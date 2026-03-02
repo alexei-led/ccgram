@@ -5,6 +5,7 @@ builtin command sets, capability flags, and shared JSONL parsing edge cases.
 """
 
 import json
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -587,6 +588,170 @@ class TestGeminiMtimeCache:
         entries2, offset2 = gemini.read_transcript_file(str(f), 2)
         assert len(entries2) == 2
         assert offset2 == 4
+
+
+# ── Codex transcript discovery ─────────────────────────────────────────
+
+
+class TestCodexDiscoverTranscript:
+    def _write_session(
+        self, sessions_dir: Path, date_parts: str, name: str, session_id: str, cwd: str
+    ) -> Path:
+        """Write a minimal Codex transcript file and return its path."""
+        day_dir = sessions_dir / date_parts
+        day_dir.mkdir(parents=True, exist_ok=True)
+        fpath = day_dir / f"{name}.jsonl"
+        meta = json.dumps(
+            {
+                "type": "session_meta",
+                "payload": {"id": session_id, "cwd": cwd},
+            }
+        )
+        fpath.write_text(meta + "\n")
+        return fpath
+
+    def test_finds_matching_transcript(self, tmp_path: Path) -> None:
+        sessions_dir = tmp_path / ".codex" / "sessions"
+        fpath = self._write_session(
+            sessions_dir, "2026/03/02", "test-session", "uuid-abc", "/my/project"
+        )
+        codex = CodexProvider()
+        with patch.object(Path, "home", return_value=tmp_path):
+            event = codex.discover_transcript("/my/project", "ccbot:@7")
+        assert event is not None
+        assert event.session_id == "uuid-abc"
+        assert event.cwd == "/my/project"
+        assert event.transcript_path == str(fpath)
+        assert event.window_key == "ccbot:@7"
+
+    def test_returns_none_when_no_cwd_match(self, tmp_path: Path) -> None:
+        sessions_dir = tmp_path / ".codex" / "sessions"
+        self._write_session(
+            sessions_dir, "2026/03/02", "test-session", "uuid-abc", "/other/project"
+        )
+        codex = CodexProvider()
+        with patch.object(Path, "home", return_value=tmp_path):
+            event = codex.discover_transcript("/my/project", "ccbot:@7")
+        assert event is None
+
+    def test_returns_none_when_no_sessions_dir(self, tmp_path: Path) -> None:
+        codex = CodexProvider()
+        with patch.object(Path, "home", return_value=tmp_path):
+            event = codex.discover_transcript("/my/project", "ccbot:@7")
+        assert event is None
+
+    def test_picks_most_recent_by_mtime(self, tmp_path: Path) -> None:
+        import os
+        import time
+
+        sessions_dir = tmp_path / ".codex" / "sessions"
+        old = self._write_session(
+            sessions_dir, "2026/03/01", "old", "uuid-old", "/my/project"
+        )
+        # Ensure mtime ordering
+        time.sleep(0.05)
+        self._write_session(
+            sessions_dir, "2026/03/02", "new", "uuid-new", "/my/project"
+        )
+        # Make old file explicitly older
+        os.utime(old, (old.stat().st_mtime - 100, old.stat().st_mtime - 100))
+
+        codex = CodexProvider()
+        with patch.object(Path, "home", return_value=tmp_path):
+            event = codex.discover_transcript("/my/project", "ccbot:@7")
+        assert event is not None
+        assert event.session_id == "uuid-new"
+
+    def test_skips_non_session_meta_first_line(self, tmp_path: Path) -> None:
+        sessions_dir = tmp_path / ".codex" / "sessions" / "2026" / "03" / "02"
+        sessions_dir.mkdir(parents=True)
+        fpath = sessions_dir / "bad.jsonl"
+        fpath.write_text(json.dumps({"type": "response_item", "payload": {}}) + "\n")
+        codex = CodexProvider()
+        with patch.object(Path, "home", return_value=tmp_path):
+            event = codex.discover_transcript("/any", "ccbot:@7")
+        assert event is None
+
+    def test_skips_invalid_json(self, tmp_path: Path) -> None:
+        sessions_dir = tmp_path / ".codex" / "sessions" / "2026" / "03" / "02"
+        sessions_dir.mkdir(parents=True)
+        fpath = sessions_dir / "corrupt.jsonl"
+        fpath.write_text("{not valid json\n")
+        codex = CodexProvider()
+        with patch.object(Path, "home", return_value=tmp_path):
+            event = codex.discover_transcript("/any", "ccbot:@7")
+        assert event is None
+
+    def test_skips_empty_session_id(self, tmp_path: Path) -> None:
+        sessions_dir = tmp_path / ".codex" / "sessions"
+        self._write_session(sessions_dir, "2026/03/02", "no-id", "", "/my/project")
+        codex = CodexProvider()
+        with patch.object(Path, "home", return_value=tmp_path):
+            event = codex.discover_transcript("/my/project", "ccbot:@7")
+        assert event is None
+
+    def test_skips_stale_transcript(self, tmp_path: Path) -> None:
+        import os
+
+        sessions_dir = tmp_path / ".codex" / "sessions"
+        fpath = self._write_session(
+            sessions_dir, "2026/03/01", "old-session", "uuid-old", "/my/project"
+        )
+        old_time = fpath.stat().st_mtime - 300
+        os.utime(fpath, (old_time, old_time))
+
+        codex = CodexProvider()
+        with patch.object(Path, "home", return_value=tmp_path):
+            event = codex.discover_transcript("/my/project", "ccbot:@7")
+        assert event is None
+
+    def test_matches_fresh_transcript_only(self, tmp_path: Path) -> None:
+        import os
+        import time
+
+        sessions_dir = tmp_path / ".codex" / "sessions"
+        stale = self._write_session(
+            sessions_dir, "2026/03/01", "stale", "uuid-stale", "/my/project"
+        )
+        old_time = stale.stat().st_mtime - 300
+        os.utime(stale, (old_time, old_time))
+
+        time.sleep(0.05)
+        self._write_session(
+            sessions_dir, "2026/03/02", "fresh", "uuid-fresh", "/my/project"
+        )
+
+        codex = CodexProvider()
+        with patch.object(Path, "home", return_value=tmp_path):
+            event = codex.discover_transcript("/my/project", "ccbot:@7")
+        assert event is not None
+        assert event.session_id == "uuid-fresh"
+
+
+class TestHooklessDiscoverTranscriptDefault:
+    def test_gemini_returns_none(self) -> None:
+        gemini = GeminiProvider()
+        assert gemini.discover_transcript("/any/cwd", "ccbot:@0") is None
+
+    def test_codex_returns_none_when_no_sessions(self, tmp_path: Path) -> None:
+        codex = CodexProvider()
+        with patch.object(Path, "home", return_value=tmp_path):
+            assert codex.discover_transcript("/any", "ccbot:@0") is None
+
+
+class TestDiscoverTranscriptContract:
+    """Contract test: discover_transcript exists on all providers and returns correctly."""
+
+    @pytest.mark.parametrize(
+        "provider_cls",
+        [CodexProvider, GeminiProvider],
+        ids=["codex", "gemini"],
+    )
+    def test_hookless_provider_has_discover_transcript(self, provider_cls) -> None:
+        provider = provider_cls()
+        assert hasattr(provider, "discover_transcript")
+        result = provider.discover_transcript("/nonexistent", "ccbot:@0")
+        assert result is None
 
 
 class TestGeminiCapabilityFlag:

@@ -579,6 +579,78 @@ class SessionManager:
         if changed:
             self._save_state()
 
+    def register_hookless_session(
+        self,
+        window_id: str,
+        session_id: str,
+        cwd: str,
+        transcript_path: str,
+        provider_name: str,
+    ) -> None:
+        """Register a session for a hookless provider (Codex, Gemini).
+
+        Updates in-memory WindowState and schedules a debounced state save.
+        Must be called from the event loop thread (not from asyncio.to_thread)
+        because _save_state() touches asyncio timer handles.
+
+        Pair with write_hookless_session_map() for the file-locked
+        session_map.json write, which is safe to call from any thread.
+        """
+        state = self.get_window_state(window_id)
+        state.session_id = session_id
+        state.cwd = cwd
+        state.transcript_path = transcript_path
+        state.provider_name = provider_name
+        self._save_state()
+
+    def write_hookless_session_map(
+        self,
+        window_id: str,
+        session_id: str,
+        cwd: str,
+        transcript_path: str,
+        provider_name: str,
+    ) -> None:
+        """Write a synthetic entry to session_map.json for a hookless provider.
+
+        Uses file locking consistent with hook.py. Safe to call from any
+        thread (no asyncio handles touched).
+        """
+        import contextlib
+        import fcntl
+
+        map_file = config.session_map_file
+        map_file.parent.mkdir(parents=True, exist_ok=True)
+        window_key = f"{config.tmux_session_name}:{window_id}"
+        lock_path = map_file.with_suffix(".lock")
+        try:
+            with open(lock_path, "w") as lock_f:
+                fcntl.flock(lock_f, fcntl.LOCK_EX)
+                try:
+                    session_map: dict[str, Any] = {}
+                    if map_file.exists():
+                        with contextlib.suppress(json.JSONDecodeError, OSError):
+                            session_map = json.loads(map_file.read_text())
+                    display_name = self.get_display_name(window_id)
+                    session_map[window_key] = {
+                        "session_id": session_id,
+                        "cwd": cwd,
+                        "window_name": display_name,
+                        "transcript_path": transcript_path,
+                        "provider_name": provider_name,
+                    }
+                    atomic_write_json(map_file, session_map)
+                    logger.info(
+                        "Registered hookless session: %s -> session_id=%s, cwd=%s",
+                        window_key,
+                        session_id,
+                        cwd,
+                    )
+                finally:
+                    fcntl.flock(lock_f, fcntl.LOCK_UN)
+        except OSError:
+            logger.exception("Failed to write session_map for hookless session")
+
     def get_session_id_for_window(self, window_id: str) -> str | None:
         """Look up session_id for a window from window_states."""
         state = self.window_states.get(window_id)

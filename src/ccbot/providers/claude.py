@@ -181,6 +181,13 @@ class ClaudeProvider:
             timestamp=TranscriptParser.get_timestamp(entry),
         )
 
+    def discover_transcript(
+        self,
+        cwd: str,  # noqa: ARG002 — protocol signature
+        window_key: str,  # noqa: ARG002 — protocol signature
+    ) -> SessionStartEvent | None:
+        return None  # Claude uses hooks, not transcript discovery
+
     def discover_commands(self, base_dir: str) -> list[DiscoveredCommand]:
         claude_dir = Path(base_dir) if base_dir else None
         commands = discover_cc_commands(claude_dir)

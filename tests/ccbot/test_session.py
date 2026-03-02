@@ -603,3 +603,87 @@ class TestUnbindThreadCleanup:
         mgr.bind_thread(100, 1, "@1")
         result = mgr.unbind_thread(100, 1)
         assert result == "@1"
+
+
+class TestRegisterHooklessSession:
+    def test_updates_window_state(self, mgr: SessionManager) -> None:
+        mgr.register_hookless_session(
+            window_id="@7",
+            session_id="uuid-abc",
+            cwd="/my/project",
+            transcript_path="/home/.codex/sessions/2026/03/02/test.jsonl",
+            provider_name="codex",
+        )
+
+        state = mgr.window_states["@7"]
+        assert state.session_id == "uuid-abc"
+        assert state.cwd == "/my/project"
+        assert state.transcript_path == "/home/.codex/sessions/2026/03/02/test.jsonl"
+        assert state.provider_name == "codex"
+
+
+class TestWriteHooklessSessionMap:
+    def test_writes_session_map_json(
+        self, mgr: SessionManager, tmp_path, monkeypatch
+    ) -> None:
+        session_map_file = tmp_path / "session_map.json"
+        monkeypatch.setattr("ccbot.session.config.session_map_file", session_map_file)
+        monkeypatch.setattr("ccbot.session.config.tmux_session_name", "ccbot")
+
+        mgr.set_display_name("@7", "pumba-codex")
+        mgr.write_hookless_session_map(
+            window_id="@7",
+            session_id="uuid-abc",
+            cwd="/my/project",
+            transcript_path="/path/to/transcript.jsonl",
+            provider_name="codex",
+        )
+
+        raw = json.loads(session_map_file.read_text())
+        entry = raw["ccbot:@7"]
+        assert entry["session_id"] == "uuid-abc"
+        assert entry["cwd"] == "/my/project"
+        assert entry["transcript_path"] == "/path/to/transcript.jsonl"
+        assert entry["provider_name"] == "codex"
+        assert entry["window_name"] == "pumba-codex"
+
+    def test_preserves_existing_session_map_entries(
+        self, mgr: SessionManager, tmp_path, monkeypatch
+    ) -> None:
+        session_map_file = tmp_path / "session_map.json"
+        session_map_file.write_text(
+            json.dumps({"ccbot:@1": {"session_id": "sid-1", "cwd": "/a"}})
+        )
+        monkeypatch.setattr("ccbot.session.config.session_map_file", session_map_file)
+        monkeypatch.setattr("ccbot.session.config.tmux_session_name", "ccbot")
+
+        mgr.write_hookless_session_map(
+            window_id="@7",
+            session_id="uuid-new",
+            cwd="/new/project",
+            transcript_path="/path/new.jsonl",
+            provider_name="codex",
+        )
+
+        raw = json.loads(session_map_file.read_text())
+        assert "ccbot:@1" in raw
+        assert "ccbot:@7" in raw
+
+    def test_handles_missing_session_map_file(
+        self, mgr: SessionManager, tmp_path, monkeypatch
+    ) -> None:
+        session_map_file = tmp_path / "session_map.json"
+        monkeypatch.setattr("ccbot.session.config.session_map_file", session_map_file)
+        monkeypatch.setattr("ccbot.session.config.tmux_session_name", "ccbot")
+
+        mgr.write_hookless_session_map(
+            window_id="@7",
+            session_id="uuid-abc",
+            cwd="/my/project",
+            transcript_path="/path/to/transcript.jsonl",
+            provider_name="codex",
+        )
+
+        assert session_map_file.exists()
+        raw = json.loads(session_map_file.read_text())
+        assert "ccbot:@7" in raw

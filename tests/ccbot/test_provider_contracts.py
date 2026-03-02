@@ -391,6 +391,13 @@ class TestParseHistoryEntry:
         assert provider.parse_history_entry(entry) is None
 
 
+class TestDiscoverTranscript:
+    def test_returns_none_or_event(self, provider: AgentProvider) -> None:
+        result = provider.discover_transcript("/nonexistent/path", "ccbot:@99")
+        # All providers should return None for a nonexistent path
+        assert result is None
+
+
 class TestDiscoverCommands:
     def test_returns_list_of_discovered_commands(self, provider: AgentProvider) -> None:
         result = provider.discover_commands("/tmp/nonexistent")

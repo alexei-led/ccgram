@@ -212,6 +212,13 @@ class JsonlProvider:
     def parse_history_entry(self, entry: dict[str, Any]) -> AgentMessage | None:
         return parse_jsonl_history_entry(entry)
 
+    def discover_transcript(
+        self,
+        cwd: str,  # noqa: ARG002 — protocol signature
+        window_key: str,  # noqa: ARG002 — protocol signature
+    ) -> SessionStartEvent | None:
+        return None
+
     def discover_commands(
         self,
         base_dir: str,  # noqa: ARG002 — protocol signature

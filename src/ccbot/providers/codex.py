@@ -12,6 +12,7 @@ Content blocks: ``input_text`` (user), ``output_text`` (assistant),
 """
 
 import json
+from pathlib import Path
 from typing import Any, cast
 
 from ccbot.providers.base import (
@@ -68,6 +69,42 @@ def _extract_codex_content(
                 pending.pop(call_id, None)
             content_type = "tool_result"
     return text, content_type, pending
+
+
+# Transcripts older than this are considered stale and skipped during discovery.
+# Prevents matching a finished session when a new Codex window opens in the same cwd.
+_TRANSCRIPT_MAX_AGE_SECS = 120.0
+
+
+def _collect_codex_sessions(sessions_dir: Path) -> list[tuple[float, Path]]:
+    """Collect all JSONL files under sessions_dir, sorted newest-first by mtime."""
+    result: list[tuple[float, Path]] = []
+    for fpath in sessions_dir.rglob("*.jsonl"):
+        try:
+            result.append((fpath.stat().st_mtime, fpath))
+        except OSError:
+            continue
+    result.sort(reverse=True)
+    return result
+
+
+def _read_codex_session_meta(fpath: Path) -> dict[str, Any] | None:
+    """Read the session_meta payload from the first line of a Codex JSONL file."""
+    try:
+        with open(fpath, encoding="utf-8") as f:
+            first_line = f.readline()
+    except OSError:
+        return None
+    if not first_line:
+        return None
+    try:
+        data = json.loads(first_line)
+    except json.JSONDecodeError:
+        return None
+    if data.get("type") != "session_meta":
+        return None
+    payload = data.get("payload")
+    return payload if isinstance(payload, dict) else None
 
 
 class CodexProvider(JsonlProvider):
@@ -207,6 +244,41 @@ class CodexProvider(JsonlProvider):
                 return None
             return AgentMessage(text=text, role="user", content_type="text")
 
+        return None
+
+    def discover_transcript(
+        self, cwd: str, window_key: str
+    ) -> SessionStartEvent | None:
+        """Scan ~/.codex/sessions/ for the most recent transcript matching cwd.
+
+        Codex transcript path: ~/.codex/sessions/YYYY/MM/DD/<name>-<ts>-<uuid>.jsonl
+        First line: {"type": "session_meta", "payload": {"id": "<uuid>", "cwd": "..."}}
+        """
+        sessions_dir = Path.home() / ".codex" / "sessions"
+        if not sessions_dir.is_dir():
+            return None
+
+        import time
+
+        jsonl_files = _collect_codex_sessions(sessions_dir)
+        now = time.time()
+        resolved_cwd = str(Path(cwd).resolve())
+        for mtime, fpath in jsonl_files[:20]:
+            if now - mtime > _TRANSCRIPT_MAX_AGE_SECS:
+                break  # sorted newest-first; remaining are all older
+            meta = _read_codex_session_meta(fpath)
+            if not meta:
+                continue
+            file_cwd = meta.get("cwd", "")
+            if file_cwd and str(Path(file_cwd).resolve()) == resolved_cwd:
+                session_id = meta.get("id", "")
+                if session_id:
+                    return SessionStartEvent(
+                        session_id=session_id,
+                        cwd=file_cwd,
+                        transcript_path=str(fpath),
+                        window_key=window_key,
+                    )
         return None
 
     def parse_hook_payload(

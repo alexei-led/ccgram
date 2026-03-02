@@ -208,6 +208,20 @@ class AgentProvider(Protocol):
         """
         ...
 
+    def discover_transcript(
+        self, cwd: str, window_key: str
+    ) -> SessionStartEvent | None:
+        """Discover transcript for a hookless provider session.
+
+        Scans the provider's session storage for the most recent transcript
+        matching the given working directory. Returns a SessionStartEvent
+        if found, None otherwise.
+
+        Only useful for providers without hook support (Codex, Gemini).
+        Providers with hooks (Claude) return None.
+        """
+        ...
+
     def discover_commands(self, base_dir: str) -> list[DiscoveredCommand]:
         """Discover available commands/skills from the provider's config."""
         ...

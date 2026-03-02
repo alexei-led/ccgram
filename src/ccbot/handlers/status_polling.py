@@ -833,6 +833,41 @@ async def _probe_topic_existence(bot: Bot) -> None:
                     )
 
 
+async def _maybe_discover_transcript(window_id: str) -> None:
+    """Discover and register transcript for hookless providers (Codex, Gemini).
+
+    Runs once per window: skips if the window already has a session_id or if
+    the provider supports hooks. When a transcript is found, writes a synthetic
+    session_map entry so the session monitor starts tracking it.
+    """
+    state = session_manager.window_states.get(window_id)
+    if not state or state.session_id or not state.cwd:
+        return
+    provider = get_provider_for_window(window_id)
+    if provider.capabilities.supports_hook:
+        return
+    window_key = f"{config.tmux_session_name}:{window_id}"
+    event = await asyncio.to_thread(provider.discover_transcript, state.cwd, window_key)
+    if event:
+        # In-memory update on event loop (touches asyncio timer handles)
+        session_manager.register_hookless_session(
+            window_id=window_id,
+            session_id=event.session_id,
+            cwd=event.cwd,
+            transcript_path=event.transcript_path,
+            provider_name=provider.capabilities.name,
+        )
+        # File-locked session_map.json write in thread (blocking I/O)
+        await asyncio.to_thread(
+            session_manager.write_hookless_session_map,
+            window_id=window_id,
+            session_id=event.session_id,
+            cwd=event.cwd,
+            transcript_path=event.transcript_path,
+            provider_name=provider.capabilities.name,
+        )
+
+
 async def status_poll_loop(bot: Bot) -> None:
     """Background task to poll terminal status for all thread-bound windows."""
     logger.info("Status polling started (interval: %ss)", STATUS_POLL_INTERVAL)
@@ -863,6 +898,9 @@ async def status_poll_loop(bot: Bot) -> None:
                             bot, user_id, thread_id, wid
                         )
                         continue
+
+                    # Discover transcript for hookless providers (Codex, Gemini)
+                    await _maybe_discover_transcript(wid)
 
                     queue = get_message_queue(user_id)
                     if queue and not queue.empty():
