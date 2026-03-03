@@ -934,6 +934,17 @@ class TestGeminiTerminalStatus:
         "  3. Allow for all future sessions\n"
         "  4. No, suggest changes (esc)\n"
     )
+    BOXED_PERMISSION_PANE = (
+        "╭──────────────────────╮\n"
+        "│ Action Required      │\n"
+        "│ ? Shell date         │\n"
+        "│ Allow execution of: 'date'?\n"
+        "│ ● 1. Allow once      │\n"
+        "│   2. Allow for this session\n"
+        "│   3. Allow for all future sessions\n"
+        "│   4. No, suggest changes (esc)\n"
+        "╰──────────────────────╯\n"
+    )
     SELECT_MODEL_PANE = (
         "Select Model\n"
         "● 1. Auto (Gemini 3)\n"
@@ -971,6 +982,15 @@ class TestGeminiTerminalStatus:
         assert "Allow once" in status.raw_text
         assert "Allow for this session" in status.raw_text
         assert "Action Required" in status.raw_text
+
+    def test_detects_boxed_permission_prompt_content(self) -> None:
+        gemini = GeminiProvider()
+        status = gemini.parse_terminal_status(self.BOXED_PERMISSION_PANE)
+        assert status is not None
+        assert status.is_interactive is True
+        assert status.ui_type == "PermissionPrompt"
+        assert "Allow for this session" in status.raw_text
+        assert status.raw_text != "Action Required"
 
     def test_returns_none_for_non_interactive_pane(self) -> None:
         gemini = GeminiProvider()

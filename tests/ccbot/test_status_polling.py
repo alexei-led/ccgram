@@ -835,6 +835,7 @@ class TestMaybeDiscoverTranscript:
             mock_tmux.find_window_by_id = AsyncMock(
                 return_value=MagicMock(pane_current_command="bun")
             )
+            mock_tmux.get_pane_title = AsyncMock(return_value="")
             mock_config.tmux_session_name = "ccbot"
             await _maybe_discover_transcript("@7")
 
@@ -882,11 +883,13 @@ class TestMaybeDiscoverTranscript:
         ):
             mock_sm.window_states = {"@7": mock_state}
             mock_tmux.find_window_by_id = AsyncMock(return_value=mock_window)
+            mock_tmux.get_pane_title = AsyncMock(return_value="")
             mock_config.tmux_session_name = "ccbot"
             await _maybe_discover_transcript("@7")
 
-        assert mock_state.cwd == "/my/project"
-        mock_sm.set_window_provider.assert_called_once_with("@7", "codex")
+        mock_sm.set_window_provider.assert_called_once_with(
+            "@7", "codex", cwd="/my/project"
+        )
         mock_sm.register_hookless_session.assert_called_once()
 
     async def test_skips_when_provider_has_hooks(self) -> None:
@@ -945,6 +948,7 @@ class TestMaybeDiscoverTranscript:
             mock_config.tmux_session_name = "ccbot"
             mock_window = MagicMock(pane_current_command="bun")
             mock_tmux.find_window_by_id = AsyncMock(return_value=mock_window)
+            mock_tmux.get_pane_title = AsyncMock(return_value="")
             await _maybe_discover_transcript("@7")
 
         mock_sm.register_hookless_session.assert_called_once_with(
@@ -998,6 +1002,7 @@ class TestMaybeDiscoverTranscript:
             mock_tmux.find_window_by_id = AsyncMock(
                 return_value=MagicMock(pane_current_command="bun")
             )
+            mock_tmux.get_pane_title = AsyncMock(return_value="")
             await _maybe_discover_transcript("@7")
 
         mock_sm.register_hookless_session.assert_called_once_with(
@@ -1031,6 +1036,7 @@ class TestMaybeDiscoverTranscript:
             mock_tmux.find_window_by_id = AsyncMock(
                 return_value=MagicMock(pane_current_command="bun")
             )
+            mock_tmux.get_pane_title = AsyncMock(return_value="")
             await _maybe_discover_transcript("@7")
 
         mock_sm.register_hookless_session.assert_not_called()
@@ -1068,6 +1074,7 @@ class TestMaybeDiscoverTranscript:
             mock_config.tmux_session_name = "ccbot"
             mock_window = MagicMock(pane_current_command="bun")
             mock_tmux.find_window_by_id = AsyncMock(return_value=mock_window)
+            mock_tmux.get_pane_title = AsyncMock(return_value="")
             mock_asyncio.to_thread = AsyncMock(side_effect=[event, None])
             await _maybe_discover_transcript("@7")
 
@@ -1128,6 +1135,7 @@ class TestMaybeDiscoverTranscript:
             }
             mock_config.tmux_session_name = "ccbot"
             mock_tmux.find_window_by_id = AsyncMock(return_value=mock_window)
+            mock_tmux.get_pane_title = AsyncMock(return_value="")
             await _maybe_discover_transcript("@7")
 
         mock_sm.register_hookless_session.assert_called_once_with(
@@ -1181,6 +1189,7 @@ class TestMaybeDiscoverTranscript:
             mock_tmux.find_window_by_id = AsyncMock(
                 return_value=MagicMock(pane_current_command="bun")
             )
+            mock_tmux.get_pane_title = AsyncMock(return_value="")
             mock_asyncio.to_thread = AsyncMock(return_value=None)
             await _maybe_discover_transcript("@7")
 
@@ -1217,3 +1226,83 @@ class TestMaybeDiscoverTranscript:
         discover_call = mock_asyncio.to_thread.call_args_list[0]
         assert discover_call.args[0] == mock_provider.discover_transcript
         assert discover_call.kwargs["max_age"] is None
+
+    async def test_rebinds_stale_codex_window_to_gemini_from_pane_title(self) -> None:
+        from ccbot.handlers.status_polling import _maybe_discover_transcript
+        from ccbot.providers.base import SessionStartEvent
+
+        mock_codex = MagicMock()
+        mock_codex.capabilities.supports_hook = False
+        mock_codex.capabilities.name = "codex"
+        mock_codex.discover_transcript.return_value = None
+
+        gemini_event = SessionStartEvent(
+            session_id="gemini-uuid",
+            cwd="/Users/alexei/Workspace/ccbot",
+            transcript_path="/Users/alexei/.gemini/tmp/ccbot/chats/session.json",
+            window_key="ccbot:@7",
+        )
+        mock_gemini = MagicMock()
+        mock_gemini.capabilities.supports_hook = False
+        mock_gemini.capabilities.name = "gemini"
+        mock_gemini.discover_transcript.return_value = gemini_event
+
+        mock_state = MagicMock(
+            session_id="old-codex-id",
+            cwd="/Users/alexei",
+            transcript_path="/Users/alexei/.codex/sessions/old.jsonl",
+            provider_name="codex",
+        )
+
+        def _provider_for_window(_: str) -> MagicMock:
+            if mock_state.provider_name == "gemini":
+                return mock_gemini
+            return mock_codex
+
+        def _set_window_provider(
+            window_id: str, provider_name: str, *, cwd: str | None = None
+        ) -> None:
+            assert window_id == "@7"
+            mock_state.provider_name = provider_name
+            if cwd:
+                mock_state.cwd = cwd
+
+        with (
+            patch("ccbot.handlers.status_polling.session_manager") as mock_sm,
+            patch(
+                "ccbot.handlers.status_polling.get_provider_for_window",
+                side_effect=_provider_for_window,
+            ),
+            patch(
+                "ccbot.handlers.status_polling.detect_provider_from_command",
+                return_value="",
+            ),
+            patch("ccbot.handlers.status_polling.config") as mock_config,
+            patch("ccbot.handlers.status_polling.tmux_manager") as mock_tmux,
+        ):
+            mock_sm.window_states = {"@7": mock_state}
+            mock_sm.set_window_provider.side_effect = _set_window_provider
+            mock_tmux.find_window_by_id = AsyncMock(
+                return_value=MagicMock(
+                    pane_current_command="bun",
+                    cwd="/Users/alexei/Workspace/ccbot",
+                )
+            )
+            mock_tmux.get_pane_title = AsyncMock(return_value="◇  Ready (ccbot)")
+            mock_config.tmux_session_name = "ccbot"
+            await _maybe_discover_transcript("@7")
+
+        mock_codex.discover_transcript.assert_not_called()
+        mock_gemini.discover_transcript.assert_called_once()
+        mock_sm.set_window_provider.assert_called_once_with(
+            "@7",
+            "gemini",
+            cwd="/Users/alexei/Workspace/ccbot",
+        )
+        mock_sm.register_hookless_session.assert_called_once_with(
+            window_id="@7",
+            session_id="gemini-uuid",
+            cwd="/Users/alexei/Workspace/ccbot",
+            transcript_path="/Users/alexei/.gemini/tmp/ccbot/chats/session.json",
+            provider_name="gemini",
+        )

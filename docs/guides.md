@@ -243,6 +243,11 @@ CCBOT_CODEX_COMMAND=codex --dangerously-bypass-approvals-and-sandbox
 CCBOT_GEMINI_COMMAND=gemini --yolo
 ```
 
+For ccbot-managed Gemini launches, CCBot also injects
+`GEMINI_CLI_SYSTEM_SETTINGS_PATH=~/.ccbot/gemini-system-settings.json` with
+`tools.shell.enableInteractiveShell=false` to avoid node-pty `EBADF` crashes in
+tmux. If you set `CCBOT_GEMINI_COMMAND`, your override is used as-is.
+
 ### Provider-Specific Commands
 
 Each provider exposes its own slash commands to the Telegram menu. Examples:

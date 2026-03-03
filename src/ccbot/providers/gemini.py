@@ -20,6 +20,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import threading
 import time
 import tomllib
@@ -37,6 +38,7 @@ from ccbot.providers.base import (
     StatusUpdate,
 )
 from ccbot.terminal_parser import UIPattern, extract_interactive_content
+from ccbot.utils import atomic_write_json, ccbot_dir
 
 # Gemini CLI known slash commands
 _GEMINI_BUILTINS: dict[str, str] = {
@@ -109,19 +111,20 @@ _GEMINI_ROLE_MAP: dict[str, MessageRole] = {
 #
 # We match on structural markers rather than exact wording for resilience
 # against prompt text changes.
+_GEMINI_BOX_PREFIX = r"[\s│┃║|]*"
 
 GEMINI_UI_PATTERNS: list[UIPattern] = [
     UIPattern(
         name="SelectionUI",
         top=(
             # e.g. "Select Model"
-            re.compile(r"^\s*Select\b"),
+            re.compile(rf"^{_GEMINI_BOX_PREFIX}Select\b"),
         ),
         bottom=(
             # Gemini modal close hint
-            re.compile(r"^\s*\(Press Esc to (close|cancel)\)"),
+            re.compile(rf"^{_GEMINI_BOX_PREFIX}\(Press Esc to (close|cancel)\)"),
             # Some selectors show Enter/Tab hints instead of close text.
-            re.compile(r"^\s*\(Press Enter to (confirm|select)\)"),
+            re.compile(rf"^{_GEMINI_BOX_PREFIX}\(Press Enter to (confirm|select)\)"),
         ),
         min_gap=1,
     ),
@@ -129,13 +132,13 @@ GEMINI_UI_PATTERNS: list[UIPattern] = [
         name="PermissionPrompt",
         top=(
             # "Action Required" header (bold in terminal, plain in capture)
-            re.compile(r"^\s*Action Required"),
+            re.compile(rf"^{_GEMINI_BOX_PREFIX}Action Required"),
         ),
         bottom=(
             # Last option always ends with "(esc" (possibly truncated by pane width)
-            re.compile(r"\(esc"),
+            re.compile(r"(?i)\(esc"),
             # Fallback: a numbered "No" option (the cancel choice)
-            re.compile(r"^\s*\d+\.\s+No\b"),
+            re.compile(rf"^{_GEMINI_BOX_PREFIX}\d+\.\s+No\b"),
         ),
     ),
 ]
@@ -151,6 +154,57 @@ _TRANSCRIPT_MAX_AGE_SECS = 120.0
 _MAX_TOOL_SUMMARY = 200
 _JSON_READ_ERRORS = (OSError, json.JSONDecodeError)
 _TOML_READ_ERRORS = (OSError, tomllib.TOMLDecodeError)
+_GEMINI_SYSTEM_SETTINGS_FILE = "gemini-system-settings.json"
+_GEMINI_WRAPPER_COMMANDS = frozenset({"bun", "node", "npx"})
+_GEMINI_PANE_TITLE_MARKERS = ("\u2726", "\u270b", "\u25c7")
+
+
+def _runtime_command_basename(pane_current_command: str) -> str:
+    cmd = pane_current_command.strip().lower()
+    if not cmd:
+        return ""
+    return os.path.basename(cmd.split()[0])
+
+
+def needs_pane_title_for_detection(pane_current_command: str) -> bool:
+    """Return True when runtime detection needs pane-title context."""
+    return _runtime_command_basename(pane_current_command) in _GEMINI_WRAPPER_COMMANDS
+
+
+def detect_gemini_from_runtime(pane_current_command: str, pane_title: str) -> bool:
+    """Detect Gemini when wrapped by runtime shims like bun/node/npx."""
+    if not needs_pane_title_for_detection(pane_current_command):
+        return False
+    if not isinstance(pane_title, str):
+        return False
+    return any(marker in pane_title for marker in _GEMINI_PANE_TITLE_MARKERS)
+
+
+def build_hardened_gemini_launch_command(command: str) -> str:
+    """Wrap Gemini launch command with ccbot-managed stability settings.
+
+    Gemini reads this path as "system settings", so it overrides workspace/user
+    settings and reliably disables interactive-shell PTY mode for ccbot runs.
+    If the settings file cannot be written, returns the original command.
+    """
+    settings_path = ccbot_dir() / _GEMINI_SYSTEM_SETTINGS_FILE
+    try:
+        atomic_write_json(
+            settings_path,
+            {
+                "tools": {
+                    "shell": {
+                        # Disable node-pty interactive shell mode in ccbot-managed Gemini runs.
+                        # This avoids known EBADF crashes in tmux when shell tools execute.
+                        "enableInteractiveShell": False
+                    }
+                }
+            },
+        )
+    except OSError:
+        return command
+    quoted_path = shlex.quote(str(settings_path))
+    return f"env GEMINI_CLI_SYSTEM_SETTINGS_PATH={quoted_path} {command}"
 
 
 def _extract_gemini_text(value: Any) -> str:
@@ -360,6 +414,16 @@ class GeminiProvider(JsonlProvider):
     )
 
     _BUILTINS = _GEMINI_BUILTINS
+
+    def requires_pane_title_for_detection(self, pane_current_command: str) -> bool:
+        """Return True when Gemini runtime detection needs pane-title context."""
+        return needs_pane_title_for_detection(pane_current_command)
+
+    def detect_from_pane_title(
+        self, pane_current_command: str, pane_title: str
+    ) -> bool:
+        """Detect Gemini from wrapped command + OSC title markers."""
+        return detect_gemini_from_runtime(pane_current_command, pane_title)
 
     def make_launch_args(
         self,

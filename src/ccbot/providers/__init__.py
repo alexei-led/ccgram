@@ -124,6 +124,53 @@ def detect_provider_from_command(pane_current_command: str) -> str:
     return ""
 
 
+def _provider_needs_pane_title(
+    provider: AgentProvider, pane_current_command: str
+) -> bool:
+    checker = getattr(provider, "requires_pane_title_for_detection", None)
+    if not callable(checker):
+        return False
+    return bool(checker(pane_current_command))
+
+
+def _provider_matches_pane_title(
+    provider: AgentProvider,
+    pane_current_command: str,
+    pane_title: str,
+) -> bool:
+    checker = getattr(provider, "detect_from_pane_title", None)
+    if not callable(checker):
+        return False
+    return bool(checker(pane_current_command, pane_title))
+
+
+def should_probe_pane_title_for_provider_detection(pane_current_command: str) -> bool:
+    """Return True when any provider needs pane-title context to detect runtime."""
+    _ensure_registered()
+    for name in registry.provider_names():
+        if _provider_needs_pane_title(registry.get(name), pane_current_command):
+            return True
+    return False
+
+
+def detect_provider_from_runtime(
+    pane_current_command: str,
+    *,
+    pane_title: str = "",
+) -> str:
+    """Detect provider from process name and optional pane-title hints."""
+    detected = detect_provider_from_command(pane_current_command)
+    if detected or not pane_title:
+        return detected
+
+    _ensure_registered()
+    for name in registry.provider_names():
+        provider = registry.get(name)
+        if _provider_matches_pane_title(provider, pane_current_command, pane_title):
+            return provider.capabilities.name
+    return ""
+
+
 def resolve_launch_command(
     provider_name: str, *, approval_mode: str = _APPROVAL_MODE_NORMAL
 ) -> str:
@@ -145,6 +192,13 @@ def resolve_launch_command(
         except UnknownProviderError:
             provider = "claude"
             command = registry.get("claude").capabilities.launch_command
+
+    # CCBOT_GEMINI_COMMAND overrides stay fully user-controlled.
+    # For ccbot-managed Gemini launches, force stable shell mode defaults.
+    if provider == "gemini" and not override:
+        from ccbot.providers.gemini import build_hardened_gemini_launch_command
+
+        command = build_hardened_gemini_launch_command(command)
 
     if approval_mode.lower() != _APPROVAL_MODE_YOLO:
         return command
@@ -187,9 +241,11 @@ __all__ = [
     "StatusUpdate",
     "UnknownProviderError",
     "detect_provider_from_command",
+    "detect_provider_from_runtime",
     "get_provider",
     "get_provider_for_window",
     "registry",
     "resolve_capabilities",
     "resolve_launch_command",
+    "should_probe_pane_title_for_provider_detection",
 ]

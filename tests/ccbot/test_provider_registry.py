@@ -1,5 +1,7 @@
 """Tests for provider registry, config integration, and per-window resolution."""
 
+import json
+import shlex
 from unittest.mock import patch
 
 import pytest
@@ -102,7 +104,9 @@ class TestResolveLaunchCommand:
 
         assert resolve_launch_command("claude") == "claude"
         assert resolve_launch_command("codex") == "codex"
-        assert resolve_launch_command("gemini") == "gemini"
+        gemini_cmd = resolve_launch_command("gemini")
+        assert "GEMINI_CLI_SYSTEM_SETTINGS_PATH=" in gemini_cmd
+        assert gemini_cmd.endswith(" gemini")
 
     def test_per_provider_env_override(self, monkeypatch) -> None:
         from ccbot.providers import resolve_launch_command
@@ -117,7 +121,9 @@ class TestResolveLaunchCommand:
         monkeypatch.setenv("CCBOT_CODEX_COMMAND", "my-codex")
         assert resolve_launch_command("codex") == "my-codex"
         assert resolve_launch_command("claude") == "claude"
-        assert resolve_launch_command("gemini") == "gemini"
+        gemini_cmd = resolve_launch_command("gemini")
+        assert "GEMINI_CLI_SYSTEM_SETTINGS_PATH=" in gemini_cmd
+        assert gemini_cmd.endswith(" gemini")
 
     def test_unknown_provider_falls_back_to_claude_default(self) -> None:
         from ccbot.providers import resolve_launch_command
@@ -145,7 +151,27 @@ class TestResolveLaunchCommand:
             resolve_launch_command("codex", approval_mode="yolo")
             == "codex --dangerously-bypass-approvals-and-sandbox"
         )
-        assert resolve_launch_command("gemini", approval_mode="yolo") == "gemini --yolo"
+        gemini_cmd = resolve_launch_command("gemini", approval_mode="yolo")
+        assert "GEMINI_CLI_SYSTEM_SETTINGS_PATH=" in gemini_cmd
+        assert gemini_cmd.endswith(" gemini --yolo")
+
+    def test_gemini_hardening_writes_system_settings_file(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from ccbot.providers import resolve_launch_command
+
+        monkeypatch.setenv("CCBOT_DIR", str(tmp_path))
+        cmd = resolve_launch_command("gemini")
+
+        settings_path = tmp_path / "gemini-system-settings.json"
+        assert settings_path.exists()
+        assert json.loads(settings_path.read_text()) == {
+            "tools": {"shell": {"enableInteractiveShell": False}}
+        }
+        assert (
+            f"GEMINI_CLI_SYSTEM_SETTINGS_PATH={shlex.quote(str(settings_path))}" in cmd
+        )
+        assert cmd.endswith(" gemini")
 
     def test_yolo_mode_does_not_duplicate_flag(self, monkeypatch) -> None:
         from ccbot.providers import resolve_launch_command

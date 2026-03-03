@@ -905,14 +905,22 @@ class SessionManager:
 
     # --- Provider management ---
 
-    def set_window_provider(self, window_id: str, provider_name: str) -> None:
+    def set_window_provider(
+        self,
+        window_id: str,
+        provider_name: str,
+        *,
+        cwd: str | None = None,
+    ) -> None:
         """Set the provider for a window. Empty string resets to config default.
 
-        Always saves state unconditionally — callers may have mutated
-        other WindowState fields (e.g. cwd) that piggyback on this save.
+        Always saves state unconditionally. When *cwd* is provided, persists it
+        in the same write so provider/cwd updates stay atomic.
         """
         state = self.get_window_state(window_id)
         state.provider_name = provider_name
+        if cwd:
+            state.cwd = cwd
         self._save_state()
 
     def get_approval_mode(self, window_id: str) -> str:
@@ -1011,6 +1019,26 @@ class SessionManager:
         encoded_cwd = cwd.replace("/", "-")
         return config.claude_projects_path / encoded_cwd / f"{session_id}.jsonl"
 
+    def _session_from_transcript_path(
+        self,
+        window_id: str,
+        state: WindowState,
+    ) -> ClaudeSession | None:
+        """Build a lightweight session object from persisted transcript_path."""
+        transcript = state.transcript_path
+        if not transcript:
+            return None
+        file_path = Path(transcript)
+        if not file_path.exists():
+            return None
+        summary = state.window_name or self.get_display_name(window_id) or "Untitled"
+        return ClaudeSession(
+            session_id=state.session_id,
+            summary=summary,
+            message_count=-1,  # unknown for non-JSONL transcript shortcuts
+            file_path=str(file_path),
+        )
+
     async def _get_session_direct(
         self, session_id: str, cwd: str, window_id: str = ""
     ) -> ClaudeSession | None:
@@ -1107,9 +1135,27 @@ class SessionManager:
         if not state.session_id or not state.cwd:
             return None
 
+        # Hookless providers persist direct transcript paths outside Claude's
+        # projects dir. Prefer that path first to avoid false "missing file"
+        # clears when session_id/cwd don't map to Claude JSONL layout.
+        direct = self._session_from_transcript_path(window_id, state)
+        if direct:
+            return direct
+
         session = await self._get_session_direct(state.session_id, state.cwd, window_id)
         if session:
             return session
+
+        provider = get_provider_for_window(window_id)
+        if not provider.capabilities.supports_hook:
+            logger.debug(
+                "Hookless session unresolved for window_id %s "
+                "(sid=%s, transcript_path=%s); keeping state",
+                window_id,
+                state.session_id,
+                state.transcript_path,
+            )
+            return None
 
         # File no longer exists, clear state
         logger.debug(

@@ -1,6 +1,8 @@
 """Tests for SessionManager pure dict operations."""
 
 import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -677,6 +679,86 @@ class TestRegisterHooklessSession:
         assert state.cwd == "/my/project"
         assert state.transcript_path == "/home/.codex/sessions/2026/03/02/test.jsonl"
         assert state.provider_name == "codex"
+
+
+class TestResolveSessionForWindow:
+    async def test_hookless_uses_persisted_transcript_path(
+        self, mgr: SessionManager, tmp_path, monkeypatch
+    ) -> None:
+        transcript = tmp_path / "session.json"
+        transcript.write_text('{"messages":[]}')
+        mgr.window_states["@7"] = WindowState(
+            session_id="gemini-uuid",
+            cwd="/my/project",
+            transcript_path=str(transcript),
+            provider_name="gemini",
+        )
+        monkeypatch.setattr(
+            "ccbot.session.get_provider_for_window",
+            lambda _wid: SimpleNamespace(
+                capabilities=SimpleNamespace(supports_hook=False)
+            ),
+        )
+
+        session = await mgr.resolve_session_for_window("@7")
+
+        assert session is not None
+        assert session.file_path == str(transcript)
+        assert mgr.window_states["@7"].session_id == "gemini-uuid"
+        assert mgr.window_states["@7"].cwd == "/my/project"
+
+    async def test_hookless_unresolved_does_not_clear_window_state(
+        self, mgr: SessionManager, monkeypatch
+    ) -> None:
+        mgr.window_states["@8"] = WindowState(
+            session_id="codex-uuid",
+            cwd="/my/project",
+            transcript_path="/missing/transcript.jsonl",
+            provider_name="codex",
+        )
+        monkeypatch.setattr(
+            "ccbot.session.get_provider_for_window",
+            lambda _wid: SimpleNamespace(
+                capabilities=SimpleNamespace(supports_hook=False)
+            ),
+        )
+        monkeypatch.setattr(
+            mgr,
+            "_get_session_direct",
+            AsyncMock(return_value=None),
+        )
+
+        session = await mgr.resolve_session_for_window("@8")
+
+        assert session is None
+        assert mgr.window_states["@8"].session_id == "codex-uuid"
+        assert mgr.window_states["@8"].cwd == "/my/project"
+
+    async def test_hook_provider_unresolved_clears_window_state(
+        self, mgr: SessionManager, monkeypatch
+    ) -> None:
+        mgr.window_states["@9"] = WindowState(
+            session_id="claude-uuid",
+            cwd="/my/project",
+            provider_name="claude",
+        )
+        monkeypatch.setattr(
+            "ccbot.session.get_provider_for_window",
+            lambda _wid: SimpleNamespace(
+                capabilities=SimpleNamespace(supports_hook=True)
+            ),
+        )
+        monkeypatch.setattr(
+            mgr,
+            "_get_session_direct",
+            AsyncMock(return_value=None),
+        )
+
+        session = await mgr.resolve_session_for_window("@9")
+
+        assert session is None
+        assert mgr.window_states["@9"].session_id == ""
+        assert mgr.window_states["@9"].cwd == ""
 
 
 class TestWriteHooklessSessionMap:

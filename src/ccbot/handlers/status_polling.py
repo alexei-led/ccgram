@@ -39,7 +39,12 @@ from telegram.constants import ChatAction
 from telegram.error import BadRequest, TelegramError
 
 from ..config import config
-from ..providers import get_provider_for_window
+from ..providers import (
+    detect_provider_from_command,
+    detect_provider_from_runtime,
+    get_provider_for_window,
+    should_probe_pane_title_for_provider_detection,
+)
 from ..providers.base import StatusUpdate
 from ..session import session_manager
 from ..session_monitor import get_active_monitor
@@ -438,12 +443,9 @@ async def _handle_no_status(
         # Hookless providers (Codex/Gemini) often sit at shell-like prompts while
         # still being an active topic. Keep idle controls visible instead of
         # clearing the status message.
-        provider_name = ""
-        with contextlib.suppress(Exception):
-            state = session_manager.get_window_state(window_id)
-            raw_provider = getattr(state, "provider_name", "")
-            if isinstance(raw_provider, str):
-                provider_name = raw_provider.lower()
+        state = session_manager.get_window_state(window_id)
+        raw_provider = getattr(state, "provider_name", "")
+        provider_name = raw_provider.lower() if isinstance(raw_provider, str) else ""
         if provider_name in ("codex", "gemini"):
             _has_seen_status.add(window_id)
             await _transition_to_idle(
@@ -845,6 +847,22 @@ async def _maybe_discover_transcript(window_id: str) -> None:
     if not state:
         return
 
+    w = await tmux_manager.find_window_by_id(window_id)
+
+    # Re-detect provider from the current pane to recover from stale mappings.
+    if w and w.pane_current_command:
+        detected = detect_provider_from_command(w.pane_current_command)
+        if not detected and should_probe_pane_title_for_provider_detection(
+            w.pane_current_command
+        ):
+            pane_title = await tmux_manager.get_pane_title(window_id)
+            detected = detect_provider_from_runtime(
+                w.pane_current_command,
+                pane_title=pane_title,
+            )
+        if detected and detected != state.provider_name:
+            session_manager.set_window_provider(window_id, detected, cwd=w.cwd or None)
+
     # If provider is explicitly set and supports hooks, trust hook delivery
     if state.provider_name:
         provider = get_provider_for_window(window_id)
@@ -853,11 +871,11 @@ async def _maybe_discover_transcript(window_id: str) -> None:
 
     # Ensure cwd is available (fall back to tmux pane path)
     if not state.cwd:
-        w = await tmux_manager.find_window_by_id(window_id)
         if not w or not w.cwd:
             return
-        state.cwd = w.cwd
-        session_manager.set_window_provider(window_id, state.provider_name or "")
+        session_manager.set_window_provider(
+            window_id, state.provider_name or "", cwd=w.cwd
+        )
 
     # Determine which providers to try
     if state.provider_name:
@@ -866,7 +884,6 @@ async def _maybe_discover_transcript(window_id: str) -> None:
         providers_to_try = [(provider.capabilities.name, provider)]
     else:
         # Detection failed — check pane is alive (skip dead shells)
-        w = await tmux_manager.find_window_by_id(window_id)
         if w and is_shell_prompt(w.pane_current_command):
             return
         # Try all hookless providers
@@ -877,7 +894,6 @@ async def _maybe_discover_transcript(window_id: str) -> None:
         ]
 
     # Disable staleness check if pane process is alive
-    w = await tmux_manager.find_window_by_id(window_id)
     pane_alive = w is not None and not is_shell_prompt(w.pane_current_command)
 
     window_key = f"{config.tmux_session_name}:{window_id}"

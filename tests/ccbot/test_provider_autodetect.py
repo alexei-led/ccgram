@@ -4,7 +4,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ccbot.providers import _reset_provider, detect_provider_from_command
+from ccbot.providers import (
+    _reset_provider,
+    detect_provider_from_command,
+    detect_provider_from_runtime,
+    should_probe_pane_title_for_provider_detection,
+)
 from ccbot.session_monitor import SessionMonitor
 
 
@@ -44,6 +49,33 @@ class TestDetectProviderFromCommand:
     def test_priority_order_first_match(self) -> None:
         # "claude" is checked first, so "claude-codex" matches "claude"
         assert detect_provider_from_command("claude-codex") == "claude"
+
+
+class TestDetectProviderFromRuntime:
+    @pytest.fixture(autouse=True)
+    def _reset(self):
+        _reset_provider()
+        yield
+        _reset_provider()
+
+    def test_probe_hint_for_gemini_wrappers(self) -> None:
+        assert should_probe_pane_title_for_provider_detection("bun") is True
+        assert should_probe_pane_title_for_provider_detection("node") is True
+        assert should_probe_pane_title_for_provider_detection("bash") is False
+
+    def test_detects_gemini_from_wrapper_and_title_marker(self) -> None:
+        assert (
+            detect_provider_from_runtime("bun", pane_title="◇ Ready (ccbot)")
+            == "gemini"
+        )
+
+    def test_does_not_detect_gemini_from_generic_title_text(self) -> None:
+        assert (
+            detect_provider_from_runtime("bun", pane_title="Working on build...") == ""
+        )
+
+    def test_prefers_command_detection_when_available(self) -> None:
+        assert detect_provider_from_runtime("codex", pane_title="◇ Ready") == "codex"
 
 
 class TestHandleNewWindowAutoDetection:
