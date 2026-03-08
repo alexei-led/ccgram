@@ -114,9 +114,9 @@ _ACTIVITY_THRESHOLD = 10.0
 # Startup timeout: after this many seconds without any status or transcript
 # activity, transition from "starting up" to idle instead of staying green forever.
 _STARTUP_TIMEOUT = 30.0
-_startup_times: dict[
-    str, float
-] = {}  # window_id -> monotonic time first seen without status
+_startup_times: dict[str, float] = (
+    {}
+)  # window_id -> monotonic time first seen without status
 
 # Per-window pyte ScreenBuffer for ANSI-aware parsing
 _screen_buffers: dict[str, ScreenBuffer] = {}
@@ -320,6 +320,9 @@ async def _check_unbound_window_ttl(live_windows: list | None = None) -> None:
     ]
     for wid in expired:
         _unbound_window_timers.pop(wid, None)
+        from ..tmux_manager import clear_vim_state
+
+        clear_vim_state(wid)
         await tmux_manager.kill_window(wid)
         logger.info("Auto-killed unbound window %s (TTL expired)", wid)
 
@@ -645,6 +648,14 @@ async def update_status_message(
     if not pane_text:
         # Transient capture failure - keep existing status message
         return
+
+    # Passive vim INSERT mode tracking — feed the polling cache so that
+    # _ensure_vim_insert_mode() has a warm cache for the common case.
+    # Use tail-only check to avoid false positives from historical output.
+    from ..tmux_manager import _has_insert_indicator, notify_vim_insert_seen
+
+    if _has_insert_indicator(pane_text):
+        notify_vim_insert_seen(w.window_id)
 
     interactive_window = get_interactive_window(user_id, thread_id)
     should_check_new_ui = True

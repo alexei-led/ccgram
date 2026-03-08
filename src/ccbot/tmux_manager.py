@@ -6,10 +6,13 @@ Wraps libtmux to provide async-friendly operations on a single tmux session:
   - send_keys: forward user input or control keys to a window.
   - create_window / kill_window: lifecycle management.
   - list_panes / capture_pane_by_id / send_keys_to_pane: pane-level ops.
+  - Vim mode detection: auto-enter INSERT mode before sending text when
+    Claude Code's /vim mode is active and the TUI is in NORMAL mode.
 
 All blocking libtmux calls are wrapped in asyncio.to_thread().
 
 Key class: TmuxManager (singleton instantiated as `tmux_manager`).
+Module-level: _vim_state cache, _vim_locks for per-window send serialization.
 """
 
 import asyncio
@@ -24,6 +27,41 @@ from libtmux.exc import LibTmuxException
 from .config import config
 
 logger = structlog.get_logger()
+
+# ── Vim mode state cache ───────────────────────────────────────────────
+# window_id → True (vim mode on) / False (vim mode off)
+# Missing key = unknown, needs probe on first send.
+_vim_state: dict[str, bool] = {}
+
+# Per-window locks to serialize vim probe + send sequences,
+# preventing interleaved keystrokes from concurrent send_keys() calls.
+_vim_locks: dict[str, asyncio.Lock] = {}
+
+# Delay between sending probe 'i' and recapturing pane (seconds).
+_VIM_PROBE_DELAY = 0.12
+
+
+def _has_insert_indicator(pane_text: str) -> bool:
+    """Check if ``-- INSERT --`` appears in the last 3 lines of pane text."""
+    return any("-- INSERT --" in line for line in pane_text.splitlines()[-3:])
+
+
+def notify_vim_insert_seen(window_id: str) -> None:
+    """Record that vim INSERT mode was observed (called from status polling)."""
+    _vim_state[window_id] = True
+
+
+def clear_vim_state(window_id: str) -> None:
+    """Remove vim state cache entry and lock for a window (called on cleanup)."""
+    _vim_state.pop(window_id, None)
+    _vim_locks.pop(window_id, None)
+
+
+def reset_vim_state() -> None:
+    """Reset all vim state (for testing)."""
+    _vim_state.clear()
+    _vim_locks.clear()
+
 
 _TmuxError = (
     LibTmuxException,
@@ -368,6 +406,58 @@ class TmuxManager:
             logger.exception("Failed to send keys to window %s", window_id)
             return False
 
+    async def _ensure_vim_insert_mode(self, window_id: str) -> None:
+        """Detect vim NORMAL mode and auto-enter INSERT before sending text.
+
+        Uses a per-window cache (_vim_state) to minimize overhead:
+        - False (vim off): returns immediately, zero cost.
+        - True (vim on): captures pane to check INSERT indicator.
+          If missing (NORMAL mode), sends ``i`` to enter INSERT.
+        - Missing (unknown): probes once to determine vim state.
+        """
+        cached = _vim_state.get(window_id)
+
+        # Fast path: vim is definitely off
+        if cached is False:
+            return
+
+        # Check current pane for INSERT indicator
+        pane_text = await self.capture_pane(window_id)
+        if not pane_text:
+            return
+
+        if _has_insert_indicator(pane_text):
+            _vim_state[window_id] = True
+            return
+
+        # No INSERT indicator visible.
+        # If cache is None (unknown), we need to probe.
+        # If cache is True (was vim), INSERT disappeared → likely NORMAL mode.
+        # Both cases: send `i` and check result.
+        if not await asyncio.to_thread(
+            self._pane_send, window_id, "i", enter=False, literal=True
+        ):
+            return
+
+        await asyncio.sleep(_VIM_PROBE_DELAY)
+
+        pane_text = await self.capture_pane(window_id)
+        if not pane_text:
+            # Transient capture failure — leave state unchanged, don't backspace
+            return
+
+        if _has_insert_indicator(pane_text):
+            # Vim is on — we just entered INSERT mode
+            _vim_state[window_id] = True
+            return
+
+        # No INSERT indicator → vim is off (or was turned off)
+        _vim_state[window_id] = False
+        # Clean up the stray 'i' we typed
+        await asyncio.to_thread(
+            self._pane_send, window_id, "BSpace", enter=False, literal=False
+        )
+
     async def _send_literal_then_enter(self, window_id: str, text: str) -> bool:
         """Send literal text followed by Enter with a delay.
 
@@ -376,9 +466,20 @@ class TmuxManager:
         rather than submit.  A 500ms gap lets the TUI process the
         text before receiving Enter.
 
+        Auto-detects vim NORMAL mode and enters INSERT before sending.
+        Serialized per-window via _vim_locks to prevent interleaved probes.
+
         Handles ``!`` command mode: sends ``!`` first so the TUI switches
         to bash mode, waits 1s, then sends the rest.
         """
+        lock = _vim_locks.setdefault(window_id, asyncio.Lock())
+        async with lock:
+            return await self._send_literal_then_enter_locked(window_id, text)
+
+    async def _send_literal_then_enter_locked(self, window_id: str, text: str) -> bool:
+        """Inner send implementation (must be called under per-window lock)."""
+        await self._ensure_vim_insert_mode(window_id)
+
         if text.startswith("!"):
             if not await asyncio.to_thread(
                 self._pane_send, window_id, "!", enter=False, literal=True
