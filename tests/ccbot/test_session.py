@@ -983,7 +983,7 @@ class TestPruneStaleStateSkipChatIds:
         assert "200:99" not in mgr.group_chat_ids
 
 
-class TestResolveStaleIdsDroppedBindings:
+class TestResolveStaleIdsPreservesDeadBindings:
     @pytest.fixture(autouse=True)
     def _mock_session_map(self, tmp_path, monkeypatch):
         session_map_file = tmp_path / "session_map.json"
@@ -991,13 +991,10 @@ class TestResolveStaleIdsDroppedBindings:
         monkeypatch.setattr("ccbot.session.config.session_map_file", session_map_file)
         monkeypatch.setattr("ccbot.session.config.tmux_session_name", "ccbot")
 
-    async def test_returns_dropped_bindings(self, mgr: SessionManager) -> None:
-        from ccbot.session import DroppedBinding
-
+    async def test_preserves_dead_window_binding(self, mgr: SessionManager) -> None:
         mgr.bind_thread(100, 1, "@1", window_name="alive-proj")
         mgr.bind_thread(100, 2, "@2", window_name="dead-proj")
-        mgr.set_group_chat_id(100, 1, -999)
-        mgr.set_group_chat_id(100, 2, -888)
+        mgr.window_states["@2"] = WindowState(cwd="/tmp/dead", provider_name="claude")
 
         alive = SimpleNamespace(window_id="@1", window_name="alive-proj")
         from ccbot.tmux_manager import tmux_manager
@@ -1005,17 +1002,14 @@ class TestResolveStaleIdsDroppedBindings:
         with patch.object(
             tmux_manager, "list_windows", AsyncMock(return_value=[alive])
         ):
-            dropped = await mgr.resolve_stale_ids()
+            await mgr.resolve_stale_ids()
 
-        assert len(dropped) == 1
-        db = dropped[0]
-        assert isinstance(db, DroppedBinding)
-        assert db.user_id == 100
-        assert db.thread_id == 2
-        assert db.window_id == "@2"
-        assert db.chat_id == -888
+        # Dead binding preserved for /restore
+        assert mgr.get_window_for_thread(100, 2) == "@2"
+        assert "@2" in mgr.window_states
+        assert mgr.window_states["@2"].cwd == "/tmp/dead"
 
-    async def test_no_dropped_when_all_alive(self, mgr: SessionManager) -> None:
+    async def test_alive_bindings_unchanged(self, mgr: SessionManager) -> None:
         mgr.bind_thread(100, 1, "@1", window_name="proj")
         alive = SimpleNamespace(window_id="@1", window_name="proj")
         from ccbot.tmux_manager import tmux_manager
@@ -1023,15 +1017,19 @@ class TestResolveStaleIdsDroppedBindings:
         with patch.object(
             tmux_manager, "list_windows", AsyncMock(return_value=[alive])
         ):
-            dropped = await mgr.resolve_stale_ids()
-        assert dropped == []
+            await mgr.resolve_stale_ids()
 
-    async def test_dropped_uses_user_id_fallback(self, mgr: SessionManager) -> None:
+        assert mgr.get_window_for_thread(100, 1) == "@1"
+
+    async def test_dead_window_state_preserved(self, mgr: SessionManager) -> None:
         mgr.bind_thread(100, 1, "@1", window_name="proj")
-        # No group_chat_id set — should fall back to user_id
+        mgr.window_states["@1"] = WindowState(cwd="/my/project", provider_name="codex")
         from ccbot.tmux_manager import tmux_manager
 
         with patch.object(tmux_manager, "list_windows", AsyncMock(return_value=[])):
-            dropped = await mgr.resolve_stale_ids()
-        assert len(dropped) == 1
-        assert dropped[0].chat_id == 100
+            await mgr.resolve_stale_ids()
+
+        # State preserved for recovery
+        assert "@1" in mgr.window_states
+        assert mgr.window_states["@1"].cwd == "/my/project"
+        assert mgr.window_states["@1"].provider_name == "codex"

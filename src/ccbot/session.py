@@ -147,16 +147,6 @@ class AuditResult:
         return len(self.issues) > 0
 
 
-@dataclass(frozen=True)
-class DroppedBinding:
-    """A thread binding dropped during startup re-resolution."""
-
-    user_id: int
-    thread_id: int
-    window_id: str
-    chat_id: int  # group chat ID, or user_id if no group stored
-
-
 @dataclass
 class ClaudeSession:
     """Information about a Claude Code session."""
@@ -314,11 +304,11 @@ class SessionManager:
         else:
             self._needs_migration = False
 
-    async def resolve_stale_ids(self) -> list[DroppedBinding]:
+    async def resolve_stale_ids(self) -> None:
         """Re-resolve persisted window IDs against live tmux windows.
 
         Called on startup. Delegates to window_resolver for the heavy lifting.
-        Returns list of bindings that were dropped (dead windows).
+        Dead window bindings and states are preserved for /restore recovery.
         """
         from .window_resolver import LiveWindow, resolve_stale_ids as _resolve
 
@@ -327,12 +317,6 @@ class SessionManager:
             LiveWindow(window_id=w.window_id, window_name=w.window_name)
             for w in windows
         ]
-
-        # Snapshot current bindings before resolution
-        old_bindings: dict[tuple[int, int], str] = {}
-        for uid, bindings in self.thread_bindings.items():
-            for tid, wid in bindings.items():
-                old_bindings[(uid, tid)] = wid
 
         changed = _resolve(
             live,
@@ -349,18 +333,6 @@ class SessionManager:
 
         self._needs_migration = False
 
-        # Compute dropped bindings (resolve_chat_id still works — group_chat_ids not yet pruned)
-        new_keys: set[tuple[int, int]] = set()
-        for uid, bindings in self.thread_bindings.items():
-            for tid in bindings:
-                new_keys.add((uid, tid))
-
-        dropped: list[DroppedBinding] = []
-        for (uid, tid), wid in old_bindings.items():
-            if (uid, tid) not in new_keys:
-                chat_id = self.resolve_chat_id(uid, tid)
-                dropped.append(DroppedBinding(uid, tid, wid, chat_id))
-
         # Prune session_map.json entries for dead windows
         live_ids = {w.window_id for w in live}
         self.prune_session_map(live_ids)
@@ -371,8 +343,6 @@ class SessionManager:
 
         # Prune orphaned display names (preserve group_chat_ids for post-restart topic creation)
         self.prune_stale_state(live_ids, skip_chat_ids=True)
-
-        return dropped
 
     # --- Display name management ---
 

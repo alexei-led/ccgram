@@ -1547,48 +1547,6 @@ async def _handle_new_window(event: NewWindowEvent, bot: Bot) -> None:
 # --- App lifecycle ---
 
 
-async def _close_stale_topics(bot: Bot, dropped_bindings: list) -> None:
-    """Close Telegram topics for bindings dropped during startup re-resolution."""
-    from .session import DroppedBinding
-
-    db: DroppedBinding
-    for db in dropped_bindings:
-        if db.chat_id == db.user_id:
-            continue  # No group chat stored — skip DM fallback
-        try:
-            await bot.close_forum_topic(db.chat_id, db.thread_id)
-            logger.info(
-                "Startup: closed stale topic thread=%d chat=%d (was window %s)",
-                db.thread_id,
-                db.chat_id,
-                db.window_id,
-            )
-        except RetryAfter as e:
-            retry_secs = (
-                e.retry_after
-                if isinstance(e.retry_after, int)
-                else int(e.retry_after.total_seconds())
-            )
-            logger.warning(
-                "Startup: flood control closing topic thread=%d, retry after %ds",
-                db.thread_id,
-                retry_secs,
-            )
-            await asyncio.sleep(max(1, retry_secs) + 1)
-            try:
-                await bot.close_forum_topic(db.chat_id, db.thread_id)
-            except TelegramError:
-                logger.exception(
-                    "Startup: failed to close topic thread=%d after retry",
-                    db.thread_id,
-                )
-        except TelegramError:
-            logger.debug(
-                "Startup: could not close topic thread=%d (may already be closed)",
-                db.thread_id,
-            )
-
-
 async def _adopt_unbound_windows(bot: Bot) -> None:
     """Auto-adopt known-but-unbound windows (post-restart recovery)."""
     all_windows = await tmux_manager.list_windows()
@@ -1626,8 +1584,7 @@ async def post_init(application: Application) -> None:
         jq.run_repeating(_refresh_commands, interval=600, first=600)
 
     # Re-resolve stale window IDs from persisted state against live tmux windows
-    dropped_bindings = await session_manager.resolve_stale_ids()
-    await _close_stale_topics(application.bot, dropped_bindings)
+    await session_manager.resolve_stale_ids()
 
     await _adopt_unbound_windows(application.bot)
 

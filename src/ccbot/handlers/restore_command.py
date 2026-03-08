@@ -1,29 +1,33 @@
-"""/restore command — recover dead topics via explicit command.
+"""/restore command — auto-recover dead topics.
 
-When a tmux window dies, the topic becomes stale. This command gives users
-an explicit way to trigger recovery, showing the same recovery keyboard
-that the text handler shows for dead windows.
+When a tmux window dies, the topic becomes stale. This command auto-recovers
+the session: recreates the window in the same cwd/provider with --continue.
 
 Key function: restore_command().
 """
 
 from pathlib import Path
 
+import contextlib
+
 import structlog
 from telegram import Update
+from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
 from ..config import config
+from ..providers import get_provider_for_window, resolve_launch_command
 from ..session import session_manager
 from ..tmux_manager import tmux_manager
 from .message_sender import safe_reply
-from .recovery_callbacks import build_recovery_keyboard
+from .status_polling import clear_dead_notification
+from .topic_emoji import format_topic_name_for_mode
 
 logger = structlog.get_logger()
 
 
-async def restore_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /restore — show recovery UI for a dead topic."""
+async def restore_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /restore — auto-recover a dead topic with --continue."""
     user = update.effective_user
     if not user or not update.message:
         return
@@ -37,7 +41,8 @@ async def restore_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -
         await safe_reply(update.message, "Use this command inside a topic.")
         return
 
-    window_id = session_manager.resolve_window_for_thread(user.id, thread_id)
+    user_id = user.id
+    window_id = session_manager.resolve_window_for_thread(user_id, thread_id)
     if not window_id:
         await safe_reply(update.message, "No session bound to this topic.")
         return
@@ -55,12 +60,38 @@ async def restore_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -
         await safe_reply(update.message, "Directory no longer exists.")
         return
 
-    display = session_manager.get_display_name(window_id)
-    keyboard = build_recovery_keyboard(window_id)
+    # Auto-recover: unbind old, create new window with --continue, rebind
+    session_manager.unbind_thread(user_id, thread_id)
+    clear_dead_notification(user_id, thread_id)
+
+    provider = get_provider_for_window(window_id)
+    approval_mode = session_manager.get_approval_mode(window_id)
+    launch_command = resolve_launch_command(
+        provider.capabilities.name, approval_mode=approval_mode
+    )
+    launch_args = provider.make_launch_args(use_continue=True)
+
+    success, message, wname, wid = await tmux_manager.create_window(
+        cwd, agent_args=launch_args, launch_command=launch_command
+    )
+    if not success:
+        await safe_reply(update.message, f"\u274c {message}")
+        return
+
+    if provider.capabilities.supports_hook:
+        await session_manager.wait_for_session_map_entry(wid)
+
+    session_manager.set_window_provider(wid, provider.capabilities.name)
+    session_manager.set_window_approval_mode(wid, approval_mode)
+    session_manager.bind_thread(user_id, thread_id, wid, window_name=wname)
+
+    with contextlib.suppress(TelegramError):
+        await context.bot.edit_forum_topic(
+            chat_id=session_manager.resolve_chat_id(user_id, thread_id),
+            message_thread_id=thread_id,
+            name=format_topic_name_for_mode(wname, approval_mode),
+        )
+
     await safe_reply(
-        update.message,
-        f"\u26a0 Window `{display}` is no longer running.\n"
-        f"\U0001f4c2 `{cwd}`\n\n"
-        "How would you like to recover?",
-        reply_markup=keyboard,
+        update.message, f"\u2705 {message}\n\nContinuing previous session."
     )

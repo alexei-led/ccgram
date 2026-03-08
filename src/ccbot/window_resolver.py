@@ -52,8 +52,8 @@ def _resolve_window_states(
                     window_display_names.pop(key, None)
                     changed = True
                 else:
-                    logger.debug("Dropping stale window_state: %s", key)
-                    changed = True
+                    # Keep dead window state — recovery needs cwd/provider
+                    new_states[key] = ws
         else:
             new_id = live_by_name.get(key)
             if new_id:
@@ -90,13 +90,8 @@ def _resolve_thread_bindings(
                     window_display_names[new_id] = window_display_names.get(val, val)
                     changed = True
                 else:
-                    logger.debug(
-                        "Dropping stale thread binding: user=%d, thread=%d, wid=%s",
-                        uid,
-                        tid,
-                        val,
-                    )
-                    changed = True
+                    # Keep dead window binding — /restore needs it
+                    new_bindings[tid] = val
             elif new_id := live_by_name.get(val):
                 logger.debug("Migrating thread binding %s -> %s", val, new_id)
                 new_bindings[tid] = new_id
