@@ -121,16 +121,22 @@ brew install alexei-led/tap/ccbot    # Homebrew (macOS)
 ### Configure
 
 1. Create a Telegram bot via [@BotFather](https://t.me/BotFather)
-2. Enable **Topics** in your bot (BotFather > Bot Settings > Groups > Topics in Groups > Enable)
-3. Add the bot to a Telegram group that has Topics enabled
-4. Create `~/.ccbot/.env`:
+2. Configure bot settings in BotFather:
+   - **Allow Groups**: Enabled (Bot Settings > Groups & Channels > Allow Groups? > Turn on)
+   - **Group Privacy**: Disabled (Bot Settings > Groups & Channels > Group Privacy > Turn off) — *Required to see all messages in topics*
+   - **Topics**: Enabled (Bot Settings > Groups & Channels > Edit Topics > Enable)
+3. Add the bot to a Telegram group with Topics enabled.
+4. **Promote the bot to Administrator** and ensure it has the **Create Topics** permission (required for the bot to automatically sync and manage session topics).
+5. Create `~/.ccbot/.env`:
 
 ```ini
 TELEGRAM_BOT_TOKEN=your_bot_token_here
 ALLOWED_USERS=your_telegram_user_id
+CCBOT_GROUP_ID=your_telegram_group_id
 ```
 
 > Get your user ID from [@userinfobot](https://t.me/userinfobot) on Telegram.
+> Get the group ID by adding -100 in front of the **Peer ID** found in the Group Info (or use [@RawDataBot](https://t.me/RawDataBot)).
 
 ### Install hooks (Claude Code only)
 
