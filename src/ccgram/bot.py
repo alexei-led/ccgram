@@ -156,6 +156,7 @@ from .handlers.file_handler import handle_document_message, handle_photo_message
 from .handlers.text_handler import handle_text_message
 from .session import session_manager
 from .session_monitor import NewMessage, NewWindowEvent, SessionMonitor
+from .telegram_request import ResilientPollingHTTPXRequest
 from .tmux_manager import tmux_manager
 from .utils import task_done_callback
 
@@ -1691,6 +1692,7 @@ def create_bot() -> Application:
     application = (
         Application.builder()
         .token(config.telegram_bot_token)
+        .get_updates_request(ResilientPollingHTTPXRequest(connection_pool_size=1))
         .post_init(post_init)
         .post_shutdown(post_shutdown)
         .build()
