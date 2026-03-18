@@ -121,7 +121,7 @@ class TestHandleUnboundTopic:
         mock_sm.iter_thread_bindings.return_value = []
         w = MagicMock(window_id="@5", window_name="proj", cwd="/tmp")
         mock_tm.list_windows = AsyncMock(return_value=[w])
-        mock_tm.discover_emdash_sessions = AsyncMock(return_value=[])
+        mock_tm.discover_external_sessions = AsyncMock(return_value=[])
         mock_picker.return_value = ("Pick:", MagicMock(), ["@5"])
 
         user_data: dict = {}
@@ -149,7 +149,7 @@ class TestHandleUnboundTopic:
         mock_sm.get_window_for_thread.return_value = None
         mock_sm.iter_thread_bindings.return_value = []
         mock_tm.list_windows = AsyncMock(return_value=[])
-        mock_tm.discover_emdash_sessions = AsyncMock(return_value=[])
+        mock_tm.discover_external_sessions = AsyncMock(return_value=[])
         mock_browser.return_value = ("Browse:", MagicMock(), [])
 
         user_data: dict = {}
@@ -176,7 +176,7 @@ class TestHandleUnboundTopic:
         mock_sm.iter_thread_bindings.return_value = []
         w = MagicMock(window_id="@5", window_name="proj", cwd="/tmp")
         mock_tm.list_windows = AsyncMock(return_value=[w])
-        mock_tm.discover_emdash_sessions = AsyncMock(return_value=[])
+        mock_tm.discover_external_sessions = AsyncMock(return_value=[])
         mock_picker.return_value = ("Pick:", MagicMock(), ["@5"])
 
         user_data: dict = {}

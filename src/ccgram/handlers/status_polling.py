@@ -1003,8 +1003,8 @@ async def status_poll_loop(bot: Bot) -> None:
             # Fetch all windows once per cycle — O(1) lookup replaces
             # per-binding find_window_by_id calls (O(N×M) → O(N+M)).
             all_windows = await tmux_manager.list_windows()
-            emdash_windows = await tmux_manager.discover_emdash_sessions()
-            all_windows.extend(emdash_windows)
+            external_windows = await tmux_manager.discover_external_sessions()
+            all_windows.extend(external_windows)
             window_lookup: dict[str, TmuxWindow] = {w.window_id: w for w in all_windows}
 
             # Periodic topic existence probe + stale state cleanup

@@ -729,6 +729,8 @@ class SessionMonitor:
 
                 # Detect unbound tmux windows (no Claude Code yet)
                 all_windows = await tmux_manager.list_windows()
+                external_windows = await tmux_manager.discover_external_sessions()
+                all_windows = all_windows + external_windows
                 live_window_ids = {w.window_id for w in all_windows}
                 session_manager.prune_session_map(live_window_ids)
                 known_window_ids = set(current_map.keys())

@@ -57,8 +57,8 @@ async def _build_dashboard(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
         )
 
     all_windows = await tmux_manager.list_windows()
-    emdash_windows = await tmux_manager.discover_emdash_sessions()
-    all_windows.extend(emdash_windows)
+    external_windows = await tmux_manager.discover_external_sessions()
+    all_windows.extend(external_windows)
     live_ids = {w.window_id for w in all_windows}
 
     lines: list[str] = []
