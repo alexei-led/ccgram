@@ -5,14 +5,14 @@ import shutil
 
 import pytest
 
-from ccbot.tmux_manager import TmuxManager
+from ccgram.tmux_manager import TmuxManager
 
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux not installed"),
 ]
 
-TEST_SESSION = "ccbot-test-integration"
+TEST_SESSION = "ccgram-test-integration"
 
 
 @pytest.fixture()

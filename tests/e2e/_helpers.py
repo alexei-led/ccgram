@@ -238,7 +238,7 @@ async def setup_bound_topic(
 
     # Set the browse_path in user_data to our work_dir
     # Access the mutable internal defaultdict (app.user_data is a read-only proxy)
-    from ccbot.handlers.directory_browser import BROWSE_PATH_KEY
+    from ccgram.handlers.directory_browser import BROWSE_PATH_KEY
 
     user_data = app._user_data[user_id]  # defaultdict auto-creates entry
     user_data[BROWSE_PATH_KEY] = str(work_dir)
@@ -287,7 +287,7 @@ async def setup_bound_topic(
     )
 
     # Resolve the window_id from the session manager
-    from ccbot.session import session_manager
+    from ccgram.session import session_manager
 
     window_id = session_manager.get_window_for_thread(user_id, thread_id)
     assert window_id is not None, "Topic not bound after setup flow"

@@ -53,7 +53,7 @@ async def test_basic_lifecycle(e2e_app, work_dir):
 
 
 # ---------------------------------------------------------------------------
-# Test 5: CCBot commands — /sessions, /screenshot
+# Test 5: CCGram commands — /sessions, /screenshot
 # ---------------------------------------------------------------------------
 
 

@@ -37,8 +37,8 @@ window_display_names: dict[str, str]        # window_id → window_name (for dis
 ```python
 # session_map.json (key format: "tmux_session:window_id")
 {
-  "ccbot:@0": {"session_id": "uuid-xxx", "cwd": "/path/to/project", "window_name": "project", "provider_name": "claude", "transcript_path": "..."},
-  "ccbot:@5": {"session_id": "uuid-yyy", "cwd": "/path/to/project", "window_name": "project-2", "provider_name": "codex", "transcript_path": "..."}
+  "ccgram:@0": {"session_id": "uuid-xxx", "cwd": "/path/to/project", "window_name": "project", "provider_name": "claude", "transcript_path": "..."},
+  "ccgram:@5": {"session_id": "uuid-yyy", "cwd": "/path/to/project", "window_name": "project-2", "provider_name": "codex", "transcript_path": "..."}
 }
 ```
 

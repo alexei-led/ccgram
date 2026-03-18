@@ -4,27 +4,27 @@
 
 Add a new provider:
 
-1. Implement provider in `src/ccbot/providers/<name>.py` following `AgentProvider` contract.
-2. Register provider in `src/ccbot/providers/__init__.py`.
+1. Implement provider in `src/ccgram/providers/<name>.py` following `AgentProvider` contract.
+2. Register provider in `src/ccgram/providers/__init__.py`.
 3. Define capabilities accurately (resume/continue/hook/status behavior).
-4. Add provider tests in `tests/ccbot/test_provider_contracts.py` and provider-specific tests.
+4. Add provider tests in `tests/ccgram/test_provider_contracts.py` and provider-specific tests.
 5. If provider launch requires runtime hardening (for example Gemini shell mode), keep it in `resolve_launch_command()` and cover it with launch-command tests.
 6. If you change provider contract signatures (for example `discover_transcript(..., max_age=...)`), update:
-   - `src/ccbot/providers/base.py` protocol
+   - `src/ccgram/providers/base.py` protocol
    - shared base implementations (`_jsonl.py`, Claude/Codex/Gemini as needed)
    - call sites (status polling/session monitor)
    - contract + behavior tests
 
 Add a new Telegram command or callback:
 
-1. Register command/callback in `src/ccbot/bot.py`.
-2. Implement handler in `src/ccbot/handlers/`.
+1. Register command/callback in `src/ccgram/bot.py`.
+2. Implement handler in `src/ccgram/handlers/`.
 3. Add callback prefix/constant in `handlers/callback_data.py` if needed.
 4. Add/adjust tests for routing + handler behavior.
 
 Add session state fields:
 
-1. Extend dataclasses/serialization in `src/ccbot/session.py`.
+1. Extend dataclasses/serialization in `src/ccgram/session.py`.
 2. Ensure load path is backward compatible with missing keys.
 3. Update migration logic if key semantics change (`window_resolver.py` / migration tests).
 
@@ -38,7 +38,7 @@ Add a new slash command (agent-side):
 Add file upload handling:
 
 1. `handlers/file_handler.py` handles photo/document messages.
-2. Files are saved to `.ccbot-uploads/` under the config directory.
+2. Files are saved to `.ccgram-uploads/` under the config directory.
 3. Agent is notified via tmux keys with the file path.
 4. Extend `file_handler.py` for new media types or post-processing.
 

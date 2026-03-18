@@ -31,18 +31,18 @@ jobs:
         id: version
         run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
       - name: Generate formula
-        run: uv run scripts/generate_homebrew_formula.py "${{ steps.version.outputs.VERSION }}" > ccbot.rb
+        run: uv run scripts/generate_homebrew_formula.py "${{ steps.version.outputs.VERSION }}" > ccgram.rb
       - name: Push to homebrew-tap
         env:
           GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           git clone "https://x-access-token:${GITHUB_TOKEN}@github.com/alexei-led/homebrew-tap.git" tap
-          cp ccbot.rb tap/Formula/ccbot.rb
+          cp ccgram.rb tap/Formula/ccgram.rb
           cd tap
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Formula/ccbot.rb
-          git commit -m "ccbot ${{ steps.version.outputs.VERSION }}"
+          git add Formula/ccgram.rb
+          git commit -m "ccgram ${{ steps.version.outputs.VERSION }}"
           git push
   github-release:
     needs:

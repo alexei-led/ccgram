@@ -2,7 +2,7 @@
 
 Provides:
   - e2e_state_dir: isolated state files in tmp_path
-  - e2e_tmux: dedicated tmux session (ccbot-e2e)
+  - e2e_tmux: dedicated tmux session (ccgram-e2e)
   - intercepted_calls: API call recorder
   - e2e_app: full Application lifecycle with mocked Bot API
   - work_dir: minimal agent working directory
@@ -25,7 +25,7 @@ pytestmark = pytest.mark.e2e
 @pytest.fixture
 def e2e_state_dir(tmp_path, monkeypatch):
     """Create isolated state files and point config at them."""
-    state_dir = tmp_path / "ccbot-state"
+    state_dir = tmp_path / "ccgram-state"
     state_dir.mkdir()
 
     state_file = state_dir / "state.json"
@@ -38,7 +38,7 @@ def e2e_state_dir(tmp_path, monkeypatch):
     events_file.write_text("")
     monitor_state.write_text("{}")
 
-    from ccbot.config import config
+    from ccgram.config import config
 
     monkeypatch.setattr(config, "config_dir", state_dir)
     monkeypatch.setattr(config, "state_file", state_file)
@@ -53,7 +53,7 @@ def e2e_state_dir(tmp_path, monkeypatch):
 # Tmux session fixture
 # ---------------------------------------------------------------------------
 
-E2E_TMUX_SESSION = "ccbot-e2e"
+E2E_TMUX_SESSION = "ccgram-e2e"
 
 
 @pytest.fixture
@@ -61,8 +61,8 @@ def e2e_tmux(monkeypatch):
     """Create a dedicated tmux session for E2E tests."""
     import libtmux
 
-    from ccbot.config import config
-    from ccbot.tmux_manager import TmuxManager
+    from ccgram.config import config
+    from ccgram.tmux_manager import TmuxManager
 
     monkeypatch.setattr(config, "tmux_session_name", E2E_TMUX_SESSION)
 
@@ -85,24 +85,24 @@ def e2e_tmux(monkeypatch):
     manager = TmuxManager(session_name=E2E_TMUX_SESSION)
 
     _tm_modules = [
-        "ccbot.tmux_manager",
-        "ccbot.bot",
-        "ccbot.session",
-        "ccbot.session_monitor",
-        "ccbot.handlers.text_handler",
-        "ccbot.handlers.directory_callbacks",
-        "ccbot.handlers.status_polling",
-        "ccbot.handlers.message_queue",
-        "ccbot.handlers.recovery_callbacks",
-        "ccbot.handlers.sessions_dashboard",
-        "ccbot.handlers.screenshot_callbacks",
-        "ccbot.handlers.interactive_ui",
-        "ccbot.handlers.interactive_callbacks",
-        "ccbot.handlers.window_callbacks",
-        "ccbot.handlers.restore_command",
-        "ccbot.handlers.resume_command",
-        "ccbot.handlers.history_callbacks",
-        "ccbot.handlers.sync_command",
+        "ccgram.tmux_manager",
+        "ccgram.bot",
+        "ccgram.session",
+        "ccgram.session_monitor",
+        "ccgram.handlers.text_handler",
+        "ccgram.handlers.directory_callbacks",
+        "ccgram.handlers.status_polling",
+        "ccgram.handlers.message_queue",
+        "ccgram.handlers.recovery_callbacks",
+        "ccgram.handlers.sessions_dashboard",
+        "ccgram.handlers.screenshot_callbacks",
+        "ccgram.handlers.interactive_ui",
+        "ccgram.handlers.interactive_callbacks",
+        "ccgram.handlers.window_callbacks",
+        "ccgram.handlers.restore_command",
+        "ccgram.handlers.resume_command",
+        "ccgram.handlers.history_callbacks",
+        "ccgram.handlers.sync_command",
     ]
     import importlib
 
@@ -214,7 +214,7 @@ def _make_api_router(calls: list):
 @pytest.fixture
 async def e2e_app(e2e_state_dir, e2e_tmux, intercepted_calls, monkeypatch):
     """Full PTB Application with real handlers, mocked Bot API, real tmux."""
-    from ccbot.session import SessionManager
+    from ccgram.session import SessionManager
 
     fresh_manager = SessionManager()
 
@@ -222,27 +222,27 @@ async def e2e_app(e2e_state_dir, e2e_tmux, intercepted_calls, monkeypatch):
     # Python's `from mod import name` creates a local binding, so we must
     # patch each importing module individually.
     _sm_modules = [
-        "ccbot.session",
-        "ccbot.bot",
-        "ccbot.handlers.text_handler",
-        "ccbot.handlers.directory_callbacks",
-        "ccbot.handlers.directory_browser",
-        "ccbot.handlers.status_polling",
-        "ccbot.handlers.message_queue",
-        "ccbot.handlers.recovery_callbacks",
-        "ccbot.handlers.callback_helpers",
-        "ccbot.handlers.sessions_dashboard",
-        "ccbot.handlers.screenshot_callbacks",
-        "ccbot.handlers.interactive_ui",
-        "ccbot.handlers.history",
-        "ccbot.handlers.hook_events",
-        "ccbot.handlers.file_handler",
-        "ccbot.handlers.voice_handler",
-        "ccbot.handlers.voice_callbacks",
-        "ccbot.handlers.window_callbacks",
-        "ccbot.handlers.restore_command",
-        "ccbot.handlers.resume_command",
-        "ccbot.handlers.sync_command",
+        "ccgram.session",
+        "ccgram.bot",
+        "ccgram.handlers.text_handler",
+        "ccgram.handlers.directory_callbacks",
+        "ccgram.handlers.directory_browser",
+        "ccgram.handlers.status_polling",
+        "ccgram.handlers.message_queue",
+        "ccgram.handlers.recovery_callbacks",
+        "ccgram.handlers.callback_helpers",
+        "ccgram.handlers.sessions_dashboard",
+        "ccgram.handlers.screenshot_callbacks",
+        "ccgram.handlers.interactive_ui",
+        "ccgram.handlers.history",
+        "ccgram.handlers.hook_events",
+        "ccgram.handlers.file_handler",
+        "ccgram.handlers.voice_handler",
+        "ccgram.handlers.voice_callbacks",
+        "ccgram.handlers.window_callbacks",
+        "ccgram.handlers.restore_command",
+        "ccgram.handlers.resume_command",
+        "ccgram.handlers.sync_command",
     ]
     import importlib
 
@@ -250,7 +250,7 @@ async def e2e_app(e2e_state_dir, e2e_tmux, intercepted_calls, monkeypatch):
         mod = importlib.import_module(mod_name)
         monkeypatch.setattr(mod, "session_manager", fresh_manager)
 
-    from ccbot.bot import create_bot
+    from ccgram.bot import create_bot
 
     app = create_bot()
 

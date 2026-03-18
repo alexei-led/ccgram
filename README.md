@@ -1,26 +1,26 @@
-# CCBot — Command & Control Bot
+# CCGram — Command & Control Bot
 
-[![CI](https://github.com/alexei-led/ccbot/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/alexei-led/ccbot/actions/workflows/ci.yml)
-[![PyPI](https://img.shields.io/pypi/v/ccbot)](https://pypi.org/project/ccbot/)
-[![Downloads](https://img.shields.io/pypi/dm/ccbot)](https://pypi.org/project/ccbot/)
-[![Python](https://img.shields.io/pypi/pyversions/ccbot)](https://pypi.org/project/ccbot/)
-[![Typed](https://img.shields.io/pypi/types/ccbot)](https://pypi.org/project/ccbot/)
-[![License](https://img.shields.io/github/license/alexei-led/ccbot)](LICENSE)
+[![CI](https://github.com/alexei-led/ccgram/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/alexei-led/ccgram/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/ccgram)](https://pypi.org/project/ccgram/)
+[![Downloads](https://img.shields.io/pypi/dm/ccgram)](https://pypi.org/project/ccgram/)
+[![Python](https://img.shields.io/pypi/pyversions/ccgram)](https://pypi.org/project/ccgram/)
+[![Typed](https://img.shields.io/pypi/types/ccgram)](https://pypi.org/project/ccgram/)
+[![License](https://img.shields.io/github/license/alexei-led/ccgram)](LICENSE)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
-Control AI coding agents from your phone. CCBot bridges Telegram to tmux — monitor output, respond to prompts, and manage sessions without touching your computer. Supports [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), and [Gemini CLI](https://github.com/google-gemini/gemini-cli).
+Control AI coding agents from your phone. CCGram bridges Telegram to tmux — monitor output, respond to prompts, and manage sessions without touching your computer. Supports [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), and [Gemini CLI](https://github.com/google-gemini/gemini-cli).
 
-## Why CCBot?
+## Why CCGram?
 
 AI coding agents run in your terminal. When you step away — commuting, on the couch, or just away from your desk — the session keeps working, but you lose visibility and control.
 
-CCBot fixes this. The key insight: it operates on **tmux**, not any agent's SDK. Your agent process stays exactly where it is, in a tmux window on your machine. CCBot reads its output and sends keystrokes to it. This means:
+CCGram fixes this. The key insight: it operates on **tmux**, not any agent's SDK. Your agent process stays exactly where it is, in a tmux window on your machine. CCGram reads its output and sends keystrokes to it. This means:
 
 - **Desktop to phone, mid-conversation** — your agent is working on a refactor? Walk away and keep monitoring from Telegram
 - **Phone back to desktop, anytime** — `tmux attach` and you're back in the terminal with full scrollback
 - **Multiple sessions in parallel** — Each Telegram topic maps to a separate tmux window, each can run a different agent
 
-Other Telegram bots wrap agent SDKs to create isolated API sessions that can't be resumed in your terminal. CCBot is different — it's a thin control layer over tmux, so the terminal remains the source of truth.
+Other Telegram bots wrap agent SDKs to create isolated API sessions that can't be resumed in your terminal. CCGram is different — it's a thin control layer over tmux, so the terminal remains the source of truth.
 
 ## How It Works
 
@@ -97,6 +97,7 @@ Each Telegram Forum topic binds to one tmux window running an agent CLI. Message
 **Extensibility**
 
 - Global Telegram menu includes bot commands + default provider commands (with `↗` prefix); provider-scoped menus auto-refresh per chat/user/topic context with Telegram-scope fallbacks
+- Tmux session auto-detection — when running inside tmux, auto-discovers the session and picks up existing agent windows; duplicate instance prevention
 - Multi-instance support — run separate bots per Telegram group on the same machine
 - Configurable via environment variables
 
@@ -112,11 +113,11 @@ Each Telegram Forum topic binds to one tmux window running an agent CLI. Message
 
 ```bash
 # Recommended
-uv tool install ccbot
+uv tool install ccgram
 
 # Alternatives
-pipx install ccbot                   # pipx
-brew install alexei-led/tap/ccbot    # Homebrew (macOS)
+pipx install ccgram                   # pipx
+brew install alexei-led/tap/ccgram    # Homebrew (macOS)
 ```
 
 ### Configure
@@ -124,7 +125,7 @@ brew install alexei-led/tap/ccbot    # Homebrew (macOS)
 1. Create a Telegram bot via [@BotFather](https://t.me/BotFather)
 2. Enable **Topics** in your bot (BotFather > Bot Settings > Groups > Topics in Groups > Enable)
 3. Add the bot to a Telegram group that has Topics enabled
-4. Create `~/.ccbot/.env`:
+4. Create `~/.ccgram/.env`:
 
 ```ini
 TELEGRAM_BOT_TOKEN=your_bot_token_here
@@ -136,20 +137,38 @@ ALLOWED_USERS=your_telegram_user_id
 ### Install hooks (Claude Code only)
 
 ```bash
-ccbot hook --install
+ccgram hook --install
 ```
 
 This registers 7 Claude Code hooks (SessionStart, Notification, Stop, SubagentStart, SubagentStop, TeammateIdle, TaskCompleted) for automatic session tracking, instant interactive UI detection, real-time status updates, and agent team notifications. Not needed for Codex or Gemini — those providers are discovered from hookless transcripts and tmux window/provider detection.
 
-> If hooks are missing, ccbot warns at startup with the fix command. Hooks are optional — terminal scraping works as fallback.
+> If hooks are missing, ccgram warns at startup with the fix command. Hooks are optional — terminal scraping works as fallback.
 
 ### Run
 
 ```bash
-ccbot
+ccgram
 ```
 
 Open your Telegram group, create a new topic, send a message — a directory browser appears. Pick a project directory, choose your agent (Claude, Codex, or Gemini), then choose session mode (`✅ Standard` or `🚀 YOLO`), and you're connected.
+
+## Migrating from ccbot
+
+CCGram was previously named `ccbot`. If upgrading from v1.x:
+
+```bash
+# Install new package
+pip install ccgram   # or: brew install alexei-led/tap/ccgram
+
+# Migrate config directory
+mv ~/.ccbot ~/.ccgram
+
+# Update environment variables: CCBOT_* → CCGRAM_*
+# Old CCBOT_* vars still work as fallback with deprecation warnings
+
+# Re-install hooks (replaces legacy "ccbot hook" entries)
+ccgram hook --install
+```
 
 ## Documentation
 
@@ -158,8 +177,8 @@ See **[docs/guides.md](docs/guides.md)** for CLI reference, configuration, upgra
 ## Development
 
 ```bash
-git clone https://github.com/alexei-led/ccbot.git
-cd ccbot
+git clone https://github.com/alexei-led/ccgram.git
+cd ccgram
 uv sync --extra dev
 
 make check        # fmt + lint + typecheck + unit + integration tests
@@ -168,7 +187,7 @@ make test-e2e     # E2E tests (requires agent CLIs, see docs/guides.md)
 
 ## Acknowledgments
 
-CCBot started as a fork of [ccbot](https://github.com/six-ddc/ccbot) by [six-ddc](https://github.com/six-ddc), who created the original Telegram-to-Claude-Code bridge. This project has since been rewritten and developed independently with multi-provider support, topic-based architecture, interactive UI, and a comprehensive test suite. Thanks to six-ddc for the initial idea and implementation.
+CCGram started as a fork of [ccbot](https://github.com/six-ddc/ccbot) by [six-ddc](https://github.com/six-ddc), who created the original Telegram-to-Claude-Code bridge. This project has since been rewritten and developed independently with multi-provider support, topic-based architecture, interactive UI, and a comprehensive test suite. Thanks to six-ddc for the initial idea and implementation.
 
 ## License
 

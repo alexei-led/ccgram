@@ -4,36 +4,36 @@
 
 1. CLI and bootstrap
 
-- `src/ccbot/main.py` starts logging and launches the PTB application.
-- `src/ccbot/cli.py` maps CLI flags to env vars before config loads.
+- `src/ccgram/main.py` starts logging and launches the PTB application.
+- `src/ccgram/cli.py` maps CLI flags to env vars before config loads.
 
 2. Bot orchestration
 
-- `src/ccbot/bot.py` wires handlers and owns callback dispatch.
+- `src/ccgram/bot.py` wires handlers and owns callback dispatch.
 - Topic routing and authorization checks live here.
 
 3. Session and monitor core
 
-- `src/ccbot/session.py` is the state hub (thread bindings, window states, offsets).
-- `src/ccbot/session_monitor.py` tails transcripts/events and emits parsed messages.
-- `src/ccbot/monitor_state.py` persists byte offsets for incremental reads.
+- `src/ccgram/session.py` is the state hub (thread bindings, window states, offsets).
+- `src/ccgram/session_monitor.py` tails transcripts/events and emits parsed messages.
+- `src/ccgram/monitor_state.py` persists byte offsets for incremental reads.
 
 4. Provider abstraction
 
-- `src/ccbot/providers/base.py` defines the provider contract.
+- `src/ccgram/providers/base.py` defines the provider contract.
   - `discover_transcript(cwd, window_key, *, max_age=None)` is the hookless discovery contract (used by Codex/Gemini; `max_age=0` disables staleness checks for alive panes).
-- `src/ccbot/providers/__init__.py` resolves per-window provider selection.
-- `src/ccbot/providers/{claude,codex,gemini}.py` implement provider-specific behavior.
-- `src/ccbot/command_catalog.py` discovers provider commands from filesystem (skills, custom commands) with 60s TTL caching.
-- `src/ccbot/cc_commands.py` registers discovered commands as Telegram bot menu entries.
-- `src/ccbot/interactive_prompt_formatter.py` normalizes provider interactive prompt text for Telegram readability (currently Codex edit approvals).
-- `src/ccbot/codex_status.py` extracts Codex status snapshots from JSONL transcripts.
-- `src/ccbot/screenshot.py` renders terminal text to PNG (PIL, ANSI color, font fallback).
+- `src/ccgram/providers/__init__.py` resolves per-window provider selection.
+- `src/ccgram/providers/{claude,codex,gemini}.py` implement provider-specific behavior.
+- `src/ccgram/command_catalog.py` discovers provider commands from filesystem (skills, custom commands) with 60s TTL caching.
+- `src/ccgram/cc_commands.py` registers discovered commands as Telegram bot menu entries.
+- `src/ccgram/interactive_prompt_formatter.py` normalizes provider interactive prompt text for Telegram readability (currently Codex edit approvals).
+- `src/ccgram/codex_status.py` extracts Codex status snapshots from JSONL transcripts.
+- `src/ccgram/screenshot.py` renders terminal text to PNG (PIL, ANSI color, font fallback).
 
 5. Integrations
 
-- `src/ccbot/tmux_manager.py` is the tmux IO boundary.
-- `src/ccbot/hook.py` writes Claude hook events to both `session_map.json` and `events.jsonl`.
+- `src/ccgram/tmux_manager.py` is the tmux IO boundary.
+- `src/ccgram/hook.py` writes Claude hook events to both `session_map.json` and `events.jsonl`.
 
 ## Request/Response Lifecycles
 
@@ -67,7 +67,7 @@ Commands menu flow (`/commands`):
 
 ## Data Model and State Files
 
-Config/state directory is `~/.ccbot` unless overridden by `CCBOT_DIR`.
+Config/state directory is `~/.ccgram` unless overridden by `CCGRAM_DIR`.
 
 - `state.json`: topic<->window bindings and window metadata.
 - `session_map.json`: hook-generated tmux window -> session map.

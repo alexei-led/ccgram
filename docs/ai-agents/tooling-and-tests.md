@@ -35,10 +35,10 @@ Before considering work complete, run at least:
 
 ## Test Layout
 
-- `tests/ccbot/`: unit tests mirroring source modules.
+- `tests/ccgram/`: unit tests mirroring source modules.
 - `tests/integration/`: integration tests for monitor flow, dispatch, tmux manager, state roundtrips.
 - `tests/conftest.py`: required test env setup before imports.
-- Hypothesis property-based tests: `tests/ccbot/test_message_queue_properties.py`.
+- Hypothesis property-based tests: `tests/ccgram/test_message_queue_properties.py`.
 
 ## Fast Test Targeting
 
@@ -46,13 +46,13 @@ Use focused test files that match changed modules first, then full test run.
 
 Examples:
 
-- session/state changes -> `tests/ccbot/test_session.py`, `tests/ccbot/test_state_migration.py`
-- monitor/parsing changes -> `tests/ccbot/test_session_monitor.py`, `tests/ccbot/test_transcript_parser.py`
-- handlers/UI changes -> `tests/ccbot/test_text_handler.py`, `tests/ccbot/test_status_polling.py`, `tests/ccbot/test_bot_callbacks.py`
-- command changes -> `tests/ccbot/test_command_catalog.py`, `tests/ccbot/test_commands_command.py`, `tests/ccbot/test_cc_commands.py`
-- hook/event changes -> `tests/ccbot/test_hook.py`, `tests/ccbot/test_hook_events.py`, `tests/ccbot/test_session_monitor_events.py`
-- cleanup/lifecycle changes -> `tests/ccbot/test_cleanup.py`, `tests/ccbot/test_topic_emoji.py`
-- provider changes -> `tests/ccbot/test_provider_contracts.py`, `tests/ccbot/test_jsonl_providers.py`
+- session/state changes -> `tests/ccgram/test_session.py`, `tests/ccgram/test_state_migration.py`
+- monitor/parsing changes -> `tests/ccgram/test_session_monitor.py`, `tests/ccgram/test_transcript_parser.py`
+- handlers/UI changes -> `tests/ccgram/test_text_handler.py`, `tests/ccgram/test_status_polling.py`, `tests/ccgram/test_bot_callbacks.py`
+- command changes -> `tests/ccgram/test_command_catalog.py`, `tests/ccgram/test_commands_command.py`, `tests/ccgram/test_cc_commands.py`
+- hook/event changes -> `tests/ccgram/test_hook.py`, `tests/ccgram/test_hook_events.py`, `tests/ccgram/test_session_monitor_events.py`
+- cleanup/lifecycle changes -> `tests/ccgram/test_cleanup.py`, `tests/ccgram/test_topic_emoji.py`
+- provider changes -> `tests/ccgram/test_provider_contracts.py`, `tests/ccgram/test_jsonl_providers.py`
 
 ## Quality Constraints
 

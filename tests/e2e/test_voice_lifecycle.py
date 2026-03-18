@@ -90,7 +90,7 @@ def _mock_get_file():
 
 def _mock_transcriber(text: str = "hello from voice"):
     """Return a mock WhisperTranscriber that immediately returns a result."""
-    from ccbot.whisper.base import TranscriptionResult
+    from ccgram.whisper.base import TranscriptionResult
 
     mock = MagicMock()
     mock.transcribe = AsyncMock(
@@ -105,13 +105,13 @@ def _mock_transcriber(text: str = "hello from voice"):
 
 
 async def test_voice_not_configured(e2e_app, work_dir):
-    """Voice message without CCBOT_WHISPER_PROVIDER → friendly setup hint."""
+    """Voice message without CCGRAM_WHISPER_PROVIDER → friendly setup hint."""
     app, calls, tmux, session_mgr = e2e_app
 
     await setup_bound_topic(app, calls, work_dir)
     calls.clear()
 
-    import ccbot.handlers.voice_handler as vh
+    import ccgram.handlers.voice_handler as vh
 
     with patch.object(vh, "get_transcriber", return_value=None):
         u = make_voice_update(bot=app.bot)
@@ -139,7 +139,7 @@ async def test_voice_transcription_shows_confirm_keyboard(e2e_app, work_dir):
     await setup_bound_topic(app, calls, work_dir)
     calls.clear()
 
-    import ccbot.handlers.voice_handler as vh
+    import ccgram.handlers.voice_handler as vh
 
     mock_transcriber = _mock_transcriber("please add logging to main.py")
 
@@ -185,7 +185,7 @@ async def test_voice_confirm_sends_to_agent(e2e_app, work_dir):
 
     transcribed = "what is the purpose of config.py"
 
-    import ccbot.handlers.voice_handler as vh
+    import ccgram.handlers.voice_handler as vh
 
     mock_transcriber = _mock_transcriber(transcribed)
 
@@ -209,7 +209,7 @@ async def test_voice_confirm_sends_to_agent(e2e_app, work_dir):
 
     # Find the confirm msg_id from user_data
     user_data = app._user_data[TEST_USER_ID]
-    from ccbot.handlers.user_state import VOICE_PENDING
+    from ccgram.handlers.user_state import VOICE_PENDING
 
     pending = user_data.get(VOICE_PENDING, {})
     assert pending, "Expected a pending voice entry in user_data"
@@ -245,7 +245,7 @@ async def test_voice_discard_clears_pending(e2e_app, work_dir):
     await setup_bound_topic(app, calls, work_dir)
     calls.clear()
 
-    import ccbot.handlers.voice_handler as vh
+    import ccgram.handlers.voice_handler as vh
 
     mock_transcriber = _mock_transcriber("discard this message")
 
@@ -266,7 +266,7 @@ async def test_voice_discard_clears_pending(e2e_app, work_dir):
     await wait_for_send(calls, method="editMessageReplyMarkup", timeout=5.0)
 
     user_data = app._user_data[TEST_USER_ID]
-    from ccbot.handlers.user_state import VOICE_PENDING
+    from ccgram.handlers.user_state import VOICE_PENDING
 
     pending = user_data.get(VOICE_PENDING, {})
     assert pending
@@ -302,7 +302,7 @@ async def test_voice_too_large(e2e_app, work_dir):
     await setup_bound_topic(app, calls, work_dir)
     calls.clear()
 
-    import ccbot.handlers.voice_handler as vh
+    import ccgram.handlers.voice_handler as vh
 
     mock_transcriber = _mock_transcriber()
 

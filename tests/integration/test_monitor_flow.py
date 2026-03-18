@@ -12,7 +12,7 @@ import time
 
 import pytest
 
-from ccbot.session_monitor import SessionMonitor
+from ccgram.session_monitor import SessionMonitor
 
 pytestmark = pytest.mark.integration
 
@@ -53,7 +53,7 @@ def session_map_with_transcript(state_dir):
 
     def _setup(transcript_path, session_id=TEST_SESSION_ID):
         session_map = {
-            "ccbot:@0": {
+            "ccgram:@0": {
                 "session_id": session_id,
                 "cwd": "/tmp/test",
                 "window_name": "test",
@@ -83,7 +83,7 @@ async def test_new_session_initializes_offset(
     session_map = session_map_with_transcript(transcript)
 
     monitor = _make_monitor(state_dir)
-    initial = await monitor.check_for_updates({"@0": session_map["ccbot:@0"]})
+    initial = await monitor.check_for_updates({"@0": session_map["ccgram:@0"]})
     assert len(initial) == 0
 
     tracked = monitor.state.get_session(TEST_SESSION_ID)
@@ -99,7 +99,7 @@ async def test_incremental_read_picks_up_new_messages(
     session_map = session_map_with_transcript(transcript)
 
     monitor = _make_monitor(state_dir)
-    current = {"@0": session_map["ccbot:@0"]}
+    current = {"@0": session_map["ccgram:@0"]}
     assert await monitor.check_for_updates(current) == []
 
     _append_jsonl(transcript, [_make_assistant_entry("new message")])
@@ -121,7 +121,7 @@ async def test_file_truncation_resets_offset(
     session_map = session_map_with_transcript(transcript)
 
     monitor = _make_monitor(state_dir)
-    current = {"@0": session_map["ccbot:@0"]}
+    current = {"@0": session_map["ccgram:@0"]}
     assert await monitor.check_for_updates(current) == []
 
     transcript.write_text("")
@@ -158,7 +158,9 @@ async def test_session_change_cleanup(state_dir, session_map_with_transcript) ->
             "transcript_path": str(transcript),
         }
     }
-    (state_dir / "session_map.json").write_text(json.dumps({"ccbot:@0": new_map["@0"]}))
+    (state_dir / "session_map.json").write_text(
+        json.dumps({"ccgram:@0": new_map["@0"]})
+    )
     await monitor._detect_and_cleanup_changes()
 
     assert monitor.state.get_session(TEST_SESSION_ID) is None

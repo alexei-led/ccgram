@@ -2,7 +2,7 @@
 
 import pytest
 
-from ccbot.config import Config
+from ccgram.config import Config
 
 pytestmark = pytest.mark.integration
 
@@ -13,7 +13,7 @@ class TestConfigIntegration:
         env_file.write_text(
             "TELEGRAM_BOT_TOKEN=from-dotenv-token\nALLOWED_USERS=99999\n"
         )
-        monkeypatch.setenv("CCBOT_DIR", str(tmp_path))
+        monkeypatch.setenv("CCGRAM_DIR", str(tmp_path))
         monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
         monkeypatch.delenv("ALLOWED_USERS", raising=False)
         cfg = Config()
@@ -22,14 +22,14 @@ class TestConfigIntegration:
 
     def test_creates_config_dir_if_missing(self, tmp_path, monkeypatch):
         new_dir = tmp_path / "nonexistent"
-        monkeypatch.setenv("CCBOT_DIR", str(new_dir))
+        monkeypatch.setenv("CCGRAM_DIR", str(new_dir))
         monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok-create-dir")
         monkeypatch.setenv("ALLOWED_USERS", "1")
         Config()
         assert new_dir.is_dir()
 
     def test_multiple_comma_separated_allowed_users(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("CCBOT_DIR", str(tmp_path))
+        monkeypatch.setenv("CCGRAM_DIR", str(tmp_path))
         monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok-multi")
         monkeypatch.setenv("ALLOWED_USERS", "123,456,789")
         cfg = Config()

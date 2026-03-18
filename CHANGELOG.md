@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-03-16
+
+### Changed
+
+- **BREAKING**: Renamed project from `ccbot` to `ccgram` (CCGram)
+- **BREAKING**: CLI command renamed from `ccbot` to `ccgram`
+- **BREAKING**: Config directory changed from `~/.ccbot/` to `~/.ccgram/`
+- **BREAKING**: Environment variables renamed from `CCBOT_*` to `CCGRAM_*`
+- Hook command changed from `ccbot hook` to `ccgram hook`
+- PyPI package name changed from `ccbot` to `ccgram`
+- Default tmux session name changed from `ccbot` to `ccgram`
+
+### Migration
+
+- Old `CCBOT_*` environment variables still work as fallback with deprecation warnings
+- `ccgram hook --install` detects and replaces legacy `ccbot hook` entries
+- `ccgram hook --uninstall` removes both old and new hook entries
+- Session map keys with `ccbot:` prefix are auto-migrated on load
+- If `~/.ccgram/` doesn't exist but `~/.ccbot/` does, a migration hint is logged
+
 ## [1.0.0] - 2026-02-22
 
 ### Added
@@ -92,7 +112,8 @@ Major rewrite as an independent fork of [six-ddc/ccbot](https://github.com/six-d
 
 Initial release by [six-ddc](https://github.com/six-ddc).
 
-[Unreleased]: https://github.com/alexei-led/ccbot/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/alexei-led/ccgram/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/alexei-led/ccgram/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/alexei-led/ccbot/compare/v0.2.11...v1.0.0
 [0.2.11]: https://github.com/alexei-led/ccbot/compare/v0.2.10...v0.2.11
 [0.2.10]: https://github.com/alexei-led/ccbot/compare/v0.2.0...v0.2.10

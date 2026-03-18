@@ -21,12 +21,12 @@ def state_dir(tmp_path, monkeypatch):
     (tmp_path / "monitor_state.json").write_text("{}")
 
     monkeypatch.setattr(
-        "ccbot.config.config.session_map_file", tmp_path / "session_map.json"
+        "ccgram.config.config.session_map_file", tmp_path / "session_map.json"
     )
-    monkeypatch.setattr("ccbot.config.config.events_file", tmp_path / "events.jsonl")
+    monkeypatch.setattr("ccgram.config.config.events_file", tmp_path / "events.jsonl")
     monkeypatch.setattr(
-        "ccbot.config.config.tmux_session_name",
-        "ccbot",
+        "ccgram.config.config.tmux_session_name",
+        "ccgram",
     )
 
     return tmp_path
@@ -50,7 +50,7 @@ def append_event(state_dir):
 
     def _append(
         event_type: str,
-        window_key: str = "ccbot:@0",
+        window_key: str = "ccgram:@0",
         session_id: str = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
         data: dict | None = None,
         timestamp: float | None = None,

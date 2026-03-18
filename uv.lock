@@ -33,7 +33,7 @@ wheels = [
 ]
 
 [[package]]
-name = "ccbot"
+name = "ccgram"
 source = { editable = "." }
 dependencies = [
     { name = "aiofiles" },

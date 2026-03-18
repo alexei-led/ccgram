@@ -50,10 +50,10 @@ async def test_command_forwarding(e2e_app, work_dir):
     await wait_for_pane(tmux, window_id, timeout=30)
     calls.clear()
 
-    u = make_text_update("/help", bot=app.bot)
+    u = make_text_update("/status", bot=app.bot)
     await app.process_update(u)
 
-    await wait_for_pane(tmux, window_id, pattern="help", timeout=15)
+    await wait_for_pane(tmux, window_id, pattern="status", timeout=15)
 
 
 async def test_recovery_fresh(e2e_app, work_dir):

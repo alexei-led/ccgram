@@ -34,7 +34,7 @@ graph TB
         SM["Window ↔ Session resolution\nThread bindings · message history"]
     end
 
-    subgraph state["State Files — ~/.ccbot/"]
+    subgraph state["State Files — ~/.ccgram/"]
         MonState["MonitorState\nbyte offsets per session"]
         Sessions["Claude Sessions\n~/.claude/projects/\nsessions-index + *.jsonl"]
     end
@@ -72,19 +72,19 @@ graph TB
 | `gemini.py`   | GeminiProvider (resume, continue, whole-file JSON transcripts, no hook)                  |
 | `__init__.py` | `get_provider_for_window()`, `detect_provider_from_command()`, `get_provider()` fallback |
 
-### Core modules (`src/ccbot/`)
+### Core modules (`src/ccgram/`)
 
 | Module             | Description                                                          |
 | ------------------ | -------------------------------------------------------------------- |
 | `cli.py`           | Click-based CLI entry point (run subcommand + all bot-config flags)  |
 | `config.py`        | Application configuration singleton (env vars, .env files, defaults) |
-| `doctor_cmd.py`    | `ccbot doctor [--fix]` — validate setup without bot token            |
-| `status_cmd.py`    | `ccbot status` — show running state without bot token                |
+| `doctor_cmd.py`    | `ccgram doctor [--fix]` — validate setup without bot token           |
+| `status_cmd.py`    | `ccgram status` — show running state without bot token               |
 | `screen_buffer.py` | pyte VT100 screen buffer (ANSI→clean lines, separator detection)     |
 | `cc_commands.py`   | CC command discovery (skills, custom commands) + menu registration   |
 | `screenshot.py`    | Terminal text → PNG rendering (ANSI color, font fallback)            |
 | `main.py`          | Application entry point (Click dispatcher, run_bot bootstrap)        |
-| `utils.py`         | Shared utilities (ccbot_dir, tmux_session_name, atomic_write_json)   |
+| `utils.py`         | Shared utilities (ccgram_dir, tmux_session_name, atomic_write_json)  |
 
 ### Handler modules (`handlers/`)
 
@@ -108,7 +108,7 @@ graph TB
 | `restore_command.py`       | /restore command: recover dead topics via recovery keyboard        |
 | `resume_command.py`        | /resume command: scan past sessions, paginated picker              |
 | `upgrade.py`               | /upgrade command: uv tool upgrade + process restart                |
-| `file_handler.py`          | Photo/document handler (save to .ccbot-uploads/, notify agent)     |
+| `file_handler.py`          | Photo/document handler (save to .ccgram-uploads/, notify agent)    |
 | `command_history.py`       | Per-user/per-topic in-memory command recall (max 20)               |
 | `topic_emoji.py`           | Topic name emoji updates (active/idle/done/dead), debounced        |
 | `hook_events.py`           | Hook event dispatcher (Notification, Stop, Subagent*, Team*)       |
@@ -117,7 +117,7 @@ graph TB
 | `callback_helpers.py`      | Shared helpers (user_owns_window, get_thread_id)                   |
 | `user_state.py`            | context.user_data string key constants                             |
 
-### State files (`~/.ccbot/` or `$CCBOT_DIR/`)
+### State files (`~/.ccgram/` or `$CCBOT_DIR/`)
 
 | File                 | Description                                                    |
 | -------------------- | -------------------------------------------------------------- |
@@ -139,4 +139,4 @@ graph TB
 - Notifications delivered to users via thread bindings (topic → window_id → session).
 - **Startup re-resolution** — Window IDs reset on tmux server restart. On startup, `resolve_stale_ids()` matches persisted display names against live windows to re-map IDs. Old state.json files keyed by window name are auto-migrated.
 - **Per-window provider** — All CLI-specific behavior (launch args, transcript parsing, terminal status, command discovery) is delegated to an `AgentProvider` protocol. Providers declare capabilities (`ProviderCapabilities`) that gate UX features per-window: hook checks, resume/continue buttons, and command registration. Each window stores its `provider_name` in `WindowState`; `get_provider_for_window(window_id)` resolves the correct provider instance, falling back to the config default. Externally created windows are auto-detected via `detect_provider_from_command(pane_current_command)`. The global `get_provider()` singleton remains for CLI commands (`doctor`, `status`) that lack window context.
-- **Foreign window support (emdash)** — Windows owned by external tools (emdash) use qualified IDs like `emdash-claude-main-abc123:@0` which are valid tmux `-t` targets. Foreign windows are marked `WindowState.external=True` and are never killed by ccbot. Discovery via `tmux list-sessions` filtered by `emdash-` prefix. The `window_resolver` preserves foreign entries during startup re-resolution. All tmux operations (send_keys, capture_pane) route foreign IDs through subprocess instead of libtmux.
+- **Foreign window support (emdash)** — Windows owned by external tools (emdash) use qualified IDs like `emdash-claude-main-abc123:@0` which are valid tmux `-t` targets. Foreign windows are marked `WindowState.external=True` and are never killed by ccgram. Discovery via `tmux list-sessions` filtered by `emdash-` prefix. The `window_resolver` preserves foreign entries during startup re-resolution. All tmux operations (send_keys, capture_pane) route foreign IDs through subprocess instead of libtmux.

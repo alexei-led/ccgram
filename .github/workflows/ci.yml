@@ -26,7 +26,7 @@ jobs:
       - name: Lint
         run: uv run ruff check src/ tests/
       - name: Type check
-        run: uv run pyright src/ccbot/
+        run: uv run pyright src/ccgram/
       - name: Dependency check
         run: uv run deptry src
       - name: Test

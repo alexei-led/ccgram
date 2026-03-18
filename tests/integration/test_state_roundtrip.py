@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from ccbot.session import SessionManager
+from ccgram.session import SessionManager
 
 pytestmark = pytest.mark.integration
 
@@ -22,9 +22,9 @@ def make_session_manager(tmp_path, monkeypatch):
 
     def _make(state_file: Path | None = None) -> SessionManager:
         sf = state_file or (tmp_path / "state.json")
-        monkeypatch.setattr("ccbot.config.config.state_file", sf)
+        monkeypatch.setattr("ccgram.config.config.state_file", sf)
         monkeypatch.setattr(
-            "ccbot.config.config.session_map_file", tmp_path / "session_map.json"
+            "ccgram.config.config.session_map_file", tmp_path / "session_map.json"
         )
         return SessionManager()
 
@@ -136,9 +136,9 @@ async def test_duplicate_bindings_deduped_on_load(tmp_path, monkeypatch) -> None
     }
     sf = tmp_path / "state.json"
     sf.write_text(json.dumps(state))
-    monkeypatch.setattr("ccbot.config.config.state_file", sf)
+    monkeypatch.setattr("ccgram.config.config.state_file", sf)
     monkeypatch.setattr(
-        "ccbot.config.config.session_map_file", tmp_path / "session_map.json"
+        "ccgram.config.config.session_map_file", tmp_path / "session_map.json"
     )
 
     sm = SessionManager()

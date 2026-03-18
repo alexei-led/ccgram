@@ -2,16 +2,16 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-TMUX_SESSION="${CCBOT_DEV_TMUX_SESSION:-ccbot}"
-TMUX_WINDOW="${CCBOT_DEV_TMUX_WINDOW:-__main__}"
+TMUX_SESSION="${CCGRAM_DEV_TMUX_SESSION:-ccgram}"
+TMUX_WINDOW="${CCGRAM_DEV_TMUX_WINDOW:-__main__}"
 TARGET="${TMUX_SESSION}:${TMUX_WINDOW}"
-LOCK_DIR="${PROJECT_DIR}/.ccbot-dev-run.lock.d"
+LOCK_DIR="${PROJECT_DIR}/.ccgram-dev-run.lock.d"
 
 usage() {
 	echo "Usage: $0 {start|stop|restart|status}"
 	echo "  start   start local dev supervisor in ${TARGET}"
 	echo "  stop    stop supervisor loop (Ctrl-\\ in control pane)"
-	echo "  restart restart ccbot process (Ctrl-C in control pane)"
+	echo "  restart restart ccgram process (Ctrl-C in control pane)"
 	echo "  status  show target pane command and recent logs"
 }
 
@@ -28,7 +28,7 @@ runloop() {
 			pid="$(cat "${LOCK_DIR}/pid" 2>/dev/null || true)"
 		fi
 		if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
-			echo "[ccbot-dev] supervisor already running (pid ${pid})"
+			echo "[ccgram-dev] supervisor already running (pid ${pid})"
 			exit 1
 		fi
 		rm -rf "${LOCK_DIR}" 2>/dev/null || true
@@ -37,36 +37,36 @@ runloop() {
 			trap 'rm -rf "${LOCK_DIR}"' EXIT INT TERM
 			return
 		fi
-		echo "[ccbot-dev] failed to acquire lock at ${LOCK_DIR}"
+		echo "[ccgram-dev] failed to acquire lock at ${LOCK_DIR}"
 		exit 1
 	}
 
 	acquire_lock
 	ulimit -c 0
-	echo "[ccbot-dev] started in ${TARGET}"
-	echo "[ccbot-dev] hint: Ctrl-C restarts ccbot"
-	echo "[ccbot-dev] hint: Ctrl-\\ stops supervisor loop"
+	echo "[ccgram-dev] started in ${TARGET}"
+	echo "[ccgram-dev] hint: Ctrl-C restarts ccgram"
+	echo "[ccgram-dev] hint: Ctrl-\\ stops supervisor loop"
 	while true; do
-		echo "[ccbot-dev] starting uv run ccbot ($(date '+%H:%M:%S'))"
+		echo "[ccgram-dev] starting uv run ccgram ($(date '+%H:%M:%S'))"
 		set +e
-		uv run ccbot
+		uv run ccgram
 		code=$?
 		set -e
 		case "${code}" in
 		130)
-			echo "[ccbot-dev] restart requested"
+			echo "[ccgram-dev] restart requested"
 			sleep 1
 			;;
 		131)
-			echo "[ccbot-dev] stop requested"
+			echo "[ccgram-dev] stop requested"
 			exit 0
 			;;
 		0)
-			echo "[ccbot-dev] exited cleanly; restarting in 1s"
+			echo "[ccgram-dev] exited cleanly; restarting in 1s"
 			sleep 1
 			;;
 		*)
-			echo "[ccbot-dev] exited code ${code}; restarting in 1s"
+			echo "[ccgram-dev] exited code ${code}; restarting in 1s"
 			sleep 1
 			;;
 		esac
@@ -127,7 +127,7 @@ stop() {
 
 restart() {
 	ensure_target
-	echo "Restarting ccbot in ${TARGET} (Ctrl-C)..."
+	echo "Restarting ccgram in ${TARGET} (Ctrl-C)..."
 	tmux send-keys -t "${TARGET}" C-c
 	sleep 1
 	status
@@ -139,5 +139,8 @@ start) start ;;
 stop) stop ;;
 restart) restart ;;
 status) status ;;
-*) usage; exit 2 ;;
+*)
+	usage
+	exit 2
+	;;
 esac

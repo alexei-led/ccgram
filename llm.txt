@@ -1,4 +1,4 @@
-LLM Context Manifest for ccbot
+LLM Context Manifest for ccgram
 
 Purpose:
 - Provide architecture and design context for AI agents before code changes.
@@ -15,18 +15,18 @@ Core architecture invariants:
 - Internal identity is tmux window_id (for example @2), not window names.
 - Per-window provider model: behavior/capabilities are resolved by window provider.
 - Parsing keeps full content; message splitting happens only in Telegram send layer.
-- tmux operations remain centralized in src/ccbot/tmux_manager.py.
+- tmux operations remain centralized in src/ccgram/tmux_manager.py.
 
 Primary entrypoints:
-- src/ccbot/main.py (bootstrap)
-- src/ccbot/cli.py (CLI/env precedence)
-- src/ccbot/bot.py (handler wiring and routing)
-- src/ccbot/session.py (binding/state hub)
-- src/ccbot/session_monitor.py (polling + outbound event flow)
-- src/ccbot/providers/ (provider contract and implementations)
-- src/ccbot/handlers/ (Telegram command/callback surface)
-- src/ccbot/command_catalog.py (provider-agnostic command discovery + caching)
-- src/ccbot/hook.py (Claude hook install/status/event writes)
+- src/ccgram/main.py (bootstrap)
+- src/ccgram/cli.py (CLI/env precedence)
+- src/ccgram/bot.py (handler wiring and routing)
+- src/ccgram/session.py (binding/state hub)
+- src/ccgram/session_monitor.py (polling + outbound event flow)
+- src/ccgram/providers/ (provider contract and implementations)
+- src/ccgram/handlers/ (Telegram command/callback surface)
+- src/ccgram/command_catalog.py (provider-agnostic command discovery + caching)
+- src/ccgram/hook.py (Claude hook install/status/event writes)
 
 State and data files:
 - state.json: topic/thread bindings + window metadata
@@ -47,8 +47,8 @@ Validation gate before done:
 - or individually: make fmt && make lint && make typecheck && make test
 
 Provider-specific implementation pointers:
-- src/ccbot/providers/base.py
-- src/ccbot/providers/__init__.py
-- src/ccbot/providers/claude.py
-- src/ccbot/providers/codex.py
-- src/ccbot/providers/gemini.py
+- src/ccgram/providers/base.py
+- src/ccgram/providers/__init__.py
+- src/ccgram/providers/claude.py
+- src/ccgram/providers/codex.py
+- src/ccgram/providers/gemini.py

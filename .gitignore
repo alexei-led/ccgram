@@ -10,7 +10,7 @@ build/
 dist/
 sdist/
 wheels/
-src/ccbot/_version.py
+src/ccgram/_version.py
 
 # Virtual Environments
 .venv/
@@ -50,6 +50,9 @@ pkg/
 
 # ralphex progress logs
 progress*.txt
+.claude
+.serena
+.works
 
 # Dev run lock
-.ccbot-dev-run.lock.d/
+.ccgram-dev-run.lock.d/

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Generate a Homebrew formula for ccbot with all Python resource blocks.
+"""Generate a Homebrew formula for ccgram with all Python resource blocks.
 
 Usage: python scripts/generate_homebrew_formula.py <version>
 
 Requires: uv (used for dependency resolution and PyPI queries).
-For local development, prefer: brew update-python-resources alexei-led/tap/ccbot
+For local development, prefer: brew update-python-resources alexei-led/tap/ccgram
 """
 
 from __future__ import annotations
@@ -24,11 +24,11 @@ PYPI_API_TIMEOUT = 600
 UV_INDEX_TIMEOUT = 600
 
 FORMULA_TEMPLATE = """\
-class Ccbot < Formula
+class Ccgram < Formula
   include Language::Python::Virtualenv
 
   desc "Control Claude Code sessions remotely via Telegram"
-  homepage "https://github.com/alexei-led/ccbot"
+  homepage "https://github.com/alexei-led/ccgram"
   url "{sdist_url}"
   sha256 "{sha256}"
   license "MIT"
@@ -46,15 +46,15 @@ class Ccbot < Formula
     <<~EOS
       To enable Claude Code hook notifications (done detection, interactive
       prompts, subagent tracking), run:
-        ccbot hook --install
+        ccgram hook --install
 
       Verify setup with:
-        ccbot doctor
+        ccgram doctor
     EOS
   end
 
   test do
-    assert_match version.to_s, shell_output("#{{bin}}/ccbot --version")
+    assert_match version.to_s, shell_output("#{{bin}}/ccgram --version")
   end
 end
 """
@@ -75,15 +75,15 @@ def sdist_info(name: str, version: str) -> tuple[str, str]:
 
 
 def wait_for_sdist(version: str) -> tuple[str, str]:
-    """Poll PyPI until ccbot sdist is available."""
+    """Poll PyPI until ccgram sdist is available."""
     deadline = time.monotonic() + PYPI_API_TIMEOUT
     while True:
         try:
-            return sdist_info("ccbot", version)
+            return sdist_info("ccgram", version)
         except urllib.error.HTTPError:
             if time.monotonic() >= deadline:
                 raise
-            print(f"Waiting for ccbot {version} on PyPI...", file=sys.stderr)
+            print(f"Waiting for ccgram {version} on PyPI...", file=sys.stderr)
             time.sleep(POLL_INTERVAL)
 
 
@@ -92,7 +92,7 @@ def _compile_deps(version: str) -> list[tuple[str, str]]:
     with tempfile.TemporaryDirectory() as tmp:
         reqs_in = Path(tmp) / "in.txt"
         reqs_out = Path(tmp) / "out.txt"
-        reqs_in.write_text(f"ccbot=={version}\n")
+        reqs_in.write_text(f"ccgram=={version}\n")
         subprocess.check_call(
             [
                 "uv",
@@ -113,7 +113,7 @@ def _compile_deps(version: str) -> list[tuple[str, str]]:
             line = line.split("#")[0].strip()
             if "==" in line:
                 name, ver = line.split("==", 1)
-                if name.strip().lower() != "ccbot":
+                if name.strip().lower() != "ccgram":
                     deps.append((name.strip(), ver.strip()))
     return sorted(deps, key=lambda x: x[0].lower())
 
@@ -149,7 +149,7 @@ def main() -> None:
         raise SystemExit(f"Usage: {sys.argv[0]} <version>")
 
     version = sys.argv[1]
-    print(f"Resolving ccbot {version}...", file=sys.stderr)
+    print(f"Resolving ccgram {version}...", file=sys.stderr)
     sdist_url, sha256 = wait_for_sdist(version)
     deps = resolve_deps(version)
     print(f"Found {len(deps)} dependencies", file=sys.stderr)

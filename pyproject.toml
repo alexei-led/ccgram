@@ -1,7 +1,7 @@
 [project]
-name = "ccbot"
+name = "ccgram"
 dynamic = ["version"]
-description = "Command & Control Bot — manage AI coding agents from Telegram via tmux"
+description = "CCGram — manage AI coding agents from Telegram via tmux"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.14"
@@ -33,13 +33,13 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/alexei-led/ccbot"
-Repository = "https://github.com/alexei-led/ccbot"
-Issues = "https://github.com/alexei-led/ccbot/issues"
-Changelog = "https://github.com/alexei-led/ccbot/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/alexei-led/ccgram"
+Repository = "https://github.com/alexei-led/ccgram"
+Issues = "https://github.com/alexei-led/ccgram/issues"
+Changelog = "https://github.com/alexei-led/ccgram/blob/main/CHANGELOG.md"
 
 [project.scripts]
-ccbot = "ccbot.main:main"
+ccgram = "ccgram.main:main"
 
 [project.optional-dependencies]
 dev = [
@@ -64,14 +64,14 @@ source = "vcs"
 local_scheme = "no-local-version"
 
 [tool.hatch.build.hooks.vcs]
-version-file = "src/ccbot/_version.py"
+version-file = "src/ccgram/_version.py"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/ccbot"]
+packages = ["src/ccgram"]
 
 [tool.ruff]
 target-version = "py314"
-exclude = ["src/ccbot/_version.py"]
+exclude = ["src/ccgram/_version.py"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "ARG", "G", "BLE", "SIM", "PLR2004", "C901", "PLR0911", "PLR0912", "PLR0915", "N"]
@@ -88,31 +88,31 @@ max-statements = 60
 # Tests: unused args (fixtures, mock lambdas), magic values in assertions
 "tests/**" = ["ARG", "PLR2004"]
 # ANSI SGR codes/Unicode ranges + ANSI code parsing is inherently branchy
-"src/ccbot/screenshot.py" = ["PLR2004", "C901", "PLR0912"]
+"src/ccgram/screenshot.py" = ["PLR2004", "C901", "PLR0912"]
 # Transcript parser: inherently complex JSONL parsing and tool dispatch
-"src/ccbot/transcript_parser.py" = ["C901", "PLR0912", "PLR0915", "PLR0911"]
+"src/ccgram/transcript_parser.py" = ["C901", "PLR0912", "PLR0915", "PLR0911"]
 # Session manager: complex state migration (resolve_stale_ids) and session map loading
-"src/ccbot/session.py" = ["C901", "PLR0912", "PLR0915"]
+"src/ccgram/session.py" = ["C901", "PLR0912", "PLR0915"]
 # Session monitor: filesystem scan with many validation branches
-"src/ccbot/session_monitor.py" = ["C901", "PLR0912"]
+"src/ccgram/session_monitor.py" = ["C901", "PLR0912"]
 # Bot: callback dispatch and message routing are inherently branchy
-"src/ccbot/bot.py" = ["C901", "PLR0912"]
+"src/ccgram/bot.py" = ["C901", "PLR0912"]
 # Hook: CLI dispatch with multiple subcommands
-"src/ccbot/hook.py" = ["C901", "PLR0915"]
+"src/ccgram/hook.py" = ["C901", "PLR0915"]
 # CC commands: filesystem scan with validation branches
-"src/ccbot/cc_commands.py" = ["C901", "PLR0912"]
+"src/ccgram/cc_commands.py" = ["C901", "PLR0912"]
 # History: paginated message formatting with many edge cases
-"src/ccbot/handlers/history.py" = ["C901", "PLR0912", "PLR0915"]
+"src/ccgram/handlers/history.py" = ["C901", "PLR0912", "PLR0915"]
 # Response builder: message formatting with content-type dispatch
-"src/ccbot/handlers/response_builder.py" = ["C901", "PLR0912"]
+"src/ccgram/handlers/response_builder.py" = ["C901", "PLR0912"]
 # Status polling: background loop with multiple state checks
-"src/ccbot/handlers/status_polling.py" = ["C901", "PLR0912"]
+"src/ccgram/handlers/status_polling.py" = ["C901", "PLR0912"]
 # Message queue: worker loop with task dispatch and error handling
-"src/ccbot/handlers/message_queue.py" = ["C901"]
+"src/ccgram/handlers/message_queue.py" = ["C901"]
 # Directory callbacks: confirm handler with state cleanup branches
-"src/ccbot/handlers/directory_callbacks.py" = ["C901"]
+"src/ccgram/handlers/directory_callbacks.py" = ["C901"]
 # Recovery callbacks: fresh handler with state cleanup branches
-"src/ccbot/handlers/recovery_callbacks.py" = ["C901"]
+"src/ccgram/handlers/recovery_callbacks.py" = ["C901"]
 
 [tool.deptry.per_rule_ignores]
 # DEP002: dev/CLI tools (never imported in src/) + httpx (transitive runtime dep of python-telegram-bot)
@@ -130,7 +130,7 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["ccbot"]
+source = ["ccgram"]
 branch = true
 
 [tool.coverage.report]

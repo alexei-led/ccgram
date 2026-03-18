@@ -1,6 +1,6 @@
 # AI Agent Orientation
 
-This folder is the codebase index for AI agents working on `ccbot`.
+This folder is the codebase index for AI agents working on `ccgram`.
 
 Use this reading order:
 
@@ -35,7 +35,7 @@ They focus on:
 
 ## Project Summary
 
-`ccbot` bridges Telegram topics to tmux windows running AI coding agents.
+`ccgram` bridges Telegram topics to tmux windows running AI coding agents.
 Core mapping model:
 
 - one Telegram topic -> one tmux window (`@id`)
@@ -43,12 +43,12 @@ Core mapping model:
 
 The key implementation areas are:
 
-- runtime and startup: `src/ccbot/main.py`, `src/ccbot/cli.py`, `src/ccbot/bot.py`
-- session/state core: `src/ccbot/session.py`, `src/ccbot/session_monitor.py`
-- providers: `src/ccbot/providers/`
-- command discovery: `src/ccbot/command_catalog.py`, `src/ccbot/cc_commands.py`
-- Telegram UI handlers: `src/ccbot/handlers/`
-- tmux integration: `src/ccbot/tmux_manager.py`
+- runtime and startup: `src/ccgram/main.py`, `src/ccgram/cli.py`, `src/ccgram/bot.py`
+- session/state core: `src/ccgram/session.py`, `src/ccgram/session_monitor.py`
+- providers: `src/ccgram/providers/`
+- command discovery: `src/ccgram/command_catalog.py`, `src/ccgram/cc_commands.py`
+- Telegram UI handlers: `src/ccgram/handlers/`
+- tmux integration: `src/ccgram/tmux_manager.py`
 
 ## Non-Negotiable Architecture Rules
 

@@ -4,115 +4,115 @@
 
 Entry points:
 
-- `src/ccbot/main.py`: process bootstrap.
-- `src/ccbot/cli.py`: CLI command surface and config override rules.
-- `src/ccbot/bot.py`: handler registration and main user flows.
+- `src/ccgram/main.py`: process bootstrap.
+- `src/ccgram/cli.py`: CLI command surface and config override rules.
+- `src/ccgram/bot.py`: handler registration and main user flows.
 
 State and routing:
 
-- `src/ccbot/session.py`: thread bindings, window states, read offsets.
-- `src/ccbot/window_resolver.py`: stale window ID migration/re-resolution.
-- `src/ccbot/state_persistence.py`: atomic/debounced JSON persistence.
+- `src/ccgram/session.py`: thread bindings, window states, read offsets.
+- `src/ccgram/window_resolver.py`: stale window ID migration/re-resolution.
+- `src/ccgram/state_persistence.py`: atomic/debounced JSON persistence.
 
 Monitoring and parsing:
 
-- `src/ccbot/session_monitor.py`: polling engine for sessions and hook events.
-- `src/ccbot/transcript_parser.py`: Claude transcript parsing and tool pairing.
-- `src/ccbot/terminal_parser.py`: terminal status/UI detection.
+- `src/ccgram/session_monitor.py`: polling engine for sessions and hook events.
+- `src/ccgram/transcript_parser.py`: Claude transcript parsing and tool pairing.
+- `src/ccgram/terminal_parser.py`: terminal status/UI detection.
 
 Telegram handler surface:
 
-- `src/ccbot/handlers/text_handler.py`: text-path orchestrator.
-- `src/ccbot/handlers/message_queue.py`: ordering, merge rules, status conversion.
-- `src/ccbot/handlers/status_polling.py`: background status and stale-session cleanup.
-- `src/ccbot/handlers/directory_browser.py` + `directory_callbacks.py`: new-session UX.
-- `src/ccbot/handlers/interactive_ui.py` + `interactive_callbacks.py`: interactive prompt UX.
-- `src/ccbot/handlers/sessions_dashboard.py`: `/sessions` dashboard behavior.
-- `src/ccbot/handlers/recovery_callbacks.py`: dead window recovery flow (fresh/continue/resume).
-- `src/ccbot/handlers/screenshot_callbacks.py`: screenshot refresh, Esc, quick-key, pane screenshots.
-- `src/ccbot/handlers/history_callbacks.py`: history pagination callbacks (prev/next).
-- `src/ccbot/handlers/hook_events.py`: hook event dispatcher (Notification, Stop, Subagent*, Team*).
-- `src/ccbot/handlers/cleanup.py`: centralized topic state teardown on close/delete.
-- `src/ccbot/handlers/topic_emoji.py`: debounced topic name emoji updates (active/idle/done/dead).
-- `src/ccbot/handlers/file_handler.py`: photo/document upload → `.ccbot-uploads/` → agent notification.
-- `src/ccbot/handlers/resume_command.py`: `/resume` scan past sessions + inline picker.
-- `src/ccbot/handlers/upgrade.py`: `/upgrade` uv tool upgrade + `os.execv()` restart.
-- `src/ccbot/handlers/sync_command.py`: `/sync` state audit + fix button.
-- `src/ccbot/handlers/command_history.py`: per-user/per-topic command recall (in-memory, max 20).
+- `src/ccgram/handlers/text_handler.py`: text-path orchestrator.
+- `src/ccgram/handlers/message_queue.py`: ordering, merge rules, status conversion.
+- `src/ccgram/handlers/status_polling.py`: background status and stale-session cleanup.
+- `src/ccgram/handlers/directory_browser.py` + `directory_callbacks.py`: new-session UX.
+- `src/ccgram/handlers/interactive_ui.py` + `interactive_callbacks.py`: interactive prompt UX.
+- `src/ccgram/handlers/sessions_dashboard.py`: `/sessions` dashboard behavior.
+- `src/ccgram/handlers/recovery_callbacks.py`: dead window recovery flow (fresh/continue/resume).
+- `src/ccgram/handlers/screenshot_callbacks.py`: screenshot refresh, Esc, quick-key, pane screenshots.
+- `src/ccgram/handlers/history_callbacks.py`: history pagination callbacks (prev/next).
+- `src/ccgram/handlers/hook_events.py`: hook event dispatcher (Notification, Stop, Subagent*, Team*).
+- `src/ccgram/handlers/cleanup.py`: centralized topic state teardown on close/delete.
+- `src/ccgram/handlers/topic_emoji.py`: debounced topic name emoji updates (active/idle/done/dead).
+- `src/ccgram/handlers/file_handler.py`: photo/document upload → `.ccgram-uploads/` → agent notification.
+- `src/ccgram/handlers/resume_command.py`: `/resume` scan past sessions + inline picker.
+- `src/ccgram/handlers/upgrade.py`: `/upgrade` uv tool upgrade + `os.execv()` restart.
+- `src/ccgram/handlers/sync_command.py`: `/sync` state audit + fix button.
+- `src/ccgram/handlers/command_history.py`: per-user/per-topic command recall (in-memory, max 20).
 
 Provider and command surface:
 
-- `src/ccbot/providers/`: provider contract and implementations.
-- `src/ccbot/command_catalog.py`: provider-agnostic command discovery + 60s TTL caching.
-- `src/ccbot/cc_commands.py`: Telegram menu registration from discovered commands.
-- `src/ccbot/hook.py`: Claude hook install/status/uninstall and event writes.
+- `src/ccgram/providers/`: provider contract and implementations.
+- `src/ccgram/command_catalog.py`: provider-agnostic command discovery + 60s TTL caching.
+- `src/ccgram/cc_commands.py`: Telegram menu registration from discovered commands.
+- `src/ccgram/hook.py`: Claude hook install/status/uninstall and event writes.
 
 Supporting modules:
 
-- `src/ccbot/screenshot.py`: terminal text → PNG rendering (PIL, ANSI color, font fallback).
-- `src/ccbot/codex_status.py`: Codex status snapshot from JSONL transcripts.
+- `src/ccgram/screenshot.py`: terminal text → PNG rendering (PIL, ANSI color, font fallback).
+- `src/ccgram/codex_status.py`: Codex status snapshot from JSONL transcripts.
 
 ## Decision Map (Where to Edit)
 
 Change topic/window routing behavior:
 
-- `src/ccbot/session.py` for bindings/state model.
-- `src/ccbot/handlers/callback_helpers.py` for thread/window extraction helpers.
-- `src/ccbot/window_resolver.py` for stale ID re-resolution.
+- `src/ccgram/session.py` for bindings/state model.
+- `src/ccgram/handlers/callback_helpers.py` for thread/window extraction helpers.
+- `src/ccgram/window_resolver.py` for stale ID re-resolution.
 
 Change monitor/event dispatch behavior:
 
-- `src/ccbot/session_monitor.py` for polling and fan-out.
-- `src/ccbot/monitor_state.py` for byte-offset persistence.
-- `src/ccbot/handlers/hook_events.py` for hook event handling.
+- `src/ccgram/session_monitor.py` for polling and fan-out.
+- `src/ccgram/monitor_state.py` for byte-offset persistence.
+- `src/ccgram/handlers/hook_events.py` for hook event handling.
 
 Change provider behavior (commands, parsing, capabilities):
 
-- `src/ccbot/providers/base.py` for contract/capabilities.
-- `src/ccbot/providers/__init__.py` for per-window provider resolution.
-- `src/ccbot/providers/{claude,codex,gemini}.py` for provider-specific behavior.
-- `src/ccbot/interactive_prompt_formatter.py` for provider-facing interactive prompt text normalization (currently Codex edit approval readability).
+- `src/ccgram/providers/base.py` for contract/capabilities.
+- `src/ccgram/providers/__init__.py` for per-window provider resolution.
+- `src/ccgram/providers/{claude,codex,gemini}.py` for provider-specific behavior.
+- `src/ccgram/interactive_prompt_formatter.py` for provider-facing interactive prompt text normalization (currently Codex edit approval readability).
 
 Change Telegram interactive UX:
 
-- `src/ccbot/handlers/interactive_ui.py` and `interactive_callbacks.py`.
-- `src/ccbot/handlers/callback_data.py` for callback key contracts.
-- `src/ccbot/handlers/message_queue.py` for ordering/merge side effects.
+- `src/ccgram/handlers/interactive_ui.py` and `interactive_callbacks.py`.
+- `src/ccgram/handlers/callback_data.py` for callback key contracts.
+- `src/ccgram/handlers/message_queue.py` for ordering/merge side effects.
 
 Change command discovery:
 
-- `src/ccbot/command_catalog.py` for filesystem scanning and caching.
-- `src/ccbot/cc_commands.py` for Telegram menu registration.
+- `src/ccgram/command_catalog.py` for filesystem scanning and caching.
+- `src/ccgram/cc_commands.py` for Telegram menu registration.
 
 Change screenshot rendering:
 
-- `src/ccbot/screenshot.py` only.
+- `src/ccgram/screenshot.py` only.
 
 Change tmux behavior:
 
-- `src/ccbot/tmux_manager.py` only.
+- `src/ccgram/tmux_manager.py` only.
 
 ## Change Mapping by Task Type
 
 Add or change a Telegram command:
 
-- Start in `src/ccbot/bot.py` command wiring.
-- Implement behavior in `src/ccbot/handlers/` module.
+- Start in `src/ccgram/bot.py` command wiring.
+- Implement behavior in `src/ccgram/handlers/` module.
 - Add callback constants in `handlers/callback_data.py` when needed.
 
 Change session binding logic:
 
-- `src/ccbot/session.py` and `src/ccbot/window_resolver.py`.
-- Validate persistence compatibility in `tests/ccbot/test_state_migration.py`.
+- `src/ccgram/session.py` and `src/ccgram/window_resolver.py`.
+- Validate persistence compatibility in `tests/ccgram/test_state_migration.py`.
 
 Adjust transcript/status parsing:
 
-- provider-specific parsing in `src/ccbot/providers/*.py`.
+- provider-specific parsing in `src/ccgram/providers/*.py`.
 - shared parse behavior in `transcript_parser.py` / `terminal_parser.py`.
 
 Touch tmux behavior:
 
-- `src/ccbot/tmux_manager.py` only; avoid shell calls spread across handlers.
+- `src/ccgram/tmux_manager.py` only; avoid shell calls spread across handlers.
 
 ## Contracts You Must Not Break
 
