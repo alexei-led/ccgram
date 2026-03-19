@@ -1096,7 +1096,7 @@ async def recall_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) ->
     )
 
 
-async def buttons_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+async def toolbar_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show persistent action toolbar with inline keyboard buttons."""
     user = update.effective_user
     if not user or not is_user_allowed(user.id):
@@ -1764,7 +1764,7 @@ def create_bot() -> Application:
     )
     application.add_handler(CommandHandler("sync", sync_command, filters=_group_filter))
     application.add_handler(
-        CommandHandler("buttons", buttons_command, filters=_group_filter)
+        CommandHandler("toolbar", toolbar_command, filters=_group_filter)
     )
     application.add_handler(
         CommandHandler("restore", restore_command, filters=_group_filter)
