@@ -8,6 +8,7 @@ Real PTB Application, real tmux, real session binding (via setup_bound_topic).
 """
 
 import shutil
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -61,7 +62,7 @@ def make_voice_update(
     )
     message = Message(
         message_id=_bump_message_id(),
-        date=None,
+        date=datetime.now(),
         chat=chat,
         from_user=user,
         voice=voice,

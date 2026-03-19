@@ -43,7 +43,7 @@ window_display_names: dict[str, str]        # window_id → window_name (for dis
 ```
 
 - Storage: `session_map.json`
-- Written when: Claude Code's `SessionStart` hook fires (always sets `provider_name: "claude"`; other providers have no hook). All 7 hook events also append to `events.jsonl` for instant dispatch.
+- Written when: Claude Code's `SessionStart` hook fires (always sets `provider_name: "claude"`; other providers have no hook). All hook events also append to `events.jsonl` for instant dispatch.
 - Property: one window maps to one session; session_id changes after `/clear`
 - Purpose: SessionMonitor reads session_map to decide which sessions to watch, and reads events.jsonl for instant event notifications (interactive UI, done detection, subagent status)
 

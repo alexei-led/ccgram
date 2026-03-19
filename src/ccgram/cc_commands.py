@@ -31,10 +31,18 @@ logger = structlog.get_logger()
 CC_BUILTINS: dict[str, str] = {
     "clear": "↗ Clear conversation history",
     "compact": "↗ Compact conversation context",
-    "cost": "↗ Show token/cost usage",
+    "effort": "↗ Set thinking effort level",
     "help": "↗ Show Claude Code help",
+    "init": "↗ Initialize CLAUDE.md in project",
+    "mcp": "↗ List MCP servers and tools",
     "memory": "↗ Edit CLAUDE.md",
     "model": "↗ Select model and thinking effort",
+    "permissions": "↗ Manage tool permissions",
+    "plan": "↗ Switch to plan mode",
+    "rc": "↗ Start remote control (alias)",
+    "remote-control": "↗ Start remote control session",
+    "status": "↗ Show session status",
+    "tasks": "↗ Manage background tasks",
 }
 
 # Bot-native commands (registered first, not from CC)
@@ -50,6 +58,7 @@ _BOT_COMMANDS: list[tuple[str, str]] = [
     ("sync", "Audit and fix state"),
     ("unbind", "Unbind this topic"),
     ("recall", "Recall recent commands"),
+    ("toolbar", "Show action toolbar"),
     ("upgrade", "Upgrade ccgram and restart"),
 ]
 

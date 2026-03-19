@@ -102,6 +102,10 @@ _ACTIVITY_THRESHOLD = 10.0
 # activity, transition from "starting up" to idle instead of staying green forever.
 _STARTUP_TIMEOUT = 30.0
 
+# Remote Control detection debounce: require RC to be absent for this many
+# seconds before clearing the badge (avoids flicker during brief screen redraws).
+_RC_DEBOUNCE_SECONDS = 3.0
+
 
 # ── Consolidated per-window and per-topic polling state ────────────────
 
@@ -116,6 +120,12 @@ class WindowPollState:
     screen_buffer: ScreenBuffer | None = field(default=None, repr=False)
     pane_count_cache: tuple[int, float] | None = None
     unbound_timer: float | None = None
+    last_pane_hash: int = 0
+    last_pyte_result: StatusUpdate | None = field(default=None, repr=False)
+    last_rendered_text: str | None = None
+    rc_active: bool = False
+    rc_off_since: float | None = None  # debounce RC removal (3s)
+    last_rc_detected: bool = False  # raw detection result (before debounce)
 
 
 @dataclass
@@ -150,25 +160,25 @@ def _get_screen_buffer(window_id: str, columns: int, rows: int) -> ScreenBuffer:
 
     ws = _get_window_state(window_id)
     buf = ws.screen_buffer
-    if (
-        buf is None
-        or not isinstance(buf, ScreenBuffer)
-        or buf.columns != columns
-        or buf.rows != rows
-    ):
+    if buf is None or not isinstance(buf, ScreenBuffer):
         buf = ScreenBuffer(columns=columns, rows=rows)
         ws.screen_buffer = buf
+    elif buf.columns != columns or buf.rows != rows:
+        buf.resize(columns, rows)
     else:
         buf.reset()
     return buf
 
 
 def clear_screen_buffer(window_id: str) -> None:
-    """Remove a window's ScreenBuffer and pane count cache (called on cleanup)."""
+    """Remove a window's ScreenBuffer, pane count cache, and pyte cache (called on cleanup)."""
     ws = _window_poll_state.get(window_id)
     if ws:
         ws.screen_buffer = None
         ws.pane_count_cache = None
+        ws.last_pane_hash = 0
+        ws.last_pyte_result = None
+        ws.last_rendered_text = None
 
 
 def clear_window_poll_state(window_id: str) -> None:
@@ -186,7 +196,18 @@ def reset_screen_buffer_state() -> None:
     for ws in _window_poll_state.values():
         ws.screen_buffer = None
         ws.pane_count_cache = None
+        ws.last_pane_hash = 0
+        ws.last_pyte_result = None
+        ws.last_rendered_text = None
+        ws.rc_active = False
+        ws.rc_off_since = None
     _pane_alert_hashes.clear()
+
+
+def is_rc_active(window_id: str) -> bool:
+    """Check whether Remote Control is currently active for a window."""
+    ws = _window_poll_state.get(window_id)
+    return ws.rc_active if ws else False
 
 
 def is_shell_prompt(pane_current_command: str) -> bool:
@@ -515,46 +536,106 @@ async def _handle_no_status(
         _clear_autoclose_if_active(user_id, thread_id)
 
 
-def _parse_with_pyte(window_id: str, pane_text: str) -> StatusUpdate | None:
+def _update_rc_state(ws: WindowPollState, rc_detected: bool) -> None:
+    """Update Remote Control state with 3s debounce on removal."""
+    if rc_detected:
+        ws.rc_active = True
+        ws.rc_off_since = None
+    elif ws.rc_active:
+        now = time.monotonic()
+        if ws.rc_off_since is None:
+            ws.rc_off_since = now
+        elif now - ws.rc_off_since >= _RC_DEBOUNCE_SECONDS:
+            ws.rc_active = False
+            ws.rc_off_since = None
+
+
+def _parse_with_pyte(
+    window_id: str,
+    pane_text: str,
+    columns: int = 0,
+    rows: int = 0,
+) -> StatusUpdate | None:
     """Try pyte-based screen parsing for status and interactive UI detection.
 
-    Feeds the plain pane text into a ScreenBuffer sized for a standard
-    terminal, then uses the screen-based parsers. Returns a StatusUpdate
+    Feeds ANSI-encoded pane text into a ScreenBuffer sized to match the actual
+    pane dimensions, then uses the screen-based parsers. Returns a StatusUpdate
     or None if nothing detected.
+
+    Side-effect: stores ANSI-stripped rendered text on
+    ``WindowPollState.last_rendered_text`` for fallback consumers.
+
+    Content-hash optimization: if pane text hasn't changed since the last call
+    and the previous result was not interactive UI, the cached result is returned
+    without re-parsing.
     """
-    from ..screen_buffer import ScreenBuffer
     from ..terminal_parser import (
         format_status_display,
         parse_from_screen,
         parse_status_from_screen,
     )
 
-    # Use a standard terminal size; pyte needs dimensions to render
-    columns, rows = 200, 50
+    if (
+        not isinstance(columns, int)
+        or not isinstance(rows, int)
+        or columns <= 0
+        or rows <= 0
+    ):
+        columns, rows = 200, 50
+
+    # Content-hash early exit: skip parsing when pane content and dimensions
+    # are unchanged. Dimensions are included because the same text re-parsed
+    # at different widths can produce different line wrapping / separator hits.
+    # Computed after normalization so 0/0 and 200/50 produce the same hash.
+    ws = _get_window_state(window_id)
+    content_hash = hash((pane_text, columns, rows))
+    if (
+        content_hash == ws.last_pane_hash
+        and ws.last_pane_hash != 0
+        and (ws.last_pyte_result is None or not ws.last_pyte_result.is_interactive)
+    ):
+        _update_rc_state(ws, ws.last_rc_detected)
+        return ws.last_pyte_result
     buf = _get_screen_buffer(window_id, columns, rows)
-    if not isinstance(buf, ScreenBuffer):
-        return None
 
     buf.feed(pane_text)
+
+    # Store ANSI-stripped rendered text for fallback consumers
+    ws.last_rendered_text = buf.rendered_text
+
+    # Detect Remote Control state from status bar below chrome
+    from ..terminal_parser import detect_remote_control
+
+    rc_detected = detect_remote_control(buf.display)
+    ws.last_rc_detected = rc_detected
+    _update_rc_state(ws, rc_detected)
 
     # Check interactive UI first (takes precedence)
     interactive = parse_from_screen(buf)
     if interactive:
-        return StatusUpdate(
+        result = StatusUpdate(
             raw_text=interactive.content,
             display_label=interactive.name,
             is_interactive=True,
             ui_type=interactive.name,
         )
+        ws.last_pane_hash = content_hash
+        ws.last_pyte_result = result
+        return result
 
     # Check status line
     raw_status = parse_status_from_screen(buf)
     if raw_status:
-        return StatusUpdate(
+        result = StatusUpdate(
             raw_text=raw_status,
             display_label=format_status_display(raw_status),
         )
+        ws.last_pane_hash = content_hash
+        ws.last_pyte_result = result
+        return result
 
+    ws.last_pane_hash = content_hash
+    ws.last_pyte_result = None
     return None
 
 
@@ -675,32 +756,41 @@ async def update_status_message(
         await enqueue_status_update(bot, user_id, window_id, None, thread_id=thread_id)
         return
 
-    pane_text = await tmux_manager.capture_pane(w.window_id)
+    pane_text = await tmux_manager.capture_pane(w.window_id, with_ansi=True)
     if not pane_text:
         # Transient capture failure - keep existing status message
         return
-
-    # Passive vim INSERT mode tracking — feed the polling cache so that
-    # _ensure_vim_insert_mode() has a warm cache for the common case.
-    # Use tail-only check to avoid false positives from historical output.
-    from ..tmux_manager import _has_insert_indicator, notify_vim_insert_seen
-
-    if _has_insert_indicator(pane_text):
-        notify_vim_insert_seen(w.window_id)
 
     interactive_window = get_interactive_window(user_id, thread_id)
     should_check_new_ui = True
 
     # Parse terminal status: try pyte-based parsing first, fall back to regex
-    status = _parse_with_pyte(window_id, pane_text)
+    status = _parse_with_pyte(
+        window_id, pane_text, columns=w.pane_width, rows=w.pane_height
+    )
+
+    # Passive vim INSERT mode tracking — feed the polling cache so that
+    # _ensure_vim_insert_mode() has a warm cache for the common case.
+    # Uses pyte-rendered text (ANSI-stripped) for reliable matching.
+    from ..tmux_manager import _has_insert_indicator, notify_vim_insert_seen
+
+    ws = _get_window_state(window_id)
+    vim_text = ws.last_rendered_text if ws.last_rendered_text is not None else pane_text
+    if _has_insert_indicator(vim_text):
+        notify_vim_insert_seen(w.window_id)
 
     if status is None:
-        # pyte path returned nothing — fall back to provider regex parsing
+        # pyte path returned nothing — fall back to provider regex parsing.
+        # Use pyte-rendered clean text (ANSI-stripped) so regex parsers
+        # don't choke on escape sequences.
+        clean_text = (
+            ws.last_rendered_text if ws.last_rendered_text is not None else pane_text
+        )
         provider = get_provider_for_window(window_id)
         pane_title = ""
         if provider.capabilities.uses_pane_title:
             pane_title = await tmux_manager.get_pane_title(w.window_id)
-        status = provider.parse_terminal_status(pane_text, pane_title=pane_title)
+        status = provider.parse_terminal_status(clean_text, pane_title=pane_title)
 
     if interactive_window == window_id:
         # User is in interactive mode for THIS window

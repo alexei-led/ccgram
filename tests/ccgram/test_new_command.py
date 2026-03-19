@@ -86,7 +86,7 @@ class TestCommandRegistration:
         for group_handlers in app.handlers.values():
             for handler in group_handlers:
                 if hasattr(handler, "commands"):
-                    handler_commands.extend(handler.commands)
+                    handler_commands.extend(handler.commands)  # type: ignore[union-attr]
 
         assert "new" in handler_commands
         assert "start" in handler_commands
@@ -101,9 +101,9 @@ class TestCommandRegistration:
         for group_handlers in app.handlers.values():
             for handler in group_handlers:
                 if hasattr(handler, "commands"):
-                    if "new" in handler.commands:
+                    if "new" in handler.commands:  # type: ignore[union-attr]
                         new_handler = handler
-                    if "start" in handler.commands:
+                    if "start" in handler.commands:  # type: ignore[union-attr]
                         start_handler = handler
 
         assert new_handler is not None

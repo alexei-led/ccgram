@@ -220,3 +220,48 @@ async def test_send_keys_to_pane(tmux, tmp_path) -> None:
 async def test_send_keys_to_pane_missing(tmux) -> None:
     sent = await tmux.send_keys_to_pane("%99999", "hello")
     assert sent is False
+
+
+# ── ANSI capture ───────────────────────────────────────────────────────
+
+
+async def test_capture_pane_with_ansi(tmux, tmp_path) -> None:
+    ok, _msg, _name, window_id = await tmux.create_window(
+        str(tmp_path), window_name="ansi-test", start_agent=False
+    )
+    assert ok
+
+    await tmux.send_keys(window_id, r'printf "\033[31mred\033[0m normal"')
+    await asyncio.sleep(0.5)
+
+    plain = await tmux.capture_pane(window_id, with_ansi=False)
+    ansi = await tmux.capture_pane(window_id, with_ansi=True)
+    assert plain is not None
+    assert ansi is not None
+    assert "red" in plain
+    assert "normal" in plain
+    assert "\x1b[" in ansi
+    assert "red" in ansi
+
+
+async def test_ansi_capture_through_pyte(tmux, tmp_path) -> None:
+    from ccgram.screen_buffer import ScreenBuffer
+
+    ok, _msg, _name, window_id = await tmux.create_window(
+        str(tmp_path), window_name="pyte-e2e", start_agent=False
+    )
+    assert ok
+
+    await tmux.send_keys(window_id, r'printf "\033[1mbold text\033[0m"')
+    await asyncio.sleep(0.5)
+
+    w = await tmux.find_window_by_id(window_id)
+    assert w is not None
+    ansi_text = await tmux.capture_pane(window_id, with_ansi=True)
+    assert ansi_text is not None
+
+    buf = ScreenBuffer(columns=w.pane_width, rows=w.pane_height)
+    buf.feed(ansi_text)
+    rendered = buf.rendered_text
+    assert "bold text" in rendered
+    assert "\x1b" not in rendered

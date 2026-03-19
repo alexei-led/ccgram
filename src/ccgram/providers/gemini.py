@@ -43,6 +43,7 @@ from ccgram.utils import atomic_write_json, ccgram_dir
 # Gemini CLI known slash commands
 _GEMINI_BUILTINS: dict[str, str] = {
     "/about": "Show version info",
+    "/agents": "Manage agent configurations",
     "/auth": "Manage authentication",
     "/bug": "Submit a bug report",
     "/chat": "Save, resume, list, or delete named sessions",
@@ -50,7 +51,6 @@ _GEMINI_BUILTINS: dict[str, str] = {
     "/commands": "Manage custom slash commands",
     "/compress": "Summarize chat context to save tokens",
     "/copy": "Copy last response to clipboard",
-    "/diff": "View file changes",
     "/directory": "Manage accessible directories",
     "/directories": "Manage accessible directories",
     "/docs": "Open full Gemini CLI docs",

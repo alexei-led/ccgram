@@ -341,3 +341,89 @@ class TestHandleTaskCompleted:
             text = mock_enqueue.call_args[0][3]
             assert "\u2705 Task completed: deploy" in text
             assert "(by " not in text
+
+
+class TestHandleStopFailure:
+    async def test_sends_error_alert(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "ccgram.handlers.hook_events.session_manager.iter_thread_bindings",
+            lambda: iter([(100, 42, "@0")]),
+        )
+        bot = AsyncMock(spec=Bot)
+        with (
+            patch(
+                "ccgram.handlers.hook_events.session_manager.resolve_chat_id",
+                return_value=-100,
+            ),
+            patch(
+                "ccgram.handlers.message_sender.rate_limit_send_message"
+            ) as mock_send,
+        ):
+            event = _make_event(
+                event_type="StopFailure",
+                data={"error": "rate_limit", "error_details": "429 Too Many Requests"},
+            )
+            await dispatch_hook_event(event, bot)
+            text = mock_send.call_args[0][2]
+            assert "rate_limit" in text
+            assert "429" in text
+
+    async def test_no_users_skips(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "ccgram.handlers.hook_events.session_manager.iter_thread_bindings",
+            lambda: iter([]),
+        )
+        bot = AsyncMock(spec=Bot)
+        with patch(
+            "ccgram.handlers.message_sender.rate_limit_send_message"
+        ) as mock_send:
+            event = _make_event(event_type="StopFailure", data={"error": "unknown"})
+            await dispatch_hook_event(event, bot)
+            mock_send.assert_not_called()
+
+
+class TestHandleSessionEnd:
+    async def test_transitions_to_done(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "ccgram.handlers.hook_events.session_manager.iter_thread_bindings",
+            lambda: iter([(100, 42, "@0")]),
+        )
+        bot = AsyncMock(spec=Bot)
+        with (
+            patch(
+                "ccgram.handlers.hook_events.session_manager.resolve_chat_id",
+                return_value=-100,
+            ),
+            patch(
+                "ccgram.handlers.hook_events.session_manager.get_display_name",
+                return_value="project",
+            ),
+            patch(
+                "ccgram.handlers.hook_events.session_manager.clear_window_session",
+            ) as mock_clear_session,
+            patch("ccgram.handlers.topic_emoji.update_topic_emoji") as mock_emoji,
+            patch(
+                "ccgram.handlers.message_queue.enqueue_status_update"
+            ) as mock_enqueue,
+            patch("ccgram.handlers.status_polling.clear_seen_status") as mock_clear,
+        ):
+            event = _make_event(event_type="SessionEnd", data={"reason": "clear"})
+            await dispatch_hook_event(event, bot)
+
+            mock_clear.assert_called_once_with("@0")
+            mock_emoji.assert_called_once_with(bot, -100, 42, "done", "project")
+            mock_enqueue.assert_called_once_with(bot, 100, "@0", None, thread_id=42)
+            mock_clear_session.assert_called_once_with("@0")
+
+    async def test_no_users_skips(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "ccgram.handlers.hook_events.session_manager.iter_thread_bindings",
+            lambda: iter([]),
+        )
+        bot = AsyncMock(spec=Bot)
+        with patch(
+            "ccgram.handlers.message_queue.enqueue_status_update"
+        ) as mock_enqueue:
+            event = _make_event(event_type="SessionEnd", data={"reason": "logout"})
+            await dispatch_hook_event(event, bot)
+            mock_enqueue.assert_not_called()

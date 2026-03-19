@@ -5,6 +5,9 @@ Handles inline keyboard callbacks for screenshot UI and status message buttons:
   - CB_STATUS_RECALL: Send one of the two recent commands from status row
   - CB_STATUS_ESC: Send Escape key from status message
   - CB_STATUS_SCREENSHOT: Take a screenshot from status message
+  - CB_STATUS_REMOTE: Toggle Remote Control activation
+  - CB_TOOLBAR_CTRLC: Send Ctrl-C from toolbar
+  - CB_TOOLBAR_DISMISS: Dismiss toolbar message
   - CB_KEYS_PREFIX: Send a quick key from screenshot keyboard
 
 Key function: handle_screenshot_callback (uniform callback handler signature).
@@ -33,9 +36,12 @@ from .callback_data import (
     CB_PANE_SCREENSHOT,
     CB_SCREENSHOT_REFRESH,
     CB_STATUS_ESC,
-    CB_STATUS_RECALL,
     CB_STATUS_NOTIFY,
+    CB_STATUS_RECALL,
+    CB_STATUS_REMOTE,
     CB_STATUS_SCREENSHOT,
+    CB_TOOLBAR_CTRLC,
+    CB_TOOLBAR_DISMISS,
     NOTIFY_MODE_LABELS,
 )
 from .callback_helpers import get_thread_id, user_owns_window
@@ -100,6 +106,45 @@ def build_screenshot_keyboard(
     )
 
 
+def build_toolbar_keyboard(window_id: str) -> InlineKeyboardMarkup:
+    """Build inline keyboard for /toolbar command."""
+    from .status_polling import is_rc_active
+
+    rc_label = "\U0001f4e1\u2713 RC" if is_rc_active(window_id) else "\U0001f4e1 RC"
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    rc_label,
+                    callback_data=f"{CB_STATUS_REMOTE}{window_id}"[:64],
+                ),
+                InlineKeyboardButton(
+                    "\U0001f4f7 Screenshot",
+                    callback_data=f"{CB_STATUS_SCREENSHOT}{window_id}"[:64],
+                ),
+                InlineKeyboardButton(
+                    "\u238b Esc",
+                    callback_data=f"{CB_STATUS_ESC}{window_id}"[:64],
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "\U0001f514 Notify",
+                    callback_data=f"{CB_STATUS_NOTIFY}{window_id}"[:64],
+                ),
+                InlineKeyboardButton(
+                    "\u23f9 Ctrl-C",
+                    callback_data=f"{CB_TOOLBAR_CTRLC}{window_id}"[:64],
+                ),
+                InlineKeyboardButton(
+                    "\u2716 Dismiss",
+                    callback_data=CB_TOOLBAR_DISMISS,
+                ),
+            ],
+        ]
+    )
+
+
 async def _handle_pane_screenshot(
     query: CallbackQuery, user_id: int, data: str, update: Update
 ) -> None:
@@ -145,6 +190,43 @@ async def _handle_pane_screenshot(
         await query.answer("Failed to send screenshot", show_alert=True)
 
 
+async def _handle_remote_control(query: CallbackQuery, user_id: int, data: str) -> None:
+    """Handle CB_STATUS_REMOTE: activate Remote Control or show status."""
+    from .status_polling import is_rc_active
+
+    window_id = data[len(CB_STATUS_REMOTE) :]
+    if not user_owns_window(user_id, window_id):
+        await query.answer("Not your session", show_alert=True)
+        return
+    if is_rc_active(window_id):
+        await query.answer("\U0001f4e1 Remote Control active")
+    else:
+        display = session_manager.get_display_name(window_id)
+        await session_manager.send_to_window(window_id, f"/remote-control {display}")
+        await query.answer("\U0001f4e1 Activating\u2026")
+
+
+async def _handle_toolbar_ctrlc(query: CallbackQuery, user_id: int, data: str) -> None:
+    """Handle CB_TOOLBAR_CTRLC: send Ctrl-C to window."""
+    window_id = data[len(CB_TOOLBAR_CTRLC) :]
+    if not user_owns_window(user_id, window_id):
+        await query.answer("Not your session", show_alert=True)
+        return
+    w = await tmux_manager.find_window_by_id(window_id)
+    if w:
+        await tmux_manager.send_keys(w.window_id, "C-c", enter=False, literal=False)
+        await query.answer("^C Sent")
+    else:
+        await query.answer("Window not found", show_alert=True)
+
+
+async def _handle_toolbar_dismiss(query: CallbackQuery) -> None:
+    """Handle CB_TOOLBAR_DISMISS: delete the toolbar message."""
+    with contextlib.suppress(TelegramError):
+        await query.delete_message()
+    await query.answer()
+
+
 async def handle_screenshot_callback(
     query: CallbackQuery,
     user_id: int,
@@ -152,21 +234,34 @@ async def handle_screenshot_callback(
     update: Update,
     _context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    """Handle screenshot, status button, and quick-key callbacks."""
-    if data.startswith(CB_SCREENSHOT_REFRESH):
-        await _handle_refresh(query, user_id, data)
-    elif data.startswith(CB_STATUS_RECALL):
-        await _handle_status_recall(query, user_id, data, update)
-    elif data.startswith(CB_STATUS_ESC):
-        await _handle_status_esc(query, user_id, data)
-    elif data.startswith(CB_STATUS_SCREENSHOT):
-        await _handle_status_screenshot(query, user_id, data, update)
-    elif data.startswith(CB_STATUS_NOTIFY):
-        await _handle_notify_toggle(query, user_id, data)
-    elif data.startswith(CB_PANE_SCREENSHOT):
-        await _handle_pane_screenshot(query, user_id, data, update)
-    elif data.startswith(CB_KEYS_PREFIX):
-        await _handle_keys(query, user_id, data)
+    """Handle screenshot, status button, toolbar, and quick-key callbacks."""
+    # Handlers that need (query, user_id, data, update)
+    with_update = {
+        CB_STATUS_RECALL: _handle_status_recall,
+        CB_STATUS_SCREENSHOT: _handle_status_screenshot,
+        CB_PANE_SCREENSHOT: _handle_pane_screenshot,
+    }
+    for prefix, handler in with_update.items():
+        if data.startswith(prefix):
+            await handler(query, user_id, data, update)
+            return
+
+    # Handlers that need (query, user_id, data)
+    without_update = {
+        CB_SCREENSHOT_REFRESH: _handle_refresh,
+        CB_STATUS_ESC: _handle_status_esc,
+        CB_STATUS_NOTIFY: _handle_notify_toggle,
+        CB_STATUS_REMOTE: _handle_remote_control,
+        CB_TOOLBAR_CTRLC: _handle_toolbar_ctrlc,
+        CB_KEYS_PREFIX: _handle_keys,
+    }
+    for prefix, handler in without_update.items():
+        if data.startswith(prefix):
+            await handler(query, user_id, data)
+            return
+
+    if data == CB_TOOLBAR_DISMISS:
+        await _handle_toolbar_dismiss(query)
 
 
 async def _handle_refresh(query: CallbackQuery, user_id: int, data: str) -> None:

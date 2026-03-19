@@ -212,6 +212,60 @@ async def _handle_teammate_idle(event: HookEvent, bot: Bot) -> None:
         await enqueue_status_update(bot, user_id, window_id, text, thread_id=thread_id)
 
 
+async def _handle_stop_failure(event: HookEvent, bot: Bot) -> None:
+    """Handle a StopFailure event — alert on API error termination."""
+    from .message_sender import rate_limit_send_message
+
+    users = _resolve_users_for_window_key(event.window_key)
+    if not users:
+        return
+
+    error = event.data.get("error", "unknown")
+    error_details = event.data.get("error_details", "")
+    logger.warning(
+        "Hook StopFailure: window_key=%s, error=%s, details=%s",
+        event.window_key,
+        error,
+        error_details,
+    )
+
+    detail = f": {error_details}" if error_details else ""
+    text = f"\u26a0 API error — {error}{detail}"
+
+    for user_id, thread_id, _window_id in users:
+        chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+        await rate_limit_send_message(bot, chat_id, text, message_thread_id=thread_id)
+
+
+async def _handle_session_end(event: HookEvent, bot: Bot) -> None:
+    """Handle a SessionEnd event — clean up session lifecycle."""
+    from .message_queue import enqueue_status_update
+    from .status_polling import clear_seen_status
+    from .topic_emoji import update_topic_emoji
+
+    users = _resolve_users_for_window_key(event.window_key)
+    if not users:
+        return
+
+    reason = event.data.get("reason", "")
+    logger.info(
+        "Hook SessionEnd: window_key=%s, reason=%s",
+        event.window_key,
+        reason,
+    )
+
+    # Clear session association so next launch gets a fresh session
+    if users:
+        session_manager.clear_window_session(users[0][2])
+
+    for user_id, thread_id, window_id in users:
+        clear_seen_status(window_id)
+        chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+        display = session_manager.get_display_name(window_id)
+        await update_topic_emoji(bot, chat_id, thread_id, "done", display)
+        await enqueue_status_update(bot, user_id, window_id, None, thread_id=thread_id)
+
+
 async def _handle_task_completed(event: HookEvent, bot: Bot) -> None:
     """Handle TaskCompleted — notify topic that a task was completed."""
     from .message_queue import enqueue_status_update
@@ -243,6 +297,10 @@ async def dispatch_hook_event(event: HookEvent, bot: Bot) -> None:
             await _handle_notification(event, bot)
         case "Stop":
             await _handle_stop(event, bot)
+        case "StopFailure":
+            await _handle_stop_failure(event, bot)
+        case "SessionEnd":
+            await _handle_session_end(event, bot)
         case "SubagentStart":
             await _handle_subagent_start(event, bot)
         case "SubagentStop":
@@ -253,7 +311,6 @@ async def dispatch_hook_event(event: HookEvent, bot: Bot) -> None:
             await _handle_task_completed(event, bot)
         case (
             "SessionStart"
-            | "SessionEnd"
             | "UserPromptSubmit"
             | "PreToolUse"
             | "PostToolUse"

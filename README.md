@@ -72,6 +72,8 @@ Each Telegram Forum topic binds to one tmux window running an agent CLI. Message
 - Terminal screenshots — capture the current pane (or any specific pane) as a PNG image
 - Voice message transcription via Whisper API (OpenAI, Groq) with confirm/discard keyboard
 - Sessions dashboard (`/sessions`) — overview of all sessions with status and kill buttons
+- Remote Control detection — 📡 topic badge when RC is active, one-tap activation from status keyboard
+- Action toolbar (`/toolbar`) — persistent inline buttons for RC, Screenshot, Esc, Notify, Ctrl-C
 
 **Real-time monitoring**
 
@@ -147,7 +149,7 @@ CCGRAM_GROUP_ID=your_telegram_group_id
 ccgram hook --install
 ```
 
-This registers 7 Claude Code hooks (SessionStart, Notification, Stop, SubagentStart, SubagentStop, TeammateIdle, TaskCompleted) for automatic session tracking, instant interactive UI detection, real-time status updates, and agent team notifications. Not needed for Codex or Gemini — those providers are discovered from hookless transcripts and tmux window/provider detection.
+This registers Claude Code hooks (SessionStart, Notification, Stop, StopFailure, SessionEnd, SubagentStart, SubagentStop, TeammateIdle, TaskCompleted) for automatic session tracking, instant interactive UI detection, API error alerting, session lifecycle cleanup, and agent team notifications. Not needed for Codex or Gemini — those providers are discovered from hookless transcripts and tmux window/provider detection.
 
 > If hooks are missing, ccgram warns at startup with the fix command. Hooks are optional — terminal scraping works as fallback.
 

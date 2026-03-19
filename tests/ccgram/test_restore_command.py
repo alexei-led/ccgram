@@ -39,7 +39,7 @@ def _patch_deps():
         yield mock_sm, mock_tm, mock_cfg, mock_cdn, mock_gpw, mock_rlc
 
 
-def _make_update(*, user_id=100, thread_id=42):  # noqa: ANN001
+def _make_update(*, user_id: int = 100, thread_id: int | None = 42):
     update = MagicMock()
     update.effective_user = MagicMock(id=user_id)
     update.message = AsyncMock()

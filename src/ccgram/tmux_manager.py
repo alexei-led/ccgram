@@ -96,6 +96,8 @@ class TmuxWindow:
     window_name: str
     cwd: str  # Current working directory
     pane_current_command: str = ""  # Process running in active pane
+    pane_width: int = 0  # Active pane width (columns)
+    pane_height: int = 0  # Active pane height (rows)
 
 
 class TmuxManager:
@@ -174,14 +176,18 @@ class TmuxManager:
                     continue
 
                 try:
-                    # Get the active pane's current path and command
+                    # Get the active pane's current path, command, and dimensions
                     pane = window.active_pane
                     if pane:
                         cwd = pane.pane_current_path or ""
                         pane_cmd = pane.pane_current_command or ""
+                        pw = int(pane.pane_width or 0)
+                        ph = int(pane.pane_height or 0)
                     else:
                         cwd = ""
                         pane_cmd = ""
+                        pw = 0
+                        ph = 0
 
                     windows.append(
                         TmuxWindow(
@@ -189,6 +195,8 @@ class TmuxManager:
                             window_name=name,
                             cwd=cwd,
                             pane_current_command=pane_cmd,
+                            pane_width=pw,
+                            pane_height=ph,
                         )
                     )
                 except _TmuxError as e:
@@ -243,7 +251,7 @@ class TmuxManager:
                 "-t",
                 session_name,
                 "-F",
-                "#{window_id}\t#{pane_current_path}\t#{pane_current_command}",
+                "#{window_id}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_width}\t#{pane_height}",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -254,15 +262,27 @@ class TmuxManager:
         if proc.returncode != 0:
             return None
         for line in stdout.decode().strip().split("\n"):
-            parts = line.split("\t", 2)
+            parts = line.split("\t", 4)
             if parts and parts[0] == window_id_part:
                 cwd = parts[1] if len(parts) > 1 else ""
                 cmd = parts[2] if len(parts) > 2 else ""  # noqa: PLR2004
+                pw = (
+                    int(parts[3])
+                    if len(parts) > 3 and parts[3].isdigit()  # noqa: PLR2004
+                    else 0
+                )
+                ph = (
+                    int(parts[4])
+                    if len(parts) > 4 and parts[4].isdigit()  # noqa: PLR2004
+                    else 0
+                )
                 return TmuxWindow(
                     window_id=qualified_id,
                     window_name=session_name.removeprefix(_EMDASH_PREFIX),
                     cwd=cwd,
                     pane_current_command=cmd,
+                    pane_width=pw,
+                    pane_height=ph,
                 )
         return None
 

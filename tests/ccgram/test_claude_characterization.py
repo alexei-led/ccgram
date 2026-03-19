@@ -203,5 +203,20 @@ class TestClaudeTerminalSignatures:
 
 class TestClaudeCommandDiscovery:
     def test_cc_builtins_exact_set(self) -> None:
-        expected = {"clear", "compact", "cost", "help", "memory", "model"}
+        expected = {
+            "clear",
+            "compact",
+            "effort",
+            "help",
+            "init",
+            "mcp",
+            "memory",
+            "model",
+            "permissions",
+            "plan",
+            "rc",
+            "remote-control",
+            "status",
+            "tasks",
+        }
         assert set(CC_BUILTINS.keys()) == expected

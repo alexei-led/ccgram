@@ -93,6 +93,13 @@ CB_PANE_SCREENSHOT = "pn:ss:"  # pn:ss:<window_id>:<pane_id>
 # Screenshot control keys
 CB_KEYS_PREFIX = "kb:"  # kb:<key_id>:<window>
 
+# Remote Control button (status keyboard + toolbar)
+CB_STATUS_REMOTE = "st:rmt:"  # st:rmt:<window_id>
+
+# Toolbar command
+CB_TOOLBAR_CTRLC = "tb:cc:"  # tb:cc:<window_id> — sends Ctrl-C
+CB_TOOLBAR_DISMISS = "tb:x"  # dismiss toolbar message
+
 # Sync command
 CB_SYNC_FIX = "sync:fix"
 CB_SYNC_DISMISS = "sync:x"

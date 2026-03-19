@@ -255,6 +255,22 @@ class TestExtractInteractiveContent:
         assert result.name == "SelectionUI"
         assert "Pick a thing" in result.content
 
+    def test_numbered_list_without_footer(self):
+        """Selection UI with numbered items but no action hint footer."""
+        pane = (
+            "Remote Control\n"
+            "\n"
+            "   Remote Control lets you access this CLI session.\n"
+            "\n"
+            "   ❯ 1. Enable Remote Control for this session\n"
+            "     2. Never mind\n"
+        )
+        result = extract_interactive_content(pane)
+        assert result is not None
+        assert result.name == "SelectionUI"
+        assert "Remote Control" in result.content
+        assert "❯" in result.content
+
     def test_codex_selection_cursor(self):
         """Codex uses › (U+203A) instead of ❯ (U+276F) for selection cursor."""
         pane = "  Which option?\n\n  › Option A    Option B\n\n  Esc to cancel\n"
@@ -863,3 +879,40 @@ class TestParseStatusFromScreen:
         screen = self._make_screen(ansi)
         screen_result = parse_status_from_screen(screen)
         assert regex_result == screen_result == "Working on task"
+
+
+# ── Remote Control detection ───────────────────────────────────────────
+
+
+class TestDetectRemoteControl:
+    def _build_lines(self, *, rc: bool = True) -> list[str]:
+        sep = "─" * 30
+        status_bar = "  ● Remote Control active" if rc else "  [Opus 4.6] Context: 34%"
+        return [
+            "output line 1",
+            "output line 2",
+            sep,
+            "❯ ",
+            sep,
+            status_bar,
+        ]
+
+    def test_rc_present(self):
+        from ccgram.terminal_parser import detect_remote_control
+
+        assert detect_remote_control(self._build_lines(rc=True)) is True
+
+    def test_rc_absent(self):
+        from ccgram.terminal_parser import detect_remote_control
+
+        assert detect_remote_control(self._build_lines(rc=False)) is False
+
+    def test_no_chrome(self):
+        from ccgram.terminal_parser import detect_remote_control
+
+        assert detect_remote_control(["output", "no chrome here"]) is False
+
+    def test_empty(self):
+        from ccgram.terminal_parser import detect_remote_control
+
+        assert detect_remote_control([]) is False

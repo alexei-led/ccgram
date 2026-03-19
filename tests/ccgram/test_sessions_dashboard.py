@@ -38,7 +38,12 @@ class TestBuildDashboard:
     async def test_empty(self, _patch_deps) -> None:
         text, keyboard = await _build_dashboard(100)
         assert "No active sessions" in text
-        data = [btn.callback_data for row in keyboard.inline_keyboard for btn in row]
+        data = [
+            btn.callback_data
+            for row in keyboard.inline_keyboard
+            for btn in row
+            if isinstance(btn.callback_data, str)
+        ]
         assert CB_SESSIONS_REFRESH in data
         assert CB_SESSIONS_NEW in data
 
@@ -105,7 +110,12 @@ class TestBuildDashboard:
 
         _text, keyboard = await _build_dashboard(100)
         labels = [btn.text for row in keyboard.inline_keyboard for btn in row]
-        data = [btn.callback_data for row in keyboard.inline_keyboard for btn in row]
+        data = [
+            btn.callback_data
+            for row in keyboard.inline_keyboard
+            for btn in row
+            if isinstance(btn.callback_data, str)
+        ]
         assert any("Refresh" in label for label in labels)
         assert any("New" in label for label in labels)
         assert CB_SESSIONS_REFRESH in data
@@ -117,7 +127,12 @@ class TestBuildDashboard:
         mock_tm.list_windows = AsyncMock(return_value=[MagicMock(window_id="@0")])
 
         _text, keyboard = await _build_dashboard(100)
-        data = [btn.callback_data for row in keyboard.inline_keyboard for btn in row]
+        data = [
+            btn.callback_data
+            for row in keyboard.inline_keyboard
+            for btn in row
+            if isinstance(btn.callback_data, str)
+        ]
         assert any(d.startswith(CB_STATUS_ESC) for d in data)
 
     async def test_alive_session_has_screenshot_button(self, _patch_deps) -> None:
@@ -126,7 +141,12 @@ class TestBuildDashboard:
         mock_tm.list_windows = AsyncMock(return_value=[MagicMock(window_id="@0")])
 
         _text, keyboard = await _build_dashboard(100)
-        data = [btn.callback_data for row in keyboard.inline_keyboard for btn in row]
+        data = [
+            btn.callback_data
+            for row in keyboard.inline_keyboard
+            for btn in row
+            if isinstance(btn.callback_data, str)
+        ]
         assert any(d.startswith(CB_STATUS_SCREENSHOT) for d in data)
 
     async def test_alive_session_shows_provider(self, _patch_deps) -> None:
@@ -174,7 +194,12 @@ class TestBuildDashboard:
         mock_tm.list_windows = AsyncMock(return_value=[])
 
         _text, keyboard = await _build_dashboard(100)
-        data = [btn.callback_data for row in keyboard.inline_keyboard for btn in row]
+        data = [
+            btn.callback_data
+            for row in keyboard.inline_keyboard
+            for btn in row
+            if isinstance(btn.callback_data, str)
+        ]
         assert not any(d.startswith(CB_STATUS_ESC) for d in data)
         assert not any(d.startswith(CB_STATUS_SCREENSHOT) for d in data)
 
@@ -242,7 +267,12 @@ class TestKillButtons:
         mock_tm.list_windows = AsyncMock(return_value=[MagicMock(window_id="@0")])
 
         _text, keyboard = await _build_dashboard(100)
-        data = [btn.callback_data for row in keyboard.inline_keyboard for btn in row]
+        data = [
+            btn.callback_data
+            for row in keyboard.inline_keyboard
+            for btn in row
+            if isinstance(btn.callback_data, str)
+        ]
         assert any(d.startswith("sess:kill:") for d in data)
 
     async def test_dead_session_no_kill_button(self, _patch_deps) -> None:
@@ -252,10 +282,20 @@ class TestKillButtons:
         mock_tm.list_windows = AsyncMock(return_value=[])
 
         _text, keyboard = await _build_dashboard(100)
-        data = [btn.callback_data for row in keyboard.inline_keyboard for btn in row]
+        data = [
+            btn.callback_data
+            for row in keyboard.inline_keyboard
+            for btn in row
+            if isinstance(btn.callback_data, str)
+        ]
         assert not any(d.startswith("sess:kill:") for d in data)
 
     async def test_empty_dashboard_no_kill_button(self, _patch_deps) -> None:
         _text, keyboard = await _build_dashboard(100)
-        data = [btn.callback_data for row in keyboard.inline_keyboard for btn in row]
+        data = [
+            btn.callback_data
+            for row in keyboard.inline_keyboard
+            for btn in row
+            if isinstance(btn.callback_data, str)
+        ]
         assert not any(d.startswith("sess:kill:") for d in data)

@@ -22,7 +22,7 @@ make test-all                         # All tests except e2e
 ccgram status                          # Show running state (no token needed)
 ccgram doctor                          # Validate setup and diagnose issues
 ccgram doctor --fix                    # Auto-fix issues (install hook, kill orphans)
-ccgram hook --install                  # Auto-install Claude Code hooks (7 event types)
+ccgram hook --install                  # Auto-install Claude Code hooks (all supported event types)
 ccgram hook --uninstall                # Remove hook from ~/.claude/settings.json
 ccgram hook --status                   # Check if hook is installed
 ccgram --version                       # Show version
@@ -39,7 +39,7 @@ ccgram --autoclose-dead 0              # Disable auto-close for dead sessions
 - **Topic-only** — no backward-compat for non-topic mode. No `active_sessions`, no `/list`, no General topic routing.
 - **No message truncation** at parse layer — splitting only at send layer (`split_message`, 4096 char limit).
 - **MarkdownV2 only** — use `safe_reply`/`safe_edit`/`safe_send` helpers (auto fallback to plain text). Internal queue/UI code calls bot API directly with its own fallback.
-- **Hook-based session tracking** — Claude Code hooks (SessionStart, Notification, Stop, SubagentStart, SubagentStop, TeammateIdle, TaskCompleted) write to `session_map.json` and `events.jsonl`; monitor polls both to detect session changes and deliver instant event notifications. Missing hooks are detected at startup with an actionable warning.
+- **Hook-based session tracking** — Claude Code hooks (SessionStart, Notification, Stop, StopFailure, SessionEnd, SubagentStart, SubagentStop, TeammateIdle, TaskCompleted) write to `session_map.json` and `events.jsonl`; monitor polls both to detect session changes and deliver instant event notifications. Missing hooks are detected at startup with an actionable warning.
 - **Message queue per user** — FIFO ordering, message merging (3800 char limit), tool_use/tool_result pairing.
 - **Rate limiting** — 1.1s minimum interval between messages per user via `rate_limit_send()`.
 
@@ -98,15 +98,15 @@ When creating a topic via the directory browser, users can choose the provider (
 
 ### Provider Capability Matrix
 
-| Capability       | Claude                       | Codex              | Gemini                      |
-| ---------------- | ---------------------------- | ------------------ | --------------------------- |
-| Hook events      | Yes (7 event types)          | No                 | No                          |
-| Resume           | Yes (`--resume`)             | Yes (`resume`)     | Yes (`--resume idx/latest`) |
-| Continue         | Yes                          | Yes                | Yes                         |
-| Transcript       | JSONL                        | JSONL              | JSON (whole-file read)      |
-| Incremental read | Yes                          | Yes                | No (whole-file JSON)        |
-| Commands         | Yes                          | Yes                | Yes                         |
-| Status detection | Hook events + pyte + spinner | Activity heuristic | Pane title + interactive UI |
+| Capability       | Claude                          | Codex              | Gemini                      |
+| ---------------- | ------------------------------- | ------------------ | --------------------------- |
+| Hook events      | Yes (all supported event types) | No                 | No                          |
+| Resume           | Yes (`--resume`)                | Yes (`resume`)     | Yes (`--resume idx/latest`) |
+| Continue         | Yes                             | Yes                | Yes                         |
+| Transcript       | JSONL                           | JSONL              | JSON (whole-file read)      |
+| Incremental read | Yes                             | Yes                | No (whole-file JSON)        |
+| Commands         | Yes                             | Yes                | Yes                         |
+| Status detection | Hook events + pyte + spinner    | Activity heuristic | Pane title + interactive UI |
 
 Capabilities gate UX per-window: recovery keyboard only shows Continue/Resume buttons when supported; `ccgram doctor` checks all hook event types for Claude. Codex and Gemini have no hooks — session tracking for these providers relies on auto-detection from running processes.
 
@@ -149,13 +149,15 @@ emdash kills session ──────────────► Dead window d
 
 ## Hook Configuration
 
-Auto-install: `ccgram hook --install` — installs hooks for 7 Claude Code event types:
+Auto-install: `ccgram hook --install` — installs hooks for these Claude Code event types:
 
 | Event         | Purpose                               | Async |
 | ------------- | ------------------------------------- | ----- |
 | SessionStart  | Session tracking (`session_map.json`) | No    |
 | Notification  | Instant interactive UI detection      | No    |
 | Stop          | Instant done/idle detection           | No    |
+| StopFailure   | Alert on API error terminations       | Yes   |
+| SessionEnd    | Session lifecycle cleanup             | Yes   |
 | SubagentStart | Track subagent activity in status     | Yes   |
 | SubagentStop  | Clear subagent status                 | Yes   |
 | TeammateIdle  | Notify when a teammate goes idle      | Yes   |

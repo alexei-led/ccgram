@@ -67,7 +67,7 @@ class TestCommandCatalog:
         )
         catalog = CommandCatalog(ttl_seconds=60.0)
 
-        discovered = catalog.get_provider_commands(provider, str(tmp_path))
+        discovered = catalog.get_provider_commands(provider, str(tmp_path))  # type: ignore[arg-type]
         names = {cmd.name for cmd in discovered}
         assert "/status" in names
         assert "spec:work" in names
@@ -86,7 +86,7 @@ class TestCommandCatalog:
         )
         catalog = CommandCatalog(ttl_seconds=60.0)
 
-        discovered = catalog.get_provider_commands(provider, str(tmp_path))
+        discovered = catalog.get_provider_commands(provider, str(tmp_path))  # type: ignore[arg-type]
         names = {cmd.name for cmd in discovered}
         assert "/help" in names
         assert "spec:work" not in names
@@ -103,8 +103,8 @@ class TestCommandCatalog:
         )
         catalog = CommandCatalog(ttl_seconds=60.0)
 
-        catalog.get_provider_commands(provider, str(tmp_path))
-        catalog.get_provider_commands(provider, str(tmp_path))
+        catalog.get_provider_commands(provider, str(tmp_path))  # type: ignore[arg-type]
+        catalog.get_provider_commands(provider, str(tmp_path))  # type: ignore[arg-type]
         assert provider.calls == 1
 
     def test_invalidate_provider_clears_cached_entries(self, tmp_path: Path) -> None:
@@ -119,7 +119,7 @@ class TestCommandCatalog:
         )
         catalog = CommandCatalog(ttl_seconds=60.0)
 
-        catalog.get_provider_commands(provider, str(tmp_path))
+        catalog.get_provider_commands(provider, str(tmp_path))  # type: ignore[arg-type]
         catalog.invalidate("codex")
-        catalog.get_provider_commands(provider, str(tmp_path))
+        catalog.get_provider_commands(provider, str(tmp_path))  # type: ignore[arg-type]
         assert provider.calls == 2

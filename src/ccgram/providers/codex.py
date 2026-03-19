@@ -33,14 +33,16 @@ from ccgram.terminal_parser import extract_interactive_content
 # Codex CLI known slash commands
 # NOTE: /new excluded — collides with bot-native /new (create session)
 _CODEX_BUILTINS: dict[str, str] = {
-    "/model": "Switch model",
-    "/mode": "Switch approval mode (suggest/auto-edit/full-auto)",
-    "/status": "Show session config and token usage",
-    "/permissions": "Adjust approval requirements",
-    "/diff": "Show git changes",
+    "/clear": "Clear conversation history",
     "/compact": "Summarize context to save tokens",
+    "/init": "Initialize project configuration",
     "/mcp": "List MCP tools",
     "/mention": "Attach files to conversation",
+    "/mode": "Switch approval mode (suggest/auto-edit/full-auto)",
+    "/model": "Switch model",
+    "/permissions": "Adjust approval requirements",
+    "/plan": "Enter plan mode",
+    "/status": "Show session config and token usage",
 }
 
 _MAX_TOOL_SUMMARY = 200

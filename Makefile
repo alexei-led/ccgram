@@ -7,7 +7,7 @@ lint:
 	uv run ruff check src/ tests/
 
 typecheck:
-	uv run pyright src/ccgram/
+	uv run pyright src/ccgram/ tests/
 
 deptry:
 	uv run deptry src

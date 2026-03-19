@@ -52,6 +52,8 @@ _HOOK_EVENT_TYPES: tuple[str, ...] = (
     "SessionStart",
     "Notification",
     "Stop",
+    "StopFailure",
+    "SessionEnd",
     "SubagentStart",
     "SubagentStop",
     "TeammateIdle",
@@ -61,6 +63,8 @@ _HOOK_EVENT_TYPES: tuple[str, ...] = (
 # Events that should not block the agent (async: true)
 _ASYNC_EVENTS: frozenset[str] = frozenset(
     {
+        "StopFailure",
+        "SessionEnd",
         "SubagentStart",
         "SubagentStop",
         "TeammateIdle",
@@ -384,6 +388,21 @@ def _extract_stop_data(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _extract_stop_failure_data(payload: dict[str, Any]) -> dict[str, Any]:
+    """Extract data from a StopFailure hook payload."""
+    return {
+        "error": payload.get("error", ""),
+        "error_details": payload.get("error_details", ""),
+    }
+
+
+def _extract_session_end_data(payload: dict[str, Any]) -> dict[str, Any]:
+    """Extract data from a SessionEnd hook payload."""
+    return {
+        "reason": payload.get("reason", ""),
+    }
+
+
 def _extract_subagent_data(payload: dict[str, Any]) -> dict[str, Any]:
     """Extract data from a SubagentStart/SubagentStop hook payload."""
     return {
@@ -416,6 +435,8 @@ def _extract_task_completed_data(payload: dict[str, Any]) -> dict[str, Any]:
 _EVENT_DATA_EXTRACTORS: dict[str, Any] = {
     "Notification": _extract_notification_data,
     "Stop": _extract_stop_data,
+    "StopFailure": _extract_stop_failure_data,
+    "SessionEnd": _extract_session_end_data,
     "SubagentStart": _extract_subagent_data,
     "SubagentStop": _extract_subagent_data,
     "TeammateIdle": _extract_teammate_idle_data,

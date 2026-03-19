@@ -5,7 +5,7 @@ Each Telegram topic maps 1:1 to a tmux window (Claude session).
 
 Core responsibilities:
   - Command handlers: /new (+ /start alias), /history, /sessions, /resume,
-    /screenshot, /panes, /restore, plus forwarding unknown /commands to Claude Code via tmux.
+    /screenshot, /panes, /toolbar, /restore, plus forwarding unknown /commands to Claude Code via tmux.
   - Callback query handler: thin dispatcher routing to dedicated handler modules.
   - Topic-based routing: each named topic binds to one tmux window.
     Unbound topics trigger the directory browser to create a new session.
@@ -99,9 +99,12 @@ from .handlers.callback_data import (
     CB_STATUS_ESC,
     CB_STATUS_NOTIFY,
     CB_STATUS_RECALL,
+    CB_STATUS_REMOTE,
     CB_STATUS_SCREENSHOT,
     CB_SYNC_DISMISS,
     CB_SYNC_FIX,
+    CB_TOOLBAR_CTRLC,
+    CB_TOOLBAR_DISMISS,
     CB_VOICE,
     CB_WIN_BIND,
     CB_WIN_CANCEL,
@@ -657,6 +660,8 @@ async def forward_command_handler(
     provider_map, current_supported = _get_provider_command_metadata(provider)
     resolved_name = provider_map.get(tg_cmd, tg_cmd)
     cc_name = resolved_name.lstrip("/")
+    if not args and cc_name in ("remote-control", "rc"):
+        args = display  # RC needs the window name as its session identifier
     cc_slash = f"/{cc_name} {args}".rstrip() if args else f"/{cc_name}"
     command_token = _normalize_slash_token(cc_slash)
 
@@ -849,13 +854,11 @@ async def _maybe_send_command_failure_message(
         pane_after = await tmux_manager.capture_pane(window_id)
         pane_delta = _extract_pane_delta(pane_before, pane_after)
         error_line = _extract_probe_error_line(pane_delta)
-    if not error_line:
-        return
-
-    await safe_reply(
-        message,
-        f"\u274c [{display}] `{cc_slash}` failed\n> {error_line}",
-    )
+    if error_line:
+        await safe_reply(
+            message,
+            f"\u274c [{display}] `{cc_slash}` failed\n> {error_line}",
+        )
 
 
 def _spawn_command_failure_probe(
@@ -1104,6 +1107,37 @@ async def recall_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) ->
     )
 
 
+async def toolbar_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show persistent action toolbar with inline keyboard buttons."""
+    user = update.effective_user
+    if not user or not is_user_allowed(user.id):
+        return
+    if not update.message:
+        return
+
+    thread_id = _get_thread_id(update)
+    if thread_id is None:
+        await safe_reply(update.message, "\u274c Use this command inside a topic.")
+        return
+
+    window_id = session_manager.get_window_for_thread(user.id, thread_id)
+    if not window_id:
+        await safe_reply(
+            update.message, "\u274c This topic is not bound to any session."
+        )
+        return
+
+    from .handlers.screenshot_callbacks import build_toolbar_keyboard
+
+    keyboard = build_toolbar_keyboard(window_id)
+    display = session_manager.get_display_name(window_id)
+    await safe_reply(
+        update.message,
+        f"\U0001f39b `{display}` toolbar",
+        reply_markup=keyboard,
+    )
+
+
 async def inline_query_handler(
     update: Update, _context: ContextTypes.DEFAULT_TYPE
 ) -> None:
@@ -1188,6 +1222,9 @@ _CB_SCREENSHOT = (
     CB_STATUS_SCREENSHOT,
     CB_KEYS_PREFIX,
     CB_PANE_SCREENSHOT,
+    CB_STATUS_REMOTE,
+    CB_TOOLBAR_CTRLC,
+    CB_TOOLBAR_DISMISS,
 )
 _CB_RECOVERY = (
     CB_RECOVERY_BACK,
@@ -1747,6 +1784,9 @@ def create_bot() -> Application:
         CommandHandler("panes", panes_command, filters=_group_filter)
     )
     application.add_handler(CommandHandler("sync", sync_command, filters=_group_filter))
+    application.add_handler(
+        CommandHandler("toolbar", toolbar_command, filters=_group_filter)
+    )
     application.add_handler(
         CommandHandler("restore", restore_command, filters=_group_filter)
     )
