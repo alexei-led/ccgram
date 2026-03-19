@@ -19,14 +19,22 @@ from ccgram.handlers.status_polling import (
     _get_window_state,
     _handle_dead_window_notification,
     _MAX_PROBE_FAILURES,
+    _pane_alert_hashes,
+    _parse_with_pyte,
     _probe_topic_existence,
     _prune_stale_state,
+    _scan_window_panes,
     _start_autoclose_timer,
     _topic_poll_state,
     _window_poll_state,
     clear_autoclose_timer,
+    clear_pane_alerts,
+    clear_screen_buffer,
+    has_pane_alert,
     is_shell_prompt,
+    reset_screen_buffer_state,
 )
+from ccgram.tmux_manager import PaneInfo
 
 
 # Helpers for readable assertions on dataclass-based state
@@ -316,48 +324,41 @@ class TestStartupTimeout:
         )
 
 
+@pytest.fixture()
+def _reset_pyte():
+    reset_screen_buffer_state()
+    yield
+    reset_screen_buffer_state()
+
+
+_SEP = "─" * 30
+
+
+@pytest.mark.usefixtures("_reset_pyte")
 class TestParseWithPyte:
     """Tests for pyte-based screen parsing integration."""
 
-    def setup_method(self) -> None:
-        from ccgram.handlers.status_polling import reset_screen_buffer_state
-
-        reset_screen_buffer_state()
-
-    def teardown_method(self) -> None:
-        from ccgram.handlers.status_polling import reset_screen_buffer_state
-
-        reset_screen_buffer_state()
-
-    def test_detects_spinner_status(self) -> None:
-        from ccgram.handlers.status_polling import _parse_with_pyte
-
-        sep = "─" * 30
-        pane_text = f"Some output\n✻ Reading file src/main.py\n{sep}\n"
+    @pytest.mark.parametrize(
+        ("spinner", "text", "expected_raw"),
+        [
+            ("✻", "Reading file src/main.py", "Reading file src/main.py"),
+            ("⠋", "Thinking about things", "Thinking about things"),
+        ],
+        ids=["unicode-spinner", "braille-spinner"],
+    )
+    def test_detects_spinner(self, spinner: str, text: str, expected_raw: str) -> None:
+        pane_text = f"Output\n{spinner} {text}\n{_SEP}\n"
         result = _parse_with_pyte("@0", pane_text)
         assert result is not None
-        assert result.raw_text == "Reading file src/main.py"
-        assert result.display_label == "\U0001f4d6 reading\u2026"
-        assert result.is_interactive is False
-
-    def test_detects_braille_spinner(self) -> None:
-        from ccgram.handlers.status_polling import _parse_with_pyte
-
-        sep = "─" * 30
-        pane_text = f"Output\n⠋ Thinking about things\n{sep}\n"
-        result = _parse_with_pyte("@0", pane_text)
-        assert result is not None
-        assert result.raw_text == "Thinking about things"
+        assert result.raw_text == expected_raw
         assert result.is_interactive is False
 
     def test_detects_interactive_ui(self) -> None:
-        from ccgram.handlers.status_polling import _parse_with_pyte
-
         pane_text = (
             "  Would you like to proceed?\n"
-            "  ─────────────────────────────────\n"
+            f"  {_SEP}\n"
             "  Yes     No\n"
-            "  ─────────────────────────────────\n"
+            f"  {_SEP}\n"
             "  ctrl-g to edit in vim\n"
         )
         result = _parse_with_pyte("@0", pane_text)
@@ -366,32 +367,19 @@ class TestParseWithPyte:
         assert result.ui_type == "ExitPlanMode"
 
     def test_returns_none_for_plain_text(self) -> None:
-        from ccgram.handlers.status_polling import _parse_with_pyte
-
-        pane_text = "$ echo hello\nhello\n$\n"
-        result = _parse_with_pyte("@0", pane_text)
+        result = _parse_with_pyte("@0", "$ echo hello\nhello\n$\n")
         assert result is None
 
     def test_screen_buffer_cached_per_window(self) -> None:
-        from ccgram.handlers.status_polling import _parse_with_pyte
-
-        sep = "─" * 30
-        pane_text = f"Output\n✻ Working\n{sep}\n"
+        pane_text = f"Output\n✻ Working\n{_SEP}\n"
         _parse_with_pyte("@0", pane_text)
-        assert _window_poll_state.get("@0") is not None
-        assert _window_poll_state["@0"].screen_buffer is not None
-
         _parse_with_pyte("@1", pane_text)
-        assert _window_poll_state.get("@1") is not None
-        assert _window_poll_state["@1"].screen_buffer is not None
         assert _window_poll_state["@0"].screen_buffer is not None
+        assert _window_poll_state["@1"].screen_buffer is not None
 
     def test_interactive_takes_precedence_over_status(self) -> None:
-        from ccgram.handlers.status_polling import _parse_with_pyte
-
-        sep = "─" * 30
         pane_text = (
-            f"✻ Working on task\n{sep}\n"
+            f"✻ Working on task\n{_SEP}\n"
             "  Do you want to proceed?\n"
             "  Allow write to /tmp/foo\n"
             "  Esc to cancel\n"
@@ -402,46 +390,227 @@ class TestParseWithPyte:
         assert result.ui_type == "PermissionPrompt"
 
 
+@pytest.mark.usefixtures("_reset_pyte")
+class TestPyteContentHashCaching:
+    """Tests for content-hash optimization in _parse_with_pyte."""
+
+    def test_cache_hit_returns_same_result(self) -> None:
+        pane_text = f"Output\n✻ Working on task\n{_SEP}\n"
+        result1 = _parse_with_pyte("@0", pane_text)
+        result2 = _parse_with_pyte("@0", pane_text)
+        assert result1 is not None
+        assert result2 is result1
+
+    def test_cache_miss_on_changed_content(self) -> None:
+        result1 = _parse_with_pyte("@0", f"Output\n✻ Reading file\n{_SEP}\n")
+        result2 = _parse_with_pyte("@0", f"Output\n✻ Writing file\n{_SEP}\n")
+        assert result1 is not None
+        assert result2 is not None
+        assert result1 is not result2
+        assert result1.raw_text != result2.raw_text
+
+    def test_cache_miss_on_dimension_change(self) -> None:
+        pane_text = f"Output\n✻ Working\n{_SEP}\n"
+        result1 = _parse_with_pyte("@0", pane_text, columns=80, rows=24)
+        result2 = _parse_with_pyte("@0", pane_text, columns=120, rows=40)
+        assert result1 is not None
+        assert result2 is not None
+        # Same text, different dimensions — must re-parse (not cache hit)
+        assert result2 is not result1
+
+    def test_cache_none_result(self) -> None:
+        pane_text = "$ echo hello\nhello\n$\n"
+        result1 = _parse_with_pyte("@0", pane_text)
+        result2 = _parse_with_pyte("@0", pane_text)
+        assert result1 is None
+        assert result2 is None
+        assert _get_window_state("@0").last_pane_hash != 0
+
+    def test_interactive_ui_not_cached(self) -> None:
+        pane_text = (
+            "  Would you like to proceed?\n"
+            "  Yes / No\n"
+            f"  {_SEP}\n"
+            "  ctrl-g to edit in vim\n"
+        )
+        result1 = _parse_with_pyte("@0", pane_text)
+        result2 = _parse_with_pyte("@0", pane_text)
+        assert result1 is not None
+        assert result1.is_interactive is True
+        assert result2 is not result1
+
+    def test_clear_screen_buffer_resets_cache(self) -> None:
+        _parse_with_pyte("@0", f"Output\n✻ Working\n{_SEP}\n")
+        ws = _get_window_state("@0")
+        assert ws.last_pane_hash != 0
+
+        clear_screen_buffer("@0")
+        assert ws.last_pane_hash == 0
+        assert ws.last_pyte_result is None
+
+
+@pytest.mark.usefixtures("_reset_pyte")
+class TestPyteDimensionPassthrough:
+    """Tests that _parse_with_pyte uses actual pane dimensions."""
+
+    def test_custom_dimensions_used(self) -> None:
+        _parse_with_pyte("@0", f"Output\n✻ Working\n{_SEP}\n", columns=80, rows=24)
+        buf = _get_window_state("@0").screen_buffer
+        assert buf is not None
+        assert buf.columns == 80
+        assert buf.rows == 24
+
+    def test_zero_dimensions_fall_back_to_default(self) -> None:
+        _parse_with_pyte("@0", f"Output\n✻ Working\n{_SEP}\n", columns=0, rows=0)
+        buf = _get_window_state("@0").screen_buffer
+        assert buf is not None
+        assert buf.columns == 200
+        assert buf.rows == 50
+
+    def test_resize_reuses_buffer(self) -> None:
+        pane_text = f"Output\n✻ Working\n{_SEP}\n"
+        _parse_with_pyte("@0", pane_text, columns=80, rows=24)
+        buf1 = _get_window_state("@0").screen_buffer
+        assert buf1 is not None
+
+        _parse_with_pyte("@0", pane_text + " changed", columns=120, rows=40)
+        buf2 = _get_window_state("@0").screen_buffer
+        assert buf2 is buf1
+        assert buf2.columns == 120
+        assert buf2.rows == 40
+
+
+@pytest.mark.usefixtures("_reset_pyte")
+class TestAnsiCapturePyteParsing:
+    """Tests for ANSI capture -> pyte rendering -> clean fallback text."""
+
+    def test_ansi_spinner_detected(self) -> None:
+        pane_text = f"Some output\n\x1b[36m✻ Reading file src/main.py\x1b[0m\n{_SEP}\n"
+        result = _parse_with_pyte("@0", pane_text)
+        assert result is not None
+        assert result.raw_text == "Reading file src/main.py"
+        assert result.is_interactive is False
+
+    def test_ansi_interactive_ui_detected(self) -> None:
+        pane_text = (
+            "  \x1b[1mWould you like to proceed?\x1b[0m\n"
+            f"  {_SEP}\n"
+            "  Yes     No\n"
+            f"  {_SEP}\n"
+            "  ctrl-g to edit in vim\n"
+        )
+        result = _parse_with_pyte("@0", pane_text)
+        assert result is not None
+        assert result.is_interactive is True
+
+    def test_last_rendered_text_populated(self) -> None:
+        _parse_with_pyte("@0", "\x1b[32mHello\x1b[0m\nWorld\n")
+        ws = _get_window_state("@0")
+        assert ws.last_rendered_text is not None
+        assert "\x1b" not in ws.last_rendered_text
+        assert "Hello" in ws.last_rendered_text
+        assert "World" in ws.last_rendered_text
+
+    def test_last_rendered_text_cached_on_hash_hit(self) -> None:
+        pane_text = "$ echo hello\nhello\n"
+        _parse_with_pyte("@0", pane_text)
+        rendered_first = _get_window_state("@0").last_rendered_text
+        _parse_with_pyte("@0", pane_text)
+        assert _get_window_state("@0").last_rendered_text is rendered_first
+
+    def test_last_rendered_text_cleared_by_clear_screen_buffer(self) -> None:
+        _parse_with_pyte("@0", "Hello\nWorld\n")
+        ws = _get_window_state("@0")
+        assert ws.last_rendered_text is not None
+        clear_screen_buffer("@0")
+        assert ws.last_rendered_text is None
+
+    def test_empty_screen_renders_as_empty_string(self) -> None:
+        _parse_with_pyte("@0", "\n\n\n")
+        assert _get_window_state("@0").last_rendered_text == ""
+
+
+def _mock_update_status_patches(*, pyte_result, provider):
+    """Context manager stack for update_status_message tests."""
+    from contextlib import ExitStack
+
+    stack = ExitStack()
+    mocks: dict = {}
+    mocks["tm"] = stack.enter_context(
+        patch("ccgram.handlers.status_polling.tmux_manager")
+    )
+    mocks["sm"] = stack.enter_context(
+        patch("ccgram.handlers.status_polling.session_manager")
+    )
+    stack.enter_context(patch("ccgram.handlers.status_polling.update_topic_emoji"))
+    mocks["enqueue"] = stack.enter_context(
+        patch("ccgram.handlers.status_polling.enqueue_status_update")
+    )
+    stack.enter_context(
+        patch(
+            "ccgram.handlers.status_polling.get_interactive_window",
+            return_value=None,
+        )
+    )
+    mocks["provider"] = stack.enter_context(
+        patch(
+            "ccgram.handlers.status_polling.get_provider_for_window",
+            return_value=provider,
+        )
+    )
+    stack.enter_context(
+        patch(
+            "ccgram.handlers.status_polling._parse_with_pyte",
+            return_value=pyte_result,
+        )
+    )
+
+    mock_window = MagicMock()
+    mock_window.window_id = "@0"
+    mock_window.window_name = "project"
+    mock_window.pane_current_command = "node"
+    mocks["tm"].find_window_by_id = AsyncMock(return_value=mock_window)
+    mocks["tm"].capture_pane = AsyncMock(return_value="\x1b[1msome ansi output\x1b[0m")
+    mocks["tm"].get_pane_title = AsyncMock(return_value="")
+    mocks["sm"].resolve_chat_id.return_value = -100
+    mocks["sm"].get_display_name.return_value = "project"
+    mocks["sm"].get_notification_mode.return_value = "normal"
+
+    return stack, mocks
+
+
 class TestPyteFallbackInUpdateStatus:
     """Tests that update_status_message falls back to regex when pyte returns None."""
 
-    async def test_falls_back_to_provider_when_pyte_returns_none(self) -> None:
-        with (
-            patch("ccgram.handlers.status_polling.tmux_manager") as mock_tm,
-            patch("ccgram.handlers.status_polling.session_manager") as mock_sm,
-            patch("ccgram.handlers.status_polling.update_topic_emoji"),
-            patch("ccgram.handlers.status_polling.enqueue_status_update"),
-            patch(
-                "ccgram.handlers.status_polling.get_interactive_window",
-                return_value=None,
-            ),
-            patch(
-                "ccgram.handlers.status_polling.get_provider_for_window",
-                return_value=make_mock_provider(has_status=True),
-            ) as mock_get_provider,
-            patch(
-                "ccgram.handlers.status_polling._parse_with_pyte",
-                return_value=None,
-            ),
-        ):
+    async def test_empty_rendered_text_does_not_fall_back_to_raw_ansi(self) -> None:
+        stack, mocks = _mock_update_status_patches(
+            pyte_result=None, provider=make_mock_provider(has_status=False)
+        )
+        with stack:
             from ccgram.handlers.status_polling import update_status_message
 
-            mock_window = MagicMock()
-            mock_window.window_id = "@0"
-            mock_window.window_name = "project"
-            mock_window.pane_current_command = "node"
-            mock_tm.find_window_by_id = AsyncMock(return_value=mock_window)
-            mock_tm.capture_pane = AsyncMock(return_value="some output")
-            mock_tm.get_pane_title = AsyncMock(return_value="")
-            mock_sm.resolve_chat_id.return_value = -100
-            mock_sm.get_display_name.return_value = "project"
-            mock_sm.get_notification_mode.return_value = "normal"
+            _get_window_state("@0").last_rendered_text = ""
+            await update_status_message(AsyncMock(spec=Bot), 1, "@0", thread_id=42)
 
-            bot = AsyncMock(spec=Bot)
-            await update_status_message(bot, 1, "@0", thread_id=42)
+            call_args = mocks["provider"].return_value.parse_terminal_status.call_args
+            assert call_args[0][0] == ""
 
-            # Provider regex parsing was called as fallback
-            mock_get_provider.return_value.parse_terminal_status.assert_called_once()
+    async def test_falls_back_to_provider_with_rendered_text(self) -> None:
+        stack, mocks = _mock_update_status_patches(
+            pyte_result=None, provider=make_mock_provider(has_status=True)
+        )
+        with stack:
+            from ccgram.handlers.status_polling import update_status_message
+
+            _get_window_state("@0").last_rendered_text = "clean rendered text"
+            await update_status_message(AsyncMock(spec=Bot), 1, "@0", thread_id=42)
+
+            provider_mock = mocks["provider"].return_value
+            provider_mock.parse_terminal_status.assert_called_once()
+            assert (
+                provider_mock.parse_terminal_status.call_args[0][0]
+                == "clean rendered text"
+            )
 
     async def test_uses_pyte_result_when_available(self) -> None:
         from ccgram.providers.base import StatusUpdate
@@ -450,48 +619,18 @@ class TestPyteFallbackInUpdateStatus:
             raw_text="Reading file",
             display_label="\U0001f4d6 reading\u2026",
         )
-        with (
-            patch("ccgram.handlers.status_polling.tmux_manager") as mock_tm,
-            patch("ccgram.handlers.status_polling.session_manager") as mock_sm,
-            patch("ccgram.handlers.status_polling.update_topic_emoji"),
-            patch(
-                "ccgram.handlers.status_polling.enqueue_status_update"
-            ) as mock_enqueue,
-            patch(
-                "ccgram.handlers.status_polling.get_interactive_window",
-                return_value=None,
-            ),
-            patch(
-                "ccgram.handlers.status_polling.get_provider_for_window",
-                return_value=make_mock_provider(has_status=True),
-            ) as mock_get_provider,
-            patch(
-                "ccgram.handlers.status_polling._parse_with_pyte",
-                return_value=pyte_status,
-            ),
-        ):
+        stack, mocks = _mock_update_status_patches(
+            pyte_result=pyte_status, provider=make_mock_provider(has_status=True)
+        )
+        with stack:
             from ccgram.handlers.status_polling import update_status_message
 
-            mock_window = MagicMock()
-            mock_window.window_id = "@0"
-            mock_window.window_name = "project"
-            mock_window.pane_current_command = "node"
-            mock_tm.find_window_by_id = AsyncMock(return_value=mock_window)
-            mock_tm.capture_pane = AsyncMock(return_value="some output")
-            mock_tm.get_pane_title = AsyncMock(return_value="")
-            mock_sm.resolve_chat_id.return_value = -100
-            mock_sm.get_display_name.return_value = "project"
-            mock_sm.get_notification_mode.return_value = "normal"
+            await update_status_message(AsyncMock(spec=Bot), 1, "@0", thread_id=42)
 
-            bot = AsyncMock(spec=Bot)
-            await update_status_message(bot, 1, "@0", thread_id=42)
-
-            # Provider regex parsing was NOT called (pyte succeeded)
-            mock_get_provider.return_value.parse_terminal_status.assert_not_called()
-            # Status was enqueued using pyte result
-            mock_enqueue.assert_called_once()
-            call_args = mock_enqueue.call_args
-            assert call_args[0][3] == "\U0001f4d6 reading\u2026"
+            provider_mock = mocks["provider"].return_value
+            provider_mock.parse_terminal_status.assert_not_called()
+            mocks["enqueue"].assert_called_once()
+            assert mocks["enqueue"].call_args[0][3] == "\U0001f4d6 reading\u2026"
 
 
 class TestClearSeenStatus:
@@ -1314,3 +1453,339 @@ class TestDeadWindowNotification:
         mock_tm.kill_window.assert_called_once_with("@5")
         mock_cleanup.assert_called_once_with(1, 42, bot, window_id="@5")
         mock_sm.unbind_thread.assert_called_once_with(1, 42)
+
+
+# ── Pane alert helpers ─────────────────────────────────────────────────
+
+
+class TestPaneAlertHelpers:
+    def test_has_pane_alert_true_when_present(self) -> None:
+        _pane_alert_hashes["%1"] = ("prompt text", 100.0, "@0")
+        assert has_pane_alert("%1") is True
+
+    def test_has_pane_alert_false_when_absent(self) -> None:
+        assert has_pane_alert("%99") is False
+
+    def test_clear_pane_alerts_removes_for_window(self) -> None:
+        _pane_alert_hashes["%1"] = ("prompt A", 100.0, "@0")
+        _pane_alert_hashes["%2"] = ("prompt B", 100.0, "@0")
+        _pane_alert_hashes["%3"] = ("prompt C", 100.0, "@5")
+        clear_pane_alerts("@0")
+        assert "%1" not in _pane_alert_hashes
+        assert "%2" not in _pane_alert_hashes
+        assert "%3" in _pane_alert_hashes
+
+
+# ── Multi-pane scanning ────────────────────────────────────────────────
+
+
+def _make_pane(pane_id: str = "%1", *, active: bool = True, index: int = 0) -> PaneInfo:
+    return PaneInfo(
+        pane_id=pane_id,
+        index=index,
+        active=active,
+        command="claude",
+        path="/tmp",
+        width=80,
+        height=24,
+    )
+
+
+class TestScanWindowPanes:
+    async def test_skips_single_pane_window(self) -> None:
+        bot = AsyncMock(spec=Bot)
+        with (
+            patch("ccgram.handlers.status_polling.tmux_manager") as mock_tm,
+            patch(
+                "ccgram.handlers.status_polling.handle_interactive_ui",
+                new_callable=AsyncMock,
+            ) as mock_handle,
+        ):
+            mock_tm.list_panes = AsyncMock(return_value=[_make_pane()])
+            await _scan_window_panes(bot, 1, "@0", 42)
+        mock_handle.assert_not_called()
+
+    async def test_detects_interactive_prompt_in_non_active_pane(self) -> None:
+        from ccgram.providers.base import StatusUpdate
+
+        bot = AsyncMock(spec=Bot)
+        interactive = StatusUpdate(
+            raw_text="Allow?",
+            display_label="Allow?",
+            is_interactive=True,
+            ui_type="PermissionPrompt",
+        )
+        mock_provider = MagicMock()
+        mock_provider.parse_terminal_status.return_value = interactive
+        with (
+            patch("ccgram.handlers.status_polling.tmux_manager") as mock_tm,
+            patch(
+                "ccgram.handlers.status_polling.get_provider_for_window",
+                return_value=mock_provider,
+            ),
+            patch(
+                "ccgram.handlers.status_polling.handle_interactive_ui",
+                new_callable=AsyncMock,
+            ) as mock_handle,
+        ):
+            mock_tm.list_panes = AsyncMock(
+                return_value=[_make_pane(), _make_pane("%2", active=False, index=1)]
+            )
+            mock_tm.capture_pane_by_id = AsyncMock(return_value="Allow?\nEsc\n")
+            await _scan_window_panes(bot, 1, "@0", 42)
+        mock_handle.assert_called_once_with(bot, 1, "@0", 42, pane_id="%2")
+
+    async def test_skips_active_pane(self) -> None:
+        bot = AsyncMock(spec=Bot)
+        mock_provider = MagicMock()
+        mock_provider.parse_terminal_status.return_value = None
+        with (
+            patch("ccgram.handlers.status_polling.tmux_manager") as mock_tm,
+            patch(
+                "ccgram.handlers.status_polling.get_provider_for_window",
+                return_value=mock_provider,
+            ),
+            patch(
+                "ccgram.handlers.status_polling.handle_interactive_ui",
+                new_callable=AsyncMock,
+            ) as mock_handle,
+        ):
+            mock_tm.list_panes = AsyncMock(
+                return_value=[_make_pane(), _make_pane("%2", active=False, index=1)]
+            )
+            mock_tm.capture_pane_by_id = AsyncMock(return_value="some text")
+            await _scan_window_panes(bot, 1, "@0", 42)
+        mock_handle.assert_not_called()
+        mock_tm.capture_pane_by_id.assert_called_once_with("%2", window_id="@0")
+
+    async def test_deduplicates_same_prompt(self) -> None:
+        from ccgram.providers.base import StatusUpdate
+
+        bot = AsyncMock(spec=Bot)
+        interactive = StatusUpdate(
+            raw_text="Allow write?",
+            display_label="Allow write?",
+            is_interactive=True,
+            ui_type="PermissionPrompt",
+        )
+        mock_provider = MagicMock()
+        mock_provider.parse_terminal_status.return_value = interactive
+        with (
+            patch("ccgram.handlers.status_polling.tmux_manager") as mock_tm,
+            patch(
+                "ccgram.handlers.status_polling.get_provider_for_window",
+                return_value=mock_provider,
+            ),
+            patch(
+                "ccgram.handlers.status_polling.handle_interactive_ui",
+                new_callable=AsyncMock,
+            ) as mock_handle,
+        ):
+            mock_tm.list_panes = AsyncMock(
+                return_value=[_make_pane(), _make_pane("%2", active=False, index=1)]
+            )
+            mock_tm.capture_pane_by_id = AsyncMock(return_value="Allow write?\nEsc\n")
+            await _scan_window_panes(bot, 1, "@0", 42)
+            await _scan_window_panes(bot, 1, "@0", 42)
+        mock_handle.assert_called_once()
+
+    async def test_clears_stale_alert_when_pane_disappears(self) -> None:
+        _pane_alert_hashes["%2"] = ("old prompt", 100.0, "@0")
+        bot = AsyncMock(spec=Bot)
+        with patch("ccgram.handlers.status_polling.tmux_manager") as mock_tm:
+            mock_tm.list_panes = AsyncMock(return_value=[_make_pane()])
+            await _scan_window_panes(bot, 1, "@0", 42)
+        assert "%2" not in _pane_alert_hashes
+
+    async def test_clears_alert_when_interactive_ui_gone(self) -> None:
+        _pane_alert_hashes["%2"] = ("old prompt", 100.0, "@0")
+        bot = AsyncMock(spec=Bot)
+        mock_provider = MagicMock()
+        mock_provider.parse_terminal_status.return_value = None
+        with (
+            patch("ccgram.handlers.status_polling.tmux_manager") as mock_tm,
+            patch(
+                "ccgram.handlers.status_polling.get_provider_for_window",
+                return_value=mock_provider,
+            ),
+            patch(
+                "ccgram.handlers.status_polling.handle_interactive_ui",
+                new_callable=AsyncMock,
+            ) as mock_handle,
+        ):
+            mock_tm.list_panes = AsyncMock(
+                return_value=[_make_pane(), _make_pane("%2", active=False, index=1)]
+            )
+            mock_tm.capture_pane_by_id = AsyncMock(return_value="normal output")
+            await _scan_window_panes(bot, 1, "@0", 42)
+        assert "%2" not in _pane_alert_hashes
+        mock_handle.assert_not_called()
+
+    async def test_cached_pane_count_skips_subprocess(self) -> None:
+        bot = AsyncMock(spec=Bot)
+        with patch("ccgram.handlers.status_polling.tmux_manager") as mock_tm:
+            mock_tm.list_panes = AsyncMock(return_value=[_make_pane()])
+            await _scan_window_panes(bot, 1, "@0", 42)
+            await _scan_window_panes(bot, 1, "@0", 42)
+        mock_tm.list_panes.assert_called_once()
+
+
+# ── update_status_message edge cases ───────────────────────────────────
+
+
+@pytest.mark.usefixtures("_reset_pyte")
+class TestUpdateStatusMessageEdgeCases:
+    async def test_window_gone_enqueues_clear(self) -> None:
+        from ccgram.handlers.status_polling import update_status_message
+
+        bot = AsyncMock(spec=Bot)
+        with (
+            patch("ccgram.handlers.status_polling.tmux_manager") as mock_tm,
+            patch(
+                "ccgram.handlers.status_polling.enqueue_status_update",
+                new_callable=AsyncMock,
+            ) as mock_enqueue,
+        ):
+            mock_tm.find_window_by_id = AsyncMock(return_value=None)
+            await update_status_message(bot, 1, "@0", thread_id=42)
+        mock_enqueue.assert_called_once_with(bot, 1, "@0", None, thread_id=42)
+
+    async def test_empty_capture_keeps_existing_status(self) -> None:
+        from ccgram.handlers.status_polling import update_status_message
+
+        bot = AsyncMock(spec=Bot)
+        mock_window = MagicMock()
+        mock_window.window_id = "@0"
+        mock_window.pane_width = 80
+        mock_window.pane_height = 24
+        with (
+            patch("ccgram.handlers.status_polling.tmux_manager") as mock_tm,
+            patch(
+                "ccgram.handlers.status_polling.enqueue_status_update",
+                new_callable=AsyncMock,
+            ) as mock_enqueue,
+        ):
+            mock_tm.find_window_by_id = AsyncMock(return_value=mock_window)
+            mock_tm.capture_pane = AsyncMock(return_value=None)
+            await update_status_message(bot, 1, "@0", thread_id=42)
+        mock_enqueue.assert_not_called()
+
+    async def test_vim_insert_detected_from_rendered_text(self) -> None:
+        from ccgram.handlers.status_polling import update_status_message
+        from ccgram.providers.base import StatusUpdate
+
+        _get_window_state("@0").last_rendered_text = "some code\n-- INSERT --\n"
+        pyte_status = StatusUpdate(raw_text="Working", display_label="...working")
+        mock_window = MagicMock()
+        mock_window.window_id = "@0"
+        mock_window.pane_width = 80
+        mock_window.pane_height = 24
+        mock_window.pane_current_command = "node"
+        bot = AsyncMock(spec=Bot)
+        with (
+            patch("ccgram.handlers.status_polling.tmux_manager") as mock_tm,
+            patch("ccgram.handlers.status_polling.session_manager") as mock_sm,
+            patch("ccgram.handlers.status_polling.update_topic_emoji"),
+            patch("ccgram.handlers.status_polling.enqueue_status_update"),
+            patch(
+                "ccgram.handlers.status_polling.get_interactive_window",
+                return_value=None,
+            ),
+            patch(
+                "ccgram.handlers.status_polling._parse_with_pyte",
+                return_value=pyte_status,
+            ),
+            patch("ccgram.tmux_manager.notify_vim_insert_seen") as mock_vim,
+            patch("ccgram.tmux_manager._has_insert_indicator", return_value=True),
+            patch("ccgram.handlers.status_polling._send_typing_throttled"),
+            patch("ccgram.handlers.hook_events.get_subagent_count", return_value=0),
+        ):
+            mock_tm.find_window_by_id = AsyncMock(return_value=mock_window)
+            mock_tm.capture_pane = AsyncMock(return_value="\x1b[1mansi\x1b[0m")
+            mock_sm.resolve_chat_id.return_value = -100
+            mock_sm.get_display_name.return_value = "project"
+            mock_sm.get_notification_mode.return_value = "normal"
+            await update_status_message(bot, 1, "@0", thread_id=42)
+        mock_vim.assert_called_once_with("@0")
+
+    async def test_interactive_window_clears_when_ui_disappears(self) -> None:
+        from ccgram.handlers.status_polling import update_status_message
+        from ccgram.providers.base import StatusUpdate
+
+        non_interactive = StatusUpdate(raw_text="Working", display_label="...working")
+        mock_window = MagicMock()
+        mock_window.window_id = "@0"
+        mock_window.pane_width = 80
+        mock_window.pane_height = 24
+        mock_window.pane_current_command = "node"
+        bot = AsyncMock(spec=Bot)
+        with (
+            patch("ccgram.handlers.status_polling.tmux_manager") as mock_tm,
+            patch("ccgram.handlers.status_polling.session_manager") as mock_sm,
+            patch("ccgram.handlers.status_polling.update_topic_emoji"),
+            patch("ccgram.handlers.status_polling.enqueue_status_update"),
+            patch(
+                "ccgram.handlers.status_polling.get_interactive_window",
+                return_value="@0",
+            ),
+            patch(
+                "ccgram.handlers.status_polling._parse_with_pyte",
+                return_value=non_interactive,
+            ),
+            patch(
+                "ccgram.handlers.status_polling.clear_interactive_msg",
+                new_callable=AsyncMock,
+            ) as mock_clear,
+            patch("ccgram.tmux_manager._has_insert_indicator", return_value=False),
+            patch("ccgram.tmux_manager.notify_vim_insert_seen"),
+            patch("ccgram.handlers.status_polling._send_typing_throttled"),
+            patch("ccgram.handlers.hook_events.get_subagent_count", return_value=0),
+        ):
+            mock_tm.find_window_by_id = AsyncMock(return_value=mock_window)
+            mock_tm.capture_pane = AsyncMock(return_value="some output")
+            mock_sm.resolve_chat_id.return_value = -100
+            mock_sm.get_display_name.return_value = "project"
+            mock_sm.get_notification_mode.return_value = "normal"
+            await update_status_message(bot, 1, "@0", thread_id=42)
+        mock_clear.assert_called_once_with(1, bot, 42)
+
+    async def test_new_interactive_ui_enters_interactive_mode(self) -> None:
+        from ccgram.handlers.status_polling import update_status_message
+        from ccgram.providers.base import StatusUpdate
+
+        interactive_status = StatusUpdate(
+            raw_text="Allow?",
+            display_label="Allow?",
+            is_interactive=True,
+            ui_type="PermissionPrompt",
+        )
+        mock_window = MagicMock()
+        mock_window.window_id = "@0"
+        mock_window.pane_width = 80
+        mock_window.pane_height = 24
+        mock_window.pane_current_command = "node"
+        bot = AsyncMock(spec=Bot)
+        with (
+            patch("ccgram.handlers.status_polling.tmux_manager") as mock_tm,
+            patch("ccgram.handlers.status_polling.session_manager"),
+            patch("ccgram.handlers.status_polling.update_topic_emoji"),
+            patch("ccgram.handlers.status_polling.enqueue_status_update"),
+            patch(
+                "ccgram.handlers.status_polling.get_interactive_window",
+                return_value=None,
+            ),
+            patch(
+                "ccgram.handlers.status_polling._parse_with_pyte",
+                return_value=interactive_status,
+            ),
+            patch(
+                "ccgram.handlers.status_polling.handle_interactive_ui",
+                new_callable=AsyncMock,
+            ) as mock_handle,
+            patch("ccgram.tmux_manager._has_insert_indicator", return_value=False),
+            patch("ccgram.tmux_manager.notify_vim_insert_seen"),
+        ):
+            mock_tm.find_window_by_id = AsyncMock(return_value=mock_window)
+            mock_tm.capture_pane = AsyncMock(return_value="Allow?\nEsc\n")
+            await update_status_message(bot, 1, "@0", thread_id=42)
+        mock_handle.assert_called_once_with(bot, 1, "@0", 42)

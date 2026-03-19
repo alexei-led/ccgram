@@ -40,8 +40,22 @@ class ScreenBuffer:
         return [line.rstrip() for line in self._screen.display]
 
     @property
+    def rendered_text(self) -> str:
+        """Full rendered text with trailing blank lines trimmed."""
+        lines = self.display
+        last = len(lines) - 1
+        while last >= 0 and not lines[last].strip():
+            last -= 1
+        return "\n".join(lines[: last + 1]) if last >= 0 else ""
+
+    @property
     def cursor_row(self) -> int:
         return self._screen.cursor.y
+
+    def resize(self, columns: int, rows: int) -> None:
+        """Resize the screen and clear content."""
+        self._screen.resize(rows, columns)
+        self._screen.reset()
 
     def reset(self) -> None:
         """Clear all screen state for reuse."""

@@ -54,6 +54,27 @@ class TestFeedAndDisplay:
         assert buf.display[0] == "text"
 
 
+class TestRenderedText:
+    def test_trims_trailing_blank_lines(self):
+        buf = ScreenBuffer(columns=40, rows=5)
+        buf.feed("Hello\r\nWorld")
+        assert buf.rendered_text == "Hello\nWorld"
+
+    def test_empty_screen(self):
+        buf = ScreenBuffer(columns=40, rows=5)
+        assert buf.rendered_text == ""
+
+    def test_strips_ansi(self):
+        buf = ScreenBuffer(columns=40, rows=5)
+        buf.feed("\x1b[31mred\x1b[0m\r\n\x1b[1mbold\x1b[0m")
+        assert buf.rendered_text == "red\nbold"
+
+    def test_preserves_internal_blank_lines(self):
+        buf = ScreenBuffer(columns=40, rows=5)
+        buf.feed("first\r\n\r\nthird")
+        assert buf.rendered_text == "first\n\nthird"
+
+
 class TestCursorPosition:
     def test_cursor_after_text(self):
         buf = ScreenBuffer(columns=40, rows=5)
@@ -78,6 +99,27 @@ class TestReset:
         buf.feed("hello\r\nworld")
         buf.reset()
         assert buf.cursor_row == 0
+
+
+class TestResize:
+    def test_resize_changes_dimensions(self):
+        buf = ScreenBuffer(columns=80, rows=24)
+        buf.resize(120, 40)
+        assert buf.columns == 120
+        assert buf.rows == 40
+
+    def test_resize_clears_content(self):
+        buf = ScreenBuffer(columns=40, rows=5)
+        buf.feed("some content")
+        buf.resize(60, 10)
+        assert all(line == "" for line in buf.display)
+
+    def test_resize_preserves_usability(self):
+        buf = ScreenBuffer(columns=40, rows=5)
+        buf.feed("old content")
+        buf.resize(80, 10)
+        buf.feed("new content")
+        assert buf.display[0] == "new content"
 
 
 class TestSequentialFeeds:
