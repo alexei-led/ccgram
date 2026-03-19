@@ -6,6 +6,7 @@ external dependencies (Bot API, TmuxManager, SessionManager).
 """
 
 import os
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -38,7 +39,7 @@ def _make_update(
         ]
     message = Message(
         message_id=update_id,
-        date=None,
+        date=datetime.now(),
         chat=chat,
         from_user=user,
         text=text,

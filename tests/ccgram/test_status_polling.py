@@ -476,6 +476,7 @@ class TestPyteDimensionPassthrough:
         _parse_with_pyte("@0", pane_text + " changed", columns=120, rows=40)
         buf2 = _get_window_state("@0").screen_buffer
         assert buf2 is buf1
+        assert buf2 is not None
         assert buf2.columns == 120
         assert buf2.rows == 40
 

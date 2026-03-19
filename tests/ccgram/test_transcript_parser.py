@@ -52,7 +52,7 @@ class TestExtractTextOnly:
         ids=["string", "text_blocks", "mixed", "empty_list", "non_list_non_string"],
     )
     def test_extract_text_only(self, content: list | str | int, expected: str):
-        assert TranscriptParser.extract_text_only(content) == expected
+        assert TranscriptParser.extract_text_only(content) == expected  # type: ignore[arg-type]
 
     def test_ansi_stripped_from_extract_text_only(self):
         content = [

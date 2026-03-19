@@ -393,7 +393,11 @@ class TestBuildResumeKeyboard:
         sessions = self._sessions(1)
         kb = _build_resume_keyboard(sessions, page=0)
         nav_row = kb.inline_keyboard[-1]
-        prev_btns = [b for b in nav_row if CB_RESUME_PAGE in (b.callback_data or "")]
+        prev_btns = [
+            b
+            for b in nav_row
+            if isinstance(b.callback_data, str) and CB_RESUME_PAGE in b.callback_data
+        ]
         assert len(prev_btns) == 0
 
     def test_next_button_on_first_page(self) -> None:
@@ -403,7 +407,8 @@ class TestBuildResumeKeyboard:
         next_btns = [
             b
             for b in nav_row
-            if b.callback_data and b.callback_data.startswith(CB_RESUME_PAGE)
+            if isinstance(b.callback_data, str)
+            and b.callback_data.startswith(CB_RESUME_PAGE)
         ]
         assert len(next_btns) == 1
         assert "Next" in next_btns[0].text
@@ -422,7 +427,7 @@ class TestBuildResumeKeyboard:
         kb = _build_resume_keyboard(sessions)
         for row in kb.inline_keyboard:
             for btn in row:
-                if btn.callback_data:
+                if isinstance(btn.callback_data, str):
                     assert len(btn.callback_data) <= 64
 
     def test_grouped_by_cwd(self) -> None:

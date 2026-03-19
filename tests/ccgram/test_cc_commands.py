@@ -342,7 +342,7 @@ class TestRegisterCommands:
             bot,
             claude_dir=tmp_path,
             include_cc_commands=False,
-            scope=scope,
+            scope=scope,  # type: ignore[arg-type]
         )
 
         bot.delete_my_commands.assert_called_once_with(scope=scope)

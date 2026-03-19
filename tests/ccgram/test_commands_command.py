@@ -1,6 +1,10 @@
 """Tests for /commands handler and scoped provider command menus."""
 
+from typing import TYPE_CHECKING, cast
 from types import SimpleNamespace
+
+if TYPE_CHECKING:
+    from ccgram.providers import AgentProvider
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -81,7 +85,9 @@ class TestCommandsCommand:
 
     async def test_no_discoverable_commands_reports_provider(self) -> None:
         update = _make_update()
-        provider = SimpleNamespace(capabilities=SimpleNamespace(name="codex"))
+        provider = cast(
+            "AgentProvider", SimpleNamespace(capabilities=SimpleNamespace(name="codex"))
+        )
         with (
             patch("ccgram.bot.session_manager") as mock_sm,
             patch("ccgram.bot.get_provider_for_window", return_value=provider),
@@ -99,7 +105,9 @@ class TestCommandsCommand:
 
     async def test_lists_provider_commands_with_original_mapping(self) -> None:
         update = _make_update()
-        provider = SimpleNamespace(capabilities=SimpleNamespace(name="codex"))
+        provider = cast(
+            "AgentProvider", SimpleNamespace(capabilities=SimpleNamespace(name="codex"))
+        )
         discovered = [
             CCCommand(
                 name="spec:work",
@@ -150,7 +158,10 @@ class TestScopedProviderMenuSync:
             message = AsyncMock()
             message.chat.id = -100999
             message.get_bot.return_value = object()
-            provider = SimpleNamespace(capabilities=SimpleNamespace(name="codex"))
+            provider = cast(
+                "AgentProvider",
+                SimpleNamespace(capabilities=SimpleNamespace(name="codex")),
+            )
 
             with patch(
                 "ccgram.bot.register_commands", new_callable=AsyncMock
@@ -173,8 +184,14 @@ class TestScopedProviderMenuSync:
             message = AsyncMock()
             message.chat.id = -100999
             message.get_bot.return_value = object()
-            codex = SimpleNamespace(capabilities=SimpleNamespace(name="codex"))
-            claude = SimpleNamespace(capabilities=SimpleNamespace(name="claude"))
+            codex = cast(
+                "AgentProvider",
+                SimpleNamespace(capabilities=SimpleNamespace(name="codex")),
+            )
+            claude = cast(
+                "AgentProvider",
+                SimpleNamespace(capabilities=SimpleNamespace(name="claude")),
+            )
 
             with patch(
                 "ccgram.bot.register_commands", new_callable=AsyncMock
@@ -197,7 +214,10 @@ class TestScopedProviderMenuSync:
             message = AsyncMock()
             message.chat.id = -100999
             message.get_bot.return_value = object()
-            provider = SimpleNamespace(capabilities=SimpleNamespace(name="codex"))
+            provider = cast(
+                "AgentProvider",
+                SimpleNamespace(capabilities=SimpleNamespace(name="codex")),
+            )
 
             with patch(
                 "ccgram.bot.register_commands",
@@ -220,7 +240,10 @@ class TestScopedProviderMenuSync:
             message = AsyncMock()
             message.chat.id = -100999
             message.get_bot.return_value = object()
-            provider = SimpleNamespace(capabilities=SimpleNamespace(name="codex"))
+            provider = cast(
+                "AgentProvider",
+                SimpleNamespace(capabilities=SimpleNamespace(name="codex")),
+            )
 
             with patch(
                 "ccgram.bot.register_commands",
@@ -249,7 +272,10 @@ class TestScopedProviderMenuSync:
             message = AsyncMock()
             message.chat.id = -100999
             message.get_bot.return_value = object()
-            provider = SimpleNamespace(capabilities=SimpleNamespace(name="codex"))
+            provider = cast(
+                "AgentProvider",
+                SimpleNamespace(capabilities=SimpleNamespace(name="codex")),
+            )
 
             with patch(
                 "ccgram.bot.register_commands",
@@ -276,7 +302,10 @@ class TestScopedProviderMenuSync:
             message = AsyncMock()
             message.chat.id = -100999
             message.get_bot.return_value = object()
-            provider = SimpleNamespace(capabilities=SimpleNamespace(name="codex"))
+            provider = cast(
+                "AgentProvider",
+                SimpleNamespace(capabilities=SimpleNamespace(name="codex")),
+            )
 
             with (
                 patch("ccgram.bot._MAX_SCOPED_PROVIDER_MENU_ENTRIES", 1),

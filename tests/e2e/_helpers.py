@@ -2,6 +2,7 @@
 
 import asyncio
 import re
+from datetime import datetime
 
 from telegram import (
     CallbackQuery,
@@ -58,7 +59,7 @@ def make_text_update(
         ]
     message = Message(
         message_id=update_id,
-        date=None,
+        date=datetime.now(),
         chat=chat,
         from_user=user,
         text=text,
@@ -89,7 +90,7 @@ def make_callback_update(
     chat = Chat(id=chat_id, type="supergroup")
     message = Message(
         message_id=message_id,
-        date=None,
+        date=datetime.now(),
         chat=chat,
         from_user=user,
         text="(callback source)",

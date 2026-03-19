@@ -127,6 +127,7 @@ class TestBuildRecoveryKeyboard:
         kb = build_recovery_keyboard(long_id)
         for row in kb.inline_keyboard:
             for btn in row:
+                assert isinstance(btn.callback_data, str)
                 assert len(btn.callback_data) <= 64
 
     def test_hides_continue_when_unsupported(self) -> None:
@@ -137,7 +138,11 @@ class TestBuildRecoveryKeyboard:
             kb = build_recovery_keyboard("@0")
 
         action_row = kb.inline_keyboard[0]
-        datas = [b.callback_data for b in action_row]
+        datas: list[str] = [
+            b.callback_data
+            for b in action_row
+            if isinstance(b.callback_data, str)  # type: ignore[misc]
+        ]
         assert any(d.startswith(CB_RECOVERY_FRESH) for d in datas)
         assert not any(d.startswith(CB_RECOVERY_CONTINUE) for d in datas)
         assert any(d.startswith(CB_RECOVERY_RESUME) for d in datas)
@@ -150,7 +155,11 @@ class TestBuildRecoveryKeyboard:
             kb = build_recovery_keyboard("@0")
 
         action_row = kb.inline_keyboard[0]
-        datas = [b.callback_data for b in action_row]
+        datas: list[str] = [
+            b.callback_data
+            for b in action_row
+            if isinstance(b.callback_data, str)  # type: ignore[misc]
+        ]
         assert any(d.startswith(CB_RECOVERY_FRESH) for d in datas)
         assert any(d.startswith(CB_RECOVERY_CONTINUE) for d in datas)
         assert not any(d.startswith(CB_RECOVERY_RESUME) for d in datas)
@@ -164,7 +173,9 @@ class TestBuildRecoveryKeyboard:
 
         action_row = kb.inline_keyboard[0]
         assert len(action_row) == 1
-        assert action_row[0].callback_data.startswith(CB_RECOVERY_FRESH)
+        cb = action_row[0].callback_data
+        assert isinstance(cb, str)
+        assert cb.startswith(CB_RECOVERY_FRESH)  # type: ignore[union-attr]
 
     def test_uses_per_window_provider(self) -> None:
         with patch(f"{_RC}.get_provider_for_window") as mock_gpw:

@@ -17,7 +17,12 @@ from ccgram.handlers.message_queue import build_status_keyboard
 
 def _all_callback_data(window_id: str) -> list[str]:
     kb = build_status_keyboard(window_id)
-    return [btn.callback_data for row in kb.inline_keyboard for btn in row]
+    return [
+        btn.callback_data
+        for row in kb.inline_keyboard
+        for btn in row
+        if isinstance(btn.callback_data, str)
+    ]
 
 
 class TestBuildStatusKeyboard:
@@ -46,8 +51,10 @@ class TestBuildStatusKeyboard:
         )
         for row in kb.inline_keyboard:
             for btn in row:
-                assert len(btn.callback_data) == 64
-                assert any(btn.callback_data.startswith(p) for p in prefixes)
+                cb = btn.callback_data
+                assert isinstance(cb, str)
+                assert len(cb) == 64
+                assert any(cb.startswith(p) for p in prefixes)
 
     @pytest.mark.parametrize(("mode", "expected_icon"), list(NOTIFY_MODE_ICONS.items()))
     def test_bell_icon_reflects_notification_mode(
@@ -89,8 +96,10 @@ class TestBuildStatusKeyboard:
         long_id = "@" + "x" * 60
         kb = build_status_keyboard(long_id, history=["cmd"])
         btn = kb.inline_keyboard[0][0]
-        assert len(btn.callback_data) == 64
-        assert btn.callback_data.startswith(CB_STATUS_RECALL)
+        cb = btn.callback_data
+        assert isinstance(cb, str)
+        assert len(cb) == 64  # type: ignore[arg-type]
+        assert cb.startswith(CB_STATUS_RECALL)  # type: ignore[union-attr]
 
     def test_rc_button_always_present(self) -> None:
         data = _all_callback_data("@0")
@@ -102,7 +111,8 @@ class TestBuildStatusKeyboard:
             btn
             for row in kb.inline_keyboard
             for btn in row
-            if btn.callback_data.startswith(CB_STATUS_REMOTE)
+            if isinstance(btn.callback_data, str)
+            and btn.callback_data.startswith(CB_STATUS_REMOTE)  # type: ignore[union-attr]
         ][0]
         assert rc_btn.text == "\U0001f4e1"
 
@@ -113,6 +123,7 @@ class TestBuildStatusKeyboard:
             btn
             for row in kb.inline_keyboard
             for btn in row
-            if btn.callback_data.startswith(CB_STATUS_REMOTE)
+            if isinstance(btn.callback_data, str)
+            and btn.callback_data.startswith(CB_STATUS_REMOTE)  # type: ignore[union-attr]
         ][0]
         assert rc_btn.text == "\U0001f4e1\u2713"

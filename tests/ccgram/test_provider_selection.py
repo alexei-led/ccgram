@@ -48,7 +48,8 @@ class TestBuildProviderPicker:
             btn.callback_data
             for row in buttons
             for btn in row
-            if btn.callback_data and btn.callback_data.startswith(CB_PROV_SELECT)
+            if isinstance(btn.callback_data, str)
+            and btn.callback_data.startswith(CB_PROV_SELECT)
         ]
         assert f"{CB_PROV_SELECT}claude" in provider_callbacks
         assert f"{CB_PROV_SELECT}codex" in provider_callbacks

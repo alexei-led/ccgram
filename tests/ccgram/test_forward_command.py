@@ -370,7 +370,7 @@ class TestCommandFailureProbe:
         )
 
         result = await _probe_transcript_command_error(
-            provider,
+            provider,  # type: ignore[arg-type]
             str(transcript),
             len(prefix),
         )
@@ -390,7 +390,7 @@ class TestCommandFailureProbe:
             parse_transcript_entries=lambda entries, pending_tools: ([], pending_tools),
         )
 
-        result = await _probe_transcript_command_error(provider, str(transcript), 0)
+        result = await _probe_transcript_command_error(provider, str(transcript), 0)  # type: ignore[arg-type]
         assert result is None
 
     async def test_surfaces_transcript_error(self) -> None:
@@ -411,7 +411,7 @@ class TestCommandFailureProbe:
                 "@1",
                 "project",
                 "/foo",
-                provider=provider,
+                provider=provider,  # type: ignore[arg-type]
                 transcript_path="/tmp/codex.jsonl",
                 since_offset=0,
                 pane_before="",
@@ -444,7 +444,7 @@ class TestCommandFailureProbe:
                 "@1",
                 "project",
                 "/foo",
-                provider=provider,
+                provider=provider,  # type: ignore[arg-type]
                 transcript_path=None,
                 since_offset=None,
                 pane_before="before",
@@ -476,7 +476,7 @@ class TestCommandFailureProbe:
                 "@1",
                 "project",
                 "/help",
-                provider=provider,
+                provider=provider,  # type: ignore[arg-type]
                 transcript_path=None,
                 since_offset=None,
                 pane_before="before",
@@ -546,8 +546,8 @@ class TestCommandHelperFunctions:
                 side_effect=lambda provider: ({}, _supported(provider)),
             ),
         ):
-            assert _command_known_in_other_provider("/cost", current) is True
-            assert _command_known_in_other_provider("/not-here", current) is False
+            assert _command_known_in_other_provider("/cost", current) is True  # type: ignore[arg-type]
+            assert _command_known_in_other_provider("/not-here", current) is False  # type: ignore[arg-type]
 
     def test_get_provider_command_metadata_builds_mapping_and_supported(self) -> None:
         provider = SimpleNamespace(
@@ -556,7 +556,7 @@ class TestCommandHelperFunctions:
         discovered = [SimpleNamespace(name="/status", telegram_name="status")]
 
         with patch("ccgram.bot.discover_provider_commands", return_value=discovered):
-            mapping, supported = _get_provider_command_metadata(provider)
+            mapping, supported = _get_provider_command_metadata(provider)  # type: ignore[arg-type]
 
         assert mapping == {"status": "/status"}
         assert supported == {"/status", "/builtin"}
