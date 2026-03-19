@@ -8,11 +8,12 @@ TARGET="${TMUX_SESSION}:${TMUX_WINDOW}"
 LOCK_DIR="${PROJECT_DIR}/.ccgram-dev-run.lock.d"
 
 usage() {
-	echo "Usage: $0 {start|stop|restart|status}"
+	echo "Usage: $0 {start|stop|restart|status|run}"
 	echo "  start   start local dev supervisor in ${TARGET}"
 	echo "  stop    stop supervisor loop (Ctrl-\\ in control pane)"
 	echo "  restart restart ccgram process (Ctrl-C in control pane)"
 	echo "  status  show target pane command and recent logs"
+	echo "  run     run supervisor interactively in foreground"
 }
 
 runloop() {
@@ -135,6 +136,7 @@ restart() {
 
 case "${1:-}" in
 __runloop) runloop ;;
+run) runloop ;;
 start) start ;;
 stop) stop ;;
 restart) restart ;;
