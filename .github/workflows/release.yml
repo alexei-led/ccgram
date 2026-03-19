@@ -10,7 +10,7 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - uses: astral-sh/setup-uv@v7
@@ -23,7 +23,7 @@ jobs:
     needs: publish
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: "3.14"
@@ -44,10 +44,40 @@ jobs:
           git add Formula/ccgram.rb
           git commit -m "ccgram ${{ steps.version.outputs.VERSION }}"
           git push
+  changelog:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      release_body: ${{ steps.cliff.outputs.content }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+      - name: Generate release notes
+        id: cliff
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --tag ${{ github.ref_name }} --unreleased --strip header
+      - name: Generate full CHANGELOG.md
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --tag ${{ github.ref_name }} --output CHANGELOG.md
+      - name: Commit CHANGELOG.md
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md
+          git diff --staged --quiet || git commit -m "docs: update CHANGELOG.md for ${{ github.ref_name }} [skip ci]"
+          git push origin main
   github-release:
     needs:
       - publish
       - update-homebrew
+      - changelog
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -57,7 +87,4 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
-          generate_release_notes: true
-          body: |
-            Automated release for `${{ github.ref_name }}`.
-            Includes published PyPI package and Homebrew formula updates.
+          body: ${{ needs.changelog.outputs.release_body }}
