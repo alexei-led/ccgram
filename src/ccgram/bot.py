@@ -5,7 +5,7 @@ Each Telegram topic maps 1:1 to a tmux window (Claude session).
 
 Core responsibilities:
   - Command handlers: /new (+ /start alias), /history, /sessions, /resume,
-    /screenshot, /panes, /restore, plus forwarding unknown /commands to Claude Code via tmux.
+    /screenshot, /panes, /toolbar, /restore, plus forwarding unknown /commands to Claude Code via tmux.
   - Callback query handler: thin dispatcher routing to dedicated handler modules.
   - Topic-based routing: each named topic binds to one tmux window.
     Unbound topics trigger the directory browser to create a new session.

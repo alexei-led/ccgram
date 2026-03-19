@@ -15,7 +15,7 @@ ccgram                        # Start the bot
 ccgram status                 # Show running state (no token needed)
 ccgram doctor                 # Validate setup and diagnose issues
 ccgram doctor --fix           # Auto-fix issues (install hook, kill orphans)
-ccgram hook --install         # Install Claude Code hooks (7 event types)
+ccgram hook --install         # Install Claude Code hooks
 ccgram hook --uninstall       # Remove all hooks
 ccgram hook --status          # Check per-event hook installation status
 ccgram --version              # Show version
@@ -226,11 +226,11 @@ CCGram supports multiple agent CLI backends. Each Telegram topic can use a diffe
 
 ### Supported Providers
 
-| Provider    | CLI Command | Hook Events         | Status Detection                                          |
-| ----------- | ----------- | ------------------- | --------------------------------------------------------- |
-| Claude Code | `claude`    | Yes (7 event types) | Hook events + pyte VT100 + spinner                        |
-| Codex CLI   | `codex`     | No                  | pyte VT100 interactive UI + transcript activity heuristic |
-| Gemini CLI  | `gemini`    | No                  | Pane title + interactive UI                               |
+| Provider    | CLI Command | Hook Events | Status Detection                                          |
+| ----------- | ----------- | ----------- | --------------------------------------------------------- |
+| Claude Code | `claude`    | Yes         | Hook events + pyte VT100 + spinner                        |
+| Codex CLI   | `codex`     | No          | pyte VT100 interactive UI + transcript activity heuristic |
+| Gemini CLI  | `gemini`    | No          | Pane title + interactive UI                               |
 
 ### Choosing a Provider
 
@@ -253,11 +253,11 @@ CCGram stores mode per window and reuses it for recover/continue/resume flows.
   - Codex: `--dangerously-bypass-approvals-and-sandbox`
   - Gemini: `--yolo`
 
-YOLO sessions are indicated in Telegram topic titles with a positive `🚀` badge and in `/sessions` with a `[YOLO]` tag.
+YOLO sessions are indicated in Telegram topic titles with a `🚀` badge and in `/sessions` with a `[YOLO]` tag. When Remote Control is active, a `📡` badge also appears in the topic title.
 
 ### Provider Differences
 
-**Claude Code** has the richest integration — 7 hook event types (SessionStart, Notification, Stop, SubagentStart, SubagentStop, TeammateIdle, TaskCompleted) provide instant session tracking, interactive UI detection, done/idle detection, subagent activity monitoring, and agent team notifications. The bot also uses a pyte VT100 screen buffer as fallback for terminal status parsing. Multi-pane windows (e.g. from agent teams) are automatically scanned for blocked panes and surfaced as inline keyboard alerts.
+**Claude Code** has the richest integration — hook events (SessionStart, Notification, Stop, StopFailure, SessionEnd, SubagentStart, SubagentStop, TeammateIdle, TaskCompleted) provide instant session tracking, interactive UI detection, done/idle detection, API error alerting, session lifecycle cleanup, subagent activity monitoring, and agent team notifications. The bot also detects Remote Control mode (📡 topic badge + one-tap activation button) and uses a pyte VT100 screen buffer as fallback for terminal status parsing. Multi-pane windows (e.g. from agent teams) are automatically scanned for blocked panes and surfaced as inline keyboard alerts.
 
 **Codex CLI** and **Gemini CLI** lack a session hook, so session tracking relies on hookless transcript discovery plus provider detection. Codex interactive prompts (question lists, permission prompts, and other selection UIs) are detected from terminal screen content via pyte and shown with inline keyboard controls. For edit-approval prompts, CCGram reformats dense terminal diffs into a compact summary with a short preview while keeping the Yes/No confirmation choices and bottom action hints intact. Gemini sets pane titles (`Working: ✦`, `Action Required: ✋`, `Ready: ◇`) that CCGram reads for status, and its `@inquirer/select` permission prompts are detected as interactive UI. Gemini transcript discovery matches project hash/alias only (no cross-project full scan) to avoid wrong-session attachment.
 

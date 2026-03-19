@@ -88,34 +88,34 @@ graph TB
 
 ### Handler modules (`handlers/`)
 
-| Module                     | Description                                                        |
-| -------------------------- | ------------------------------------------------------------------ |
-| `text_handler.py`          | Text message routing (UI guards → unbound → dead → forward)        |
-| `message_sender.py`        | safe_reply/safe_edit/safe_send + rate_limit_send                   |
-| `message_queue.py`         | Per-user queue + worker (merge, status dedup)                      |
-| `status_polling.py`        | Background status polling (1s), auto-close, multi-pane scanning    |
-| `response_builder.py`      | Response pagination and formatting                                 |
-| `interactive_ui.py`        | AskUserQuestion / ExitPlanMode / Permission UI rendering           |
-| `interactive_callbacks.py` | Callbacks for interactive UI (arrow keys, enter, esc)              |
-| `directory_browser.py`     | Directory selection UI for new topics                              |
-| `directory_callbacks.py`   | Callbacks for directory browser (navigate, confirm, provider pick) |
-| `window_callbacks.py`      | Window picker callbacks (bind, new, cancel)                        |
-| `recovery_callbacks.py`    | Dead window recovery callbacks (fresh, continue, resume)           |
-| `screenshot_callbacks.py`  | Screenshot refresh, Esc, quick-key, pane screenshot callbacks      |
-| `history.py`               | Message history display with pagination                            |
-| `history_callbacks.py`     | History pagination callbacks (prev/next)                           |
-| `sessions_dashboard.py`    | /sessions command: active session overview + kill                  |
-| `restore_command.py`       | /restore command: recover dead topics via recovery keyboard        |
-| `resume_command.py`        | /resume command: scan past sessions, paginated picker              |
-| `upgrade.py`               | /upgrade command: uv tool upgrade + process restart                |
-| `file_handler.py`          | Photo/document handler (save to .ccgram-uploads/, notify agent)    |
-| `command_history.py`       | Per-user/per-topic in-memory command recall (max 20)               |
-| `topic_emoji.py`           | Topic name emoji updates (active/idle/done/dead), debounced        |
-| `hook_events.py`           | Hook event dispatcher (Notification, Stop, Subagent*, Team*)       |
-| `cleanup.py`               | Centralized topic state cleanup on close/delete                    |
-| `callback_data.py`         | CB\_\* callback data constants for inline keyboard routing         |
-| `callback_helpers.py`      | Shared helpers (user_owns_window, get_thread_id)                   |
-| `user_state.py`            | context.user_data string key constants                             |
+| Module                     | Description                                                                           |
+| -------------------------- | ------------------------------------------------------------------------------------- |
+| `text_handler.py`          | Text message routing (UI guards → unbound → dead → forward)                           |
+| `message_sender.py`        | safe_reply/safe_edit/safe_send + rate_limit_send                                      |
+| `message_queue.py`         | Per-user queue + worker (merge, status dedup)                                         |
+| `status_polling.py`        | Background status polling (1s), RC detection, auto-close, multi-pane scanning         |
+| `response_builder.py`      | Response pagination and formatting                                                    |
+| `interactive_ui.py`        | AskUserQuestion / ExitPlanMode / Permission UI rendering                              |
+| `interactive_callbacks.py` | Callbacks for interactive UI (arrow keys, enter, esc)                                 |
+| `directory_browser.py`     | Directory selection UI for new topics                                                 |
+| `directory_callbacks.py`   | Callbacks for directory browser (navigate, confirm, provider pick)                    |
+| `window_callbacks.py`      | Window picker callbacks (bind, new, cancel)                                           |
+| `recovery_callbacks.py`    | Dead window recovery callbacks (fresh, continue, resume)                              |
+| `screenshot_callbacks.py`  | Screenshot, status buttons, RC toggle, toolbar, quick-key callbacks                   |
+| `history.py`               | Message history display with pagination                                               |
+| `history_callbacks.py`     | History pagination callbacks (prev/next)                                              |
+| `sessions_dashboard.py`    | /sessions command: active session overview + kill                                     |
+| `restore_command.py`       | /restore command: recover dead topics via recovery keyboard                           |
+| `resume_command.py`        | /resume command: scan past sessions, paginated picker                                 |
+| `upgrade.py`               | /upgrade command: uv tool upgrade + process restart                                   |
+| `file_handler.py`          | Photo/document handler (save to .ccgram-uploads/, notify agent)                       |
+| `command_history.py`       | Per-user/per-topic in-memory command recall (max 20)                                  |
+| `topic_emoji.py`           | Topic name emoji updates (active/idle/done/dead + RC/YOLO badges), debounced          |
+| `hook_events.py`           | Hook event dispatcher (Stop, StopFailure, SessionEnd, Notification, Subagent*, Team*) |
+| `cleanup.py`               | Centralized topic state cleanup on close/delete                                       |
+| `callback_data.py`         | CB\_\* callback data constants for inline keyboard routing                            |
+| `callback_helpers.py`      | Shared helpers (user_owns_window, get_thread_id)                                      |
+| `user_state.py`            | context.user_data string key constants                                                |
 
 ### State files (`~/.ccgram/` or `$CCBOT_DIR/`)
 
