@@ -105,6 +105,7 @@ from .handlers.callback_data import (
     CB_SYNC_FIX,
     CB_TOOLBAR_CTRLC,
     CB_TOOLBAR_DISMISS,
+    CB_VOICE,
     CB_WIN_BIND,
     CB_WIN_CANCEL,
     CB_WIN_NEW,
@@ -121,6 +122,7 @@ from .handlers.recovery_callbacks import handle_recovery_callback
 from .handlers.restore_command import restore_command
 from .handlers.resume_command import handle_resume_command_callback, resume_command
 from .handlers.screenshot_callbacks import handle_screenshot_callback
+from .handlers.voice_callbacks import handle_voice_callback
 from .handlers.window_callbacks import handle_window_callback
 from .handlers.directory_browser import clear_browse_state
 from .handlers.cleanup import clear_topic_state
@@ -156,9 +158,11 @@ from .handlers.message_sender import safe_reply
 from .handlers.response_builder import build_response_parts
 from .handlers.status_polling import status_poll_loop
 from .handlers.file_handler import handle_document_message, handle_photo_message
+from .handlers.voice_handler import handle_voice_message
 from .handlers.text_handler import handle_text_message
 from .session import session_manager
 from .session_monitor import NewMessage, NewWindowEvent, SessionMonitor
+from .telegram_request import ResilientPollingHTTPXRequest
 from .tmux_manager import tmux_manager
 from .utils import task_done_callback
 
@@ -681,7 +685,11 @@ async def forward_command_handler(
     logger.info(
         "Forwarding command %s to window %s (user=%d)", cc_slash, display, user.id
     )
-    await update.message.chat.send_action(ChatAction.TYPING)
+    await update.message.get_bot().send_chat_action(
+        chat_id=update.message.chat.id,
+        message_thread_id=thread_id,
+        action=ChatAction.TYPING,
+    )
     (
         probe_transcript_path,
         probe_transcript_offset,
@@ -1164,9 +1172,13 @@ async def unsupported_content_handler(
     if not user or not is_user_allowed(user.id):
         return
     logger.debug("Unsupported content from user %d", user.id)
+    # Omit "voice" from the list when whisper is configured (has its own handler)
+    media_list = (
+        "Stickers, voice, video" if not config.whisper_provider else "Stickers, video"
+    )
     await safe_reply(
         update.message,
-        "\u26a0 Stickers, voice, video, and similar media are not supported. Use text, photos, or documents.",
+        f"\u26a0 {media_list}, and similar media are not supported. Use text, photos, or documents.",
     )
 
 
@@ -1222,6 +1234,7 @@ _CB_RECOVERY = (
     CB_RECOVERY_PICK,
     CB_RECOVERY_CANCEL,
 )
+_CB_VOICE = (CB_VOICE,)
 _CB_RESUME = (CB_RESUME_PICK, CB_RESUME_PAGE, CB_RESUME_CANCEL)
 
 
@@ -1304,6 +1317,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             return
         await handle_sessions_kill(query, user.id, window_id)
         await query.answer()
+
+    # Voice message callbacks
+    elif data.startswith(_CB_VOICE):
+        await handle_voice_callback(update, context)
 
     # Sync command
     elif data == CB_SYNC_FIX:
@@ -1728,6 +1745,7 @@ def create_bot() -> Application:
     application = (
         Application.builder()
         .token(config.telegram_bot_token)
+        .get_updates_request(ResilientPollingHTTPXRequest(connection_pool_size=1))
         .post_init(post_init)
         .post_shutdown(post_shutdown)
         .build()
@@ -1802,6 +1820,10 @@ def create_bot() -> Application:
     application.add_handler(
         MessageHandler(filters.Document.ALL & _group_filter, handle_document_message)
     )
+    # Voice messages (transcription when configured)
+    application.add_handler(
+        MessageHandler(filters.VOICE & _group_filter, handle_voice_message)
+    )
     # Catch-all: unsupported content (stickers, voice, video, etc.)
     application.add_handler(
         MessageHandler(
@@ -1809,6 +1831,7 @@ def create_bot() -> Application:
             & ~filters.TEXT
             & ~filters.PHOTO
             & ~filters.Document.ALL
+            & ~filters.VOICE
             & ~filters.StatusUpdate.ALL
             & _group_filter,
             unsupported_content_handler,

@@ -72,6 +72,14 @@ graph TB
 | `gemini.py`   | GeminiProvider (resume, continue, whole-file JSON transcripts, no hook)                  |
 | `__init__.py` | `get_provider_for_window()`, `detect_provider_from_command()`, `get_provider()` fallback |
 
+### Whisper modules (`whisper/`)
+
+| Module                 | Description                                                   |
+| ---------------------- | ------------------------------------------------------------- |
+| `base.py`              | WhisperTranscriber Protocol + TranscriptionResult dataclass   |
+| `httpx_transcriber.py` | OpenAI-compatible transcription via httpx (OpenAI, Groq, etc) |
+| `__init__.py`          | Provider factory (`get_transcriber()` from config)            |
+
 ### Core modules (`src/ccgram/`)
 
 | Module             | Description                                                          |
@@ -109,6 +117,8 @@ graph TB
 | `resume_command.py`        | /resume command: scan past sessions, paginated picker                                 |
 | `upgrade.py`               | /upgrade command: uv tool upgrade + process restart                                   |
 | `file_handler.py`          | Photo/document handler (save to .ccgram-uploads/, notify agent)                       |
+| `voice_handler.py`         | Voice message download, transcription, confirm keyboard                               |
+| `voice_callbacks.py`       | Voice callback routing (vc:send/vc:drop actions)                                      |
 | `command_history.py`       | Per-user/per-topic in-memory command recall (max 20)                                  |
 | `topic_emoji.py`           | Topic name emoji updates (active/idle/done/dead + RC/YOLO badges), debounced          |
 | `hook_events.py`           | Hook event dispatcher (Stop, StopFailure, SessionEnd, Notification, Subagent*, Team*) |

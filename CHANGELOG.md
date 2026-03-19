@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Voice message transcription via Whisper API — send voice in Telegram, confirm transcription, forward to agent
+- Multi-provider support: OpenAI, Groq, and any OpenAI-compatible endpoint
+
 ## [2.0.0] - 2026-03-16
 
 ### Changed

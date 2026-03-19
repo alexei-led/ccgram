@@ -70,6 +70,7 @@ Each Telegram Forum topic binds to one tmux window running an agent CLI. Message
 - Codex `/status` replies include a bot-side transcript snapshot (session + token/rate-limit stats) when Codex does not emit a normal transcript message
 - Multi-pane support — auto-detects blocked panes, surfaces prompts, `/panes` command for overview
 - Terminal screenshots — capture the current pane (or any specific pane) as a PNG image
+- Voice message transcription via Whisper API (OpenAI, Groq) with confirm/discard keyboard
 - Sessions dashboard (`/sessions`) — overview of all sessions with status and kill buttons
 - Remote Control detection — 📡 topic badge when RC is active, one-tap activation from status keyboard
 - Action toolbar (`/toolbar`) — persistent inline buttons for RC, Screenshot, Esc, Notify, Ctrl-C
@@ -125,16 +126,22 @@ brew install alexei-led/tap/ccgram    # Homebrew (macOS)
 ### Configure
 
 1. Create a Telegram bot via [@BotFather](https://t.me/BotFather)
-2. Enable **Topics** in your bot (BotFather > Bot Settings > Groups > Topics in Groups > Enable)
-3. Add the bot to a Telegram group that has Topics enabled
-4. Create `~/.ccgram/.env`:
+2. Configure bot settings in BotFather:
+   - **Allow Groups**: Enabled (Bot Settings > Groups & Channels > Allow Groups? > Turn on)
+   - **Group Privacy**: Disabled (Bot Settings > Groups & Channels > Group Privacy > Turn off) — _Required to see all messages in topics_
+   - **Topics**: Enabled (Bot Settings > Groups & Channels > Edit Topics > Enable)
+3. Add the bot to a Telegram group with Topics enabled.
+4. **Promote the bot to Administrator** and ensure it has the **Create Topics** permission (required for the bot to automatically sync and manage session topics).
+5. Create `~/.ccgram/.env`:
 
 ```ini
 TELEGRAM_BOT_TOKEN=your_bot_token_here
 ALLOWED_USERS=your_telegram_user_id
+CCGRAM_GROUP_ID=your_telegram_group_id
 ```
 
 > Get your user ID from [@userinfobot](https://t.me/userinfobot) on Telegram.
+> Get the group ID by adding -100 in front of the **Peer ID** found in the Group Info (or use [@RawDataBot](https://t.me/RawDataBot)).
 
 ### Install hooks (Claude Code only)
 

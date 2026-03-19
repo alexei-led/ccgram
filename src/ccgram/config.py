@@ -73,6 +73,11 @@ class Config:
         # Own tmux window ID (set by run_bot() after auto-detect, used to skip self in list_windows)
         self.own_window_id: str | None = None
 
+        # External session discovery: comma-separated glob patterns to filter session names.
+        # Empty string (default) means all sessions are scanned (excluding own session).
+        # Example: "omc-*,omx-*" limits discovery to sessions matching those patterns.
+        self.tmux_external_patterns: str = os.getenv("TMUX_EXTERNAL_PATTERNS", "")
+
         # All state files live under config_dir
         self.state_file = self.config_dir / "state.json"
         self.session_map_file = self.config_dir / "session_map.json"
@@ -113,6 +118,23 @@ class Config:
         self.show_hidden_dirs: bool = _env_with_fallback(
             "CCGRAM_SHOW_HIDDEN_DIRS", "CCBOT_SHOW_HIDDEN_DIRS"
         ).lower() in ("1", "true", "yes")
+
+        # Whisper transcription
+        self.whisper_provider: str = _env_with_fallback(
+            "CCGRAM_WHISPER_PROVIDER", "CCBOT_WHISPER_PROVIDER"
+        )
+        self.whisper_api_key: str = _env_with_fallback(
+            "CCGRAM_WHISPER_API_KEY", "CCBOT_WHISPER_API_KEY"
+        )
+        self.whisper_base_url: str = _env_with_fallback(
+            "CCGRAM_WHISPER_BASE_URL", "CCBOT_WHISPER_BASE_URL"
+        )
+        self.whisper_model: str = _env_with_fallback(
+            "CCGRAM_WHISPER_MODEL", "CCBOT_WHISPER_MODEL"
+        )
+        self.whisper_language: str = _env_with_fallback(
+            "CCGRAM_WHISPER_LANGUAGE", "CCBOT_WHISPER_LANGUAGE"
+        )
 
         # Auto-close stale topics (minutes; 0 = disabled)
         self.autoclose_done_minutes = int(os.getenv("AUTOCLOSE_DONE_MINUTES", "30"))

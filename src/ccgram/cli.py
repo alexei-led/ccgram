@@ -68,6 +68,7 @@ _FLAG_TO_ENV: list[tuple[str, str]] = [
     ("provider", "CCGRAM_PROVIDER"),
     ("show_hidden_dirs", "CCGRAM_SHOW_HIDDEN_DIRS"),
     ("claude_config_dir", "CLAUDE_CONFIG_DIR"),
+    ("whisper_provider", "CCGRAM_WHISPER_PROVIDER"),
 ]
 
 
@@ -178,6 +179,12 @@ def apply_args_to_env(**kwargs: object) -> None:
     default=None,
     envvar="CLAUDE_CONFIG_DIR",
     help="Claude config directory (default: ~/.claude).",
+)
+@click.option(
+    "--whisper-provider",
+    default=None,
+    envvar="CCGRAM_WHISPER_PROVIDER",
+    help='Whisper transcription provider: "openai", "groq", or "" (disabled).',
 )
 def run_cmd(**kwargs: object) -> None:
     """Start the bot with optional overrides."""

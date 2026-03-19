@@ -237,6 +237,8 @@ async def e2e_app(e2e_state_dir, e2e_tmux, intercepted_calls, monkeypatch):
         "ccgram.handlers.history",
         "ccgram.handlers.hook_events",
         "ccgram.handlers.file_handler",
+        "ccgram.handlers.voice_handler",
+        "ccgram.handlers.voice_callbacks",
         "ccgram.handlers.window_callbacks",
         "ccgram.handlers.restore_command",
         "ccgram.handlers.resume_command",

@@ -16,6 +16,7 @@ Module-level: _vim_state cache, _vim_locks for per-window send serialization.
 """
 
 import asyncio
+import fnmatch
 import structlog
 import subprocess
 from dataclasses import dataclass
@@ -25,6 +26,7 @@ import libtmux
 from libtmux.exc import LibTmuxException
 
 from .config import config
+from .providers import detect_provider_from_command
 from .window_resolver import EMDASH_SESSION_PREFIX as _EMDASH_PREFIX, is_foreign_window
 
 logger = structlog.get_logger()
@@ -70,7 +72,7 @@ _TmuxError = (
     subprocess.CalledProcessError,
 )
 
-_EMDASH_DISCOVERY_TTL = 10.0  # seconds — cache emdash session discovery
+_EXTERNAL_DISCOVERY_TTL = 10.0  # seconds — cache external session discovery
 
 
 @dataclass
@@ -109,8 +111,8 @@ class TmuxManager:
         """
         self.session_name = session_name or config.tmux_session_name
         self._server: libtmux.Server | None = None
-        self._emdash_cache: list[TmuxWindow] = []
-        self._emdash_cache_expires: float = 0.0
+        self._external_cache: list[TmuxWindow] = []
+        self._external_cache_expires: float = 0.0
 
     @property
     def server(self) -> libtmux.Server:
@@ -675,19 +677,29 @@ class TmuxManager:
 
         return await asyncio.to_thread(_sync_kill)
 
-    async def discover_emdash_sessions(self) -> list[TmuxWindow]:
-        """Discover emdash tmux sessions and return as TmuxWindow list.
+    async def discover_external_sessions(self) -> list[TmuxWindow]:
+        """Discover external tmux sessions running AI agent processes.
 
-        Each emdash task runs in its own tmux session named
-        "emdash-{provider}-{kind}-{id}". Returns one TmuxWindow per session
-        with qualified window_id (e.g. "emdash-claude-main-abc123:@0").
+        Scans all tmux sessions (excluding ``self.session_name``) for windows
+        whose active pane is running a recognised AI provider process
+        (claude, codex, gemini, …). Returns one :class:`TmuxWindow` per
+        matching window with a qualified ``window_id`` of the form
+        ``"session_name:@N"``.
 
-        Results are cached for _EMDASH_DISCOVERY_TTL seconds to avoid
+        If ``config.tmux_external_patterns`` is non-empty, only sessions whose
+        names match at least one of the comma-separated :mod:`fnmatch` glob
+        patterns are considered (e.g. ``"omc-*,omx-*"``).  An empty pattern
+        string (the default) means *all* sessions are scanned.
+
+        Results are cached for :data:`_EXTERNAL_DISCOVERY_TTL` seconds to avoid
         spawning N+1 subprocesses on every 1-second poll cycle.
+
+        Backwards-compatibility: emdash sessions (prefix ``"emdash-"``) are
+        naturally included by this general scan without any special-casing.
         """
         now = asyncio.get_event_loop().time()
-        if now < self._emdash_cache_expires:
-            return list(self._emdash_cache)
+        if now < self._external_cache_expires:
+            return list(self._external_cache)
 
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -705,17 +717,78 @@ class TmuxManager:
         if proc.returncode != 0:
             return []
 
+        # Parse optional glob patterns from config
+        raw_patterns = config.tmux_external_patterns.strip()
+        patterns: list[str] = (
+            [p.strip() for p in raw_patterns.split(",") if p.strip()]
+            if raw_patterns
+            else []
+        )
+
         results: list[TmuxWindow] = []
         for session_name in stdout.decode().strip().split("\n"):
-            if not session_name.startswith(_EMDASH_PREFIX):
+            if not session_name or session_name == self.session_name:
                 continue
-            w = await self._find_foreign_window(f"{session_name}:@0")
-            if w:
-                results.append(w)
+            if patterns and not any(
+                fnmatch.fnmatch(session_name, pat) for pat in patterns
+            ):
+                continue
+            results.extend(await self._scan_session_windows(session_name))
 
-        self._emdash_cache = results
-        self._emdash_cache_expires = now + _EMDASH_DISCOVERY_TTL
+        self._external_cache = results
+        self._external_cache_expires = now + _EXTERNAL_DISCOVERY_TTL
         return list(results)
+
+    async def _scan_session_windows(self, session_name: str) -> list[TmuxWindow]:
+        """List windows in *session_name* that run a recognised AI provider."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "tmux",
+                "list-windows",
+                "-t",
+                session_name,
+                "-F",
+                "#{window_id}\t#{window_name}\t#{pane_current_path}\t#{pane_current_command}",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            async with asyncio.timeout(5.0):
+                win_stdout, _ = await proc.communicate()
+        except TimeoutError, OSError:
+            return []
+        if proc.returncode != 0:
+            return []
+
+        results: list[TmuxWindow] = []
+        for line in win_stdout.decode().strip().split("\n"):
+            if not line:
+                continue
+            parts = line.split("\t", 3)
+            if len(parts) < 4:  # noqa: PLR2004
+                continue
+            win_id, win_name, cwd, cmd = parts
+            if not detect_provider_from_command(cmd):
+                continue
+            qualified_id = f"{session_name}:{win_id}"
+            results.append(
+                TmuxWindow(
+                    window_id=qualified_id,
+                    window_name=win_name or session_name.removeprefix(_EMDASH_PREFIX),
+                    cwd=cwd,
+                    pane_current_command=cmd,
+                )
+            )
+        return results
+
+    async def discover_emdash_sessions(self) -> list[TmuxWindow]:
+        """Discover emdash tmux sessions (deprecated alias).
+
+        .. deprecated::
+            Use :meth:`discover_external_sessions` instead.  This method is
+            kept for backwards-compatibility and simply delegates to the
+            generalised implementation.
+        """
+        return await self.discover_external_sessions()
 
     async def rename_window(self, window_id: str, new_name: str) -> bool:
         """Rename a tmux window by its ID. Returns True on success."""

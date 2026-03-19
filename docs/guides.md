@@ -101,20 +101,64 @@ The tests create an isolated `ccgram-e2e` tmux session that does not interfere w
 
 All settings accept both CLI flags and environment variables. CLI flags take precedence. `TELEGRAM_BOT_TOKEN` is env-only for security (flags are visible in `ps`).
 
-| Variable / Flag                                | Default           | Description                                          |
-| ---------------------------------------------- | ----------------- | ---------------------------------------------------- |
-| `TELEGRAM_BOT_TOKEN`                           | _(required)_      | Bot token from @BotFather (env only)                 |
-| `ALLOWED_USERS` / `--allowed-users`            | _(required)_      | Comma-separated Telegram user IDs                    |
-| `CCGRAM_DIR` / `--config-dir`                  | `~/.ccgram`       | Config and state directory                           |
-| `TMUX_SESSION_NAME` / `--tmux-session`         | `ccgram`          | tmux session name                                    |
-| `CCGRAM_PROVIDER` / `--provider`               | `claude`          | Default agent provider (`claude`, `codex`, `gemini`) |
-| `CCGRAM_<NAME>_COMMAND`                        | _(from provider)_ | Per-provider launch command (env only, see below)    |
-| `CCGRAM_GROUP_ID` / `--group-id`               | _(all groups)_    | Restrict to one Telegram group                       |
-| `CCGRAM_INSTANCE_NAME` / `--instance-name`     | hostname          | Display label for this instance                      |
-| `CCGRAM_LOG_LEVEL` / `--log-level`             | `INFO`            | Logging level (DEBUG, INFO, WARNING, ERROR)          |
-| `MONITOR_POLL_INTERVAL` / `--monitor-interval` | `2.0`             | Seconds between transcript polls                     |
-| `AUTOCLOSE_DONE_MINUTES` / `--autoclose-done`  | `30`              | Auto-close done topics after N minutes (0=off)       |
-| `AUTOCLOSE_DEAD_MINUTES` / `--autoclose-dead`  | `10`              | Auto-close dead sessions after N minutes (0=off)     |
+| Variable / Flag                                  | Default              | Description                                                   |
+| ------------------------------------------------ | -------------------- | ------------------------------------------------------------- |
+| `TELEGRAM_BOT_TOKEN`                             | _(required)_         | Bot token from @BotFather (env only)                          |
+| `ALLOWED_USERS` / `--allowed-users`              | _(required)_         | Comma-separated Telegram user IDs                             |
+| `CCGRAM_DIR` / `--config-dir`                    | `~/.ccgram`          | Config and state directory                                    |
+| `TMUX_SESSION_NAME` / `--tmux-session`           | `ccgram`             | tmux session name                                             |
+| `CCGRAM_PROVIDER` / `--provider`                 | `claude`             | Default agent provider (`claude`, `codex`, `gemini`)          |
+| `CCGRAM_<NAME>_COMMAND`                          | _(from provider)_    | Per-provider launch command (env only, see below)             |
+| `CCGRAM_GROUP_ID` / `--group-id`                 | _(all groups)_       | Restrict to one Telegram group                                |
+| `CCGRAM_INSTANCE_NAME` / `--instance-name`       | hostname             | Display label for this instance                               |
+| `CCGRAM_LOG_LEVEL` / `--log-level`               | `INFO`               | Logging level (DEBUG, INFO, WARNING, ERROR)                   |
+| `MONITOR_POLL_INTERVAL` / `--monitor-interval`   | `2.0`                | Seconds between transcript polls                              |
+| `AUTOCLOSE_DONE_MINUTES` / `--autoclose-done`    | `30`                 | Auto-close done topics after N minutes (0=off)                |
+| `AUTOCLOSE_DEAD_MINUTES` / `--autoclose-dead`    | `10`                 | Auto-close dead sessions after N minutes (0=off)              |
+| `CCGRAM_WHISPER_PROVIDER` / `--whisper-provider` | _(empty)_            | Whisper provider: `openai`, `groq`, or empty to disable       |
+| `CCGRAM_WHISPER_API_KEY`                         | _(empty)_            | API key (env only); falls back to OPENAI_API_KEY/GROQ_API_KEY |
+| `CCGRAM_WHISPER_BASE_URL` / `--whisper-base-url` | _(provider default)_ | Custom OpenAI-compatible endpoint URL                         |
+| `CCGRAM_WHISPER_MODEL` / `--whisper-model`       | _(provider default)_ | Model override (e.g., `whisper-large-v3-turbo`)               |
+| `CCGRAM_WHISPER_LANGUAGE` / `--whisper-language` | _(auto-detect)_      | Force language code (e.g., `en`, `zh`)                        |
+
+## Voice Message Transcription
+
+Send voice messages in Telegram and have them transcribed and forwarded to the agent.
+
+### Setup
+
+Set a whisper provider and API key:
+
+```ini
+# Groq (fast, generous free tier)
+CCGRAM_WHISPER_PROVIDER=groq
+GROQ_API_KEY=gsk_xxxxxxxx
+
+# Or OpenAI
+CCGRAM_WHISPER_PROVIDER=openai
+OPENAI_API_KEY=sk-xxxxxxxx
+
+# Or any OpenAI-compatible endpoint
+CCGRAM_WHISPER_PROVIDER=openai
+CCGRAM_WHISPER_API_KEY=your_key
+CCGRAM_WHISPER_BASE_URL=http://localhost:8000/v1
+```
+
+Optional overrides:
+
+```ini
+CCGRAM_WHISPER_MODEL=whisper-large-v3-turbo   # default depends on provider
+CCGRAM_WHISPER_LANGUAGE=en                     # omit for auto-detect
+```
+
+### How It Works
+
+1. Send a voice message in a topic bound to an agent
+2. Bot downloads the audio (max 25 MB) and sends it to the Whisper API
+3. Transcription appears with **✓ Send to agent** and **✗ Discard** buttons
+4. Tap **Send** to forward the text to the agent, or **Discard** to cancel
+
+Leave `CCGRAM_WHISPER_PROVIDER` empty (the default) to disable voice transcription.
 
 ## Tmux Session Auto-Detection
 
