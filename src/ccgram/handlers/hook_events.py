@@ -254,17 +254,16 @@ async def _handle_session_end(event: HookEvent, bot: Bot) -> None:
         reason,
     )
 
+    # Clear session association so next launch gets a fresh session
+    if users:
+        session_manager.clear_window_session(users[0][2])
+
     for user_id, thread_id, window_id in users:
         clear_seen_status(window_id)
         chat_id = session_manager.resolve_chat_id(user_id, thread_id)
         display = session_manager.get_display_name(window_id)
         await update_topic_emoji(bot, chat_id, thread_id, "done", display)
         await enqueue_status_update(bot, user_id, window_id, None, thread_id=thread_id)
-
-    # Clear session association so next launch gets a fresh session
-    if users:
-        window_id = users[0][2]
-        session_manager.clear_window_session(window_id)
 
 
 async def _handle_task_completed(event: HookEvent, bot: Bot) -> None:

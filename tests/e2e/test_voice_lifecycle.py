@@ -8,7 +8,7 @@ Real PTB Application, real tmux, real session binding (via setup_bound_topic).
 """
 
 import shutil
-from datetime import datetime  # noqa: F401
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest

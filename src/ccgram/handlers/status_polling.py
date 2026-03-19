@@ -125,6 +125,7 @@ class WindowPollState:
     last_rendered_text: str | None = None
     rc_active: bool = False
     rc_off_since: float | None = None  # debounce RC removal (3s)
+    last_rc_detected: bool = False  # raw detection result (before debounce)
 
 
 @dataclass
@@ -574,8 +575,6 @@ def _parse_with_pyte(
         parse_status_from_screen,
     )
 
-    # Fall back to default dimensions if not provided, invalid, or non-int
-    # (non-int can happen when callers pass MagicMock in tests)
     if (
         not isinstance(columns, int)
         or not isinstance(rows, int)
@@ -595,6 +594,7 @@ def _parse_with_pyte(
         and ws.last_pane_hash != 0
         and (ws.last_pyte_result is None or not ws.last_pyte_result.is_interactive)
     ):
+        _update_rc_state(ws, ws.last_rc_detected)
         return ws.last_pyte_result
     buf = _get_screen_buffer(window_id, columns, rows)
 
@@ -606,7 +606,9 @@ def _parse_with_pyte(
     # Detect Remote Control state from status bar below chrome
     from ..terminal_parser import detect_remote_control
 
-    _update_rc_state(ws, detect_remote_control(buf.display))
+    rc_detected = detect_remote_control(buf.display)
+    ws.last_rc_detected = rc_detected
+    _update_rc_state(ws, rc_detected)
 
     # Check interactive UI first (takes precedence)
     interactive = parse_from_screen(buf)

@@ -661,7 +661,7 @@ async def forward_command_handler(
     resolved_name = provider_map.get(tg_cmd, tg_cmd)
     cc_name = resolved_name.lstrip("/")
     if not args and cc_name in ("remote-control", "rc"):
-        args = display
+        args = display  # RC needs the window name as its session identifier
     cc_slash = f"/{cc_name} {args}".rstrip() if args else f"/{cc_name}"
     command_token = _normalize_slash_token(cc_slash)
 

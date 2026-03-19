@@ -427,31 +427,6 @@ class TmuxManager:
         except OSError:
             return ""
 
-    async def set_window_user_option(
-        self, window_id: str, key: str, value: str
-    ) -> None:
-        """Set a user-defined tmux window option (fire-and-forget).
-
-        Useful for exposing ccgram state to tmux status bar formatting.
-        Silently ignores all errors.
-        """
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "tmux",
-                "set-option",
-                "-w",
-                "-t",
-                window_id,
-                key,
-                value,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            async with asyncio.timeout(3.0):
-                await proc.wait()
-        except OSError, TimeoutError:
-            pass
-
     async def _capture_pane_plain(self, window_id: str) -> str | None:
         """Capture pane as plain text via libtmux.
 

@@ -536,7 +536,7 @@ def _mock_update_status_patches(*, pyte_result, provider):
     from contextlib import ExitStack
 
     stack = ExitStack()
-    mocks: dict = {}
+    mocks: dict[str, MagicMock] = {}
     mocks["tm"] = stack.enter_context(
         patch("ccgram.handlers.status_polling.tmux_manager")
     )
@@ -570,6 +570,8 @@ def _mock_update_status_patches(*, pyte_result, provider):
     mock_window.window_id = "@0"
     mock_window.window_name = "project"
     mock_window.pane_current_command = "node"
+    mock_window.pane_width = 80
+    mock_window.pane_height = 24
     mocks["tm"].find_window_by_id = AsyncMock(return_value=mock_window)
     mocks["tm"].capture_pane = AsyncMock(return_value="\x1b[1msome ansi output\x1b[0m")
     mocks["tm"].get_pane_title = AsyncMock(return_value="")
