@@ -97,5 +97,8 @@ CB_KEYS_PREFIX = "kb:"  # kb:<key_id>:<window>
 CB_SYNC_FIX = "sync:fix"
 CB_SYNC_DISMISS = "sync:x"
 
+# Voice transcription confirm/discard
+CB_VOICE = "vc:"  # vc:send:<msg_id> / vc:drop:<msg_id>
+
 # Idle status sentinel (shared between status_polling and message_queue)
 IDLE_STATUS_TEXT = "\u2713 Ready"

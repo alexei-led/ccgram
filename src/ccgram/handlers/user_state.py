@@ -9,3 +9,6 @@ PENDING_THREAD_TEXT = "_pending_thread_text"
 RECOVERY_WINDOW_ID = "_recovery_window_id"
 RECOVERY_SESSIONS = "_recovery_sessions"
 RESUME_SESSIONS = "_resume_sessions"
+VOICE_PENDING = (
+    "_voice_pending"  # dict[tuple[int, int], str]: (chat_id, msg_id) → transcribed text
+)

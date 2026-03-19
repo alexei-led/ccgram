@@ -373,6 +373,7 @@ class TestProviderCommandHelpers:
         names = {c.name for c in commands}
         assert "/status" in names
         assert "/mcp" in names
+        assert "/help" not in names
 
     def test_builds_provider_command_map(self, tmp_path: Path) -> None:
         from ccgram.providers.codex import CodexProvider

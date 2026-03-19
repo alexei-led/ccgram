@@ -29,6 +29,7 @@ dependencies = [
     "structlog>=24.0.0",
     "click>=8.1.0",
     "pyte>=0.8.2",
+
 ]
 
 [project.urls]
@@ -114,8 +115,8 @@ max-statements = 60
 "src/ccgram/handlers/recovery_callbacks.py" = ["C901"]
 
 [tool.deptry.per_rule_ignores]
-# DEP002: dev/CLI tools (never imported in src/) + httpx (transitive runtime dep of python-telegram-bot)
-DEP002 = ["httpx", "deptry", "pyright", "pytest", "pytest-asyncio", "pytest-cov", "pytest-timeout", "ruff", "hypothesis"]
+# DEP002: dev/CLI tools (never imported in src/)
+DEP002 = ["deptry", "pyright", "pytest", "pytest-asyncio", "pytest-cov", "pytest-timeout", "ruff", "hypothesis"]
 
 [tool.pyright]
 pythonVersion = "3.14"

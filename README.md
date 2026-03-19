@@ -70,6 +70,7 @@ Each Telegram Forum topic binds to one tmux window running an agent CLI. Message
 - Codex `/status` replies include a bot-side transcript snapshot (session + token/rate-limit stats) when Codex does not emit a normal transcript message
 - Multi-pane support — auto-detects blocked panes, surfaces prompts, `/panes` command for overview
 - Terminal screenshots — capture the current pane (or any specific pane) as a PNG image
+- Voice message transcription via Whisper API (OpenAI, Groq) with confirm/discard keyboard
 - Sessions dashboard (`/sessions`) — overview of all sessions with status and kill buttons
 
 **Real-time monitoring**

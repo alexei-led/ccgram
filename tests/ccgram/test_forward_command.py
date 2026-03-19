@@ -33,6 +33,7 @@ def _make_update(
     msg.chat.id = -100999
     msg.chat.is_forum = True
     msg.is_topic_message = True
+    msg.get_bot = MagicMock(return_value=MagicMock(send_chat_action=AsyncMock()))
     update.message = msg
     update.callback_query = None
     return update

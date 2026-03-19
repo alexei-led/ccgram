@@ -20,7 +20,7 @@ from .message_queue import (
     enqueue_status_update,
 )
 from .topic_emoji import clear_topic_emoji_state
-from .user_state import PENDING_THREAD_ID, PENDING_THREAD_TEXT
+from .user_state import PENDING_THREAD_ID, PENDING_THREAD_TEXT, VOICE_PENDING
 
 
 async def clear_topic_state(
@@ -92,3 +92,11 @@ async def clear_topic_state(
     if user_data is not None and user_data.get(PENDING_THREAD_ID) == thread_id:
         user_data.pop(PENDING_THREAD_ID, None)
         user_data.pop(PENDING_THREAD_TEXT, None)
+
+    # Clear pending voice transcriptions for this chat
+    if user_data is not None:
+        voice_store: dict[tuple[int, int], str] = user_data.get(VOICE_PENDING, {})
+        chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+        stale = [k for k in voice_store if k[0] == chat_id]
+        for k in stale:
+            voice_store.pop(k, None)

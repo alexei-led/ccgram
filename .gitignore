@@ -54,5 +54,9 @@ pkg/
 # ralphex progress logs
 progress*.txt
 
+# Contributor tool dirs
+.serena
+.works
+
 # Dev run lock
 .ccgram-dev-run.lock.d/
