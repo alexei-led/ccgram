@@ -879,3 +879,40 @@ class TestParseStatusFromScreen:
         screen = self._make_screen(ansi)
         screen_result = parse_status_from_screen(screen)
         assert regex_result == screen_result == "Working on task"
+
+
+# ── Remote Control detection ───────────────────────────────────────────
+
+
+class TestDetectRemoteControl:
+    def _build_lines(self, *, rc: bool = True) -> list[str]:
+        sep = "─" * 30
+        status_bar = "  ● Remote Control active" if rc else "  [Opus 4.6] Context: 34%"
+        return [
+            "output line 1",
+            "output line 2",
+            sep,
+            "❯ ",
+            sep,
+            status_bar,
+        ]
+
+    def test_rc_present(self):
+        from ccgram.terminal_parser import detect_remote_control
+
+        assert detect_remote_control(self._build_lines(rc=True)) is True
+
+    def test_rc_absent(self):
+        from ccgram.terminal_parser import detect_remote_control
+
+        assert detect_remote_control(self._build_lines(rc=False)) is False
+
+    def test_no_chrome(self):
+        from ccgram.terminal_parser import detect_remote_control
+
+        assert detect_remote_control(["output", "no chrome here"]) is False
+
+    def test_empty(self):
+        from ccgram.terminal_parser import detect_remote_control
+
+        assert detect_remote_control([]) is False

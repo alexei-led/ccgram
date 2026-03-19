@@ -1096,6 +1096,37 @@ async def recall_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) ->
     )
 
 
+async def buttons_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show persistent action toolbar with inline keyboard buttons."""
+    user = update.effective_user
+    if not user or not is_user_allowed(user.id):
+        return
+    if not update.message:
+        return
+
+    thread_id = _get_thread_id(update)
+    if thread_id is None:
+        await safe_reply(update.message, "\u274c Use this command inside a topic.")
+        return
+
+    window_id = session_manager.get_window_for_thread(user.id, thread_id)
+    if not window_id:
+        await safe_reply(
+            update.message, "\u274c This topic is not bound to any session."
+        )
+        return
+
+    from .handlers.screenshot_callbacks import build_toolbar_keyboard
+
+    keyboard = build_toolbar_keyboard(window_id)
+    display = session_manager.get_display_name(window_id)
+    await safe_reply(
+        update.message,
+        f"\U0001f39b `{display}` toolbar",
+        reply_markup=keyboard,
+    )
+
+
 async def inline_query_handler(
     update: Update, _context: ContextTypes.DEFAULT_TYPE
 ) -> None:
@@ -1176,6 +1207,9 @@ _CB_SCREENSHOT = (
     CB_STATUS_SCREENSHOT,
     CB_KEYS_PREFIX,
     CB_PANE_SCREENSHOT,
+    "st:rmt:",  # CB_STATUS_REMOTE
+    "tb:cc:",  # CB_TOOLBAR_CTRLC
+    "tb:x",  # CB_TOOLBAR_DISMISS
 )
 _CB_RECOVERY = (
     CB_RECOVERY_BACK,
@@ -1729,6 +1763,9 @@ def create_bot() -> Application:
         CommandHandler("panes", panes_command, filters=_group_filter)
     )
     application.add_handler(CommandHandler("sync", sync_command, filters=_group_filter))
+    application.add_handler(
+        CommandHandler("buttons", buttons_command, filters=_group_filter)
+    )
     application.add_handler(
         CommandHandler("restore", restore_command, filters=_group_filter)
     )

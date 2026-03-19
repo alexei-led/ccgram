@@ -31,8 +31,9 @@ from ..tmux_manager import tmux_manager
 from ..utils import task_done_callback
 from .callback_data import (
     CB_STATUS_ESC,
-    CB_STATUS_RECALL,
     CB_STATUS_NOTIFY,
+    CB_STATUS_RECALL,
+    CB_STATUS_REMOTE,
     CB_STATUS_SCREENSHOT,
     NOTIFY_MODE_ICONS,
 )
@@ -51,8 +52,9 @@ MERGE_MAX_LENGTH = 3800  # Leave room for markdown conversion overhead
 def build_status_keyboard(
     window_id: str, history: list[str] | None = None
 ) -> InlineKeyboardMarkup:
-    """Build inline keyboard for status messages: [↑ cmd] row + [Esc] [Screenshot] [Bell]."""
+    """Build inline keyboard for status messages: [↑ cmd] row + [Esc] [Screenshot] [Bell] [RC]."""
     from .command_history import truncate_for_display
+    from .status_polling import is_rc_active
 
     rows: list[list[InlineKeyboardButton]] = []
 
@@ -72,6 +74,7 @@ def build_status_keyboard(
     # Control row
     mode = session_manager.get_notification_mode(window_id)
     bell = NOTIFY_MODE_ICONS.get(mode, "\U0001f514")
+    rc_label = "\U0001f4e1\u2713" if is_rc_active(window_id) else "\U0001f4e1"
     rows.append(
         [
             InlineKeyboardButton(
@@ -85,6 +88,10 @@ def build_status_keyboard(
             InlineKeyboardButton(
                 bell,
                 callback_data=f"{CB_STATUS_NOTIFY}{window_id}"[:64],
+            ),
+            InlineKeyboardButton(
+                rc_label,
+                callback_data=f"{CB_STATUS_REMOTE}{window_id}"[:64],
             ),
         ]
     )

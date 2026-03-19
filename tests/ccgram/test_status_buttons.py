@@ -8,6 +8,7 @@ from ccgram.handlers.callback_data import (
     CB_STATUS_ESC,
     CB_STATUS_NOTIFY,
     CB_STATUS_RECALL,
+    CB_STATUS_REMOTE,
     CB_STATUS_SCREENSHOT,
     NOTIFY_MODE_ICONS,
 )
@@ -21,7 +22,8 @@ def _all_callback_data(window_id: str) -> list[str]:
 
 class TestBuildStatusKeyboard:
     @pytest.mark.parametrize(
-        "prefix", [CB_STATUS_ESC, CB_STATUS_SCREENSHOT, CB_STATUS_NOTIFY]
+        "prefix",
+        [CB_STATUS_ESC, CB_STATUS_SCREENSHOT, CB_STATUS_NOTIFY, CB_STATUS_REMOTE],
     )
     def test_has_button_with_prefix(self, prefix: str) -> None:
         assert any(d.startswith(prefix) for d in _all_callback_data("@0"))
@@ -31,11 +33,17 @@ class TestBuildStatusKeyboard:
         assert f"{CB_STATUS_ESC}@42" in data
         assert f"{CB_STATUS_SCREENSHOT}@42" in data
         assert f"{CB_STATUS_NOTIFY}@42" in data
+        assert f"{CB_STATUS_REMOTE}@42" in data
 
     def test_callback_data_truncated_to_64_bytes(self) -> None:
         long_id = "@" + "x" * 60
         kb = build_status_keyboard(long_id)
-        prefixes = (CB_STATUS_ESC, CB_STATUS_SCREENSHOT, CB_STATUS_NOTIFY)
+        prefixes = (
+            CB_STATUS_ESC,
+            CB_STATUS_SCREENSHOT,
+            CB_STATUS_NOTIFY,
+            CB_STATUS_REMOTE,
+        )
         for row in kb.inline_keyboard:
             for btn in row:
                 assert len(btn.callback_data) == 64
@@ -83,3 +91,28 @@ class TestBuildStatusKeyboard:
         btn = kb.inline_keyboard[0][0]
         assert len(btn.callback_data) == 64
         assert btn.callback_data.startswith(CB_STATUS_RECALL)
+
+    def test_rc_button_always_present(self) -> None:
+        data = _all_callback_data("@0")
+        assert any(d.startswith(CB_STATUS_REMOTE) for d in data)
+
+    def test_rc_button_label_inactive(self) -> None:
+        kb = build_status_keyboard("@0")
+        rc_btn = [
+            btn
+            for row in kb.inline_keyboard
+            for btn in row
+            if btn.callback_data.startswith(CB_STATUS_REMOTE)
+        ][0]
+        assert rc_btn.text == "\U0001f4e1"
+
+    def test_rc_button_label_active(self) -> None:
+        with patch("ccgram.handlers.status_polling.is_rc_active", return_value=True):
+            kb = build_status_keyboard("@0")
+        rc_btn = [
+            btn
+            for row in kb.inline_keyboard
+            for btn in row
+            if btn.callback_data.startswith(CB_STATUS_REMOTE)
+        ][0]
+        assert rc_btn.text == "\U0001f4e1\u2713"

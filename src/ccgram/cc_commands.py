@@ -58,6 +58,7 @@ _BOT_COMMANDS: list[tuple[str, str]] = [
     ("sync", "Audit and fix state"),
     ("unbind", "Unbind this topic"),
     ("recall", "Recall recent commands"),
+    ("buttons", "Show action toolbar"),
     ("upgrade", "Upgrade ccgram and restart"),
 ]
 

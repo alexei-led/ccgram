@@ -29,14 +29,15 @@ EMOJI_IDLE = "\U0001f4a4"  # Zzz / sleeping
 EMOJI_DONE = "\u2705"  # Check mark (Claude exited normally)
 EMOJI_DEAD = "\u274c"  # Cross mark
 EMOJI_YOLO = "\U0001f680"  # Rocket (positive YOLO indicator)
+EMOJI_RC = "\U0001f4e1"  # Satellite dish (Remote Control active)
 _EMOJI_DEAD_OLD = "\u26ab"  # Legacy dead emoji (black circle, pre-2026-02)
 
 # Debounce: state must be stable for this many seconds before updating topic name.
 # Prevents rapid active↔idle toggling from flooding chat with rename messages.
 DEBOUNCE_SECONDS = 5.0
 
-# Topic state tracking: (chat_id, thread_id) -> (state, approval_mode)
-_topic_states: dict[tuple[int, int], tuple[str, str]] = {}
+# Topic state tracking: (chat_id, thread_id) -> (state, approval_mode, rc_active)
+_topic_states: dict[tuple[int, int], tuple[str, str, bool]] = {}
 
 # Pending transitions: (chat_id, thread_id) -> (desired_state, first_seen_monotonic)
 _pending_transitions: dict[tuple[int, int], tuple[str, float]] = {}
@@ -79,6 +80,18 @@ def _resolve_approval_mode(chat_id: int, thread_id: int) -> str:
     return session_manager.get_approval_mode(window_id)
 
 
+def _resolve_rc_mode(chat_id: int, thread_id: int) -> bool:
+    """Resolve Remote Control active state for a topic via session bindings."""
+    from ..session import session_manager
+
+    window_id = session_manager.get_window_for_chat_thread(chat_id, thread_id)
+    if not window_id:
+        return False
+    from .status_polling import is_rc_active
+
+    return is_rc_active(window_id)
+
+
 def format_topic_name_for_mode(display_name: str, approval_mode: str) -> str:
     """Format a topic display name with a positive mode badge."""
     clean_name = strip_emoji_prefix(display_name)
@@ -113,7 +126,8 @@ async def update_topic_emoji(
     key = (chat_id, thread_id)
 
     approval_mode = _resolve_approval_mode(chat_id, thread_id)
-    state_token = (state, approval_mode)
+    rc_active = _resolve_rc_mode(chat_id, thread_id)
+    state_token = (state, approval_mode, rc_active)
 
     # Already in this state/mode — no transition needed
     if _topic_states.get(key) == state_token:
@@ -146,8 +160,9 @@ async def update_topic_emoji(
     _pending_transitions.pop(key, None)
 
     clean_name = _resolve_topic_name(key, display_name)
+    rc_prefix = f"{EMOJI_RC} " if rc_active else ""
     mode_prefix = f"{EMOJI_YOLO} " if approval_mode == "yolo" else ""
-    new_name = f"{emoji} {mode_prefix}{clean_name}"
+    new_name = f"{emoji} {rc_prefix}{mode_prefix}{clean_name}"
 
     try:
         await bot.edit_forum_topic(
@@ -188,9 +203,11 @@ def strip_emoji_prefix(name: str) -> str:
         if name.startswith(prefix):
             name = name[len(prefix) :]
             break
-    yolo_prefix = f"{EMOJI_YOLO} "
-    if name.startswith(yolo_prefix):
-        return name[len(yolo_prefix) :]
+    # Strip badge emojis (RC, YOLO) — order: RC before YOLO matches composition order
+    for badge in (EMOJI_RC, EMOJI_YOLO):
+        badge_prefix = f"{badge} "
+        if name.startswith(badge_prefix):
+            name = name[len(badge_prefix) :]
     return name
 
 

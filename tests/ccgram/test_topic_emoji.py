@@ -449,3 +449,59 @@ class TestUpdateStoredTopicName:
 
         update_stored_topic_name(-100, 99, "fresh-name")
         assert _topic_names[(-100, 99)] == "fresh-name"
+
+
+class TestRemoteControlBadge:
+    def test_strip_rc_prefix(self) -> None:
+        from ccgram.handlers.topic_emoji import EMOJI_RC
+
+        assert strip_emoji_prefix(f"{EMOJI_RC} myproject") == "myproject"
+
+    def test_strip_state_and_rc_prefix(self) -> None:
+        from ccgram.handlers.topic_emoji import EMOJI_RC
+
+        assert strip_emoji_prefix(f"{EMOJI_ACTIVE} {EMOJI_RC} myproject") == "myproject"
+
+    def test_strip_state_rc_yolo_prefix(self) -> None:
+        from ccgram.handlers.topic_emoji import EMOJI_RC
+
+        assert (
+            strip_emoji_prefix(f"{EMOJI_ACTIVE} {EMOJI_RC} {EMOJI_YOLO} myproject")
+            == "myproject"
+        )
+
+    async def test_rc_active_adds_badge(self) -> None:
+        from ccgram.handlers.topic_emoji import EMOJI_RC
+
+        bot = AsyncMock()
+        with (
+            patch(
+                "ccgram.handlers.topic_emoji._resolve_approval_mode",
+                return_value="normal",
+            ),
+            patch("ccgram.handlers.topic_emoji._resolve_rc_mode", return_value=True),
+        ):
+            await _debounced_update(bot, -100, 42, "active", "myproject")
+        bot.edit_forum_topic.assert_called_once_with(
+            chat_id=-100,
+            message_thread_id=42,
+            name=f"{EMOJI_ACTIVE} {EMOJI_RC} myproject",
+        )
+
+    async def test_rc_and_yolo_badges(self) -> None:
+        from ccgram.handlers.topic_emoji import EMOJI_RC
+
+        bot = AsyncMock()
+        with (
+            patch(
+                "ccgram.handlers.topic_emoji._resolve_approval_mode",
+                return_value="yolo",
+            ),
+            patch("ccgram.handlers.topic_emoji._resolve_rc_mode", return_value=True),
+        ):
+            await _debounced_update(bot, -100, 42, "active", "myproject")
+        bot.edit_forum_topic.assert_called_once_with(
+            chat_id=-100,
+            message_thread_id=42,
+            name=f"{EMOJI_ACTIVE} {EMOJI_RC} {EMOJI_YOLO} myproject",
+        )

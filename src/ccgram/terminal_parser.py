@@ -10,7 +10,7 @@ All Claude Code text patterns live here. To support a new UI type or
 a changed Claude Code version, edit UI_PATTERNS / STATUS_SPINNERS.
 
 Key functions: extract_interactive_content(), parse_status_line(),
-strip_pane_chrome(), extract_bash_output().
+strip_pane_chrome(), extract_bash_output(), detect_remote_control().
 """
 
 import re
@@ -434,6 +434,19 @@ def format_status_display(raw_status: str) -> str:
         if keyword in lower:
             return label
     return _DEFAULT_STATUS
+
+
+# ── Remote Control detection ──────────────────────────────────────────
+
+_RC_MARKER = "Remote Control active"
+
+
+def detect_remote_control(lines: list[str]) -> bool:
+    """Detect 'Remote Control active' in the status bar below chrome separators."""
+    boundary = find_chrome_boundary(lines)
+    if boundary is None:
+        return False
+    return any(_RC_MARKER in line for line in lines[boundary:])
 
 
 # ── Pane chrome stripping & bash output extraction ─────────────────────

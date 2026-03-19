@@ -102,6 +102,10 @@ _ACTIVITY_THRESHOLD = 10.0
 # activity, transition from "starting up" to idle instead of staying green forever.
 _STARTUP_TIMEOUT = 30.0
 
+# Remote Control detection debounce: require RC to be absent for this many
+# seconds before clearing the badge (avoids flicker during brief screen redraws).
+_RC_DEBOUNCE_SECONDS = 3.0
+
 
 # ── Consolidated per-window and per-topic polling state ────────────────
 
@@ -119,6 +123,8 @@ class WindowPollState:
     last_pane_hash: int = 0
     last_pyte_result: StatusUpdate | None = field(default=None, repr=False)
     last_rendered_text: str | None = None
+    rc_active: bool = False
+    rc_off_since: float | None = None  # debounce RC removal (3s)
 
 
 @dataclass
@@ -192,7 +198,15 @@ def reset_screen_buffer_state() -> None:
         ws.last_pane_hash = 0
         ws.last_pyte_result = None
         ws.last_rendered_text = None
+        ws.rc_active = False
+        ws.rc_off_since = None
     _pane_alert_hashes.clear()
+
+
+def is_rc_active(window_id: str) -> bool:
+    """Check whether Remote Control is currently active for a window."""
+    ws = _window_poll_state.get(window_id)
+    return ws.rc_active if ws else False
 
 
 def is_shell_prompt(pane_current_command: str) -> bool:
@@ -521,6 +535,20 @@ async def _handle_no_status(
         _clear_autoclose_if_active(user_id, thread_id)
 
 
+def _update_rc_state(ws: WindowPollState, rc_detected: bool) -> None:
+    """Update Remote Control state with 3s debounce on removal."""
+    if rc_detected:
+        ws.rc_active = True
+        ws.rc_off_since = None
+    elif ws.rc_active:
+        now = time.monotonic()
+        if ws.rc_off_since is None:
+            ws.rc_off_since = now
+        elif now - ws.rc_off_since >= _RC_DEBOUNCE_SECONDS:
+            ws.rc_active = False
+            ws.rc_off_since = None
+
+
 def _parse_with_pyte(
     window_id: str,
     pane_text: str,
@@ -573,6 +601,11 @@ def _parse_with_pyte(
 
     # Store ANSI-stripped rendered text for fallback consumers
     ws.last_rendered_text = buf.rendered_text
+
+    # Detect Remote Control state from status bar below chrome
+    from ..terminal_parser import detect_remote_control
+
+    _update_rc_state(ws, detect_remote_control(buf.display))
 
     # Check interactive UI first (takes precedence)
     interactive = parse_from_screen(buf)
