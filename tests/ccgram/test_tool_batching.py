@@ -16,6 +16,7 @@ from ccgram.handlers.message_queue import (
     _handle_content_task,
     _is_batch_eligible,
     _process_batch_task,
+    build_subagent_label,
     clear_batch_for_topic,
     format_batch_message,
     shutdown_workers,
@@ -94,6 +95,54 @@ class TestFormatBatchMessage:
         result = format_batch_message(entries)
         assert "\u23bf" in result
         assert "\u23f3" not in result
+
+    def test_subagent_label_none(self) -> None:
+        entries = [ToolBatchEntry("t1", "Read x")]
+        result = format_batch_message(entries, subagent_label=None)
+        assert "[" not in result.split("\n")[0]
+
+    def test_subagent_label_single(self) -> None:
+        entries = [ToolBatchEntry("t1", "Read x"), ToolBatchEntry("t2", "Edit y")]
+        result = format_batch_message(entries, subagent_label="\U0001f916 write-tests")
+        header = result.split("\n")[0]
+        assert "2 tool calls" in header
+        assert "[\U0001f916 write-tests]" in header
+
+    def test_subagent_label_multi(self) -> None:
+        entries = [ToolBatchEntry("t1", "Read x")]
+        label = "\U0001f916 2 subagents: write-tests, refactor"
+        result = format_batch_message(entries, subagent_label=label)
+        header = result.split("\n")[0]
+        assert "[" in header
+        assert "2 subagents" in header
+
+
+class TestBuildSubagentLabel:
+    def test_empty_list(self) -> None:
+        assert build_subagent_label([]) is None
+
+    def test_single_name(self) -> None:
+        result = build_subagent_label(["write-tests"])
+        assert result == "\U0001f916 write-tests"
+
+    def test_two_names(self) -> None:
+        result = build_subagent_label(["write-tests", "refactor"])
+        assert result is not None
+        assert "2 subagents" in result
+        assert "write-tests" in result
+        assert "refactor" in result
+
+    def test_three_names(self) -> None:
+        result = build_subagent_label(["a", "b", "c"])
+        assert result is not None
+        assert "3 subagents" in result
+
+    def test_truncates_at_three(self) -> None:
+        result = build_subagent_label(["a", "b", "c", "d"])
+        assert result is not None
+        assert "4 subagents" in result
+        assert "a, b, c" in result
+        assert "d" not in result
 
 
 # --- _is_batch_eligible tests ---

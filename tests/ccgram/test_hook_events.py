@@ -11,6 +11,7 @@ from ccgram.handlers.hook_events import (
     clear_subagents,
     dispatch_hook_event,
     get_subagent_count,
+    get_subagent_names,
 )
 
 
@@ -65,16 +66,29 @@ class TestSubagentTracking:
         _active_subagents.clear()
 
     def test_start_increments_count(self) -> None:
-        _active_subagents["@0"] = {"a1"}
+        _active_subagents["@0"] = {"a1": "agent-1"}
         assert get_subagent_count("@0") == 1
 
     def test_clear_removes_all(self) -> None:
-        _active_subagents["@0"] = {"a1", "a2"}
+        _active_subagents["@0"] = {"a1": "agent-1", "a2": "agent-2"}
         clear_subagents("@0")
         assert get_subagent_count("@0") == 0
 
     def test_count_missing_window(self) -> None:
         assert get_subagent_count("@999") == 0
+
+    def test_get_names_returns_values(self) -> None:
+        _active_subagents["@0"] = {"a1": "write-tests", "a2": "refactor"}
+        names = get_subagent_names("@0")
+        assert sorted(names) == ["refactor", "write-tests"]
+
+    def test_get_names_missing_window(self) -> None:
+        assert get_subagent_names("@999") == []
+
+    def test_get_names_empty_after_clear(self) -> None:
+        _active_subagents["@0"] = {"a1": "agent-1"}
+        clear_subagents("@0")
+        assert get_subagent_names("@0") == []
 
 
 class TestDispatchHookEvent:
@@ -219,12 +233,19 @@ class TestHandleSubagentStart:
             lambda: iter([(100, 42, "@0")]),
         )
         bot = AsyncMock(spec=Bot)
-        event = _make_event(
-            event_type="SubagentStart",
-            data={"subagent_id": "sub-1", "name": "researcher"},
-        )
-        await dispatch_hook_event(event, bot)
-        assert get_subagent_count("@0") == 1
+        with patch(
+            "ccgram.handlers.message_queue.enqueue_status_update"
+        ) as mock_enqueue:
+            event = _make_event(
+                event_type="SubagentStart",
+                data={"subagent_id": "sub-1", "name": "researcher"},
+            )
+            await dispatch_hook_event(event, bot)
+            assert get_subagent_count("@0") == 1
+            assert get_subagent_names("@0") == ["researcher"]
+            mock_enqueue.assert_called_once_with(
+                bot, 100, "@0", "\U0001f916 Subagent started: researcher", thread_id=42
+            )
 
     async def test_tracks_multiple_subagents(self, monkeypatch) -> None:
         monkeypatch.setattr(
@@ -232,12 +253,47 @@ class TestHandleSubagentStart:
             lambda: iter([(100, 42, "@0")]),
         )
         bot = AsyncMock(spec=Bot)
-        for sub_id in ("sub-1", "sub-2"):
+        with patch("ccgram.handlers.message_queue.enqueue_status_update"):
+            for sub_id in ("sub-1", "sub-2"):
+                event = _make_event(
+                    event_type="SubagentStart", data={"subagent_id": sub_id}
+                )
+                await dispatch_hook_event(event, bot)
+            assert get_subagent_count("@0") == 2
+
+    async def test_name_fallback_to_description(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "ccgram.handlers.hook_events.session_manager.iter_thread_bindings",
+            lambda: iter([(100, 42, "@0")]),
+        )
+        bot = AsyncMock(spec=Bot)
+        with patch(
+            "ccgram.handlers.message_queue.enqueue_status_update"
+        ) as mock_enqueue:
             event = _make_event(
-                event_type="SubagentStart", data={"subagent_id": sub_id}
+                event_type="SubagentStart",
+                data={"subagent_id": "sub-1", "description": "explore code"},
             )
             await dispatch_hook_event(event, bot)
-        assert get_subagent_count("@0") == 2
+            assert get_subagent_names("@0") == ["explore code"]
+            assert "explore code" in mock_enqueue.call_args[0][3]
+
+    async def test_name_fallback_to_truncated_id(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "ccgram.handlers.hook_events.session_manager.iter_thread_bindings",
+            lambda: iter([(100, 42, "@0")]),
+        )
+        bot = AsyncMock(spec=Bot)
+        with patch(
+            "ccgram.handlers.message_queue.enqueue_status_update"
+        ) as mock_enqueue:
+            event = _make_event(
+                event_type="SubagentStart",
+                data={"subagent_id": "abcdef123456789"},
+            )
+            await dispatch_hook_event(event, bot)
+            assert get_subagent_names("@0") == ["abcdef123456"]
+            assert "abcdef123456" in mock_enqueue.call_args[0][3]
 
 
 class TestHandleSubagentStop:
@@ -249,23 +305,34 @@ class TestHandleSubagentStop:
             "ccgram.handlers.hook_events.session_manager.iter_thread_bindings",
             lambda: iter([(100, 42, "@0")]),
         )
-        _active_subagents["@0"] = {"sub-1", "sub-2"}
+        _active_subagents["@0"] = {"sub-1": "agent-1", "sub-2": "agent-2"}
         bot = AsyncMock(spec=Bot)
-        event = _make_event(event_type="SubagentStop", data={"subagent_id": "sub-1"})
-        await dispatch_hook_event(event, bot)
-        assert get_subagent_count("@0") == 1
+        with patch(
+            "ccgram.handlers.message_queue.enqueue_status_update"
+        ) as mock_enqueue:
+            event = _make_event(
+                event_type="SubagentStop", data={"subagent_id": "sub-1"}
+            )
+            await dispatch_hook_event(event, bot)
+            assert get_subagent_count("@0") == 1
+            mock_enqueue.assert_called_once_with(
+                bot, 100, "@0", "\U0001f916 Subagent done: agent-1", thread_id=42
+            )
 
     async def test_removes_last_subagent_cleans_dict(self, monkeypatch) -> None:
         monkeypatch.setattr(
             "ccgram.handlers.hook_events.session_manager.iter_thread_bindings",
             lambda: iter([(100, 42, "@0")]),
         )
-        _active_subagents["@0"] = {"sub-1"}
+        _active_subagents["@0"] = {"sub-1": "agent-1"}
         bot = AsyncMock(spec=Bot)
-        event = _make_event(event_type="SubagentStop", data={"subagent_id": "sub-1"})
-        await dispatch_hook_event(event, bot)
-        assert get_subagent_count("@0") == 0
-        assert "@0" not in _active_subagents
+        with patch("ccgram.handlers.message_queue.enqueue_status_update"):
+            event = _make_event(
+                event_type="SubagentStop", data={"subagent_id": "sub-1"}
+            )
+            await dispatch_hook_event(event, bot)
+            assert get_subagent_count("@0") == 0
+            assert "@0" not in _active_subagents
 
 
 class TestHandleTeammateIdle:

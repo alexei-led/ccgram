@@ -824,13 +824,15 @@ async def update_status_message(
         ws.startup_time = None
         await _send_typing_throttled(bot, user_id, thread_id)
         if notif_mode not in ("muted", "errors_only"):
-            # Append subagent count if any are active
-            from .hook_events import get_subagent_count
+            # Append subagent names if any are active
+            from .hook_events import get_subagent_names
+            from .message_queue import build_subagent_label
 
-            subagent_count = get_subagent_count(window_id)
+            subagent_names = get_subagent_names(window_id)
             display_status = status_line
-            if subagent_count:
-                display_status = f"{status_line} ({subagent_count} subagent{'s' if subagent_count > 1 else ''})"
+            if subagent_names:
+                label = build_subagent_label(subagent_names)
+                display_status = f"{status_line} ({label})"
             await enqueue_status_update(
                 bot,
                 user_id,

@@ -133,13 +133,18 @@ async def _handle_stop(event: HookEvent, bot: Bot) -> None:
         await enqueue_status_update(bot, user_id, window_id, None, thread_id=thread_id)
 
 
-# Track active subagents per window: window_id -> set of subagent_ids
-_active_subagents: dict[str, set[str]] = {}
+# Track active subagents per window: window_id -> {subagent_id -> name}
+_active_subagents: dict[str, dict[str, str]] = {}
 
 
 def get_subagent_count(window_id: str) -> int:
     """Return the number of active subagents for a window."""
-    return len(_active_subagents.get(window_id, set()))
+    return len(_active_subagents.get(window_id, {}))
+
+
+def get_subagent_names(window_id: str) -> list[str]:
+    """Return names of active subagents for a window."""
+    return list(_active_subagents.get(window_id, {}).values())
 
 
 def clear_subagents(window_id: str) -> None:
@@ -147,28 +152,46 @@ def clear_subagents(window_id: str) -> None:
     _active_subagents.pop(window_id, None)
 
 
-async def _handle_subagent_start(event: HookEvent, bot: Bot) -> None:  # noqa: ARG001
-    """Handle SubagentStart — track active subagent."""
+async def _handle_subagent_start(event: HookEvent, bot: Bot) -> None:
+    """Handle SubagentStart — track active subagent and notify."""
+    from .message_queue import enqueue_status_update
+
     users = _resolve_users_for_window_key(event.window_key)
     if not users:
         return
 
     window_id = users[0][2]  # all users share the same window_id
     subagent_id = event.data.get("subagent_id", "")
+    name = (
+        event.data.get("name", "")
+        or event.data.get("description", "")
+        or subagent_id[:12]
+    )
 
-    _active_subagents.setdefault(window_id, set()).add(subagent_id)
+    _active_subagents.setdefault(window_id, {})[subagent_id] = name
 
     count = len(_active_subagents[window_id])
     logger.debug(
         "Subagent started: window=%s, count=%d, name=%s",
         window_id,
         count,
-        event.data.get("name", ""),
+        name,
     )
 
+    for user_id, thread_id, window_id in users:
+        await enqueue_status_update(
+            bot,
+            user_id,
+            window_id,
+            f"\U0001f916 Subagent started: {name}",
+            thread_id=thread_id,
+        )
 
-async def _handle_subagent_stop(event: HookEvent, bot: Bot) -> None:  # noqa: ARG001
-    """Handle SubagentStop — remove subagent from tracking."""
+
+async def _handle_subagent_stop(event: HookEvent, bot: Bot) -> None:
+    """Handle SubagentStop — remove subagent from tracking and notify."""
+    from .message_queue import enqueue_status_update
+
     users = _resolve_users_for_window_key(event.window_key)
     if not users:
         return
@@ -176,20 +199,29 @@ async def _handle_subagent_stop(event: HookEvent, bot: Bot) -> None:  # noqa: AR
     window_id = users[0][2]
     subagent_id = event.data.get("subagent_id", "")
 
-    ids = _active_subagents.get(window_id)
-    if not ids:
+    agents = _active_subagents.get(window_id)
+    if not agents:
         return
-    ids.discard(subagent_id)
-    if not ids:
+    name = agents.pop(subagent_id, subagent_id[:12])
+    if not agents:
         _active_subagents.pop(window_id, None)
 
     count = get_subagent_count(window_id)
     logger.debug(
-        "Subagent stopped: window=%s, remaining=%d, id=%s",
+        "Subagent stopped: window=%s, remaining=%d, name=%s",
         window_id,
         count,
-        subagent_id,
+        name,
     )
+
+    for user_id, thread_id, window_id in users:
+        await enqueue_status_update(
+            bot,
+            user_id,
+            window_id,
+            f"\U0001f916 Subagent done: {name}",
+            thread_id=thread_id,
+        )
 
 
 async def _handle_teammate_idle(event: HookEvent, bot: Bot) -> None:

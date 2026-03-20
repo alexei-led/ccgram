@@ -83,18 +83,36 @@ def _is_batch_eligible(task: MessageTask) -> bool:
     )
 
 
-def format_batch_message(entries: list[ToolBatchEntry]) -> str:
+def build_subagent_label(names: list[str]) -> str | None:
+    """Build a display label for active subagents.
+
+    Returns None if no subagents are active.
+    """
+    if not names:
+        return None
+    if len(names) == 1:
+        return f"\U0001f916 {names[0]}"
+    joined = ", ".join(names[:3])
+    return f"\U0001f916 {len(names)} subagents: {joined}"
+
+
+def format_batch_message(
+    entries: list[ToolBatchEntry], subagent_label: str | None = None
+) -> str:
     """Render a batch of tool calls as a single compact message.
 
     Format:
-        ⚡ 3 tool calls
+        ⚡ 3 tool calls [🤖 write-tests]
         📖 Read  src/foo.py       ⎿  42 lines
         ✏️ Edit  src/foo.py       ⎿  +3 −1
         ⚡ Bash  make test        ⏳
     """
     count = len(entries)
     label = "tool call" if count == 1 else "tool calls"
-    lines = [f"\u26a1 {count} {label}"]
+    header = f"\u26a1 {count} {label}"
+    if subagent_label:
+        header = f"{header} [{subagent_label}]"
+    lines = [header]
 
     for entry in entries:
         line = entry.tool_use_text
@@ -400,7 +418,10 @@ async def _process_batch_task(bot: Bot, user_id: int, task: MessageTask) -> None
         return
 
     # Send or edit batch message
-    batch_text = format_batch_message(batch.entries)
+    from .hook_events import get_subagent_names
+
+    subagent_label = build_subagent_label(get_subagent_names(window_id))
+    batch_text = format_batch_message(batch.entries, subagent_label=subagent_label)
 
     if batch.telegram_msg_id is None:
         # Clear status message first, then send new batch message
