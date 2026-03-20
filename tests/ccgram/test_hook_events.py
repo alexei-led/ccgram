@@ -103,6 +103,11 @@ class TestBuildSubagentLabel:
         assert "write-tests" in result
         assert "refactor" in result
 
+    def test_three_names(self) -> None:
+        result = build_subagent_label(["a", "b", "c"])
+        assert result is not None
+        assert "3 subagents" in result
+
     def test_truncates_at_three(self) -> None:
         result = build_subagent_label(["a", "b", "c", "d"])
         assert result is not None
@@ -357,7 +362,28 @@ class TestHandleSubagentStart:
             data={"subagent_id": "sub-1", "name": "test"},
         )
         await dispatch_hook_event(event, bot)
-        assert get_subagent_names("@0") == []
+        assert _active_subagents == {}
+
+    async def test_notifies_multiple_users(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "ccgram.handlers.hook_events.session_manager.iter_thread_bindings",
+            lambda: iter([(100, 42, "@0"), (200, 99, "@0")]),
+        )
+        bot = AsyncMock(spec=Bot)
+        with patch(
+            "ccgram.handlers.message_queue.enqueue_status_update"
+        ) as mock_enqueue:
+            event = _make_event(
+                event_type="SubagentStart",
+                data={"subagent_id": "sub-1", "name": "researcher"},
+            )
+            await dispatch_hook_event(event, bot)
+            assert mock_enqueue.call_count == 2
+            calls = mock_enqueue.call_args_list
+            assert calls[0][0][1] == 100  # first user_id
+            assert calls[1][0][1] == 200  # second user_id
+            assert calls[0][0][2] == "@0"  # window_id from outer scope
+            assert calls[1][0][2] == "@0"
 
 
 class TestHandleSubagentStop:
