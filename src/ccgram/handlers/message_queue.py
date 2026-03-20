@@ -49,10 +49,10 @@ logger = structlog.get_logger()
 MERGE_MAX_LENGTH = 3800  # Leave room for markdown conversion overhead
 
 # Batch limits for tool call chains
-# Keep conservative: header + entries + result text + separators must fit 4096 chars.
-# 12 entries * ~200 chars (tool text + result + separator) + header ≈ 2600 chars.
-BATCH_MAX_LENGTH = 3000
-BATCH_MAX_ENTRIES = 12
+# Keep conservative: header + entries + result text + separators + MarkdownV2 escaping
+# must fit 4096 chars. Worst case: 10 * (250 + 85 + 6) + 20 ≈ 3430 chars.
+BATCH_MAX_LENGTH = 2800
+BATCH_MAX_ENTRIES = 10
 
 
 @dataclass
@@ -401,7 +401,6 @@ async def _process_batch_task(bot: Bot, user_id: int, task: MessageTask) -> None
 
     # Send or edit batch message
     batch_text = format_batch_message(batch.entries)
-    md_text = convert_markdown(batch_text)
 
     if batch.telegram_msg_id is None:
         # Clear status message first, then send new batch message
@@ -415,7 +414,8 @@ async def _process_batch_task(bot: Bot, user_id: int, task: MessageTask) -> None
         if sent:
             batch.telegram_msg_id = sent.message_id
     else:
-        # Edit existing batch message
+        # Edit existing batch message (MarkdownV2 with plain text fallback)
+        md_text = convert_markdown(batch_text)
         try:
             await bot.edit_message_text(
                 chat_id=chat_id,
@@ -427,7 +427,6 @@ async def _process_batch_task(bot: Bot, user_id: int, task: MessageTask) -> None
         except RetryAfter:
             raise
         except TelegramError:
-            # Fallback to plain text
             with contextlib.suppress(TelegramError):
                 await bot.edit_message_text(
                     chat_id=chat_id,
