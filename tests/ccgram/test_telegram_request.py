@@ -1,5 +1,7 @@
 """Tests for resilient Telegram polling requests."""
 
+from pathlib import Path
+import tomllib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -61,3 +63,15 @@ class TestCreateBotPollingRequest:
         assert isinstance(app.bot._request[1], HTTPXRequest)
         assert not isinstance(app.bot._request[1], ResilientPollingHTTPXRequest)
         assert app.bot._request[0]._client._transport._pool._max_connections == 1
+
+
+class TestProjectDependencies:
+    def test_declares_ptb_socks_support(self) -> None:
+        project_root = Path(__file__).resolve().parents[2]
+        pyproject = tomllib.loads((project_root / "pyproject.toml").read_text())
+        dependencies = pyproject["project"]["dependencies"]
+
+        assert any(
+            dependency.startswith("python-telegram-bot[socks]>=")
+            for dependency in dependencies
+        )
