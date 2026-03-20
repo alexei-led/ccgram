@@ -15,6 +15,7 @@ from telegram import Bot
 from ..utils import log_throttle_reset
 from .interactive_ui import clear_interactive_msg
 from .message_queue import (
+    clear_batch_for_topic,
     clear_status_msg_info,
     clear_tool_msg_ids_for_topic,
     enqueue_status_update,
@@ -49,8 +50,9 @@ async def clear_topic_state(
     else:
         clear_status_msg_info(user_id, thread_id)
 
-    # Clear tool message ID tracking
+    # Clear tool message ID tracking and active batch
     clear_tool_msg_ids_for_topic(user_id, thread_id)
+    clear_batch_for_topic(user_id, thread_id)
 
     # Clear poll state (lazy import to avoid circular dep)
     from .status_polling import (

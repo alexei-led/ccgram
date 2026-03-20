@@ -45,7 +45,7 @@ APPROVAL_MODES: frozenset[str] = frozenset({"normal", "yolo"})
 DEFAULT_APPROVAL_MODE = "normal"
 YOLO_APPROVAL_MODE = "yolo"
 
-BATCH_MODES: tuple[str, ...] = ("batched", "verbose")
+BATCH_MODES: frozenset[str] = frozenset({"batched", "verbose"})
 DEFAULT_BATCH_MODE = "batched"
 
 
