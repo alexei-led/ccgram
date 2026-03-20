@@ -36,9 +36,7 @@ class TestInstallHook:
         settings = json.loads(settings_file.read_text())
         session_start = settings["hooks"]["SessionStart"]
         assert len(session_start) == 1
-        assert (
-            session_start[0]["hooks"][0]["command"] == _expected_module_command()
-        )
+        assert session_start[0]["hooks"][0]["command"] == _expected_module_command()
 
     def test_install_adds_to_existing_matcher_group(
         self, tmp_path, monkeypatch
@@ -103,9 +101,7 @@ class TestInstallHook:
         assert len(hooks_list) == 1
         assert hooks_list[0]["command"] == _expected_module_command()
 
-    def test_install_rewrites_full_path_command(
-        self, tmp_path, monkeypatch
-    ) -> None:
+    def test_install_rewrites_full_path_command(self, tmp_path, monkeypatch) -> None:
         settings_file = tmp_path / "settings.json"
         settings = {
             "hooks": {
@@ -163,8 +159,7 @@ class TestInstallMultipleEvents:
             assert event_type in settings["hooks"]
             hooks_list = settings["hooks"][event_type][0]["hooks"]
             assert any(
-                h.get("command", "") == _expected_module_command()
-                for h in hooks_list
+                h.get("command", "") == _expected_module_command() for h in hooks_list
             )
 
     def test_async_flag_on_subagent_events(self, tmp_path, monkeypatch) -> None:
@@ -323,8 +318,7 @@ class TestIsHookInstalled:
                             {
                                 "type": "command",
                                 "command": (
-                                    f"{shlex.quote(sys.executable)} "
-                                    "-m ccgram.main hook"
+                                    f"{shlex.quote(sys.executable)} -m ccgram.main hook"
                                 ),
                                 "timeout": 5,
                             }
@@ -534,8 +528,7 @@ class TestUninstallHook:
                             {
                                 "type": "command",
                                 "command": (
-                                    f"{shlex.quote(sys.executable)} "
-                                    "-m ccgram.main hook"
+                                    f"{shlex.quote(sys.executable)} -m ccgram.main hook"
                                 ),
                                 "timeout": 5,
                             }

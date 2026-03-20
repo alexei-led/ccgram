@@ -24,6 +24,7 @@ import structlog
 import sys
 import time
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 logger = structlog.get_logger()
@@ -95,7 +96,7 @@ def _is_any_ccgram_hook_command(command: str) -> bool:
 
 
 def _has_matching_hook(
-    settings: dict, event_type: str, predicate: Any
+    settings: dict, event_type: str, predicate: Callable[[str], bool]
 ) -> bool:
     """Check if an event has a hook command matching the predicate."""
     hooks = settings.get("hooks", {})
@@ -130,7 +131,7 @@ def get_installed_events(settings: dict) -> dict[str, bool]:
 
 
 def _replace_hook_commands(
-    settings: dict, event_type: str, predicate: Any, replacement: str
+    settings: dict, event_type: str, predicate: Callable[[str], bool], replacement: str
 ) -> None:
     """Replace matching hook commands for an event with the given command."""
     event_hooks = settings.get("hooks", {}).get(event_type, [])
@@ -171,9 +172,7 @@ def _install_hook() -> int:
     current_command = _current_hook_command()
 
     for event_type in _HOOK_EVENT_TYPES:
-        has_current = _has_matching_hook(
-            settings, event_type, _is_current_hook_command
-        )
+        has_current = _has_matching_hook(settings, event_type, _is_current_hook_command)
         has_known = _has_matching_hook(
             settings, event_type, _is_any_ccgram_hook_command
         )
