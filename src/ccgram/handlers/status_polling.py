@@ -825,8 +825,7 @@ async def update_status_message(
         await _send_typing_throttled(bot, user_id, thread_id)
         if notif_mode not in ("muted", "errors_only"):
             # Append subagent names if any are active
-            from .hook_events import get_subagent_names
-            from .message_queue import build_subagent_label
+            from .hook_events import build_subagent_label, get_subagent_names
 
             subagent_names = get_subagent_names(window_id)
             display_status = status_line

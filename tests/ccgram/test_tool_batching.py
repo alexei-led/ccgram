@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from ccgram.handlers.hook_events import build_subagent_label
 from ccgram.handlers.message_queue import (
     BATCH_MAX_ENTRIES,
     BATCH_MAX_LENGTH,
@@ -16,7 +17,6 @@ from ccgram.handlers.message_queue import (
     _handle_content_task,
     _is_batch_eligible,
     _process_batch_task,
-    build_subagent_label,
     clear_batch_for_topic,
     format_batch_message,
     shutdown_workers,

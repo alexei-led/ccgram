@@ -83,19 +83,6 @@ def _is_batch_eligible(task: MessageTask) -> bool:
     )
 
 
-def build_subagent_label(names: list[str]) -> str | None:
-    """Build a display label for active subagents.
-
-    Returns None if no subagents are active.
-    """
-    if not names:
-        return None
-    if len(names) == 1:
-        return f"\U0001f916 {names[0]}"
-    joined = ", ".join(names[:3])
-    return f"\U0001f916 {len(names)} subagents: {joined}"
-
-
 def format_batch_message(
     entries: list[ToolBatchEntry], subagent_label: str | None = None
 ) -> str:
@@ -418,7 +405,7 @@ async def _process_batch_task(bot: Bot, user_id: int, task: MessageTask) -> None
         return
 
     # Send or edit batch message
-    from .hook_events import get_subagent_names
+    from .hook_events import build_subagent_label, get_subagent_names
 
     subagent_label = build_subagent_label(get_subagent_names(window_id))
     batch_text = format_batch_message(batch.entries, subagent_label=subagent_label)
@@ -466,7 +453,11 @@ async def _flush_batch(bot: Bot, user_id: int, thread_id_or_0: int) -> None:
 
     thread_id: int | None = thread_id_or_0 if thread_id_or_0 != 0 else None
     chat_id = session_manager.resolve_chat_id(user_id, thread_id)
-    batch_text = format_batch_message(batch.entries)
+
+    from .hook_events import build_subagent_label, get_subagent_names
+
+    subagent_label = build_subagent_label(get_subagent_names(batch.window_id))
+    batch_text = format_batch_message(batch.entries, subagent_label=subagent_label)
 
     if batch.telegram_msg_id is None:
         # First send failed earlier — attempt one send before dropping
@@ -899,9 +890,14 @@ async def _check_and_send_status(
 
     status = get_provider_for_window(window_id).parse_terminal_status(pane_text)
     if status and not status.is_interactive:
-        await _do_send_status_message(
-            bot, user_id, thread_id_or_0, window_id, status.display_label
-        )
+        from .hook_events import build_subagent_label, get_subagent_names
+
+        display = status.display_label
+        subagent_names = get_subagent_names(window_id)
+        if subagent_names:
+            label = build_subagent_label(subagent_names)
+            display = f"{display} ({label})"
+        await _do_send_status_message(bot, user_id, thread_id_or_0, window_id, display)
 
 
 async def enqueue_content_message(

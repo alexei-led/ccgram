@@ -136,15 +136,25 @@ async def _handle_stop(event: HookEvent, bot: Bot) -> None:
 # Track active subagents per window: window_id -> {subagent_id -> name}
 _active_subagents: dict[str, dict[str, str]] = {}
 
-
-def get_subagent_count(window_id: str) -> int:
-    """Return the number of active subagents for a window."""
-    return len(_active_subagents.get(window_id, {}))
+_MAX_DISPLAYED_NAMES = 3
 
 
 def get_subagent_names(window_id: str) -> list[str]:
     """Return names of active subagents for a window."""
     return list(_active_subagents.get(window_id, {}).values())
+
+
+def build_subagent_label(names: list[str]) -> str | None:
+    """Build a display label for active subagents.
+
+    Returns None if no subagents are active.
+    """
+    if not names:
+        return None
+    if len(names) == 1:
+        return f"\U0001f916 {names[0]}"
+    joined = ", ".join(names[:_MAX_DISPLAYED_NAMES])
+    return f"\U0001f916 {len(names)} subagents: {joined}"
 
 
 def clear_subagents(window_id: str) -> None:
@@ -163,22 +173,22 @@ async def _handle_subagent_start(event: HookEvent, bot: Bot) -> None:
     window_id = users[0][2]  # all users share the same window_id
     subagent_id = event.data.get("subagent_id", "")
     name = (
-        event.data.get("name", "")
-        or event.data.get("description", "")
+        (event.data.get("name") or "").strip()
+        or (event.data.get("description") or "").strip()
         or subagent_id[:12]
+        or "subagent"
     )
 
     _active_subagents.setdefault(window_id, {})[subagent_id] = name
 
-    count = len(_active_subagents[window_id])
     logger.debug(
         "Subagent started: window=%s, count=%d, name=%s",
         window_id,
-        count,
+        len(_active_subagents[window_id]),
         name,
     )
 
-    for user_id, thread_id, window_id in users:
+    for user_id, thread_id, _ in users:
         await enqueue_status_update(
             bot,
             user_id,
@@ -202,19 +212,18 @@ async def _handle_subagent_stop(event: HookEvent, bot: Bot) -> None:
     agents = _active_subagents.get(window_id)
     if not agents:
         return
-    name = agents.pop(subagent_id, subagent_id[:12])
+    name = agents.pop(subagent_id, subagent_id[:12] or "subagent")
     if not agents:
         _active_subagents.pop(window_id, None)
 
-    count = get_subagent_count(window_id)
     logger.debug(
         "Subagent stopped: window=%s, remaining=%d, name=%s",
         window_id,
-        count,
+        len(_active_subagents.get(window_id, {})),
         name,
     )
 
-    for user_id, thread_id, window_id in users:
+    for user_id, thread_id, _ in users:
         await enqueue_status_update(
             bot,
             user_id,
@@ -286,9 +295,11 @@ async def _handle_session_end(event: HookEvent, bot: Bot) -> None:
         reason,
     )
 
-    # Clear session association so next launch gets a fresh session
+    # Clear session association and subagent tracking so next launch starts fresh
     if users:
-        session_manager.clear_window_session(users[0][2])
+        window_id = users[0][2]
+        session_manager.clear_window_session(window_id)
+        clear_subagents(window_id)
 
     for user_id, thread_id, window_id in users:
         clear_seen_status(window_id)
