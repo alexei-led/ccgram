@@ -2,6 +2,7 @@
 
 import io
 import json
+import shlex
 import subprocess
 import sys
 from unittest.mock import patch
@@ -19,6 +20,10 @@ from ccgram.hook import (
 )
 
 
+def _expected_module_command() -> str:
+    return f"{shlex.quote(sys.executable)} -m ccgram.main hook"
+
+
 class TestInstallHook:
     def test_install_into_empty_settings(self, tmp_path, monkeypatch) -> None:
         settings_file = tmp_path / "settings.json"
@@ -31,7 +36,7 @@ class TestInstallHook:
         settings = json.loads(settings_file.read_text())
         session_start = settings["hooks"]["SessionStart"]
         assert len(session_start) == 1
-        assert session_start[0]["hooks"][0]["command"] == "ccgram hook"
+        assert session_start[0]["hooks"][0]["command"] == _expected_module_command()
 
     def test_install_adds_to_existing_matcher_group(
         self, tmp_path, monkeypatch
@@ -64,9 +69,9 @@ class TestInstallHook:
         assert len(session_start) == 1
         hooks_list = session_start[0]["hooks"]
         assert len(hooks_list) == 2
-        assert hooks_list[1]["command"] == "ccgram hook"
+        assert hooks_list[1]["command"] == _expected_module_command()
 
-    def test_install_skips_when_already_present_with_wrapper(
+    def test_install_rewrites_wrapped_relative_command(
         self, tmp_path, monkeypatch
     ) -> None:
         settings_file = tmp_path / "settings.json"
@@ -94,10 +99,9 @@ class TestInstallHook:
         updated = json.loads(settings_file.read_text())
         hooks_list = updated["hooks"]["SessionStart"][0]["hooks"]
         assert len(hooks_list) == 1
+        assert hooks_list[0]["command"] == _expected_module_command()
 
-    def test_install_skips_when_already_present_with_full_path(
-        self, tmp_path, monkeypatch
-    ) -> None:
+    def test_install_rewrites_full_path_command(self, tmp_path, monkeypatch) -> None:
         settings_file = tmp_path / "settings.json"
         settings = {
             "hooks": {
@@ -123,8 +127,11 @@ class TestInstallHook:
         updated = json.loads(settings_file.read_text())
         hooks_list = updated["hooks"]["SessionStart"][0]["hooks"]
         assert len(hooks_list) == 1
+        assert hooks_list[0]["command"] == _expected_module_command()
 
-    def test_install_uses_path_relative_command(self, tmp_path, monkeypatch) -> None:
+    def test_install_uses_current_python_module_command(
+        self, tmp_path, monkeypatch
+    ) -> None:
         settings_file = tmp_path / "settings.json"
         settings_file.parent.mkdir(parents=True, exist_ok=True)
         monkeypatch.setattr("ccgram.hook._claude_settings_file", lambda: settings_file)
@@ -133,8 +140,8 @@ class TestInstallHook:
 
         updated = json.loads(settings_file.read_text())
         cmd = updated["hooks"]["SessionStart"][0]["hooks"][0]["command"]
-        assert cmd == "ccgram hook"
-        assert "/" not in cmd
+        assert cmd == _expected_module_command()
+        assert " -m ccgram.main hook" in cmd
 
 
 class TestInstallMultipleEvents:
@@ -151,7 +158,9 @@ class TestInstallMultipleEvents:
         for event_type in _HOOK_EVENT_TYPES:
             assert event_type in settings["hooks"]
             hooks_list = settings["hooks"][event_type][0]["hooks"]
-            assert any("ccgram hook" in h.get("command", "") for h in hooks_list)
+            assert any(
+                h.get("command", "") == _expected_module_command() for h in hooks_list
+            )
 
     def test_async_flag_on_subagent_events(self, tmp_path, monkeypatch) -> None:
         settings_file = tmp_path / "settings.json"
@@ -183,7 +192,7 @@ class TestInstallMultipleEvents:
                 h
                 for entry in entries
                 for h in entry.get("hooks", [])
-                if "ccgram hook" in h.get("command", "")
+                if h.get("command", "") == _expected_module_command()
             ]
             assert len(ccgram_hooks) == 1, (
                 f"{event_type} has {len(ccgram_hooks)} ccgram hooks"
@@ -291,6 +300,26 @@ class TestIsHookInstalled:
                             {
                                 "type": "command",
                                 "command": "/usr/bin/ccgram hook",
+                                "timeout": 5,
+                            }
+                        ]
+                    }
+                ]
+            }
+        }
+        assert _is_hook_installed(settings) is True
+
+    def test_python_module_command_matches(self) -> None:
+        settings = {
+            "hooks": {
+                "SessionStart": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": (
+                                    f"{shlex.quote(sys.executable)} -m ccgram.main hook"
+                                ),
                                 "timeout": 5,
                             }
                         ]
@@ -470,6 +499,37 @@ class TestUninstallHook:
                             {
                                 "type": "command",
                                 "command": "ccgram hook 2>/dev/null || true",
+                                "timeout": 5,
+                            }
+                        ]
+                    }
+                ]
+            }
+        }
+        settings_file.write_text(json.dumps(settings))
+        monkeypatch.setattr("ccgram.hook._claude_settings_file", lambda: settings_file)
+
+        result = _uninstall_hook()
+        assert result == 0
+
+        updated = json.loads(settings_file.read_text())
+        assert not _is_hook_installed(updated)
+        assert updated["hooks"]["SessionStart"] == []
+
+    def test_uninstall_removes_python_module_variant(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        settings_file = tmp_path / "settings.json"
+        settings = {
+            "hooks": {
+                "SessionStart": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": (
+                                    f"{shlex.quote(sys.executable)} -m ccgram.main hook"
+                                ),
                                 "timeout": 5,
                             }
                         ]

@@ -18,11 +18,13 @@ import json
 import logging
 import os
 import re
-import structlog
+import shlex
 import subprocess
+import structlog
 import sys
 import time
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 logger = structlog.get_logger()
@@ -39,9 +41,11 @@ def _claude_settings_file() -> Path:
     return Path.home() / ".claude" / "settings.json"
 
 
-# Substring marker for detecting ccgram hook in command strings
-_HOOK_COMMAND_MARKER = "ccgram hook"
-# Legacy marker from pre-rename ccbot — used for detection and cleanup
+# Current hook command uses the active Python interpreter to avoid PATH issues.
+_CURRENT_HOOK_MARKER = "ccgram.main hook"
+# Older installs used the console script name directly.
+_PATH_HOOK_MARKER = "ccgram hook"
+# Legacy marker from pre-rename ccbot — used for detection and cleanup.
 _LEGACY_HOOK_MARKER = "ccbot hook"
 
 # Expected number of parts when parsing "session_name\t@id\twindow_name"
@@ -73,8 +77,28 @@ _ASYNC_EVENTS: frozenset[str] = frozenset(
 )
 
 
-def _has_hook_marker(settings: dict, event_type: str, marker: str) -> bool:
-    """Check if a hook with the given marker is installed for an event type."""
+def _current_hook_command() -> str:
+    """Build the hook command bound to the current Python interpreter."""
+    return f"{shlex.quote(sys.executable)} -m ccgram.main hook"
+
+
+def _is_current_hook_command(command: str) -> bool:
+    """Return True when the command matches the current module-based hook style."""
+    return _CURRENT_HOOK_MARKER in command
+
+
+def _is_any_ccgram_hook_command(command: str) -> bool:
+    """Return True for current, old, or legacy hook command styles."""
+    return any(
+        marker in command
+        for marker in (_CURRENT_HOOK_MARKER, _PATH_HOOK_MARKER, _LEGACY_HOOK_MARKER)
+    )
+
+
+def _has_matching_hook(
+    settings: dict, event_type: str, predicate: Callable[[str], bool]
+) -> bool:
+    """Check if an event has a hook command matching the predicate."""
     hooks = settings.get("hooks", {})
     event_hooks = hooks.get(event_type, [])
 
@@ -86,16 +110,14 @@ def _has_hook_marker(settings: dict, event_type: str, marker: str) -> bool:
             if not isinstance(h, dict):
                 continue
             cmd = h.get("command", "")
-            if marker in cmd:
+            if predicate(cmd):
                 return True
     return False
 
 
 def _has_ccgram_hook(settings: dict, event_type: str) -> bool:
     """Check if ccgram hook (or legacy ccbot hook) is installed."""
-    return _has_hook_marker(
-        settings, event_type, _HOOK_COMMAND_MARKER
-    ) or _has_hook_marker(settings, event_type, _LEGACY_HOOK_MARKER)
+    return _has_matching_hook(settings, event_type, _is_any_ccgram_hook_command)
 
 
 def _is_hook_installed(settings: dict) -> bool:
@@ -108,8 +130,10 @@ def get_installed_events(settings: dict) -> dict[str, bool]:
     return {event: _has_ccgram_hook(settings, event) for event in _HOOK_EVENT_TYPES}
 
 
-def _replace_legacy_hooks(settings: dict, event_type: str) -> None:
-    """Replace legacy 'ccbot hook' command strings with 'ccgram hook'."""
+def _replace_hook_commands(
+    settings: dict, event_type: str, predicate: Callable[[str], bool], replacement: str
+) -> None:
+    """Replace matching hook commands for an event with the given command."""
     event_hooks = settings.get("hooks", {}).get(event_type, [])
     for entry in event_hooks:
         if not isinstance(entry, dict):
@@ -118,8 +142,8 @@ def _replace_legacy_hooks(settings: dict, event_type: str) -> None:
             if not isinstance(h, dict):
                 continue
             cmd = h.get("command", "")
-            if _LEGACY_HOOK_MARKER in cmd:
-                h["command"] = cmd.replace(_LEGACY_HOOK_MARKER, _HOOK_COMMAND_MARKER)
+            if predicate(cmd):
+                h["command"] = replacement
 
 
 def _install_hook() -> int:
@@ -145,24 +169,31 @@ def _install_hook() -> int:
 
     installed_count = 0
     already_count = 0
+    current_command = _current_hook_command()
 
     for event_type in _HOOK_EVENT_TYPES:
-        has_new = _has_hook_marker(settings, event_type, _HOOK_COMMAND_MARKER)
-        has_legacy = _has_hook_marker(settings, event_type, _LEGACY_HOOK_MARKER)
+        has_current = _has_matching_hook(settings, event_type, _is_current_hook_command)
+        has_known = _has_matching_hook(
+            settings, event_type, _is_any_ccgram_hook_command
+        )
 
-        if has_legacy and not has_new:
-            # Replace legacy "ccbot hook" entries with "ccgram hook"
-            _replace_legacy_hooks(settings, event_type)
+        if has_known and not has_current:
+            _replace_hook_commands(
+                settings,
+                event_type,
+                _is_any_ccgram_hook_command,
+                current_command,
+            )
             installed_count += 1
             continue
 
-        if has_new:
+        if has_current:
             already_count += 1
             continue
 
         hook_config: dict[str, Any] = {
             "type": "command",
-            "command": "ccgram hook",
+            "command": current_command,
             "timeout": 5,
         }
         if event_type in _ASYNC_EVENTS:
@@ -245,10 +276,7 @@ def _uninstall_hook() -> int:
                 h
                 for h in inner_hooks
                 if not isinstance(h, dict)
-                or (
-                    _HOOK_COMMAND_MARKER not in h.get("command", "")
-                    and _LEGACY_HOOK_MARKER not in h.get("command", "")
-                )
+                or not _is_any_ccgram_hook_command(h.get("command", ""))
             ]
             if filtered:
                 entry["hooks"] = filtered
