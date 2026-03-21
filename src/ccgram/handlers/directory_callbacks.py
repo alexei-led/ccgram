@@ -28,6 +28,7 @@ from .callback_data import (
     CB_DIR_CANCEL,
     CB_DIR_CONFIRM,
     CB_DIR_FAV,
+    CB_DIR_HOME,
     CB_DIR_PAGE,
     CB_DIR_SELECT,
     CB_DIR_STAR,
@@ -72,6 +73,8 @@ async def handle_directory_callback(
         await _handle_select(query, user_id, data, update, context)
     elif data == CB_DIR_UP:
         await _handle_up(query, user_id, update, context)
+    elif data == CB_DIR_HOME:
+        await _handle_home(query, user_id, update, context)
     elif data.startswith(CB_DIR_PAGE):
         await _handle_page(query, user_id, data, update, context)
     elif data == CB_DIR_CONFIRM:
@@ -258,6 +261,32 @@ async def _handle_up(
     await query.answer()
 
 
+async def _handle_home(
+    query: CallbackQuery,
+    user_id: int,
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """Handle CB_DIR_HOME: jump to home directory."""
+    pending_tid = (
+        context.user_data.get(PENDING_THREAD_ID) if context.user_data else None
+    )
+    if pending_tid is not None and get_thread_id(update) != pending_tid:
+        await query.answer("Stale browser (topic mismatch)", show_alert=True)
+        return
+
+    home_path = str(Path.home())
+    if context.user_data is not None:
+        context.user_data[BROWSE_PATH_KEY] = home_path
+        context.user_data[BROWSE_PAGE_KEY] = 0
+
+    msg_text, keyboard, subdirs = build_directory_browser(home_path, user_id=user_id)
+    if context.user_data is not None:
+        context.user_data[BROWSE_DIRS_KEY] = subdirs
+    await safe_edit(query, msg_text, reply_markup=keyboard)
+    await query.answer()
+
+
 async def _handle_page(
     query: CallbackQuery,
     user_id: int,
@@ -388,7 +417,13 @@ async def _handle_provider_select(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    """Handle CB_PROV_SELECT: select provider and show mode picker."""
+    """Handle CB_PROV_SELECT: select provider and show mode picker.
+
+    Providers without a YOLO flag (e.g. shell) skip the mode picker
+    and go directly to window creation with approval_mode="normal".
+    """
+    from ccgram.providers import _YOLO_FLAGS
+
     provider_name = data[len(CB_PROV_SELECT) :]
     if not provider_registry.is_valid(provider_name):
         await query.answer("Unknown provider", show_alert=True)
@@ -409,6 +444,14 @@ async def _handle_provider_select(
     ):
         return
 
+    if provider_name not in _YOLO_FLAGS:
+        # No mode picker needed — go directly to window creation
+        clear_browse_state(context.user_data)
+        await _create_window_and_bind(
+            query, user_id, selected_path, provider_name, "normal", context
+        )
+        return
+
     text, keyboard = build_mode_picker(selected_path, provider_name)
     await safe_edit(query, text, reply_markup=keyboard)
 
@@ -422,47 +465,24 @@ def _parse_mode_select(data: str) -> tuple[str, str] | None:
     return provider_name, approval_mode.lower()
 
 
-async def _handle_mode_select(
+async def _create_window_and_bind(
     query: CallbackQuery,
     user_id: int,
-    data: str,
-    update: Update,
+    selected_path: str,
+    provider_name: str,
+    approval_mode: str,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    """Handle CB_MODE_SELECT: select launch mode and create tmux window."""
-    parsed = _parse_mode_select(data)
-    if parsed is None:
-        await query.answer("Invalid mode", show_alert=True)
-        return
+    """Create a tmux window, bind to the pending topic, and forward pending text.
 
-    provider_name, approval_mode = parsed
-    if not provider_registry.is_valid(provider_name):
-        await query.answer("Unknown provider", show_alert=True)
-        return
-    if approval_mode not in ("normal", "yolo"):
-        await query.answer("Unknown mode", show_alert=True)
-        return
+    Shared by _handle_mode_select (after mode picker) and _handle_provider_select
+    (when mode picker is skipped for providers without YOLO flags).
+    """
+    from ccgram.providers import resolve_launch_command
 
-    default_path = str(Path.cwd())
-    selected_path = (
-        context.user_data.get(BROWSE_PATH_KEY, default_path)
-        if context.user_data
-        else default_path
-    )
     pending_thread_id: int | None = (
         context.user_data.get(PENDING_THREAD_ID) if context.user_data else None
     )
-
-    # Clear browse state now that mode is selected.
-    clear_browse_state(context.user_data)
-
-    if not await _validate_provider_select(
-        query, user_id, update, context, pending_thread_id
-    ):
-        return
-
-    # Resolve launch command (env override > provider default), with mode.
-    from ccgram.providers import resolve_launch_command
 
     launch_command = resolve_launch_command(provider_name, approval_mode=approval_mode)
 
@@ -477,7 +497,6 @@ async def _handle_mode_select(
         return
 
     session_manager.update_user_mru(user_id, selected_path)
-    # Set cwd before provider/mode save so state snapshots stay coherent.
     window_state = session_manager.get_window_state(created_wid)
     window_state.cwd = selected_path
     session_manager.set_window_provider(created_wid, provider_name)
@@ -549,6 +568,49 @@ async def _handle_mode_select(
             )
     elif context.user_data is not None:
         context.user_data.pop(PENDING_THREAD_ID, None)
+
+
+async def _handle_mode_select(
+    query: CallbackQuery,
+    user_id: int,
+    data: str,
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """Handle CB_MODE_SELECT: select launch mode and create tmux window."""
+    parsed = _parse_mode_select(data)
+    if parsed is None:
+        await query.answer("Invalid mode", show_alert=True)
+        return
+
+    provider_name, approval_mode = parsed
+    if not provider_registry.is_valid(provider_name):
+        await query.answer("Unknown provider", show_alert=True)
+        return
+    if approval_mode not in ("normal", "yolo"):
+        await query.answer("Unknown mode", show_alert=True)
+        return
+
+    default_path = str(Path.cwd())
+    selected_path = (
+        context.user_data.get(BROWSE_PATH_KEY, default_path)
+        if context.user_data
+        else default_path
+    )
+    pending_thread_id: int | None = (
+        context.user_data.get(PENDING_THREAD_ID) if context.user_data else None
+    )
+
+    clear_browse_state(context.user_data)
+
+    if not await _validate_provider_select(
+        query, user_id, update, context, pending_thread_id
+    ):
+        return
+
+    await _create_window_and_bind(
+        query, user_id, selected_path, provider_name, approval_mode, context
+    )
 
 
 async def _handle_cancel(

@@ -141,6 +141,12 @@ class Config:
             "CCGRAM_WHISPER_LANGUAGE", "CCBOT_WHISPER_LANGUAGE"
         )
 
+        # LLM command generation (shell provider)
+        self.llm_provider: str = os.getenv("CCGRAM_LLM_PROVIDER", "")
+        self.llm_api_key: str = os.getenv("CCGRAM_LLM_API_KEY", "")
+        self.llm_base_url: str = os.getenv("CCGRAM_LLM_BASE_URL", "")
+        self.llm_model: str = os.getenv("CCGRAM_LLM_MODEL", "")
+
         # Auto-close stale topics (minutes; 0 = disabled)
         self.autoclose_done_minutes = int(os.getenv("AUTOCLOSE_DONE_MINUTES", "30"))
         self.autoclose_dead_minutes = int(os.getenv("AUTOCLOSE_DEAD_MINUTES", "10"))

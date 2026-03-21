@@ -48,10 +48,12 @@ def _ensure_registered() -> None:
     from ccgram.providers.claude import ClaudeProvider
     from ccgram.providers.codex import CodexProvider
     from ccgram.providers.gemini import GeminiProvider
+    from ccgram.providers.shell import ShellProvider
 
     registry.register("claude", ClaudeProvider)
     registry.register("codex", CodexProvider)
     registry.register("gemini", GeminiProvider)
+    registry.register("shell", ShellProvider)
     _registered = True
 
 

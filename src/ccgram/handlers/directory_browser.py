@@ -24,6 +24,7 @@ from .callback_data import (
     CB_DIR_CANCEL,
     CB_DIR_CONFIRM,
     CB_DIR_FAV,
+    CB_DIR_HOME,
     CB_DIR_PAGE,
     CB_DIR_SELECT,
     CB_DIR_STAR,
@@ -36,7 +37,7 @@ from .callback_data import (
 )
 
 # Max favorites shown in directory browser
-_MAX_FAVORITES = 3
+_MAX_FAVORITES = 5
 
 # Max characters for a favorite path label before truncating
 _MAX_FAV_LABEL_LEN = 26
@@ -55,6 +56,29 @@ BROWSE_PATH_KEY = "browse_path"
 BROWSE_PAGE_KEY = "browse_page"
 BROWSE_DIRS_KEY = "browse_dirs"  # Cache of subdirs for current path
 UNBOUND_WINDOWS_KEY = "unbound_windows"  # Cache of (name, cwd) tuples
+
+# Project markers: filename → badge icon (checked via os.scandir)
+_PROJECT_MARKERS: dict[str, str] = {
+    ".git": "\u2699",
+    "pyproject.toml": "\U0001f40d",
+    "Cargo.toml": "\U0001f980",
+    "go.mod": "\U0001f439",
+    "package.json": "\U0001f4e6",
+    "Makefile": "\U0001f527",
+}
+
+
+def _detect_project_badge(parent: Path, name: str) -> str:
+    """Return a project badge icon for a subdirectory, or empty string."""
+    subdir = parent / name
+    try:
+        entries = {e.name for e in subdir.iterdir()}
+    except (PermissionError, OSError):  # fmt: skip
+        return ""
+    for marker, icon in _PROJECT_MARKERS.items():
+        if marker in entries:
+            return icon
+    return ""
 
 
 def clear_browse_state(user_data: dict | None) -> None:
@@ -187,7 +211,6 @@ def _build_favorites_buttons(
                 InlineKeyboardButton(star_icon, callback_data=f"{CB_DIR_STAR}{idx}"),
             ]
         )
-    rows.append([InlineKeyboardButton("── folders ──", callback_data="noop")])
     return rows
 
 
@@ -229,12 +252,15 @@ def build_directory_browser(
     for i in range(0, len(page_dirs), 2):
         row = []
         for j, name in enumerate(page_dirs[i : i + 2]):
-            display = name[:12] + "…" if len(name) > _MAX_BUTTON_LABEL_LEN else name
-            # Use global index (start + i + j) to avoid long dir names in callback_data
+            display = (
+                name[:12] + "\u2026" if len(name) > _MAX_BUTTON_LABEL_LEN else name
+            )
+            badge = _detect_project_badge(path, name)
+            icon = badge if badge else "\U0001f4c1"
             idx = start + i + j
             row.append(
                 InlineKeyboardButton(
-                    f"📁 {display}", callback_data=f"{CB_DIR_SELECT}{idx}"
+                    f"{icon} {display}", callback_data=f"{CB_DIR_SELECT}{idx}"
                 )
             )
         buttons.append(row)
@@ -258,6 +284,7 @@ def build_directory_browser(
     # Allow going up unless at filesystem root
     if path != path.parent:
         action_row.append(InlineKeyboardButton("..", callback_data=CB_DIR_UP))
+    action_row.append(InlineKeyboardButton("\U0001f3e0", callback_data=CB_DIR_HOME))
     action_row.append(InlineKeyboardButton("Select", callback_data=CB_DIR_CONFIRM))
     action_row.append(InlineKeyboardButton("Cancel", callback_data=CB_DIR_CANCEL))
     buttons.append(action_row)
@@ -276,6 +303,7 @@ _PROVIDER_META: dict[str, tuple[str, str]] = {
     "claude": ("Claude", "🟠"),
     "codex": ("Codex", "🟢"),
     "gemini": ("Gemini", "🔵"),
+    "shell": ("Shell", "⬛"),
 }
 
 

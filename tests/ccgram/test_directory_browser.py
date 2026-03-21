@@ -74,8 +74,8 @@ class TestGetFavorites:
         favorites, _starred = get_favorites(100)
         assert len(favorites) == expected_count
 
-    def test_caps_at_three(self, tmp_path: Path, mock_session_manager: Mock) -> None:
-        dirs = [tmp_path / f"dir{i}" for i in range(5)]
+    def test_caps_at_five(self, tmp_path: Path, mock_session_manager: Mock) -> None:
+        dirs = [tmp_path / f"dir{i}" for i in range(8)]
         for d in dirs:
             d.mkdir()
 
@@ -86,7 +86,7 @@ class TestGetFavorites:
         mock_session_manager.get_user_mru.return_value = [str(d) for d in dirs[2:]]
 
         favorites, _starred = get_favorites(100)
-        assert len(favorites) == 3
+        assert len(favorites) == 5
 
     def test_handles_oserror_on_is_dir(self, mock_session_manager: Mock) -> None:
         mock_session_manager.get_user_starred.return_value = ["/invalid/path"]

@@ -399,5 +399,15 @@ async def handle_text_message(
     ):
         return
 
+    # Shell provider: route through LLM or raw execution
+    provider = get_provider_for_window(window_id)
+    if provider.capabilities.name == "shell":
+        from .shell_commands import handle_shell_message
+
+        await handle_shell_message(
+            context.bot, user.id, thread_id, window_id, text, message
+        )
+        return
+
     # Forward message to window
     await _forward_message(window_id, user.id, thread_id, text, context.bot, message)

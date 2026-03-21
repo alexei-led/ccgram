@@ -72,6 +72,7 @@ from .handlers.callback_data import (
     CB_DIR_CANCEL,
     CB_DIR_CONFIRM,
     CB_DIR_FAV,
+    CB_DIR_HOME,
     CB_DIR_PAGE,
     CB_DIR_SELECT,
     CB_DIR_STAR,
@@ -457,6 +458,11 @@ async def history_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -
     window_id = session_manager.resolve_window_for_thread(user.id, thread_id)
     if not window_id:
         await safe_reply(update.message, "\u274c No session bound to this topic.")
+        return
+
+    provider = get_provider_for_window(window_id)
+    if not provider.capabilities.supports_structured_transcript:
+        await safe_reply(update.message, "No transcript available for this provider.")
         return
 
     await send_history(update.message, window_id)
@@ -1240,6 +1246,7 @@ _CB_DIRECTORY = (
     CB_DIR_STAR,
     CB_DIR_SELECT,
     CB_DIR_UP,
+    CB_DIR_HOME,
     CB_DIR_PAGE,
     CB_DIR_CONFIRM,
     CB_PROV_SELECT,
@@ -1354,6 +1361,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     # Voice message callbacks
     elif data.startswith(_CB_VOICE):
         await handle_voice_callback(update, context)
+
+    # Shell command approval
+    elif data.startswith("sh:"):
+        from .handlers.shell_commands import handle_shell_callback
+
+        thread_id = _get_thread_id(update)
+        await handle_shell_callback(query, user.id, data, context.bot, thread_id)
 
     # Sync command
     elif data == CB_SYNC_FIX:

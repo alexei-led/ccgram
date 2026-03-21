@@ -503,7 +503,7 @@ async def _handle_no_status(
         state = session_manager.get_window_state(window_id)
         raw_provider = getattr(state, "provider_name", "")
         provider_name = raw_provider.lower() if isinstance(raw_provider, str) else ""
-        if provider_name in ("codex", "gemini"):
+        if provider_name in ("codex", "gemini", "shell"):
             ws.has_seen_status = True
             await _transition_to_idle(
                 bot, user_id, window_id, thread_id, chat_id, display, notif_mode
@@ -1038,16 +1038,19 @@ async def _maybe_discover_transcript(
     if state.provider_name:
         # Explicit hookless provider — try only that one
         provider = get_provider_for_window(window_id)
+        # Shell provider has no transcripts — skip discovery
+        if provider.capabilities.name == "shell":
+            return
         providers_to_try = [(provider.capabilities.name, provider)]
     else:
         # Detection failed — check pane is alive (skip dead shells)
         if w and is_shell_prompt(w.pane_current_command):
             return
-        # Try all hookless providers
+        # Try all hookless providers (exclude shell — no transcripts)
         providers_to_try = [
             (name, registry.get(name))
             for name in registry.provider_names()
-            if not registry.get(name).capabilities.supports_hook
+            if not registry.get(name).capabilities.supports_hook and name != "shell"
         ]
 
     # Disable staleness check if pane process is alive
@@ -1091,6 +1094,13 @@ async def _maybe_discover_transcript(
                 provider_name=provider_name,
             )
             return
+
+    # Fallback: if no provider was detected and pane is alive with an
+    # unrecognized process, assign "shell" so the window gets idle status
+    # instead of being stuck with no provider. If an agent CLI starts later,
+    # re-detection in the next poll cycle will override this.
+    if not state.provider_name and pane_alive:
+        session_manager.set_window_provider(window_id, "shell")
 
 
 async def status_poll_loop(bot: Bot) -> None:

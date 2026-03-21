@@ -22,6 +22,7 @@ from ccgram.providers._jsonl import JsonlProvider
 from ccgram.providers.claude import ClaudeProvider
 from ccgram.providers.codex import CodexProvider
 from ccgram.providers.gemini import GeminiProvider
+from ccgram.providers.shell import ShellProvider
 
 # ── Stub provider (minimal conforming implementation) ────────────────────
 
@@ -77,6 +78,7 @@ PROVIDER_FIXTURES: list[type] = [
     ClaudeProvider,
     CodexProvider,
     GeminiProvider,
+    ShellProvider,
 ]
 
 
@@ -92,7 +94,9 @@ class TestAgentProviderCapabilities:
     def test_required_fields(self, provider: AgentProvider) -> None:
         caps = provider.capabilities
         assert caps.name
-        assert caps.launch_command
+        # Shell provider has empty launch_command (tmux opens $SHELL by default)
+        if caps.name != "shell":
+            assert caps.launch_command
 
     def test_immutability(self, provider: AgentProvider) -> None:
         caps = provider.capabilities
@@ -165,6 +169,8 @@ class TestParseTranscriptLine:
         assert provider.parse_transcript_line(line) is None
 
     def test_valid_returns_dict(self, provider: AgentProvider) -> None:
+        if not provider.capabilities.supports_structured_transcript:
+            pytest.skip("No transcript support")
         line = json.dumps({"type": "assistant", "message": {"content": "hi"}})
         result = provider.parse_transcript_line(line)
         assert isinstance(result, dict)
@@ -252,6 +258,8 @@ class TestParseTranscriptEntries:
         assert isinstance(pending, dict)
 
     def test_message_fields(self, provider: AgentProvider) -> None:
+        if not provider.capabilities.supports_structured_transcript:
+            pytest.skip("No transcript support")
         entries = [_make_assistant_entry(provider, "hello")]
         messages, _ = provider.parse_transcript_entries(entries, {})
         assert len(messages) == 1
@@ -261,11 +269,15 @@ class TestParseTranscriptEntries:
         assert msg.role == "assistant"
 
     def test_pending_carry_over(self, provider: AgentProvider) -> None:
+        if not provider.capabilities.supports_structured_transcript:
+            pytest.skip("No transcript support")
         entries = [_make_tool_use_entry(provider)]
         _, pending = provider.parse_transcript_entries(entries, {})
         assert "t1" in pending
 
     def test_pending_resolved_on_result(self, provider: AgentProvider) -> None:
+        if not provider.capabilities.supports_structured_transcript:
+            pytest.skip("No transcript support")
         entries = [
             _make_tool_use_entry(provider),
             _make_tool_result_entry(provider),
@@ -315,6 +327,8 @@ class TestExtractBashOutput:
         assert provider.extract_bash_output("some text\nno command here", "ls") is None
 
     def test_returns_output_when_command_found(self, provider: AgentProvider) -> None:
+        if not provider.capabilities.supports_structured_transcript:
+            pytest.skip("No transcript support")
         pane = "some text\n! ls -la\ntotal 42\n"
         result = provider.extract_bash_output(pane, "ls")
         assert result is not None
@@ -323,6 +337,8 @@ class TestExtractBashOutput:
 
 class TestIsUserTranscriptEntry:
     def test_user_entry_detected(self, provider: AgentProvider) -> None:
+        if not provider.capabilities.supports_structured_transcript:
+            pytest.skip("No transcript support")
         name = provider.capabilities.name
         if name == "codex":
             entry = {"type": "input_item", "payload": {"role": "user"}}
@@ -351,6 +367,8 @@ class TestParseHistoryEntry:
         assert provider.parse_history_entry({"type": "summary"}) is None
 
     def test_assistant_message_parsed(self, provider: AgentProvider) -> None:
+        if not provider.capabilities.supports_structured_transcript:
+            pytest.skip("No transcript support")
         entry = _make_assistant_entry(provider, "hello world")
         result = provider.parse_history_entry(entry)
         assert result is not None
@@ -359,6 +377,8 @@ class TestParseHistoryEntry:
         assert result.text == "hello world"
 
     def test_user_message_parsed(self, provider: AgentProvider) -> None:
+        if not provider.capabilities.supports_structured_transcript:
+            pytest.skip("No transcript support")
         name = provider.capabilities.name
         if name == "codex":
             entry = {
