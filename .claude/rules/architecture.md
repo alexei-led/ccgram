@@ -70,7 +70,16 @@ graph TB
 | `claude.py`   | ClaudeProvider (hook, resume, continue, JSONL transcripts)                               |
 | `codex.py`    | CodexProvider (resume, continue, JSONL transcripts, no hook)                             |
 | `gemini.py`   | GeminiProvider (resume, continue, whole-file JSON transcripts, no hook)                  |
+| `shell.py`    | ShellProvider (no hook, no transcript, shell prompt idle detection)                      |
 | `__init__.py` | `get_provider_for_window()`, `detect_provider_from_command()`, `get_provider()` fallback |
+
+### LLM modules (`llm/`)
+
+| Module               | Description                                              |
+| -------------------- | -------------------------------------------------------- |
+| `base.py`            | CommandGenerator Protocol + CommandResult dataclass      |
+| `httpx_completer.py` | OpenAI-compatible + Anthropic chat completions via httpx |
+| `__init__.py`        | LLM provider registry + `get_completer()` factory        |
 
 ### Whisper modules (`whisper/`)
 
@@ -126,6 +135,8 @@ graph TB
 | `callback_data.py`         | CB\_\* callback data constants for inline keyboard routing                            |
 | `callback_helpers.py`      | Shared helpers (user_owns_window, get_thread_id)                                      |
 | `user_state.py`            | context.user_data string key constants                                                |
+| `shell_commands.py`        | NL→command approval flow + callbacks                                                  |
+| `shell_capture.py`         | Terminal output capture and relay                                                     |
 
 ### State files (`~/.ccgram/` or `$CCBOT_DIR/`)
 

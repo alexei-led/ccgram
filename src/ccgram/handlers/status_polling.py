@@ -1099,7 +1099,7 @@ async def _maybe_discover_transcript(
     # unrecognized process, assign "shell" so the window gets idle status
     # instead of being stuck with no provider. If an agent CLI starts later,
     # re-detection in the next poll cycle will override this.
-    if not state.provider_name and pane_alive:
+    if not state.provider_name and w and is_shell_prompt(w.pane_current_command):
         session_manager.set_window_provider(window_id, "shell")
 
 

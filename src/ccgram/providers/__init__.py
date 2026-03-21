@@ -33,6 +33,12 @@ _YOLO_FLAGS: dict[str, str] = {
     "gemini": "--yolo",
 }
 
+
+def has_yolo_mode(provider_name: str) -> bool:
+    """Return True if the provider supports YOLO (permissive) launch mode."""
+    return provider_name in _YOLO_FLAGS
+
+
 # Singleton cache
 _active: AgentProvider | None = None
 
@@ -251,6 +257,7 @@ __all__ = [
     "detect_provider_from_runtime",
     "get_provider",
     "get_provider_for_window",
+    "has_yolo_mode",
     "registry",
     "resolve_capabilities",
     "resolve_launch_command",

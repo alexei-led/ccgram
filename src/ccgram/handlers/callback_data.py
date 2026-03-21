@@ -111,9 +111,7 @@ CB_VOICE = "vc:"  # vc:send:<msg_id> / vc:drop:<msg_id>
 # Shell command approval
 CB_SHELL_RUN = "sh:run:"  # sh:run:<window_id>
 CB_SHELL_EDIT = "sh:edt:"  # sh:edt:<window_id>
-CB_SHELL_REVISE = "sh:rev:"  # sh:rev:<window_id>
 CB_SHELL_CANCEL = "sh:x:"  # sh:x:<window_id>
-CB_SHELL_CONFIRM = "sh:ok:"  # sh:ok:<window_id> (generic confirm)
 CB_SHELL_CONFIRM_DANGER = "sh:dng:"  # sh:dng:<window_id> (dangerous confirm)
 
 # Idle status sentinel (shared between status_polling and message_queue)

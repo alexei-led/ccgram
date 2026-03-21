@@ -24,10 +24,8 @@ from ..session import session_manager
 from ..tmux_manager import tmux_manager
 from .callback_data import (
     CB_SHELL_CANCEL,
-    CB_SHELL_CONFIRM,
     CB_SHELL_CONFIRM_DANGER,
     CB_SHELL_EDIT,
-    CB_SHELL_REVISE,
     CB_SHELL_RUN,
 )
 from .message_sender import safe_edit, safe_reply, safe_send
@@ -65,9 +63,15 @@ async def handle_shell_message(
     await enqueue_status_update(bot, user_id, window_id, None, thread_id)
     clear_probe_failures(window_id)
 
-    if text.startswith("!") and len(text) > 1:
-        await _execute_raw_command(bot, user_id, thread_id, window_id, text[1:])
-        return
+    # Clear any stale pending command for this topic
+    chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+    _clear_pending(chat_id, thread_id)
+
+    if text.startswith("!"):
+        raw = text[1:].lstrip()
+        if raw:
+            await _execute_raw_command(bot, user_id, thread_id, window_id, raw)
+            return
 
     completer = get_completer()
     if not completer:
@@ -97,7 +101,6 @@ async def handle_shell_message(
         await _execute_raw_command(bot, user_id, thread_id, window_id, text)
         return
 
-    chat_id = session_manager.resolve_chat_id(user_id, thread_id)
     await _show_command_approval(chat_id, thread_id, window_id, result, text, message)
 
 
@@ -170,12 +173,6 @@ def _build_approval_keyboard(
                     "\u270f Edit",
                     callback_data=f"{CB_SHELL_EDIT}{window_id}",
                 ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "\U0001f504 Revise",
-                    callback_data=f"{CB_SHELL_REVISE}{window_id}",
-                ),
                 InlineKeyboardButton(
                     "\u2715 Cancel",
                     callback_data=f"{CB_SHELL_CANCEL}{window_id}",
@@ -204,12 +201,8 @@ async def handle_shell_callback(
         await _cb_run(query, bot, user_id, thread_id, data, chat_id, pending)
     elif data.startswith(CB_SHELL_EDIT):
         await _cb_edit(query, pending)
-    elif data.startswith(CB_SHELL_REVISE):
-        await _cb_revise(query, pending)
     elif data.startswith(CB_SHELL_CANCEL):
         await _cb_cancel(query, chat_id, thread_id)
-    elif data.startswith(CB_SHELL_CONFIRM):
-        await _cb_run(query, bot, user_id, thread_id, data, chat_id, pending)
 
 
 async def _cb_run(
@@ -223,8 +216,6 @@ async def _cb_run(
 ) -> None:
     """Handle Run / Confirm Danger callbacks."""
     prefix = CB_SHELL_RUN if data.startswith(CB_SHELL_RUN) else CB_SHELL_CONFIRM_DANGER
-    if not data.startswith(prefix):
-        prefix = CB_SHELL_CONFIRM
     window_id = data[len(prefix) :]
     await query.answer()
     if pending:
@@ -246,22 +237,6 @@ async def _cb_edit(
         await safe_edit(
             query,
             f"\U0001f4cb Copy, edit, and send back:\n`{pending[0]}`",
-        )
-    else:
-        await safe_edit(query, "\u274c Command expired")
-
-
-async def _cb_revise(
-    query: CallbackQuery,
-    pending: tuple[str, str] | None,
-) -> None:
-    """Handle Revise callback."""
-    await query.answer()
-    if pending:
-        await safe_edit(
-            query,
-            "\U0001f504 Describe the change you want "
-            "(e.g. 'add -r flag' or 'use grep instead'):",
         )
     else:
         await safe_edit(query, "\u274c Command expired")

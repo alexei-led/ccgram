@@ -422,7 +422,7 @@ async def _handle_provider_select(
     Providers without a YOLO flag (e.g. shell) skip the mode picker
     and go directly to window creation with approval_mode="normal".
     """
-    from ccgram.providers import _YOLO_FLAGS
+    from ccgram.providers import has_yolo_mode
 
     provider_name = data[len(CB_PROV_SELECT) :]
     if not provider_registry.is_valid(provider_name):
@@ -444,7 +444,7 @@ async def _handle_provider_select(
     ):
         return
 
-    if provider_name not in _YOLO_FLAGS:
+    if not has_yolo_mode(provider_name):
         # No mode picker needed — go directly to window creation
         clear_browse_state(context.user_data)
         await _create_window_and_bind(

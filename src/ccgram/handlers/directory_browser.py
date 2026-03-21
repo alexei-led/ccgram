@@ -71,13 +71,12 @@ _PROJECT_MARKERS: dict[str, str] = {
 def _detect_project_badge(parent: Path, name: str) -> str:
     """Return a project badge icon for a subdirectory, or empty string."""
     subdir = parent / name
-    try:
-        entries = {e.name for e in subdir.iterdir()}
-    except (PermissionError, OSError):  # fmt: skip
-        return ""
     for marker, icon in _PROJECT_MARKERS.items():
-        if marker in entries:
-            return icon
+        try:
+            if (subdir / marker).exists():
+                return icon
+        except OSError:
+            continue
     return ""
 
 

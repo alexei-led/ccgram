@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-ccgram (Command & Control Bot) — manage AI coding agents from Telegram via tmux. Each Telegram Forum topic is bound to one tmux window running one agent CLI instance (Claude Code, Codex, or Gemini).
+ccgram (Command & Control Bot) — manage AI coding agents from Telegram via tmux. Each Telegram Forum topic is bound to one tmux window running one agent CLI instance (Claude Code, Codex, Gemini, or a plain shell).
 
 Tech stack: Python, python-telegram-bot, tmux, uv.
 
@@ -40,6 +40,7 @@ ccgram --autoclose-dead 0              # Disable auto-close for dead sessions
 - **No message truncation** at parse layer — splitting only at send layer (`split_message`, 4096 char limit).
 - **Entity-based formatting** — use `safe_reply`/`safe_edit`/`safe_send` helpers which convert markdown to plain text + MessageEntity offsets (no parse errors possible, auto fallback to plain text). Internal queue/UI code calls bot API directly with its own fallback.
 - **Hook-based session tracking** — Claude Code hooks (SessionStart, Notification, Stop, StopFailure, SessionEnd, SubagentStart, SubagentStop, TeammateIdle, TaskCompleted) write to `session_map.json` and `events.jsonl`; monitor polls both to detect session changes and deliver instant event notifications. Missing hooks are detected at startup with an actionable warning.
+- **Shell provider chat-first design** — text sent to a shell topic goes through the LLM for NL→command generation by default; prefix with `!` to send a raw command directly. When no LLM is configured, all text is forwarded as raw commands.
 - **Message queue per user** — FIFO ordering, message merging (3800 char limit), tool_use/tool_result pairing.
 - **Rate limiting** — 1.1s minimum interval between messages per user via `rate_limit_send()`.
 
@@ -79,7 +80,7 @@ ccgram supports multiple agent CLI backends via the provider abstraction (`src/c
 | Default provider     | `CCGRAM_PROVIDER`       | `claude`        |
 | Per-provider command | `CCGRAM_<NAME>_COMMAND` | (from provider) |
 
-Launch command override: `CCGRAM_<NAME>_COMMAND` (e.g. `CCGRAM_CLAUDE_COMMAND=ce --current`), falls back to provider default. Resolved by `resolve_launch_command()` in `providers/__init__.py`.
+Launch command override: `CCGRAM_<NAME>_COMMAND` (e.g. `CCGRAM_CLAUDE_COMMAND=ce --current`), falls back to provider default. The shell provider has no override — tmux opens `$SHELL` by default. Resolved by `resolve_launch_command()` in `providers/__init__.py`.
 
 ### Per-Window Provider Model
 
@@ -91,24 +92,37 @@ Each tmux window tracks its own provider in `WindowState.provider_name`. Resolut
 Key functions:
 
 - `get_provider_for_window(window_id)` — resolves provider instance for a specific window
-- `detect_provider_from_command(pane_current_command)` — auto-detects provider from process name (claude/codex/gemini)
+- `detect_provider_from_command(pane_current_command)` — auto-detects provider from process name (claude/codex/gemini/shell)
 - `set_window_provider(window_id, provider_name)` — persists provider choice on SessionManager
 
-When creating a topic via the directory browser, users can choose the provider (Claude default, Codex, Gemini). Externally created tmux windows are auto-detected from `pane_current_command`. The global `get_provider()` remains as fallback for CLI commands without window context (e.g., `doctor`, `status`).
+When creating a topic via the directory browser, users can choose the provider (Claude default, Codex, Gemini, Shell). Externally created tmux windows are auto-detected from `pane_current_command`. The global `get_provider()` remains as fallback for CLI commands without window context (e.g., `doctor`, `status`).
 
 ### Provider Capability Matrix
 
-| Capability       | Claude                          | Codex              | Gemini                      |
-| ---------------- | ------------------------------- | ------------------ | --------------------------- |
-| Hook events      | Yes (all supported event types) | No                 | No                          |
-| Resume           | Yes (`--resume`)                | Yes (`resume`)     | Yes (`--resume idx/latest`) |
-| Continue         | Yes                             | Yes                | Yes                         |
-| Transcript       | JSONL                           | JSONL              | JSON (whole-file read)      |
-| Incremental read | Yes                             | Yes                | No (whole-file JSON)        |
-| Commands         | Yes                             | Yes                | Yes                         |
-| Status detection | Hook events + pyte + spinner    | Activity heuristic | Pane title + interactive UI |
+| Capability       | Claude                          | Codex              | Gemini                      | Shell                       |
+| ---------------- | ------------------------------- | ------------------ | --------------------------- | --------------------------- |
+| Hook events      | Yes (all supported event types) | No                 | No                          | No                          |
+| Resume           | Yes (`--resume`)                | Yes (`resume`)     | Yes (`--resume idx/latest`) | No                          |
+| Continue         | Yes                             | Yes                | Yes                         | No                          |
+| Transcript       | JSONL                           | JSONL              | JSON (whole-file read)      | None                        |
+| Incremental read | Yes                             | Yes                | No (whole-file JSON)        | No                          |
+| Commands         | Yes                             | Yes                | Yes                         | No                          |
+| Status detection | Hook events + pyte + spinner    | Activity heuristic | Pane title + interactive UI | Shell prompt idle detection |
 
-Capabilities gate UX per-window: recovery keyboard only shows Continue/Resume buttons when supported; `ccgram doctor` checks all hook event types for Claude. Codex and Gemini have no hooks — session tracking for these providers relies on auto-detection from running processes.
+Capabilities gate UX per-window: recovery keyboard only shows Continue/Resume buttons when supported; `ccgram doctor` checks all hook event types for Claude. Codex, Gemini, and Shell have no hooks — session tracking for these providers relies on auto-detection from running processes.
+
+### LLM Configuration
+
+The shell provider uses an LLM to translate natural language input into shell commands. LLM settings are independent of the agent provider and apply only when a shell topic is active.
+
+| Setting      | Env Var               | Default         |
+| ------------ | --------------------- | --------------- |
+| LLM provider | `CCGRAM_LLM_PROVIDER` | (empty)         |
+| LLM API key  | `CCGRAM_LLM_API_KEY`  | (empty)         |
+| LLM base URL | `CCGRAM_LLM_BASE_URL` | (from provider) |
+| LLM model    | `CCGRAM_LLM_MODEL`    | (from provider) |
+
+Supported LLM providers: `openai`, `groq`, `anthropic`, `ollama`. When `CCGRAM_LLM_PROVIDER` is unset, the shell provider skips NL→command generation and forwards all input as raw commands.
 
 ### Migration Notes
 
