@@ -218,21 +218,87 @@ class TestGetCompleter:
         with pytest.raises(ValueError, match="No API key found"):
             get_completer()
 
-    def test_api_key_from_env_var(self, monkeypatch) -> None:
+    def test_xai_with_api_key(self, monkeypatch) -> None:
         self._mock_config(
             monkeypatch,
-            llm_provider="groq",
-            llm_api_key="",
+            llm_provider="xai",
+            llm_api_key="xai-test-key",
             llm_base_url="",
             llm_model="",
         )
-        monkeypatch.setenv("GROQ_API_KEY", "gsk-test-key")
 
         from ccgram.llm import get_completer
         from ccgram.llm.httpx_completer import OpenAICompatCompleter
 
         result = get_completer()
         assert isinstance(result, OpenAICompatCompleter)
+        assert result._base_url == "https://api.x.ai/v1"
+
+    def test_deepseek_with_api_key(self, monkeypatch) -> None:
+        self._mock_config(
+            monkeypatch,
+            llm_provider="deepseek",
+            llm_api_key="ds-test-key",
+            llm_base_url="",
+            llm_model="",
+        )
+
+        from ccgram.llm import get_completer
+        from ccgram.llm.httpx_completer import OpenAICompatCompleter
+
+        result = get_completer()
+        assert isinstance(result, OpenAICompatCompleter)
+        assert result._base_url == "https://api.deepseek.com/v1"
+
+    def test_api_key_from_provider_env_var(self, monkeypatch) -> None:
+        self._mock_config(
+            monkeypatch,
+            llm_provider="xai",
+            llm_api_key="",
+            llm_base_url="",
+            llm_model="",
+        )
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("XAI_API_KEY", "xai-from-env")
+
+        from ccgram.llm import get_completer
+        from ccgram.llm.httpx_completer import OpenAICompatCompleter
+
+        result = get_completer()
+        assert isinstance(result, OpenAICompatCompleter)
+
+    def test_fallback_to_openai_api_key(self, monkeypatch) -> None:
+        self._mock_config(
+            monkeypatch,
+            llm_provider="xai",
+            llm_api_key="",
+            llm_base_url="",
+            llm_model="",
+        )
+        monkeypatch.delenv("XAI_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-fallback")
+
+        from ccgram.llm import get_completer
+        from ccgram.llm.httpx_completer import OpenAICompatCompleter
+
+        result = get_completer()
+        assert isinstance(result, OpenAICompatCompleter)
+
+    def test_no_api_key_anywhere_raises(self, monkeypatch) -> None:
+        self._mock_config(
+            monkeypatch,
+            llm_provider="deepseek",
+            llm_api_key="",
+            llm_base_url="",
+            llm_model="",
+        )
+        monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        from ccgram.llm import get_completer
+
+        with pytest.raises(ValueError, match="No API key found"):
+            get_completer()
 
     def test_custom_model_and_base_url(self, monkeypatch) -> None:
         self._mock_config(

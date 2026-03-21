@@ -378,27 +378,41 @@ The shell provider opens a plain shell session in tmux. Text messages are sent t
 
 ### LLM Configuration
 
-Configure an LLM provider to enable natural language to shell command generation:
+Configure an LLM provider to enable natural language to shell command generation. API key resolution: `CCGRAM_LLM_API_KEY` > provider-specific env var > `OPENAI_API_KEY` (universal fallback).
 
 **OpenAI:**
 
 ```bash
 CCGRAM_LLM_PROVIDER=openai
-CCGRAM_LLM_API_KEY=sk-...        # or set OPENAI_API_KEY
+# Uses OPENAI_API_KEY by default — no extra key needed
 ```
 
-**Groq (free tier available):**
+**x.ai (Grok):**
 
 ```bash
-CCGRAM_LLM_PROVIDER=groq
-CCGRAM_LLM_API_KEY=gsk_...       # or set GROQ_API_KEY
+CCGRAM_LLM_PROVIDER=xai
+XAI_API_KEY=xai-...              # or set OPENAI_API_KEY as fallback
+```
+
+**DeepSeek:**
+
+```bash
+CCGRAM_LLM_PROVIDER=deepseek
+DEEPSEEK_API_KEY=sk-...          # or set OPENAI_API_KEY as fallback
 ```
 
 **Anthropic:**
 
 ```bash
 CCGRAM_LLM_PROVIDER=anthropic
-CCGRAM_LLM_API_KEY=sk-ant-...    # or set ANTHROPIC_API_KEY
+ANTHROPIC_API_KEY=sk-ant-...     # or set OPENAI_API_KEY as fallback
+```
+
+**Groq:**
+
+```bash
+CCGRAM_LLM_PROVIDER=groq
+GROQ_API_KEY=gsk_...             # or set OPENAI_API_KEY as fallback
 ```
 
 **Ollama (local, no API key needed):**
@@ -408,7 +422,7 @@ CCGRAM_LLM_PROVIDER=ollama
 CCGRAM_LLM_BASE_URL=http://localhost:11434/v1
 ```
 
-Override model with `CCGRAM_LLM_MODEL=gpt-4o`. Provider defaults: openai → `gpt-4o-mini`, groq → `llama-3.3-70b-versatile`, anthropic → `claude-sonnet-4-20250514`, ollama → `llama3.1`.
+Override model with `CCGRAM_LLM_MODEL=gpt-4o`. Provider defaults: openai → `gpt-4o-mini`, xai → `grok-3-fast`, deepseek → `deepseek-chat`, anthropic → `claude-sonnet-4-20250514`, groq → `llama-3.3-70b-versatile`, ollama → `llama3.1`.
 
 When no LLM is configured, all text messages are sent as raw shell commands.
 

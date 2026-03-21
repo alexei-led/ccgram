@@ -122,7 +122,7 @@ The shell provider uses an LLM to translate natural language input into shell co
 | LLM base URL | `CCGRAM_LLM_BASE_URL` | (from provider) |
 | LLM model    | `CCGRAM_LLM_MODEL`    | (from provider) |
 
-Supported LLM providers: `openai`, `groq`, `anthropic`, `ollama`. When `CCGRAM_LLM_PROVIDER` is unset, the shell provider skips NL→command generation and forwards all input as raw commands.
+Supported LLM providers: `openai`, `xai`, `deepseek`, `anthropic`, `groq`, `ollama`. API key resolution: `CCGRAM_LLM_API_KEY` > provider-specific env var (e.g. `XAI_API_KEY`) > `OPENAI_API_KEY` (universal fallback). When `CCGRAM_LLM_PROVIDER` is unset, the shell provider skips NL→command generation and forwards all input as raw commands.
 
 ### Migration Notes
 
