@@ -70,6 +70,25 @@ async def test_send_keys_and_capture_pane(tmux, tmp_path) -> None:
     assert "hello-integration" in output
 
 
+async def test_no_agent_disables_automatic_rename(tmux, tmp_path) -> None:
+    ok, _msg, _name, window_id = await tmux.create_window(
+        str(tmp_path), window_name="shell-norename", start_agent=False
+    )
+    assert ok
+
+    session = tmux.get_session()
+    assert session
+    window = session.windows.get(window_id=window_id)
+    assert window.show_option("automatic-rename") is False
+
+    await asyncio.sleep(0.5)
+    await tmux.send_keys(window_id, "echo should-not-rename")
+    await asyncio.sleep(1.0)
+    found = await tmux.find_window_by_id(window_id)
+    assert found is not None
+    assert found.window_name == "shell-norename"
+
+
 async def test_kill_window(tmux, tmp_path) -> None:
     ok, _msg, _name, window_id = await tmux.create_window(
         str(tmp_path), window_name="kill-me", start_agent=False

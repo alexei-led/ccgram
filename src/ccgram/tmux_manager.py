@@ -971,6 +971,12 @@ class TmuxManager:
 
                 new_window_id = window.window_id or ""
 
+                # Disable automatic-rename for windows without an agent CLI
+                # (plain shell). Tmux auto-renames based on the current process,
+                # which causes topic emoji flickering as the display name changes.
+                if not (start_agent and launch_command):
+                    window.set_option("automatic-rename", "off")
+
                 # Start agent CLI if requested
                 if start_agent and launch_command:
                     pane = window.active_pane
