@@ -30,6 +30,14 @@
 - `src/ccgram/codex_status.py` extracts Codex status snapshots from JSONL transcripts.
 - `src/ccgram/screenshot.py` renders terminal text to PNG (PIL, ANSI color, font fallback).
 
+4a. LLM command generation layer
+
+- `src/ccgram/llm/base.py` defines the `CommandGenerator` protocol and `CommandResult` datatype used by all LLM backends.
+- `src/ccgram/llm/httpx_completer.py` implements completers for OpenAI-compatible APIs and the Anthropic API via httpx.
+- `src/ccgram/llm/__init__.py` owns the `_PROVIDERS` registry and resolves the active backend from config.
+- `src/ccgram/handlers/shell_commands.py` consumes `CommandGenerator` to drive the NL→command→approval-keyboard flow; also handles raw `!` command execution.
+- `src/ccgram/handlers/shell_capture.py` polls the shell pane after execution and streams output back to Telegram via in-place edits.
+
 5. Integrations
 
 - `src/ccgram/tmux_manager.py` is the tmux IO boundary.
@@ -43,6 +51,14 @@ Inbound user message (Telegram -> tmux):
 2. `handlers/text_handler.py` validates context and resolves topic binding.
 3. `session.py` maps `(user_id, thread_id)` -> `window_id`.
 4. `tmux_manager.py` sends keys to the mapped window/pane.
+
+Shell provider message flow (NL -> command -> shell):
+
+1. `handlers/text_handler.py` detects shell provider window and routes to `shell_commands.py`.
+2. `shell_commands.py` calls `llm/` to generate a suggested command from the NL description.
+3. Telegram approval keyboard is rendered; user confirms or cancels.
+4. On approval, the command is sent to the tmux pane via `tmux_manager.py`.
+5. `shell_capture.py` polls pane output and relays it back to Telegram via in-place edits.
 
 Outbound agent output (provider transcript/event -> Telegram):
 
@@ -80,6 +96,7 @@ Provider transcript sources (read-only):
 - Codex: `~/.codex/sessions/`
 - Gemini: `~/.gemini/tmp/`
   - Gemini discovery matches by `projectHash` (or configured project alias dir) and does not full-scan unrelated project dirs.
+- Shell: no transcript files; output is captured directly from the tmux pane by `handlers/shell_capture.py`.
 
 ## Core Flow
 

@@ -8,7 +8,7 @@
 [![License](https://img.shields.io/github/license/alexei-led/ccgram)](LICENSE)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
-Control AI coding agents from your phone. CCGram bridges Telegram to tmux — monitor output, respond to prompts, and manage sessions without touching your computer. Supports [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), and [Gemini CLI](https://github.com/google-gemini/gemini-cli).
+Control AI coding agents from your phone. CCGram bridges Telegram to tmux — monitor output, respond to prompts, and manage sessions without touching your computer. Supports [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), [Gemini CLI](https://github.com/google-gemini/gemini-cli), and plain shell sessions with LLM command generation.
 
 ## Why CCGram?
 
@@ -62,7 +62,7 @@ Each Telegram Forum topic binds to one tmux window running an agent CLI. Message
 **Session control**
 
 - Send messages directly to your agent topic
-- `/commands` shows commands supported by that topic's provider (Claude/Codex/Gemini)
+- `/commands` shows commands supported by that topic's provider (Claude/Codex/Gemini/Shell)
 - Forwarded slash commands report provider mismatch errors (for example Claude-only `/cost` in Codex)
 - Command menu auto-switches per user/chat to the active topic provider after interaction
 - Interactive prompts (AskUserQuestion, ExitPlanMode, Permission) rendered as inline keyboards
@@ -91,8 +91,9 @@ Each Telegram Forum topic binds to one tmux window running an agent CLI. Message
 
 **Multi-provider support**
 
-- Claude Code (default), OpenAI Codex CLI, and Google Gemini CLI
+- Claude Code (default), OpenAI Codex CLI, Google Gemini CLI, and plain shell
 - Per-topic provider selection — different topics can use different agents simultaneously
+- Shell provider supports LLM command generation — describe what you want and get a shell command to run
 - Auto-detects provider from externally created tmux windows (process name, with Gemini bun/node wrapper fallback via Gemini pane-title symbols)
 - Provider-aware recovery (Continue/Resume buttons adapt to each provider's capabilities)
 - [Emdash](https://emdash.ai) integration — auto-discovers emdash tmux sessions; bind Telegram topics to emdash-managed agents with zero configuration
@@ -110,7 +111,7 @@ Each Telegram Forum topic binds to one tmux window running an agent CLI. Message
 
 - **Python 3.14+**
 - **tmux** — installed and in PATH
-- **At least one agent CLI** — `claude` (default), `codex`, or `gemini` installed and authenticated
+- **At least one agent CLI** — `claude` (default), `codex`, or `gemini` installed and authenticated (or use the plain `shell` provider with no extra install required)
 
 ### Install
 
@@ -159,7 +160,7 @@ This registers Claude Code hooks (SessionStart, Notification, Stop, StopFailure,
 ccgram
 ```
 
-Open your Telegram group, create a new topic, send a message — a directory browser appears. Pick a project directory, choose your agent (Claude, Codex, or Gemini), then choose session mode (`✅ Standard` or `🚀 YOLO`), and you're connected.
+Open your Telegram group, create a new topic, send a message — a directory browser appears. Pick a project directory, choose your agent (Claude, Codex, Gemini, or Shell), then choose session mode (`✅ Standard` or `🚀 YOLO`), and you're connected.
 
 ## Migrating from ccbot
 

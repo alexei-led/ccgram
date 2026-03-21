@@ -120,6 +120,10 @@ All settings accept both CLI flags and environment variables. CLI flags take pre
 | `CCGRAM_WHISPER_BASE_URL` / `--whisper-base-url` | _(provider default)_ | Custom OpenAI-compatible endpoint URL                         |
 | `CCGRAM_WHISPER_MODEL` / `--whisper-model`       | _(provider default)_ | Model override (e.g., `whisper-large-v3-turbo`)               |
 | `CCGRAM_WHISPER_LANGUAGE` / `--whisper-language` | _(auto-detect)_      | Force language code (e.g., `en`, `zh`)                        |
+| `CCGRAM_LLM_PROVIDER`                            | _(empty = disabled)_ | LLM provider for shell command generation                     |
+| `CCGRAM_LLM_API_KEY`                             | _(empty)_            | API key for LLM provider (env only)                           |
+| `CCGRAM_LLM_BASE_URL`                            | _(from provider)_    | Custom LLM API endpoint                                       |
+| `CCGRAM_LLM_MODEL`                               | _(from provider)_    | LLM model override                                            |
 
 ## Voice Message Transcription
 
@@ -270,22 +274,23 @@ CCGram supports multiple agent CLI backends. Each Telegram topic can use a diffe
 
 ### Supported Providers
 
-| Provider    | CLI Command | Hook Events | Status Detection                                          |
-| ----------- | ----------- | ----------- | --------------------------------------------------------- |
-| Claude Code | `claude`    | Yes         | Hook events + pyte VT100 + spinner                        |
-| Codex CLI   | `codex`     | No          | pyte VT100 interactive UI + transcript activity heuristic |
-| Gemini CLI  | `gemini`    | No          | Pane title + interactive UI                               |
+| Provider    | CLI Command | Hook Events | Resume | Continue | Transcript | Status Detection                                          |
+| ----------- | ----------- | ----------- | ------ | -------- | ---------- | --------------------------------------------------------- |
+| Claude Code | `claude`    | Yes         | Yes    | Yes      | JSONL      | Hook events + pyte VT100 + spinner                        |
+| Codex CLI   | `codex`     | No          | Yes    | Yes      | JSONL      | pyte VT100 interactive UI + transcript activity heuristic |
+| Gemini CLI  | `gemini`    | No          | Yes    | Yes      | JSON       | Pane title + interactive UI                               |
+| Shell       | `bash`      | No          | No     | No       | None       | Shell prompt idle detection                               |
 
 ### Choosing a Provider
 
-**From Telegram**: When you create a new topic and select a directory, a provider picker appears with Claude (default), Codex, and Gemini options. After provider selection, CCGram asks for session mode:
+**From Telegram**: When you create a new topic and select a directory, a provider picker appears with Claude (default), Codex, Gemini, and Shell options. After provider selection, CCGram asks for session mode:
 
 - `✅ Standard` (normal approvals)
 - `🚀 YOLO` (provider-specific permissive mode)
 
 **From the terminal**: If you create a tmux window manually and start an agent CLI, CCGram auto-detects the provider from the running process name. For Gemini sessions launched via bun/node wrappers, it also checks Gemini pane-title symbols (`✦`, `✋`, `◇`).
 
-**Default provider**: Set `CCGRAM_PROVIDER=codex` (or `gemini`) to change the default. Claude is the default if unset.
+**Default provider**: Set `CCGRAM_PROVIDER=codex` (or `gemini`, `shell`) to change the default. Claude is the default if unset.
 
 ### Session Mode (Standard vs YOLO)
 
@@ -366,6 +371,71 @@ Each provider exposes its own slash commands to the Telegram menu. Examples:
 For Codex, `/status` now sends a transcript-based fallback snapshot in Telegram
 (session/cwd/token/rate-limit summary) because some Codex builds render status
 in the terminal UI without emitting a transcript assistant message.
+
+## Shell Provider
+
+The shell provider opens a plain shell session in tmux. Text messages are sent through an LLM to generate shell commands; prefix with `!` for raw commands.
+
+### LLM Configuration
+
+Configure an LLM provider to enable natural language to shell command generation:
+
+**OpenAI:**
+
+```bash
+CCGRAM_LLM_PROVIDER=openai
+CCGRAM_LLM_API_KEY=sk-...        # or set OPENAI_API_KEY
+```
+
+**Groq (free tier available):**
+
+```bash
+CCGRAM_LLM_PROVIDER=groq
+CCGRAM_LLM_API_KEY=gsk_...       # or set GROQ_API_KEY
+```
+
+**Anthropic:**
+
+```bash
+CCGRAM_LLM_PROVIDER=anthropic
+CCGRAM_LLM_API_KEY=sk-ant-...    # or set ANTHROPIC_API_KEY
+```
+
+**Ollama (local, no API key needed):**
+
+```bash
+CCGRAM_LLM_PROVIDER=ollama
+CCGRAM_LLM_BASE_URL=http://localhost:11434/v1
+```
+
+Override model with `CCGRAM_LLM_MODEL=gpt-4o`. Provider defaults: openai → `gpt-4o-mini`, groq → `llama-3.3-70b-versatile`, anthropic → `claude-sonnet-4-20250514`, ollama → `llama3.1`.
+
+When no LLM is configured, all text messages are sent as raw shell commands.
+
+### Command Generation Flow
+
+1. Send a text message describing what you want (e.g., "list all Python files")
+2. The LLM generates a shell command (e.g., `find . -name "*.py"`)
+3. An approval keyboard appears: **▶ Run** | **✏ Edit** | **✕ Cancel**
+4. Tap **Run** to execute, **Edit** to copy and modify, or **Cancel** to discard
+5. Dangerous commands (`rm -rf`, `dd`, etc.) show an extra confirmation step
+
+### Raw Commands
+
+Prefix with `!` to bypass LLM and send directly to the shell:
+
+- `!ls -la` → sends `ls -la` directly
+- `! git status` → sends `git status` (leading space stripped)
+
+### Voice Messages
+
+Voice messages in shell topics flow through Whisper transcription → LLM command generation → approval keyboard automatically.
+
+### Shell Status
+
+- Idle at prompt: "🐚 Shell ready" (or "✓ Ready" with standard status)
+- `/history` is not available (no transcript)
+- Resume and Continue are not supported (shell sessions are ephemeral)
 
 ## Data Storage
 
