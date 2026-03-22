@@ -63,3 +63,6 @@ progress*.txt
 
 # Dev run lock
 .ccgram-dev-run.lock.d/
+
+# Runtime uploads
+.ccgram-uploads/
