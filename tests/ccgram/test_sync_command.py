@@ -111,12 +111,12 @@ class TestBuildReport:
     def test_report_shows_stale_topic_hint(self) -> None:
         audit = AuditResult(issues=[], total_bindings=0, live_binding_count=0)
         text, _keyboard = _format_report(audit, fixed_count=1, closed_topic_count=2)
-        assert "Closed 2 stale topics (delete manually in Telegram)" in text
+        assert "Removed 2 stale topics" in text
 
     def test_report_shows_singular_stale_topic_hint(self) -> None:
         audit = AuditResult(issues=[], total_bindings=0, live_binding_count=0)
         text, _keyboard = _format_report(audit, fixed_count=1, closed_topic_count=1)
-        assert "Closed 1 stale topic (delete manually in Telegram)" in text
+        assert "Removed 1 stale topic" in text
 
     def test_clean_state_shows_all_clear(self) -> None:
         audit = AuditResult(issues=[], total_bindings=3, live_binding_count=3)
@@ -266,11 +266,11 @@ class TestSyncFix:
             patch("ccgram.handlers.sync_command.clear_topic_state") as mock_cleanup,
         ):
             await handle_sync_fix(query)
-            mock_bot.close_forum_topic.assert_called_once_with(-999, 42)
+            mock_bot.delete_forum_topic.assert_called_once_with(-999, 42)
             mock_cleanup.assert_called_once_with(100, 42, bot=mock_bot, window_id="@7")
             mock_sm.unbind_thread.assert_called_once_with(100, 42)
             report_text = mock_edit.call_args[0][1]
-            assert "Closed 1 stale topic" in report_text
+            assert "Removed 1 stale topic" in report_text
 
     async def test_fix_skips_unbind_when_close_fails(self, _patch_deps) -> None:
         mock_sm, _, _ = _patch_deps
@@ -302,6 +302,7 @@ class TestSyncFix:
 
         query = MagicMock()
         mock_bot = AsyncMock()
+        mock_bot.delete_forum_topic.side_effect = TelegramError("Forbidden")
         mock_bot.close_forum_topic.side_effect = TelegramError("Forbidden")
         query.get_bot = MagicMock(return_value=mock_bot)
 
@@ -310,6 +311,7 @@ class TestSyncFix:
             patch("ccgram.handlers.sync_command.clear_topic_state") as mock_cleanup,
         ):
             await handle_sync_fix(query)
+            mock_bot.delete_forum_topic.assert_called_once()
             mock_bot.close_forum_topic.assert_called_once()
             mock_cleanup.assert_not_called()
             mock_sm.unbind_thread.assert_not_called()
