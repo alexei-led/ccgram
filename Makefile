@@ -1,4 +1,4 @@
-.PHONY: fmt lint test test-integration test-e2e test-all typecheck deptry check install dev build clean
+.PHONY: fmt lint test test-integration test-integration-llm test-e2e test-all typecheck deptry check install dev build clean
 
 fmt:
 	uv run ruff format src/ tests/
@@ -16,7 +16,10 @@ test:
 	uv run pytest tests/ -m "not integration and not e2e"
 
 test-integration:
-	uv run pytest tests/integration/ -v
+	uv run pytest tests/integration/ -m "not llm" -v
+
+test-integration-llm:
+	uv run pytest tests/integration/ -m "llm" -v
 
 test-e2e:
 	uv run pytest tests/e2e/ -v --timeout=300

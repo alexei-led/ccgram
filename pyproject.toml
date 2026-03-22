@@ -127,6 +127,7 @@ asyncio_mode = "auto"
 markers = [
     "integration: tests using real filesystem or external processes",
     "e2e: end-to-end tests with real agent CLIs (local only, slow)",
+    "llm: tests requiring real LLM API keys (slow, requires env vars)",
 ]
 
 [tool.coverage.run]
