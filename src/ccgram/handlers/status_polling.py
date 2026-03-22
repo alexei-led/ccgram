@@ -886,13 +886,35 @@ async def _handle_dead_window_notification(
     else:
         text = f"\u26a0 Session `{display}` ended."
         keyboard = None
-    await rate_limit_send_message(
+    sent = await rate_limit_send_message(
         bot,
         chat_id,
         text,
         message_thread_id=thread_id,
         reply_markup=keyboard,
     )
+    if sent is None:
+        # Send failed — probe topic to detect deletion and clean up stale binding
+        try:
+            await bot.unpin_all_forum_topic_messages(
+                chat_id=chat_id, message_thread_id=thread_id
+            )
+        except BadRequest as probe_err:
+            if (
+                "thread not found" in probe_err.message.lower()
+                or "Topic_id_invalid" in probe_err.message
+            ):
+                _get_window_state(wid).probe_failures = 0
+                await clear_topic_state(user_id, thread_id, bot, window_id=wid)
+                session_manager.unbind_thread(user_id, thread_id)
+                logger.info(
+                    "Topic deleted: unbound window %s for thread %d, user %d",
+                    wid,
+                    thread_id,
+                    user_id,
+                )
+        except TelegramError:
+            pass  # Transient — 60s probe will handle it
     _dead_notified.add(dead_key)
 
 

@@ -26,6 +26,15 @@ from ..entity_formatting import convert_to_entities
 
 logger = structlog.get_logger()
 
+
+def _is_thread_gone(exc: TelegramError) -> bool:
+    """Check if error indicates the Telegram topic/thread no longer exists."""
+    if isinstance(exc, BadRequest):
+        msg = exc.message.lower()
+        return "thread not found" in msg or "topic_id_invalid" in msg
+    return False
+
+
 # Disable link previews in all messages to reduce visual noise
 NO_LINK_PREVIEW = LinkPreviewOptions(is_disabled=True)
 
@@ -77,33 +86,31 @@ async def _with_entity_fallback(
     """
     plain_text, entities = convert_to_entities(text)
 
-    # Phase 1: try with entities
-    try:
-        return await send_fn(plain_text, entities=entities, **kwargs)
-    except RetryAfter as e:
-        await asyncio.sleep(_retry_after_seconds(e) + 1)
+    # Phase 1: with entities; Phase 2: plain text fallback.
+    # Thread-gone errors (deleted topic) short-circuit both phases.
+    last_error: TelegramError | None = None
+    for phase_entities in (entities, None):
+        send_kwargs = {**kwargs}
+        if phase_entities is not None:
+            send_kwargs["entities"] = phase_entities
         try:
-            return await send_fn(plain_text, entities=entities, **kwargs)
-        except TelegramError as e2:
-            logger.warning("Failed to %s after retry: %s", context_label, e2)
-            # Fall through to Phase 2 plain text
-    except TelegramError:
-        pass
+            return await send_fn(plain_text, **send_kwargs)
+        except RetryAfter as e:
+            await asyncio.sleep(_retry_after_seconds(e) + 1)
+            try:
+                return await send_fn(plain_text, **send_kwargs)
+            except TelegramError as e2:
+                if _is_thread_gone(e2):
+                    return None
+                last_error = e2
+        except TelegramError as e:
+            if _is_thread_gone(e):
+                return None
+            last_error = e
 
-    # Phase 2: fall back to plain text (no entities)
-    fallback_text = plain_text
-    try:
-        return await send_fn(fallback_text, **kwargs)
-    except RetryAfter as e:
-        await asyncio.sleep(_retry_after_seconds(e) + 1)
-        try:
-            return await send_fn(fallback_text, **kwargs)
-        except TelegramError as e2:
-            logger.warning("Failed to %s after retry: %s", context_label, e2)
-            return None
-    except TelegramError as e:
-        logger.warning("Failed to %s: %s", context_label, e)
-        return None
+    if last_error is not None:
+        logger.warning("Failed to %s: %s", context_label, last_error)
+    return None
 
 
 async def _send_with_fallback(
