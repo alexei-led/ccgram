@@ -104,9 +104,11 @@ class _BaseCompleter:
         model: str,
         base_url: str | None = None,
         *,
+        temperature: float = 0.1,
         default_base_url: str = _OPENAI_BASE_URL,
     ) -> None:
         self.model = model
+        self.temperature = temperature
         self._api_key = api_key
         self._base_url = (base_url or default_base_url).rstrip("/")
         self._client = httpx.AsyncClient()
@@ -150,8 +152,16 @@ class OpenAICompatCompleter(_BaseCompleter):
         api_key: str,
         model: str,
         base_url: str | None = None,
+        *,
+        temperature: float = 0.1,
     ) -> None:
-        super().__init__(api_key, model, base_url, default_base_url=_OPENAI_BASE_URL)
+        super().__init__(
+            api_key,
+            model,
+            base_url,
+            temperature=temperature,
+            default_base_url=_OPENAI_BASE_URL,
+        )
 
     async def _request(self, user_msg: str) -> str:
         payload = {
@@ -160,7 +170,7 @@ class OpenAICompatCompleter(_BaseCompleter):
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": user_msg},
             ],
-            "temperature": 0.1,
+            "temperature": self.temperature,
         }
         try:
             response = await self._client.post(
@@ -195,8 +205,16 @@ class AnthropicCompleter(_BaseCompleter):
         api_key: str,
         model: str,
         base_url: str | None = None,
+        *,
+        temperature: float = 0.1,
     ) -> None:
-        super().__init__(api_key, model, base_url, default_base_url=_ANTHROPIC_BASE_URL)
+        super().__init__(
+            api_key,
+            model,
+            base_url,
+            temperature=temperature,
+            default_base_url=_ANTHROPIC_BASE_URL,
+        )
 
     async def _request(self, user_msg: str) -> str:
         payload = {
@@ -204,7 +222,7 @@ class AnthropicCompleter(_BaseCompleter):
             "max_tokens": 1024,
             "system": _SYSTEM_PROMPT,
             "messages": [{"role": "user", "content": user_msg}],
-            "temperature": 0.1,
+            "temperature": self.temperature,
         }
         try:
             response = await self._client.post(

@@ -12,7 +12,7 @@ from .httpx_completer import AnthropicCompleter, OpenAICompatCompleter
 _PROVIDERS: dict[str, dict[str, str | None]] = {
     "openai": {
         "base_url": None,
-        "model": "gpt-4o-mini",
+        "model": "gpt-5.4-nano",
         "api_key_env": "OPENAI_API_KEY",
     },
     "xai": {
@@ -84,18 +84,21 @@ def get_completer() -> CommandGenerator | None:
 
     base_url = config.llm_base_url or provider_info.get("base_url")
     model = config.llm_model or provider_info.get("model") or ""
+    temperature = config.llm_temperature
 
     if provider == "anthropic":
         return AnthropicCompleter(
             api_key=api_key,
             model=model,
             base_url=base_url,
+            temperature=temperature,
         )
 
     return OpenAICompatCompleter(
         api_key=api_key,
         model=model,
         base_url=base_url,
+        temperature=temperature,
     )
 
 
