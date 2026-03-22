@@ -20,7 +20,7 @@ from telegram import (
     InlineKeyboardMarkup,
     Update,
 )
-from telegram.error import TelegramError
+from telegram.error import BadRequest, TelegramError
 from telegram.ext import ContextTypes
 
 from ..config import config
@@ -127,6 +127,25 @@ def _format_report(
     return text, keyboard
 
 
+async def _remove_topic(bot: Bot, chat_id: int, thread_id: int) -> bool:
+    """Try to delete a topic, fall back to close. Returns True on success.
+
+    BadRequest (topic already gone) is treated as success.
+    """
+    try:
+        await bot.delete_forum_topic(chat_id, thread_id)
+        return True
+    except BadRequest:
+        return True
+    except TelegramError:
+        pass
+    try:
+        await bot.close_forum_topic(chat_id, thread_id)
+        return True
+    except TelegramError:
+        return False
+
+
 async def _close_ghost_topics(bot: Bot, issues: list[AuditIssue]) -> int:
     """Delete (or close) Telegram topics for ghost bindings.
 
@@ -153,19 +172,13 @@ async def _close_ghost_topics(bot: Bot, issues: list[AuditIssue]) -> int:
                 thread_id,
             )
         else:
-            try:
-                await bot.delete_forum_topic(chat_id, thread_id)
-                topic_removed = True
-            except TelegramError:
-                try:
-                    await bot.close_forum_topic(chat_id, thread_id)
-                    topic_removed = True
-                except TelegramError:
-                    logger.exception(
-                        "Failed to delete/close ghost topic thread=%d window=%s",
-                        thread_id,
-                        window_id,
-                    )
+            topic_removed = await _remove_topic(bot, chat_id, thread_id)
+            if not topic_removed:
+                logger.warning(
+                    "Failed to delete/close ghost topic thread=%d window=%s",
+                    thread_id,
+                    window_id,
+                )
         if topic_removed or chat_id == user_id:
             try:
                 await clear_topic_state(
