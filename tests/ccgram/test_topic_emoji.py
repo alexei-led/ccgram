@@ -8,7 +8,8 @@ from telegram.error import BadRequest, TelegramError
 from conftest import make_mock_provider
 
 from ccgram.handlers.topic_emoji import (
-    DEBOUNCE_SECONDS,
+    DEBOUNCE_ACTIVE_IDLE_SECONDS,
+    DEBOUNCE_TERMINAL_SECONDS,
     EMOJI_ACTIVE,
     EMOJI_DEAD,
     EMOJI_DONE,
@@ -20,6 +21,13 @@ from ccgram.handlers.topic_emoji import (
     strip_emoji_prefix,
     update_topic_emoji,
 )
+
+
+def _debounce_for(state: str) -> float:
+    """Return the debounce duration for a given state."""
+    if state in ("done", "dead"):
+        return DEBOUNCE_TERMINAL_SECONDS
+    return DEBOUNCE_ACTIVE_IDLE_SECONDS
 
 
 @pytest.fixture(autouse=True)
@@ -70,7 +78,7 @@ async def _debounced_update(
     with patch(_PATCH_MONOTONIC) as mock_monotonic:
         mock_monotonic.return_value = 0.0
         await update_topic_emoji(bot, chat_id, thread_id, state, display_name)
-        mock_monotonic.return_value = DEBOUNCE_SECONDS + 0.1
+        mock_monotonic.return_value = _debounce_for(state) + 0.1
         await update_topic_emoji(bot, chat_id, thread_id, state, display_name)
 
 
@@ -142,10 +150,10 @@ class TestUpdateTopicEmoji:
                 await update_topic_emoji(bot, -100, 42, state, "myproject")
             bot.edit_forum_topic.assert_not_called()
 
-            # Settle on "active" and wait past DEBOUNCE_SECONDS
+            # Settle on "active" and wait past _debounce_for("active")
             mock_monotonic.return_value = 4.0
             await update_topic_emoji(bot, -100, 42, "active", "myproject")
-            mock_monotonic.return_value = 4.0 + DEBOUNCE_SECONDS + 0.1
+            mock_monotonic.return_value = 4.0 + _debounce_for("active") + 0.1
             await update_topic_emoji(bot, -100, 42, "active", "myproject")
 
         bot.edit_forum_topic.assert_called_once_with(
@@ -186,7 +194,7 @@ class TestUpdateTopicEmoji:
         with patch(_PATCH_MONOTONIC) as mock_monotonic:
             mock_monotonic.return_value = 0.0
             await update_topic_emoji(bot, -100, 42, "active", "myproject")
-            mock_monotonic.return_value = DEBOUNCE_SECONDS - 0.1
+            mock_monotonic.return_value = _debounce_for("active") - 0.1
             await update_topic_emoji(bot, -100, 42, "active", "myproject")
         bot.edit_forum_topic.assert_not_called()
 
@@ -277,7 +285,7 @@ class TestClearTopicEmojiState:
             mock_monotonic.return_value = 100.0
             await update_topic_emoji(bot, -100, 42, "active", "myproject")
             bot.edit_forum_topic.assert_not_called()
-            mock_monotonic.return_value = 100.0 + DEBOUNCE_SECONDS + 0.1
+            mock_monotonic.return_value = 100.0 + _debounce_for("active") + 0.1
             await update_topic_emoji(bot, -100, 42, "active", "myproject")
         bot.edit_forum_topic.assert_called_once()
 
