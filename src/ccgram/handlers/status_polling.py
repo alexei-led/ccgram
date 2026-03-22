@@ -998,10 +998,22 @@ async def _probe_topic_existence(bot: Bot) -> None:
                     )
 
 
+def _cancel_shell_captures_for_window(window_id: str) -> None:
+    """Cancel any shell capture tasks for topics bound to this window."""
+    from .shell_capture import cancel_shell_capture
+
+    for user_id, thread_id, wid in session_manager.iter_thread_bindings():
+        if wid == window_id:
+            cancel_shell_capture(user_id, thread_id)
+
+
 async def _maybe_discover_transcript(
     window_id: str,
     *,
     _window: TmuxWindow | None = None,
+    bot: Bot | None = None,
+    user_id: int = 0,
+    thread_id: int = 0,
 ) -> None:
     """Discover and register transcript for hookless providers (Codex, Gemini).
 
@@ -1023,6 +1035,9 @@ async def _maybe_discover_transcript(
     Args:
         _window: Pre-fetched TmuxWindow (avoids duplicate list_windows call
             when called from the poll loop).
+        bot: Telegram Bot instance for sending prompt setup offers.
+        user_id: Telegram user ID for the topic owner.
+        thread_id: Telegram thread ID for the bound topic.
     """
     from ..providers import registry
 
@@ -1044,7 +1059,17 @@ async def _maybe_discover_transcript(
                 pane_title=pane_title,
             )
         if detected and detected != state.provider_name:
+            old_provider = state.provider_name
             session_manager.set_window_provider(window_id, detected, cwd=w.cwd or None)
+            if detected == "shell" and bot and user_id and thread_id:
+                from .shell_commands import offer_prompt_setup
+
+                await offer_prompt_setup(bot, user_id, thread_id, window_id)
+            elif old_provider == "shell":
+                _cancel_shell_captures_for_window(window_id)
+                from .shell_commands import clear_marker_skip
+
+                clear_marker_skip(window_id)
         elif not detected and state.transcript_path:
             inferred = detect_provider_from_transcript_path(state.transcript_path)
             if inferred and inferred != state.provider_name:
@@ -1077,8 +1102,13 @@ async def _maybe_discover_transcript(
             return
         providers_to_try = [(provider.capabilities.name, provider)]
     else:
-        # Detection failed — check pane is alive (skip dead shells)
+        # Detection failed — pane is a shell prompt: assign shell provider
         if w and is_shell_prompt(w.pane_current_command):
+            session_manager.set_window_provider(window_id, "shell")
+            if bot and user_id and thread_id:
+                from .shell_commands import offer_prompt_setup
+
+                await offer_prompt_setup(bot, user_id, thread_id, window_id)
             return
         # Try all hookless providers (exclude shell — no transcripts)
         providers_to_try = [
@@ -1129,13 +1159,6 @@ async def _maybe_discover_transcript(
             )
             return
 
-    # Fallback: if no provider was detected and pane is alive with an
-    # unrecognized process, assign "shell" so the window gets idle status
-    # instead of being stuck with no provider. If an agent CLI starts later,
-    # re-detection in the next poll cycle will override this.
-    if not state.provider_name and w and is_shell_prompt(w.pane_current_command):
-        session_manager.set_window_provider(window_id, "shell")
-
 
 async def status_poll_loop(bot: Bot) -> None:
     """Background task to poll terminal status for all thread-bound windows."""
@@ -1176,7 +1199,13 @@ async def status_poll_loop(bot: Bot) -> None:
                         continue
 
                     # Discover transcript for hookless providers (Codex, Gemini)
-                    await _maybe_discover_transcript(wid, _window=w)
+                    await _maybe_discover_transcript(
+                        wid,
+                        _window=w,
+                        bot=bot,
+                        user_id=user_id,
+                        thread_id=thread_id,
+                    )
 
                     queue = get_message_queue(user_id)
                     if queue and not queue.empty():

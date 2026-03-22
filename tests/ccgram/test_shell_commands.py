@@ -2,6 +2,7 @@
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from telegram import Bot, CallbackQuery, InlineKeyboardMarkup, Message
 
 from ccgram.handlers.callback_data import (
@@ -9,6 +10,8 @@ from ccgram.handlers.callback_data import (
     CB_SHELL_CONFIRM_DANGER,
     CB_SHELL_EDIT,
     CB_SHELL_RUN,
+    CB_SHELL_SETUP,
+    CB_SHELL_SETUP_SKIP,
 )
 from ccgram.handlers.shell_commands import (
     _build_approval_keyboard,
@@ -26,13 +29,6 @@ class TestPendingState:
     def setup_method(self) -> None:
         _shell_pending.clear()
 
-    def test_set_and_get_roundtrip(self) -> None:
-        _shell_pending[(-100, 42)] = ("ls -la", 1)
-        assert _shell_pending.get((-100, 42)) == ("ls -la", 1)
-
-    def test_get_nonexistent_returns_none(self) -> None:
-        assert _shell_pending.get((999, 999)) is None
-
     def test_clear_removes_entry(self) -> None:
         _shell_pending[(-100, 42)] = ("ls", 1)
         clear_shell_pending(-100, 42)
@@ -41,41 +37,45 @@ class TestPendingState:
     def test_clear_nonexistent_no_error(self) -> None:
         clear_shell_pending(999, 999)
 
-    def test_overwrite_existing(self) -> None:
-        _shell_pending[(-100, 42)] = ("ls", 1)
-        _shell_pending[(-100, 42)] = ("pwd", 1)
-        assert _shell_pending[(-100, 42)] == ("pwd", 1)
-
 
 class TestBuildApprovalKeyboard:
-    def test_non_dangerous_has_run_edit_cancel(self) -> None:
-        kb = _build_approval_keyboard("@0", is_dangerous=False)
+    @pytest.mark.parametrize(
+        ("is_dangerous", "expected_labels", "absent_labels"),
+        [
+            (False, ["Run", "Edit", "Cancel"], []),
+            (True, ["Confirm", "Cancel"], ["Edit"]),
+        ],
+        ids=["non-dangerous", "dangerous"],
+    )
+    def test_button_labels(
+        self,
+        is_dangerous: bool,
+        expected_labels: list[str],
+        absent_labels: list[str],
+    ) -> None:
+        kb = _build_approval_keyboard("@0", is_dangerous=is_dangerous)
         assert isinstance(kb, InlineKeyboardMarkup)
-        buttons = [btn for row in kb.inline_keyboard for btn in row]
-        texts = [btn.text for btn in buttons]
-        assert any("Run" in t for t in texts)
-        assert any("Edit" in t for t in texts)
-        assert any("Cancel" in t for t in texts)
+        texts = [btn.text for row in kb.inline_keyboard for btn in row]
+        for label in expected_labels:
+            assert any(label in t for t in texts)
+        for label in absent_labels:
+            assert not any(label in t for t in texts)
 
-    def test_non_dangerous_callback_data_includes_window_id(self) -> None:
-        kb = _build_approval_keyboard("@5", is_dangerous=False)
+    @pytest.mark.parametrize(
+        ("is_dangerous", "btn_label", "expected_prefix"),
+        [
+            (False, "Run", CB_SHELL_RUN),
+            (True, "Confirm", CB_SHELL_CONFIRM_DANGER),
+        ],
+        ids=["non-dangerous-run", "dangerous-confirm"],
+    )
+    def test_callback_data_includes_window_id(
+        self, is_dangerous: bool, btn_label: str, expected_prefix: str
+    ) -> None:
+        kb = _build_approval_keyboard("@5", is_dangerous=is_dangerous)
         buttons = [btn for row in kb.inline_keyboard for btn in row]
-        run_btn = next(b for b in buttons if "Run" in b.text)
-        assert run_btn.callback_data == f"{CB_SHELL_RUN}@5"
-
-    def test_dangerous_has_confirm_and_cancel_only(self) -> None:
-        kb = _build_approval_keyboard("@0", is_dangerous=True)
-        buttons = [btn for row in kb.inline_keyboard for btn in row]
-        texts = [btn.text for btn in buttons]
-        assert any("Confirm" in t for t in texts)
-        assert any("Cancel" in t for t in texts)
-        assert not any("Edit" in t for t in texts)
-
-    def test_dangerous_callback_data_includes_window_id(self) -> None:
-        kb = _build_approval_keyboard("@3", is_dangerous=True)
-        buttons = [btn for row in kb.inline_keyboard for btn in row]
-        confirm_btn = next(b for b in buttons if "Confirm" in b.text)
-        assert confirm_btn.callback_data == f"{CB_SHELL_CONFIRM_DANGER}@3"
+        btn = next(b for b in buttons if btn_label in b.text)
+        assert btn.callback_data == f"{expected_prefix}@5"
 
 
 class TestHandleShellMessage:
@@ -90,13 +90,17 @@ class TestHandleShellMessage:
             patch(f"{_MOD}.enqueue_status_update", new_callable=AsyncMock),
             patch(f"{_MOD}.clear_probe_failures"),
             patch(f"{_MOD}.session_manager") as mock_sm,
+            patch(f"{_MOD}.tmux_manager") as mock_tm,
             patch(f"{_MOD}.start_shell_capture") as mock_capture,
         ):
             mock_sm.send_to_window = AsyncMock(return_value=(True, ""))
+            mock_tm.capture_pane = AsyncMock(return_value=None)
             await handle_shell_message(bot, 1, 42, "@0", "!ls -la", message)
 
             mock_sm.send_to_window.assert_called_once_with("@0", "ls -la")
-            mock_capture.assert_called_once_with(bot, 1, 42, "@0")
+            mock_capture.assert_called_once_with(
+                bot, 1, 42, "@0", baseline="", command="ls -la"
+            )
 
     async def test_bang_with_space_strips_leading_space(self) -> None:
         bot = AsyncMock(spec=Bot)
@@ -154,9 +158,6 @@ class TestHandleShellMessage:
             )
         )
 
-        mock_ws = MagicMock()
-        mock_ws.cwd = "/tmp"
-
         with (
             patch(f"{_MOD}.enqueue_status_update", new_callable=AsyncMock),
             patch(f"{_MOD}.clear_probe_failures"),
@@ -164,8 +165,11 @@ class TestHandleShellMessage:
             patch(f"{_MOD}.session_manager") as mock_sm,
             patch(f"{_MOD}.tmux_manager") as mock_tm,
             patch(f"{_MOD}.safe_reply", new_callable=AsyncMock),
+            patch(
+                f"{_MOD}._gather_llm_context",
+                return_value={"cwd": "/tmp", "shell": "bash", "shell_tools": ""},
+            ),
         ):
-            mock_sm.get_window_state.return_value = mock_ws
             mock_sm.resolve_chat_id.return_value = -100
             mock_tm.capture_pane = AsyncMock(return_value="$ ")
 
@@ -174,8 +178,10 @@ class TestHandleShellMessage:
             )
 
             mock_completer.generate_command.assert_called_once()
-            call_kwargs = mock_completer.generate_command.call_args
-            assert call_kwargs[0][0] == "find files named foo"
+            assert (
+                mock_completer.generate_command.call_args[0][0]
+                == "find files named foo"
+            )
 
     async def test_llm_error_falls_back_to_raw(self) -> None:
         bot = AsyncMock(spec=Bot)
@@ -186,9 +192,6 @@ class TestHandleShellMessage:
             side_effect=RuntimeError("API error")
         )
 
-        mock_ws = MagicMock()
-        mock_ws.cwd = "/tmp"
-
         with (
             patch(f"{_MOD}.enqueue_status_update", new_callable=AsyncMock),
             patch(f"{_MOD}.clear_probe_failures"),
@@ -196,8 +199,11 @@ class TestHandleShellMessage:
             patch(f"{_MOD}.session_manager") as mock_sm,
             patch(f"{_MOD}.tmux_manager") as mock_tm,
             patch(f"{_MOD}.start_shell_capture"),
+            patch(
+                f"{_MOD}._gather_llm_context",
+                return_value={"cwd": "/tmp", "shell": "bash", "shell_tools": ""},
+            ),
         ):
-            mock_sm.get_window_state.return_value = mock_ws
             mock_sm.send_to_window = AsyncMock(return_value=(True, ""))
             mock_tm.capture_pane = AsyncMock(return_value="$ ")
 
@@ -245,8 +251,6 @@ class TestHandleShellMessage:
         mock_completer.generate_command = AsyncMock(
             return_value=CommandResult(command="ls", explanation="", is_dangerous=False)
         )
-        mock_ws = MagicMock()
-        mock_ws.cwd = "/tmp"
 
         with (
             patch(f"{_MOD}.enqueue_status_update", new_callable=AsyncMock),
@@ -255,8 +259,11 @@ class TestHandleShellMessage:
             patch(f"{_MOD}.session_manager") as mock_sm,
             patch(f"{_MOD}.tmux_manager") as mock_tm,
             patch(f"{_MOD}.safe_send", new_callable=AsyncMock) as mock_send,
+            patch(
+                f"{_MOD}._gather_llm_context",
+                return_value={"cwd": "/tmp", "shell": "bash", "shell_tools": ""},
+            ),
         ):
-            mock_sm.get_window_state.return_value = mock_ws
             mock_sm.resolve_chat_id.return_value = -100
             mock_tm.capture_pane = AsyncMock(return_value="$ ")
 
@@ -276,19 +283,23 @@ class TestHandleShellCallback:
 
         with (
             patch(f"{_MOD}.session_manager") as mock_sm,
+            patch(f"{_MOD}.tmux_manager") as mock_tm,
             patch(f"{_MOD}.safe_edit", new_callable=AsyncMock),
             patch(f"{_MOD}.start_shell_capture") as mock_capture,
         ):
             mock_sm.resolve_chat_id.return_value = -100
             mock_sm.get_window_for_thread.return_value = "@0"
             mock_sm.send_to_window = AsyncMock(return_value=(True, ""))
+            mock_tm.capture_pane = AsyncMock(return_value=None)
             _shell_pending[(-100, 42)] = ("ls -la", 1)
 
             await handle_shell_callback(query, 1, f"{CB_SHELL_RUN}@0", bot, 42)
 
             query.answer.assert_called_once()
             mock_sm.send_to_window.assert_called_once_with("@0", "ls -la")
-            mock_capture.assert_called_once_with(bot, 1, 42, "@0")
+            mock_capture.assert_called_once_with(
+                bot, 1, 42, "@0", baseline="", command="ls -la"
+            )
             assert _shell_pending.get((-100, 42)) is None
 
     async def test_run_wrong_user_rejects(self) -> None:
@@ -424,3 +435,288 @@ class TestHandleShellCallback:
 
             mock_sm.send_to_window.assert_called_once_with("@0", "rm -rf /tmp/test")
             assert _shell_pending.get((-100, 42)) is None
+
+
+class TestOfferPromptSetup:
+    def setup_method(self) -> None:
+        from ccgram.handlers.shell_commands import _marker_setup_skipped
+
+        _marker_setup_skipped.discard("@0")
+
+    def teardown_method(self) -> None:
+        from ccgram.handlers.shell_commands import _marker_setup_skipped
+
+        _marker_setup_skipped.discard("@0")
+
+    async def test_skips_when_user_chose_skip(self) -> None:
+        from ccgram.handlers.shell_commands import (
+            _marker_setup_skipped,
+            offer_prompt_setup,
+        )
+
+        _marker_setup_skipped.add("@0")
+        bot = AsyncMock(spec=Bot)
+        with patch(f"{_MOD}.safe_send", new_callable=AsyncMock) as mock_send:
+            await offer_prompt_setup(bot, 1, 42, "@0")
+
+        mock_send.assert_not_called()
+
+    async def test_skips_when_marker_present(self) -> None:
+        from ccgram.handlers.shell_commands import offer_prompt_setup
+
+        bot = AsyncMock(spec=Bot)
+        with (
+            patch(
+                "ccgram.providers.shell.has_prompt_marker",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(f"{_MOD}.safe_send", new_callable=AsyncMock) as mock_send,
+        ):
+            await offer_prompt_setup(bot, 1, 42, "@0")
+
+        mock_send.assert_not_called()
+
+    async def test_sends_keyboard_when_marker_absent(self) -> None:
+        from ccgram.handlers.shell_commands import offer_prompt_setup
+
+        bot = AsyncMock(spec=Bot)
+        with (
+            patch(
+                "ccgram.providers.shell.has_prompt_marker",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(f"{_MOD}.session_manager") as mock_sm,
+            patch(f"{_MOD}.safe_send", new_callable=AsyncMock) as mock_send,
+        ):
+            mock_sm.resolve_chat_id.return_value = -100
+            await offer_prompt_setup(bot, 1, 42, "@0")
+
+        mock_send.assert_called_once()
+        call_kwargs = mock_send.call_args
+        assert "prompt marker" in call_kwargs[0][2]
+        keyboard = call_kwargs[1]["reply_markup"]
+        buttons = [btn for row in keyboard.inline_keyboard for btn in row]
+        assert len(buttons) == 2
+        assert "Set up" in buttons[0].text
+        assert "Skip" in buttons[1].text
+
+    async def test_setup_callback_calls_setup_shell_prompt(self) -> None:
+        query = AsyncMock(spec=CallbackQuery)
+        query.answer = AsyncMock()
+        bot = AsyncMock(spec=Bot)
+
+        with (
+            patch(f"{_MOD}.session_manager") as mock_sm,
+            patch(
+                "ccgram.providers.shell.setup_shell_prompt", new_callable=AsyncMock
+            ) as mock_setup,
+            patch(f"{_MOD}.safe_edit", new_callable=AsyncMock) as mock_edit,
+            patch(f"{_MOD}.tmux_manager") as mock_tm,
+        ):
+            mock_sm.resolve_chat_id.return_value = -100
+            mock_tm.find_window_by_id = AsyncMock(return_value=MagicMock())
+            await handle_shell_callback(query, 1, f"{CB_SHELL_SETUP}@3", bot, 42)
+
+        mock_setup.assert_awaited_once_with("@3")
+        mock_edit.assert_called_once()
+        assert "\u2705" in mock_edit.call_args[0][1]
+        query.answer.assert_called_once_with("Done")
+
+    async def test_skip_callback_edits_message(self) -> None:
+        query = AsyncMock(spec=CallbackQuery)
+        query.answer = AsyncMock()
+        bot = AsyncMock(spec=Bot)
+
+        with (
+            patch(f"{_MOD}.session_manager") as mock_sm,
+            patch(f"{_MOD}.safe_edit", new_callable=AsyncMock) as mock_edit,
+        ):
+            mock_sm.resolve_chat_id.return_value = -100
+            await handle_shell_callback(query, 1, f"{CB_SHELL_SETUP_SKIP}@3", bot, 42)
+
+        mock_edit.assert_called_once()
+        assert "Skipped" in mock_edit.call_args[0][1]
+        query.answer.assert_called_once_with("Skipped")
+
+
+class TestLazyMarkerRecovery:
+    async def test_raw_command_restores_marker_when_missing(self) -> None:
+        bot = AsyncMock(spec=Bot)
+        message = AsyncMock(spec=Message)
+
+        with (
+            patch(f"{_MOD}.enqueue_status_update", new_callable=AsyncMock),
+            patch(f"{_MOD}.clear_probe_failures"),
+            patch(f"{_MOD}.session_manager") as mock_sm,
+            patch(f"{_MOD}.tmux_manager") as mock_tm,
+            patch(f"{_MOD}.start_shell_capture"),
+            patch(
+                "ccgram.providers.shell.has_prompt_marker",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "ccgram.providers.shell.setup_shell_prompt", new_callable=AsyncMock
+            ) as mock_setup,
+        ):
+            mock_sm.send_to_window = AsyncMock(return_value=(True, ""))
+            mock_tm.capture_pane = AsyncMock(return_value=None)
+            await handle_shell_message(bot, 1, 42, "@0", "!ls", message)
+
+        mock_setup.assert_awaited_once_with("@0")
+
+    async def test_raw_command_skips_setup_when_marker_present(self) -> None:
+        bot = AsyncMock(spec=Bot)
+        message = AsyncMock(spec=Message)
+
+        with (
+            patch(f"{_MOD}.enqueue_status_update", new_callable=AsyncMock),
+            patch(f"{_MOD}.clear_probe_failures"),
+            patch(f"{_MOD}.session_manager") as mock_sm,
+            patch(f"{_MOD}.tmux_manager") as mock_tm,
+            patch(f"{_MOD}.start_shell_capture"),
+            patch(
+                "ccgram.providers.shell.has_prompt_marker",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(
+                "ccgram.providers.shell.setup_shell_prompt", new_callable=AsyncMock
+            ) as mock_setup,
+        ):
+            mock_sm.send_to_window = AsyncMock(return_value=(True, ""))
+            mock_tm.capture_pane = AsyncMock(return_value=None)
+            await handle_shell_message(bot, 1, 42, "@0", "!ls", message)
+
+        mock_setup.assert_not_awaited()
+
+    async def test_lazy_recovery_skips_when_user_chose_skip(self) -> None:
+        from ccgram.handlers.shell_commands import _marker_setup_skipped
+
+        bot = AsyncMock(spec=Bot)
+        message = AsyncMock(spec=Message)
+
+        _marker_setup_skipped.add("@0")
+        try:
+            with (
+                patch(f"{_MOD}.enqueue_status_update", new_callable=AsyncMock),
+                patch(f"{_MOD}.clear_probe_failures"),
+                patch(f"{_MOD}.session_manager") as mock_sm,
+                patch(f"{_MOD}.tmux_manager") as mock_tm,
+                patch(f"{_MOD}.start_shell_capture"),
+                patch(
+                    "ccgram.providers.shell.setup_shell_prompt",
+                    new_callable=AsyncMock,
+                ) as mock_setup,
+            ):
+                mock_sm.send_to_window = AsyncMock(return_value=(True, ""))
+                mock_tm.capture_pane = AsyncMock(return_value=None)
+                await handle_shell_message(bot, 1, 42, "@0", "!ls", message)
+
+            mock_setup.assert_not_awaited()
+        finally:
+            _marker_setup_skipped.discard("@0")
+
+
+class TestSkipTracking:
+    def setup_method(self) -> None:
+        from ccgram.handlers.shell_commands import _marker_setup_skipped
+
+        _marker_setup_skipped.clear()
+
+    def teardown_method(self) -> None:
+        from ccgram.handlers.shell_commands import _marker_setup_skipped
+
+        _marker_setup_skipped.clear()
+
+    async def test_skip_callback_does_not_call_setup(self) -> None:
+        query = AsyncMock(spec=CallbackQuery)
+        query.answer = AsyncMock()
+        bot = AsyncMock(spec=Bot)
+
+        with (
+            patch(f"{_MOD}.session_manager") as mock_sm,
+            patch(f"{_MOD}.safe_edit", new_callable=AsyncMock),
+            patch(
+                "ccgram.providers.shell.setup_shell_prompt", new_callable=AsyncMock
+            ) as mock_setup,
+        ):
+            mock_sm.resolve_chat_id.return_value = -100
+            await handle_shell_callback(query, 1, f"{CB_SHELL_SETUP_SKIP}@0", bot, 42)
+
+        mock_setup.assert_not_awaited()
+
+    async def test_skip_callback_records_window_in_skip_set(self) -> None:
+        from ccgram.handlers.shell_commands import _marker_setup_skipped
+
+        query = AsyncMock(spec=CallbackQuery)
+        query.answer = AsyncMock()
+        bot = AsyncMock(spec=Bot)
+
+        with (
+            patch(f"{_MOD}.session_manager") as mock_sm,
+            patch(f"{_MOD}.safe_edit", new_callable=AsyncMock),
+        ):
+            mock_sm.resolve_chat_id.return_value = -100
+            await handle_shell_callback(query, 1, f"{CB_SHELL_SETUP_SKIP}@5", bot, 42)
+
+        assert "@5" in _marker_setup_skipped
+
+    async def test_setup_callback_clears_skip_flag(self) -> None:
+        from ccgram.handlers.shell_commands import _marker_setup_skipped
+
+        _marker_setup_skipped.add("@3")
+        query = AsyncMock(spec=CallbackQuery)
+        query.answer = AsyncMock()
+        bot = AsyncMock(spec=Bot)
+
+        with (
+            patch(f"{_MOD}.session_manager") as mock_sm,
+            patch("ccgram.providers.shell.setup_shell_prompt", new_callable=AsyncMock),
+            patch(f"{_MOD}.safe_edit", new_callable=AsyncMock),
+            patch(f"{_MOD}.tmux_manager") as mock_tm,
+        ):
+            mock_sm.resolve_chat_id.return_value = -100
+            mock_tm.find_window_by_id = AsyncMock(return_value=MagicMock())
+            await handle_shell_callback(query, 1, f"{CB_SHELL_SETUP}@3", bot, 42)
+
+        assert "@3" not in _marker_setup_skipped
+
+    async def test_setup_callback_handles_dead_window(self) -> None:
+        query = AsyncMock(spec=CallbackQuery)
+        query.answer = AsyncMock()
+        bot = AsyncMock(spec=Bot)
+
+        with (
+            patch(f"{_MOD}.session_manager") as mock_sm,
+            patch(
+                "ccgram.providers.shell.setup_shell_prompt", new_callable=AsyncMock
+            ) as mock_setup,
+            patch(f"{_MOD}.safe_edit", new_callable=AsyncMock) as mock_edit,
+            patch(f"{_MOD}.tmux_manager") as mock_tm,
+        ):
+            mock_sm.resolve_chat_id.return_value = -100
+            mock_tm.find_window_by_id = AsyncMock(return_value=None)
+            await handle_shell_callback(query, 1, f"{CB_SHELL_SETUP}@99", bot, 42)
+
+        mock_setup.assert_not_awaited()
+        assert "no longer exists" in mock_edit.call_args[0][1]
+        query.answer.assert_called_once_with("Window gone", show_alert=True)
+
+
+class TestHasPromptMarker:
+    @pytest.mark.parametrize(
+        ("capture_value", "expected"),
+        [("ccgram:0❯ ", True), ("$ ", False), (None, False)],
+        ids=["marker-present", "marker-absent", "capture-none"],
+    )
+    async def test_has_prompt_marker(
+        self, capture_value: str | None, expected: bool
+    ) -> None:
+        from ccgram.providers.shell import has_prompt_marker
+
+        with patch("ccgram.tmux_manager.tmux_manager") as mock_tm:
+            mock_tm.capture_pane = AsyncMock(return_value=capture_value)
+            assert await has_prompt_marker("@0") is expected

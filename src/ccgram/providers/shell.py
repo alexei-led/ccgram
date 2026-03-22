@@ -3,12 +3,43 @@
 Extends JsonlProvider to inherit default no-op implementations.
 Tmux opens the user's $SHELL by default; overrides only what differs
 from the base class (no transcripts, no commands, no bash output).
+Prompt marker (ccgram:N❯) enables output isolation and exit code detection.
 """
 
+import asyncio
+import os
+import re
 from typing import Any, ClassVar
 
 from ccgram.providers._jsonl import JsonlProvider
 from ccgram.providers.base import ProviderCapabilities
+
+PROMPT_MARKER = "ccgram:"
+PROMPT_RE = re.compile(r"^ccgram:(\d+)❯\s?(.*)")
+
+
+async def has_prompt_marker(window_id: str) -> bool:
+    """Check if the ccgram prompt marker is present in the pane."""
+    from ccgram.tmux_manager import tmux_manager
+
+    capture = await tmux_manager.capture_pane(window_id)
+    return bool(capture and PROMPT_MARKER in capture)
+
+
+async def setup_shell_prompt(window_id: str) -> None:
+    """Override shell prompt with ccgram marker including exit code."""
+    from ccgram.tmux_manager import tmux_manager
+
+    shell = os.environ.get("SHELL", "").rsplit("/", 1)[-1]
+    cmds = {
+        "fish": 'function fish_prompt; printf "ccgram:$status❯ "; end',
+        "bash": "PS1='ccgram:$?❯ '",
+        "zsh": "PROMPT='ccgram:%?❯ '",
+    }
+    cmd = cmds.get(shell, cmds["bash"])
+    await tmux_manager.send_keys(window_id, cmd)
+    await asyncio.sleep(0.3)
+    await tmux_manager.send_keys(window_id, "clear")
 
 
 class ShellProvider(JsonlProvider):

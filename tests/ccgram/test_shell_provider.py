@@ -71,7 +71,6 @@ class TestShellOverrides:
     def test_parse_transcript_line_returns_none_for_valid_json(
         self, provider: ShellProvider
     ) -> None:
-        # JsonlProvider base calls parse_jsonl_line which returns a dict
         assert (
             provider.parse_transcript_line(
                 '{"type": "assistant", "message": {"content": "hi"}}'
@@ -80,20 +79,13 @@ class TestShellOverrides:
         )
 
     def test_read_transcript_file_returns_empty(self, provider: ShellProvider) -> None:
-        # JsonlProvider base raises NotImplementedError
         entries, offset = provider.read_transcript_file("/any/path.jsonl", 0)
-        assert entries == []
-        assert offset == 0
-
-    def test_read_transcript_file_ignores_offset(self, provider: ShellProvider) -> None:
-        entries, offset = provider.read_transcript_file("/any/path.jsonl", 999)
         assert entries == []
         assert offset == 0
 
     def test_extract_bash_output_returns_none_even_with_match(
         self, provider: ShellProvider
     ) -> None:
-        # JsonlProvider base calls extract_bang_output which finds the "! ls" line
         pane = "some text\n! ls -la\ntotal 42\n"
         assert provider.extract_bash_output(pane, "ls") is None
 

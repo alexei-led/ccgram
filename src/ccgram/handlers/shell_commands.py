@@ -2,12 +2,17 @@
 
 Handles the NL description -> LLM -> suggested command -> approval keyboard
 flow for the shell provider. Also handles raw command execution via ``!`` prefix.
+Prompt marker offer UI for shell provider setup on bind/switch.
 
 Key components:
   - handle_shell_message: Route shell text (NL or raw ``!`` command)
   - handle_shell_callback: Dispatch approval keyboard callbacks
+  - offer_prompt_setup: Offer inline keyboard to set up prompt marker
   - clear_shell_pending: Cleanup for topic deletion
 """
+
+import os
+import shutil
 
 import structlog
 
@@ -28,6 +33,8 @@ from .callback_data import (
     CB_SHELL_CONFIRM_DANGER,
     CB_SHELL_EDIT,
     CB_SHELL_RUN,
+    CB_SHELL_SETUP,
+    CB_SHELL_SETUP_SKIP,
 )
 from .message_sender import safe_edit, safe_reply, safe_send
 from .message_queue import enqueue_status_update
@@ -36,13 +43,109 @@ from .status_polling import clear_probe_failures
 
 logger = structlog.get_logger()
 
-# Module-level pending command state: (chat_id, thread_id) -> (command, user_id)
 _shell_pending: dict[tuple[int, int], tuple[str, int]] = {}
+_marker_setup_skipped: set[str] = set()
+
+
+def clear_marker_skip(window_id: str) -> None:
+    """Clear skip flag for a window (used by cleanup and provider switch)."""
+    _marker_setup_skipped.discard(window_id)
+
+
+_MODERN_TOOLS: dict[str, str] = {
+    "fd": "find replacement (use fd syntax: fd PATTERN, fd --type file, NOT find syntax)",
+    "rg": "grep replacement (use rg PATTERN, NOT grep syntax)",
+    "bat": "cat replacement",
+    "eza": "ls replacement (use eza, NOT ls)",
+    "sd": "sed replacement (use sd 'from' 'to', NOT sed syntax)",
+    "dust": "du replacement (use dust, NOT du)",
+    "procs": "ps replacement",
+}
+
+_shell_env: dict[str, str] | None = None
+
+
+def _detect_shell_env() -> dict[str, str]:
+    """Detect shell type and available modern CLI tools (cached)."""
+    global _shell_env  # noqa: PLW0603
+    if _shell_env is not None:
+        return _shell_env
+
+    shell = os.environ.get("SHELL", "")
+    if "/" in shell:
+        shell = shell.rsplit("/", 1)[1]
+
+    available = []
+    for tool, desc in _MODERN_TOOLS.items():
+        if shutil.which(tool):
+            available.append(f"{tool} ({desc})")
+
+    _shell_env = {
+        "shell": shell,
+        "shell_tools": ", ".join(available),
+    }
+    return _shell_env
+
+
+def _gather_llm_context(window_id: str) -> dict[str, str]:
+    """Gather cwd, shell type, and available tools for LLM calls."""
+    env = _detect_shell_env()
+    cwd = session_manager.get_window_state(window_id).cwd or ""
+    return {"cwd": cwd, "shell": env["shell"], "shell_tools": env["shell_tools"]}
 
 
 def clear_shell_pending(chat_id: int, thread_id: int) -> None:
     """Clear any pending shell command for this topic (used by cleanup)."""
     _shell_pending.pop((chat_id, thread_id), None)
+
+
+async def offer_prompt_setup(
+    bot: Bot, user_id: int, thread_id: int, window_id: str
+) -> None:
+    """Offer to set up ccgram prompt marker via inline keyboard.
+
+    If marker already present in pane capture or user already chose Skip,
+    silently skips.  Otherwise sends [Set up] [Skip] keyboard to the topic.
+    """
+    if window_id in _marker_setup_skipped:
+        return
+    from ..providers.shell import has_prompt_marker
+
+    if await has_prompt_marker(window_id):
+        return
+    chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+    keyboard = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "Set up prompt",
+                    callback_data=f"{CB_SHELL_SETUP}{window_id}",
+                ),
+                InlineKeyboardButton(
+                    "Skip",
+                    callback_data=f"{CB_SHELL_SETUP_SKIP}{window_id}",
+                ),
+            ],
+        ]
+    )
+    await safe_send(
+        bot,
+        chat_id,
+        "Shell detected without ccgram prompt marker.\n"
+        "Set up for output capture and exit code detection?",
+        message_thread_id=thread_id,
+        reply_markup=keyboard,
+    )
+
+
+async def _ensure_prompt_marker(window_id: str) -> None:
+    """Lazily restore prompt marker if lost (exec bash, profile reload)."""
+    if window_id in _marker_setup_skipped:
+        return
+    from ..providers.shell import has_prompt_marker, setup_shell_prompt
+
+    if not await has_prompt_marker(window_id):
+        await setup_shell_prompt(window_id)
 
 
 async def handle_shell_message(
@@ -57,9 +160,9 @@ async def handle_shell_message(
     await enqueue_status_update(bot, user_id, window_id, None, thread_id)
     clear_probe_failures(window_id)
 
-    # Clear any stale pending command for this topic
     chat_id = session_manager.resolve_chat_id(user_id, thread_id)
     clear_shell_pending(chat_id, thread_id)
+    await _ensure_prompt_marker(window_id)
 
     if text.startswith("!"):
         raw = text[1:].lstrip()
@@ -71,20 +174,15 @@ async def handle_shell_message(
     try:
         completer = get_completer()
     except ValueError:
-        logger.exception("LLM misconfigured, falling back to raw")
+        logger.warning("LLM misconfigured, falling back to raw")
         completer = None
 
     if not completer:
         await _execute_raw_command(bot, user_id, thread_id, window_id, text)
         return
 
-    # Gather context from tmux
-    cwd = ""
+    ctx = _gather_llm_context(window_id)
     recent_output = ""
-    window_state = session_manager.get_window_state(window_id)
-    if window_state.cwd:
-        cwd = window_state.cwd
-
     raw_pane = await tmux_manager.capture_pane(window_id)
     if raw_pane:
         lines = raw_pane.strip().splitlines()
@@ -93,11 +191,13 @@ async def handle_shell_message(
     try:
         result = await completer.generate_command(
             text,
-            cwd=cwd,
+            cwd=ctx["cwd"],
+            shell=ctx["shell"],
+            shell_tools=ctx["shell_tools"],
             recent_output=recent_output,
         )
     except RuntimeError:
-        logger.exception("LLM command generation failed, falling back to raw")
+        logger.warning("LLM command generation failed, falling back to raw")
         await _execute_raw_command(bot, user_id, thread_id, window_id, text)
         return
 
@@ -114,6 +214,12 @@ async def _execute_raw_command(
     command: str,
 ) -> None:
     """Send a raw command to the shell and start output capture."""
+    # Capture baseline BEFORE sending so we can diff later
+    baseline = ""
+    raw_pane = await tmux_manager.capture_pane(window_id)
+    if raw_pane:
+        baseline = raw_pane.rstrip()
+
     success, err_message = await session_manager.send_to_window(window_id, command)
     if not success:
         chat_id = session_manager.resolve_chat_id(user_id, thread_id)
@@ -122,7 +228,9 @@ async def _execute_raw_command(
         )
         return
 
-    start_shell_capture(bot, user_id, thread_id, window_id)
+    start_shell_capture(
+        bot, user_id, thread_id, window_id, baseline=baseline, command=command
+    )
 
 
 async def _show_command_approval(
@@ -205,7 +313,11 @@ async def handle_shell_callback(
     chat_id = session_manager.resolve_chat_id(user_id, thread_id)
     pending = _shell_pending.get((chat_id, thread_id))
 
-    if data.startswith(CB_SHELL_RUN) or data.startswith(CB_SHELL_CONFIRM_DANGER):
+    if data.startswith(CB_SHELL_SETUP_SKIP):
+        await _cb_setup_skip(query, data)
+    elif data.startswith(CB_SHELL_SETUP):
+        await _cb_setup_prompt(query, data)
+    elif data.startswith(CB_SHELL_RUN) or data.startswith(CB_SHELL_CONFIRM_DANGER):
         await _cb_run(query, bot, user_id, thread_id, chat_id, pending)
     elif data.startswith(CB_SHELL_EDIT):
         await _cb_edit(query, chat_id, thread_id, pending)
@@ -271,3 +383,27 @@ async def _cb_cancel(
     await query.answer("Cancelled")
     clear_shell_pending(chat_id, thread_id)
     await safe_edit(query, "Cancelled")
+
+
+async def _cb_setup_prompt(query: CallbackQuery, data: str) -> None:
+    """Handle CB_SHELL_SETUP: inject prompt marker into the shell."""
+    from ..providers.shell import setup_shell_prompt
+
+    window_id = data[len(CB_SHELL_SETUP) :]
+    _marker_setup_skipped.discard(window_id)
+    w = await tmux_manager.find_window_by_id(window_id)
+    if not w:
+        await safe_edit(query, "\u274c Window no longer exists")
+        await query.answer("Window gone", show_alert=True)
+        return
+    await setup_shell_prompt(window_id)
+    await safe_edit(query, "\u2705 Prompt marker configured")
+    await query.answer("Done")
+
+
+async def _cb_setup_skip(query: CallbackQuery, data: str) -> None:
+    """Handle CB_SHELL_SETUP_SKIP: skip prompt marker setup."""
+    window_id = data[len(CB_SHELL_SETUP_SKIP) :]
+    _marker_setup_skipped.add(window_id)
+    await safe_edit(query, "Skipped \u2014 raw commands work, no exit code detection")
+    await query.answer("Skipped")

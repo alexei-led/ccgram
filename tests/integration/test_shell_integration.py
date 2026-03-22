@@ -40,10 +40,10 @@ class TestShellCaptureLoop:
         bot = AsyncMock()
         call_count = 0
         outputs = [
-            "$ ",  # baseline
-            "$ ls\nfile1.txt",  # poll 1: new output → relay
-            "$ ls\nfile1.txt",  # poll 2: same → stable_count=1
-            "$ ls\nfile1.txt",  # poll 3: same → stable_count=2 → stop
+            "$ ",
+            "$ ls\nfile1.txt",
+            "$ ls\nfile1.txt",
+            "$ ls\nfile1.txt",
         ]
 
         async def fake_capture(window_id):
@@ -109,7 +109,7 @@ class TestShellCaptureLoop:
                 return "output v1"
             if call_count == 3:
                 return "output v2"
-            return "output v2"  # stabilize
+            return "output v2"
 
         with (
             patch(f"{_MOD}.tmux_manager") as mock_tm,
@@ -141,7 +141,6 @@ class TestShellCaptureLoop:
             patch(f"{_MOD}.task_done_callback"),
             patch("asyncio.sleep", new_callable=AsyncMock),
         ):
-            # Window disappears immediately → loop exits fast
             mock_tm.find_window_by_id = AsyncMock(return_value=None)
             mock_tm.capture_pane = AsyncMock(return_value="")
             mock_sm.resolve_chat_id.return_value = -100
@@ -150,7 +149,6 @@ class TestShellCaptureLoop:
             task = _shell_capture_tasks.get((1, 42))
             assert task is not None
 
-            # Wait for the task to complete
             await asyncio.sleep(0)
             await asyncio.sleep(0)
             try:

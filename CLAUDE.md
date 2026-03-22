@@ -40,7 +40,7 @@ ccgram --autoclose-dead 0              # Disable auto-close for dead sessions
 - **No message truncation** at parse layer — splitting only at send layer (`split_message`, 4096 char limit).
 - **Entity-based formatting** — use `safe_reply`/`safe_edit`/`safe_send` helpers which convert markdown to plain text + MessageEntity offsets (no parse errors possible, auto fallback to plain text). Internal queue/UI code calls bot API directly with its own fallback.
 - **Hook-based session tracking** — Claude Code hooks (SessionStart, Notification, Stop, StopFailure, SessionEnd, SubagentStart, SubagentStop, TeammateIdle, TaskCompleted) write to `session_map.json` and `events.jsonl`; monitor polls both to detect session changes and deliver instant event notifications. Missing hooks are detected at startup with an actionable warning.
-- **Shell provider chat-first design** — text sent to a shell topic goes through the LLM for NL→command generation by default; prefix with `!` to send a raw command directly. When no LLM is configured, all text is forwarded as raw commands.
+- **Shell provider chat-first design** — text sent to a shell topic goes through the LLM for NL→command generation by default; prefix with `!` to send a raw command directly. When no LLM is configured, all text is forwarded as raw commands. Prompt marker `ccgram:N❯` enables output isolation and exit code detection. Two setup paths: **Auto-setup** (explicit shell topic creation via directory browser) configures the marker immediately without asking. **Ask flow** (external window bind or runtime provider switch to shell) shows an inline keyboard [Set up] / [Skip]; Skip is respected for the session (lazy recovery won't override). On provider switch away from shell and back, a fresh offer is shown. If marker is lost mid-session (`exec bash`, profile reload), it is lazily restored on the next command send (unless user chose Skip). Marker setup is session-scoped (PS1/PROMPT override) — never modifies shell config files.
 - **Message queue per user** — FIFO ordering, message merging (3800 char limit), tool_use/tool_result pairing.
 - **Rate limiting** — 1.1s minimum interval between messages per user via `rate_limit_send()`.
 
@@ -95,7 +95,7 @@ Key functions:
 - `detect_provider_from_command(pane_current_command)` — auto-detects provider from process name (claude/codex/gemini/shell)
 - `set_window_provider(window_id, provider_name)` — persists provider choice on SessionManager
 
-When creating a topic via the directory browser, users can choose the provider (Claude default, Codex, Gemini, Shell). Externally created tmux windows are auto-detected from `pane_current_command`. The global `get_provider()` remains as fallback for CLI commands without window context (e.g., `doctor`, `status`).
+When creating a topic via the directory browser, users can choose the provider (Claude default, Codex, Gemini, Shell). Externally created tmux windows are auto-detected from `pane_current_command`. The global `get_provider()` remains as fallback for CLI commands without window context (e.g., `doctor`, `status`). Runtime re-detection (every 1s poll cycle) triggers prompt marker check on each transition to shell. Explicit shell topic creation (directory browser) auto-configures the marker.
 
 ### Provider Capability Matrix
 

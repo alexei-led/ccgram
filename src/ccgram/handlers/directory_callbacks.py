@@ -14,6 +14,8 @@ Handles all inline keyboard callbacks for the directory browser UI:
 Key function: handle_directory_callback (uniform callback handler signature).
 """
 
+import asyncio
+
 import structlog
 from pathlib import Path
 
@@ -511,6 +513,12 @@ async def _create_window_and_bind(
         user_id,
         pending_thread_id,
     )
+    if provider_name == "shell":
+        from ccgram.providers.shell import setup_shell_prompt
+
+        await asyncio.sleep(0.5)
+        await setup_shell_prompt(created_wid)
+
     if provider_registry.get(provider_name).capabilities.supports_hook:
         await session_manager.wait_for_session_map_entry(created_wid)
 

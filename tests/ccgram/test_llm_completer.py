@@ -130,6 +130,12 @@ class TestBuildUserMessage:
         assert "Recent output:" in result
         assert "$ df -h" in result
 
+    def test_with_shell_tools(self) -> None:
+        result = _build_user_message(
+            "find python files", shell_tools="fd (find replacement)"
+        )
+        assert "Available tools: fd (find replacement)" in result
+
     def test_context_section_starts_with_newline(self) -> None:
         result = _build_user_message("do something", cwd="/home")
         assert "\nContext:\n" in result

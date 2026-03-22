@@ -11,7 +11,7 @@ Key function: handle_window_callback (uniform callback handler signature).
 import structlog
 from pathlib import Path
 
-from telegram import CallbackQuery, Chat, Update
+from telegram import Bot, CallbackQuery, Chat, Update
 from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
@@ -72,6 +72,70 @@ async def handle_window_callback(
         await _handle_cancel(query, update, context)
 
 
+async def _detect_and_setup_provider(
+    window_id: str,
+    pane_current_command: str | None,
+    *,
+    bot: "Bot | None" = None,
+    user_id: int = 0,
+    thread_id: int = 0,
+) -> str:
+    """Detect provider from pane process and offer prompt setup if shell.
+
+    Returns the detected provider name (empty string if undetected).
+    """
+    from ..providers import detect_provider_from_command
+
+    detected = (
+        detect_provider_from_command(pane_current_command)
+        if pane_current_command
+        else ""
+    )
+    if detected:
+        session_manager.set_window_provider(window_id, detected)
+        if detected == "shell" and bot and user_id and thread_id:
+            from .shell_commands import offer_prompt_setup
+
+            await offer_prompt_setup(bot, user_id, thread_id, window_id)
+    return detected
+
+
+async def _forward_pending_text(
+    bot: "Bot",
+    user_id: int,
+    thread_id: int,
+    window_id: str,
+    text: str,
+    provider_name: str,
+    *,
+    is_existing_window: bool = False,
+) -> None:
+    """Forward pending text to a newly bound window, routing shell via LLM.
+
+    Args:
+        is_existing_window: True when binding an existing window (not a fresh
+            one from directory browser).  For shell, skips handle_shell_message
+            to avoid _ensure_prompt_marker racing with the offer keyboard.
+    """
+    if provider_name == "shell" and not is_existing_window:
+        from .shell_commands import handle_shell_message
+
+        await handle_shell_message(bot, user_id, thread_id, window_id, text)
+    else:
+        # For non-shell providers or existing shell windows, send raw text.
+        # Existing shell windows skip handle_shell_message to avoid
+        # _ensure_prompt_marker racing with the offer keyboard just shown.
+        send_ok, send_msg = await session_manager.send_to_window(window_id, text)
+        if not send_ok:
+            logger.warning("Failed to forward pending text: %s", send_msg)
+            await safe_send(
+                bot,
+                session_manager.resolve_chat_id(user_id, thread_id),
+                f"❌ Failed to send pending message: {send_msg}",
+                message_thread_id=thread_id,
+            )
+
+
 async def _handle_bind(
     query: CallbackQuery,
     user_id: int,
@@ -116,6 +180,14 @@ async def _handle_bind(
     session_manager.bind_thread(user_id, thread_id, selected_wid, window_name=display)
     _store_group_chat_id(user_id, thread_id, update, query)
 
+    detected = await _detect_and_setup_provider(
+        selected_wid,
+        w.pane_current_command,
+        bot=context.bot,
+        user_id=user_id,
+        thread_id=thread_id,
+    )
+
     try:
         await context.bot.edit_forum_topic(
             chat_id=session_manager.resolve_chat_id(user_id, thread_id),
@@ -139,17 +211,15 @@ async def _handle_bind(
         context.user_data.pop(PENDING_THREAD_TEXT, None)
         context.user_data.pop(PENDING_THREAD_ID, None)
     if pending_text:
-        send_ok, send_msg = await session_manager.send_to_window(
-            selected_wid, pending_text
+        await _forward_pending_text(
+            context.bot,
+            user_id,
+            thread_id,
+            selected_wid,
+            pending_text,
+            detected,
+            is_existing_window=True,
         )
-        if not send_ok:
-            logger.warning("Failed to forward pending text: %s", send_msg)
-            await safe_send(
-                context.bot,
-                session_manager.resolve_chat_id(user_id, thread_id),
-                f"❌ Failed to send pending message: {send_msg}",
-                message_thread_id=thread_id,
-            )
     await query.answer("Bound")
 
 

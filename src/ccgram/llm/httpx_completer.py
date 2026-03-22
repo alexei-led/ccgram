@@ -21,6 +21,10 @@ _SYSTEM_PROMPT = """\
 You are a shell command generator. Given a natural language description, \
 generate the appropriate shell command or pipeline.
 
+When available tools are listed in the context, ALWAYS use them instead of \
+their traditional counterparts (e.g. use fd instead of find, rg instead of grep). \
+Use the correct syntax for the available tool, not the syntax of the tool it replaces.
+
 Return ONLY valid JSON with these fields:
 - "command": the shell command (string)
 - "explanation": brief explanation of what it does (string)
@@ -39,6 +43,7 @@ def _build_user_message(
     shell: str = "",
     os_info: str = "",
     recent_output: str = "",
+    shell_tools: str = "",
 ) -> str:
     """Build the user message with context."""
     parts = [description]
@@ -49,6 +54,8 @@ def _build_user_message(
         context_parts.append(f"Shell: {shell}")
     if os_info:
         context_parts.append(f"OS: {os_info}")
+    if shell_tools:
+        context_parts.append(f"Available tools: {shell_tools}")
     if recent_output:
         trimmed = (
             recent_output[-_MAX_RECENT_OUTPUT_CHARS:]
@@ -121,6 +128,7 @@ class _BaseCompleter:
         shell: str = "",
         os_info: str = "",
         recent_output: str = "",
+        shell_tools: str = "",
     ) -> CommandResult:
         """Generate a shell command from a natural language description."""
         if not os_info:
@@ -131,6 +139,7 @@ class _BaseCompleter:
             shell=shell,
             os_info=os_info,
             recent_output=recent_output,
+            shell_tools=shell_tools,
         )
         text = await self._request(user_msg)
         return _parse_command_result(text)

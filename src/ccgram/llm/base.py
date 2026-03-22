@@ -29,6 +29,7 @@ class CommandGenerator(Protocol):
         shell: str = "",
         os_info: str = "",
         recent_output: str = "",
+        shell_tools: str = "",
     ) -> CommandResult:
         """Generate a shell command from a natural language description.
 
@@ -38,6 +39,7 @@ class CommandGenerator(Protocol):
             shell: Shell type (bash, zsh, fish, etc.).
             os_info: OS information string.
             recent_output: Recent terminal output for context.
+            shell_tools: Available CLI tools and their descriptions.
 
         Returns:
             CommandResult with the generated command and explanation.
