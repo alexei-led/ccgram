@@ -114,15 +114,17 @@ class TestAutocloseTimers:
             patch("ccgram.handlers.status_polling.config") as mock_config,
             patch("ccgram.handlers.status_polling.session_manager") as mock_sm,
             patch("ccgram.handlers.status_polling.time") as mock_time,
+            patch("ccgram.handlers.status_polling.clear_topic_state"),
         ):
             mock_config.autoclose_done_minutes = 30
             mock_config.autoclose_dead_minutes = minutes
             mock_time.monotonic.return_value = elapsed
             mock_sm.resolve_chat_id.return_value = -100
             await _check_autoclose_timers(bot)
-        bot.close_forum_topic.assert_called_once_with(
+        bot.delete_forum_topic.assert_called_once_with(
             chat_id=-100, message_thread_id=42
         )
+        mock_sm.unbind_thread.assert_called_once_with(1, 42)
         assert not _has_autoclose(1, 42)
 
     async def test_check_not_expired_yet(self) -> None:

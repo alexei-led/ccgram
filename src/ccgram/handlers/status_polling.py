@@ -405,16 +405,28 @@ async def _check_autoclose_timers(bot: Bot) -> None:
         if ts:
             ts.autoclose = None
         chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+        window_id = session_manager.get_window_for_thread(user_id, thread_id)
+        removed = False
         try:
-            await bot.close_forum_topic(chat_id=chat_id, message_thread_id=thread_id)
+            await bot.delete_forum_topic(chat_id=chat_id, message_thread_id=thread_id)
+            removed = True
+        except TelegramError:
+            try:
+                await bot.close_forum_topic(
+                    chat_id=chat_id, message_thread_id=thread_id
+                )
+                removed = True
+            except TelegramError as e:
+                logger.debug("Failed to auto-close topic thread=%d: %s", thread_id, e)
+        if removed:
             logger.info(
-                "Auto-closed topic: chat=%d thread=%d (user=%d)",
+                "Auto-removed topic: chat=%d thread=%d (user=%d)",
                 chat_id,
                 thread_id,
                 user_id,
             )
-        except TelegramError as e:
-            logger.debug("Failed to auto-close topic thread=%d: %s", thread_id, e)
+            await clear_topic_state(user_id, thread_id, bot=bot, window_id=window_id)
+            session_manager.unbind_thread(user_id, thread_id)
 
 
 def _check_transcript_activity(window_id: str, now: float) -> bool:
