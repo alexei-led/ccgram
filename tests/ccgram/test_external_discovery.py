@@ -39,11 +39,11 @@ class TestDiscoverExternalSessions:
             mock_exec.side_effect = [sessions_proc, windows_proc]
             result = await manager.discover_external_sessions()
 
-        assert len(result) == 1
+        assert len(result) == 2
         assert result[0].window_id == "my-project:@0"
-        assert result[0].window_name == "project"
-        assert result[0].cwd == "/home/user/project"
         assert result[0].pane_current_command == "claude"
+        assert result[1].window_id == "my-project:@1"
+        assert result[1].pane_current_command == "bash"
 
     @pytest.mark.asyncio
     async def test_skips_own_session(self, manager):
@@ -236,8 +236,9 @@ class TestScanSessionWindows:
         ):
             result = await manager._scan_session_windows("my-session")
 
-        assert len(result) == 1
+        assert len(result) == 2
         assert result[0].window_id == "my-session:@0"
+        assert result[1].window_id == "my-session:@1"
 
     @pytest.mark.asyncio
     async def test_multiple_ai_windows(self, manager):

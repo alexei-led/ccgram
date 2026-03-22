@@ -8,10 +8,7 @@ from the base class (no transcripts, no commands, no bash output).
 from typing import Any, ClassVar
 
 from ccgram.providers._jsonl import JsonlProvider
-from ccgram.providers.base import (
-    DiscoveredCommand,
-    ProviderCapabilities,
-)
+from ccgram.providers.base import ProviderCapabilities
 
 
 class ShellProvider(JsonlProvider):
@@ -55,9 +52,3 @@ class ShellProvider(JsonlProvider):
         command: str,  # noqa: ARG002
     ) -> str | None:
         return None
-
-    def discover_commands(
-        self,
-        base_dir: str,  # noqa: ARG002
-    ) -> list[DiscoveredCommand]:
-        return []

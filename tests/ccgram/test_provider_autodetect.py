@@ -40,8 +40,11 @@ class TestDetectProviderFromCommand:
     def test_unknown_command_returns_empty(self) -> None:
         assert detect_provider_from_command("vim") == ""
 
-    def test_shell_command_returns_empty(self) -> None:
-        assert detect_provider_from_command("bash") == ""
+    def test_shell_command_detected(self) -> None:
+        assert detect_provider_from_command("bash") == "shell"
+        assert detect_provider_from_command("zsh") == "shell"
+        assert detect_provider_from_command("fish") == "shell"
+        assert detect_provider_from_command("-bash") == "shell"
 
     def test_empty_command_returns_empty(self) -> None:
         assert detect_provider_from_command("") == ""
