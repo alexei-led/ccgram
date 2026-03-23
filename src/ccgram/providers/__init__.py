@@ -129,8 +129,9 @@ def detect_provider_from_command(pane_current_command: str) -> str:
         if basename == name or basename.startswith(name + "-"):
             return name
 
-    shells = {"bash", "zsh", "fish", "sh", "dash", "tcsh", "csh", "ksh"}
-    if basename in shells or basename.lstrip("-") in shells:
+    from .shell import KNOWN_SHELLS
+
+    if basename in KNOWN_SHELLS or basename.lstrip("-") in KNOWN_SHELLS:
         return "shell"
 
     return ""

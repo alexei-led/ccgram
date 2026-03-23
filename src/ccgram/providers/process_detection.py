@@ -26,6 +26,8 @@ import os
 
 import structlog
 
+from .shell import KNOWN_SHELLS as _KNOWN_SHELLS
+
 logger = structlog.get_logger()
 
 # Tokens that wrap the actual CLI binary — skip during classification.
@@ -48,8 +50,6 @@ _PROVIDER_PATH_MARKERS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("gemini-cli",), "gemini"),
 )
 
-# Known interactive shells (reuse list from shell provider).
-_KNOWN_SHELLS = frozenset({"bash", "zsh", "fish", "sh", "dash", "tcsh", "csh", "ksh"})
 
 # JS runtimes that trigger ps-based detection in the caller.
 JS_RUNTIMES = frozenset({"node", "bun", "npx", "bunx"})

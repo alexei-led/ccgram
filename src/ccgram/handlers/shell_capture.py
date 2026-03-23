@@ -36,6 +36,7 @@ _CAPTURE_TIMEOUT = 60
 
 # Consecutive stable polls required before considering output done
 _STABLE_THRESHOLD = 2
+_MAX_FIX_OUTPUT_CHARS = 500
 
 # A bare prompt (e.g. "$ " or "❮") is shorter than this
 _MAX_BARE_PROMPT_LEN = 5
@@ -367,9 +368,12 @@ async def _maybe_suggest_fix(
 
     ctx = gather_llm_context(window_id)
 
+    output = state.last_output or ""
+    if len(output) > _MAX_FIX_OUTPUT_CHARS:
+        output = f"…{output[-_MAX_FIX_OUTPUT_CHARS:]}"
     fix_description = (
         f"The command `{state.command}` failed (exit {state.exit_code}):\n"
-        f"{state.last_output}\n\n"
+        f"{output}\n\n"
         f"Generate a corrected command."
     )
 

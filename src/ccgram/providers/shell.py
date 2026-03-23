@@ -17,7 +17,7 @@ from ccgram.providers.base import ProviderCapabilities
 PROMPT_MARKER = "ccgram:"
 PROMPT_RE = re.compile(r"^ccgram:(\d+)❯\s?(.*)")
 
-_KNOWN_SHELLS = {"bash", "zsh", "fish", "sh", "dash", "tcsh", "csh", "ksh"}
+KNOWN_SHELLS = frozenset({"bash", "zsh", "fish", "sh", "dash", "tcsh", "csh", "ksh"})
 
 
 async def has_prompt_marker(window_id: str) -> bool:
@@ -48,7 +48,7 @@ async def detect_pane_shell(window_id: str) -> str:
     if window and window.pane_current_command:
         basename = os.path.basename(window.pane_current_command.split()[0])
         cleaned = basename.lstrip("-")
-        if cleaned in _KNOWN_SHELLS:
+        if cleaned in KNOWN_SHELLS:
             return cleaned
     return get_shell_name()
 
