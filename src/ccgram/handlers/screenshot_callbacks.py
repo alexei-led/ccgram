@@ -326,10 +326,9 @@ async def _handle_status_recall(
     window_id, idx_raw = rest.rsplit(":", 1)
     try:
         idx = int(idx_raw)
+        if idx < 0:
+            raise ValueError  # noqa: TRY301
     except ValueError:
-        await query.answer("Invalid data")
-        return
-    if idx < 0:
         await query.answer("Invalid data")
         return
     if not user_owns_window(user_id, window_id):
@@ -352,6 +351,20 @@ async def _handle_status_recall(
         return
 
     command = history[idx]
+
+    # Shell provider: route through LLM pipeline instead of raw send
+    from ..providers import get_provider_for_window
+
+    provider = get_provider_for_window(window_id)
+    if provider.capabilities.name == "shell":
+        from .shell_commands import handle_shell_message
+
+        await handle_shell_message(
+            query.get_bot(), user_id, thread_id, window_id, command
+        )
+        await query.answer("\u21a9 Recalled")
+        return
+
     ok, err = await session_manager.send_to_window(window_id, command)
     if not ok:
         await query.answer(err or "Failed to send command", show_alert=True)

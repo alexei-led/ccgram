@@ -61,36 +61,32 @@ _MODERN_TOOLS: dict[str, str] = {
     "procs": "ps replacement",
 }
 
-_shell_env: dict[str, str] | None = None
+_cached_shell_tools: str | None = None
 
 
-def _detect_shell_env() -> dict[str, str]:
-    """Detect shell type and available modern CLI tools (cached)."""
-    global _shell_env  # noqa: PLW0603
-    if _shell_env is not None:
-        return _shell_env
-
-    from ..providers.shell import get_shell_name
-
-    shell = get_shell_name()
+def _detect_shell_tools() -> str:
+    """Detect available modern CLI tools on PATH (cached)."""
+    global _cached_shell_tools  # noqa: PLW0603
+    if _cached_shell_tools is not None:
+        return _cached_shell_tools
 
     available = []
     for tool, desc in _MODERN_TOOLS.items():
         if shutil.which(tool):
             available.append(f"{tool} ({desc})")
 
-    _shell_env = {
-        "shell": shell,
-        "shell_tools": ", ".join(available),
-    }
-    return _shell_env
+    _cached_shell_tools = ", ".join(available)
+    return _cached_shell_tools
 
 
-def gather_llm_context(window_id: str) -> dict[str, str]:
+async def gather_llm_context(window_id: str) -> dict[str, str]:
     """Gather cwd, shell type, and available tools for LLM calls."""
-    env = _detect_shell_env()
+    from ..providers.shell import detect_pane_shell
+
+    shell = await detect_pane_shell(window_id)
+    tools = _detect_shell_tools()
     cwd = session_manager.get_window_state(window_id).cwd or ""
-    return {"cwd": cwd, "shell": env["shell"], "shell_tools": env["shell_tools"]}
+    return {"cwd": cwd, "shell": shell, "shell_tools": tools}
 
 
 def has_shell_pending(chat_id: int, thread_id: int) -> bool:
@@ -178,14 +174,22 @@ async def handle_shell_message(
     try:
         completer = get_completer()
     except ValueError:
-        logger.warning("LLM misconfigured, falling back to raw")
-        completer = None
+        logger.warning("LLM misconfigured")
+        await safe_send(
+            bot,
+            chat_id,
+            "\u26a0 LLM misconfigured \u2014 command not sent.\n"
+            "Use `!` prefix for raw commands.",
+            message_thread_id=thread_id,
+        )
+        return
 
     if not completer:
+        # No LLM configured — raw mode is intentional
         await _execute_raw_command(bot, user_id, thread_id, window_id, text)
         return
 
-    ctx = gather_llm_context(window_id)
+    ctx = await gather_llm_context(window_id)
     recent_output = ""
     raw_pane = await tmux_manager.capture_pane(window_id)
     if raw_pane:
@@ -201,9 +205,19 @@ async def handle_shell_message(
             recent_output=recent_output,
         )
     except RuntimeError:
-        logger.warning("LLM command generation failed, falling back to raw")
-        await _execute_raw_command(bot, user_id, thread_id, window_id, text)
+        logger.warning("LLM command generation failed")
+        await safe_send(
+            bot,
+            chat_id,
+            "\u26a0 LLM request failed \u2014 command not sent.\n"
+            "Use `!` prefix for raw commands.",
+            message_thread_id=thread_id,
+        )
         return
+
+    from .command_history import record_command
+
+    record_command(user_id, thread_id, text)
 
     await show_command_approval(
         bot, chat_id, thread_id, window_id, result, user_id, message

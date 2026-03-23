@@ -8,7 +8,6 @@ from telegram import Bot
 
 from ccgram.handlers.shell_capture import (
     _CaptureState,
-    _OUTPUT_LIMIT,
     _extract_command_output,
     _extract_new_output,
     _looks_like_info_bar,
@@ -198,7 +197,7 @@ class TestPollOnce:
         assert state.msg_id == 123
         assert state.last_output == "new output here"
         assert should_stop is False
-        mock_edit.assert_called_once_with(bot, -100, 123, "new output here")
+        mock_edit.assert_called_once_with(bot, -100, 123, "```\nnew output here\n```")
 
     async def test_long_output_truncated(self) -> None:
         bot = AsyncMock(spec=Bot)
@@ -220,8 +219,8 @@ class TestPollOnce:
             await _poll_once(bot, -100, 42, "@0", state)
 
         sent_text = mock_send.call_args[0][2]
-        assert len(sent_text) <= _OUTPUT_LIMIT + 10
-        assert sent_text.startswith("\u2026 ")
+        assert sent_text.startswith("```\n\u2026 ")
+        assert sent_text.endswith("\n```")
 
     async def test_unchanged_output_increments_stable(self) -> None:
         bot = AsyncMock(spec=Bot)
@@ -377,6 +376,7 @@ class TestMaybeSuggestFix:
             patch("ccgram.llm.get_completer", return_value=mock_completer),
             patch(
                 "ccgram.handlers.shell_commands.gather_llm_context",
+                new_callable=AsyncMock,
                 return_value={"cwd": "/tmp", "shell": "bash", "shell_tools": ""},
             ),
             patch(
@@ -412,6 +412,7 @@ class TestMaybeSuggestFix:
             patch("ccgram.llm.get_completer", return_value=mock_completer),
             patch(
                 "ccgram.handlers.shell_commands.gather_llm_context",
+                new_callable=AsyncMock,
                 return_value={"cwd": "/tmp", "shell": "bash", "shell_tools": ""},
             ),
             patch(
@@ -600,6 +601,7 @@ class TestMaybeSuggestFixErrorPaths:
             patch("ccgram.llm.get_completer", return_value=mock_completer),
             patch(
                 "ccgram.handlers.shell_commands.gather_llm_context",
+                new_callable=AsyncMock,
                 return_value={"cwd": "/tmp", "shell": "bash", "shell_tools": ""},
             ),
             patch(
@@ -648,6 +650,7 @@ class TestMaybeSuggestFixErrorPaths:
             patch("ccgram.llm.get_completer", return_value=mock_completer),
             patch(
                 "ccgram.handlers.shell_commands.gather_llm_context",
+                new_callable=AsyncMock,
                 return_value={"cwd": "/tmp", "shell": "bash", "shell_tools": ""},
             ),
             patch(
@@ -659,3 +662,70 @@ class TestMaybeSuggestFixErrorPaths:
             await _maybe_suggest_fix(bot, 1, -100, 42, "@0", state)
 
         mock_approval.assert_not_awaited()
+
+
+class TestClassifyError:
+    @pytest.mark.parametrize(
+        ("exit_code", "output", "expected_substring"),
+        [
+            (127, "", "command not found"),
+            (0, "bash: foo: command not found", "command not found"),
+            (126, "", "permission denied"),
+            (1, "Permission denied", "permission denied"),
+            (2, "syntax error near unexpected token", "syntax error"),
+            (1, "parse error: expected end", "syntax error"),
+            (1, "No such file or directory", "file/directory not found"),
+            (1, "invalid option -- 'z'", "invalid option"),
+            (1, "unrecognized option '--foo'", "invalid option"),
+            (1, "some generic error", ""),
+            (None, "", ""),
+        ],
+        ids=[
+            "exit-127",
+            "command-not-found-text",
+            "exit-126",
+            "permission-denied-text",
+            "syntax-error-text",
+            "parse-error-text",
+            "no-such-file",
+            "invalid-option",
+            "unrecognized-option",
+            "generic-error",
+            "none-exit-code",
+        ],
+    )
+    def test_classify_error(
+        self, exit_code: int | None, output: str, expected_substring: str
+    ) -> None:
+        from ccgram.handlers.shell_capture import _classify_error
+
+        result = _classify_error(exit_code, output)
+        if expected_substring:
+            assert expected_substring in result
+        else:
+            assert result == ""
+
+
+class TestUpdateErrorMessage:
+    async def test_formats_with_code_fence(self) -> None:
+        from ccgram.handlers.shell_capture import _update_error_message
+
+        bot = AsyncMock(spec=Bot)
+        with patch(f"{_MOD}.edit_with_fallback", new_callable=AsyncMock) as mock_edit:
+            await _update_error_message(bot, -100, 99, 1, "some error output")
+
+        formatted = mock_edit.call_args[0][3]
+        assert formatted.startswith("\u274c exit 1\n```\n")
+        assert formatted.endswith("\n```")
+        assert "some error output" in formatted
+
+    async def test_escapes_backticks_in_output(self) -> None:
+        from ccgram.handlers.shell_capture import _update_error_message
+
+        bot = AsyncMock(spec=Bot)
+        with patch(f"{_MOD}.edit_with_fallback", new_callable=AsyncMock) as mock_edit:
+            await _update_error_message(bot, -100, 99, 1, "has ``` backticks")
+
+        formatted = mock_edit.call_args[0][3]
+        body = formatted.split("```\n", 1)[1].rsplit("\n```", 1)[0]
+        assert "```" not in body

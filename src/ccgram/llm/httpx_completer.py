@@ -37,6 +37,40 @@ format, shutdown, reboot, kill -9.
 
 Do NOT wrap the JSON in markdown code fences. Return raw JSON only."""
 
+_SHELL_SYNTAX_NOTES: dict[str, str] = {
+    "fish": (
+        "\n\nIMPORTANT: The target shell is fish. Fish is NOT POSIX-compatible.\n"
+        "- No && or || — use `; and` / `; or` or separate lines with `and`/`or`\n"
+        "- No heredocs (<<EOF) — use `printf '...' | command` or write to a temp file\n"
+        "- Variables: `set VAR value`, NOT `export VAR=value`\n"
+        "- Command substitution: `(command)` not `$(command)`\n"
+        "- No brace expansion {a,b} — use explicit arguments\n"
+        "- Conditionals: `if command; ...; end` not `if command; then ...; fi`\n"
+        "- Loops: `for x in a b c; ...; end` not `for x in a b c; do ...; done`\n"
+        "- Multi-line scripts: use `begin; ...; end` blocks\n"
+        "- For inline Python: `python3 -c 'code'` (single quotes, no heredoc)"
+    ),
+    "zsh": (
+        "\n\nTarget shell is zsh. Use zsh-compatible syntax.\n"
+        "- Arrays are 1-indexed: $arr[1] not $arr[0]\n"
+        "- Glob qualifiers available: *(.) for files, *(/) for dirs"
+    ),
+    "bash": (
+        "\n\nTarget shell is bash. Use bash-compatible syntax.\n"
+        "- Use [[ ]] for conditionals (safer than [ ])"
+    ),
+}
+
+
+def _build_system_prompt(shell: str = "") -> str:
+    """Build the system prompt with shell-specific syntax notes."""
+    notes = _SHELL_SYNTAX_NOTES.get(shell.lower()) if shell else None
+    if notes:
+        return _SYSTEM_PROMPT + notes
+    if shell:
+        return _SYSTEM_PROMPT + f"\n\nTarget shell is {shell}."
+    return _SYSTEM_PROMPT
+
 
 def _build_user_message(
     description: str,
@@ -145,7 +179,7 @@ class _BaseCompleter:
             recent_output=recent_output,
             shell_tools=shell_tools,
         )
-        text = await self._request(user_msg)
+        text = await self._request(user_msg, shell=shell)
         return _parse_command_result(text)
 
     async def _post_and_extract(
@@ -178,7 +212,7 @@ class _BaseCompleter:
             msg = f"Unexpected LLM response: {response.text[:200]}"
             raise RuntimeError(msg) from exc
 
-    async def _request(self, user_msg: str) -> str:
+    async def _request(self, user_msg: str, *, shell: str = "") -> str:
         """Send the request and return the response text."""
         raise NotImplementedError
 
@@ -188,11 +222,12 @@ class OpenAICompatCompleter(_BaseCompleter):
 
     _default_base_url: str = _OPENAI_BASE_URL
 
-    async def _request(self, user_msg: str) -> str:
+    async def _request(self, user_msg: str, *, shell: str = "") -> str:
+        prompt = _build_system_prompt(shell)
         payload = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "system", "content": prompt},
                 {"role": "user", "content": user_msg},
             ],
             "temperature": self.temperature,
@@ -213,11 +248,12 @@ class AnthropicCompleter(_BaseCompleter):
 
     _default_base_url: str = _ANTHROPIC_BASE_URL
 
-    async def _request(self, user_msg: str) -> str:
+    async def _request(self, user_msg: str, *, shell: str = "") -> str:
+        prompt = _build_system_prompt(shell)
         payload = {
             "model": self.model,
             "max_tokens": 1024,
-            "system": _SYSTEM_PROMPT,
+            "system": prompt,
             "messages": [{"role": "user", "content": user_msg}],
             "temperature": self.temperature,
         }

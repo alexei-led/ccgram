@@ -172,6 +172,7 @@ class TestHandleShellMessage:
             patch(f"{_MOD}.safe_reply", new_callable=AsyncMock),
             patch(
                 f"{_MOD}.gather_llm_context",
+                new_callable=AsyncMock,
                 return_value={"cwd": "/tmp", "shell": "bash", "shell_tools": ""},
             ),
         ):
@@ -188,7 +189,7 @@ class TestHandleShellMessage:
                 == "find files named foo"
             )
 
-    async def test_llm_error_falls_back_to_raw(self) -> None:
+    async def test_llm_error_notifies_user(self) -> None:
         bot = AsyncMock(spec=Bot)
         message = AsyncMock(spec=Message)
 
@@ -203,22 +204,23 @@ class TestHandleShellMessage:
             patch(f"{_MOD}.get_completer", return_value=mock_completer),
             patch(f"{_MOD}.session_manager") as mock_sm,
             patch(f"{_MOD}.tmux_manager") as mock_tm,
-            patch(f"{_MOD}.start_shell_capture"),
+            patch(f"{_MOD}.safe_send", new_callable=AsyncMock) as mock_send,
             patch(
                 f"{_MOD}.gather_llm_context",
+                new_callable=AsyncMock,
                 return_value={"cwd": "/tmp", "shell": "bash", "shell_tools": ""},
             ),
         ):
-            mock_sm.send_to_window = AsyncMock(return_value=(True, ""))
+            mock_sm.resolve_chat_id.return_value = -100
             mock_tm.capture_pane = AsyncMock(return_value="$ ")
 
             await handle_shell_message(bot, 1, 42, "@0", "do something", message)
 
-            mock_sm.send_to_window.assert_called_once_with(
-                "@0", "do something", raw=True
-            )
+            mock_send.assert_called_once()
+            assert "LLM request failed" in mock_send.call_args[0][2]
+            mock_sm.send_to_window.assert_not_called()
 
-    async def test_llm_config_error_falls_back_to_raw(self) -> None:
+    async def test_llm_config_error_notifies_user(self) -> None:
         bot = AsyncMock(spec=Bot)
 
         with (
@@ -226,14 +228,14 @@ class TestHandleShellMessage:
             patch(f"{_MOD}.clear_probe_failures"),
             patch(f"{_MOD}.get_completer", side_effect=ValueError("bad provider")),
             patch(f"{_MOD}.session_manager") as mock_sm,
-            patch(f"{_MOD}.start_shell_capture"),
+            patch(f"{_MOD}.safe_send", new_callable=AsyncMock) as mock_send,
         ):
-            mock_sm.send_to_window = AsyncMock(return_value=(True, ""))
+            mock_sm.resolve_chat_id.return_value = -100
             await handle_shell_message(bot, 1, 42, "@0", "do something")
 
-            mock_sm.send_to_window.assert_called_once_with(
-                "@0", "do something", raw=True
-            )
+            mock_send.assert_called_once()
+            assert "LLM misconfigured" in mock_send.call_args[0][2]
+            mock_sm.send_to_window.assert_not_called()
 
     async def test_send_failure_replies_error(self) -> None:
         bot = AsyncMock(spec=Bot)
@@ -270,6 +272,7 @@ class TestHandleShellMessage:
             patch(f"{_MOD}.safe_send", new_callable=AsyncMock) as mock_send,
             patch(
                 f"{_MOD}.gather_llm_context",
+                new_callable=AsyncMock,
                 return_value={"cwd": "/tmp", "shell": "bash", "shell_tools": ""},
             ),
         ):
@@ -834,55 +837,35 @@ class TestDangerousCommandPrefix:
         assert "ls -la" in sent_text
 
 
-class TestDetectShellEnv:
+class TestDetectShellTools:
     def setup_method(self) -> None:
         import ccgram.handlers.shell_commands as mod
 
         self._mod = mod
-        self._original = mod._shell_env
-        mod._shell_env = None
+        self._original = mod._cached_shell_tools
+        mod._cached_shell_tools = None
 
     def teardown_method(self) -> None:
-        self._mod._shell_env = self._original
-
-    def test_returns_shell_name(self) -> None:
-        with (
-            patch("ccgram.providers.shell.get_shell_name", return_value="fish"),
-            patch("shutil.which", return_value=None),
-        ):
-            from ccgram.handlers.shell_commands import _detect_shell_env
-
-            result = _detect_shell_env()
-
-        assert result["shell"] == "fish"
+        self._mod._cached_shell_tools = self._original
 
     def test_returns_detected_tools(self) -> None:
         def fake_which(name: str) -> str | None:
             return f"/usr/bin/{name}" if name in ("fd", "rg") else None
 
-        with (
-            patch("ccgram.providers.shell.get_shell_name", return_value="zsh"),
-            patch("shutil.which", side_effect=fake_which),
-        ):
-            from ccgram.handlers.shell_commands import _detect_shell_env
+        with patch("shutil.which", side_effect=fake_which):
+            from ccgram.handlers.shell_commands import _detect_shell_tools
 
-            result = _detect_shell_env()
+            result = _detect_shell_tools()
 
-        assert "fd" in result["shell_tools"]
-        assert "rg" in result["shell_tools"]
-        assert "bat" not in result["shell_tools"]
+        assert "fd" in result
+        assert "rg" in result
+        assert "bat" not in result
 
     def test_cache_populated_and_reused(self) -> None:
-        with (
-            patch(
-                "ccgram.providers.shell.get_shell_name", return_value="bash"
-            ) as mock_shell,
-            patch("shutil.which", return_value=None),
-        ):
-            from ccgram.handlers.shell_commands import _detect_shell_env
+        with patch("shutil.which", return_value=None):
+            from ccgram.handlers.shell_commands import _detect_shell_tools
 
-            first = _detect_shell_env()
-            second = _detect_shell_env()
+            first = _detect_shell_tools()
+            second = _detect_shell_tools()
 
         assert first is second
-        mock_shell.assert_called_once()

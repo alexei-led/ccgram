@@ -322,3 +322,63 @@ class TestCompleterBaseUrl:
     def test_trailing_slash_stripped(self, cls: type) -> None:
         c = cls(api_key="sk-test", model="m", base_url="https://custom.api/v1/")
         assert not c._base_url.endswith("/")
+
+
+class TestBuildSystemPrompt:
+    def test_empty_shell_returns_base(self) -> None:
+        from ccgram.llm.httpx_completer import _SYSTEM_PROMPT, _build_system_prompt
+
+        assert _build_system_prompt() == _SYSTEM_PROMPT
+        assert _build_system_prompt("") == _SYSTEM_PROMPT
+
+    @pytest.mark.parametrize(
+        ("shell", "expected_substring"),
+        [
+            ("fish", "NOT POSIX-compatible"),
+            ("fish", "No && or ||"),
+            ("fish", "No heredocs"),
+            ("zsh", "1-indexed"),
+            ("bash", "bash-compatible"),
+        ],
+        ids=["fish-posix", "fish-no-and", "fish-no-heredoc", "zsh-arrays", "bash"],
+    )
+    def test_known_shell_notes_included(
+        self, shell: str, expected_substring: str
+    ) -> None:
+        from ccgram.llm.httpx_completer import _build_system_prompt
+
+        prompt = _build_system_prompt(shell)
+        assert expected_substring in prompt
+
+    def test_unknown_shell_gets_generic_note(self) -> None:
+        from ccgram.llm.httpx_completer import _build_system_prompt
+
+        prompt = _build_system_prompt("tcsh")
+        assert "Target shell is tcsh" in prompt
+
+    def test_case_insensitive(self) -> None:
+        from ccgram.llm.httpx_completer import _build_system_prompt
+
+        prompt_lower = _build_system_prompt("fish")
+        prompt_upper = _build_system_prompt("FISH")
+        assert prompt_lower == prompt_upper
+
+    async def test_openai_passes_shell_to_prompt(self) -> None:
+        mock_response = MagicMock()
+        mock_response.json.return_value = _openai_response("ls")
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(return_value=mock_response)
+            mock_client_cls.return_value.__aenter__ = AsyncMock(
+                return_value=mock_client
+            )
+            mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            c = OpenAICompatCompleter(api_key="sk-test", model="m")
+            await c.generate_command("list files", shell="fish")
+
+        payload = mock_client.post.call_args[1]["json"]
+        system_msg = payload["messages"][0]["content"]
+        assert "NOT POSIX-compatible" in system_msg

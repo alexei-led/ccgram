@@ -36,7 +36,7 @@ _CAPTURE_TIMEOUT = 60
 
 # Consecutive stable polls required before considering output done
 _STABLE_THRESHOLD = 2
-_MAX_FIX_OUTPUT_CHARS = 500
+_MAX_FIX_OUTPUT_CHARS = 800
 
 # A bare prompt (e.g. "$ " or "❮") is shorter than this
 _MAX_BARE_PROMPT_LEN = 5
@@ -219,7 +219,7 @@ async def _relay_output(
     output: str,
     state: _CaptureState,
 ) -> None:
-    """Send or edit the output message in Telegram."""
+    """Send or edit the output message in Telegram (monospace formatted)."""
     display = strip_terminal_glyphs(output)
     if len(display) > _OUTPUT_LIMIT:
         display = "\u2026 " + display[-_OUTPUT_LIMIT:]
@@ -227,17 +227,21 @@ async def _relay_output(
     if not display.strip():
         return
 
+    # Wrap in code fence for monospace rendering on Telegram
+    display = display.replace("```", "` ` `")
+    formatted = f"```\n{display}\n```"
+
     if state.msg_id is None:
         sent = await rate_limit_send_message(
             bot,
             chat_id,
-            display,
+            formatted,
             message_thread_id=thread_id,
         )
         if sent:
             state.msg_id = sent.message_id
     else:
-        await edit_with_fallback(bot, chat_id, state.msg_id, display)
+        await edit_with_fallback(bot, chat_id, state.msg_id, formatted)
 
 
 async def _poll_once(
@@ -333,6 +337,41 @@ async def _capture_shell_output(
             _shell_capture_tasks.pop(key, None)
 
 
+_EXIT_COMMAND_NOT_FOUND = 127
+_EXIT_PERMISSION_DENIED = 126
+
+
+def _classify_error(exit_code: int | None, output: str) -> str:
+    """Classify error type from exit code and output for better LLM fix prompts."""
+    lower = output.lower()
+    if exit_code == _EXIT_COMMAND_NOT_FOUND or "command not found" in lower:
+        return "command not found \u2014 check spelling, PATH, or install the tool"
+    if exit_code == _EXIT_PERMISSION_DENIED or "permission denied" in lower:
+        return "permission denied \u2014 may need sudo or chmod"
+    if "syntax error" in lower or "unexpected token" in lower or "parse error" in lower:
+        return "shell syntax error \u2014 check shell-specific syntax"
+    if "no such file or directory" in lower:
+        return "file/directory not found \u2014 check the path"
+    if "invalid option" in lower or "unrecognized option" in lower:
+        return "invalid option \u2014 check the command flags"
+    return ""
+
+
+async def _update_error_message(
+    bot: Bot, chat_id: int, msg_id: int, exit_code: int, output: str
+) -> None:
+    """Edit the output message to prepend an error indicator (monospace)."""
+    error_prefix = f"\u274c exit {exit_code}\n"
+    display = strip_terminal_glyphs(output)
+    fence_overhead = 8  # ```\n ... \n```
+    max_body = _OUTPUT_LIMIT - len(error_prefix) - fence_overhead
+    if len(display) > max_body:
+        display = display[-max_body:]
+    display = display.replace("```", "` ` `")
+    formatted = f"{error_prefix}```\n{display}\n```"
+    await edit_with_fallback(bot, chat_id, msg_id, formatted)
+
+
 async def _maybe_suggest_fix(
     bot: Bot,
     user_id: int,
@@ -345,14 +384,10 @@ async def _maybe_suggest_fix(
     if state.exit_code is None or state.exit_code == 0:
         return
 
-    # Edit existing message to prepend error indicator
     if state.msg_id:
-        error_prefix = f"\u274c exit {state.exit_code}\n"
-        display = strip_terminal_glyphs(state.last_output)
-        max_body = _OUTPUT_LIMIT - len(error_prefix)
-        if len(display) > max_body:
-            display = display[-max_body:]
-        await edit_with_fallback(bot, chat_id, state.msg_id, error_prefix + display)
+        await _update_error_message(
+            bot, chat_id, state.msg_id, state.exit_code, state.last_output
+        )
 
     try:
         from ..llm import get_completer
@@ -366,16 +401,19 @@ async def _maybe_suggest_fix(
 
     from .shell_commands import gather_llm_context
 
-    ctx = gather_llm_context(window_id)
+    ctx = await gather_llm_context(window_id)
 
     output = state.last_output or ""
     if len(output) > _MAX_FIX_OUTPUT_CHARS:
         output = f"…{output[-_MAX_FIX_OUTPUT_CHARS:]}"
+
+    error_hint = _classify_error(state.exit_code, output)
     fix_description = (
-        f"The command `{state.command}` failed (exit {state.exit_code}):\n"
-        f"{output}\n\n"
-        f"Generate a corrected command."
+        f"The command `{state.command}` failed (exit {state.exit_code}):\n{output}\n\n"
     )
+    if error_hint:
+        fix_description += f"Error type: {error_hint}\n"
+    fix_description += "Generate a corrected command."
 
     try:
         result = await completer.generate_command(

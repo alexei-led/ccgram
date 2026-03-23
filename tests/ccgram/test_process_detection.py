@@ -71,15 +71,12 @@ PS_OUTPUT_CLAUDE = (
 )
 
 PS_OUTPUT_CODEX = (
-    "10001 10001 Ss   -zsh\n"
-    "10050 10050 S+   bun /Users/x/.bun/bin/codex --full-auto\n"
+    "10001 10001 Ss   -zsh\n10050 10050 S+   bun /Users/x/.bun/bin/codex --full-auto\n"
 )
 
 PS_OUTPUT_SHELL_ONLY = " 5000  5000 Ss+  -bash\n"
 
-PS_OUTPUT_NO_LEADER = (
-    " 9000  9000 Ss   -fish\n" " 9100  9050 S+   node /some/script.js\n"
-)
+PS_OUTPUT_NO_LEADER = " 9000  9000 Ss   -fish\n 9100  9050 S+   node /some/script.js\n"
 
 
 class TestGetForegroundArgs:
