@@ -321,3 +321,19 @@ class TestGetCompleter:
         result = get_completer()
         assert isinstance(result, OpenAICompatCompleter)
         assert result.model == "custom-model"
+
+    def test_groq_with_api_key(self, monkeypatch) -> None:
+        self._mock_config(
+            monkeypatch,
+            llm_provider="groq",
+            llm_api_key="gsk-test-key",
+            llm_base_url="",
+            llm_model="",
+        )
+
+        from ccgram.llm import get_completer
+        from ccgram.llm.httpx_completer import OpenAICompatCompleter
+
+        result = get_completer()
+        assert isinstance(result, OpenAICompatCompleter)
+        assert result._base_url == "https://api.groq.com/openai/v1"

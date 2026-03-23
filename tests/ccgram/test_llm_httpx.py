@@ -242,6 +242,24 @@ class TestCompleterErrors:
         ):
             await completer.generate_command("test", os_info="Linux")
 
+    @pytest.mark.parametrize(
+        ("cls", "api_key"),
+        [
+            (OpenAICompatCompleter, "sk-test"),
+            (AnthropicCompleter, "sk-ant-test"),
+        ],
+        ids=["openai", "anthropic"],
+    )
+    async def test_timeout_error_raises_runtime(self, cls: type, api_key: str) -> None:
+        completer = cls(api_key=api_key, model="m")
+
+        mock_post = AsyncMock(side_effect=httpx.TimeoutException("Request timed out"))
+        with (
+            _patch_httpx_client(mock_post),
+            pytest.raises(RuntimeError, match="LLM request failed"),
+        ):
+            await completer.generate_command("test", os_info="Linux")
+
 
 class TestCompleterTemperature:
     @pytest.mark.parametrize(

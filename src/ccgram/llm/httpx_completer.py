@@ -7,6 +7,8 @@ Uses raw httpx — zero new dependencies.
 
 import json
 import platform
+from collections.abc import Callable
+from typing import Any
 
 import httpx
 
@@ -101,10 +103,13 @@ def _parse_command_result(text: str) -> CommandResult:
 class _BaseCompleter:
     """Shared base for LLM command generators using httpx.
 
-    Subclasses implement ``_request()`` for API-specific payload and
-    response parsing.  Creates a fresh httpx client per request to
-    avoid lifecycle issues in long-running bots.
+    Subclasses provide ``_url()``, ``_headers()``, ``_payload()``, and
+    ``_extract()`` for API-specific details.  The shared ``_request()``
+    handles HTTP execution and error handling.  Creates a fresh httpx
+    client per request to avoid lifecycle issues in long-running bots.
     """
+
+    _default_base_url: str = _OPENAI_BASE_URL
 
     def __init__(
         self,
@@ -113,12 +118,11 @@ class _BaseCompleter:
         base_url: str | None = None,
         *,
         temperature: float = 0.1,
-        default_base_url: str = _OPENAI_BASE_URL,
     ) -> None:
         self.model = model
         self.temperature = temperature
         self._api_key = api_key
-        self._base_url = (base_url or default_base_url).rstrip("/")
+        self._base_url = (base_url or self._default_base_url).rstrip("/")
 
     async def generate_command(
         self,
@@ -144,6 +148,36 @@ class _BaseCompleter:
         text = await self._request(user_msg)
         return _parse_command_result(text)
 
+    async def _post_and_extract(
+        self,
+        url: str,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        extract: Callable[[dict[str, Any]], str],
+    ) -> str:
+        """Post to LLM API and extract response text with shared error handling."""
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.post(
+                    url,
+                    headers=headers,
+                    json=payload,
+                    timeout=30.0,
+                )
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                msg = f"LLM request failed: {exc.response.status_code}"
+                raise RuntimeError(msg) from exc
+            except httpx.HTTPError as exc:
+                msg = f"LLM request failed: {exc}"
+                raise RuntimeError(msg) from exc
+
+        try:
+            return extract(response.json())
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            msg = f"Unexpected LLM response: {response.text[:200]}"
+            raise RuntimeError(msg) from exc
+
     async def _request(self, user_msg: str) -> str:
         """Send the request and return the response text."""
         raise NotImplementedError
@@ -152,21 +186,7 @@ class _BaseCompleter:
 class OpenAICompatCompleter(_BaseCompleter):
     """LLM command generator using OpenAI-compatible chat completions API."""
 
-    def __init__(
-        self,
-        api_key: str,
-        model: str,
-        base_url: str | None = None,
-        *,
-        temperature: float = 0.1,
-    ) -> None:
-        super().__init__(
-            api_key,
-            model,
-            base_url,
-            temperature=temperature,
-            default_base_url=_OPENAI_BASE_URL,
-        )
+    _default_base_url: str = _OPENAI_BASE_URL
 
     async def _request(self, user_msg: str) -> str:
         payload = {
@@ -177,50 +197,21 @@ class OpenAICompatCompleter(_BaseCompleter):
             ],
             "temperature": self.temperature,
         }
-        async with httpx.AsyncClient() as client:
-            try:
-                response = await client.post(
-                    f"{self._base_url}/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {self._api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json=payload,
-                    timeout=30.0,
-                )
-                response.raise_for_status()
-            except httpx.HTTPStatusError as exc:
-                msg = f"LLM request failed: {exc.response.status_code}"
-                raise RuntimeError(msg) from exc
-            except httpx.HTTPError as exc:
-                msg = f"LLM request failed: {exc}"
-                raise RuntimeError(msg) from exc
-
-        try:
-            return response.json()["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, ValueError) as exc:
-            msg = f"Unexpected LLM response: {response.text[:200]}"
-            raise RuntimeError(msg) from exc
+        return await self._post_and_extract(
+            f"{self._base_url}/chat/completions",
+            {
+                "Authorization": f"Bearer {self._api_key}",
+                "Content-Type": "application/json",
+            },
+            payload,
+            lambda data: data["choices"][0]["message"]["content"],
+        )
 
 
 class AnthropicCompleter(_BaseCompleter):
     """LLM command generator using the Anthropic Messages API."""
 
-    def __init__(
-        self,
-        api_key: str,
-        model: str,
-        base_url: str | None = None,
-        *,
-        temperature: float = 0.1,
-    ) -> None:
-        super().__init__(
-            api_key,
-            model,
-            base_url,
-            temperature=temperature,
-            default_base_url=_ANTHROPIC_BASE_URL,
-        )
+    _default_base_url: str = _ANTHROPIC_BASE_URL
 
     async def _request(self, user_msg: str) -> str:
         payload = {
@@ -230,28 +221,13 @@ class AnthropicCompleter(_BaseCompleter):
             "messages": [{"role": "user", "content": user_msg}],
             "temperature": self.temperature,
         }
-        async with httpx.AsyncClient() as client:
-            try:
-                response = await client.post(
-                    f"{self._base_url}/messages",
-                    headers={
-                        "x-api-key": self._api_key,
-                        "anthropic-version": "2023-06-01",
-                        "Content-Type": "application/json",
-                    },
-                    json=payload,
-                    timeout=30.0,
-                )
-                response.raise_for_status()
-            except httpx.HTTPStatusError as exc:
-                msg = f"LLM request failed: {exc.response.status_code}"
-                raise RuntimeError(msg) from exc
-            except httpx.HTTPError as exc:
-                msg = f"LLM request failed: {exc}"
-                raise RuntimeError(msg) from exc
-
-        try:
-            return response.json()["content"][0]["text"]
-        except (KeyError, IndexError, ValueError) as exc:
-            msg = f"Unexpected LLM response: {response.text[:200]}"
-            raise RuntimeError(msg) from exc
+        return await self._post_and_extract(
+            f"{self._base_url}/messages",
+            {
+                "x-api-key": self._api_key,
+                "anthropic-version": "2023-06-01",
+                "Content-Type": "application/json",
+            },
+            payload,
+            lambda data: data["content"][0]["text"],
+        )
