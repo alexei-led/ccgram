@@ -1705,7 +1705,8 @@ class TestMaybeDiscoverTranscript:
                 side_effect=_provider_for_window,
             ),
             patch(
-                "ccgram.handlers.status_polling.detect_provider_from_command",
+                "ccgram.handlers.status_polling.detect_provider_from_pane",
+                new_callable=AsyncMock,
                 return_value="",
             ),
             patch(

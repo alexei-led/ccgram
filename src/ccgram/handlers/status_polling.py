@@ -42,7 +42,6 @@ from telegram.error import BadRequest, TelegramError
 
 from ..config import config
 from ..providers import (
-    detect_provider_from_command,
     detect_provider_from_pane,
     detect_provider_from_transcript_path,
     detect_provider_from_runtime,

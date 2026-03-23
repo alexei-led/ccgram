@@ -94,11 +94,15 @@ def _make_context(user_data: dict | None = None) -> MagicMock:
     return ctx
 
 
-def _make_query(data: str = "") -> AsyncMock:
+def _make_query(
+    data: str = "", *, chat_type: str = "supergroup", chat_id: int = -100999
+) -> AsyncMock:
     query = AsyncMock()
     query.data = data
     query.answer = AsyncMock()
     query.message = MagicMock()
+    query.message.chat.type = chat_type
+    query.message.chat.id = chat_id
     return query
 
 
