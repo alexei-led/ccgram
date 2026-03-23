@@ -62,16 +62,17 @@ graph TB
 
 ### Provider modules (`providers/`)
 
-| Module        | Description                                                                                                        |
-| ------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `base.py`     | AgentProvider protocol, ProviderCapabilities, event types                                                          |
-| `registry.py` | ProviderRegistry (name→factory map, singleton cache)                                                               |
-| `_jsonl.py`   | Shared JSONL parsing base class for Codex + Gemini                                                                 |
-| `claude.py`   | ClaudeProvider (hook, resume, continue, JSONL transcripts)                                                         |
-| `codex.py`    | CodexProvider (resume, continue, JSONL transcripts, no hook)                                                       |
-| `gemini.py`   | GeminiProvider (resume, continue, whole-file JSON transcripts, no hook)                                            |
-| `shell.py`    | ShellProvider (no hook, no transcript, prompt marker `ccgram:N❯` setup, `has_prompt_marker` check, idle detection) |
-| `__init__.py` | `get_provider_for_window()`, `detect_provider_from_command()`, `get_provider()` fallback                           |
+| Module                 | Description                                                                                                        |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `base.py`              | AgentProvider protocol, ProviderCapabilities, event types                                                          |
+| `registry.py`          | ProviderRegistry (name→factory map, singleton cache)                                                               |
+| `_jsonl.py`            | Shared JSONL parsing base class for Codex + Gemini                                                                 |
+| `claude.py`            | ClaudeProvider (hook, resume, continue, JSONL transcripts)                                                         |
+| `codex.py`             | CodexProvider (resume, continue, JSONL transcripts, no hook)                                                       |
+| `gemini.py`            | GeminiProvider (resume, continue, whole-file JSON transcripts, no hook)                                            |
+| `shell.py`             | ShellProvider (no hook, no transcript, prompt marker `ccgram:N❯` setup, `has_prompt_marker` check, idle detection) |
+| `process_detection.py` | Foreground process detection via `ps -t <tty>` with PGID caching for reliable provider identification              |
+| `__init__.py`          | `get_provider_for_window()`, `detect_provider_from_pane()`, `detect_provider_from_command()`, `get_provider()`     |
 
 ### LLM modules (`llm/`)
 

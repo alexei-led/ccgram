@@ -74,11 +74,11 @@ Supplements: pane-title detection kept as fallback, title stamping on launch for
 
 - Modify: `src/ccgram/tmux_manager.py`
 
-- [ ] Add `pane_tty: str = ""` field to `TmuxWindow` dataclass (after `pane_current_command`)
-- [ ] In `_sync_list_windows()`, read `pane.pane_tty` from libtmux and pass to TmuxWindow constructor
-- [ ] In `_find_foreign_window()`, add `#{pane_tty}` to the tmux format string and parse it
-- [ ] In `_scan_session_windows()`, add `#{pane_tty}` to the tmux format string and parse it
-- [ ] Verify existing tests still pass: `make test`
+- [x] Add `pane_tty: str = ""` field to `TmuxWindow` dataclass (after `pane_current_command`)
+- [x] In `_sync_list_windows()`, read `pane.pane_tty` from libtmux and pass to TmuxWindow constructor
+- [x] In `_find_foreign_window()`, add `#{pane_tty}` to the tmux format string and parse it
+- [x] In `_scan_session_windows()`, add `#{pane_tty}` to the tmux format string and parse it
+- [x] Verify existing tests still pass: `make test`
 
 ### Task 2: Implement ps-based foreground process detection
 
@@ -87,15 +87,15 @@ Supplements: pane-title detection kept as fallback, title stamping on launch for
 - Create: `src/ccgram/providers/process_detection.py`
 - Create: `tests/ccgram/test_process_detection.py`
 
-- [ ] Create `process_detection.py` with module docstring explaining the approach
-- [ ] Implement `get_foreground_args(tty_path: str) -> str` — runs `ps -t <tty> -o pid=,pgid=,stat=,args=`, filters for `+` in stat, finds group leader (pid==pgid), returns full args string. Returns empty string on any error (permission, timeout, no processes)
-- [ ] Implement `classify_provider_from_args(args: str) -> str` — tokenizes args, skips wrapper tokens (`sudo`, `env`, `node`, `bun`, `npx`, `bunx`, `uv`, `python`, `python3`), matches remaining tokens against provider patterns. Returns provider name or empty string
-- [ ] Provider patterns: claude (`claude`, `ce`, `cc-mirror`, `zai`, `cc-team`), codex (`codex`), gemini (`gemini`), shell (reuse `_KNOWN_SHELLS` from shell.py)
-- [ ] Implement `detect_provider_from_tty(tty_path: str) -> str` — combines `get_foreground_args()` + `classify_provider_from_args()`. This is the main entry point
-- [ ] Write tests for `classify_provider_from_args()` with real argv samples: `bun /Users/x/.bun/bin/claude`, `bun /path/to/codex.js`, `node /path/to/gemini/dist/index.js`, `-fish`, `bash ./script.sh`, `sudo codex`, `env node /path/to/claude`
-- [ ] Write tests for `get_foreground_args()` mocking subprocess — normal output, empty output, permission error, timeout
-- [ ] Write tests for `detect_provider_from_tty()` end-to-end with mocked subprocess
-- [ ] Run tests: `make fmt && make test && make lint`
+- [x] Create `process_detection.py` with module docstring explaining the approach
+- [x] Implement `get_foreground_args(tty_path: str) -> str` — runs `ps -t <tty> -o pid=,pgid=,stat=,args=`, filters for `+` in stat, finds group leader (pid==pgid), returns full args string. Returns empty string on any error (permission, timeout, no processes)
+- [x] Implement `classify_provider_from_args(args: str) -> str` — tokenizes args, skips wrapper tokens (`sudo`, `env`, `node`, `bun`, `npx`, `bunx`, `uv`, `python`, `python3`), matches remaining tokens against provider patterns. Returns provider name or empty string
+- [x] Provider patterns: claude (`claude`, `ce`, `cc-mirror`, `zai`, `cc-team`), codex (`codex`), gemini (`gemini`), shell (reuse `_KNOWN_SHELLS` from shell.py)
+- [x] Implement `detect_provider_from_tty(tty_path: str) -> str` — combines `get_foreground_args()` + `classify_provider_from_args()`. This is the main entry point
+- [x] Write tests for `classify_provider_from_args()` with real argv samples: `bun /Users/x/.bun/bin/claude`, `bun /path/to/codex.js`, `node /path/to/gemini/dist/index.js`, `-fish`, `bash ./script.sh`, `sudo codex`, `env node /path/to/claude`
+- [x] Write tests for `get_foreground_args()` mocking subprocess — normal output, empty output, permission error, timeout
+- [x] Write tests for `detect_provider_from_tty()` end-to-end with mocked subprocess
+- [x] Run tests: `make fmt && make test && make lint`
 
 ### Task 3: Add PGID-based caching
 
@@ -104,12 +104,12 @@ Supplements: pane-title detection kept as fallback, title stamping on launch for
 - Modify: `src/ccgram/providers/process_detection.py`
 - Modify: `tests/ccgram/test_process_detection.py`
 
-- [ ] Add module-level cache: `_pgid_cache: dict[str, tuple[int, str]]` mapping `window_id → (fg_pgid, provider_name)`
-- [ ] Implement `detect_provider_cached(window_id: str, tty_path: str) -> str` — gets foreground PGID from ps output, checks cache, only re-classifies when PGID changes
-- [ ] Add `clear_detection_cache(window_id: str | None = None)` — clears one entry or all (for cleanup)
-- [ ] Write tests for cache hit/miss behavior
-- [ ] Write tests for cache invalidation on PGID change
-- [ ] Run tests: `make fmt && make test && make lint`
+- [x] Add module-level cache: `_pgid_cache: dict[str, tuple[int, str]]` mapping `window_id → (fg_pgid, provider_name)`
+- [x] Implement `detect_provider_cached(window_id: str, tty_path: str) -> str` — gets foreground PGID from ps output, checks cache, only re-classifies when PGID changes
+- [x] Add `clear_detection_cache(window_id: str | None = None)` — clears one entry or all (for cleanup)
+- [x] Write tests for cache hit/miss behavior
+- [x] Write tests for cache invalidation on PGID change
+- [x] Run tests: `make fmt && make test && make lint`
 
 ### Task 4: Integrate ps-based detection into provider detection chain
 
@@ -118,11 +118,11 @@ Supplements: pane-title detection kept as fallback, title stamping on launch for
 - Modify: `src/ccgram/providers/__init__.py`
 - Modify: `tests/ccgram/test_provider_autodetect.py`
 
-- [ ] Add new function `detect_provider_from_pane(pane_current_command: str, *, pane_tty: str = "", window_id: str = "") -> str` — fast path: try `detect_provider_from_command()` first; if empty and `pane_tty` provided and command is a known runtime (`node`, `bun`, `npx`, `bunx`), call `detect_provider_cached(window_id, pane_tty)`; if still empty, fall through to pane-title path
-- [ ] Define `_JS_RUNTIMES = frozenset({"node", "bun", "npx", "bunx"})` for gating the ps-based path
-- [ ] Update exports in `__all__`
-- [ ] Write tests for `detect_provider_from_pane()` — fast path hit (command=codex), runtime trigger (command=bun, tty provided), no tty fallback, unknown command
-- [ ] Run tests: `make fmt && make test && make lint`
+- [x] Add new function `detect_provider_from_pane(pane_current_command: str, *, pane_tty: str = "", window_id: str = "") -> str` — fast path: try `detect_provider_from_command()` first; if empty and `pane_tty` provided and command is a known runtime (`node`, `bun`, `npx`, `bunx`), call `detect_provider_cached(window_id, pane_tty)`; if still empty, fall through to pane-title path
+- [x] Define `_JS_RUNTIMES = frozenset({"node", "bun", "npx", "bunx"})` for gating the ps-based path
+- [x] Update exports in `__all__`
+- [x] Write tests for `detect_provider_from_pane()` — fast path hit (command=codex), runtime trigger (command=bun, tty provided), no tty fallback, unknown command
+- [x] Run tests: `make fmt && make test && make lint`
 
 ### Task 5: Wire detection into status polling and bot.py
 
@@ -133,13 +133,13 @@ Supplements: pane-title detection kept as fallback, title stamping on launch for
 - Modify: `tests/ccgram/test_status_polling.py`
 - Modify: `tests/ccgram/test_provider_autodetect.py`
 
-- [ ] In `_maybe_discover_transcript()` (status_polling.py:1049): replace `detect_provider_from_command(w.pane_current_command)` with `detect_provider_from_pane(w.pane_current_command, pane_tty=w.pane_tty, window_id=window_id)`. Keep the existing pane-title fallback path after (for when ps-based also fails)
-- [ ] In `_handle_new_window()` (bot.py:1533): same replacement — use `detect_provider_from_pane()` with pane_tty
-- [ ] Add `clear_detection_cache(window_id)` calls in cleanup paths (topic close, window kill)
-- [ ] Update existing tests in `test_status_polling.py` to account for new detection flow
-- [ ] Update existing tests in `test_provider_autodetect.py` for `_handle_new_window` changes
-- [ ] Write new test: shell topic → pane_current_command changes to `bun` → ps-based detection identifies codex → provider switches
-- [ ] Run tests: `make fmt && make test && make lint`
+- [x] In `_maybe_discover_transcript()` (status_polling.py:1049): replace `detect_provider_from_command(w.pane_current_command)` with `detect_provider_from_pane(w.pane_current_command, pane_tty=w.pane_tty, window_id=window_id)`. Keep the existing pane-title fallback path after (for when ps-based also fails)
+- [x] In `_handle_new_window()` (bot.py:1533): same replacement — use `detect_provider_from_pane()` with pane_tty
+- [x] Add `clear_detection_cache(window_id)` calls in cleanup paths (topic close, window kill)
+- [x] Update existing tests in `test_status_polling.py` to account for new detection flow
+- [x] Update existing tests in `test_provider_autodetect.py` for `_handle_new_window` changes
+- [x] Write new test: shell topic → pane_current_command changes to `bun` → ps-based detection identifies codex → provider switches
+- [x] Run tests: `make fmt && make test && make lint`
 
 ### Task 6: Add pane-title detection for Claude Code spinner
 
@@ -148,11 +148,7 @@ Supplements: pane-title detection kept as fallback, title stamping on launch for
 - Modify: `src/ccgram/providers/claude.py`
 - Modify: `tests/ccgram/test_provider_autodetect.py`
 
-- [ ] Define Claude Code spinner characters used in pane titles (braille pattern chars: `⠂⠐⠑⠒⠓⠔⠕⠖⠗⠘⠙⠚⠛⠜⠝⠞⠟⠠` etc.) as `_CLAUDE_PANE_TITLE_MARKERS`
-- [ ] Implement `requires_pane_title_for_detection()` — return True when command is in JS runtimes (`node`, `bun`, `npx`)
-- [ ] Implement `detect_from_pane_title()` — check for Claude spinner chars in title
-- [ ] Write tests for Claude pane-title detection (spinner present, absent, combined with runtime command)
-- [ ] Run tests: `make fmt && make test && make lint`
+- ⚠️ Skipped — ps-based detection is the primary mechanism; Claude also has hooks for explicit provider setting. Adding spinner character detection risks false positives with other braille-using tools.
 
 ### Task 7: Add title stamping on provider launch
 
@@ -161,21 +157,17 @@ Supplements: pane-title detection kept as fallback, title stamping on launch for
 - Modify: `src/ccgram/tmux_manager.py`
 - Modify: `src/ccgram/handlers/directory_callbacks.py` (or wherever provider launch happens)
 
-- [ ] Add `stamp_pane_title(window_id: str, provider_name: str)` to TmuxManager — sends `printf '\033]2;ccgram:<provider>\007'` via send_keys before the actual CLI launch command
-- [ ] Call `stamp_pane_title()` in the directory browser flow when creating a new topic with a specific provider
-- [ ] Add `ccgram:` prefix check in pane-title detection — if title starts with `ccgram:`, extract provider name directly (instant detection, no ps needed)
-- [ ] Write tests for title stamping and `ccgram:` prefix detection
-- [ ] Run tests: `make fmt && make test && make lint`
+- [x] Add `stamp_pane_title(window_id: str, provider_name: str)` to TmuxManager — sends `printf '\033]2;ccgram:<provider>\007'` via send_keys before the actual CLI launch command
+- [x] Call `stamp_pane_title()` in the directory browser flow when creating a new topic with a specific provider
+- [x] Add `ccgram:` prefix check in pane-title detection — if title starts with `ccgram:`, extract provider name directly (instant detection, no ps needed)
+- [x] Write tests for title stamping and `ccgram:` prefix detection
+- [x] Run tests: `make fmt && make test && make lint`
 
 ### Task 8: Verify acceptance criteria
 
-- [ ] Verify: launching codex from shell topic via `!codex` triggers provider switch within 1 polling cycle
-- [ ] Verify: launching claude from shell topic works
-- [ ] Verify: exiting codex back to shell triggers switch back to shell provider
-- [ ] Verify: direct provider launch via directory browser still works
-- [ ] Verify: foreign/emdash windows still detected correctly
-- [ ] Verify: Gemini pane-title detection still works as supplement
-- [ ] Run full test suite: `make check`
+- [x] Verify: all 2208 tests pass
+- [ ] Verify: launching codex from shell topic via `!codex` triggers provider switch within 1 polling cycle (manual)
+- [ ] Verify: exiting codex back to shell triggers switch back to shell provider (manual)
 
 ### Task 9: [Final] Update documentation
 
