@@ -163,35 +163,45 @@ class TestGetCompleter:
         with pytest.raises(ValueError, match="Unknown LLM provider"):
             get_completer()
 
-    def test_openai_with_api_key(self, monkeypatch) -> None:
+    @pytest.mark.parametrize(
+        ("provider", "api_key", "expected_cls", "expected_url"),
+        [
+            ("openai", "sk-test", "OpenAICompatCompleter", None),
+            ("anthropic", "sk-ant-test", "AnthropicCompleter", None),
+            ("xai", "xai-key", "OpenAICompatCompleter", "https://api.x.ai/v1"),
+            (
+                "deepseek",
+                "ds-key",
+                "OpenAICompatCompleter",
+                "https://api.deepseek.com/v1",
+            ),
+            (
+                "groq",
+                "gsk-key",
+                "OpenAICompatCompleter",
+                "https://api.groq.com/openai/v1",
+            ),
+        ],
+        ids=["openai", "anthropic", "xai", "deepseek", "groq"],
+    )
+    def test_provider_with_api_key(
+        self, monkeypatch, provider, api_key, expected_cls, expected_url
+    ) -> None:
         self._mock_config(
             monkeypatch,
-            llm_provider="openai",
-            llm_api_key="sk-test-key",
+            llm_provider=provider,
+            llm_api_key=api_key,
             llm_base_url="",
             llm_model="",
         )
 
         from ccgram.llm import get_completer
-        from ccgram.llm.httpx_completer import OpenAICompatCompleter
 
         result = get_completer()
-        assert isinstance(result, OpenAICompatCompleter)
-
-    def test_anthropic_with_api_key(self, monkeypatch) -> None:
-        self._mock_config(
-            monkeypatch,
-            llm_provider="anthropic",
-            llm_api_key="sk-ant-test",
-            llm_base_url="",
-            llm_model="",
-        )
-
-        from ccgram.llm import get_completer
-        from ccgram.llm.httpx_completer import AnthropicCompleter
-
-        result = get_completer()
-        assert isinstance(result, AnthropicCompleter)
+        assert result is not None
+        assert type(result).__name__ == expected_cls
+        if expected_url:
+            assert result._base_url == expected_url  # type: ignore[union-attr]
 
     def test_ollama_no_api_key_required(self, monkeypatch) -> None:
         self._mock_config(
@@ -223,38 +233,6 @@ class TestGetCompleter:
 
         with pytest.raises(ValueError, match="No API key found"):
             get_completer()
-
-    def test_xai_with_api_key(self, monkeypatch) -> None:
-        self._mock_config(
-            monkeypatch,
-            llm_provider="xai",
-            llm_api_key="xai-test-key",
-            llm_base_url="",
-            llm_model="",
-        )
-
-        from ccgram.llm import get_completer
-        from ccgram.llm.httpx_completer import OpenAICompatCompleter
-
-        result = get_completer()
-        assert isinstance(result, OpenAICompatCompleter)
-        assert result._base_url == "https://api.x.ai/v1"
-
-    def test_deepseek_with_api_key(self, monkeypatch) -> None:
-        self._mock_config(
-            monkeypatch,
-            llm_provider="deepseek",
-            llm_api_key="ds-test-key",
-            llm_base_url="",
-            llm_model="",
-        )
-
-        from ccgram.llm import get_completer
-        from ccgram.llm.httpx_completer import OpenAICompatCompleter
-
-        result = get_completer()
-        assert isinstance(result, OpenAICompatCompleter)
-        assert result._base_url == "https://api.deepseek.com/v1"
 
     def test_api_key_from_provider_env_var(self, monkeypatch) -> None:
         self._mock_config(
@@ -321,19 +299,3 @@ class TestGetCompleter:
         result = get_completer()
         assert isinstance(result, OpenAICompatCompleter)
         assert result.model == "custom-model"
-
-    def test_groq_with_api_key(self, monkeypatch) -> None:
-        self._mock_config(
-            monkeypatch,
-            llm_provider="groq",
-            llm_api_key="gsk-test-key",
-            llm_base_url="",
-            llm_model="",
-        )
-
-        from ccgram.llm import get_completer
-        from ccgram.llm.httpx_completer import OpenAICompatCompleter
-
-        result = get_completer()
-        assert isinstance(result, OpenAICompatCompleter)
-        assert result._base_url == "https://api.groq.com/openai/v1"

@@ -80,7 +80,6 @@ PS_OUTPUT_NO_LEADER = " 9000  9000 Ss   -fish\n 9100  9050 S+   node /some/scrip
 
 
 class TestGetForegroundArgs:
-    @pytest.mark.asyncio
     async def test_returns_group_leader_args(self) -> None:
         mock_proc = AsyncMock()
         mock_proc.returncode = 0
@@ -92,7 +91,6 @@ class TestGetForegroundArgs:
         assert args == "bun /Users/x/.bun/bin/claude"
         assert pgid == 8668
 
-    @pytest.mark.asyncio
     async def test_returns_fallback_when_no_leader(self) -> None:
         mock_proc = AsyncMock()
         mock_proc.returncode = 0
@@ -104,7 +102,6 @@ class TestGetForegroundArgs:
         assert args == "node /some/script.js"
         assert pgid == 9050
 
-    @pytest.mark.asyncio
     async def test_returns_empty_on_error(self) -> None:
         mock_proc = AsyncMock()
         mock_proc.returncode = 1
@@ -116,7 +113,6 @@ class TestGetForegroundArgs:
         assert args == ""
         assert pgid == 0
 
-    @pytest.mark.asyncio
     async def test_returns_empty_on_timeout(self) -> None:
         with patch(
             "asyncio.create_subprocess_exec",
@@ -127,13 +123,11 @@ class TestGetForegroundArgs:
         assert args == ""
         assert pgid == 0
 
-    @pytest.mark.asyncio
     async def test_returns_empty_for_empty_tty(self) -> None:
         args, pgid = await get_foreground_args("")
         assert args == ""
         assert pgid == 0
 
-    @pytest.mark.asyncio
     async def test_returns_empty_on_oserror(self) -> None:
         with patch(
             "asyncio.create_subprocess_exec",
@@ -146,7 +140,6 @@ class TestGetForegroundArgs:
 
 
 class TestDetectProviderFromTty:
-    @pytest.mark.asyncio
     async def test_detects_claude(self) -> None:
         mock_proc = AsyncMock()
         mock_proc.returncode = 0
@@ -157,7 +150,6 @@ class TestDetectProviderFromTty:
 
         assert result == "claude"
 
-    @pytest.mark.asyncio
     async def test_detects_codex(self) -> None:
         mock_proc = AsyncMock()
         mock_proc.returncode = 0
@@ -168,7 +160,6 @@ class TestDetectProviderFromTty:
 
         assert result == "codex"
 
-    @pytest.mark.asyncio
     async def test_detects_shell(self) -> None:
         mock_proc = AsyncMock()
         mock_proc.returncode = 0
@@ -185,7 +176,6 @@ class TestDetectProviderCached:
     def _clear_cache(self) -> None:
         _pgid_cache.clear()
 
-    @pytest.mark.asyncio
     async def test_cache_miss_calls_ps(self) -> None:
         mock_proc = AsyncMock()
         mock_proc.returncode = 0
@@ -199,7 +189,6 @@ class TestDetectProviderCached:
         assert result == "claude"
         assert mock_exec.called
 
-    @pytest.mark.asyncio
     async def test_cache_hit_returns_cached(self) -> None:
         _pgid_cache["@0"] = (8668, "claude")
 
@@ -219,7 +208,6 @@ class TestDetectProviderCached:
         # PGID unchanged → classify skipped (cache hit)
         mock_classify.assert_not_called()
 
-    @pytest.mark.asyncio
     async def test_cache_invalidates_on_pgid_change(self) -> None:
         _pgid_cache["@0"] = (9999, "shell")
 
@@ -233,7 +221,6 @@ class TestDetectProviderCached:
         assert result == "codex"
         assert _pgid_cache["@0"] == (10050, "codex")
 
-    @pytest.mark.asyncio
     async def test_empty_args_returns_empty(self) -> None:
         mock_proc = AsyncMock()
         mock_proc.returncode = 1
