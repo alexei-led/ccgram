@@ -11,7 +11,6 @@ Key components:
   - clear_shell_pending: Cleanup for topic deletion
 """
 
-import os
 import shutil
 
 import structlog
@@ -25,7 +24,7 @@ from telegram import (
 )
 
 from ..llm import get_completer
-from ..llm.base import CommandResult
+from ..llm import CommandResult
 from ..session import session_manager
 from ..tmux_manager import tmux_manager
 from .callback_data import (
@@ -71,9 +70,9 @@ def _detect_shell_env() -> dict[str, str]:
     if _shell_env is not None:
         return _shell_env
 
-    shell = os.environ.get("SHELL", "")
-    if "/" in shell:
-        shell = shell.rsplit("/", 1)[1]
+    from ..providers.shell import get_shell_name
+
+    shell = get_shell_name()
 
     available = []
     for tool, desc in _MODERN_TOOLS.items():
@@ -87,11 +86,16 @@ def _detect_shell_env() -> dict[str, str]:
     return _shell_env
 
 
-def _gather_llm_context(window_id: str) -> dict[str, str]:
+def gather_llm_context(window_id: str) -> dict[str, str]:
     """Gather cwd, shell type, and available tools for LLM calls."""
     env = _detect_shell_env()
     cwd = session_manager.get_window_state(window_id).cwd or ""
     return {"cwd": cwd, "shell": env["shell"], "shell_tools": env["shell_tools"]}
+
+
+def has_shell_pending(chat_id: int, thread_id: int) -> bool:
+    """Check if there is a pending shell command for this topic."""
+    return (chat_id, thread_id) in _shell_pending
 
 
 def clear_shell_pending(chat_id: int, thread_id: int) -> None:
@@ -181,7 +185,7 @@ async def handle_shell_message(
         await _execute_raw_command(bot, user_id, thread_id, window_id, text)
         return
 
-    ctx = _gather_llm_context(window_id)
+    ctx = gather_llm_context(window_id)
     recent_output = ""
     raw_pane = await tmux_manager.capture_pane(window_id)
     if raw_pane:
@@ -201,7 +205,7 @@ async def handle_shell_message(
         await _execute_raw_command(bot, user_id, thread_id, window_id, text)
         return
 
-    await _show_command_approval(
+    await show_command_approval(
         bot, chat_id, thread_id, window_id, result, user_id, message
     )
 
@@ -220,7 +224,9 @@ async def _execute_raw_command(
     if raw_pane:
         baseline = raw_pane.rstrip()
 
-    success, err_message = await session_manager.send_to_window(window_id, command)
+    success, err_message = await session_manager.send_to_window(
+        window_id, command, raw=True
+    )
     if not success:
         chat_id = session_manager.resolve_chat_id(user_id, thread_id)
         await safe_send(
@@ -233,7 +239,7 @@ async def _execute_raw_command(
     )
 
 
-async def _show_command_approval(
+async def show_command_approval(
     bot: Bot,
     chat_id: int,
     thread_id: int,

@@ -16,9 +16,12 @@ from ccgram.handlers.callback_data import (
 from ccgram.handlers.shell_commands import (
     _build_approval_keyboard,
     _shell_pending,
+    clear_marker_skip,
     clear_shell_pending,
     handle_shell_callback,
     handle_shell_message,
+    has_shell_pending,
+    show_command_approval,
 )
 from ccgram.llm.base import CommandResult
 
@@ -97,7 +100,7 @@ class TestHandleShellMessage:
             mock_tm.capture_pane = AsyncMock(return_value=None)
             await handle_shell_message(bot, 1, 42, "@0", "!ls -la", message)
 
-            mock_sm.send_to_window.assert_called_once_with("@0", "ls -la")
+            mock_sm.send_to_window.assert_called_once_with("@0", "ls -la", raw=True)
             mock_capture.assert_called_once_with(
                 bot, 1, 42, "@0", baseline="", command="ls -la"
             )
@@ -115,7 +118,7 @@ class TestHandleShellMessage:
             mock_sm.send_to_window = AsyncMock(return_value=(True, ""))
             await handle_shell_message(bot, 1, 42, "@0", "! ls", message)
 
-            mock_sm.send_to_window.assert_called_once_with("@0", "ls")
+            mock_sm.send_to_window.assert_called_once_with("@0", "ls", raw=True)
 
     async def test_bare_bang_is_ignored(self) -> None:
         bot = AsyncMock(spec=Bot)
@@ -145,7 +148,9 @@ class TestHandleShellMessage:
             mock_sm.send_to_window = AsyncMock(return_value=(True, ""))
             await handle_shell_message(bot, 1, 42, "@0", "find . -name foo", message)
 
-            mock_sm.send_to_window.assert_called_once_with("@0", "find . -name foo")
+            mock_sm.send_to_window.assert_called_once_with(
+                "@0", "find . -name foo", raw=True
+            )
 
     async def test_no_bang_with_llm_calls_completer(self) -> None:
         bot = AsyncMock(spec=Bot)
@@ -166,7 +171,7 @@ class TestHandleShellMessage:
             patch(f"{_MOD}.tmux_manager") as mock_tm,
             patch(f"{_MOD}.safe_reply", new_callable=AsyncMock),
             patch(
-                f"{_MOD}._gather_llm_context",
+                f"{_MOD}.gather_llm_context",
                 return_value={"cwd": "/tmp", "shell": "bash", "shell_tools": ""},
             ),
         ):
@@ -200,7 +205,7 @@ class TestHandleShellMessage:
             patch(f"{_MOD}.tmux_manager") as mock_tm,
             patch(f"{_MOD}.start_shell_capture"),
             patch(
-                f"{_MOD}._gather_llm_context",
+                f"{_MOD}.gather_llm_context",
                 return_value={"cwd": "/tmp", "shell": "bash", "shell_tools": ""},
             ),
         ):
@@ -209,7 +214,9 @@ class TestHandleShellMessage:
 
             await handle_shell_message(bot, 1, 42, "@0", "do something", message)
 
-            mock_sm.send_to_window.assert_called_once_with("@0", "do something")
+            mock_sm.send_to_window.assert_called_once_with(
+                "@0", "do something", raw=True
+            )
 
     async def test_llm_config_error_falls_back_to_raw(self) -> None:
         bot = AsyncMock(spec=Bot)
@@ -224,7 +231,9 @@ class TestHandleShellMessage:
             mock_sm.send_to_window = AsyncMock(return_value=(True, ""))
             await handle_shell_message(bot, 1, 42, "@0", "do something")
 
-            mock_sm.send_to_window.assert_called_once_with("@0", "do something")
+            mock_sm.send_to_window.assert_called_once_with(
+                "@0", "do something", raw=True
+            )
 
     async def test_send_failure_replies_error(self) -> None:
         bot = AsyncMock(spec=Bot)
@@ -260,7 +269,7 @@ class TestHandleShellMessage:
             patch(f"{_MOD}.tmux_manager") as mock_tm,
             patch(f"{_MOD}.safe_send", new_callable=AsyncMock) as mock_send,
             patch(
-                f"{_MOD}._gather_llm_context",
+                f"{_MOD}.gather_llm_context",
                 return_value={"cwd": "/tmp", "shell": "bash", "shell_tools": ""},
             ),
         ):
@@ -296,7 +305,7 @@ class TestHandleShellCallback:
             await handle_shell_callback(query, 1, f"{CB_SHELL_RUN}@0", bot, 42)
 
             query.answer.assert_called_once()
-            mock_sm.send_to_window.assert_called_once_with("@0", "ls -la")
+            mock_sm.send_to_window.assert_called_once_with("@0", "ls -la", raw=True)
             mock_capture.assert_called_once_with(
                 bot, 1, 42, "@0", baseline="", command="ls -la"
             )
@@ -433,7 +442,9 @@ class TestHandleShellCallback:
                 query, 1, f"{CB_SHELL_CONFIRM_DANGER}@0", bot, 42
             )
 
-            mock_sm.send_to_window.assert_called_once_with("@0", "rm -rf /tmp/test")
+            mock_sm.send_to_window.assert_called_once_with(
+                "@0", "rm -rf /tmp/test", raw=True
+            )
             assert _shell_pending.get((-100, 42)) is None
 
 
@@ -720,3 +731,158 @@ class TestHasPromptMarker:
         with patch("ccgram.tmux_manager.tmux_manager") as mock_tm:
             mock_tm.capture_pane = AsyncMock(return_value=capture_value)
             assert await has_prompt_marker("@0") is expected
+
+
+class TestClearMarkerSkip:
+    def setup_method(self) -> None:
+        from ccgram.handlers.shell_commands import _marker_setup_skipped
+
+        _marker_setup_skipped.clear()
+
+    def teardown_method(self) -> None:
+        from ccgram.handlers.shell_commands import _marker_setup_skipped
+
+        _marker_setup_skipped.clear()
+
+    def test_clear_removes_window_from_skip_set(self) -> None:
+        from ccgram.handlers.shell_commands import _marker_setup_skipped
+
+        _marker_setup_skipped.add("@0")
+        clear_marker_skip("@0")
+        assert "@0" not in _marker_setup_skipped
+
+    def test_clear_nonexistent_no_error(self) -> None:
+        clear_marker_skip("@999")
+
+    async def test_after_clear_offer_shows_keyboard(self) -> None:
+        from ccgram.handlers.shell_commands import (
+            _marker_setup_skipped,
+            offer_prompt_setup,
+        )
+
+        _marker_setup_skipped.add("@0")
+        clear_marker_skip("@0")
+
+        bot = AsyncMock(spec=Bot)
+        with (
+            patch(
+                "ccgram.providers.shell.has_prompt_marker",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(f"{_MOD}.session_manager") as mock_sm,
+            patch(f"{_MOD}.safe_send", new_callable=AsyncMock) as mock_send,
+        ):
+            mock_sm.resolve_chat_id.return_value = -100
+            await offer_prompt_setup(bot, 1, 42, "@0")
+
+        mock_send.assert_called_once()
+
+
+class TestHasShellPending:
+    def setup_method(self) -> None:
+        _shell_pending.clear()
+
+    def teardown_method(self) -> None:
+        _shell_pending.clear()
+
+    def test_returns_false_when_empty(self) -> None:
+        assert has_shell_pending(-100, 42) is False
+
+    def test_returns_true_when_entry_exists(self) -> None:
+        _shell_pending[(-100, 42)] = ("ls", 1)
+        assert has_shell_pending(-100, 42) is True
+
+    def test_returns_false_for_different_key(self) -> None:
+        _shell_pending[(-100, 42)] = ("ls", 1)
+        assert has_shell_pending(-100, 99) is False
+
+
+class TestDangerousCommandPrefix:
+    def setup_method(self) -> None:
+        _shell_pending.clear()
+
+    def teardown_method(self) -> None:
+        _shell_pending.clear()
+
+    async def test_dangerous_result_shows_warning_prefix(self) -> None:
+        bot = AsyncMock(spec=Bot)
+        result = CommandResult(
+            command="rm -rf /", explanation="Delete all", is_dangerous=True
+        )
+
+        with patch(f"{_MOD}.safe_send", new_callable=AsyncMock) as mock_send:
+            await show_command_approval(bot, -100, 42, "@0", result, user_id=1)
+
+        mock_send.assert_called_once()
+        sent_text = mock_send.call_args[0][2]
+        assert "\u26a0\ufe0f *Potentially dangerous*" in sent_text
+        assert "rm -rf /" in sent_text
+
+    async def test_non_dangerous_result_no_warning_prefix(self) -> None:
+        bot = AsyncMock(spec=Bot)
+        result = CommandResult(
+            command="ls -la", explanation="List files", is_dangerous=False
+        )
+
+        with patch(f"{_MOD}.safe_send", new_callable=AsyncMock) as mock_send:
+            await show_command_approval(bot, -100, 42, "@0", result, user_id=1)
+
+        mock_send.assert_called_once()
+        sent_text = mock_send.call_args[0][2]
+        assert "Potentially dangerous" not in sent_text
+        assert "ls -la" in sent_text
+
+
+class TestDetectShellEnv:
+    def setup_method(self) -> None:
+        import ccgram.handlers.shell_commands as mod
+
+        self._mod = mod
+        self._original = mod._shell_env
+        mod._shell_env = None
+
+    def teardown_method(self) -> None:
+        self._mod._shell_env = self._original
+
+    def test_returns_shell_name(self) -> None:
+        with (
+            patch("ccgram.providers.shell.get_shell_name", return_value="fish"),
+            patch("shutil.which", return_value=None),
+        ):
+            from ccgram.handlers.shell_commands import _detect_shell_env
+
+            result = _detect_shell_env()
+
+        assert result["shell"] == "fish"
+
+    def test_returns_detected_tools(self) -> None:
+        def fake_which(name: str) -> str | None:
+            return f"/usr/bin/{name}" if name in ("fd", "rg") else None
+
+        with (
+            patch("ccgram.providers.shell.get_shell_name", return_value="zsh"),
+            patch("shutil.which", side_effect=fake_which),
+        ):
+            from ccgram.handlers.shell_commands import _detect_shell_env
+
+            result = _detect_shell_env()
+
+        assert "fd" in result["shell_tools"]
+        assert "rg" in result["shell_tools"]
+        assert "bat" not in result["shell_tools"]
+
+    def test_cache_populated_and_reused(self) -> None:
+        with (
+            patch(
+                "ccgram.providers.shell.get_shell_name", return_value="bash"
+            ) as mock_shell,
+            patch("shutil.which", return_value=None),
+        ):
+            from ccgram.handlers.shell_commands import _detect_shell_env
+
+            first = _detect_shell_env()
+            second = _detect_shell_env()
+
+        assert first is second
+        mock_shell.assert_called_once()

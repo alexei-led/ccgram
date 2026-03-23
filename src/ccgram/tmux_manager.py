@@ -605,7 +605,13 @@ class TmuxManager:
         )
 
     async def send_keys(
-        self, window_id: str, text: str, enter: bool = True, literal: bool = True
+        self,
+        window_id: str,
+        text: str,
+        enter: bool = True,
+        literal: bool = True,
+        *,
+        raw: bool = False,
     ) -> bool:
         """Send keys to a specific window.
 
@@ -615,11 +621,13 @@ class TmuxManager:
             enter: Whether to press enter after the text
             literal: If True, send text literally. If False, interpret special keys
                      like "Up", "Down", "Left", "Right", "Escape", "Enter".
+            raw: If True, bypass TUI-specific workarounds (``!`` prefix splitting,
+                 vim mode detection, Enter delay). Use for plain shell windows.
 
         Returns:
             True if successful, False otherwise
         """
-        if literal and enter:
+        if literal and enter and not raw:
             return await self._send_literal_then_enter(window_id, text)
 
         return await asyncio.to_thread(

@@ -269,8 +269,9 @@ async def _poll_once(
         state.exit_code = result.exit_code
         return True
 
-    # No marker — stable poll heuristic
-    if not changed and new_output:
+    # No marker — stable poll heuristic (increment even when empty so
+    # no-output commands don't spin for the full capture timeout)
+    if not changed:
         state.stable_count += 1
         if state.stable_count >= _STABLE_THRESHOLD:
             return True
@@ -362,9 +363,9 @@ async def _maybe_suggest_fix(
     if not completer:
         return
 
-    from .shell_commands import _gather_llm_context
+    from .shell_commands import gather_llm_context
 
-    ctx = _gather_llm_context(window_id)
+    ctx = gather_llm_context(window_id)
 
     fix_description = (
         f"The command `{state.command}` failed (exit {state.exit_code}):\n"
@@ -386,8 +387,8 @@ async def _maybe_suggest_fix(
     if not result.command or result.command == state.command:
         return
 
-    from .shell_commands import _shell_pending, _show_command_approval
+    from .shell_commands import has_shell_pending, show_command_approval
 
-    if (chat_id, thread_id) in _shell_pending:
+    if has_shell_pending(chat_id, thread_id):
         return
-    await _show_command_approval(bot, chat_id, thread_id, window_id, result, user_id)
+    await show_command_approval(bot, chat_id, thread_id, window_id, result, user_id)

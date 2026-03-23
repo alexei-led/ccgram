@@ -11,9 +11,11 @@ from ccgram.handlers.shell_capture import (
     _OUTPUT_LIMIT,
     _extract_command_output,
     _extract_new_output,
+    _looks_like_info_bar,
     _maybe_suggest_fix,
     _poll_once,
     _shell_capture_tasks,
+    _strip_trailing_prompt,
     cancel_shell_capture,
     start_shell_capture,
     strip_terminal_glyphs,
@@ -374,11 +376,11 @@ class TestMaybeSuggestFix:
             patch(f"{_MOD}.session_manager") as mock_sm,
             patch("ccgram.llm.get_completer", return_value=mock_completer),
             patch(
-                "ccgram.handlers.shell_commands._gather_llm_context",
+                "ccgram.handlers.shell_commands.gather_llm_context",
                 return_value={"cwd": "/tmp", "shell": "bash", "shell_tools": ""},
             ),
             patch(
-                "ccgram.handlers.shell_commands._show_command_approval",
+                "ccgram.handlers.shell_commands.show_command_approval",
                 new_callable=AsyncMock,
             ) as mock_approval,
         ):
@@ -409,11 +411,11 @@ class TestMaybeSuggestFix:
             patch(f"{_MOD}.session_manager") as mock_sm,
             patch("ccgram.llm.get_completer", return_value=mock_completer),
             patch(
-                "ccgram.handlers.shell_commands._gather_llm_context",
+                "ccgram.handlers.shell_commands.gather_llm_context",
                 return_value={"cwd": "/tmp", "shell": "bash", "shell_tools": ""},
             ),
             patch(
-                "ccgram.handlers.shell_commands._show_command_approval",
+                "ccgram.handlers.shell_commands.show_command_approval",
                 new_callable=AsyncMock,
             ) as mock_approval,
         ):
@@ -423,7 +425,10 @@ class TestMaybeSuggestFix:
         mock_approval.assert_not_awaited()
 
     async def test_skips_when_pending_already_set(self) -> None:
-        from ccgram.handlers.shell_commands import _shell_pending
+        from ccgram.handlers.shell_commands import (
+            _shell_pending,
+            has_shell_pending,
+        )
         from ccgram.llm.base import CommandResult
 
         bot = AsyncMock(spec=Bot)
@@ -445,11 +450,11 @@ class TestMaybeSuggestFix:
                 patch(f"{_MOD}.session_manager") as mock_sm,
                 patch("ccgram.llm.get_completer", return_value=mock_completer),
                 patch(
-                    "ccgram.handlers.shell_commands._gather_llm_context",
+                    "ccgram.handlers.shell_commands.gather_llm_context",
                     return_value={"cwd": "/tmp", "shell": "bash", "shell_tools": ""},
                 ),
                 patch(
-                    "ccgram.handlers.shell_commands._show_command_approval",
+                    "ccgram.handlers.shell_commands.show_command_approval",
                     new_callable=AsyncMock,
                 ) as mock_approval,
             ):
@@ -457,7 +462,7 @@ class TestMaybeSuggestFix:
                 await _maybe_suggest_fix(bot, 1, -100, 42, "@0", state)
 
             mock_approval.assert_not_awaited()
-            assert _shell_pending[(-100, 42)] == ("new-user-cmd", 1)
+            assert has_shell_pending(-100, 42)
         finally:
             _shell_pending.pop((-100, 42), None)
 
@@ -520,3 +525,137 @@ class TestCancelShellCapture:
 
     async def test_cancel_nonexistent_no_error(self) -> None:
         cancel_shell_capture(999, 999)
+
+
+class TestStripTrailingPrompt:
+    @pytest.mark.parametrize(
+        ("lines", "expected"),
+        [
+            ([], []),
+            (["output line", "$ "], ["output line"]),
+            (["output line", "% "], ["output line"]),
+            (["output line", "> "], ["output line"]),
+            (["output line", "# "], ["output line"]),
+            (["output line", "\ue0b0❮ "], ["output line"]),
+            (["output line", "", "$ "], ["output line"]),
+            (["~/projects/foo · main", "$ "], []),
+            (["normal output text"], ["normal output text"]),
+            (
+                ["output", "this is a long line with > embedded in it"],
+                ["output", "this is a long line with > embedded in it"],
+            ),
+        ],
+        ids=[
+            "empty-input",
+            "dollar-prompt",
+            "percent-prompt",
+            "angle-prompt",
+            "hash-prompt",
+            "glyph-chevron-prompt",
+            "blank-line-before-prompt",
+            "info-bar-plus-prompt",
+            "no-prompt-not-stripped",
+            "long-line-with-prompt-char-not-stripped",
+        ],
+    )
+    def test_strip_trailing_prompt(self, lines: list[str], expected: list[str]) -> None:
+        assert _strip_trailing_prompt(lines.copy()) == expected
+
+
+class TestLooksLikeInfoBar:
+    @pytest.mark.parametrize(
+        ("line", "expected"),
+        [
+            ("~/projects/foo", True),
+            ("main · feature-branch", True),
+            ("\ue0b0 branch-name", True),
+            ("normal output text", False),
+            ("", False),
+        ],
+        ids=["tilde-slash", "middle-dot", "nerd-font-glyph", "normal-text", "empty"],
+    )
+    def test_looks_like_info_bar(self, line: str, expected: bool) -> None:
+        assert _looks_like_info_bar(line) is expected
+
+
+class TestMaybeSuggestFixErrorPaths:
+    async def test_msg_id_none_skips_edit_but_calls_llm(self) -> None:
+        from ccgram.llm.base import CommandResult
+
+        bot = AsyncMock(spec=Bot)
+        state = _CaptureState(
+            exit_code=1, msg_id=None, last_output="err", command="bad-cmd"
+        )
+
+        mock_completer = AsyncMock()
+        mock_completer.generate_command = AsyncMock(
+            return_value=CommandResult(
+                command="good-cmd", explanation="fix", is_dangerous=False
+            )
+        )
+
+        with (
+            patch(f"{_MOD}.edit_with_fallback", new_callable=AsyncMock) as mock_edit,
+            patch(f"{_MOD}.session_manager") as mock_sm,
+            patch("ccgram.llm.get_completer", return_value=mock_completer),
+            patch(
+                "ccgram.handlers.shell_commands.gather_llm_context",
+                return_value={"cwd": "/tmp", "shell": "bash", "shell_tools": ""},
+            ),
+            patch(
+                "ccgram.handlers.shell_commands.show_command_approval",
+                new_callable=AsyncMock,
+            ) as mock_approval,
+        ):
+            mock_sm.get_window_state.return_value = MagicMock(cwd="/tmp")
+            await _maybe_suggest_fix(bot, 1, -100, 42, "@0", state)
+
+        mock_edit.assert_not_called()
+        mock_approval.assert_awaited_once()
+
+    async def test_import_error_skips_suggestion(self) -> None:
+        bot = AsyncMock(spec=Bot)
+        state = _CaptureState(
+            exit_code=1, msg_id=99, last_output="err", command="bad-cmd"
+        )
+
+        with (
+            patch(f"{_MOD}.edit_with_fallback", new_callable=AsyncMock),
+            patch("ccgram.llm.get_completer", side_effect=ImportError("no module")),
+            patch(
+                "ccgram.handlers.shell_commands.show_command_approval",
+                new_callable=AsyncMock,
+            ) as mock_approval,
+        ):
+            await _maybe_suggest_fix(bot, 1, -100, 42, "@0", state)
+
+        mock_approval.assert_not_awaited()
+
+    async def test_generate_command_runtime_error_no_fix(self) -> None:
+        bot = AsyncMock(spec=Bot)
+        state = _CaptureState(
+            exit_code=1, msg_id=99, last_output="err", command="bad-cmd"
+        )
+
+        mock_completer = AsyncMock()
+        mock_completer.generate_command = AsyncMock(
+            side_effect=RuntimeError("API down")
+        )
+
+        with (
+            patch(f"{_MOD}.edit_with_fallback", new_callable=AsyncMock),
+            patch(f"{_MOD}.session_manager") as mock_sm,
+            patch("ccgram.llm.get_completer", return_value=mock_completer),
+            patch(
+                "ccgram.handlers.shell_commands.gather_llm_context",
+                return_value={"cwd": "/tmp", "shell": "bash", "shell_tools": ""},
+            ),
+            patch(
+                "ccgram.handlers.shell_commands.show_command_approval",
+                new_callable=AsyncMock,
+            ) as mock_approval,
+        ):
+            mock_sm.get_window_state.return_value = MagicMock(cwd="/tmp")
+            await _maybe_suggest_fix(bot, 1, -100, 42, "@0", state)
+
+        mock_approval.assert_not_awaited()
