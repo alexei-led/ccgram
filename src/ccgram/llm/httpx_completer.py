@@ -7,6 +7,7 @@ Uses raw httpx — zero new dependencies.
 
 import json
 import platform
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -36,6 +37,25 @@ Examples of dangerous commands: rm -rf, dd, mkfs, DROP TABLE, \
 format, shutdown, reboot, kill -9.
 
 Do NOT wrap the JSON in markdown code fences. Return raw JSON only."""
+
+_DANGEROUS_RE = re.compile(
+    r"rm\s+(-\w*[rR]\w*\s+|--recursive)"
+    r"|\bdd\s+"
+    r"|\bmkfs\b"
+    r"|\b(shutdown|reboot|halt|poweroff)\b"
+    r"|\bkill\s+-9\b|\bkillall\b"
+    r"|\bchmod\s+(-\w*R\w*\s+)?777\b"
+    r"|>\s*/dev/sd|>\s*/dev/nvme"
+    r"|\bDROP\s+(TABLE|DATABASE)\b"
+    r"|\bsudo\s+rm\b",
+    re.IGNORECASE,
+)
+
+
+def _is_dangerous_heuristic(command: str) -> bool:
+    """Check if a command matches known dangerous patterns."""
+    return bool(_DANGEROUS_RE.search(command))
+
 
 _SHELL_SYNTAX_NOTES: dict[str, str] = {
     "fish": (
@@ -127,7 +147,7 @@ def _parse_command_result(text: str) -> CommandResult:
     explanation = data.get("explanation", "")
     if not isinstance(explanation, str):
         explanation = ""
-    dangerous = bool(data.get("dangerous", False))
+    dangerous = bool(data.get("dangerous", False)) or _is_dangerous_heuristic(command)
 
     return CommandResult(
         command=command, explanation=explanation, is_dangerous=dangerous

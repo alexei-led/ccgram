@@ -390,6 +390,8 @@ class TestMaybeSuggestFix:
         mock_edit.assert_called_once()
         assert "\u274c exit 1" in mock_edit.call_args[0][3]
         mock_approval.assert_awaited_once()
+        approval_args = mock_approval.call_args[0]
+        assert approval_args[4].command == "good-cmd"
 
     async def test_skips_when_same_command_suggested(self) -> None:
         from ccgram.llm.base import CommandResult
@@ -426,10 +428,7 @@ class TestMaybeSuggestFix:
         mock_approval.assert_not_awaited()
 
     async def test_skips_when_pending_already_set(self) -> None:
-        from ccgram.handlers.shell_commands import (
-            _shell_pending,
-            has_shell_pending,
-        )
+        from ccgram.handlers.shell_commands import _shell_pending
         from ccgram.llm.base import CommandResult
 
         bot = AsyncMock(spec=Bot)
@@ -452,18 +451,20 @@ class TestMaybeSuggestFix:
                 patch("ccgram.llm.get_completer", return_value=mock_completer),
                 patch(
                     "ccgram.handlers.shell_commands.gather_llm_context",
+                    new_callable=AsyncMock,
                     return_value={"cwd": "/tmp", "shell": "bash", "shell_tools": ""},
                 ),
                 patch(
                     "ccgram.handlers.shell_commands.show_command_approval",
                     new_callable=AsyncMock,
+                    return_value=False,
                 ) as mock_approval,
             ):
                 mock_sm.get_window_state.return_value = MagicMock(cwd="/tmp")
                 await _maybe_suggest_fix(bot, 1, -100, 42, "@0", state)
 
-            mock_approval.assert_not_awaited()
-            assert has_shell_pending(-100, 42)
+            mock_approval.assert_awaited_once()
+            assert _shell_pending[(-100, 42)] == ("new-user-cmd", 1)
         finally:
             _shell_pending.pop((-100, 42), None)
 

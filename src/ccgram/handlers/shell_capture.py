@@ -36,10 +36,11 @@ _CAPTURE_TIMEOUT = 60
 
 # Consecutive stable polls required before considering output done
 _STABLE_THRESHOLD = 2
+_STABLE_THRESHOLD_EMPTY = 5
 _MAX_FIX_OUTPUT_CHARS = 800
 
 # A bare prompt (e.g. "$ " or "❮") is shorter than this
-_MAX_BARE_PROMPT_LEN = 5
+_MAX_BARE_PROMPT_LEN = 3
 
 _shell_capture_tasks: dict[tuple[int, int], asyncio.Task[None]] = {}
 
@@ -83,10 +84,11 @@ def _extract_command_output(baseline_lines: list[str], current: str) -> _Command
     if not lines:
         return _CommandOutput(text="")
 
-    # Scan from bottom for bare prompt: ccgram:N❯ (no command after ❯)
+    # Scan from bottom (last 10 lines only) for bare prompt: ccgram:N❯
+    scan_start = max(0, len(lines) - 10)
     end_idx = None
     exit_code = None
-    for i in range(len(lines) - 1, -1, -1):
+    for i in range(len(lines) - 1, scan_start - 1, -1):
         m = PROMPT_RE.match(lines[i])
         if m and not m.group(2).strip():
             end_idx = i
@@ -278,7 +280,10 @@ async def _poll_once(
     # no-output commands don't spin for the full capture timeout)
     if not changed:
         state.stable_count += 1
-        if state.stable_count >= _STABLE_THRESHOLD:
+        threshold = (
+            _STABLE_THRESHOLD_EMPTY if not state.last_output else _STABLE_THRESHOLD
+        )
+        if state.stable_count >= threshold:
             return True
 
     return False
@@ -429,8 +434,6 @@ async def _maybe_suggest_fix(
     if not result.command or result.command == state.command:
         return
 
-    from .shell_commands import has_shell_pending, show_command_approval
+    from .shell_commands import show_command_approval
 
-    if has_shell_pending(chat_id, thread_id):
-        return
     await show_command_approval(bot, chat_id, thread_id, window_id, result, user_id)
