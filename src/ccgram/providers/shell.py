@@ -25,7 +25,10 @@ async def has_prompt_marker(window_id: str) -> bool:
     from ccgram.tmux_manager import tmux_manager
 
     capture = await tmux_manager.capture_pane(window_id)
-    return bool(capture and PROMPT_MARKER in capture)
+    if not capture:
+        return False
+    tail = "\n".join(capture.rstrip().splitlines()[-5:])
+    return bool(PROMPT_RE.search(tail))
 
 
 def get_shell_name() -> str:
@@ -65,6 +68,8 @@ async def setup_shell_prompt(window_id: str) -> None:
         "fish": 'function fish_prompt; printf "ccgram:$status❯ "; end',
         "bash": "PS1='ccgram:$?❯ '",
         "zsh": "PROMPT='ccgram:%?❯ '",
+        "tcsh": 'set prompt = "ccgram:$status❯ "',
+        "csh": 'set prompt = "ccgram:$status❯ "',
     }
     cmd = cmds.get(shell, cmds["bash"])
     await tmux_manager.send_keys(window_id, cmd)

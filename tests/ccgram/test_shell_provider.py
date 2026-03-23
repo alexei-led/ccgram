@@ -210,10 +210,10 @@ class TestSetupShellPrompt:
             ("fish", "fish_prompt"),
             ("bash", "PS1="),
             ("zsh", "PROMPT="),
-            ("tcsh", "PS1="),
+            ("tcsh", "set prompt"),
             ("ksh", "PS1="),
         ],
-        ids=["fish", "bash", "zsh", "tcsh-fallback", "ksh-fallback"],
+        ids=["fish", "bash", "zsh", "tcsh", "ksh-fallback"],
     )
     async def test_sends_correct_prompt_command(
         self, mock_tmux, shell: str, expected_substring: str
