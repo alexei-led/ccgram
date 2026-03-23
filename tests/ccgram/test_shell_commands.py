@@ -16,6 +16,8 @@ from ccgram.handlers.callback_data import (
 from ccgram.handlers.shell_commands import (
     _build_approval_keyboard,
     _cancel_stuck_input,
+    _generation_counter,
+    _marker_setup_skipped,
     _shell_pending,
     clear_marker_skip,
     clear_shell_pending,
@@ -29,10 +31,18 @@ from ccgram.llm.base import CommandResult
 _MOD = "ccgram.handlers.shell_commands"
 
 
-class TestPendingState:
-    def setup_method(self) -> None:
-        _shell_pending.clear()
+@pytest.fixture(autouse=True)
+def _clean_shell_state():
+    _shell_pending.clear()
+    _marker_setup_skipped.clear()
+    _generation_counter.clear()
+    yield
+    _shell_pending.clear()
+    _marker_setup_skipped.clear()
+    _generation_counter.clear()
 
+
+class TestPendingState:
     def test_clear_removes_entry(self) -> None:
         _shell_pending[(-100, 42)] = ("ls", 1)
         clear_shell_pending(-100, 42)
@@ -83,9 +93,6 @@ class TestBuildApprovalKeyboard:
 
 
 class TestHandleShellMessage:
-    def setup_method(self) -> None:
-        _shell_pending.clear()
-
     async def test_bang_prefix_sends_raw_command(self) -> None:
         bot = AsyncMock(spec=Bot)
         message = AsyncMock(spec=Message)
@@ -292,9 +299,6 @@ class TestHandleShellMessage:
 
 
 class TestHandleShellCallback:
-    def setup_method(self) -> None:
-        _shell_pending.clear()
-
     async def test_run_with_pending_executes_and_clears(self) -> None:
         query = AsyncMock(spec=CallbackQuery)
         query.answer = AsyncMock()
@@ -335,6 +339,24 @@ class TestHandleShellCallback:
             _shell_pending[(-100, 42)] = ("ls -la", 999)
 
             await handle_shell_callback(query, 1, f"{CB_SHELL_RUN}@0", bot, 42)
+
+            assert "Not your command" in mock_edit.call_args[0][1]
+
+    async def test_confirm_danger_wrong_user_rejects(self) -> None:
+        query = AsyncMock(spec=CallbackQuery)
+        query.answer = AsyncMock()
+        bot = AsyncMock(spec=Bot)
+
+        with (
+            patch(f"{_MOD}.session_manager") as mock_sm,
+            patch(f"{_MOD}.safe_edit", new_callable=AsyncMock) as mock_edit,
+        ):
+            mock_sm.resolve_chat_id.return_value = -100
+            _shell_pending[(-100, 42)] = ("rm -rf /", 999)
+
+            await handle_shell_callback(
+                query, 1, f"{CB_SHELL_CONFIRM_DANGER}@0", bot, 42
+            )
 
             assert "Not your command" in mock_edit.call_args[0][1]
 
@@ -539,7 +561,7 @@ class TestCancelStuckInput:
             )
 
     async def test_running_command_skips(self) -> None:
-        """When foreground process is not a shell (e.g. python), don't Ctrl+C."""
+
         with patch(f"{_MOD}.tmux_manager") as mock_tm:
             mock_tm.find_window_by_id = AsyncMock(
                 return_value=self._mock_window(pane_cmd="python3")
@@ -570,7 +592,7 @@ class TestCancelStuckInput:
             mock_tm.send_keys.assert_called_once()
 
     async def test_tail_dash_f_running_skips(self) -> None:
-        """tail -f shows as foreground process, should not be interrupted."""
+
         with patch(f"{_MOD}.tmux_manager") as mock_tm:
             mock_tm.find_window_by_id = AsyncMock(
                 return_value=self._mock_window(pane_cmd="tail")
@@ -582,7 +604,7 @@ class TestCancelStuckInput:
             mock_tm.send_keys.assert_not_called()
 
     async def test_login_shell_detected(self) -> None:
-        """Login shells have - prefix (e.g. -bash), should still detect."""
+
         with patch(f"{_MOD}.tmux_manager") as mock_tm:
             mock_tm.find_window_by_id = AsyncMock(
                 return_value=self._mock_window(pane_cmd="-bash")
@@ -596,9 +618,6 @@ class TestCancelStuckInput:
 
 
 class TestShowCommandApprovalPaths:
-    def setup_method(self) -> None:
-        _shell_pending.clear()
-
     async def test_message_present_uses_safe_reply(self) -> None:
         bot = AsyncMock(spec=Bot)
         message = AsyncMock(spec=Message)
@@ -626,16 +645,6 @@ class TestShowCommandApprovalPaths:
 
 
 class TestOfferPromptSetup:
-    def setup_method(self) -> None:
-        from ccgram.handlers.shell_commands import _marker_setup_skipped
-
-        _marker_setup_skipped.discard("@0")
-
-    def teardown_method(self) -> None:
-        from ccgram.handlers.shell_commands import _marker_setup_skipped
-
-        _marker_setup_skipped.discard("@0")
-
     async def test_skips_when_user_chose_skip(self) -> None:
         from ccgram.handlers.shell_commands import (
             _marker_setup_skipped,
@@ -702,6 +711,9 @@ class TestOfferPromptSetup:
             ) as mock_setup,
             patch(f"{_MOD}.safe_edit", new_callable=AsyncMock) as mock_edit,
             patch(f"{_MOD}.tmux_manager") as mock_tm,
+            patch(
+                "ccgram.handlers.callback_helpers.user_owns_window", return_value=True
+            ),
         ):
             mock_sm.resolve_chat_id.return_value = -100
             mock_tm.find_window_by_id = AsyncMock(return_value=MagicMock())
@@ -720,6 +732,9 @@ class TestOfferPromptSetup:
         with (
             patch(f"{_MOD}.session_manager") as mock_sm,
             patch(f"{_MOD}.safe_edit", new_callable=AsyncMock) as mock_edit,
+            patch(
+                "ccgram.handlers.callback_helpers.user_owns_window", return_value=True
+            ),
         ):
             mock_sm.resolve_chat_id.return_value = -100
             await handle_shell_callback(query, 1, f"{CB_SHELL_SETUP_SKIP}@3", bot, 42)
@@ -812,16 +827,6 @@ class TestLazyMarkerRecovery:
 
 
 class TestSkipTracking:
-    def setup_method(self) -> None:
-        from ccgram.handlers.shell_commands import _marker_setup_skipped
-
-        _marker_setup_skipped.clear()
-
-    def teardown_method(self) -> None:
-        from ccgram.handlers.shell_commands import _marker_setup_skipped
-
-        _marker_setup_skipped.clear()
-
     async def test_skip_callback_does_not_call_setup(self) -> None:
         query = AsyncMock(spec=CallbackQuery)
         query.answer = AsyncMock()
@@ -833,6 +838,9 @@ class TestSkipTracking:
             patch(
                 "ccgram.providers.shell.setup_shell_prompt", new_callable=AsyncMock
             ) as mock_setup,
+            patch(
+                "ccgram.handlers.callback_helpers.user_owns_window", return_value=True
+            ),
         ):
             mock_sm.resolve_chat_id.return_value = -100
             await handle_shell_callback(query, 1, f"{CB_SHELL_SETUP_SKIP}@0", bot, 42)
@@ -840,8 +848,6 @@ class TestSkipTracking:
         mock_setup.assert_not_awaited()
 
     async def test_skip_callback_records_window_in_skip_set(self) -> None:
-        from ccgram.handlers.shell_commands import _marker_setup_skipped
-
         query = AsyncMock(spec=CallbackQuery)
         query.answer = AsyncMock()
         bot = AsyncMock(spec=Bot)
@@ -849,6 +855,9 @@ class TestSkipTracking:
         with (
             patch(f"{_MOD}.session_manager") as mock_sm,
             patch(f"{_MOD}.safe_edit", new_callable=AsyncMock),
+            patch(
+                "ccgram.handlers.callback_helpers.user_owns_window", return_value=True
+            ),
         ):
             mock_sm.resolve_chat_id.return_value = -100
             await handle_shell_callback(query, 1, f"{CB_SHELL_SETUP_SKIP}@5", bot, 42)
@@ -868,6 +877,9 @@ class TestSkipTracking:
             patch("ccgram.providers.shell.setup_shell_prompt", new_callable=AsyncMock),
             patch(f"{_MOD}.safe_edit", new_callable=AsyncMock),
             patch(f"{_MOD}.tmux_manager") as mock_tm,
+            patch(
+                "ccgram.handlers.callback_helpers.user_owns_window", return_value=True
+            ),
         ):
             mock_sm.resolve_chat_id.return_value = -100
             mock_tm.find_window_by_id = AsyncMock(return_value=MagicMock())
@@ -887,6 +899,9 @@ class TestSkipTracking:
             ) as mock_setup,
             patch(f"{_MOD}.safe_edit", new_callable=AsyncMock) as mock_edit,
             patch(f"{_MOD}.tmux_manager") as mock_tm,
+            patch(
+                "ccgram.handlers.callback_helpers.user_owns_window", return_value=True
+            ),
         ):
             mock_sm.resolve_chat_id.return_value = -100
             mock_tm.find_window_by_id = AsyncMock(return_value=None)
@@ -914,16 +929,6 @@ class TestHasPromptMarker:
 
 
 class TestClearMarkerSkip:
-    def setup_method(self) -> None:
-        from ccgram.handlers.shell_commands import _marker_setup_skipped
-
-        _marker_setup_skipped.clear()
-
-    def teardown_method(self) -> None:
-        from ccgram.handlers.shell_commands import _marker_setup_skipped
-
-        _marker_setup_skipped.clear()
-
     def test_clear_removes_window_from_skip_set(self) -> None:
         from ccgram.handlers.shell_commands import _marker_setup_skipped
 
@@ -960,12 +965,6 @@ class TestClearMarkerSkip:
 
 
 class TestHasShellPending:
-    def setup_method(self) -> None:
-        _shell_pending.clear()
-
-    def teardown_method(self) -> None:
-        _shell_pending.clear()
-
     def test_returns_false_when_empty(self) -> None:
         assert has_shell_pending(-100, 42) is False
 
@@ -979,12 +978,6 @@ class TestHasShellPending:
 
 
 class TestDangerousCommandPrefix:
-    def setup_method(self) -> None:
-        _shell_pending.clear()
-
-    def teardown_method(self) -> None:
-        _shell_pending.clear()
-
     async def test_dangerous_result_shows_warning_prefix(self) -> None:
         bot = AsyncMock(spec=Bot)
         result = CommandResult(

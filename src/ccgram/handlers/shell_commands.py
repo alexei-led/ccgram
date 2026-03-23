@@ -45,6 +45,7 @@ logger = structlog.get_logger()
 
 _shell_pending: dict[tuple[int, int], tuple[str, int]] = {}
 _marker_setup_skipped: set[str] = set()
+_generation_counter: dict[tuple[int, int], int] = {}
 
 
 def clear_marker_skip(window_id: str) -> None:
@@ -98,6 +99,7 @@ def has_shell_pending(chat_id: int, thread_id: int) -> bool:
 def clear_shell_pending(chat_id: int, thread_id: int) -> None:
     """Clear any pending shell command for this topic (used by cleanup)."""
     _shell_pending.pop((chat_id, thread_id), None)
+    _generation_counter.pop((chat_id, thread_id), None)
 
 
 async def offer_prompt_setup(
@@ -247,6 +249,10 @@ async def handle_shell_message(
         lines = raw_pane.strip().splitlines()
         recent_output = "\n".join(lines[-10:])
 
+    gen_key = (chat_id, thread_id)
+    gen_id = _generation_counter.get(gen_key, 0) + 1
+    _generation_counter[gen_key] = gen_id
+
     try:
         result = await completer.generate_command(
             text,
@@ -264,6 +270,9 @@ async def handle_shell_message(
             "Use `!` prefix for raw commands.",
             message_thread_id=thread_id,
         )
+        return
+
+    if _generation_counter.get(gen_key) != gen_id:
         return
 
     from .command_history import record_command
@@ -314,8 +323,16 @@ async def show_command_approval(
     result: CommandResult,
     user_id: int,
     message: Message | None = None,
-) -> None:
-    """Show a suggested command with approval keyboard."""
+) -> bool:
+    """Show a suggested command with approval keyboard.
+
+    Returns True if the command was stored, False if the slot was already
+    occupied (avoids overwriting a user's pending command with an auto-fix).
+    """
+    key = (chat_id, thread_id)
+    if key in _shell_pending:
+        return False
+
     text = f"`{result.command}`"
     if result.explanation:
         text += f"\n{result.explanation}"
@@ -329,7 +346,8 @@ async def show_command_approval(
         await safe_send(
             bot, chat_id, text, message_thread_id=thread_id, reply_markup=keyboard
         )
-    _shell_pending[(chat_id, thread_id)] = (result.command, user_id)
+    _shell_pending[key] = (result.command, user_id)
+    return True
 
 
 def _build_approval_keyboard(
@@ -387,15 +405,15 @@ async def handle_shell_callback(
     pending = _shell_pending.get((chat_id, thread_id))
 
     if data.startswith(CB_SHELL_SETUP_SKIP):
-        await _cb_setup_skip(query, data)
+        await _cb_setup_skip(query, data, user_id)
     elif data.startswith(CB_SHELL_SETUP):
-        await _cb_setup_prompt(query, data)
+        await _cb_setup_prompt(query, data, user_id)
     elif data.startswith(CB_SHELL_RUN) or data.startswith(CB_SHELL_CONFIRM_DANGER):
         await _cb_run(query, bot, user_id, thread_id, chat_id, pending)
     elif data.startswith(CB_SHELL_EDIT):
-        await _cb_edit(query, chat_id, thread_id, pending)
+        await _cb_edit(query, user_id, chat_id, thread_id, pending)
     elif data.startswith(CB_SHELL_CANCEL):
-        await _cb_cancel(query, chat_id, thread_id)
+        await _cb_cancel(query, user_id, chat_id, thread_id, pending)
 
 
 async def _cb_run(
@@ -431,12 +449,16 @@ async def _cb_run(
 
 async def _cb_edit(
     query: CallbackQuery,
+    user_id: int,
     chat_id: int,
     thread_id: int,
     pending: tuple[str, int] | None,
 ) -> None:
     """Handle Edit callback."""
     await query.answer()
+    if pending and pending[1] != user_id:
+        await safe_edit(query, "\u274c Not your command")
+        return
     clear_shell_pending(chat_id, thread_id)
     if pending:
         await safe_edit(
@@ -449,20 +471,29 @@ async def _cb_edit(
 
 async def _cb_cancel(
     query: CallbackQuery,
+    user_id: int,
     chat_id: int,
     thread_id: int,
+    pending: tuple[str, int] | None,
 ) -> None:
     """Handle Cancel callback."""
+    if pending and pending[1] != user_id:
+        await query.answer("Not your command", show_alert=True)
+        return
     await query.answer("Cancelled")
     clear_shell_pending(chat_id, thread_id)
     await safe_edit(query, "Cancelled")
 
 
-async def _cb_setup_prompt(query: CallbackQuery, data: str) -> None:
+async def _cb_setup_prompt(query: CallbackQuery, data: str, user_id: int) -> None:
     """Handle CB_SHELL_SETUP: inject prompt marker into the shell."""
+    from .callback_helpers import user_owns_window
     from ..providers.shell import setup_shell_prompt
 
     window_id = data[len(CB_SHELL_SETUP) :]
+    if not user_owns_window(user_id, window_id):
+        await query.answer("Not your window", show_alert=True)
+        return
     _marker_setup_skipped.discard(window_id)
     w = await tmux_manager.find_window_by_id(window_id)
     if not w:
@@ -474,9 +505,14 @@ async def _cb_setup_prompt(query: CallbackQuery, data: str) -> None:
     await query.answer("Done")
 
 
-async def _cb_setup_skip(query: CallbackQuery, data: str) -> None:
+async def _cb_setup_skip(query: CallbackQuery, data: str, user_id: int) -> None:
     """Handle CB_SHELL_SETUP_SKIP: skip prompt marker setup."""
+    from .callback_helpers import user_owns_window
+
     window_id = data[len(CB_SHELL_SETUP_SKIP) :]
+    if not user_owns_window(user_id, window_id):
+        await query.answer("Not your window", show_alert=True)
+        return
     _marker_setup_skipped.add(window_id)
     await safe_edit(query, "Skipped \u2014 raw commands work, no exit code detection")
     await query.answer("Skipped")
