@@ -17,6 +17,8 @@ from ccgram.providers.base import ProviderCapabilities
 PROMPT_MARKER = "ccgram:"
 PROMPT_RE = re.compile(r"^ccgram:(\d+)❯\s?(.*)")
 
+_KNOWN_SHELLS = {"bash", "zsh", "fish", "sh", "dash", "tcsh", "csh", "ksh"}
+
 
 async def has_prompt_marker(window_id: str) -> bool:
     """Check if the ccgram prompt marker is present in the pane."""
@@ -26,11 +28,36 @@ async def has_prompt_marker(window_id: str) -> bool:
     return bool(capture and PROMPT_MARKER in capture)
 
 
+def get_shell_name() -> str:
+    """Return the basename of the bot process's $SHELL (e.g. 'fish', 'zsh').
+
+    Sync fallback — for pane-accurate detection use ``detect_pane_shell()``.
+    """
+    return os.environ.get("SHELL", "").rsplit("/", 1)[-1]
+
+
+async def detect_pane_shell(window_id: str) -> str:
+    """Detect the shell running in a tmux pane via pane_current_command.
+
+    Falls back to ``get_shell_name()`` when the pane is unavailable or
+    its command is not a recognized shell.
+    """
+    from ccgram.tmux_manager import tmux_manager
+
+    window = await tmux_manager.find_window_by_id(window_id)
+    if window and window.pane_current_command:
+        basename = os.path.basename(window.pane_current_command.split()[0])
+        cleaned = basename.lstrip("-")
+        if cleaned in _KNOWN_SHELLS:
+            return cleaned
+    return get_shell_name()
+
+
 async def setup_shell_prompt(window_id: str) -> None:
     """Override shell prompt with ccgram marker including exit code."""
     from ccgram.tmux_manager import tmux_manager
 
-    shell = os.environ.get("SHELL", "").rsplit("/", 1)[-1]
+    shell = await detect_pane_shell(window_id)
     cmds = {
         "fish": 'function fish_prompt; printf "ccgram:$status❯ "; end',
         "bash": "PS1='ccgram:$?❯ '",

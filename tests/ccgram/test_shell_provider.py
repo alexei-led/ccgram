@@ -5,9 +5,12 @@ for ShellProvider via ``pytest.skip("No transcript support")``. These tests
 verify the override behavior directly and assert exact capability values.
 """
 
+from unittest.mock import AsyncMock, patch
+
 import pytest
 
-from ccgram.providers.shell import ShellProvider
+from ccgram.providers.shell import ShellProvider, detect_pane_shell
+from ccgram.tmux_manager import TmuxWindow
 
 
 class TestShellCapabilities:
@@ -107,3 +110,77 @@ class TestShellOverrides:
         sep = "─" * 30
         pane = f"output\n✻ Reading files\n{sep}\n❯ \n{sep}\n"
         assert provider.parse_terminal_status(pane) is None
+
+
+class TestDetectPaneShell:
+    @pytest.fixture
+    def mock_tmux(self):
+        with patch("ccgram.tmux_manager.tmux_manager") as mock_tm:
+            yield mock_tm
+
+    @pytest.mark.parametrize(
+        ("pane_cmd", "expected"),
+        [
+            ("bash", "bash"),
+            ("zsh", "zsh"),
+            ("fish", "fish"),
+            ("-bash", "bash"),
+            ("-zsh", "zsh"),
+            ("dash", "dash"),
+            ("ksh", "ksh"),
+            ("/opt/homebrew/bin/fish", "fish"),
+            ("/bin/bash", "bash"),
+        ],
+        ids=[
+            "bash",
+            "zsh",
+            "fish",
+            "login-bash",
+            "login-zsh",
+            "dash",
+            "ksh",
+            "full-path-fish",
+            "full-path-bash",
+        ],
+    )
+    async def test_detects_shell_from_pane_command(
+        self, mock_tmux, pane_cmd: str, expected: str
+    ) -> None:
+        mock_tmux.find_window_by_id = AsyncMock(
+            return_value=TmuxWindow(
+                window_id="@0",
+                window_name="test",
+                cwd="/tmp",
+                pane_current_command=pane_cmd,
+            )
+        )
+        assert await detect_pane_shell("@0") == expected
+
+    async def test_falls_back_to_env_when_pane_not_found(self, mock_tmux) -> None:
+        mock_tmux.find_window_by_id = AsyncMock(return_value=None)
+        with patch("ccgram.providers.shell.os.environ.get", return_value="/bin/zsh"):
+            assert await detect_pane_shell("@0") == "zsh"
+
+    async def test_falls_back_to_env_when_command_not_a_shell(self, mock_tmux) -> None:
+        mock_tmux.find_window_by_id = AsyncMock(
+            return_value=TmuxWindow(
+                window_id="@0",
+                window_name="test",
+                cwd="/tmp",
+                pane_current_command="python",
+            )
+        )
+        with patch("ccgram.providers.shell.os.environ.get", return_value="/bin/fish"):
+            assert await detect_pane_shell("@0") == "fish"
+
+    async def test_falls_back_to_env_when_command_empty(self, mock_tmux) -> None:
+        mock_tmux.find_window_by_id = AsyncMock(
+            return_value=TmuxWindow(
+                window_id="@0",
+                window_name="test",
+                cwd="/tmp",
+                pane_current_command="",
+            )
+        )
+        with patch("ccgram.providers.shell.os.environ.get", return_value="/bin/bash"):
+            assert await detect_pane_shell("@0") == "bash"
