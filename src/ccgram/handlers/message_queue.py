@@ -505,42 +505,51 @@ async def _message_queue_worker(bot: Bot, user_id: int) -> None:
         try:
             task = await queue.get()
             try:
-                if task.task_type == "content":
-                    extra = await _handle_content_task(bot, user_id, task, queue, lock)
-                    for _ in range(extra):
-                        queue.task_done()
-                elif task.task_type == "status_update":
-                    # Flush batch before status
-                    thread_id = task.thread_id or 0
-                    bkey = (user_id, thread_id)
-                    if bkey in _active_batches:
-                        await _flush_batch(bot, user_id, thread_id)
-                    collapsed_task, dropped = await _coalesce_status_updates(
-                        queue, task, lock
-                    )
-                    if dropped > 0:
-                        for _ in range(dropped):
-                            queue.task_done()
-                    await _process_status_update_task(bot, user_id, collapsed_task)
-                elif task.task_type == "status_clear":
-                    thread_id = task.thread_id or 0
-                    bkey = (user_id, thread_id)
-                    if bkey in _active_batches:
-                        await _flush_batch(bot, user_id, thread_id)
-                    await _do_clear_status_message(bot, user_id, thread_id)
-            except RetryAfter as e:
-                retry_secs = min(
-                    60,
-                    (
-                        e.retry_after
-                        if isinstance(e.retry_after, int)
-                        else int(e.retry_after.total_seconds())
-                    ),
-                )
-                logger.warning(
-                    "Flood control for user %s, pausing %ss", user_id, retry_secs
-                )
-                await asyncio.sleep(retry_secs)
+                while True:
+                    try:
+                        if task.task_type == "content":
+                            extra = await _handle_content_task(
+                                bot, user_id, task, queue, lock
+                            )
+                            for _ in range(extra):
+                                queue.task_done()
+                        elif task.task_type == "status_update":
+                            # Flush batch before status
+                            thread_id = task.thread_id or 0
+                            bkey = (user_id, thread_id)
+                            if bkey in _active_batches:
+                                await _flush_batch(bot, user_id, thread_id)
+                            collapsed_task, dropped = await _coalesce_status_updates(
+                                queue, task, lock
+                            )
+                            if dropped > 0:
+                                for _ in range(dropped):
+                                    queue.task_done()
+                            await _process_status_update_task(
+                                bot, user_id, collapsed_task
+                            )
+                        elif task.task_type == "status_clear":
+                            thread_id = task.thread_id or 0
+                            bkey = (user_id, thread_id)
+                            if bkey in _active_batches:
+                                await _flush_batch(bot, user_id, thread_id)
+                            await _do_clear_status_message(bot, user_id, thread_id)
+                        break
+                    except RetryAfter as e:
+                        retry_secs = min(
+                            60,
+                            (
+                                e.retry_after
+                                if isinstance(e.retry_after, int)
+                                else int(e.retry_after.total_seconds())
+                            ),
+                        )
+                        logger.warning(
+                            "Flood control for user %s, pausing %ss",
+                            user_id,
+                            retry_secs,
+                        )
+                        await asyncio.sleep(retry_secs)
             except (TelegramError, OSError):  # fmt: skip
                 logger.exception(
                     "Error processing message task for user %s (thread %s)",

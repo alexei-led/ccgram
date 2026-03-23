@@ -4,6 +4,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from telegram.error import RetryAfter
 
 from ccgram.handlers.message_queue import (
     BATCH_MAX_ENTRIES,
@@ -18,6 +19,7 @@ from ccgram.handlers.message_queue import (
     _process_batch_task,
     clear_batch_for_topic,
     format_batch_message,
+    get_or_create_queue,
     shutdown_workers,
 )
 from ccgram.session import (
@@ -803,6 +805,36 @@ class TestShutdownClearsBatches:
         _active_batches[(2, 5)] = ToolBatch(window_id="@1", thread_id=5)
         await shutdown_workers()
         assert len(_active_batches) == 0
+
+
+# --- RetryAfter queue behavior ---
+
+
+class TestQueueWorkerRetryAfter:
+    @patch("ccgram.handlers.message_queue.asyncio.sleep", new_callable=AsyncMock)
+    @patch("ccgram.handlers.message_queue._handle_content_task", new_callable=AsyncMock)
+    async def test_retry_after_retries_same_task(self, mock_handle, mock_sleep) -> None:
+        await shutdown_workers()
+        mock_handle.side_effect = [RetryAfter(1), 0]
+
+        bot = AsyncMock()
+        queue = get_or_create_queue(bot, 1)
+        queue.put_nowait(
+            MessageTask(
+                task_type="content",
+                window_id="@0",
+                parts=["hello"],
+                content_type="text",
+                thread_id=10,
+            )
+        )
+
+        try:
+            await asyncio.wait_for(queue.join(), timeout=1)
+            assert mock_handle.await_count == 2
+            mock_sleep.assert_awaited_once()
+        finally:
+            await shutdown_workers()
 
 
 # --- C1 fix: tool_result not silently dropped ---
