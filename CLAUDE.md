@@ -92,10 +92,11 @@ Each tmux window tracks its own provider in `WindowState.provider_name`. Resolut
 Key functions:
 
 - `get_provider_for_window(window_id)` — resolves provider instance for a specific window
-- `detect_provider_from_command(pane_current_command)` — auto-detects provider from process name (claude/codex/gemini/shell)
+- `detect_provider_from_pane(pane_current_command, pane_tty, window_id)` — auto-detects provider from process name with ps-based TTY fallback for JS-runtime-wrapped CLIs
+- `detect_provider_from_command(pane_current_command)` — fast-path detection from process basename (claude/codex/gemini/shell)
 - `set_window_provider(window_id, provider_name)` — persists provider choice on SessionManager
 
-When creating a topic via the directory browser, users can choose the provider (Claude default, Codex, Gemini, Shell). Externally created tmux windows are auto-detected from `pane_current_command`. The global `get_provider()` remains as fallback for CLI commands without window context (e.g., `doctor`, `status`). Runtime re-detection (every 1s poll cycle) triggers prompt marker check on each transition to shell. Explicit shell topic creation (directory browser) auto-configures the marker.
+When creating a topic via the directory browser, users can choose the provider (Claude default, Codex, Gemini, Shell). Externally created tmux windows are auto-detected via `detect_provider_from_pane()` which tries process basename first, then falls back to `ps -t` foreground process inspection (with PGID caching) when the pane command is a JS runtime wrapper (node/bun). The global `get_provider()` remains as fallback for CLI commands without window context (e.g., `doctor`, `status`). Runtime re-detection (every 1s poll cycle) triggers prompt marker check on each transition to shell. Explicit shell topic creation (directory browser) auto-configures the marker.
 
 ### Provider Capability Matrix
 

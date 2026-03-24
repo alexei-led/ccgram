@@ -94,7 +94,7 @@ Each Telegram Forum topic binds to one tmux window running an agent CLI. Message
 - Claude Code (default), OpenAI Codex CLI, Google Gemini CLI, and plain shell
 - Per-topic provider selection — different topics can use different agents simultaneously
 - Shell provider supports LLM command generation — describe what you want and get a shell command to run
-- Auto-detects provider from externally created tmux windows (process name, with Gemini bun/node wrapper fallback via Gemini pane-title symbols)
+- Auto-detects provider from externally created tmux windows (process name, with ps-based TTY detection fallback for JS-runtime-wrapped CLIs like bun/node)
 - Provider-aware recovery (Continue/Resume buttons adapt to each provider's capabilities)
 - [Emdash](https://emdash.ai) integration — auto-discovers emdash tmux sessions; bind Telegram topics to emdash-managed agents with zero configuration
 
