@@ -129,6 +129,37 @@ Supported LLM providers: `openai`, `xai`, `deepseek`, `anthropic`, `groq`, `olla
 
 Existing Claude deployments need no changes — `claude` is the default provider. Windows without an explicit `provider_name` fall back to the config default. The hook subsystem (`ccgram hook --install`) is Claude-specific and skipped for other providers.
 
+## Testing
+
+### Test Structure
+
+Tests mirror the source layout: `tests/ccgram/` for unit tests, `tests/integration/` for integration tests, `tests/e2e/` for end-to-end tests.
+
+### Telegram Bot Testing Strategy
+
+No reliable Telegram Bot API mock server exists. The project uses a tiered approach:
+
+| Tier            | Pattern                                   | When to use                                       |
+| --------------- | ----------------------------------------- | ------------------------------------------------- |
+| **Unit**        | `MagicMock`/`AsyncMock` for PTB objects   | Testing handler logic in isolation                |
+| **Integration** | Real PTB `Application` + `_do_post` patch | Testing handler registration and dispatch routing |
+| **E2E**         | Real agent CLIs + real tmux (no Telegram) | Testing full agent lifecycle                      |
+
+**Integration test pattern** (`_do_post` patch): Instantiate a real PTB Application, register real handlers, patch `type(application.bot)._do_post` to intercept all outbound HTTP calls. Dispatch real `Update`/`Message` objects via `application.process_update()`. This exercises PTB's filter evaluation, handler matching, and Forum topic routing (`message_thread_id`) without any network calls. See `tests/integration/test_message_dispatch.py` for the base pattern.
+
+### Shell Provider Tests
+
+The shell provider has dedicated tests for each layer:
+
+| Test File                                         | Coverage                                                                   |
+| ------------------------------------------------- | -------------------------------------------------------------------------- |
+| `tests/ccgram/test_shell_provider.py`             | Provider capabilities, shell detection, prompt setup                       |
+| `tests/ccgram/test_shell_commands.py`             | Command routing, LLM flow, approval keyboard, callbacks                    |
+| `tests/ccgram/test_shell_capture.py`              | Output extraction, passive monitoring, relay formatting, error suggestions |
+| `tests/integration/test_shell_flow.py`            | Complete Telegram → Shell → Telegram round-trip                            |
+| `tests/integration/test_shell_dispatch.py`        | PTB dispatch routing to shell handler                                      |
+| `tests/integration/test_shell_llm_integration.py` | Real LLM API round-trip with command execution                             |
+
 ## Emdash Integration
 
 ccgram auto-discovers [emdash](https://github.com/generalaction/emdash) tmux sessions and lets users control emdash-managed agents from Telegram. Zero configuration — works automatically when both tools run on the same machine.
