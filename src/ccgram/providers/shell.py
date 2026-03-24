@@ -37,9 +37,6 @@ def get_prompt_re() -> re.Pattern[str]:
     return _compile_prompt_re(_get_marker_prefix())
 
 
-# Legacy alias — kept for backward compatibility in imports
-PROMPT_RE = re.compile(rf"^{_DEFAULT_MARKER}:(\d+)❯\s?(.*)")
-
 KNOWN_SHELLS = frozenset({"bash", "zsh", "fish", "sh", "dash", "tcsh", "csh", "ksh"})
 
 
