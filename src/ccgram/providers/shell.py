@@ -27,8 +27,7 @@ async def has_prompt_marker(window_id: str) -> bool:
     capture = await tmux_manager.capture_pane(window_id)
     if not capture:
         return False
-    tail = "\n".join(capture.rstrip().splitlines()[-5:])
-    return bool(PROMPT_RE.search(tail))
+    return any(PROMPT_RE.match(line) for line in capture.rstrip().splitlines()[-5:])
 
 
 def get_shell_name() -> str:

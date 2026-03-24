@@ -90,13 +90,14 @@ async def clear_topic_state(
 
     clear_history(user_id, thread_id)
 
-    # Clear shell provider state (capture tasks + pending commands)
-    from .shell_capture import cancel_shell_capture
+    # Clear shell provider state (capture tasks + pending commands + passive monitor)
+    from .shell_capture import cancel_shell_capture, clear_shell_monitor_state
     from .shell_commands import clear_marker_skip, clear_shell_pending
 
     cancel_shell_capture(user_id, thread_id)
     clear_shell_pending(chat_id, thread_id)
     if window_id:
+        clear_shell_monitor_state(window_id)
         clear_marker_skip(window_id)
         from ..providers.process_detection import clear_detection_cache
 

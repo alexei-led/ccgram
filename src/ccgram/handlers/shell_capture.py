@@ -1,14 +1,20 @@
 """Terminal output capture and relay for shell provider sessions.
 
-Captures raw shell output from tmux panes and relays it to Telegram,
-using in-place message editing for streaming updates. Uses prompt markers
-(ccgram:N❯) for output isolation and exit code detection, falling back
-to baseline diffing when markers are absent.
-Strips Nerd Font glyphs for clean Telegram display.
+Two capture modes:
+  - Active capture: triggered when commands are sent via Telegram
+    (start_shell_capture → background polling → relay to Telegram)
+  - Passive monitoring: detects commands typed directly in tmux
+    (check_passive_shell_output, called from status polling loop)
+
+Both use prompt markers (ccgram:N❯) for output isolation and exit code
+detection. Active capture falls back to baseline diffing when markers
+are absent. Passive monitoring requires markers.
 
 Key components:
-  - start_shell_capture: Launch a background capture task
+  - start_shell_capture: Launch active background capture task
+  - check_passive_shell_output: Poll-driven passive output relay
   - _extract_command_output: Prompt-marker-based output extraction
+  - _extract_passive_output: Extract output for passive monitoring
   - _extract_new_output: Baseline-diff fallback for unmarked shells
   - strip_terminal_glyphs: Remove Nerd Font / PUA characters
 """
@@ -48,6 +54,38 @@ _shell_capture_tasks: dict[tuple[int, int], asyncio.Task[None]] = {}
 # BMP PUA: U+E000–U+F8FF, Supplement PUA-A: U+F0000–U+FFFFD
 _GLYPH_RE = re.compile(r"[\ue000-\uf8ff\U000f0000-\U000ffffd]")
 
+_SCROLLBACK_LINES = 200
+
+
+async def _capture_with_scrollback(
+    window_id: str, history: int = _SCROLLBACK_LINES
+) -> str | None:
+    """Capture pane text including scrollback history.
+
+    Uses ``tmux capture-pane -p -J -S -N`` to get *history* lines of
+    scrollback.  ``-J`` joins wrapped lines so prompt markers are never
+    split across two lines on narrow terminals.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "tmux",
+            "capture-pane",
+            "-p",
+            "-J",
+            "-S",
+            f"-{history}",
+            "-t",
+            window_id,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        async with asyncio.timeout(5.0):
+            stdout, _ = await proc.communicate()
+        text = stdout.decode("utf-8", errors="replace").rstrip()
+        return text if text else None
+    except TimeoutError, OSError:
+        return None
+
 
 @dataclass
 class _CommandOutput:
@@ -67,6 +105,35 @@ class _CaptureState:
     baseline_lines: list[str] = field(default_factory=list)
     command: str = ""
     exit_code: int | None = None
+
+
+@dataclass
+class _PassiveOutput:
+    """Result of passive output extraction for tmux-direct commands."""
+
+    command_echo: str
+    echo_index: int  # line index in the pane — distinguishes re-runs of same command
+    text: str
+    exit_code: int | None = None
+
+
+@dataclass
+class _ShellMonitorState:
+    """Per-window state for passive shell output monitoring."""
+
+    last_text_hash: int = (
+        0  # hash(rendered_text) — best-effort dedup, skip unchanged polls
+    )
+    last_command_echo: str = ""  # echo line text of last relayed command
+    last_echo_index: int = (
+        -1
+    )  # line index of echo — distinguishes re-runs of same command
+    msg_id: int | None = None  # Telegram message ID for in-place editing
+    last_output: str = ""  # last relayed output text
+    exit_code_sent: bool = False  # already showed error indicator for this command
+
+
+_shell_monitor_state: dict[str, _ShellMonitorState] = {}
 
 
 def strip_terminal_glyphs(text: str) -> str:
@@ -182,6 +249,97 @@ def _looks_like_info_bar(line: str) -> bool:
     return "~/" in line or "·" in line or _GLYPH_RE.search(line) is not None
 
 
+def _find_command_echo(lines: list[str]) -> tuple[str, int] | None:
+    """Find the command echo line above the last bare prompt.
+
+    Scans from bottom for a bare prompt, then upward for the command echo.
+    Returns ``(echo_text, line_index)`` or None if idle.
+    """
+    scan_start = max(0, len(lines) - 10)
+    for i in range(len(lines) - 1, scan_start - 1, -1):
+        m = PROMPT_RE.match(lines[i])
+        if m and not m.group(2).strip():
+            for j in range(i - 1, -1, -1):
+                mj = PROMPT_RE.match(lines[j])
+                if mj and mj.group(2).strip():
+                    return (lines[j], j)
+            return None
+    return None
+
+
+def _find_in_progress(lines: list[str]) -> _PassiveOutput | None:
+    """Find in-progress command output (no bare prompt at bottom)."""
+    for i in range(len(lines) - 1, -1, -1):
+        m = PROMPT_RE.match(lines[i])
+        if m and m.group(2).strip():
+            output_lines = lines[i + 1 :]
+            while output_lines and not output_lines[-1].strip():
+                output_lines.pop()
+            return _PassiveOutput(
+                command_echo=lines[i],
+                echo_index=i,
+                text="\n".join(output_lines),
+            )
+    return None
+
+
+def _extract_passive_output(text: str) -> _PassiveOutput | None:
+    """Extract command output for passive monitoring (tmux-direct commands).
+
+    Returns None for idle shell (bare prompt only) or no markers.
+    For completed commands: returns output with exit_code (int).
+    For in-progress commands: returns partial output with exit_code=None.
+    """
+    lines = text.rstrip().splitlines()
+    if not lines:
+        return None
+
+    # Check bottom 10 lines for any prompt marker
+    tail = lines[max(0, len(lines) - 10) :]
+    if not any(PROMPT_RE.match(line) for line in tail):
+        return None
+
+    # Try completed-command extraction (bare prompt at bottom)
+    result = _extract_command_output([], text)
+    if result.exit_code is not None:
+        found = _find_command_echo(lines)
+        if found is None:
+            return None  # idle — bare prompt with no command above
+        echo_text, echo_idx = found
+        return _PassiveOutput(
+            command_echo=echo_text,
+            echo_index=echo_idx,
+            text=result.text,
+            exit_code=result.exit_code,
+        )
+
+    # No bare prompt — check for in-progress command
+    return _find_in_progress(lines)
+
+
+async def _fast_forward_passive_state(window_id: str) -> None:
+    """Snapshot current pane into passive monitor state.
+
+    Called after active capture completes so the next poll cycle's
+    passive monitor does not re-relay the same command output.
+    """
+    state = _shell_monitor_state.get(window_id)
+    if state is None:
+        state = _ShellMonitorState()
+        _shell_monitor_state[window_id] = state
+
+    raw = await _capture_with_scrollback(window_id)
+    if not raw:
+        return
+    passive = _extract_passive_output(raw)
+    if passive is not None:
+        state.last_command_echo = passive.command_echo
+        state.last_echo_index = passive.echo_index
+        state.last_output = passive.text
+        state.exit_code_sent = passive.exit_code is not None and passive.exit_code != 0
+    state.last_text_hash = hash(raw)
+
+
 def start_shell_capture(
     bot: Bot,
     user_id: int,
@@ -196,6 +354,10 @@ def start_shell_capture(
     existing = _shell_capture_tasks.pop(key, None)
     if existing and not existing.done():
         existing.cancel()
+
+    # Reset passive monitor so it doesn't carry stale error flags
+    # or re-relay the same command after active capture finishes.
+    clear_shell_monitor_state(window_id)
 
     task = asyncio.create_task(
         _capture_shell_output(
@@ -219,21 +381,28 @@ async def _relay_output(
     chat_id: int,
     thread_id: int,
     output: str,
-    state: _CaptureState,
-) -> None:
-    """Send or edit the output message in Telegram (monospace formatted)."""
+    *,
+    msg_id: int | None = None,
+) -> int | None:
+    """Send or edit the output message in Telegram (monospace formatted).
+
+    Returns the Telegram message ID (new or existing) so callers can
+    track it for subsequent edits.  Returns None when the initial send
+    fails (rate limit, network), in which case the next call with
+    ``msg_id=None`` will attempt a fresh send.
+    """
     display = strip_terminal_glyphs(output)
     if len(display) > _OUTPUT_LIMIT:
         display = "\u2026 " + display[-_OUTPUT_LIMIT:]
 
     if not display.strip():
-        return
+        return msg_id
 
     # Wrap in code fence for monospace rendering on Telegram
     display = display.replace("```", "` ` `")
     formatted = f"```\n{display}\n```"
 
-    if state.msg_id is None:
+    if msg_id is None:
         sent = await rate_limit_send_message(
             bot,
             chat_id,
@@ -241,9 +410,11 @@ async def _relay_output(
             message_thread_id=thread_id,
         )
         if sent:
-            state.msg_id = sent.message_id
+            return sent.message_id
+        return None
     else:
-        await edit_with_fallback(bot, chat_id, state.msg_id, formatted)
+        await edit_with_fallback(bot, chat_id, msg_id, formatted)
+        return msg_id
 
 
 async def _poll_once(
@@ -258,7 +429,7 @@ async def _poll_once(
     if not w:
         return True
 
-    raw = await tmux_manager.capture_pane(window_id)
+    raw = await _capture_with_scrollback(window_id)
     if raw is None:
         return False
 
@@ -269,7 +440,9 @@ async def _poll_once(
     if changed:
         state.stable_count = 0
         state.last_output = new_output
-        await _relay_output(bot, chat_id, thread_id, new_output, state)
+        state.msg_id = await _relay_output(
+            bot, chat_id, thread_id, new_output, msg_id=state.msg_id
+        )
 
     # Prompt marker detected = command finished
     if result.exit_code is not None:
@@ -334,6 +507,10 @@ async def _capture_shell_output(
         # After capture completes, check for errors and suggest fix
         if state.last_output and state.command:
             await _maybe_suggest_fix(bot, user_id, chat_id, thread_id, window_id, state)
+
+        # Fast-forward passive monitor past this command so it doesn't
+        # re-relay the same output on the next poll cycle.
+        await _fast_forward_passive_state(window_id)
     except asyncio.CancelledError:
         return
     finally:
@@ -437,3 +614,136 @@ async def _maybe_suggest_fix(
     from .shell_commands import show_command_approval
 
     await show_command_approval(bot, chat_id, thread_id, window_id, result, user_id)
+
+
+# ── Passive shell output monitoring ───────────────────────────────────
+# Detects and relays output from commands typed directly in tmux
+# (not via Telegram). Requires prompt markers for reliable extraction.
+
+
+def clear_shell_monitor_state(window_id: str) -> None:
+    """Remove passive monitor state for a window (cleanup / provider switch)."""
+    _shell_monitor_state.pop(window_id, None)
+
+
+def reset_shell_monitor_state() -> None:
+    """Reset all passive monitor state (for testing)."""
+    _shell_monitor_state.clear()
+
+
+def _reset_monitor(state: _ShellMonitorState) -> None:
+    """Reset passive monitor state to idle."""
+    state.last_command_echo = ""
+    state.last_echo_index = -1
+    state.msg_id = None
+    state.last_output = ""
+    state.exit_code_sent = False
+
+
+def _has_markers_in_tail(rendered_text: str) -> bool:
+    """Quick check for prompt markers in the last 10 visible lines.
+
+    Strips leading whitespace because pyte may pad lines when the terminal
+    wraps long output (the prompt ends up indented on a continuation line).
+    """
+    lines = rendered_text.rstrip().splitlines()
+    tail = lines[max(0, len(lines) - 10) :]
+    return any(PROMPT_RE.match(line.lstrip()) for line in tail)
+
+
+async def check_passive_shell_output(
+    bot: Bot,
+    user_id: int,
+    thread_id: int,
+    window_id: str,
+    rendered_text: str,
+) -> None:
+    """Check for new shell output from direct tmux interaction.
+
+    Called every poll cycle from status_polling for shell provider windows.
+    Uses ``rendered_text`` (cheap, from pyte) for change detection, then
+    ``_capture_with_scrollback`` for reliable output extraction so that
+    command echoes scrolled off the visible pane are still found.
+    """
+    text_hash = hash(rendered_text)
+    state = _shell_monitor_state.setdefault(window_id, _ShellMonitorState())
+    changed = text_hash != state.last_text_hash
+    if not changed:
+        return
+    state.last_text_hash = text_hash
+
+    # Skip if active Telegram-initiated capture is running for this topic
+    key = (user_id, thread_id)
+    task = _shell_capture_tasks.get(key)
+    if task and not task.done():
+        return
+
+    if not _has_markers_in_tail(rendered_text):
+        if not (state.last_command_echo and state.msg_id is not None):
+            _reset_monitor(state)
+        return
+
+    # Capture with scrollback for reliable command echo finding
+    scrollback = await _capture_with_scrollback(window_id)
+    if not scrollback:
+        return
+
+    passive = _extract_passive_output(scrollback)
+    if passive is None:
+        if not (state.last_command_echo and state.msg_id is not None):
+            _reset_monitor(state)
+        return
+
+    if (
+        passive.command_echo != state.last_command_echo
+        or passive.echo_index != state.last_echo_index
+    ):
+        state.last_command_echo = passive.command_echo
+        state.last_echo_index = passive.echo_index
+        state.msg_id = None
+        state.last_output = ""
+        state.exit_code_sent = False
+
+    await _relay_passive_output(bot, user_id, thread_id, state, passive)
+
+
+def _command_from_echo(echo: str) -> str:
+    """Extract the command text from a prompt echo line.
+
+    ``"ccgram:0❯ ls -al"`` → ``"ls -al"``
+    """
+    m = PROMPT_RE.match(echo)
+    return m.group(2).strip() if m else echo
+
+
+async def _relay_passive_output(
+    bot: Bot,
+    user_id: int,
+    thread_id: int,
+    state: _ShellMonitorState,
+    passive: _PassiveOutput,
+) -> None:
+    """Relay extracted passive output to Telegram.
+
+    Formats as: ``❯ <command>`` header followed by output in a code block.
+    """
+    chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+
+    if passive.text != state.last_output:
+        state.last_output = passive.text
+        cmd = _command_from_echo(passive.command_echo)
+        combined = f"❯ {cmd}\n{passive.text}" if cmd else passive.text
+        state.msg_id = await _relay_output(
+            bot, chat_id, thread_id, combined, msg_id=state.msg_id
+        )
+
+    if (
+        passive.exit_code is not None
+        and passive.exit_code != 0
+        and not state.exit_code_sent
+        and state.msg_id
+    ):
+        state.exit_code_sent = True
+        await _update_error_message(
+            bot, chat_id, state.msg_id, passive.exit_code, passive.text
+        )

@@ -1007,6 +1007,23 @@ def _cancel_shell_captures_for_window(window_id: str) -> None:
             cancel_shell_capture(user_id, thread_id)
 
 
+async def _maybe_check_passive_shell(
+    bot: Bot, user_id: int, window_id: str, thread_id: int
+) -> None:
+    """Relay shell output from direct tmux interaction to Telegram."""
+    state = session_manager.get_window_state(window_id)
+    if not state or state.provider_name != "shell":
+        return
+    ws = _window_poll_state.get(window_id)
+    if ws is None or ws.last_rendered_text is None:
+        return
+    from .shell_capture import check_passive_shell_output
+
+    await check_passive_shell_output(
+        bot, user_id, thread_id, window_id, ws.last_rendered_text
+    )
+
+
 async def _maybe_discover_transcript(
     window_id: str,
     *,
@@ -1064,13 +1081,16 @@ async def _maybe_discover_transcript(
             old_provider = state.provider_name
             session_manager.set_window_provider(window_id, detected, cwd=w.cwd or None)
             if detected == "shell" and bot and user_id and thread_id:
+                state.transcript_path = ""  # shell has no transcripts
                 from .shell_commands import offer_prompt_setup
 
                 await offer_prompt_setup(bot, user_id, thread_id, window_id)
             elif old_provider == "shell":
                 _cancel_shell_captures_for_window(window_id)
+                from .shell_capture import clear_shell_monitor_state
                 from .shell_commands import clear_marker_skip
 
+                clear_shell_monitor_state(window_id)
                 clear_marker_skip(window_id)
         elif not detected and state.transcript_path:
             inferred = detect_provider_from_transcript_path(state.transcript_path)
@@ -1107,6 +1127,7 @@ async def _maybe_discover_transcript(
         # Detection failed — pane is a shell prompt: assign shell provider
         if w and is_shell_prompt(w.pane_current_command):
             session_manager.set_window_provider(window_id, "shell")
+            state.transcript_path = ""  # shell has no transcripts
             if bot and user_id and thread_id:
                 from .shell_commands import offer_prompt_setup
 
@@ -1211,6 +1232,11 @@ async def status_poll_loop(bot: Bot) -> None:
 
                     queue = get_message_queue(user_id)
                     if queue and not queue.empty():
+                        # Queue busy — skip status updates but still run passive
+                        # shell monitoring (uses stale pyte text, hash dedup
+                        # handles it) so shell output relay isn't blocked by
+                        # unrelated windows flooding the queue.
+                        await _maybe_check_passive_shell(bot, user_id, wid, thread_id)
                         continue
                     await update_status_message(
                         bot,
@@ -1221,6 +1247,8 @@ async def status_poll_loop(bot: Bot) -> None:
                     )
                     # Scan non-active panes for interactive prompts (agent teams)
                     await _scan_window_panes(bot, user_id, wid, thread_id)
+                    # Relay shell output from direct tmux interaction
+                    await _maybe_check_passive_shell(bot, user_id, wid, thread_id)
                 except (TelegramError, OSError) as e:
                     log_throttled(
                         logger,
