@@ -1006,13 +1006,17 @@ async def _maybe_check_passive_shell(
     if not state or state.provider_name != "shell":
         return
     ws = _window_poll_state.get(window_id)
-    if ws is None or ws.last_rendered_text is None:
-        return
+    rendered = ws.last_rendered_text if ws else None
+    if rendered is None:
+        # update_status_message hasn't run yet (queue busy, first poll).
+        # Do a direct capture so shell output isn't lost.
+        raw = await tmux_manager.capture_pane(window_id)
+        if not raw:
+            return
+        rendered = raw
     from .shell_capture import check_passive_shell_output
 
-    await check_passive_shell_output(
-        bot, user_id, thread_id, window_id, ws.last_rendered_text
-    )
+    await check_passive_shell_output(bot, user_id, thread_id, window_id, rendered)
 
 
 async def _maybe_discover_transcript(
