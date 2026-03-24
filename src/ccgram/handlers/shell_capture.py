@@ -46,7 +46,7 @@ async def _capture_with_scrollback(
 ) -> str | None:
     """Capture pane text including scrollback history.
 
-    Uses ``tmux capture-pane -p -J -S -N`` to get *history* lines of
+    Uses ``tmux capture-pane -p -J -S -{history}`` to get *history* lines of
     scrollback.  ``-J`` joins wrapped lines so prompt markers are never
     split across two lines on narrow terminals.
     """

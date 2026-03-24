@@ -20,6 +20,7 @@ from ccgram.providers.base import (
     SessionStartEvent,
     StatusUpdate,
 )
+from ccgram.providers.process_detection import JS_RUNTIMES
 from ccgram.providers.registry import ProviderRegistry, UnknownProviderError, registry
 
 logger = structlog.get_logger()
@@ -188,9 +189,6 @@ def detect_provider_from_runtime(
     return ""
 
 
-_JS_RUNTIMES = frozenset({"node", "bun", "npx", "bunx"})
-
-
 async def detect_provider_from_pane(
     pane_current_command: str,
     *,
@@ -212,7 +210,7 @@ async def detect_provider_from_pane(
         if not cmd:
             return ""
         basename = os.path.basename(cmd.split()[0])
-        if basename in _JS_RUNTIMES:
+        if basename in JS_RUNTIMES:
             from .process_detection import detect_provider_cached
 
             detected = await detect_provider_cached(window_id or "", pane_tty)
