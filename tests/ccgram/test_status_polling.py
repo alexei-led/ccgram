@@ -868,9 +868,9 @@ class TestProviderSwitchPromptSetup:
                 return_value="shell",
             ),
             patch(
-                "ccgram.handlers.shell_commands.offer_prompt_setup",
+                "ccgram.providers.shell.setup_shell_prompt",
                 new_callable=AsyncMock,
-            ) as mock_offer,
+            ) as mock_setup,
         ):
             mock_sm.window_states = {
                 "@7": MagicMock(
@@ -886,7 +886,7 @@ class TestProviderSwitchPromptSetup:
             await _maybe_discover_transcript("@7", bot=bot, user_id=1, thread_id=42)
 
         mock_sm.set_window_provider.assert_called_once_with("@7", "shell", cwd="/proj")
-        mock_offer.assert_awaited_once_with(bot, 1, 42, "@7")
+        mock_setup.assert_awaited_once_with("@7")
 
     async def test_switch_to_claude_does_not_offer_prompt_setup(self) -> None:
         from ccgram.handlers.status_polling import _maybe_discover_transcript
@@ -908,9 +908,9 @@ class TestProviderSwitchPromptSetup:
                 return_value=mock_provider,
             ),
             patch(
-                "ccgram.handlers.shell_commands.offer_prompt_setup",
+                "ccgram.providers.shell.setup_shell_prompt",
                 new_callable=AsyncMock,
-            ) as mock_offer,
+            ) as mock_setup,
         ):
             mock_sm.window_states = {
                 "@7": MagicMock(
@@ -925,82 +925,7 @@ class TestProviderSwitchPromptSetup:
             )
             await _maybe_discover_transcript("@7", bot=bot, user_id=1, thread_id=42)
 
-        mock_offer.assert_not_awaited()
-
-    async def test_switch_away_from_shell_cancels_captures(self) -> None:
-        from ccgram.handlers.status_polling import _maybe_discover_transcript
-
-        mock_provider = MagicMock()
-        mock_provider.capabilities.supports_hook = True
-
-        with (
-            patch("ccgram.handlers.status_polling.session_manager") as mock_sm,
-            patch("ccgram.handlers.status_polling.tmux_manager") as mock_tmux,
-            patch(
-                "ccgram.handlers.status_polling.detect_provider_from_pane",
-                new_callable=AsyncMock,
-                return_value="claude",
-            ),
-            patch(
-                "ccgram.handlers.status_polling.get_provider_for_window",
-                return_value=mock_provider,
-            ),
-            patch(
-                "ccgram.handlers.status_polling._cancel_shell_captures_for_window"
-            ) as mock_cancel,
-        ):
-            mock_sm.window_states = {
-                "@7": MagicMock(
-                    session_id="",
-                    cwd="/proj",
-                    provider_name="shell",
-                    transcript_path="",
-                )
-            }
-            mock_tmux.find_window_by_id = AsyncMock(
-                return_value=MagicMock(pane_current_command="claude", cwd="/proj")
-            )
-            await _maybe_discover_transcript("@7")
-
-        mock_cancel.assert_called_once_with("@7")
-
-    async def test_switch_away_from_shell_clears_skip_flag(self) -> None:
-        from ccgram.handlers.status_polling import _maybe_discover_transcript
-
-        mock_provider = MagicMock()
-        mock_provider.capabilities.supports_hook = True
-
-        with (
-            patch("ccgram.handlers.status_polling.session_manager") as mock_sm,
-            patch("ccgram.handlers.status_polling.tmux_manager") as mock_tmux,
-            patch(
-                "ccgram.handlers.status_polling.detect_provider_from_pane",
-                new_callable=AsyncMock,
-                return_value="claude",
-            ),
-            patch(
-                "ccgram.handlers.status_polling.get_provider_for_window",
-                return_value=mock_provider,
-            ),
-            patch("ccgram.handlers.status_polling._cancel_shell_captures_for_window"),
-            patch(
-                "ccgram.handlers.shell_commands.clear_marker_skip"
-            ) as mock_clear_skip,
-        ):
-            mock_sm.window_states = {
-                "@7": MagicMock(
-                    session_id="",
-                    cwd="/proj",
-                    provider_name="shell",
-                    transcript_path="",
-                )
-            }
-            mock_tmux.find_window_by_id = AsyncMock(
-                return_value=MagicMock(pane_current_command="claude", cwd="/proj")
-            )
-            await _maybe_discover_transcript("@7")
-
-        mock_clear_skip.assert_called_once_with("@7")
+        mock_setup.assert_not_awaited()
 
     async def test_fallback_shell_assignment_offers_prompt_setup(self) -> None:
         from ccgram.handlers.status_polling import _maybe_discover_transcript
@@ -1016,9 +941,9 @@ class TestProviderSwitchPromptSetup:
                 return_value="",
             ),
             patch(
-                "ccgram.handlers.shell_commands.offer_prompt_setup",
+                "ccgram.providers.shell.setup_shell_prompt",
                 new_callable=AsyncMock,
-            ) as mock_offer,
+            ) as mock_setup,
         ):
             mock_sm.window_states = {
                 "@7": MagicMock(
@@ -1036,9 +961,9 @@ class TestProviderSwitchPromptSetup:
             await _maybe_discover_transcript("@7", bot=bot, user_id=1, thread_id=42)
 
         mock_sm.set_window_provider.assert_called_once_with("@7", "shell")
-        mock_offer.assert_awaited_once_with(bot, 1, 42, "@7")
+        mock_setup.assert_awaited_once_with("@7")
 
-    async def test_discover_transcript_with_default_params_skips_offer(self) -> None:
+    async def test_fallback_shell_assignment_sets_up_prompt_without_bot(self) -> None:
         from ccgram.handlers.status_polling import _maybe_discover_transcript
 
         with (
@@ -1051,9 +976,9 @@ class TestProviderSwitchPromptSetup:
                 return_value="",
             ),
             patch(
-                "ccgram.handlers.shell_commands.offer_prompt_setup",
+                "ccgram.providers.shell.setup_shell_prompt",
                 new_callable=AsyncMock,
-            ) as mock_offer,
+            ) as mock_setup,
             patch(
                 "ccgram.handlers.status_polling.should_probe_pane_title_for_provider_detection",
                 return_value=False,
@@ -1074,79 +999,7 @@ class TestProviderSwitchPromptSetup:
             mock_config.tmux_session_name = "ccgram"
             await _maybe_discover_transcript("@7")
 
-        mock_offer.assert_not_awaited()
-
-    async def test_round_trip_shell_claude_shell_resets_skip_and_reoffers(self) -> None:
-        from ccgram.handlers.shell_commands import _marker_setup_skipped
-        from ccgram.handlers.status_polling import _maybe_discover_transcript
-
-        mock_provider = MagicMock()
-        mock_provider.capabilities.supports_hook = True
-
-        bot = AsyncMock(spec=Bot)
-
-        _marker_setup_skipped.add("@7")
-        try:
-            with (
-                patch("ccgram.handlers.status_polling.session_manager") as mock_sm,
-                patch("ccgram.handlers.status_polling.tmux_manager") as mock_tmux,
-                patch(
-                    "ccgram.handlers.status_polling.detect_provider_from_pane",
-                    new_callable=AsyncMock,
-                    return_value="claude",
-                ),
-                patch(
-                    "ccgram.handlers.status_polling.get_provider_for_window",
-                    return_value=mock_provider,
-                ),
-                patch(
-                    "ccgram.handlers.status_polling._cancel_shell_captures_for_window"
-                ),
-            ):
-                mock_sm.window_states = {
-                    "@7": MagicMock(
-                        session_id="",
-                        cwd="/proj",
-                        provider_name="shell",
-                        transcript_path="",
-                    )
-                }
-                mock_tmux.find_window_by_id = AsyncMock(
-                    return_value=MagicMock(pane_current_command="claude", cwd="/proj")
-                )
-                await _maybe_discover_transcript("@7", bot=bot, user_id=1, thread_id=42)
-
-            assert "@7" not in _marker_setup_skipped
-
-            with (
-                patch("ccgram.handlers.status_polling.session_manager") as mock_sm,
-                patch("ccgram.handlers.status_polling.tmux_manager") as mock_tmux,
-                patch(
-                    "ccgram.handlers.status_polling.detect_provider_from_pane",
-                    new_callable=AsyncMock,
-                    return_value="shell",
-                ),
-                patch(
-                    "ccgram.handlers.shell_commands.offer_prompt_setup",
-                    new_callable=AsyncMock,
-                ) as mock_offer,
-            ):
-                mock_sm.window_states = {
-                    "@7": MagicMock(
-                        session_id="",
-                        cwd="/proj",
-                        provider_name="claude",
-                        transcript_path="",
-                    )
-                }
-                mock_tmux.find_window_by_id = AsyncMock(
-                    return_value=MagicMock(pane_current_command="fish", cwd="/proj")
-                )
-                await _maybe_discover_transcript("@7", bot=bot, user_id=1, thread_id=42)
-
-            mock_offer.assert_awaited_once_with(bot, 1, 42, "@7")
-        finally:
-            _marker_setup_skipped.discard("@7")
+        mock_setup.assert_awaited_once_with("@7")
 
 
 class TestMaybeDiscoverTranscript:

@@ -113,8 +113,5 @@ CB_SHELL_RUN = "sh:run:"  # sh:run:<window_id>
 CB_SHELL_EDIT = "sh:edt:"  # sh:edt:<window_id>
 CB_SHELL_CANCEL = "sh:x:"  # sh:x:<window_id>
 CB_SHELL_CONFIRM_DANGER = "sh:dng:"  # sh:dng:<window_id> (dangerous confirm)
-CB_SHELL_SETUP = "sh:set:"  # sh:set:<window_id> — set up prompt marker
-CB_SHELL_SETUP_SKIP = "sh:skp:"  # sh:skp:<window_id> — skip prompt setup
-
 # Idle status sentinel (shared between status_polling and message_queue)
 IDLE_STATUS_TEXT = "\u2713 Ready"

@@ -76,11 +76,11 @@ async def _detect_and_setup_provider(
     window_id: str,
     pane_current_command: str | None,
     *,
-    bot: "Bot | None" = None,
-    user_id: int = 0,
-    thread_id: int = 0,
+    bot: "Bot | None" = None,  # noqa: ARG001
+    user_id: int = 0,  # noqa: ARG001
+    thread_id: int = 0,  # noqa: ARG001
 ) -> str:
-    """Detect provider from pane process and offer prompt setup if shell.
+    """Detect provider from pane process and set up prompt if shell.
 
     Returns the detected provider name (empty string if undetected).
     """
@@ -93,10 +93,10 @@ async def _detect_and_setup_provider(
     )
     if detected:
         session_manager.set_window_provider(window_id, detected)
-        if detected == "shell" and bot and user_id and thread_id:
-            from .shell_commands import offer_prompt_setup
+        if detected == "shell":
+            from ..providers.shell import setup_shell_prompt
 
-            await offer_prompt_setup(bot, user_id, thread_id, window_id)
+            await setup_shell_prompt(window_id)
     return detected
 
 

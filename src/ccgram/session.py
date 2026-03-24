@@ -1005,12 +1005,45 @@ class SessionManager:
 
         Always saves state unconditionally. When *cwd* is provided, persists it
         in the same write so provider/cwd updates stay atomic.
+
+        When switching to a hookless provider (e.g. shell), clears any stale
+        session_map.json entry and session_id so hook-based data from a
+        previous provider doesn't cause provider detection flickering.
         """
         state = self.get_window_state(window_id)
+        old_provider = state.provider_name
         state.provider_name = provider_name
         if cwd:
             state.cwd = cwd
+
+        # When switching away from a hook-based provider to a hookless one,
+        # clear stale session data that would otherwise cause the poll loop
+        # to re-detect the old provider from session_map.json.
+        if old_provider != provider_name and provider_name:
+            from .providers import registry
+
+            new_prov = registry.get(provider_name)
+            if not new_prov.capabilities.supports_hook:
+                if state.session_id:
+                    state.session_id = ""
+                    state.transcript_path = ""
+                self._clear_session_map_entry(window_id)
+
         self._save_state()
+
+    def _clear_session_map_entry(self, window_id: str) -> None:
+        """Remove a window's entry from session_map.json if present."""
+        if not config.session_map_file.exists():
+            return
+        try:
+            raw = json.loads(config.session_map_file.read_text())
+        except json.JSONDecodeError, OSError:
+            return
+        key = f"{config.tmux_session_name}:{window_id}"
+        if key in raw:
+            del raw[key]
+            atomic_write_json(config.session_map_file, raw)
+            logger.debug("Cleared session_map entry for %s", window_id)
 
     def get_approval_mode(self, window_id: str) -> str:
         """Get approval mode for a window (default: 'normal')."""

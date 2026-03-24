@@ -56,37 +56,3 @@ class TestClearTopicState:
 
         mock_enqueue.assert_called_once()
         assert mock_enqueue.call_args[0][2] == ""
-
-    async def test_clears_marker_skip_when_window_id_provided(self) -> None:
-        bot = AsyncMock()
-        with (
-            patch("ccgram.handlers.cleanup.enqueue_status_update"),
-            patch("ccgram.handlers.cleanup.clear_interactive_msg"),
-            patch("ccgram.handlers.cleanup.clear_topic_emoji_state"),
-            patch("ccgram.handlers.cleanup.clear_tool_msg_ids_for_topic"),
-            patch("ccgram.handlers.status_polling.session_manager") as mock_sm,
-            patch(
-                "ccgram.handlers.shell_commands.clear_marker_skip"
-            ) as mock_clear_skip,
-        ):
-            mock_sm.resolve_chat_id.return_value = -100
-            await clear_topic_state(1, 42, bot=bot, window_id="@0")
-
-        mock_clear_skip.assert_called_once_with("@0")
-
-    async def test_does_not_clear_marker_skip_when_no_window_id(self) -> None:
-        bot = AsyncMock()
-        with (
-            patch("ccgram.handlers.cleanup.enqueue_status_update"),
-            patch("ccgram.handlers.cleanup.clear_interactive_msg"),
-            patch("ccgram.handlers.cleanup.clear_topic_emoji_state"),
-            patch("ccgram.handlers.cleanup.clear_tool_msg_ids_for_topic"),
-            patch("ccgram.handlers.status_polling.session_manager") as mock_sm,
-            patch(
-                "ccgram.handlers.shell_commands.clear_marker_skip"
-            ) as mock_clear_skip,
-        ):
-            mock_sm.resolve_chat_id.return_value = -100
-            await clear_topic_state(1, 42, bot=bot, window_id=None)
-
-        mock_clear_skip.assert_not_called()

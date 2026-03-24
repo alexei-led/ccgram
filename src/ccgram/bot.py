@@ -111,8 +111,6 @@ from .handlers.callback_data import (
     CB_SHELL_CONFIRM_DANGER,
     CB_SHELL_EDIT,
     CB_SHELL_RUN,
-    CB_SHELL_SETUP,
-    CB_SHELL_SETUP_SKIP,
     CB_WIN_BIND,
     CB_WIN_CANCEL,
     CB_WIN_NEW,
@@ -1287,8 +1285,6 @@ _CB_SHELL = (
     CB_SHELL_EDIT,
     CB_SHELL_CANCEL,
     CB_SHELL_CONFIRM_DANGER,
-    CB_SHELL_SETUP,
-    CB_SHELL_SETUP_SKIP,
 )
 
 

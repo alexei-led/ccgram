@@ -998,15 +998,6 @@ async def _probe_topic_existence(bot: Bot) -> None:
                     )
 
 
-def _cancel_shell_captures_for_window(window_id: str) -> None:
-    """Cancel any shell capture tasks for topics bound to this window."""
-    from .shell_capture import cancel_shell_capture
-
-    for user_id, thread_id, wid in session_manager.iter_thread_bindings():
-        if wid == window_id:
-            cancel_shell_capture(user_id, thread_id)
-
-
 async def _maybe_check_passive_shell(
     bot: Bot, user_id: int, window_id: str, thread_id: int
 ) -> None:
@@ -1028,9 +1019,9 @@ async def _maybe_discover_transcript(
     window_id: str,
     *,
     _window: TmuxWindow | None = None,
-    bot: Bot | None = None,
-    user_id: int = 0,
-    thread_id: int = 0,
+    bot: Bot | None = None,  # noqa: ARG001
+    user_id: int = 0,  # noqa: ARG001
+    thread_id: int = 0,  # noqa: ARG001
 ) -> None:
     """Discover and register transcript for hookless providers (Codex, Gemini).
 
@@ -1080,18 +1071,15 @@ async def _maybe_discover_transcript(
         if detected and detected != state.provider_name:
             old_provider = state.provider_name
             session_manager.set_window_provider(window_id, detected, cwd=w.cwd or None)
-            if detected == "shell" and bot and user_id and thread_id:
+            if detected == "shell":
                 state.transcript_path = ""  # shell has no transcripts
-                from .shell_commands import offer_prompt_setup
+                from ..providers.shell import setup_shell_prompt
 
-                await offer_prompt_setup(bot, user_id, thread_id, window_id)
+                await setup_shell_prompt(window_id)
             elif old_provider == "shell":
-                _cancel_shell_captures_for_window(window_id)
                 from .shell_capture import clear_shell_monitor_state
-                from .shell_commands import clear_marker_skip
 
                 clear_shell_monitor_state(window_id)
-                clear_marker_skip(window_id)
         elif not detected and state.transcript_path:
             inferred = detect_provider_from_transcript_path(state.transcript_path)
             if inferred and inferred != state.provider_name:
@@ -1128,10 +1116,9 @@ async def _maybe_discover_transcript(
         if w and is_shell_prompt(w.pane_current_command):
             session_manager.set_window_provider(window_id, "shell")
             state.transcript_path = ""  # shell has no transcripts
-            if bot and user_id and thread_id:
-                from .shell_commands import offer_prompt_setup
+            from ..providers.shell import setup_shell_prompt
 
-                await offer_prompt_setup(bot, user_id, thread_id, window_id)
+            await setup_shell_prompt(window_id)
             return
         # Try all hookless providers (exclude shell — no transcripts)
         providers_to_try = [
