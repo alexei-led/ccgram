@@ -10,7 +10,9 @@ Key components:
 """
 
 import asyncio
+import functools
 import os
+import re
 import shutil
 
 import structlog
@@ -52,22 +54,30 @@ _MODERN_TOOLS: dict[str, str] = {
     "procs": "ps replacement",
 }
 
-_cached_shell_tools: str | None = None
 
-
+@functools.cache
 def _detect_shell_tools() -> str:
     """Detect available modern CLI tools on PATH (cached)."""
-    global _cached_shell_tools  # noqa: PLW0603
-    if _cached_shell_tools is not None:
-        return _cached_shell_tools
-
     available = []
     for tool, desc in _MODERN_TOOLS.items():
         if shutil.which(tool):
             available.append(f"{tool} ({desc})")
+    return ", ".join(available)
 
-    _cached_shell_tools = ", ".join(available)
-    return _cached_shell_tools
+
+# Patterns redacted from terminal output before sending to the LLM
+_SENSITIVE_RE = re.compile(
+    r"(?i)"
+    r"(?:export\s+\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH)\w*\s*=\s*\S+)"
+    r"|(?:(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH)\w*\s*[=:]\s*['\"]?\S{8,})"
+    r"|(?:(?:sk|pk|ghp|gho|ghu|ghs|ghr|glpat|xoxb|xoxp|xoxs|AKIA)-[A-Za-z0-9_/+=]{10,})"
+    r"|(?:Bearer\s+[A-Za-z0-9_.+/=-]{20,})",
+)
+
+
+def redact_for_llm(text: str) -> str:
+    """Strip sensitive patterns from terminal text before sending to an LLM."""
+    return _SENSITIVE_RE.sub("[REDACTED]", text)
 
 
 async def gather_llm_context(window_id: str) -> dict[str, str]:
@@ -96,7 +106,7 @@ async def _ensure_prompt_marker(window_id: str) -> None:
     from ..providers.shell import has_prompt_marker, setup_shell_prompt
 
     if not await has_prompt_marker(window_id):
-        await setup_shell_prompt(window_id)
+        await setup_shell_prompt(window_id, clear=False)
 
 
 async def _cancel_stuck_input(window_id: str) -> None:
@@ -195,7 +205,7 @@ async def handle_shell_message(
     raw_pane = await tmux_manager.capture_pane(window_id)
     if raw_pane:
         lines = raw_pane.strip().splitlines()
-        recent_output = "\n".join(lines[-10:])
+        recent_output = redact_for_llm("\n".join(lines[-10:]))
 
     gen_key = (chat_id, thread_id)
     gen_id = _generation_counter.get(gen_key, 0) + 1
@@ -275,6 +285,10 @@ async def show_command_approval(
     if key in _shell_pending:
         return False
 
+    # Reserve the slot before awaiting to prevent concurrent callers
+    # from emitting duplicate approval keyboards for the same topic.
+    _shell_pending[key] = (result.command, user_id)
+
     text = f"`{result.command}`"
     if result.explanation:
         text += f"\n{result.explanation}"
@@ -282,13 +296,17 @@ async def show_command_approval(
         text = f"\u26a0\ufe0f *Potentially dangerous*\n{text}"
 
     keyboard = _build_approval_keyboard(window_id, result.is_dangerous)
-    if message:
-        await safe_reply(message, text, reply_markup=keyboard)
-    else:
-        await safe_send(
-            bot, chat_id, text, message_thread_id=thread_id, reply_markup=keyboard
-        )
-    _shell_pending[key] = (result.command, user_id)
+    try:
+        if message:
+            await safe_reply(message, text, reply_markup=keyboard)
+        else:
+            await safe_send(
+                bot, chat_id, text, message_thread_id=thread_id, reply_markup=keyboard
+            )
+    except Exception:
+        # If send fails, release the slot so future attempts aren't blocked
+        _shell_pending.pop(key, None)
+        raise
     return True
 
 

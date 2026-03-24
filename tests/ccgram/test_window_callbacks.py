@@ -192,6 +192,7 @@ class TestBindProviderDetection:
         mock_window = MagicMock()
         mock_window.window_name = "my-shell"
         mock_window.pane_current_command = "fish"
+        mock_window.pane_tty = "/dev/ttys003"
 
         with (
             patch("ccgram.handlers.window_callbacks.session_manager") as mock_sm,
@@ -203,7 +204,8 @@ class TestBindProviderDetection:
             patch("ccgram.handlers.window_callbacks.safe_edit"),
             patch("ccgram.handlers.window_callbacks.format_topic_name_for_mode"),
             patch(
-                "ccgram.providers.detect_provider_from_command",
+                "ccgram.providers.detect_provider_from_pane",
+                new_callable=AsyncMock,
                 return_value="shell",
             ),
             patch(
@@ -216,7 +218,7 @@ class TestBindProviderDetection:
             await handle_window_callback(query, 100, f"{CB_WIN_BIND}0", update, context)
 
         mock_sm.set_window_provider.assert_called_once_with("@5", "shell")
-        mock_setup.assert_awaited_once_with("@5")
+        mock_setup.assert_awaited_once_with("@5", clear=False)
 
     async def test_bind_claude_window_does_not_offer_prompt_setup(self) -> None:
         user_data = {UNBOUND_WINDOWS_KEY: ["@5"], PENDING_THREAD_ID: 42}
@@ -236,7 +238,8 @@ class TestBindProviderDetection:
             patch("ccgram.handlers.window_callbacks.safe_edit"),
             patch("ccgram.handlers.window_callbacks.format_topic_name_for_mode"),
             patch(
-                "ccgram.providers.detect_provider_from_command",
+                "ccgram.providers.detect_provider_from_pane",
+                new_callable=AsyncMock,
                 return_value="claude",
             ),
             patch(
@@ -272,7 +275,8 @@ class TestBindProviderDetection:
             patch("ccgram.handlers.window_callbacks.safe_edit"),
             patch("ccgram.handlers.window_callbacks.format_topic_name_for_mode"),
             patch(
-                "ccgram.providers.detect_provider_from_command",
+                "ccgram.providers.detect_provider_from_pane",
+                new_callable=AsyncMock,
                 return_value="shell",
             ),
             patch(

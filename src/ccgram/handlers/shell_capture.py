@@ -109,9 +109,11 @@ class _ShellMonitorState:
     telegram_command: str = ""  # command sent via Telegram (for error suggestions)
     telegram_user_id: int = 0
     telegram_thread_id: int = 0
+    telegram_generation: int = 0  # monotonic counter to discard stale fix suggestions
 
 
 _shell_monitor_state: dict[str, _ShellMonitorState] = {}
+_fix_generation: int = 0
 
 
 def strip_terminal_glyphs(text: str) -> str:
@@ -234,10 +236,13 @@ def mark_telegram_command(
     When the passive monitor detects this command completed with a non-zero
     exit code, it will trigger LLM-based error suggestions.
     """
+    global _fix_generation  # noqa: PLW0603
+    _fix_generation += 1
     state = _shell_monitor_state.setdefault(window_id, _ShellMonitorState())
     state.telegram_command = command
     state.telegram_user_id = user_id
     state.telegram_thread_id = thread_id
+    state.telegram_generation = _fix_generation
 
 
 async def _relay_output(
@@ -307,6 +312,7 @@ async def _maybe_suggest_fix(
     exit_code: int,
     msg_id: int | None,
     output: str,
+    generation: int = 0,
 ) -> None:
     """If exit code is non-zero, show error indicator and ask LLM for a fix."""
     if msg_id:
@@ -316,7 +322,7 @@ async def _maybe_suggest_fix(
         from ..llm import get_completer
 
         completer = get_completer()
-    except ValueError, ImportError:
+    except (ValueError, ImportError):  # fmt: skip
         completer = None
 
     if not completer:
@@ -326,7 +332,9 @@ async def _maybe_suggest_fix(
 
     ctx = await gather_llm_context(window_id)
 
-    trimmed = output or ""
+    from .shell_commands import redact_for_llm
+
+    trimmed = redact_for_llm(output or "")
     if len(trimmed) > _MAX_FIX_OUTPUT_CHARS:
         trimmed = f"\u2026{trimmed[-_MAX_FIX_OUTPUT_CHARS:]}"
 
@@ -344,6 +352,10 @@ async def _maybe_suggest_fix(
         )
     except RuntimeError:
         logger.debug("LLM fix suggestion failed")
+        return
+
+    # Discard stale fix if a newer command was sent while LLM was thinking
+    if generation and _fix_generation != generation:
         return
 
     if not result.command or result.command == command:
@@ -490,9 +502,11 @@ async def _relay_passive_output(
         tg_cmd = state.telegram_command
         tg_uid = state.telegram_user_id
         tg_tid = state.telegram_thread_id
+        tg_gen = state.telegram_generation
         state.telegram_command = ""
         state.telegram_user_id = 0
         state.telegram_thread_id = 0
+        state.telegram_generation = 0
         await _maybe_suggest_fix(
             bot,
             tg_uid,
@@ -503,4 +517,5 @@ async def _relay_passive_output(
             exit_code=passive.exit_code,
             msg_id=state.msg_id,
             output=passive.text,
+            generation=tg_gen,
         )

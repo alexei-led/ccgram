@@ -659,7 +659,7 @@ class TestLazyMarkerRecovery:
             mock_tm.capture_pane = AsyncMock(return_value=None)
             await handle_shell_message(bot, 1, 42, "@0", "!ls", message)
 
-        mock_setup.assert_awaited_once_with("@0")
+        mock_setup.assert_awaited_once_with("@0", clear=False)
 
     async def test_raw_command_skips_setup_when_marker_present(self) -> None:
         bot = AsyncMock(spec=Bot)
@@ -749,14 +749,14 @@ class TestDangerousCommandPrefix:
 
 class TestDetectShellTools:
     def setup_method(self) -> None:
-        import ccgram.handlers.shell_commands as mod
+        from ccgram.handlers.shell_commands import _detect_shell_tools
 
-        self._mod = mod
-        self._original = mod._cached_shell_tools
-        mod._cached_shell_tools = None
+        _detect_shell_tools.cache_clear()
 
     def teardown_method(self) -> None:
-        self._mod._cached_shell_tools = self._original
+        from ccgram.handlers.shell_commands import _detect_shell_tools
+
+        _detect_shell_tools.cache_clear()
 
     def test_returns_detected_tools(self) -> None:
         def fake_which(name: str) -> str | None:

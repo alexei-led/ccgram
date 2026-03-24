@@ -1075,7 +1075,7 @@ async def _maybe_discover_transcript(
                 state.transcript_path = ""  # shell has no transcripts
                 from ..providers.shell import setup_shell_prompt
 
-                await setup_shell_prompt(window_id)
+                await setup_shell_prompt(window_id, clear=False)
             elif old_provider == "shell":
                 from .shell_capture import clear_shell_monitor_state
 
@@ -1118,7 +1118,7 @@ async def _maybe_discover_transcript(
             state.transcript_path = ""  # shell has no transcripts
             from ..providers.shell import setup_shell_prompt
 
-            await setup_shell_prompt(window_id)
+            await setup_shell_prompt(window_id, clear=False)
             return
         # Try all hookless providers (exclude shell — no transcripts)
         providers_to_try = [

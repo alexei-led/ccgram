@@ -79,10 +79,12 @@ async def detect_pane_shell(window_id: str) -> str:
     return get_shell_name()
 
 
-async def setup_shell_prompt(window_id: str) -> None:
+async def setup_shell_prompt(window_id: str, *, clear: bool = True) -> None:
     """Override shell prompt with marker including exit code.
 
     No-op if the marker is already present in the pane (idempotent).
+    Set ``clear=False`` when attaching to an existing session to
+    preserve scrollback context.
     """
     if await has_prompt_marker(window_id):
         return
@@ -101,7 +103,8 @@ async def setup_shell_prompt(window_id: str) -> None:
     cmd = cmds.get(shell, cmds["bash"])
     await tmux_manager.send_keys(window_id, cmd)
     await asyncio.sleep(0.3)
-    await tmux_manager.send_keys(window_id, "clear")
+    if clear:
+        await tmux_manager.send_keys(window_id, "clear")
 
 
 class ShellProvider(JsonlProvider):

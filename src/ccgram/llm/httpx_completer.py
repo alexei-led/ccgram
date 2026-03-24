@@ -5,6 +5,7 @@ Supports any API that follows OpenAI's chat completions endpoint
 Uses raw httpx — zero new dependencies.
 """
 
+import abc
 import json
 import platform
 import re
@@ -154,7 +155,7 @@ def _parse_command_result(text: str) -> CommandResult:
     )
 
 
-class _BaseCompleter:
+class _BaseCompleter(abc.ABC):
     """Shared base for LLM command generators using httpx.
 
     Subclasses provide ``_url()``, ``_headers()``, ``_payload()``, and
@@ -232,9 +233,10 @@ class _BaseCompleter:
                 msg = f"Unexpected LLM response: {response.text[:200]}"
                 raise RuntimeError(msg) from exc
 
+    @abc.abstractmethod
     async def _request(self, user_msg: str, *, shell: str = "") -> str:
         """Send the request and return the response text."""
-        raise NotImplementedError
+        ...
 
 
 class OpenAICompatCompleter(_BaseCompleter):

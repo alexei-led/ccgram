@@ -22,6 +22,7 @@ Key methods for thread binding access:
 """
 
 import asyncio
+import fcntl
 import json
 import structlog
 from dataclasses import dataclass, field
@@ -1035,15 +1036,23 @@ class SessionManager:
         """Remove a window's entry from session_map.json if present."""
         if not config.session_map_file.exists():
             return
+        lock_path = config.session_map_file.with_suffix(".lock")
         try:
-            raw = json.loads(config.session_map_file.read_text())
-        except json.JSONDecodeError, OSError:
-            return
-        key = f"{config.tmux_session_name}:{window_id}"
-        if key in raw:
-            del raw[key]
-            atomic_write_json(config.session_map_file, raw)
-            logger.debug("Cleared session_map entry for %s", window_id)
+            with open(lock_path, "w") as lock_f:
+                fcntl.flock(lock_f, fcntl.LOCK_EX)
+                try:
+                    raw = json.loads(config.session_map_file.read_text())
+                    key = f"{config.tmux_session_name}:{window_id}"
+                    if key in raw:
+                        del raw[key]
+                        atomic_write_json(config.session_map_file, raw)
+                        logger.debug("Cleared session_map entry for %s", window_id)
+                except (json.JSONDecodeError, OSError):  # fmt: skip
+                    return
+                finally:
+                    fcntl.flock(lock_f, fcntl.LOCK_UN)
+        except OSError:
+            logger.debug("Failed to lock session_map for clearing %s", window_id)
 
     def get_approval_mode(self, window_id: str) -> str:
         """Get approval mode for a window (default: 'normal')."""

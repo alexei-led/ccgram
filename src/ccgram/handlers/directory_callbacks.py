@@ -467,6 +467,21 @@ def _parse_mode_select(data: str) -> tuple[str, str] | None:
     return provider_name, approval_mode.lower()
 
 
+async def _wait_for_shell_ready(window_id: str, *, attempts: int = 5) -> None:
+    """Wait for a freshly created tmux window to show a shell prompt."""
+    import os
+
+    from ccgram.providers.shell import KNOWN_SHELLS
+
+    for _ in range(attempts):
+        w = await tmux_manager.find_window_by_id(window_id)
+        if w and w.pane_current_command:
+            cmd = os.path.basename(w.pane_current_command.split()[0]).lstrip("-")
+            if cmd in KNOWN_SHELLS:
+                return
+        await asyncio.sleep(0.2)
+
+
 async def _create_window_and_bind(
     query: CallbackQuery,
     user_id: int,
@@ -518,7 +533,7 @@ async def _create_window_and_bind(
     if provider_name == "shell":
         from ccgram.providers.shell import setup_shell_prompt
 
-        await asyncio.sleep(0.5)
+        await _wait_for_shell_ready(created_wid)
         await setup_shell_prompt(created_wid)
 
     if provider_registry.get(provider_name).capabilities.supports_hook:

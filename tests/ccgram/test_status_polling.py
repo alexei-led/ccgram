@@ -886,7 +886,7 @@ class TestProviderSwitchPromptSetup:
             await _maybe_discover_transcript("@7", bot=bot, user_id=1, thread_id=42)
 
         mock_sm.set_window_provider.assert_called_once_with("@7", "shell", cwd="/proj")
-        mock_setup.assert_awaited_once_with("@7")
+        mock_setup.assert_awaited_once_with("@7", clear=False)
 
     async def test_switch_to_claude_does_not_offer_prompt_setup(self) -> None:
         from ccgram.handlers.status_polling import _maybe_discover_transcript
@@ -961,7 +961,7 @@ class TestProviderSwitchPromptSetup:
             await _maybe_discover_transcript("@7", bot=bot, user_id=1, thread_id=42)
 
         mock_sm.set_window_provider.assert_called_once_with("@7", "shell")
-        mock_setup.assert_awaited_once_with("@7")
+        mock_setup.assert_awaited_once_with("@7", clear=False)
 
     async def test_fallback_shell_assignment_sets_up_prompt_without_bot(self) -> None:
         from ccgram.handlers.status_polling import _maybe_discover_transcript
@@ -999,7 +999,7 @@ class TestProviderSwitchPromptSetup:
             mock_config.tmux_session_name = "ccgram"
             await _maybe_discover_transcript("@7")
 
-        mock_setup.assert_awaited_once_with("@7")
+        mock_setup.assert_awaited_once_with("@7", clear=False)
 
 
 class TestMaybeDiscoverTranscript:
