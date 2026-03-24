@@ -181,19 +181,17 @@ class TestHandleVoiceMessage:
         mock_download.return_value = b"fake audio bytes"
 
         mock_reply_msg = MagicMock()
-        mock_reply_msg.message_id = 42
         mock_reply_msg.chat = MagicMock()
         mock_reply_msg.chat.id = 999
-        mock_reply_msg.edit_reply_markup = AsyncMock()
         update = _make_update()
-        update.message.reply_text = AsyncMock(return_value=mock_reply_msg)
+        mock_reply.return_value = mock_reply_msg
 
         context = MagicMock()
         context.user_data = {}
 
         await voice_handler.handle_voice_message(update, context)
 
-        assert context.user_data[VOICE_PENDING][(999, 42)] == "do the thing"
+        assert context.user_data[VOICE_PENDING][(999, 1)] == "do the thing"
         update.message.get_bot.return_value.send_chat_action.assert_awaited_once_with(
             chat_id=999, message_thread_id=42, action=ChatAction.TYPING
         )
@@ -206,7 +204,7 @@ class TestHandleVoiceMessage:
     @patch(f"{_VH}.config")
     @patch(f"{_VH}.get_transcriber")
     @patch(f"{_VH}.safe_reply", new_callable=AsyncMock)
-    async def test_markup_failure_clears_pending(
+    async def test_confirm_reply_gone_skips_pending(
         self,
         mock_reply: AsyncMock,
         mock_get_transcriber: MagicMock,
@@ -214,8 +212,6 @@ class TestHandleVoiceMessage:
         mock_session_manager: MagicMock,
         mock_download: AsyncMock,
     ) -> None:
-        from telegram.error import TelegramError
-
         from ccgram.handlers import voice_handler
 
         mock_config.is_user_allowed.return_value = True
@@ -227,15 +223,8 @@ class TestHandleVoiceMessage:
         mock_session_manager.resolve_window_for_thread.return_value = "@0"
         mock_download.return_value = b"fake audio bytes"
 
-        mock_reply_msg = MagicMock()
-        mock_reply_msg.message_id = 42
-        mock_reply_msg.chat = MagicMock()
-        mock_reply_msg.chat.id = 999
-        mock_reply_msg.edit_reply_markup = AsyncMock(
-            side_effect=TelegramError("markup failed")
-        )
+        mock_reply.return_value = None
         update = _make_update()
-        update.message.reply_text = AsyncMock(return_value=mock_reply_msg)
 
         context = MagicMock()
         context.user_data = {}
@@ -243,8 +232,6 @@ class TestHandleVoiceMessage:
         await voice_handler.handle_voice_message(update, context)
 
         assert context.user_data == {}
-        mock_reply.assert_awaited_once()
-        assert "confirmation buttons" in mock_reply.call_args.args[1].lower()
 
     @patch(f"{_VH}._download_voice", new_callable=AsyncMock)
     @patch(f"{_VH}.session_manager")

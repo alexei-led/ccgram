@@ -90,28 +90,20 @@ async def _transcribe_audio(
 async def _send_confirm_message(
     message: Message, text: str, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    """Send transcription text, then attach the confirm/discard keyboard.
+    """Send transcription with confirm/discard keyboard in a single message.
 
-    We send without a keyboard first to learn the message_id, store the pending
-    text under that id, then edit the keyboard in — so callback_data always carries
-    a real message_id and the user_data entry exists before any tap is possible.
+    Uses the original voice message_id as the callback reference so the keyboard
+    is included on first send (no edit_reply_markup needed).
     """
-    confirm_msg = await message.reply_text(f"🎤 Transcribed:\n\n{text}")
-
-    try:
-        await confirm_msg.edit_reply_markup(
-            reply_markup=_build_voice_keyboard(confirm_msg.message_id)
-        )
-    except TelegramError as e:
-        logger.warning("Failed to attach voice confirm keyboard: %s", e)
-        await safe_reply(
-            message,
-            "⚠️ Could not attach confirmation buttons. Please resend the voice message.",
-        )
+    keyboard = _build_voice_keyboard(message.message_id)
+    confirm_msg = await safe_reply(
+        message, f"🎤 Transcribed:\n\n{text}", reply_markup=keyboard
+    )
+    if confirm_msg is None:
         return
 
     if context.user_data is not None:
-        key = (confirm_msg.chat.id, confirm_msg.message_id)
+        key = (confirm_msg.chat.id, message.message_id)
         context.user_data.setdefault(VOICE_PENDING, {})[key] = text
 
 
