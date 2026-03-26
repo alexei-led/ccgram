@@ -117,32 +117,51 @@ def _wrap_setup_commands(shell: str) -> str:
     """Return the shell command that appends a ⌘N⌘ marker to the prompt."""
     # Fish: wrap existing fish_prompt, preserving Tide/Starship/etc.
     # Uses set_color instead of raw ANSI — avoids escape mangling via send_keys.
-    # Fallback: if fish_prompt doesn't exist (minimal config), define a no-op.
+    # Guard: skip if __ccgram_orig_prompt already exists (idempotent).
+    # Embedded clear hides the setup command from the user.
     fish = (
-        "functions -c fish_prompt __ccgram_orig_prompt 2>/dev/null; "
+        "functions -q __ccgram_orig_prompt; or begin; "
+        "functions --copy fish_prompt __ccgram_orig_prompt 2>/dev/null; "
         "or function __ccgram_orig_prompt; end; "
         "function fish_prompt; "
         "set -l __s $status; "
         "__ccgram_orig_prompt; "
         "set_color brblack; printf '⌘%d⌘ ' $__s; set_color normal; "
-        "end"
+        "end; clear; end"
     )
     # Bash: save exit code in PROMPT_COMMAND before user hooks run,
-    # then append marker to existing PS1.  ANSI dim codes are safe
-    # inside a PS1 string assignment (bash interprets \033 at render time).
+    # then append marker to existing PS1.  Guard: skip if __ccgram_sc exists.
     bash = (
+        "type __ccgram_sc >/dev/null 2>&1 || { "
         "__ccgram_sc(){ __ccgram_x=$?; return $__ccgram_x; }; "
         'PROMPT_COMMAND="__ccgram_sc${PROMPT_COMMAND:+;$PROMPT_COMMAND}"; '
-        'PS1="${PS1}\\[\\033[2m\\]⌘\\${__ccgram_x}⌘\\[\\033[0m\\] "'
+        'PS1="${PS1}\\[\\033[2m\\]⌘\\${__ccgram_x}⌘\\[\\033[0m\\] "; '
+        "clear; }"
     )
-    # Zsh: append marker to existing PROMPT.  %{...%} wraps non-printing
-    # sequences; zsh interprets \033 at render time.
-    zsh = 'PROMPT="${PROMPT}%{\\033[2m%}⌘%?⌘%{\\033[0m%} "'
+    # Zsh: append marker to existing PROMPT.  Guard: skip if marker present.
+    # \\? in the glob escapes ? to match literal (zsh expands %? at render time).
+    zsh = (
+        '[[ "$PROMPT" == *⌘%\\?⌘* ]] || { '
+        'PROMPT="${PROMPT}%{\\033[2m%}⌘%?⌘%{\\033[0m%} "; '
+        "clear; }"
+    )
     # tcsh/csh: append marker to existing prompt (no dim support).
+    # No inline guard — tcsh lacks POSIX case/block syntax for one-liners.
+    # The Python-level has_prompt_marker() check provides idempotency.
     tcsh = 'set prompt = "${prompt}⌘$status⌘ "'
-    return {"fish": fish, "bash": bash, "zsh": zsh, "tcsh": tcsh, "csh": tcsh}.get(
-        shell, bash
-    )
+    # POSIX sh/dash/ksh: replace prompt (can't reliably wrap).
+    # Static ⌘0⌘ marker — POSIX sh doesn't expand $? in PS1 dynamically.
+    sh = 'case "$PS1" in *⌘*⌘*) ;; *) PS1="\\$ ⌘0⌘ "; clear;; esac'
+    return {
+        "fish": fish,
+        "bash": bash,
+        "zsh": zsh,
+        "tcsh": tcsh,
+        "csh": tcsh,
+        "sh": sh,
+        "dash": sh,
+        "ksh": sh,
+    }.get(shell, sh)
 
 
 def _replace_setup_commands(shell: str, prefix: str) -> str:
@@ -183,10 +202,10 @@ async def setup_shell_prompt(window_id: str, *, clear: bool = True) -> None:
         cmd = _replace_setup_commands(shell, _get_marker_prefix())
     else:
         cmd = _wrap_setup_commands(shell)
-    await tmux_manager.send_keys(window_id, cmd)
+    await tmux_manager.send_keys(window_id, cmd, raw=True)
     await asyncio.sleep(0.3)
     if clear:
-        await tmux_manager.send_keys(window_id, "clear")
+        await tmux_manager.send_keys(window_id, "clear", raw=True)
 
 
 class ShellProvider(JsonlProvider):

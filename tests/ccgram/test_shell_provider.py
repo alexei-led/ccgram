@@ -258,6 +258,37 @@ class TestSetupShellPrompt:
         assert len(calls) == 3
         assert calls[2][0][1] == "clear"
 
+    async def test_send_keys_uses_raw_true(self, mock_tmux) -> None:
+        from ccgram.providers.shell import setup_shell_prompt
+
+        mock_tmux.find_window_by_id = AsyncMock(
+            return_value=TmuxWindow(
+                window_id="@0",
+                window_name="test",
+                cwd="/tmp",
+                pane_current_command="bash",
+            )
+        )
+        mock_tmux.send_keys = AsyncMock()
+
+        await setup_shell_prompt("@0")
+
+        calls = mock_tmux.send_keys.call_args_list
+        # calls[1] = prompt command, calls[2] = clear — both should use raw=True
+        assert calls[1][1].get("raw") is True
+        assert calls[2][1].get("raw") is True
+
+    @pytest.mark.usefixtures("_wrap_mode")
+    async def test_skips_setup_when_marker_present(self, mock_tmux) -> None:
+        from ccgram.providers.shell import setup_shell_prompt
+
+        mock_tmux.capture_pane = AsyncMock(return_value="~/code main ❯ ⌘0⌘ ")
+        mock_tmux.send_keys = AsyncMock()
+
+        await setup_shell_prompt("@0")
+
+        mock_tmux.send_keys.assert_not_called()
+
 
 class TestGetShellName:
     def test_returns_basename_of_shell_env(self) -> None:
@@ -380,7 +411,8 @@ class TestWrapModeSetup:
         await setup_shell_prompt("@0")
 
         cmd = mock_tmux.send_keys.call_args_list[1][0][1]
-        assert "functions -c fish_prompt __ccgram_orig_prompt" in cmd
+        assert "functions --copy fish_prompt __ccgram_orig_prompt" in cmd
+        assert "functions -q __ccgram_orig_prompt" in cmd
         assert "__ccgram_orig_prompt" in cmd
         assert "⌘%d⌘" in cmd
         assert "set_color brblack" in cmd
@@ -476,9 +508,16 @@ class TestWrapSetupCommands:
             ("fish", "__ccgram_orig_prompt"),
             ("fish", "set_color brblack"),
             ("fish", "or function __ccgram_orig_prompt"),
+            ("fish", "functions -q __ccgram_orig_prompt"),
             ("bash", "PROMPT_COMMAND"),
             ("bash", "⌘\\${__ccgram_x}⌘"),
+            ("bash", "type __ccgram_sc"),
             ("zsh", "⌘%?⌘"),
+            ("zsh", "⌘%\\?⌘"),
+            ("sh", "⌘0⌘"),
+            ("sh", "⌘*⌘"),
+            ("dash", "⌘0⌘"),
+            ("ksh", "⌘0⌘"),
             ("tcsh", "⌘$status⌘"),
             ("csh", "⌘$status⌘"),
         ],
@@ -486,9 +525,16 @@ class TestWrapSetupCommands:
             "fish-wraps-original",
             "fish-uses-set_color",
             "fish-has-fallback",
+            "fish-guard",
             "bash-prompt-command",
             "bash-marker-format",
+            "bash-guard",
             "zsh-marker-format",
+            "zsh-guard",
+            "sh-marker",
+            "sh-guard",
+            "dash-marker",
+            "ksh-marker",
             "tcsh-marker-format",
             "csh-marker-format",
         ],
@@ -498,11 +544,11 @@ class TestWrapSetupCommands:
 
         assert expected in _wrap_setup_commands(shell)
 
-    def test_unknown_shell_falls_back_to_bash(self) -> None:
+    def test_unknown_shell_falls_back_to_posix(self) -> None:
         from ccgram.providers.shell import _wrap_setup_commands
 
         cmd = _wrap_setup_commands("unknown_shell")
-        assert "PROMPT_COMMAND" in cmd
+        assert "⌘0⌘" in cmd
 
 
 class TestReplaceSetupCommands:
