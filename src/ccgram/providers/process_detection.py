@@ -95,6 +95,34 @@ def classify_provider_from_args(args: str) -> str:
     return ""
 
 
+async def _run_ps(tty_path: str) -> bytes | None:
+    """Run ``ps -t <tty>`` with timeout, kill on timeout. None on error."""
+    import contextlib
+
+    proc: asyncio.subprocess.Process | None = None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ps",
+            "-t",
+            tty_path,
+            "-o",
+            "pid=,pgid=,stat=,args=",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        async with asyncio.timeout(3.0):
+            stdout, _ = await proc.communicate()
+    except TimeoutError:
+        if proc:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+                await proc.wait()
+        return None
+    except OSError:
+        return None
+    return stdout if proc.returncode == 0 else None
+
+
 async def get_foreground_args(tty_path: str) -> tuple[str, int]:
     """Get the full argv and PGID of the foreground process on a TTY.
 
@@ -108,22 +136,8 @@ async def get_foreground_args(tty_path: str) -> tuple[str, int]:
     if not tty_path:
         return "", 0
 
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "ps",
-            "-t",
-            tty_path,
-            "-o",
-            "pid=,pgid=,stat=,args=",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        async with asyncio.timeout(3.0):
-            stdout, _ = await proc.communicate()
-    except TimeoutError, OSError:
-        return "", 0
-
-    if proc.returncode != 0 or not stdout:
+    stdout = await _run_ps(tty_path)
+    if not stdout:
         return "", 0
 
     best_args = ""

@@ -39,7 +39,6 @@ from .callback_data import (
 from .message_sender import edit_with_fallback, rate_limit_send_message
 
 # Top-level loop resilience: catch any error to keep the worker alive
-_LoopError = (TelegramError, OSError, RuntimeError, ValueError)
 
 logger = structlog.get_logger()
 
@@ -195,11 +194,19 @@ def get_message_queue(user_id: int) -> asyncio.Queue[MessageTask] | None:
 
 
 def get_or_create_queue(bot: Bot, user_id: int) -> asyncio.Queue[MessageTask]:
-    """Get or create message queue and worker for a user."""
+    """Get or create message queue and worker for a user.
+
+    Also detects dead workers and respawns them so messages are not lost.
+    """
     if user_id not in _message_queues:
         _message_queues[user_id] = asyncio.Queue()
         _queue_locks[user_id] = asyncio.Lock()
-        # Start worker task for this user
+
+    # Respawn dead workers (can happen if an uncaught exception killed the task)
+    existing = _queue_workers.get(user_id)
+    if existing is None or existing.done():
+        if existing is not None:
+            logger.warning("Respawning dead queue worker for user %s", user_id)
         task = asyncio.create_task(_message_queue_worker(bot, user_id))
         task.add_done_callback(task_done_callback)
         _queue_workers[user_id] = task
@@ -559,7 +566,9 @@ async def _message_queue_worker(bot: Bot, user_id: int) -> None:
         except asyncio.CancelledError:
             logger.debug("Message queue worker cancelled for user %s", user_id)
             break
-        except _LoopError:
+        except Exception:
+            # Catch-all: any error (network, programming, etc.) must not kill
+            # the queue worker — log and continue processing next message.
             logger.exception(
                 "Unexpected error in queue worker for user %s",
                 user_id,

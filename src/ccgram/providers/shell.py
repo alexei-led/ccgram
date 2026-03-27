@@ -120,7 +120,7 @@ def _wrap_setup_commands(shell: str) -> str:
     # Guard: skip if __ccgram_orig_prompt already exists (idempotent).
     # Embedded clear hides the setup command from the user.
     fish = (
-        "functions -q __ccgram_orig_prompt; or begin; "
+        "functions --query __ccgram_orig_prompt; or begin; "
         "functions --copy fish_prompt __ccgram_orig_prompt 2>/dev/null; "
         "or function __ccgram_orig_prompt; end; "
         "function fish_prompt; "
@@ -176,6 +176,41 @@ def _replace_setup_commands(shell: str, prefix: str) -> str:
     return cmds.get(shell, cmds["bash"])
 
 
+async def _is_interactive_shell(window_id: str) -> bool:
+    """Check if the pane has an interactive shell at a prompt (not running a script).
+
+    Uses ``ps -t`` to inspect the foreground process. A shell running a script
+    (e.g. ``bash ./scripts/restart.sh``) has child processes in the foreground
+    group, while an idle interactive shell is its own foreground leader with
+    bare args like ``-bash``, ``fish``, or ``/bin/zsh``.
+
+    Returns True if the shell looks interactive, False if it's running a script
+    or if detection fails (fail-safe: don't send C-c to unknown targets).
+    """
+    from ccgram.tmux_manager import tmux_manager
+
+    w = await tmux_manager.find_window_by_id(window_id)
+    if not w or not w.pane_tty:
+        return False
+
+    from .process_detection import get_foreground_args
+
+    args, _ = await get_foreground_args(w.pane_tty)
+    if not args:
+        return False
+
+    # Interactive shells have bare args: -bash, fish, /usr/bin/zsh, etc.
+    # Script-running shells have: bash ./script.sh, bash -c '...', etc.
+    first_token = args.split()[0]
+    basename = first_token.rsplit("/", 1)[-1].lstrip("-")
+    if basename not in KNOWN_SHELLS:
+        return False
+
+    # If there are args beyond the shell name, it's running a script/command
+    tokens = args.split()
+    return len(tokens) == 1
+
+
 async def setup_shell_prompt(window_id: str, *, clear: bool = True) -> None:
     """Configure the shell prompt with a detectable marker.
 
@@ -187,6 +222,17 @@ async def setup_shell_prompt(window_id: str, *, clear: bool = True) -> None:
     Set ``clear=False`` when attaching to an existing session to
     preserve scrollback context.
     """
+    from ccgram.config import config
+
+    # Never send prompt setup to ccgram's own window — the C-c would kill the bot
+    if config.own_window_id and window_id == config.own_window_id:
+        return
+
+    # Safety: verify the shell is actually idle at a prompt, not running a script.
+    # Sending C-c to a shell running restart.sh/ccgram would kill the service.
+    if not await _is_interactive_shell(window_id):
+        return
+
     if await has_prompt_marker(window_id):
         return
 

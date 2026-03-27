@@ -715,6 +715,9 @@ async def forward_command_handler(
         probe_pane_before,
     ) = await _capture_command_probe_context(window_id, provider)
     status_probe_offset = _codex_status_probe_offset(window_id, cc_slash)
+    from .handlers.status_polling import clear_probe_failures
+
+    clear_probe_failures(window_id)
     success, message = await session_manager.send_to_window(window_id, cc_slash)
     if success:
         if thread_id is not None:
@@ -1727,8 +1730,20 @@ async def _adopt_unbound_windows(bot: Bot) -> None:
         logger.info("Startup: adopted %d unbound window(s)", len(orphaned))
 
 
+def _global_exception_handler(
+    _loop: asyncio.AbstractEventLoop, context: dict[str, object]
+) -> None:
+    """Last-resort handler for uncaught exceptions in asyncio tasks."""
+    exc = context.get("exception")
+    msg = context.get("message", "Unhandled exception in event loop")
+    logger.error("asyncio exception handler: %s", msg, exc_info=exc)  # type: ignore[arg-type]
+
+
 async def post_init(application: Application) -> None:
     global session_monitor, _status_poll_task, _global_provider_menu
+
+    # Install global asyncio exception handler as safety net
+    asyncio.get_running_loop().set_exception_handler(_global_exception_handler)
 
     default_provider = get_provider()
     try:
@@ -1844,7 +1859,12 @@ async def _send_shutdown_notification(application: Application) -> None:
         logger.debug("Failed to send shutdown notification", exc_info=True)
 
 
-async def post_shutdown(application: Application) -> None:
+async def post_stop(application: Application) -> None:
+    """Send shutdown notification while HTTP transport is still alive."""
+    await _send_shutdown_notification(application)
+
+
+async def post_shutdown(_application: Application) -> None:
     global _status_poll_task
 
     # Stop status polling
@@ -1864,9 +1884,6 @@ async def post_shutdown(application: Application) -> None:
 
     # Flush debounced state to disk AFTER workers/monitor stop (captures final mutations)
     session_manager.flush_state()
-
-    # Notify Telegram group that the bot is shutting down
-    await _send_shutdown_notification(application)
 
 
 async def _error_handler(_update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1894,6 +1911,7 @@ def create_bot() -> Application:
         .token(config.telegram_bot_token)
         .get_updates_request(ResilientPollingHTTPXRequest(connection_pool_size=1))
         .post_init(post_init)
+        .post_stop(post_stop)
         .post_shutdown(post_shutdown)
         .build()
     )

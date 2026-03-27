@@ -487,8 +487,12 @@ class SessionManager:
             else [k for k in self.group_chat_ids if k not in bound_keys]
         )
 
+        # Prune stale byte offsets (independent of display/chat pruning)
+        all_known = live_window_ids | in_use
+        offsets_changed = self.prune_stale_offsets(all_known)
+
         if not stale_display and not stale_chat:
-            return False
+            return offsets_changed
 
         for wid in stale_display:
             logger.info(
@@ -933,7 +937,6 @@ class SessionManager:
         Uses file locking consistent with hook.py. Safe to call from any
         thread (no asyncio handles touched).
         """
-        import contextlib
         import fcntl
 
         map_file = config.session_map_file
@@ -950,8 +953,28 @@ class SessionManager:
                 try:
                     session_map: dict[str, Any] = {}
                     if map_file.exists():
-                        with contextlib.suppress(json.JSONDecodeError, OSError):
-                            session_map = json.loads(map_file.read_text())
+                        try:
+                            parsed = json.loads(map_file.read_text())
+                            if isinstance(parsed, dict):
+                                session_map = parsed
+                        except json.JSONDecodeError:
+                            backup = map_file.with_suffix(".json.corrupt")
+                            try:
+                                import shutil
+
+                                shutil.copy2(map_file, backup)
+                                logger.warning(
+                                    "Corrupted session_map.json backed up to %s",
+                                    backup,
+                                )
+                            except OSError:
+                                logger.warning(
+                                    "Corrupted session_map.json (backup failed)"
+                                )
+                        except OSError:
+                            logger.warning(
+                                "Failed to read session_map.json for hookless write"
+                            )
                     display_name = self.get_display_name(window_id)
                     session_map[window_key] = {
                         "session_id": session_id,

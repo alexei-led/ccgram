@@ -39,7 +39,7 @@ from .utils import (
     task_done_callback,
 )
 
-_CallbackError = (OSError, RuntimeError, TelegramError)
+_CallbackError = Exception
 # Top-level loop resilience: catch any error to keep monitoring alive
 _LoopError = (OSError, RuntimeError, json.JSONDecodeError, ValueError, TelegramError)
 
@@ -812,6 +812,13 @@ class SessionMonitor:
 
             except _LoopError:
                 logger.exception("Monitor loop error")
+                backoff_delay = min(_BACKOFF_MAX, _BACKOFF_MIN * (2**error_streak))
+                error_streak += 1
+                await asyncio.sleep(backoff_delay)
+                continue
+            except Exception:
+                # Catch-all: programming errors must not kill the monitor loop.
+                logger.exception("Unexpected error in monitor loop")
                 backoff_delay = min(_BACKOFF_MAX, _BACKOFF_MIN * (2**error_streak))
                 error_streak += 1
                 await asyncio.sleep(backoff_delay)

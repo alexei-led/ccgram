@@ -83,7 +83,10 @@ def parse_jsonl_entries(
         msg_type = entry.get("type", "")
         if msg_type not in ("user", "assistant"):
             continue
-        content = entry.get("message", {}).get("content", "")
+        message = entry.get("message")
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content", "")
         text, content_type, pending = extract_content_blocks(content, pending)
         if text:
             messages.append(
@@ -120,7 +123,10 @@ def parse_jsonl_history_entry(entry: dict[str, Any]) -> AgentMessage | None:
     msg_type = entry.get("type", "")
     if msg_type not in ("user", "assistant"):
         return None
-    content = entry.get("message", {}).get("content", "")
+    message = entry.get("message")
+    if not isinstance(message, dict):
+        return None
+    content = message.get("content", "")
     if isinstance(content, list):
         text = "".join(
             b.get("text", "")

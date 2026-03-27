@@ -367,14 +367,21 @@ async def _check_unbound_window_ttl(live_windows: list | None = None) -> None:
         if ws.unbound_timer is not None and now - ws.unbound_timer >= timeout
     ]
     for wid in expired:
-        ws = _window_poll_state.get(wid)
-        if ws:
-            ws.unbound_timer = None
         from ..tmux_manager import clear_vim_state
 
         clear_vim_state(wid)
         await tmux_manager.kill_window(wid)
+        clear_window_poll_state(wid)
         logger.info("Auto-killed unbound window %s (TTL expired)", wid)
+
+    # Prune poll state for windows that are neither live nor bound
+    stale_poll_ids = [
+        wid
+        for wid in _window_poll_state
+        if wid not in live_ids and wid not in bound_ids
+    ]
+    for wid in stale_poll_ids:
+        clear_window_poll_state(wid)
 
 
 async def _check_autoclose_timers(bot: Bot) -> None:
@@ -1315,6 +1322,14 @@ async def status_poll_loop(bot: Bot) -> None:
 
         except _LoopError:
             logger.exception("Status poll loop error")
+            backoff_delay = min(_BACKOFF_MAX, _BACKOFF_MIN * (2**_error_streak))
+            _error_streak += 1
+            await asyncio.sleep(backoff_delay)
+            continue
+        except Exception:
+            # Catch-all: programming errors (KeyError, TypeError, AttributeError,
+            # etc.) must not kill the polling loop — log and continue.
+            logger.exception("Unexpected error in status poll loop")
             backoff_delay = min(_BACKOFF_MAX, _BACKOFF_MIN * (2**_error_streak))
             _error_streak += 1
             await asyncio.sleep(backoff_delay)

@@ -51,17 +51,26 @@ def _retry_after_seconds(exc: RetryAfter) -> int:
 
 # Rate limiting: last send time per chat to avoid Telegram flood control
 _last_send_time: dict[int, float] = {}
+_rate_limit_locks: dict[int, asyncio.Lock] = {}
 MESSAGE_SEND_INTERVAL = 1.1  # seconds between messages to same chat
 
 
 async def rate_limit_send(chat_id: int) -> None:
-    """Wait if necessary to avoid Telegram flood control (max 1 msg/sec per chat)."""
-    now = time.monotonic()
-    if chat_id in _last_send_time:
-        elapsed = now - _last_send_time[chat_id]
-        if elapsed < MESSAGE_SEND_INTERVAL:
-            await asyncio.sleep(MESSAGE_SEND_INTERVAL - elapsed)
-    _last_send_time[chat_id] = time.monotonic()
+    """Wait if necessary to avoid Telegram flood control (max 1 msg/sec per chat).
+
+    Uses a per-chat lock to serialize concurrent senders, preventing two
+    coroutines from computing the same wake-up time and sending simultaneously.
+    """
+    lock = _rate_limit_locks.setdefault(chat_id, asyncio.Lock())
+    async with lock:
+        now = time.monotonic()
+        if chat_id in _last_send_time:
+            target = _last_send_time[chat_id] + MESSAGE_SEND_INTERVAL
+            if target > now:
+                _last_send_time[chat_id] = target
+                await asyncio.sleep(target - now)
+                return
+        _last_send_time[chat_id] = time.monotonic()
 
 
 async def _with_entity_fallback(

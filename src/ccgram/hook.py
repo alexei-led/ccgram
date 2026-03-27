@@ -494,11 +494,31 @@ def _update_session_map(
                 session_map: dict[str, dict[str, str]] = {}
                 if map_file.exists():
                     try:
-                        session_map = json.loads(map_file.read_text())
-                    except (json.JSONDecodeError, OSError):  # fmt: skip
-                        logger.warning(
-                            "Failed to read existing session_map, starting fresh"
-                        )
+                        raw = map_file.read_text()
+                        parsed = json.loads(raw)
+                        if isinstance(parsed, dict):
+                            session_map = parsed
+                        else:
+                            logger.warning(
+                                "session_map.json has unexpected type %s, ignoring",
+                                type(parsed).__name__,
+                            )
+                    except json.JSONDecodeError:
+                        # Corrupted JSON — preserve the file for inspection
+                        # instead of silently overwriting with near-empty data.
+                        backup = map_file.with_suffix(".json.corrupt")
+                        try:
+                            import shutil
+
+                            shutil.copy2(map_file, backup)
+                            logger.warning(
+                                "Corrupted session_map.json backed up to %s",
+                                backup,
+                            )
+                        except OSError:
+                            logger.warning("Corrupted session_map.json (backup failed)")
+                    except OSError:
+                        logger.warning("Failed to read session_map.json")
 
                 session_map[session_window_key] = {
                     "session_id": session_id,

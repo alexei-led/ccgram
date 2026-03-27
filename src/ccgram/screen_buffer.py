@@ -7,7 +7,10 @@ Used by terminal_parser.py for robust status and interactive UI detection.
 Key class: ScreenBuffer — create, feed raw text, read rendered lines.
 """
 
+import structlog
 import pyte
+
+logger = structlog.get_logger()
 
 
 class ScreenBuffer:
@@ -32,7 +35,11 @@ class ScreenBuffer:
 
     def feed(self, raw_text: str) -> None:
         """Feed raw terminal text (with ANSI escapes) into the screen."""
-        self._stream.feed(raw_text)
+        try:
+            self._stream.feed(raw_text)
+        except TypeError, ValueError, KeyError, IndexError, UnicodeDecodeError:
+            logger.debug("pyte feed error, resetting screen", exc_info=True)
+            self._screen.reset()
 
     @property
     def display(self) -> list[str]:
@@ -54,6 +61,8 @@ class ScreenBuffer:
 
     def resize(self, columns: int, rows: int) -> None:
         """Resize the screen and clear content."""
+        if columns < 1 or rows < 1:
+            return
         self._screen.resize(rows, columns)
         self._screen.reset()
 

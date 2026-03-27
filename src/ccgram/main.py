@@ -40,14 +40,15 @@ def _install_signal_handlers() -> None:
         _shutdown_signal = signum
 
         sig_name = signal.Signals(signum).name
-        debug = logging.getLogger("ccgram").isEnabledFor(logging.DEBUG)
-        if debug and frame is not None:
+        # Always log stack trace for signal diagnosis (helps find phantom SIGINTs)
+        if frame is not None:
             stack = "".join(traceback.format_stack(frame))
-            sys.stderr.write(f"\n[ccgram] {sig_name} received — call stack:\n{stack}\n")
-            sys.stderr.flush()
+            sys.stderr.write(
+                f"\n[ccgram] {sig_name} received (pid={os.getpid()}) — call stack:\n{stack}\n"
+            )
         else:
             sys.stderr.write(f"\n[ccgram] {sig_name} received (pid={os.getpid()})\n")
-            sys.stderr.flush()
+        sys.stderr.flush()
 
         raise SystemExit
 

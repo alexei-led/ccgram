@@ -52,6 +52,7 @@ async def _capture_with_scrollback(
     scrollback.  ``-J`` joins wrapped lines so prompt markers are never
     split across two lines on narrow terminals.
     """
+    proc: asyncio.subprocess.Process | None = None
     try:
         proc = await asyncio.create_subprocess_exec(
             "tmux",
@@ -69,7 +70,16 @@ async def _capture_with_scrollback(
             stdout, _ = await proc.communicate()
         text = stdout.decode("utf-8", errors="replace").rstrip()
         return text if text else None
-    except (TimeoutError, OSError) as exc:
+    except TimeoutError:
+        if proc:
+            import contextlib
+
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+                await proc.wait()
+        logger.debug("capture_with_scrollback timed out", window_id=window_id)
+        return None
+    except OSError as exc:
         logger.debug(
             "capture_with_scrollback failed", window_id=window_id, error=str(exc)
         )

@@ -16,6 +16,7 @@ Module-level: _vim_state cache, _vim_locks for per-window send serialization.
 """
 
 import asyncio
+import contextlib
 import fnmatch
 import structlog
 import subprocess
@@ -251,6 +252,7 @@ class TmuxManager:
     async def _find_foreign_window(self, qualified_id: str) -> TmuxWindow | None:
         """Check if a foreign tmux window exists and return TmuxWindow."""
         session_name, window_id_part = qualified_id.rsplit(":", 1)
+        proc: asyncio.subprocess.Process | None = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 "tmux",
@@ -264,7 +266,13 @@ class TmuxManager:
             )
             async with asyncio.timeout(5.0):
                 stdout, _ = await proc.communicate()
-        except TimeoutError, OSError:
+        except TimeoutError:
+            if proc:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                    await proc.wait()
+            return None
+        except OSError:
             return None
         if proc.returncode != 0:
             return None
@@ -719,6 +727,7 @@ class TmuxManager:
         if now < self._external_cache_expires:
             return list(self._external_cache)
 
+        proc: asyncio.subprocess.Process | None = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 "tmux",
@@ -730,7 +739,13 @@ class TmuxManager:
             )
             async with asyncio.timeout(5.0):
                 stdout, _ = await proc.communicate()
-        except TimeoutError, OSError:
+        except TimeoutError:
+            if proc:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                    await proc.wait()
+            return []
+        except OSError:
             return []
         if proc.returncode != 0:
             return []
@@ -759,6 +774,7 @@ class TmuxManager:
 
     async def _scan_session_windows(self, session_name: str) -> list[TmuxWindow]:
         """List windows in *session_name* that run a recognised AI provider."""
+        proc: asyncio.subprocess.Process | None = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 "tmux",
@@ -772,7 +788,13 @@ class TmuxManager:
             )
             async with asyncio.timeout(5.0):
                 win_stdout, _ = await proc.communicate()
-        except TimeoutError, OSError:
+        except TimeoutError:
+            if proc:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                    await proc.wait()
+            return []
+        except OSError:
             return []
         if proc.returncode != 0:
             return []
