@@ -67,8 +67,8 @@ async def rate_limit_send(chat_id: int) -> None:
         if chat_id in _last_send_time:
             target = _last_send_time[chat_id] + MESSAGE_SEND_INTERVAL
             if target > now:
-                _last_send_time[chat_id] = target
                 await asyncio.sleep(target - now)
+                _last_send_time[chat_id] = time.monotonic()
                 return
         _last_send_time[chat_id] = time.monotonic()
 

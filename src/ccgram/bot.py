@@ -1736,7 +1736,14 @@ def _global_exception_handler(
     """Last-resort handler for uncaught exceptions in asyncio tasks."""
     exc = context.get("exception")
     msg = context.get("message", "Unhandled exception in event loop")
-    logger.error("asyncio exception handler: %s", msg, exc_info=exc)  # type: ignore[arg-type]
+    if isinstance(exc, BaseException):
+        logger.error(
+            "asyncio exception handler: %s",
+            msg,
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+    else:
+        logger.error("asyncio exception handler: %s", msg)
 
 
 async def post_init(application: Application) -> None:

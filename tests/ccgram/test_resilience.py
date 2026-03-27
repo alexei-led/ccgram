@@ -7,6 +7,7 @@ lifecycle.
 """
 
 import asyncio
+import contextlib
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -153,7 +154,8 @@ class TestDeadWorkerRespawn:
         first_worker = _queue_workers[user_id]
 
         first_worker.cancel()
-        await asyncio.sleep(0.05)
+        with contextlib.suppress(asyncio.CancelledError):
+            await first_worker
         assert first_worker.done()
 
         queue2 = get_or_create_queue(bot, user_id)
@@ -163,7 +165,8 @@ class TestDeadWorkerRespawn:
         assert not second_worker.done()
 
         second_worker.cancel()
-        await asyncio.sleep(0.05)
+        with contextlib.suppress(asyncio.CancelledError):
+            await second_worker
         _message_queues.pop(user_id, None)
         _queue_locks.pop(user_id, None)
         _queue_workers.pop(user_id, None)
@@ -171,7 +174,10 @@ class TestDeadWorkerRespawn:
 
 class TestRateLimitSendLocking:
     async def test_concurrent_sends_serialized(self):
+        import time
+
         from ccgram.handlers.message_sender import (
+            MESSAGE_SEND_INTERVAL,
             _last_send_time,
             _rate_limit_locks,
             rate_limit_send,
@@ -181,19 +187,26 @@ class TestRateLimitSendLocking:
         _last_send_time.pop(chat_id, None)
         _rate_limit_locks.pop(chat_id, None)
 
-        call_order: list[int] = []
+        timestamps: list[float] = []
 
-        async def timed_send(idx: int):
+        async def timed_send():
             await rate_limit_send(chat_id)
-            call_order.append(idx)
+            timestamps.append(time.monotonic())
 
+        # Seed the rate limiter so subsequent calls must wait
         await rate_limit_send(chat_id)
+        t0 = time.monotonic()
 
-        tasks = [asyncio.create_task(timed_send(i)) for i in range(3)]
+        # Launch 2 concurrent senders — they should be serialized by the lock
+        tasks = [asyncio.create_task(timed_send()) for _ in range(2)]
         await asyncio.gather(*tasks)
 
-        assert len(call_order) == 3
-        assert chat_id in _rate_limit_locks
+        assert len(timestamps) == 2
+        # Each send should be spaced at least MESSAGE_SEND_INTERVAL apart from seed
+        for ts in timestamps:
+            assert (
+                ts - t0 >= MESSAGE_SEND_INTERVAL * 0.8
+            )  # 80% tolerance for scheduling jitter
 
         _last_send_time.pop(chat_id, None)
         _rate_limit_locks.pop(chat_id, None)
