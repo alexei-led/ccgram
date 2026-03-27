@@ -9,6 +9,7 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       matrix:
         python-version:
@@ -29,5 +30,7 @@ jobs:
         run: uv run pyright src/ccgram/
       - name: Dependency check
         run: uv run deptry src
-      - name: Test
-        run: uv run pytest --tb=short -q
+      - name: Unit tests
+        run: uv run pytest tests/ -m "not integration and not e2e" --tb=short -v --timeout=30
+      - name: Integration tests
+        run: uv run pytest tests/integration/ -m "not llm" --tb=short -v --timeout=30
