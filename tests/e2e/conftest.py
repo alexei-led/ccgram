@@ -92,7 +92,6 @@ def e2e_tmux(monkeypatch):
         "ccgram.handlers.text_handler",
         "ccgram.handlers.directory_callbacks",
         "ccgram.handlers.status_polling",
-        "ccgram.handlers.message_queue",
         "ccgram.handlers.recovery_callbacks",
         "ccgram.handlers.sessions_dashboard",
         "ccgram.handlers.screenshot_callbacks",
