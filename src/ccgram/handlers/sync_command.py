@@ -335,24 +335,24 @@ async def _recreate_dead_topics(bot: Bot, issues: list[AuditIssue]) -> int:
         # doesn't skip the window as "already bound".  On failure, restore.
         session_manager.unbind_thread(user_id, thread_id)
 
-        # Re-inject the group_chat_id so _handle_new_window can discover the chat.
-        # Use a placeholder thread_id that won't collide; _handle_new_window only
-        # iterates group_chat_ids values to find unique chat IDs.
+        # Inject a temporary in-memory-only group_chat_id so _handle_new_window
+        # can discover the chat.  Direct dict mutation avoids _save_state() —
+        # if the process crashes, the placeholder won't persist to state.json.
+        _placeholder_key = f"{user_id}:0"
         if chat_id != user_id:
-            session_manager.set_group_chat_id(user_id, 0, chat_id)
+            session_manager.group_chat_ids[_placeholder_key] = chat_id
 
         try:
             await _handle_new_window(event, bot)
             recreated += 1
-        except TelegramError:
+        except Exception:
             logger.exception("Failed to recreate topic for window %s", window_id)
             # Restore binding so the window isn't orphaned
             session_manager.bind_thread(user_id, thread_id, window_id, window_name=name)
             if chat_id != user_id:
                 session_manager.set_group_chat_id(user_id, thread_id, chat_id)
         finally:
-            # Clean up the placeholder group_chat_id entry
-            session_manager.group_chat_ids.pop(f"{user_id}:0", None)
+            session_manager.group_chat_ids.pop(_placeholder_key, None)
     return recreated
 
 
