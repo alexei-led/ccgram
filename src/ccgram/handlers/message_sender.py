@@ -27,7 +27,7 @@ from ..entity_formatting import convert_to_entities
 logger = structlog.get_logger()
 
 
-def _is_thread_gone(exc: TelegramError) -> bool:
+def is_thread_gone(exc: TelegramError) -> bool:
     """Check if error indicates the Telegram topic/thread no longer exists."""
     if isinstance(exc, BadRequest):
         msg = exc.message.lower()
@@ -109,11 +109,11 @@ async def _with_entity_fallback(
             try:
                 return await send_fn(plain_text, **send_kwargs)
             except TelegramError as e2:
-                if _is_thread_gone(e2):
+                if is_thread_gone(e2):
                     return None
                 last_error = e2
         except TelegramError as e:
-            if _is_thread_gone(e):
+            if is_thread_gone(e):
                 return None
             last_error = e
 

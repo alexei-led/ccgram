@@ -700,6 +700,119 @@ class TestVariableTerminalSizes:
         assert strip_pane_chrome(lines) == ["output"]
 
 
+# ── Bottom-up fallback detection ─────────────────────────────────────
+
+
+class TestBottomUpFallback:
+    def test_edit_file_title_detected(self):
+        """New-style 'Edit File' prompt without matching top pattern."""
+        pane = (
+            "  Edit File\n"
+            "\n"
+            "  src/handlers/sync_command.py\n"
+            "\n"
+            "  + new_line = True\n"
+            "  - old_line = False\n"
+            "\n"
+            "  ❯ Yes    No\n"
+            "\n"
+            "  Esc to cancel\n"
+        )
+        result = extract_interactive_content(pane)
+        assert result is not None
+        assert "Edit File" in result.content
+        assert "Esc to cancel" in result.content
+
+    def test_unknown_title_with_action_hint(self):
+        """Completely unknown title still detected by bottom-up."""
+        pane = (
+            "  Something Never Seen Before\n"
+            "\n"
+            "  Description text here\n"
+            "\n"
+            "  Yes    No\n"
+            "\n"
+            "  Esc to cancel\n"
+        )
+        result = extract_interactive_content(pane)
+        assert result is not None
+        assert "Something Never Seen Before" in result.content
+
+    def test_enter_to_confirm_bottom(self):
+        """Bottom-up works with 'Enter to confirm' action hint."""
+        pane = "  Pick something:\n\n  Option A\n  Option B\n\n  Enter to confirm\n"
+        result = extract_interactive_content(pane)
+        assert result is not None
+        assert "Pick something" in result.content
+
+    def test_section_break_stops_upward_scan(self):
+        """Two blank lines above the UI block stop the upward scan.
+
+        Uses plain options (no ❯) so bottom-up fallback is exercised
+        instead of the SelectionUI catch-all which has context_above=10.
+        """
+        pane = (
+            "Some earlier output\n"
+            "More earlier output\n"
+            "\n"
+            "\n"
+            "  New Prompt Title\n"
+            "\n"
+            "  Accept    Reject\n"
+            "\n"
+            "  Esc to cancel\n"
+        )
+        result = extract_interactive_content(pane)
+        assert result is not None
+        assert "New Prompt Title" in result.content
+        assert "earlier output" not in result.content
+
+    def test_no_action_hint_returns_none(self):
+        """Regular output without action hints is not detected."""
+        pane = "Some regular output\nMore output\nNo hints here\n"
+        result = extract_interactive_content(pane)
+        assert result is None
+
+    def test_action_hint_too_far_from_bottom(self):
+        """Action hint buried in output (not near bottom) is ignored."""
+        lines = [
+            "  Esc to cancel",  # action hint
+            *[f"  output line {i}" for i in range(10)],  # lots of output after
+            "",
+        ]
+        pane = "\n".join(lines)
+        result = extract_interactive_content(pane)
+        assert result is None
+
+    def test_infers_selection_ui_name(self):
+        """Bottom-up infers SelectionUI when ❯ is present."""
+        pane = "  Unknown Title\n  ❯ Option A\n    Option B\n  Esc to cancel\n"
+        result = extract_interactive_content(pane)
+        assert result is not None
+        assert result.name == "SelectionUI"
+
+    def test_infers_ask_user_name(self):
+        """Bottom-up infers AskUserQuestion when checkbox chars present."""
+        pane = "  Unknown Title\n  ☐ Option A\n  ✔ Option B\n  Enter to select\n"
+        result = extract_interactive_content(pane)
+        assert result is not None
+        assert result.name == "AskUserQuestion"
+
+    def test_infers_generic_name(self):
+        """Bottom-up returns InteractiveUI when no cursor/checkbox present."""
+        pane = "  Unknown Title\n\n  Some text\n\n  Esc to cancel\n"
+        result = extract_interactive_content(pane)
+        assert result is not None
+        assert result.name == "InteractiveUI"
+
+    def test_pattern_match_takes_precedence(self):
+        """Known patterns still match first — bottom-up is only a fallback."""
+        pane = "  Do you want to proceed?\n\n  ❯ Yes    No\n\n  Esc to cancel\n"
+        result = extract_interactive_content(pane)
+        assert result is not None
+        assert result.name == "PermissionPrompt"  # not bottom-up
+
+
 # ── extract_interactive_content with list[str] ───────────────────────
 
 

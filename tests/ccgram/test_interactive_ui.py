@@ -112,3 +112,98 @@ class TestInteractiveModeTracking:
 
         set_interactive_mode(100, "@0", thread_id=None)
         assert get_interactive_window(100, None) == "@0"
+
+
+class TestDeadTopicCooldown:
+    """Verify longer backoff when topic is deleted (thread not found)."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_state(self) -> None:
+        from ccgram.handlers.interactive_ui import (
+            _interactive_mode,
+            _interactive_msgs,
+            _send_cooldowns,
+        )
+
+        _interactive_mode.clear()
+        _interactive_msgs.clear()
+        _send_cooldowns.clear()
+
+    async def test_dead_topic_applies_longer_cooldown(self) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        from telegram.error import BadRequest
+
+        from ccgram.handlers.interactive_ui import (
+            _DEAD_TOPIC_RETRY_INTERVAL,
+            _send_cooldowns,
+            handle_interactive_ui,
+        )
+
+        mock_bot = AsyncMock()
+        mock_bot.send_message.side_effect = BadRequest("Message thread not found")
+
+        with (
+            patch(
+                "ccgram.handlers.interactive_ui._capture_interactive_content",
+                new_callable=AsyncMock,
+                return_value=("AskUserQuestion", "Pick one:"),
+            ),
+            patch("ccgram.handlers.interactive_ui.session_manager") as mock_sm,
+            patch(
+                "ccgram.handlers.interactive_ui.rate_limit_send",
+                new_callable=AsyncMock,
+            ),
+        ):
+            mock_sm.resolve_chat_id.return_value = -999
+
+            result = await handle_interactive_ui(mock_bot, 100, "@2", thread_id=42)
+            assert result is False
+
+            # Cooldown should be set to ~60s, not the default 5s
+            ikey = (100, 42)
+            assert ikey in _send_cooldowns
+            import time
+
+            cooldown_remaining = _send_cooldowns[ikey] - time.monotonic()
+            assert cooldown_remaining > 30  # well above the default 5s
+            assert cooldown_remaining <= _DEAD_TOPIC_RETRY_INTERVAL
+
+    async def test_non_dead_topic_error_uses_normal_cooldown(self) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        from telegram.error import BadRequest
+
+        from ccgram.handlers.interactive_ui import (
+            _SEND_RETRY_INTERVAL,
+            _send_cooldowns,
+            handle_interactive_ui,
+        )
+
+        mock_bot = AsyncMock()
+        mock_bot.send_message.side_effect = BadRequest("Chat not found")
+
+        with (
+            patch(
+                "ccgram.handlers.interactive_ui._capture_interactive_content",
+                new_callable=AsyncMock,
+                return_value=("AskUserQuestion", "Pick one:"),
+            ),
+            patch("ccgram.handlers.interactive_ui.session_manager") as mock_sm,
+            patch(
+                "ccgram.handlers.interactive_ui.rate_limit_send",
+                new_callable=AsyncMock,
+            ),
+        ):
+            mock_sm.resolve_chat_id.return_value = -999
+
+            result = await handle_interactive_ui(mock_bot, 100, "@2", thread_id=42)
+            assert result is False
+
+            # Normal cooldown — should be around now, not 60s into the future
+            ikey = (100, 42)
+            assert ikey in _send_cooldowns
+            import time
+
+            cooldown_remaining = _send_cooldowns[ikey] - time.monotonic()
+            assert cooldown_remaining <= _SEND_RETRY_INTERVAL

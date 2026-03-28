@@ -3,16 +3,17 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from telegram.error import BadRequest, TelegramError
 
 from ccgram.handlers.callback_data import CB_SYNC_DISMISS, CB_SYNC_FIX
 from ccgram.handlers.sync_command import (
     _format_report,
+    _probe_dead_topics,
+    _recreate_dead_topics,
     handle_sync_dismiss,
     handle_sync_fix,
     sync_command,
 )
-from telegram.error import TelegramError
-
 from ccgram.session import AuditIssue, AuditResult
 
 
@@ -390,3 +391,209 @@ class TestSyncFix:
         text, keyboard = _format_report(audit)
         assert "unbound tmux window" in text
         assert keyboard is not None
+
+
+class TestDeadTopicDetection:
+    async def test_probe_detects_dead_topic(self, _patch_deps) -> None:
+        mock_sm, _, _ = _patch_deps
+        mock_sm.iter_thread_bindings.return_value = [(100, 42, "@2")]
+        mock_sm.resolve_chat_id.return_value = -999
+        mock_sm.get_display_name.return_value = "qmd-go"
+
+        mock_bot = AsyncMock()
+        mock_bot.send_message.side_effect = BadRequest("Message thread not found")
+
+        issues = await _probe_dead_topics(mock_bot)
+        assert len(issues) == 1
+        assert issues[0].category == "dead_topic"
+        assert "window:@2" in issues[0].detail
+        assert issues[0].fixable is True
+
+    async def test_probe_skips_alive_topic(self, _patch_deps) -> None:
+        mock_sm, _, _ = _patch_deps
+        mock_sm.iter_thread_bindings.return_value = [(100, 42, "@2")]
+        mock_sm.resolve_chat_id.return_value = -999
+
+        mock_bot = AsyncMock()
+        # send_message succeeds — topic is alive; returns a message to delete
+        mock_bot.send_message.return_value = MagicMock(message_id=999)
+
+        issues = await _probe_dead_topics(mock_bot)
+        assert issues == []
+
+    async def test_probe_skips_network_errors(self, _patch_deps) -> None:
+        mock_sm, _, _ = _patch_deps
+        mock_sm.iter_thread_bindings.return_value = [(100, 42, "@2")]
+        mock_sm.resolve_chat_id.return_value = -999
+
+        mock_bot = AsyncMock()
+        mock_bot.send_message.side_effect = TelegramError("Network error")
+
+        issues = await _probe_dead_topics(mock_bot)
+        assert issues == []
+
+    async def test_probe_skips_bindings_without_group_chat(self, _patch_deps) -> None:
+        mock_sm, _, _ = _patch_deps
+        mock_sm.iter_thread_bindings.return_value = [(100, 42, "@2")]
+        # resolve_chat_id falls back to user_id — no group chat
+        mock_sm.resolve_chat_id.return_value = 100
+
+        mock_bot = AsyncMock()
+
+        issues = await _probe_dead_topics(mock_bot)
+        assert issues == []
+        mock_bot.send_message.assert_not_called()
+
+
+class TestDeadTopicRecreation:
+    async def test_recreate_unbinds_and_creates_topic(self, _patch_deps) -> None:
+        mock_sm, _, _ = _patch_deps
+        mock_sm.get_window_state.return_value = MagicMock(
+            session_id="s1", cwd="/tmp/proj", window_name="qmd-go"
+        )
+
+        issues = [
+            AuditIssue(
+                "dead_topic",
+                "user:100 thread:42 window:@2 (qmd-go)",
+                fixable=True,
+            ),
+        ]
+
+        mock_bot = AsyncMock()
+
+        with patch(
+            "ccgram.bot._handle_new_window", new_callable=AsyncMock
+        ) as mock_handle:
+            count = await _recreate_dead_topics(mock_bot, issues)
+            assert count == 1
+            mock_sm.unbind_thread.assert_called_once_with(100, 42)
+            mock_handle.assert_called_once()
+            event = mock_handle.call_args[0][0]
+            assert event.window_id == "@2"
+            assert event.window_name == "qmd-go"
+
+    async def test_recreate_skips_non_dead_topic_issues(self, _patch_deps) -> None:
+        issues = [
+            AuditIssue("ghost_binding", "user:100 thread:42 window:@7", fixable=True),
+        ]
+        mock_bot = AsyncMock()
+
+        with patch(
+            "ccgram.bot._handle_new_window", new_callable=AsyncMock
+        ) as mock_handle:
+            count = await _recreate_dead_topics(mock_bot, issues)
+            assert count == 0
+            mock_handle.assert_not_called()
+
+    async def test_recreate_handles_telegram_error(self, _patch_deps) -> None:
+        mock_sm, _, _ = _patch_deps
+        mock_sm.get_window_state.return_value = MagicMock(
+            session_id="s1", cwd="/tmp", window_name="proj"
+        )
+
+        issues = [
+            AuditIssue(
+                "dead_topic",
+                "user:100 thread:42 window:@2 (proj)",
+                fixable=True,
+            ),
+        ]
+
+        mock_bot = AsyncMock()
+
+        with patch(
+            "ccgram.bot._handle_new_window",
+            new_callable=AsyncMock,
+            side_effect=TelegramError("Failed"),
+        ):
+            count = await _recreate_dead_topics(mock_bot, issues)
+            assert count == 0
+            mock_sm.unbind_thread.assert_called_once_with(100, 42)
+            # Binding restored on failure so window isn't orphaned
+            mock_sm.bind_thread.assert_called_once_with(
+                100, 42, "@2", window_name="proj"
+            )
+
+
+class TestBuildReportDeadTopic:
+    def test_dead_topic_is_fixable(self) -> None:
+        audit = AuditResult(
+            issues=[
+                AuditIssue(
+                    "dead_topic",
+                    "user:100 thread:42 window:@2 (qmd-go)",
+                    fixable=True,
+                ),
+            ],
+            total_bindings=3,
+            live_binding_count=3,
+        )
+        _text, keyboard = _format_report(audit)
+        assert keyboard is not None
+        assert "Fix 1 issue" in keyboard.inline_keyboard[0][0].text
+
+    def test_recreated_topic_count_in_report(self) -> None:
+        audit = AuditResult(issues=[], total_bindings=2, live_binding_count=2)
+        text, _ = _format_report(audit, fixed_count=1, recreated_topic_count=1)
+        assert "Recreated 1 topic" in text
+
+    def test_recreated_topics_plural(self) -> None:
+        audit = AuditResult(issues=[], total_bindings=2, live_binding_count=2)
+        text, _ = _format_report(audit, fixed_count=2, recreated_topic_count=2)
+        assert "Recreated 2 topics" in text
+
+    def test_dead_topic_excluded_from_category_counts(self) -> None:
+        audit = AuditResult(
+            issues=[
+                AuditIssue(
+                    "dead_topic",
+                    "user:100 thread:42 window:@2 (qmd-go)",
+                    fixable=True,
+                ),
+            ],
+            total_bindings=3,
+            live_binding_count=3,
+        )
+        text, _ = _format_report(audit)
+        assert "dead topic" not in text
+
+
+class TestSyncFixDeadTopic:
+    async def test_fix_recreates_dead_topics(self, _patch_deps) -> None:
+        mock_sm, _, _ = _patch_deps
+        mock_sm.audit_state.side_effect = [
+            AuditResult(issues=[], total_bindings=1, live_binding_count=1),
+            AuditResult(issues=[], total_bindings=1, live_binding_count=1),
+        ]
+        # First probe finds dead topic, second probe (post-fix) finds none
+        mock_sm.iter_thread_bindings.side_effect = [
+            [(100, 42, "@2")],  # pre-audit probe
+            [],  # prune_stale_offsets
+            [],  # post-fix probe (already unbound)
+        ]
+        mock_sm.resolve_chat_id.return_value = -999
+        mock_sm.get_display_name.return_value = "qmd-go"
+        mock_sm.get_window_state.return_value = MagicMock(
+            session_id="s1", cwd="/tmp", window_name="qmd-go"
+        )
+
+        query = MagicMock()
+        mock_bot = AsyncMock()
+        mock_bot.send_message.side_effect = [
+            BadRequest("Message thread not found"),  # pre-audit
+            # post-fix probe: no bindings, so not called
+        ]
+        query.get_bot.return_value = mock_bot
+
+        with (
+            patch("ccgram.handlers.sync_command.safe_edit") as mock_edit,
+            patch(
+                "ccgram.bot._handle_new_window", new_callable=AsyncMock
+            ) as mock_handle,
+        ):
+            await handle_sync_fix(query)
+            mock_sm.unbind_thread.assert_called_once_with(100, 42)
+            mock_handle.assert_called_once()
+            report_text = mock_edit.call_args[0][1]
+            assert "Recreated 1 topic" in report_text

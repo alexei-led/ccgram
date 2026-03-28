@@ -211,6 +211,93 @@ def _try_extract(lines: list[str], pattern: UIPattern) -> InteractiveUIContent |
     return InteractiveUIContent(content=_shorten_separators(content), name=pattern.name)
 
 
+# ── Bottom-up fallback ───────────────────────────────────────────────────
+
+# Action hints that reliably mark the bottom of any Claude Code interactive UI.
+_ACTION_HINT_RE = re.compile(
+    r"(?i)^\s*("
+    r"Esc to (cancel|exit)"
+    r"|Enter to (select|confirm|continue|submit)"
+    r"|ctrl-g to edit"
+    r"|Type to filter"
+    r"|Press enter to (confirm|select|continue|submit)"
+    r")"
+)
+
+# Maximum lines to scan upward from the action hint.
+_BOTTOM_UP_MAX_SCAN = 30
+
+# Maximum non-blank lines from terminal bottom to consider the action hint
+# part of a currently-active UI (not leftover output from an earlier prompt).
+_BOTTOM_UP_MAX_DEPTH = 5
+
+# Consecutive blank lines that signal a section break (UI boundary).
+_SECTION_BREAK_BLANKS = 2
+
+# Minimum lines between top and bottom for a valid UI block.
+_BOTTOM_UP_MIN_GAP = 2
+
+
+_CHECKBOX_CHARS_RE = re.compile(r"[☐✔☒]")
+_CURSOR_CHARS_RE = re.compile(r"[❯›]\s")
+
+
+def _infer_ui_name(lines: list[str]) -> str:
+    """Infer interactive UI type from content characteristics."""
+    for line in lines:
+        if _CHECKBOX_CHARS_RE.search(line):
+            return "AskUserQuestion"
+        if _CURSOR_CHARS_RE.search(line):
+            return "SelectionUI"
+    return "InteractiveUI"
+
+
+def _try_extract_bottom_up(lines: list[str]) -> InteractiveUIContent | None:
+    """Fallback: detect interactive UI by action hints near terminal bottom.
+
+    Anchors on action-hint lines ("Esc to cancel", "Enter to confirm", etc.)
+    in the last few non-blank lines, then scans upward to find the UI boundary.
+    Resilient to title/wording changes — only depends on stable action hints.
+    """
+    # Find action hint near the bottom of the terminal
+    bottom_idx: int | None = None
+    non_blank_seen = 0
+    for i in range(len(lines) - 1, -1, -1):
+        if lines[i].strip():
+            non_blank_seen += 1
+            if non_blank_seen > _BOTTOM_UP_MAX_DEPTH:
+                break
+            if _ACTION_HINT_RE.search(lines[i]):
+                bottom_idx = i
+                break
+
+    if bottom_idx is None:
+        return None
+
+    # Scan upward from the action hint to find the top boundary.
+    # Stop at: two consecutive blank lines (section break), or max scan limit.
+    top_idx = bottom_idx
+    consecutive_blank = 0
+    scan_floor = max(0, bottom_idx - _BOTTOM_UP_MAX_SCAN)
+    for i in range(bottom_idx - 1, scan_floor - 1, -1):
+        if not lines[i].strip():
+            consecutive_blank += 1
+            if consecutive_blank >= _SECTION_BREAK_BLANKS:
+                # Two blank lines = section break; UI starts after them.
+                top_idx = i + consecutive_blank
+                break
+        else:
+            consecutive_blank = 0
+            top_idx = i
+
+    if bottom_idx - top_idx < _BOTTOM_UP_MIN_GAP:
+        return None
+
+    content = "\n".join(lines[top_idx : bottom_idx + 1]).rstrip()
+    name = _infer_ui_name(lines[top_idx : bottom_idx + 1])
+    return InteractiveUIContent(content=_shorten_separators(content), name=name)
+
+
 # ── Public API ───────────────────────────────────────────────────────────
 
 
@@ -221,7 +308,8 @@ def extract_interactive_content(
     """Extract content from an interactive UI in terminal output.
 
     Tries each UI pattern in declaration order; first match wins.
-    Returns None if no recognizable interactive UI is found.
+    Falls back to bottom-up detection (action hints near terminal bottom)
+    when no pattern matches — resilient to title/wording changes.
 
     ``pane_text`` can be a raw string (split on newlines) or a pre-split
     list of lines (e.g. from ScreenBuffer.display).
@@ -237,7 +325,9 @@ def extract_interactive_content(
         result = _try_extract(lines, pattern)
         if result:
             return result
-    return None
+
+    # Bottom-up fallback: detect by action hints near terminal bottom
+    return _try_extract_bottom_up(lines)
 
 
 def parse_from_screen(screen: ScreenBuffer) -> InteractiveUIContent | None:

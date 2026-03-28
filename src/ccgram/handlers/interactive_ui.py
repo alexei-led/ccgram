@@ -15,8 +15,9 @@ State dicts are keyed by (user_id, thread_id_or_0) for Telegram topic support.
 """
 
 import contextlib
-import structlog
 import time
+
+import structlog
 
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telegram.error import BadRequest, RetryAfter, TelegramError
@@ -35,7 +36,7 @@ from .callback_data import (
     CB_ASK_TAB,
     CB_ASK_UP,
 )
-from .message_sender import NO_LINK_PREVIEW, rate_limit_send
+from .message_sender import NO_LINK_PREVIEW, is_thread_gone, rate_limit_send
 
 logger = structlog.get_logger()
 
@@ -58,6 +59,7 @@ _interactive_mode: dict[tuple[int, int], str] = {}
 # Cooldown to prevent flood when interactive sends fail repeatedly
 _send_cooldowns: dict[tuple[int, int], float] = {}
 _SEND_RETRY_INTERVAL = 5.0  # seconds between retries for failed sends
+_DEAD_TOPIC_RETRY_INTERVAL = 60.0  # longer backoff when topic is deleted
 
 
 def get_interactive_window(user_id: int, thread_id: int | None = None) -> str | None:
@@ -295,6 +297,21 @@ async def handle_interactive_ui(
             reply_markup=keyboard,
             **thread_kwargs,  # type: ignore[arg-type]
         )
+    except BadRequest as e:
+        if is_thread_gone(e):
+            logger.warning(
+                "Topic gone for interactive UI (chat=%s thread=%s window=%s), "
+                "backing off %ss — use /sync to recreate",
+                chat_id,
+                thread_id,
+                window_id,
+                int(_DEAD_TOPIC_RETRY_INTERVAL),
+            )
+            _send_cooldowns[ikey] = (
+                now + _DEAD_TOPIC_RETRY_INTERVAL - _SEND_RETRY_INTERVAL
+            )
+        else:
+            logger.error("Failed to send interactive UI to %s: %s", chat_id, e)
     except TelegramError as e:
         logger.error("Failed to send interactive UI to %s: %s", chat_id, e)
     if sent:
