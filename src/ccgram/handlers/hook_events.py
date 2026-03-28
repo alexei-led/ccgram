@@ -104,12 +104,9 @@ async def _handle_notification(event: HookEvent, bot: Bot) -> None:
 async def _handle_stop(event: HookEvent, bot: Bot) -> None:
     """Handle a Stop event — transition directly to idle.
 
-    Previous behaviour cleared has_seen_status and the status message, which
-    forced the poll loop through a startup-grace → active → idle dance,
-    producing two topic-rename service messages and a brand-new "Ready"
-    message on every agent turn.  Now we transition straight to idle: the
-    status message is edited in-place (dedup catches identical text) and the
-    topic emoji goes to idle without an intermediate active flicker.
+    Edits the status message in-place to "Ready" (dedup catches identical
+    text) and sets the topic emoji to idle without an intermediate active
+    flicker.  Muted/errors_only windows get their status cleared instead.
     """
     from .callback_data import IDLE_STATUS_TEXT
     from .message_queue import enqueue_status_update
@@ -127,19 +124,20 @@ async def _handle_stop(event: HookEvent, bot: Bot) -> None:
     )
 
     for user_id, thread_id, window_id in users:
-        # Don't clear has_seen_status — keeps the poll loop on the idle
-        # path so it won't trigger the startup-grace → active → idle dance.
         chat_id = session_manager.resolve_chat_id(user_id, thread_id)
         display = session_manager.get_display_name(window_id)
         await update_topic_emoji(bot, chat_id, thread_id, "idle", display)
-        # No autoclose timer here — the poll loop manages autoclose when
-        # it detects a shell prompt (is_shell_prompt); the timer from Stop
-        # was always immediately cleared by _transition_to_idle → _clear_autoclose_if_active.
-        # Update status to "Ready" (edit-in-place); don't clear (avoids
-        # deleting the message and recreating it as a new bubble).
-        await enqueue_status_update(
-            bot, user_id, window_id, IDLE_STATUS_TEXT, thread_id=thread_id
-        )
+        # Respect notification mode: muted/errors_only windows should not
+        # show a "Ready" status bubble.
+        notif_mode = session_manager.get_notification_mode(window_id)
+        if notif_mode in ("muted", "errors_only"):
+            await enqueue_status_update(
+                bot, user_id, window_id, None, thread_id=thread_id
+            )
+        else:
+            await enqueue_status_update(
+                bot, user_id, window_id, IDLE_STATUS_TEXT, thread_id=thread_id
+            )
 
 
 # Track active subagents per window: window_id -> {subagent_id -> name}

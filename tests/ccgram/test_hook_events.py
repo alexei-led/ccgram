@@ -142,6 +142,10 @@ class TestHandleStop:
                 "ccgram.handlers.hook_events.session_manager.get_display_name",
                 return_value="project",
             ),
+            patch(
+                "ccgram.handlers.hook_events.session_manager.get_notification_mode",
+                return_value="all",
+            ),
             patch("ccgram.handlers.topic_emoji.update_topic_emoji") as mock_emoji,
             patch(
                 "ccgram.handlers.message_queue.enqueue_status_update"
@@ -154,6 +158,35 @@ class TestHandleStop:
             mock_enqueue.assert_called_once_with(
                 bot, 100, "@0", "\u2713 Ready", thread_id=42
             )
+
+    async def test_stop_muted_clears_status(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "ccgram.handlers.hook_events.session_manager.iter_thread_bindings",
+            lambda: iter([(100, 42, "@0")]),
+        )
+        bot = AsyncMock(spec=Bot)
+        with (
+            patch(
+                "ccgram.handlers.hook_events.session_manager.resolve_chat_id",
+                return_value=-100,
+            ),
+            patch(
+                "ccgram.handlers.hook_events.session_manager.get_display_name",
+                return_value="project",
+            ),
+            patch(
+                "ccgram.handlers.hook_events.session_manager.get_notification_mode",
+                return_value="muted",
+            ),
+            patch("ccgram.handlers.topic_emoji.update_topic_emoji"),
+            patch(
+                "ccgram.handlers.message_queue.enqueue_status_update"
+            ) as mock_enqueue,
+        ):
+            event = _make_event(event_type="Stop", data={"stop_reason": "done"})
+            await dispatch_hook_event(event, bot)
+
+            mock_enqueue.assert_called_once_with(bot, 100, "@0", None, thread_id=42)
 
     async def test_stop_no_users_skips(self, monkeypatch) -> None:
         monkeypatch.setattr(
