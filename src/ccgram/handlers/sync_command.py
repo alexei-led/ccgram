@@ -111,6 +111,14 @@ def _format_report(
             f"({audit.live_binding_count}/{audit.total_bindings} alive)"
         )
 
+    # Dead topic summary (window alive, but Telegram topic deleted)
+    dead_topic_count = sum(1 for i in audit.issues if i.category == "dead_topic")
+    if dead_topic_count > 0:
+        topic_word = "topic" if dead_topic_count == 1 else "topics"
+        lines.append(
+            f"\u26a0 {dead_topic_count} dead {topic_word} (deleted in Telegram)"
+        )
+
     lines.extend(_issue_summary_lines(audit))
 
     text = "\n".join(lines)
@@ -282,7 +290,13 @@ async def _probe_dead_topics(bot: Bot) -> list[AuditIssue]:
     results = await asyncio.gather(
         *(_probe_one(*b) for b in bindings), return_exceptions=True
     )
-    return [r for r in results if isinstance(r, AuditIssue)]
+    issues: list[AuditIssue] = []
+    for r in results:
+        if isinstance(r, AuditIssue):
+            issues.append(r)
+        elif isinstance(r, BaseException):
+            logger.error("Unexpected error probing dead topics", exc_info=r)
+    return issues
 
 
 async def _recreate_dead_topics(bot: Bot, issues: list[AuditIssue]) -> int:
@@ -313,9 +327,20 @@ async def _recreate_dead_topics(bot: Bot, issues: list[AuditIssue]) -> int:
             cwd=ws.cwd,
         )
 
+        # Preserve group_chat_id before unbinding — unbind_thread deletes it,
+        # but _handle_new_window needs it to know which chat to create the topic in.
+        chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+
         # Unbind THEN recreate — must unbind first so _handle_new_window
         # doesn't skip the window as "already bound".  On failure, restore.
         session_manager.unbind_thread(user_id, thread_id)
+
+        # Re-inject the group_chat_id so _handle_new_window can discover the chat.
+        # Use a placeholder thread_id that won't collide; _handle_new_window only
+        # iterates group_chat_ids values to find unique chat IDs.
+        if chat_id != user_id:
+            session_manager.set_group_chat_id(user_id, 0, chat_id)
+
         try:
             await _handle_new_window(event, bot)
             recreated += 1
@@ -323,6 +348,11 @@ async def _recreate_dead_topics(bot: Bot, issues: list[AuditIssue]) -> int:
             logger.exception("Failed to recreate topic for window %s", window_id)
             # Restore binding so the window isn't orphaned
             session_manager.bind_thread(user_id, thread_id, window_id, window_name=name)
+            if chat_id != user_id:
+                session_manager.set_group_chat_id(user_id, thread_id, chat_id)
+        finally:
+            # Clean up the placeholder group_chat_id entry
+            session_manager.group_chat_ids.pop(f"{user_id}:0", None)
     return recreated
 
 

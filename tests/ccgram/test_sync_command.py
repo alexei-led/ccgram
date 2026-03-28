@@ -543,7 +543,7 @@ class TestBuildReportDeadTopic:
         text, _ = _format_report(audit, fixed_count=2, recreated_topic_count=2)
         assert "Recreated 2 topics" in text
 
-    def test_dead_topic_excluded_from_category_counts(self) -> None:
+    def test_dead_topic_shown_as_dedicated_line(self) -> None:
         audit = AuditResult(
             issues=[
                 AuditIssue(
@@ -556,7 +556,8 @@ class TestBuildReportDeadTopic:
             live_binding_count=3,
         )
         text, _ = _format_report(audit)
-        assert "dead topic" not in text
+        assert "1 dead topic" in text
+        assert "deleted in Telegram" in text
 
 
 class TestSyncFixDeadTopic:
