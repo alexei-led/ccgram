@@ -361,14 +361,21 @@ class SessionManager:
 
     def sync_display_names(self, live_windows: list[tuple[str, str]]) -> bool:
         """Sync display names from live tmux windows. Returns True if changed."""
-        changed = thread_router.sync_display_names(live_windows)
-        if changed:
-            # Sync WindowState.window_name for consistency
-            for window_id, window_name in live_windows:
-                ws = self.window_states.get(window_id)
-                if ws and ws.window_name != window_name:
-                    ws.window_name = window_name
-        return changed
+        router_changed = thread_router.sync_display_names(live_windows)
+        # Always reconcile WindowState.window_name — the router may already
+        # have the correct name while WindowState is still stale from older
+        # persisted state.
+        ws_changed = False
+        for window_id, window_name in live_windows:
+            ws = self.window_states.get(window_id)
+            if ws and ws.window_name != window_name:
+                ws.window_name = window_name
+                ws_changed = True
+        # Router saves itself when router_changed; persist WindowState repairs
+        # even when the router side was already correct.
+        if ws_changed and not router_changed:
+            self._save_state()
+        return router_changed or ws_changed
 
     async def wait_for_session_map_entry(
         self, window_id: str, timeout: float = 5.0, interval: float = 0.5

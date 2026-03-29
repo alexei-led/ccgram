@@ -133,12 +133,9 @@ class TestPruneStaleState:
     @pytest.mark.asyncio
     async def test_syncs_display_names(self):
         mock_window = MagicMock(window_id="@0", window_name="test")
-        with (
-            patch("ccgram.handlers.polling_coordinator.thread_router") as mock_router,
-            patch("ccgram.handlers.polling_coordinator.session_manager") as mock_sm,
-        ):
+        with patch("ccgram.handlers.polling_coordinator.session_manager") as mock_sm:
             await _prune_stale_state([mock_window])
-            mock_router.sync_display_names.assert_called_once_with([("@0", "test")])
+            mock_sm.sync_display_names.assert_called_once_with([("@0", "test")])
             mock_sm.prune_stale_state.assert_called_once_with({"@0"})
 
 

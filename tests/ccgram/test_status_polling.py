@@ -853,25 +853,19 @@ class TestPruneStaleStatePolling:
         mock_win = MagicMock()
         mock_win.window_id = "@1"
         mock_win.window_name = "proj"
-        with (
-            patch("ccgram.handlers.polling_coordinator.session_manager") as mock_sm,
-            patch("ccgram.handlers.polling_coordinator.thread_router") as mock_tr,
-        ):
-            mock_tr.sync_display_names.return_value = False
+        with patch("ccgram.handlers.polling_coordinator.session_manager") as mock_sm:
+            mock_sm.sync_display_names.return_value = False
             mock_sm.prune_stale_state.return_value = False
             await _prune_stale_state([mock_win])
-        mock_tr.sync_display_names.assert_called_once_with([("@1", "proj")])
+        mock_sm.sync_display_names.assert_called_once_with([("@1", "proj")])
         mock_sm.prune_stale_state.assert_called_once_with({"@1"})
 
     async def test_empty_window_list(self) -> None:
-        with (
-            patch("ccgram.handlers.polling_coordinator.session_manager") as mock_sm,
-            patch("ccgram.handlers.polling_coordinator.thread_router") as mock_tr,
-        ):
-            mock_tr.sync_display_names.return_value = False
+        with patch("ccgram.handlers.polling_coordinator.session_manager") as mock_sm:
+            mock_sm.sync_display_names.return_value = False
             mock_sm.prune_stale_state.return_value = False
             await _prune_stale_state([])
-        mock_tr.sync_display_names.assert_called_once_with([])
+        mock_sm.sync_display_names.assert_called_once_with([])
         mock_sm.prune_stale_state.assert_called_once_with(set())
 
 

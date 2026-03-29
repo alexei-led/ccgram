@@ -706,7 +706,7 @@ async def _prune_stale_state(live_windows: list) -> None:
     """Sync display names and prune orphaned state entries."""
     live_ids = {w.window_id for w in live_windows}
     live_pairs = [(w.window_id, w.window_name) for w in live_windows]
-    thread_router.sync_display_names(live_pairs)
+    session_manager.sync_display_names(live_pairs)
     session_manager.prune_stale_state(live_ids)
 
 

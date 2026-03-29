@@ -206,7 +206,7 @@ class TestSyncFix:
 
         with patch("ccgram.handlers.sync_command.safe_edit") as mock_edit:
             await handle_sync_fix(query)
-            mock_tr.sync_display_names.assert_called_once_with([])
+            mock_sm.sync_display_names.assert_called_once_with([])
             mock_sm.prune_stale_state.assert_called_once_with(set())
             mock_sm.prune_session_map.assert_called_once_with(set())
             mock_sm.prune_stale_window_states.assert_called_once_with(set())

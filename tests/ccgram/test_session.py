@@ -583,6 +583,16 @@ class TestSyncDisplayNames:
         assert mgr.get_display_name("@1") == "a-renamed"
         assert mgr.get_display_name("@2") == "b"
 
+    def test_heals_stale_window_state_when_router_already_correct(
+        self, mgr: SessionManager
+    ) -> None:
+        # Router already has correct name, but WindowState is stale
+        thread_router.window_display_names["@1"] = "new-name"
+        mgr.window_states["@1"] = WindowState(window_name="old-name")
+        changed = mgr.sync_display_names([("@1", "new-name")])
+        assert changed is True
+        assert mgr.window_states["@1"].window_name == "new-name"
+
 
 class TestPruneStaleState:
     def test_removes_orphaned_display_names(self, mgr: SessionManager) -> None:

@@ -391,7 +391,7 @@ async def handle_sync_fix(query: CallbackQuery) -> None:
 
     # Run state cleanup operations
     try:
-        thread_router.sync_display_names(live_pairs)
+        session_manager.sync_display_names(live_pairs)
         session_manager.prune_stale_state(live_ids)
         session_manager.prune_session_map(live_ids)
         session_manager.prune_stale_window_states(live_ids)
