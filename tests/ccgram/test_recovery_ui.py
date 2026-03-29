@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import ccgram.bot as bot_mod
+import ccgram.handlers.command_orchestration as cmd_orch_mod
 from ccgram.bot import text_handler
 from ccgram.handlers.recovery_callbacks import (
     _SessionEntry,
@@ -374,9 +374,12 @@ class TestTextHandlerDeadWindow:
 
 class TestBotTextHandlerScopedMenu:
     @patch("ccgram.bot.handle_text_message", new_callable=AsyncMock)
-    @patch("ccgram.bot._sync_scoped_provider_menu", new_callable=AsyncMock)
-    @patch("ccgram.bot.get_provider_for_window")
-    @patch("ccgram.bot.thread_router")
+    @patch(
+        "ccgram.handlers.command_orchestration.sync_scoped_provider_menu",
+        new_callable=AsyncMock,
+    )
+    @patch("ccgram.handlers.command_orchestration.get_provider_for_window")
+    @patch("ccgram.handlers.command_orchestration.thread_router")
     async def test_syncs_scoped_menu_when_thread_is_bound(
         self,
         mock_tr: MagicMock,
@@ -398,8 +401,11 @@ class TestBotTextHandlerScopedMenu:
         mock_handle_text.assert_called_once_with(update, ctx)
 
     @patch("ccgram.bot.handle_text_message", new_callable=AsyncMock)
-    @patch("ccgram.bot._sync_scoped_provider_menu", new_callable=AsyncMock)
-    @patch("ccgram.bot.thread_router")
+    @patch(
+        "ccgram.handlers.command_orchestration.sync_scoped_provider_menu",
+        new_callable=AsyncMock,
+    )
+    @patch("ccgram.handlers.command_orchestration.thread_router")
     async def test_skips_scoped_menu_sync_when_thread_is_unbound(
         self,
         mock_tr: MagicMock,
@@ -418,9 +424,12 @@ class TestBotTextHandlerScopedMenu:
         mock_handle_text.assert_called_once_with(update, ctx)
 
     @patch("ccgram.bot.handle_text_message", new_callable=AsyncMock)
-    @patch("ccgram.bot._sync_scoped_provider_menu", new_callable=AsyncMock)
-    @patch("ccgram.bot.get_provider_for_window")
-    @patch("ccgram.bot.thread_router")
+    @patch(
+        "ccgram.handlers.command_orchestration.sync_scoped_provider_menu",
+        new_callable=AsyncMock,
+    )
+    @patch("ccgram.handlers.command_orchestration.get_provider_for_window")
+    @patch("ccgram.handlers.command_orchestration.thread_router")
     async def test_cached_chat_user_still_resolves_provider_context(
         self,
         mock_tr: MagicMock,
@@ -429,9 +438,9 @@ class TestBotTextHandlerScopedMenu:
         mock_handle_text: AsyncMock,
         _no_group: MagicMock,
     ) -> None:
-        bot_mod._scoped_provider_menu.clear()
+        cmd_orch_mod._scoped_provider_menu.clear()
         try:
-            bot_mod._scoped_provider_menu[(-100999, 100)] = "codex"
+            cmd_orch_mod._scoped_provider_menu[(-100999, 100)] = "codex"
             provider = SimpleNamespace(capabilities=SimpleNamespace(name="codex"))
             mock_get_provider.return_value = provider
             mock_tr.resolve_window_for_thread.return_value = "@1"
@@ -445,7 +454,7 @@ class TestBotTextHandlerScopedMenu:
             mock_sync_menu.assert_called_once_with(update.message, 100, provider)
             mock_handle_text.assert_called_once_with(update, ctx)
         finally:
-            bot_mod._scoped_provider_menu.clear()
+            cmd_orch_mod._scoped_provider_menu.clear()
 
 
 class TestRecoveryFreshCallback:

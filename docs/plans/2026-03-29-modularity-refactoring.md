@@ -188,18 +188,18 @@ Design doc: `docs/design/bot-shell/design.md`, `docs/design/callback-dispatch/de
 
 #### Task 10: Extract command orchestration from bot.py
 
-- [ ] Create `src/ccgram/handlers/command_orchestration.py`
-- [ ] Move from `bot.py`:
+- [x] Create `src/ccgram/handlers/command_orchestration.py`
+- [x] Move from `bot.py`:
   - `forward_command_handler()` and its helpers
   - `_sync_scoped_provider_menu()`, `_sync_chat_scoped_provider_menu()`, `_get_provider_command_metadata()`
   - Menu cache state: `_scoped_provider_menu`, `_chat_scoped_provider_menu`, `_global_provider_menu`
   - `_maybe_send_codex_status_snapshot()` replacement (now `_maybe_send_status_snapshot()` using `provider.build_status_snapshot()`)
   - `_codex_status_probe_offset()` replacement
   - Menu refresh job setup function
-- [ ] Update `bot.py` to import `forward_command_handler` from `command_orchestration`
-- [ ] Update `create_bot()` handler registration to use imported function
-- [ ] Add tests in `tests/ccgram/handlers/test_command_orchestration.py`: `test_forward_known_command`, `test_forward_unknown_command_warns`, `test_menu_cache_invalidated_on_provider_change`
-- [ ] Run `make test` — must pass
+- [x] Update `bot.py` to import `forward_command_handler` from `command_orchestration`
+- [x] Update `create_bot()` handler registration to use imported function
+- [x] Add tests in `tests/ccgram/handlers/test_command_orchestration.py`: `test_forward_known_command`, `test_forward_unknown_command_warns`, `test_menu_cache_invalidated_on_provider_change`
+- [x] Run `make test` — must pass
 
 #### Task 11: Extract topic orchestration from bot.py
 

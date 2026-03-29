@@ -5,7 +5,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ccgram.bot import (
+from ccgram.bot import forward_command_handler
+from ccgram.handlers.command_orchestration import (
     _command_known_in_other_provider,
     _extract_pane_delta,
     _extract_probe_error_line,
@@ -14,7 +15,6 @@ from ccgram.bot import (
     _normalize_slash_token,
     _probe_transcript_command_error,
     _short_supported_commands,
-    forward_command_handler,
 )
 
 
@@ -85,14 +85,17 @@ class TestForwardCommandResolution:
         self.mock_probe_spawn = MagicMock()
 
         with (
-            patch("ccgram.bot.thread_router", self.mock_tr),
-            patch("ccgram.bot.session_manager", self.mock_sm),
-            patch("ccgram.bot.tmux_manager", self.mock_tm),
+            patch("ccgram.handlers.command_orchestration.thread_router", self.mock_tr),
             patch(
-                "ccgram.bot.get_provider_for_window", return_value=self.mock_provider
+                "ccgram.handlers.command_orchestration.session_manager", self.mock_sm
+            ),
+            patch("ccgram.handlers.command_orchestration.tmux_manager", self.mock_tm),
+            patch(
+                "ccgram.handlers.command_orchestration.get_provider_for_window",
+                return_value=self.mock_provider,
             ),
             patch(
-                "ccgram.bot._get_provider_command_metadata",
+                "ccgram.handlers.command_orchestration._get_provider_command_metadata",
                 return_value=(
                     {
                         "clear": "clear",
@@ -112,16 +115,22 @@ class TestForwardCommandResolution:
                     },
                 ),
             ),
-            patch("ccgram.bot._command_known_in_other_provider", return_value=False),
             patch(
-                "ccgram.bot._capture_command_probe_context",
+                "ccgram.handlers.command_orchestration._command_known_in_other_provider",
+                return_value=False,
+            ),
+            patch(
+                "ccgram.handlers.command_orchestration._capture_command_probe_context",
                 self.mock_probe_ctx,
             ),
             patch(
-                "ccgram.bot._spawn_command_failure_probe",
+                "ccgram.handlers.command_orchestration._spawn_command_failure_probe",
                 self.mock_probe_spawn,
             ),
-            patch("ccgram.bot._sync_scoped_provider_menu", new_callable=AsyncMock),
+            patch(
+                "ccgram.handlers.command_orchestration.sync_scoped_provider_menu",
+                new_callable=AsyncMock,
+            ),
         ):
             yield
 
@@ -170,7 +179,10 @@ class TestForwardCommandResolution:
         self.mock_sm.send_to_window.assert_called_once_with("@1", "/unknown_thing")
 
     async def test_known_other_provider_command_is_rejected(self) -> None:
-        with patch("ccgram.bot._command_known_in_other_provider", return_value=True):
+        with patch(
+            "ccgram.handlers.command_orchestration._command_known_in_other_provider",
+            return_value=True,
+        ):
             update = _make_update(text="/cost")
             await forward_command_handler(update, _make_context())
 
@@ -267,7 +279,9 @@ class TestForwardCommandResolution:
     async def test_unauthorized_user(self) -> None:
         with (
             patch("ccgram.bot.is_user_allowed", return_value=False),
-            patch("ccgram.bot._get_provider_command_metadata") as mock_metadata,
+            patch(
+                "ccgram.handlers.command_orchestration._get_provider_command_metadata"
+            ) as mock_metadata,
         ):
             update = _make_update(text="/clear")
             await forward_command_handler(update, _make_context())
@@ -299,7 +313,10 @@ class TestForwardCommandResolution:
             has_output_since=MagicMock(return_value=False),
         )
 
-        with patch("ccgram.bot.get_provider_for_window", return_value=codex_provider):
+        with patch(
+            "ccgram.handlers.command_orchestration.get_provider_for_window",
+            return_value=codex_provider,
+        ):
             update = _make_update(text="/status")
             await forward_command_handler(update, _make_context())
 
@@ -323,7 +340,10 @@ class TestForwardCommandResolution:
             build_status_snapshot=MagicMock(return_value=None),
         )
 
-        with patch("ccgram.bot.get_provider_for_window", return_value=claude_provider):
+        with patch(
+            "ccgram.handlers.command_orchestration.get_provider_for_window",
+            return_value=claude_provider,
+        ):
             update = _make_update(text="/status")
             await forward_command_handler(update, _make_context())
 
@@ -350,9 +370,18 @@ class TestForwardCommandResolution:
         )
 
         with (
-            patch("ccgram.bot.get_provider_for_window", return_value=codex_provider),
-            patch("ccgram.bot._status_snapshot_probe_offset", return_value=0),
-            patch("ccgram.bot.asyncio.sleep", new_callable=AsyncMock),
+            patch(
+                "ccgram.handlers.command_orchestration.get_provider_for_window",
+                return_value=codex_provider,
+            ),
+            patch(
+                "ccgram.handlers.command_orchestration._status_snapshot_probe_offset",
+                return_value=0,
+            ),
+            patch(
+                "ccgram.handlers.command_orchestration.asyncio.sleep",
+                new_callable=AsyncMock,
+            ),
         ):
             update = _make_update(text="/status")
             await forward_command_handler(update, _make_context())
@@ -417,13 +446,19 @@ class TestCommandFailureProbe:
         message = AsyncMock()
 
         with (
-            patch("ccgram.bot.asyncio.sleep", new_callable=AsyncMock),
             patch(
-                "ccgram.bot._probe_transcript_command_error",
+                "ccgram.handlers.command_orchestration.asyncio.sleep",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "ccgram.handlers.command_orchestration._probe_transcript_command_error",
                 new_callable=AsyncMock,
                 return_value="unrecognized command '/foo'",
             ),
-            patch("ccgram.bot.safe_reply", new_callable=AsyncMock) as mock_reply,
+            patch(
+                "ccgram.handlers.command_orchestration.safe_reply",
+                new_callable=AsyncMock,
+            ) as mock_reply,
         ):
             await _maybe_send_command_failure_message(
                 message,
@@ -445,18 +480,24 @@ class TestCommandFailureProbe:
         message = AsyncMock()
 
         with (
-            patch("ccgram.bot.asyncio.sleep", new_callable=AsyncMock),
             patch(
-                "ccgram.bot._probe_transcript_command_error",
+                "ccgram.handlers.command_orchestration.asyncio.sleep",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "ccgram.handlers.command_orchestration._probe_transcript_command_error",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
             patch(
-                "ccgram.bot.tmux_manager.capture_pane",
+                "ccgram.handlers.command_orchestration.tmux_manager.capture_pane",
                 new_callable=AsyncMock,
                 return_value="before\nunknown command: /foo",
             ),
-            patch("ccgram.bot.safe_reply", new_callable=AsyncMock) as mock_reply,
+            patch(
+                "ccgram.handlers.command_orchestration.safe_reply",
+                new_callable=AsyncMock,
+            ) as mock_reply,
         ):
             await _maybe_send_command_failure_message(
                 message,
@@ -477,18 +518,24 @@ class TestCommandFailureProbe:
         message = AsyncMock()
 
         with (
-            patch("ccgram.bot.asyncio.sleep", new_callable=AsyncMock),
             patch(
-                "ccgram.bot._probe_transcript_command_error",
+                "ccgram.handlers.command_orchestration.asyncio.sleep",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "ccgram.handlers.command_orchestration._probe_transcript_command_error",
                 new_callable=AsyncMock,
                 return_value=None,
             ),
             patch(
-                "ccgram.bot.tmux_manager.capture_pane",
+                "ccgram.handlers.command_orchestration.tmux_manager.capture_pane",
                 new_callable=AsyncMock,
                 return_value="before\nall good",
             ),
-            patch("ccgram.bot.safe_reply", new_callable=AsyncMock) as mock_reply,
+            patch(
+                "ccgram.handlers.command_orchestration.safe_reply",
+                new_callable=AsyncMock,
+            ) as mock_reply,
         ):
             await _maybe_send_command_failure_message(
                 message,
@@ -553,15 +600,15 @@ class TestCommandHelperFunctions:
 
         with (
             patch(
-                "ccgram.bot.registry.provider_names",
+                "ccgram.handlers.command_orchestration.registry.provider_names",
                 return_value=["codex", "claude", "gemini"],
             ),
             patch(
-                "ccgram.bot.registry.get",
+                "ccgram.handlers.command_orchestration.registry.get",
                 side_effect=lambda name: {"claude": claude, "gemini": gemini}[name],
             ),
             patch(
-                "ccgram.bot._get_provider_command_metadata",
+                "ccgram.handlers.command_orchestration._get_provider_command_metadata",
                 side_effect=lambda provider: ({}, _supported(provider)),
             ),
         ):
@@ -574,7 +621,10 @@ class TestCommandHelperFunctions:
         )
         discovered = [SimpleNamespace(name="/status", telegram_name="status")]
 
-        with patch("ccgram.bot.discover_provider_commands", return_value=discovered):
+        with patch(
+            "ccgram.handlers.command_orchestration.discover_provider_commands",
+            return_value=discovered,
+        ):
             mapping, supported = _get_provider_command_metadata(provider)  # type: ignore[arg-type]
 
         assert mapping == {"status": "/status"}
