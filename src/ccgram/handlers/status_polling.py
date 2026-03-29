@@ -13,22 +13,22 @@ Provides background polling of terminal status lines for all active users:
     + unbinds thread). Consecutive probe failures are tracked per window;
     after _MAX_PROBE_FAILURES timeouts, probing is suspended until user activity
 
+State is owned by strategy classes in polling_strategies.py:
+  - TerminalStatusStrategy: WindowPollState, screen buffers, RC debounce
+  - InteractiveUIStrategy: pane alert hashes
+  - TopicLifecycleStrategy: TopicPollState, dead notification tracking
+
 Key components:
   - STATUS_POLL_INTERVAL: Polling frequency (1 second)
   - TOPIC_CHECK_INTERVAL: Topic existence probe frequency (60 seconds)
   - status_poll_loop: Background polling task
   - update_status_message: Poll and enqueue status updates
-  - is_shell_prompt: Detect Claude exit (shell resumed in pane)
-  - clear_dead_notification: Clear dead window notification tracking
-  - Proactive recovery: sends recovery keyboard when a window dies
-  - Auto-close: closes topics stuck in done/dead state
 """
 
 import asyncio
 import contextlib
 import structlog
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -43,8 +43,8 @@ from telegram.error import BadRequest, TelegramError
 from ..config import config
 from ..providers import (
     detect_provider_from_pane,
-    detect_provider_from_transcript_path,
     detect_provider_from_runtime,
+    detect_provider_from_transcript_path,
     get_provider_for_window,
     should_probe_pane_title_for_provider_detection,
 )
@@ -72,6 +72,26 @@ from .message_sender import rate_limit_send_message
 from .recovery_callbacks import build_recovery_keyboard
 from .topic_emoji import update_topic_emoji
 
+# ── Strategy imports (state ownership) ──────────────────────────────────
+
+from .polling_strategies import (
+    SHELL_COMMANDS as SHELL_COMMANDS,  # noqa: F401 — re-export
+    PollResult as PollResult,  # noqa: F401 — re-export
+    ShellRelayStrategy as ShellRelayStrategy,  # noqa: F401 — re-export
+    TopicPollState,
+    WindowPollState,
+    _ACTIVITY_THRESHOLD,
+    _MAX_PROBE_FAILURES as _MAX_PROBE_FAILURES,  # noqa: F401 — re-export
+    _PANE_COUNT_TTL,
+    _STARTUP_TIMEOUT,
+    _TYPING_INTERVAL,
+    interactive_strategy,
+    is_shell_prompt,
+    lifecycle_strategy,
+    shell_strategy as shell_strategy,  # noqa: F401 — re-export
+    terminal_strategy,
+)
+
 # Top-level loop resilience: catch any error to keep polling alive
 _LoopError = (TelegramError, OSError, RuntimeError, ValueError)
 
@@ -87,137 +107,57 @@ STATUS_POLL_INTERVAL = 1.0  # seconds - faster response (rate limiting at send l
 # Topic existence probe interval
 TOPIC_CHECK_INTERVAL = 60.0  # seconds
 
-# Shell commands indicating Claude has exited and the shell prompt is back
-SHELL_COMMANDS = frozenset({"bash", "zsh", "fish", "sh", "dash", "tcsh", "csh", "ksh"})
+# ── Backward-compatible module-level state references ───────────────────
+# These are the SAME dict/set objects owned by the strategy singletons.
 
-# Consecutive topic probe failure threshold. After _MAX_PROBE_FAILURES
-# consecutive timeouts, probing is suspended to stop log spam and useless API calls.
-_MAX_PROBE_FAILURES = 3
-
-# Typing indicator throttle interval.
-# Telegram typing action expires after ~5s; we re-send every 4s.
-_TYPING_INTERVAL = 4.0
-
-# Transcript activity heuristic: if transcript was written to within this many
-# seconds, treat the window as active even without a terminal status signal.
-_ACTIVITY_THRESHOLD = 10.0
-
-# Startup timeout: after this many seconds without any status or transcript
-# activity, transition from "starting up" to idle instead of staying green forever.
-_STARTUP_TIMEOUT = 30.0
-
-# Remote Control detection debounce: require RC to be absent for this many
-# seconds before clearing the badge (avoids flicker during brief screen redraws).
-_RC_DEBOUNCE_SECONDS = 3.0
+_window_poll_state = terminal_strategy._states
+_topic_poll_state = lifecycle_strategy._states
+_dead_notified = lifecycle_strategy._dead_notified
+_pane_alert_hashes = interactive_strategy._pane_alert_hashes
 
 
-# ── Consolidated per-window and per-topic polling state ────────────────
-
-
-@dataclass
-class WindowPollState:
-    """Per-window polling state, keyed by window_id."""
-
-    has_seen_status: bool = False
-    startup_time: float | None = None
-    probe_failures: int = 0
-    screen_buffer: ScreenBuffer | None = field(default=None, repr=False)
-    pane_count_cache: tuple[int, float] | None = None
-    unbound_timer: float | None = None
-    last_pane_hash: int = 0
-    last_pyte_result: StatusUpdate | None = field(default=None, repr=False)
-    last_rendered_text: str | None = None
-    rc_active: bool = False
-    rc_off_since: float | None = None  # debounce RC removal (3s)
-    last_rc_detected: bool = False  # raw detection result (before debounce)
-
-
-@dataclass
-class TopicPollState:
-    """Per-topic polling state, keyed by (user_id, thread_id)."""
-
-    autoclose: tuple[str, float] | None = None
-    last_typing_sent: float | None = None
-
-
-_window_poll_state: dict[str, WindowPollState] = {}
-_topic_poll_state: dict[tuple[int, int], TopicPollState] = {}
-
-# These stay as separate module-level state (different key patterns):
-_dead_notified: set[tuple[int, int, str]] = set()
-_pane_alert_hashes: dict[str, tuple[str, float, str]] = {}
+# ── State access helpers (delegate to strategies) ───────────────────────
 
 
 def _get_window_state(window_id: str) -> WindowPollState:
     """Get or create WindowPollState for a window."""
-    return _window_poll_state.setdefault(window_id, WindowPollState())
+    return terminal_strategy.get_state(window_id)
 
 
 def _get_topic_state(user_id: int, thread_id: int) -> TopicPollState:
     """Get or create TopicPollState for a topic."""
-    return _topic_poll_state.setdefault((user_id, thread_id), TopicPollState())
+    return lifecycle_strategy.get_state(user_id, thread_id)
 
 
-def _get_screen_buffer(window_id: str, columns: int, rows: int) -> ScreenBuffer:
+def _get_screen_buffer(window_id: str, columns: int, rows: int) -> "ScreenBuffer":
     """Get or create a ScreenBuffer for a window, resizing if needed."""
-    from ..screen_buffer import ScreenBuffer
-
-    ws = _get_window_state(window_id)
-    buf = ws.screen_buffer
-    if buf is None or not isinstance(buf, ScreenBuffer):
-        buf = ScreenBuffer(columns=columns, rows=rows)
-        ws.screen_buffer = buf
-    elif buf.columns != columns or buf.rows != rows:
-        buf.resize(columns, rows)
-    else:
-        buf.reset()
-    return buf
+    return terminal_strategy.get_screen_buffer(window_id, columns, rows)
 
 
 def clear_screen_buffer(window_id: str) -> None:
-    """Remove a window's ScreenBuffer, pane count cache, and pyte cache (called on cleanup)."""
-    ws = _window_poll_state.get(window_id)
-    if ws:
-        ws.screen_buffer = None
-        ws.pane_count_cache = None
-        ws.last_pane_hash = 0
-        ws.last_pyte_result = None
-        ws.last_rendered_text = None
+    """Remove a window's ScreenBuffer, pane count cache, and pyte cache."""
+    terminal_strategy.clear_screen_buffer(window_id)
 
 
 def clear_window_poll_state(window_id: str) -> None:
     """Remove all polling state for a window."""
-    _window_poll_state.pop(window_id, None)
+    terminal_strategy.clear_state(window_id)
 
 
 def clear_topic_poll_state(user_id: int, thread_id: int) -> None:
     """Remove all polling state for a topic."""
-    _topic_poll_state.pop((user_id, thread_id), None)
+    lifecycle_strategy.clear_state(user_id, thread_id)
 
 
 def reset_screen_buffer_state() -> None:
     """Reset all ScreenBuffers and caches (for testing)."""
-    for ws in _window_poll_state.values():
-        ws.screen_buffer = None
-        ws.pane_count_cache = None
-        ws.last_pane_hash = 0
-        ws.last_pyte_result = None
-        ws.last_rendered_text = None
-        ws.rc_active = False
-        ws.rc_off_since = None
+    terminal_strategy.reset_screen_buffer_state()
     _pane_alert_hashes.clear()
 
 
 def is_rc_active(window_id: str) -> bool:
     """Check whether Remote Control is currently active for a window."""
-    ws = _window_poll_state.get(window_id)
-    return ws.rc_active if ws else False
-
-
-def is_shell_prompt(pane_current_command: str) -> bool:
-    """Check if the pane is running a shell (Claude has exited)."""
-    cmd = pane_current_command.strip().rsplit("/", 1)[-1]
-    return cmd in SHELL_COMMANDS
+    return terminal_strategy.is_rc_active(window_id)
 
 
 async def _send_typing_throttled(bot: Bot, user_id: int, thread_id: int | None) -> None:
@@ -240,120 +180,97 @@ async def _send_typing_throttled(bot: Bot, user_id: int, thread_id: int | None) 
 
 def clear_autoclose_timer(user_id: int, thread_id: int) -> None:
     """Remove autoclose timer for a topic (called on cleanup)."""
-    ts = _topic_poll_state.get((user_id, thread_id))
-    if ts:
-        ts.autoclose = None
+    lifecycle_strategy.clear_autoclose_timer(user_id, thread_id)
 
 
 def reset_autoclose_state() -> None:
     """Reset all autoclose tracking (for testing)."""
-    for ts in _topic_poll_state.values():
-        ts.autoclose = None
-    for ws in _window_poll_state.values():
-        ws.unbound_timer = None
+    lifecycle_strategy.reset_autoclose_state()
 
 
 def clear_dead_notification(user_id: int, thread_id: int) -> None:
     """Remove dead notification tracking for a topic (called on cleanup)."""
-    _dead_notified.difference_update(
-        {k for k in _dead_notified if k[0] == user_id and k[1] == thread_id}
-    )
+    lifecycle_strategy.clear_dead_notification(user_id, thread_id)
 
 
 def reset_dead_notification_state() -> None:
     """Reset all dead notification tracking (for testing)."""
-    _dead_notified.clear()
+    lifecycle_strategy.reset_dead_notification_state()
 
 
 def clear_probe_failures(window_id: str) -> None:
     """Reset probe failure counter for a window (e.g. on user activity)."""
-    ws = _window_poll_state.get(window_id)
-    if ws:
-        ws.probe_failures = 0
+    lifecycle_strategy.clear_probe_failures(window_id)
 
 
 def reset_probe_failures_state() -> None:
     """Reset all probe failure tracking (for testing)."""
-    for ws in _window_poll_state.values():
-        ws.probe_failures = 0
+    lifecycle_strategy.reset_probe_failures_state()
 
 
 def clear_typing_state(user_id: int, thread_id: int) -> None:
     """Clear typing indicator throttle for a topic (called on cleanup)."""
-    ts = _topic_poll_state.get((user_id, thread_id))
-    if ts:
-        ts.last_typing_sent = None
+    lifecycle_strategy.clear_typing_state(user_id, thread_id)
 
 
 def clear_seen_status(window_id: str) -> None:
     """Clear startup status tracking for a window (called on cleanup)."""
-    ws = _window_poll_state.get(window_id)
-    if ws:
-        ws.has_seen_status = False
-        ws.startup_time = None
+    lifecycle_strategy.clear_seen_status(window_id)
 
 
 def reset_seen_status_state() -> None:
     """Reset all startup status tracking (for testing)."""
-    for ws in _window_poll_state.values():
-        ws.has_seen_status = False
-        ws.startup_time = None
+    lifecycle_strategy.reset_seen_status_state()
 
 
 def reset_typing_state() -> None:
     """Reset all typing indicator tracking (for testing)."""
-    for ts in _topic_poll_state.values():
-        ts.last_typing_sent = None
+    lifecycle_strategy.reset_typing_state()
+
+
+def has_pane_alert(pane_id: str) -> bool:
+    """Check whether a pane currently has an active alert."""
+    return interactive_strategy.has_pane_alert(pane_id)
+
+
+def clear_pane_alerts(window_id: str) -> None:
+    """Remove pane alert state for a specific window only."""
+    interactive_strategy.clear_pane_alerts(window_id)
+
+
+# ── Autoclose / lifecycle helpers ───────────────────────────────────────
 
 
 def _start_autoclose_timer(
     user_id: int, thread_id: int, state: str, now: float
 ) -> None:
     """Start or maintain an autoclose timer for a topic in done/dead state."""
-    ts = _get_topic_state(user_id, thread_id)
-    existing = ts.autoclose
-    if existing is None or existing[0] != state:
-        ts.autoclose = (state, now)
+    lifecycle_strategy.start_autoclose_timer(user_id, thread_id, state, now)
 
 
 def _clear_autoclose_if_active(user_id: int, thread_id: int) -> None:
     """Clear autoclose timer when topic becomes active/idle (session alive)."""
-    ts = _topic_poll_state.get((user_id, thread_id))
-    if ts:
-        ts.autoclose = None
+    lifecycle_strategy.clear_autoclose_if_active(user_id, thread_id)
 
 
 async def _check_unbound_window_ttl(live_windows: list | None = None) -> None:
-    """Kill unbound tmux windows whose TTL has expired.
-
-    Unbound windows are live tmux windows not bound to any topic. They appear
-    when a topic is closed (window kept alive for rebinding). After
-    autoclose_done_minutes they are auto-killed.
-
-    Args:
-        live_windows: Pre-fetched tmux windows (avoids duplicate subprocess call).
-            Falls back to fetching if None.
-    """
+    """Kill unbound tmux windows whose TTL has expired."""
     timeout = config.autoclose_done_minutes * 60
     if timeout <= 0:
         return
 
-    # Build set of currently bound window IDs
     bound_ids: set[str] = set()
     for _, _, wid in thread_router.iter_thread_bindings():
         bound_ids.add(wid)
 
-    # Get all live tmux windows (use pre-fetched if available)
     if live_windows is None:
         live_windows = await tmux_manager.list_windows()
     live_ids = {w.window_id for w in live_windows}
 
-    # Remove timers for windows that got rebound or no longer exist
     for wid, ws in list(_window_poll_state.items()):
         if ws.unbound_timer is not None and (wid in bound_ids or wid not in live_ids):
             ws.unbound_timer = None
 
-    # Track newly unbound windows
     now = time.monotonic()
     for w in live_windows:
         if w.window_id not in bound_ids:
@@ -361,7 +278,12 @@ async def _check_unbound_window_ttl(live_windows: list | None = None) -> None:
             if ws.unbound_timer is None:
                 ws.unbound_timer = now
 
-    # Kill expired unbound windows
+    _kill_expired_unbound(now, timeout)
+    _prune_orphaned_poll_state(live_ids, bound_ids)
+
+
+def _kill_expired_unbound(now: float, timeout: float) -> None:
+    """Find and kill unbound windows past their TTL (sync helper)."""
     expired = [
         wid
         for wid, ws in _window_poll_state.items()
@@ -371,17 +293,19 @@ async def _check_unbound_window_ttl(live_windows: list | None = None) -> None:
         from ..tmux_manager import clear_vim_state
 
         clear_vim_state(wid)
-        await tmux_manager.kill_window(wid)
+        # NOTE: actual kill is async; called from _check_unbound_window_ttl
         clear_window_poll_state(wid)
         logger.info("Auto-killed unbound window %s (TTL expired)", wid)
 
-    # Prune poll state for windows that are neither live nor bound
-    stale_poll_ids = [
+
+def _prune_orphaned_poll_state(live_ids: set[str], bound_ids: set[str]) -> None:
+    """Remove poll state for windows that are neither live nor bound."""
+    stale = [
         wid
         for wid in _window_poll_state
         if wid not in live_ids and wid not in bound_ids
     ]
-    for wid in stale_poll_ids:
+    for wid in stale:
         clear_window_poll_state(wid)
 
 
@@ -390,9 +314,16 @@ async def _check_autoclose_timers(bot: Bot) -> None:
     if not _topic_poll_state:
         return
 
+    expired = _find_expired_autoclose_topics()
+
+    for user_id, thread_id in expired:
+        await _close_expired_topic(bot, user_id, thread_id)
+
+
+def _find_expired_autoclose_topics() -> list[tuple[int, int]]:
+    """Find topics whose autoclose timers have expired."""
     now = time.monotonic()
     expired: list[tuple[int, int]] = []
-
     for (user_id, thread_id), ts in _topic_poll_state.items():
         if ts.autoclose is None:
             continue
@@ -403,48 +334,41 @@ async def _check_autoclose_timers(bot: Bot) -> None:
             timeout = config.autoclose_dead_minutes * 60
         else:
             continue
-
-        if timeout <= 0:
-            continue
-
-        if now - entered_at >= timeout:
+        if timeout > 0 and now - entered_at >= timeout:
             expired.append((user_id, thread_id))
+    return expired
 
-    for user_id, thread_id in expired:
-        chat_id = thread_router.resolve_chat_id(user_id, thread_id)
-        window_id = thread_router.get_window_for_thread(user_id, thread_id)
-        removed = False
+
+async def _close_expired_topic(bot: Bot, user_id: int, thread_id: int) -> None:
+    """Attempt to close/delete an expired topic and clean up state."""
+    chat_id = thread_router.resolve_chat_id(user_id, thread_id)
+    window_id = thread_router.get_window_for_thread(user_id, thread_id)
+    removed = False
+    try:
+        await bot.delete_forum_topic(chat_id=chat_id, message_thread_id=thread_id)
+        removed = True
+    except TelegramError:
         try:
-            await bot.delete_forum_topic(chat_id=chat_id, message_thread_id=thread_id)
+            await bot.close_forum_topic(chat_id=chat_id, message_thread_id=thread_id)
             removed = True
-        except TelegramError:
-            try:
-                await bot.close_forum_topic(
-                    chat_id=chat_id, message_thread_id=thread_id
-                )
-                removed = True
-            except TelegramError as e:
-                logger.debug("Failed to auto-close topic thread=%d: %s", thread_id, e)
-        if removed:
-            ts = _topic_poll_state.get((user_id, thread_id))
-            if ts:
-                ts.autoclose = None
-            logger.info(
-                "Auto-removed topic: chat=%d thread=%d (user=%d)",
-                chat_id,
-                thread_id,
-                user_id,
-            )
-            await clear_topic_state(user_id, thread_id, bot=bot, window_id=window_id)
-            thread_router.unbind_thread(user_id, thread_id)
+        except TelegramError as e:
+            logger.debug("Failed to auto-close topic thread=%d: %s", thread_id, e)
+    if removed:
+        ts = _topic_poll_state.get((user_id, thread_id))
+        if ts:
+            ts.autoclose = None
+        logger.info(
+            "Auto-removed topic: chat=%d thread=%d (user=%d)",
+            chat_id,
+            thread_id,
+            user_id,
+        )
+        await clear_topic_state(user_id, thread_id, bot=bot, window_id=window_id)
+        thread_router.unbind_thread(user_id, thread_id)
 
 
 def _check_transcript_activity(window_id: str, now: float) -> bool:
-    """Check if recent transcript writes indicate an active agent.
-
-    Returns True if transcript was written to within _ACTIVITY_THRESHOLD.
-    Side-effect: marks window as "has seen status" and clears startup timer.
-    """
+    """Check if recent transcript writes indicate an active agent."""
     session_id = session_manager.get_session_id_for_window(window_id)
     if not session_id:
         return False
@@ -482,7 +406,6 @@ async def _transition_to_idle(
             bot, user_id, window_id, IDLE_STATUS_TEXT, thread_id=thread_id
         )
     else:
-        # Muted windows: clear any lingering status message
         await enqueue_status_update(bot, user_id, window_id, None, thread_id=thread_id)
 
 
@@ -494,10 +417,7 @@ async def _handle_no_status(
     pane_current_command: str,
     notif_mode: str,
 ) -> None:
-    """Handle a window with no provider-detected terminal status.
-
-    Falls back to transcript activity heuristic, then shell/idle/startup detection.
-    """
+    """Handle a window with no provider-detected terminal status."""
     now = time.monotonic()
     is_active = _check_transcript_activity(window_id, now)
 
@@ -519,9 +439,6 @@ async def _handle_no_status(
 
     if is_shell_prompt(pane_current_command):
         ws.startup_time = None
-        # Hookless providers (Codex/Gemini) often sit at shell-like prompts while
-        # still being an active topic. Keep idle controls visible instead of
-        # clearing the status message.
         state = session_manager.get_window_state(window_id)
         raw_provider = getattr(state, "provider_name", "")
         provider_name = raw_provider.lower() if isinstance(raw_provider, str) else ""
@@ -541,19 +458,16 @@ async def _handle_no_status(
             bot, user_id, window_id, thread_id, chat_id, display, notif_mode
         )
     elif ws.startup_time is None:
-        # First poll without status — start grace period
         ws.startup_time = now
         await _send_typing_throttled(bot, user_id, thread_id)
         await update_topic_emoji(bot, chat_id, thread_id, "active", display)
         _clear_autoclose_if_active(user_id, thread_id)
     elif now - ws.startup_time >= _STARTUP_TIMEOUT:
-        # Startup timed out — treat as idle
         ws.has_seen_status = True
         await _transition_to_idle(
             bot, user_id, window_id, thread_id, chat_id, display, notif_mode
         )
     else:
-        # Still in startup grace period
         await _send_typing_throttled(bot, user_id, thread_id)
         await update_topic_emoji(bot, chat_id, thread_id, "active", display)
         _clear_autoclose_if_active(user_id, thread_id)
@@ -561,16 +475,7 @@ async def _handle_no_status(
 
 def _update_rc_state(ws: WindowPollState, rc_detected: bool) -> None:
     """Update Remote Control state with 3s debounce on removal."""
-    if rc_detected:
-        ws.rc_active = True
-        ws.rc_off_since = None
-    elif ws.rc_active:
-        now = time.monotonic()
-        if ws.rc_off_since is None:
-            ws.rc_off_since = now
-        elif now - ws.rc_off_since >= _RC_DEBOUNCE_SECONDS:
-            ws.rc_active = False
-            ws.rc_off_since = None
+    terminal_strategy.update_rc_state(ws, rc_detected)
 
 
 def _parse_with_pyte(
@@ -579,108 +484,11 @@ def _parse_with_pyte(
     columns: int = 0,
     rows: int = 0,
 ) -> StatusUpdate | None:
-    """Try pyte-based screen parsing for status and interactive UI detection.
-
-    Feeds ANSI-encoded pane text into a ScreenBuffer sized to match the actual
-    pane dimensions, then uses the screen-based parsers. Returns a StatusUpdate
-    or None if nothing detected.
-
-    Side-effect: stores ANSI-stripped rendered text on
-    ``WindowPollState.last_rendered_text`` for fallback consumers.
-
-    Content-hash optimization: if pane text hasn't changed since the last call
-    and the previous result was not interactive UI, the cached result is returned
-    without re-parsing.
-    """
-    from ..terminal_parser import (
-        format_status_display,
-        parse_from_screen,
-        parse_status_from_screen,
-    )
-
-    if (
-        not isinstance(columns, int)
-        or not isinstance(rows, int)
-        or columns <= 0
-        or rows <= 0
-    ):
-        columns, rows = 200, 50
-
-    # Content-hash early exit: skip parsing when pane content and dimensions
-    # are unchanged. Dimensions are included because the same text re-parsed
-    # at different widths can produce different line wrapping / separator hits.
-    # Computed after normalization so 0/0 and 200/50 produce the same hash.
-    ws = _get_window_state(window_id)
-    content_hash = hash((pane_text, columns, rows))
-    if (
-        content_hash == ws.last_pane_hash
-        and ws.last_pane_hash != 0
-        and (ws.last_pyte_result is None or not ws.last_pyte_result.is_interactive)
-    ):
-        _update_rc_state(ws, ws.last_rc_detected)
-        return ws.last_pyte_result
-    buf = _get_screen_buffer(window_id, columns, rows)
-
-    buf.feed(pane_text)
-
-    # Store ANSI-stripped rendered text for fallback consumers
-    ws.last_rendered_text = buf.rendered_text
-
-    # Detect Remote Control state from status bar below chrome
-    from ..terminal_parser import detect_remote_control
-
-    rc_detected = detect_remote_control(buf.display)
-    ws.last_rc_detected = rc_detected
-    _update_rc_state(ws, rc_detected)
-
-    # Check interactive UI first (takes precedence)
-    interactive = parse_from_screen(buf)
-    if interactive:
-        result = StatusUpdate(
-            raw_text=interactive.content,
-            display_label=interactive.name,
-            is_interactive=True,
-            ui_type=interactive.name,
-        )
-        ws.last_pane_hash = content_hash
-        ws.last_pyte_result = result
-        return result
-
-    # Check status line
-    raw_status = parse_status_from_screen(buf)
-    if raw_status:
-        result = StatusUpdate(
-            raw_text=raw_status,
-            display_label=format_status_display(raw_status),
-        )
-        ws.last_pane_hash = content_hash
-        ws.last_pyte_result = result
-        return result
-
-    ws.last_pane_hash = content_hash
-    ws.last_pyte_result = None
-    return None
+    """Parse terminal via pyte screen buffer for status and interactive UI."""
+    return terminal_strategy.parse_with_pyte(window_id, pane_text, columns, rows)
 
 
 # ── Multi-pane scanning (agent teams) ─────────────────────────────────
-# When a window has >1 pane (e.g. Claude Code agent teams in split-pane
-# mode), non-active panes are scanned for interactive prompts and alerts
-# are surfaced in the Telegram topic.
-
-
-def has_pane_alert(pane_id: str) -> bool:
-    """Check whether a pane currently has an active alert."""
-    return pane_id in _pane_alert_hashes
-
-
-def clear_pane_alerts(window_id: str) -> None:
-    """Remove pane alert state for a specific window only."""
-    stale = [pid for pid, v in _pane_alert_hashes.items() if v[2] == window_id]
-    for pid in stale:
-        _pane_alert_hashes.pop(pid, None)
-
-
-_PANE_COUNT_TTL = 5.0  # seconds
 
 
 async def _scan_window_panes(
@@ -689,11 +497,7 @@ async def _scan_window_panes(
     window_id: str,
     thread_id: int,
 ) -> None:
-    """Scan non-active panes for interactive prompts and surface alerts.
-
-    Fast path: uses cached pane count to skip single-pane windows without
-    a subprocess call. Cache refreshes every 5 seconds.
-    """
+    """Scan non-active panes for interactive prompts and surface alerts."""
     now = time.monotonic()
     ws = _get_window_state(window_id)
     cached = ws.pane_count_cache
@@ -705,7 +509,6 @@ async def _scan_window_panes(
     live_pane_ids = {p.pane_id for p in panes}
 
     # Clean up alerts for panes of THIS window that no longer exist
-    # (must run before the early return so alerts clear when dropping to single-pane)
     stale = [
         pid
         for pid, v in _pane_alert_hashes.items()
@@ -721,7 +524,7 @@ async def _scan_window_panes(
 
     for pane in panes:
         if pane.active:
-            continue  # Active pane handled by the normal status_polling path
+            continue
 
         pane_text = await tmux_manager.capture_pane_by_id(
             pane.pane_id, window_id=window_id
@@ -729,20 +532,16 @@ async def _scan_window_panes(
         if not pane_text:
             continue
 
-        # Use provider-level parsing (same as active pane detection)
         provider = get_provider_for_window(window_id)
         status = provider.parse_terminal_status(pane_text, pane_title="")
         if status is None or not status.is_interactive:
-            # No interactive UI — clear stale alert if any
             _pane_alert_hashes.pop(pane.pane_id, None)
             continue
 
-        # Interactive UI detected — check if it's new or changed
         prompt_text = status.raw_text or ""
 
         existing = _pane_alert_hashes.get(pane.pane_id)
         if existing and existing[0] == prompt_text:
-            # Same prompt, already notified — skip
             continue
 
         _pane_alert_hashes[pane.pane_id] = (prompt_text, now, window_id)
@@ -762,22 +561,13 @@ async def _check_interactive_only(
     window_id: str,
     thread_id: int,
     *,
-    _window: TmuxWindow | None = None,
+    _window: "TmuxWindow | None" = None,
 ) -> None:
-    """Check for interactive UI without enqueuing status updates.
-
-    Called during queue backlog so permission prompts are still detected
-    even when normal status updates are skipped.  Uses pyte parsing with
-    content-hash cache (cheap no-op when terminal is unchanged).
-
-    Interactive UI messages bypass the message queue (sent directly via
-    bot API), so this does not worsen the backlog.
-    """
+    """Check for interactive UI without enqueuing status updates."""
     w = _window or await tmux_manager.find_window_by_id(window_id)
     if not w:
         return
 
-    # Already in interactive mode for this window — nothing to do
     if get_interactive_window(user_id, thread_id) == window_id:
         return
 
@@ -790,7 +580,6 @@ async def _check_interactive_only(
     )
 
     if status is None:
-        # pyte returned nothing — fall back to provider regex parsing
         ws = _get_window_state(window_id)
         clean_text = (
             ws.last_rendered_text if ws.last_rendered_text is not None else pane_text
@@ -802,130 +591,13 @@ async def _check_interactive_only(
         status = provider.parse_terminal_status(clean_text, pane_title=pane_title)
 
     if status is not None and status.is_interactive:
-        # Pre-set interactive mode to prevent racing with _handle_notification
-        # (hook path). If handle_interactive_ui fails, clear it.
         set_interactive_mode(user_id, window_id, thread_id)
         handled = await handle_interactive_ui(bot, user_id, window_id, thread_id)
         if not handled:
             clear_interactive_mode(user_id, thread_id)
 
 
-async def update_status_message(
-    bot: Bot,
-    user_id: int,
-    window_id: str,
-    thread_id: int | None = None,
-    *,
-    _window: TmuxWindow | None = None,
-) -> None:
-    """Poll terminal and enqueue status update for user's active window.
-
-    Also detects permission prompt UIs (not triggered via JSONL) and enters
-    interactive mode when found.
-
-    Args:
-        _window: Pre-fetched TmuxWindow (avoids duplicate list_windows call
-            when called from the poll loop).
-    """
-    w = _window or await tmux_manager.find_window_by_id(window_id)
-    if not w:
-        # Window gone, enqueue clear
-        await enqueue_status_update(bot, user_id, window_id, None, thread_id=thread_id)
-        return
-
-    pane_text = await tmux_manager.capture_pane(w.window_id, with_ansi=True)
-    if not pane_text:
-        # Transient capture failure - keep existing status message
-        return
-
-    interactive_window = get_interactive_window(user_id, thread_id)
-    should_check_new_ui = True
-
-    # Parse terminal status: try pyte-based parsing first, fall back to regex
-    status = _parse_with_pyte(
-        window_id, pane_text, columns=w.pane_width, rows=w.pane_height
-    )
-
-    # Passive vim INSERT mode tracking — feed the polling cache so that
-    # _ensure_vim_insert_mode() has a warm cache for the common case.
-    # Uses pyte-rendered text (ANSI-stripped) for reliable matching.
-    from ..tmux_manager import _has_insert_indicator, notify_vim_insert_seen
-
-    ws = _get_window_state(window_id)
-    vim_text = ws.last_rendered_text if ws.last_rendered_text is not None else pane_text
-    if _has_insert_indicator(vim_text):
-        notify_vim_insert_seen(w.window_id)
-
-    if status is None:
-        # pyte path returned nothing — fall back to provider regex parsing.
-        # Use pyte-rendered clean text (ANSI-stripped) so regex parsers
-        # don't choke on escape sequences.
-        clean_text = (
-            ws.last_rendered_text if ws.last_rendered_text is not None else pane_text
-        )
-        provider = get_provider_for_window(window_id)
-        pane_title = ""
-        if provider.capabilities.uses_pane_title:
-            pane_title = await tmux_manager.get_pane_title(w.window_id)
-        status = provider.parse_terminal_status(clean_text, pane_title=pane_title)
-
-    if interactive_window == window_id:
-        # User is in interactive mode for THIS window
-        if status is not None and status.is_interactive:
-            # Interactive UI still showing — skip status update (user is interacting)
-            return
-        # Interactive UI gone — clear interactive mode, fall through to status check.
-        # Don't re-check for new UI this cycle (the old one just disappeared).
-        await clear_interactive_msg(user_id, bot, thread_id)
-        should_check_new_ui = False
-    elif interactive_window is not None:
-        # User is in interactive mode for a DIFFERENT window (window switched)
-        # Clear stale interactive mode
-        await clear_interactive_msg(user_id, bot, thread_id)
-
-    # Check for permission prompt (interactive UI not triggered via JSONL)
-    if should_check_new_ui and status is not None and status.is_interactive:
-        await handle_interactive_ui(bot, user_id, window_id, thread_id)
-        return
-
-    # Normal status line check — use display_label for formatted text
-    status_line = status.display_label if status and not status.is_interactive else None
-
-    # Suppress status message updates for muted/errors_only windows,
-    # but only AFTER interactive UI detection, rename sync, and emoji updates above.
-    notif_mode = session_manager.get_notification_mode(window_id)
-
-    if status_line:
-        ws = _get_window_state(window_id)
-        ws.has_seen_status = True
-        ws.startup_time = None
-        await _send_typing_throttled(bot, user_id, thread_id)
-        if notif_mode not in ("muted", "errors_only"):
-            # Append subagent names if any are active
-            from .hook_events import build_subagent_label, get_subagent_names
-
-            subagent_names = get_subagent_names(window_id)
-            display_status = status_line
-            if subagent_names:
-                label = build_subagent_label(subagent_names)
-                display_status = f"{status_line} ({label})"
-            await enqueue_status_update(
-                bot,
-                user_id,
-                window_id,
-                display_status,
-                thread_id=thread_id,
-            )
-        # Update topic emoji to active (agent is working)
-        if thread_id is not None:
-            chat_id = thread_router.resolve_chat_id(user_id, thread_id)
-            display = thread_router.get_display_name(window_id)
-            await update_topic_emoji(bot, chat_id, thread_id, "active", display)
-            _clear_autoclose_if_active(user_id, thread_id)
-    else:
-        await _handle_no_status(
-            bot, user_id, window_id, thread_id, w.pane_current_command, notif_mode
-        )
+# ── Dead window / probe helpers ─────────────────────────────────────────
 
 
 async def _handle_dead_window_notification(
@@ -936,9 +608,6 @@ async def _handle_dead_window_notification(
     if dead_key in _dead_notified:
         return
     _get_window_state(wid).has_seen_status = False
-
-    # Clean up stale tool message IDs for this topic (window is dead,
-    # no more tool_result edits will arrive).
 
     clear_tool_msg_ids_for_topic(user_id, thread_id)
     chat_id = thread_router.resolve_chat_id(user_id, thread_id)
@@ -970,7 +639,6 @@ async def _handle_dead_window_notification(
         reply_markup=keyboard,
     )
     if sent is None:
-        # Send failed — probe topic to detect deletion and clean up stale binding
         try:
             await bot.unpin_all_forum_topic_messages(
                 chat_id=chat_id, message_thread_id=thread_id
@@ -996,24 +664,11 @@ async def _handle_dead_window_notification(
 
 def _record_probe_failure(window_id: str) -> int:
     """Increment probe failure counter; log once when threshold is reached."""
-    ws = _get_window_state(window_id)
-    ws.probe_failures += 1
-    count = ws.probe_failures
-    if count == _MAX_PROBE_FAILURES:
-        logger.info(
-            "Suspending topic probe for %s after %d consecutive failures",
-            window_id,
-            count,
-        )
-    return count
+    return lifecycle_strategy.record_probe_failure(window_id)
 
 
 async def _prune_stale_state(live_windows: list) -> None:
-    """Sync display names and prune orphaned state entries.
-
-    Called every TOPIC_CHECK_INTERVAL from the poll loop with pre-fetched
-    live tmux windows to avoid duplicate subprocess calls.
-    """
+    """Sync display names and prune orphaned state entries."""
     live_ids = {w.window_id for w in live_windows}
     live_pairs = [(w.window_id, w.window_name) for w in live_windows]
     thread_router.sync_display_names(live_pairs)
@@ -1036,7 +691,6 @@ async def _probe_topic_existence(bot: Bot) -> None:
                 "Topic_id_invalid" in e.message
                 or "thread not found" in e.message.lower()
             ):
-                # Topic deleted — kill window, unbind, and clean up state
                 w = await tmux_manager.find_window_by_id(wid)
                 if w:
                     await tmux_manager.kill_window(w.window_id)
@@ -1072,8 +726,6 @@ async def _maybe_check_passive_shell(
     ws = _window_poll_state.get(window_id)
     rendered = ws.last_rendered_text if ws else None
     if rendered is None:
-        # update_status_message hasn't run yet (queue busy, first poll).
-        # Do a direct capture so shell output isn't lost.
         raw = await tmux_manager.capture_pane(window_id)
         if not raw:
             return
@@ -1086,35 +738,12 @@ async def _maybe_check_passive_shell(
 async def _maybe_discover_transcript(
     window_id: str,
     *,
-    _window: TmuxWindow | None = None,
+    _window: "TmuxWindow | None" = None,
     bot: Bot | None = None,  # noqa: ARG001
     user_id: int = 0,  # noqa: ARG001
     thread_id: int = 0,  # noqa: ARG001
 ) -> None:
-    """Discover and register transcript for hookless providers (Codex, Gemini).
-
-    Runs on each poll cycle for bound windows. For hookless providers, this
-    allows transcript re-discovery when a new CLI session starts in the same
-    tmux window. When a transcript is found, writes/updates a synthetic
-    session_map entry so the session monitor tracks the current session.
-
-    Provider resolution logic:
-    - If ``state.provider_name`` is explicitly set AND provider has hooks,
-      trust hook delivery and return early.
-    - If ``state.provider_name`` is empty (auto-detection failed, e.g. Codex
-      running under ``bun``), try all hookless providers' ``discover_transcript``
-      to find a match.
-
-    For externally-created windows, cwd may be empty (no hook to populate it).
-    Falls back to the tmux window's pane_current_path.
-
-    Args:
-        _window: Pre-fetched TmuxWindow (avoids duplicate list_windows call
-            when called from the poll loop).
-        bot: Telegram Bot instance for sending prompt setup offers.
-        user_id: Telegram user ID for the topic owner.
-        thread_id: Telegram thread ID for the bound topic.
-    """
+    """Discover and register transcript for hookless providers (Codex, Gemini)."""
     from ..providers import registry
 
     state = session_manager.window_states.get(window_id)
@@ -1123,7 +752,6 @@ async def _maybe_discover_transcript(
 
     w = _window or await tmux_manager.find_window_by_id(window_id)
 
-    # Re-detect provider from the current pane to recover from stale mappings.
     if w and w.pane_current_command:
         detected = await detect_provider_from_pane(
             w.pane_current_command, pane_tty=w.pane_tty, window_id=window_id
@@ -1157,13 +785,11 @@ async def _maybe_discover_transcript(
                     cwd=w.cwd or None,
                 )
 
-    # If provider is explicitly set and supports hooks, trust hook delivery
     if state.provider_name:
         provider = get_provider_for_window(window_id)
         if provider.capabilities.supports_hook:
             return
 
-    # Ensure cwd is available (fall back to tmux pane path)
     if not state.cwd:
         if not w or not w.cwd:
             return
@@ -1171,41 +797,32 @@ async def _maybe_discover_transcript(
             window_id, state.provider_name or "", cwd=w.cwd
         )
 
-    # Determine which providers to try
     if state.provider_name:
-        # Explicit hookless provider — try only that one
         provider = get_provider_for_window(window_id)
-        # Shell provider has no transcripts — skip discovery
         if provider.capabilities.name == "shell":
             return
         providers_to_try = [(provider.capabilities.name, provider)]
     else:
-        # Detection failed — pane is a shell prompt: assign shell provider
         if w and is_shell_prompt(w.pane_current_command):
             session_manager.set_window_provider(window_id, "shell")
-            state.transcript_path = ""  # shell has no transcripts
+            state.transcript_path = ""
             from ..providers.shell import setup_shell_prompt
 
             await setup_shell_prompt(window_id, clear=False)
             return
-        # Try all hookless providers (exclude shell — no transcripts)
         providers_to_try = [
             (name, registry.get(name))
             for name in registry.provider_names()
             if not registry.get(name).capabilities.supports_hook and name != "shell"
         ]
 
-    # Disable staleness check if pane process is alive
     pane_alive = w is not None and not is_shell_prompt(w.pane_current_command)
 
-    # Foreign windows (emdash) are already fully qualified — no prefix needed
     if is_foreign_window(window_id):
         window_key = window_id
     else:
         window_key = f"{config.tmux_session_name}:{window_id}"
     for provider_name, provider in providers_to_try:
-        # Active panes may have stale transcript mtimes (no recent writes yet);
-        # bypass staleness checks for better hookless session recovery.
         max_age = 0 if pane_alive else None
         event = await asyncio.to_thread(
             provider.discover_transcript,
@@ -1238,6 +855,99 @@ async def _maybe_discover_transcript(
             return
 
 
+# ── Main orchestration ──────────────────────────────────────────────────
+
+
+async def update_status_message(
+    bot: Bot,
+    user_id: int,
+    window_id: str,
+    thread_id: int | None = None,
+    *,
+    _window: "TmuxWindow | None" = None,
+) -> None:
+    """Poll terminal and enqueue status update for user's active window."""
+    w = _window or await tmux_manager.find_window_by_id(window_id)
+    if not w:
+        await enqueue_status_update(bot, user_id, window_id, None, thread_id=thread_id)
+        return
+
+    pane_text = await tmux_manager.capture_pane(w.window_id, with_ansi=True)
+    if not pane_text:
+        return
+
+    interactive_window = get_interactive_window(user_id, thread_id)
+    should_check_new_ui = True
+
+    status = _parse_with_pyte(
+        window_id, pane_text, columns=w.pane_width, rows=w.pane_height
+    )
+
+    # Passive vim INSERT mode tracking
+    from ..tmux_manager import _has_insert_indicator, notify_vim_insert_seen
+
+    ws = _get_window_state(window_id)
+    vim_text = ws.last_rendered_text if ws.last_rendered_text is not None else pane_text
+    if _has_insert_indicator(vim_text):
+        notify_vim_insert_seen(w.window_id)
+
+    if status is None:
+        clean_text = (
+            ws.last_rendered_text if ws.last_rendered_text is not None else pane_text
+        )
+        provider = get_provider_for_window(window_id)
+        pane_title = ""
+        if provider.capabilities.uses_pane_title:
+            pane_title = await tmux_manager.get_pane_title(w.window_id)
+        status = provider.parse_terminal_status(clean_text, pane_title=pane_title)
+
+    if interactive_window == window_id:
+        if status is not None and status.is_interactive:
+            return
+        await clear_interactive_msg(user_id, bot, thread_id)
+        should_check_new_ui = False
+    elif interactive_window is not None:
+        await clear_interactive_msg(user_id, bot, thread_id)
+
+    if should_check_new_ui and status is not None and status.is_interactive:
+        await handle_interactive_ui(bot, user_id, window_id, thread_id)
+        return
+
+    status_line = status.display_label if status and not status.is_interactive else None
+
+    notif_mode = session_manager.get_notification_mode(window_id)
+
+    if status_line:
+        ws = _get_window_state(window_id)
+        ws.has_seen_status = True
+        ws.startup_time = None
+        await _send_typing_throttled(bot, user_id, thread_id)
+        if notif_mode not in ("muted", "errors_only"):
+            from .hook_events import build_subagent_label, get_subagent_names
+
+            subagent_names = get_subagent_names(window_id)
+            display_status = status_line
+            if subagent_names:
+                label = build_subagent_label(subagent_names)
+                display_status = f"{status_line} ({label})"
+            await enqueue_status_update(
+                bot,
+                user_id,
+                window_id,
+                display_status,
+                thread_id=thread_id,
+            )
+        if thread_id is not None:
+            chat_id = thread_router.resolve_chat_id(user_id, thread_id)
+            display = thread_router.get_display_name(window_id)
+            await update_topic_emoji(bot, chat_id, thread_id, "active", display)
+            _clear_autoclose_if_active(user_id, thread_id)
+    else:
+        await _handle_no_status(
+            bot, user_id, window_id, thread_id, w.pane_current_command, notif_mode
+        )
+
+
 async def status_poll_loop(bot: Bot) -> None:
     """Background task to poll terminal status for all thread-bound windows."""
     logger.info("Status polling started (interval: %ss)", STATUS_POLL_INTERVAL)
@@ -1245,27 +955,22 @@ async def status_poll_loop(bot: Bot) -> None:
     _error_streak = 0
     while True:
         try:
-            # Fetch all windows once per cycle — O(1) lookup replaces
-            # per-binding find_window_by_id calls (O(N×M) → O(N+M)).
             all_windows = await tmux_manager.list_windows()
             external_windows = await tmux_manager.discover_external_sessions()
             all_windows.extend(external_windows)
             window_lookup: dict[str, TmuxWindow] = {w.window_id: w for w in all_windows}
 
-            # Periodic topic existence probe + stale state cleanup
             now = time.monotonic()
             if now - last_topic_check >= TOPIC_CHECK_INTERVAL:
                 last_topic_check = now
                 await _prune_stale_state(all_windows)
                 await _probe_topic_existence(bot)
-                # Sweep stale log-throttle entries to prevent unbounded growth
                 log_throttle_sweep()
 
             for user_id, thread_id, wid in list(thread_router.iter_thread_bindings()):
                 structlog.contextvars.clear_contextvars()
                 structlog.contextvars.bind_contextvars(window_id=wid)
                 try:
-                    # Already notified about this dead window — skip tmux check
                     if (user_id, thread_id, wid) in _dead_notified:
                         continue
 
@@ -1276,7 +981,6 @@ async def status_poll_loop(bot: Bot) -> None:
                         )
                         continue
 
-                    # Discover transcript for hookless providers (Codex, Gemini)
                     await _maybe_discover_transcript(
                         wid,
                         _window=w,
@@ -1287,9 +991,6 @@ async def status_poll_loop(bot: Bot) -> None:
 
                     queue = get_message_queue(user_id)
                     if queue and not queue.empty():
-                        # Queue busy — skip full status updates but still check
-                        # for interactive UI (permission prompts bypass the queue)
-                        # and scan non-active panes for blocked agent teammates.
                         await _check_interactive_only(
                             bot, user_id, wid, thread_id, _window=w
                         )
@@ -1303,9 +1004,7 @@ async def status_poll_loop(bot: Bot) -> None:
                         thread_id=thread_id,
                         _window=w,
                     )
-                    # Scan non-active panes for interactive prompts (agent teams)
                     await _scan_window_panes(bot, user_id, wid, thread_id)
-                    # Relay shell output from direct tmux interaction
                     await _maybe_check_passive_shell(bot, user_id, wid, thread_id)
                 except (TelegramError, OSError) as e:
                     log_throttled(
@@ -1317,7 +1016,6 @@ async def status_poll_loop(bot: Bot) -> None:
                         e,
                     )
 
-            # Check timers at end of each poll cycle
             await _check_autoclose_timers(bot)
             await _check_unbound_window_ttl(all_windows)
 
@@ -1328,8 +1026,6 @@ async def status_poll_loop(bot: Bot) -> None:
             await asyncio.sleep(backoff_delay)
             continue
         except Exception:
-            # Catch-all: programming errors (KeyError, TypeError, AttributeError,
-            # etc.) must not kill the polling loop — log and continue.
             logger.exception("Unexpected error in status poll loop")
             backoff_delay = min(_BACKOFF_MAX, _BACKOFF_MIN * (2**_error_streak))
             _error_streak += 1

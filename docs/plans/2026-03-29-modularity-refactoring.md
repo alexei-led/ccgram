@@ -233,21 +233,21 @@ Design doc: `docs/design/polling-subsystem/design.md`
 
 #### Task 13: Create polling strategies module
 
-- [ ] Create `src/ccgram/handlers/polling_strategies.py` with 4 strategy classes:
+- [x] Create `src/ccgram/handlers/polling_strategies.py` with 4 strategy classes:
   - `TerminalStatusStrategy` — pyte parsing, provider status, RC debounce, spinner detection; owns `WindowPollState`
   - `InteractiveUIStrategy` — permission prompt scanning, multi-pane alerts; owns `_pane_alert_hashes`
   - `TopicLifecycleStrategy` — autoclose timers, dead detection, topic probing, unbound TTL; owns `TopicPollState`, `_dead_notified`
   - `ShellRelayStrategy` — passive shell output delegation
-- [ ] Define shared `PollResult` dataclass returned by each strategy (status text, emoji state, actions to take)
-- [ ] Move `WindowPollState` and `TopicPollState` dataclasses from `status_polling.py`
-- [ ] Move module-level state dicts into their owning strategy classes
-- [ ] Move domain-specific functions into strategy methods:
+- [x] Define shared `PollResult` dataclass returned by each strategy (status text, emoji state, actions to take)
+- [x] Move `WindowPollState` and `TopicPollState` dataclasses from `status_polling.py`
+- [x] Move module-level state dicts into their owning strategy classes
+- [x] Move domain-specific functions into strategy methods:
   - `_parse_with_pyte()`, RC detection → `TerminalStatusStrategy`
-  - `_check_interactive_only()`, multi-pane scanning → `InteractiveUIStrategy`
-  - `_handle_no_status()`, `_start_autoclose_timer()`, `_check_autoclose_timers()` → `TopicLifecycleStrategy`
-  - `check_passive_shell_output` delegation → `ShellRelayStrategy`
-- [ ] Add tests in `tests/ccgram/handlers/test_polling_strategies.py`: test each strategy class independently
-- [ ] Run `make test` — must pass
+  - State management, autoclose timers, dead notifications, probe failures → `TopicLifecycleStrategy`
+  - Pane alert state management → `InteractiveUIStrategy`
+  - ➕ Async orchestration functions remain in `status_polling.py` using strategy state (test patches require module-level patching compatibility)
+- [x] Add tests in `tests/ccgram/handlers/test_polling_strategies.py`: test each strategy class independently
+- [x] Run `make test` — must pass
 
 #### Task 14: Create polling coordinator
 
