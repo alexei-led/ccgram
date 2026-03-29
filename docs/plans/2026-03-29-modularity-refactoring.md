@@ -287,9 +287,9 @@ Design doc: `docs/design/polling-subsystem/design.md`
 
 ### Task 17: [Final] Update documentation
 
-- [ ] Update `CLAUDE.md` module inventory table to reflect new modules
-- [ ] Update `.claude/rules/architecture.md` module inventory
-- [ ] Remove old file references, add new module descriptions
+- [x] Update `CLAUDE.md` module inventory table to reflect new modules
+- [x] Update `.claude/rules/architecture.md` module inventory
+- [x] Remove old file references, add new module descriptions
 
 ## Technical Details
 

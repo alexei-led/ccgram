@@ -30,7 +30,7 @@ graph TB
         Hook["Receive hook stdin\nWrite session_map.json\nWrite events.jsonl"]
     end
 
-    subgraph session["SessionManager — session.py"]
+    subgraph session["SessionManager + ThreadRouter"]
         SM["Window ↔ Session resolution\nThread bindings · message history"]
     end
 
@@ -62,17 +62,19 @@ graph TB
 
 ### Provider modules (`providers/`)
 
-| Module                 | Description                                                                                                        |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `base.py`              | AgentProvider protocol, ProviderCapabilities, event types                                                          |
-| `registry.py`          | ProviderRegistry (name→factory map, singleton cache)                                                               |
-| `_jsonl.py`            | Shared JSONL parsing base class for Codex + Gemini                                                                 |
-| `claude.py`            | ClaudeProvider (hook, resume, continue, JSONL transcripts)                                                         |
-| `codex.py`             | CodexProvider (resume, continue, JSONL transcripts, no hook)                                                       |
-| `gemini.py`            | GeminiProvider (resume, continue, whole-file JSON transcripts, no hook)                                            |
-| `shell.py`             | ShellProvider (no hook, no transcript, prompt marker `ccgram:N❯` setup, `has_prompt_marker` check, idle detection) |
-| `process_detection.py` | Foreground process detection via `ps -t <tty>` with PGID caching for reliable provider identification              |
-| `__init__.py`          | `get_provider_for_window()`, `detect_provider_from_pane()`, `detect_provider_from_command()`, `get_provider()`     |
+| Module                 | Description                                                                                                    |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `base.py`              | AgentProvider protocol, ProviderCapabilities, event types                                                      |
+| `registry.py`          | ProviderRegistry (name→factory map, singleton cache)                                                           |
+| `_jsonl.py`            | Shared JSONL parsing base class for Codex + Gemini                                                             |
+| `claude.py`            | ClaudeProvider (hook, resume, continue, JSONL transcripts)                                                     |
+| `codex.py`             | CodexProvider (resume, continue, JSONL transcripts, no hook)                                                   |
+| `gemini.py`            | GeminiProvider (resume, continue, whole-file JSON transcripts, no hook)                                        |
+| `codex_status.py`      | Codex status snapshot builder (transcript parsing, activity detection)                                         |
+| `codex_format.py`      | Codex interactive prompt formatter (permission/tool prompts)                                                   |
+| `shell.py`             | ShellProvider (no hook, no transcript, PromptMatch dataclass, prompt marker setup, idle detection)             |
+| `process_detection.py` | Foreground process detection via `ps -t <tty>` with PGID caching for reliable provider identification          |
+| `__init__.py`          | `get_provider_for_window()`, `detect_provider_from_pane()`, `detect_provider_from_command()`, `get_provider()` |
 
 ### LLM modules (`llm/`)
 
@@ -92,17 +94,19 @@ graph TB
 
 ### Core modules (`src/ccgram/`)
 
-| Module             | Description                                                          |
-| ------------------ | -------------------------------------------------------------------- |
-| `cli.py`           | Click-based CLI entry point (run subcommand + all bot-config flags)  |
-| `config.py`        | Application configuration singleton (env vars, .env files, defaults) |
-| `doctor_cmd.py`    | `ccgram doctor [--fix]` — validate setup without bot token           |
-| `status_cmd.py`    | `ccgram status` — show running state without bot token               |
-| `screen_buffer.py` | pyte VT100 screen buffer (ANSI→clean lines, separator detection)     |
-| `cc_commands.py`   | CC command discovery (skills, custom commands) + menu registration   |
-| `screenshot.py`    | Terminal text → PNG rendering (ANSI color, font fallback)            |
-| `main.py`          | Application entry point (Click dispatcher, run_bot bootstrap)        |
-| `utils.py`         | Shared utilities (ccgram_dir, tmux_session_name, atomic_write_json)  |
+| Module             | Description                                                                      |
+| ------------------ | -------------------------------------------------------------------------------- |
+| `cli.py`           | Click-based CLI entry point (run subcommand + all bot-config flags)              |
+| `config.py`        | Application configuration singleton (env vars, .env files, defaults)             |
+| `doctor_cmd.py`    | `ccgram doctor [--fix]` — validate setup without bot token                       |
+| `status_cmd.py`    | `ccgram status` — show running state without bot token                           |
+| `screen_buffer.py` | pyte VT100 screen buffer (ANSI→clean lines, separator detection)                 |
+| `cc_commands.py`   | CC command discovery (skills, custom commands) + menu registration               |
+| `screenshot.py`    | Terminal text → PNG rendering (ANSI color, font fallback)                        |
+| `main.py`          | Application entry point (Click dispatcher, run_bot bootstrap)                    |
+| `utils.py`         | Shared utilities (ccgram_dir, tmux_session_name, atomic_write_json)              |
+| `protocols.py`     | Protocol classes (WindowStateStore, UserPreferences, SessionResolver)            |
+| `thread_router.py` | ThreadRouter — thread bindings, display names, reverse index, chat ID resolution |
 
 ### Handler modules (`handlers/`)
 
@@ -111,10 +115,16 @@ graph TB
 | `text_handler.py`          | Text message routing (UI guards → unbound → dead → forward)                                  |
 | `message_sender.py`        | safe_reply/safe_edit/safe_send + rate_limit_send                                             |
 | `message_queue.py`         | Per-user queue + worker (merge, status dedup)                                                |
-| `status_polling.py`        | Background status polling (1s), RC detection, auto-close, multi-pane scanning                |
+| `polling_coordinator.py`   | Background status polling loop (1s), delegates to strategy classes                           |
+| `polling_strategies.py`    | TerminalStatus, InteractiveUI, TopicLifecycle, ShellRelay strategy classes                   |
 | `response_builder.py`      | Response pagination and formatting                                                           |
 | `interactive_ui.py`        | AskUserQuestion / ExitPlanMode / Permission UI rendering                                     |
 | `interactive_callbacks.py` | Callbacks for interactive UI (arrow keys, enter, esc)                                        |
+| `callback_registry.py`     | Prefix-based callback dispatch registry with self-registration decorator                     |
+| `callback_data.py`         | CB\_\* callback data constants for inline keyboard routing                                   |
+| `callback_helpers.py`      | Shared helpers (user_owns_window, get_thread_id)                                             |
+| `command_orchestration.py` | Forward command handler, provider menu cache, status snapshot delegation                     |
+| `topic_orchestration.py`   | New window/topic creation, unbound window adoption, rate limiting                            |
 | `directory_browser.py`     | Directory selection UI for new topics                                                        |
 | `directory_callbacks.py`   | Callbacks for directory browser (navigate, confirm, provider pick)                           |
 | `window_callbacks.py`      | Window picker callbacks (bind, new, cancel)                                                  |
@@ -125,6 +135,7 @@ graph TB
 | `sessions_dashboard.py`    | /sessions command: active session overview + kill                                            |
 | `restore_command.py`       | /restore command: recover dead topics via recovery keyboard                                  |
 | `resume_command.py`        | /resume command: scan past sessions, paginated picker                                        |
+| `sync_command.py`          | /sync command: sync window state with tmux                                                   |
 | `upgrade.py`               | /upgrade command: uv tool upgrade + process restart                                          |
 | `file_handler.py`          | Photo/document handler (save to .ccgram-uploads/, notify agent)                              |
 | `voice_handler.py`         | Voice message download, transcription, confirm keyboard                                      |
@@ -133,8 +144,6 @@ graph TB
 | `topic_emoji.py`           | Topic name emoji updates (active/idle/done/dead + RC/YOLO badges), debounced                 |
 | `hook_events.py`           | Hook event dispatcher (Stop, StopFailure, SessionEnd, Notification, Subagent*, Team*)        |
 | `cleanup.py`               | Centralized topic state cleanup on close/delete                                              |
-| `callback_data.py`         | CB\_\* callback data constants for inline keyboard routing                                   |
-| `callback_helpers.py`      | Shared helpers (user_owns_window, get_thread_id)                                             |
 | `user_state.py`            | context.user_data string key constants                                                       |
 | `shell_commands.py`        | NL→command approval, dangerous command detection via LLM, prompt marker offer UI             |
 | `shell_capture.py`         | Prompt-marker output isolation, exit code detection, baseline-diff fallback, glyph stripping |
