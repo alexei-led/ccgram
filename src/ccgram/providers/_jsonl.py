@@ -249,3 +249,20 @@ class JsonlProvider:
             DiscoveredCommand(name=name, description=desc, source="builtin")
             for name, desc in self._BUILTINS.items()
         ]
+
+    def build_status_snapshot(
+        self,
+        transcript_path: str,  # noqa: ARG002 — protocol signature
+        *,
+        display_name: str = "",  # noqa: ARG002
+        session_id: str = "",  # noqa: ARG002
+        cwd: str = "",  # noqa: ARG002
+    ) -> str | None:
+        return None
+
+    def has_output_since(
+        self,
+        transcript_path: str,  # noqa: ARG002 — protocol signature
+        offset: int,  # noqa: ARG002
+    ) -> bool:
+        return False

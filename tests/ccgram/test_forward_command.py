@@ -72,7 +72,11 @@ class TestForwardCommandResolution:
         )
         self.mock_tm.capture_pane = AsyncMock(return_value="")
         self.mock_provider = SimpleNamespace(
-            capabilities=SimpleNamespace(name="claude", supports_incremental_read=True)
+            capabilities=SimpleNamespace(
+                name="claude",
+                supports_incremental_read=True,
+                supports_status_snapshot=False,
+            )
         )
         self.mock_probe_ctx = AsyncMock(return_value=(None, None, None))
         self.mock_probe_spawn = MagicMock()
@@ -275,71 +279,82 @@ class TestForwardCommandResolution:
 
         self.mock_sm.send_to_window.assert_not_called()
 
-    async def test_codex_status_sends_snapshot_reply(self) -> None:
+    async def test_status_snapshot_sends_reply(self) -> None:
         self.mock_sm.get_window_state.return_value = SimpleNamespace(
             transcript_path="/tmp/codex.jsonl",
             session_id="sess-1",
             cwd="/work/repo",
         )
-        codex_provider = SimpleNamespace(capabilities=SimpleNamespace(name="codex"))
+        codex_provider = SimpleNamespace(
+            capabilities=SimpleNamespace(
+                name="codex",
+                supports_incremental_read=True,
+                supports_status_snapshot=True,
+            ),
+            build_status_snapshot=MagicMock(return_value="Status snapshot body"),
+            has_output_since=MagicMock(return_value=False),
+        )
 
-        with (
-            patch("ccgram.bot.get_provider_for_window", return_value=codex_provider),
-            patch(
-                "ccgram.bot.build_codex_status_snapshot",
-                return_value="Codex status snapshot body",
-            ) as mock_snapshot,
-        ):
+        with patch("ccgram.bot.get_provider_for_window", return_value=codex_provider):
             update = _make_update(text="/status")
             await forward_command_handler(update, _make_context())
 
         self.mock_sm.send_to_window.assert_called_once_with("@1", "/status")
-        mock_snapshot.assert_called_once_with(
+        codex_provider.build_status_snapshot.assert_called_once_with(
             "/tmp/codex.jsonl",
             display_name="project",
             session_id="sess-1",
             cwd="/work/repo",
         )
         assert update.message.reply_text.call_count == 2
-        assert (
-            "status snapshot body"
-            in update.message.reply_text.call_args_list[1].args[0]
+        assert "snapshot body" in update.message.reply_text.call_args_list[1].args[0]
+
+    async def test_status_on_non_snapshot_provider_skips_snapshot(self) -> None:
+        claude_provider = SimpleNamespace(
+            capabilities=SimpleNamespace(
+                name="claude",
+                supports_incremental_read=True,
+                supports_status_snapshot=False,
+            ),
+            build_status_snapshot=MagicMock(return_value=None),
         )
 
-    async def test_status_on_non_codex_skips_snapshot(self) -> None:
-        claude_provider = SimpleNamespace(capabilities=SimpleNamespace(name="claude"))
-
-        with (
-            patch("ccgram.bot.get_provider_for_window", return_value=claude_provider),
-            patch("ccgram.bot.build_codex_status_snapshot") as mock_snapshot,
-        ):
+        with patch("ccgram.bot.get_provider_for_window", return_value=claude_provider):
             update = _make_update(text="/status")
             await forward_command_handler(update, _make_context())
 
         self.mock_sm.send_to_window.assert_called_once_with("@1", "/status")
-        mock_snapshot.assert_not_called()
+        claude_provider.build_status_snapshot.assert_not_called()
         assert update.message.reply_text.call_count == 1
 
-    async def test_codex_status_skips_fallback_when_native_reply_exists(self) -> None:
+    async def test_status_snapshot_skips_fallback_when_native_reply_exists(
+        self,
+    ) -> None:
         self.mock_sm.get_window_state.return_value = SimpleNamespace(
             transcript_path="/tmp/codex.jsonl",
             session_id="sess-1",
             cwd="/work/repo",
         )
-        codex_provider = SimpleNamespace(capabilities=SimpleNamespace(name="codex"))
+        codex_provider = SimpleNamespace(
+            capabilities=SimpleNamespace(
+                name="codex",
+                supports_incremental_read=True,
+                supports_status_snapshot=True,
+            ),
+            build_status_snapshot=MagicMock(return_value=None),
+            has_output_since=MagicMock(return_value=True),
+        )
 
         with (
             patch("ccgram.bot.get_provider_for_window", return_value=codex_provider),
-            patch("ccgram.bot._codex_status_probe_offset", return_value=0),
-            patch("ccgram.bot.has_codex_assistant_output_since", return_value=True),
-            patch("ccgram.bot.build_codex_status_snapshot") as mock_snapshot,
+            patch("ccgram.bot._status_snapshot_probe_offset", return_value=0),
             patch("ccgram.bot.asyncio.sleep", new_callable=AsyncMock),
         ):
             update = _make_update(text="/status")
             await forward_command_handler(update, _make_context())
 
         self.mock_sm.send_to_window.assert_called_once_with("@1", "/status")
-        mock_snapshot.assert_not_called()
+        codex_provider.build_status_snapshot.assert_not_called()
         assert update.message.reply_text.call_count == 1
 
 

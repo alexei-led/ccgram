@@ -83,18 +83,18 @@ Design doc: `docs/design/codex-provider/design.md`, `docs/design/provider-protoc
 
 #### Task 4: Add optional protocol methods and eliminate name checks
 
-- [ ] Add `build_status_snapshot(self, window_id: str, transcript_path: str, offset: int) -> str | None` method to `AgentProvider` protocol in `src/ccgram/providers/base.py` with default `return None`
-- [ ] Add `has_output_since(self, transcript_path: str, offset: int) -> bool` method with default `return False`
-- [ ] Add `supports_status_snapshot: bool = False` to `ProviderCapabilities` dataclass
-- [ ] Implement `build_status_snapshot()` in `CodexProvider` (`src/ccgram/providers/codex.py`) delegating to `codex_status.build_codex_status_snapshot()`
-- [ ] Implement `has_output_since()` in `CodexProvider` delegating to `codex_status.has_codex_assistant_output_since()`
-- [ ] Set `supports_status_snapshot=True` in CodexProvider capabilities
-- [ ] In `src/ccgram/bot.py`: replace `_maybe_send_codex_status_snapshot()` and `_codex_status_probe_offset()` with calls to `provider.build_status_snapshot()` and `provider.has_output_since()` — remove `capabilities.name == "codex"` checks
-- [ ] Remove direct import of `codex_status` from `bot.py`
-- [ ] Search codebase for remaining `capabilities.name == "codex"` or `provider_name == "codex"` — replace with capability queries
-- [ ] Add tests: verify `build_status_snapshot()` returns None for non-Codex providers, returns string for Codex
-- [ ] Update existing tests in `test_codex_status.py` for new call path
-- [ ] Run `make check` — must pass (completes Step C1)
+- [x] Add `build_status_snapshot(self, transcript_path: str, *, display_name: str, session_id: str, cwd: str) -> str | None` method to `AgentProvider` protocol in `src/ccgram/providers/base.py` with default `return None`
+- [x] Add `has_output_since(self, transcript_path: str, offset: int) -> bool` method with default `return False`
+- [x] Add `supports_status_snapshot: bool = False` to `ProviderCapabilities` dataclass
+- [x] Implement `build_status_snapshot()` in `CodexProvider` (`src/ccgram/providers/codex.py`) delegating to `codex_status.build_codex_status_snapshot()`
+- [x] Implement `has_output_since()` in `CodexProvider` delegating to `codex_status.has_codex_assistant_output_since()`
+- [x] Set `supports_status_snapshot=True` in CodexProvider capabilities
+- [x] In `src/ccgram/bot.py`: replace `_maybe_send_codex_status_snapshot()` and `_codex_status_probe_offset()` with calls to `provider.build_status_snapshot()` and `provider.has_output_since()` — remove `capabilities.name == "codex"` checks
+- [x] Remove direct import of `codex_status` from `bot.py`
+- [x] Search codebase for remaining `capabilities.name == "codex"` or `provider_name == "codex"` — replace with capability queries
+- [x] Add tests: verify `build_status_snapshot()` returns None for non-Codex providers, returns string for Codex
+- [x] Update existing tests in `test_forward_command.py` for new call path
+- [x] Run `make check` — must pass (completes Step C1)
 
 ---
 

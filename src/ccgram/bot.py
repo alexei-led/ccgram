@@ -64,10 +64,6 @@ from .providers import (
     should_probe_pane_title_for_provider_detection,
 )
 from .config import config
-from .providers.codex_status import (
-    build_codex_status_snapshot,
-    has_codex_assistant_output_since,
-)
 from .handlers.callback_data import (
     CB_DIR_CANCEL,
     CB_DIR_CONFIRM,
@@ -714,7 +710,7 @@ async def forward_command_handler(
         probe_transcript_offset,
         probe_pane_before,
     ) = await _capture_command_probe_context(window_id, provider)
-    status_probe_offset = _codex_status_probe_offset(window_id, cc_slash)
+    status_probe_offset = _status_snapshot_probe_offset(window_id, cc_slash)
     from .handlers.status_polling import clear_probe_failures
 
     clear_probe_failures(window_id)
@@ -725,7 +721,7 @@ async def forward_command_handler(
 
             record_command(user.id, thread_id, cc_slash)
         await safe_reply(update.message, f"\u26a1 [{display}] Sent: {cc_slash}")
-        await _maybe_send_codex_status_snapshot(
+        await _maybe_send_status_snapshot(
             update.message,
             window_id,
             display,
@@ -910,14 +906,17 @@ def _spawn_command_failure_probe(
     task.add_done_callback(task_done_callback)
 
 
-def _codex_status_probe_offset(window_id: str, cc_slash: str) -> int | None:
-    """Return transcript file offset before sending codex /status(/stats)."""
+def _status_snapshot_probe_offset(window_id: str, cc_slash: str) -> int | None:
+    """Return transcript file offset before sending a /status(/stats) command.
+
+    Only returns an offset when the provider supports status snapshots.
+    """
     command = cc_slash.split(None, 1)[0].lower()
     if command not in ("/status", "/stats"):
         return None
 
     provider = get_provider_for_window(window_id)
-    if provider.capabilities.name != "codex":
+    if not provider.capabilities.supports_status_snapshot:
         return None
 
     transcript_path = session_manager.get_window_state(window_id).transcript_path
@@ -930,7 +929,7 @@ def _codex_status_probe_offset(window_id: str, cc_slash: str) -> int | None:
         return None
 
 
-async def _maybe_send_codex_status_snapshot(
+async def _maybe_send_status_snapshot(
     message: Message,
     window_id: str,
     display: str,
@@ -938,13 +937,17 @@ async def _maybe_send_codex_status_snapshot(
     *,
     since_offset: int | None = None,
 ) -> None:
-    """Send transcript-based Codex status fallback for /status and /stats."""
+    """Send transcript-based status snapshot fallback for /status and /stats.
+
+    Delegates to the provider's ``build_status_snapshot()`` method.
+    Providers that don't support snapshots are skipped via the capability check.
+    """
     command = cc_slash.split(None, 1)[0].lower()
     if command not in ("/status", "/stats"):
         return
 
     provider = get_provider_for_window(window_id)
-    if provider.capabilities.name != "codex":
+    if not provider.capabilities.supports_status_snapshot:
         return
 
     state = session_manager.get_window_state(window_id)
@@ -952,14 +955,14 @@ async def _maybe_send_codex_status_snapshot(
     if not transcript_path:
         await safe_reply(
             message,
-            f"[{display}] Codex status snapshot unavailable (no transcript path).",
+            f"[{display}] Status snapshot unavailable (no transcript path).",
         )
         return
 
     if since_offset is not None:
         await asyncio.sleep(_CODEX_STATUS_FALLBACK_DELAY_SECONDS)
         has_native_output = await asyncio.to_thread(
-            has_codex_assistant_output_since,
+            provider.has_output_since,
             transcript_path,
             since_offset,
         )
@@ -967,7 +970,7 @@ async def _maybe_send_codex_status_snapshot(
             return
 
     snapshot = await asyncio.to_thread(
-        build_codex_status_snapshot,
+        provider.build_status_snapshot,
         transcript_path,
         display_name=display,
         session_id=state.session_id,
@@ -979,7 +982,7 @@ async def _maybe_send_codex_status_snapshot(
 
     await safe_reply(
         message,
-        f"[{display}] Codex status snapshot unavailable (transcript unreadable).",
+        f"[{display}] Status snapshot unavailable (transcript unreadable).",
     )
 
 

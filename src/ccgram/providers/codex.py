@@ -528,6 +528,7 @@ class CodexProvider(JsonlProvider):
         transcript_format="jsonl",
         builtin_commands=tuple(_CODEX_BUILTINS.keys()),
         supports_user_command_discovery=True,
+        supports_status_snapshot=True,
     )
 
     _BUILTINS = _CODEX_BUILTINS
@@ -703,3 +704,27 @@ class CodexProvider(JsonlProvider):
                         window_key=window_key,
                     )
         return None
+
+    # ── Status snapshot (Codex-specific) ─────────────────────────────
+
+    def build_status_snapshot(
+        self,
+        transcript_path: str,
+        *,
+        display_name: str = "",
+        session_id: str = "",
+        cwd: str = "",
+    ) -> str | None:
+        from ccgram.providers.codex_status import build_codex_status_snapshot
+
+        return build_codex_status_snapshot(
+            transcript_path,
+            display_name=display_name,
+            session_id=session_id,
+            cwd=cwd,
+        )
+
+    def has_output_since(self, transcript_path: str, offset: int) -> bool:
+        from ccgram.providers.codex_status import has_codex_assistant_output_since
+
+        return has_codex_assistant_output_since(transcript_path, offset)

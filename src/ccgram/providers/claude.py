@@ -214,3 +214,18 @@ class ClaudeProvider:
             )
             for name, desc in CC_BUILTINS.items()
         ]
+
+    def build_status_snapshot(
+        self,
+        transcript_path: str,
+        *,
+        display_name: str = "",
+        session_id: str = "",
+        cwd: str = "",
+    ) -> str | None:
+        _ = transcript_path, display_name, session_id, cwd
+        return None
+
+    def has_output_since(self, transcript_path: str, offset: int) -> bool:
+        _ = transcript_path, offset
+        return False

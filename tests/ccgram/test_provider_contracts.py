@@ -427,6 +427,99 @@ class TestDiscoverTranscript:
         assert result is None
 
 
+class TestStatusSnapshot:
+    def test_non_snapshot_providers_return_none(self, provider: AgentProvider) -> None:
+        if provider.capabilities.supports_status_snapshot:
+            pytest.skip("Provider supports snapshots")
+        result = provider.build_status_snapshot(
+            "/tmp/nonexistent.jsonl",
+            display_name="test",
+        )
+        assert result is None
+
+    def test_non_snapshot_providers_has_output_false(
+        self, provider: AgentProvider
+    ) -> None:
+        if provider.capabilities.supports_status_snapshot:
+            pytest.skip("Provider supports snapshots")
+        assert provider.has_output_since("/tmp/nonexistent.jsonl", 0) is False
+
+    def test_codex_snapshot_with_transcript(
+        self, provider: AgentProvider, tmp_path: Any
+    ) -> None:
+        if not provider.capabilities.supports_status_snapshot:
+            pytest.skip("Provider does not support snapshots")
+        transcript = tmp_path / "codex.jsonl"
+        transcript.write_text(
+            json.dumps(
+                {
+                    "timestamp": "2026-03-02T17:00:00.000Z",
+                    "type": "session_meta",
+                    "payload": {
+                        "id": "sess-test",
+                        "cwd": "/tmp/repo",
+                        "cli_version": "0.106.0",
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        result = provider.build_status_snapshot(
+            str(transcript),
+            display_name="repo",
+            session_id="sess-test",
+            cwd="/tmp/repo",
+        )
+        assert result is not None
+        assert "repo" in result
+        assert "sess-test" in result
+
+    def test_codex_has_output_since(
+        self, provider: AgentProvider, tmp_path: Any
+    ) -> None:
+        if not provider.capabilities.supports_status_snapshot:
+            pytest.skip("Provider does not support snapshots")
+        transcript = tmp_path / "codex.jsonl"
+        transcript.write_text(
+            json.dumps(
+                {
+                    "timestamp": "2026-03-02T17:00:01.000Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "hello"}],
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        assert provider.has_output_since(str(transcript), 0) is True
+
+    def test_codex_has_output_since_missing_file(self, provider: AgentProvider) -> None:
+        if not provider.capabilities.supports_status_snapshot:
+            pytest.skip("Provider does not support snapshots")
+        assert provider.has_output_since("/tmp/nonexistent.jsonl", 0) is False
+
+    def test_snapshot_missing_file_returns_none(self, provider: AgentProvider) -> None:
+        if not provider.capabilities.supports_status_snapshot:
+            pytest.skip("Provider does not support snapshots")
+        result = provider.build_status_snapshot(
+            "/tmp/nonexistent.jsonl",
+            display_name="test",
+        )
+        assert result is None
+
+    def test_supports_status_snapshot_flag(self, provider: AgentProvider) -> None:
+        caps = provider.capabilities
+        if caps.name == "codex":
+            assert caps.supports_status_snapshot is True
+        else:
+            assert caps.supports_status_snapshot is False
+
+
 class TestDiscoverCommands:
     def test_returns_list_of_discovered_commands(self, provider: AgentProvider) -> None:
         result = provider.discover_commands("/tmp/nonexistent")

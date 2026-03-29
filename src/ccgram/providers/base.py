@@ -119,6 +119,7 @@ class ProviderCapabilities:
     # When true, CommandCatalog appends user-defined commands discovered from
     # the configured command sources (currently ~/.claude skills/commands).
     supports_user_command_discovery: bool = False
+    supports_status_snapshot: bool = False
 
 
 # ── Provider protocol ────────────────────────────────────────────────────
@@ -260,5 +261,30 @@ class AgentProvider(Protocol):
         built-ins). Higher-level command composition (for example, appending
         user-defined commands from shared command sources) is done by
         ``CommandCatalog.get_provider_commands()``.
+        """
+        ...
+
+    def build_status_snapshot(
+        self,
+        transcript_path: str,
+        *,
+        display_name: str,
+        session_id: str = "",
+        cwd: str = "",
+    ) -> str | None:
+        """Build a transcript-based status snapshot for display.
+
+        Returns a formatted string suitable for Telegram, or None if the
+        provider does not support status snapshots or the transcript is
+        unreadable. Only providers with ``supports_status_snapshot=True``
+        return non-None values.
+        """
+        ...
+
+    def has_output_since(self, transcript_path: str, offset: int) -> bool:
+        """Check whether the transcript has assistant output after *offset*.
+
+        Used to detect whether a slash command (e.g. ``/status``) produced
+        native transcript output, so the caller can skip the snapshot fallback.
         """
         ...
