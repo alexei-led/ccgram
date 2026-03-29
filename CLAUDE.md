@@ -143,7 +143,7 @@ Existing Claude deployments need no changes — `claude` is the default provider
 
 ### Test Structure
 
-Tests mirror the source layout: `tests/ccgram/` for unit tests, `tests/integration/` for integration tests, `tests/e2e/` for end-to-end tests.
+Tests mirror the source layout: `tests/ccgram/` for unit tests (with `handlers/` and `providers/` subdirectories matching source), `tests/integration/` for integration tests, `tests/e2e/` for end-to-end tests. Uses `asyncio_mode = "auto"` — no `@pytest.mark.asyncio` decorators needed. No comments or docstrings in test files.
 
 ### Telegram Bot Testing Strategy
 
@@ -163,7 +163,7 @@ The shell provider has dedicated tests for each layer:
 
 | Test File                                         | Coverage                                                                   |
 | ------------------------------------------------- | -------------------------------------------------------------------------- |
-| `tests/ccgram/test_shell_provider.py`             | Provider capabilities, shell detection, prompt setup                       |
+| `tests/ccgram/providers/test_shell.py`            | Provider capabilities, shell detection, prompt setup                       |
 | `tests/ccgram/test_shell_commands.py`             | Command routing, LLM flow, approval keyboard, callbacks                    |
 | `tests/ccgram/test_shell_capture.py`              | Output extraction, passive monitoring, relay formatting, error suggestions |
 | `tests/integration/test_shell_flow.py`            | Complete Telegram → Shell → Telegram round-trip                            |

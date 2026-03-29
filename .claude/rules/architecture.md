@@ -2,11 +2,12 @@
 
 ```mermaid
 graph TB
-    subgraph bot["Telegram Bot — bot.py"]
+    subgraph bot["Telegram Bot — bot.py + handlers/"]
         direction TB
-        BotCore["Topic routing · /history · /sessions\nStatus messages · Interactive UI\nMessage queue + worker · Entity formatting"]
+        BotCore["Command handlers · handler registration\ncallback_registry · topic_orchestration\ncommand_orchestration · polling_coordinator"]
         BotSub1["entity_formatting.py\nMD → plain text + MessageEntity offsets"]
         BotSub2["telegram_sender.py\nsplit_message — 4096 limit"]
+        BotSub3["message_queue.py · message_sender.py\nPer-user queue + worker · rate limiting"]
         Terminal["terminal_parser.py + screen_buffer.py\npyte VT100 · interactive UI detection\nspinner parsing · separator detection"]
     end
 
