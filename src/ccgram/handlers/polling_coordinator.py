@@ -668,12 +668,12 @@ async def _check_unbound_window_ttl(live_windows: list | None = None) -> None:
             if ws.unbound_timer is None:
                 ws.unbound_timer = now
 
-    _kill_expired_unbound(now, timeout)
+    await _kill_expired_unbound(now, timeout)
     _prune_orphaned_poll_state(live_ids, bound_ids)
 
 
-def _kill_expired_unbound(now: float, timeout: float) -> None:
-    """Find and kill unbound windows past their TTL (sync helper)."""
+async def _kill_expired_unbound(now: float, timeout: float) -> None:
+    """Find and kill unbound windows past their TTL."""
     expired = [
         wid
         for wid, ws in terminal_strategy._states.items()
@@ -683,6 +683,7 @@ def _kill_expired_unbound(now: float, timeout: float) -> None:
         from ..tmux_manager import clear_vim_state
 
         clear_vim_state(wid)
+        await tmux_manager.kill_window(wid)
         clear_window_poll_state(wid)
         logger.info("Auto-killed unbound window %s (TTL expired)", wid)
 
