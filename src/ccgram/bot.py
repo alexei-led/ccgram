@@ -163,6 +163,7 @@ from .handlers.voice_handler import handle_voice_message
 from .handlers.text_handler import handle_text_message
 from .session import session_manager
 from .session_monitor import NewMessage, NewWindowEvent, SessionMonitor
+from .thread_router import thread_router
 from .telegram_request import ResilientPollingHTTPXRequest
 from .tmux_manager import tmux_manager
 from .utils import handle_general_topic_message, is_general_topic, task_done_callback
@@ -412,7 +413,7 @@ async def _sync_scoped_menu_for_text_context(update: Update, user_id: int) -> No
     thread_id = _get_thread_id(update)
     if thread_id is None:
         return
-    window_id = session_manager.resolve_window_for_thread(user_id, thread_id)
+    window_id = thread_router.resolve_window_for_thread(user_id, thread_id)
     if not window_id:
         return
     provider = get_provider_for_window(window_id)
@@ -455,7 +456,7 @@ async def history_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -
         return
 
     thread_id = _get_thread_id(update)
-    window_id = session_manager.resolve_window_for_thread(user.id, thread_id)
+    window_id = thread_router.resolve_window_for_thread(user.id, thread_id)
     if not window_id:
         await safe_reply(update.message, "\u274c No session bound to this topic.")
         return
@@ -477,7 +478,7 @@ async def commands_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) 
         return
 
     thread_id = _get_thread_id(update)
-    window_id = session_manager.resolve_window_for_thread(user.id, thread_id)
+    window_id = thread_router.resolve_window_for_thread(user.id, thread_id)
     if not window_id:
         await safe_reply(update.message, "\u274c No session bound to this topic.")
         return
@@ -518,10 +519,10 @@ async def topic_closed_handler(
     if thread_id is None:
         return
 
-    window_id = session_manager.get_window_for_thread(user.id, thread_id)
+    window_id = thread_router.get_window_for_thread(user.id, thread_id)
     if window_id:
-        display = session_manager.get_display_name(window_id)
-        session_manager.unbind_thread(user.id, thread_id)
+        display = thread_router.get_display_name(window_id)
+        thread_router.unbind_thread(user.id, thread_id)
         # Clean up all memory state for this topic
         await clear_topic_state(
             user.id, thread_id, context.bot, context.user_data, window_id=window_id
@@ -564,7 +565,7 @@ async def topic_edited_handler(
     if chat_id is None:
         return
 
-    window_id = session_manager.get_window_for_chat_thread(chat_id, thread_id)
+    window_id = thread_router.get_window_for_chat_thread(chat_id, thread_id)
     if not window_id:
         logger.debug("Topic edited: no binding (thread=%d)", thread_id)
         return
@@ -573,7 +574,7 @@ async def topic_edited_handler(
 
     # Loop guard: if clean name matches current display name, this was a
     # bot-originated emoji/mode change — skip to prevent rename loops.
-    current_display = session_manager.get_display_name(window_id)
+    current_display = thread_router.get_display_name(window_id)
     if current_display and strip_emoji_prefix(current_display) == clean_name:
         logger.debug(
             "Topic edited: name unchanged after strip, skipping (thread=%d)", thread_id
@@ -582,7 +583,7 @@ async def topic_edited_handler(
 
     renamed = await tmux_manager.rename_window(window_id, clean_name)
     if renamed:
-        session_manager.set_display_name(window_id, clean_name)
+        thread_router.set_display_name(window_id, clean_name)
         update_stored_topic_name(chat_id, thread_id, clean_name)
         logger.info(
             "Topic renamed: window %s → %r (thread=%d)",
@@ -614,21 +615,21 @@ async def unbind_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await safe_reply(update.message, "\u274c Use this command inside a topic.")
         return
 
-    window_id = session_manager.get_window_for_thread(user.id, thread_id)
+    window_id = thread_router.get_window_for_thread(user.id, thread_id)
     if not window_id:
         await safe_reply(
             update.message, "\u274c This topic is not bound to any session."
         )
         return
 
-    display = session_manager.get_display_name(window_id)
+    display = thread_router.get_display_name(window_id)
     # Enqueue a status clear to actually delete the Telegram status message
     # (clear_topic_state only clears the tracking dict, leaving a ghost)
     await enqueue_status_update(context.bot, user.id, window_id, None, thread_id)
     await clear_topic_state(
         user.id, thread_id, context.bot, context.user_data, window_id=window_id
     )
-    session_manager.unbind_thread(user.id, thread_id)
+    thread_router.unbind_thread(user.id, thread_id)
     await safe_reply(
         update.message,
         f"\u2702 Unbound from window `{display}`. The session is still running.\n"
@@ -650,7 +651,7 @@ async def forward_command_handler(
     chat = update.message.chat
     thread_id = _get_thread_id(update)
     if chat.type in ("group", "supergroup") and thread_id is not None:
-        session_manager.set_group_chat_id(user.id, thread_id, chat.id)
+        thread_router.set_group_chat_id(user.id, thread_id, chat.id)
 
     cmd_text = update.message.text or ""
     # Split into command word + arguments, then strip @botname from command
@@ -658,18 +659,18 @@ async def forward_command_handler(
     raw_cmd = parts[0].split("@")[0] if parts else ""  # strip @botname
     tg_cmd = raw_cmd.lstrip("/")
     args = parts[1] if len(parts) > 1 else ""
-    window_id = session_manager.resolve_window_for_thread(user.id, thread_id)
+    window_id = thread_router.resolve_window_for_thread(user.id, thread_id)
     if not window_id:
         await safe_reply(update.message, "\u274c No session bound to this topic.")
         return
 
     w = await tmux_manager.find_window_by_id(window_id)
     if not w:
-        display = session_manager.get_display_name(window_id)
+        display = thread_router.get_display_name(window_id)
         await safe_reply(update.message, f"\u274c Window '{display}' no longer exists.")
         return
 
-    display = session_manager.get_display_name(window_id)
+    display = thread_router.get_display_name(window_id)
     provider = get_provider_for_window(window_id)
     await _sync_scoped_provider_menu(update.message, user.id, provider)
     provider_map, current_supported = _get_provider_command_metadata(provider)
@@ -1010,7 +1011,7 @@ async def screenshot_command(
             await safe_reply(update.message, "\u274c Use this command inside a topic.")
         return
 
-    window_id = session_manager.get_window_for_thread(user.id, thread_id)
+    window_id = thread_router.get_window_for_thread(user.id, thread_id)
     if not window_id:
         await safe_reply(
             update.message, "\u274c This topic is not bound to any session."
@@ -1034,7 +1035,7 @@ async def screenshot_command(
 
     png_bytes = await text_to_image(pane_text, with_ansi=True)
     keyboard = build_screenshot_keyboard(window_id)
-    chat_id = session_manager.resolve_chat_id(user.id, thread_id)
+    chat_id = thread_router.resolve_chat_id(user.id, thread_id)
     try:
         await update.message.get_bot().send_document(
             chat_id=chat_id,
@@ -1070,7 +1071,7 @@ async def panes_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> 
             await safe_reply(update.message, "\u274c Use this command inside a topic.")
         return
 
-    window_id = session_manager.get_window_for_thread(user.id, thread_id)
+    window_id = thread_router.get_window_for_thread(user.id, thread_id)
     if not window_id:
         await safe_reply(
             update.message, "\u274c This topic is not bound to any session."
@@ -1181,7 +1182,7 @@ async def toolbar_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -
             await safe_reply(update.message, "\u274c Use this command inside a topic.")
         return
 
-    window_id = session_manager.get_window_for_thread(user.id, thread_id)
+    window_id = thread_router.get_window_for_thread(user.id, thread_id)
     if not window_id:
         await safe_reply(
             update.message, "\u274c This topic is not bound to any session."
@@ -1191,7 +1192,7 @@ async def toolbar_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -
     from .handlers.screenshot_callbacks import build_toolbar_keyboard
 
     keyboard = build_toolbar_keyboard(window_id)
-    display = session_manager.get_display_name(window_id)
+    display = thread_router.get_display_name(window_id)
     await safe_reply(
         update.message,
         f"\U0001f39b `{display}` toolbar",
@@ -1221,7 +1222,7 @@ async def verbose_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -
             await safe_reply(update.message, "\u274c Use this command inside a topic.")
         return
 
-    window_id = session_manager.get_window_for_thread(user.id, thread_id)
+    window_id = thread_router.get_window_for_thread(user.id, thread_id)
     if not window_id:
         await safe_reply(
             update.message, "\u274c This topic is not bound to any session."
@@ -1369,7 +1370,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if query.message and query.message.chat.type in ("group", "supergroup"):
         cb_thread_id = _get_thread_id(update)
         if cb_thread_id is not None:
-            session_manager.set_group_chat_id(
+            thread_router.set_group_chat_id(
                 user.id, cb_thread_id, query.message.chat.id
             )
 
@@ -1572,7 +1573,7 @@ async def _handle_new_window(event: NewWindowEvent, bot: Bot) -> None:
     """
 
     # Check if this window is already bound to any topic
-    for _, _, bound_wid in session_manager.iter_thread_bindings():
+    for _, _, bound_wid in thread_router.iter_thread_bindings():
         if bound_wid == event.window_id:
             logger.debug(
                 "New window %s already bound, skipping topic creation", event.window_id
@@ -1612,15 +1613,15 @@ async def _handle_new_window(event: NewWindowEvent, bot: Bot) -> None:
 
     # Collect unique chat_ids from existing bindings
     seen_chats: set[int] = set()
-    for user_id, thread_id, _ in session_manager.iter_thread_bindings():
-        chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+    for user_id, thread_id, _ in thread_router.iter_thread_bindings():
+        chat_id = thread_router.resolve_chat_id(user_id, thread_id)
         if chat_id != user_id:  # Only group chats (not fallback to user_id)
             seen_chats.add(chat_id)
 
     # Fallback: use preserved group_chat_ids (post-restart, no bindings left)
     if not seen_chats:
         seen_chats.update(
-            cid for cid in session_manager.group_chat_ids.values() if cid < 0
+            cid for cid in thread_router.group_chat_ids.values() if cid < 0
         )
 
     if not seen_chats:
@@ -1665,28 +1666,28 @@ async def _handle_new_window(event: NewWindowEvent, bot: Bot) -> None:
             # Bind one user to establish the route for this chat.
             # In cold-start (no existing bindings), use the first allowed user.
             bound = False
-            for user_id, thread_id, _ in session_manager.iter_thread_bindings():
-                if session_manager.resolve_chat_id(user_id, thread_id) == chat_id:
-                    session_manager.bind_thread(
+            for user_id, thread_id, _ in thread_router.iter_thread_bindings():
+                if thread_router.resolve_chat_id(user_id, thread_id) == chat_id:
+                    thread_router.bind_thread(
                         user_id,
                         topic.message_thread_id,
                         event.window_id,
                         window_name=topic_name,
                     )
-                    session_manager.set_group_chat_id(
+                    thread_router.set_group_chat_id(
                         user_id, topic.message_thread_id, chat_id
                     )
                     bound = True
                     break
             if not bound and config.allowed_users:
                 first_user_id = next(iter(config.allowed_users))
-                session_manager.bind_thread(
+                thread_router.bind_thread(
                     first_user_id,
                     topic.message_thread_id,
                     event.window_id,
                     window_name=topic_name,
                 )
-                session_manager.set_group_chat_id(
+                thread_router.set_group_chat_id(
                     first_user_id, topic.message_thread_id, chat_id
                 )
         except RetryAfter as e:

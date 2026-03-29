@@ -7,12 +7,12 @@ Provides utility functions used by multiple callback handler modules:
 
 from telegram import Update
 
-from ..session import session_manager
+from ..thread_router import thread_router
 
 
 def user_owns_window(user_id: int, window_id: str) -> bool:
     """Check if a user has any thread binding to the given window."""
-    return window_id in session_manager.get_all_thread_windows(user_id).values()
+    return window_id in thread_router.get_all_thread_windows(user_id).values()
 
 
 def get_thread_id(update: Update) -> int | None:

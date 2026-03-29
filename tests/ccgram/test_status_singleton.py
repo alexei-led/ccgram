@@ -42,15 +42,15 @@ def _status_task(text: str = "running...", window_id: str = WINDOW_ID) -> Messag
 class TestEditFailureNoNewMessage:
     """Change 1: edit failure clears tracking, does NOT send a new message."""
 
-    @patch("ccgram.handlers.message_queue.session_manager")
+    @patch("ccgram.handlers.message_queue.thread_router")
     @patch("ccgram.handlers.message_queue.edit_with_fallback", new_callable=AsyncMock)
     @patch(
         "ccgram.handlers.message_queue.rate_limit_send_message", new_callable=AsyncMock
     )
     async def test_edit_failure_clears_tracking_no_send(
-        self, mock_send, mock_edit, mock_sm
+        self, mock_send, mock_edit, mock_tr
     ) -> None:
-        mock_sm.resolve_chat_id.return_value = 42
+        mock_tr.resolve_chat_id.return_value = 42
         mock_edit.return_value = False  # edit fails
 
         # Pre-populate: existing status message tracked
@@ -65,15 +65,15 @@ class TestEditFailureNoNewMessage:
         # No new message should be sent
         mock_send.assert_not_called()
 
-    @patch("ccgram.handlers.message_queue.session_manager")
+    @patch("ccgram.handlers.message_queue.thread_router")
     @patch("ccgram.handlers.message_queue.edit_with_fallback", new_callable=AsyncMock)
     @patch(
         "ccgram.handlers.message_queue.rate_limit_send_message", new_callable=AsyncMock
     )
     async def test_edit_success_updates_tracking(
-        self, mock_send, mock_edit, mock_sm
+        self, mock_send, mock_edit, mock_tr
     ) -> None:
-        mock_sm.resolve_chat_id.return_value = 42
+        mock_tr.resolve_chat_id.return_value = 42
         mock_edit.return_value = True  # edit succeeds
 
         _status_msg_info[SKEY] = (100, WINDOW_ID, "old text")
@@ -89,15 +89,15 @@ class TestEditFailureNoNewMessage:
 class TestDoSendGuard:
     """Change 3: _do_send_status_message edits existing instead of sending new."""
 
-    @patch("ccgram.handlers.message_queue.session_manager")
+    @patch("ccgram.handlers.message_queue.thread_router")
     @patch("ccgram.handlers.message_queue.edit_with_fallback", new_callable=AsyncMock)
     @patch(
         "ccgram.handlers.message_queue.rate_limit_send_message", new_callable=AsyncMock
     )
     async def test_existing_status_same_window_edits_in_place(
-        self, mock_send, mock_edit, mock_sm
+        self, mock_send, mock_edit, mock_tr
     ) -> None:
-        mock_sm.resolve_chat_id.return_value = 42
+        mock_tr.resolve_chat_id.return_value = 42
         mock_edit.return_value = True
 
         _status_msg_info[SKEY] = (100, WINDOW_ID, "old text")
@@ -110,15 +110,15 @@ class TestDoSendGuard:
         mock_send.assert_not_called()
         assert _status_msg_info[SKEY] == (100, WINDOW_ID, "new text")
 
-    @patch("ccgram.handlers.message_queue.session_manager")
+    @patch("ccgram.handlers.message_queue.thread_router")
     @patch("ccgram.handlers.message_queue.edit_with_fallback", new_callable=AsyncMock)
     @patch(
         "ccgram.handlers.message_queue.rate_limit_send_message", new_callable=AsyncMock
     )
     async def test_existing_status_identical_text_skips(
-        self, mock_send, mock_edit, mock_sm
+        self, mock_send, mock_edit, mock_tr
     ) -> None:
-        mock_sm.resolve_chat_id.return_value = 42
+        mock_tr.resolve_chat_id.return_value = 42
 
         _status_msg_info[SKEY] = (100, WINDOW_ID, "running...")
 
@@ -129,15 +129,15 @@ class TestDoSendGuard:
         mock_edit.assert_not_called()
         mock_send.assert_not_called()
 
-    @patch("ccgram.handlers.message_queue.session_manager")
+    @patch("ccgram.handlers.message_queue.thread_router")
     @patch("ccgram.handlers.message_queue.edit_with_fallback", new_callable=AsyncMock)
     @patch(
         "ccgram.handlers.message_queue.rate_limit_send_message", new_callable=AsyncMock
     )
     async def test_no_existing_status_sends_new(
-        self, mock_send, mock_edit, mock_sm
+        self, mock_send, mock_edit, mock_tr
     ) -> None:
-        mock_sm.resolve_chat_id.return_value = 42
+        mock_tr.resolve_chat_id.return_value = 42
         sent_msg = MagicMock()
         sent_msg.message_id = 200
         mock_send.return_value = sent_msg
@@ -149,7 +149,7 @@ class TestDoSendGuard:
         mock_send.assert_called_once()
         assert _status_msg_info[SKEY] == (200, WINDOW_ID, "running...")
 
-    @patch("ccgram.handlers.message_queue.session_manager")
+    @patch("ccgram.handlers.message_queue.thread_router")
     @patch("ccgram.handlers.message_queue.edit_with_fallback", new_callable=AsyncMock)
     @patch(
         "ccgram.handlers.message_queue.rate_limit_send_message", new_callable=AsyncMock
@@ -158,9 +158,9 @@ class TestDoSendGuard:
         "ccgram.handlers.message_queue._do_clear_status_message", new_callable=AsyncMock
     )
     async def test_existing_status_different_window_clears_and_sends(
-        self, mock_clear, mock_send, mock_edit, mock_sm
+        self, mock_clear, mock_send, mock_edit, mock_tr
     ) -> None:
-        mock_sm.resolve_chat_id.return_value = 42
+        mock_tr.resolve_chat_id.return_value = 42
         sent_msg = MagicMock()
         sent_msg.message_id = 300
         mock_send.return_value = sent_msg
@@ -174,15 +174,15 @@ class TestDoSendGuard:
         mock_send.assert_called_once()
         assert _status_msg_info[SKEY] == (300, WINDOW_ID, "running...")
 
-    @patch("ccgram.handlers.message_queue.session_manager")
+    @patch("ccgram.handlers.message_queue.thread_router")
     @patch("ccgram.handlers.message_queue.edit_with_fallback", new_callable=AsyncMock)
     @patch(
         "ccgram.handlers.message_queue.rate_limit_send_message", new_callable=AsyncMock
     )
     async def test_existing_status_edit_fails_falls_through_to_send(
-        self, mock_send, mock_edit, mock_sm
+        self, mock_send, mock_edit, mock_tr
     ) -> None:
-        mock_sm.resolve_chat_id.return_value = 42
+        mock_tr.resolve_chat_id.return_value = 42
         mock_edit.return_value = False  # edit fails
         sent_msg = MagicMock()
         sent_msg.message_id = 400

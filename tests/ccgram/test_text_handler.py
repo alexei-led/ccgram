@@ -96,9 +96,8 @@ class TestCheckUiGuards:
 class TestHandleUnboundTopic:
     @patch(f"{_TH}.thread_router")
     @patch(f"{_TH}.tmux_manager")
-    @patch(f"{_TH}.session_manager")
     async def test_bound_topic_returns_false(
-        self, mock_sm: MagicMock, _mock_tm: MagicMock, mock_tr: MagicMock
+        self, _mock_tm: MagicMock, mock_tr: MagicMock
     ) -> None:
         mock_tr.get_window_for_thread.return_value = "@0"
         message = AsyncMock()
@@ -110,16 +109,16 @@ class TestHandleUnboundTopic:
     @patch(f"{_TH}.safe_reply", new_callable=AsyncMock)
     @patch(f"{_TH}.build_window_picker")
     @patch(f"{_TH}.tmux_manager")
-    @patch(f"{_TH}.session_manager")
+    @patch(f"{_TH}.thread_router")
     async def test_shows_window_picker(
         self,
-        mock_sm: MagicMock,
+        mock_tr: MagicMock,
         mock_tm: MagicMock,
         mock_picker: MagicMock,
         mock_reply: AsyncMock,
     ) -> None:
-        mock_sm.get_window_for_thread.return_value = None
-        mock_sm.iter_thread_bindings.return_value = []
+        mock_tr.get_window_for_thread.return_value = None
+        mock_tr.iter_thread_bindings.return_value = []
         w = MagicMock(window_id="@5", window_name="proj", cwd="/tmp")
         mock_tm.list_windows = AsyncMock(return_value=[w])
         mock_tm.discover_external_sessions = AsyncMock(return_value=[])
@@ -139,16 +138,16 @@ class TestHandleUnboundTopic:
     @patch(f"{_TH}.safe_reply", new_callable=AsyncMock)
     @patch(f"{_TH}.build_directory_browser")
     @patch(f"{_TH}.tmux_manager")
-    @patch(f"{_TH}.session_manager")
+    @patch(f"{_TH}.thread_router")
     async def test_shows_directory_browser(
         self,
-        mock_sm: MagicMock,
+        mock_tr: MagicMock,
         mock_tm: MagicMock,
         mock_browser: MagicMock,
         mock_reply: AsyncMock,
     ) -> None:
-        mock_sm.get_window_for_thread.return_value = None
-        mock_sm.iter_thread_bindings.return_value = []
+        mock_tr.get_window_for_thread.return_value = None
+        mock_tr.iter_thread_bindings.return_value = []
         mock_tm.list_windows = AsyncMock(return_value=[])
         mock_tm.discover_external_sessions = AsyncMock(return_value=[])
         mock_browser.return_value = ("Browse:", MagicMock(), [])
@@ -165,16 +164,16 @@ class TestHandleUnboundTopic:
     @patch(f"{_TH}.safe_reply", new_callable=AsyncMock)
     @patch(f"{_TH}.build_window_picker")
     @patch(f"{_TH}.tmux_manager")
-    @patch(f"{_TH}.session_manager")
+    @patch(f"{_TH}.thread_router")
     async def test_stores_pending_state(
         self,
-        mock_sm: MagicMock,
+        mock_tr: MagicMock,
         mock_tm: MagicMock,
         mock_picker: MagicMock,
         _mock_reply: AsyncMock,
     ) -> None:
-        mock_sm.get_window_for_thread.return_value = None
-        mock_sm.iter_thread_bindings.return_value = []
+        mock_tr.get_window_for_thread.return_value = None
+        mock_tr.iter_thread_bindings.return_value = []
         w = MagicMock(window_id="@5", window_name="proj", cwd="/tmp")
         mock_tm.list_windows = AsyncMock(return_value=[w])
         mock_tm.discover_external_sessions = AsyncMock(return_value=[])
@@ -203,15 +202,17 @@ class TestHandleDeadWindow:
     @patch(f"{_TH}.build_recovery_keyboard")
     @patch(f"{_TH}.tmux_manager")
     @patch(f"{_TH}.session_manager")
+    @patch(f"{_TH}.thread_router")
     async def test_shows_recovery_ui(
         self,
+        mock_tr: MagicMock,
         mock_sm: MagicMock,
         mock_tm: MagicMock,
         mock_kb: MagicMock,
         mock_reply: AsyncMock,
     ) -> None:
         mock_tm.find_window_by_id = AsyncMock(return_value=None)
-        mock_sm.get_display_name.return_value = "project"
+        mock_tr.get_display_name.return_value = "project"
         ws = MagicMock()
         ws.cwd = "/tmp/project"
         mock_sm.get_window_state.return_value = ws
@@ -235,15 +236,17 @@ class TestHandleDeadWindow:
     @patch(f"{_TH}.build_directory_browser")
     @patch(f"{_TH}.tmux_manager")
     @patch(f"{_TH}.session_manager")
+    @patch(f"{_TH}.thread_router")
     async def test_falls_back_to_browser_no_cwd(
         self,
+        mock_tr: MagicMock,
         mock_sm: MagicMock,
         mock_tm: MagicMock,
         mock_browser: MagicMock,
         _mock_reply: AsyncMock,
     ) -> None:
         mock_tm.find_window_by_id = AsyncMock(return_value=None)
-        mock_sm.get_display_name.return_value = "project"
+        mock_tr.get_display_name.return_value = "project"
         ws = MagicMock()
         ws.cwd = ""
         mock_sm.get_window_state.return_value = ws
@@ -262,22 +265,24 @@ class TestHandleDeadWindow:
             )
 
         assert result is True
-        mock_sm.unbind_thread.assert_called_once_with(100, 42)
+        mock_tr.unbind_thread.assert_called_once_with(100, 42)
         mock_browser.assert_called_once()
 
     @patch(f"{_TH}.safe_reply", new_callable=AsyncMock)
     @patch(f"{_TH}.build_directory_browser")
     @patch(f"{_TH}.tmux_manager")
     @patch(f"{_TH}.session_manager")
+    @patch(f"{_TH}.thread_router")
     async def test_falls_back_to_browser_invalid_cwd(
         self,
+        mock_tr: MagicMock,
         mock_sm: MagicMock,
         mock_tm: MagicMock,
         mock_browser: MagicMock,
         _mock_reply: AsyncMock,
     ) -> None:
         mock_tm.find_window_by_id = AsyncMock(return_value=None)
-        mock_sm.get_display_name.return_value = "project"
+        mock_tr.get_display_name.return_value = "project"
         ws = MagicMock()
         ws.cwd = "/nonexistent"
         mock_sm.get_window_state.return_value = ws
@@ -296,23 +301,20 @@ class TestHandleDeadWindow:
             )
 
         assert result is True
-        mock_sm.unbind_thread.assert_called_once_with(100, 42)
+        mock_tr.unbind_thread.assert_called_once_with(100, 42)
 
 
 class TestShellProviderRouting:
     @patch(f"{_TH}.get_provider_for_window")
     @patch(f"{_TH}._handle_dead_window", new_callable=AsyncMock, return_value=False)
     @patch(f"{_TH}.thread_router")
-    @patch(f"{_TH}.session_manager")
     async def test_shell_provider_routes_to_handle_shell_message(
         self,
-        mock_sm: MagicMock,
         mock_tr: MagicMock,
         _mock_dead: AsyncMock,
         mock_get_provider: MagicMock,
     ) -> None:
         mock_tr.get_window_for_thread.return_value = "@0"
-        mock_sm.is_authorized.return_value = True
 
         provider = MagicMock()
         provider.capabilities.name = "shell"
@@ -349,14 +351,15 @@ class TestShellProviderRouting:
     @patch(f"{_TH}.get_provider_for_window")
     @patch(f"{_TH}._handle_dead_window", new_callable=AsyncMock, return_value=False)
     @patch(f"{_TH}.session_manager")
+    @patch(f"{_TH}.thread_router")
     async def test_non_shell_provider_does_not_route_to_shell(
         self,
+        mock_tr: MagicMock,
         mock_sm: MagicMock,
         _mock_dead: AsyncMock,
         mock_get_provider: MagicMock,
     ) -> None:
-        mock_sm.get_window_for_thread.return_value = "@0"
-        mock_sm.is_authorized.return_value = True
+        mock_tr.get_window_for_thread.return_value = "@0"
         mock_sm.send_to_window = AsyncMock(return_value=(True, ""))
 
         provider = MagicMock()
@@ -498,9 +501,9 @@ class TestBashCaptureCleanup:
 
         with (
             patch(f"{_TH}.tmux_manager") as mock_tm,
-            patch(f"{_TH}.session_manager") as mock_sm,
+            patch(f"{_TH}.thread_router") as mock_tr,
         ):
-            mock_sm.resolve_chat_id.return_value = 999
+            mock_tr.resolve_chat_id.return_value = 999
             # capture_pane returns None → early return in first iteration
             mock_tm.capture_pane = AsyncMock(return_value=None)
 
@@ -522,9 +525,9 @@ class TestBashCaptureCleanup:
 
         with (
             patch(f"{_TH}.tmux_manager") as mock_tm,
-            patch(f"{_TH}.session_manager") as mock_sm,
+            patch(f"{_TH}.thread_router") as mock_tr,
         ):
-            mock_sm.resolve_chat_id.return_value = 777
+            mock_tr.resolve_chat_id.return_value = 777
             mock_tm.capture_pane = AsyncMock(return_value=None)
 
             task = asyncio.create_task(
@@ -554,9 +557,9 @@ class TestBashCaptureCleanup:
 
         with (
             patch(f"{_TH}.tmux_manager") as mock_tm,
-            patch(f"{_TH}.session_manager") as mock_sm,
+            patch(f"{_TH}.thread_router") as mock_tr,
         ):
-            mock_sm.resolve_chat_id.return_value = 555
+            mock_tr.resolve_chat_id.return_value = 555
             mock_tm.capture_pane = AsyncMock(return_value=None)
 
             task_a = asyncio.create_task(

@@ -90,8 +90,9 @@ def _resolve_topic_name(key: tuple[int, int], display_name: str) -> str:
 def _resolve_approval_mode(chat_id: int, thread_id: int) -> str:
     """Resolve approval mode for a topic via session bindings."""
     from ..session import DEFAULT_APPROVAL_MODE, session_manager
+    from ..thread_router import thread_router
 
-    window_id = session_manager.get_window_for_chat_thread(chat_id, thread_id)
+    window_id = thread_router.get_window_for_chat_thread(chat_id, thread_id)
     if not window_id:
         return DEFAULT_APPROVAL_MODE
     return session_manager.get_approval_mode(window_id)
@@ -99,9 +100,9 @@ def _resolve_approval_mode(chat_id: int, thread_id: int) -> str:
 
 def _resolve_rc_mode(chat_id: int, thread_id: int) -> bool:
     """Resolve Remote Control active state for a topic via session bindings."""
-    from ..session import session_manager
+    from ..thread_router import thread_router
 
-    window_id = session_manager.get_window_for_chat_thread(chat_id, thread_id)
+    window_id = thread_router.get_window_for_chat_thread(chat_id, thread_id)
     if not window_id:
         return False
     from .status_polling import is_rc_active

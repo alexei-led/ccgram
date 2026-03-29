@@ -58,26 +58,26 @@ class TestCommandsCommand:
     async def test_unauthorized_user_returns_early(self) -> None:
         with (
             patch("ccgram.bot.is_user_allowed", return_value=False),
-            patch("ccgram.bot.session_manager") as mock_sm,
+            patch("ccgram.bot.thread_router") as mock_tr,
         ):
             await commands_command(_make_update(), MagicMock())
 
-        mock_sm.resolve_window_for_thread.assert_not_called()
+        mock_tr.resolve_window_for_thread.assert_not_called()
 
     async def test_no_message_returns_early(self) -> None:
         update = _make_update()
         update.message = None
-        with patch("ccgram.bot.session_manager") as mock_sm:
+        with patch("ccgram.bot.thread_router") as mock_tr:
             await commands_command(update, MagicMock())
-        mock_sm.resolve_window_for_thread.assert_not_called()
+        mock_tr.resolve_window_for_thread.assert_not_called()
 
     async def test_unbound_topic_reports_error(self) -> None:
         update = _make_update()
         with (
-            patch("ccgram.bot.session_manager") as mock_sm,
+            patch("ccgram.bot.thread_router") as mock_tr,
             patch("ccgram.bot.safe_reply", new_callable=AsyncMock) as mock_reply,
         ):
-            mock_sm.resolve_window_for_thread.return_value = None
+            mock_tr.resolve_window_for_thread.return_value = None
             await commands_command(update, MagicMock())
 
         mock_reply.assert_called_once()
@@ -89,13 +89,13 @@ class TestCommandsCommand:
             "AgentProvider", SimpleNamespace(capabilities=SimpleNamespace(name="codex"))
         )
         with (
-            patch("ccgram.bot.session_manager") as mock_sm,
+            patch("ccgram.bot.thread_router") as mock_tr,
             patch("ccgram.bot.get_provider_for_window", return_value=provider),
             patch("ccgram.bot._sync_scoped_provider_menu", new_callable=AsyncMock),
             patch("ccgram.bot.discover_provider_commands", return_value=[]),
             patch("ccgram.bot.safe_reply", new_callable=AsyncMock) as mock_reply,
         ):
-            mock_sm.resolve_window_for_thread.return_value = "@1"
+            mock_tr.resolve_window_for_thread.return_value = "@1"
             await commands_command(update, MagicMock())
 
         mock_reply.assert_called_once()
@@ -129,7 +129,7 @@ class TestCommandsCommand:
             ),
         ]
         with (
-            patch("ccgram.bot.session_manager") as mock_sm,
+            patch("ccgram.bot.thread_router") as mock_tr,
             patch("ccgram.bot.get_provider_for_window", return_value=provider),
             patch(
                 "ccgram.bot._sync_scoped_provider_menu", new_callable=AsyncMock
@@ -137,7 +137,7 @@ class TestCommandsCommand:
             patch("ccgram.bot.discover_provider_commands", return_value=discovered),
             patch("ccgram.bot.safe_reply", new_callable=AsyncMock) as mock_reply,
         ):
-            mock_sm.resolve_window_for_thread.return_value = "@1"
+            mock_tr.resolve_window_for_thread.return_value = "@1"
             await commands_command(update, MagicMock())
 
         mock_sync.assert_called_once_with(update.message, 100, provider)

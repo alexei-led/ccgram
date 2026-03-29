@@ -50,6 +50,7 @@ from ..providers import (
 )
 from ..providers.base import StatusUpdate
 from ..session import session_manager
+from ..thread_router import thread_router
 from ..window_resolver import is_foreign_window
 from ..session_monitor import get_active_monitor
 from ..tmux_manager import tmux_manager
@@ -228,7 +229,7 @@ async def _send_typing_throttled(bot: Bot, user_id: int, thread_id: int | None) 
     if now - (ts.last_typing_sent or 0.0) < _TYPING_INTERVAL:
         return
     ts.last_typing_sent = now
-    chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+    chat_id = thread_router.resolve_chat_id(user_id, thread_id)
     with contextlib.suppress(TelegramError):
         await bot.send_chat_action(
             chat_id=chat_id,
@@ -339,7 +340,7 @@ async def _check_unbound_window_ttl(live_windows: list | None = None) -> None:
 
     # Build set of currently bound window IDs
     bound_ids: set[str] = set()
-    for _, _, wid in session_manager.iter_thread_bindings():
+    for _, _, wid in thread_router.iter_thread_bindings():
         bound_ids.add(wid)
 
     # Get all live tmux windows (use pre-fetched if available)
@@ -410,8 +411,8 @@ async def _check_autoclose_timers(bot: Bot) -> None:
             expired.append((user_id, thread_id))
 
     for user_id, thread_id in expired:
-        chat_id = session_manager.resolve_chat_id(user_id, thread_id)
-        window_id = session_manager.get_window_for_thread(user_id, thread_id)
+        chat_id = thread_router.resolve_chat_id(user_id, thread_id)
+        window_id = thread_router.get_window_for_thread(user_id, thread_id)
         removed = False
         try:
             await bot.delete_forum_topic(chat_id=chat_id, message_thread_id=thread_id)
@@ -435,7 +436,7 @@ async def _check_autoclose_timers(bot: Bot) -> None:
                 user_id,
             )
             await clear_topic_state(user_id, thread_id, bot=bot, window_id=window_id)
-            session_manager.unbind_thread(user_id, thread_id)
+            thread_router.unbind_thread(user_id, thread_id)
 
 
 def _check_transcript_activity(window_id: str, now: float) -> bool:
@@ -503,8 +504,8 @@ async def _handle_no_status(
     if is_active:
         await _send_typing_throttled(bot, user_id, thread_id)
         if thread_id is not None:
-            chat_id = session_manager.resolve_chat_id(user_id, thread_id)
-            display = session_manager.get_display_name(window_id)
+            chat_id = thread_router.resolve_chat_id(user_id, thread_id)
+            display = thread_router.get_display_name(window_id)
             await update_topic_emoji(bot, chat_id, thread_id, "active", display)
             _clear_autoclose_if_active(user_id, thread_id)
         return
@@ -512,8 +513,8 @@ async def _handle_no_status(
     if thread_id is None:
         return
 
-    chat_id = session_manager.resolve_chat_id(user_id, thread_id)
-    display = session_manager.get_display_name(window_id)
+    chat_id = thread_router.resolve_chat_id(user_id, thread_id)
+    display = thread_router.get_display_name(window_id)
     ws = _get_window_state(window_id)
 
     if is_shell_prompt(pane_current_command):
@@ -917,8 +918,8 @@ async def update_status_message(
             )
         # Update topic emoji to active (agent is working)
         if thread_id is not None:
-            chat_id = session_manager.resolve_chat_id(user_id, thread_id)
-            display = session_manager.get_display_name(window_id)
+            chat_id = thread_router.resolve_chat_id(user_id, thread_id)
+            display = thread_router.get_display_name(window_id)
             await update_topic_emoji(bot, chat_id, thread_id, "active", display)
             _clear_autoclose_if_active(user_id, thread_id)
     else:
@@ -940,8 +941,8 @@ async def _handle_dead_window_notification(
     # no more tool_result edits will arrive).
 
     clear_tool_msg_ids_for_topic(user_id, thread_id)
-    chat_id = session_manager.resolve_chat_id(user_id, thread_id)
-    display = session_manager.get_display_name(wid)
+    chat_id = thread_router.resolve_chat_id(user_id, thread_id)
+    display = thread_router.get_display_name(wid)
     await update_topic_emoji(bot, chat_id, thread_id, "dead", display)
     _start_autoclose_timer(user_id, thread_id, "dead", time.monotonic())
 
@@ -981,7 +982,7 @@ async def _handle_dead_window_notification(
             ):
                 _get_window_state(wid).probe_failures = 0
                 await clear_topic_state(user_id, thread_id, bot, window_id=wid)
-                session_manager.unbind_thread(user_id, thread_id)
+                thread_router.unbind_thread(user_id, thread_id)
                 logger.info(
                     "Topic deleted: unbound window %s for thread %d, user %d",
                     wid,
@@ -1015,18 +1016,18 @@ async def _prune_stale_state(live_windows: list) -> None:
     """
     live_ids = {w.window_id for w in live_windows}
     live_pairs = [(w.window_id, w.window_name) for w in live_windows]
-    session_manager.sync_display_names(live_pairs)
+    thread_router.sync_display_names(live_pairs)
     session_manager.prune_stale_state(live_ids)
 
 
 async def _probe_topic_existence(bot: Bot) -> None:
     """Probe all bound topics via Telegram API; detect deleted topics."""
-    for user_id, thread_id, wid in list(session_manager.iter_thread_bindings()):
+    for user_id, thread_id, wid in list(thread_router.iter_thread_bindings()):
         if _get_window_state(wid).probe_failures >= _MAX_PROBE_FAILURES:
             continue
         try:
             await bot.unpin_all_forum_topic_messages(
-                chat_id=session_manager.resolve_chat_id(user_id, thread_id),
+                chat_id=thread_router.resolve_chat_id(user_id, thread_id),
                 message_thread_id=thread_id,
             )
             _get_window_state(wid).probe_failures = 0
@@ -1041,7 +1042,7 @@ async def _probe_topic_existence(bot: Bot) -> None:
                     await tmux_manager.kill_window(w.window_id)
                 _get_window_state(wid).probe_failures = 0
                 await clear_topic_state(user_id, thread_id, bot, window_id=wid)
-                session_manager.unbind_thread(user_id, thread_id)
+                thread_router.unbind_thread(user_id, thread_id)
                 logger.info(
                     "Topic deleted: killed window_id '%s' and "
                     "unbound thread %d for user %d",
@@ -1260,7 +1261,7 @@ async def status_poll_loop(bot: Bot) -> None:
                 # Sweep stale log-throttle entries to prevent unbounded growth
                 log_throttle_sweep()
 
-            for user_id, thread_id, wid in list(session_manager.iter_thread_bindings()):
+            for user_id, thread_id, wid in list(thread_router.iter_thread_bindings()):
                 structlog.contextvars.clear_contextvars()
                 structlog.contextvars.bind_contextvars(window_id=wid)
                 try:

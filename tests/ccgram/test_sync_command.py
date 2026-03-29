@@ -21,17 +21,18 @@ from ccgram.session import AuditIssue, AuditResult
 def _patch_deps():
     with (
         patch("ccgram.handlers.sync_command.session_manager") as mock_sm,
+        patch("ccgram.handlers.sync_command.thread_router") as mock_tr,
         patch("ccgram.handlers.sync_command.tmux_manager") as mock_tm,
         patch("ccgram.handlers.sync_command.config") as mock_cfg,
     ):
         mock_sm.audit_state.return_value = AuditResult(
             issues=[], total_bindings=0, live_binding_count=0
         )
-        mock_sm.iter_thread_bindings.return_value = []
+        mock_tr.iter_thread_bindings.return_value = []
         mock_sm.window_states = {}
         mock_tm.list_windows = AsyncMock(return_value=[])
         mock_cfg.is_user_allowed.return_value = True
-        yield mock_sm, mock_tm, mock_cfg
+        yield mock_sm, mock_tr, mock_tm, mock_cfg
 
 
 class TestBuildReport:
@@ -149,7 +150,7 @@ class TestSyncDismiss:
 
 class TestSyncCommand:
     async def test_unauthorized_user_rejected(self, _patch_deps) -> None:
-        _, _, mock_cfg = _patch_deps
+        _, _, _, mock_cfg = _patch_deps
         mock_cfg.is_user_allowed.return_value = False
 
         update = MagicMock()
@@ -171,7 +172,7 @@ class TestSyncCommand:
             mock_reply.assert_not_called()
 
     async def test_calls_audit_and_replies(self, _patch_deps) -> None:
-        mock_sm, _, _ = _patch_deps
+        mock_sm, _, _, _ = _patch_deps
         mock_sm.audit_state.return_value = AuditResult(
             issues=[], total_bindings=2, live_binding_count=2
         )
@@ -189,7 +190,7 @@ class TestSyncCommand:
 
 class TestSyncFix:
     async def test_fix_runs_cleanup_and_re_audits(self, _patch_deps) -> None:
-        mock_sm, _, _ = _patch_deps
+        mock_sm, mock_tr, _, _ = _patch_deps
         mock_sm.audit_state.side_effect = [
             AuditResult(
                 issues=[
@@ -205,7 +206,7 @@ class TestSyncFix:
 
         with patch("ccgram.handlers.sync_command.safe_edit") as mock_edit:
             await handle_sync_fix(query)
-            mock_sm.sync_display_names.assert_called_once_with([])
+            mock_tr.sync_display_names.assert_called_once_with([])
             mock_sm.prune_stale_state.assert_called_once_with(set())
             mock_sm.prune_session_map.assert_called_once_with(set())
             mock_sm.prune_stale_window_states.assert_called_once_with(set())
@@ -215,7 +216,7 @@ class TestSyncFix:
             assert "\u2705 Fixed 1 issue" in mock_edit.call_args[0][1]
 
     async def test_fix_computes_actual_fixed_count(self, _patch_deps) -> None:
-        mock_sm, _, _ = _patch_deps
+        mock_sm, _, _, _ = _patch_deps
         mock_sm.audit_state.side_effect = [
             AuditResult(
                 issues=[
@@ -241,7 +242,7 @@ class TestSyncFix:
             assert "\u2705 Fixed 1 issue" in mock_edit.call_args[0][1]
 
     async def test_fix_closes_ghost_topics(self, _patch_deps) -> None:
-        mock_sm, _, _ = _patch_deps
+        mock_sm, mock_tr, _, _ = _patch_deps
         mock_sm.audit_state.side_effect = [
             AuditResult(
                 issues=[
@@ -256,7 +257,7 @@ class TestSyncFix:
             ),
             AuditResult(issues=[], total_bindings=0, live_binding_count=0),
         ]
-        mock_sm.resolve_chat_id.return_value = -999
+        mock_tr.resolve_chat_id.return_value = -999
 
         query = MagicMock()
         mock_bot = AsyncMock()
@@ -269,12 +270,12 @@ class TestSyncFix:
             await handle_sync_fix(query)
             mock_bot.delete_forum_topic.assert_called_once_with(-999, 42)
             mock_cleanup.assert_called_once_with(100, 42, bot=mock_bot, window_id="@7")
-            mock_sm.unbind_thread.assert_called_once_with(100, 42)
+            mock_tr.unbind_thread.assert_called_once_with(100, 42)
             report_text = mock_edit.call_args[0][1]
             assert "Removed 1 stale topic" in report_text
 
     async def test_fix_skips_unbind_when_close_fails(self, _patch_deps) -> None:
-        mock_sm, _, _ = _patch_deps
+        mock_sm, mock_tr, _, _ = _patch_deps
         mock_sm.audit_state.side_effect = [
             AuditResult(
                 issues=[
@@ -299,7 +300,7 @@ class TestSyncFix:
                 live_binding_count=0,
             ),
         ]
-        mock_sm.resolve_chat_id.return_value = -999
+        mock_tr.resolve_chat_id.return_value = -999
 
         query = MagicMock()
         mock_bot = AsyncMock()
@@ -315,10 +316,10 @@ class TestSyncFix:
             mock_bot.delete_forum_topic.assert_called_once()
             mock_bot.close_forum_topic.assert_called_once()
             mock_cleanup.assert_not_called()
-            mock_sm.unbind_thread.assert_not_called()
+            mock_tr.unbind_thread.assert_not_called()
 
     async def test_fix_skips_close_when_no_group_chat(self, _patch_deps) -> None:
-        mock_sm, _, _ = _patch_deps
+        mock_sm, mock_tr, _, _ = _patch_deps
         mock_sm.audit_state.side_effect = [
             AuditResult(
                 issues=[
@@ -334,7 +335,7 @@ class TestSyncFix:
             AuditResult(issues=[], total_bindings=0, live_binding_count=0),
         ]
         # Falls back to user_id — no group chat stored
-        mock_sm.resolve_chat_id.return_value = 100
+        mock_tr.resolve_chat_id.return_value = 100
 
         query = MagicMock()
         mock_bot = AsyncMock()
@@ -348,10 +349,10 @@ class TestSyncFix:
             mock_bot.close_forum_topic.assert_not_called()
             # Still unbinds and cleans up state
             mock_cleanup.assert_called_once_with(100, 42, bot=mock_bot, window_id="@7")
-            mock_sm.unbind_thread.assert_called_once_with(100, 42)
+            mock_tr.unbind_thread.assert_called_once_with(100, 42)
 
     async def test_fix_adopts_orphaned_windows(self, _patch_deps) -> None:
-        mock_sm, _, _ = _patch_deps
+        mock_sm, _, _, _ = _patch_deps
         mock_sm.audit_state.side_effect = [
             AuditResult(
                 issues=[
@@ -395,10 +396,10 @@ class TestSyncFix:
 
 class TestDeadTopicDetection:
     async def test_probe_detects_dead_topic(self, _patch_deps) -> None:
-        mock_sm, _, _ = _patch_deps
-        mock_sm.iter_thread_bindings.return_value = [(100, 42, "@2")]
-        mock_sm.resolve_chat_id.return_value = -999
-        mock_sm.get_display_name.return_value = "qmd-go"
+        _, mock_tr, _, _ = _patch_deps
+        mock_tr.iter_thread_bindings.return_value = [(100, 42, "@2")]
+        mock_tr.resolve_chat_id.return_value = -999
+        mock_tr.get_display_name.return_value = "qmd-go"
 
         mock_bot = AsyncMock()
         mock_bot.send_message.side_effect = BadRequest("Message thread not found")
@@ -410,9 +411,9 @@ class TestDeadTopicDetection:
         assert issues[0].fixable is True
 
     async def test_probe_skips_alive_topic(self, _patch_deps) -> None:
-        mock_sm, _, _ = _patch_deps
-        mock_sm.iter_thread_bindings.return_value = [(100, 42, "@2")]
-        mock_sm.resolve_chat_id.return_value = -999
+        _, mock_tr, _, _ = _patch_deps
+        mock_tr.iter_thread_bindings.return_value = [(100, 42, "@2")]
+        mock_tr.resolve_chat_id.return_value = -999
 
         mock_bot = AsyncMock()
         # send_message succeeds — topic is alive; returns a message to delete
@@ -422,9 +423,9 @@ class TestDeadTopicDetection:
         assert issues == []
 
     async def test_probe_skips_network_errors(self, _patch_deps) -> None:
-        mock_sm, _, _ = _patch_deps
-        mock_sm.iter_thread_bindings.return_value = [(100, 42, "@2")]
-        mock_sm.resolve_chat_id.return_value = -999
+        _, mock_tr, _, _ = _patch_deps
+        mock_tr.iter_thread_bindings.return_value = [(100, 42, "@2")]
+        mock_tr.resolve_chat_id.return_value = -999
 
         mock_bot = AsyncMock()
         mock_bot.send_message.side_effect = TelegramError("Network error")
@@ -433,10 +434,10 @@ class TestDeadTopicDetection:
         assert issues == []
 
     async def test_probe_skips_bindings_without_group_chat(self, _patch_deps) -> None:
-        mock_sm, _, _ = _patch_deps
-        mock_sm.iter_thread_bindings.return_value = [(100, 42, "@2")]
+        _, mock_tr, _, _ = _patch_deps
+        mock_tr.iter_thread_bindings.return_value = [(100, 42, "@2")]
         # resolve_chat_id falls back to user_id — no group chat
-        mock_sm.resolve_chat_id.return_value = 100
+        mock_tr.resolve_chat_id.return_value = 100
 
         mock_bot = AsyncMock()
 
@@ -447,7 +448,7 @@ class TestDeadTopicDetection:
 
 class TestDeadTopicRecreation:
     async def test_recreate_unbinds_and_creates_topic(self, _patch_deps) -> None:
-        mock_sm, _, _ = _patch_deps
+        mock_sm, mock_tr, _, _ = _patch_deps
         mock_sm.get_window_state.return_value = MagicMock(
             session_id="s1", cwd="/tmp/proj", window_name="qmd-go"
         )
@@ -467,7 +468,7 @@ class TestDeadTopicRecreation:
         ) as mock_handle:
             count = await _recreate_dead_topics(mock_bot, issues)
             assert count == 1
-            mock_sm.unbind_thread.assert_called_once_with(100, 42)
+            mock_tr.unbind_thread.assert_called_once_with(100, 42)
             mock_handle.assert_called_once()
             event = mock_handle.call_args[0][0]
             assert event.window_id == "@2"
@@ -487,7 +488,7 @@ class TestDeadTopicRecreation:
             mock_handle.assert_not_called()
 
     async def test_recreate_handles_telegram_error(self, _patch_deps) -> None:
-        mock_sm, _, _ = _patch_deps
+        mock_sm, mock_tr, _, _ = _patch_deps
         mock_sm.get_window_state.return_value = MagicMock(
             session_id="s1", cwd="/tmp", window_name="proj"
         )
@@ -509,9 +510,9 @@ class TestDeadTopicRecreation:
         ):
             count = await _recreate_dead_topics(mock_bot, issues)
             assert count == 0
-            mock_sm.unbind_thread.assert_called_once_with(100, 42)
+            mock_tr.unbind_thread.assert_called_once_with(100, 42)
             # Binding restored on failure so window isn't orphaned
-            mock_sm.bind_thread.assert_called_once_with(
+            mock_tr.bind_thread.assert_called_once_with(
                 100, 42, "@2", window_name="proj"
             )
 
@@ -562,19 +563,19 @@ class TestBuildReportDeadTopic:
 
 class TestSyncFixDeadTopic:
     async def test_fix_recreates_dead_topics(self, _patch_deps) -> None:
-        mock_sm, _, _ = _patch_deps
+        mock_sm, mock_tr, _, _ = _patch_deps
         mock_sm.audit_state.side_effect = [
             AuditResult(issues=[], total_bindings=1, live_binding_count=1),
             AuditResult(issues=[], total_bindings=1, live_binding_count=1),
         ]
         # First probe finds dead topic, second probe (post-fix) finds none
-        mock_sm.iter_thread_bindings.side_effect = [
+        mock_tr.iter_thread_bindings.side_effect = [
             [(100, 42, "@2")],  # pre-audit probe
             [],  # prune_stale_offsets
             [],  # post-fix probe (already unbound)
         ]
-        mock_sm.resolve_chat_id.return_value = -999
-        mock_sm.get_display_name.return_value = "qmd-go"
+        mock_tr.resolve_chat_id.return_value = -999
+        mock_tr.get_display_name.return_value = "qmd-go"
         mock_sm.get_window_state.return_value = MagicMock(
             session_id="s1", cwd="/tmp", window_name="qmd-go"
         )
@@ -594,7 +595,7 @@ class TestSyncFixDeadTopic:
             ) as mock_handle,
         ):
             await handle_sync_fix(query)
-            mock_sm.unbind_thread.assert_called_once_with(100, 42)
+            mock_tr.unbind_thread.assert_called_once_with(100, 42)
             mock_handle.assert_called_once()
             report_text = mock_edit.call_args[0][1]
             assert "Recreated 1 topic" in report_text

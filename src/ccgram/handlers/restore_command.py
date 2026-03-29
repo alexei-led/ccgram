@@ -18,6 +18,7 @@ from telegram.ext import ContextTypes
 from ..config import config
 from ..providers import get_provider_for_window, resolve_launch_command
 from ..session import session_manager
+from ..thread_router import thread_router
 from ..tmux_manager import tmux_manager
 from .message_sender import safe_reply
 from .status_polling import clear_dead_notification
@@ -42,7 +43,7 @@ async def restore_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     user_id = user.id
-    window_id = session_manager.resolve_window_for_thread(user_id, thread_id)
+    window_id = thread_router.resolve_window_for_thread(user_id, thread_id)
     if not window_id:
         await safe_reply(update.message, "No session bound to this topic.")
         return
@@ -61,7 +62,7 @@ async def restore_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     # Auto-recover: unbind old, create new window with --continue, rebind
-    session_manager.unbind_thread(user_id, thread_id)
+    thread_router.unbind_thread(user_id, thread_id)
     clear_dead_notification(user_id, thread_id)
 
     provider = get_provider_for_window(window_id)
@@ -83,13 +84,13 @@ async def restore_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     session_manager.set_window_provider(wid, provider.capabilities.name)
     session_manager.set_window_approval_mode(wid, approval_mode)
-    session_manager.bind_thread(user_id, thread_id, wid, window_name=wname)
+    thread_router.bind_thread(user_id, thread_id, wid, window_name=wname)
     if update.message.chat.type in ("group", "supergroup"):
-        session_manager.set_group_chat_id(user_id, thread_id, update.message.chat.id)
+        thread_router.set_group_chat_id(user_id, thread_id, update.message.chat.id)
 
     with contextlib.suppress(TelegramError):
         await context.bot.edit_forum_topic(
-            chat_id=session_manager.resolve_chat_id(user_id, thread_id),
+            chat_id=thread_router.resolve_chat_id(user_id, thread_id),
             message_thread_id=thread_id,
             name=format_topic_name_for_mode(wname, approval_mode),
         )

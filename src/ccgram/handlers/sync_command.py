@@ -27,6 +27,7 @@ from telegram.ext import ContextTypes
 
 from ..config import config
 from ..session import AuditIssue, AuditResult, session_manager
+from ..thread_router import thread_router
 from ..tmux_manager import tmux_manager
 from .callback_data import CB_SYNC_DISMISS, CB_SYNC_FIX
 from .cleanup import clear_topic_state
@@ -185,7 +186,7 @@ async def _close_ghost_topics(bot: Bot, issues: list[AuditIssue]) -> int:
         user_id = int(match.group(1))
         thread_id = int(match.group(2))
         window_id = match.group(3)
-        chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+        chat_id = thread_router.resolve_chat_id(user_id, thread_id)
         topic_removed = False
         if chat_id == user_id:
             logger.warning(
@@ -205,7 +206,7 @@ async def _close_ghost_topics(bot: Bot, issues: list[AuditIssue]) -> int:
                 await clear_topic_state(
                     user_id, thread_id, bot=bot, window_id=window_id
                 )
-                session_manager.unbind_thread(user_id, thread_id)
+                thread_router.unbind_thread(user_id, thread_id)
                 if topic_removed:
                     closed_count += 1
             except OSError, TelegramError:
@@ -230,7 +231,7 @@ async def _adopt_orphaned_windows(bot: Bot, issues: list[AuditIssue]) -> None:
             continue
         window_id = match.group(1)
         ws = session_manager.get_window_state(window_id)
-        name = ws.window_name or session_manager.get_display_name(window_id)
+        name = ws.window_name or thread_router.get_display_name(window_id)
         event = NewWindowEvent(
             window_id=window_id,
             session_id=ws.session_id,
@@ -251,8 +252,8 @@ async def _probe_dead_topics(bot: Bot) -> list[AuditIssue]:
     only ``send_message`` reliably throws "thread not found" for deleted topics.
     """
     bindings = [
-        (uid, tid, wid, session_manager.resolve_chat_id(uid, tid))
-        for uid, tid, wid in session_manager.iter_thread_bindings()
+        (uid, tid, wid, thread_router.resolve_chat_id(uid, tid))
+        for uid, tid, wid in thread_router.iter_thread_bindings()
     ]
     # Only probe bindings with a group chat (chat_id != user_id)
     bindings = [(uid, tid, wid, cid) for uid, tid, wid, cid in bindings if cid != uid]
@@ -277,7 +278,7 @@ async def _probe_dead_topics(bot: Bot) -> list[AuditIssue]:
                     await bot.delete_message(chat_id, msg.message_id)
             except BadRequest as exc:
                 if is_thread_gone(exc):
-                    display = session_manager.get_display_name(window_id)
+                    display = thread_router.get_display_name(window_id)
                     return AuditIssue(
                         category="dead_topic",
                         detail=f"user:{user_id} thread:{thread_id} window:{window_id} ({display})",
@@ -319,7 +320,7 @@ async def _recreate_dead_topics(bot: Bot, issues: list[AuditIssue]) -> int:
         window_id = match.group(3)
 
         ws = session_manager.get_window_state(window_id)
-        name = ws.window_name or session_manager.get_display_name(window_id)
+        name = ws.window_name or thread_router.get_display_name(window_id)
         event = NewWindowEvent(
             window_id=window_id,
             session_id=ws.session_id,
@@ -329,18 +330,18 @@ async def _recreate_dead_topics(bot: Bot, issues: list[AuditIssue]) -> int:
 
         # Preserve group_chat_id before unbinding — unbind_thread deletes it,
         # but _handle_new_window needs it to know which chat to create the topic in.
-        chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+        chat_id = thread_router.resolve_chat_id(user_id, thread_id)
 
         # Unbind THEN recreate — must unbind first so _handle_new_window
         # doesn't skip the window as "already bound".  On failure, restore.
-        session_manager.unbind_thread(user_id, thread_id)
+        thread_router.unbind_thread(user_id, thread_id)
 
         # Inject a temporary in-memory-only group_chat_id so _handle_new_window
         # can discover the chat.  Direct dict mutation avoids _save_state() —
         # if the process crashes, the placeholder won't persist to state.json.
         _placeholder_key = f"{user_id}:0"
         if chat_id != user_id:
-            session_manager.group_chat_ids[_placeholder_key] = chat_id
+            thread_router.group_chat_ids[_placeholder_key] = chat_id
 
         try:
             await _handle_new_window(event, bot)
@@ -348,11 +349,11 @@ async def _recreate_dead_topics(bot: Bot, issues: list[AuditIssue]) -> int:
         except TelegramError, OSError:
             logger.exception("Failed to recreate topic for window %s", window_id)
             # Restore binding so the window isn't orphaned
-            session_manager.bind_thread(user_id, thread_id, window_id, window_name=name)
+            thread_router.bind_thread(user_id, thread_id, window_id, window_name=name)
             if chat_id != user_id:
-                session_manager.set_group_chat_id(user_id, thread_id, chat_id)
+                thread_router.set_group_chat_id(user_id, thread_id, chat_id)
         finally:
-            session_manager.group_chat_ids.pop(_placeholder_key, None)
+            thread_router.group_chat_ids.pop(_placeholder_key, None)
     return recreated
 
 
@@ -389,12 +390,12 @@ async def handle_sync_fix(query: CallbackQuery) -> None:
 
     # Run state cleanup operations
     try:
-        session_manager.sync_display_names(live_pairs)
+        thread_router.sync_display_names(live_pairs)
         session_manager.prune_stale_state(live_ids)
         session_manager.prune_session_map(live_ids)
         session_manager.prune_stale_window_states(live_ids)
         bound_ids: set[str] = {
-            wid for _, _, wid in session_manager.iter_thread_bindings()
+            wid for _, _, wid in thread_router.iter_thread_bindings()
         }
         state_ids = set(session_manager.window_states.keys())
         session_manager.prune_stale_offsets(live_ids | bound_ids | state_ids)

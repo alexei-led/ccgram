@@ -80,9 +80,9 @@ async def clear_topic_state(
     await clear_interactive_msg(user_id, bot, thread_id)
 
     # Clear topic emoji tracking (needs chat_id; use 0 as fallback)
-    from ..session import session_manager
+    from ..thread_router import thread_router
 
-    chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+    chat_id = thread_router.resolve_chat_id(user_id, thread_id)
     clear_topic_emoji_state(chat_id, thread_id)
 
     # Clear command history for this topic
@@ -109,7 +109,7 @@ async def clear_topic_state(
     # Clear pending voice transcriptions for this chat
     if user_data is not None:
         voice_store: dict[tuple[int, int], str] = user_data.get(VOICE_PENDING, {})
-        chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+        chat_id = thread_router.resolve_chat_id(user_id, thread_id)
         stale = [k for k in voice_store if k[0] == chat_id]
         for k in stale:
             voice_store.pop(k, None)

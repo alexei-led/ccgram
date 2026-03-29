@@ -56,9 +56,12 @@ class TestForwardCommandResolution:
 
     @pytest.fixture(autouse=True)
     def _setup_mocks(self):
+        self.mock_tr = MagicMock()
+        self.mock_tr.resolve_window_for_thread.return_value = "@1"
+        self.mock_tr.get_display_name.return_value = "project"
+        self.mock_tr.set_group_chat_id = MagicMock()
+
         self.mock_sm = MagicMock()
-        self.mock_sm.resolve_window_for_thread.return_value = "@1"
-        self.mock_sm.get_display_name.return_value = "project"
         self.mock_sm.send_to_window = AsyncMock(return_value=(True, ""))
         self.mock_sm.get_window_state.return_value = SimpleNamespace(
             transcript_path="",
@@ -82,6 +85,7 @@ class TestForwardCommandResolution:
         self.mock_probe_spawn = MagicMock()
 
         with (
+            patch("ccgram.bot.thread_router", self.mock_tr),
             patch("ccgram.bot.session_manager", self.mock_sm),
             patch("ccgram.bot.tmux_manager", self.mock_tm),
             patch(
@@ -232,7 +236,7 @@ class TestForwardCommandResolution:
             reset_seen_status_state()
 
     async def test_no_session_bound(self) -> None:
-        self.mock_sm.resolve_window_for_thread.return_value = None
+        self.mock_tr.resolve_window_for_thread.return_value = None
 
         update = _make_update(text="/clear")
         await forward_command_handler(update, _make_context())

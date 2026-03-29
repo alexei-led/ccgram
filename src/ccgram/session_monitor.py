@@ -771,9 +771,11 @@ class SessionMonitor:
                 for window in all_windows:
                     if window.window_id in known_window_ids:
                         continue
+                    from .thread_router import thread_router
+
                     already_bound = any(
                         wid == window.window_id
-                        for _, _, wid in session_manager.iter_thread_bindings()
+                        for _, _, wid in thread_router.iter_thread_bindings()
                     )
                     if not already_bound and self._new_window_callback:
                         event = NewWindowEvent(

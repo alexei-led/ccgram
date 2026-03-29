@@ -55,7 +55,7 @@ def _make_callback_query(data: str, message_id: int = 42) -> MagicMock:
 
 class TestHandleVoiceMessage:
     @patch(f"{_VH}._download_voice", new_callable=AsyncMock)
-    @patch(f"{_VH}.session_manager")
+    @patch(f"{_VH}.thread_router")
     @patch(f"{_VH}.config")
     @patch(f"{_VH}.get_transcriber")
     @patch(f"{_VH}.safe_reply", new_callable=AsyncMock)
@@ -64,14 +64,14 @@ class TestHandleVoiceMessage:
         mock_reply: AsyncMock,
         mock_get_transcriber: MagicMock,
         mock_config: MagicMock,
-        mock_session_manager: MagicMock,
+        mock_thread_router: MagicMock,
         mock_download: AsyncMock,
     ) -> None:
         from ccgram.handlers import voice_handler
 
         mock_config.is_user_allowed.return_value = True
         mock_get_transcriber.return_value = None
-        mock_session_manager.resolve_window_for_thread.return_value = "@0"
+        mock_thread_router.resolve_window_for_thread.return_value = "@0"
         mock_download.return_value = b"fake audio bytes"
 
         await voice_handler.handle_voice_message(
@@ -82,7 +82,7 @@ class TestHandleVoiceMessage:
         assert "not configured" in mock_reply.call_args.args[1]
         mock_download.assert_not_awaited()
 
-    @patch(f"{_VH}.session_manager")
+    @patch(f"{_VH}.thread_router")
     @patch(f"{_VH}.config")
     @patch(f"{_VH}.get_transcriber")
     @patch(f"{_VH}.safe_reply", new_callable=AsyncMock)
@@ -91,7 +91,7 @@ class TestHandleVoiceMessage:
         mock_reply: AsyncMock,
         mock_get_transcriber: MagicMock,
         mock_config: MagicMock,
-        mock_session_manager: MagicMock,
+        mock_thread_router: MagicMock,
     ) -> None:
         from ccgram.handlers import voice_handler
 
@@ -103,9 +103,9 @@ class TestHandleVoiceMessage:
 
         mock_reply.assert_called_once()
         assert "not authorized" in mock_reply.call_args.args[1]
-        mock_session_manager.resolve_window_for_thread.assert_not_called()
+        mock_thread_router.resolve_window_for_thread.assert_not_called()
 
-    @patch(f"{_VH}.session_manager")
+    @patch(f"{_VH}.thread_router")
     @patch(f"{_VH}.config")
     @patch(f"{_VH}.get_transcriber")
     @patch(f"{_VH}.safe_reply", new_callable=AsyncMock)
@@ -114,13 +114,13 @@ class TestHandleVoiceMessage:
         mock_reply: AsyncMock,
         mock_get_transcriber: MagicMock,
         mock_config: MagicMock,
-        mock_session_manager: MagicMock,
+        mock_thread_router: MagicMock,
     ) -> None:
         from ccgram.handlers import voice_handler
 
         mock_config.is_user_allowed.return_value = True
         mock_get_transcriber.return_value = MagicMock()
-        mock_session_manager.resolve_window_for_thread.return_value = None
+        mock_thread_router.resolve_window_for_thread.return_value = None
 
         await voice_handler.handle_voice_message(
             _make_update(), MagicMock(user_data={})
@@ -129,7 +129,7 @@ class TestHandleVoiceMessage:
         mock_reply.assert_called_once()
         assert "Bind this topic" in mock_reply.call_args.args[1]
 
-    @patch(f"{_VH}.session_manager")
+    @patch(f"{_VH}.thread_router")
     @patch(f"{_VH}.config")
     @patch(f"{_VH}.get_transcriber")
     @patch(f"{_VH}.safe_reply", new_callable=AsyncMock)
@@ -138,13 +138,13 @@ class TestHandleVoiceMessage:
         mock_reply: AsyncMock,
         mock_get_transcriber: MagicMock,
         mock_config: MagicMock,
-        mock_session_manager: MagicMock,
+        mock_thread_router: MagicMock,
     ) -> None:
         from ccgram.handlers import voice_handler
 
         mock_config.is_user_allowed.return_value = True
         mock_get_transcriber.return_value = MagicMock()
-        mock_session_manager.resolve_window_for_thread.return_value = "@0"
+        mock_thread_router.resolve_window_for_thread.return_value = "@0"
 
         await voice_handler.handle_voice_message(
             _make_update(voice_file_size=26 * 1024 * 1024),
@@ -155,7 +155,7 @@ class TestHandleVoiceMessage:
         assert "too large" in mock_reply.call_args.args[1]
 
     @patch(f"{_VH}._download_voice", new_callable=AsyncMock)
-    @patch(f"{_VH}.session_manager")
+    @patch(f"{_VH}.thread_router")
     @patch(f"{_VH}.config")
     @patch(f"{_VH}.get_transcriber")
     @patch(f"{_VH}.safe_reply", new_callable=AsyncMock)
@@ -164,7 +164,7 @@ class TestHandleVoiceMessage:
         mock_reply: AsyncMock,
         mock_get_transcriber: MagicMock,
         mock_config: MagicMock,
-        mock_session_manager: MagicMock,
+        mock_thread_router: MagicMock,
         mock_download: AsyncMock,
     ) -> None:
         from telegram.constants import ChatAction
@@ -177,7 +177,7 @@ class TestHandleVoiceMessage:
             return_value=TranscriptionResult(text="do the thing", language="en")
         )
         mock_get_transcriber.return_value = mock_transcriber
-        mock_session_manager.resolve_window_for_thread.return_value = "@0"
+        mock_thread_router.resolve_window_for_thread.return_value = "@0"
         mock_download.return_value = b"fake audio bytes"
 
         mock_reply_msg = MagicMock()
@@ -200,7 +200,7 @@ class TestHandleVoiceMessage:
         )
 
     @patch(f"{_VH}._download_voice", new_callable=AsyncMock)
-    @patch(f"{_VH}.session_manager")
+    @patch(f"{_VH}.thread_router")
     @patch(f"{_VH}.config")
     @patch(f"{_VH}.get_transcriber")
     @patch(f"{_VH}.safe_reply", new_callable=AsyncMock)
@@ -209,7 +209,7 @@ class TestHandleVoiceMessage:
         mock_reply: AsyncMock,
         mock_get_transcriber: MagicMock,
         mock_config: MagicMock,
-        mock_session_manager: MagicMock,
+        mock_thread_router: MagicMock,
         mock_download: AsyncMock,
     ) -> None:
         from ccgram.handlers import voice_handler
@@ -220,7 +220,7 @@ class TestHandleVoiceMessage:
             return_value=TranscriptionResult(text="do the thing", language="en")
         )
         mock_get_transcriber.return_value = mock_transcriber
-        mock_session_manager.resolve_window_for_thread.return_value = "@0"
+        mock_thread_router.resolve_window_for_thread.return_value = "@0"
         mock_download.return_value = b"fake audio bytes"
 
         mock_reply.return_value = None
@@ -234,7 +234,7 @@ class TestHandleVoiceMessage:
         assert context.user_data == {}
 
     @patch(f"{_VH}._download_voice", new_callable=AsyncMock)
-    @patch(f"{_VH}.session_manager")
+    @patch(f"{_VH}.thread_router")
     @patch(f"{_VH}.config")
     @patch(f"{_VH}.get_transcriber")
     @patch(f"{_VH}.safe_reply", new_callable=AsyncMock)
@@ -243,14 +243,14 @@ class TestHandleVoiceMessage:
         mock_reply: AsyncMock,
         mock_get_transcriber: MagicMock,
         mock_config: MagicMock,
-        mock_session_manager: MagicMock,
+        mock_thread_router: MagicMock,
         mock_download: AsyncMock,
     ) -> None:
         from ccgram.handlers import voice_handler
 
         mock_config.is_user_allowed.return_value = True
         mock_get_transcriber.side_effect = ValueError("missing OPENAI_API_KEY")
-        mock_session_manager.resolve_window_for_thread.return_value = "@0"
+        mock_thread_router.resolve_window_for_thread.return_value = "@0"
 
         await voice_handler.handle_voice_message(
             _make_update(), MagicMock(user_data={})
@@ -260,7 +260,7 @@ class TestHandleVoiceMessage:
         assert "missing openai_api_key" in mock_reply.call_args.args[1].lower()
 
     @patch(f"{_VH}._download_voice", new_callable=AsyncMock)
-    @patch(f"{_VH}.session_manager")
+    @patch(f"{_VH}.thread_router")
     @patch(f"{_VH}.config")
     @patch(f"{_VH}.get_transcriber")
     @patch(f"{_VH}.safe_reply", new_callable=AsyncMock)
@@ -269,7 +269,7 @@ class TestHandleVoiceMessage:
         mock_reply: AsyncMock,
         mock_get_transcriber: MagicMock,
         mock_config: MagicMock,
-        mock_session_manager: MagicMock,
+        mock_thread_router: MagicMock,
         mock_download: AsyncMock,
     ) -> None:
         from ccgram.handlers import voice_handler
@@ -280,7 +280,7 @@ class TestHandleVoiceMessage:
             return_value=TranscriptionResult(text="   ", language="en")
         )
         mock_get_transcriber.return_value = mock_transcriber
-        mock_session_manager.resolve_window_for_thread.return_value = "@0"
+        mock_thread_router.resolve_window_for_thread.return_value = "@0"
         mock_download.return_value = b"fake audio bytes"
 
         context = MagicMock()
@@ -293,7 +293,7 @@ class TestHandleVoiceMessage:
         assert context.user_data == {}
 
     @patch(f"{_VH}._download_voice", new_callable=AsyncMock)
-    @patch(f"{_VH}.session_manager")
+    @patch(f"{_VH}.thread_router")
     @patch(f"{_VH}.config")
     @patch(f"{_VH}.get_transcriber")
     @patch(f"{_VH}.safe_reply", new_callable=AsyncMock)
@@ -302,7 +302,7 @@ class TestHandleVoiceMessage:
         mock_reply: AsyncMock,
         mock_get_transcriber: MagicMock,
         mock_config: MagicMock,
-        mock_session_manager: MagicMock,
+        mock_thread_router: MagicMock,
         mock_download: AsyncMock,
     ) -> None:
         from ccgram.handlers import voice_handler
@@ -313,7 +313,7 @@ class TestHandleVoiceMessage:
             side_effect=RuntimeError("Transcription failed: 401")
         )
         mock_get_transcriber.return_value = mock_transcriber
-        mock_session_manager.resolve_window_for_thread.return_value = "@0"
+        mock_thread_router.resolve_window_for_thread.return_value = "@0"
         mock_download.return_value = b"fake audio bytes"
 
         await voice_handler.handle_voice_message(
@@ -323,21 +323,21 @@ class TestHandleVoiceMessage:
         mock_reply.assert_called()
         assert "❌" in mock_reply.call_args.args[1]
 
-    @patch(f"{_VH}.session_manager")
+    @patch(f"{_VH}.thread_router")
     @patch(f"{_VH}.config")
     @patch(f"{_VH}.safe_reply", new_callable=AsyncMock)
     async def test_download_failure(
         self,
         mock_reply: AsyncMock,
         mock_config: MagicMock,
-        mock_session_manager: MagicMock,
+        mock_thread_router: MagicMock,
     ) -> None:
         from telegram.error import TelegramError
 
         from ccgram.handlers import voice_handler
 
         mock_config.is_user_allowed.return_value = True
-        mock_session_manager.resolve_window_for_thread.return_value = "@0"
+        mock_thread_router.resolve_window_for_thread.return_value = "@0"
 
         update = _make_update()
         update.message.get_bot.return_value.get_file = AsyncMock(
@@ -353,13 +353,17 @@ class TestHandleVoiceMessage:
 
 class TestHandleVoiceCallback:
     @patch(f"{_VC}.session_manager")
+    @patch(f"{_VC}.thread_router")
     @patch(f"{_VC}.get_thread_id")
     async def test_send_success(
-        self, mock_get_thread_id: MagicMock, mock_session_manager: MagicMock
+        self,
+        mock_get_thread_id: MagicMock,
+        mock_thread_router: MagicMock,
+        mock_session_manager: MagicMock,
     ) -> None:
         from ccgram.handlers import voice_callbacks
 
-        mock_session_manager.resolve_window_for_thread.return_value = "@0"
+        mock_thread_router.resolve_window_for_thread.return_value = "@0"
         mock_session_manager.send_to_window = AsyncMock(return_value=(True, None))
         mock_get_thread_id.return_value = 42
 
@@ -379,15 +383,19 @@ class TestHandleVoiceCallback:
         assert (999, 42) not in context.user_data.get(VOICE_PENDING, {})
 
     @patch(f"{_VC}.session_manager")
+    @patch(f"{_VC}.thread_router")
     @patch(f"{_VC}.get_thread_id")
     async def test_send_success_delete_fails(
-        self, mock_get_thread_id: MagicMock, mock_session_manager: MagicMock
+        self,
+        mock_get_thread_id: MagicMock,
+        mock_thread_router: MagicMock,
+        mock_session_manager: MagicMock,
     ) -> None:
         from telegram.error import TelegramError
 
         from ccgram.handlers import voice_callbacks
 
-        mock_session_manager.resolve_window_for_thread.return_value = "@0"
+        mock_thread_router.resolve_window_for_thread.return_value = "@0"
         mock_session_manager.send_to_window = AsyncMock(return_value=(True, None))
         mock_get_thread_id.return_value = 42
 
@@ -476,11 +484,8 @@ class TestHandleVoiceCallback:
 
         update.callback_query.answer.assert_called_once_with("Discarded")
 
-    @patch(f"{_VC}.session_manager")
     @patch(f"{_VC}.get_thread_id")
-    async def test_expired_entry(
-        self, mock_get_thread_id: MagicMock, mock_session_manager: MagicMock
-    ) -> None:
+    async def test_expired_entry(self, mock_get_thread_id: MagicMock) -> None:
         from ccgram.handlers import voice_callbacks
 
         mock_get_thread_id.return_value = 42
@@ -498,15 +503,15 @@ class TestHandleVoiceCallback:
         update.callback_query.answer.assert_called_once()
         assert "expired" in update.callback_query.answer.call_args.args[0].lower()
 
-    @patch(f"{_VC}.session_manager")
+    @patch(f"{_VC}.thread_router")
     @patch(f"{_VC}.get_thread_id")
     async def test_send_without_bound_window(
-        self, mock_get_thread_id: MagicMock, mock_session_manager: MagicMock
+        self, mock_get_thread_id: MagicMock, mock_thread_router: MagicMock
     ) -> None:
         from ccgram.handlers import voice_callbacks
 
         mock_get_thread_id.return_value = 42
-        mock_session_manager.resolve_window_for_thread.return_value = None
+        mock_thread_router.resolve_window_for_thread.return_value = None
 
         update = MagicMock()
         update.callback_query = _make_callback_query("vc:send:42", message_id=42)
@@ -531,17 +536,19 @@ class TestHandleVoiceCallback:
         ],
     )
     @patch(f"{_VC}.session_manager")
+    @patch(f"{_VC}.thread_router")
     @patch(f"{_VC}.get_thread_id")
     async def test_send_failure_preserves_pending(
         self,
         mock_get_thread_id: MagicMock,
+        mock_thread_router: MagicMock,
         mock_session_manager: MagicMock,
         error_msg: str,
     ) -> None:
         from ccgram.handlers import voice_callbacks
 
         mock_get_thread_id.return_value = 42
-        mock_session_manager.resolve_window_for_thread.return_value = "@0"
+        mock_thread_router.resolve_window_for_thread.return_value = "@0"
         mock_session_manager.send_to_window = AsyncMock(return_value=(False, error_msg))
 
         update = MagicMock()
@@ -577,10 +584,12 @@ class TestHandleVoiceCallback:
     @patch(f"{_VC}.ack_reaction", new_callable=AsyncMock)
     @patch(f"{_VC}.get_provider_for_window")
     @patch(f"{_VC}.session_manager")
+    @patch(f"{_VC}.thread_router")
     @patch(f"{_VC}.get_thread_id")
     async def test_send_shell_provider_routes_through_llm(
         self,
         mock_get_thread_id: MagicMock,
+        mock_thread_router: MagicMock,
         mock_session_manager: MagicMock,
         mock_get_provider: MagicMock,
         mock_ack: AsyncMock,
@@ -588,7 +597,7 @@ class TestHandleVoiceCallback:
         from ccgram.handlers import voice_callbacks
 
         mock_get_thread_id.return_value = 42
-        mock_session_manager.resolve_window_for_thread.return_value = "@0"
+        mock_thread_router.resolve_window_for_thread.return_value = "@0"
 
         mock_provider = MagicMock()
         mock_provider.capabilities.name = "shell"
@@ -623,17 +632,19 @@ class TestHandleVoiceCallback:
 
     @patch(f"{_VC}.get_provider_for_window")
     @patch(f"{_VC}.session_manager")
+    @patch(f"{_VC}.thread_router")
     @patch(f"{_VC}.get_thread_id")
     async def test_send_shell_provider_error_preserves_pending(
         self,
         mock_get_thread_id: MagicMock,
+        mock_thread_router: MagicMock,
         mock_session_manager: MagicMock,
         mock_get_provider: MagicMock,
     ) -> None:
         from ccgram.handlers import voice_callbacks
 
         mock_get_thread_id.return_value = 42
-        mock_session_manager.resolve_window_for_thread.return_value = "@0"
+        mock_thread_router.resolve_window_for_thread.return_value = "@0"
 
         mock_provider = MagicMock()
         mock_provider.capabilities.name = "shell"

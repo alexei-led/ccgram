@@ -53,10 +53,11 @@ class TestHandleNewWindowColdStart:
         bot.create_forum_topic = AsyncMock(return_value=_make_topic(thread_id=42))
 
         with (
-            patch("ccgram.bot.session_manager") as mock_sm,
+            patch("ccgram.bot.session_manager"),
+            patch("ccgram.bot.thread_router") as mock_tr,
             patch("ccgram.bot.config") as mock_config,
         ):
-            mock_sm.iter_thread_bindings.return_value = iter([])
+            mock_tr.iter_thread_bindings.return_value = iter([])
             mock_config.group_id = -100500
             mock_config.allowed_users = {12345}
 
@@ -72,30 +73,32 @@ class TestHandleNewWindowColdStart:
         bot.create_forum_topic = AsyncMock(return_value=_make_topic(thread_id=42))
 
         with (
-            patch("ccgram.bot.session_manager") as mock_sm,
+            patch("ccgram.bot.session_manager"),
+            patch("ccgram.bot.thread_router") as mock_tr,
             patch("ccgram.bot.config") as mock_config,
         ):
-            mock_sm.iter_thread_bindings.return_value = iter([])
-            mock_sm.resolve_chat_id.return_value = 12345
+            mock_tr.iter_thread_bindings.return_value = iter([])
+            mock_tr.resolve_chat_id.return_value = 12345
             mock_config.group_id = -100500
             mock_config.allowed_users = {12345}
 
             await _handle_new_window(event, bot)
 
-        mock_sm.bind_thread.assert_called_once_with(
+        mock_tr.bind_thread.assert_called_once_with(
             12345, 42, "@10", window_name="my-project"
         )
-        mock_sm.set_group_chat_id.assert_called_once_with(12345, 42, -100500)
+        mock_tr.set_group_chat_id.assert_called_once_with(12345, 42, -100500)
 
     async def test_skips_without_group_id(self) -> None:
         event = _make_event()
         bot = AsyncMock()
 
         with (
-            patch("ccgram.bot.session_manager") as mock_sm,
+            patch("ccgram.bot.session_manager"),
+            patch("ccgram.bot.thread_router") as mock_tr,
             patch("ccgram.bot.config") as mock_config,
         ):
-            mock_sm.iter_thread_bindings.return_value = iter([])
+            mock_tr.iter_thread_bindings.return_value = iter([])
             mock_config.group_id = None
 
             await _handle_new_window(event, bot)
@@ -112,16 +115,17 @@ class TestHandleNewWindowNormalFlow:
         bot.create_forum_topic = AsyncMock(return_value=_make_topic(thread_id=77))
 
         with (
-            patch("ccgram.bot.session_manager") as mock_sm,
+            patch("ccgram.bot.session_manager"),
+            patch("ccgram.bot.thread_router") as mock_tr,
             patch("ccgram.bot.config"),
         ):
             bindings = [(100, 5, "@1")]
-            mock_sm.iter_thread_bindings.side_effect = [
+            mock_tr.iter_thread_bindings.side_effect = [
                 iter(bindings),
                 iter(bindings),
                 iter(bindings),
             ]
-            mock_sm.resolve_chat_id.return_value = -100200
+            mock_tr.resolve_chat_id.return_value = -100200
 
             await _handle_new_window(event, bot)
 
@@ -135,25 +139,26 @@ class TestHandleNewWindowNormalFlow:
         bot.create_forum_topic = AsyncMock(return_value=_make_topic(thread_id=77))
 
         with (
-            patch("ccgram.bot.session_manager") as mock_sm,
+            patch("ccgram.bot.session_manager"),
+            patch("ccgram.bot.thread_router") as mock_tr,
             patch("ccgram.bot.config"),
         ):
             bindings = [(100, 5, "@1")]
             # iter_thread_bindings called multiple times: once for already-bound check,
             # once for collecting chats, once for binding loop
-            mock_sm.iter_thread_bindings.side_effect = [
+            mock_tr.iter_thread_bindings.side_effect = [
                 iter(bindings),
                 iter(bindings),
                 iter(bindings),
             ]
-            mock_sm.resolve_chat_id.return_value = -100200
+            mock_tr.resolve_chat_id.return_value = -100200
 
             await _handle_new_window(event, bot)
 
-        mock_sm.bind_thread.assert_called_once_with(
+        mock_tr.bind_thread.assert_called_once_with(
             100, 77, "@10", window_name="my-project"
         )
-        mock_sm.set_group_chat_id.assert_called_once_with(100, 77, -100200)
+        mock_tr.set_group_chat_id.assert_called_once_with(100, 77, -100200)
 
 
 class TestHandleNewWindowAlreadyBound:
@@ -164,10 +169,11 @@ class TestHandleNewWindowAlreadyBound:
         bot = AsyncMock()
 
         with (
-            patch("ccgram.bot.session_manager") as mock_sm,
+            patch("ccgram.bot.session_manager"),
+            patch("ccgram.bot.thread_router") as mock_tr,
             patch("ccgram.bot.config"),
         ):
-            mock_sm.iter_thread_bindings.return_value = iter([(100, 5, "@10")])
+            mock_tr.iter_thread_bindings.return_value = iter([(100, 5, "@10")])
 
             await _handle_new_window(event, bot)
 
@@ -183,10 +189,11 @@ class TestHandleNewWindowErrors:
         bot.create_forum_topic = AsyncMock(side_effect=TelegramError("API error"))
 
         with (
-            patch("ccgram.bot.session_manager") as mock_sm,
+            patch("ccgram.bot.session_manager"),
+            patch("ccgram.bot.thread_router") as mock_tr,
             patch("ccgram.bot.config") as mock_config,
         ):
-            mock_sm.iter_thread_bindings.return_value = iter([])
+            mock_tr.iter_thread_bindings.return_value = iter([])
             mock_config.group_id = -100500
             mock_config.allowed_users = {12345}
 
@@ -198,12 +205,13 @@ class TestHandleNewWindowErrors:
         bot.create_forum_topic = AsyncMock(side_effect=RetryAfter(27))
 
         with (
-            patch("ccgram.bot.session_manager") as mock_sm,
+            patch("ccgram.bot.session_manager"),
+            patch("ccgram.bot.thread_router") as mock_tr,
             patch("ccgram.bot.config") as mock_config,
             patch("ccgram.bot._topic_create_retry_until", {}),
             patch("ccgram.bot.time.monotonic", side_effect=[100.0, 100.0, 101.0]),
         ):
-            mock_sm.iter_thread_bindings.side_effect = [
+            mock_tr.iter_thread_bindings.side_effect = [
                 iter([]),
                 iter([]),
                 iter([]),
@@ -227,19 +235,20 @@ class TestHandleNewWindowErrors:
         )
 
         with (
-            patch("ccgram.bot.session_manager") as mock_sm,
+            patch("ccgram.bot.session_manager"),
+            patch("ccgram.bot.thread_router") as mock_tr,
             patch("ccgram.bot.config") as mock_config,
             patch("ccgram.bot._topic_create_retry_until", {}),
             patch("ccgram.bot.time.monotonic", side_effect=[100.0, 100.0, 106.0]),
         ):
-            mock_sm.iter_thread_bindings.side_effect = [
+            mock_tr.iter_thread_bindings.side_effect = [
                 iter([]),
                 iter([]),
                 iter([]),
                 iter([]),
                 iter([]),
             ]
-            mock_sm.resolve_chat_id.return_value = 12345
+            mock_tr.resolve_chat_id.return_value = 12345
             mock_config.group_id = -100500
             mock_config.allowed_users = {12345}
 
@@ -247,7 +256,7 @@ class TestHandleNewWindowErrors:
             await _handle_new_window(event, bot)
 
         assert bot.create_forum_topic.call_count == 2
-        mock_sm.bind_thread.assert_called_once_with(
+        mock_tr.bind_thread.assert_called_once_with(
             12345, 42, "@10", window_name="my-project"
         )
 
@@ -257,10 +266,11 @@ class TestHandleNewWindowErrors:
         bot.create_forum_topic = AsyncMock(return_value=_make_topic(thread_id=42))
 
         with (
-            patch("ccgram.bot.session_manager") as mock_sm,
+            patch("ccgram.bot.session_manager"),
+            patch("ccgram.bot.thread_router") as mock_tr,
             patch("ccgram.bot.config") as mock_config,
         ):
-            mock_sm.iter_thread_bindings.return_value = iter([])
+            mock_tr.iter_thread_bindings.return_value = iter([])
             mock_config.group_id = -100500
             mock_config.allowed_users = {12345}
 
@@ -280,11 +290,12 @@ class TestHandleNewWindowGroupChatIdsFallback:
         bot.create_forum_topic = AsyncMock(return_value=_make_topic(thread_id=42))
 
         with (
-            patch("ccgram.bot.session_manager") as mock_sm,
+            patch("ccgram.bot.session_manager"),
+            patch("ccgram.bot.thread_router") as mock_tr,
             patch("ccgram.bot.config") as mock_config,
         ):
-            mock_sm.iter_thread_bindings.return_value = iter([])
-            mock_sm.group_chat_ids = {"100:5": -100200}
+            mock_tr.iter_thread_bindings.return_value = iter([])
+            mock_tr.group_chat_ids = {"100:5": -100200}
             mock_config.group_id = None
             mock_config.allowed_users = {12345}
 
@@ -299,11 +310,12 @@ class TestHandleNewWindowGroupChatIdsFallback:
         bot = AsyncMock()
 
         with (
-            patch("ccgram.bot.session_manager") as mock_sm,
+            patch("ccgram.bot.session_manager"),
+            patch("ccgram.bot.thread_router") as mock_tr,
             patch("ccgram.bot.config") as mock_config,
         ):
-            mock_sm.iter_thread_bindings.return_value = iter([])
-            mock_sm.group_chat_ids = {"100:5": 100}  # DM fallback (positive)
+            mock_tr.iter_thread_bindings.return_value = iter([])
+            mock_tr.group_chat_ids = {"100:5": 100}  # DM fallback (positive)
             mock_config.group_id = None
 
             await _handle_new_window(event, bot)

@@ -21,6 +21,7 @@ from telegram.ext import ContextTypes
 
 from ..config import config
 from ..session import session_manager
+from ..thread_router import thread_router
 from .callback_helpers import get_thread_id
 from .message_sender import ack_reaction, safe_reply
 
@@ -112,7 +113,7 @@ def _resolve_upload_dir(
 
     Returns (window_id, upload_path, error_message).
     """
-    window_id = session_manager.resolve_window_for_thread(user_id, thread_id)
+    window_id = thread_router.resolve_window_for_thread(user_id, thread_id)
     if not window_id:
         return None, None, "No session bound to this topic."
 

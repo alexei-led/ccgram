@@ -112,19 +112,19 @@ class TestAutocloseTimers:
         bot = AsyncMock(spec=Bot)
         with (
             patch("ccgram.handlers.status_polling.config") as mock_config,
-            patch("ccgram.handlers.status_polling.session_manager") as mock_sm,
+            patch("ccgram.handlers.status_polling.thread_router") as mock_tr,
             patch("ccgram.handlers.status_polling.time") as mock_time,
             patch("ccgram.handlers.status_polling.clear_topic_state"),
         ):
             mock_config.autoclose_done_minutes = 30
             mock_config.autoclose_dead_minutes = minutes
             mock_time.monotonic.return_value = elapsed
-            mock_sm.resolve_chat_id.return_value = -100
+            mock_tr.resolve_chat_id.return_value = -100
             await _check_autoclose_timers(bot)
         bot.delete_forum_topic.assert_called_once_with(
             chat_id=-100, message_thread_id=42
         )
-        mock_sm.unbind_thread.assert_called_once_with(1, 42)
+        mock_tr.unbind_thread.assert_called_once_with(1, 42)
         assert not _has_autoclose(1, 42)
 
     async def test_check_not_expired_yet(self) -> None:
@@ -160,13 +160,13 @@ class TestAutocloseTimers:
         bot.close_forum_topic.side_effect = TelegramError("fail")
         with (
             patch("ccgram.handlers.status_polling.config") as mock_config,
-            patch("ccgram.handlers.status_polling.session_manager") as mock_sm,
+            patch("ccgram.handlers.status_polling.thread_router") as mock_tr,
             patch("ccgram.handlers.status_polling.time") as mock_time,
         ):
             mock_config.autoclose_done_minutes = 30
             mock_config.autoclose_dead_minutes = 10
             mock_time.monotonic.return_value = 30 * 60 + 1
-            mock_sm.resolve_chat_id.return_value = -100
+            mock_tr.resolve_chat_id.return_value = -100
             await _check_autoclose_timers(bot)
         assert not _has_autoclose(1, 42)
 
@@ -254,7 +254,7 @@ class TestStartupTimeout:
 
         bot = AsyncMock(spec=Bot)
         with (
-            patch("ccgram.handlers.status_polling.session_manager") as mock_sm,
+            patch("ccgram.handlers.status_polling.thread_router") as mock_tr,
             patch("ccgram.handlers.status_polling.update_topic_emoji"),
             patch("ccgram.handlers.status_polling._send_typing_throttled"),
             patch(
@@ -264,8 +264,8 @@ class TestStartupTimeout:
             patch("ccgram.handlers.status_polling.time") as mock_time,
         ):
             mock_time.monotonic.return_value = 1000.0
-            mock_sm.resolve_chat_id.return_value = -100
-            mock_sm.get_display_name.return_value = "project"
+            mock_tr.resolve_chat_id.return_value = -100
+            mock_tr.get_display_name.return_value = "project"
             await _handle_no_status(bot, 1, "@0", 42, "node", "normal")
         assert (
             _window_poll_state.get("@0") is not None
@@ -278,7 +278,7 @@ class TestStartupTimeout:
         bot = AsyncMock(spec=Bot)
         _get_window_state("@0").startup_time = 1000.0
         with (
-            patch("ccgram.handlers.status_polling.session_manager") as mock_sm,
+            patch("ccgram.handlers.status_polling.thread_router") as mock_tr,
             patch("ccgram.handlers.status_polling.update_topic_emoji") as mock_emoji,
             patch("ccgram.handlers.status_polling.enqueue_status_update"),
             patch(
@@ -288,8 +288,8 @@ class TestStartupTimeout:
             patch("ccgram.handlers.status_polling.time") as mock_time,
         ):
             mock_time.monotonic.return_value = 1000.0 + 31.0
-            mock_sm.resolve_chat_id.return_value = -100
-            mock_sm.get_display_name.return_value = "project"
+            mock_tr.resolve_chat_id.return_value = -100
+            mock_tr.get_display_name.return_value = "project"
             await _handle_no_status(bot, 1, "@0", 42, "node", "normal")
         assert _window_poll_state.get("@0") and _window_poll_state["@0"].has_seen_status
         assert (
@@ -304,7 +304,7 @@ class TestStartupTimeout:
         bot = AsyncMock(spec=Bot)
         _get_window_state("@0").startup_time = 1000.0
         with (
-            patch("ccgram.handlers.status_polling.session_manager") as mock_sm,
+            patch("ccgram.handlers.status_polling.thread_router") as mock_tr,
             patch("ccgram.handlers.status_polling.update_topic_emoji") as mock_emoji,
             patch(
                 "ccgram.handlers.status_polling._send_typing_throttled"
@@ -316,8 +316,8 @@ class TestStartupTimeout:
             patch("ccgram.handlers.status_polling.time") as mock_time,
         ):
             mock_time.monotonic.return_value = 1010.0
-            mock_sm.resolve_chat_id.return_value = -100
-            mock_sm.get_display_name.return_value = "project"
+            mock_tr.resolve_chat_id.return_value = -100
+            mock_tr.get_display_name.return_value = "project"
             await _handle_no_status(bot, 1, "@0", 42, "node", "normal")
         mock_typing.assert_called_once_with(bot, 1, 42)
         mock_emoji.assert_called_once_with(bot, -100, 42, "active", "project")
@@ -545,6 +545,9 @@ def _mock_update_status_patches(*, pyte_result, provider):
     mocks["sm"] = stack.enter_context(
         patch("ccgram.handlers.status_polling.session_manager")
     )
+    mocks["tr"] = stack.enter_context(
+        patch("ccgram.handlers.status_polling.thread_router")
+    )
     stack.enter_context(patch("ccgram.handlers.status_polling.update_topic_emoji"))
     mocks["enqueue"] = stack.enter_context(
         patch("ccgram.handlers.status_polling.enqueue_status_update")
@@ -577,8 +580,8 @@ def _mock_update_status_patches(*, pyte_result, provider):
     mocks["tm"].find_window_by_id = AsyncMock(return_value=mock_window)
     mocks["tm"].capture_pane = AsyncMock(return_value="\x1b[1msome ansi output\x1b[0m")
     mocks["tm"].get_pane_title = AsyncMock(return_value="")
-    mocks["sm"].resolve_chat_id.return_value = -100
-    mocks["sm"].get_display_name.return_value = "project"
+    mocks["tr"].resolve_chat_id.return_value = -100
+    mocks["tr"].get_display_name.return_value = "project"
     mocks["sm"].get_notification_mode.return_value = "normal"
 
     return stack, mocks
@@ -695,7 +698,7 @@ class TestShellPromptClearsStatus:
         _get_window_state("@0").has_seen_status = True
         bot = AsyncMock(spec=Bot)
         with (
-            patch("ccgram.handlers.status_polling.session_manager") as mock_sm,
+            patch("ccgram.handlers.status_polling.thread_router") as mock_tr,
             patch("ccgram.handlers.status_polling.update_topic_emoji"),
             patch(
                 "ccgram.handlers.status_polling.enqueue_status_update"
@@ -707,8 +710,8 @@ class TestShellPromptClearsStatus:
             patch("ccgram.handlers.status_polling.time") as mock_time,
         ):
             mock_time.monotonic.return_value = 1000.0
-            mock_sm.resolve_chat_id.return_value = -100
-            mock_sm.get_display_name.return_value = "project"
+            mock_tr.resolve_chat_id.return_value = -100
+            mock_tr.get_display_name.return_value = "project"
             await _handle_no_status(bot, 1, "@0", 42, "bash", "normal")
         mock_enqueue.assert_called_once_with(bot, 1, "@0", None, thread_id=42)
 
@@ -720,6 +723,7 @@ class TestShellPromptClearsStatus:
         bot = AsyncMock(spec=Bot)
         with (
             patch("ccgram.handlers.status_polling.session_manager") as mock_sm,
+            patch("ccgram.handlers.status_polling.thread_router") as mock_tr,
             patch("ccgram.handlers.status_polling.update_topic_emoji"),
             patch(
                 "ccgram.handlers.status_polling.enqueue_status_update"
@@ -731,8 +735,8 @@ class TestShellPromptClearsStatus:
             patch("ccgram.handlers.status_polling.time") as mock_time,
         ):
             mock_time.monotonic.return_value = 1000.0
-            mock_sm.resolve_chat_id.return_value = -100
-            mock_sm.get_display_name.return_value = "project"
+            mock_tr.resolve_chat_id.return_value = -100
+            mock_tr.get_display_name.return_value = "project"
             mock_sm.get_window_state.return_value = MagicMock(provider_name="codex")
             await _handle_no_status(bot, 1, "@0", 42, "bash", "normal")
 
@@ -746,17 +750,17 @@ class TestProbeFailures:
     async def test_probe_skips_suspended_windows(self) -> None:
         _get_window_state("@5").probe_failures = _MAX_PROBE_FAILURES
         bot = AsyncMock(spec=Bot)
-        with patch("ccgram.handlers.status_polling.session_manager") as mock_sm:
-            mock_sm.iter_thread_bindings.return_value = [(1, 42, "@5")]
+        with patch("ccgram.handlers.status_polling.thread_router") as mock_tr:
+            mock_tr.iter_thread_bindings.return_value = [(1, 42, "@5")]
             await _probe_topic_existence(bot)
         bot.unpin_all_forum_topic_messages.assert_not_called()
 
     async def test_probe_success_resets_counter(self) -> None:
         _get_window_state("@5").probe_failures = 2
         bot = AsyncMock(spec=Bot)
-        with patch("ccgram.handlers.status_polling.session_manager") as mock_sm:
-            mock_sm.iter_thread_bindings.return_value = [(1, 42, "@5")]
-            mock_sm.resolve_chat_id.return_value = -100
+        with patch("ccgram.handlers.status_polling.thread_router") as mock_tr:
+            mock_tr.iter_thread_bindings.return_value = [(1, 42, "@5")]
+            mock_tr.resolve_chat_id.return_value = -100
             await _probe_topic_existence(bot)
         assert (
             _window_poll_state.get("@5") is None
@@ -776,18 +780,18 @@ class TestProbeFailures:
     async def test_probe_error_increments_counter(self, exc: TelegramError) -> None:
         bot = AsyncMock(spec=Bot)
         bot.unpin_all_forum_topic_messages.side_effect = exc
-        with patch("ccgram.handlers.status_polling.session_manager") as mock_sm:
-            mock_sm.iter_thread_bindings.return_value = [(1, 42, "@5")]
-            mock_sm.resolve_chat_id.return_value = -100
+        with patch("ccgram.handlers.status_polling.thread_router") as mock_tr:
+            mock_tr.iter_thread_bindings.return_value = [(1, 42, "@5")]
+            mock_tr.resolve_chat_id.return_value = -100
             await _probe_topic_existence(bot)
         assert _window_poll_state["@5"].probe_failures == 1
 
     async def test_probe_suspends_after_max_failures(self) -> None:
         bot = AsyncMock(spec=Bot)
         bot.unpin_all_forum_topic_messages.side_effect = TelegramError("Timed out")
-        with patch("ccgram.handlers.status_polling.session_manager") as mock_sm:
-            mock_sm.iter_thread_bindings.return_value = [(1, 42, "@5")]
-            mock_sm.resolve_chat_id.return_value = -100
+        with patch("ccgram.handlers.status_polling.thread_router") as mock_tr:
+            mock_tr.iter_thread_bindings.return_value = [(1, 42, "@5")]
+            mock_tr.resolve_chat_id.return_value = -100
             for _ in range(_MAX_PROBE_FAILURES + 1):
                 await _probe_topic_existence(bot)
         assert bot.unpin_all_forum_topic_messages.call_count == _MAX_PROBE_FAILURES
@@ -807,15 +811,15 @@ class TestProbeFailures:
         mock_window = MagicMock()
         mock_window.window_id = "@5"
         with (
-            patch("ccgram.handlers.status_polling.session_manager") as mock_sm,
+            patch("ccgram.handlers.status_polling.thread_router") as mock_tr,
             patch("ccgram.handlers.status_polling.tmux_manager") as mock_tm,
             patch(
                 "ccgram.handlers.status_polling.clear_topic_state",
                 new_callable=AsyncMock,
             ) as mock_cleanup,
         ):
-            mock_sm.iter_thread_bindings.return_value = [(1, 42, "@5")]
-            mock_sm.resolve_chat_id.return_value = -100
+            mock_tr.iter_thread_bindings.return_value = [(1, 42, "@5")]
+            mock_tr.resolve_chat_id.return_value = -100
             mock_tm.find_window_by_id = AsyncMock(
                 return_value=mock_window if window_alive else None
             )
@@ -826,7 +830,7 @@ class TestProbeFailures:
         else:
             mock_tm.kill_window.assert_not_called()
         mock_cleanup.assert_called_once_with(1, 42, bot, window_id="@5")
-        mock_sm.unbind_thread.assert_called_once_with(1, 42)
+        mock_tr.unbind_thread.assert_called_once_with(1, 42)
         assert (
             _window_poll_state.get("@5") is None
             or _window_poll_state["@5"].probe_failures == 0
@@ -838,19 +842,25 @@ class TestPruneStaleStatePolling:
         mock_win = MagicMock()
         mock_win.window_id = "@1"
         mock_win.window_name = "proj"
-        with patch("ccgram.handlers.status_polling.session_manager") as mock_sm:
-            mock_sm.sync_display_names.return_value = False
+        with (
+            patch("ccgram.handlers.status_polling.session_manager") as mock_sm,
+            patch("ccgram.handlers.status_polling.thread_router") as mock_tr,
+        ):
+            mock_tr.sync_display_names.return_value = False
             mock_sm.prune_stale_state.return_value = False
             await _prune_stale_state([mock_win])
-        mock_sm.sync_display_names.assert_called_once_with([("@1", "proj")])
+        mock_tr.sync_display_names.assert_called_once_with([("@1", "proj")])
         mock_sm.prune_stale_state.assert_called_once_with({"@1"})
 
     async def test_empty_window_list(self) -> None:
-        with patch("ccgram.handlers.status_polling.session_manager") as mock_sm:
-            mock_sm.sync_display_names.return_value = False
+        with (
+            patch("ccgram.handlers.status_polling.session_manager") as mock_sm,
+            patch("ccgram.handlers.status_polling.thread_router") as mock_tr,
+        ):
+            mock_tr.sync_display_names.return_value = False
             mock_sm.prune_stale_state.return_value = False
             await _prune_stale_state([])
-        mock_sm.sync_display_names.assert_called_once_with([])
+        mock_tr.sync_display_names.assert_called_once_with([])
         mock_sm.prune_stale_state.assert_called_once_with(set())
 
 
@@ -1602,6 +1612,7 @@ class TestDeadWindowNotification:
         bot = AsyncMock(spec=Bot)
         with (
             patch("ccgram.handlers.status_polling.session_manager") as mock_sm,
+            patch("ccgram.handlers.status_polling.thread_router") as mock_tr,
             patch(
                 "ccgram.handlers.status_polling.rate_limit_send_message",
                 new_callable=AsyncMock,
@@ -1621,8 +1632,8 @@ class TestDeadWindowNotification:
                 return_value=True,
             ),
         ):
-            mock_sm.resolve_chat_id.return_value = -100
-            mock_sm.get_display_name.return_value = "test"
+            mock_tr.resolve_chat_id.return_value = -100
+            mock_tr.get_display_name.return_value = "test"
             mock_sm.get_window_state.return_value = MagicMock(cwd="/proj")
             await _handle_dead_window_notification(bot, 1, 42, "@5")
 
@@ -1633,6 +1644,7 @@ class TestDeadWindowNotification:
         bot = AsyncMock(spec=Bot)
         with (
             patch("ccgram.handlers.status_polling.session_manager") as mock_sm,
+            patch("ccgram.handlers.status_polling.thread_router") as mock_tr,
             patch(
                 "ccgram.handlers.status_polling.rate_limit_send_message",
                 new_callable=AsyncMock,
@@ -1652,8 +1664,8 @@ class TestDeadWindowNotification:
                 return_value=True,
             ),
         ):
-            mock_sm.resolve_chat_id.return_value = -100
-            mock_sm.get_display_name.return_value = "test"
+            mock_tr.resolve_chat_id.return_value = -100
+            mock_tr.get_display_name.return_value = "test"
             mock_sm.get_window_state.return_value = MagicMock(cwd="/proj")
             await _handle_dead_window_notification(bot, 1, 42, "@5")
             await _handle_dead_window_notification(bot, 1, 42, "@5")
@@ -1675,22 +1687,22 @@ class TestDeadWindowNotification:
         mock_window = MagicMock()
         mock_window.window_id = "@5"
         with (
-            patch("ccgram.handlers.status_polling.session_manager") as mock_sm,
+            patch("ccgram.handlers.status_polling.thread_router") as mock_tr,
             patch("ccgram.handlers.status_polling.tmux_manager") as mock_tm,
             patch(
                 "ccgram.handlers.status_polling.clear_topic_state",
                 new_callable=AsyncMock,
             ) as mock_cleanup,
         ):
-            mock_sm.iter_thread_bindings.return_value = [(1, 42, "@5")]
-            mock_sm.resolve_chat_id.return_value = -100
+            mock_tr.iter_thread_bindings.return_value = [(1, 42, "@5")]
+            mock_tr.resolve_chat_id.return_value = -100
             mock_tm.find_window_by_id = AsyncMock(return_value=mock_window)
             mock_tm.kill_window = AsyncMock()
             await _probe_topic_existence(bot)
 
         mock_tm.kill_window.assert_called_once_with("@5")
         mock_cleanup.assert_called_once_with(1, 42, bot, window_id="@5")
-        mock_sm.unbind_thread.assert_called_once_with(1, 42)
+        mock_tr.unbind_thread.assert_called_once_with(1, 42)
 
 
 # ── Pane alert helpers ─────────────────────────────────────────────────
@@ -1923,6 +1935,7 @@ class TestUpdateStatusMessageEdgeCases:
         with (
             patch("ccgram.handlers.status_polling.tmux_manager") as mock_tm,
             patch("ccgram.handlers.status_polling.session_manager") as mock_sm,
+            patch("ccgram.handlers.status_polling.thread_router") as mock_tr,
             patch("ccgram.handlers.status_polling.update_topic_emoji"),
             patch("ccgram.handlers.status_polling.enqueue_status_update"),
             patch(
@@ -1940,8 +1953,8 @@ class TestUpdateStatusMessageEdgeCases:
         ):
             mock_tm.find_window_by_id = AsyncMock(return_value=mock_window)
             mock_tm.capture_pane = AsyncMock(return_value="\x1b[1mansi\x1b[0m")
-            mock_sm.resolve_chat_id.return_value = -100
-            mock_sm.get_display_name.return_value = "project"
+            mock_tr.resolve_chat_id.return_value = -100
+            mock_tr.get_display_name.return_value = "project"
             mock_sm.get_notification_mode.return_value = "normal"
             await update_status_message(bot, 1, "@0", thread_id=42)
         mock_vim.assert_called_once_with("@0")
@@ -1962,6 +1975,7 @@ class TestUpdateStatusMessageEdgeCases:
         with (
             patch("ccgram.handlers.status_polling.tmux_manager") as mock_tm,
             patch("ccgram.handlers.status_polling.session_manager") as mock_sm,
+            patch("ccgram.handlers.status_polling.thread_router") as mock_tr,
             patch("ccgram.handlers.status_polling.update_topic_emoji"),
             patch(
                 "ccgram.handlers.status_polling.enqueue_status_update",
@@ -1985,8 +1999,8 @@ class TestUpdateStatusMessageEdgeCases:
         ):
             mock_tm.find_window_by_id = AsyncMock(return_value=mock_window)
             mock_tm.capture_pane = AsyncMock(return_value="some output")
-            mock_sm.resolve_chat_id.return_value = -100
-            mock_sm.get_display_name.return_value = "project"
+            mock_tr.resolve_chat_id.return_value = -100
+            mock_tr.get_display_name.return_value = "project"
             mock_sm.get_notification_mode.return_value = "normal"
             await update_status_message(bot, 1, "@0", thread_id=42)
         status_text = mock_enqueue.call_args[0][3]
@@ -2007,6 +2021,7 @@ class TestUpdateStatusMessageEdgeCases:
         with (
             patch("ccgram.handlers.status_polling.tmux_manager") as mock_tm,
             patch("ccgram.handlers.status_polling.session_manager") as mock_sm,
+            patch("ccgram.handlers.status_polling.thread_router") as mock_tr,
             patch("ccgram.handlers.status_polling.update_topic_emoji"),
             patch("ccgram.handlers.status_polling.enqueue_status_update"),
             patch(
@@ -2028,8 +2043,8 @@ class TestUpdateStatusMessageEdgeCases:
         ):
             mock_tm.find_window_by_id = AsyncMock(return_value=mock_window)
             mock_tm.capture_pane = AsyncMock(return_value="some output")
-            mock_sm.resolve_chat_id.return_value = -100
-            mock_sm.get_display_name.return_value = "project"
+            mock_tr.resolve_chat_id.return_value = -100
+            mock_tr.get_display_name.return_value = "project"
             mock_sm.get_notification_mode.return_value = "normal"
             await update_status_message(bot, 1, "@0", thread_id=42)
         mock_clear.assert_called_once_with(1, bot, 42)

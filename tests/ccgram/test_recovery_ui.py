@@ -305,7 +305,7 @@ class TestTextHandlerDeadWindow:
             mock_path.cwd.return_value.__str__ = str_mock
             await text_handler(update, ctx)
 
-        mock_sm.unbind_thread.assert_called_once()
+        mock_tr.unbind_thread.assert_called_once()
         mock_browser.assert_called_once()
 
     @patch(f"{_TH}.thread_router")
@@ -340,7 +340,7 @@ class TestTextHandlerDeadWindow:
             mock_path.cwd.return_value.__str__ = str_mock
             await text_handler(update, ctx)
 
-        mock_sm.unbind_thread.assert_called_once()
+        mock_tr.unbind_thread.assert_called_once()
 
     @patch(f"{_TH}.thread_router")
     @patch(f"{_TH}.tmux_manager")
@@ -369,17 +369,17 @@ class TestTextHandlerDeadWindow:
             mock_path.cwd.return_value = mock_path.return_value
             await text_handler(update, ctx)
 
-        mock_sm.unbind_thread.assert_not_called()
+        mock_tr.unbind_thread.assert_not_called()
 
 
 class TestBotTextHandlerScopedMenu:
     @patch("ccgram.bot.handle_text_message", new_callable=AsyncMock)
     @patch("ccgram.bot._sync_scoped_provider_menu", new_callable=AsyncMock)
     @patch("ccgram.bot.get_provider_for_window")
-    @patch("ccgram.bot.session_manager")
+    @patch("ccgram.bot.thread_router")
     async def test_syncs_scoped_menu_when_thread_is_bound(
         self,
-        mock_sm: MagicMock,
+        mock_tr: MagicMock,
         mock_get_provider: MagicMock,
         mock_sync_menu: AsyncMock,
         mock_handle_text: AsyncMock,
@@ -387,7 +387,7 @@ class TestBotTextHandlerScopedMenu:
     ) -> None:
         provider = SimpleNamespace(capabilities=SimpleNamespace(name="codex"))
         mock_get_provider.return_value = provider
-        mock_sm.resolve_window_for_thread.return_value = "@1"
+        mock_tr.resolve_window_for_thread.return_value = "@1"
 
         update = _make_update()
         ctx = _make_context()
@@ -399,15 +399,15 @@ class TestBotTextHandlerScopedMenu:
 
     @patch("ccgram.bot.handle_text_message", new_callable=AsyncMock)
     @patch("ccgram.bot._sync_scoped_provider_menu", new_callable=AsyncMock)
-    @patch("ccgram.bot.session_manager")
+    @patch("ccgram.bot.thread_router")
     async def test_skips_scoped_menu_sync_when_thread_is_unbound(
         self,
-        mock_sm: MagicMock,
+        mock_tr: MagicMock,
         mock_sync_menu: AsyncMock,
         mock_handle_text: AsyncMock,
         _no_group: MagicMock,
     ) -> None:
-        mock_sm.resolve_window_for_thread.return_value = None
+        mock_tr.resolve_window_for_thread.return_value = None
 
         update = _make_update()
         ctx = _make_context()
@@ -420,10 +420,10 @@ class TestBotTextHandlerScopedMenu:
     @patch("ccgram.bot.handle_text_message", new_callable=AsyncMock)
     @patch("ccgram.bot._sync_scoped_provider_menu", new_callable=AsyncMock)
     @patch("ccgram.bot.get_provider_for_window")
-    @patch("ccgram.bot.session_manager")
+    @patch("ccgram.bot.thread_router")
     async def test_cached_chat_user_still_resolves_provider_context(
         self,
-        mock_sm: MagicMock,
+        mock_tr: MagicMock,
         mock_get_provider: MagicMock,
         mock_sync_menu: AsyncMock,
         mock_handle_text: AsyncMock,
@@ -434,14 +434,14 @@ class TestBotTextHandlerScopedMenu:
             bot_mod._scoped_provider_menu[(-100999, 100)] = "codex"
             provider = SimpleNamespace(capabilities=SimpleNamespace(name="codex"))
             mock_get_provider.return_value = provider
-            mock_sm.resolve_window_for_thread.return_value = "@1"
+            mock_tr.resolve_window_for_thread.return_value = "@1"
             update = _make_update()
             update.message.chat.id = -100999
             ctx = _make_context()
 
             await text_handler(update, ctx)
 
-            mock_sm.resolve_window_for_thread.assert_called_once_with(100, 42)
+            mock_tr.resolve_window_for_thread.assert_called_once_with(100, 42)
             mock_sync_menu.assert_called_once_with(update.message, 100, provider)
             mock_handle_text.assert_called_once_with(update, ctx)
         finally:
@@ -479,7 +479,7 @@ class TestRecoveryFreshCallback:
             mock_path.return_value.is_dir.return_value = True
             await handle_recovery_callback(query, 100, query.data, update, ctx)
 
-        mock_sm.unbind_thread.assert_called_once_with(100, 42)
+        mock_tr.unbind_thread.assert_called_once_with(100, 42)
         mock_tm.create_window.assert_called_once_with(
             "/tmp/project", agent_args="", launch_command="claude"
         )
@@ -1264,6 +1264,7 @@ class TestScanSessionsForCwd:
 
 class TestRecoveryPerWindowProvider:
     @patch(f"{_RC}.get_provider_for_window")
+    @patch(f"{_RC}.thread_router")
     @patch(f"{_RC}.tmux_manager")
     @patch(f"{_RC}.session_manager")
     @patch(f"{_RC}.safe_edit", new_callable=AsyncMock)
@@ -1272,6 +1273,7 @@ class TestRecoveryPerWindowProvider:
         _mock_safe_edit: AsyncMock,
         mock_sm: MagicMock,
         mock_tm: MagicMock,
+        mock_tr: MagicMock,
         mock_gpw: MagicMock,
     ) -> None:
         mock_sm.get_window_state.return_value = MagicMock(cwd="/tmp/project")
@@ -1280,7 +1282,7 @@ class TestRecoveryPerWindowProvider:
         )
         mock_sm.wait_for_session_map_entry = AsyncMock()
         mock_sm.send_to_window = AsyncMock(return_value=(True, "ok"))
-        mock_sm.resolve_chat_id.return_value = -100999
+        mock_tr.resolve_chat_id.return_value = -100999
         mock_gpw.return_value.make_launch_args.return_value = "--continue"
 
         update = _make_callback_update(data=f"{CB_RECOVERY_CONTINUE}@0")
@@ -1298,6 +1300,7 @@ class TestRecoveryPerWindowProvider:
         )
 
     @patch(f"{_RC}.get_provider_for_window")
+    @patch(f"{_RC}.thread_router")
     @patch(f"{_RC}.tmux_manager")
     @patch(f"{_RC}.session_manager")
     @patch(f"{_RC}.safe_edit", new_callable=AsyncMock)
@@ -1306,6 +1309,7 @@ class TestRecoveryPerWindowProvider:
         _mock_safe_edit: AsyncMock,
         mock_sm: MagicMock,
         mock_tm: MagicMock,
+        mock_tr: MagicMock,
         mock_gpw: MagicMock,
     ) -> None:
         mock_sm.get_window_state.return_value = MagicMock(cwd="/tmp/project")
@@ -1314,7 +1318,7 @@ class TestRecoveryPerWindowProvider:
         )
         mock_sm.wait_for_session_map_entry = AsyncMock()
         mock_sm.send_to_window = AsyncMock(return_value=(True, "ok"))
-        mock_sm.resolve_chat_id.return_value = -100999
+        mock_tr.resolve_chat_id.return_value = -100999
         mock_gpw.return_value.make_launch_args.return_value = "--resume sess-1"
 
         update = _make_callback_update(data=f"{CB_RECOVERY_PICK}0")

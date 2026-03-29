@@ -14,9 +14,9 @@ class TestClearTopicState:
             patch("ccgram.handlers.cleanup.clear_topic_emoji_state"),
             patch("ccgram.handlers.cleanup.clear_tool_msg_ids_for_topic"),
             patch("ccgram.handlers.cleanup.clear_status_msg_info") as mock_clear_info,
-            patch("ccgram.handlers.status_polling.session_manager") as mock_sm,
+            patch("ccgram.thread_router.thread_router") as mock_tr,
         ):
-            mock_sm.resolve_chat_id.return_value = -100
+            mock_tr.resolve_chat_id.return_value = -100
             await clear_topic_state(1, 42, bot=bot, window_id="@0")
 
         mock_enqueue.assert_called_once()
@@ -34,9 +34,9 @@ class TestClearTopicState:
             patch("ccgram.handlers.cleanup.clear_topic_emoji_state"),
             patch("ccgram.handlers.cleanup.clear_tool_msg_ids_for_topic"),
             patch("ccgram.handlers.cleanup.clear_status_msg_info") as mock_clear_info,
-            patch("ccgram.handlers.status_polling.session_manager") as mock_sm,
+            patch("ccgram.thread_router.thread_router") as mock_tr,
         ):
-            mock_sm.resolve_chat_id.return_value = -100
+            mock_tr.resolve_chat_id.return_value = -100
             await clear_topic_state(1, 42, bot=None, window_id="@0")
 
         mock_enqueue.assert_not_called()
@@ -49,9 +49,9 @@ class TestClearTopicState:
             patch("ccgram.handlers.cleanup.clear_interactive_msg"),
             patch("ccgram.handlers.cleanup.clear_topic_emoji_state"),
             patch("ccgram.handlers.cleanup.clear_tool_msg_ids_for_topic"),
-            patch("ccgram.handlers.status_polling.session_manager") as mock_sm,
+            patch("ccgram.thread_router.thread_router") as mock_tr,
         ):
-            mock_sm.resolve_chat_id.return_value = -100
+            mock_tr.resolve_chat_id.return_value = -100
             await clear_topic_state(1, 42, bot=bot, window_id=None)
 
         mock_enqueue.assert_called_once()

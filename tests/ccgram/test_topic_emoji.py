@@ -367,7 +367,8 @@ class TestStatusPollingIntegration:
     async def test_active_window_with_status_updates_emoji(self) -> None:
         with (
             patch("ccgram.handlers.status_polling.tmux_manager") as mock_tm,
-            patch("ccgram.handlers.status_polling.session_manager") as mock_sm,
+            patch("ccgram.handlers.status_polling.session_manager"),
+            patch("ccgram.handlers.status_polling.thread_router") as mock_tr,
             patch("ccgram.handlers.status_polling.update_topic_emoji") as mock_emoji,
             patch("ccgram.handlers.status_polling.enqueue_status_update"),
             patch(
@@ -384,8 +385,8 @@ class TestStatusPollingIntegration:
             mock_tm.find_window_by_id = AsyncMock(return_value=MagicMock())
             mock_tm.capture_pane = AsyncMock(return_value="some output")
             mock_tm.get_pane_title = AsyncMock(return_value="")
-            mock_sm.resolve_chat_id.return_value = -100
-            mock_sm.get_display_name.return_value = "myproject"
+            mock_tr.resolve_chat_id.return_value = -100
+            mock_tr.get_display_name.return_value = "myproject"
 
             bot = AsyncMock()
             await update_status_message(bot, 1, "@0", thread_id=42)
@@ -395,7 +396,8 @@ class TestStatusPollingIntegration:
     async def test_idle_window_without_status_updates_emoji(self) -> None:
         with (
             patch("ccgram.handlers.status_polling.tmux_manager") as mock_tm,
-            patch("ccgram.handlers.status_polling.session_manager") as mock_sm,
+            patch("ccgram.handlers.status_polling.session_manager"),
+            patch("ccgram.handlers.status_polling.thread_router") as mock_tr,
             patch("ccgram.handlers.status_polling.update_topic_emoji") as mock_emoji,
             patch(
                 "ccgram.handlers.status_polling.get_interactive_window",
@@ -418,8 +420,8 @@ class TestStatusPollingIntegration:
             mock_tm.find_window_by_id = AsyncMock(return_value=mock_window)
             mock_tm.capture_pane = AsyncMock(return_value="some output")
             mock_tm.get_pane_title = AsyncMock(return_value="")
-            mock_sm.resolve_chat_id.return_value = -100
-            mock_sm.get_display_name.return_value = "myproject"
+            mock_tr.resolve_chat_id.return_value = -100
+            mock_tr.get_display_name.return_value = "myproject"
 
             bot = AsyncMock()
             await update_status_message(bot, 1, "@0", thread_id=42)
@@ -430,7 +432,8 @@ class TestStatusPollingIntegration:
         """New window with no spinner yet should show active, not idle."""
         with (
             patch("ccgram.handlers.status_polling.tmux_manager") as mock_tm,
-            patch("ccgram.handlers.status_polling.session_manager") as mock_sm,
+            patch("ccgram.handlers.status_polling.session_manager"),
+            patch("ccgram.handlers.status_polling.thread_router") as mock_tr,
             patch("ccgram.handlers.status_polling.update_topic_emoji") as mock_emoji,
             patch(
                 "ccgram.handlers.status_polling.get_interactive_window",
@@ -453,8 +456,8 @@ class TestStatusPollingIntegration:
             mock_tm.find_window_by_id = AsyncMock(return_value=mock_window)
             mock_tm.capture_pane = AsyncMock(return_value="some output")
             mock_tm.get_pane_title = AsyncMock(return_value="")
-            mock_sm.resolve_chat_id.return_value = -100
-            mock_sm.get_display_name.return_value = "newproject"
+            mock_tr.resolve_chat_id.return_value = -100
+            mock_tr.get_display_name.return_value = "newproject"
 
             bot = AsyncMock()
             await update_status_message(bot, 1, "@99", thread_id=99)
@@ -464,7 +467,8 @@ class TestStatusPollingIntegration:
     async def test_done_when_shell_prompt(self) -> None:
         with (
             patch("ccgram.handlers.status_polling.tmux_manager") as mock_tm,
-            patch("ccgram.handlers.status_polling.session_manager") as mock_sm,
+            patch("ccgram.handlers.status_polling.session_manager"),
+            patch("ccgram.handlers.status_polling.thread_router") as mock_tr,
             patch("ccgram.handlers.status_polling.update_topic_emoji") as mock_emoji,
             patch(
                 "ccgram.handlers.status_polling.get_interactive_window",
@@ -482,8 +486,8 @@ class TestStatusPollingIntegration:
             mock_tm.find_window_by_id = AsyncMock(return_value=mock_window)
             mock_tm.capture_pane = AsyncMock(return_value="some output")
             mock_tm.get_pane_title = AsyncMock(return_value="")
-            mock_sm.resolve_chat_id.return_value = -100
-            mock_sm.get_display_name.return_value = "myproject"
+            mock_tr.resolve_chat_id.return_value = -100
+            mock_tr.get_display_name.return_value = "myproject"
 
             bot = AsyncMock()
             await update_status_message(bot, 1, "@0", thread_id=42)

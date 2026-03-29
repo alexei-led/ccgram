@@ -264,7 +264,7 @@ async def _handle_dead_window(
             user_id,
             thread_id,
         )
-        session_manager.unbind_thread(user_id, thread_id)
+        thread_router.unbind_thread(user_id, thread_id)
         from .status_polling import clear_dead_notification
 
         clear_dead_notification(user_id, thread_id)

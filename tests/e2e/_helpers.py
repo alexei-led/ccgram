@@ -287,10 +287,10 @@ async def setup_bound_topic(
         timeout=30.0,
     )
 
-    # Resolve the window_id from the session manager
-    from ccgram.session import session_manager
+    # Resolve the window_id from the thread router
+    from ccgram.thread_router import thread_router
 
-    window_id = session_manager.get_window_for_thread(user_id, thread_id)
+    window_id = thread_router.get_window_for_thread(user_id, thread_id)
     assert window_id is not None, "Topic not bound after setup flow"
 
     return window_id, browser_msg_id

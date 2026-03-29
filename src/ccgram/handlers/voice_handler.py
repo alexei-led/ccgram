@@ -15,7 +15,7 @@ from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
 from ..config import config
-from ..session import session_manager
+from ..thread_router import thread_router
 from ..whisper import get_transcriber
 from ..whisper.base import TranscriptionResult, WhisperTranscriber
 from .callback_helpers import get_thread_id
@@ -121,7 +121,7 @@ async def handle_voice_message(
         return
 
     thread_id = get_thread_id(update)
-    window_id = session_manager.resolve_window_for_thread(user.id, thread_id)
+    window_id = thread_router.resolve_window_for_thread(user.id, thread_id)
     if not window_id:
         await safe_reply(message, "⚠️ Bind this topic to an agent session first.")
         return

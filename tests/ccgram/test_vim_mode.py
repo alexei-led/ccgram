@@ -353,9 +353,9 @@ class TestPollingAndCleanupIntegration:
             patch("ccgram.handlers.cleanup.clear_interactive_msg"),
             patch("ccgram.handlers.cleanup.clear_topic_emoji_state"),
             patch("ccgram.handlers.cleanup.clear_tool_msg_ids_for_topic"),
-            patch("ccgram.handlers.status_polling.session_manager") as mock_sm,
+            patch("ccgram.thread_router.thread_router") as mock_tr,
         ):
-            mock_sm.resolve_chat_id.return_value = -100
+            mock_tr.resolve_chat_id.return_value = -100
             await clear_topic_state(1, 42, bot=AsyncMock(), window_id="@7")
         assert "@7" not in _vim_state
 
@@ -369,9 +369,9 @@ class TestPollingAndCleanupIntegration:
             patch("ccgram.handlers.cleanup.clear_interactive_msg"),
             patch("ccgram.handlers.cleanup.clear_topic_emoji_state"),
             patch("ccgram.handlers.cleanup.clear_tool_msg_ids_for_topic"),
-            patch("ccgram.handlers.status_polling.session_manager") as mock_sm,
+            patch("ccgram.thread_router.thread_router") as mock_tr,
         ):
-            mock_sm.resolve_chat_id.return_value = -100
+            mock_tr.resolve_chat_id.return_value = -100
             await clear_topic_state(1, 42, bot=AsyncMock(), window_id=None)
         # Vim state for @7 should remain untouched
         assert _vim_state["@7"] is True

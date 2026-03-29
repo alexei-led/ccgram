@@ -107,6 +107,7 @@ class TestBindWindowCallback:
 
         with (
             patch("ccgram.handlers.window_callbacks.session_manager") as mock_sm,
+            patch("ccgram.handlers.window_callbacks.thread_router") as mock_tr,
             patch(
                 "ccgram.handlers.window_callbacks.tmux_manager.find_window_by_id",
                 new_callable=AsyncMock,
@@ -115,7 +116,7 @@ class TestBindWindowCallback:
             patch("ccgram.handlers.window_callbacks.safe_edit"),
             patch("ccgram.handlers.window_callbacks.format_topic_name_for_mode"),
         ):
-            mock_sm.resolve_chat_id.return_value = -100
+            mock_tr.resolve_chat_id.return_value = -100
             mock_sm.get_approval_mode.return_value = "normal"
             mock_sm.send_to_window = AsyncMock(return_value=(True, "ok"))
             await handle_window_callback(query, 100, f"{CB_WIN_BIND}0", update, context)
@@ -197,6 +198,7 @@ class TestBindProviderDetection:
 
         with (
             patch("ccgram.handlers.window_callbacks.session_manager") as mock_sm,
+            patch("ccgram.handlers.window_callbacks.thread_router") as mock_tr,
             patch(
                 "ccgram.handlers.window_callbacks.tmux_manager.find_window_by_id",
                 new_callable=AsyncMock,
@@ -214,7 +216,7 @@ class TestBindProviderDetection:
                 new_callable=AsyncMock,
             ) as mock_setup,
         ):
-            mock_sm.resolve_chat_id.return_value = -100
+            mock_tr.resolve_chat_id.return_value = -100
             mock_sm.get_approval_mode.return_value = "normal"
             await handle_window_callback(query, 100, f"{CB_WIN_BIND}0", update, context)
 
@@ -231,6 +233,7 @@ class TestBindProviderDetection:
 
         with (
             patch("ccgram.handlers.window_callbacks.session_manager") as mock_sm,
+            patch("ccgram.handlers.window_callbacks.thread_router") as mock_tr,
             patch(
                 "ccgram.handlers.window_callbacks.tmux_manager.find_window_by_id",
                 new_callable=AsyncMock,
@@ -248,7 +251,7 @@ class TestBindProviderDetection:
                 new_callable=AsyncMock,
             ) as mock_setup,
         ):
-            mock_sm.resolve_chat_id.return_value = -100
+            mock_tr.resolve_chat_id.return_value = -100
             mock_sm.get_approval_mode.return_value = "normal"
             await handle_window_callback(query, 100, f"{CB_WIN_BIND}0", update, context)
 
@@ -268,6 +271,7 @@ class TestBindProviderDetection:
 
         with (
             patch("ccgram.handlers.window_callbacks.session_manager") as mock_sm,
+            patch("ccgram.handlers.window_callbacks.thread_router") as mock_tr,
             patch(
                 "ccgram.handlers.window_callbacks.tmux_manager.find_window_by_id",
                 new_callable=AsyncMock,
@@ -289,7 +293,7 @@ class TestBindProviderDetection:
                 new_callable=AsyncMock,
             ) as mock_forward,
         ):
-            mock_sm.resolve_chat_id.return_value = -100
+            mock_tr.resolve_chat_id.return_value = -100
             mock_sm.get_approval_mode.return_value = "normal"
             await handle_window_callback(query, 100, f"{CB_WIN_BIND}0", update, context)
 

@@ -15,6 +15,7 @@ from typing import Any
 from telegram import Bot
 
 from ..session import session_manager
+from ..thread_router import thread_router
 
 logger = structlog.get_logger()
 
@@ -47,7 +48,7 @@ def _resolve_users_for_window_key(
     window_id = parts[1]
 
     results: list[tuple[int, int, str]] = []
-    for user_id, thread_id, bound_wid in session_manager.iter_thread_bindings():
+    for user_id, thread_id, bound_wid in thread_router.iter_thread_bindings():
         if bound_wid == window_id:
             results.append((user_id, thread_id, window_id))
     return results
@@ -124,8 +125,8 @@ async def _handle_stop(event: HookEvent, bot: Bot) -> None:
     )
 
     for user_id, thread_id, window_id in users:
-        chat_id = session_manager.resolve_chat_id(user_id, thread_id)
-        display = session_manager.get_display_name(window_id)
+        chat_id = thread_router.resolve_chat_id(user_id, thread_id)
+        display = thread_router.get_display_name(window_id)
         await update_topic_emoji(bot, chat_id, thread_id, "idle", display)
         notif_mode = session_manager.get_notification_mode(window_id)
         status_text = (
@@ -277,7 +278,7 @@ async def _handle_stop_failure(event: HookEvent, bot: Bot) -> None:
     text = f"\u26a0 API error — {error}{detail}"
 
     for user_id, thread_id, _window_id in users:
-        chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+        chat_id = thread_router.resolve_chat_id(user_id, thread_id)
         await rate_limit_send_message(bot, chat_id, text, message_thread_id=thread_id)
 
 
@@ -306,8 +307,8 @@ async def _handle_session_end(event: HookEvent, bot: Bot) -> None:
 
     for user_id, thread_id, window_id in users:
         clear_seen_status(window_id)
-        chat_id = session_manager.resolve_chat_id(user_id, thread_id)
-        display = session_manager.get_display_name(window_id)
+        chat_id = thread_router.resolve_chat_id(user_id, thread_id)
+        display = thread_router.get_display_name(window_id)
         await update_topic_emoji(bot, chat_id, thread_id, "done", display)
         await enqueue_status_update(bot, user_id, window_id, None, thread_id=thread_id)
 

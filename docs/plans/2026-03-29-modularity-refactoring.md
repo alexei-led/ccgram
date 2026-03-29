@@ -142,23 +142,23 @@ Design doc: `docs/design/thread-router/design.md`, `docs/design/session-state/de
 
 #### Task 8: Update consumer imports (batch 2 — core + remaining)
 
-- [ ] Update `src/ccgram/bot.py`: import `thread_router`
-- [ ] Update `src/ccgram/handlers/status_polling.py`: import `thread_router`
-- [ ] Update `src/ccgram/handlers/hook_events.py`: import `thread_router`
-- [ ] Update `src/ccgram/handlers/cleanup.py`: import `thread_router`
-- [ ] Update `src/ccgram/handlers/topic_emoji.py`: import `thread_router`
-- [ ] Update `src/ccgram/handlers/restore_command.py`: import `thread_router`
-- [ ] Update `src/ccgram/handlers/resume_command.py`: import `thread_router`
-- [ ] Update `src/ccgram/handlers/sessions_dashboard.py`: import `thread_router`
-- [ ] Update `src/ccgram/handlers/history.py`: import `thread_router`
-- [ ] Update `src/ccgram/handlers/callback_helpers.py`: import `thread_router`
-- [ ] Update `src/ccgram/handlers/voice_handler.py` and `voice_callbacks.py`: import `thread_router`
-- [ ] Update `src/ccgram/handlers/file_handler.py`: import `thread_router`
-- [ ] Update `src/ccgram/sync_command.py`: import `thread_router`
-- [ ] Update `src/ccgram/session_monitor.py`: import `thread_router` if needed
-- [ ] Update `src/ccgram/providers/__init__.py`: import `thread_router` if needed
-- [ ] Update test files that mock `session_manager` routing methods to mock `thread_router` instead
-- [ ] Run `make check` — must pass (completes Step B1)
+- [x] Update `src/ccgram/bot.py`: import `thread_router`
+- [x] Update `src/ccgram/handlers/status_polling.py`: import `thread_router`
+- [x] Update `src/ccgram/handlers/hook_events.py`: import `thread_router`
+- [x] Update `src/ccgram/handlers/cleanup.py`: import `thread_router`
+- [x] Update `src/ccgram/handlers/topic_emoji.py`: import `thread_router`
+- [x] Update `src/ccgram/handlers/restore_command.py`: import `thread_router`
+- [x] Update `src/ccgram/handlers/resume_command.py`: import `thread_router`
+- [x] Update `src/ccgram/handlers/sessions_dashboard.py`: import `thread_router`
+- [x] Update `src/ccgram/handlers/history.py`: import `thread_router`
+- [x] Update `src/ccgram/handlers/callback_helpers.py`: import `thread_router`
+- [x] Update `src/ccgram/handlers/voice_handler.py` and `voice_callbacks.py`: import `thread_router`
+- [x] Update `src/ccgram/handlers/file_handler.py`: import `thread_router`
+- [x] Update `src/ccgram/handlers/sync_command.py`: import `thread_router`
+- [x] Update `src/ccgram/session_monitor.py`: import `thread_router` if needed
+- [x] Update `src/ccgram/providers/__init__.py`: not needed (no routing methods used)
+- [x] Update test files that mock `session_manager` routing methods to mock `thread_router` instead
+- [x] Run `make check` — must pass (completes Step B1)
 
 ---
 
