@@ -50,6 +50,7 @@ from .directory_browser import (
     clear_browse_state,
     get_favorites,
 )
+from .callback_registry import register
 from .message_sender import safe_edit, safe_send
 from .topic_emoji import format_topic_name_for_mode
 from .user_state import PENDING_THREAD_ID, PENDING_THREAD_TEXT
@@ -668,3 +669,25 @@ async def _handle_cancel(
         context.user_data.pop(PENDING_THREAD_TEXT, None)
     await safe_edit(query, "Cancelled")
     await query.answer("Cancelled")
+
+
+# --- Registry dispatch entry point ---
+
+
+@register(
+    CB_DIR_FAV,
+    CB_DIR_STAR,
+    CB_DIR_SELECT,
+    CB_DIR_UP,
+    CB_DIR_HOME,
+    CB_DIR_PAGE,
+    CB_DIR_CONFIRM,
+    CB_PROV_SELECT,
+    CB_MODE_SELECT,
+    CB_DIR_CANCEL,
+)
+async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    user = update.effective_user
+    assert query is not None and query.data is not None and user is not None
+    await handle_directory_callback(query, user.id, query.data, update, context)

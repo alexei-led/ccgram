@@ -23,8 +23,11 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
+    Update,
 )
 from telegram.error import TelegramError
+from telegram.ext import ContextTypes
+
 from ..llm import get_completer
 from ..llm import CommandResult
 from ..session import session_manager
@@ -36,6 +39,8 @@ from .callback_data import (
     CB_SHELL_EDIT,
     CB_SHELL_RUN,
 )
+from .callback_helpers import get_thread_id
+from .callback_registry import register
 from .message_sender import safe_edit, safe_reply, safe_send
 from .message_queue import enqueue_status_update
 from .status_polling import clear_probe_failures
@@ -441,3 +446,15 @@ async def _cb_cancel(
     await query.answer("Cancelled")
     clear_shell_pending(chat_id, thread_id)
     await safe_edit(query, "Cancelled")
+
+
+# --- Registry dispatch entry point ---
+
+
+@register(CB_SHELL_RUN, CB_SHELL_EDIT, CB_SHELL_CANCEL, CB_SHELL_CONFIRM_DANGER)
+async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    user = update.effective_user
+    assert query is not None and query.data is not None and user is not None
+    thread_id = get_thread_id(update)
+    await handle_shell_callback(query, user.id, query.data, context.bot, thread_id)

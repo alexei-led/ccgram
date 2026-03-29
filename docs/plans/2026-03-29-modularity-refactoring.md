@@ -168,12 +168,12 @@ Design doc: `docs/design/bot-shell/design.md`, `docs/design/callback-dispatch/de
 
 #### Task 9: Create callback registry
 
-- [ ] Create `src/ccgram/handlers/callback_registry.py` with:
+- [x] Create `src/ccgram/handlers/callback_registry.py` with:
   - `_registry: dict[str, Callable]` — prefix → handler mapping
   - `register(*prefixes)` decorator for handler self-registration
   - `dispatch(update, context)` function — longest-prefix match, authorization check, group chat ID recording
   - `load_handlers()` function — explicit imports of all callback-bearing handler modules
-- [ ] Add `@register(CB_...)` decorators to existing callback handler modules:
+- [x] Add `@register(CB_...)` decorators to existing callback handler modules:
   - `directory_callbacks.py` — `@register(CB_DIR_*)`
   - `window_callbacks.py` — `@register(CB_WINDOW_*)`
   - `history_callbacks.py` — `@register(CB_HISTORY_*)`
@@ -183,8 +183,8 @@ Design doc: `docs/design/bot-shell/design.md`, `docs/design/callback-dispatch/de
   - `resume_command.py` — `@register(CB_RESUME_*)`
   - `voice_callbacks.py` — `@register(CB_VOICE_*)`
   - `shell_commands.py` — `@register(CB_SHELL_*)`
-- [ ] Add tests in `tests/ccgram/handlers/test_callback_registry.py`: `test_register_single_prefix`, `test_dispatch_matches_prefix`, `test_dispatch_longest_prefix`, `test_dispatch_no_match`, `test_load_handlers_populates_registry`
-- [ ] Run `make test` — must pass
+- [x] Add tests in `tests/ccgram/handlers/test_callback_registry.py`: `test_register_single_prefix`, `test_dispatch_matches_prefix`, `test_dispatch_longest_prefix`, `test_dispatch_no_match`, `test_load_handlers_populates_registry`
+- [x] Run `make test` — must pass
 
 #### Task 10: Extract command orchestration from bot.py
 

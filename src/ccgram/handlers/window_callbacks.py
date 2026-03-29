@@ -30,6 +30,7 @@ from .directory_browser import (
     build_directory_browser,
     clear_window_picker_state,
 )
+from .callback_registry import register
 from .message_sender import safe_edit, safe_send
 from .topic_emoji import format_topic_name_for_mode
 from .user_state import PENDING_THREAD_ID, PENDING_THREAD_TEXT
@@ -273,3 +274,14 @@ async def _handle_cancel(
         context.user_data.pop(PENDING_THREAD_TEXT, None)
     await safe_edit(query, "Cancelled")
     await query.answer("Cancelled")
+
+
+# --- Registry dispatch entry point ---
+
+
+@register(CB_WIN_BIND, CB_WIN_NEW, CB_WIN_CANCEL)
+async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    user = update.effective_user
+    assert query is not None and query.data is not None and user is not None
+    await handle_window_callback(query, user.id, query.data, update, context)

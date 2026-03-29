@@ -25,6 +25,7 @@ from .callback_data import (
     CB_ASK_TAB,
     CB_ASK_UP,
 )
+from .callback_registry import register
 from .interactive_ui import clear_interactive_msg, handle_interactive_ui
 
 logger = structlog.get_logger()
@@ -121,3 +122,14 @@ async def handle_interactive_callback(
         elif sent and not refresh_ui:
             await clear_interactive_msg(user_id, context.bot, thread_id)
         await query.answer(INTERACTIVE_KEY_LABELS.get(cb_prefix, ""))
+
+
+# --- Registry dispatch entry point ---
+
+
+@register(*INTERACTIVE_PREFIXES)
+async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    user = update.effective_user
+    assert query is not None and query.data is not None and user is not None
+    await handle_interactive_callback(query, user.id, query.data, update, context)

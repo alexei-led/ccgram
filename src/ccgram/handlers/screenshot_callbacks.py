@@ -46,6 +46,7 @@ from .callback_data import (
     NOTIFY_MODE_LABELS,
 )
 from .callback_helpers import get_thread_id, user_owns_window
+from .callback_registry import register
 
 logger = structlog.get_logger()
 
@@ -496,3 +497,25 @@ async def _handle_keys(query: CallbackQuery, user_id: int, data: str) -> None:
                 ),
                 reply_markup=keyboard,
             )
+
+
+# --- Registry dispatch entry point ---
+
+
+@register(
+    CB_SCREENSHOT_REFRESH,
+    CB_STATUS_RECALL,
+    CB_STATUS_ESC,
+    CB_STATUS_NOTIFY,
+    CB_STATUS_SCREENSHOT,
+    CB_KEYS_PREFIX,
+    CB_PANE_SCREENSHOT,
+    CB_STATUS_REMOTE,
+    CB_TOOLBAR_CTRLC,
+    CB_TOOLBAR_DISMISS,
+)
+async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    user = update.effective_user
+    assert query is not None and query.data is not None and user is not None
+    await handle_screenshot_callback(query, user.id, query.data, update, context)

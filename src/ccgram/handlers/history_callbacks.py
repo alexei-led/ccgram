@@ -13,7 +13,8 @@ from telegram import CallbackQuery, Update
 from telegram.ext import ContextTypes
 
 from ..tmux_manager import tmux_manager
-from .callback_data import CB_HISTORY_PREV
+from .callback_data import CB_HISTORY_NEXT, CB_HISTORY_PREV
+from .callback_registry import register
 from .history import send_history
 from .message_sender import safe_edit
 
@@ -70,3 +71,14 @@ async def handle_history_callback(
     else:
         await safe_edit(query, "Window no longer exists.")
     await query.answer("Page updated")
+
+
+# --- Registry dispatch entry point ---
+
+
+@register(CB_HISTORY_PREV, CB_HISTORY_NEXT)
+async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    user = update.effective_user
+    assert query is not None and query.data is not None and user is not None
+    await handle_history_callback(query, user.id, query.data, update, context)

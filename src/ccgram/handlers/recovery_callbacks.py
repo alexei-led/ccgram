@@ -35,6 +35,7 @@ from .callback_data import (
     CB_RECOVERY_RESUME,
 )
 from .callback_helpers import get_thread_id
+from .callback_registry import register
 from .message_sender import safe_edit, safe_send
 from .topic_emoji import format_topic_name_for_mode
 from .user_state import (
@@ -633,3 +634,21 @@ async def _handle_cancel(
     _clear_recovery_state(context.user_data)
     await safe_edit(query, "Cancelled. Send a message to try again.")
     await query.answer("Cancelled")
+
+
+# --- Registry dispatch entry point ---
+
+
+@register(
+    CB_RECOVERY_BACK,
+    CB_RECOVERY_FRESH,
+    CB_RECOVERY_CONTINUE,
+    CB_RECOVERY_RESUME,
+    CB_RECOVERY_PICK,
+    CB_RECOVERY_CANCEL,
+)
+async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    user = update.effective_user
+    assert query is not None and query.data is not None and user is not None
+    await handle_recovery_callback(query, user.id, query.data, update, context)

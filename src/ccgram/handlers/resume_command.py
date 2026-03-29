@@ -34,6 +34,7 @@ from ..tmux_manager import tmux_manager
 from ..utils import read_session_metadata_from_jsonl
 from .callback_data import CB_RESUME_CANCEL, CB_RESUME_PAGE, CB_RESUME_PICK
 from .callback_helpers import get_thread_id
+from .callback_registry import register
 from .message_sender import safe_edit, safe_reply
 from .topic_emoji import format_topic_name_for_mode
 from .user_state import RESUME_SESSIONS
@@ -433,3 +434,14 @@ def _clear_resume_state(user_data: dict | None) -> None:
     if user_data is None:
         return
     user_data.pop(RESUME_SESSIONS, None)
+
+
+# --- Registry dispatch entry point ---
+
+
+@register(CB_RESUME_PICK, CB_RESUME_PAGE, CB_RESUME_CANCEL)
+async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    user = update.effective_user
+    assert query is not None and query.data is not None and user is not None
+    await handle_resume_command_callback(query, user.id, query.data, update, context)
