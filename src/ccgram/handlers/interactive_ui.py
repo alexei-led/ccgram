@@ -23,7 +23,7 @@ from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telegram.error import BadRequest, RetryAfter, TelegramError
 
 from ..providers import get_provider_for_window
-from ..session import session_manager
+from ..thread_router import thread_router
 from ..tmux_manager import tmux_manager
 from .callback_data import (
     CB_ASK_DOWN,
@@ -259,7 +259,7 @@ async def handle_interactive_ui(
     if pane_id:
         text = f"\U0001f500 Pane ({pane_id}):\n{text}"
     ikey = (user_id, thread_id or 0)
-    chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+    chat_id = thread_router.resolve_chat_id(user_id, thread_id)
     keyboard = _build_interactive_keyboard(window_id, ui_name=ui_name, pane_id=pane_id)
 
     # Try editing existing interactive message first
@@ -338,6 +338,6 @@ async def clear_interactive_msg(
         msg_id,
     )
     if bot and msg_id:
-        chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+        chat_id = thread_router.resolve_chat_id(user_id, thread_id)
         with contextlib.suppress(TelegramError):
             await bot.delete_message(chat_id=chat_id, message_id=msg_id)

@@ -23,7 +23,7 @@ async def test_status_recall_sends_selected_history_command() -> None:
         ),
         patch("ccgram.handlers.screenshot_callbacks.get_thread_id", return_value=42),
         patch(
-            "ccgram.handlers.screenshot_callbacks.session_manager.resolve_window_for_thread",
+            "ccgram.handlers.screenshot_callbacks.thread_router.resolve_window_for_thread",
             return_value="@0",
         ),
         patch(
@@ -57,7 +57,7 @@ async def test_status_recall_rejects_stale_topic_binding() -> None:
         ),
         patch("ccgram.handlers.screenshot_callbacks.get_thread_id", return_value=42),
         patch(
-            "ccgram.handlers.screenshot_callbacks.session_manager.resolve_window_for_thread",
+            "ccgram.handlers.screenshot_callbacks.thread_router.resolve_window_for_thread",
             return_value="@9",
         ),
         patch(
@@ -84,7 +84,7 @@ async def test_status_recall_handles_missing_history_entry() -> None:
         ),
         patch("ccgram.handlers.screenshot_callbacks.get_thread_id", return_value=42),
         patch(
-            "ccgram.handlers.screenshot_callbacks.session_manager.resolve_window_for_thread",
+            "ccgram.handlers.screenshot_callbacks.thread_router.resolve_window_for_thread",
             return_value="@0",
         ),
         patch("ccgram.handlers.command_history.get_history", return_value=["/status"]),

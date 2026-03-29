@@ -30,6 +30,7 @@ from telegram.ext import ContextTypes
 
 from ..screenshot import text_to_image
 from ..session import session_manager
+from ..thread_router import thread_router
 from ..tmux_manager import tmux_manager
 from .callback_data import (
     CB_KEYS_PREFIX,
@@ -175,7 +176,7 @@ async def _handle_pane_screenshot(
     if thread_id is None:
         await query.answer("Use in a topic", show_alert=True)
         return
-    chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+    chat_id = thread_router.resolve_chat_id(user_id, thread_id)
     try:
         await query.get_bot().send_document(
             chat_id=chat_id,
@@ -201,7 +202,7 @@ async def _handle_remote_control(query: CallbackQuery, user_id: int, data: str) 
     if is_rc_active(window_id):
         await query.answer("\U0001f4e1 Remote Control active")
     else:
-        display = session_manager.get_display_name(window_id)
+        display = thread_router.get_display_name(window_id)
         await session_manager.send_to_window(window_id, f"/remote-control {display}")
         await query.answer("\U0001f4e1 Activating\u2026")
 
@@ -339,7 +340,7 @@ async def _handle_status_recall(
     if thread_id is None:
         await query.answer("Use in a topic", show_alert=True)
         return
-    if session_manager.resolve_window_for_thread(user_id, thread_id) != window_id:
+    if thread_router.resolve_window_for_thread(user_id, thread_id) != window_id:
         await query.answer("Stale status button", show_alert=True)
         return
 
@@ -396,7 +397,7 @@ async def _handle_status_screenshot(
     if thread_id is None:
         await query.answer("Use in a topic", show_alert=True)
         return
-    chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+    chat_id = thread_router.resolve_chat_id(user_id, thread_id)
     try:
         await query.get_bot().send_document(
             chat_id=chat_id,

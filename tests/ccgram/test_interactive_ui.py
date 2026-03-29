@@ -149,7 +149,7 @@ class TestDeadTopicCooldown:
                 new_callable=AsyncMock,
                 return_value=("AskUserQuestion", "Pick one:"),
             ),
-            patch("ccgram.handlers.interactive_ui.session_manager") as mock_sm,
+            patch("ccgram.handlers.interactive_ui.thread_router") as mock_sm,
             patch(
                 "ccgram.handlers.interactive_ui.rate_limit_send",
                 new_callable=AsyncMock,
@@ -189,7 +189,7 @@ class TestDeadTopicCooldown:
                 new_callable=AsyncMock,
                 return_value=("AskUserQuestion", "Pick one:"),
             ),
-            patch("ccgram.handlers.interactive_ui.session_manager") as mock_sm,
+            patch("ccgram.handlers.interactive_ui.thread_router") as mock_sm,
             patch(
                 "ccgram.handlers.interactive_ui.rate_limit_send",
                 new_callable=AsyncMock,

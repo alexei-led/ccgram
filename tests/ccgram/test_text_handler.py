@@ -94,12 +94,13 @@ class TestCheckUiGuards:
 
 
 class TestHandleUnboundTopic:
+    @patch(f"{_TH}.thread_router")
     @patch(f"{_TH}.tmux_manager")
     @patch(f"{_TH}.session_manager")
     async def test_bound_topic_returns_false(
-        self, mock_sm: MagicMock, _mock_tm: MagicMock
+        self, mock_sm: MagicMock, _mock_tm: MagicMock, mock_tr: MagicMock
     ) -> None:
-        mock_sm.get_window_for_thread.return_value = "@0"
+        mock_tr.get_window_for_thread.return_value = "@0"
         message = AsyncMock()
 
         result = await _handle_unbound_topic(100, 42, "hello", {}, message)
@@ -301,14 +302,16 @@ class TestHandleDeadWindow:
 class TestShellProviderRouting:
     @patch(f"{_TH}.get_provider_for_window")
     @patch(f"{_TH}._handle_dead_window", new_callable=AsyncMock, return_value=False)
+    @patch(f"{_TH}.thread_router")
     @patch(f"{_TH}.session_manager")
     async def test_shell_provider_routes_to_handle_shell_message(
         self,
         mock_sm: MagicMock,
+        mock_tr: MagicMock,
         _mock_dead: AsyncMock,
         mock_get_provider: MagicMock,
     ) -> None:
-        mock_sm.get_window_for_thread.return_value = "@0"
+        mock_tr.get_window_for_thread.return_value = "@0"
         mock_sm.is_authorized.return_value = True
 
         provider = MagicMock()

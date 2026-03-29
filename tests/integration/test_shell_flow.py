@@ -50,6 +50,7 @@ class TestRawCommandFlow:
             patch(f"{_MOD_CMD}.enqueue_status_update", new_callable=AsyncMock),
             patch(f"{_MOD_CMD}.clear_probe_failures"),
             patch(f"{_MOD_CMD}.session_manager") as mock_sm,
+            patch(f"{_MOD_CMD}.thread_router") as mock_tr,
             patch(f"{_MOD_CMD}.tmux_manager") as mock_tm,
             patch(
                 "ccgram.providers.shell.has_prompt_marker",
@@ -60,7 +61,7 @@ class TestRawCommandFlow:
                 "ccgram.handlers.shell_capture.mark_telegram_command",
             ) as mock_mark,
         ):
-            mock_sm.resolve_chat_id.return_value = TEST_CHAT_ID
+            mock_tr.resolve_chat_id.return_value = TEST_CHAT_ID
             mock_sm.send_to_window = AsyncMock(return_value=(True, ""))
             mock_tm.find_window_by_id = AsyncMock(return_value=None)
             mock_tm.capture_pane = AsyncMock(return_value=None)
@@ -95,7 +96,7 @@ class TestRawCommandFlow:
                 new_callable=AsyncMock,
                 return_value=mock_sent,
             ) as mock_send,
-            patch(f"{_MOD_CAP}.session_manager") as mock_sm,
+            patch(f"{_MOD_CAP}.thread_router") as mock_sm,
             patch(
                 f"{_MOD_CAP}._capture_with_scrollback",
                 new_callable=AsyncMock,
@@ -140,7 +141,7 @@ class TestRawCommandFlow:
             patch(
                 f"{_MOD_CAP}.edit_with_fallback", new_callable=AsyncMock
             ) as mock_edit,
-            patch(f"{_MOD_CAP}.session_manager") as mock_sm,
+            patch(f"{_MOD_CAP}.thread_router") as mock_sm,
             patch(
                 f"{_MOD_CAP}._capture_with_scrollback",
                 new_callable=AsyncMock,
@@ -176,7 +177,7 @@ class TestLlmCommandFlow:
             patch(f"{_MOD_CMD}.enqueue_status_update", new_callable=AsyncMock),
             patch(f"{_MOD_CMD}.clear_probe_failures"),
             patch(f"{_MOD_CMD}.get_completer", return_value=mock_completer),
-            patch(f"{_MOD_CMD}.session_manager") as mock_sm,
+            patch(f"{_MOD_CMD}.thread_router") as mock_tr,
             patch(f"{_MOD_CMD}.tmux_manager") as mock_tm,
             patch(f"{_MOD_CMD}.safe_reply", new_callable=AsyncMock) as mock_reply,
             patch(
@@ -185,7 +186,7 @@ class TestLlmCommandFlow:
                 return_value={"cwd": "/tmp", "shell": "bash", "shell_tools": ""},
             ),
         ):
-            mock_sm.resolve_chat_id.return_value = TEST_CHAT_ID
+            mock_tr.resolve_chat_id.return_value = TEST_CHAT_ID
             mock_tm.capture_pane = AsyncMock(return_value="$ ")
 
             await handle_shell_message(
@@ -219,11 +220,12 @@ class TestLlmCommandFlow:
             patch(f"{_MOD_CMD}.clear_probe_failures"),
             patch(f"{_MOD_CMD}.get_completer", return_value=None),
             patch(f"{_MOD_CMD}.session_manager") as mock_sm,
+            patch(f"{_MOD_CMD}.thread_router") as mock_tr,
             patch(
                 "ccgram.handlers.shell_capture.mark_telegram_command",
             ) as mock_mark,
         ):
-            mock_sm.resolve_chat_id.return_value = TEST_CHAT_ID
+            mock_tr.resolve_chat_id.return_value = TEST_CHAT_ID
             mock_sm.send_to_window = AsyncMock(return_value=(True, ""))
 
             await handle_shell_message(
@@ -272,7 +274,7 @@ class TestErrorRecovery:
                 return_value=mock_sent,
             ),
             patch(f"{_MOD_CAP}.edit_with_fallback", new_callable=AsyncMock),
-            patch(f"{_MOD_CAP}.session_manager") as mock_sm,
+            patch(f"{_MOD_CAP}.thread_router") as mock_sm,
             patch(
                 f"{_MOD_CAP}._capture_with_scrollback",
                 new_callable=AsyncMock,
@@ -325,7 +327,7 @@ class TestErrorRecovery:
                 return_value=mock_sent,
             ),
             patch(f"{_MOD_CAP}.edit_with_fallback", new_callable=AsyncMock),
-            patch(f"{_MOD_CAP}.session_manager") as mock_sm,
+            patch(f"{_MOD_CAP}.thread_router") as mock_sm,
             patch(
                 f"{_MOD_CAP}._capture_with_scrollback",
                 new_callable=AsyncMock,
@@ -367,7 +369,7 @@ class TestPassiveMonitoringRoundTrip:
                 new_callable=AsyncMock,
                 return_value=mock_sent,
             ) as mock_send,
-            patch(f"{_MOD_CAP}.session_manager") as mock_sm,
+            patch(f"{_MOD_CAP}.thread_router") as mock_sm,
             patch(
                 f"{_MOD_CAP}._capture_with_scrollback",
                 new_callable=AsyncMock,
@@ -393,7 +395,7 @@ class TestPassiveMonitoringRoundTrip:
             patch(
                 f"{_MOD_CAP}.edit_with_fallback", new_callable=AsyncMock
             ) as mock_edit,
-            patch(f"{_MOD_CAP}.session_manager") as mock_sm2,
+            patch(f"{_MOD_CAP}.thread_router") as mock_sm2,
             patch(
                 f"{_MOD_CAP}._capture_with_scrollback",
                 new_callable=AsyncMock,

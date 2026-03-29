@@ -315,7 +315,7 @@ class TestCheckPassiveShellOutput:
                 new_callable=AsyncMock,
                 return_value=mock_sent,
             ) as mock_send,
-            patch(f"{_MOD}.session_manager") as mock_sm,
+            patch(f"{_MOD}.thread_router") as mock_sm,
             patch(
                 f"{_MOD}._capture_with_scrollback",
                 new_callable=AsyncMock,
@@ -345,7 +345,7 @@ class TestCheckPassiveShellOutput:
                 new_callable=AsyncMock,
                 return_value=mock_sent,
             ),
-            patch(f"{_MOD}.session_manager") as mock_sm,
+            patch(f"{_MOD}.thread_router") as mock_sm,
             patch(
                 f"{_MOD}._capture_with_scrollback",
                 new_callable=AsyncMock,
@@ -360,7 +360,7 @@ class TestCheckPassiveShellOutput:
             patch(
                 f"{_MOD}.rate_limit_send_message", new_callable=AsyncMock
             ) as mock_send2,
-            patch(f"{_MOD}.session_manager") as mock_sm2,
+            patch(f"{_MOD}.thread_router") as mock_sm2,
             patch(
                 f"{_MOD}._capture_with_scrollback",
                 new_callable=AsyncMock,
@@ -391,7 +391,7 @@ class TestCheckPassiveShellOutput:
                 return_value=mock_sent,
             ),
             patch(f"{_MOD}.edit_with_fallback", new_callable=AsyncMock) as mock_edit,
-            patch(f"{_MOD}.session_manager") as mock_sm,
+            patch(f"{_MOD}.thread_router") as mock_sm,
             patch(
                 f"{_MOD}._capture_with_scrollback",
                 new_callable=AsyncMock,
@@ -425,7 +425,7 @@ class TestCheckPassiveShellOutput:
                 new_callable=AsyncMock,
                 return_value=mock_sent,
             ),
-            patch(f"{_MOD}.session_manager") as mock_sm,
+            patch(f"{_MOD}.thread_router") as mock_sm,
             patch(
                 f"{_MOD}._capture_with_scrollback",
                 new_callable=AsyncMock,
@@ -445,7 +445,7 @@ class TestCheckPassiveShellOutput:
                 new_callable=AsyncMock,
                 return_value=mock_sent2,
             ),
-            patch(f"{_MOD}.session_manager") as mock_sm2,
+            patch(f"{_MOD}.thread_router") as mock_sm2,
             patch(
                 f"{_MOD}._capture_with_scrollback",
                 new_callable=AsyncMock,
@@ -482,7 +482,7 @@ class TestCheckPassiveShellOutput:
                 new_callable=AsyncMock,
                 return_value=mock_sent,
             ) as mock_send,
-            patch(f"{_MOD}.session_manager") as mock_sm,
+            patch(f"{_MOD}.thread_router") as mock_sm,
             patch(
                 f"{_MOD}._capture_with_scrollback",
                 new_callable=AsyncMock,
@@ -552,7 +552,7 @@ class TestPassiveEdgeCases:
                 new_callable=AsyncMock,
                 return_value=mock_sent1,
             ),
-            patch(f"{_MOD}.session_manager") as mock_sm,
+            patch(f"{_MOD}.thread_router") as mock_sm,
             patch(
                 f"{_MOD}._capture_with_scrollback",
                 new_callable=AsyncMock,
@@ -572,7 +572,7 @@ class TestPassiveEdgeCases:
                 new_callable=AsyncMock,
                 return_value=mock_sent2,
             ),
-            patch(f"{_MOD}.session_manager") as mock_sm2,
+            patch(f"{_MOD}.thread_router") as mock_sm2,
             patch(
                 f"{_MOD}._capture_with_scrollback",
                 new_callable=AsyncMock,
@@ -606,7 +606,7 @@ class TestPassiveEdgeCases:
 
         # Pane with no markers in tail (scrolled out) — should preserve state
         no_marker_pane = "\n".join([f"output line {i}" for i in range(20)])
-        with patch(f"{_MOD}.session_manager") as mock_sm:
+        with patch(f"{_MOD}.thread_router") as mock_sm:
             mock_sm.resolve_chat_id.return_value = -100
             await check_passive_shell_output(bot, 1, 42, "@0", no_marker_pane)
 
@@ -683,7 +683,7 @@ class TestPassiveRelayFormatting:
                 new_callable=AsyncMock,
                 return_value=mock_sent,
             ) as mock_send,
-            patch(f"{_MOD}.session_manager") as mock_sm,
+            patch(f"{_MOD}.thread_router") as mock_sm,
             patch(
                 f"{_MOD}._capture_with_scrollback",
                 new_callable=AsyncMock,
@@ -713,7 +713,7 @@ class TestPassiveRelayFormatting:
                 new_callable=AsyncMock,
                 return_value=mock_sent,
             ) as mock_send,
-            patch(f"{_MOD}.session_manager") as mock_sm,
+            patch(f"{_MOD}.thread_router") as mock_sm,
             patch(
                 f"{_MOD}._capture_with_scrollback",
                 new_callable=AsyncMock,
@@ -746,7 +746,7 @@ class TestPassiveRelayFormatting:
                 return_value=mock_sent,
             ),
             patch(f"{_MOD}.edit_with_fallback", new_callable=AsyncMock) as mock_edit,
-            patch(f"{_MOD}.session_manager") as mock_sm,
+            patch(f"{_MOD}.thread_router") as mock_sm,
             patch(
                 f"{_MOD}._capture_with_scrollback",
                 new_callable=AsyncMock,

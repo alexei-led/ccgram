@@ -27,6 +27,7 @@ from telegram.error import RetryAfter, TelegramError
 import contextlib
 
 from ..session import session_manager
+from ..thread_router import thread_router
 from ..utils import task_done_callback
 from .callback_data import (
     CB_STATUS_ESC,
@@ -356,7 +357,7 @@ async def _process_batch_task(bot: Bot, user_id: int, task: MessageTask) -> None
     window_id = task.window_id or ""
     thread_id = task.thread_id or 0
     bkey = (user_id, thread_id)
-    chat_id = session_manager.resolve_chat_id(user_id, task.thread_id)
+    chat_id = thread_router.resolve_chat_id(user_id, task.thread_id)
 
     batch = _active_batches.get(bkey)
 
@@ -444,7 +445,7 @@ async def _flush_batch(bot: Bot, user_id: int, thread_id_or_0: int) -> None:
         return
 
     thread_id: int | None = thread_id_or_0 if thread_id_or_0 != 0 else None
-    chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+    chat_id = thread_router.resolve_chat_id(user_id, thread_id)
 
     from .hook_events import build_subagent_label, get_subagent_names
 
@@ -586,7 +587,7 @@ async def _process_content_task(bot: Bot, user_id: int, task: MessageTask) -> No
     """Process a content message task."""
     window_id = task.window_id or ""
     thread_id = task.thread_id or 0
-    chat_id = session_manager.resolve_chat_id(user_id, task.thread_id)
+    chat_id = thread_router.resolve_chat_id(user_id, task.thread_id)
 
     # 1. Handle tool_result editing (merged parts are edited together)
     if task.content_type == "tool_result" and task.tool_use_id:
@@ -664,7 +665,7 @@ async def _convert_status_to_content(
         return None
 
     thread_id: int | None = thread_id_or_0 if thread_id_or_0 != 0 else None
-    chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+    chat_id = thread_router.resolve_chat_id(user_id, thread_id)
 
     msg_id, stored_wid, _ = info
     if stored_wid != window_id:
@@ -705,7 +706,7 @@ async def _process_status_update_task(
     """Process a status update task."""
     window_id = task.window_id or ""
     thread_id = task.thread_id or 0
-    chat_id = session_manager.resolve_chat_id(user_id, task.thread_id)
+    chat_id = thread_router.resolve_chat_id(user_id, task.thread_id)
     skey = (user_id, thread_id)
     # task.text must be pre-formatted (display_label from StatusUpdate, not raw terminal text)
     status_text = task.text or ""
@@ -766,7 +767,7 @@ async def _do_send_status_message(
     """
     skey = (user_id, thread_id_or_0)
     thread_id: int | None = thread_id_or_0 if thread_id_or_0 != 0 else None
-    chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+    chat_id = thread_router.resolve_chat_id(user_id, thread_id)
     history = _get_idle_history(user_id, thread_id_or_0, text)
     keyboard = build_status_keyboard(window_id, history=history)
 
@@ -811,7 +812,7 @@ async def _do_clear_status_message(
     if info:
         msg_id = info[0]
         thread_id: int | None = thread_id_or_0 if thread_id_or_0 != 0 else None
-        chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+        chat_id = thread_router.resolve_chat_id(user_id, thread_id)
         try:
             await bot.delete_message(chat_id=chat_id, message_id=msg_id)
         except TelegramError as e:

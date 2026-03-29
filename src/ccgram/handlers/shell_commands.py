@@ -28,6 +28,7 @@ from telegram.error import TelegramError
 from ..llm import get_completer
 from ..llm import CommandResult
 from ..session import session_manager
+from ..thread_router import thread_router
 from ..tmux_manager import tmux_manager
 from .callback_data import (
     CB_SHELL_CANCEL,
@@ -172,7 +173,7 @@ async def handle_shell_message(
     await enqueue_status_update(bot, user_id, window_id, None, thread_id)
     clear_probe_failures(window_id)
 
-    chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+    chat_id = thread_router.resolve_chat_id(user_id, thread_id)
     clear_shell_pending(chat_id, thread_id)
     await _ensure_prompt_marker(window_id)
 
@@ -257,7 +258,7 @@ async def _execute_raw_command(
         window_id, command, raw=True
     )
     if not success:
-        chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+        chat_id = thread_router.resolve_chat_id(user_id, thread_id)
         await safe_send(
             bot, chat_id, f"\u274c {err_message}", message_thread_id=thread_id
         )
@@ -362,7 +363,7 @@ async def handle_shell_callback(
         await query.answer("No topic context")
         return
 
-    chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+    chat_id = thread_router.resolve_chat_id(user_id, thread_id)
     pending = _shell_pending.get((chat_id, thread_id))
 
     if data.startswith(CB_SHELL_RUN) or data.startswith(CB_SHELL_CONFIRM_DANGER):
@@ -393,7 +394,7 @@ async def _cb_run(
         return
 
     # Use window from thread binding (authoritative), not callback data
-    window_id = session_manager.get_window_for_thread(user_id, thread_id)
+    window_id = thread_router.get_window_for_thread(user_id, thread_id)
     if not window_id:
         clear_shell_pending(chat_id, thread_id)
         await safe_edit(query, "\u274c No session bound")

@@ -16,6 +16,7 @@ from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
 from ..session import session_manager
+from ..thread_router import thread_router
 from ..tmux_manager import tmux_manager
 from .callback_data import CB_WIN_BIND, CB_WIN_CANCEL, CB_WIN_NEW
 from .callback_helpers import get_thread_id
@@ -50,7 +51,7 @@ def _store_group_chat_id(
     """Persist group chat routing for a topic thread (best-effort)."""
     chat = _get_topic_chat(update, query)
     if chat and chat.type in ("group", "supergroup"):
-        session_manager.set_group_chat_id(user_id, thread_id, chat.id)
+        thread_router.set_group_chat_id(user_id, thread_id, chat.id)
 
 
 async def handle_window_callback(
@@ -135,7 +136,7 @@ async def _forward_pending_text(
             logger.warning("Failed to forward pending text: %s", send_msg)
             await safe_send(
                 bot,
-                session_manager.resolve_chat_id(user_id, thread_id),
+                thread_router.resolve_chat_id(user_id, thread_id),
                 f"❌ Failed to send pending message: {send_msg}",
                 message_thread_id=thread_id,
             )
@@ -171,7 +172,7 @@ async def _handle_bind(
 
     w = await tmux_manager.find_window_by_id(selected_wid)
     if not w:
-        display = session_manager.get_display_name(selected_wid)
+        display = thread_router.get_display_name(selected_wid)
         await query.answer(f"Window '{display}' no longer exists", show_alert=True)
         return
 
@@ -182,7 +183,7 @@ async def _handle_bind(
 
     display = w.window_name
     clear_window_picker_state(context.user_data)
-    session_manager.bind_thread(user_id, thread_id, selected_wid, window_name=display)
+    thread_router.bind_thread(user_id, thread_id, selected_wid, window_name=display)
     _store_group_chat_id(user_id, thread_id, update, query)
 
     detected = await _detect_and_setup_provider(
@@ -196,7 +197,7 @@ async def _handle_bind(
 
     try:
         await context.bot.edit_forum_topic(
-            chat_id=session_manager.resolve_chat_id(user_id, thread_id),
+            chat_id=thread_router.resolve_chat_id(user_id, thread_id),
             message_thread_id=thread_id,
             name=format_topic_name_for_mode(
                 display, session_manager.get_approval_mode(selected_wid)

@@ -40,6 +40,7 @@ from .recovery_callbacks import build_recovery_keyboard
 from .status_polling import clear_probe_failures
 from .user_state import PENDING_THREAD_ID, PENDING_THREAD_TEXT, RECOVERY_WINDOW_ID
 from ..session import session_manager
+from ..thread_router import thread_router
 from ..providers import get_provider_for_window
 from ..tmux_manager import tmux_manager
 from ..utils import handle_general_topic_message, is_general_topic, task_done_callback
@@ -83,7 +84,7 @@ async def _capture_bash_output(
         # Wait for the command to start producing output
         await asyncio.sleep(2.0)
 
-        chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+        chat_id = thread_router.resolve_chat_id(user_id, thread_id)
         msg_id: int | None = None
         last_output: str = ""
 
@@ -179,16 +180,14 @@ async def _handle_unbound_topic(
 
     Returns True if the topic is unbound (handled), False if already bound.
     """
-    window_id = session_manager.get_window_for_thread(user_id, thread_id)
+    window_id = thread_router.get_window_for_thread(user_id, thread_id)
     if window_id is not None:
         return False
 
     all_windows = await tmux_manager.list_windows()
     external_windows = await tmux_manager.discover_external_sessions()
     all_windows.extend(external_windows)
-    bound_ids = {
-        bound_wid for _, _, bound_wid in session_manager.iter_thread_bindings()
-    }
+    bound_ids = {bound_wid for _, _, bound_wid in thread_router.iter_thread_bindings()}
     unbound = [
         (w.window_id, w.window_name, w.cwd)
         for w in all_windows
@@ -252,7 +251,7 @@ async def _handle_dead_window(
     if w:
         return False
 
-    display = session_manager.get_display_name(window_id)
+    display = thread_router.get_display_name(window_id)
     window_state = session_manager.get_window_state(window_id)
     cwd = window_state.cwd if window_state.cwd else ""
 
@@ -370,7 +369,7 @@ async def handle_text_message(
     # Store group chat_id for forum topic message routing
     chat = message.chat
     if chat.type in ("group", "supergroup") and thread_id is not None:
-        session_manager.set_group_chat_id(user.id, thread_id, chat.id)
+        thread_router.set_group_chat_id(user.id, thread_id, chat.id)
 
     # UI guards (window picker / directory browser active)
     if await _check_ui_guards(context.user_data, thread_id, message):
@@ -396,7 +395,7 @@ async def handle_text_message(
         return
 
     # Bound topic — check if window is still alive
-    window_id = session_manager.get_window_for_thread(user.id, thread_id)
+    window_id = thread_router.get_window_for_thread(user.id, thread_id)
     assert window_id is not None  # _handle_unbound_topic returned False
 
     if await _handle_dead_window(

@@ -122,10 +122,11 @@ def _make_update(thread_id: int = 42) -> MagicMock:
 class TestHandleConfirmShowsProviderPicker:
     @patch("ccgram.handlers.directory_callbacks.safe_edit", new_callable=AsyncMock)
     @patch("ccgram.handlers.directory_callbacks.session_manager")
+    @patch("ccgram.handlers.directory_callbacks.thread_router")
     async def test_confirm_shows_provider_picker(
-        self, mock_sm: MagicMock, mock_edit: AsyncMock
+        self, mock_tr: MagicMock, mock_sm: MagicMock, mock_edit: AsyncMock
     ) -> None:
-        mock_sm.get_window_for_thread.return_value = None
+        mock_tr.get_window_for_thread.return_value = None
         user_data = {
             "browse_path": "/tmp/test",
             PENDING_THREAD_ID: 42,
@@ -145,10 +146,11 @@ class TestHandleConfirmShowsProviderPicker:
 
     @patch("ccgram.handlers.directory_callbacks.safe_edit", new_callable=AsyncMock)
     @patch("ccgram.handlers.directory_callbacks.session_manager")
+    @patch("ccgram.handlers.directory_callbacks.thread_router")
     async def test_confirm_clears_browse_state(
-        self, mock_sm: MagicMock, mock_edit: AsyncMock
+        self, mock_tr: MagicMock, mock_sm: MagicMock, mock_edit: AsyncMock
     ) -> None:
-        mock_sm.get_window_for_thread.return_value = None
+        mock_tr.get_window_for_thread.return_value = None
         user_data = {
             "browse_path": "/tmp/test",
             "browse_page": 2,
@@ -171,15 +173,17 @@ class TestHandleProviderSelect:
     @patch("ccgram.handlers.directory_callbacks.tmux_manager")
     @patch("ccgram.handlers.directory_callbacks.provider_registry")
     @patch("ccgram.handlers.directory_callbacks.session_manager")
+    @patch("ccgram.handlers.directory_callbacks.thread_router")
     async def test_shows_mode_picker(
         self,
+        mock_tr: MagicMock,
         mock_sm: MagicMock,
         mock_registry: MagicMock,
         mock_tmux: MagicMock,
         mock_edit: AsyncMock,
     ) -> None:
         mock_registry.is_valid.return_value = True
-        mock_sm.get_window_for_thread.return_value = None
+        mock_tr.get_window_for_thread.return_value = None
         mock_tmux.create_window = AsyncMock()
 
         user_data = {"browse_path": "/tmp/test", PENDING_THREAD_ID: 42}
@@ -215,8 +219,10 @@ class TestHandleModeSelect:
     @patch("ccgram.handlers.directory_callbacks.session_manager")
     @patch("ccgram.handlers.directory_callbacks.tmux_manager")
     @patch("ccgram.handlers.directory_callbacks.provider_registry")
+    @patch("ccgram.handlers.directory_callbacks.thread_router")
     async def test_creates_window_with_yolo_mode(
         self,
+        mock_tr: MagicMock,
         mock_registry: MagicMock,
         mock_tmux: MagicMock,
         mock_sm: MagicMock,
@@ -235,8 +241,8 @@ class TestHandleModeSelect:
             return_value=(True, "Created window 'proj'", "proj", "@5")
         )
         mock_tmux.stamp_pane_title = AsyncMock()
-        mock_sm.get_window_for_thread.return_value = None
-        mock_sm.resolve_chat_id.return_value = 123
+        mock_tr.get_window_for_thread.return_value = None
+        mock_tr.resolve_chat_id.return_value = 123
         mock_sm.send_to_window = AsyncMock(return_value=(True, "ok"))
         mock_sm.get_window_state.return_value = MagicMock()
 
@@ -257,7 +263,7 @@ class TestHandleModeSelect:
         mock_tmux.stamp_pane_title.assert_awaited_once_with("@5", "codex")
         mock_sm.set_window_provider.assert_called_once_with("@5", "codex")
         mock_sm.set_window_approval_mode.assert_called_once_with("@5", "yolo")
-        mock_sm.set_group_chat_id.assert_called_once_with(100, 42, -100999)
+        mock_tr.set_group_chat_id.assert_called_once_with(100, 42, -100999)
 
     @patch("ccgram.handlers.directory_callbacks.provider_registry")
     async def test_rejects_unknown_mode(self, mock_registry: MagicMock) -> None:
@@ -276,8 +282,10 @@ class TestHandleModeSelect:
     @patch("ccgram.handlers.directory_callbacks.session_manager")
     @patch("ccgram.handlers.directory_callbacks.tmux_manager")
     @patch("ccgram.handlers.directory_callbacks.provider_registry")
+    @patch("ccgram.handlers.directory_callbacks.thread_router")
     async def test_forwards_pending_text(
         self,
+        mock_tr: MagicMock,
         mock_registry: MagicMock,
         mock_tmux: MagicMock,
         mock_sm: MagicMock,
@@ -294,8 +302,8 @@ class TestHandleModeSelect:
             return_value=(True, "Created window 'proj'", "proj", "@1")
         )
         mock_tmux.stamp_pane_title = AsyncMock()
-        mock_sm.get_window_for_thread.return_value = None
-        mock_sm.resolve_chat_id.return_value = 123
+        mock_tr.get_window_for_thread.return_value = None
+        mock_tr.resolve_chat_id.return_value = 123
         mock_sm.send_to_window = AsyncMock(return_value=(True, "ok"))
         mock_sm.get_window_state.return_value = MagicMock()
 

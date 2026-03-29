@@ -204,6 +204,7 @@ _TH = "ccgram.handlers.text_handler"
 
 
 class TestTextHandlerDeadWindow:
+    @patch(f"{_TH}.thread_router")
     @patch(f"{_TH}.tmux_manager")
     @patch(f"{_TH}.session_manager")
     @patch(f"{_TH}.safe_reply", new_callable=AsyncMock)
@@ -212,14 +213,15 @@ class TestTextHandlerDeadWindow:
         mock_safe_reply: AsyncMock,
         mock_sm: MagicMock,
         mock_tm: MagicMock,
+        mock_tr: MagicMock,
         _no_group: MagicMock,
     ) -> None:
-        mock_sm.get_window_for_thread.return_value = "@0"
+        mock_tr.get_window_for_thread.return_value = "@0"
         mock_tm.find_window_by_id = AsyncMock(return_value=None)
         ws = MagicMock()
         ws.cwd = "/tmp/project"
         mock_sm.get_window_state.return_value = ws
-        mock_sm.get_display_name.return_value = "project"
+        mock_tr.get_display_name.return_value = "project"
 
         update = _make_update()
         ctx = _make_context()
@@ -239,6 +241,7 @@ class TestTextHandlerDeadWindow:
         assert "no longer running" in msg_text
         assert "recover" in msg_text.lower()
 
+    @patch(f"{_TH}.thread_router")
     @patch(f"{_TH}.tmux_manager")
     @patch(f"{_TH}.session_manager")
     @patch(f"{_TH}.safe_reply", new_callable=AsyncMock)
@@ -247,14 +250,15 @@ class TestTextHandlerDeadWindow:
         mock_safe_reply: AsyncMock,
         mock_sm: MagicMock,
         mock_tm: MagicMock,
+        mock_tr: MagicMock,
         _no_group: MagicMock,
     ) -> None:
-        mock_sm.get_window_for_thread.return_value = "@0"
+        mock_tr.get_window_for_thread.return_value = "@0"
         mock_tm.find_window_by_id = AsyncMock(return_value=None)
         ws = MagicMock()
         ws.cwd = "/tmp/project"
         mock_sm.get_window_state.return_value = ws
-        mock_sm.get_display_name.return_value = "project"
+        mock_tr.get_display_name.return_value = "project"
 
         update = _make_update(text="my pending message")
         user_data: dict = {}
@@ -269,6 +273,7 @@ class TestTextHandlerDeadWindow:
         assert user_data[PENDING_THREAD_ID] == 42
         assert user_data[RECOVERY_WINDOW_ID] == "@0"
 
+    @patch(f"{_TH}.thread_router")
     @patch(f"{_TH}.tmux_manager")
     @patch(f"{_TH}.session_manager")
     @patch(f"{_TH}.safe_reply", new_callable=AsyncMock)
@@ -279,14 +284,15 @@ class TestTextHandlerDeadWindow:
         mock_safe_reply: AsyncMock,
         mock_sm: MagicMock,
         mock_tm: MagicMock,
+        mock_tr: MagicMock,
         _no_group: MagicMock,
     ) -> None:
-        mock_sm.get_window_for_thread.return_value = "@0"
+        mock_tr.get_window_for_thread.return_value = "@0"
         mock_tm.find_window_by_id = AsyncMock(return_value=None)
         ws = MagicMock()
         ws.cwd = ""
         mock_sm.get_window_state.return_value = ws
-        mock_sm.get_display_name.return_value = "project"
+        mock_tr.get_display_name.return_value = "project"
         mock_browser.return_value = ("Browse:", MagicMock(), [])
 
         update = _make_update()
@@ -302,6 +308,7 @@ class TestTextHandlerDeadWindow:
         mock_sm.unbind_thread.assert_called_once()
         mock_browser.assert_called_once()
 
+    @patch(f"{_TH}.thread_router")
     @patch(f"{_TH}.tmux_manager")
     @patch(f"{_TH}.session_manager")
     @patch(f"{_TH}.safe_reply", new_callable=AsyncMock)
@@ -312,14 +319,15 @@ class TestTextHandlerDeadWindow:
         mock_safe_reply: AsyncMock,
         mock_sm: MagicMock,
         mock_tm: MagicMock,
+        mock_tr: MagicMock,
         _no_group: MagicMock,
     ) -> None:
-        mock_sm.get_window_for_thread.return_value = "@0"
+        mock_tr.get_window_for_thread.return_value = "@0"
         mock_tm.find_window_by_id = AsyncMock(return_value=None)
         ws = MagicMock()
         ws.cwd = "/nonexistent/path"
         mock_sm.get_window_state.return_value = ws
-        mock_sm.get_display_name.return_value = "project"
+        mock_tr.get_display_name.return_value = "project"
         mock_browser.return_value = ("Browse:", MagicMock(), [])
 
         update = _make_update()
@@ -334,6 +342,7 @@ class TestTextHandlerDeadWindow:
 
         mock_sm.unbind_thread.assert_called_once()
 
+    @patch(f"{_TH}.thread_router")
     @patch(f"{_TH}.tmux_manager")
     @patch(f"{_TH}.session_manager")
     @patch(f"{_TH}.safe_reply", new_callable=AsyncMock)
@@ -342,14 +351,15 @@ class TestTextHandlerDeadWindow:
         mock_safe_reply: AsyncMock,
         mock_sm: MagicMock,
         mock_tm: MagicMock,
+        mock_tr: MagicMock,
         _no_group: MagicMock,
     ) -> None:
-        mock_sm.get_window_for_thread.return_value = "@0"
+        mock_tr.get_window_for_thread.return_value = "@0"
         mock_tm.find_window_by_id = AsyncMock(return_value=None)
         ws = MagicMock()
         ws.cwd = "/tmp/project"
         mock_sm.get_window_state.return_value = ws
-        mock_sm.get_display_name.return_value = "project"
+        mock_tr.get_display_name.return_value = "project"
 
         update = _make_update()
         ctx = _make_context()
@@ -439,6 +449,7 @@ class TestBotTextHandlerScopedMenu:
 
 
 class TestRecoveryFreshCallback:
+    @patch(f"{_RC}.thread_router")
     @patch(f"{_RC}.tmux_manager")
     @patch(f"{_RC}.session_manager")
     @patch(f"{_RC}.safe_edit", new_callable=AsyncMock)
@@ -447,6 +458,7 @@ class TestRecoveryFreshCallback:
         _mock_safe_edit: AsyncMock,
         mock_sm: MagicMock,
         mock_tm: MagicMock,
+        mock_tr: MagicMock,
     ) -> None:
         mock_sm.get_window_state.return_value = MagicMock(
             cwd="/tmp/project", provider_name=""
@@ -456,7 +468,7 @@ class TestRecoveryFreshCallback:
         )
         mock_sm.wait_for_session_map_entry = AsyncMock()
         mock_sm.send_to_window = AsyncMock(return_value=(True, "ok"))
-        mock_sm.resolve_chat_id.return_value = -100999
+        mock_tr.resolve_chat_id.return_value = -100999
 
         update = _make_callback_update(data=f"{CB_RECOVERY_FRESH}@0")
         user_data = _recovery_user_data()
@@ -471,11 +483,12 @@ class TestRecoveryFreshCallback:
         mock_tm.create_window.assert_called_once_with(
             "/tmp/project", agent_args="", launch_command="claude"
         )
-        mock_sm.bind_thread.assert_called_once_with(
+        mock_tr.bind_thread.assert_called_once_with(
             100, 42, "@5", window_name="project"
         )
-        mock_sm.set_group_chat_id.assert_called_once_with(100, 42, -100999)
+        mock_tr.set_group_chat_id.assert_called_once_with(100, 42, -100999)
 
+    @patch(f"{_RC}.thread_router")
     @patch(f"{_RC}.tmux_manager")
     @patch(f"{_RC}.session_manager")
     @patch(f"{_RC}.safe_edit", new_callable=AsyncMock)
@@ -486,6 +499,7 @@ class TestRecoveryFreshCallback:
         _mock_safe_edit: AsyncMock,
         mock_sm: MagicMock,
         mock_tm: MagicMock,
+        mock_tr: MagicMock,
     ) -> None:
         mock_sm.get_window_state.return_value = MagicMock(cwd="/tmp/project")
         mock_tm.create_window = AsyncMock(
@@ -493,7 +507,7 @@ class TestRecoveryFreshCallback:
         )
         mock_sm.wait_for_session_map_entry = AsyncMock()
         mock_sm.send_to_window = AsyncMock(return_value=(True, "ok"))
-        mock_sm.resolve_chat_id.return_value = -100999
+        mock_tr.resolve_chat_id.return_value = -100999
 
         update = _make_callback_update(data=f"{CB_RECOVERY_FRESH}@0")
         user_data = _recovery_user_data()
@@ -509,6 +523,7 @@ class TestRecoveryFreshCallback:
         assert PENDING_THREAD_ID not in user_data
         assert RECOVERY_WINDOW_ID not in user_data
 
+    @patch(f"{_RC}.thread_router")
     @patch(f"{_RC}.tmux_manager")
     @patch(f"{_RC}.session_manager")
     @patch(f"{_RC}.safe_edit", new_callable=AsyncMock)
@@ -517,9 +532,10 @@ class TestRecoveryFreshCallback:
         mock_safe_edit: AsyncMock,
         mock_sm: MagicMock,
         _mock_tm: MagicMock,
+        mock_tr: MagicMock,
     ) -> None:
         mock_sm.get_window_state.return_value = MagicMock(cwd="/gone")
-        mock_sm.resolve_chat_id.return_value = -100999
+        mock_tr.resolve_chat_id.return_value = -100999
 
         update = _make_callback_update(data=f"{CB_RECOVERY_FRESH}@0")
         user_data = _recovery_user_data()
@@ -570,6 +586,7 @@ class TestRecoveryFreshCallback:
 
 
 class TestRecoveryContinueCallback:
+    @patch(f"{_RC}.thread_router")
     @patch(f"{_RC}.tmux_manager")
     @patch(f"{_RC}.session_manager")
     @patch(f"{_RC}.safe_edit", new_callable=AsyncMock)
@@ -578,6 +595,7 @@ class TestRecoveryContinueCallback:
         _mock_safe_edit: AsyncMock,
         mock_sm: MagicMock,
         mock_tm: MagicMock,
+        mock_tr: MagicMock,
     ) -> None:
         mock_sm.get_window_state.return_value = MagicMock(
             cwd="/tmp/project", provider_name=""
@@ -587,7 +605,7 @@ class TestRecoveryContinueCallback:
         )
         mock_sm.wait_for_session_map_entry = AsyncMock()
         mock_sm.send_to_window = AsyncMock(return_value=(True, "ok"))
-        mock_sm.resolve_chat_id.return_value = -100999
+        mock_tr.resolve_chat_id.return_value = -100999
 
         update = _make_callback_update(data=f"{CB_RECOVERY_CONTINUE}@0")
         user_data = _recovery_user_data()
@@ -601,10 +619,11 @@ class TestRecoveryContinueCallback:
         mock_tm.create_window.assert_called_once_with(
             "/tmp/project", agent_args="--continue", launch_command="claude"
         )
-        mock_sm.bind_thread.assert_called_once_with(
+        mock_tr.bind_thread.assert_called_once_with(
             100, 42, "@5", window_name="project"
         )
 
+    @patch(f"{_RC}.thread_router")
     @patch(f"{_RC}.tmux_manager")
     @patch(f"{_RC}.session_manager")
     @patch(f"{_RC}.safe_edit", new_callable=AsyncMock)
@@ -615,6 +634,7 @@ class TestRecoveryContinueCallback:
         _mock_safe_edit: AsyncMock,
         mock_sm: MagicMock,
         mock_tm: MagicMock,
+        mock_tr: MagicMock,
     ) -> None:
         mock_sm.get_window_state.return_value = MagicMock(cwd="/tmp/project")
         mock_tm.create_window = AsyncMock(
@@ -622,7 +642,7 @@ class TestRecoveryContinueCallback:
         )
         mock_sm.wait_for_session_map_entry = AsyncMock()
         mock_sm.send_to_window = AsyncMock(return_value=(True, "ok"))
-        mock_sm.resolve_chat_id.return_value = -100999
+        mock_tr.resolve_chat_id.return_value = -100999
 
         update = _make_callback_update(data=f"{CB_RECOVERY_CONTINUE}@0")
         user_data = _recovery_user_data(text="my message")
@@ -737,6 +757,7 @@ class TestRecoveryResumeCallback:
 
 
 class TestRecoveryResumePickCallback:
+    @patch(f"{_RC}.thread_router")
     @patch(f"{_RC}.tmux_manager")
     @patch(f"{_RC}.session_manager")
     @patch(f"{_RC}.safe_edit", new_callable=AsyncMock)
@@ -745,6 +766,7 @@ class TestRecoveryResumePickCallback:
         _mock_safe_edit: AsyncMock,
         mock_sm: MagicMock,
         mock_tm: MagicMock,
+        mock_tr: MagicMock,
     ) -> None:
         mock_sm.get_window_state.return_value = MagicMock(
             cwd="/tmp/project", provider_name=""
@@ -754,7 +776,7 @@ class TestRecoveryResumePickCallback:
         )
         mock_sm.wait_for_session_map_entry = AsyncMock()
         mock_sm.send_to_window = AsyncMock(return_value=(True, "ok"))
-        mock_sm.resolve_chat_id.return_value = -100999
+        mock_tr.resolve_chat_id.return_value = -100999
 
         update = _make_callback_update(data=f"{CB_RECOVERY_PICK}0")
         user_data = _recovery_user_data()
@@ -780,8 +802,9 @@ class TestRecoveryResumePickCallback:
             agent_args="--resume a1b2c3d4-0000-0000-0000-000000000001",
             launch_command="claude",
         )
-        mock_sm.bind_thread.assert_called_once()
+        mock_tr.bind_thread.assert_called_once()
 
+    @patch(f"{_RC}.thread_router")
     @patch(f"{_RC}.tmux_manager")
     @patch(f"{_RC}.session_manager")
     @patch(f"{_RC}.safe_edit", new_callable=AsyncMock)
@@ -790,6 +813,7 @@ class TestRecoveryResumePickCallback:
         _mock_safe_edit: AsyncMock,
         mock_sm: MagicMock,
         mock_tm: MagicMock,
+        mock_tr: MagicMock,
     ) -> None:
         mock_sm.get_window_state.return_value = MagicMock(
             cwd="/tmp/project", provider_name=""
@@ -799,7 +823,7 @@ class TestRecoveryResumePickCallback:
         )
         mock_sm.wait_for_session_map_entry = AsyncMock()
         mock_sm.send_to_window = AsyncMock(return_value=(True, "ok"))
-        mock_sm.resolve_chat_id.return_value = -100999
+        mock_tr.resolve_chat_id.return_value = -100999
 
         update = _make_callback_update(data=f"{CB_RECOVERY_PICK}1")
         user_data = _recovery_user_data()

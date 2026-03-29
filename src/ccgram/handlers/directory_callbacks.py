@@ -25,6 +25,7 @@ from telegram.ext import ContextTypes
 
 from ..providers import registry as provider_registry
 from ..session import session_manager
+from ..thread_router import thread_router
 from ..tmux_manager import tmux_manager
 from .callback_data import (
     CB_DIR_CANCEL,
@@ -356,9 +357,9 @@ async def _handle_confirm(
 
     # Guard against double-click: if thread already has a window, skip
     if pending_thread_id is not None:
-        existing_wid = session_manager.get_window_for_thread(user_id, pending_thread_id)
+        existing_wid = thread_router.get_window_for_thread(user_id, pending_thread_id)
         if existing_wid is not None:
-            display = session_manager.get_display_name(existing_wid)
+            display = thread_router.get_display_name(existing_wid)
             logger.warning(
                 "Thread %d already bound to window %s (%s), ignoring duplicate confirm",
                 pending_thread_id,
@@ -397,9 +398,9 @@ async def _validate_provider_select(
 
     # Guard against double-click: if thread already has a window, skip
     if pending_thread_id is not None:
-        existing_wid = session_manager.get_window_for_thread(user_id, pending_thread_id)
+        existing_wid = thread_router.get_window_for_thread(user_id, pending_thread_id)
         if existing_wid is not None:
-            display = session_manager.get_display_name(existing_wid)
+            display = thread_router.get_display_name(existing_wid)
             logger.warning(
                 "Thread %d already bound to window %s (%s), ignoring duplicate provider select",
                 pending_thread_id,
@@ -543,17 +544,17 @@ async def _create_window_and_bind(
         await safe_edit(query, f"✅ {message}")
         return
 
-    session_manager.bind_thread(
+    thread_router.bind_thread(
         user_id, pending_thread_id, created_wid, window_name=created_wname
     )
     query_message = query.message
     chat = query_message.chat if query_message else None
     if chat and chat.type in ("group", "supergroup"):
-        session_manager.set_group_chat_id(user_id, pending_thread_id, chat.id)
+        thread_router.set_group_chat_id(user_id, pending_thread_id, chat.id)
 
     try:
         await context.bot.edit_forum_topic(
-            chat_id=session_manager.resolve_chat_id(user_id, pending_thread_id),
+            chat_id=thread_router.resolve_chat_id(user_id, pending_thread_id),
             message_thread_id=pending_thread_id,
             name=format_topic_name_for_mode(created_wname, approval_mode),
         )
@@ -598,7 +599,7 @@ async def _create_window_and_bind(
                 logger.warning("Failed to forward pending text: %s", send_msg)
                 await safe_send(
                     context.bot,
-                    session_manager.resolve_chat_id(user_id, pending_thread_id),
+                    thread_router.resolve_chat_id(user_id, pending_thread_id),
                     f"❌ Failed to send pending message: {send_msg}",
                     message_thread_id=pending_thread_id,
                 )

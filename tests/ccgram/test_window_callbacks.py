@@ -47,6 +47,7 @@ class TestBindWindowCallback:
 
         with (
             patch("ccgram.handlers.window_callbacks.session_manager") as mock_sm,
+            patch("ccgram.handlers.window_callbacks.thread_router") as mock_tr,
             patch(
                 "ccgram.handlers.window_callbacks.tmux_manager.find_window_by_id",
                 new_callable=AsyncMock,
@@ -55,14 +56,14 @@ class TestBindWindowCallback:
             patch("ccgram.handlers.window_callbacks.safe_edit") as mock_edit,
             patch("ccgram.handlers.window_callbacks.format_topic_name_for_mode"),
         ):
-            mock_sm.resolve_chat_id.return_value = -100
+            mock_tr.resolve_chat_id.return_value = -100
             mock_sm.get_approval_mode.return_value = "normal"
             await handle_window_callback(query, 100, f"{CB_WIN_BIND}0", update, context)
 
-            mock_sm.bind_thread.assert_called_once_with(
+            mock_tr.bind_thread.assert_called_once_with(
                 100, 42, "@5", window_name="my-project"
             )
-            mock_sm.set_group_chat_id.assert_called_once_with(100, 42, -100999)
+            mock_tr.set_group_chat_id.assert_called_once_with(100, 42, -100999)
             mock_edit.assert_called_once()
             assert "my-project" in mock_edit.call_args[0][1]
 

@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from telegram import Bot
 
 from ..providers.shell import match_prompt
-from ..session import session_manager
+from ..thread_router import thread_router
 from .message_sender import edit_with_fallback, rate_limit_send_message
 
 logger = structlog.get_logger()
@@ -484,7 +484,7 @@ async def _relay_passive_output(
 
     Formats as: ``❯ <command>`` header followed by output in a code block.
     """
-    chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+    chat_id = thread_router.resolve_chat_id(user_id, thread_id)
 
     if passive.text != state.last_output:
         state.last_output = passive.text

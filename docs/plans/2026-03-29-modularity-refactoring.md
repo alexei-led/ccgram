@@ -128,17 +128,17 @@ Design doc: `docs/design/thread-router/design.md`, `docs/design/session-state/de
 
 #### Task 7: Update consumer imports (batch 1 — handlers)
 
-- [ ] Update `src/ccgram/handlers/text_handler.py`: import `thread_router` for routing methods
-- [ ] Update `src/ccgram/handlers/message_queue.py`: import `thread_router` for `resolve_chat_id`
-- [ ] Update `src/ccgram/handlers/interactive_ui.py`: import `thread_router` for routing
-- [ ] Update `src/ccgram/handlers/shell_commands.py`: import `thread_router` for routing
-- [ ] Update `src/ccgram/handlers/shell_capture.py`: import `thread_router` if needed
-- [ ] Update `src/ccgram/handlers/window_callbacks.py`: import `thread_router`
-- [ ] Update `src/ccgram/handlers/directory_callbacks.py`: import `thread_router`
-- [ ] Update `src/ccgram/handlers/directory_browser.py`: import `thread_router`
-- [ ] Update `src/ccgram/handlers/recovery_callbacks.py`: import `thread_router`
-- [ ] Update `src/ccgram/handlers/screenshot_callbacks.py`: import `thread_router`
-- [ ] Run `make test` — must pass
+- [x] Update `src/ccgram/handlers/text_handler.py`: import `thread_router` for routing methods
+- [x] Update `src/ccgram/handlers/message_queue.py`: import `thread_router` for `resolve_chat_id`
+- [x] Update `src/ccgram/handlers/interactive_ui.py`: import `thread_router` for routing
+- [x] Update `src/ccgram/handlers/shell_commands.py`: import `thread_router` for routing
+- [x] Update `src/ccgram/handlers/shell_capture.py`: import `thread_router` if needed
+- [x] Update `src/ccgram/handlers/window_callbacks.py`: import `thread_router`
+- [x] Update `src/ccgram/handlers/directory_callbacks.py`: import `thread_router`
+- [x] Update `src/ccgram/handlers/directory_browser.py`: import `thread_router`
+- [x] Update `src/ccgram/handlers/recovery_callbacks.py`: import `thread_router`
+- [x] Update `src/ccgram/handlers/screenshot_callbacks.py`: import `thread_router`
+- [x] Run `make test` — must pass
 
 #### Task 8: Update consumer imports (batch 2 — core + remaining)
 
