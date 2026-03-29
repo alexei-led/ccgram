@@ -104,12 +104,12 @@ Design doc: `docs/design/thread-router/design.md`, `docs/design/session-state/de
 
 #### Task 5: Create Protocol definitions
 
-- [ ] Create `src/ccgram/protocols.py` with Protocol classes:
+- [x] Create `src/ccgram/protocols.py` with Protocol classes:
   - `WindowStateStore`: `get_window_state()`, `get_display_name()`, `get_session_id_for_window()`, `clear_window_session()`
   - `UserPreferences`: notification/approval/batch mode getters, setters, cyclers
   - `SessionResolver`: `resolve_session_for_window()`, `get_recent_messages()`
-- [ ] Add `TYPE_CHECKING` guard for Protocol imports to avoid runtime overhead
-- [ ] Run `make typecheck` — must pass
+- [x] Add `TYPE_CHECKING` guard for Protocol imports to avoid runtime overhead
+- [x] Run `make typecheck` — must pass
 
 #### Task 6: Extract ThreadRouter class
 
