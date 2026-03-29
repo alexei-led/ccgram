@@ -203,14 +203,14 @@ Design doc: `docs/design/bot-shell/design.md`, `docs/design/callback-dispatch/de
 
 #### Task 11: Extract topic orchestration from bot.py
 
-- [ ] Create `src/ccgram/handlers/topic_orchestration.py`
-- [ ] Move from `bot.py`:
+- [x] Create `src/ccgram/handlers/topic_orchestration.py`
+- [x] Move from `bot.py`:
   - `_handle_new_window()` and helpers
   - `_adopt_unbound_windows()`
   - Rate limiting state: `_topic_create_retry_until`
-- [ ] Update `bot.py` `post_init()` to import and use `handle_new_window` from `topic_orchestration`
-- [ ] Add tests in `tests/ccgram/handlers/test_topic_orchestration.py`: `test_handle_new_window_creates_topic`, `test_handle_new_window_skips_already_bound`, `test_rate_limit_backoff`
-- [ ] Run `make test` — must pass
+- [x] Update `bot.py` `post_init()` to import and use `handle_new_window` from `topic_orchestration`
+- [x] Add tests in `tests/ccgram/handlers/test_topic_orchestration.py`: `test_handle_new_window_creates_topic`, `test_handle_new_window_skips_already_bound`, `test_rate_limit_backoff`
+- [x] Run `make test` — must pass
 
 #### Task 12: Wire callback registry into bot.py and remove old dispatch
 

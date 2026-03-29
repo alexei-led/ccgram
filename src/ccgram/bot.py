@@ -23,7 +23,6 @@ import structlog
 import os
 import re
 import signal
-import time
 from pathlib import Path
 
 from telegram import (
@@ -34,7 +33,7 @@ from telegram import (
     InputTextMessageContent,
     Update,
 )
-from telegram.error import BadRequest, Conflict, NetworkError, RetryAfter, TelegramError
+from telegram.error import BadRequest, Conflict, NetworkError, TelegramError
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -50,13 +49,14 @@ from .cc_commands import (
     register_commands,
 )
 from .providers import (
-    detect_provider_from_pane,
-    detect_provider_from_runtime,
     get_provider,
     get_provider_for_window,
-    should_probe_pane_title_for_provider_detection,
 )
 from .config import config
+from .handlers.topic_orchestration import (
+    adopt_unbound_windows as _adopt_unbound_windows,
+    handle_new_window as _handle_new_window,
+)
 from .handlers.command_orchestration import (
     forward_command_handler,
     sync_scoped_menu_for_text_context as _sync_scoped_menu_for_text_context,
@@ -181,11 +181,6 @@ session_monitor: SessionMonitor | None = None
 
 # Status polling task
 _status_poll_task: asyncio.Task | None = None
-
-# Per-chat backoff for auto topic creation after Telegram flood control.
-# chat_id -> monotonic timestamp when next attempt is allowed.
-_topic_create_retry_until: dict[int, float] = {}
-_TOPIC_CREATE_RETRY_BUFFER_SECONDS = 1
 
 
 def is_user_allowed(user_id: int | None) -> bool:
@@ -984,176 +979,7 @@ async def handle_new_message(msg: NewMessage, bot: Bot) -> None:
                     pass
 
 
-# --- Auto-create topic for new tmux windows ---
-
-
-async def _handle_new_window(event: NewWindowEvent, bot: Bot) -> None:
-    """Create a Telegram forum topic for a newly detected tmux window.
-
-    Skips if the window is already bound to a topic. Creates one topic per
-    unique group chat, binds all users in that chat.
-    """
-
-    # Check if this window is already bound to any topic
-    for _, _, bound_wid in thread_router.iter_thread_bindings():
-        if bound_wid == event.window_id:
-            logger.debug(
-                "New window %s already bound, skipping topic creation", event.window_id
-            )
-            return
-
-    # Auto-detect provider from the running process (only if not already set).
-    # detect_provider_from_command returns "" for unrecognized commands (shells),
-    # so we only persist when a known CLI is confidently identified.
-    existing_provider = session_manager.get_window_state(event.window_id).provider_name
-    if not existing_provider:
-        w = await tmux_manager.find_window_by_id(event.window_id)
-        if w and w.pane_current_command:
-            detected = await detect_provider_from_pane(
-                w.pane_current_command,
-                pane_tty=w.pane_tty,
-                window_id=event.window_id,
-            )
-            if not detected and should_probe_pane_title_for_provider_detection(
-                w.pane_current_command
-            ):
-                pane_title = await tmux_manager.get_pane_title(event.window_id)
-                detected = detect_provider_from_runtime(
-                    w.pane_current_command,
-                    pane_title=pane_title,
-                )
-            if detected:
-                session_manager.set_window_provider(event.window_id, detected)
-                logger.info(
-                    "Auto-detected provider %r for window %s (command=%s)",
-                    detected,
-                    event.window_id,
-                    w.pane_current_command,
-                )
-
-    topic_name = event.window_name or Path(event.cwd).name or event.window_id
-
-    # Collect unique chat_ids from existing bindings
-    seen_chats: set[int] = set()
-    for user_id, thread_id, _ in thread_router.iter_thread_bindings():
-        chat_id = thread_router.resolve_chat_id(user_id, thread_id)
-        if chat_id != user_id:  # Only group chats (not fallback to user_id)
-            seen_chats.add(chat_id)
-
-    # Fallback: use preserved group_chat_ids (post-restart, no bindings left)
-    if not seen_chats:
-        seen_chats.update(
-            cid for cid in thread_router.group_chat_ids.values() if cid < 0
-        )
-
-    if not seen_chats:
-        if config.group_id:
-            seen_chats.add(config.group_id)
-            logger.info(
-                "Cold-start: using CCBOT_GROUP_ID=%d for auto-topic (window %s)",
-                config.group_id,
-                event.window_id,
-            )
-        else:
-            logger.debug(
-                "No group chats found for auto-topic creation (window %s)",
-                event.window_id,
-            )
-            return
-
-    for chat_id in seen_chats:
-        retry_until = _topic_create_retry_until.get(chat_id, 0.0)
-        now = time.monotonic()
-        if now < retry_until:
-            wait_seconds = max(1, int(retry_until - now))
-            logger.debug(
-                "Skipping auto-topic creation for chat %d (window %s), "
-                "backoff active for %ss",
-                chat_id,
-                event.window_id,
-                wait_seconds,
-            )
-            continue
-
-        try:
-            topic = await bot.create_forum_topic(chat_id=chat_id, name=topic_name)
-            _topic_create_retry_until.pop(chat_id, None)
-            logger.info(
-                "Auto-created topic '%s' (thread=%d) in chat %d for window %s",
-                topic_name,
-                topic.message_thread_id,
-                chat_id,
-                event.window_id,
-            )
-            # Bind one user to establish the route for this chat.
-            # In cold-start (no existing bindings), use the first allowed user.
-            bound = False
-            for user_id, thread_id, _ in thread_router.iter_thread_bindings():
-                if thread_router.resolve_chat_id(user_id, thread_id) == chat_id:
-                    thread_router.bind_thread(
-                        user_id,
-                        topic.message_thread_id,
-                        event.window_id,
-                        window_name=topic_name,
-                    )
-                    thread_router.set_group_chat_id(
-                        user_id, topic.message_thread_id, chat_id
-                    )
-                    bound = True
-                    break
-            if not bound and config.allowed_users:
-                first_user_id = next(iter(config.allowed_users))
-                thread_router.bind_thread(
-                    first_user_id,
-                    topic.message_thread_id,
-                    event.window_id,
-                    window_name=topic_name,
-                )
-                thread_router.set_group_chat_id(
-                    first_user_id, topic.message_thread_id, chat_id
-                )
-        except RetryAfter as e:
-            retry_after_seconds = (
-                e.retry_after
-                if isinstance(e.retry_after, int)
-                else int(e.retry_after.total_seconds())
-            )
-            retry_after_seconds = max(1, retry_after_seconds)
-            _topic_create_retry_until[chat_id] = (
-                time.monotonic()
-                + retry_after_seconds
-                + _TOPIC_CREATE_RETRY_BUFFER_SECONDS
-            )
-            logger.warning(
-                "Flood control creating topic for window %s in chat %d, "
-                "backing off %ss",
-                event.window_id,
-                chat_id,
-                retry_after_seconds,
-            )
-        except TelegramError:
-            logger.exception(
-                "Failed to create topic for window %s in chat %d",
-                event.window_id,
-                chat_id,
-            )
-
-
 # --- App lifecycle ---
-
-
-async def _adopt_unbound_windows(bot: Bot) -> None:
-    """Auto-adopt known-but-unbound windows (post-restart recovery)."""
-    all_windows = await tmux_manager.list_windows()
-    live_ids = {w.window_id for w in all_windows}
-    live_pairs = [(w.window_id, w.window_name) for w in all_windows]
-    audit = session_manager.audit_state(live_ids, live_pairs)
-    orphaned = [i for i in audit.issues if i.category == "orphaned_window"]
-    if orphaned:
-        from .handlers.sync_command import _adopt_orphaned_windows
-
-        await _adopt_orphaned_windows(bot, orphaned)
-        logger.info("Startup: adopted %d unbound window(s)", len(orphaned))
 
 
 def _global_exception_handler(

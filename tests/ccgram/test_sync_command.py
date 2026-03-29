@@ -372,7 +372,8 @@ class TestSyncFix:
         with (
             patch("ccgram.handlers.sync_command.safe_edit"),
             patch(
-                "ccgram.bot._handle_new_window", new_callable=AsyncMock
+                "ccgram.handlers.topic_orchestration.handle_new_window",
+                new_callable=AsyncMock,
             ) as mock_handle,
         ):
             await handle_sync_fix(query)
@@ -464,7 +465,8 @@ class TestDeadTopicRecreation:
         mock_bot = AsyncMock()
 
         with patch(
-            "ccgram.bot._handle_new_window", new_callable=AsyncMock
+            "ccgram.handlers.topic_orchestration.handle_new_window",
+            new_callable=AsyncMock,
         ) as mock_handle:
             count = await _recreate_dead_topics(mock_bot, issues)
             assert count == 1
@@ -481,7 +483,8 @@ class TestDeadTopicRecreation:
         mock_bot = AsyncMock()
 
         with patch(
-            "ccgram.bot._handle_new_window", new_callable=AsyncMock
+            "ccgram.handlers.topic_orchestration.handle_new_window",
+            new_callable=AsyncMock,
         ) as mock_handle:
             count = await _recreate_dead_topics(mock_bot, issues)
             assert count == 0
@@ -504,7 +507,7 @@ class TestDeadTopicRecreation:
         mock_bot = AsyncMock()
 
         with patch(
-            "ccgram.bot._handle_new_window",
+            "ccgram.handlers.topic_orchestration.handle_new_window",
             new_callable=AsyncMock,
             side_effect=TelegramError("Failed"),
         ):
@@ -591,7 +594,8 @@ class TestSyncFixDeadTopic:
         with (
             patch("ccgram.handlers.sync_command.safe_edit") as mock_edit,
             patch(
-                "ccgram.bot._handle_new_window", new_callable=AsyncMock
+                "ccgram.handlers.topic_orchestration.handle_new_window",
+                new_callable=AsyncMock,
             ) as mock_handle,
         ):
             await handle_sync_fix(query)

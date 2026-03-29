@@ -95,11 +95,11 @@ class TestDetectProviderFromRuntime:
 
 
 class TestHandleNewWindowAutoDetection:
-    @patch("ccgram.bot.tmux_manager")
-    @patch("ccgram.bot.session_manager")
-    @patch("ccgram.bot.config")
+    @patch("ccgram.handlers.topic_orchestration.tmux_manager")
+    @patch("ccgram.handlers.topic_orchestration.session_manager")
+    @patch("ccgram.handlers.topic_orchestration.config")
     @patch(
-        "ccgram.bot.detect_provider_from_pane",
+        "ccgram.handlers.topic_orchestration.detect_provider_from_pane",
         new_callable=AsyncMock,
         return_value="codex",
     )
@@ -110,7 +110,9 @@ class TestHandleNewWindowAutoDetection:
         mock_sm: MagicMock,
         mock_tmux: MagicMock,
     ) -> None:
-        from ccgram.bot import _handle_new_window
+        from ccgram.handlers.topic_orchestration import (
+            handle_new_window as _handle_new_window,
+        )
         from ccgram.session_monitor import NewWindowEvent
 
         mock_config.group_id = None
@@ -131,10 +133,13 @@ class TestHandleNewWindowAutoDetection:
         mock_detect.assert_awaited_once()
         mock_sm.set_window_provider.assert_called_once_with("@5", "codex")
 
-    @patch("ccgram.bot.tmux_manager")
-    @patch("ccgram.bot.session_manager")
-    @patch("ccgram.bot.config")
-    @patch("ccgram.bot.detect_provider_from_pane", new_callable=AsyncMock)
+    @patch("ccgram.handlers.topic_orchestration.tmux_manager")
+    @patch("ccgram.handlers.topic_orchestration.session_manager")
+    @patch("ccgram.handlers.topic_orchestration.config")
+    @patch(
+        "ccgram.handlers.topic_orchestration.detect_provider_from_pane",
+        new_callable=AsyncMock,
+    )
     async def test_skips_detection_when_no_pane_command(
         self,
         mock_detect: MagicMock,
@@ -142,7 +147,9 @@ class TestHandleNewWindowAutoDetection:
         mock_sm: MagicMock,
         mock_tmux: MagicMock,
     ) -> None:
-        from ccgram.bot import _handle_new_window
+        from ccgram.handlers.topic_orchestration import (
+            handle_new_window as _handle_new_window,
+        )
         from ccgram.session_monitor import NewWindowEvent
 
         mock_config.group_id = None
@@ -162,10 +169,13 @@ class TestHandleNewWindowAutoDetection:
         mock_detect.assert_not_called()
         mock_sm.set_window_provider.assert_not_called()
 
-    @patch("ccgram.bot.tmux_manager")
-    @patch("ccgram.bot.session_manager")
-    @patch("ccgram.bot.config")
-    @patch("ccgram.bot.detect_provider_from_pane", new_callable=AsyncMock)
+    @patch("ccgram.handlers.topic_orchestration.tmux_manager")
+    @patch("ccgram.handlers.topic_orchestration.session_manager")
+    @patch("ccgram.handlers.topic_orchestration.config")
+    @patch(
+        "ccgram.handlers.topic_orchestration.detect_provider_from_pane",
+        new_callable=AsyncMock,
+    )
     async def test_skips_detection_when_window_not_found(
         self,
         mock_detect: MagicMock,
@@ -173,7 +183,9 @@ class TestHandleNewWindowAutoDetection:
         mock_sm: MagicMock,
         mock_tmux: MagicMock,
     ) -> None:
-        from ccgram.bot import _handle_new_window
+        from ccgram.handlers.topic_orchestration import (
+            handle_new_window as _handle_new_window,
+        )
         from ccgram.session_monitor import NewWindowEvent
 
         mock_config.group_id = None
@@ -191,11 +203,13 @@ class TestHandleNewWindowAutoDetection:
         mock_detect.assert_not_called()
         mock_sm.set_window_provider.assert_not_called()
 
-    @patch("ccgram.bot.tmux_manager")
-    @patch("ccgram.bot.session_manager")
-    @patch("ccgram.bot.config")
+    @patch("ccgram.handlers.topic_orchestration.tmux_manager")
+    @patch("ccgram.handlers.topic_orchestration.session_manager")
+    @patch("ccgram.handlers.topic_orchestration.config")
     @patch(
-        "ccgram.bot.detect_provider_from_pane", new_callable=AsyncMock, return_value=""
+        "ccgram.handlers.topic_orchestration.detect_provider_from_pane",
+        new_callable=AsyncMock,
+        return_value="",
     )
     async def test_detects_gemini_from_pane_title_when_command_is_bun(
         self,
@@ -204,7 +218,9 @@ class TestHandleNewWindowAutoDetection:
         mock_sm: MagicMock,
         mock_tmux: MagicMock,
     ) -> None:
-        from ccgram.bot import _handle_new_window
+        from ccgram.handlers.topic_orchestration import (
+            handle_new_window as _handle_new_window,
+        )
         from ccgram.session_monitor import NewWindowEvent
 
         mock_config.group_id = None
@@ -227,11 +243,13 @@ class TestHandleNewWindowAutoDetection:
         mock_tmux.get_pane_title.assert_awaited_once_with("@8")
         mock_sm.set_window_provider.assert_called_once_with("@8", "gemini")
 
-    @patch("ccgram.bot.tmux_manager")
-    @patch("ccgram.bot.session_manager")
-    @patch("ccgram.bot.config")
+    @patch("ccgram.handlers.topic_orchestration.tmux_manager")
+    @patch("ccgram.handlers.topic_orchestration.session_manager")
+    @patch("ccgram.handlers.topic_orchestration.config")
     @patch(
-        "ccgram.bot.detect_provider_from_pane", new_callable=AsyncMock, return_value=""
+        "ccgram.handlers.topic_orchestration.detect_provider_from_pane",
+        new_callable=AsyncMock,
+        return_value="",
     )
     async def test_does_not_detect_gemini_from_generic_working_text(
         self,
@@ -240,7 +258,9 @@ class TestHandleNewWindowAutoDetection:
         mock_sm: MagicMock,
         mock_tmux: MagicMock,
     ) -> None:
-        from ccgram.bot import _handle_new_window
+        from ccgram.handlers.topic_orchestration import (
+            handle_new_window as _handle_new_window,
+        )
         from ccgram.session_monitor import NewWindowEvent
 
         mock_config.group_id = None
@@ -263,11 +283,13 @@ class TestHandleNewWindowAutoDetection:
         mock_tmux.get_pane_title.assert_awaited_once_with("@10")
         mock_sm.set_window_provider.assert_not_called()
 
-    @patch("ccgram.bot.tmux_manager")
-    @patch("ccgram.bot.session_manager")
-    @patch("ccgram.bot.config")
+    @patch("ccgram.handlers.topic_orchestration.tmux_manager")
+    @patch("ccgram.handlers.topic_orchestration.session_manager")
+    @patch("ccgram.handlers.topic_orchestration.config")
     @patch(
-        "ccgram.bot.detect_provider_from_pane", new_callable=AsyncMock, return_value=""
+        "ccgram.handlers.topic_orchestration.detect_provider_from_pane",
+        new_callable=AsyncMock,
+        return_value="",
     )
     async def test_skips_provider_set_for_unrecognized_command(
         self,
@@ -276,7 +298,9 @@ class TestHandleNewWindowAutoDetection:
         mock_sm: MagicMock,
         mock_tmux: MagicMock,
     ) -> None:
-        from ccgram.bot import _handle_new_window
+        from ccgram.handlers.topic_orchestration import (
+            handle_new_window as _handle_new_window,
+        )
         from ccgram.session_monitor import NewWindowEvent
 
         mock_config.group_id = None
