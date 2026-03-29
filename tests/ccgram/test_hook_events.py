@@ -614,7 +614,7 @@ class TestHandleSessionEnd:
             patch(
                 "ccgram.handlers.message_queue.enqueue_status_update"
             ) as mock_enqueue,
-            patch("ccgram.handlers.status_polling.clear_seen_status") as mock_clear,
+            patch("ccgram.handlers.polling_strategies.clear_seen_status") as mock_clear,
         ):
             event = _make_event(event_type="SessionEnd", data={"reason": "clear"})
             await dispatch_hook_event(event, bot)
@@ -645,7 +645,7 @@ class TestHandleSessionEnd:
             ),
             patch("ccgram.handlers.topic_emoji.update_topic_emoji"),
             patch("ccgram.handlers.message_queue.enqueue_status_update"),
-            patch("ccgram.handlers.status_polling.clear_seen_status"),
+            patch("ccgram.handlers.polling_strategies.clear_seen_status"),
         ):
             event = _make_event(event_type="SessionEnd", data={"reason": "clear"})
             await dispatch_hook_event(event, bot)

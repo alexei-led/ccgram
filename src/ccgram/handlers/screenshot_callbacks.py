@@ -110,7 +110,7 @@ def build_screenshot_keyboard(
 
 def build_toolbar_keyboard(window_id: str) -> InlineKeyboardMarkup:
     """Build inline keyboard for /toolbar command."""
-    from .status_polling import is_rc_active
+    from .polling_strategies import is_rc_active
 
     rc_label = "\U0001f4e1\u2713 RC" if is_rc_active(window_id) else "\U0001f4e1 RC"
     return InlineKeyboardMarkup(
@@ -194,7 +194,7 @@ async def _handle_pane_screenshot(
 
 async def _handle_remote_control(query: CallbackQuery, user_id: int, data: str) -> None:
     """Handle CB_STATUS_REMOTE: activate Remote Control or show status."""
-    from .status_polling import is_rc_active
+    from .polling_strategies import is_rc_active
 
     window_id = data[len(CB_STATUS_REMOTE) :]
     if not user_owns_window(user_id, window_id):

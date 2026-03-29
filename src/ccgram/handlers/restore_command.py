@@ -21,7 +21,7 @@ from ..session import session_manager
 from ..thread_router import thread_router
 from ..tmux_manager import tmux_manager
 from .message_sender import safe_reply
-from .status_polling import clear_dead_notification
+from .polling_strategies import clear_dead_notification
 from .topic_emoji import format_topic_name_for_mode
 
 logger = structlog.get_logger()

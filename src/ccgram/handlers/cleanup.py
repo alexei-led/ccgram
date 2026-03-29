@@ -55,7 +55,7 @@ async def clear_topic_state(
     clear_batch_for_topic(user_id, thread_id)
 
     # Clear poll state (lazy import to avoid circular dep)
-    from .status_polling import (
+    from .polling_strategies import (
         clear_dead_notification,
         clear_pane_alerts,
         clear_topic_poll_state,

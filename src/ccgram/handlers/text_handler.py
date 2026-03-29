@@ -37,7 +37,7 @@ from .message_sender import (
     safe_reply,
 )
 from .recovery_callbacks import build_recovery_keyboard
-from .status_polling import clear_probe_failures
+from .polling_strategies import clear_probe_failures
 from .user_state import PENDING_THREAD_ID, PENDING_THREAD_TEXT, RECOVERY_WINDOW_ID
 from ..session import session_manager
 from ..thread_router import thread_router
@@ -265,7 +265,7 @@ async def _handle_dead_window(
             thread_id,
         )
         thread_router.unbind_thread(user_id, thread_id)
-        from .status_polling import clear_dead_notification
+        from .polling_strategies import clear_dead_notification
 
         clear_dead_notification(user_id, thread_id)
         start_path = str(Path.cwd())

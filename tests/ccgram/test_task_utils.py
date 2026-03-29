@@ -77,7 +77,7 @@ async def test_backoff_constants_session_monitor() -> None:
 
 
 async def test_backoff_constants_status_polling() -> None:
-    from ccgram.handlers.status_polling import _BACKOFF_MAX, _BACKOFF_MIN
+    from ccgram.handlers.polling_coordinator import _BACKOFF_MAX, _BACKOFF_MIN
 
     assert _BACKOFF_MIN == 2.0
     assert _BACKOFF_MAX == 30.0

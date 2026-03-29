@@ -38,7 +38,7 @@ def _debounce_for(state: str) -> float:
 
 @pytest.fixture(autouse=True)
 def _reset():
-    from ccgram.handlers.status_polling import reset_seen_status_state
+    from ccgram.handlers.polling_strategies import reset_seen_status_state
 
     reset_all_state()
     reset_seen_status_state()
@@ -366,21 +366,23 @@ class TestClearTopicEmojiState:
 class TestStatusPollingIntegration:
     async def test_active_window_with_status_updates_emoji(self) -> None:
         with (
-            patch("ccgram.handlers.status_polling.tmux_manager") as mock_tm,
-            patch("ccgram.handlers.status_polling.session_manager"),
-            patch("ccgram.handlers.status_polling.thread_router") as mock_tr,
-            patch("ccgram.handlers.status_polling.update_topic_emoji") as mock_emoji,
-            patch("ccgram.handlers.status_polling.enqueue_status_update"),
+            patch("ccgram.handlers.polling_coordinator.tmux_manager") as mock_tm,
+            patch("ccgram.handlers.polling_coordinator.session_manager"),
+            patch("ccgram.handlers.polling_coordinator.thread_router") as mock_tr,
             patch(
-                "ccgram.handlers.status_polling.get_interactive_window",
+                "ccgram.handlers.polling_coordinator.update_topic_emoji"
+            ) as mock_emoji,
+            patch("ccgram.handlers.polling_coordinator.enqueue_status_update"),
+            patch(
+                "ccgram.handlers.polling_coordinator.get_interactive_window",
                 return_value=None,
             ),
             patch(
-                "ccgram.handlers.status_polling.get_provider_for_window",
+                "ccgram.handlers.polling_coordinator.get_provider_for_window",
                 return_value=make_mock_provider(has_status=True),
             ),
         ):
-            from ccgram.handlers.status_polling import update_status_message
+            from ccgram.handlers.polling_coordinator import update_status_message
 
             mock_tm.find_window_by_id = AsyncMock(return_value=MagicMock())
             mock_tm.capture_pane = AsyncMock(return_value="some output")
@@ -395,20 +397,22 @@ class TestStatusPollingIntegration:
 
     async def test_idle_window_without_status_updates_emoji(self) -> None:
         with (
-            patch("ccgram.handlers.status_polling.tmux_manager") as mock_tm,
-            patch("ccgram.handlers.status_polling.session_manager"),
-            patch("ccgram.handlers.status_polling.thread_router") as mock_tr,
-            patch("ccgram.handlers.status_polling.update_topic_emoji") as mock_emoji,
+            patch("ccgram.handlers.polling_coordinator.tmux_manager") as mock_tm,
+            patch("ccgram.handlers.polling_coordinator.session_manager"),
+            patch("ccgram.handlers.polling_coordinator.thread_router") as mock_tr,
             patch(
-                "ccgram.handlers.status_polling.get_interactive_window",
+                "ccgram.handlers.polling_coordinator.update_topic_emoji"
+            ) as mock_emoji,
+            patch(
+                "ccgram.handlers.polling_coordinator.get_interactive_window",
                 return_value=None,
             ),
             patch(
-                "ccgram.handlers.status_polling.get_provider_for_window",
+                "ccgram.handlers.polling_coordinator.get_provider_for_window",
                 return_value=make_mock_provider(has_status=False),
             ),
         ):
-            from ccgram.handlers.status_polling import (
+            from ccgram.handlers.polling_coordinator import (
                 _get_window_state,
                 update_status_message,
             )
@@ -431,25 +435,25 @@ class TestStatusPollingIntegration:
     async def test_startup_window_shows_active_not_idle(self) -> None:
         """New window with no spinner yet should show active, not idle."""
         with (
-            patch("ccgram.handlers.status_polling.tmux_manager") as mock_tm,
-            patch("ccgram.handlers.status_polling.session_manager"),
-            patch("ccgram.handlers.status_polling.thread_router") as mock_tr,
-            patch("ccgram.handlers.status_polling.update_topic_emoji") as mock_emoji,
+            patch("ccgram.handlers.polling_coordinator.tmux_manager") as mock_tm,
+            patch("ccgram.handlers.polling_coordinator.session_manager"),
+            patch("ccgram.handlers.polling_coordinator.thread_router") as mock_tr,
             patch(
-                "ccgram.handlers.status_polling.get_interactive_window",
+                "ccgram.handlers.polling_coordinator.update_topic_emoji"
+            ) as mock_emoji,
+            patch(
+                "ccgram.handlers.polling_coordinator.get_interactive_window",
                 return_value=None,
             ),
             patch(
-                "ccgram.handlers.status_polling.get_provider_for_window",
+                "ccgram.handlers.polling_coordinator.get_provider_for_window",
                 return_value=make_mock_provider(has_status=False),
             ),
         ):
-            from ccgram.handlers.status_polling import (
-                _window_poll_state,
-                update_status_message,
-            )
+            from ccgram.handlers.polling_coordinator import update_status_message
+            from ccgram.handlers.polling_strategies import terminal_strategy
 
-            _window_poll_state.pop("@99", None)
+            terminal_strategy._states.pop("@99", None)
 
             mock_window = MagicMock()
             mock_window.pane_current_command = "node"
@@ -466,20 +470,22 @@ class TestStatusPollingIntegration:
 
     async def test_done_when_shell_prompt(self) -> None:
         with (
-            patch("ccgram.handlers.status_polling.tmux_manager") as mock_tm,
-            patch("ccgram.handlers.status_polling.session_manager"),
-            patch("ccgram.handlers.status_polling.thread_router") as mock_tr,
-            patch("ccgram.handlers.status_polling.update_topic_emoji") as mock_emoji,
+            patch("ccgram.handlers.polling_coordinator.tmux_manager") as mock_tm,
+            patch("ccgram.handlers.polling_coordinator.session_manager"),
+            patch("ccgram.handlers.polling_coordinator.thread_router") as mock_tr,
             patch(
-                "ccgram.handlers.status_polling.get_interactive_window",
+                "ccgram.handlers.polling_coordinator.update_topic_emoji"
+            ) as mock_emoji,
+            patch(
+                "ccgram.handlers.polling_coordinator.get_interactive_window",
                 return_value=None,
             ),
             patch(
-                "ccgram.handlers.status_polling.get_provider_for_window",
+                "ccgram.handlers.polling_coordinator.get_provider_for_window",
                 return_value=make_mock_provider(has_status=False),
             ),
         ):
-            from ccgram.handlers.status_polling import update_status_message
+            from ccgram.handlers.polling_coordinator import update_status_message
 
             mock_window = MagicMock()
             mock_window.pane_current_command = "zsh"
@@ -496,20 +502,22 @@ class TestStatusPollingIntegration:
 
     async def test_no_thread_id_skips_emoji(self) -> None:
         with (
-            patch("ccgram.handlers.status_polling.tmux_manager") as mock_tm,
-            patch("ccgram.handlers.status_polling.session_manager"),
-            patch("ccgram.handlers.status_polling.update_topic_emoji") as mock_emoji,
-            patch("ccgram.handlers.status_polling.enqueue_status_update"),
+            patch("ccgram.handlers.polling_coordinator.tmux_manager") as mock_tm,
+            patch("ccgram.handlers.polling_coordinator.session_manager"),
             patch(
-                "ccgram.handlers.status_polling.get_interactive_window",
+                "ccgram.handlers.polling_coordinator.update_topic_emoji"
+            ) as mock_emoji,
+            patch("ccgram.handlers.polling_coordinator.enqueue_status_update"),
+            patch(
+                "ccgram.handlers.polling_coordinator.get_interactive_window",
                 return_value=None,
             ),
             patch(
-                "ccgram.handlers.status_polling.get_provider_for_window",
+                "ccgram.handlers.polling_coordinator.get_provider_for_window",
                 return_value=make_mock_provider(has_status=True),
             ),
         ):
-            from ccgram.handlers.status_polling import update_status_message
+            from ccgram.handlers.polling_coordinator import update_status_message
 
             mock_tm.find_window_by_id = AsyncMock(return_value=MagicMock())
             mock_tm.capture_pane = AsyncMock(return_value="some output")

@@ -43,7 +43,7 @@ from .callback_helpers import get_thread_id
 from .callback_registry import register
 from .message_sender import safe_edit, safe_reply, safe_send
 from .message_queue import enqueue_status_update
-from .status_polling import clear_probe_failures
+from .polling_strategies import clear_probe_failures
 
 logger = structlog.get_logger()
 

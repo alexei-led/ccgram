@@ -117,7 +117,9 @@ class TestBuildStatusKeyboard:
         assert rc_btn.text == "\U0001f4e1"
 
     def test_rc_button_label_active(self) -> None:
-        with patch("ccgram.handlers.status_polling.is_rc_active", return_value=True):
+        with patch(
+            "ccgram.handlers.polling_strategies.is_rc_active", return_value=True
+        ):
             kb = build_status_keyboard("@0")
         rc_btn = [
             btn

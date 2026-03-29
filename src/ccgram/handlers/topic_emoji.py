@@ -105,7 +105,7 @@ def _resolve_rc_mode(chat_id: int, thread_id: int) -> bool:
     window_id = thread_router.get_window_for_chat_thread(chat_id, thread_id)
     if not window_id:
         return False
-    from .status_polling import is_rc_active
+    from .polling_strategies import is_rc_active
 
     return is_rc_active(window_id)
 

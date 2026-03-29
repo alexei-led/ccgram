@@ -105,8 +105,8 @@ max-statements = 60
 "src/ccgram/handlers/history.py" = ["C901", "PLR0912", "PLR0915"]
 # Response builder: message formatting with content-type dispatch
 "src/ccgram/handlers/response_builder.py" = ["C901", "PLR0912"]
-# Status polling: background loop with multiple state checks
-"src/ccgram/handlers/status_polling.py" = ["C901", "PLR0912"]
+# Polling coordinator: background loop with multiple state checks
+"src/ccgram/handlers/polling_coordinator.py" = ["C901", "PLR0912"]
 # Message queue: worker loop with task dispatch and error handling
 "src/ccgram/handlers/message_queue.py" = ["C901"]
 # Directory callbacks: confirm handler with state cleanup branches

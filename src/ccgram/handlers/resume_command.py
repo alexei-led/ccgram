@@ -290,7 +290,7 @@ async def _create_resume_window(
     old_window_id = thread_router.get_window_for_thread(user_id, thread_id)
     if old_window_id:
         thread_router.unbind_thread(user_id, thread_id)
-        from .status_polling import clear_dead_notification
+        from .polling_strategies import clear_dead_notification
 
         clear_dead_notification(user_id, thread_id)
 

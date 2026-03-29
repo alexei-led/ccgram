@@ -263,12 +263,12 @@ Design doc: `docs/design/polling-subsystem/design.md`
 
 #### Task 15: Remove old status_polling.py and finalize
 
-- [ ] Update `src/ccgram/bot.py`: change `from .handlers.status_polling import status_poll_loop` to `from .handlers.polling_coordinator import status_poll_loop`
-- [ ] Update all imports of `clear_*` functions from `status_polling` to point to new locations (strategies or coordinator)
-- [ ] Update `src/ccgram/handlers/cleanup.py` imports
-- [ ] Delete `src/ccgram/handlers/status_polling.py`
-- [ ] Move/update tests from `tests/ccgram/test_status_polling.py` to new test files
-- [ ] Run `make check` — must pass (completes Step A1)
+- [x] Update `src/ccgram/bot.py`: change `from .handlers.status_polling import status_poll_loop` to `from .handlers.polling_coordinator import status_poll_loop`
+- [x] Update all imports of `clear_*` functions from `status_polling` to point to new locations (strategies or coordinator)
+- [x] Update `src/ccgram/handlers/cleanup.py` imports
+- [x] Delete `src/ccgram/handlers/status_polling.py`
+- [x] Move/update tests from `tests/ccgram/test_status_polling.py` to new test files
+- [x] Run `make check` — must pass (completes Step A1)
 
 ---
 

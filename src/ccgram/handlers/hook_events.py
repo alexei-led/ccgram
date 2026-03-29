@@ -285,7 +285,7 @@ async def _handle_stop_failure(event: HookEvent, bot: Bot) -> None:
 async def _handle_session_end(event: HookEvent, bot: Bot) -> None:
     """Handle a SessionEnd event — clean up session lifecycle."""
     from .message_queue import enqueue_status_update
-    from .status_polling import clear_seen_status
+    from .polling_strategies import clear_seen_status
     from .topic_emoji import update_topic_emoji
 
     users = _resolve_users_for_window_key(event.window_key)

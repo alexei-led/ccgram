@@ -346,7 +346,7 @@ async def _create_and_bind_window(
     """
     # Unbind old dead window and clear dead-notification tracking
     thread_router.unbind_thread(user_id, thread_id)
-    from .status_polling import clear_dead_notification
+    from .polling_strategies import clear_dead_notification
 
     clear_dead_notification(user_id, thread_id)
 

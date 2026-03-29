@@ -1,17 +1,18 @@
-"""Thin polling coordinator loop for terminal status monitoring.
+"""Polling coordinator for terminal status monitoring.
 
 Orchestrates the polling cycle by iterating thread bindings and delegating
-to domain-specific functions in status_polling.py and strategy classes in
-polling_strategies.py. Owns the loop timing, error backoff, and periodic
-maintenance tasks (topic probing, display name sync, autoclose, unbound TTL).
+to strategy classes in polling_strategies.py. Contains all async orchestration
+functions (update_status_message, interactive UI checks, transcript discovery,
+shell relay, dead window handling) plus the main polling loop.
 
 Key components:
   - status_poll_loop: Background polling task (entry point for bot.py)
+  - update_status_message: Poll and enqueue status updates
   - STATUS_POLL_INTERVAL / TOPIC_CHECK_INTERVAL: Timing constants
-  - Periodic tasks: autoclose timers, unbound window TTL, topic existence probes
 """
 
 import asyncio
+import contextlib
 import structlog
 import time
 from pathlib import Path
@@ -20,22 +21,51 @@ from typing import TYPE_CHECKING
 from telegram import Bot
 
 if TYPE_CHECKING:
+    from ..screen_buffer import ScreenBuffer
     from ..tmux_manager import TmuxWindow
+from telegram.constants import ChatAction
 from telegram.error import BadRequest, TelegramError
 
 from ..config import config
+from ..providers import (
+    detect_provider_from_pane,
+    detect_provider_from_runtime,
+    detect_provider_from_transcript_path,
+    get_provider_for_window,
+    should_probe_pane_title_for_provider_detection,
+)
+from ..providers.base import StatusUpdate
 from ..session import session_manager
+from ..session_monitor import get_active_monitor
 from ..thread_router import thread_router
 from ..tmux_manager import tmux_manager
 from ..utils import log_throttle_sweep, log_throttled
+from ..window_resolver import is_foreign_window
 from .cleanup import clear_topic_state
+from .interactive_ui import (
+    clear_interactive_mode,
+    clear_interactive_msg,
+    get_interactive_window,
+    handle_interactive_ui,
+    set_interactive_mode,
+)
 from .message_queue import (
     clear_tool_msg_ids_for_topic,
+    enqueue_status_update,
     get_message_queue,
 )
 from .message_sender import rate_limit_send_message
 from .polling_strategies import (
+    _ACTIVITY_THRESHOLD,
     _MAX_PROBE_FAILURES,
+    _PANE_COUNT_TTL,
+    _STARTUP_TIMEOUT,
+    _TYPING_INTERVAL,
+    TopicPollState,
+    WindowPollState,
+    clear_window_poll_state,
+    interactive_strategy,
+    is_shell_prompt,
     lifecycle_strategy,
     terminal_strategy,
 )
@@ -55,6 +85,502 @@ _BACKOFF_MAX = 30.0
 
 # Top-level loop resilience: catch any error to keep polling alive
 _LoopError = (TelegramError, OSError, RuntimeError, ValueError)
+
+
+# ── State access helpers ─────────────────────────────────────────────────
+
+
+def _get_window_state(window_id: str) -> WindowPollState:
+    """Get or create WindowPollState for a window."""
+    return terminal_strategy.get_state(window_id)
+
+
+def _get_topic_state(user_id: int, thread_id: int) -> TopicPollState:
+    """Get or create TopicPollState for a topic."""
+    return lifecycle_strategy.get_state(user_id, thread_id)
+
+
+def _get_screen_buffer(window_id: str, columns: int, rows: int) -> "ScreenBuffer":
+    """Get or create a ScreenBuffer for a window, resizing if needed."""
+    return terminal_strategy.get_screen_buffer(window_id, columns, rows)
+
+
+# ── Typing throttle ─────────────────────────────────────────────────────
+
+
+async def _send_typing_throttled(bot: Bot, user_id: int, thread_id: int | None) -> None:
+    """Send typing indicator if enough time has elapsed since the last one."""
+    if thread_id is None:
+        return
+    ts = _get_topic_state(user_id, thread_id)
+    now = time.monotonic()
+    if now - (ts.last_typing_sent or 0.0) < _TYPING_INTERVAL:
+        return
+    ts.last_typing_sent = now
+    chat_id = thread_router.resolve_chat_id(user_id, thread_id)
+    with contextlib.suppress(TelegramError):
+        await bot.send_chat_action(
+            chat_id=chat_id,
+            message_thread_id=thread_id,
+            action=ChatAction.TYPING,
+        )
+
+
+# ── RC state / pyte parsing ─────────────────────────────────────────────
+
+
+def _update_rc_state(ws: WindowPollState, rc_detected: bool) -> None:
+    """Update Remote Control state with 3s debounce on removal."""
+    terminal_strategy.update_rc_state(ws, rc_detected)
+
+
+def _parse_with_pyte(
+    window_id: str,
+    pane_text: str,
+    columns: int = 0,
+    rows: int = 0,
+) -> StatusUpdate | None:
+    """Parse terminal via pyte screen buffer for status and interactive UI."""
+    return terminal_strategy.parse_with_pyte(window_id, pane_text, columns, rows)
+
+
+# ── Transcript activity check ───────────────────────────────────────────
+
+
+def _check_transcript_activity(window_id: str, now: float) -> bool:
+    """Check if recent transcript writes indicate an active agent."""
+    session_id = session_manager.get_session_id_for_window(window_id)
+    if not session_id:
+        return False
+
+    mon = get_active_monitor()
+    if not mon:
+        return False
+    last_activity = mon.get_last_activity(session_id)
+    if last_activity and (now - last_activity) < _ACTIVITY_THRESHOLD:
+        ws = _get_window_state(window_id)
+        ws.has_seen_status = True
+        ws.startup_time = None
+        return True
+    return False
+
+
+# ── Idle / no-status transitions ────────────────────────────────────────
+
+
+async def _transition_to_idle(
+    bot: Bot,
+    user_id: int,
+    window_id: str,
+    thread_id: int,
+    chat_id: int,
+    display: str,
+    notif_mode: str,
+) -> None:
+    """Transition a window to idle state (emoji, autoclose, typing, status)."""
+    _get_window_state(window_id).startup_time = None
+    await update_topic_emoji(bot, chat_id, thread_id, "idle", display)
+    lifecycle_strategy.clear_autoclose_if_active(user_id, thread_id)
+    _get_topic_state(user_id, thread_id).last_typing_sent = None
+    if notif_mode not in ("muted", "errors_only"):
+        from .callback_data import IDLE_STATUS_TEXT
+
+        await enqueue_status_update(
+            bot, user_id, window_id, IDLE_STATUS_TEXT, thread_id=thread_id
+        )
+    else:
+        await enqueue_status_update(bot, user_id, window_id, None, thread_id=thread_id)
+
+
+async def _handle_no_status(
+    bot: Bot,
+    user_id: int,
+    window_id: str,
+    thread_id: int | None,
+    pane_current_command: str,
+    notif_mode: str,
+) -> None:
+    """Handle a window with no provider-detected terminal status."""
+    now = time.monotonic()
+    is_active = _check_transcript_activity(window_id, now)
+
+    if is_active:
+        await _send_typing_throttled(bot, user_id, thread_id)
+        if thread_id is not None:
+            chat_id = thread_router.resolve_chat_id(user_id, thread_id)
+            display = thread_router.get_display_name(window_id)
+            await update_topic_emoji(bot, chat_id, thread_id, "active", display)
+            lifecycle_strategy.clear_autoclose_if_active(user_id, thread_id)
+        return
+
+    if thread_id is None:
+        return
+
+    chat_id = thread_router.resolve_chat_id(user_id, thread_id)
+    display = thread_router.get_display_name(window_id)
+    ws = _get_window_state(window_id)
+
+    if is_shell_prompt(pane_current_command):
+        ws.startup_time = None
+        state = session_manager.get_window_state(window_id)
+        raw_provider = getattr(state, "provider_name", "")
+        provider_name = raw_provider.lower() if isinstance(raw_provider, str) else ""
+        if provider_name in ("codex", "gemini", "shell"):
+            ws.has_seen_status = True
+            await _transition_to_idle(
+                bot, user_id, window_id, thread_id, chat_id, display, notif_mode
+            )
+            return
+
+        await update_topic_emoji(bot, chat_id, thread_id, "done", display)
+        lifecycle_strategy.start_autoclose_timer(user_id, thread_id, "done", now)
+        _get_topic_state(user_id, thread_id).last_typing_sent = None
+        await enqueue_status_update(bot, user_id, window_id, None, thread_id=thread_id)
+    elif ws.has_seen_status:
+        await _transition_to_idle(
+            bot, user_id, window_id, thread_id, chat_id, display, notif_mode
+        )
+    elif ws.startup_time is None:
+        ws.startup_time = now
+        await _send_typing_throttled(bot, user_id, thread_id)
+        await update_topic_emoji(bot, chat_id, thread_id, "active", display)
+        lifecycle_strategy.clear_autoclose_if_active(user_id, thread_id)
+    elif now - ws.startup_time >= _STARTUP_TIMEOUT:
+        ws.has_seen_status = True
+        await _transition_to_idle(
+            bot, user_id, window_id, thread_id, chat_id, display, notif_mode
+        )
+    else:
+        await _send_typing_throttled(bot, user_id, thread_id)
+        await update_topic_emoji(bot, chat_id, thread_id, "active", display)
+        lifecycle_strategy.clear_autoclose_if_active(user_id, thread_id)
+
+
+# ── Multi-pane scanning (agent teams) ─────────────────────────────────
+
+
+async def _scan_window_panes(
+    bot: Bot,
+    user_id: int,
+    window_id: str,
+    thread_id: int,
+) -> None:
+    """Scan non-active panes for interactive prompts and surface alerts."""
+    now = time.monotonic()
+    ws = _get_window_state(window_id)
+    cached = ws.pane_count_cache
+    if cached and cached[1] > now and cached[0] <= 1:
+        return  # Cached single-pane — no subprocess needed
+
+    panes = await tmux_manager.list_panes(window_id)
+    ws.pane_count_cache = (len(panes), now + _PANE_COUNT_TTL)
+    live_pane_ids = {p.pane_id for p in panes}
+
+    _pane_alert_hashes = interactive_strategy._pane_alert_hashes
+
+    # Clean up alerts for panes of THIS window that no longer exist
+    stale = [
+        pid
+        for pid, v in _pane_alert_hashes.items()
+        if v[2] == window_id and pid not in live_pane_ids
+    ]
+    for pid in stale:
+        _pane_alert_hashes.pop(pid, None)
+
+    if len(panes) <= 1:
+        return
+
+    now = time.monotonic()
+
+    for pane in panes:
+        if pane.active:
+            continue
+
+        pane_text = await tmux_manager.capture_pane_by_id(
+            pane.pane_id, window_id=window_id
+        )
+        if not pane_text:
+            continue
+
+        provider = get_provider_for_window(window_id)
+        status = provider.parse_terminal_status(pane_text, pane_title="")
+        if status is None or not status.is_interactive:
+            _pane_alert_hashes.pop(pane.pane_id, None)
+            continue
+
+        prompt_text = status.raw_text or ""
+
+        existing = _pane_alert_hashes.get(pane.pane_id)
+        if existing and existing[0] == prompt_text:
+            continue
+
+        _pane_alert_hashes[pane.pane_id] = (prompt_text, now, window_id)
+        logger.info(
+            "Pane %s in window %s has interactive UI, surfacing alert",
+            pane.pane_id,
+            window_id,
+        )
+        await handle_interactive_ui(
+            bot, user_id, window_id, thread_id, pane_id=pane.pane_id
+        )
+
+
+# ── Interactive-only check ───────────────────────────────────────────────
+
+
+async def _check_interactive_only(
+    bot: Bot,
+    user_id: int,
+    window_id: str,
+    thread_id: int,
+    *,
+    _window: "TmuxWindow | None" = None,
+) -> None:
+    """Check for interactive UI without enqueuing status updates."""
+    w = _window or await tmux_manager.find_window_by_id(window_id)
+    if not w:
+        return
+
+    if get_interactive_window(user_id, thread_id) == window_id:
+        return
+
+    pane_text = await tmux_manager.capture_pane(w.window_id, with_ansi=True)
+    if not pane_text:
+        return
+
+    status = _parse_with_pyte(
+        window_id, pane_text, columns=w.pane_width, rows=w.pane_height
+    )
+
+    if status is None:
+        ws = _get_window_state(window_id)
+        clean_text = (
+            ws.last_rendered_text if ws.last_rendered_text is not None else pane_text
+        )
+        provider = get_provider_for_window(window_id)
+        pane_title = ""
+        if provider.capabilities.uses_pane_title:
+            pane_title = await tmux_manager.get_pane_title(w.window_id)
+        status = provider.parse_terminal_status(clean_text, pane_title=pane_title)
+
+    if status is not None and status.is_interactive:
+        set_interactive_mode(user_id, window_id, thread_id)
+        handled = await handle_interactive_ui(bot, user_id, window_id, thread_id)
+        if not handled:
+            clear_interactive_mode(user_id, thread_id)
+
+
+# ── Passive shell relay ──────────────────────────────────────────────────
+
+
+async def _maybe_check_passive_shell(
+    bot: Bot, user_id: int, window_id: str, thread_id: int
+) -> None:
+    """Relay shell output from direct tmux interaction to Telegram."""
+    state = session_manager.get_window_state(window_id)
+    if not state or state.provider_name != "shell":
+        return
+    ws = terminal_strategy._states.get(window_id)
+    rendered = ws.last_rendered_text if ws else None
+    if rendered is None:
+        raw = await tmux_manager.capture_pane(window_id)
+        if not raw:
+            return
+        rendered = raw
+    from .shell_capture import check_passive_shell_output
+
+    await check_passive_shell_output(bot, user_id, thread_id, window_id, rendered)
+
+
+# ── Transcript discovery ─────────────────────────────────────────────────
+
+
+async def _maybe_discover_transcript(
+    window_id: str,
+    *,
+    _window: "TmuxWindow | None" = None,
+    bot: Bot | None = None,  # noqa: ARG001
+    user_id: int = 0,  # noqa: ARG001
+    thread_id: int = 0,  # noqa: ARG001
+) -> None:
+    """Discover and register transcript for hookless providers (Codex, Gemini)."""
+    from ..providers import registry
+
+    state = session_manager.window_states.get(window_id)
+    if not state:
+        return
+
+    w = _window or await tmux_manager.find_window_by_id(window_id)
+
+    if w and w.pane_current_command:
+        detected = await detect_provider_from_pane(
+            w.pane_current_command, pane_tty=w.pane_tty, window_id=window_id
+        )
+        if not detected and should_probe_pane_title_for_provider_detection(
+            w.pane_current_command
+        ):
+            pane_title = await tmux_manager.get_pane_title(window_id)
+            detected = detect_provider_from_runtime(
+                w.pane_current_command,
+                pane_title=pane_title,
+            )
+        if detected and detected != state.provider_name:
+            old_provider = state.provider_name
+            session_manager.set_window_provider(window_id, detected, cwd=w.cwd or None)
+            if detected == "shell":
+                state.transcript_path = ""  # shell has no transcripts
+                from ..providers.shell import setup_shell_prompt
+
+                await setup_shell_prompt(window_id, clear=False)
+            elif old_provider == "shell":
+                from .shell_capture import clear_shell_monitor_state
+
+                clear_shell_monitor_state(window_id)
+        elif not detected and state.transcript_path:
+            inferred = detect_provider_from_transcript_path(state.transcript_path)
+            if inferred and inferred != state.provider_name:
+                session_manager.set_window_provider(
+                    window_id,
+                    inferred,
+                    cwd=w.cwd or None,
+                )
+
+    if state.provider_name:
+        provider = get_provider_for_window(window_id)
+        if provider.capabilities.supports_hook:
+            return
+
+    if not state.cwd:
+        if not w or not w.cwd:
+            return
+        session_manager.set_window_provider(
+            window_id, state.provider_name or "", cwd=w.cwd
+        )
+
+    if state.provider_name:
+        provider = get_provider_for_window(window_id)
+        if provider.capabilities.name == "shell":
+            return
+        providers_to_try = [(provider.capabilities.name, provider)]
+    else:
+        if w and is_shell_prompt(w.pane_current_command):
+            session_manager.set_window_provider(window_id, "shell")
+            state.transcript_path = ""
+            from ..providers.shell import setup_shell_prompt
+
+            await setup_shell_prompt(window_id, clear=False)
+            return
+        providers_to_try = [
+            (name, registry.get(name))
+            for name in registry.provider_names()
+            if not registry.get(name).capabilities.supports_hook and name != "shell"
+        ]
+
+    pane_alive = w is not None and not is_shell_prompt(w.pane_current_command)
+
+    if is_foreign_window(window_id):
+        window_key = window_id
+    else:
+        window_key = f"{config.tmux_session_name}:{window_id}"
+    for provider_name, provider in providers_to_try:
+        max_age = 0 if pane_alive else None
+        event = await asyncio.to_thread(
+            provider.discover_transcript,
+            state.cwd,
+            window_key,
+            max_age=max_age,
+        )
+        if event:
+            if (
+                state.session_id == event.session_id
+                and state.transcript_path == event.transcript_path
+                and state.provider_name == provider_name
+            ):
+                return
+            session_manager.register_hookless_session(
+                window_id=window_id,
+                session_id=event.session_id,
+                cwd=event.cwd,
+                transcript_path=event.transcript_path,
+                provider_name=provider_name,
+            )
+            await asyncio.to_thread(
+                session_manager.write_hookless_session_map,
+                window_id=window_id,
+                session_id=event.session_id,
+                cwd=event.cwd,
+                transcript_path=event.transcript_path,
+                provider_name=provider_name,
+            )
+            return
+
+
+# ── Dead window / probe helpers ─────────────────────────────────────────
+
+
+async def _handle_dead_window_notification(
+    bot: Bot, user_id: int, thread_id: int, wid: str
+) -> None:
+    """Send proactive recovery notification for a dead window (once per death)."""
+    dead_notified = lifecycle_strategy._dead_notified
+    dead_key = (user_id, thread_id, wid)
+    if dead_key in dead_notified:
+        return
+    terminal_strategy.get_state(wid).has_seen_status = False
+
+    clear_tool_msg_ids_for_topic(user_id, thread_id)
+    chat_id = thread_router.resolve_chat_id(user_id, thread_id)
+    display = thread_router.get_display_name(wid)
+    await update_topic_emoji(bot, chat_id, thread_id, "dead", display)
+    lifecycle_strategy.start_autoclose_timer(
+        user_id, thread_id, "dead", time.monotonic()
+    )
+
+    window_state = session_manager.get_window_state(wid)
+    cwd = window_state.cwd or ""
+    try:
+        dir_exists = bool(cwd) and await asyncio.to_thread(Path(cwd).is_dir)
+    except OSError:
+        dir_exists = False
+    if dir_exists:
+        keyboard = build_recovery_keyboard(wid)
+        text = (
+            f"\u26a0 Session `{display}` ended.\n"
+            f"\U0001f4c2 `{cwd}`\n\n"
+            "Tap a button or send a message to recover."
+        )
+    else:
+        text = f"\u26a0 Session `{display}` ended."
+        keyboard = None
+    sent = await rate_limit_send_message(
+        bot,
+        chat_id,
+        text,
+        message_thread_id=thread_id,
+        reply_markup=keyboard,
+    )
+    if sent is None:
+        try:
+            await bot.unpin_all_forum_topic_messages(
+                chat_id=chat_id, message_thread_id=thread_id
+            )
+        except BadRequest as probe_err:
+            if (
+                "thread not found" in probe_err.message.lower()
+                or "topic_id_invalid" in probe_err.message.lower()
+            ):
+                terminal_strategy.get_state(wid).probe_failures = 0
+                await clear_topic_state(user_id, thread_id, bot, window_id=wid)
+                thread_router.unbind_thread(user_id, thread_id)
+                logger.info(
+                    "Topic deleted: unbound window %s for thread %d, user %d",
+                    wid,
+                    thread_id,
+                    user_id,
+                )
+        except TelegramError:
+            pass
+    dead_notified.add(dead_key)
 
 
 # ── Autoclose timer management ────────────────────────────────────────────
@@ -148,8 +674,6 @@ async def _check_unbound_window_ttl(live_windows: list | None = None) -> None:
 
 def _kill_expired_unbound(now: float, timeout: float) -> None:
     """Find and kill unbound windows past their TTL (sync helper)."""
-    from .status_polling import clear_window_poll_state
-
     expired = [
         wid
         for wid, ws in terminal_strategy._states.items()
@@ -165,8 +689,6 @@ def _kill_expired_unbound(now: float, timeout: float) -> None:
 
 def _prune_orphaned_poll_state(live_ids: set[str], bound_ids: set[str]) -> None:
     """Remove poll state for windows that are neither live nor bound."""
-    from .status_polling import clear_window_poll_state
-
     stale = [
         wid
         for wid in terminal_strategy._states
@@ -174,74 +696,6 @@ def _prune_orphaned_poll_state(live_ids: set[str], bound_ids: set[str]) -> None:
     ]
     for wid in stale:
         clear_window_poll_state(wid)
-
-
-# ── Dead window notification ──────────────────────────────────────────────
-
-
-async def _handle_dead_window_notification(
-    bot: Bot, user_id: int, thread_id: int, wid: str
-) -> None:
-    """Send proactive recovery notification for a dead window (once per death)."""
-    dead_notified = lifecycle_strategy._dead_notified
-    dead_key = (user_id, thread_id, wid)
-    if dead_key in dead_notified:
-        return
-    terminal_strategy.get_state(wid).has_seen_status = False
-
-    clear_tool_msg_ids_for_topic(user_id, thread_id)
-    chat_id = thread_router.resolve_chat_id(user_id, thread_id)
-    display = thread_router.get_display_name(wid)
-    await update_topic_emoji(bot, chat_id, thread_id, "dead", display)
-    lifecycle_strategy.start_autoclose_timer(
-        user_id, thread_id, "dead", time.monotonic()
-    )
-
-    window_state = session_manager.get_window_state(wid)
-    cwd = window_state.cwd or ""
-    try:
-        dir_exists = bool(cwd) and await asyncio.to_thread(Path(cwd).is_dir)
-    except OSError:
-        dir_exists = False
-    if dir_exists:
-        keyboard = build_recovery_keyboard(wid)
-        text = (
-            f"\u26a0 Session `{display}` ended.\n"
-            f"\U0001f4c2 `{cwd}`\n\n"
-            "Tap a button or send a message to recover."
-        )
-    else:
-        text = f"\u26a0 Session `{display}` ended."
-        keyboard = None
-    sent = await rate_limit_send_message(
-        bot,
-        chat_id,
-        text,
-        message_thread_id=thread_id,
-        reply_markup=keyboard,
-    )
-    if sent is None:
-        try:
-            await bot.unpin_all_forum_topic_messages(
-                chat_id=chat_id, message_thread_id=thread_id
-            )
-        except BadRequest as probe_err:
-            if (
-                "thread not found" in probe_err.message.lower()
-                or "topic_id_invalid" in probe_err.message.lower()
-            ):
-                terminal_strategy.get_state(wid).probe_failures = 0
-                await clear_topic_state(user_id, thread_id, bot, window_id=wid)
-                thread_router.unbind_thread(user_id, thread_id)
-                logger.info(
-                    "Topic deleted: unbound window %s for thread %d, user %d",
-                    wid,
-                    thread_id,
-                    user_id,
-                )
-        except TelegramError:
-            pass
-    dead_notified.add(dead_key)
 
 
 # ── Display name sync / state pruning ─────────────────────────────────────
@@ -299,19 +753,104 @@ async def _probe_topic_existence(bot: Bot) -> None:
                     )
 
 
+# ── Main orchestration ──────────────────────────────────────────────────
+
+
+async def update_status_message(
+    bot: Bot,
+    user_id: int,
+    window_id: str,
+    thread_id: int | None = None,
+    *,
+    _window: "TmuxWindow | None" = None,
+) -> None:
+    """Poll terminal and enqueue status update for user's active window."""
+    w = _window or await tmux_manager.find_window_by_id(window_id)
+    if not w:
+        await enqueue_status_update(bot, user_id, window_id, None, thread_id=thread_id)
+        return
+
+    pane_text = await tmux_manager.capture_pane(w.window_id, with_ansi=True)
+    if not pane_text:
+        return
+
+    interactive_window = get_interactive_window(user_id, thread_id)
+    should_check_new_ui = True
+
+    status = _parse_with_pyte(
+        window_id, pane_text, columns=w.pane_width, rows=w.pane_height
+    )
+
+    # Passive vim INSERT mode tracking
+    from ..tmux_manager import _has_insert_indicator, notify_vim_insert_seen
+
+    ws = _get_window_state(window_id)
+    vim_text = ws.last_rendered_text if ws.last_rendered_text is not None else pane_text
+    if _has_insert_indicator(vim_text):
+        notify_vim_insert_seen(w.window_id)
+
+    if status is None:
+        clean_text = (
+            ws.last_rendered_text if ws.last_rendered_text is not None else pane_text
+        )
+        provider = get_provider_for_window(window_id)
+        pane_title = ""
+        if provider.capabilities.uses_pane_title:
+            pane_title = await tmux_manager.get_pane_title(w.window_id)
+        status = provider.parse_terminal_status(clean_text, pane_title=pane_title)
+
+    if interactive_window == window_id:
+        if status is not None and status.is_interactive:
+            return
+        await clear_interactive_msg(user_id, bot, thread_id)
+        should_check_new_ui = False
+    elif interactive_window is not None:
+        await clear_interactive_msg(user_id, bot, thread_id)
+
+    if should_check_new_ui and status is not None and status.is_interactive:
+        await handle_interactive_ui(bot, user_id, window_id, thread_id)
+        return
+
+    status_line = status.display_label if status and not status.is_interactive else None
+
+    notif_mode = session_manager.get_notification_mode(window_id)
+
+    if status_line:
+        ws = _get_window_state(window_id)
+        ws.has_seen_status = True
+        ws.startup_time = None
+        await _send_typing_throttled(bot, user_id, thread_id)
+        if notif_mode not in ("muted", "errors_only"):
+            from .hook_events import build_subagent_label, get_subagent_names
+
+            subagent_names = get_subagent_names(window_id)
+            display_status = status_line
+            if subagent_names:
+                label = build_subagent_label(subagent_names)
+                display_status = f"{status_line} ({label})"
+            await enqueue_status_update(
+                bot,
+                user_id,
+                window_id,
+                display_status,
+                thread_id=thread_id,
+            )
+        if thread_id is not None:
+            chat_id = thread_router.resolve_chat_id(user_id, thread_id)
+            display = thread_router.get_display_name(window_id)
+            await update_topic_emoji(bot, chat_id, thread_id, "active", display)
+            lifecycle_strategy.clear_autoclose_if_active(user_id, thread_id)
+    else:
+        await _handle_no_status(
+            bot, user_id, window_id, thread_id, w.pane_current_command, notif_mode
+        )
+
+
 # ── Main loop ─────────────────────────────────────────────────────────────
 
 
 async def status_poll_loop(bot: Bot) -> None:
     """Background task to poll terminal status for all thread-bound windows."""
-    from .status_polling import (
-        _check_interactive_only,
-        _maybe_check_passive_shell,
-        _maybe_discover_transcript,
-        _scan_window_panes,
-        update_status_message,
-    )
-
     logger.info("Status polling started (interval: %ss)", STATUS_POLL_INTERVAL)
     last_topic_check = 0.0
     _error_streak = 0

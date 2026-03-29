@@ -115,7 +115,7 @@ def build_status_keyboard(
 ) -> InlineKeyboardMarkup:
     """Build inline keyboard for status messages: [↑ cmd] row + [Esc] [Screenshot] [Bell] [RC]."""
     from .command_history import truncate_for_display
-    from .status_polling import is_rc_active
+    from .polling_strategies import is_rc_active
 
     rows: list[list[InlineKeyboardButton]] = []
 

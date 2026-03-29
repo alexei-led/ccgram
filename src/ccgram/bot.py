@@ -94,7 +94,7 @@ from .handlers.message_queue import (
 )
 from .handlers.message_sender import safe_reply
 from .handlers.response_builder import build_response_parts
-from .handlers.status_polling import status_poll_loop
+from .handlers.polling_coordinator import status_poll_loop
 from .handlers.file_handler import handle_document_message, handle_photo_message
 from .handlers.voice_handler import handle_voice_message
 from .handlers.text_handler import handle_text_message
@@ -441,7 +441,7 @@ async def panes_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
-    from .handlers.status_polling import has_pane_alert
+    from .handlers.polling_strategies import has_pane_alert
 
     lines = [f"\U0001f4d0 {len(panes)} panes in window\n"]
     buttons: list[InlineKeyboardButton] = []
