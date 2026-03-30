@@ -5,7 +5,6 @@ strategy classes:
   - TerminalStatusStrategy: pyte screen buffer state, RC debounce, content-hash cache
   - InteractiveUIStrategy: pane alert hash state for deduplication
   - TopicLifecycleStrategy: autoclose timers, dead notification tracking, probe failures
-  - ShellRelayStrategy: shell output relay (stateless delegation)
 
 Each strategy owns its state and state management methods. Domain-specific
 async functions (which depend on tmux, Telegram, providers, etc.) remain in
@@ -140,6 +139,30 @@ class TerminalStatusStrategy:
             ws.rc_active = False
             ws.rc_off_since = None
 
+    def clear_unbound_timers(self, bound_ids: set[str], live_ids: set[str]) -> None:
+        """Clear unbound timers for windows that are now bound or gone."""
+        for wid, ws in list(self._states.items()):
+            if ws.unbound_timer is not None and (
+                wid in bound_ids or wid not in live_ids
+            ):
+                ws.unbound_timer = None
+
+    def get_expired_unbound(self, now: float, timeout: float) -> list[str]:
+        """Return window IDs whose unbound timer has expired."""
+        return [
+            wid
+            for wid, ws in self._states.items()
+            if ws.unbound_timer is not None and now - ws.unbound_timer >= timeout
+        ]
+
+    def get_orphaned_window_ids(
+        self, live_ids: set[str], bound_ids: set[str]
+    ) -> list[str]:
+        """Return window IDs that are neither live nor bound."""
+        return [
+            wid for wid in self._states if wid not in live_ids and wid not in bound_ids
+        ]
+
     def is_rc_active(self, window_id: str) -> bool:
         """Check whether Remote Control is currently active for a window."""
         ws = self._states.get(window_id)
@@ -265,11 +288,39 @@ class InteractiveUIStrategy:
         """Check whether a pane currently has an active alert."""
         return pane_id in self._pane_alert_hashes
 
+    def get_pane_alert(self, pane_id: str) -> tuple[str, float, str] | None:
+        """Return pane alert tuple (hash, timestamp, window_id), or None."""
+        return self._pane_alert_hashes.get(pane_id)
+
+    def set_pane_alert(
+        self, pane_id: str, content_hash: str, timestamp: float, window_id: str
+    ) -> None:
+        """Record a pane alert entry."""
+        self._pane_alert_hashes[pane_id] = (content_hash, timestamp, window_id)
+
+    def remove_pane_alert(self, pane_id: str) -> None:
+        """Remove a single pane alert entry."""
+        self._pane_alert_hashes.pop(pane_id, None)
+
+    def prune_stale_pane_alerts(self, window_id: str, live_pane_ids: set[str]) -> None:
+        """Remove alerts for panes of a window that no longer exist."""
+        stale = [
+            pid
+            for pid, v in self._pane_alert_hashes.items()
+            if v[2] == window_id and pid not in live_pane_ids
+        ]
+        for pid in stale:
+            self._pane_alert_hashes.pop(pid, None)
+
     def clear_pane_alerts(self, window_id: str) -> None:
         """Remove pane alert state for a specific window only."""
         stale = [pid for pid, v in self._pane_alert_hashes.items() if v[2] == window_id]
         for pid in stale:
             self._pane_alert_hashes.pop(pid, None)
+
+    def clear_all_alerts(self) -> None:
+        """Clear all pane alert state (for testing)."""
+        self._pane_alert_hashes.clear()
 
 
 # ── TopicLifecycleStrategy ──────────────────────────────────────────────
@@ -292,6 +343,18 @@ class TopicLifecycleStrategy:
         """Get or create TopicPollState for a topic."""
         return self._states.setdefault((user_id, thread_id), TopicPollState())
 
+    def is_dead_notified(self, user_id: int, thread_id: int, window_id: str) -> bool:
+        """Check if a dead notification was already sent for this topic/window."""
+        return (user_id, thread_id, window_id) in self._dead_notified
+
+    def mark_dead_notified(self, user_id: int, thread_id: int, window_id: str) -> None:
+        """Record that a dead notification was sent."""
+        self._dead_notified.add((user_id, thread_id, window_id))
+
+    def iter_autoclose_timers(self) -> list[tuple[int, int, TopicPollState]]:
+        """Return list of (user_id, thread_id, state) for topics with state."""
+        return [(uid, tid, ts) for (uid, tid), ts in self._states.items()]
+
     def clear_state(self, user_id: int, thread_id: int) -> None:
         """Remove all polling state for a topic."""
         self._states.pop((user_id, thread_id), None)
@@ -305,14 +368,8 @@ class TopicLifecycleStrategy:
         if existing is None or existing[0] != state:
             ts.autoclose = (state, now)
 
-    def clear_autoclose_if_active(self, user_id: int, thread_id: int) -> None:
-        """Clear autoclose timer when topic becomes active/idle."""
-        ts = self._states.get((user_id, thread_id))
-        if ts:
-            ts.autoclose = None
-
     def clear_autoclose_timer(self, user_id: int, thread_id: int) -> None:
-        """Remove autoclose timer for a topic (called on cleanup)."""
+        """Clear autoclose timer for a topic (on cleanup or when active)."""
         ts = self._states.get((user_id, thread_id))
         if ts:
             ts.autoclose = None
@@ -383,25 +440,11 @@ class TopicLifecycleStrategy:
         return count
 
 
-# ── ShellRelayStrategy ──────────────────────────────────────────────────
-
-
-class ShellRelayStrategy:
-    """Passive shell output delegation (stateless).
-
-    The async check_passive_shell function remains in polling_coordinator.py.
-    """
-
-    def __init__(self, terminal: TerminalStatusStrategy) -> None:
-        self._terminal = terminal
-
-
 # ── Module-level strategy singletons ────────────────────────────────────
 
 terminal_strategy = TerminalStatusStrategy()
 interactive_strategy = InteractiveUIStrategy(terminal_strategy)
 lifecycle_strategy = TopicLifecycleStrategy(terminal_strategy)
-shell_strategy = ShellRelayStrategy(terminal_strategy)
 
 
 # ── Module-level convenience functions ────────────────────────────────
@@ -421,7 +464,7 @@ def clear_screen_buffer(window_id: str) -> None:
 def reset_screen_buffer_state() -> None:
     """Reset all ScreenBuffers and caches (for testing)."""
     terminal_strategy.reset_screen_buffer_state()
-    interactive_strategy._pane_alert_hashes.clear()
+    interactive_strategy.clear_all_alerts()
 
 
 def is_rc_active(window_id: str) -> bool:

@@ -8,7 +8,6 @@ import pytest
 
 from ccgram.handlers.polling_strategies import (
     InteractiveUIStrategy,
-    ShellRelayStrategy,
     TerminalStatusStrategy,
     TopicLifecycleStrategy,
     TopicPollState,
@@ -174,14 +173,14 @@ class TestTopicLifecycleStrategy:
         ts = self.strategy.get_state(1, 42)
         assert ts.autoclose == ("dead", 200.0)
 
-    def test_clear_autoclose_if_active(self):
+    def test_clear_autoclose_timer_when_active(self):
         self.strategy.start_autoclose_timer(1, 42, "done", 100.0)
-        self.strategy.clear_autoclose_if_active(1, 42)
+        self.strategy.clear_autoclose_timer(1, 42)
         ts = self.strategy.get_state(1, 42)
         assert ts.autoclose is None
 
-    def test_clear_autoclose_if_active_nonexistent(self):
-        self.strategy.clear_autoclose_if_active(1, 42)
+    def test_clear_autoclose_timer_nonexistent(self):
+        self.strategy.clear_autoclose_timer(1, 42)
 
     def test_clear_dead_notification(self):
         self.strategy._dead_notified.add((1, 42, "@0"))
@@ -239,13 +238,6 @@ class TestTopicLifecycleStrategy:
         for ts in self.strategy._states.values():
             assert ts.autoclose is None
         assert ws.unbound_timer is None
-
-
-class TestShellRelayStrategy:
-    def test_instantiation(self):
-        terminal = TerminalStatusStrategy()
-        strategy = ShellRelayStrategy(terminal)
-        assert strategy._terminal is terminal
 
 
 class TestIsShellPrompt:

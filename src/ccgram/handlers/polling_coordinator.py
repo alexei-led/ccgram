@@ -180,7 +180,7 @@ async def _transition_to_idle(
     """Transition a window to idle state (emoji, autoclose, typing, status)."""
     _get_window_state(window_id).startup_time = None
     await update_topic_emoji(bot, chat_id, thread_id, "idle", display)
-    lifecycle_strategy.clear_autoclose_if_active(user_id, thread_id)
+    lifecycle_strategy.clear_autoclose_timer(user_id, thread_id)
     _get_topic_state(user_id, thread_id).last_typing_sent = None
     if notif_mode not in ("muted", "errors_only"):
         from .callback_data import IDLE_STATUS_TEXT
@@ -210,7 +210,7 @@ async def _handle_no_status(
             chat_id = thread_router.resolve_chat_id(user_id, thread_id)
             display = thread_router.get_display_name(window_id)
             await update_topic_emoji(bot, chat_id, thread_id, "active", display)
-            lifecycle_strategy.clear_autoclose_if_active(user_id, thread_id)
+            lifecycle_strategy.clear_autoclose_timer(user_id, thread_id)
         return
 
     if thread_id is None:
@@ -244,7 +244,7 @@ async def _handle_no_status(
         ws.startup_time = now
         await _send_typing_throttled(bot, user_id, thread_id)
         await update_topic_emoji(bot, chat_id, thread_id, "active", display)
-        lifecycle_strategy.clear_autoclose_if_active(user_id, thread_id)
+        lifecycle_strategy.clear_autoclose_timer(user_id, thread_id)
     elif now - ws.startup_time >= _STARTUP_TIMEOUT:
         ws.has_seen_status = True
         await _transition_to_idle(
@@ -253,7 +253,7 @@ async def _handle_no_status(
     else:
         await _send_typing_throttled(bot, user_id, thread_id)
         await update_topic_emoji(bot, chat_id, thread_id, "active", display)
-        lifecycle_strategy.clear_autoclose_if_active(user_id, thread_id)
+        lifecycle_strategy.clear_autoclose_timer(user_id, thread_id)
 
 
 # ── Multi-pane scanning (agent teams) ─────────────────────────────────
@@ -276,16 +276,7 @@ async def _scan_window_panes(
     ws.pane_count_cache = (len(panes), now + _PANE_COUNT_TTL)
     live_pane_ids = {p.pane_id for p in panes}
 
-    _pane_alert_hashes = interactive_strategy._pane_alert_hashes
-
-    # Clean up alerts for panes of THIS window that no longer exist
-    stale = [
-        pid
-        for pid, v in _pane_alert_hashes.items()
-        if v[2] == window_id and pid not in live_pane_ids
-    ]
-    for pid in stale:
-        _pane_alert_hashes.pop(pid, None)
+    interactive_strategy.prune_stale_pane_alerts(window_id, live_pane_ids)
 
     if len(panes) <= 1:
         return
@@ -305,16 +296,16 @@ async def _scan_window_panes(
         provider = get_provider_for_window(window_id)
         status = provider.parse_terminal_status(pane_text, pane_title="")
         if status is None or not status.is_interactive:
-            _pane_alert_hashes.pop(pane.pane_id, None)
+            interactive_strategy.remove_pane_alert(pane.pane_id)
             continue
 
         prompt_text = status.raw_text or ""
 
-        existing = _pane_alert_hashes.get(pane.pane_id)
+        existing = interactive_strategy.get_pane_alert(pane.pane_id)
         if existing and existing[0] == prompt_text:
             continue
 
-        _pane_alert_hashes[pane.pane_id] = (prompt_text, now, window_id)
+        interactive_strategy.set_pane_alert(pane.pane_id, prompt_text, now, window_id)
         logger.info(
             "Pane %s in window %s has interactive UI, surfacing alert",
             pane.pane_id,
@@ -380,8 +371,8 @@ async def _maybe_check_passive_shell(
     state = session_manager.get_window_state(window_id)
     if not state or state.provider_name != "shell":
         return
-    ws = terminal_strategy._states.get(window_id)
-    rendered = ws.last_rendered_text if ws else None
+    ws = terminal_strategy.get_state(window_id)
+    rendered = ws.last_rendered_text
     if rendered is None:
         raw = await tmux_manager.capture_pane(window_id)
         if not raw:
@@ -522,9 +513,7 @@ async def _handle_dead_window_notification(
     bot: Bot, user_id: int, thread_id: int, wid: str
 ) -> None:
     """Send proactive recovery notification for a dead window (once per death)."""
-    dead_notified = lifecycle_strategy._dead_notified
-    dead_key = (user_id, thread_id, wid)
-    if dead_key in dead_notified:
+    if lifecycle_strategy.is_dead_notified(user_id, thread_id, wid):
         return
     terminal_strategy.get_state(wid).has_seen_status = False
 
@@ -580,7 +569,7 @@ async def _handle_dead_window_notification(
                 )
         except TelegramError:
             pass
-    dead_notified.add(dead_key)
+    lifecycle_strategy.mark_dead_notified(user_id, thread_id, wid)
 
 
 # ── Autoclose timer management ────────────────────────────────────────────
@@ -588,13 +577,13 @@ async def _handle_dead_window_notification(
 
 async def _check_autoclose_timers(bot: Bot) -> None:
     """Close topics whose done/dead timers have expired."""
-    topic_states = lifecycle_strategy._states
-    if not topic_states:
+    all_topics = lifecycle_strategy.iter_autoclose_timers()
+    if not all_topics:
         return
 
     now = time.monotonic()
     expired: list[tuple[int, int]] = []
-    for (user_id, thread_id), ts in topic_states.items():
+    for user_id, thread_id, ts in all_topics:
         if ts.autoclose is None:
             continue
         state, entered_at = ts.autoclose
@@ -626,9 +615,7 @@ async def _close_expired_topic(bot: Bot, user_id: int, thread_id: int) -> None:
         except TelegramError as e:
             logger.debug("Failed to auto-close topic thread=%d: %s", thread_id, e)
     if removed:
-        ts = lifecycle_strategy._states.get((user_id, thread_id))
-        if ts:
-            ts.autoclose = None
+        lifecycle_strategy.clear_autoclose_timer(user_id, thread_id)
         logger.info(
             "Auto-removed topic: chat=%d thread=%d (user=%d)",
             chat_id,
@@ -656,14 +643,11 @@ async def _check_unbound_window_ttl(live_windows: list | None = None) -> None:
         live_windows = await tmux_manager.list_windows()
     live_ids = {w.window_id for w in live_windows}
 
-    window_states = terminal_strategy._states
-    for wid, ws in list(window_states.items()):
-        if ws.unbound_timer is not None and (wid in bound_ids or wid not in live_ids):
-            ws.unbound_timer = None
+    terminal_strategy.clear_unbound_timers(bound_ids, live_ids)
 
     now = time.monotonic()
     for w in live_windows:
-        if w.window_id not in bound_ids:
+        if w.window_id not in bound_ids and not is_foreign_window(w.window_id):
             ws = terminal_strategy.get_state(w.window_id)
             if ws.unbound_timer is None:
                 ws.unbound_timer = now
@@ -674,11 +658,7 @@ async def _check_unbound_window_ttl(live_windows: list | None = None) -> None:
 
 async def _kill_expired_unbound(now: float, timeout: float) -> None:
     """Find and kill unbound windows past their TTL."""
-    expired = [
-        wid
-        for wid, ws in terminal_strategy._states.items()
-        if ws.unbound_timer is not None and now - ws.unbound_timer >= timeout
-    ]
+    expired = terminal_strategy.get_expired_unbound(now, timeout)
     for wid in expired:
         from ..tmux_manager import clear_vim_state
 
@@ -690,12 +670,7 @@ async def _kill_expired_unbound(now: float, timeout: float) -> None:
 
 def _prune_orphaned_poll_state(live_ids: set[str], bound_ids: set[str]) -> None:
     """Remove poll state for windows that are neither live nor bound."""
-    stale = [
-        wid
-        for wid in terminal_strategy._states
-        if wid not in live_ids and wid not in bound_ids
-    ]
-    for wid in stale:
+    for wid in terminal_strategy.get_orphaned_window_ids(live_ids, bound_ids):
         clear_window_poll_state(wid)
 
 
@@ -840,7 +815,7 @@ async def update_status_message(
             chat_id = thread_router.resolve_chat_id(user_id, thread_id)
             display = thread_router.get_display_name(window_id)
             await update_topic_emoji(bot, chat_id, thread_id, "active", display)
-            lifecycle_strategy.clear_autoclose_if_active(user_id, thread_id)
+            lifecycle_strategy.clear_autoclose_timer(user_id, thread_id)
     else:
         await _handle_no_status(
             bot, user_id, window_id, thread_id, w.pane_current_command, notif_mode
@@ -855,7 +830,6 @@ async def status_poll_loop(bot: Bot) -> None:
     logger.info("Status polling started (interval: %ss)", STATUS_POLL_INTERVAL)
     last_topic_check = 0.0
     _error_streak = 0
-    dead_notified = lifecycle_strategy._dead_notified
     while True:
         try:
             all_windows = await tmux_manager.list_windows()
@@ -876,7 +850,7 @@ async def status_poll_loop(bot: Bot) -> None:
                 structlog.contextvars.clear_contextvars()
                 structlog.contextvars.bind_contextvars(window_id=wid)
                 try:
-                    if (user_id, thread_id, wid) in dead_notified:
+                    if lifecycle_strategy.is_dead_notified(user_id, thread_id, wid):
                         continue
 
                     w = window_lookup.get(wid)

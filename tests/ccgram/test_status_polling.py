@@ -37,7 +37,7 @@ _topic_poll_state = lifecycle_strategy._states
 _dead_notified = lifecycle_strategy._dead_notified
 _pane_alert_hashes = interactive_strategy._pane_alert_hashes
 _start_autoclose_timer = lifecycle_strategy.start_autoclose_timer
-_clear_autoclose_if_active = lifecycle_strategy.clear_autoclose_if_active
+_clear_autoclose_timer = lifecycle_strategy.clear_autoclose_timer
 
 
 def _has_autoclose(user_id: int, thread_id: int) -> bool:
@@ -91,7 +91,7 @@ class TestAutocloseTimers:
 
     def test_clear_on_active(self) -> None:
         _start_autoclose_timer(1, 42, "done", 100.0)
-        _clear_autoclose_if_active(1, 42)
+        _clear_autoclose_timer(1, 42)
         assert not _has_autoclose(1, 42)
 
     def test_clear_timer(self) -> None:
