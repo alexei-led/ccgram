@@ -102,12 +102,17 @@ def e2e_tmux(monkeypatch):
         "ccgram.handlers.resume_command",
         "ccgram.handlers.history_callbacks",
         "ccgram.handlers.sync_command",
+        "ccgram.handlers.command_orchestration",
+        "ccgram.handlers.topic_orchestration",
+        "ccgram.handlers.shell_commands",
+        "ccgram.handlers.cleanup",
     ]
     import importlib
 
     for mod_name in _tm_modules:
         mod = importlib.import_module(mod_name)
-        monkeypatch.setattr(mod, "tmux_manager", manager)
+        if hasattr(mod, "tmux_manager"):
+            monkeypatch.setattr(mod, "tmux_manager", manager)
 
     yield manager
 
@@ -229,25 +234,26 @@ async def e2e_app(e2e_state_dir, e2e_tmux, intercepted_calls, monkeypatch):
         "ccgram.handlers.polling_coordinator",
         "ccgram.handlers.message_queue",
         "ccgram.handlers.recovery_callbacks",
-        "ccgram.handlers.callback_helpers",
         "ccgram.handlers.sessions_dashboard",
         "ccgram.handlers.screenshot_callbacks",
-        "ccgram.handlers.interactive_ui",
         "ccgram.handlers.history",
         "ccgram.handlers.hook_events",
         "ccgram.handlers.file_handler",
-        "ccgram.handlers.voice_handler",
         "ccgram.handlers.voice_callbacks",
         "ccgram.handlers.window_callbacks",
         "ccgram.handlers.restore_command",
         "ccgram.handlers.resume_command",
         "ccgram.handlers.sync_command",
+        "ccgram.handlers.command_orchestration",
+        "ccgram.handlers.topic_orchestration",
+        "ccgram.handlers.shell_commands",
     ]
     import importlib
 
     for mod_name in _sm_modules:
         mod = importlib.import_module(mod_name)
-        monkeypatch.setattr(mod, "session_manager", fresh_manager)
+        if hasattr(mod, "session_manager"):
+            monkeypatch.setattr(mod, "session_manager", fresh_manager)
 
     from ccgram.bot import create_bot
 

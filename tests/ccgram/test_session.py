@@ -493,6 +493,13 @@ class TestGlobFallbackCwdUpdate:
 
 
 class TestSetWindowProvider:
+    @pytest.fixture(autouse=True)
+    def _mock_registry(self):
+        mock_prov = SimpleNamespace(capabilities=SimpleNamespace(supports_hook=False))
+        with patch("ccgram.providers.registry") as mock_reg:
+            mock_reg.get.return_value = mock_prov
+            yield
+
     def test_set_and_get(self, mgr: SessionManager) -> None:
         mgr.set_window_provider("@1", "codex")
         assert mgr.window_states["@1"].provider_name == "codex"

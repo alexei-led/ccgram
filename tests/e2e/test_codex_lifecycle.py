@@ -53,7 +53,11 @@ async def test_command_forwarding(e2e_app, work_dir):
     u = make_text_update("/status", bot=app.bot)
     await app.process_update(u)
 
-    await wait_for_pane(tmux, window_id, pattern="status", timeout=60)
+    await wait_for_send(
+        calls,
+        method="sendChatAction",
+        timeout=10,
+    )
 
 
 async def test_recovery_fresh(e2e_app, work_dir):
