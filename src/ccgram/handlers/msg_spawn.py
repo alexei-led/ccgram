@@ -93,6 +93,12 @@ def _spawns_dir() -> Path:
     return ccgram_dir() / "mailbox" / "spawns"
 
 
+def _spawn_timeout() -> int:
+    from ..config import config
+
+    return config.msg_spawn_timeout
+
+
 def reset_spawn_state() -> None:
     _pending_requests.clear()
 
@@ -221,7 +227,7 @@ def scan_spawn_requests() -> list[SpawnRequest]:
         if req.id in _pending_requests:
             continue
 
-        if req.is_expired():
+        if req.is_expired(timeout=_spawn_timeout()):
             with contextlib.suppress(OSError):
                 entry.unlink()
             continue

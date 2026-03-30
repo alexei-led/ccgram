@@ -76,16 +76,22 @@ async def clear_topic_state(
 
         clear_subagents(window_id)
 
-        # Clear mailbox state for this window
+        # Clear mailbox and delivery state for this window
         from ..config import config
         from ..mailbox import Mailbox
         from ..msg_discovery import clear_declared
+        from ..window_resolver import is_foreign_window
+        from .msg_broker import clear_delivery_state
 
-        qualified_id = f"{config.tmux_session_name}:{window_id}"
+        if is_foreign_window(window_id):
+            qualified_id = window_id
+        else:
+            qualified_id = f"{config.tmux_session_name}:{window_id}"
         mb = Mailbox(config.mailbox_dir)
         mb.sweep(qualified_id)
         mb.clear_inbox(qualified_id)
         clear_declared(qualified_id)
+        clear_delivery_state(window_id)
 
     # Clear interactive UI state (also deletes message from chat)
     await clear_interactive_msg(user_id, bot, thread_id)

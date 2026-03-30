@@ -293,6 +293,7 @@ class TestBrokerDeliveryCycle:
     def mock_provider(self):
         provider = MagicMock()
         provider.capabilities.name = "claude"
+        provider.capabilities.supports_hook = True
         return provider
 
     @pytest.fixture()
@@ -312,7 +313,13 @@ class TestBrokerDeliveryCycle:
             return_value=mock_provider,
         ):
             count = await broker_delivery_cycle(
-                mailbox, mock_tmux, window_states, "ccgram", 10, tmp_path
+                mailbox,
+                mock_tmux,
+                window_states,
+                "ccgram",
+                10,
+                tmp_path,
+                idle_windows=frozenset({"ccgram:@5"}),
             )
 
         assert count == 1
@@ -348,7 +355,13 @@ class TestBrokerDeliveryCycle:
             return_value=mock_provider,
         ):
             count = await broker_delivery_cycle(
-                mailbox, mock_tmux, window_states, "ccgram", 10, tmp_path
+                mailbox,
+                mock_tmux,
+                window_states,
+                "ccgram",
+                10,
+                tmp_path,
+                idle_windows=frozenset({"ccgram:@5"}),
             )
 
         assert count == 0
@@ -363,7 +376,13 @@ class TestBrokerDeliveryCycle:
             return_value=mock_provider,
         ):
             await broker_delivery_cycle(
-                mailbox, mock_tmux, window_states, "ccgram", 10, tmp_path
+                mailbox,
+                mock_tmux,
+                window_states,
+                "ccgram",
+                10,
+                tmp_path,
+                idle_windows=frozenset({"ccgram:@5"}),
             )
 
         all_msgs = mailbox.all_messages("ccgram:@5")
@@ -385,7 +404,13 @@ class TestBrokerDeliveryCycle:
             return_value=mock_provider,
         ):
             count = await broker_delivery_cycle(
-                mailbox, mock_tmux, window_states, "ccgram", 10, tmp_path
+                mailbox,
+                mock_tmux,
+                window_states,
+                "ccgram",
+                10,
+                tmp_path,
+                idle_windows=frozenset({"ccgram:@5"}),
             )
 
         assert count == 0
@@ -402,7 +427,13 @@ class TestBrokerDeliveryCycle:
             return_value=mock_provider,
         ):
             count = await broker_delivery_cycle(
-                mailbox, mock_tmux, window_states, "ccgram", 10, tmp_path
+                mailbox,
+                mock_tmux,
+                window_states,
+                "ccgram",
+                10,
+                tmp_path,
+                idle_windows=frozenset({"ccgram:@5"}),
             )
 
         assert count == 2
@@ -422,7 +453,13 @@ class TestBrokerDeliveryCycle:
             return_value=mock_provider,
         ):
             count = await broker_delivery_cycle(
-                mailbox, mock_tmux, window_states, "ccgram", 10, tmp_path
+                mailbox,
+                mock_tmux,
+                window_states,
+                "ccgram",
+                10,
+                tmp_path,
+                idle_windows=frozenset({"ccgram:@5"}),
             )
 
         assert count == 1
@@ -442,7 +479,13 @@ class TestBrokerDeliveryCycle:
             return_value=mock_provider,
         ):
             count = await broker_delivery_cycle(
-                mailbox, mock_tmux, window_states, "ccgram", 10, tmp_path
+                mailbox,
+                mock_tmux,
+                window_states,
+                "ccgram",
+                10,
+                tmp_path,
+                idle_windows=frozenset({"ccgram:@5"}),
             )
 
         assert count == 0
@@ -458,7 +501,13 @@ class TestBrokerDeliveryCycle:
             return_value=mock_provider,
         ):
             count = await broker_delivery_cycle(
-                mailbox, mock_tmux, window_states, "ccgram", 10, tmp_path
+                mailbox,
+                mock_tmux,
+                window_states,
+                "ccgram",
+                10,
+                tmp_path,
+                idle_windows=frozenset({"ccgram:@5"}),
             )
 
         assert count == 0

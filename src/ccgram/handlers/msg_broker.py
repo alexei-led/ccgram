@@ -295,6 +295,7 @@ async def broker_delivery_cycle(
     msg_rate_limit: int,
     mailbox_dir: Path,
     bot: "Bot | None" = None,
+    idle_windows: frozenset[str] = frozenset(),
 ) -> int:
     """Run one broker delivery cycle.
 
@@ -319,6 +320,11 @@ async def broker_delivery_cycle(
         provider = get_provider_for_window(window_id)
         if provider.capabilities.name == "shell":
             await _notify_shell_pending(bot, mailbox, qualified_id)
+            continue
+
+        # Hook-enabled providers get delivery via Stop event (hook_events.py).
+        # Only deliver when explicitly marked idle; skip in periodic poll.
+        if provider.capabilities.supports_hook and qualified_id not in idle_windows:
             continue
 
         to_deliver, loops = _collect_eligible(mailbox, qualified_id, msg_rate_limit)
@@ -414,10 +420,12 @@ async def _process_spawn_requests(bot: "Bot") -> None:
         scan_spawn_requests,
     )
 
+    from ..config import config
+
     new_requests = scan_spawn_requests()
     for req in new_requests:
         try:
-            if req.auto:
+            if req.auto or config.msg_auto_spawn:
                 await handle_spawn_approval(req.id, bot)
             else:
                 await post_spawn_approval_keyboard(bot, req.requester_window, req)

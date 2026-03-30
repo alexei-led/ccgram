@@ -86,12 +86,19 @@ class Message:
         return elapsed.total_seconds() > self.ttl_minutes * 60
 
 
+def _validate_no_traversal(value: str, label: str) -> None:
+    """Reject values containing path traversal sequences."""
+    if ".." in value or "/" in value or "\\" in value:
+        raise ValueError(f"Invalid {label}: must not contain path separators or '..'")
+
+
 def _sanitize_dir_name(qualified_id: str) -> str:
     """Convert a qualified window ID to a safe directory name.
 
     Replaces colons with ``=`` so that IDs like ``ccgram:@0`` become
     ``ccgram=@0`` (filesystem-safe on all platforms).
     """
+    _validate_no_traversal(qualified_id, "window ID")
     return qualified_id.replace(":", "=")
 
 
@@ -509,6 +516,7 @@ class Mailbox:
     def _find_message(
         self, msg_id: str, window_id: str
     ) -> tuple[Message | None, Path | None]:
+        _validate_no_traversal(msg_id, "message ID")
         inbox_dir = self._inbox_dir(window_id)
         msg_path = inbox_dir / f"{msg_id}.json"
         if not msg_path.is_file():
