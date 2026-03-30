@@ -473,7 +473,7 @@ class Mailbox:
             return results
 
         for inbox_entry in os.scandir(str(self.base_dir)):
-            if not inbox_entry.is_dir() or inbox_entry.name == "tmp":
+            if not inbox_entry.is_dir() or inbox_entry.name in ("tmp", "spawns"):
                 continue
             self._collect_undelivered(inbox_entry.path, cutoff, results)
         return results

@@ -214,8 +214,9 @@ def write_delivery_file(
     mailbox_dir: Path, window_id: str, msg_id: str, body: str
 ) -> Path:
     """Write full message body to a delivery file for long messages."""
-    from ..mailbox import _sanitize_dir_name
+    from ..mailbox import _sanitize_dir_name, _validate_no_traversal
 
+    _validate_no_traversal(msg_id, "message ID")
     inbox_dir = mailbox_dir / _sanitize_dir_name(window_id)
     tmp_dir = inbox_dir / "tmp"
     tmp_dir.mkdir(parents=True, exist_ok=True)
