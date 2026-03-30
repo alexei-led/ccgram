@@ -538,20 +538,21 @@ async def _create_window_and_bind(
         await _wait_for_shell_ready(created_wid)
         await setup_shell_prompt(created_wid)
 
+    if pending_thread_id is not None:
+        thread_router.bind_thread(
+            user_id, pending_thread_id, created_wid, window_name=created_wname
+        )
+        query_message = query.message
+        chat = query_message.chat if query_message else None
+        if chat and chat.type in ("group", "supergroup"):
+            thread_router.set_group_chat_id(user_id, pending_thread_id, chat.id)
+
     if provider_registry.get(provider_name).capabilities.supports_hook:
         await session_manager.wait_for_session_map_entry(created_wid)
 
     if pending_thread_id is None:
         await safe_edit(query, f"✅ {message}")
         return
-
-    thread_router.bind_thread(
-        user_id, pending_thread_id, created_wid, window_name=created_wname
-    )
-    query_message = query.message
-    chat = query_message.chat if query_message else None
-    if chat and chat.type in ("group", "supergroup"):
-        thread_router.set_group_chat_id(user_id, pending_thread_id, chat.id)
 
     try:
         await context.bot.edit_forum_topic(

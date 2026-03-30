@@ -908,12 +908,13 @@ async def post_shutdown(_application: Application) -> None:
         _status_poll_task = None
         logger.info("Status polling stopped")
 
-    # Stop all queue workers
-    await shutdown_workers()
-
+    # Stop session monitor first (it may enqueue messages to workers)
     if session_monitor:
         session_monitor.stop()
         logger.info("Session monitor stopped")
+
+    # Stop all queue workers after monitor is stopped
+    await shutdown_workers()
 
     # Flush debounced state to disk AFTER workers/monitor stop (captures final mutations)
     session_manager.flush_state()
