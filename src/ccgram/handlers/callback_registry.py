@@ -53,7 +53,7 @@ def register(
 
 
 def get_registry() -> dict[str, CallbackHandler]:
-    """Return a read-only view of the registry for testing."""
+    """Return the mutable registry dict (for testing only)."""
     return _registry
 
 

@@ -8,7 +8,7 @@ from ccgram.handlers.command_orchestration import (
     _command_known_in_other_provider,
     _extract_pane_delta,
     _extract_probe_error_line,
-    _get_provider_command_metadata,
+    _build_provider_command_metadata,
     _maybe_send_command_failure_message,
     _normalize_slash_token,
     _probe_transcript_command_error,
@@ -94,7 +94,7 @@ class TestForwardCommandResolution:
                 return_value=self.mock_provider,
             ),
             patch(
-                "ccgram.handlers.command_orchestration._get_provider_command_metadata",
+                "ccgram.handlers.command_orchestration._build_provider_command_metadata",
                 return_value=(
                     {
                         "clear": "clear",
@@ -280,7 +280,7 @@ class TestForwardCommandResolution:
         with (
             patch("ccgram.bot.is_user_allowed", return_value=False),
             patch(
-                "ccgram.handlers.command_orchestration._get_provider_command_metadata"
+                "ccgram.handlers.command_orchestration._build_provider_command_metadata"
             ) as mock_metadata,
         ):
             update = _make_update(text="/clear")
@@ -608,14 +608,14 @@ class TestCommandHelperFunctions:
                 side_effect=lambda name: {"claude": claude, "gemini": gemini}[name],
             ),
             patch(
-                "ccgram.handlers.command_orchestration._get_provider_command_metadata",
+                "ccgram.handlers.command_orchestration._build_provider_command_metadata",
                 side_effect=lambda provider: ({}, _supported(provider)),
             ),
         ):
             assert _command_known_in_other_provider("/cost", current) is True  # type: ignore[arg-type]
             assert _command_known_in_other_provider("/not-here", current) is False  # type: ignore[arg-type]
 
-    def test_get_provider_command_metadata_builds_mapping_and_supported(self) -> None:
+    def test_build_provider_command_metadata_builds_mapping_and_supported(self) -> None:
         provider = SimpleNamespace(
             capabilities=SimpleNamespace(name="codex", builtin_commands=("/builtin",))
         )
@@ -625,7 +625,7 @@ class TestCommandHelperFunctions:
             "ccgram.handlers.command_orchestration.discover_provider_commands",
             return_value=discovered,
         ):
-            mapping, supported = _get_provider_command_metadata(provider)  # type: ignore[arg-type]
+            mapping, supported = _build_provider_command_metadata(provider)  # type: ignore[arg-type]
 
         assert mapping == {"status": "/status"}
         assert supported == {"/status", "/builtin"}

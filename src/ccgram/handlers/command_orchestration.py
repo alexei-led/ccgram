@@ -168,12 +168,6 @@ def _build_provider_command_metadata(
     return mapping, supported
 
 
-def _get_provider_command_metadata(
-    provider: AgentProvider,
-) -> tuple[dict[str, str], set[str]]:
-    return _build_provider_command_metadata(provider)
-
-
 # --- Scoped command menu sync ---
 
 
@@ -512,7 +506,7 @@ def _command_known_in_other_provider(
             supported = supported_cache[name]
         else:
             provider = registry.get(name)
-            _, supported = _get_provider_command_metadata(provider)
+            _, supported = _build_provider_command_metadata(provider)
             if supported_cache is not None:
                 supported_cache[name] = supported
         if command_token in supported:
@@ -585,7 +579,7 @@ async def forward_command_handler(
     display = thread_router.get_display_name(window_id)
     provider = get_provider_for_window(window_id)
     await sync_scoped_provider_menu(update.message, user.id, provider)
-    provider_map, current_supported = _get_provider_command_metadata(provider)
+    provider_map, current_supported = _build_provider_command_metadata(provider)
     resolved_name = provider_map.get(tg_cmd, tg_cmd)
     cc_name = resolved_name.lstrip("/")
     if not args and cc_name in ("remote-control", "rc"):
@@ -627,9 +621,9 @@ async def forward_command_handler(
     from .polling_strategies import clear_probe_failures
 
     clear_probe_failures(window_id)
-    success, message = await session_manager.send_to_window(window_id, cc_slash)
+    success, error_msg = await session_manager.send_to_window(window_id, cc_slash)
     if not success:
-        await safe_reply(update.message, f"\u274c {message}")
+        await safe_reply(update.message, f"\u274c {error_msg}")
         return
 
     if thread_id is not None:
