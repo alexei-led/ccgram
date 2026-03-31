@@ -409,9 +409,9 @@ Migrate modules that use `window_id` key.
 
 ### Task 11: [Final] Update documentation
 
-- [ ] update `CLAUDE.md` module inventory (new: `topic_state_registry.py`, `user_preferences.py`, `handlers/msg_delivery.py`)
-- [ ] update `.claude/rules/architecture.md` module inventory
-- [ ] update `docs/design/architecture.md` if any design decisions changed during implementation
+- [x] update `CLAUDE.md` module inventory (new: `topic_state_registry.py`, `user_preferences.py`, `handlers/msg_delivery.py`)
+- [x] update `.claude/rules/architecture.md` module inventory
+- [x] update `docs/design/architecture.md` if any design decisions changed during implementation
 
 ## Technical Details
 

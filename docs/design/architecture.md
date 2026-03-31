@@ -2,44 +2,54 @@
 
 ## Functional Requirements Summary
 
-This architecture addresses five modularity imbalances identified in the [modularity review](../reviews/modularity-review.md):
+This architecture addresses the four modularity imbalances identified in the [third modularity review](../reviews/modularity-review.md) (2026-03-30):
 
-1. **Status Polling Knowledge Sprawl** (CRITICAL) — `status_polling.py` (1,339 lines) holds model-level knowledge of 7 conceptual domains
-2. **SessionManager State Accumulation** (CRITICAL) — `session.py` (945 lines, 40+ methods) mixes 8 unrelated concerns behind a single API surface exposed to 24 consumers
-3. **bot.py Dispatch Monolith** (CRITICAL) — `bot.py` (2,018 lines, 49 imports) serves as a manual wiring hub for 30+ handlers with mixed orchestration logic
-4. **Provider Abstraction Leakage** (SIGNIFICANT) — Codex-specific modules and provider name checks break the provider protocol's design intent
-5. **Shell Prompt Implicit Contract** (SIGNIFICANT) — Raw `re.Match` groups create silent breakage risk between shell provider and capture modules
+1. **Inter-Agent Messaging Private-Interface Coupling** (SIGNIFICANT) — Handler-layer modules (`msg_broker`, `msg_spawn`, `msg_cmd`) bypass encapsulation boundaries via private imports, shared mutable dicts, and raw state.json parsing
+2. **SessionManager God Object** (SIGNIFICANT) — 1,526 lines, ~50 public methods, 24 consumers, 6 unrelated concerns with no interface segregation
+3. **Fragmented Per-Topic State** (SIGNIFICANT) — 14+ module-level mutable dicts across 9 modules with 4 inconsistent key types, orchestrated by cleanup.py via 14 lazy imports
+4. **Cross-Strategy Encapsulation Violations** (MINOR) — `TopicLifecycleStrategy` accesses `TerminalStatusStrategy._states` directly; coordinator imports private constants
+
+The architecture preserves 7 well-balanced integrations: Hook System, Provider Protocol, LLM/Whisper, Callback Registry, ThreadRouter, `mailbox.py` core, and Shell PromptMatch contract.
 
 ## Module Map
 
-| Module                    | Type    | Files                                                                          | Description                                                             |
-| ------------------------- | ------- | ------------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
-| **Polling Subsystem**     | NEW     | `handlers/polling_coordinator.py`, `handlers/polling_strategies.py`            | Terminal state polling via 4 focused strategies + thin coordinator      |
-| **Thread Router**         | NEW     | `thread_router.py`                                                             | Bidirectional topic↔window routing, chat ID resolution                  |
-| **Session State**         | CHANGED | `session.py`                                                                   | Per-window state, preferences, persistence; exposes Protocol interfaces |
-| **Bot Shell**             | CHANGED | `bot.py`                                                                       | Pure handler registration + application lifecycle                       |
-| **Callback Dispatch**     | NEW     | `handlers/callback_registry.py`                                                | Self-registration callback routing via `@register` decorator            |
-| **Command Orchestration** | NEW     | `handlers/command_orchestration.py`                                            | Command forwarding, menu caching, failure probing                       |
-| **Topic Orchestration**   | NEW     | `handlers/topic_orchestration.py`                                              | Auto-topic creation, window adoption, rate limiting                     |
-| **Provider Protocol**     | CHANGED | `providers/base.py`, `providers/__init__.py`                                   | Extended with optional `build_status_snapshot()` method                 |
-| **Shell Provider**        | CHANGED | `providers/shell.py`                                                           | Typed `PromptMatch` contract replacing raw `re.Match`                   |
-| **Codex Provider**        | CHANGED | `providers/codex.py`, `providers/codex_status.py`, `providers/codex_format.py` | Absorbs previously leaked top-level modules                             |
+### Preserved Modules (no boundary changes)
 
-### File Migration Map
+| Module                    | Files                                                                          | Description                                                 |
+| ------------------------- | ------------------------------------------------------------------------------ | ----------------------------------------------------------- |
+| **Bot Shell**             | `bot.py`                                                                       | PTB Application lifecycle, handler registration             |
+| **Thread Router**         | `thread_router.py`                                                             | Bidirectional topic↔window routing, chat ID resolution      |
+| **Callback Dispatch**     | `handlers/callback_registry.py`                                                | Self-registering `@register` prefix-based callback routing  |
+| **Provider Protocol**     | `providers/base.py`, `providers/__init__.py`, `providers/registry.py`          | AgentProvider protocol, capability matrix, detection        |
+| **Shell Provider**        | `providers/shell.py`                                                           | PromptMatch contract, prompt injection, idle detection      |
+| **Codex Provider**        | `providers/codex.py`, `providers/codex_status.py`, `providers/codex_format.py` | JSONL transcripts, status snapshots, interactive formatting |
+| **Command Orchestration** | `handlers/command_orchestration.py`                                            | Command forwarding, 3-tier menu cache, status snapshots     |
+| **LLM**                   | `llm/`                                                                         | Protocol + factory for OpenAI-compatible chat completions   |
+| **Whisper**               | `whisper/`                                                                     | Protocol + factory for voice transcription                  |
+| **Session Monitor**       | `session_monitor.py`                                                           | JSONL polling, hook event dispatch, session tracking        |
+| **Tmux Manager**          | `tmux_manager.py`                                                              | Window/pane CRUD, send_keys, capture_pane                   |
 
-| Current                                       | Target                                                                                                                                          | Change     |
-| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
-| `handlers/status_polling.py` (1,339 lines)    | `handlers/polling_coordinator.py` (~200) + `handlers/polling_strategies.py` (~800)                                                              | Decomposed |
-| `bot.py` (2,018 lines)                        | `bot.py` (~400) + `handlers/callback_registry.py` (~80) + `handlers/command_orchestration.py` (~250) + `handlers/topic_orchestration.py` (~200) | Decomposed |
-| `session.py` (945 lines)                      | `session.py` (~600) + `thread_router.py` (~200) + `protocols.py` (~60)                                                                          | Extracted  |
-| `codex_status.py` (237 lines)                 | `providers/codex_status.py`                                                                                                                     | Moved      |
-| `interactive_prompt_formatter.py` (245 lines) | `providers/codex_format.py`                                                                                                                     | Moved      |
+### New Modules
 
-### Net File Count
+| Module                   | Files                      | Description                                                                   |
+| ------------------------ | -------------------------- | ----------------------------------------------------------------------------- |
+| **Topic State Registry** | `topic_state_registry.py`  | Self-registering cleanup orchestration; replaces cleanup.py's 14 lazy imports |
+| **User Preferences**     | `user_preferences.py`      | Starred dirs, MRU, read offsets (extracted from SessionManager)               |
+| **Message Delivery**     | `handlers/msg_delivery.py` | `MessageDeliveryStrategy` singleton; breaks broker↔telegram cycle             |
 
-- **Removed**: 2 top-level modules (`codex_status.py`, `interactive_prompt_formatter.py`) + 1 handler (`status_polling.py`)
-- **Added**: 6 new modules (`polling_coordinator.py`, `polling_strategies.py`, `callback_registry.py`, `command_orchestration.py`, `topic_orchestration.py`, `thread_router.py`, `protocols.py`)
-- **Net**: +4 files. Total lines across changed files: ~2,790 (down from ~4,302 original — 35% reduction due to eliminated duplication and ceremony)
+### Redesigned Modules (boundary changes)
+
+| Module                    | Files                                                               | Key Change                                                                                                                                |
+| ------------------------- | ------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| **Session State**         | `session.py`                                                        | Drop 9 pass-through methods; add `export_window_info()`; expose Protocol interfaces (`WindowStateStore`, `SessionIO`, `WindowModeConfig`) |
+| **Mailbox**               | `mailbox.py`                                                        | Expose `sanitize_dir_name()`, `validate_no_traversal()` as public API                                                                     |
+| **Spawn Request**         | `spawn_request.py`                                                  | Public accessor API (`get_pending`, `pop_pending`, `iter_pending`, `register_pending`); private `_pending_requests` dict                  |
+| **Message Broker**        | `handlers/msg_broker.py`                                            | Uses mailbox public API (sanitize_dir_name, validate_no_traversal); imports spawn accessors; imports delivery strategy from msg_delivery  |
+| **Messaging Telegram UI** | `handlers/msg_telegram.py`                                          | `resolve_topic()` promoted to public; imports delivery_strategy from msg_delivery                                                         |
+| **Message Spawn**         | `handlers/msg_spawn.py`                                             | Uses public APIs from topic_orchestration and msg_telegram                                                                                |
+| **Topic Orchestration**   | `handlers/topic_orchestration.py`                                   | `collect_target_chats()`, `create_topic_in_chat()` promoted to public                                                                     |
+| **Polling Subsystem**     | `handlers/polling_coordinator.py`, `handlers/polling_strategies.py` | TerminalStatusStrategy gets public methods for probe/seen/unbound state; coordinator delegates threshold comparisons                      |
+| **Messaging CLI**         | `msg_cmd.py`                                                        | Uses `export_window_info()` instead of raw state.json parsing                                                                             |
 
 ## How the Modules Work Together
 
@@ -49,12 +59,12 @@ This architecture addresses five modularity imbalances identified in the [modula
 User types "hello" in topic (thread_id=42)
   → Bot Shell dispatches to text_handler
   → text_handler calls Thread Router: get_window_for_thread(user_id, 42) → "@0"
-  → text_handler calls Session State: send_to_window("@0", "hello")
+  → text_handler calls Session State (SessionIO): send_to_window("@0", "hello")
   → Session State delegates to Tmux Manager: send_keys("@0", "hello\n")
 ```
 
-**Modules**: Bot Shell → text_handler → Thread Router → Session State → Tmux Manager
-**Contracts**: Contract (routing) → Model (window state) → Contract (tmux)
+**Modules**: Bot Shell → text_handler → Thread Router → Session State (SessionIO) → Tmux Manager
+**Contracts**: Contract (routing) → Contract (SessionIO protocol) → Contract (tmux)
 
 ### Flow 2: Agent Output → User
 
@@ -68,172 +78,195 @@ SessionMonitor detects new JSONL content
 ```
 
 **Modules**: Session Monitor → Thread Router → Message Queue → Telegram API
-**Contracts**: Functional (callback) → Contract (routing) → Contract (queue)
 
-### Flow 3: Status Polling Cycle (1 second)
+### Flow 3: Inter-Agent Message Delivery (NEW)
+
+```
+Agent A sends "ccgram msg send @5 'help with tests'"
+  → Messaging CLI: create message via Mailbox.create()
+  → Mailbox writes message JSON to @5's inbox directory
+  → Polling Coordinator calls broker_delivery_cycle()
+  → Message Broker: check window @5 idle via Provider Protocol
+  → Message Broker: construct delivery path via Mailbox.sanitize_dir_name()
+  → Message Broker: inject message via Tmux Manager send_keys
+  → Message Broker: mark delivered via Message Delivery strategy
+  → Messaging Telegram UI: notify_messages_delivered() → silent notification in both topics
+```
+
+**Modules**: CLI → Mailbox → Polling → Broker → [Provider, Mailbox, Tmux, Delivery] → Telegram UI
+**Key design**: Broker never imports mailbox private functions; delivery strategy owned by msg_delivery module (no cycle)
+
+### Flow 4: Agent Spawn Request (NEW)
+
+```
+Agent sends "ccgram msg spawn --provider claude --cwd ~/project"
+  → Messaging CLI: create_spawn_request() via Spawn Request module
+  → Spawn Request persists to mailbox/spawns/
+  → Polling → Broker: scan_spawn_requests() via Spawn Request public API
+  → Broker routes to Message Spawn handler
+  → Message Spawn: post_spawn_approval_keyboard() → Telegram inline keyboard
+  → User taps "Approve"
+  → Message Spawn: creates window via Tmux Manager
+  → Message Spawn: creates topic via Topic Orchestration public API (collect_target_chats, create_topic_in_chat)
+  → Message Spawn: installs messaging skill via msg_skill
+```
+
+**Modules**: CLI → Spawn Request → Polling → Broker → Spawn Handler → [Tmux, Topic Orchestration, msg_skill]
+**Key design**: Spawn handler uses public `collect_target_chats()` and `create_topic_in_chat()` from topic_orchestration; no private imports
+
+### Flow 5: Topic Cleanup via Registry (NEW)
+
+```
+Topic closed or window dies
+  → Polling detects dead window
+  → cleanup.py: resolve window_id, qualified_id
+  → Topic State Registry: clear_all(user_id, thread_id, window_id, qualified_id)
+    → Calls all registered topic-scoped cleanups with (user_id, thread_id)
+    → Resolves chat_id for legacy modules, calls (chat_id, thread_id) cleanups
+    → Calls all window-scoped cleanups with window_id
+    → Calls all qualified-scoped cleanups with qualified_id
+```
+
+**Modules**: Polling → cleanup.py → Topic State Registry → [all registered handler modules]
+**Key design**: cleanup.py is ~20 lines (resolve IDs, call registry); no lazy imports. New features register via @topic_state.register("scope")
+
+### Flow 6: Status Polling Cycle (1 second)
 
 ```
 Polling Coordinator iterates Thread Router: iter_thread_bindings()
   For each (user_id, thread_id, window_id):
     → TerminalStatusStrategy: capture pane, parse via Provider Protocol
+      Strategy owns threshold logic (MAX_PROBE_FAILURES, STARTUP_TIMEOUT)
       If active status → enqueue status update, update topic emoji
       If interactive prompt → InteractiveUIStrategy: surface keyboard
-      If RC detected → debounce transition
-    → TopicLifecycleStrategy: check autoclose timers, probe topic existence
-      If done/dead timeout → trigger cleanup
-    → ShellRelayStrategy: check passive output (shell windows only)
+    → TopicLifecycleStrategy: check autoclose timers
+      Calls TerminalStatusStrategy.clear_probe_failures(window_id) — public method
+      Calls TerminalStatusStrategy.clear_seen_status(window_id) — public method
+    → ShellRelayStrategy: check passive output
+    → Broker delivery cycle: inject pending messages into idle windows
 ```
 
-**Modules**: Polling Coordinator → Polling Strategies → [Thread Router, Session State, Provider Protocol, Tmux Manager, Message Queue, Interactive UI, Topic Emoji, Shell Capture, Cleanup]
-**Key design**: Coordinator has zero domain knowledge — each strategy owns its concerns.
+**Modules**: Coordinator → Strategies → [Thread Router, Session State, Provider, Tmux, Queue, Emoji, Shell Capture, Broker]
+**Key design**: Coordinator delegates threshold decisions to strategies; TopicLifecycleStrategy accesses TerminalStatusStrategy only via public methods
 
-### Flow 4: User Taps Inline Button
-
-```
-Telegram sends CallbackQuery with data="dir:select:/home/user/project"
-  → Bot Shell dispatches to Callback Dispatch: dispatch(update, context)
-  → Callback Dispatch: longest-prefix match "dir:" → handle_directory_callback
-  → handle_directory_callback processes the selection
-```
-
-**Modules**: Bot Shell → Callback Dispatch → Handler module
-**Contracts**: Contract (registration) → Contract (prefix decorator). Adding a new callback handler never touches Bot Shell or Callback Dispatch dispatch logic.
-
-### Flow 5: Unknown `/command` Forwarded to Provider
+### Flow 7: CLI Peer Discovery (REDESIGNED)
 
 ```
-User sends /status in Codex topic
-  → Bot Shell dispatches to Command Orchestration: forward_command_handler
-  → Command Orch: sync provider menu (3-tier cache)
-  → Command Orch: validate against Provider Protocol capabilities
-  → Command Orch: send_to_window via Session State
-  → Command Orch: probe for failure (async delay + pane inspection)
-  → Command Orch: provider.build_status_snapshot() → Codex returns formatted stats
-  → Command Orch: deliver snapshot to user via Message Sender
+Agent runs "ccgram msg list-peers"
+  → Messaging CLI: calls export_window_info() from Session State
+  → Session State returns dict[str, WindowInfo] (explicit public contract)
+  → Messaging CLI: passes to msg_discovery.list_peers()
+  → Returns formatted peer list
 ```
 
-**Modules**: Bot Shell → Command Orchestration → [Provider Protocol, Session State, Thread Router, Message Sender]
-**Key design**: No `capabilities.name == "codex"` check — `build_status_snapshot()` is polymorphic. Claude/Gemini/Shell return None.
-
-### Flow 6: New Tmux Window Auto-Creates Topic
-
-```
-External tmux window created
-  → SessionMonitor fires NewWindowEvent
-  → Topic Orchestration: handle_new_window(bot, event)
-    → Tmux Manager: get window metadata
-    → Provider Protocol: detect_provider_from_pane() → "codex"
-    → Session State: set_window_provider("@5", "codex")
-    → Thread Router: enumerate chats via iter_thread_bindings()
-    → Telegram API: create_forum_topic(chat_id, "my-project")
-    → Thread Router: bind_thread(user_id, new_thread_id, "@5")
-```
-
-**Modules**: Session Monitor → Topic Orchestration → [Tmux Manager, Provider Protocol, Session State, Thread Router, Telegram API]
-**Key design**: Rate limiting per chat prevents Telegram flood control.
-
-### Flow 7: Shell Command with Typed Prompt Contract
-
-```
-Shell command executes, output appears between two prompt markers
-  → Polling calls ShellRelayStrategy → delegates to Shell Capture
-  → Shell Capture: match_prompt(line) → PromptMatch(sequence_number=5, trailing_text="ls -la", exit_code=0, raw_line="...")
-  → Shell Capture: match_prompt(next_marker_line) → PromptMatch(sequence_number=6, trailing_text="", exit_code=0, ...)
-  → Output between markers extracted, exit code from PromptMatch.exit_code
-  → Formatted output sent to user
-```
-
-**Modules**: Polling Subsystem → Shell Capture → Shell Provider (via PromptMatch)
-**Key design**: Named fields (`.sequence_number`, `.exit_code`) instead of positional groups (`.group(1)`, `.group(2)`). Adding fields to PromptMatch doesn't break consumers.
+**Key design**: CLI no longer parses state.json directly; uses `export_window_info()` public API
 
 ## Coupling Assessment
 
-| Integration                           | Strength       | Distance                        | Volatility     | Balanced?      | Rationale                                                                                           |
-| ------------------------------------- | -------------- | ------------------------------- | -------------- | -------------- | --------------------------------------------------------------------------------------------------- |
-| Polling Subsystem → Session State     | Model          | Low (same pkg)                  | High (core)    | **Yes**        | Strategies read WindowState fields — co-location justified by high mutual knowledge                 |
-| Polling Subsystem → Thread Router     | Contract       | Low (same pkg)                  | High (core)    | **Borderline** | Different bounded contexts co-located for deployment; low coupling is intentional, not low cohesion |
-| Polling Subsystem → Provider Protocol | Contract       | Low (same pkg)                  | Medium (supp.) | **Yes**        | Low-volatility protocol side grants exemption                                                       |
-| Bot Shell → Callback Dispatch         | Contract       | Low (same pkg)                  | Low (generic)  | **Yes**        | Stable infrastructure — low volatility exempts from balance check                                   |
-| Bot Shell → Command Orchestration     | Functional     | Low (same pkg)                  | High (core)    | **Yes**        | High strength at low distance for volatile module — correct cohesion                                |
-| Bot Shell → Topic Orchestration       | Functional     | Low (same pkg)                  | Medium (supp.) | **Yes**        | Appropriate strength for distance and volatility                                                    |
-| Command Orch. → Provider Protocol     | Contract       | Low (same pkg)                  | Medium (supp.) | **Yes**        | Capability queries without deep provider knowledge                                                  |
-| Command Orch. → Session State         | Model          | Low (same pkg)                  | High (core)    | **Yes**        | Probing needs window state internals — justified co-location                                        |
-| Thread Router ↔ Session State         | Functional     | Low (same pkg)                  | High (core)    | **Yes**        | Shared persistence lifecycle — bidirectional coordination by design                                 |
-| Shell Capture → Shell Provider        | Contract       | Medium (handlers/ → providers/) | High (active)  | **Yes**        | Typed PromptMatch contract across package boundary — correct balance                                |
-| Codex Provider → Codex helpers        | Model          | Low (same pkg)                  | Medium (supp.) | **Yes**        | Provider-specific knowledge co-located within provider package                                      |
-| Bot layer → Codex internals           | **Eliminated** | —                               | —              | **Yes**        | No more direct dependency — bot calls provider protocol uniformly                                   |
+| Integration                      | Strength   | Distance                  | Volatility     | Balanced?  | Rationale                                                                  |
+| -------------------------------- | ---------- | ------------------------- | -------------- | ---------- | -------------------------------------------------------------------------- |
+| Hook System → Session Monitor    | Contract   | High (separate processes) | Low            | Yes        | JSONL file contract between processes — gold standard                      |
+| Provider Protocol → Consumers    | Contract   | Low (same pkg)            | Medium (supp.) | Yes        | Capability flags gate behavior uniformly                                   |
+| LLM / Whisper → Consumers        | Contract   | Low (same pkg)            | Low (generic)  | Yes        | Protocol + factory, zero cross-coupling                                    |
+| Callback Registry → Handlers     | Contract   | Low (same pkg)            | Low (generic)  | Yes        | @register decorator absorbs handler volatility                             |
+| ThreadRouter → Consumers         | Contract   | Low (same pkg)            | Low            | Yes        | Zero ccgram imports; clean public API                                      |
+| Mailbox → Consumers              | Contract   | Low (same pkg)            | Medium (supp.) | Yes        | Zero internal imports; public sanitize_dir_name(), validate_no_traversal() |
+| Shell PromptMatch → Consumers    | Contract   | Low (same pkg)            | Low (supp.)    | Yes        | Named dataclass fields; stable contract                                    |
+| Topic State Registry → Handlers  | Contract   | Low (same pkg)            | High (core)    | Yes        | Self-registration pattern; adding state is local                           |
+| msg_broker → Mailbox             | Contract   | Low (same pkg)            | High (core)    | Yes        | Public API only (sanitize_dir_name, validate_no_traversal)                 |
+| msg_broker → Spawn Request       | Contract   | Low (same pkg)            | High (core)    | Yes        | Public accessors (get_pending, pop_pending)                                |
+| msg_broker → Message Delivery    | Contract   | Low (same pkg)            | High (core)    | Yes        | Shared singleton with no back-reference                                    |
+| msg_spawn → Topic Orchestration  | Contract   | Low (same pkg)            | Medium (supp.) | Yes        | Public functions (collect_target_chats, create_topic_in_chat)              |
+| msg_spawn → Messaging Telegram   | Contract   | Low (same pkg)            | Medium (supp.) | Yes        | Public resolve_topic()                                                     |
+| msg_cmd → Session State          | Contract   | Medium (CLI/bot)          | High (core)    | Yes        | Explicit export_window_info() API                                          |
+| SessionManager → Consumers       | Contract   | Low (same pkg)            | High (core)    | Yes        | Narrow Protocol interfaces (WindowStateStore, SessionIO, WindowModeConfig) |
+| Session State ↔ User Preferences | Functional | Low (same pkg)            | Low (generic)  | Yes        | Shared persistence lifecycle (same pattern as ThreadRouter)                |
+| Polling Strategies → Coordinator | Model      | Low (same pkg)            | High (core)    | Borderline | Strategy singletons with public methods; coordinator delegates             |
+| TopicLifecycle → TerminalStatus  | Contract   | Low (same file)           | Medium         | Yes        | Public methods (clear_probe_failures, clear_seen_status)                   |
 
 ## Design Decisions and Trade-offs
 
-### Decision 1: Polling strategies in one module, not four
+### Decision 1: Topic State Registry via self-registration (not central manifest)
 
-**Considered**: Four separate files (`terminal_status_strategy.py`, `interactive_ui_strategy.py`, `topic_lifecycle_strategy.py`, `shell_relay_strategy.py`).
+**Considered**: Central manifest file listing all cleanup functions (like a DI container config).
 
-**Chosen**: Single `polling_strategies.py` with four classes.
+**Chosen**: Self-registration at import time via `@topic_state.register(scope)` decorator.
 
-**Why**: The strategies share type imports (`WindowPollState`, `TopicPollState`), are always modified in the same PR (the poll interface is their shared evolution axis), and four tiny files would create cross-import friction without reducing coupling. The balance model says co-located modules with shared knowledge should have high strength — separate files at low distance would be low cohesion.
+**Why**: Matches the proven `callback_registry` pattern. Registration is co-located with the state it cleans — a developer adding per-window state sees both the state dict and its cleanup in the same file. No central file to update. The balance model says: the registry is generic infrastructure (low volatility); the registrations are in core/supporting modules (high volatility). Contract coupling at low distance — balanced.
 
-### Decision 2: Thread Router physically extracted, not Protocol-only
+**Trade-off**: Registration happens as import-time side effects. If a module isn't imported, its cleanup isn't registered. Mitigated by: handler modules are always imported via `load_handlers()` (same as callback registry).
 
-**Considered**: Protocol-only segregation (SessionManager implements `ThreadRouter` protocol, consumers type-hint against it).
+### Decision 2: Extract MessageDeliveryStrategy to msg_delivery.py (not keep in broker)
 
-**Chosen**: Physical extraction into `thread_router.py` class, plus Protocol interfaces on remaining SessionManager.
+**Considered**: Keep delivery strategy in msg_broker.py; have msg_telegram use a callback-based approach to avoid the import.
 
-**Why**: Thread routing (82 calls, 9 methods) is the highest-usage concern with the cleanest data boundary. Physical extraction makes the dependency audit concrete — `from ccgram.thread_router import thread_router` is unambiguous. Protocol-only segregation still allows accidental access to the full SessionManager. The cost (200-line new file, updated imports across 24 consumers) is one-time; the benefit (prevented state accumulation) is ongoing.
+**Chosen**: Physical extraction to `msg_delivery.py`.
 
-### Decision 3: Callback registry with explicit `load_handlers()`, not auto-discovery
+**Why**: The `msg_broker ↔ msg_telegram` circular dependency is a structural problem caused by co-locating the delivery strategy singleton with the broker that uses it. Both broker and telegram UI need access to the strategy — extracting it into a third module eliminates the cycle entirely. The balance model says: high-volatility shared state (delivery strategy) should be co-located with its primary consumers at low distance — a separate module within the same package satisfies this.
 
-**Considered**: Automatic module discovery (scan `handlers/` for `@register` decorators).
+**Trade-off**: One more file. Minimal — the class is ~80 lines with clear ownership.
 
-**Chosen**: Explicit `load_handlers()` function with manual imports.
+### Decision 3: Spawn Request accessor functions (not expose the dict)
 
-**Why**: Auto-discovery adds runtime magic that makes import errors harder to debug. Explicit imports mean a missing handler causes an ImportError at startup, not a silent missing callback at runtime. The cost is one import line per handler module — acceptable for a codebase with ~15 callback handler modules.
+**Considered**: Make `_pending_requests` a public module-level dict (the current de facto state).
 
-### Decision 4: Optional protocol method for status snapshots, not capability flag + dispatch
+**Chosen**: Private dict with `get_pending()`, `pop_pending()`, `iter_pending()`, `register_pending()` accessor functions.
 
-**Considered**: `ProviderCapabilities.supports_status_snapshot: bool` flag, with bot.py checking the flag and calling a separate function.
+**Why**: Three modules co-owning a single mutable dict with no accessor protocol is intrusive coupling in a high-volatility area. Accessor functions are the minimal contract-level encapsulation that allows the cache structure to change without coordinated edits. The balance model says: reduce integration strength from intrusive to contract while keeping distance low.
 
-**Chosen**: `build_status_snapshot() -> str | None` as an optional method on `AgentProvider` with a default `None` return.
+**Trade-off**: 4 one-line functions. The cost is nearly zero.
 
-**Why**: The flag-and-dispatch pattern recreates the problem — consumers still need to know _how_ to call the snapshot builder. An optional method with a default return means consumers call it uniformly and handle `None`. No flag checks, no dispatch, no provider name strings.
+### Decision 4: Promote private functions to public (not create wrapper modules)
 
-### Decision 5: PromptMatch with exit_code field, not just sequence_number + trailing_text
+**Considered**: Create adapter/facade modules between msg_spawn and topic_orchestration.
 
-**Considered**: Minimal dataclass with only `sequence_number` and `trailing_text` (matching current regex groups).
+**Chosen**: Simply promote `_collect_target_chats`, `_create_topic_in_chat`, `_resolve_topic` to public (drop underscore prefix, add docstrings).
 
-**Chosen**: Include `exit_code` and `raw_line` fields.
+**Why**: These functions already have stable signatures and are used across module boundaries. The underscore prefix is a lie — they are de facto public interfaces. Promoting them acknowledges reality. Creating wrapper modules would add distance without reducing strength. The balance model says: don't increase distance when strength is already appropriate for the distance.
 
-**Why**: `exit_code` is extracted from the sequence number in wrap mode but is a distinct semantic concept — callers want "what was the exit code?" not "what was group 1?". Including it in the dataclass makes the semantic intent explicit. `raw_line` aids debugging without requiring callers to reconstruct from fields.
+**Trade-off**: None. This is pure recognition of existing contracts.
 
-### Decision 6: Incremental migration order
+### Decision 5: Session State export_window_info() (not shared serialization format)
 
-**Recommended order** (each step is independently mergeable):
+**Considered**: Define a shared `WindowInfo` type that both session.py and msg_cmd.py import from a common module.
 
-1. **C2: Shell PromptMatch** — smallest change, zero risk, fixes silent breakage class. ~2 files changed.
-2. **C1: Provider abstraction** — move files + add optional method. ~5 files changed.
-3. **B1: Thread Router extraction** — physical split + Protocol definitions. ~26 files changed (import updates).
-4. **A2: Bot dispatch extraction** — callback registry + orchestration modules. ~20 files changed.
-5. **A1: Polling decomposition** — largest change, benefits from all prior work. ~5 files changed.
+**Chosen**: `export_window_info()` function on session.py that returns `dict[str, WindowInfo]` where `WindowInfo` is defined in `msg_discovery.py`.
 
-Each step reduces the blast radius of subsequent steps. Steps 1-2 are encapsulation repairs (low risk). Step 3 is interface segregation (medium risk, high consumer count). Steps 4-5 are decompositions (medium risk, high reward).
+**Why**: The CLI process cannot instantiate SessionManager (no bot token). The current code parses state.json directly, hardcoding field names. `export_window_info()` makes the dependency explicit — it's a contract-level function that session.py owns and msg_cmd.py calls. If SessionManager's serialization format changes, only this function needs updating (single point of change). The balance model says: reduce integration strength from intrusive (raw schema knowledge) to contract (explicit export function) while acknowledging the medium distance (CLI vs bot process).
+
+**Trade-off**: The function loads state.json from disk in the CLI process, which duplicates some of SessionManager's load logic. Acceptable because it's a read-only snapshot.
+
+### Decision 6: Protocol interfaces on SessionManager (not physical decomposition)
+
+**Considered**: Split SessionManager into 3 physical classes (WindowStateStore, SessionIO, WindowModeConfig).
+
+**Chosen**: Keep one physical class with Protocol interfaces for consumer-facing contracts.
+
+**Why**: SessionManager's 6 concerns share persistence (state.json) and startup/shutdown lifecycle. Physical decomposition would require a persistence coordinator or shared state.json writes from multiple objects — adding complexity. Protocol interfaces achieve the same consumer-facing benefit (narrow dependency surface) without the internal restructuring cost. The balance model says: interface segregation reduces effective coupling strength without changing distance.
+
+**Trade-off**: The physical class remains large (~1,200 lines after removing 9 pass-throughs and 6 preference methods). Protocol interfaces are only enforced by type checkers, not at runtime. Acceptable because the goal is consumer isolation, not runtime polymorphism.
 
 ## Unresolved Risks
 
-### Minor: Polling Subsystem → Thread Router low cohesion (Borderline)
+### Minor: Polling Strategies → Coordinator model coupling (Borderline)
 
-The balance model flags contract-level coupling at low distance as potential low cohesion. This is an intentional trade-off: polling and routing are genuinely different bounded contexts. Merging them would recreate the original knowledge sprawl. If this becomes problematic (e.g., polling and routing are always changed together), consider merging them into a single module with clear internal boundaries.
+The coordinator imports strategy singletons and calls their public methods. This is model-level coupling at low distance. The balance model says this is borderline — acceptable if volatility stays medium. If the coordinator grows beyond ~800 lines or strategies start changing independently, consider a `PollResult` return dataclass so the coordinator routes without interpreting strategy semantics.
 
-### Minor: SessionManager still accumulates preferences
+### Minor: Session State still accumulates per-window modes
 
-After Thread Router extraction, SessionManager still owns 5 concerns: window state, preferences, directory favorites, user offsets, and persistence. Further extraction (e.g., separate `UserPreferences` class) is possible but not currently justified — the Protocol interfaces prevent consumer coupling from growing. Revisit if SessionManager exceeds 800 lines again.
+After extracting UserPreferences, SessionManager still owns ~35 public methods across 4 concerns. Further extraction (e.g., `WindowModeConfig` as a physical class) is possible but not justified — the Protocol interfaces prevent consumer coupling from growing. Revisit if SessionManager exceeds 1,200 lines.
 
-### Minor: Callback registry import ordering
+### Minor: Topic State Registry import ordering
 
-The `@register` decorator pattern requires handler modules to be imported before `create_bot()` runs. If a handler module has a side effect on import (e.g., initializing a global), the import ordering matters. This is mitigated by the explicit `load_handlers()` function, but circular imports between handler modules could surface. Mitigation: handler modules should never import each other; shared logic lives in helper modules.
+Like the callback registry, the topic state registry depends on handler modules being imported before cleanup runs. If a handler module isn't imported (e.g., conditional import based on config), its state won't be cleaned. Mitigated by: all handler modules are imported via `load_handlers()` at startup.
 
-### Observation: 24 consumer import migration for Thread Router
+### Minor: Message Delivery singleton testability
 
-Extracting Thread Router requires updating imports in ~24 files. This is a mechanical change but creates a large diff that may conflict with in-flight feature work. Mitigation: perform the migration in a dedicated PR with no functional changes, and coordinate timing with active feature branches.
+`MessageDeliveryStrategy` is a module-level singleton. Unit testing requires either importing and mutating it or adding a reset function. This matches the existing pattern for strategy singletons in polling_strategies.py.
+
+### Observation: 15+ consumer import changes for SessionManager Protocol adoption
+
+Introducing Protocol type annotations across 15+ handler files creates a large diff. Recommend: do this in a dedicated PR with no functional changes, similar to the ThreadRouter extraction migration. The Protocol interfaces can be adopted incrementally — consumers that don't type-annotate still work.
 
 ---
 
