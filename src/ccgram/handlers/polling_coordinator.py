@@ -661,16 +661,13 @@ async def _kill_expired_unbound(now: float, timeout: float) -> None:
     """Find and kill unbound windows past their TTL."""
     expired = terminal_strategy.get_expired_unbound(now, timeout)
     for wid in expired:
-        from ..tmux_manager import clear_vim_state
-
-        clear_vim_state(wid)
         await tmux_manager.kill_window(wid)
-        clear_window_poll_state(wid)
 
         from ..config import config
         from ..window_resolver import is_foreign_window
         from .topic_state_registry import topic_state
 
+        topic_state.clear_window(wid)
         qualified_id = (
             wid if is_foreign_window(wid) else f"{config.tmux_session_name}:{wid}"
         )

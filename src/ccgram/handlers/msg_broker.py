@@ -138,6 +138,7 @@ def _collect_eligible(
     for msg in eligible:
         if delivery_strategy.check_loop(qualified_id, msg.from_id):
             delivery_strategy.pause_peer(qualified_id, msg.from_id)
+            delivery_strategy.pause_peer(msg.from_id, qualified_id)
             pair = (qualified_id, msg.from_id)
             if pair not in seen_loops:
                 seen_loops.add(pair)

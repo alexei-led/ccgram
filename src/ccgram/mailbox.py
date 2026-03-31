@@ -82,6 +82,8 @@ class Message:
         if not self.created_at:
             return True
         created = datetime.fromisoformat(self.created_at)
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
         elapsed = datetime.now(timezone.utc) - created
         return elapsed.total_seconds() > self.ttl_minutes * 60
 
