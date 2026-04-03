@@ -5,7 +5,10 @@ cc_commands.py without changing any behavior. This is a thin adapter layer
 that translates between the provider protocol and existing module APIs.
 """
 
+import json
 import os
+import time
+from pathlib import Path
 from typing import Any, cast
 
 from ccgram.cc_commands import CC_BUILTINS
@@ -19,6 +22,7 @@ from ccgram.providers.base import (
     SessionStartEvent,
     StatusUpdate,
 )
+from ccgram.utils import read_session_metadata_from_jsonl
 
 from ccgram.terminal_parser import (
     extract_bash_output,
@@ -27,6 +31,68 @@ from ccgram.terminal_parser import (
     parse_status_block,
 )
 from ccgram.transcript_parser import TranscriptParser
+
+_TRANSCRIPT_MAX_AGE_SECS = 120.0
+_TAIL_READ_BYTES = 8192
+_TAIL_SCAN_LINES = 8
+_SESSION_END_COMMANDS = frozenset({"/clear", "/compact", "/exit"})
+
+
+def _resolve_cwd(cwd: str) -> str:
+    try:
+        return str(Path(cwd).resolve())
+    except OSError:
+        return cwd
+
+
+def _claude_project_dir(cwd: str) -> Path:
+    resolved = _resolve_cwd(cwd)
+    return Path.home() / ".claude" / "projects" / resolved.replace("/", "-")
+
+
+def _read_tail_lines(
+    file_path: str | Path,
+    *,
+    read_bytes: int = _TAIL_READ_BYTES,
+    max_lines: int = _TAIL_SCAN_LINES,
+) -> list[str]:
+    try:
+        with open(file_path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            start = max(0, size - read_bytes)
+            f.seek(start)
+            chunk = f.read().decode("utf-8", errors="ignore")
+    except OSError:
+        return []
+
+    lines = chunk.splitlines()
+    if start > 0 and lines:
+        lines = lines[1:]
+    return lines[-max_lines:]
+
+
+def _transcript_indicates_session_end(file_path: str | Path) -> bool:
+    """Return True when the transcript tail contains a session-ending command."""
+    for line in reversed(_read_tail_lines(file_path)):
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(entry, dict) or entry.get("type") != "user":
+            continue
+        message = entry.get("message", {})
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content", "")
+        if not isinstance(content, str):
+            continue
+        if any(
+            f"<command-name>{command}</command-name>" in content
+            for command in _SESSION_END_COMMANDS
+        ):
+            return True
+    return False
 
 
 class ClaudeProvider:
@@ -207,12 +273,49 @@ class ClaudeProvider:
 
     def discover_transcript(
         self,
-        cwd: str,  # noqa: ARG002 — protocol signature
-        window_key: str,  # noqa: ARG002 — protocol signature
+        cwd: str,
+        window_key: str,
         *,
-        max_age: float | None = None,  # noqa: ARG002 — protocol signature
+        max_age: float | None = None,
     ) -> SessionStartEvent | None:
-        return None  # Claude uses hooks, not transcript discovery
+        """Discover the newest Claude transcript for a cwd.
+
+        Used only as a guarded recovery path when hook delivery was missed.
+        """
+        project_dir = _claude_project_dir(cwd)
+        if not project_dir.is_dir():
+            return None
+
+        age_limit = _TRANSCRIPT_MAX_AGE_SECS if max_age is None else max_age
+        now = time.time()
+        resolved_cwd = _resolve_cwd(cwd)
+        transcripts: list[tuple[float, Path]] = []
+        try:
+            for fpath in project_dir.glob("*.jsonl"):
+                try:
+                    transcripts.append((fpath.stat().st_mtime, fpath))
+                except OSError:
+                    continue
+        except OSError:
+            return None
+
+        transcripts.sort(reverse=True)
+        for mtime, fpath in transcripts[:20]:
+            if age_limit > 0 and now - mtime > age_limit:
+                break
+            session_id = fpath.stem
+            if not UUID_RE.match(session_id):
+                continue
+            file_cwd, _ = read_session_metadata_from_jsonl(fpath)
+            if _resolve_cwd(file_cwd) != resolved_cwd:
+                continue
+            return SessionStartEvent(
+                session_id=session_id,
+                cwd=file_cwd or cwd,
+                transcript_path=str(fpath),
+                window_key=window_key,
+            )
+        return None
 
     def discover_commands(self, base_dir: str) -> list[DiscoveredCommand]:
         _ = base_dir

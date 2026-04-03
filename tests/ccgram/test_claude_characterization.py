@@ -5,6 +5,9 @@ specific to the Claude provider — NOT covered by the generic contract
 tests in test_provider_contracts.py.
 """
 
+import json
+from pathlib import Path
+
 import pytest
 
 from ccgram.cc_commands import CC_BUILTINS
@@ -16,7 +19,7 @@ from ccgram.terminal_parser import (
     parse_status_line,
 )
 from ccgram.providers.base import EXPANDABLE_QUOTE_END, EXPANDABLE_QUOTE_START
-from ccgram.providers.claude import ClaudeProvider
+from ccgram.providers.claude import ClaudeProvider, _transcript_indicates_session_end
 from ccgram.transcript_parser import TranscriptParser
 
 # ── Hook payload format ──────────────────────────────────────────────────
@@ -103,6 +106,74 @@ class TestClaudeProviderMethods:
         assert result is not None
         assert "Reading file" in result.raw_text
         assert result.is_interactive is False
+
+    def test_discover_transcript_picks_newest_matching_jsonl(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        provider = ClaudeProvider()
+        cwd = "/proj"
+        project_dir = tmp_path / ".claude" / "projects" / "-proj"
+        project_dir.mkdir(parents=True)
+
+        older = project_dir / "11111111-1111-1111-1111-111111111111.jsonl"
+        newer = project_dir / "22222222-2222-2222-2222-222222222222.jsonl"
+
+        older.write_text(
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {"content": "old"},
+                    "cwd": cwd,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        newer.write_text(
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {"content": "new"},
+                    "cwd": cwd,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        older.touch()
+        newer.touch()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        event = provider.discover_transcript(cwd, "ccgram:@7", max_age=0)
+
+        assert event is not None
+        assert event.session_id == "22222222-2222-2222-2222-222222222222"
+        assert event.transcript_path == str(newer)
+
+    def test_transcript_end_detection_recognizes_exit_command(self, tmp_path) -> None:
+        transcript = tmp_path / "ended.jsonl"
+        transcript.write_text(
+            "\n".join(
+                [
+                    json.dumps({"type": "assistant", "message": {"content": []}}),
+                    json.dumps(
+                        {
+                            "type": "user",
+                            "message": {
+                                "content": (
+                                    "<command-name>/exit</command-name>\n"
+                                    "<command-message>exit</command-message>"
+                                )
+                            },
+                        }
+                    ),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        assert _transcript_indicates_session_end(transcript) is True
 
 
 # ── Transcript format ────────────────────────────────────────────────────

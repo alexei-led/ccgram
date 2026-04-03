@@ -23,6 +23,7 @@ from ..providers import (
     get_provider_for_window,
     should_probe_pane_title_for_provider_detection,
 )
+from ..providers.claude import _transcript_indicates_session_end
 from ..session import session_manager
 from ..tmux_manager import tmux_manager
 from ..window_resolver import is_foreign_window
@@ -34,6 +35,21 @@ if TYPE_CHECKING:
     from ..tmux_manager import TmuxWindow
 
 logger = structlog.get_logger()
+
+
+def should_attempt_hooked_transcript_recovery(
+    state: object,
+    provider_name: str,
+    *,
+    pane_alive: bool,
+) -> bool:
+    """Allow conservative transcript discovery for missed Claude SessionStart."""
+    if not pane_alive or provider_name != "claude":
+        return False
+    transcript_path = getattr(state, "transcript_path", "")
+    if not transcript_path:
+        return False
+    return _transcript_indicates_session_end(transcript_path)
 
 
 async def _detect_and_apply_provider(
@@ -110,7 +126,7 @@ async def _find_and_register_transcript(
     )
 
     for provider_name, provider in providers_to_try:
-        max_age = 0 if pane_alive else None
+        max_age = 0 if pane_alive and not provider.capabilities.supports_hook else None
         event = await asyncio.to_thread(
             provider.discover_transcript,
             state.cwd,
@@ -167,9 +183,15 @@ async def discover_and_register_transcript(
     if w and w.pane_current_command:
         await _detect_and_apply_provider(window_id, state, w)
 
+    pane_alive = w is not None and not is_shell_prompt(w.pane_current_command)
+
     if state.provider_name:
         provider = get_provider_for_window(window_id)
-        if provider.capabilities.supports_hook:
+        if provider.capabilities.supports_hook and not should_attempt_hooked_transcript_recovery(
+            state,
+            provider.capabilities.name,
+            pane_alive=pane_alive,
+        ):
             return
 
     if not state.cwd:
@@ -190,5 +212,4 @@ async def discover_and_register_transcript(
     if not providers_to_try:
         return
 
-    pane_alive = w is not None and not is_shell_prompt(w.pane_current_command)
     await _find_and_register_transcript(window_id, state, providers_to_try, pane_alive)
