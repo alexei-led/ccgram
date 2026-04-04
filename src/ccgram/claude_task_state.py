@@ -200,7 +200,7 @@ class ClaudeTaskStateStore:
                 )
                 lines.append(f"{glyph} {label}")
 
-            hidden = snapshot.total_count - min(8, snapshot.total_count)
+            hidden = max(0, snapshot.total_count - 8)
             if hidden > 0:
                 lines.append(f"+{hidden} more")
 

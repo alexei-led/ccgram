@@ -30,9 +30,20 @@ _MAX_ASSISTANT_CHARS = 500
 
 
 def _read_tail_lines(path: Path, max_lines: int) -> list[str]:
-    """Read the last N lines from a file. Runs in a thread to avoid blocking."""
+    """Read the last N lines from a file via reverse seek. Runs in a thread."""
     try:
-        lines = path.read_text().splitlines()
+        size = path.stat().st_size
+        if size == 0:
+            return []
+        # Read a chunk from the end — 200 bytes per line is generous for JSONL
+        chunk_size = min(size, max_lines * 200)
+        with path.open("rb") as f:
+            f.seek(max(0, size - chunk_size))
+            tail = f.read().decode(errors="replace")
+        lines = tail.splitlines()
+        # Drop the first partial line if we didn't read from the start
+        if chunk_size < size:
+            lines = lines[1:]
         return lines[-max_lines:]
     except OSError:
         return []

@@ -155,7 +155,6 @@ async def _handle_stop(event: HookEvent, bot: Bot) -> None:
     )
 
     num_turns = event.data.get("num_turns", 0)
-    window_id = ""
     for user_id, thread_id, window_id in users:
         claude_task_state.clear_wait_header(window_id)
         notif_mode = session_manager.get_notification_mode(window_id)
@@ -175,14 +174,17 @@ async def _handle_stop(event: HookEvent, bot: Bot) -> None:
     await run_broker_cycle(bot, idle_windows=frozenset({event.window_key}))
 
     # Fire async LLM summary enhancement (non-blocking)
-    if window_id and users:
-        transcript_path = session_manager.get_window_state(window_id).transcript_path
+    first_window_id = users[0][2]
+    if first_window_id:
+        transcript_path = session_manager.get_window_state(
+            first_window_id
+        ).transcript_path
         if transcript_path:
             import asyncio
 
             asyncio.create_task(
                 _enhance_with_llm_summary(
-                    bot, users, window_id, transcript_path, num_turns
+                    bot, users, first_window_id, transcript_path, num_turns
                 )
             )
 

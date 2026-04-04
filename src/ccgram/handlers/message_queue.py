@@ -251,7 +251,8 @@ def _format_task_list_section(entry: ToolBatchEntry) -> list[str]:
 
 
 _BATCH_ERROR_RE = re.compile(
-    r"\b(error|FAILED|fail|Exception|Traceback|exit code [1-9]\d*)\b", re.IGNORECASE
+    r"\b(error|FAILED|fail(ed|ure[s]?)?|Exception|Traceback|exit code [1-9]\d*)\b",
+    re.IGNORECASE,
 )
 _BATCH_SUCCESS_RE = re.compile(r"\b(passed|success|exit code 0)\b", re.IGNORECASE)
 

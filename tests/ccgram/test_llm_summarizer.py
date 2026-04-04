@@ -115,6 +115,27 @@ class TestBuildSummaryContext:
         context = _build_summary_context(lines)
         assert context == ""
 
+    def test_list_type_tool_result_content(self):
+        line = json.dumps(
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "t1",
+                            "content": [
+                                {"type": "text", "text": "23 passed, 0 failed"},
+                                {"type": "text", "text": "all tests ok"},
+                            ],
+                        }
+                    ]
+                },
+            }
+        )
+        context = _build_summary_context([line])
+        assert "23 passed" in context
+
 
 class TestSummarizeCompletion:
     async def test_returns_none_when_path_empty(self):
