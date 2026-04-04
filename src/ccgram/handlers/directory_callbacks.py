@@ -485,6 +485,33 @@ async def _wait_for_shell_ready(window_id: str, *, attempts: int = 5) -> None:
         await asyncio.sleep(0.2)
 
 
+async def _accept_yolo_confirmation(window_id: str, *, timeout: float = 8.0) -> bool:
+    """Detect and accept Claude Code's bypass permissions confirmation prompt.
+
+    When launched with --dangerously-skip-permissions, Claude Code shows a
+    TUI confirmation where "No, exit" is the default selection. Sends
+    Down+Enter to select the "Yes" option so the session can start.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        text = await tmux_manager.capture_pane(window_id)
+        if text and "bypass permissions" in text.lower():
+            await asyncio.sleep(0.3)
+            await tmux_manager.send_keys(window_id, "Down", enter=False, literal=False)
+            await asyncio.sleep(0.15)
+            await tmux_manager.send_keys(window_id, "Enter", enter=False, literal=False)
+            logger.info("Accepted bypass permissions prompt for window %s", window_id)
+            return True
+        await asyncio.sleep(0.5)
+    logger.warning(
+        "Bypass permissions prompt not detected within %.0fs for window %s",
+        timeout,
+        window_id,
+    )
+    return False
+
+
 def _try_install_messaging_skill(provider_name: str, cwd: str) -> None:
     """Install the messaging skill for Claude windows (no-op for other providers)."""
     if provider_name != "claude":
@@ -561,6 +588,9 @@ async def _create_window_and_bind(
         chat = query_message.chat if query_message else None
         if chat and chat.type in ("group", "supergroup"):
             thread_router.set_group_chat_id(user_id, pending_thread_id, chat.id)
+
+    if approval_mode == "yolo" and provider_name == "claude":
+        await _accept_yolo_confirmation(created_wid)
 
     if provider_registry.get(provider_name).capabilities.supports_hook:
         await session_manager.wait_for_session_map_entry(created_wid)

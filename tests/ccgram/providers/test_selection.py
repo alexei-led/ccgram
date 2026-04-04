@@ -264,6 +264,54 @@ class TestHandleModeSelect:
         mock_sm.set_window_approval_mode.assert_called_once_with("@5", "yolo")
         mock_tr.set_group_chat_id.assert_called_once_with(100, 42, -100999)
 
+    @patch(
+        "ccgram.handlers.directory_callbacks._accept_yolo_confirmation",
+        new_callable=AsyncMock,
+    )
+    @patch("ccgram.providers.resolve_launch_command")
+    @patch("ccgram.handlers.directory_callbacks.safe_edit", new_callable=AsyncMock)
+    @patch("ccgram.handlers.directory_callbacks.session_manager")
+    @patch("ccgram.handlers.directory_callbacks.tmux_manager")
+    @patch("ccgram.handlers.directory_callbacks.provider_registry")
+    @patch("ccgram.handlers.directory_callbacks.thread_router")
+    async def test_claude_yolo_accepts_bypass_prompt(
+        self,
+        mock_tr: MagicMock,
+        mock_registry: MagicMock,
+        mock_tmux: MagicMock,
+        mock_sm: MagicMock,
+        mock_edit: AsyncMock,
+        mock_resolve_launch: MagicMock,
+        mock_accept_yolo: AsyncMock,
+    ) -> None:
+        mock_registry.is_valid.return_value = True
+        mock_provider = MagicMock()
+        mock_provider.capabilities.supports_hook = True
+        mock_registry.get.return_value = mock_provider
+
+        mock_resolve_launch.return_value = "claude --dangerously-skip-permissions"
+        mock_tmux.create_window = AsyncMock(
+            return_value=(True, "Created window 'proj'", "proj", "@5")
+        )
+        mock_tmux.stamp_pane_title = AsyncMock()
+        mock_tr.get_window_for_thread.return_value = None
+        mock_tr.resolve_chat_id.return_value = 123
+        mock_sm.get_window_state.return_value = MagicMock()
+        mock_sm.wait_for_session_map_entry = AsyncMock(return_value=True)
+        mock_accept_yolo.return_value = True
+
+        user_data = {"browse_path": "/tmp/proj", PENDING_THREAD_ID: 42}
+        query = _make_query(data=f"{CB_MODE_SELECT}claude:yolo")
+        update = _make_update(thread_id=42)
+        context = _make_context(user_data)
+
+        await _handle_mode_select(
+            query, 100, f"{CB_MODE_SELECT}claude:yolo", update, context
+        )
+
+        mock_accept_yolo.assert_awaited_once_with("@5")
+        mock_sm.wait_for_session_map_entry.assert_awaited_once_with("@5")
+
     @patch("ccgram.handlers.directory_callbacks.provider_registry")
     async def test_rejects_unknown_mode(self, mock_registry: MagicMock) -> None:
         mock_registry.is_valid.return_value = True
@@ -348,3 +396,88 @@ class TestTryInstallMessagingSkill:
         mock_ensure.side_effect = RuntimeError("unexpected")
         _try_install_messaging_skill("claude", "/tmp/proj")
         mock_ensure.assert_called_once()
+
+
+class TestAcceptYoloConfirmation:
+    @patch("ccgram.handlers.directory_callbacks.tmux_manager")
+    async def test_detects_prompt_and_sends_down_then_enter(
+        self, mock_tmux: MagicMock
+    ) -> None:
+        from unittest.mock import call
+
+        from ccgram.handlers.directory_callbacks import _accept_yolo_confirmation
+
+        mock_tmux.capture_pane = AsyncMock(
+            return_value=(
+                "WARNING: Claude Code running in Bypass Permissions mode\n"
+                "  ❯ 1. No, exit\n"
+                "    2. Yes, I accept all responsibility"
+            )
+        )
+        mock_tmux.send_keys = AsyncMock(return_value=True)
+
+        result = await _accept_yolo_confirmation("@5", timeout=2.0)
+
+        assert result is True
+        assert mock_tmux.send_keys.await_count == 2
+        calls = mock_tmux.send_keys.call_args_list
+        assert calls[0] == call("@5", "Down", enter=False, literal=False)
+        assert calls[1] == call("@5", "Enter", enter=False, literal=False)
+
+    @patch("ccgram.handlers.directory_callbacks.tmux_manager")
+    async def test_returns_false_on_timeout_without_sending_keys(
+        self, mock_tmux: MagicMock
+    ) -> None:
+        from ccgram.handlers.directory_callbacks import _accept_yolo_confirmation
+
+        mock_tmux.capture_pane = AsyncMock(return_value="some other output")
+        mock_tmux.send_keys = AsyncMock(return_value=True)
+
+        result = await _accept_yolo_confirmation("@5", timeout=0.1)
+
+        assert result is False
+        mock_tmux.send_keys.assert_not_awaited()
+
+    @patch("ccgram.handlers.directory_callbacks.tmux_manager")
+    async def test_handles_none_capture(self, mock_tmux: MagicMock) -> None:
+        from ccgram.handlers.directory_callbacks import _accept_yolo_confirmation
+
+        mock_tmux.capture_pane = AsyncMock(return_value=None)
+        mock_tmux.send_keys = AsyncMock(return_value=True)
+
+        result = await _accept_yolo_confirmation("@5", timeout=0.1)
+
+        assert result is False
+        mock_tmux.send_keys.assert_not_awaited()
+
+    @patch("ccgram.handlers.directory_callbacks.tmux_manager")
+    async def test_case_insensitive_detection(self, mock_tmux: MagicMock) -> None:
+        from ccgram.handlers.directory_callbacks import _accept_yolo_confirmation
+
+        mock_tmux.capture_pane = AsyncMock(
+            return_value="BYPASS PERMISSIONS mode warning"
+        )
+        mock_tmux.send_keys = AsyncMock(return_value=True)
+
+        result = await _accept_yolo_confirmation("@5", timeout=2.0)
+
+        assert result is True
+        assert mock_tmux.send_keys.await_count == 2
+
+    @patch("ccgram.handlers.directory_callbacks.tmux_manager")
+    async def test_polls_until_prompt_appears(self, mock_tmux: MagicMock) -> None:
+        from ccgram.handlers.directory_callbacks import _accept_yolo_confirmation
+
+        mock_tmux.capture_pane = AsyncMock(
+            side_effect=[
+                None,
+                "Loading...",
+                "Bypass Permissions mode\n❯ 1. No, exit",
+            ]
+        )
+        mock_tmux.send_keys = AsyncMock(return_value=True)
+
+        result = await _accept_yolo_confirmation("@5", timeout=5.0)
+
+        assert result is True
+        assert mock_tmux.capture_pane.await_count == 3
