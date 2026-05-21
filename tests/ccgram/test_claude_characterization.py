@@ -205,6 +205,16 @@ class TestClaudeCommandDiscovery:
             "remote-control",
             "status",
             "tasks",
+            # All 12 picker commands — must remain in CC_BUILTINS.
+            "agents",
+            "copy",
+            "diff",
+            "release-notes",
+            "rewind",
+            "settings",
+            "skills",
+            "theme",
+            "tui",
         }
         assert core <= set(CC_BUILTINS.keys())
 

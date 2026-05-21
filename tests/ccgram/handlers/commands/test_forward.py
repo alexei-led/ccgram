@@ -185,7 +185,7 @@ class TestForwardCommandResolution:
         await forward_command_handler(update, _make_context())
 
         reply_text = update.message.reply_text.call_args[0][0]
-        assert "Picker opened" not in reply_text
+        assert reply_text == "⚡ [project] Sent: /clear"
 
     async def test_botname_mention_stripped(self) -> None:
         update = _make_update(text="/clear@mybot")
@@ -437,3 +437,77 @@ class TestForwardCommandResolution:
             "@1", "/remote-control project"
         )
         mock_arm.assert_called_once()
+
+
+class TestForwardWithRealClaudeProvider:
+    """End-to-end tests using a real ClaudeProvider (no capability mock)."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_mocks(self):
+        from ccgram.providers.claude import ClaudeProvider
+
+        self.mock_tr = MagicMock()
+        self.mock_tr.resolve_window_for_thread.return_value = "@1"
+        self.mock_tr.get_display_name.return_value = "project"
+        self.mock_tr.set_group_chat_id = MagicMock()
+
+        self.mock_ws = MagicMock()
+
+        self.mock_wq = MagicMock()
+        self.mock_wq.view_window.return_value = SimpleNamespace(
+            transcript_path=None,
+            session_id="sess-1",
+            cwd="/work/repo",
+            provider_name="claude",
+        )
+        self.mock_wq.get_window_provider.return_value = "claude"
+
+        self.mock_tm = MagicMock()
+        self.mock_tm.find_window_by_id = AsyncMock(
+            return_value=MagicMock(window_id="@1")
+        )
+        self.mock_tm.capture_pane = AsyncMock(return_value="")
+
+        with (
+            patch(f"{_FW}.thread_router", self.mock_tr),
+            patch(f"{_FW}.window_store", self.mock_ws),
+            patch(f"{_FW}.window_query", self.mock_wq),
+            patch(
+                f"{_FW}.send_to_window",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ) as self.mock_send_to_window,
+            patch(f"{_FW}.tmux_manager", self.mock_tm),
+            patch(
+                f"{_FW}.get_provider_for_window",
+                return_value=ClaudeProvider(),
+            ),
+            patch(
+                f"{_FW}._build_provider_command_metadata",
+                return_value={},
+            ),
+            patch(
+                f"{_FW}._capture_command_probe_context",
+                AsyncMock(return_value=(None, None, None)),
+            ),
+            patch(f"{_FW}._spawn_command_failure_probe", MagicMock()),
+            patch(f"{_FW}.sync_scoped_provider_menu", new_callable=AsyncMock),
+            patch(f"{_FW}._maybe_send_status_snapshot", new_callable=AsyncMock),
+            patch("ccgram.handlers.status.rc_probe.arm_rc_probe"),
+        ):
+            yield
+
+    async def test_picker_command_produces_hint(self) -> None:
+        update = _make_update(text="/model")
+        await forward_command_handler(update, _make_context())
+
+        reply_text = update.message.reply_text.call_args[0][0]
+        assert "Sent: /model" in reply_text
+        assert "Picker opened" in reply_text
+
+    async def test_non_picker_command_no_hint(self) -> None:
+        update = _make_update(text="/clear")
+        await forward_command_handler(update, _make_context())
+
+        reply_text = update.message.reply_text.call_args[0][0]
+        assert reply_text == "⚡ [project] Sent: /clear"

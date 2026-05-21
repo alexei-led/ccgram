@@ -21,6 +21,56 @@ class TestHasYoloConfirmation:
         assert cls().capabilities.has_yolo_confirmation is False
 
 
+class TestClaudePickerCommands:
+    def test_exact_set(self):
+        assert ClaudeProvider().capabilities.tui_picker_commands == frozenset(
+            {
+                "agents",
+                "copy",
+                "diff",
+                "effort",
+                "model",
+                "permissions",
+                "release-notes",
+                "rewind",
+                "settings",
+                "skills",
+                "theme",
+                "tui",
+            }
+        )
+
+    def test_status_excluded(self):
+        assert "status" not in ClaudeProvider().capabilities.tui_picker_commands
+
+
+class TestCodexPickerCommands:
+    def test_exact_set(self):
+        assert CodexProvider().capabilities.tui_picker_commands == frozenset(
+            {"model", "permissions", "skills", "statusline", "personality"}
+        )
+
+
+class TestGeminiPickerCommands:
+    def test_exact_set(self):
+        assert GeminiProvider().capabilities.tui_picker_commands == frozenset(
+            {
+                "agents",
+                "auth",
+                "chat",
+                "editor",
+                "extensions",
+                "ide",
+                "model",
+                "privacy",
+                "rewind",
+                "settings",
+                "terminal-setup",
+                "theme",
+            }
+        )
+
+
 class TestScrapeCurrentModeEdit:
     async def test_edit_mode(self):
         provider = ClaudeProvider()

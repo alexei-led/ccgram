@@ -117,6 +117,8 @@ async def forward_command_handler(
     parts = cmd_text.split(None, 1)
     raw_cmd = parts[0].split("@")[0] if parts else ""
     tg_cmd = raw_cmd.lstrip("/")
+    # args is forwarded verbatim to the provider via tmux send-keys -l (literal mode).
+    # Gated by config.is_user_allowed — authorised users can type anything into their own agent.
     args = parts[1] if len(parts) > 1 else ""
     window_id = thread_router.resolve_window_for_thread(user.id, thread_id)
     if not window_id:
@@ -166,7 +168,7 @@ async def forward_command_handler(
         record_command(user.id, thread_id, cc_slash)
     confirmation = f"⚡ [{display}] Sent: {cc_slash}"
     if cc_name in provider.capabilities.tui_picker_commands:
-        confirmation += "\n📺 Picker opened — use /toolbar (↑↓ Enter Esc) to drive it."
+        confirmation += "\n🔽 Picker opened — use /toolbar (↑↓ Enter Esc) to drive it."
     await safe_reply(update.message, confirmation)
     _arm_rc_probe_if_remote_control(update, window_id, cc_name)
     await _maybe_send_status_snapshot(

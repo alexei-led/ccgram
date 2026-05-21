@@ -127,7 +127,6 @@ class ClaudeProvider:
                 "rewind",
                 "settings",
                 "skills",
-                "status",
                 "theme",
                 "tui",
             }
