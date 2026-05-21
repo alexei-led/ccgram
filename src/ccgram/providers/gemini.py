@@ -71,9 +71,9 @@ _GEMINI_BUILTINS: dict[str, str] = {
     "/policies": "List active policies",
     "/privacy": "Display privacy notice",
     "/quit": "Exit Gemini CLI",
-    "/resume": "Browse and resume auto-saved sessions",
+    # /resume excluded — collides with bot-native /resume (ccgram session picker)
     "/rewind": "Restart from an earlier message",
-    "/restore": "List or restore project state checkpoints",
+    # /restore excluded — collides with bot-native /restore (dead-topic recovery)
     "/settings": "View and edit Gemini settings",
     "/setup-github": "Set up GitHub Actions",
     "/shells": "Toggle background shells",
@@ -578,6 +578,24 @@ class GeminiProvider(JsonlProvider):
         uses_pane_title=True,
         builtin_commands=tuple(_GEMINI_BUILTINS.keys()),
         supports_status_snapshot=True,
+        # Pickers verified against geminicli.com/docs/reference/commands.
+        # Each opens a modal selector the user drives with arrow keys.
+        tui_picker_commands=frozenset(
+            {
+                "agents",
+                "auth",
+                "chat",
+                "editor",
+                "extensions",
+                "ide",
+                "model",
+                "privacy",
+                "rewind",
+                "settings",
+                "terminal-setup",
+                "theme",
+            }
+        ),
     )
 
     _BUILTINS = _GEMINI_BUILTINS

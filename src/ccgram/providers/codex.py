@@ -30,19 +30,29 @@ from ccgram.providers.base import (
 )
 from ccgram.terminal_parser import extract_interactive_content
 
-# Codex CLI known slash commands
-# NOTE: /new excluded — collides with bot-native /new (create session)
+# Codex CLI known slash commands. Refreshed from
+# github.com/openai/codex/blob/main/codex-rs/tui/tooltips.txt.
+# NOTE: /new excluded — collides with bot-native /new (create session).
 _CODEX_BUILTINS: dict[str, str] = {
     "/clear": "Clear conversation history",
-    "/compact": "Summarize context to save tokens",
-    "/init": "Initialize project configuration",
-    "/mcp": "List MCP tools",
+    "/compact": "Summarize history and free up context",
+    "/copy": "Copy last response as Markdown",
+    "/feedback": "Send logs to maintainers",
+    "/fork": "Branch chat into a new thread",
+    "/init": "Create AGENTS.md project guidance",
+    "/mcp": "List configured MCP tools",
     "/mention": "Attach files to conversation",
     "/mode": "Switch approval mode (suggest/auto-edit/full-auto)",
-    "/model": "Switch model",
-    "/permissions": "Adjust approval requirements",
+    "/model": "Switch model and reasoning effort",
+    "/permissions": "Manage confirmation rules",
+    "/personality": "Customize Codex communication style",
     "/plan": "Enter plan mode",
-    "/status": "Show session config and token usage",
+    "/rename": "Rename current thread",
+    "/review": "Review current changes",
+    "/side": "Start a side conversation in a temporary fork",
+    "/skills": "List available skills",
+    "/statusline": "Configure status line items",
+    "/status": "Show model, approvals, token usage",
 }
 
 _MAX_TOOL_SUMMARY = 200
@@ -597,6 +607,11 @@ class CodexProvider(JsonlProvider):
         builtin_commands=tuple(_CODEX_BUILTINS.keys()),
         supports_user_command_discovery=True,
         supports_status_snapshot=True,
+        # Pickers per tooltips.txt: each opens a modal selector users
+        # drive with arrow keys + Enter.
+        tui_picker_commands=frozenset(
+            {"model", "permissions", "skills", "statusline", "personality"}
+        ),
     )
 
     _BUILTINS = _CODEX_BUILTINS

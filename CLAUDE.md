@@ -131,8 +131,11 @@ When creating a topic via the directory browser, users can choose the provider (
 | YOLO auto-accept | Yes                                 | No                             | No                                                               | No                              | No                          |
 | Mode scraping    | Yes (mode-line parse)               | No                             | No                                                               | No                              | No                          |
 | RC feedback      | Yes (probe after `/remote-control`) | No                             | No                                                               | No                              | No                          |
+| Picker hints     | Yes (13 commands)                   | Yes (5 commands)               | Yes (12 commands)                                                | Yes (6 commands)                | No                          |
 
 Capabilities gate UX per-window: recovery keyboard only shows Continue/Resume buttons when supported; `ccgram doctor` checks managed hook installs for Claude, Codex, and Gemini. Pi hook support is supplied by cc-thingz hook-runner; transcript/process detection remains fallback for all non-shell agents.
+
+**Picker hints** (`ProviderCapabilities.tui_picker_commands`): each provider declares the slash commands that open a modal in-TUI selector (e.g. `/model`, `/login`, `/theme`). When such a command is forwarded, the topic's `Sent: …` reply gets a one-line hint pointing at `/toolbar` so users know to navigate the picker via the inline keyboard's `↑↓ Enter Esc` buttons. The list is per-provider — Claude declares 13 (sourced from `code.claude.com/docs/en/commands`), Codex 5 (from `tui/tooltips.txt`), Gemini 12 (from `geminicli.com/docs/reference/commands`), Pi 6 (verified against the live binary). Shell has none.
 
 ### Remote Control Feedback
 

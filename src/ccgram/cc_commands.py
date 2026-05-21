@@ -27,22 +27,48 @@ from telegram import Bot, BotCommand, BotCommandScope
 
 logger = structlog.get_logger()
 
-# Built-in Claude Code commands (always registered)
+# Built-in Claude Code commands. Refreshed from code.claude.com/docs/en/commands.
+# Telegram menu is a discovery surface only — any /<token> still forwards
+# to the provider (see commands/forward.py). /new is bot-native (excluded);
+# /resume collides with bot-native /resume (excluded — ccgram has its own picker).
 CC_BUILTINS: dict[str, str] = {
-    "clear": "↗ Clear conversation history",
-    "compact": "↗ Compact conversation context",
-    "effort": "↗ Set thinking effort level",
+    "agents": "↗ Manage subagent configurations",
+    "background": "↗ Detach session as background agent",
+    "branch": "↗ Fork conversation at current point",
+    "clear": "↗ Clear conversation context",
+    "compact": "↗ Summarize history to free context",
+    "context": "↗ Show context window usage",
+    "copy": "↗ Copy last response to clipboard",
+    "cost": "↗ Show session cost (alias /usage)",
+    "diff": "↗ Open interactive diff viewer",
+    "doctor": "↗ Diagnose Claude Code installation",
+    "effort": "↗ Adjust thinking effort level",
+    "export": "↗ Export conversation as text",
+    "feedback": "↗ Submit feedback or bug report",
     "help": "↗ Show Claude Code help",
     "init": "↗ Initialize CLAUDE.md in project",
-    "mcp": "↗ List MCP servers and tools",
-    "memory": "↗ Edit CLAUDE.md",
-    "model": "↗ Select model and thinking effort",
+    "loop": "↗ Run prompt repeatedly on a schedule",
+    "mcp": "↗ Manage MCP server connections",
+    "memory": "↗ Edit CLAUDE.md memory files",
+    "model": "↗ Select model and effort",
     "permissions": "↗ Manage tool permissions",
-    "plan": "↗ Switch to plan mode",
+    "plan": "↗ Enter plan mode",
     "rc": "↗ Start remote control (alias)",
+    "recap": "↗ Summarize current session",
+    "release-notes": "↗ View changelog (picker)",
     "remote-control": "↗ Start remote control session",
+    "review": "↗ Review pull request locally",
+    "rewind": "↗ Rewind conversation or code",
+    "security-review": "↗ Analyze pending changes for security",
+    "settings": "↗ Open Settings interface",
+    "skills": "↗ List available skills (picker)",
+    "statusline": "↗ Configure status line",
     "status": "↗ Show session status",
     "tasks": "↗ Manage background tasks",
+    "theme": "↗ Change color theme (picker)",
+    "tui": "↗ Switch terminal UI renderer",
+    "usage": "↗ Show usage and cost stats",
+    "verify": "↗ Build and run app to verify change",
 }
 
 # Bot-native commands (registered first, not from CC)

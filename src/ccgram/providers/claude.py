@@ -112,6 +112,26 @@ class ClaudeProvider:
         has_yolo_confirmation=True,
         supports_task_tracking=True,
         uses_pyte_status_parsing=True,
+        # Commands documented at code.claude.com/docs/en/commands as
+        # opening a modal/interactive overlay the user navigates with
+        # arrow keys, Enter, and Esc. Sourced from the v2.1.x docs page.
+        tui_picker_commands=frozenset(
+            {
+                "agents",
+                "copy",
+                "diff",
+                "effort",
+                "model",
+                "permissions",
+                "release-notes",
+                "rewind",
+                "settings",
+                "skills",
+                "status",
+                "theme",
+                "tui",
+            }
+        ),
     )
 
     @property
