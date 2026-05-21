@@ -164,13 +164,13 @@ After Round 4 (F1), the flat 50+ peer modules are grouped into feature subpackag
 
 #### `handlers/commands/` — `/commands` + `/toolbar` orchestration (Round 5 F4)
 
-| Module               | Description                                                                                                                                                                                       |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `__init__.py`        | Public surface: `commands_command`, `toolbar_command`, re-exports of `forward_command_handler`, `setup_menu_refresh_job`, `get_global_provider_menu`, `set_global_provider_menu`, `sync_scoped_*` |
-| `forward.py`         | Forward command handler (`forward_command_handler`, `_normalize_slash_token`, `_handle_clear_command`)                                                                                            |
-| `menu_sync.py`       | Provider menu cache + scoped sync (`sync_scoped_provider_menu`, `sync_scoped_menu_for_text_context`, `setup_menu_refresh_job`, LRU helpers, `_build_provider_command_metadata`)                   |
-| `failure_probe.py`   | Command failure probing (`_capture_command_probe_context`, `_probe_transcript_command_error`, `_spawn_command_failure_probe`, `_command_known_in_other_provider`)                                 |
-| `status_snapshot.py` | Status snapshot delegation (`_status_snapshot_probe_offset`, `_maybe_send_status_snapshot`)                                                                                                       |
+| Module               | Description                                                                                                                                                                                                     |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `__init__.py`        | Public surface: `commands_command`, `toolbar_command`, re-exports of `forward_command_handler`, `setup_menu_refresh_job`, `get_global_provider_menu`, `set_global_provider_menu`, `sync_scoped_*`               |
+| `forward.py`         | Forward command handler (`forward_command_handler`, `_handle_clear_command`) — forwards every `/<token>` to the active provider; unknown commands are caught reactively by `failure_probe`                      |
+| `menu_sync.py`       | Provider menu cache + scoped sync (`sync_scoped_provider_menu`, `sync_scoped_menu_for_text_context`, `setup_menu_refresh_job`, LRU helpers, `_build_provider_command_metadata` — Telegram→native name map only) |
+| `failure_probe.py`   | Command failure probing (`_capture_command_probe_context`, `_probe_transcript_command_error`, `_spawn_command_failure_probe`)                                                                                   |
+| `status_snapshot.py` | Status snapshot delegation (`_status_snapshot_probe_offset`, `_maybe_send_status_snapshot`)                                                                                                                     |
 
 #### `handlers/interactive/` — interactive UI prompts
 

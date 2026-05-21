@@ -4,7 +4,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from ccgram.handlers.commands.failure_probe import (
-    _command_known_in_other_provider,
     _extract_pane_delta,
     _extract_probe_error_line,
     _maybe_send_command_failure_message,
@@ -173,32 +172,3 @@ class TestMaybeSendCommandFailureMessage:
             )
 
         mock_reply.assert_not_called()
-
-
-class TestCommandKnownInOtherProvider:
-    def test_command_known_in_other_provider(self) -> None:
-        current = SimpleNamespace(capabilities=SimpleNamespace(name="codex"))
-        claude = SimpleNamespace(capabilities=SimpleNamespace(name="claude"))
-        gemini = SimpleNamespace(capabilities=SimpleNamespace(name="gemini"))
-
-        def _supported(provider: SimpleNamespace) -> set[str]:
-            if provider.capabilities.name == "claude":
-                return {"/cost"}
-            return set()
-
-        with (
-            patch(
-                f"{_FP}.registry.provider_names",
-                return_value=["codex", "claude", "gemini"],
-            ),
-            patch(
-                f"{_FP}.registry.get",
-                side_effect=lambda name: {"claude": claude, "gemini": gemini}[name],
-            ),
-            patch(
-                f"{_FP}._build_provider_command_metadata",
-                side_effect=lambda provider: ({}, _supported(provider)),
-            ),
-        ):
-            assert _command_known_in_other_provider("/cost", current) is True  # type: ignore[arg-type]
-            assert _command_known_in_other_provider("/not-here", current) is False  # type: ignore[arg-type]

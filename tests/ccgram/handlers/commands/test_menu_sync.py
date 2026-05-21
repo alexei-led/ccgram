@@ -15,7 +15,6 @@ from ccgram.handlers.commands.menu_sync import (
     _build_provider_command_metadata,
     _chat_scoped_provider_menu,
     _scoped_provider_menu,
-    _short_supported_commands,
     get_global_provider_menu,
     set_global_provider_menu,
     sync_scoped_provider_menu as _sync_scoped_provider_menu,
@@ -42,33 +41,20 @@ def _clean_scoped_caches():
     menu_sync_mod._global_provider_menu = None
 
 
-class TestShortSupportedCommands:
-    def test_default(self) -> None:
-        assert (
-            _short_supported_commands(set())
-            == "Use /commands to list available commands."
-        )
-
-    def test_truncates(self) -> None:
-        supported = {f"/cmd{i}" for i in range(10)}
-        summary = _short_supported_commands(supported, limit=3)
-        assert summary.startswith("Try: ")
-        assert " …" in summary
-        assert summary.count("/cmd") == 3
-
-
 class TestBuildProviderCommandMetadata:
-    def test_builds_mapping_and_supported(self) -> None:
+    def test_builds_telegram_to_native_mapping(self) -> None:
         provider = SimpleNamespace(
             capabilities=SimpleNamespace(name="codex", builtin_commands=("/builtin",))
         )
-        discovered = [SimpleNamespace(name="/status", telegram_name="status")]
+        discovered = [
+            SimpleNamespace(name="/status", telegram_name="status"),
+            SimpleNamespace(name="spec:work", telegram_name="spec_work"),
+        ]
 
         with patch(f"{_MS}.discover_provider_commands", return_value=discovered):
-            mapping, supported = _build_provider_command_metadata(provider)  # type: ignore[arg-type]
+            mapping = _build_provider_command_metadata(provider)  # type: ignore[arg-type]
 
-        assert mapping == {"status": "/status"}
-        assert supported == {"/status", "/builtin"}
+        assert mapping == {"status": "/status", "spec_work": "spec:work"}
 
 
 class TestScopedProviderMenuSync:

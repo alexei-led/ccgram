@@ -11,10 +11,7 @@ probes for "command failed" signals from two sources:
      transcript has no error line.
 
 If either source yields an error line, a one-shot Telegram reply is
-posted in the topic. Also exposes ``_command_known_in_other_provider``
-so the forward path can reject a /-command that exists for *some*
-provider but not the active one (helps users notice provider mismatch
-before a noisy forward attempt).
+posted in the topic.
 """
 
 from __future__ import annotations
@@ -27,15 +24,11 @@ import re
 import structlog
 from telegram import Message
 
-from ...providers import (
-    AgentProvider,
-    registry,
-)
+from ...providers import AgentProvider
 from ... import window_query
 from ...tmux_manager import tmux_manager
 from ...utils import task_done_callback
 from ..messaging_pipeline.message_sender import safe_reply
-from .menu_sync import _build_provider_command_metadata
 
 logger = structlog.get_logger()
 
@@ -211,26 +204,3 @@ def _spawn_command_failure_probe(
 
     task = asyncio.create_task(_run())
     task.add_done_callback(task_done_callback)
-
-
-def _command_known_in_other_provider(
-    command_token: str,
-    current_provider: AgentProvider,
-    *,
-    supported_cache: dict[str, set[str]] | None = None,
-) -> bool:
-    """Return True when command exists in any provider except the current one."""
-    current_name = current_provider.capabilities.name
-    for name in registry.provider_names():
-        if name == current_name:
-            continue
-        if supported_cache is not None and name in supported_cache:
-            supported = supported_cache[name]
-        else:
-            provider = registry.get(name)
-            _, supported = _build_provider_command_metadata(provider)
-            if supported_cache is not None:
-                supported_cache[name] = supported
-        if command_token in supported:
-            return True
-    return False

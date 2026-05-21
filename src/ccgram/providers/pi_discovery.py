@@ -26,16 +26,34 @@ _PI_EXTENSION_COMMAND_RE = re.compile(
     r"pi\.registerCommand\(\s*[\"'](?P<name>[^\"']+)[\"']",
 )
 
-# Telegram-friendly Pi built-ins. Interactive TUI flows stay out.
+# Telegram-friendly Pi built-ins. The forward path lets users send *any*
+# /-command through to the provider, so this list is purely for discovery
+# (/commands listing, menu autocomplete). Modal-TUI flows like /model,
+# /resume, /login open pickers the user navigates with the inline toolbar.
 _PI_TELEGRAM_BUILTINS: dict[str, str] = {
-    "/clear": "Clear conversation history",
     "/changelog": "Show version history",
+    "/clear": "Clear conversation history",
+    "/clone": "Clone session from an earlier message",
+    "/colors": "Show terminal color palette",
     "/compact": "Compact conversation context",
+    "/copy": "Copy last response to clipboard",
+    "/debug": "Show debug information",
     "/export": "Export session to HTML",
+    "/fork": "Fork conversation from an earlier message",
+    "/hotkeys": "Show keyboard shortcuts",
+    "/import": "Import a previous session",
+    "/login": "Add or update provider credentials",
+    "/logout": "Remove provider credentials",
+    "/model": "Pick the active model",
     "/name": "Set session display name",
-    "/reload": "Reload extensions, skills, prompts, and themes",
+    "/new": "Start a new session",
+    "/quit": "Exit Pi (Ctrl-C twice)",
+    "/reload": "Reload extensions, skills, prompts, themes",
+    "/resume": "Resume a previous session",
     "/session": "Show session info",
+    "/settings": "Open settings TUI",
     "/share": "Upload as private GitHub gist",
+    "/tree": "Show session tree",
 }
 
 

@@ -84,34 +84,18 @@ def _get_lru_cache_entry[K, V](
     return value
 
 
-def _short_supported_commands(supported_commands: set[str], limit: int = 8) -> str:
-    supported = sorted(supported_commands)
-    if not supported:
-        return "Use /commands to list available commands."
-    shown = supported[:limit]
-    suffix = "" if len(supported) <= limit else " …"
-    return "Try: " + ", ".join(shown) + suffix
-
-
 # --- Provider command metadata ---
 
 
 def _build_provider_command_metadata(
     provider: AgentProvider,
-) -> tuple[dict[str, str], set[str]]:
+) -> dict[str, str]:
+    """Map Telegram-friendly /-name (e.g. ``spec_work``) → provider native (``spec:work``)."""
     mapping: dict[str, str] = {}
-    supported: set[str] = set()
     for cmd in discover_provider_commands(provider):
         if cmd.telegram_name and cmd.telegram_name not in mapping:
             mapping[cmd.telegram_name] = cmd.name
-        token = cmd.name if cmd.name.startswith("/") else f"/{cmd.name}"
-        supported.add(token.lower())
-    for builtin in provider.capabilities.builtin_commands:
-        if not builtin:
-            continue
-        token = builtin if builtin.startswith("/") else f"/{builtin}"
-        supported.add(token.lower())
-    return mapping, supported
+    return mapping
 
 
 # --- Scoped command menu sync ---

@@ -5,7 +5,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from ccgram.handlers.commands import forward_command_handler
-from ccgram.handlers.commands.forward import _normalize_slash_token
 
 
 _FW = "ccgram.handlers.commands.forward"
@@ -97,28 +96,14 @@ class TestForwardCommandResolution:
             ),
             patch(
                 f"{_FW}._build_provider_command_metadata",
-                return_value=(
-                    {
-                        "clear": "clear",
-                        "compact": "compact",
-                        "committing_code": "committing-code",
-                        "spec_work": "spec:work",
-                        "spec_new": "spec:new",
-                        "status": "/status",
-                    },
-                    {
-                        "/clear",
-                        "/compact",
-                        "/committing-code",
-                        "/spec:work",
-                        "/spec:new",
-                        "/status",
-                    },
-                ),
-            ),
-            patch(
-                f"{_FW}._command_known_in_other_provider",
-                return_value=False,
+                return_value={
+                    "clear": "clear",
+                    "compact": "compact",
+                    "committing_code": "committing-code",
+                    "spec_work": "spec:work",
+                    "spec_new": "spec:new",
+                    "status": "/status",
+                },
             ),
             patch(
                 f"{_FW}._capture_command_probe_context",
@@ -177,18 +162,11 @@ class TestForwardCommandResolution:
 
         self.mock_send_to_window.assert_called_once_with("@1", "/unknown_thing")
 
-    async def test_known_other_provider_command_is_rejected(self) -> None:
-        with patch(
-            f"{_FW}._command_known_in_other_provider",
-            return_value=True,
-        ):
-            update = _make_update(text="/cost")
-            await forward_command_handler(update, _make_context())
+    async def test_cross_provider_command_forwarded_to_provider(self) -> None:
+        update = _make_update(text="/cost")
+        await forward_command_handler(update, _make_context())
 
-        self.mock_send_to_window.assert_not_called()
-        reply_text = update.message.reply_text.call_args[0][0]
-        assert "not supported" in reply_text
-        assert "/commands" in reply_text
+        self.mock_send_to_window.assert_called_once_with("@1", "/cost")
 
     async def test_botname_mention_stripped(self) -> None:
         update = _make_update(text="/clear@mybot")
@@ -415,7 +393,7 @@ class TestForwardCommandResolution:
 
         mock_arm.assert_not_called()
 
-    async def test_no_rc_probe_for_codex_rejected_remote_control(self) -> None:
+    async def test_codex_remote_control_forwarded_arm_delegates_to_probe(self) -> None:
         codex_provider = SimpleNamespace(
             capabilities=SimpleNamespace(
                 name="codex",
@@ -425,20 +403,14 @@ class TestForwardCommandResolution:
         )
         with (
             patch(f"{_FW}.get_provider_for_window", return_value=codex_provider),
-            patch(f"{_FW}._command_known_in_other_provider", return_value=True),
             patch("ccgram.handlers.status.rc_probe.arm_rc_probe") as mock_arm,
         ):
             update = _make_update(text="/remote-control")
             await forward_command_handler(update, _make_context())
 
-        self.mock_send_to_window.assert_not_called()
-        mock_arm.assert_not_called()
-        reply_text = update.message.reply_text.call_args[0][0]
-        assert "not supported" in reply_text
-
-
-class TestNormalizeSlashToken:
-    def test_normalize_slash_token(self) -> None:
-        assert _normalize_slash_token("COST") == "/cost"
-        assert _normalize_slash_token("/STATUS now") == "/status"
-        assert _normalize_slash_token("   ") == "/"
+        # Gate is gone: the slash forwards to the provider. The capability
+        # check now lives inside arm_rc_probe, which no-ops for non-Claude.
+        self.mock_send_to_window.assert_called_once_with(
+            "@1", "/remote-control project"
+        )
+        mock_arm.assert_called_once()

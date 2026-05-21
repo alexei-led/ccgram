@@ -8,8 +8,7 @@ LOC) into four cohesive modules:
   - ``menu_sync``: per-user/per-chat/global Telegram command menu cache
     + the periodic refresh job. Owns provider command metadata.
   - ``failure_probe``: post-send transcript + pane delta probes for
-    "unknown command" failure surfacing, plus the cross-provider
-    awareness check.
+    "unknown command" failure surfacing.
   - ``status_snapshot``: /status and /stats fallback that synthesises a
     one-shot snapshot from the transcript when the provider doesn't
     reply natively.

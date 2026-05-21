@@ -75,7 +75,7 @@ Provider and command surface:
 - `src/ccgram/command_catalog.py`: provider-agnostic command discovery + 60s TTL caching.
 - `src/ccgram/cc_commands.py`: Telegram menu registration from discovered commands.
 - `src/ccgram/handlers/commands/__init__.py`: `/commands` + `/toolbar` entry points (Round 5 F4) — re-exports `forward_command_handler`, `setup_menu_refresh_job`, `get_global_provider_menu`, `set_global_provider_menu`, `sync_scoped_*`.
-- `src/ccgram/handlers/commands/forward.py`: forward command handler (Round 5 F4) — `forward_command_handler`, `_normalize_slash_token`, `_handle_clear_command`.
+- `src/ccgram/handlers/commands/forward.py`: forward command handler (Round 5 F4) — `forward_command_handler`, `_handle_clear_command`. Universal `/<token>` forward; unknown commands surfaced by `failure_probe`, never pre-rejected.
 - `src/ccgram/handlers/commands/menu_sync.py`: provider menu cache + scoped sync (Round 5 F4) — `sync_scoped_provider_menu`, `setup_menu_refresh_job`, `_build_provider_command_metadata`, LRU helpers.
 - `src/ccgram/handlers/commands/failure_probe.py`: command failure probing (Round 5 F4) — `_capture_command_probe_context`, `_probe_transcript_command_error`, `_spawn_command_failure_probe`.
 - `src/ccgram/handlers/commands/status_snapshot.py`: status snapshot delegation (Round 5 F4).

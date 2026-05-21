@@ -570,14 +570,29 @@ class TestCapabilities:
         assert caps.transcript_format == "jsonl"
         assert caps.supports_incremental_read is True
         assert set(caps.builtin_commands) == {
-            "/clear",
             "/changelog",
+            "/clear",
+            "/clone",
+            "/colors",
             "/compact",
+            "/copy",
+            "/debug",
             "/export",
+            "/fork",
+            "/hotkeys",
+            "/import",
+            "/login",
+            "/logout",
+            "/model",
             "/name",
+            "/new",
+            "/quit",
             "/reload",
+            "/resume",
             "/session",
+            "/settings",
             "/share",
+            "/tree",
         }
 
 
@@ -607,11 +622,12 @@ class TestDiscoverCommands:
         cmds = PiProvider().discover_commands(str(tmp_path / "proj"))
         names = {c.name for c in cmds}
         assert "/clear" in names
+        assert "/tree" in names
+        assert "/model" in names
+        assert "/quit" in names
         assert "brave-search" in names
         assert "review" in names
         assert "stats" in names
-        assert "/tree" not in names
-        assert "/model" not in names
         assert all(c.name for c in cmds)
 
     def test_dedup_keeps_first_source(

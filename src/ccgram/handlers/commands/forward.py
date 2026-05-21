@@ -8,11 +8,11 @@ Pipeline:
   1. resolve user/topic/window/provider
   2. translate the Telegram-friendly /-name back to the provider-native
      name (via menu_sync._build_provider_command_metadata)
-  3. reject if the command exists in another provider but not this one
-  4. capture transcript + pane probe context
-  5. send via tmux
-  6. spawn the failure probe + status snapshot fallbacks
-  7. handle /clear post-send cleanup (clear session, reset polling)
+  3. capture transcript + pane probe context
+  4. send via tmux — any /<token> is forwarded as-is; unknown commands
+     are surfaced reactively by the failure probe, not pre-rejected
+  5. spawn the failure probe + status snapshot fallbacks
+  6. handle /clear post-send cleanup (clear session, reset polling)
 """
 
 from __future__ import annotations
@@ -40,12 +40,10 @@ from ..messaging_pipeline.message_sender import safe_reply
 from ..polling.polling_state import lifecycle_strategy, reset_window_polling_state
 from .failure_probe import (
     _capture_command_probe_context,
-    _command_known_in_other_provider,
     _spawn_command_failure_probe,
 )
 from .menu_sync import (
     _build_provider_command_metadata,
-    _short_supported_commands,
     sync_scoped_provider_menu,
 )
 from .status_snapshot import (
@@ -57,14 +55,6 @@ if TYPE_CHECKING:
     from telegram.ext import ContextTypes
 
 logger = structlog.get_logger()
-
-
-def _normalize_slash_token(command: str) -> str:
-    parts = command.strip().split(None, 1)
-    if not parts:
-        return "/"
-    token = parts[0].lower()
-    return token if token.startswith("/") else f"/{token}"
 
 
 async def _handle_clear_command(
@@ -144,30 +134,12 @@ async def forward_command_handler(
         window_id, provider_name=window_query.get_window_provider(window_id)
     )
     await sync_scoped_provider_menu(update.message, user.id, provider)
-    provider_map, current_supported = _build_provider_command_metadata(provider)
+    provider_map = _build_provider_command_metadata(provider)
     resolved_name = provider_map.get(tg_cmd, tg_cmd)
     cc_name = resolved_name.lstrip("/")
     if not args and cc_name in ("remote-control", "rc"):
         args = display
     cc_slash = f"/{cc_name} {args}".rstrip() if args else f"/{cc_name}"
-    command_token = _normalize_slash_token(cc_slash)
-
-    supported_cache: dict[str, set[str]] = {
-        provider.capabilities.name: current_supported
-    }
-    if command_token not in current_supported and _command_known_in_other_provider(
-        command_token,
-        provider,
-        supported_cache=supported_cache,
-    ):
-        await safe_reply(
-            update.message,
-            f"❌ [{display}] `{command_token}` is not supported by "
-            f"`{provider.capabilities.name}`.\n"
-            f"{_short_supported_commands(current_supported)}\n"
-            "Use /commands for the full list.",
-        )
-        return
 
     logger.info(
         "Forwarding command %s to window %s (user=%d)", cc_slash, display, user.id
