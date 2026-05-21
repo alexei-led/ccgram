@@ -174,7 +174,7 @@ class TestForwardCommandResolution:
 
         reply_text = update.message.reply_text.call_args[0][0]
         assert "Sent: /model" in reply_text
-        assert "Picker may open" in reply_text
+        assert "drive the picker" in reply_text
         assert "/toolbar" in reply_text
 
     async def test_no_picker_hint_for_non_picker_command(self) -> None:
@@ -191,7 +191,7 @@ class TestForwardCommandResolution:
         await forward_command_handler(update, _make_context())
 
         reply_text = update.message.reply_text.call_args[0][0]
-        assert "Picker" not in reply_text
+        assert "drive the picker" not in reply_text
         assert "/toolbar" not in reply_text
         self.mock_send_to_window.assert_called_once_with("@1", "/model claude-opus-4-5")
 
@@ -201,7 +201,7 @@ class TestForwardCommandResolution:
         await forward_command_handler(update, _make_context())
 
         reply_text = update.message.reply_text.call_args[0][0]
-        assert "Picker may open" in reply_text
+        assert "drive the picker" in reply_text
 
     async def test_botname_mention_stripped(self) -> None:
         update = _make_update(text="/clear@mybot")
@@ -535,6 +535,10 @@ class TestForwardWithRealProvider:
             ("codex", "model"),
             ("gemini", "model"),
             ("pi", "model"),
+            ("claude", "effort"),
+            ("codex", "personality"),
+            ("gemini", "auth"),
+            ("pi", "login"),
         ],
     )
     async def test_picker_command_produces_hint(
@@ -546,7 +550,7 @@ class TestForwardWithRealProvider:
 
         reply_text = update.message.reply_text.call_args[0][0]
         assert f"Sent: /{picker_cmd}" in reply_text
-        assert "Picker may open" in reply_text
+        assert "drive the picker" in reply_text
         assert "/toolbar" in reply_text
 
     @pytest.mark.parametrize("provider_name", ["claude", "codex", "gemini", "pi"])
@@ -556,7 +560,7 @@ class TestForwardWithRealProvider:
         await forward_command_handler(update, _make_context())
 
         reply_text = update.message.reply_text.call_args[0][0]
-        assert "Picker" not in reply_text
+        assert "/toolbar" not in reply_text
 
     @pytest.mark.parametrize("provider_name", ["claude", "codex", "gemini", "pi"])
     async def test_picker_command_with_args_no_hint(self, provider_name: str) -> None:
@@ -565,4 +569,4 @@ class TestForwardWithRealProvider:
         await forward_command_handler(update, _make_context())
 
         reply_text = update.message.reply_text.call_args[0][0]
-        assert "Picker" not in reply_text
+        assert "/toolbar" not in reply_text

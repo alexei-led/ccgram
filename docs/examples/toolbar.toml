@@ -11,7 +11,10 @@
 #
 #   screen ctrlc live send close       (builtin handlers)
 #   mode think yolo                    (toggle keys with state readback)
-#   esc enter tab eof susp             (plain key sends)
+#   esc enter tab eof susp up down     (plain key sends)
+#
+# The `up`/`down` keys drive in-CLI TUI pickers (e.g. /model, /theme).
+# When ccgram forwards a picker command it points users at /toolbar.
 #
 # All built-in actions are listed in src/ccgram/toolbar_config.py:BUILTIN_ACTIONS.
 # Three rendering styles per provider: "emoji" | "text" | "emoji_text" (default).
@@ -72,15 +75,17 @@ style = "emoji_text"
 buttons = [
   ["screen",   "ctrlc",  "live"     ],
   ["mode",     "think",  "deepthink"],
+  ["up",       "enter",  "down"     ],
   ["clear",    "compact","esc"      ],
-  ["send",     "enter",  "close"    ],
+  ["send",     "close"             ],
 ]
 
 [providers.codex]
 style = "emoji_text"
 buttons = [
   ["screen", "ctrlc", "live"],
-  ["esc",    "enter", "tab" ],
+  ["esc",    "tab",   "mode"],
+  ["up",     "enter", "down"],
   ["send",   "clear", "close"],
 ]
 
