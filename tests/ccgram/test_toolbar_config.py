@@ -271,6 +271,8 @@ class TestBuiltins:
             "tab",
             "eof",
             "susp",
+            "up",
+            "down",
         }
         assert expected.issubset(BUILTIN_ACTIONS.keys())
 
@@ -289,7 +291,7 @@ class TestBuiltins:
 
     def test_default_layouts_have_valid_grids(self) -> None:
         for provider, layout in DEFAULT_LAYOUTS.items():
-            assert len(layout.buttons) == 3, f"{provider}: expected 3 rows"
+            assert 3 <= len(layout.buttons) <= 4, f"{provider}: expected 3-4 rows"
             for row in layout.buttons:
                 assert 1 <= len(row) <= 8, f"{provider}: row width out of range"
 

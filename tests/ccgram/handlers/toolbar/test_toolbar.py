@@ -43,11 +43,11 @@ def _fresh_toolbar_config():
 
 class TestBuildToolbarKeyboard:
     @pytest.mark.parametrize("provider", ["claude", "codex", "gemini", "shell"])
-    def test_default_grid_is_3x3(self, provider: str) -> None:
+    def test_default_grid_has_valid_shape(self, provider: str) -> None:
         kb = build_toolbar_keyboard("@5", provider)
-        assert len(kb.inline_keyboard) == 3
+        assert 3 <= len(kb.inline_keyboard) <= 4
         for row in kb.inline_keyboard:
-            assert len(row) == 3
+            assert 1 <= len(row) <= 8
 
     @pytest.mark.parametrize("provider", ["claude", "codex", "gemini", "shell"])
     def test_callback_data_uses_single_prefix(self, provider: str) -> None:

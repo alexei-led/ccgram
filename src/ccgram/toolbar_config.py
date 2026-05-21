@@ -176,6 +176,8 @@ BUILTIN_ACTIONS: dict[str, ToolbarAction] = {
         _b("tab", "\u21e5", "Tab", "key", "Tab"),
         _b("eof", "^D", "EOF", "key", "C-d"),
         _b("susp", "^Z", "Susp", "key", "C-z"),
+        _b("up", "\U0001f53c", "Up", "key", "Up"),
+        _b("down", "\U0001f53d", "Down", "key", "Down"),
     )
 }
 
@@ -190,15 +192,17 @@ DEFAULT_LAYOUTS: dict[str, ToolbarLayout] = {
         buttons=(
             ("screen", "ctrlc", "live"),
             ("mode", "think", "esc"),
-            ("send", "enter", "close"),
+            ("up", "enter", "down"),
+            ("send", "close"),
         ),
     ),
     "codex": ToolbarLayout(
         style="emoji_text",
         buttons=(
             ("screen", "ctrlc", "live"),
-            ("esc", "enter", "tab"),
-            ("send", "mode", "close"),
+            ("esc", "tab", "mode"),
+            ("up", "enter", "down"),
+            ("send", "close"),
         ),
     ),
     "gemini": ToolbarLayout(
@@ -206,14 +210,16 @@ DEFAULT_LAYOUTS: dict[str, ToolbarLayout] = {
         buttons=(
             ("screen", "ctrlc", "live"),
             ("mode", "yolo", "esc"),
-            ("send", "enter", "close"),
+            ("up", "enter", "down"),
+            ("send", "close"),
         ),
     ),
     "pi": ToolbarLayout(
         style="emoji_text",
         buttons=(
             ("screen", "ctrlc", "live"),
-            ("esc", "enter", "tab"),
+            ("esc", "tab"),
+            ("up", "enter", "down"),
             ("send", "close"),
         ),
     ),

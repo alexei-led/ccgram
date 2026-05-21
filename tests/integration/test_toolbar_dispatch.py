@@ -105,9 +105,9 @@ class TestKeyboardBuild:
     @pytest.mark.parametrize("provider", ["claude", "codex", "gemini", "shell"])
     def test_default_keyboard_for_each_provider(self, provider: str) -> None:
         kb = build_toolbar_keyboard(TEST_WINDOW_ID, provider)
-        assert len(kb.inline_keyboard) == 3
+        assert 3 <= len(kb.inline_keyboard) <= 4
         for row in kb.inline_keyboard:
-            assert len(row) == 3
+            assert 1 <= len(row) <= 8
             for btn in row:
                 cb = btn.callback_data
                 assert isinstance(cb, str)
