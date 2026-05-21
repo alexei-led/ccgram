@@ -178,6 +178,9 @@ BUILTIN_ACTIONS: dict[str, ToolbarAction] = {
         _b("susp", "^Z", "Susp", "key", "C-z"),
         _b("up", "\U0001f53c", "Up", "key", "Up"),
         _b("down", "\U0001f53d", "Down", "key", "Down"),
+        # π — Pi flagship: opens the model picker. Greek letter (U+03C0)
+        # for the pi.dev brand; reused by other providers that support /model.
+        _b("model", "π", "Model", "text", "/model"),
     )
 }
 
@@ -218,7 +221,7 @@ DEFAULT_LAYOUTS: dict[str, ToolbarLayout] = {
         style="emoji_text",
         buttons=(
             ("screen", "ctrlc", "live"),
-            ("esc", "tab"),
+            ("esc", "tab", "model"),
             ("up", "enter", "down"),
             ("send", "close"),
         ),

@@ -561,6 +561,7 @@ class TestForwardWithRealProvider:
 
         reply_text = update.message.reply_text.call_args[0][0]
         assert "/toolbar" not in reply_text
+        assert "drive the picker" not in reply_text
 
     @pytest.mark.parametrize("provider_name", ["claude", "codex", "gemini", "pi"])
     async def test_picker_command_with_args_no_hint(self, provider_name: str) -> None:
@@ -569,4 +570,95 @@ class TestForwardWithRealProvider:
         await forward_command_handler(update, _make_context())
 
         reply_text = update.message.reply_text.call_args[0][0]
+        assert "/toolbar" not in reply_text
+        assert "drive the picker" not in reply_text
+
+    @pytest.mark.parametrize("provider_name", ["claude", "codex", "gemini", "pi"])
+    async def test_uppercase_picker_command_still_fires_hint(
+        self, provider_name: str
+    ) -> None:
+        self._mock_get_provider.return_value = _real_provider(provider_name)
+        update = _make_update(text="/MODEL")
+        await forward_command_handler(update, _make_context())
+
+        reply_text = update.message.reply_text.call_args[0][0]
+        assert "drive the picker" in reply_text
+
+    async def test_claude_hyphenated_picker_reachable_via_telegram_form(self) -> None:
+        """`/release-notes` is hyphenated; Telegram bots only accept underscores.
+
+        The user types `/release_notes`; the provider_map reverses it to the
+        original `release-notes`. Verify the picker hint still fires.
+        """
+        from ccgram.providers.claude import ClaudeProvider
+
+        claude = ClaudeProvider()
+        assert "release-notes" in claude.capabilities.tui_picker_commands
+        self._mock_get_provider.return_value = claude
+        with patch(
+            f"{_FW}._build_provider_command_metadata",
+            return_value={"release_notes": "release-notes"},
+        ):
+            update = _make_update(text="/release_notes")
+            await forward_command_handler(update, _make_context())
+
+        reply_text = update.message.reply_text.call_args[0][0]
+        assert "drive the picker" in reply_text
+
+    async def test_degraded_hint_when_toolbar_lacks_nav_keys(self) -> None:
+        """Custom toolbar that drops up/down must not be promised in the hint."""
+        from ccgram.providers.claude import ClaudeProvider
+        from ccgram.toolbar_config import (
+            BUILTIN_ACTIONS,
+            ToolbarConfig,
+            ToolbarLayout,
+        )
+
+        stripped = ToolbarConfig(
+            layouts={
+                "claude": ToolbarLayout(
+                    style="emoji_text",
+                    buttons=(("screen", "send", "close"),),
+                )
+            },
+            actions=dict(BUILTIN_ACTIONS),
+        )
+        self._mock_get_provider.return_value = ClaudeProvider()
+        with patch(
+            "ccgram.handlers.toolbar.toolbar_keyboard.get_toolbar_config",
+            return_value=stripped,
+        ):
+            update = _make_update(text="/model")
+            await forward_command_handler(update, _make_context())
+
+        reply_text = update.message.reply_text.call_args[0][0]
+        # Degraded copy: points at /toolbar but does not promise specific buttons.
+        assert "/toolbar" in reply_text
+        assert "drive the picker" in reply_text
+        assert "🔼" not in reply_text
+        assert "🔽" not in reply_text
+        assert "Enter Esc" not in reply_text
+
+    async def test_full_hint_when_toolbar_has_nav_keys(self) -> None:
+        """Default toolbar has up/down/enter/esc — full hint with glyphs fires."""
+        from ccgram.providers.claude import ClaudeProvider
+
+        self._mock_get_provider.return_value = ClaudeProvider()
+        update = _make_update(text="/model")
+        await forward_command_handler(update, _make_context())
+
+        reply_text = update.message.reply_text.call_args[0][0]
+        assert "🔼" in reply_text
+        assert "🔽" in reply_text
+        assert "Enter Esc" in reply_text
+
+    async def test_shell_provider_never_emits_picker_hint(self) -> None:
+        from ccgram.providers.shell import ShellProvider
+
+        self._mock_get_provider.return_value = ShellProvider()
+        update = _make_update(text="/model")
+        await forward_command_handler(update, _make_context())
+
+        reply_text = update.message.reply_text.call_args[0][0]
+        assert "drive the picker" not in reply_text
         assert "/toolbar" not in reply_text

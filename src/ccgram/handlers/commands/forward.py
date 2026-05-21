@@ -57,6 +57,31 @@ if TYPE_CHECKING:
 logger = structlog.get_logger()
 
 
+_NAV_KEYS = ("up", "down", "enter", "esc")
+
+
+def _picker_hint(provider_name: str) -> str:
+    """Return the picker-hint suffix for ``provider_name``.
+
+    Inspects the resolved toolbar layout — if the user customised
+    ``toolbar.toml`` and dropped the navigation keys, emit the degraded
+    hint that just points at ``/toolbar`` rather than promising buttons
+    that don't exist.
+    """
+    # Lazy: handlers.toolbar pulls in PTB Application machinery; keep it
+    # out of forward's module-load path.
+    from ..toolbar.toolbar_keyboard import get_toolbar_config
+
+    try:
+        layout = get_toolbar_config().for_provider(provider_name)
+        present = {name for row in layout.buttons for name in row}
+    except Exception:  # noqa: BLE001 — toolbar lookup must never break forwarding
+        present = set()
+    if all(k in present for k in _NAV_KEYS):
+        return "\n💡 Open /toolbar to drive the picker — 🔼 🔽 Enter Esc."
+    return "\n💡 Open /toolbar to drive the picker."
+
+
 async def _handle_clear_command(
     update: Update,
     user_id: int,
@@ -116,7 +141,7 @@ async def forward_command_handler(
     cmd_text = update.message.text or ""
     parts = cmd_text.split(None, 1)
     raw_cmd = parts[0].split("@")[0] if parts else ""
-    tg_cmd = raw_cmd.lstrip("/")
+    tg_cmd = raw_cmd.lstrip("/").lower()
     # args is forwarded verbatim to the provider via tmux send-keys -l (literal mode).
     # Gated by config.is_user_allowed — authorised users can type anything into their own agent.
     args = parts[1] if len(parts) > 1 else ""
@@ -170,8 +195,8 @@ async def forward_command_handler(
     # Picker hint only fires when no args were forwarded: picker commands that
     # accept a direct value (e.g. /model gpt-5) apply it without opening the
     # modal, so the "type /toolbar" guidance would mislead.
-    if not args and cc_name in provider.capabilities.tui_picker_commands:
-        confirmation += "\n🔽 Type /toolbar to drive the picker with ↑ ↓ Enter Esc."
+    if not args and cc_name.lower() in provider.capabilities.tui_picker_commands:
+        confirmation += _picker_hint(provider.capabilities.name)
     await safe_reply(update.message, confirmation)
     _arm_rc_probe_if_remote_control(update, window_id, cc_name)
     await _maybe_send_status_snapshot(
