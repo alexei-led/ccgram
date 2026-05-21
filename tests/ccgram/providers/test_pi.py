@@ -592,11 +592,9 @@ class TestCapabilities:
             "/share",
             "/tree",
         }
-        # /new and /resume reserved by ccgram bot-native handlers
         assert "/new" not in caps.builtin_commands
         assert "/resume" not in caps.builtin_commands
 
-        # Commands that open modal TUI pickers — surfaced as a hint when forwarded.
         assert caps.tui_picker_commands == frozenset(
             {"model", "login", "fork", "clone", "import", "settings"}
         )

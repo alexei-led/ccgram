@@ -8,8 +8,6 @@ from ccgram.handlers.commands import forward_command_handler
 
 
 _FW = "ccgram.handlers.commands.forward"
-_MS = "ccgram.handlers.commands.menu_sync"
-_FP = "ccgram.handlers.commands.failure_probe"
 _SS = "ccgram.handlers.commands.status_snapshot"
 
 
@@ -176,7 +174,7 @@ class TestForwardCommandResolution:
 
         reply_text = update.message.reply_text.call_args[0][0]
         assert "Sent: /model" in reply_text
-        assert "Picker opened" in reply_text
+        assert "Picker may open" in reply_text
         assert "/toolbar" in reply_text
 
     async def test_no_picker_hint_for_non_picker_command(self) -> None:
@@ -186,6 +184,24 @@ class TestForwardCommandResolution:
 
         reply_text = update.message.reply_text.call_args[0][0]
         assert reply_text == "⚡ [project] Sent: /clear"
+
+    async def test_no_picker_hint_when_picker_command_has_args(self) -> None:
+        self.mock_provider.capabilities.tui_picker_commands = frozenset({"model"})
+        update = _make_update(text="/model claude-opus-4-5")
+        await forward_command_handler(update, _make_context())
+
+        reply_text = update.message.reply_text.call_args[0][0]
+        assert "Picker" not in reply_text
+        assert "/toolbar" not in reply_text
+        self.mock_send_to_window.assert_called_once_with("@1", "/model claude-opus-4-5")
+
+    async def test_picker_hint_with_botname_mention(self) -> None:
+        self.mock_provider.capabilities.tui_picker_commands = frozenset({"model"})
+        update = _make_update(text="/model@mybot")
+        await forward_command_handler(update, _make_context())
+
+        reply_text = update.message.reply_text.call_args[0][0]
+        assert "Picker may open" in reply_text
 
     async def test_botname_mention_stripped(self) -> None:
         update = _make_update(text="/clear@mybot")
@@ -431,21 +447,35 @@ class TestForwardCommandResolution:
             update = _make_update(text="/remote-control")
             await forward_command_handler(update, _make_context())
 
-        # Gate is gone: the slash forwards to the provider. The capability
-        # check now lives inside arm_rc_probe, which no-ops for non-Claude.
         self.mock_send_to_window.assert_called_once_with(
             "@1", "/remote-control project"
         )
         mock_arm.assert_called_once()
 
 
-class TestForwardWithRealClaudeProvider:
-    """End-to-end tests using a real ClaudeProvider (no capability mock)."""
-
-    @pytest.fixture(autouse=True)
-    def _setup_mocks(self):
+def _real_provider(name: str):
+    if name == "claude":
         from ccgram.providers.claude import ClaudeProvider
 
+        return ClaudeProvider()
+    if name == "codex":
+        from ccgram.providers.codex import CodexProvider
+
+        return CodexProvider()
+    if name == "gemini":
+        from ccgram.providers.gemini import GeminiProvider
+
+        return GeminiProvider()
+    if name == "pi":
+        from ccgram.providers.pi import PiProvider
+
+        return PiProvider()
+    raise ValueError(name)
+
+
+class TestForwardWithRealProvider:
+    @pytest.fixture(autouse=True)
+    def _setup_mocks(self):
         self.mock_tr = MagicMock()
         self.mock_tr.resolve_window_for_thread.return_value = "@1"
         self.mock_tr.get_display_name.return_value = "project"
@@ -468,6 +498,9 @@ class TestForwardWithRealClaudeProvider:
         )
         self.mock_tm.capture_pane = AsyncMock(return_value="")
 
+        self._provider_patch = patch(f"{_FW}.get_provider_for_window")
+        self._mock_get_provider = self._provider_patch.start()
+
         with (
             patch(f"{_FW}.thread_router", self.mock_tr),
             patch(f"{_FW}.window_store", self.mock_ws),
@@ -478,10 +511,6 @@ class TestForwardWithRealClaudeProvider:
                 return_value=(True, ""),
             ) as self.mock_send_to_window,
             patch(f"{_FW}.tmux_manager", self.mock_tm),
-            patch(
-                f"{_FW}.get_provider_for_window",
-                return_value=ClaudeProvider(),
-            ),
             patch(
                 f"{_FW}._build_provider_command_metadata",
                 return_value={},
@@ -497,17 +526,43 @@ class TestForwardWithRealClaudeProvider:
         ):
             yield
 
-    async def test_picker_command_produces_hint(self) -> None:
-        update = _make_update(text="/model")
+        self._provider_patch.stop()
+
+    @pytest.mark.parametrize(
+        "provider_name,picker_cmd",
+        [
+            ("claude", "model"),
+            ("codex", "model"),
+            ("gemini", "model"),
+            ("pi", "model"),
+        ],
+    )
+    async def test_picker_command_produces_hint(
+        self, provider_name: str, picker_cmd: str
+    ) -> None:
+        self._mock_get_provider.return_value = _real_provider(provider_name)
+        update = _make_update(text=f"/{picker_cmd}")
         await forward_command_handler(update, _make_context())
 
         reply_text = update.message.reply_text.call_args[0][0]
-        assert "Sent: /model" in reply_text
-        assert "Picker opened" in reply_text
+        assert f"Sent: /{picker_cmd}" in reply_text
+        assert "Picker may open" in reply_text
+        assert "/toolbar" in reply_text
 
-    async def test_non_picker_command_no_hint(self) -> None:
+    @pytest.mark.parametrize("provider_name", ["claude", "codex", "gemini", "pi"])
+    async def test_non_picker_command_no_hint(self, provider_name: str) -> None:
+        self._mock_get_provider.return_value = _real_provider(provider_name)
         update = _make_update(text="/clear")
         await forward_command_handler(update, _make_context())
 
         reply_text = update.message.reply_text.call_args[0][0]
-        assert reply_text == "⚡ [project] Sent: /clear"
+        assert "Picker" not in reply_text
+
+    @pytest.mark.parametrize("provider_name", ["claude", "codex", "gemini", "pi"])
+    async def test_picker_command_with_args_no_hint(self, provider_name: str) -> None:
+        self._mock_get_provider.return_value = _real_provider(provider_name)
+        update = _make_update(text="/model some-value")
+        await forward_command_handler(update, _make_context())
+
+        reply_text = update.message.reply_text.call_args[0][0]
+        assert "Picker" not in reply_text

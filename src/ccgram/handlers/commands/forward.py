@@ -167,8 +167,11 @@ async def forward_command_handler(
     if thread_id is not None:
         record_command(user.id, thread_id, cc_slash)
     confirmation = f"⚡ [{display}] Sent: {cc_slash}"
-    if cc_name in provider.capabilities.tui_picker_commands:
-        confirmation += "\n🔽 Picker opened — use /toolbar (↑↓ Enter Esc) to drive it."
+    # Picker hint only fires when no args were forwarded: picker commands that
+    # accept a direct value (e.g. /model gpt-5) apply it without opening the
+    # modal, so the "use /toolbar" guidance would mislead.
+    if not args and cc_name in provider.capabilities.tui_picker_commands:
+        confirmation += "\n🔽 Picker may open — open /toolbar and use the arrows, Enter, or Esc to navigate."
     await safe_reply(update.message, confirmation)
     _arm_rc_probe_if_remote_control(update, window_id, cc_name)
     await _maybe_send_status_snapshot(
