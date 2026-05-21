@@ -30,10 +30,12 @@ from telegram import (
     Update,
 )
 from telegram.error import TelegramError
+from ...last_unit import capture_for_screenshot
 from ...screenshot import text_to_image
 from ...telegram_client import PTBTelegramClient
 from ...thread_router import thread_router
 from ...tmux_manager import tmux_manager
+from ...window_query import get_window_provider
 from ..callback_data import (
     CB_KEYS_PREFIX,
     CB_LIVE_START,
@@ -307,7 +309,7 @@ async def _handle_refresh(query: CallbackQuery, user_id: int, data: str) -> None
             pane_id, with_ansi=True, window_id=window_id
         )
     else:
-        text = await tmux_manager.capture_pane(w.window_id, with_ansi=True)
+        text = await capture_for_screenshot(window_id, get_window_provider(window_id))
     if not text:
         await query.answer("Failed to capture pane", show_alert=True)
         return
@@ -339,7 +341,7 @@ async def _handle_status_screenshot(
     if not w:
         await query.answer("Window not found", show_alert=True)
         return
-    text = await tmux_manager.capture_pane(w.window_id, with_ansi=True)
+    text = await capture_for_screenshot(window_id, get_window_provider(window_id))
     if not text:
         await query.answer("Failed to capture", show_alert=True)
         return
@@ -418,7 +420,7 @@ async def screenshot_command(
         await safe_reply(update.message, "\u274c Window no longer exists.")
         return
 
-    pane_text = await tmux_manager.capture_pane(w.window_id, with_ansi=True)
+    pane_text = await capture_for_screenshot(window_id, get_window_provider(window_id))
     if not pane_text:
         await safe_reply(update.message, "\u274c Failed to capture terminal.")
         return

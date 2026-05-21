@@ -231,6 +231,9 @@ class Config:
         self.live_view_timeout: int = max(
             1, _parse_int_env("CCGRAM_LIVE_VIEW_TIMEOUT", 300)
         )
+        self.screenshot_history: int = max(
+            50, _parse_int_env("CCGRAM_SCREENSHOT_HISTORY", 500)
+        )
 
     def _init_shell_and_llm(self) -> None:
         self.prompt_mode = os.getenv("CCGRAM_PROMPT_MODE", "wrap")

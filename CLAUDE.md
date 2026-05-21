@@ -174,8 +174,11 @@ The LLM is also used for **completion summaries**: when an agent finishes (Stop 
 | Auto-stop timeout | `CCGRAM_LIVE_VIEW_TIMEOUT`    | `300` (s) |
 | Monitor poll      | `MONITOR_POLL_INTERVAL`       | `1.0` (s) |
 | Status poll       | `CCGRAM_STATUS_POLL_INTERVAL` | `1.0` (s) |
+| Screenshot lines  | `CCGRAM_SCREENSHOT_HISTORY`   | `500`     |
 
 Live view and poll intervals are clamped to a minimum of 0.5s (live view: 1s). Live view auto-refreshes terminal screenshots via `editMessageMedia` at the configured interval, and auto-stops after the timeout.
+
+Screenshots (`/screenshot`, 📷 status-bar button) capture scrollback (default 500 lines) with ANSI color rather than just the visible viewport. For shell topics, the last command and its output are extracted from between prompt markers when available, falling back to full scrollback. Live view keeps viewport capture unchanged.
 
 ### /send Command — File Delivery
 
