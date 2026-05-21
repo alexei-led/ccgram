@@ -17,10 +17,15 @@ from __future__ import annotations
 import re
 
 from .config import config
+from .providers.shell_infra import match_prompt
 from .tmux_manager import tmux_manager
 
 # Strip ANSI escape sequences for marker matching purposes only.
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[mGKHF]|\x1b\][^\x07]*\x07|\x1b[()][AB012]")
+# Covers full CSI range (cursor movement, SGR, private-mode such as
+# bracketed paste \x1b[?2004h), OSC strings, and simple two-byte
+# designators. tmux ``capture-pane -e`` can interleave these around prompt
+# markers, so the marker regex must not trip on residual escape bytes.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][AB012]")
 
 
 def _strip_ansi(line: str) -> str:
@@ -37,11 +42,6 @@ def extract_last_shell_block(scrollback_text: str) -> str | None:
     inclusive. Returns None if either pivot is not found (no markers, command
     still running, or only one marker present).
     """
-    # Lazy: provider.shell_infra imported here to avoid coupling last_unit into
-    # the providers package at module level — last_unit is a leaf used by
-    # handlers, and providers also import from handlers indirectly via config.
-    from .providers.shell_infra import match_prompt
-
     lines = scrollback_text.splitlines()
     if not lines:
         return None
