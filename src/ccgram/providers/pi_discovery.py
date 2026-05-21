@@ -29,7 +29,11 @@ _PI_EXTENSION_COMMAND_RE = re.compile(
 # Telegram-friendly Pi built-ins. The forward path lets users send *any*
 # /-command through to the provider, so this list is purely for discovery
 # (/commands listing, menu autocomplete). Modal-TUI flows like /model,
-# /resume, /login open pickers the user navigates with the inline toolbar.
+# /login open pickers the user navigates with the inline toolbar.
+#
+# NOTE: /new and /resume excluded — they collide with bot-native handlers
+# (handlers/topics/new_command.py, handlers/recovery/resume_command.py)
+# and will never be forwarded to Pi. Same convention as codex.py.
 _PI_TELEGRAM_BUILTINS: dict[str, str] = {
     "/changelog": "Show version history",
     "/clear": "Clear conversation history",
@@ -46,10 +50,8 @@ _PI_TELEGRAM_BUILTINS: dict[str, str] = {
     "/logout": "Remove provider credentials",
     "/model": "Pick the active model",
     "/name": "Set session display name",
-    "/new": "Start a new session",
     "/quit": "Exit Pi (Ctrl-C twice)",
     "/reload": "Reload extensions, skills, prompts, themes",
-    "/resume": "Resume a previous session",
     "/session": "Show session info",
     "/settings": "Open settings TUI",
     "/share": "Upload as private GitHub gist",

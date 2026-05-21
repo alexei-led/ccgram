@@ -585,15 +585,16 @@ class TestCapabilities:
             "/logout",
             "/model",
             "/name",
-            "/new",
             "/quit",
             "/reload",
-            "/resume",
             "/session",
             "/settings",
             "/share",
             "/tree",
         }
+        # /new and /resume reserved by ccgram bot-native handlers
+        assert "/new" not in caps.builtin_commands
+        assert "/resume" not in caps.builtin_commands
 
 
 class TestDiscoverCommands:
