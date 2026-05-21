@@ -143,6 +143,12 @@ class ProviderCapabilities:
     # from transcript entries. Callers should invoke seed_task_state() on
     # session start and apply_task_entries() on each new batch.
     supports_task_tracking: bool = False
+    # Slash command names (without the leading "/") that open a modal in-TUI
+    # picker the user must navigate via arrow keys / Enter / Esc. When a
+    # command in this set is forwarded, the topic gets a one-line hint
+    # pointing at /toolbar so users know how to drive the picker from
+    # Telegram. Empty for providers without modal pickers.
+    tui_picker_commands: frozenset[str] = frozenset()
 
 
 # ── Provider protocol ────────────────────────────────────────────────────

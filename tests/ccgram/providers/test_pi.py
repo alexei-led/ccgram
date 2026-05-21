@@ -596,6 +596,11 @@ class TestCapabilities:
         assert "/new" not in caps.builtin_commands
         assert "/resume" not in caps.builtin_commands
 
+        # Commands that open modal TUI pickers — surfaced as a hint when forwarded.
+        assert caps.tui_picker_commands == frozenset(
+            {"model", "login", "fork", "clone", "import", "settings"}
+        )
+
 
 class TestDiscoverCommands:
     def test_returns_builtins_and_dynamic_sources(

@@ -164,7 +164,10 @@ async def forward_command_handler(
 
     if thread_id is not None:
         record_command(user.id, thread_id, cc_slash)
-    await safe_reply(update.message, f"⚡ [{display}] Sent: {cc_slash}")
+    confirmation = f"⚡ [{display}] Sent: {cc_slash}"
+    if cc_name in provider.capabilities.tui_picker_commands:
+        confirmation += "\n📺 Picker opened — use /toolbar (↑↓ Enter Esc) to drive it."
+    await safe_reply(update.message, confirmation)
     _arm_rc_probe_if_remote_control(update, window_id, cc_name)
     await _maybe_send_status_snapshot(
         update.message,

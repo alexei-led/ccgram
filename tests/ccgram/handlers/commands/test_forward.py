@@ -75,6 +75,7 @@ class TestForwardCommandResolution:
                 name="claude",
                 supports_incremental_read=True,
                 supports_status_snapshot=False,
+                tui_picker_commands=frozenset(),
             )
         )
         self.mock_probe_ctx = AsyncMock(return_value=(None, None, None))
@@ -167,6 +168,24 @@ class TestForwardCommandResolution:
         await forward_command_handler(update, _make_context())
 
         self.mock_send_to_window.assert_called_once_with("@1", "/cost")
+
+    async def test_tui_picker_hint_appended_for_known_picker_command(self) -> None:
+        self.mock_provider.capabilities.tui_picker_commands = frozenset({"model"})
+        update = _make_update(text="/model")
+        await forward_command_handler(update, _make_context())
+
+        reply_text = update.message.reply_text.call_args[0][0]
+        assert "Sent: /model" in reply_text
+        assert "Picker opened" in reply_text
+        assert "/toolbar" in reply_text
+
+    async def test_no_picker_hint_for_non_picker_command(self) -> None:
+        self.mock_provider.capabilities.tui_picker_commands = frozenset({"model"})
+        update = _make_update(text="/clear")
+        await forward_command_handler(update, _make_context())
+
+        reply_text = update.message.reply_text.call_args[0][0]
+        assert "Picker opened" not in reply_text
 
     async def test_botname_mention_stripped(self) -> None:
         update = _make_update(text="/clear@mybot")
@@ -283,6 +302,7 @@ class TestForwardCommandResolution:
                 name="codex",
                 supports_incremental_read=True,
                 supports_status_snapshot=True,
+                tui_picker_commands=frozenset(),
             ),
             build_status_snapshot=MagicMock(return_value="Status snapshot body"),
             has_output_since=MagicMock(return_value=False),
@@ -312,6 +332,7 @@ class TestForwardCommandResolution:
                 name="claude",
                 supports_incremental_read=True,
                 supports_status_snapshot=False,
+                tui_picker_commands=frozenset(),
             ),
             build_status_snapshot=MagicMock(return_value=None),
         )
@@ -345,6 +366,7 @@ class TestForwardCommandResolution:
                 name="codex",
                 supports_incremental_read=True,
                 supports_status_snapshot=True,
+                tui_picker_commands=frozenset(),
             ),
             build_status_snapshot=MagicMock(return_value=None),
             has_output_since=MagicMock(return_value=True),
@@ -399,6 +421,7 @@ class TestForwardCommandResolution:
                 name="codex",
                 supports_incremental_read=True,
                 supports_status_snapshot=False,
+                tui_picker_commands=frozenset(),
             )
         )
         with (
