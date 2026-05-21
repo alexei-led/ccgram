@@ -12,9 +12,13 @@
 #   screen ctrlc live send close       (builtin handlers)
 #   mode think yolo                    (toggle keys with state readback)
 #   esc enter tab eof susp up down     (plain key sends)
+#   model                              (π — types /model to open the picker)
 #
-# The `up`/`down` keys drive in-CLI TUI pickers (e.g. /model, /theme).
-# When ccgram forwards a picker command it points users at /toolbar.
+# The `up`/`down`/`enter`/`esc` keys drive in-CLI TUI pickers (e.g.
+# /model, /theme). When ccgram forwards a picker command it points users
+# at /toolbar — if your custom grid drops those four nav keys, the hint
+# degrades to a generic "Open /toolbar" without promising buttons that
+# don't exist.
 #
 # All built-in actions are listed in src/ccgram/toolbar_config.py:BUILTIN_ACTIONS.
 # Three rendering styles per provider: "emoji" | "text" | "emoji_text" (default).
@@ -87,6 +91,15 @@ buttons = [
   ["esc",    "tab",   "mode"],
   ["up",     "enter", "down"],
   ["send",   "clear", "close"],
+]
+
+[providers.pi]
+style = "emoji_text"
+buttons = [
+  ["screen", "ctrlc", "live"  ],
+  ["esc",    "tab",   "model" ],
+  ["up",     "enter", "down"  ],
+  ["send",   "close"          ],
 ]
 
 # Use "text" style to drop emojis when labels would otherwise truncate.

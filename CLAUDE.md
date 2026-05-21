@@ -135,7 +135,7 @@ When creating a topic via the directory browser, users can choose the provider (
 
 Capabilities gate UX per-window: recovery keyboard only shows Continue/Resume buttons when supported; `ccgram doctor` checks managed hook installs for Claude, Codex, and Gemini. Pi hook support is supplied by cc-thingz hook-runner; transcript/process detection remains fallback for all non-shell agents.
 
-**Picker hints** (`ProviderCapabilities.tui_picker_commands`): each provider declares the slash commands that open a modal in-TUI selector (e.g. `/model`, `/login`, `/theme`). When such a command is forwarded, the topic's `Sent: …` reply gets a one-line hint pointing at `/toolbar` so users know to navigate the picker via the inline keyboard's `↑↓ Enter Esc` buttons. The list is per-provider — Claude declares 12 (sourced from `code.claude.com/docs/en/commands`), Codex 5 (from `tui/tooltips.txt`), Gemini 12 (from `geminicli.com/docs/reference/commands`), Pi 6 (verified against the live binary). Shell has none.
+**Picker hints** (`ProviderCapabilities.tui_picker_commands`): each provider declares the slash commands that open a modal in-TUI selector (e.g. `/model`, `/login`, `/theme`). When such a command is forwarded, the topic's `Sent: …` reply gets a one-line hint pointing at `/toolbar`. `forward._picker_hint()` introspects the resolved `ToolbarLayout` for the window's provider — if `up`/`down`/`enter`/`esc` are all present, the hint reads `💡 Open /toolbar to drive the picker — 🔼 🔽 Enter Esc.`; if a user's custom `~/.ccgram/toolbar.toml` drops any of those nav keys, it degrades to `💡 Open /toolbar to drive the picker.` (no promise of buttons that don't exist). The picker set is per-provider — Claude declares 12 (sourced from `code.claude.com/docs/en/commands`), Codex 5 (from `tui/tooltips.txt`), Gemini 12 (from `geminicli.com/docs/reference/commands`), Pi 6 (verified against the live binary). Shell has none. Forward lower-cases the resolved cc_name before the picker lookup so `/MODEL` matches `model`. The drift guard (`tests/ccgram/providers/test_picker_capability_drift.py`) enumerates providers via the registry — a new provider can't silently skip the subset invariant.
 
 ### Remote Control Feedback
 
@@ -209,13 +209,13 @@ Send workspace files to Telegram. Three modes in one command:
 
 **Default**: 3×3 grid per provider, `emoji_text` style:
 
-| Provider | Row 1                        | Row 2                    | Row 3                     |
-| -------- | ---------------------------- | ------------------------ | ------------------------- |
-| Claude   | 📷 Screen, ⏹ Ctrl-C, 📺 Live | 🔀 Mode, 💭 Think, ⎋ Esc | 📤 Send, ⏎ Enter, ✖ Close |
-| Codex    | 📷 Screen, ⏹ Ctrl-C, 📺 Live | ⎋ Esc, ⏎ Enter, ⇥ Tab    | 📤 Send, 🔀 Mode, ✖ Close |
-| Gemini   | 📷 Screen, ⏹ Ctrl-C, 📺 Live | 🔀 Mode, 🅨 YOLO, ⎋ Esc   | 📤 Send, ⏎ Enter, ✖ Close |
-| Pi       | 📷 Screen, ⏹ Ctrl-C, 📺 Live | ⎋ Esc, ⏎ Enter, ⇥ Tab    | 📤 Send, ✖ Close          |
-| Shell    | 📷 Screen, ⏹ Ctrl-C, 📺 Live | ⏎ Enter, ^D EOF, ^Z Susp | 📤 Send, ⎋ Esc, ✖ Close   |
+| Provider | Row 1                        | Row 2                    | Row 3                                     |
+| -------- | ---------------------------- | ------------------------ | ----------------------------------------- |
+| Claude   | 📷 Screen, ⏹ Ctrl-C, 📺 Live | 🔀 Mode, 💭 Think, ⎋ Esc | 📤 Send, ⏎ Enter, ✖ Close                 |
+| Codex    | 📷 Screen, ⏹ Ctrl-C, 📺 Live | ⎋ Esc, ⏎ Enter, ⇥ Tab    | 📤 Send, 🔀 Mode, ✖ Close                 |
+| Gemini   | 📷 Screen, ⏹ Ctrl-C, 📺 Live | 🔀 Mode, 🅨 YOLO, ⎋ Esc   | 📤 Send, ⏎ Enter, ✖ Close                 |
+| Pi       | 📷 Screen, ⏹ Ctrl-C, 📺 Live | ⎋ Esc, ⇥ Tab, π Model    | 🔼 Up, ⏎ Enter, 🔽 Down, 📤 Send, ✖ Close |
+| Shell    | 📷 Screen, ⏹ Ctrl-C, 📺 Live | ⏎ Enter, ^D EOF, ^Z Susp | 📤 Send, ⎋ Esc, ✖ Close                   |
 
 **Toggle actions with state readback**: Mode (Shift+Tab), Think (Tab), YOLO (Ctrl+Y) capture the pane ~250ms after the key press, scrape the agent CLI's mode-line, and surface it in the answer toast (e.g., "auto-accept edits on"). Falls back to the static toast when no recognized mode-line is found.
 
