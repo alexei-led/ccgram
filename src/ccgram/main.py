@@ -217,7 +217,7 @@ def run_bot() -> None:
     # Lazy: main runs `ccgram` startup; defer imports until the relevant subcommand executes
     from .tmux_manager import tmux_manager
 
-    logger.info("Allowed users: %s", config.allowed_users)
+    logger.info("Allowed users: %d configured", len(config.allowed_users))
     logger.info("Claude projects path: %s", config.claude_projects_path)
 
     # In auto-detect mode, session must already exist

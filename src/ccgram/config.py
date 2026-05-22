@@ -212,10 +212,8 @@ class Config:
         )
 
         logger.debug(
-            "Config initialized: dir=%s, token=%s..., allowed_users=%d, "
-            "tmux_session=%s",
+            "Config initialized: dir=%s, allowed_users=%d, tmux_session=%s",
             self.config_dir,
-            self.telegram_bot_token[:8],
             len(self.allowed_users),
             self.tmux_session_name,
         )
