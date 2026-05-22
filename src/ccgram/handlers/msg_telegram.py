@@ -78,10 +78,8 @@ def _is_local_qualified(qualified_id: str) -> bool:
     Bare IDs (no colon) are considered local.  Qualified IDs are local
     only when their session prefix matches ``tmux_session_name()``.
     """
-    if ":" not in qualified_id:
-        return True
-    session_prefix = qualified_id.rsplit(":", 1)[0]
-    return session_prefix == tmux_session_name()
+    from ..utils import is_local_qualified
+    return is_local_qualified(qualified_id)
 
 
 def resolve_topic(

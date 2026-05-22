@@ -126,6 +126,19 @@ def tmux_session_name() -> str:
     return os.environ.get("TMUX_SESSION_NAME", "ccgram")
 
 
+def is_local_qualified(qualified_id: str) -> bool:
+    """Check if a qualified ID belongs to the local tmux session.
+
+    Bare IDs (no colon) are considered local.  Qualified IDs are local
+    only when their session prefix matches ``tmux_session_name()``.
+    """
+    if ":" not in qualified_id:
+        return True
+    session_prefix = qualified_id.rsplit(":", 1)[0]
+    return session_prefix == tmux_session_name()
+
+
+
 def atomic_write_json(path: Path, data: Any, indent: int = 2) -> None:
     """Write JSON data to a file atomically.
 

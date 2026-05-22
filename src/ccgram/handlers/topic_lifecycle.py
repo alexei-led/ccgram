@@ -180,6 +180,9 @@ async def prune_stale_state(live_windows: "list[TmuxWindow]") -> None:
 async def probe_topic_existence(bot: Bot) -> None:
     """Probe all bound topics via Telegram API; detect deleted topics."""
     for user_id, thread_id, wid in list(thread_router.iter_thread_bindings()):
+        from ..utils import is_local_qualified
+        if not is_local_qualified(wid):
+            continue
         if lifecycle_strategy.should_skip_probe(wid):
             continue
         try:
