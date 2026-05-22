@@ -174,7 +174,7 @@ async def _tick_one_view(
         ra = exc.retry_after
         wait = ra.total_seconds() if isinstance(ra, timedelta) else float(ra)
         view.next_edit_after = time.monotonic() + wait
-        logger.info("live_view_retry_after", key=key, wait=wait)
+        logger.warning("live_view_retry_after", key=key, wait=wait)
     except TelegramError as exc:
         logger.warning("live_view_tick_error", key=key, error=str(exc))
         _active_views.pop(key, None)

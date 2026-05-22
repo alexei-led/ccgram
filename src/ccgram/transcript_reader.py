@@ -345,7 +345,9 @@ class TranscriptReader:
                             )
 
                 except (json.JSONDecodeError, OSError) as e:
-                    logger.debug("Error reading index %s: %s", index_file, e)
+                    # Degraded discovery: index unreadable, falling back to a
+                    # glob scan below. Worth surfacing — not a per-poll hot path.
+                    logger.warning("Error reading index %s: %s", index_file, e)
 
             try:
                 for jsonl_file in project_dir.glob("*.jsonl"):
@@ -374,6 +376,6 @@ class TranscriptReader:
                         )
                     )
             except OSError as e:
-                logger.debug("Error scanning jsonl files in %s: %s", project_dir, e)
+                logger.warning("Error scanning jsonl files in %s: %s", project_dir, e)
 
         return sessions

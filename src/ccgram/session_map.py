@@ -571,8 +571,11 @@ class SessionMapSync:
                     return
                 finally:
                     fcntl.flock(lock_f, fcntl.LOCK_UN)
-        except OSError:
-            logger.debug("Failed to lock session_map for clearing %s", window_id)
+        except OSError as exc:
+            # Lock failure means the entry clear was lost — surface it.
+            logger.warning(
+                "Failed to lock session_map for clearing %s: %s", window_id, exc
+            )
 
     # ------------------------------------------------------------------
     # Internal helpers

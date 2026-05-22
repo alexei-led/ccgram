@@ -234,7 +234,12 @@ def setup_menu_refresh_job(application: "Application") -> None:
                 await register_commands(context.bot, provider=refreshed_provider)
                 _global_provider_menu = refreshed_provider.capabilities.name
             except _CommandRefreshError:
-                logger.exception("Failed to refresh CC commands, keeping previous menu")
+                # Recoverable: the previous menu stays in place, so this is a
+                # warning, not an ERROR-level exception.
+                logger.warning(
+                    "Failed to refresh CC commands, keeping previous menu",
+                    exc_info=True,
+                )
 
     jq = getattr(application, "job_queue", None)
     if jq is not None:
