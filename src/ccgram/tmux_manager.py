@@ -398,7 +398,10 @@ class TmuxManager:
             async with asyncio.timeout(5.0):
                 stdout, stderr = await proc.communicate()
             if proc.returncode != 0:
-                logger.warning(
+                # Window/pane gone mid-capture — a race in the live-view poll,
+                # not an operator-actionable error. TimeoutError below stays
+                # WARNING (tmux genuinely wedged).
+                logger.debug(
                     "Failed to get pane dimensions %s: %s",
                     window_id,
                     stderr.decode("utf-8", errors="replace"),
@@ -446,7 +449,8 @@ class TmuxManager:
             async with asyncio.timeout(5.0):
                 stdout, stderr = await proc.communicate()
             if proc.returncode != 0:
-                logger.warning(
+                # Window/pane gone mid-capture — live-view race, not actionable.
+                logger.debug(
                     "Failed to capture pane %s: %s",
                     window_id,
                     stderr.decode("utf-8", errors="replace"),
@@ -555,7 +559,9 @@ class TmuxManager:
                     # Window closed mid-capture — race, not an error.
                     logger.debug("Pane capture skipped (window gone): %s", window_id)
                 else:
-                    logger.warning("Failed to capture pane %s: %s", window_id, e)
+                    # Other libtmux errors here are transient races on the
+                    # status-poll path (~1s); server reset below recovers.
+                    logger.debug("Failed to capture pane %s: %s", window_id, e)
                 self._reset_server()
                 return None
 
@@ -953,7 +959,9 @@ class TmuxManager:
                     )
                 return result
             except _TmuxError as exc:
-                logger.warning("Failed to list panes for %s: %s", window_id, exc)
+                # Miniapp polls panes at ~0.2s; a gone window races here. Debug,
+                # not warning — server reset below recovers.
+                logger.debug("Failed to list panes for %s: %s", window_id, exc)
                 self._reset_server()
                 return []
 
@@ -996,7 +1004,9 @@ class TmuxManager:
                 text = text.rstrip()
                 return text if text else None
             except _TmuxError as exc:
-                logger.warning("Failed to capture pane %s: %s", pane_id, exc)
+                # Miniapp polls captures at ~0.2s; a gone pane races here. Debug,
+                # not warning — server reset below recovers.
+                logger.debug("Failed to capture pane %s: %s", pane_id, exc)
                 self._reset_server()
                 return None
 

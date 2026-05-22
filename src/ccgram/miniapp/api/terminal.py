@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any
 
 from aiohttp import WSMsgType, web
 
+from ...utils import log_throttled
 from ..auth import (
     InvalidTokenError,
     TokenPayload,
@@ -318,15 +319,28 @@ async def _stream_loop(
                     pane_capture(window_id, pane_id), timeout=_CAPTURE_TIMEOUT
                 )
         except TimeoutError:
-            logger.warning(
-                "terminal capture timeout for %s pane=%s", window_id, pane_id
+            # Throttled: fires every `interval` (~0.2s) for a stuck/gone pane.
+            # The client still gets an error frame each tick; the log need not.
+            log_throttled(
+                logger,
+                f"term-capture-timeout:{window_id}:{pane_id}",
+                "terminal capture timeout for %s pane=%s",
+                window_id,
+                pane_id,
             )
             await _send_json(ws, {"type": "error", "message": "capture timeout"})
             await asyncio.sleep(interval)
             continue
         except Exception:  # noqa: BLE001 — capture failure must not kill stream
-            logger.exception(
-                "terminal capture failed for %s pane=%s", window_id, pane_id
+            # Throttled: same per-tick cadence. The underlying capture path
+            # (tmux_manager) already logs the specific tmux error; this is a
+            # backstop, and the client gets an error frame regardless.
+            log_throttled(
+                logger,
+                f"term-capture-failed:{window_id}:{pane_id}",
+                "terminal capture failed for %s pane=%s",
+                window_id,
+                pane_id,
             )
             await _send_json(ws, {"type": "error", "message": "capture failed"})
             await asyncio.sleep(interval)

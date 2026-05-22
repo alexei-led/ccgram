@@ -37,7 +37,7 @@ async def handle_new_message(msg: NewMessage, client: TelegramClient) -> None:  
     Routes via thread_bindings to deliver to the correct topic.
     """
     status = "complete" if msg.is_complete else "streaming"
-    logger.info(
+    logger.debug(
         "handle_new_message [%s]: session=%s, text_len=%d",
         status,
         msg.session_id,
@@ -47,7 +47,7 @@ async def handle_new_message(msg: NewMessage, client: TelegramClient) -> None:  
     active_users = session_query.find_users_for_session(msg.session_id)
 
     if not active_users:
-        logger.info("No active users for session %s", msg.session_id)
+        logger.debug("No active users for session %s", msg.session_id)
         return
 
     for user_id, window_id, thread_id in active_users:

@@ -36,6 +36,8 @@ from telegram import Bot, InlineKeyboardMarkup
 from telegram.error import BadRequest, NetworkError, RetryAfter, TelegramError, TimedOut
 from telegram.warnings import PTBUserWarning
 
+from .utils import log_throttled
+
 # PTB v22.6+ exposes a typed `send_message_draft` whose signature requires a
 # `draft_id` and returns `bool` rather than a Message dict — incompatible with
 # our message_id-keyed edit flow. Keep using `do_api_request` and silence the
@@ -449,7 +451,7 @@ class DraftStream:
             # message not modified — treat as success (no-op edit)
             if "not modified" in (exc.message or "").lower():
                 return
-            logger.warning("DraftStream legacy edit failed: %s", exc)
+            self._warn_legacy_edit_failed(exc)
         except RetryAfter as exc:
             await asyncio.sleep(_retry_after_seconds(exc) + 1)
             with contextlib.suppress(TelegramError):
@@ -460,7 +462,19 @@ class DraftStream:
                     **edit_kwargs,
                 )
         except TelegramError as exc:
-            logger.warning("DraftStream legacy edit failed: %s", exc)
+            self._warn_legacy_edit_failed(exc)
+
+    def _warn_legacy_edit_failed(self, exc: TelegramError) -> None:
+        # Throttled: _push_legacy runs on every append()/finalize(). When the
+        # target message is gone or persistently rejecting edits this would
+        # warn per delta. The degrade into legacy mode was already announced at
+        # WARNING by _handle_stream_failure, so repeats here are low value.
+        log_throttled(
+            logger,
+            f"draft-legacy-edit:{self._chat_id}:{self._message_id}",
+            "DraftStream legacy edit failed: %s",
+            exc,
+        )
 
     async def _handle_stream_failure(self, exc: TelegramError) -> None:
         self._stream_failures += 1

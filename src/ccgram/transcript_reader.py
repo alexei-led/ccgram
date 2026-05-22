@@ -60,11 +60,18 @@ def _resolve_provider_for_file(window_id: str, file_path: Path) -> Any:
         and provider.capabilities.supports_hook
         and registry.is_valid(inferred)
     ):
-        logger.warning(
+        # Throttled debug, not warning: this read-path observation repeats every
+        # poll until session_map corrects the in-memory state, and the
+        # authoritative WARNING already fires once on that mutation
+        # (session_map._sync_window_from_session_map). Logging here every poll
+        # only floods.
+        log_throttled(
+            logger,
+            f"provider-mismatch:{window_id}",
             "Provider mismatch for window %s: state=%s transcript=%s; using %s",
             window_id,
             current,
-            file_path,
+            str(file_path),
             inferred,
         )
         return registry.get(inferred)
