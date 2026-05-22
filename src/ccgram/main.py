@@ -113,9 +113,11 @@ def _use_colors(stream: object) -> bool:
     Keeps raw ANSI escapes out of redirected/piped log files while still
     coloring the interactive tmux pane the daemon runs in.
     """
-    if os.environ.get("NO_COLOR"):
+    # Presence-based, per the NO_COLOR / FORCE_COLOR conventions: set with any
+    # value (including empty) counts. NO_COLOR wins over FORCE_COLOR.
+    if "NO_COLOR" in os.environ:
         return False
-    if os.environ.get("FORCE_COLOR"):
+    if "FORCE_COLOR" in os.environ:
         return True
     isatty = getattr(stream, "isatty", None)
     return bool(isatty and isatty())

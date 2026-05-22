@@ -49,6 +49,11 @@ def log_throttled(
     First occurrence always logs. Subsequent calls with the same *key* and
     identical formatted message are suppressed until *cooldown* seconds elapse.
     A changed message resets the timer and logs immediately.
+
+    Not thread-safe: the read-check-write of ``_throttle_state`` is unlocked, so
+    all callers must run on the asyncio event loop (never from asyncio.to_thread
+    or a threadpool). Use distinct, bounded keys — entries persist until
+    log_throttle_sweep() evicts them.
     """
     formatted = msg % args if args else msg
     now = _clock()

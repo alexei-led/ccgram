@@ -98,7 +98,15 @@ async def _run_spawn_cycle(client: TelegramClient) -> None:
                     client, req.requester_window, req
                 )
                 if not posted:
+                    # Same lost-work case as the except below: the approval
+                    # keyboard could not be posted (e.g. no topic bound to the
+                    # requester window), so the spawn silently never happens.
                     pop_pending(req.id)
+                    logger.warning(
+                        "Dropped spawn request: approval keyboard not posted",
+                        request_id=req.id,
+                        requester_window=req.requester_window,
+                    )
         except (OSError, TelegramError) as exc:
             # The request is discarded (pop_pending), so the spawn the user
             # asked for silently never happens — surface it at WARNING with

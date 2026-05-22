@@ -61,10 +61,13 @@ def _resolve_provider_for_file(window_id: str, file_path: Path) -> Any:
         and registry.is_valid(inferred)
     ):
         # Throttled debug, not warning: this read-path observation repeats every
-        # poll until session_map corrects the in-memory state, and the
-        # authoritative WARNING already fires once on that mutation
-        # (session_map._sync_window_from_session_map). Logging here every poll
-        # only floods.
+        # poll until session_map corrects the in-memory state. The read itself
+        # self-heals (we return the inferred provider below), and when the hook
+        # is functional session_map._sync_window_from_session_map emits the
+        # authoritative WARNING on the state mutation. Caveat: if the hook is
+        # broken so session_map never updates, that correction (and its WARNING)
+        # never fires and this stays debug-only — accepted, since the read still
+        # works and a per-poll WARNING here would just flood.
         log_throttled(
             logger,
             f"provider-mismatch:{window_id}",

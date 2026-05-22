@@ -251,22 +251,30 @@ async def test_capture_pane_with_ansi(tmux, tmp_path) -> None:
     assert ok
 
     # raw=True: plain shell window — use the direct send path, not the
-    # Claude-TUI path (vim-mode probe + 500ms Enter delay).
-    await tmux.send_keys(window_id, r'printf "\033[31mred\033[0m normal\n"', raw=True)
+    # Claude-TUI path (vim-mode probe + 500ms Enter delay). The trailing
+    # `touch` of a sentinel file proves the shell actually executed the line,
+    # independent of pane capture: the command is always *echoed* on screen
+    # (so "red"/"normal"/the ESC sequence appear whether or not it ran), making
+    # the captured text alone an unreliable execution signal.
+    done = tmp_path / ".ansi_executed"
+    await tmux.send_keys(
+        window_id,
+        f'printf "\\033[31mred\\033[0m normal"; touch "{done}"',
+        raw=True,
+    )
 
-    # Poll for the rendered ANSI output. The real ESC byte (\x1b) only appears
-    # once the shell actually executes printf — that is the signal we assert
-    # on (the literal command text contains "red"/"normal" but not \x1b, so a
-    # substring match alone would be a false positive). Some sandboxed CI
-    # environments run the pane under a shell that never executes piped
-    # keystrokes; skip there rather than fail on an environment limitation.
     ansi = ""
     for _ in range(10):
         await asyncio.sleep(0.3)
         ansi = await tmux.capture_pane(window_id, with_ansi=True) or ""
-        if "\x1b[" in ansi:
+        if done.exists():
             break
-    if "\x1b[" not in ansi:
+
+    # Some sandboxed CI environments run the pane under a shell that never
+    # executes piped keystrokes — skip there. But if the shell DID execute
+    # (sentinel present) yet ANSI capture lost the escape, that is a real
+    # capture regression and must fail, not skip.
+    if not done.exists():
         pytest.skip("tmux pane shell did not execute the command in this environment")
 
     plain = await tmux.capture_pane(window_id, with_ansi=False)
