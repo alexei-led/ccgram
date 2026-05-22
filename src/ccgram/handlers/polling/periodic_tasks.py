@@ -99,9 +99,17 @@ async def _run_spawn_cycle(client: TelegramClient) -> None:
                 )
                 if not posted:
                     pop_pending(req.id)
-        except OSError, TelegramError:
+        except (OSError, TelegramError) as exc:
+            # The request is discarded (pop_pending), so the spawn the user
+            # asked for silently never happens — surface it at WARNING with
+            # detail, not a swallowed debug line.
             pop_pending(req.id)
-            logger.debug("Failed to process spawn request", request_id=req.id)
+            logger.warning(
+                "Dropped spawn request after error posting approval",
+                request_id=req.id,
+                requester_window=req.requester_window,
+                error=str(exc),
+            )
 
 
 def _run_mailbox_sweep() -> None:
