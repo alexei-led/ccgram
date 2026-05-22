@@ -75,7 +75,7 @@ async def _handle_app(request: web.Request) -> web.Response:
     try:
         payload = verify_token(token, bot_token=bot_token)
     except InvalidTokenError as exc:
-        logger.info("rejected miniapp token: %s", exc)
+        logger.debug("rejected miniapp token: %s", exc)
         return web.Response(status=403, text="invalid or expired token")
 
     # Escape every interpolated value: today the payload fields are

@@ -264,9 +264,10 @@ class TestVerifyHooksInstalled:
         ):
             bootstrap.verify_hooks_installed()
 
-        logger.info.assert_called_once()
+        # DEBUG, not INFO: an opt-in latency tip should not greet every startup.
+        logger.debug.assert_called_once()
         # Message includes the provider name and the install command.
-        args = logger.info.call_args[0]
+        args = logger.debug.call_args[0]
         assert "codex" in args
 
     def test_no_hint_for_non_managed_provider(self):

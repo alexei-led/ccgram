@@ -384,9 +384,10 @@ def _parse_layout(
 
 
 def _read_toml(path: Path) -> dict | None:
-    """Read and parse a TOML file. Returns None on any error (logs warning)."""
+    """Read and parse a TOML file. Returns None on any error."""
     if not path.exists():
-        logger.warning("Toolbar config file not found: %s — using defaults", path)
+        # Optional config — its absence is the normal default case, not a warning.
+        logger.debug("Toolbar config file not found: %s — using defaults", path)
         return None
     try:
         with path.open("rb") as fh:

@@ -334,7 +334,7 @@ async def _send_interactive_with_retry(
             return None
         except (TimedOut, NetworkError) as e:
             if attempt < _INTERACTIVE_SEND_RETRIES:
-                logger.info("Interactive UI send transient error, retrying: %s", e)
+                logger.debug("Interactive UI send transient error, retrying: %s", e)
                 await asyncio.sleep(_INTERACTIVE_SEND_RETRY_BACKOFF_S)
                 continue
             logger.error("Failed to send interactive UI to %s: %s", chat_id, e)

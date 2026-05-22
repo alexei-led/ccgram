@@ -580,16 +580,16 @@ class TmuxManager:
             )
         session = self.get_session()
         if not session:
-            logger.warning("No tmux session found")
+            logger.debug("No tmux session found")
             return False
         try:
             window = session.windows.get(window_id=window_id, default=None)
             if not window:
-                logger.warning("Window %s not found", window_id)
+                logger.debug("Window %s not found", window_id)
                 return False
             pane = window.active_pane
             if not pane:
-                logger.warning("No active pane in window %s", window_id)
+                logger.debug("No active pane in window %s", window_id)
                 return False
             pane.send_keys(chars, enter=enter, literal=literal)
             return True
@@ -987,7 +987,7 @@ class TmuxManager:
                 # Validate pane belongs to the specified window before capture
                 panes = await self.list_panes(window_id)
                 if not any(p.pane_id == pane_id for p in panes):
-                    logger.warning("Pane %s not found in window %s", pane_id, window_id)
+                    logger.debug("Pane %s not found in window %s", pane_id, window_id)
                     return None
             return await self._capture_pane_ansi(pane_id)
 
@@ -1037,7 +1037,7 @@ class TmuxManager:
             try:
                 pane = self._find_pane(pane_id, session, window_id=window_id)
                 if not pane:
-                    logger.warning("Pane %s not found", pane_id)
+                    logger.debug("Pane %s not found", pane_id)
                     return False
                 pane.send_keys(text, enter=enter, literal=literal)
                 return True

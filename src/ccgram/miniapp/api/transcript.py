@@ -75,7 +75,7 @@ def _verify(request: web.Request) -> str | web.Response:
             bot_token=bot_token, token=token, init_data=init_data
         )
     except InvalidTokenError as exc:
-        logger.info("rejected transcript token: %s", exc)
+        logger.debug("rejected transcript token: %s", exc)
         return web.Response(status=403, text="invalid or expired token")
     return payload.window_id
 

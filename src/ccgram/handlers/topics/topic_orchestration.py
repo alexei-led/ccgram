@@ -59,7 +59,7 @@ async def _create_forum_topic_with_retry(
         except (TimedOut, NetworkError) as exc:
             last_exc = exc
             if attempt < _TOPIC_CREATE_TRANSIENT_RETRIES:
-                logger.info("create_forum_topic transient error, retrying: %s", exc)
+                logger.debug("create_forum_topic transient error, retrying: %s", exc)
                 await asyncio.sleep(_TOPIC_CREATE_TRANSIENT_BACKOFF_S)
                 continue
             raise

@@ -199,7 +199,7 @@ async def _authenticate_websocket(
         if init_data_user_id(params) != payload.user_id:
             raise InvalidTokenError("user mismatch")
     except InvalidTokenError as exc:
-        logger.info("rejected ws auth: %s", exc)
+        logger.debug("rejected ws auth: %s", exc)
         await ws.close(code=_WS_AUTH_FAILED_CODE, message=b"auth failed")
         return False
     return True
@@ -218,7 +218,7 @@ async def _terminal_handler(request: web.Request) -> web.StreamResponse:
     try:
         payload = verify_token(token, bot_token=bot_token)
     except InvalidTokenError as exc:
-        logger.info("rejected terminal websocket token: %s", exc)
+        logger.debug("rejected terminal websocket token: %s", exc)
         return web.Response(status=403, text="invalid or expired token")
 
     pane_id = (request.query.get("pane") or "").strip() or None
@@ -283,7 +283,7 @@ async def _panes_handler(request: web.Request) -> web.Response:
             bot_token=bot_token, token=token, init_data=init_data
         )
     except InvalidTokenError as exc:
-        logger.info("rejected panes list token: %s", exc)
+        logger.debug("rejected panes list token: %s", exc)
         return web.Response(status=403, text="invalid or expired token")
 
     try:
