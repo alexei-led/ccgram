@@ -57,7 +57,6 @@ CB_SESSIONS_KILL_CONFIRM = "sess:killok:"  # sess:killok:<window_id>
 # Status message action buttons
 CB_STATUS_ESC = "st:esc:"  # st:esc:<window_id>
 CB_STATUS_SCREENSHOT = "st:ss:"  # st:ss:<window_id>
-CB_STATUS_NOTIFY = "st:nfy:"  # st:nfy:<window_id>
 CB_STATUS_RECALL = "st:rc:"  # st:rc:<window_id>:<history_index>
 
 # Recovery UI (dead window)
@@ -73,24 +72,6 @@ CB_RECOVERY_CANCEL = "rec:x"  # cancel recovery
 CB_RESUME_PICK = "res:p:"  # res:p:<index> (session selection)
 CB_RESUME_PAGE = "res:pg:"  # res:pg:<page> (pagination)
 CB_RESUME_CANCEL = "res:x"  # cancel resume browser
-
-# Notification mode UI metadata (canonical mode list lives in session.py)
-NOTIFY_MODE_ICONS: dict[str, str] = {
-    "all": "\U0001f514",
-    "errors_only": "\u26a0\ufe0f",
-    "muted": "\U0001f515",
-}
-NOTIFY_MODE_LABELS: dict[str, str] = {
-    k: f"{v} {k.replace('_', ' ').title()}" for k, v in NOTIFY_MODE_ICONS.items()
-}
-# Reactions on the status bubble after a notify-mode toggle. Picked from
-# Telegram's allowed reaction set (the bell/warning/no-bell glyphs aren't
-# available as reactions for bots).
-NOTIFY_MODE_REACT: dict[str, str] = {
-    "all": "\U0001f440",  # \ud83d\udc40 REACT_SEEN \u2014 watching everything
-    "errors_only": "\U0001f914",  # \ud83e\udd14 REACT_THINKING \u2014 selective
-    "muted": "\U0001f494",  # \ud83d\udc94 REACT_FAIL \u2014 disabled
-}
 
 # Provider selection (directory browser flow)
 CB_PROV_SELECT = "prov:"  # prov:<provider_name>

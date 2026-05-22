@@ -44,7 +44,6 @@ from .window_state_store import (
     BATCH_MODES,
     DEFAULT_APPROVAL_MODE,
     DEFAULT_BATCH_MODE,
-    NOTIFICATION_MODES,
     WindowState,
     WindowStateStore,
     install_window_store,
@@ -564,7 +563,6 @@ class SessionManager:
             cwd=ws.cwd or "",
             provider_name=ws.provider_name,
             approval_mode=ws.approval_mode,
-            notification_mode=ws.notification_mode,
             batch_mode=ws.batch_mode,
             tool_call_visibility=ws.tool_call_visibility,
             transcript_path=Path(ws.transcript_path) if ws.transcript_path else None,
@@ -656,33 +654,6 @@ class SessionManager:
         state = window_store.get_window_state(window_id)
         state.approval_mode = normalized
         self._save_state()
-
-    # --- Notification mode ---
-
-    _NOTIFICATION_MODES = NOTIFICATION_MODES
-
-    def get_notification_mode(self, window_id: str) -> str:
-        """Get notification mode for a window (default: 'all')."""
-        state = self.window_states.get(window_id)
-        return state.notification_mode if state else "all"
-
-    def set_notification_mode(self, window_id: str, mode: str) -> None:
-        """Set notification mode for a window."""
-        if mode not in self._NOTIFICATION_MODES:
-            raise ValueError(f"Invalid notification mode: {mode!r}")
-        state = window_store.get_window_state(window_id)
-        if state.notification_mode != mode:
-            state.notification_mode = mode
-            self._save_state()
-
-    def cycle_notification_mode(self, window_id: str) -> str:
-        """Cycle notification mode: all → errors_only → muted → all. Returns new mode."""
-        current = self.get_notification_mode(window_id)
-        modes = self._NOTIFICATION_MODES
-        idx = modes.index(current) if current in modes else 0
-        new_mode = modes[(idx + 1) % len(modes)]
-        self.set_notification_mode(window_id, new_mode)
-        return new_mode
 
     # --- Batch mode ---
 

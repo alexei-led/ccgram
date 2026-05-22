@@ -351,36 +351,6 @@ class TestWindowStateGeminiExternalWarned:
         assert window_store.window_states["@4"].gemini_external_warned is True
 
 
-class TestNotificationMode:
-    def test_default_is_all(self, store: WindowStateStore) -> None:
-        assert store.get_notification_mode("@1") == "all"
-
-    def test_set_and_get(self, store: WindowStateStore) -> None:
-        store.set_notification_mode("@1", "errors_only")
-        assert store.get_notification_mode("@1") == "errors_only"
-
-    def test_invalid_mode_raises(self, store: WindowStateStore) -> None:
-        with pytest.raises(ValueError):
-            store.set_notification_mode("@1", "bad")
-
-    def test_set_same_value_skips_save(self, store: WindowStateStore) -> None:
-        store.set_notification_mode("@1", "muted")
-        store._save_calls.clear()  # type: ignore[attr-defined]
-        store.set_notification_mode("@1", "muted")
-        assert store._save_calls == []  # type: ignore[attr-defined]
-
-    def test_cycle_all_to_errors_only(self, store: WindowStateStore) -> None:
-        assert store.cycle_notification_mode("@1") == "errors_only"
-
-    def test_cycle_errors_only_to_muted(self, store: WindowStateStore) -> None:
-        store.set_notification_mode("@1", "errors_only")
-        assert store.cycle_notification_mode("@1") == "muted"
-
-    def test_cycle_muted_to_all(self, store: WindowStateStore) -> None:
-        store.set_notification_mode("@1", "muted")
-        assert store.cycle_notification_mode("@1") == "all"
-
-
 class TestApprovalMode:
     def test_default_is_normal(self, store: WindowStateStore) -> None:
         assert store.get_approval_mode("@1") == "normal"

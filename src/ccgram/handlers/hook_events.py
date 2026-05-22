@@ -169,7 +169,6 @@ async def _handle_stop(event: HookEvent, client: TelegramClient) -> None:
     Topic emoji remains poller-owned. Hook-driven idle flips can fight the
     transcript/activity heuristic and cause active/idle rename churn on quiet
     topics, so Stop only updates the status bubble and broker delivery state.
-    Muted/errors_only windows get their status cleared instead.
     """
 
     users = _resolve_users_for_window_key(event.window_key)
@@ -203,21 +202,16 @@ async def _handle_stop(event: HookEvent, client: TelegramClient) -> None:
         except TimeoutError:
             logger.debug("LLM summary timed out after %ss", _LLM_SUMMARY_TIMEOUT)
 
-    notif_mode = view.notification_mode if view else "all"
-
     for user_id, thread_id, window_id in users:
         session_lifecycle.handle_stop_task_state(window_id)
-        if notif_mode in ("muted", "errors_only"):
-            status_text = None
+        if provider_name == "claude":
+            status_text = claude_task_state.format_completion_text(
+                window_id, num_turns=num_turns
+            )
         else:
-            if provider_name == "claude":
-                status_text = claude_task_state.format_completion_text(
-                    window_id, num_turns=num_turns
-                )
-            else:
-                status_text = "✓ Ready"
-            if summary and status_text:
-                status_text = status_text.replace("✓ Ready", f"✓ Done — {summary}", 1)
+            status_text = "✓ Ready"
+        if summary and status_text:
+            status_text = status_text.replace("✓ Ready", f"✓ Done — {summary}", 1)
         await enqueue_status_update(
             client, user_id, window_id, status_text, thread_id=thread_id
         )

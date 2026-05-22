@@ -22,17 +22,14 @@ from ...expandable_quote import format_expandable_quote
 from ...telegram_client import TelegramClient, unwrap_bot
 from ...telegram_draft import DraftStream
 from ...thread_router import thread_router
-from ...window_query import get_notification_mode
 from ...window_state_store import PaneInfo, window_store
 
 from ..callback_data import (
     CB_STATUS_ESC,
-    CB_STATUS_NOTIFY,
     CB_STATUS_RECALL,
     CB_STATUS_REMOTE,
     CB_STATUS_SCREENSHOT,
     IDLE_STATUS_TEXT,
-    NOTIFY_MODE_ICONS,
 )
 from ..messaging_pipeline.message_sender import edit_with_fallback, rate_limit_send
 from ..messaging_pipeline.message_task import (
@@ -109,7 +106,7 @@ def build_status_keyboard(
 
     Layout:
       Row 1 (optional): up to 2 history-recall buttons
-      Row 2: [Esc] [Screenshot] [Bell] [RC]
+      Row 2: [Esc] [Screenshot] [RC]
       Row 3 (optional): [🪟 Dashboard] when Mini App is enabled and user_id is set
     """
     # Lazy: command_history → messaging_pipeline → status → status_bubble
@@ -134,8 +131,6 @@ def build_status_keyboard(
             )
         rows.append(hist_row)
 
-    mode = get_notification_mode(window_id)
-    bell = NOTIFY_MODE_ICONS.get(mode, "\U0001f514")
     rc_label = "📡✓" if rc_active else "📡"
     rows.append(
         [
@@ -146,10 +141,6 @@ def build_status_keyboard(
             InlineKeyboardButton(
                 "\U0001f4f8",
                 callback_data=f"{CB_STATUS_SCREENSHOT}{window_id}"[:64],
-            ),
-            InlineKeyboardButton(
-                bell,
-                callback_data=f"{CB_STATUS_NOTIFY}{window_id}"[:64],
             ),
             InlineKeyboardButton(
                 rc_label,

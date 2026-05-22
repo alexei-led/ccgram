@@ -38,7 +38,6 @@ def view_window(window_id: str) -> WindowView | None:
         cwd=ws.cwd or "",
         provider_name=ws.provider_name,
         approval_mode=ws.approval_mode,
-        notification_mode=ws.notification_mode,
         batch_mode=ws.batch_mode,
         tool_call_visibility=ws.tool_call_visibility,
         transcript_path=Path(ws.transcript_path) if ws.transcript_path else None,
@@ -60,12 +59,6 @@ def get_approval_mode(window_id: str) -> str:
     state = window_store.window_states.get(window_id)
     mode = state.approval_mode if state else DEFAULT_APPROVAL_MODE
     return mode if mode in APPROVAL_MODES else DEFAULT_APPROVAL_MODE
-
-
-def get_notification_mode(window_id: str) -> str:
-    """Get notification mode for a window (default: 'all')."""
-    state = window_store.window_states.get(window_id)
-    return state.notification_mode if state else "all"
 
 
 def get_batch_mode(window_id: str) -> str:

@@ -153,28 +153,6 @@ class TestHandleStop:
             assert status_text is not None
             assert IDLE_STATUS_TEXT in status_text
 
-    @pytest.mark.parametrize("mode", ["muted", "errors_only"])
-    async def test_stop_silent_mode_clears_status(self, monkeypatch, mode) -> None:
-        monkeypatch.setattr(
-            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
-            lambda: iter([(100, 42, "@0")]),
-        )
-        bot = AsyncMock(spec=Bot)
-        view_stub = MagicMock(notification_mode=mode, transcript_path=None)
-        with (
-            patch(
-                "ccgram.handlers.hook_events.view_window",
-                return_value=view_stub,
-            ),
-            patch("ccgram.handlers.hook_events.update_topic_emoji") as mock_emoji,
-            patch("ccgram.handlers.hook_events.enqueue_status_update") as mock_enqueue,
-        ):
-            event = _make_event(event_type="Stop", data={"stop_reason": "done"})
-            await dispatch_hook_event(event, bot)
-
-            mock_emoji.assert_not_called()
-            mock_enqueue.assert_called_once_with(ANY, 100, "@0", None, thread_id=42)
-
     async def test_stop_no_users_skips(self, monkeypatch) -> None:
         monkeypatch.setattr(
             "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",

@@ -1,8 +1,7 @@
-"""Status-bubble button callbacks (notify toggle, recall, remote control, esc, keys).
+"""Status-bubble button callbacks (recall, remote control, esc, keys).
 
 Handles inline keyboard callbacks originating from the status-bubble keyboard
 built by status_bubble.py:
-  - CB_STATUS_NOTIFY: Cycle notification mode (all / mentions / off)
   - CB_STATUS_RECALL: Send one of the last shown commands directly
   - CB_STATUS_REMOTE: Activate Remote Control or show status
   - CB_STATUS_ESC: Send Escape key from status message
@@ -22,7 +21,6 @@ from telegram import (
     CallbackQuery,
     InlineKeyboardButton,
     InputMediaDocument,
-    Message,
     Update,
     WebAppInfo,
 )
@@ -32,7 +30,6 @@ from ...config import config
 from ...miniapp.auth import sign_token
 from ...screenshot import text_to_image
 from ... import window_query
-from ...session import session_manager
 from ...telegram_client import PTBTelegramClient
 from ...thread_router import thread_router
 from ...tmux_manager import send_to_window, tmux_manager
@@ -40,15 +37,11 @@ from ...topic_state_registry import topic_state
 from ..callback_data import (
     CB_KEYS_PREFIX,
     CB_STATUS_ESC,
-    CB_STATUS_NOTIFY,
     CB_STATUS_RECALL,
     CB_STATUS_REMOTE,
-    NOTIFY_MODE_LABELS,
-    NOTIFY_MODE_REACT,
 )
 from ..callback_helpers import get_thread_id, parse_target, user_owns_window
 from ..callback_registry import register
-from ..messaging_pipeline.message_sender import react
 from ..live.screenshot_callbacks import (
     KEY_LABELS,
     KEYS_SEND_MAP,
@@ -96,43 +89,6 @@ def _clear_key_refreshes(window_id: str) -> None:
         task = _pending_key_refreshes.pop(k, None)
         if task and not task.done():
             task.cancel()
-
-
-async def _handle_notify_toggle(query: CallbackQuery, user_id: int, data: str) -> None:
-    """Handle CB_STATUS_NOTIFY: cycle notification mode for a window."""
-    window_id = data[len(CB_STATUS_NOTIFY) :]
-    if not user_owns_window(user_id, window_id):
-        await query.answer("Not your session", show_alert=True)
-        return
-    new_mode = session_manager.cycle_notification_mode(window_id)
-    label = NOTIFY_MODE_LABELS.get(new_mode, new_mode)
-    # Lazy: polling_state → status_bar_actions via callback registry,
-    # and status_bubble is a sibling — both kept lazy.
-    # Lazy: polling subpackage pulls strategies; defer per-call
-    from ..polling.polling_state import terminal_screen_buffer
-
-    # Lazy: status_bar_actions ↔ status_bubble sibling cycle
-    from .status_bubble import build_status_keyboard
-
-    keyboard = build_status_keyboard(
-        window_id,
-        rc_active=terminal_screen_buffer.is_rc_active(window_id),
-        user_id=user_id,
-    )
-    with contextlib.suppress(TelegramError):
-        await query.edit_message_reply_markup(reply_markup=keyboard)
-    # Persistent reaction so the new mode stays visible after the toast fades.
-
-    bubble = query.message
-    react_emoji = NOTIFY_MODE_REACT.get(new_mode)
-    if isinstance(bubble, Message) and react_emoji is not None:
-        await react(
-            PTBTelegramClient(query.get_bot()),
-            bubble.chat_id,
-            bubble.message_id,
-            react_emoji,
-        )
-    await query.answer(label)
 
 
 async def _handle_status_recall(
@@ -207,7 +163,7 @@ async def _handle_status_recall(
 
 async def _handle_remote_control(query: CallbackQuery, user_id: int, data: str) -> None:
     """Handle CB_STATUS_REMOTE: activate Remote Control or show status."""
-    # Lazy: polling_state cycle — same as _handle_notify_toggle.
+    # Lazy: polling_state ↔ status cycle — keep deferred.
     from ..polling.polling_state import terminal_screen_buffer
 
     window_id = data[len(CB_STATUS_REMOTE) :]
@@ -360,7 +316,6 @@ async def _handle_status_bar_action(
 
     without_update = {
         CB_STATUS_ESC: _handle_status_esc,
-        CB_STATUS_NOTIFY: _handle_notify_toggle,
         CB_STATUS_REMOTE: _handle_remote_control,
     }
     for prefix, handler in without_update.items():
@@ -370,7 +325,6 @@ async def _handle_status_bar_action(
 
 
 @register(
-    CB_STATUS_NOTIFY,
     CB_STATUS_RECALL,
     CB_STATUS_ESC,
     CB_STATUS_REMOTE,

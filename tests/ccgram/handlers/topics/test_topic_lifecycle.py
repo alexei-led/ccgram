@@ -77,7 +77,6 @@ def _window_view(origin: str) -> WindowView:
         cwd="/tmp",
         provider_name="claude",
         approval_mode="normal",
-        notification_mode="all",
         batch_mode="batched",
         tool_call_visibility="default",
         transcript_path=None,

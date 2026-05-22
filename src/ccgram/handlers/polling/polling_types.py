@@ -103,7 +103,6 @@ class TickContext:
     startup_time: float | None  # None if no startup grace period is running
     is_dead_window: bool  # tmux window no longer exists
     supports_hook: bool  # provider emits hook events (Claude)
-    notification_mode: str  # "normal" | "muted" | "errors_only" | etc.
 
 
 @dataclass(frozen=True, slots=True)

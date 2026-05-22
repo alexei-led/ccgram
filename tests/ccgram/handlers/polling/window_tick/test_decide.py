@@ -24,7 +24,6 @@ def _make_ctx(
     startup_time: float | None = None,
     is_dead_window: bool = False,
     supports_hook: bool = True,
-    notification_mode: str = "all",
 ) -> TickContext:
     return TickContext(
         window_id=window_id,
@@ -35,7 +34,6 @@ def _make_ctx(
         startup_time=startup_time,
         is_dead_window=is_dead_window,
         supports_hook=supports_hook,
-        notification_mode=notification_mode,
     )
 
 

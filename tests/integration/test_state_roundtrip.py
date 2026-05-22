@@ -118,7 +118,6 @@ async def test_window_state_survives_reload(make_session_manager) -> None:
     state.session_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
     state.cwd = "/tmp/myproject"
     sm1.set_window_provider("@5", "claude")
-    sm1.set_notification_mode("@5", "errors_only")
     sm1.flush_state()
 
     _sm2 = make_session_manager()  # reload triggers __post_init__ -> _load_state
@@ -126,7 +125,6 @@ async def test_window_state_survives_reload(make_session_manager) -> None:
     assert reloaded.session_id == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
     assert reloaded.cwd == "/tmp/myproject"
     assert reloaded.provider_name == "claude"
-    assert reloaded.notification_mode == "errors_only"
 
 
 async def test_duplicate_bindings_deduped_on_load(tmp_path, monkeypatch) -> None:

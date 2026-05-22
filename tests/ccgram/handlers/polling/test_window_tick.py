@@ -221,7 +221,7 @@ class TestUpdateStatusActiveLine:
 
         with (
             patch("ccgram.handlers.polling.window_tick.apply.tmux_manager") as mock_tm,
-            patch("ccgram.handlers.polling.window_tick.apply.window_query") as mock_sm,
+            patch("ccgram.handlers.polling.window_tick.apply.window_query"),
             patch("ccgram.handlers.polling.window_tick.apply.thread_router") as mock_tr,
             patch(
                 "ccgram.handlers.polling.window_tick.apply.get_interactive_window",
@@ -250,7 +250,6 @@ class TestUpdateStatusActiveLine:
         ):
             mock_tm.find_window_by_id = AsyncMock(return_value=w)
             mock_tm.capture_pane = AsyncMock(return_value="pane text")
-            mock_sm.get_notification_mode.return_value = "all"
             mock_tr.resolve_chat_id.return_value = 42
             mock_tr.get_display_name.return_value = "test"
             mock_cts.get_subagent_names = MagicMock(return_value=[])
@@ -267,7 +266,7 @@ class TestUpdateStatusActiveLine:
 
         with (
             patch("ccgram.handlers.polling.window_tick.apply.tmux_manager") as mock_tm,
-            patch("ccgram.handlers.polling.window_tick.apply.window_query") as mock_sm,
+            patch("ccgram.handlers.polling.window_tick.apply.window_query"),
             patch("ccgram.handlers.polling.window_tick.apply.thread_router") as mock_tr,
             patch(
                 "ccgram.handlers.polling.window_tick.apply.get_interactive_window",
@@ -304,7 +303,6 @@ class TestUpdateStatusActiveLine:
         ):
             mock_tm.find_window_by_id = AsyncMock(return_value=w)
             mock_tm.capture_pane = AsyncMock(return_value="pane text")
-            mock_sm.get_notification_mode.return_value = "all"
             mock_tr.resolve_chat_id.return_value = 42
             mock_tr.get_display_name.return_value = "test"
             mock_cts.clear_wait_header = MagicMock()
@@ -312,48 +310,6 @@ class TestUpdateStatusActiveLine:
             await _update_status(bot, 1, "@0", thread_id=100, _window=w)
             enqueue_call = mock_enqueue.call_args
             assert "1 subagent" in str(enqueue_call)
-
-    async def test_muted_skips_enqueue(self):
-        bot = AsyncMock(spec=Bot)
-        w = _make_window()
-        status = _make_status(raw_text="Working", is_interactive=False)
-
-        with (
-            patch("ccgram.handlers.polling.window_tick.apply.tmux_manager") as mock_tm,
-            patch("ccgram.handlers.polling.window_tick.apply.window_query") as mock_sm,
-            patch("ccgram.handlers.polling.window_tick.apply.thread_router"),
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.get_interactive_window",
-                return_value=None,
-            ),
-            patch(
-                "ccgram.handlers.polling.window_tick.observe._parse_with_pyte",
-                return_value=status,
-            ),
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.enqueue_status_update",
-                new_callable=AsyncMock,
-            ) as mock_enqueue,
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.update_topic_emoji",
-                new_callable=AsyncMock,
-            ),
-            patch(
-                "ccgram.handlers.polling.window_tick.apply._send_typing_throttled",
-                new_callable=AsyncMock,
-            ) as mock_typing,
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.claude_task_state"
-            ) as mock_cts,
-            patch("ccgram.handlers.polling.window_tick.apply.get_provider_for_window"),
-        ):
-            mock_tm.find_window_by_id = AsyncMock(return_value=w)
-            mock_tm.capture_pane = AsyncMock(return_value="pane text")
-            mock_sm.get_notification_mode.return_value = "muted"
-            mock_cts.get_subagent_names = MagicMock(return_value=[])
-            await _update_status(bot, 1, "@0", thread_id=100, _window=w)
-            mock_enqueue.assert_not_called()
-            mock_typing.assert_called_once()
 
 
 def _make_ctx(
@@ -365,7 +321,6 @@ def _make_ctx(
     startup_time: float | None = None,
     is_dead_window: bool = False,
     supports_hook: bool = True,
-    notification_mode: str = "all",
 ) -> TickContext:
     return TickContext(
         window_id=window_id,
@@ -376,7 +331,6 @@ def _make_ctx(
         startup_time=startup_time,
         is_dead_window=is_dead_window,
         supports_hook=supports_hook,
-        notification_mode=notification_mode,
     )
 
 

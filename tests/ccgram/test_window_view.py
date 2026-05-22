@@ -31,7 +31,6 @@ class TestWindowViewProjection:
             cwd="/tmp/proj",
             provider_name="claude",
             approval_mode="normal",
-            notification_mode="all",
             transcript_path="/tmp/log.jsonl",
         )
         view = sm.view_window("@1")
@@ -40,7 +39,6 @@ class TestWindowViewProjection:
             cwd="/tmp/proj",
             provider_name="claude",
             approval_mode="normal",
-            notification_mode="all",
             batch_mode="batched",
             tool_call_visibility="default",
             transcript_path=Path("/tmp/log.jsonl"),
@@ -58,7 +56,6 @@ class TestWindowViewProjection:
             cwd="",
             provider_name="codex",
             approval_mode="normal",
-            notification_mode="all",
             transcript_path="",
         )
         view = sm.view_window("@2")

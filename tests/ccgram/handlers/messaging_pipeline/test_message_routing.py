@@ -38,7 +38,6 @@ def bot() -> MagicMock:
 def mock_deps():
     with (
         patch("ccgram.handlers.messaging_pipeline.message_routing.session_query") as sq,
-        patch("ccgram.handlers.messaging_pipeline.message_routing.window_query") as wq,
         patch(
             "ccgram.handlers.messaging_pipeline.message_routing.enqueue_content_message",
             new_callable=AsyncMock,
@@ -74,11 +73,9 @@ def mock_deps():
     ):
         sq.find_users_for_session.return_value = [(100, "@5", 42)]
         sq.resolve_session_for_window = AsyncMock(return_value=None)
-        wq.get_notification_mode.return_value = "all"
         gmq.return_value = None
         yield {
             "sq": sq,
-            "wq": wq,
             "eq": eq,
             "gmq": gmq,
             "hui": hui,
@@ -95,42 +92,6 @@ async def test_no_active_users_returns_early(bot, mock_deps):
     mock_deps["sq"].find_users_for_session.return_value = []
     await handle_new_message(_make_msg(), bot)
     mock_deps["eq"].assert_not_called()
-
-
-async def test_muted_mode_skips_non_tool(bot, mock_deps):
-    mock_deps["wq"].get_notification_mode.return_value = "muted"
-    await handle_new_message(_make_msg(text="hi"), bot)
-    mock_deps["eq"].assert_not_called()
-
-
-async def test_errors_only_skips_without_keyword(bot, mock_deps):
-    mock_deps["wq"].get_notification_mode.return_value = "errors_only"
-    await handle_new_message(_make_msg(text="normal output"), bot)
-    mock_deps["eq"].assert_not_called()
-
-
-async def test_errors_only_passes_with_error_keyword(bot, mock_deps):
-    mock_deps["wq"].get_notification_mode.return_value = "errors_only"
-    await handle_new_message(_make_msg(text="got Exception: boom"), bot)
-    mock_deps["eq"].assert_called_once()
-
-
-async def test_errors_only_passes_final_answer_without_keyword(bot, mock_deps):
-    mock_deps["wq"].get_notification_mode.return_value = "errors_only"
-    await handle_new_message(
-        _make_msg(text="normal final answer", phase="final_answer"),
-        bot,
-    )
-    mock_deps["eq"].assert_called_once()
-
-
-async def test_errors_only_delivers_tool_flow_regardless(bot, mock_deps):
-    mock_deps["wq"].get_notification_mode.return_value = "errors_only"
-    await handle_new_message(
-        _make_msg(text="no keywords here", content_type="tool_use", tool_name="Bash"),
-        bot,
-    )
-    mock_deps["eq"].assert_called_once()
 
 
 async def test_short_thinking_is_dropped(bot, mock_deps):

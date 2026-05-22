@@ -153,23 +153,23 @@ Final status-bar row: `[⎋ Esc] [📸 Screenshot] [📄 Last] [📥 Get File]`.
 - Delete: `tests/ccgram/test_session_notification_mode.py`
 - Modify: notify-mode assertions in `tests/ccgram/test_window_view.py`, `test_window_query.py`, `test_window_state_store.py`, `test_state_migration.py`, `test_state_roundtrip.py` (integration), `test_schedule_save_wiring.py`, `handlers/polling/**` tests (`test_decide.py`, `test_tick_decision.py`, `test_window_tick.py`, `test_status_polling.py`), `handlers/messaging_pipeline/test_message_routing.py`, `handlers/test_hook_events.py`, `handlers/status/test_status_buttons.py`, `handlers/status/test_status_bar_actions.py`, `handlers/topics/test_topic_lifecycle.py`, `tests/e2e/test_claude_lifecycle.py`
 
-- [ ] `window_state_store.py`: remove `NOTIFICATION_MODES`, `notification_mode` field + docstring line, `to_dict`/`from_dict` handling, reset in clear (line ~323), and `get/set/cycle_notification_mode`.
-- [ ] `session.py`: remove `get/set/cycle_notification_mode` and the `notification_mode=` arg in `WindowView` construction (line ~567).
-- [ ] `window_query.py`: remove `get_notification_mode` and the `notification_mode=` field in the view projection (line ~41).
-- [ ] `window_view.py`: remove `notification_mode` field.
-- [ ] `polling_types.py`: remove `TickContext.notification_mode`.
-- [ ] `observe.py`: drop `notification_mode` param of `build_context` and its forwarding (lines ~92,119).
-- [ ] `decide.py`: remove all consumption of `ctx.notification_mode` (always-on typing/status).
-- [ ] `apply.py`: remove `notif_mode` lookups + the `not in ("muted","errors_only")` gates (lines ~112,425,564-573) → always send.
-- [ ] `message_routing.py`: remove the errors_only suppression branch (lines ~62-71) → always forward content.
-- [ ] `hook_events.py`: remove the muted/errors_only status-clear branch (lines ~206-210) → always set status; fix the docstring at line ~172.
-- [ ] `status_bubble.py`: remove the 🔔 bell button + `NOTIFY_MODE_ICONS` usage from `build_status_keyboard`.
-- [ ] `status_bar_actions.py`: remove `_handle_notify_toggle`, `NOTIFY_MODE_ICONS`/`NOTIFY_MODE_REACT`, `CB_STATUS_NOTIFY` from `@register` and routing dict.
-- [ ] `callback_data.py`: remove `CB_STATUS_NOTIFY`.
-- [ ] Delete `tests/ccgram/test_session_notification_mode.py`; remove notify-mode assertions/params from the test files listed above (incl. e2e).
-- [ ] Grep `notification_mode|NOTIFY_MODE|cycle_notification_mode|CB_STATUS_NOTIFY|errors_only` across `src/` and `tests/` → zero hits (except `pane_lifecycle_notify`, which stays).
-- [ ] Verify polling-kernel purity test still passes (`test_polling_types_purity.py`) and query-layer AST test passes.
-- [ ] Run `make check` — must pass before Task 5.
+- [x] `window_state_store.py`: remove `NOTIFICATION_MODES`, `notification_mode` field + docstring line, `to_dict`/`from_dict` handling, reset in clear (line ~323), and `get/set/cycle_notification_mode`.
+- [x] `session.py`: remove `get/set/cycle_notification_mode` and the `notification_mode=` arg in `WindowView` construction (line ~567).
+- [x] `window_query.py`: remove `get_notification_mode` and the `notification_mode=` field in the view projection (line ~41).
+- [x] `window_view.py`: remove `notification_mode` field.
+- [x] `polling_types.py`: remove `TickContext.notification_mode`.
+- [x] `observe.py`: drop `notification_mode` param of `build_context` and its forwarding (lines ~92,119).
+- [x] `decide.py`: remove all consumption of `ctx.notification_mode` (always-on typing/status).
+- [x] `apply.py`: remove `notif_mode` lookups + the `not in ("muted","errors_only")` gates (lines ~112,425,564-573) → always send.
+- [x] `message_routing.py`: remove the errors_only suppression branch (lines ~62-71) → always forward content.
+- [x] `hook_events.py`: remove the muted/errors_only status-clear branch (lines ~206-210) → always set status; fix the docstring at line ~172.
+- [x] `status_bubble.py`: remove the 🔔 bell button + `NOTIFY_MODE_ICONS` usage from `build_status_keyboard`.
+- [x] `status_bar_actions.py`: remove `_handle_notify_toggle`, `NOTIFY_MODE_ICONS`/`NOTIFY_MODE_REACT`, `CB_STATUS_NOTIFY` from `@register` and routing dict.
+- [x] `callback_data.py`: remove `CB_STATUS_NOTIFY`.
+- [x] Delete `tests/ccgram/test_session_notification_mode.py`; remove notify-mode assertions/params from the test files listed above (incl. e2e).
+- [x] Grep `notification_mode|NOTIFY_MODE|cycle_notification_mode|CB_STATUS_NOTIFY|errors_only` across `src/` and `tests/` → zero hits (except `pane_lifecycle_notify`, which stays).
+- [x] Verify polling-kernel purity test still passes (`test_polling_types_purity.py`) and query-layer AST test passes.
+- [x] Run `make check` — must pass before Task 5.
 
 ### Task 5: Status-bar final layout (drop Remote, add Last + Get File)
 

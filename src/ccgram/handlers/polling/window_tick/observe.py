@@ -88,15 +88,12 @@ def build_context(
     window_id: str,
     w: "TmuxWindow",
     status: StatusUpdate | None,
-    *,
-    notification_mode: str,
 ) -> TickContext:
     """Build the TickContext that ``decide_tick`` will consume.
 
     Caller must have already called ``_resolve_status`` (so cached pyte
-    state is up to date), dispatched any interactive-UI side effect, and
-    resolved the notification mode (see ``apply._update_status``). The
-    ``is_recently_active`` calculation has a side effect
+    state is up to date) and dispatched any interactive-UI side effect.
+    The ``is_recently_active`` calculation has a side effect
     (``mark_seen_status``) — keeping it inside this builder rather than
     inside ``decide_tick`` preserves the existing behaviour.
     """
@@ -116,7 +113,6 @@ def build_context(
         startup_time=ws.startup_time if ws else None,
         is_dead_window=False,
         supports_hook=provider.capabilities.supports_hook,
-        notification_mode=notification_mode,
     )
 
 

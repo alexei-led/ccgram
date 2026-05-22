@@ -10,7 +10,6 @@ from ccgram.thread_router import thread_router
 from ._helpers import (
     TEST_THREAD_ID,
     TEST_USER_ID,
-    _bump_message_id,
     find_message_id_for,
     make_callback_update,
     make_text_update,
@@ -309,50 +308,3 @@ async def test_multi_topic_isolation(e2e_app, work_dir):
         predicate=lambda d: d.get("message_thread_id") == thread_a,
         timeout=10,
     )
-
-
-# ---------------------------------------------------------------------------
-# Test 10: Notification mode cycling
-# ---------------------------------------------------------------------------
-
-
-async def test_notification_mode_cycling(e2e_app, work_dir):
-    app, calls, tmux, session_mgr = e2e_app
-    window_id, _ = await setup_bound_topic(app, calls, work_dir)
-
-    # Wait for status message with notify button
-    await asyncio.sleep(5)
-
-    # Cycle notification mode: all → errors_only
-    calls.clear()
-
-    status_msg_id = _bump_message_id()
-    u = make_callback_update(
-        f"st:nfy:{window_id}",
-        status_msg_id,
-        bot=app.bot,
-    )
-    await app.process_update(u)
-
-    notify_data = await wait_for_send(
-        calls,
-        method="answerCallbackQuery",
-        timeout=5,
-    )
-    assert notify_data is not None
-
-    # Cycle again: errors_only → muted
-    calls.clear()
-    u2 = make_callback_update(
-        f"st:nfy:{window_id}",
-        status_msg_id,
-        bot=app.bot,
-    )
-    await app.process_update(u2)
-
-    notify_data2 = await wait_for_send(
-        calls,
-        method="answerCallbackQuery",
-        timeout=5,
-    )
-    assert notify_data2 is not None

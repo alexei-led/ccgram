@@ -40,7 +40,7 @@ class TestWindowStateStoreRequiresCallbacks:
             schedule_save=lambda: calls.append(1),
             on_hookless_provider_switch=lambda _wid: None,
         )
-        store.set_notification_mode("@1", "muted")
+        store.set_pane_lifecycle_notify("@1", True)
         assert calls == [1]
 
     def test_constructor_wires_hookless_provider_switch(self) -> None:

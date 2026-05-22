@@ -10,12 +10,10 @@ class TestWindowStateSerialization:
         ws = WindowState.from_dict(data)
         assert ws.session_id == "abc"
         assert ws.cwd == "/tmp"
-        assert ws.notification_mode == "all"
 
     def test_sparse_serialization_omits_defaults(self) -> None:
         ws = WindowState(session_id="abc", cwd="/tmp")
         d = ws.to_dict()
-        assert "notification_mode" not in d
         assert "window_name" not in d
         assert "transcript_path" not in d
 

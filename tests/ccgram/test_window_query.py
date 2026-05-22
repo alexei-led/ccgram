@@ -7,7 +7,6 @@ import pytest
 from ccgram.window_query import (
     get_approval_mode,
     get_batch_mode,
-    get_notification_mode,
     get_session_id_for_window,
     get_window_provider,
     iter_window_ids,
@@ -35,7 +34,6 @@ def populated(_store: WindowStateStore) -> WindowStateStore:
         cwd="/proj",
         provider_name="claude",
         approval_mode="yolo",
-        notification_mode="muted",
         batch_mode="verbose",
         window_name="myproj",
         transcript_path="/tmp/t.jsonl",
@@ -95,14 +93,6 @@ class TestGetApprovalMode:
     ) -> None:
         _store.window_states["@2"] = WindowState(approval_mode="garbage")
         assert get_approval_mode("@2") == "normal"
-
-
-class TestGetNotificationMode:
-    def test_unknown_window_returns_all(self) -> None:
-        assert get_notification_mode("@missing") == "all"
-
-    def test_returns_stored_mode(self, populated) -> None:
-        assert get_notification_mode("@1") == "muted"
 
 
 class TestGetBatchMode:

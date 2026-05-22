@@ -39,7 +39,6 @@ import pytest
 #   set_display_name × 1
 #   cycle_batch_mode × 1
 #   cycle_tool_call_visibility × 1
-#   cycle_notification_mode × 1
 #   sync_display_names × 2
 #   prune_stale_state × 2
 #   prune_stale_window_states × 1
@@ -52,12 +51,10 @@ ALLOWED_SESSION_MANAGER_ATTRS: frozenset[str] = frozenset(
         "set_window_cwd",
         "set_window_worktree",
         "set_display_name",
-        "set_notification_mode",
         "set_batch_mode",
         "set_tool_call_visibility",
         "cycle_batch_mode",
         "cycle_tool_call_visibility",
-        "cycle_notification_mode",
         "sync_display_names",
         "prune_stale_state",
         "prune_stale_window_states",

@@ -259,7 +259,6 @@ def _make_ctx(
     startup_time: float | None = None,
     is_dead_window: bool = False,
     supports_hook: bool = True,
-    notification_mode: str = "normal",
 ) -> TickContext:
     return TickContext(
         window_id=window_id,
@@ -270,7 +269,6 @@ def _make_ctx(
         startup_time=startup_time,
         is_dead_window=is_dead_window,
         supports_hook=supports_hook,
-        notification_mode=notification_mode,
     )
 
 
@@ -556,7 +554,6 @@ def _mock_update_status_patches(*, pyte_result, provider):
     mocks["tm"].get_pane_title = AsyncMock(return_value="")
     mocks["tr"].resolve_chat_id.return_value = -100
     mocks["tr"].get_display_name.return_value = "project"
-    mocks["sm"].get_notification_mode.return_value = "normal"
 
     return stack, mocks
 
@@ -649,24 +646,10 @@ class TestTransitionToIdle:
             patch("ccgram.handlers.polling.window_tick.apply.time") as mock_time,
         ):
             mock_time.monotonic.return_value = 100.0
-            await _transition_to_idle(bot, 1, "@0", 42, -100, "project", "normal")
+            await _transition_to_idle(bot, 1, "@0", 42, -100, "project")
         mock_enqueue.assert_called_once()
         assert mock_enqueue.call_args[0][3] == IDLE_STATUS_TEXT
         assert mock_enqueue.call_args[1]["thread_id"] == 42
-
-    @pytest.mark.parametrize("mode", ["muted", "errors_only"])
-    async def test_suppressed_mode_clears_status_no_timer(self, mode: str) -> None:
-        from ccgram.handlers.polling.window_tick import _transition_to_idle
-
-        bot = AsyncMock(spec=Bot)
-        with (
-            patch("ccgram.handlers.polling.window_tick.apply.update_topic_emoji"),
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.enqueue_status_update"
-            ) as mock_enqueue,
-        ):
-            await _transition_to_idle(bot, 1, "@0", 42, -100, "project", mode)
-        mock_enqueue.assert_called_once_with(ANY, 1, "@0", None, thread_id=42)
 
 
 class TestShellPromptClearsStatus:
@@ -2438,7 +2421,7 @@ class TestUpdateStatusMessageEdgeCases:
         bot = AsyncMock(spec=Bot)
         with (
             patch("ccgram.handlers.polling.window_tick.apply.tmux_manager") as mock_tm,
-            patch("ccgram.handlers.polling.window_tick.apply.window_query") as mock_sm,
+            patch("ccgram.handlers.polling.window_tick.apply.window_query"),
             patch("ccgram.handlers.polling.window_tick.apply.thread_router") as mock_tr,
             patch("ccgram.handlers.polling.window_tick.apply.update_topic_emoji"),
             patch("ccgram.handlers.polling.window_tick.apply.enqueue_status_update"),
@@ -2467,7 +2450,6 @@ class TestUpdateStatusMessageEdgeCases:
             mock_tm.capture_pane = AsyncMock(return_value="\x1b[1mansi\x1b[0m")
             mock_tr.resolve_chat_id.return_value = -100
             mock_tr.get_display_name.return_value = "project"
-            mock_sm.get_notification_mode.return_value = "normal"
             await update_status_message(bot, 1, "@0", thread_id=42)
         mock_vim.assert_called_once_with("@0")
 
@@ -2488,7 +2470,7 @@ class TestUpdateStatusMessageEdgeCases:
         bot = AsyncMock(spec=Bot)
         with (
             patch("ccgram.handlers.polling.window_tick.apply.tmux_manager") as mock_tm,
-            patch("ccgram.handlers.polling.window_tick.apply.window_query") as mock_sm,
+            patch("ccgram.handlers.polling.window_tick.apply.window_query"),
             patch("ccgram.handlers.polling.window_tick.apply.thread_router") as mock_tr,
             patch("ccgram.handlers.polling.window_tick.apply.update_topic_emoji"),
             patch(
@@ -2515,7 +2497,7 @@ class TestUpdateStatusMessageEdgeCases:
             mock_tm.capture_pane = AsyncMock(return_value="some output")
             mock_tr.resolve_chat_id.return_value = -100
             mock_tr.get_display_name.return_value = "project"
-            mock_sm.get_notification_mode.return_value = "normal"
+
             await update_status_message(bot, 1, "@0", thread_id=42)
         status_text = mock_enqueue.call_args[0][3]
         assert "write-tests" in status_text
@@ -2544,7 +2526,7 @@ class TestUpdateStatusMessageEdgeCases:
         bot = AsyncMock(spec=Bot)
         with (
             patch("ccgram.handlers.polling.window_tick.apply.tmux_manager") as mock_tm,
-            patch("ccgram.handlers.polling.window_tick.apply.window_query") as mock_sm,
+            patch("ccgram.handlers.polling.window_tick.apply.window_query"),
             patch("ccgram.handlers.polling.window_tick.apply.thread_router") as mock_tr,
             patch("ccgram.handlers.polling.window_tick.apply.update_topic_emoji"),
             patch(
@@ -2571,7 +2553,7 @@ class TestUpdateStatusMessageEdgeCases:
             mock_tm.capture_pane = AsyncMock(return_value="some output")
             mock_tr.resolve_chat_id.return_value = -100
             mock_tr.get_display_name.return_value = "project"
-            mock_sm.get_notification_mode.return_value = "normal"
+
             await update_status_message(bot, 1, "@0", thread_id=42)
         status_text = mock_enqueue.call_args[0][3]
         assert status_text.startswith("Running py-idioms review…")
@@ -2593,7 +2575,7 @@ class TestUpdateStatusMessageEdgeCases:
         bot = AsyncMock(spec=Bot)
         with (
             patch("ccgram.handlers.polling.window_tick.apply.tmux_manager") as mock_tm,
-            patch("ccgram.handlers.polling.window_tick.apply.window_query") as mock_sm,
+            patch("ccgram.handlers.polling.window_tick.apply.window_query"),
             patch("ccgram.handlers.polling.window_tick.apply.thread_router") as mock_tr,
             patch("ccgram.handlers.polling.window_tick.apply.update_topic_emoji"),
             patch("ccgram.handlers.polling.window_tick.apply.enqueue_status_update"),
@@ -2621,7 +2603,7 @@ class TestUpdateStatusMessageEdgeCases:
             mock_tm.capture_pane = AsyncMock(return_value="some output")
             mock_tr.resolve_chat_id.return_value = -100
             mock_tr.get_display_name.return_value = "project"
-            mock_sm.get_notification_mode.return_value = "normal"
+
             await update_status_message(bot, 1, "@0", thread_id=42)
         _assert_clear_called_once_with_client(mock_clear, 1, bot, 42)
 
