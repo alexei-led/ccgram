@@ -45,6 +45,26 @@ Bot commands in topics: `/send`, `/toolbar`, `/history`, `/sessions`, `/restore`
 - Catch specific exceptions (`OSError`, `ValueError`); never bare `except Exception`.
 - Tests: `tests/ccgram/` (unit, mirrors source), `tests/integration/`, `tests/e2e/`. `asyncio_mode = "auto"` — no `@pytest.mark.asyncio`. No comments or docstrings in test files.
 
+## Logging
+
+`structlog` everywhere (`structlog.get_logger()`); the hook subprocess uses stdlib `logging` (separate config in `hook.py`, not colored — fine, it's short-lived). Daemon level policy:
+
+- **DEBUG**: decisions / "why" / per-iteration detail. Off in normal runs.
+- **INFO**: durable lifecycle or state-change events only — never per poll/tick/callback. A genuine once-per-event transition (session changed, window deleted) is INFO; steady-state observations are not.
+- **WARNING**: recoverable anomaly, kept rare. Transient races (window/pane gone mid-capture, token rejected on refresh, missing optional config) are DEBUG — flooding WARNING with races trains operators to ignore it and hides the real ones.
+- **ERROR** / `logger.exception`: a unit of work failed and needs action. Recoverable fallbacks (previous menu kept, glob-scan fallback) are WARNING, not ERROR.
+
+**Steady-state rule**: in poll/tick loops, log on _transition_, not every iteration. Reuse existing patterns — do not invent:
+
+- `log_throttled(logger, key, msg, *args)` (`utils.py`) — first occurrence + 300s cooldown per key, debug-level. Used in `session_map.py` (preserve-primary), `transcript_reader.py` (provider mismatch / partial jsonl), `miniapp/api/terminal.py` stream loop, `polling_coordinator.py`.
+- Mutation-gating — log only when state actually changes (`session_map.py` `_sync_window_from_session_map`, the provider-correction log ~line 625).
+- Warn-once-then-debug counter — `ResilientPollingHTTPXRequest._should_warn_for_reset` (`telegram_request.py`): warn once per interval, debug after, reset on success. Use for a WARNING-level condition that must stay visible without flooding.
+- Per-entry prune loops: DEBUG per item + one INFO summary after (`session.py`, `window_state_store.py`, `user_preferences.py`).
+
+**Color**: `setup_logging` (`main.py`) sets `level_styles` (debug grey, info green, warning bold yellow, error bold red, critical bold bright red) and gates **both** `colors=` and `level_styles` on `_use_colors()` (`isatty()`, honoring `NO_COLOR`/`FORCE_COLOR`). `level_styles` colors the level even when `colors=False`, so both must be gated or raw ANSI leaks into redirected/piped log files. Keep the `key=value` layout — only the level token is colored.
+
+**Never log secrets or PII**: no bot-token bytes (not even a prefix), no full allowed-user-id lists (log a count), no raw message text / chat content.
+
 ## Tmux Auto-Detection
 
 When started inside tmux (`$TMUX` set) with no `--tmux-session` flag, attaches to current session — no creation, no `__main__` placeholder. Excludes own window. Refuses startup if another ccgram is in the same session. `--tmux-session` overrides. Outside tmux, creates `ccgram` session + `__main__` window.
