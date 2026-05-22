@@ -40,7 +40,7 @@ TOML schema::
     buttons = [
       ["screen", "ctrlc",   "live" ],
       ["mode",   "think",   "esc"  ],
-      ["send",   "enter",   "close"],
+      ["last",   "getfile", "close"],
     ]
 
 Unknown providers fall back to the ``claude`` layout. Any malformed entry
@@ -153,7 +153,8 @@ BUILTIN_ACTIONS: dict[str, ToolbarAction] = {
         _b("screen", "\U0001f4f7", "Screen", "builtin", "screenshot"),
         _b("ctrlc", "\u23f9", "Ctrl-C", "builtin", "ctrlc"),
         _b("live", "\U0001f4fa", "Live", "builtin", "live"),
-        _b("send", "\U0001f4e4", "Send", "builtin", "send"),
+        _b("getfile", "\U0001f4e5", "Get File", "builtin", "getfile"),
+        _b("last", "\U0001f4c4", "Last", "builtin", "lastreply"),
         _b("close", "\u2716", "Close", "builtin", "dismiss"),
         # Mode toggle — cycles Claude's permission modes via Shift-Tab.
         # read_state=True so the button label updates to Def/Edit/Plan/Full.
@@ -196,7 +197,7 @@ DEFAULT_LAYOUTS: dict[str, ToolbarLayout] = {
             ("screen", "ctrlc", "live"),
             ("mode", "think", "esc"),
             ("up", "enter", "down"),
-            ("send", "close"),
+            ("last", "getfile", "close"),
         ),
     ),
     "codex": ToolbarLayout(
@@ -205,7 +206,7 @@ DEFAULT_LAYOUTS: dict[str, ToolbarLayout] = {
             ("screen", "ctrlc", "live"),
             ("esc", "tab", "mode"),
             ("up", "enter", "down"),
-            ("send", "close"),
+            ("last", "getfile", "close"),
         ),
     ),
     "gemini": ToolbarLayout(
@@ -214,7 +215,7 @@ DEFAULT_LAYOUTS: dict[str, ToolbarLayout] = {
             ("screen", "ctrlc", "live"),
             ("mode", "yolo", "esc"),
             ("up", "enter", "down"),
-            ("send", "close"),
+            ("last", "getfile", "close"),
         ),
     ),
     "pi": ToolbarLayout(
@@ -223,7 +224,7 @@ DEFAULT_LAYOUTS: dict[str, ToolbarLayout] = {
             ("screen", "ctrlc", "live"),
             ("esc", "tab", "model"),
             ("up", "enter", "down"),
-            ("send", "close"),
+            ("last", "getfile", "close"),
         ),
     ),
     "shell": ToolbarLayout(
@@ -231,7 +232,7 @@ DEFAULT_LAYOUTS: dict[str, ToolbarLayout] = {
         buttons=(
             ("screen", "ctrlc", "live"),
             ("enter", "eof", "susp"),
-            ("send", "esc", "close"),
+            ("last", "getfile", "esc", "close"),
         ),
     ),
 }

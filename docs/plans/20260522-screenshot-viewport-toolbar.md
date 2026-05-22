@@ -198,14 +198,14 @@ Final status-bar row: `[⎋ Esc] [📸 Screenshot] [📄 Last] [📥 Get File]`.
 - Modify: `tests/ccgram/` toolbar tests (e.g. `test_toolbar_config.py` / toolbar callback + drift tests — locate exact files)
 - Modify: CLAUDE.md (Toolbar section default grids)
 
-- [ ] In `toolbar_config.py`: rename `_b("send","📤","Send","builtin","send")` → `_b("getfile","📥","Get File","builtin","getfile")`; add `_b("last","📄","Last","builtin","lastreply")`.
-- [ ] Update EVERY provider default grid: replace `"send"` with `"getfile"` and add `"last"` to each final row (claude/codex/gemini/pi/shell).
-- [ ] In `toolbar_callbacks.py`: rename `_builtin_send`→`_builtin_getfile`; change `_BUILTIN_DISPATCH` key `"send"`→`"getfile"`; add `"lastreply": _builtin_last` invoking `last_reply.send_last_reply` (resolve chat/thread from query/update).
-- [ ] Update `docs/examples/toolbar.toml`: rename `[actions.send]`/references → `getfile`; show `last`; refresh sample grids.
-- [ ] Update CLAUDE.md Toolbar "Default rows per provider" to include Last/Get File and the `builtin` reserved list (`screen`, `ctrlc`, `live`, `getfile`, `last`, `close`).
-- [ ] Tests: default grids resolve, reference `getfile`+`last`, no `send` builtin remains; `getfile` builtin opens file browser; `last` builtin calls `send_last_reply`; update/extend the picker/toolbar drift test.
-- [ ] Grep `"send"` builtin references in `src/` and `docs/examples/toolbar.toml` → only legitimate non-toolbar uses remain.
-- [ ] Run `make check` — must pass before Task 7.
+- [x] In `toolbar_config.py`: rename `_b("send","📤","Send","builtin","send")` → `_b("getfile","📥","Get File","builtin","getfile")`; add `_b("last","📄","Last","builtin","lastreply")`.
+- [x] Update EVERY provider default grid: replace `"send"` with `"getfile"` and add `"last"` to each final row (claude/codex/gemini/pi/shell).
+- [x] In `toolbar_callbacks.py`: rename `_builtin_send`→`_builtin_getfile`; change `_BUILTIN_DISPATCH` key `"send"`→`"getfile"`; add `"lastreply": _builtin_last` invoking `last_reply.send_last_reply` (resolve chat/thread from query/update).
+- [x] Update `docs/examples/toolbar.toml`: rename `[actions.send]`/references → `getfile`; show `last`; refresh sample grids.
+- [x] Update CLAUDE.md Toolbar "Default rows per provider" to include Last/Get File and the `builtin` reserved list (`screen`, `ctrlc`, `live`, `getfile`, `last`, `close`).
+- [x] Tests: default grids resolve, reference `getfile`+`last`, no `send` builtin remains; `getfile` builtin opens file browser; `last` builtin calls `send_last_reply`; update/extend the picker/toolbar drift test.
+- [x] Grep `"send"` builtin references in `src/` and `docs/examples/toolbar.toml` → only legitimate non-toolbar uses remain.
+- [x] Run `make check` — must pass before Task 7.
 
 ### Task 7: Verify acceptance criteria
 

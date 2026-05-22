@@ -319,9 +319,9 @@ class TestDispatchBuiltinDismiss:
         query.delete_message.assert_awaited_once()
 
 
-class TestDispatchBuiltinSend:
+class TestDispatchBuiltinGetfile:
     async def test_no_cwd_alerts(self) -> None:
-        query = _make_query("tb:@5:send")
+        query = _make_query("tb:@5:getfile")
         update = _make_update_with_user()
         context = _make_context()
         with (
@@ -332,10 +332,77 @@ class TestDispatchBuiltinSend:
             patch("ccgram.handlers.toolbar.toolbar_callbacks.view_window") as mock_view,
         ):
             mock_view.return_value = None
-            await handle_toolbar_callback(query, 100, "tb:@5:send", update, context)
+            await handle_toolbar_callback(query, 100, "tb:@5:getfile", update, context)
         query.answer.assert_awaited_once_with(
             "Working directory not available", show_alert=True
         )
+
+
+class TestDispatchBuiltinLast:
+    async def test_calls_send_last_reply(self) -> None:
+        query = _make_query("tb:@5:last")
+        update = _make_update_with_user()
+        context = _make_context()
+        mock_send_last = AsyncMock()
+        with (
+            patch(
+                "ccgram.handlers.toolbar.toolbar_callbacks.user_owns_window",
+                return_value=True,
+            ),
+            patch(
+                "ccgram.handlers.toolbar.toolbar_callbacks.thread_router"
+            ) as mock_router,
+            patch(
+                "ccgram.handlers.toolbar.toolbar_callbacks.get_thread_id",
+                return_value=42,
+            ),
+            patch(
+                "ccgram.telegram_client.PTBTelegramClient",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "ccgram.handlers.last_reply.send_last_reply",
+                mock_send_last,
+            ),
+        ):
+            mock_router.resolve_chat_id.return_value = -100
+            await handle_toolbar_callback(query, 100, "tb:@5:last", update, context)
+        query.answer.assert_awaited_once()
+
+    async def test_no_user_context_alerts(self) -> None:
+        query = _make_query("tb:@5:last")
+        update = MagicMock()
+        update.effective_user = None
+        update.effective_chat = MagicMock(id=-100, type="supergroup")
+        update.effective_message = MagicMock(message_thread_id=42)
+        context = _make_context()
+        with patch(
+            "ccgram.handlers.toolbar.toolbar_callbacks.user_owns_window",
+            return_value=True,
+        ):
+            await handle_toolbar_callback(query, 100, "tb:@5:last", update, context)
+        query.answer.assert_awaited_once_with("No user context", show_alert=True)
+
+    async def test_no_topic_alerts(self) -> None:
+        query = _make_query("tb:@5:last")
+        update = _make_update_with_user()
+        context = _make_context()
+        with (
+            patch(
+                "ccgram.handlers.toolbar.toolbar_callbacks.user_owns_window",
+                return_value=True,
+            ),
+            patch(
+                "ccgram.handlers.toolbar.toolbar_callbacks.get_thread_id",
+                return_value=None,
+            ),
+            patch(
+                "ccgram.handlers.toolbar.toolbar_callbacks.thread_router"
+            ) as mock_router,
+        ):
+            mock_router.resolve_chat_id.return_value = None
+            await handle_toolbar_callback(query, 100, "tb:@5:last", update, context)
+        query.answer.assert_awaited_once_with("Use in a topic", show_alert=True)
 
 
 # ──────────────────────────────────────────────────────────────────────

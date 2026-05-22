@@ -9,10 +9,10 @@
 #
 # Built-in actions (always available, no need to redefine):
 #
-#   screen ctrlc live send close       (builtin handlers)
-#   mode think yolo                    (toggle keys with state readback)
-#   esc enter tab eof susp up down     (plain key sends)
-#   model                              (π — types /model to open the picker)
+#   screen ctrlc live getfile last close   (builtin handlers)
+#   mode think yolo                        (toggle keys with state readback)
+#   esc enter tab eof susp up down         (plain key sends)
+#   model                                  (π — types /model to open the picker)
 #
 # The `up`/`down`/`enter`/`esc` keys drive in-CLI TUI pickers (e.g.
 # /model, /theme). When ccgram forwards a picker command it points users
@@ -77,36 +77,36 @@ read_state = true
 [providers.claude]
 style = "emoji_text"
 buttons = [
-  ["screen",   "ctrlc",  "live"     ],
-  ["mode",     "think",  "deepthink"],
-  ["up",       "enter",  "down"     ],
-  ["clear",    "compact","esc"      ],
-  ["send",     "close"             ],
+  ["screen",   "ctrlc",   "live"     ],
+  ["mode",     "think",   "deepthink"],
+  ["up",       "enter",   "down"     ],
+  ["clear",    "compact", "esc"      ],
+  ["last",     "getfile", "close"    ],
 ]
 
 [providers.codex]
 style = "emoji_text"
 buttons = [
-  ["screen", "ctrlc", "live"],
-  ["esc",    "tab",   "mode"],
-  ["up",     "enter", "down"],
-  ["send",   "clear", "close"],
+  ["screen",  "ctrlc",   "live" ],
+  ["esc",     "tab",     "mode" ],
+  ["up",      "enter",   "down" ],
+  ["last",    "getfile", "clear", "close"],
 ]
 
 [providers.pi]
 style = "emoji_text"
 buttons = [
-  ["screen", "ctrlc", "live"  ],
-  ["esc",    "tab",   "model" ],
-  ["up",     "enter", "down"  ],
-  ["send",   "close"          ],
+  ["screen",  "ctrlc",   "live"  ],
+  ["esc",     "tab",     "model" ],
+  ["up",      "enter",   "down"  ],
+  ["last",    "getfile", "close" ],
 ]
 
 # Use "text" style to drop emojis when labels would otherwise truncate.
 [providers.shell]
 style = "text"
 buttons = [
-  ["screen", "ctrlc", "live" ],
-  ["enter",  "eof",   "susp" ],
-  ["send",   "clear", "close"],
+  ["screen",  "ctrlc",   "live"  ],
+  ["enter",   "eof",     "susp"  ],
+  ["last",    "getfile", "clear", "close"],
 ]

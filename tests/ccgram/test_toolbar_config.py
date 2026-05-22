@@ -261,7 +261,8 @@ class TestBuiltins:
             "screen",
             "ctrlc",
             "live",
-            "send",
+            "getfile",
+            "last",
             "close",
             "mode",
             "think",
@@ -275,6 +276,23 @@ class TestBuiltins:
             "down",
         }
         assert expected.issubset(BUILTIN_ACTIONS.keys())
+
+    def test_send_builtin_removed(self) -> None:
+        assert "send" not in BUILTIN_ACTIONS
+
+    def test_getfile_is_builtin_with_correct_payload(self) -> None:
+        assert "getfile" in BUILTIN_ACTIONS
+        action = BUILTIN_ACTIONS["getfile"]
+        assert action.action_type == "builtin"
+        assert action.payload == "getfile"
+        assert action.emoji == "\U0001f4e5"
+
+    def test_last_is_builtin_with_lastreply_payload(self) -> None:
+        assert "last" in BUILTIN_ACTIONS
+        action = BUILTIN_ACTIONS["last"]
+        assert action.action_type == "builtin"
+        assert action.payload == "lastreply"
+        assert action.emoji == "\U0001f4c4"
 
     def test_mode_is_literal_with_read_state(self) -> None:
         mode = BUILTIN_ACTIONS["mode"]
@@ -294,6 +312,15 @@ class TestBuiltins:
             assert 3 <= len(layout.buttons) <= 4, f"{provider}: expected 3-4 rows"
             for row in layout.buttons:
                 assert 1 <= len(row) <= 8, f"{provider}: row width out of range"
+
+    def test_default_layouts_contain_getfile_not_send(self) -> None:
+        for provider, layout in DEFAULT_LAYOUTS.items():
+            all_names = [name for row in layout.buttons for name in row]
+            assert "getfile" in all_names, f"{provider}: missing getfile"
+            assert "last" in all_names, f"{provider}: missing last"
+            assert "send" not in all_names, (
+                f"{provider}: old send builtin still present"
+            )
 
     def test_default_layouts_use_known_actions(self) -> None:
         for provider, layout in DEFAULT_LAYOUTS.items():
@@ -377,20 +404,20 @@ class TestGridShapePermutations:
             ('[["close"]]', (("close",),)),
             # 1x4 horizontal
             (
-                '[["screen", "ctrlc", "live", "send"]]',
-                (("screen", "ctrlc", "live", "send"),),
+                '[["screen", "ctrlc", "live", "getfile"]]',
+                (("screen", "ctrlc", "live", "getfile"),),
             ),
             # 4x1 vertical stack
             (
-                '[["screen"], ["ctrlc"], ["live"], ["send"]]',
-                (("screen",), ("ctrlc",), ("live",), ("send",)),
+                '[["screen"], ["ctrlc"], ["live"], ["getfile"]]',
+                (("screen",), ("ctrlc",), ("live",), ("getfile",)),
             ),
             # 2x4
             (
-                '[["screen", "ctrlc", "live", "send"], '
+                '[["screen", "ctrlc", "live", "getfile"], '
                 '["mode", "think", "esc", "close"]]',
                 (
-                    ("screen", "ctrlc", "live", "send"),
+                    ("screen", "ctrlc", "live", "getfile"),
                     ("mode", "think", "esc", "close"),
                 ),
             ),
@@ -398,11 +425,11 @@ class TestGridShapePermutations:
             (
                 '[["screen", "ctrlc", "live"], '
                 '["mode", "think", "esc"], '
-                '["send", "enter", "close"]]',
+                '["last", "enter", "close"]]',
                 (
                     ("screen", "ctrlc", "live"),
                     ("mode", "think", "esc"),
-                    ("send", "enter", "close"),
+                    ("last", "enter", "close"),
                 ),
             ),
             # Asymmetric: rows of different widths
@@ -549,7 +576,7 @@ class TestComplexUserConfigs:
             '  ["screen",   "ctrlc",  "live"     ],\n'
             '  ["mode",     "think",  "deepthink"],\n'
             '  ["clear",    "compact","esc"      ],\n'
-            '  ["send",     "enter",  "close"    ],\n'
+            '  ["last",     "getfile", "close"    ],\n'
             "]\n"
             "\n"
             "[providers.shell]\n"

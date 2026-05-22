@@ -176,11 +176,11 @@ Tunables: `CCGRAM_SEND_SEARCH_DEPTH` (5), `CCGRAM_SEND_MAX_RESULTS` (50).
 
 Default rows per provider:
 
-- Claude: `[Screen, Ctrl-C, Live] [Mode, Think, Esc] [Send, Enter, Close]`
-- Codex: `[Screen, Ctrl-C, Live] [Esc, Enter, Tab] [Send, Mode, Close]`
-- Gemini: `[Screen, Ctrl-C, Live] [Mode, YOLO, Esc] [Send, Enter, Close]`
-- Pi: `[Screen, Ctrl-C, Live] [Esc, Tab, π Model] [Up, Enter, Down, Send, Close]`
-- Shell: `[Screen, Ctrl-C, Live] [Enter, ^D EOF, ^Z Susp] [Send, Esc, Close]`
+- Claude: `[Screen, Ctrl-C, Live] [Mode, Think, Esc] [Up, Enter, Down] [Last, Get File, Close]`
+- Codex: `[Screen, Ctrl-C, Live] [Esc, Tab, Mode] [Up, Enter, Down] [Last, Get File, Close]`
+- Gemini: `[Screen, Ctrl-C, Live] [Mode, YOLO, Esc] [Up, Enter, Down] [Last, Get File, Close]`
+- Pi: `[Screen, Ctrl-C, Live] [Esc, Tab, π Model] [Up, Enter, Down] [Last, Get File, Close]`
+- Shell: `[Screen, Ctrl-C, Live] [Enter, ^D EOF, ^Z Susp] [Last, Get File, Esc, Close]`
 
 Toggle actions with state readback (Mode = Shift+Tab, Think = Tab, YOLO = Ctrl+Y): capture pane ~250ms after press, scrape agent mode-line, surface in answer toast (e.g., `auto-accept edits on`). Falls back to static toast when no recognized mode-line.
 
@@ -188,7 +188,7 @@ Action types in TOML:
 
 - `key`: tmux key sequence (`"Tab"`, `"C-c"`, `'\x1b[Z'`). `literal=true` for raw bytes (single-quoted TOML literal strings).
 - `text`: literal text + Enter (`"/clear"`, prompt template).
-- `builtin`: reserved (`screen`, `ctrlc`, `live`, `send`, `close`). Users cannot define new ones.
+- `builtin`: reserved (`screen`, `ctrlc`, `live`, `getfile`, `last`, `close`). Users cannot define new ones.
 
 Action names ≤24 chars (callback_data budget). Providers absent from TOML keep defaults. Malformed entries logged and skipped; loader never raises. Provider resolved from `WindowState.provider_name`.
 
@@ -206,7 +206,7 @@ style = "emoji_text"
 buttons = [
   ["screen", "ctrlc", "live"],
   ["mode",   "think", "clear"],
-  ["send",   "enter", "close"],
+  ["last",   "getfile", "close"],
 ]
 ```
 

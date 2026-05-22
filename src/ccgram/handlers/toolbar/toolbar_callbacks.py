@@ -146,14 +146,14 @@ async def _builtin_live(
     await handle_screenshot_callback(query, user.id, fake_data, update, context)
 
 
-async def _builtin_send(
+async def _builtin_getfile(
     _action: ToolbarAction,
     query: CallbackQuery,
     window_id: str,
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    """Builtin: open the /send file browser."""
+    """Builtin: open the file browser to upload a file from the agent CWD."""
     user = update.effective_user
     if user is None:
         await query.answer("No user context", show_alert=True)
@@ -191,6 +191,39 @@ async def _builtin_send(
     await query.answer()
 
 
+async def _builtin_last(
+    _action: ToolbarAction,
+    query: CallbackQuery,
+    window_id: str,
+    update: Update,
+    _context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """Builtin: send the last assistant reply (or shell output) to this topic."""
+    user = update.effective_user
+    if user is None:
+        await query.answer("No user context", show_alert=True)
+        return
+    user_id = user.id
+    thread_id = get_thread_id(update)
+    chat_id = thread_router.resolve_chat_id(user_id, thread_id) if thread_id else None
+    if chat_id is None:
+        await query.answer("Use in a topic", show_alert=True)
+        return
+    # Lazy: PTBTelegramClient resolved per-call
+    from ...telegram_client import PTBTelegramClient
+
+    # Lazy: last_reply ↔ toolbar cycle
+    from ..last_reply import send_last_reply
+
+    await send_last_reply(
+        PTBTelegramClient(query.get_bot()),
+        chat_id,
+        thread_id,
+        window_id,
+    )
+    await query.answer()
+
+
 async def _builtin_dismiss(
     _action: ToolbarAction,
     query: CallbackQuery,
@@ -213,7 +246,8 @@ _BUILTIN_DISPATCH: dict[str, _BuiltinHandler] = {
     "screenshot": _builtin_screenshot,
     "ctrlc": _builtin_ctrlc,
     "live": _builtin_live,
-    "send": _builtin_send,
+    "getfile": _builtin_getfile,
+    "lastreply": _builtin_last,
     "dismiss": _builtin_dismiss,
 }
 
