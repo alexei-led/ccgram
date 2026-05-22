@@ -142,11 +142,10 @@ Completion summary: on Stop hook, waits up to 3s for LLM to produce one line, th
 
 - `CCGRAM_LIVE_VIEW_INTERVAL` (5s), `CCGRAM_LIVE_VIEW_TIMEOUT` (300s).
 - `MONITOR_POLL_INTERVAL` (1.0s), `CCGRAM_STATUS_POLL_INTERVAL` (1.0s).
-- `CCGRAM_SCREENSHOT_HISTORY` (500 lines).
 
 Live view + poll intervals clamped to 0.5s min (live view: 1s). Auto-refreshes via `editMessageMedia`, auto-stops after timeout.
 
-Screenshots (`/screenshot`, 📷 status-bar button) capture scrollback (default 500 lines) with ANSI. For shell topics: extract last command + output between prompt markers when available, else full scrollback. Live view keeps viewport capture unchanged.
+Screenshots (`/screenshot`, 📷 status-bar button) capture the current terminal viewport with ANSI colors. Live view also captures viewport only.
 
 ## /send Command
 

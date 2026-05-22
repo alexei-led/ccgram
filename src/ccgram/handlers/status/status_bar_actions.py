@@ -29,7 +29,6 @@ from telegram import (
 from telegram.error import TelegramError
 
 from ...config import config
-from ...last_unit import capture_for_screenshot
 from ...miniapp.auth import sign_token
 from ...screenshot import text_to_image
 from ... import window_query
@@ -317,9 +316,7 @@ def _schedule_key_refresh(
                     pane_id, with_ansi=True, window_id=window_id
                 )
             else:
-                text = await capture_for_screenshot(
-                    window_id, window_query.get_window_provider(window_id)
-                )
+                text = await tmux_manager.capture_pane(window_id, with_ansi=True)
             if text:
                 png_bytes = await text_to_image(text, with_ansi=True)
                 keyboard = build_screenshot_keyboard(window_id, pane_id=pane_id)

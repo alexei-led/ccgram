@@ -92,16 +92,16 @@ Final status-bar row: `[⎋ Esc] [📸 Screenshot] [📄 Last] [📥 Get File]`.
 - Modify: `tests/ccgram/test_last_unit.py`
 - Modify: `tests/ccgram/handlers/live/test_live_view.py`
 
-- [ ] In `screenshot_callbacks.py`, switch non-pane paths of `_handle_refresh`, `_handle_status_screenshot`, `screenshot_command` from `capture_for_screenshot(...)` to `tmux_manager.capture_pane(window_id, with_ansi=True)`; remove the now-unused `capture_for_screenshot` import.
-- [ ] In `status_bar_actions.py` `_do_refresh`, switch the non-pane path to `capture_pane(window_id, with_ansi=True)`; remove the import.
-- [ ] Delete `capture_for_screenshot` from `last_unit.py` (KEEP `extract_last_shell_block` and `_strip_ansi`/`_ANSI_RE`); update module docstring.
-- [ ] Delete `screenshot_history` from `config.py` (`_init_live_view`) and the `CCGRAM_SCREENSHOT_HISTORY` env read; remove any doc reference in code comments.
-- [ ] In `tmux_manager.py` `capture_pane_scrollback`, drop the `with_ansi` param and the `-e` branch (default plain); confirm `shell_capture.py` still compiles (it calls plain).
-- [ ] In `test_last_unit.py`, delete the 4 `capture_for_screenshot` cases (`test_capture_*`); KEEP the 8 `extract_last_shell_block` cases.
-- [ ] In `test_live_view.py` (~line 801), retarget the `status_bar_actions.capture_for_screenshot` mock to `capture_pane`.
-- [ ] Grep repo for `capture_for_screenshot`, `screenshot_history`, `CCGRAM_SCREENSHOT_HISTORY`, `capture_pane_scrollback(.*with_ansi` → zero hits remain.
-- [ ] Update CLAUDE.md "Live View" section: screenshots capture viewport; remove `CCGRAM_SCREENSHOT_HISTORY` line.
-- [ ] Run `make check` — must pass before Task 2.
+- [x] In `screenshot_callbacks.py`, switch non-pane paths of `_handle_refresh`, `_handle_status_screenshot`, `screenshot_command` from `capture_for_screenshot(...)` to `tmux_manager.capture_pane(window_id, with_ansi=True)`; remove the now-unused `capture_for_screenshot` import.
+- [x] In `status_bar_actions.py` `_do_refresh`, switch the non-pane path to `capture_pane(window_id, with_ansi=True)`; remove the import.
+- [x] Delete `capture_for_screenshot` from `last_unit.py` (KEEP `extract_last_shell_block` and `_strip_ansi`/`_ANSI_RE`); update module docstring.
+- [x] Delete `screenshot_history` from `config.py` (`_init_live_view`) and the `CCGRAM_SCREENSHOT_HISTORY` env read; remove any doc reference in code comments.
+- [x] In `tmux_manager.py` `capture_pane_scrollback`, drop the `with_ansi` param and the `-e` branch (default plain); confirm `shell_capture.py` still compiles (it calls plain).
+- [x] In `test_last_unit.py`, delete the 4 `capture_for_screenshot` cases (`test_capture_*`); KEEP the 8 `extract_last_shell_block` cases.
+- [x] In `test_live_view.py` (~line 801), retarget the `status_bar_actions.capture_for_screenshot` mock to `capture_pane`.
+- [x] Grep repo for `capture_for_screenshot`, `screenshot_history`, `CCGRAM_SCREENSHOT_HISTORY`, `capture_pane_scrollback(.*with_ansi` → zero hits remain.
+- [x] Update CLAUDE.md "Live View" section: screenshots capture viewport; remove `CCGRAM_SCREENSHOT_HISTORY` line.
+- [x] Run `make check` — must pass before Task 2.
 
 ### Task 2: Renderer strips non-SGR escapes
 

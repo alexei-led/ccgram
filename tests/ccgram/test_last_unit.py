@@ -1,8 +1,4 @@
-from unittest.mock import AsyncMock, patch
-
-import pytest
-
-from ccgram.last_unit import capture_for_screenshot, extract_last_shell_block
+from ccgram.last_unit import extract_last_shell_block
 
 # Wrap-mode markers: ⌘N⌘ with optional ANSI around them.
 # Bare prompt: marker followed only by ANSI reset codes (strip → empty after strip)
@@ -92,46 +88,3 @@ def test_extract_replace_mode_happy_path() -> None:
     scrollback = _scrollback("earlier", echo, OUTPUT, bare)
     result = extract_last_shell_block(scrollback)
     assert result == _scrollback(echo, OUTPUT, bare)
-
-
-@pytest.mark.asyncio
-async def test_capture_shell_with_markers(_wrap_mode: None) -> None:
-    scrollback = _scrollback("earlier", ECHO, OUTPUT, BARE)
-    with patch(
-        "ccgram.last_unit.tmux_manager.capture_pane_scrollback",
-        new=AsyncMock(return_value=scrollback),
-    ):
-        result = await capture_for_screenshot("@0", "shell")
-    assert result == _scrollback(ECHO, OUTPUT, BARE)
-
-
-@pytest.mark.asyncio
-async def test_capture_shell_without_markers_returns_full_scrollback() -> None:
-    scrollback = "no markers here\njust plain text"
-    with patch(
-        "ccgram.last_unit.tmux_manager.capture_pane_scrollback",
-        new=AsyncMock(return_value=scrollback),
-    ):
-        result = await capture_for_screenshot("@0", "shell")
-    assert result == scrollback
-
-
-@pytest.mark.asyncio
-async def test_capture_claude_returns_full_scrollback(_wrap_mode: None) -> None:
-    scrollback = _scrollback("earlier", ECHO, OUTPUT, BARE)
-    with patch(
-        "ccgram.last_unit.tmux_manager.capture_pane_scrollback",
-        new=AsyncMock(return_value=scrollback),
-    ):
-        result = await capture_for_screenshot("@0", "claude")
-    assert result == scrollback
-
-
-@pytest.mark.asyncio
-async def test_capture_returns_none_when_scrollback_fails() -> None:
-    with patch(
-        "ccgram.last_unit.tmux_manager.capture_pane_scrollback",
-        new=AsyncMock(return_value=None),
-    ):
-        result = await capture_for_screenshot("@0", "shell")
-    assert result is None

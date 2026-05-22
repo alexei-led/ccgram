@@ -1,24 +1,16 @@
-"""Last-unit capture — smart scrollback for screenshots.
+"""Last-unit extraction — slice last command+output from shell scrollback.
 
-Provides scrollback-based terminal capture for screenshot rendering, with
-shell-specific marker extraction that isolates the last command and its output.
-
-Core responsibilities:
-  - ``extract_last_shell_block``: slice last command+output from scrollback
-    text using prompt markers (handles ANSI-laden text by stripping escapes
-    before matching but returning original colored lines).
-  - ``capture_for_screenshot``: capture scrollback with ANSI from tmux,
-    applying marker extraction for shell topics and returning full scrollback
-    for all other providers.
+Provides ``extract_last_shell_block`` which isolates the most recent
+command and its output from plain scrollback text using prompt markers.
+ANSI escape sequences are stripped before marker matching but the original
+colored lines are returned unchanged.
 """
 
 from __future__ import annotations
 
 import re
 
-from .config import config
 from .providers.shell_infra import match_prompt
-from .tmux_manager import tmux_manager
 
 # Strip ANSI escape sequences for marker matching purposes only.
 # Covers full CSI range (cursor movement, SGR, private-mode such as
@@ -69,26 +61,3 @@ def extract_last_shell_block(scrollback_text: str) -> str | None:
         return None
 
     return "\n".join(lines[echo_idx:])
-
-
-async def capture_for_screenshot(
-    window_id: str, provider_name: str | None
-) -> str | None:
-    """Capture scrollback with ANSI for screenshot rendering.
-
-    For provider_name == 'shell', attempts marker-based extraction and falls
-    back to full scrollback if no markers found. For all other providers,
-    returns full scrollback unchanged.
-    """
-    scrollback = await tmux_manager.capture_pane_scrollback(
-        window_id, history=config.screenshot_history, with_ansi=True
-    )
-    if scrollback is None:
-        return None
-
-    if provider_name == "shell":
-        extracted = extract_last_shell_block(scrollback)
-        if extracted is not None:
-            return extracted
-
-    return scrollback

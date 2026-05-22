@@ -798,11 +798,6 @@ class TestHandleKeysLiveGuard:
                 "ccgram.handlers.status.status_bar_actions.tmux_manager"
             ) as mock_tmux,
             patch(
-                "ccgram.handlers.status.status_bar_actions.capture_for_screenshot",
-                new_callable=AsyncMock,
-                return_value="terminal text",
-            ),
-            patch(
                 "ccgram.handlers.status.status_bar_actions.text_to_image",
                 new_callable=AsyncMock,
                 return_value=b"PNG",
@@ -812,6 +807,7 @@ class TestHandleKeysLiveGuard:
             mock_tmux.find_window_by_id = AsyncMock(
                 return_value=MagicMock(window_id="@0")
             )
+            mock_tmux.capture_pane = AsyncMock(return_value="terminal text")
             mock_tmux.send_keys = AsyncMock()
             await _handle_keys(query, 1, f"{CB_KEYS_PREFIX}ent:@0", update)
             import asyncio
