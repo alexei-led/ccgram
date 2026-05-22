@@ -21,6 +21,17 @@ from PIL import Image, ImageDraw, ImageFont
 
 _RE_ANSI_SGR = re.compile(r"\x1b\[([0-9;]*)m")
 
+# Matches non-SGR escape sequences that should be stripped before rendering:
+#   - OSC strings:  ESC ] <payload> BEL  or  ESC ] <payload> ESC \
+#   - CSI sequences that do NOT end in 'm' (cursor moves, mode sets, etc.)
+#   - Two-byte ESC designators: ESC followed by any single non-[ non-] byte
+# The pattern leaves ESC[...m (SGR) intact.
+_RE_NON_SGR = re.compile(
+    r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC string (BEL or ST terminator)
+    r"|\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x6c\x6e-\x7e]"  # CSI non-SGR (final ≠ 'm')
+    r"|\x1b[^\[\]]"  # Two-byte ESC sequence (not CSI or OSC)
+)
+
 logger = structlog.get_logger()
 
 _FONTS_DIR = Path(__file__).parent / "fonts"
@@ -265,6 +276,20 @@ def _split_line_segments_plain(line: str) -> list[tuple[str, int]]:
     return segments
 
 
+def strip_non_sgr(text: str) -> str:
+    """Remove non-SGR escape sequences from *text*, preserving ESC[...m intact.
+
+    Strips:
+    - OSC strings (ESC ] ... BEL or ESC ] ... ESC \\)
+    - CSI sequences whose final byte is not 'm' (cursor moves, mode sets, …)
+    - Two-byte ESC designators (ESC followed by a single non-[ non-] byte)
+
+    SGR sequences (ESC [ <params> m) pass through unchanged so that color
+    rendering continues to work after the strip.
+    """
+    return _RE_NON_SGR.sub("", text)
+
+
 async def text_to_image(
     text: str,
     font_size: int = 28,
@@ -289,7 +314,10 @@ async def text_to_image(
     def _render_image() -> bytes:
         fonts = [_load_font(p, effective_font_size) for p in _FONT_PATHS]
 
-        lines = text.split("\n")
+        # Strip non-SGR escapes before any further processing so they neither
+        # appear as glyphs nor interfere with SGR parsing.
+        cleaned = strip_non_sgr(text)
+        lines = cleaned.split("\n")
         padding = 16
 
         # Parse lines into styled segments

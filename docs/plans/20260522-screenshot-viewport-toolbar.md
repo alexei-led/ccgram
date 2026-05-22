@@ -110,11 +110,11 @@ Final status-bar row: `[⎋ Esc] [📸 Screenshot] [📄 Last] [📥 Get File]`.
 - Modify: `src/ccgram/screenshot.py`
 - Modify: `tests/ccgram/test_screenshot.py`
 
-- [ ] Add a pre-pass in `text_to_image` (before line parsing) that removes all non-SGR escapes: CSI sequences not ending in `m`, OSC strings (`ESC ] ... BEL`/`ST`), and two-byte ESC designators; preserve `ESC[...m` for `_RE_ANSI_SGR`. Implement as a module-level regex (e.g. `_RE_NON_SGR`) applied per input.
-- [ ] Ensure stripping runs for both `with_ansi=True` and `False` paths (plain text with stray escapes still cleaned).
-- [ ] Add test: input with cursor-move (`ESC[2A`), OSC title (`ESC]0;t BEL`), bracketed-paste (`ESC[?2004h`) mixed with SGR color → renders valid PNG and the escapes do not appear as glyphs (assert via a stripping-helper unit check if extracted, or assert PNG validity + no exception).
-- [ ] Add test: SGR color still applied after stripping (a colored run survives the pre-pass).
-- [ ] Run `make check` — must pass before Task 3.
+- [x] Add a pre-pass in `text_to_image` (before line parsing) that removes all non-SGR escapes: CSI sequences not ending in `m`, OSC strings (`ESC ] ... BEL`/`ST`), and two-byte ESC designators; preserve `ESC[...m` for `_RE_ANSI_SGR`. Implement as a module-level regex (e.g. `_RE_NON_SGR`) applied per input.
+- [x] Ensure stripping runs for both `with_ansi=True` and `False` paths (plain text with stray escapes still cleaned).
+- [x] Add test: input with cursor-move (`ESC[2A`), OSC title (`ESC]0;t BEL`), bracketed-paste (`ESC[?2004h`) mixed with SGR color → renders valid PNG and the escapes do not appear as glyphs (assert via a stripping-helper unit check if extracted, or assert PNG validity + no exception).
+- [x] Add test: SGR color still applied after stripping (a colored run survives the pre-pass).
+- [x] Run `make check` — must pass before Task 3.
 
 ### Task 3: `/last` backend + command
 
