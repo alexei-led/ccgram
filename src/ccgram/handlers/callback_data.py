@@ -58,6 +58,8 @@ CB_SESSIONS_KILL_CONFIRM = "sess:killok:"  # sess:killok:<window_id>
 CB_STATUS_ESC = "st:esc:"  # st:esc:<window_id>
 CB_STATUS_SCREENSHOT = "st:ss:"  # st:ss:<window_id>
 CB_STATUS_RECALL = "st:rc:"  # st:rc:<window_id>:<history_index>
+CB_STATUS_LAST_REPLY = "st:lr:"  # st:lr:<window_id>
+CB_STATUS_GET_FILE = "st:gf:"  # st:gf:<window_id>
 
 # Recovery UI (dead window)
 CB_RECOVERY_FRESH = "rec:f:"  # rec:f:<window_id>
@@ -95,9 +97,6 @@ CB_PANE_LIFECYCLE_TOGGLE = "pn:lc:"  # pn:lc:<window_id> — per-window toggle
 
 # Screenshot control keys
 CB_KEYS_PREFIX = "kb:"  # kb:<key_id>:<window>
-
-# Remote Control button (status keyboard + toolbar)
-CB_STATUS_REMOTE = "st:rmt:"  # st:rmt:<window_id>
 
 # Toolbar — single prefix; the suffix encodes "<window_id>:<action_name>".
 # The action_name is looked up in the loaded ToolbarConfig.actions pool to

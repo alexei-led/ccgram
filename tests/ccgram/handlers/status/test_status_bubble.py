@@ -617,20 +617,3 @@ class TestFormatClaudeTaskStatusWithPanes:
         assert lines[0] == "Running"
         assert lines[1].startswith("└ ")
         assert "1 tasks (0 done, 1 open)" in lines[2]
-
-
-class TestRegisterRcActiveProvider:
-    def test_double_registration_raises(self) -> None:
-        from ccgram.handlers.status import status_bubble
-
-        status_bubble._reset_rc_active_provider_for_testing()
-        status_bubble.register_rc_active_provider(lambda _wid: True)
-        with pytest.raises(RuntimeError, match="already registered"):
-            status_bubble.register_rc_active_provider(lambda _wid: False)
-
-    def test_default_raises_when_not_wired(self) -> None:
-        from ccgram.handlers.status import status_bubble
-
-        status_bubble._reset_rc_active_provider_for_testing()
-        with pytest.raises(RuntimeError, match="not wired"):
-            status_bubble._rc_active_fn("@0")

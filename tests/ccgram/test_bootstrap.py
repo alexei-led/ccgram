@@ -46,12 +46,10 @@ class TestWireRuntimeCallbacks:
     def test_wires_all_three_register_callbacks(self):
         from ccgram.handlers import hook_events
         from ccgram.handlers.shell import shell_capture
-        from ccgram.handlers.status import status_bubble
 
         bootstrap.wire_runtime_callbacks()
 
         assert hook_events._stop_callback_registered is True
-        assert status_bubble._rc_active_fn_registered is True
         assert shell_capture._approval_callback_registered is True
         assert bootstrap._callbacks_wired is True
 
@@ -217,7 +215,6 @@ class TestResetForTesting:
     def test_resets_inner_callback_registrations(self):
         from ccgram.handlers import hook_events
         from ccgram.handlers.shell import shell_capture
-        from ccgram.handlers.status import status_bubble
 
         bootstrap.wire_runtime_callbacks()
         bootstrap.reset_for_testing()
@@ -225,7 +222,6 @@ class TestResetForTesting:
         # After reset, re-wiring must succeed (i.e., the F2.6 fail-loud
         # double-registration guard sees a clean slate).
         assert hook_events._stop_callback_registered is False
-        assert status_bubble._rc_active_fn_registered is False
         assert shell_capture._approval_callback_registered is False
 
         bootstrap.wire_runtime_callbacks()

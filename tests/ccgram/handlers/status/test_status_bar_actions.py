@@ -3,7 +3,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from ccgram.handlers.callback_data import (
     CB_KEYS_PREFIX,
     CB_STATUS_ESC,
-    CB_STATUS_REMOTE,
+    CB_STATUS_GET_FILE,
+    CB_STATUS_LAST_REPLY,
 )
 from ccgram.handlers.status.status_bar_actions import _handle_status_bar_action
 
@@ -48,76 +49,66 @@ class TestStatusEsc:
         query.answer.assert_awaited_once_with("Window not found", show_alert=True)
 
 
-class TestRemoteControl:
-    async def test_activates_remote_control(self):
+class TestLastReply:
+    async def test_dispatches_to_send_last_reply(self):
         query = _q()
         with (
             patch(f"{MOD}.user_owns_window", return_value=True),
-            patch(
-                "ccgram.handlers.polling.polling_state.terminal_screen_buffer"
-            ) as tsb,
+            patch(f"{MOD}.get_thread_id", return_value=42),
             patch(f"{MOD}.thread_router") as tr,
-            patch(f"{MOD}.send_to_window", new_callable=AsyncMock) as mock_send,
+            patch(
+                "ccgram.handlers.last_reply.send_last_reply", new_callable=AsyncMock
+            ) as mock_send,
         ):
-            tsb.is_rc_active.return_value = False
-            tr.get_display_name.return_value = "my-project"
+            tr.resolve_chat_id.return_value = 999
             await _handle_status_bar_action(
-                query, 1, f"{CB_STATUS_REMOTE}@0", MagicMock(), MagicMock()
+                query, 1, f"{CB_STATUS_LAST_REPLY}@0", MagicMock(), MagicMock()
             )
-        mock_send.assert_awaited_once_with("@0", "/remote-control my-project")
-        query.answer.assert_awaited_once_with("\U0001f4e1 Activating\u2026")
+        mock_send.assert_awaited_once()
+        args = mock_send.call_args.args
+        assert args[1] == 999
+        assert args[2] == 42
+        assert args[3] == "@0"
 
-    async def test_shows_already_active(self):
+    async def test_rejects_foreign_window(self):
         query = _q()
+        with patch(f"{MOD}.user_owns_window", return_value=False):
+            await _handle_status_bar_action(
+                query, 1, f"{CB_STATUS_LAST_REPLY}@0", MagicMock(), MagicMock()
+            )
+        query.answer.assert_awaited_once_with("Not your session", show_alert=True)
+
+
+class TestGetFile:
+    async def test_opens_file_browser(self, tmp_path):
+        query = _q()
+        context = MagicMock()
+        context.user_data = {}
+        view = MagicMock()
+        view.cwd = str(tmp_path)
         with (
             patch(f"{MOD}.user_owns_window", return_value=True),
-            patch(
-                "ccgram.handlers.polling.polling_state.terminal_screen_buffer"
-            ) as tsb,
-        ):
-            tsb.is_rc_active.return_value = True
-            await _handle_status_bar_action(
-                query, 1, f"{CB_STATUS_REMOTE}@0", MagicMock(), MagicMock()
-            )
-        query.answer.assert_awaited_once_with("\U0001f4e1 Remote Control active")
-
-    async def test_arms_rc_probe_after_activation(self):
-        from ccgram.telegram_client import PTBTelegramClient
-
-        query = _q()
-        with (
-            patch(f"{MOD}.user_owns_window", return_value=True),
-            patch(
-                "ccgram.handlers.polling.polling_state.terminal_screen_buffer"
-            ) as tsb,
+            patch(f"{MOD}.get_thread_id", return_value=42),
             patch(f"{MOD}.thread_router") as tr,
-            patch(f"{MOD}.send_to_window", new_callable=AsyncMock),
-            patch("ccgram.handlers.status.rc_probe.arm_rc_probe") as mock_arm,
-        ):
-            tsb.is_rc_active.return_value = False
-            tr.get_display_name.return_value = "proj"
-            await _handle_status_bar_action(
-                query, 1, f"{CB_STATUS_REMOTE}@0", MagicMock(), MagicMock()
-            )
-        mock_arm.assert_called_once()
-        args = mock_arm.call_args.args
-        assert args[0] == "@0"
-        assert isinstance(args[1], PTBTelegramClient)
-
-    async def test_does_not_arm_probe_when_already_active(self):
-        query = _q()
-        with (
-            patch(f"{MOD}.user_owns_window", return_value=True),
+            patch(f"{MOD}.window_query") as wq,
             patch(
-                "ccgram.handlers.polling.polling_state.terminal_screen_buffer"
-            ) as tsb,
-            patch("ccgram.handlers.status.rc_probe.arm_rc_probe") as mock_arm,
+                "ccgram.handlers.send.open_file_browser", new_callable=AsyncMock
+            ) as mock_open,
         ):
-            tsb.is_rc_active.return_value = True
+            wq.view_window.return_value = view
+            tr.resolve_chat_id.return_value = 999
             await _handle_status_bar_action(
-                query, 1, f"{CB_STATUS_REMOTE}@0", MagicMock(), MagicMock()
+                query, 1, f"{CB_STATUS_GET_FILE}@0", MagicMock(), context
             )
-        mock_arm.assert_not_called()
+        mock_open.assert_awaited_once()
+
+    async def test_rejects_foreign_window(self):
+        query = _q()
+        with patch(f"{MOD}.user_owns_window", return_value=False):
+            await _handle_status_bar_action(
+                query, 1, f"{CB_STATUS_GET_FILE}@0", MagicMock(), MagicMock()
+            )
+        query.answer.assert_awaited_once_with("Not your session", show_alert=True)
 
 
 class TestKeys:

@@ -19,7 +19,6 @@ from .status_bubble import (
     convert_status_to_content,
     process_status_clear,
     process_status_update,
-    register_rc_active_provider,
     send_status_text,
 )
 from .topic_emoji import (
@@ -56,7 +55,6 @@ __all__ = [
     "format_topic_name_for_mode",
     "process_status_clear",
     "process_status_update",
-    "register_rc_active_provider",
     "reset_all_state",
     "send_status_text",
     "strip_emoji_prefix",

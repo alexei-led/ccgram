@@ -181,12 +181,12 @@ Final status-bar row: `[⎋ Esc] [📸 Screenshot] [📄 Last] [📥 Get File]`.
 - Modify: `tests/ccgram/handlers/status/test_status_buttons.py`
 - Modify: `tests/ccgram/handlers/status/test_status_bar_actions.py`
 
-- [ ] Add `CB_STATUS_LAST_REPLY = "st:lr:"` and `CB_STATUS_GET_FILE = "st:gf:"` to `callback_data.py`.
-- [ ] In `build_status_keyboard`, set Row 1 to `[⎋ Esc] [📸] [📄 Last] [📥 Get File]`; remove the 📡 Remote button (`CB_STATUS_REMOTE`).
-- [ ] In `status_bar_actions.py`: add `_handle_last_reply` (calls `last_reply.send_last_reply`) and `_handle_get_file` (calls `send_command.open_file_browser` with the window CWD via `window_query.view_window`); add both constants to `@register` and `with_update` routing; remove `_handle_remote_control` registration/routing and the `CB_STATUS_REMOTE` button wiring (KEEP `rc_probe.py` and `/remote-control`/`/rc` command paths untouched).
-- [ ] Confirm `arm_rc_probe`/`rc_probe.py` and `/remote-control`+`/rc` commands remain registered and functional (grep + read registry).
-- [ ] Tests: keyboard now contains Esc/Screenshot/Last/Get-File and NOT Notify/Remote; Last button → `send_last_reply` invoked; Get-File button → file browser opened; RC commands still registered.
-- [ ] Run `make check` — must pass before Task 6.
+- [x] Add `CB_STATUS_LAST_REPLY = "st:lr:"` and `CB_STATUS_GET_FILE = "st:gf:"` to `callback_data.py`.
+- [x] In `build_status_keyboard`, set Row 1 to `[⎋ Esc] [📸] [📄 Last] [📥 Get File]`; remove the 📡 Remote button (`CB_STATUS_REMOTE`).
+- [x] In `status_bar_actions.py`: add `_handle_last_reply` (calls `last_reply.send_last_reply`) and `_handle_get_file` (calls `send_command.open_file_browser` with the window CWD via `window_query.view_window`); add both constants to `@register` and `with_update` routing; remove `_handle_remote_control` registration/routing and the `CB_STATUS_REMOTE` button wiring (KEEP `rc_probe.py` and `/remote-control`/`/rc` command paths untouched).
+- [x] Confirm `arm_rc_probe`/`rc_probe.py` and `/remote-control`+`/rc` commands remain registered and functional (grep + read registry).
+- [x] Tests: keyboard now contains Esc/Screenshot/Last/Get-File and NOT Notify/Remote; Last button → `send_last_reply` invoked; Get-File button → file browser opened; RC commands still registered.
+- [x] Run `make check` — must pass before Task 6.
 
 ### Task 6: Toolbar revamp (rename send→getfile, add last)
 

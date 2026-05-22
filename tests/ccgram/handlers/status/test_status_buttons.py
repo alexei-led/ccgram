@@ -1,4 +1,4 @@
-"""Tests for status message inline action buttons (Esc, Screenshot, RC)."""
+"""Tests for status message inline action buttons (Esc, Screenshot, Last, Get File)."""
 
 from unittest.mock import patch
 
@@ -6,8 +6,9 @@ import pytest
 
 from ccgram.handlers.callback_data import (
     CB_STATUS_ESC,
+    CB_STATUS_GET_FILE,
+    CB_STATUS_LAST_REPLY,
     CB_STATUS_RECALL,
-    CB_STATUS_REMOTE,
     CB_STATUS_SCREENSHOT,
 )
 from ccgram.handlers.status.status_bubble import build_status_keyboard
@@ -26,7 +27,12 @@ def _all_callback_data(window_id: str) -> list[str]:
 class TestBuildStatusKeyboard:
     @pytest.mark.parametrize(
         "prefix",
-        [CB_STATUS_ESC, CB_STATUS_SCREENSHOT, CB_STATUS_REMOTE],
+        [
+            CB_STATUS_ESC,
+            CB_STATUS_SCREENSHOT,
+            CB_STATUS_LAST_REPLY,
+            CB_STATUS_GET_FILE,
+        ],
     )
     def test_has_button_with_prefix(self, prefix: str) -> None:
         assert any(d.startswith(prefix) for d in _all_callback_data("@0"))
@@ -35,7 +41,8 @@ class TestBuildStatusKeyboard:
         data = _all_callback_data("@42")
         assert f"{CB_STATUS_ESC}@42" in data
         assert f"{CB_STATUS_SCREENSHOT}@42" in data
-        assert f"{CB_STATUS_REMOTE}@42" in data
+        assert f"{CB_STATUS_LAST_REPLY}@42" in data
+        assert f"{CB_STATUS_GET_FILE}@42" in data
 
     def test_callback_data_truncated_to_64_bytes(self) -> None:
         long_id = "@" + "x" * 60
@@ -43,7 +50,8 @@ class TestBuildStatusKeyboard:
         prefixes = (
             CB_STATUS_ESC,
             CB_STATUS_SCREENSHOT,
-            CB_STATUS_REMOTE,
+            CB_STATUS_LAST_REPLY,
+            CB_STATUS_GET_FILE,
         )
         for row in kb.inline_keyboard:
             for btn in row:
@@ -87,31 +95,39 @@ class TestBuildStatusKeyboard:
         assert len(cb) == 64  # type: ignore[arg-type]
         assert cb.startswith(CB_STATUS_RECALL)  # type: ignore[union-attr]
 
-    def test_rc_button_always_present(self) -> None:
+    def test_last_reply_button_present(self) -> None:
         data = _all_callback_data("@0")
-        assert any(d.startswith(CB_STATUS_REMOTE) for d in data)
+        assert any(d.startswith(CB_STATUS_LAST_REPLY) for d in data)
 
-    def test_rc_button_label_inactive(self) -> None:
+    def test_get_file_button_present(self) -> None:
+        data = _all_callback_data("@0")
+        assert any(d.startswith(CB_STATUS_GET_FILE) for d in data)
+
+    def test_no_remote_button(self) -> None:
+        data = _all_callback_data("@0")
+        assert not any(d.startswith("st:rmt:") for d in data)
+
+    def test_last_reply_button_label(self) -> None:
         kb = build_status_keyboard("@0")
-        rc_btn = [
-            btn
+        btn = [
+            b
             for row in kb.inline_keyboard
-            for btn in row
-            if isinstance(btn.callback_data, str)
-            and btn.callback_data.startswith(CB_STATUS_REMOTE)  # type: ignore[union-attr]
+            for b in row
+            if isinstance(b.callback_data, str)
+            and b.callback_data.startswith(CB_STATUS_LAST_REPLY)
         ][0]
-        assert rc_btn.text == "\U0001f4e1"
+        assert btn.text == "\U0001f4c4 Last"
 
-    def test_rc_button_label_active(self) -> None:
-        kb = build_status_keyboard("@0", rc_active=True)
-        rc_btn = [
-            btn
+    def test_get_file_button_label(self) -> None:
+        kb = build_status_keyboard("@0")
+        btn = [
+            b
             for row in kb.inline_keyboard
-            for btn in row
-            if isinstance(btn.callback_data, str)
-            and btn.callback_data.startswith(CB_STATUS_REMOTE)  # type: ignore[union-attr]
+            for b in row
+            if isinstance(b.callback_data, str)
+            and b.callback_data.startswith(CB_STATUS_GET_FILE)
         ][0]
-        assert rc_btn.text == "\U0001f4e1✓"
+        assert btn.text == "\U0001f4e5 Get File"
 
 
 class TestDashboardButtonRow:

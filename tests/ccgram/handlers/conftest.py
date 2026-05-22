@@ -29,12 +29,10 @@ def _wire_runtime_callbacks_for_tests():
     from ccgram import bootstrap
     from ccgram.handlers import hook_events
     from ccgram.handlers.shell import shell_capture
-    from ccgram.handlers.status import status_bubble
 
     bootstrap.reset_for_testing()
 
     hook_events.register_stop_callback(AsyncMock())
-    status_bubble.register_rc_active_provider(lambda _wid: False)
     shell_capture.register_approval_callback(AsyncMock(return_value=False))
 
     yield
