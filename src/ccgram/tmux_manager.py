@@ -750,7 +750,7 @@ class TmuxManager:
         Foreign windows (emdash) are never killed — they are owned externally.
         """
         if is_foreign_window(window_id):
-            logger.info("Skipping kill for external window %s", window_id)
+            logger.debug("Skipping kill for external window %s", window_id)
             return False
 
         def _sync_kill() -> bool:

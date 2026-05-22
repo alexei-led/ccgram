@@ -99,7 +99,7 @@ class SessionResolver:
         if window_id and decoded_cwd.startswith("/") and Path(decoded_cwd).is_dir():
             current_cwd = identity_state.get_cwd(window_id)
             if current_cwd and current_cwd != decoded_cwd:
-                logger.info(
+                logger.debug(
                     "Glob fallback: updating cwd for window %s: %r -> %r",
                     window_id,
                     current_cwd,

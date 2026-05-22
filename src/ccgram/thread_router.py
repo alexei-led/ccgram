@@ -268,7 +268,7 @@ class ThreadRouter:
         if self.group_chat_ids.get(key) != chat_id:
             self.group_chat_ids[key] = chat_id
             self._schedule_save()
-            logger.info(
+            logger.debug(
                 "Stored group chat_id %d for user %d, thread %d",
                 chat_id,
                 user_id,
@@ -334,7 +334,7 @@ class ThreadRouter:
             if old and old != window_name:
                 self.window_display_names[window_id] = window_name
                 changed = True
-                logger.info(
+                logger.debug(
                     "Synced display name: %s %s → %s", window_id, old, window_name
                 )
         if changed:

@@ -142,17 +142,21 @@ class UserPreferences:
         """
         changed = False
         empty_users: list[int] = []
+        pruned = 0
         for uid, offsets in self.user_window_offsets.items():
             stale = [wid for wid in offsets if wid not in known_window_ids]
             for wid in stale:
-                logger.info("Pruning stale offset: user %d, window %s", uid, wid)
+                logger.debug("Pruning stale offset: user %d, window %s", uid, wid)
                 del offsets[wid]
                 changed = True
+                pruned += 1
             if not offsets:
                 empty_users.append(uid)
         for uid in empty_users:
             del self.user_window_offsets[uid]
             changed = True
+        if pruned:
+            logger.info("Pruned %d stale window offset(s)", pruned)
         if changed:
             self._schedule_save()
         return changed

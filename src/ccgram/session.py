@@ -356,10 +356,15 @@ class SessionManager:
 
         for wid in stale_display:
             name = thread_router.pop_display_name(wid)
-            logger.info("Pruning stale display name: %s (%s)", wid, name)
+            logger.debug("Pruning stale display name: %s (%s)", wid, name)
         for key in stale_chat:
-            logger.info("Pruning stale group_chat_id: %s", key)
+            logger.debug("Pruning stale group_chat_id: %s", key)
             del thread_router.group_chat_ids[key]
+        logger.info(
+            "Pruned stale state: %d display name(s), %d group chat id(s)",
+            len(stale_display),
+            len(stale_chat),
+        )
 
         self._save_state()
         return True
@@ -539,8 +544,9 @@ class SessionManager:
         if not stale:
             return False
         for wid in stale:
-            logger.info("Pruning stale window_state: %s", wid)
+            logger.debug("Pruning stale window_state: %s", wid)
             del self.window_states[wid]
+        logger.info("Pruned %d stale window_state(s)", len(stale))
         self._save_state()
         return True
 
