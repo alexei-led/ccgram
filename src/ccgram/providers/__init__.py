@@ -51,12 +51,14 @@ def _ensure_registered() -> None:
     global _registered
     if _registered:
         return
+    from ccgram.providers.antigravity import AntigravityProvider
     from ccgram.providers.claude import ClaudeProvider
     from ccgram.providers.codex import CodexProvider
     from ccgram.providers.gemini import GeminiProvider
     from ccgram.providers.pi import PiProvider
     from ccgram.providers.shell import ShellProvider
 
+    registry.register("antigravity", AntigravityProvider)
     registry.register("claude", ClaudeProvider)
     registry.register("codex", CodexProvider)
     registry.register("gemini", GeminiProvider)
@@ -128,9 +130,9 @@ def detect_provider_from_command(pane_current_command: str) -> str:
     # Match basename only (first token) to avoid false positives
     # from paths like /home/claude/bin/vim
     basename = os.path.basename(cmd.split()[0])
-    for name in ("claude", "codex", "gemini", "pi"):
+    for name in ("claude", "codex", "gemini", "pi", "antigravity", "agy"):
         if basename == name or basename.startswith(name + "-"):
-            return name
+            return "antigravity" if name == "agy" else name
 
     from .shell import KNOWN_SHELLS
 
@@ -150,7 +152,7 @@ def detect_provider_from_transcript_path(transcript_path: str) -> str:
     if "/.claude/projects/" in normalized:
         return "claude"
     if "/.gemini/" in normalized and "/chats/" in normalized:
-        return "gemini"
+        return "antigravity"
     if "/.pi/agent/sessions/" in normalized:
         return "pi"
     return ""
@@ -259,6 +261,11 @@ def resolve_launch_command(
         from ccgram.providers.gemini import build_hardened_gemini_launch_command
 
         command = build_hardened_gemini_launch_command(command)
+
+    if provider == "antigravity" and not override:
+        from ccgram.providers.antigravity import build_hardened_antigravity_launch_command
+
+        command = build_hardened_antigravity_launch_command(command)
 
     if approval_mode.lower() != _APPROVAL_MODE_YOLO:
         return command

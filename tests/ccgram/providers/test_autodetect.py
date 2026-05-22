@@ -25,12 +25,15 @@ class TestDetectProviderFromCommand:
             pytest.param("codex", "codex", id="bare-codex"),
             pytest.param("gemini", "gemini", id="bare-gemini"),
             pytest.param("pi", "pi", id="bare-pi"),
+            pytest.param("antigravity", "antigravity", id="bare-antigravity"),
+            pytest.param("agy", "antigravity", id="bare-agy"),
             pytest.param("/usr/local/bin/claude", "claude", id="full-path-claude"),
             pytest.param("/opt/bin/codex --resume", "codex", id="codex-with-args"),
             pytest.param("gemini-cli", "gemini", id="gemini-cli-variant"),
             pytest.param("Claude", "claude", id="case-insensitive-claude"),
             pytest.param("CODEX", "codex", id="uppercase-codex"),
             pytest.param("  claude  ", "claude", id="whitespace-padded"),
+            pytest.param("/home/ruben/.local/bin/agy", "antigravity", id="full-path-agy"),
         ],
     )
     def test_known_commands(self, command: str, expected: str) -> None:

@@ -13,6 +13,7 @@ from ccgram.providers.base import (
     StatusUpdate,
 )
 from ccgram.providers._jsonl import JsonlProvider
+from ccgram.providers.antigravity import AntigravityProvider
 from ccgram.providers.claude import ClaudeProvider
 from ccgram.providers.codex import CodexProvider
 from ccgram.providers.gemini import GeminiProvider
@@ -60,6 +61,7 @@ class StubProvider(JsonlProvider):
 
 PROVIDER_FIXTURES: list[type] = [
     StubProvider,
+    AntigravityProvider,
     ClaudeProvider,
     CodexProvider,
     GeminiProvider,
@@ -174,6 +176,8 @@ def _make_assistant_entry(
         }
     if name == "gemini":
         return {"type": "gemini", "content": text}
+    if name == "antigravity":
+        return {"type": "antigravity", "content": text}
     return {
         "type": "assistant",
         "message": {"content": [{"type": "text", "text": text}]},
@@ -195,6 +199,12 @@ def _make_tool_use_entry(provider: AgentProvider) -> dict[str, Any]:
     if name == "gemini":
         return {
             "type": "gemini",
+            "content": "Using tool",
+            "toolCalls": [{"id": "t1", "name": "Read"}],
+        }
+    if name == "antigravity":
+        return {
+            "type": "antigravity",
             "content": "Using tool",
             "toolCalls": [{"id": "t1", "name": "Read"}],
         }
@@ -233,6 +243,18 @@ def _make_tool_result_entry(provider: AgentProvider) -> dict[str, Any]:
         }
     if name == "gemini":
         return {"type": "gemini", "content": "result ok"}
+    if name == "antigravity":
+        return {
+            "type": "antigravity",
+            "content": "Using tool finished",
+            "toolCalls": [
+                {
+                    "id": "t1",
+                    "name": "Read",
+                    "resultDisplay": "ok",
+                }
+            ],
+        }
     if name == "pi":
         return {
             "type": "toolResult",
@@ -383,7 +405,7 @@ class TestParseHistoryEntry:
                 "type": "input_item",
                 "payload": {"role": "user", "content": "my question"},
             }
-        elif name == "gemini":
+        elif name in ("gemini", "antigravity"):
             entry = {"type": "user", "content": "my question"}
         else:
             entry = {
@@ -403,8 +425,8 @@ class TestParseHistoryEntry:
                 "type": "response_item",
                 "payload": {"role": "assistant", "content": []},
             }
-        elif name == "gemini":
-            entry = {"type": "gemini", "content": ""}
+        elif name in ("gemini", "antigravity"):
+            entry = {"type": name, "content": ""}
         else:
             entry = {"type": "assistant", "message": {"content": []}}
         assert provider.parse_history_entry(entry) is None
@@ -511,7 +533,7 @@ class TestStatusSnapshot:
 
     def test_supports_status_snapshot_flag(self, provider: AgentProvider) -> None:
         caps = provider.capabilities
-        if caps.name in ("codex", "gemini"):
+        if caps.name in ("codex", "gemini", "antigravity"):
             assert caps.supports_status_snapshot is True
         else:
             assert caps.supports_status_snapshot is False
