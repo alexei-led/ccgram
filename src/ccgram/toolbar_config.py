@@ -187,7 +187,8 @@ BUILTIN_ACTIONS: dict[str, ToolbarAction] = {
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Default per-provider layouts (3 rows × 3 buttons each, emoji_text).
+# Default per-provider layouts (emoji_text). Claude/Codex/Gemini/Pi are 4
+# rows × 3 buttons; shell is 3 rows (last row has 4 buttons).
 # ──────────────────────────────────────────────────────────────────────
 
 DEFAULT_LAYOUTS: dict[str, ToolbarLayout] = {

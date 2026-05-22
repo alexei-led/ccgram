@@ -88,6 +88,13 @@ def test_strip_non_sgr_removes_osc_st():
     assert "\x1b" not in result
 
 
+def test_strip_non_sgr_removes_osc_with_embedded_esc():
+    text = "\x1b]8;;http://x\x1by\x1b\\link\x07hello"
+    result = strip_non_sgr(text)
+    assert result == "link\x07hello"
+    assert "\x1b" not in result
+
+
 def test_strip_non_sgr_removes_bracketed_paste():
     text = "\x1b[?2004hhello"
     result = strip_non_sgr(text)

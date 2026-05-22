@@ -131,10 +131,10 @@ async def _deliver(
         return
 
     # Overflow: write to temp file and send as document
-    # Lazy: tempfile and Path only needed for large outputs — avoid stdlib cost on the fast path
+    # Lazy: only used in this overflow branch
     import tempfile
 
-    # Lazy: Path used only in the overflow branch
+    # Lazy: only used in this overflow branch
     from pathlib import Path
 
     tmp_path: str | None = None

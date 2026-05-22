@@ -25,9 +25,11 @@ _RE_ANSI_SGR = re.compile(r"\x1b\[([0-9;]*)m")
 #   - OSC strings:  ESC ] <payload> BEL  or  ESC ] <payload> ESC \
 #   - CSI sequences that do NOT end in 'm' (cursor moves, mode sets, etc.)
 #   - Two-byte ESC designators: ESC followed by any single non-[ non-] byte
-# The pattern leaves ESC[...m (SGR) intact.
+# The pattern leaves ESC[...m (SGR) intact. The OSC payload allows an embedded
+# ESC as long as it is not the start of the ST terminator (ESC \), so OSC 8
+# hyperlinks and titles containing literal ESC are stripped whole.
 _RE_NON_SGR = re.compile(
-    r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC string (BEL or ST terminator)
+    r"\x1b\](?:[^\x07\x1b]|\x1b(?!\\))*(?:\x07|\x1b\\)"  # OSC string (BEL or ST terminator)
     r"|\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x6c\x6e-\x7e]"  # CSI non-SGR (final ≠ 'm')
     r"|\x1b[^\[\]]"  # Two-byte ESC sequence (not CSI or OSC)
 )

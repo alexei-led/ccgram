@@ -108,33 +108,6 @@ class TestExtractLastAiReply:
         assert result == "No reply yet."
 
 
-def _patch_send_last_reply_deps(
-    *,
-    caps,
-    scrollback=None,
-    shell_block=None,
-    messages=None,
-):
-    """Return a context manager stack patching the three lazy-import sources."""
-    messages = messages or []
-    mock_sq = MagicMock()
-    mock_sq.get_recent_messages = AsyncMock(return_value=(messages, len(messages)))
-
-    mock_tm = MagicMock()
-    mock_tm.capture_pane_scrollback = AsyncMock(return_value=scrollback)
-
-    provider = _make_provider(caps)
-
-    patches = [
-        patch("ccgram.handlers.last_reply.get_window_provider", return_value=caps.name),
-        patch("ccgram.handlers.last_reply.tmux_manager", mock_tm),
-        patch("ccgram.providers.get_provider_for_window", return_value=provider),
-        patch("ccgram.last_unit.extract_last_shell_block", return_value=shell_block),
-        patch("ccgram.session_query.get_recent_messages", mock_sq.get_recent_messages),
-    ]
-    return patches, mock_sq, mock_tm
-
-
 class TestSendLastReplyShell:
     async def test_shell_returns_block(self) -> None:
         from ccgram.handlers import last_reply
@@ -238,7 +211,37 @@ class TestSendLastReplyAI:
                 return_value=_make_provider(_ai_caps()),
             ),
             patch(
-                "ccgram.session_resolver.session_resolver.get_recent_messages",
+                "ccgram.session_query.get_recent_messages",
+                mock_sq.get_recent_messages,
+            ),
+        ):
+            await last_reply.send_last_reply(fake, 100, 42, "@0")
+
+        assert fake.call_count("send_message") == 1
+        assert fake.call_count("send_document") == 0
+
+    async def test_text_at_limit_uses_send_message(self) -> None:
+        from ccgram.handlers import last_reply
+
+        fake = FakeTelegramClient()
+        messages = [
+            _msg("user", "text", "q"),
+            _msg("assistant", "text", "x" * 4096),
+        ]
+        mock_sq = MagicMock()
+        mock_sq.get_recent_messages = AsyncMock(return_value=(messages, 2))
+
+        with (
+            patch(
+                "ccgram.handlers.last_reply.get_window_provider",
+                return_value="claude",
+            ),
+            patch(
+                "ccgram.providers.get_provider_for_window",
+                return_value=_make_provider(_ai_caps()),
+            ),
+            patch(
+                "ccgram.session_query.get_recent_messages",
                 mock_sq.get_recent_messages,
             ),
         ):
@@ -269,7 +272,7 @@ class TestSendLastReplyAI:
                 return_value=_make_provider(_ai_caps()),
             ),
             patch(
-                "ccgram.session_resolver.session_resolver.get_recent_messages",
+                "ccgram.session_query.get_recent_messages",
                 mock_sq.get_recent_messages,
             ),
         ):
