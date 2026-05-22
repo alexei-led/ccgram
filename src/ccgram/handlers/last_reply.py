@@ -47,9 +47,6 @@ async def send_last_reply(
     # Lazy: providers module pulls in all provider implementations at registration
     from ..providers import get_provider_for_window
 
-    # Lazy: session_query wraps session_resolver which does JSONL discovery
-    from .. import session_query
-
     # Lazy: last_unit only needed for the shell path
     from ..last_unit import extract_last_shell_block
 
@@ -62,7 +59,7 @@ async def send_last_reply(
         block = extract_last_shell_block(scrollback) if scrollback else None
         text = block if block is not None else "No command output found."
     elif caps.supports_structured_transcript:
-        text = await _extract_last_ai_reply(window_id, session_query)
+        text = await _extract_last_ai_reply(window_id)
     else:
         # Provider without structured transcript (e.g. unknown); best-effort scrollback
         scrollback = await tmux_manager.capture_pane_scrollback(window_id, history=200)
@@ -71,9 +68,12 @@ async def send_last_reply(
     await _deliver(client, chat_id, thread_id, window_id, text)
 
 
-async def _extract_last_ai_reply(window_id: str, session_query: object) -> str:
+async def _extract_last_ai_reply(window_id: str) -> str:
     """Extract last assistant reply from the transcript for an AI provider."""
-    messages, _ = await session_query.get_recent_messages(window_id)  # type: ignore[union-attr]
+    # Lazy: session_query wraps session_resolver which does JSONL discovery
+    from .. import session_query
+
+    messages, _ = await session_query.get_recent_messages(window_id)
 
     # Try the last-turn path first; fall back to most-recent assistant text.
     result = _collect_last_turn_blocks(messages)
@@ -148,7 +148,12 @@ async def _deliver(
             fh.write(text)
             tmp_path = fh.name
 
-        window_label = window_id.lstrip("@") or "reply"
+        window_label = (
+            "".join(c if c.isalnum() or c in "_-" else "-" for c in window_id).strip(
+                "-"
+            )
+            or "reply"
+        )
         filename = f"last-reply-{window_label}.txt"
         await client.send_document(
             chat_id=chat_id,

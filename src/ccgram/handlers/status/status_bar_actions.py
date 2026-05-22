@@ -359,16 +359,13 @@ async def _handle_status_bar_action(
             await handler(query, user_id, data, update)
             return
 
-    without_update = {
-        CB_STATUS_ESC: _handle_status_esc,
-    }
-    for prefix, handler in without_update.items():
-        if data.startswith(prefix):
-            await handler(query, user_id, data)
-            return
+    if data.startswith(CB_STATUS_ESC):
+        await _handle_status_esc(query, user_id, data)
+        return
 
     if data.startswith(CB_STATUS_GET_FILE):
         await _handle_get_file(query, user_id, data, update, context)
+        return
 
 
 @register(

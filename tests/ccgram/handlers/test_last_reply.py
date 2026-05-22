@@ -1,6 +1,10 @@
 """Tests for last_reply.send_last_reply and last_command handler."""
 
+import tempfile
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from ccgram.telegram_client import FakeTelegramClient
 
@@ -40,9 +44,11 @@ class TestExtractLastAiReply:
             _msg("assistant", "text", "second reply"),
         ]
 
-        mock_sq = MagicMock()
-        mock_sq.get_recent_messages = AsyncMock(return_value=(messages, 4))
-        result = await _extract_last_ai_reply("@0", mock_sq)
+        with patch(
+            "ccgram.session_query.get_recent_messages",
+            AsyncMock(return_value=(messages, 4)),
+        ):
+            result = await _extract_last_ai_reply("@0")
         assert result == "second reply"
 
     async def test_multiple_assistant_blocks_joined(self) -> None:
@@ -53,9 +59,11 @@ class TestExtractLastAiReply:
             _msg("assistant", "text", "part one"),
             _msg("assistant", "text", "part two"),
         ]
-        mock_sq = MagicMock()
-        mock_sq.get_recent_messages = AsyncMock(return_value=(messages, 3))
-        result = await _extract_last_ai_reply("@0", mock_sq)
+        with patch(
+            "ccgram.session_query.get_recent_messages",
+            AsyncMock(return_value=(messages, 3)),
+        ):
+            result = await _extract_last_ai_reply("@0")
         assert result == "part one\n\npart two"
 
     async def test_fallback_to_most_recent_assistant_when_last_turn_has_none(
@@ -68,9 +76,11 @@ class TestExtractLastAiReply:
             _msg("user", "text", "question"),
             _msg("assistant", "tool_use", ""),
         ]
-        mock_sq = MagicMock()
-        mock_sq.get_recent_messages = AsyncMock(return_value=(messages, 3))
-        result = await _extract_last_ai_reply("@0", mock_sq)
+        with patch(
+            "ccgram.session_query.get_recent_messages",
+            AsyncMock(return_value=(messages, 3)),
+        ):
+            result = await _extract_last_ai_reply("@0")
         assert result == "early reply"
 
     async def test_no_reply_yet_when_no_assistant_text(self) -> None:
@@ -80,17 +90,21 @@ class TestExtractLastAiReply:
             _msg("user", "text", "hello"),
             _msg("assistant", "tool_use", ""),
         ]
-        mock_sq = MagicMock()
-        mock_sq.get_recent_messages = AsyncMock(return_value=(messages, 2))
-        result = await _extract_last_ai_reply("@0", mock_sq)
+        with patch(
+            "ccgram.session_query.get_recent_messages",
+            AsyncMock(return_value=(messages, 2)),
+        ):
+            result = await _extract_last_ai_reply("@0")
         assert result == "No reply yet."
 
     async def test_empty_messages(self) -> None:
         from ccgram.handlers.last_reply import _extract_last_ai_reply
 
-        mock_sq = MagicMock()
-        mock_sq.get_recent_messages = AsyncMock(return_value=([], 0))
-        result = await _extract_last_ai_reply("@0", mock_sq)
+        with patch(
+            "ccgram.session_query.get_recent_messages",
+            AsyncMock(return_value=([], 0)),
+        ):
+            result = await _extract_last_ai_reply("@0")
         assert result == "No reply yet."
 
 
@@ -266,6 +280,45 @@ class TestSendLastReplyAI:
         doc_call = fake.last_call("send_document")
         assert doc_call is not None
         assert "last-reply-0.txt" in doc_call.kwargs.get("filename", "")
+
+    async def test_long_text_cleans_temp_file_on_send_failure(self) -> None:
+        from ccgram.handlers import last_reply
+
+        fake = FakeTelegramClient()
+        fake.set_side_effect("send_document", [RuntimeError("boom")])
+        long_text = "x" * 5000
+        messages = [
+            _msg("user", "text", "q"),
+            _msg("assistant", "text", long_text),
+        ]
+        created: list[str] = []
+        real_ntf = tempfile.NamedTemporaryFile
+
+        def _spy(*a, **k):
+            fh = real_ntf(*a, **k)
+            created.append(fh.name)
+            return fh
+
+        with (
+            patch(
+                "ccgram.handlers.last_reply.get_window_provider",
+                return_value="claude",
+            ),
+            patch(
+                "ccgram.providers.get_provider_for_window",
+                return_value=_make_provider(_ai_caps()),
+            ),
+            patch(
+                "ccgram.session_query.get_recent_messages",
+                AsyncMock(return_value=(messages, 2)),
+            ),
+            patch("tempfile.NamedTemporaryFile", side_effect=_spy),
+            pytest.raises(RuntimeError),
+        ):
+            await last_reply.send_last_reply(fake, 100, 42, "@0")
+
+        assert created
+        assert not Path(created[0]).exists()
 
 
 class TestLastCommand:

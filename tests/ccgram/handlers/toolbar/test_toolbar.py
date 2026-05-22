@@ -367,6 +367,11 @@ class TestDispatchBuiltinLast:
         ):
             mock_router.resolve_chat_id.return_value = -100
             await handle_toolbar_callback(query, 100, "tb:@5:last", update, context)
+        mock_send_last.assert_awaited_once()
+        args = mock_send_last.call_args.args
+        assert args[1] == -100
+        assert args[2] == 42
+        assert args[3] == "@5"
         query.answer.assert_awaited_once()
 
     async def test_no_user_context_alerts(self) -> None:

@@ -78,10 +78,11 @@ Each Telegram Forum topic binds to one tmux window. Messages you type are sent a
 - **Slash commands** — provider-aware menu (Claude `/cost`, Codex `/status`, Gemini `/chat`, Pi `/compact`, etc.); mismatched commands report errors
 - **Voice messages** — transcribed via Whisper API (OpenAI/Groq), shown with **Send / Discard** buttons before forwarding
 - **Multi-pane support** — auto-detects blocked panes in agent teams, surfaces prompts as alerts; `/panes` for overview
-- **Terminal screenshots** — capture the current pane (or any specific pane) as a PNG image. Captures scrollback (default 500 lines, configurable) with ANSI color rather than just the visible viewport; for shell topics, the last command and its output are sliced from between prompt markers
-- **Terminal live view** — auto-refreshing screenshots every 5 seconds via **Live** button or `/live` command; content-hash gating skips edits when nothing changed; auto-stops after timeout (configurable). Live view keeps viewport-only capture for low-latency refresh
+- **Terminal screenshots** — capture the current pane (or any specific pane) as a readable PNG of the current viewport, with ANSI color
+- **Last reply** (`/last`, 📄 **Last** button) — resends the most recent assistant reply (AI providers, from the transcript) or last command+output (shell topics); long responses overflow to a `.txt` attachment instead of a giant image
+- **Terminal live view** — auto-refreshing screenshots every 5 seconds via **Live** button or `/live` command; content-hash gating skips edits when nothing changed; auto-stops after timeout (configurable)
 - **File delivery** (`/send`) — send workspace files to Telegram: exact path (`/send docs/arch.png`), glob (`/send *.png`), substring search (`/send arch`), or interactive browser (`/send`). Project-scoped with security filtering (hidden files, credentials, gitignored, >50 MB denied)
-- **Action toolbar** (`/toolbar`) — provider-specific inline buttons. Default 3×3 grid: row 1 is universal (Screenshot, Ctrl-C, Live). Row 2 varies per provider: Claude (Mode, Think, Esc), Codex (Esc, Enter, Tab), Gemini (Mode, YOLO, Esc), Pi (Esc, Tab, π Model), Shell (Enter, EOF, Suspend). Row 3 has Send, Enter/Esc, Close (Pi adds a 5-cell row with Up/Down arrows). Customize via `~/.ccgram/toolbar.toml`
+- **Action toolbar** (`/toolbar`) — provider-specific inline buttons. Row 1 is universal (Screenshot, Ctrl-C, Live). Row 2 varies per provider: Claude (Mode, Think, Esc), Codex (Esc, Enter, Tab), Gemini (Mode, YOLO, Esc), Pi (Esc, Tab, π Model), Shell (Enter, EOF, Suspend). The final row is Last, Get File, Close across all providers. Customize via `~/.ccgram/toolbar.toml`
 - **Picker hints** — when you forward a slash command that opens a modal in-TUI picker (e.g. `/model`, `/login`, `/theme`), the topic reply suggests using `/toolbar` to drive the picker with arrow keys
 - **Remote Control** — 📡 topic badge when RC is active; one-tap activation from status keyboard. Claude's `/remote-control` is silent on outcome, so ccgram probes the pane afterward and posts the result (sharing URL on success, "unavailable", or failure) as a single status reply (Claude only)
 
@@ -254,7 +255,6 @@ Open your Telegram group, create a new topic, send a message — a directory bro
 | `CCGRAM_TTS_API_KEY`           | _(empty)_                      | API key for OpenAI TTS. Falls back to `OPENAI_API_KEY` if unset                                             |
 | `CCGRAM_LIVE_VIEW_INTERVAL`    | `5`                            | Live view refresh interval in seconds                                                                       |
 | `CCGRAM_LIVE_VIEW_TIMEOUT`     | `300`                          | Live view auto-stop timeout in seconds                                                                      |
-| `CCGRAM_SCREENSHOT_HISTORY`    | `500`                          | Scrollback lines captured by `/screenshot` and the 📷 button (min 50)                                       |
 | `CCGRAM_SEND_SEARCH_DEPTH`     | `5`                            | Max directory depth for `/send` file search                                                                 |
 | `CCGRAM_SEND_MAX_RESULTS`      | `50`                           | Max file results returned by `/send` search                                                                 |
 | `AUTOCLOSE_DONE_MINUTES`       | `30`                           | Auto-close completed topics after N minutes                                                                 |
