@@ -42,6 +42,7 @@ _PTB_BOT_ALLOWLIST = frozenset(
         "commands/forward.py",
         "commands/menu_sync.py",
         "file_handler.py",
+        "last_reply.py",  # wraps get_bot() in PTBTelegramClient for send_last_reply
         "live/pane_callbacks.py",
         "live/screenshot_callbacks.py",
         "messaging/msg_spawn.py",
@@ -74,6 +75,7 @@ _SINGLETON_ALLOWLIST = frozenset(
         "file_handler.py",
         "hook_events.py",
         "interactive/interactive_ui.py",
+        "last_reply.py",  # reads thread_router for window/chat resolution in last_command
         "live/pane_callbacks.py",
         "live/screenshot_callbacks.py",
         "messaging/msg_telegram.py",

@@ -124,14 +124,14 @@ Final status-bar row: `[⎋ Esc] [📸 Screenshot] [📄 Last] [📥 Get File]`.
 - Modify: `src/ccgram/handlers/registry.py`
 - Create: `tests/ccgram/handlers/test_last_reply.py`
 
-- [ ] Create `handlers/last_reply.py` with `send_last_reply(client, chat_id, thread_id, window_id)` implementing the AI/shell/overflow logic in Technical Details; reads provider via `window_query.get_window_provider` + `get_provider_for_window`; AI path via `session_query.get_recent_messages`; shell path via `tmux_manager.capture_pane_scrollback(window_id, history=200)` + `extract_last_shell_block`. Module docstring required.
-- [ ] Add a `last_command` handler in `last_reply.py` (resolve window_id from thread binding via `window_query`, guard unbound/dead, call `send_last_reply`).
-- [ ] Register `/last` in `handlers/registry.py` `CommandSpec` table.
-- [ ] Overflow path: >4096 chars → write temp `.txt`, `client.send_document`; clean up temp file in `finally`.
-- [ ] Tests: AI last-turn extraction (assistant text after last user turn, joined); fallback to most-recent assistant text when last turn has none; "No reply yet." when no assistant text.
-- [ ] Tests: shell path returns `extract_last_shell_block` output; "No command output found." when `None`.
-- [ ] Tests: ≤4096 → `safe_send`/text call recorded in `fake.calls`; >4096 → `send_document` recorded; unbound/dead window guarded.
-- [ ] Run `make check` — must pass before Task 4.
+- [x] Create `handlers/last_reply.py` with `send_last_reply(client, chat_id, thread_id, window_id)` implementing the AI/shell/overflow logic in Technical Details; reads provider via `window_query.get_window_provider` + `get_provider_for_window`; AI path via `session_query.get_recent_messages`; shell path via `tmux_manager.capture_pane_scrollback(window_id, history=200)` + `extract_last_shell_block`. Module docstring required.
+- [x] Add a `last_command` handler in `last_reply.py` (resolve window_id from thread binding via `window_query`, guard unbound/dead, call `send_last_reply`).
+- [x] Register `/last` in `handlers/registry.py` `CommandSpec` table.
+- [x] Overflow path: >4096 chars → write temp `.txt`, `client.send_document`; clean up temp file in `finally`.
+- [x] Tests: AI last-turn extraction (assistant text after last user turn, joined); fallback to most-recent assistant text when last turn has none; "No reply yet." when no assistant text.
+- [x] Tests: shell path returns `extract_last_shell_block` output; "No command output found." when `None`.
+- [x] Tests: ≤4096 → `safe_send`/text call recorded in `fake.calls`; >4096 → `send_document` recorded; unbound/dead window guarded.
+- [x] Run `make check` — must pass before Task 4.
 
 ### Task 4: Rip notify-mode feature
 
