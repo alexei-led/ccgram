@@ -627,8 +627,9 @@ class WindowStateStore:
         if not stale:
             return False
         for wid in stale:
-            logger.info("Pruning stale window_state: %s", wid)
+            logger.debug("Pruning stale window_state: %s", wid)
             del self.window_states[wid]
+        logger.info("Pruned %d stale window_state(s)", len(stale))
         self._schedule_save()
         return True
 

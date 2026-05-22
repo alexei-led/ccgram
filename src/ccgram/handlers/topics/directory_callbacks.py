@@ -983,7 +983,12 @@ async def _create_window_and_bind(  # noqa: PLR0915
         else:
             send_ok, send_msg = await send_to_window(created_wid, pending_text)
             if not send_ok:
-                logger.warning("Failed to forward pending text: %s", send_msg)
+                logger.warning(
+                    "Failed to forward pending text to window %s (user %s): %s",
+                    created_wid,
+                    user_id,
+                    send_msg,
+                )
                 # Lazy: telegram_client wraps PTB Bot.
                 from ...telegram_client import PTBTelegramClient
 

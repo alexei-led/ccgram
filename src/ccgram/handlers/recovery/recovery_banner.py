@@ -298,7 +298,12 @@ async def _create_and_bind_window(
     if pending_text:
         send_ok, send_msg = await send_to_window(created_wid, pending_text)
         if not send_ok:
-            logger.warning("Failed to forward pending text: %s", send_msg)
+            logger.warning(
+                "Failed to forward pending text to window %s (user %s): %s",
+                created_wid,
+                user_id,
+                send_msg,
+            )
             await safe_send(
                 client,
                 thread_router.resolve_chat_id(user_id, thread_id),

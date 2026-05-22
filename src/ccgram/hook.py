@@ -448,7 +448,6 @@ def _install_hook(provider_name: str = "claude") -> int:  # noqa: PLR0912
         try:
             settings = json.loads(settings_file.read_text())
         except (json.JSONDecodeError, OSError) as e:
-            logger.exception("Error reading %s", settings_file)
             print(f"Error reading {settings_file}: {e}", file=sys.stderr)
             return 1
 
@@ -512,7 +511,6 @@ def _install_hook(provider_name: str = "claude") -> int:  # noqa: PLR0912
             json.dumps(settings, indent=2, ensure_ascii=False) + "\n"
         )
     except OSError as e:
-        logger.exception("Error writing %s", settings_file)
         print(f"Error writing {settings_file}: {e}", file=sys.stderr)
         return 1
 

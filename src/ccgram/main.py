@@ -226,11 +226,10 @@ def run_bot() -> None:
         if not session:
             logger.error("Tmux session '%s' not found", config.tmux_session_name)
             sys.exit(1)
-        logger.info("Auto-detected tmux session '%s'", session.session_name)
+        logger.info("Using auto-detected tmux session '%s'", session.session_name)
     else:
         session = tmux_manager.get_or_create_session()
-
-    logger.info("Tmux session '%s' ready", session.session_name)
+        logger.info("Tmux session '%s' ready", session.session_name)
 
     # Lazy: main runs `ccgram` startup; defer imports until the relevant subcommand executes
     from . import __version__

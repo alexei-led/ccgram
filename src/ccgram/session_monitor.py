@@ -316,7 +316,10 @@ class SessionMonitor:
                     try:
                         await self._new_window_callback(event)
                     except _CallbackError:
-                        logger.exception("New window callback error for %s", window_id)
+                        logger.exception(
+                            "New window callback error (session_map path) for %s",
+                            window_id,
+                        )
 
         return result.current_map
 
@@ -369,7 +372,7 @@ class SessionMonitor:
                             await self._new_window_callback(event)
                         except _CallbackError:
                             logger.exception(
-                                "New window callback error for %s",
+                                "New window callback error (unbound window path) for %s",
                                 window.window_id,
                             )
 
@@ -424,7 +427,9 @@ class SessionMonitor:
             self._task.cancel()
             self._task = None
         self.state.save()
-        logger.info("Session monitor stopped and state saved")
+        # Distinct from the loop's "Session monitor stopped" (logged when the
+        # poll loop actually exits) — this marks the stop request + state save.
+        logger.info("Session monitor stop requested; state saved")
 
 
 _active_monitor: SessionMonitor | None = None
