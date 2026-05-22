@@ -4,24 +4,25 @@ CCGram supports multiple agent CLI backends. Each Telegram topic can use a diffe
 
 ## Overview
 
-| Provider    | CLI Command | Hook Events | Resume | Continue | Transcript | Status Detection                                          |
-| ----------- | ----------- | ----------- | ------ | -------- | ---------- | --------------------------------------------------------- |
-| Claude Code | `claude`    | Yes         | Yes    | Yes      | JSONL      | Hook events + pyte VT100 + spinner                        |
-| Codex CLI   | `codex`     | No          | Yes    | Yes      | JSONL      | pyte VT100 interactive UI + transcript activity heuristic |
-| Gemini CLI  | `gemini`    | No          | Yes    | Yes      | JSON       | Pane title + interactive UI                               |
-| Pi          | `pi`        | No          | Yes    | Yes      | JSONL (v3) | Transcript activity heuristic                             |
-| Shell       | `bash`      | No          | No     | No       | None       | Shell prompt idle detection                               |
+| Provider        | CLI Command        | Hook Events | Resume | Continue | Transcript | Status Detection                                          |
+| --------------- | ------------------ | ----------- | ------ | -------- | ---------- | --------------------------------------------------------- |
+| Claude Code     | `claude`           | Yes         | Yes    | Yes      | JSONL      | Hook events + pyte VT100 + spinner                        |
+| Codex CLI       | `codex`            | No          | Yes    | Yes      | JSONL      | pyte VT100 interactive UI + transcript activity heuristic |
+| Gemini CLI      | `gemini`           | No          | Yes    | Yes      | JSON       | Pane title + interactive UI                               |
+| Antigravity CLI | `antigravity chat` | No          | Yes    | Yes      | JSONL      | Pane title (`🛸`) + interactive UI                        |
+| Pi              | `pi`               | No          | Yes    | Yes      | JSONL (v3) | Transcript activity heuristic                             |
+| Shell           | `bash`             | No          | No     | No       | None       | Shell prompt idle detection                               |
 
 ## Choosing a Provider
 
-**From Telegram**: When you create a new topic and select a directory, a provider picker appears with Claude (default), Codex, Gemini, Pi, and Shell options. After provider selection, CCGram asks for session mode:
+**From Telegram**: When you create a new topic and select a directory, a provider picker appears with Claude (default), Codex, Gemini, Antigravity, Pi, and Shell options. After provider selection, CCGram asks for session mode:
 
 - `✅ Standard` (normal approvals)
 - `🚀 YOLO` (provider-specific permissive mode)
 
-**From the terminal**: If you create a tmux window manually and start an agent CLI, CCGram auto-detects the provider from the running process name. When the pane command is a JS runtime wrapper (node, bun), it falls back to `ps -t` foreground process inspection to reliably identify the actual CLI. As a last resort, Gemini pane-title symbols (`✦`, `✋`, `◇`) are checked.
+**From the terminal**: If you create a tmux window manually and start an agent CLI, CCGram auto-detects the provider from the running process name (supporting both `antigravity` and `agy` formats). When the pane command is a JS runtime wrapper (node, bun), it falls back to `ps -t` foreground process inspection to reliably identify the actual CLI. As a last resort, Gemini pane-title symbols (`✦`, `✋`, `◇`) and Antigravity pane-title symbols (`🛸`) are checked.
 
-**Default provider**: Set `CCGRAM_PROVIDER=codex` (or `gemini`, `pi`, `shell`) to change the default. Claude is the default if unset.
+**Default provider**: Set `CCGRAM_PROVIDER=antigravity` (or `claude`, `codex`, `gemini`, `pi`, `shell`) to change the default. Claude is the default if unset.
 
 ## Session Mode (Standard vs YOLO)
 
@@ -43,10 +44,11 @@ Override the CLI command used to launch each provider via `CCGRAM_<NAME>_COMMAND
 CCGRAM_CLAUDE_COMMAND=ce --current
 CCGRAM_CODEX_COMMAND=my-codex-wrapper
 CCGRAM_GEMINI_COMMAND=/opt/gemini/run
+CCGRAM_ANTIGRAVITY_COMMAND=agy chat
 CCGRAM_PI_COMMAND=pi --model sonnet
 ```
 
-`<NAME>` is uppercase: `CLAUDE`, `CODEX`, `GEMINI`, `PI`. Defaults to the provider's built-in command (`claude`, `codex`, `gemini`, `pi`) when unset. New providers automatically support `CCGRAM_<NAME>_COMMAND` without code changes.
+`<NAME>` is uppercase: `CLAUDE`, `CODEX`, `GEMINI`, `ANTIGRAVITY`, `PI`. Defaults to the provider's built-in command (`claude`, `codex`, `gemini`, `antigravity chat`, `pi`) when unset. New providers automatically support `CCGRAM_<NAME>_COMMAND` without code changes.
 
 You can use this for a global "today" setup (all new sessions), for example:
 
@@ -63,6 +65,7 @@ Each provider exposes its own slash commands to the Telegram menu. Examples:
 - **Claude**: `/clear`, `/compact`, `/cost`, `/doctor`, `/permissions`...
 - **Codex**: `/model`, `/mode`, `/status`, `/diff`, `/compact`, `/mcp`...
 - **Gemini**: `/chat`, `/clear`, `/compress`, `/model`, `/memory`, `/vim`...
+- **Antigravity**: `/about`, `/chat`, `/clear`, `/commands`, `/compress`, `/mcp`, `/memory`, `/model`, `/permissions`, `/plan`, `/resume`, `/skills`, `/stats`, `/vim`... (plus dynamically discovered custom commands from workspace `.gemini/commands/<group>/*.toml` files).
 - **Pi**: `/clear`, `/compact`, `/export`, `/name`, `/reload`, `/session`, `/share`, `/changelog`... (plus discovered skills/prompts/extensions)
 
 ---
@@ -141,6 +144,28 @@ For ccgram-managed Gemini launches, CCGram injects `GEMINI_CLI_SYSTEM_SETTINGS_P
 ### Transcript
 
 Gemini transcripts are JSON files (whole-file read, not incremental) under `~/.gemini/tmp/`.
+
+## Antigravity CLI
+
+Antigravity CLI is the next-generation CLI client for Gemini-based agents (e.g., `antigravity` or `agy`). It lacks a session hook, so session tracking relies on hookless transcript discovery plus provider detection.
+
+Antigravity sets a pane title with a `🛸` marker when active. Like Gemini, it uses `@inquirer/select` for interactive permission prompts (detected by CCGram and mapped to inline keyboards).
+
+### Launch Hardening
+
+For ccgram-managed Antigravity launches, CCGram injects both `GEMINI_CLI_SYSTEM_SETTINGS_PATH` and `ANTIGRAVITY_CLI_SYSTEM_SETTINGS_PATH` pointing to `~/.ccgram/antigravity-system-settings.json` with `tools.shell.enableInteractiveShell=false` to ensure terminal stability and prevent node-pty crashes.
+
+### Transcript
+
+Antigravity transcripts are stored as incremental JSONL files inside the standard App Data history path:
+- History mapping: `~/.gemini/antigravity-cli/history.jsonl` (scanned in reverse to find the latest conversation ID matching the project workspace).
+- Session transcript: `~/.gemini/antigravity-cli/brain/<conversationId>/.system_generated/logs/transcript.jsonl`.
+
+### Commands
+
+In addition to standard built-in commands (like `/plan`, `/mcp`, `/memory`, `/skills`), Antigravity supports **dynamic custom slash command discovery**:
+- Scans for custom slash command definition `.toml` files under `~/.gemini/commands/<group>/`, `~/.agents/commands/<group>/`, `<project>/.gemini/commands/<group>/`, or `<project>/.agents/commands/<group>/`.
+- Commands are mapped as `/<group>:<command_name>` based on the subdirectory and TOML filename, with descriptions read directly from the TOML `description` key.
 
 ## Pi
 
