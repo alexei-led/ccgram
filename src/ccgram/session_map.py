@@ -34,19 +34,13 @@ from typing import Any, cast
 import aiofiles
 
 from .config import config
-from .utils import atomic_write_json
+from .utils import atomic_write_json, log_throttle_reset, log_throttled
 from .window_resolver import EMDASH_SESSION_PREFIX, is_foreign_window, is_window_id
 
 logger = structlog.get_logger()
 
 _LEGACY_SESSION_PREFIX = "ccbot:"
 _DEFAULT_PRIMARY_SESSION_GRACE_SEC = 60.0
-
-# Per-window memo of the last incoming session_id we logged a "preserve" for.
-# Decision is stable across poll cycles (steady state: same nested sid arrives
-# every ~1s); logging the conclusion every cycle is pure noise.  Log only on
-# transition — when the incoming sid we're rejecting changes.
-_preserve_log_memo: dict[str, str] = {}
 
 
 def _primary_session_grace_sec() -> float:
@@ -129,14 +123,14 @@ def _prefer_existing_primary(
     if not existing_is_fresh and not existing_is_newer:
         return None
 
-    if _preserve_log_memo.get(window_id) != incoming_sid:
-        _preserve_log_memo[window_id] = incoming_sid
-        logger.debug(
-            "Preserving primary session for window_id %s: existing %s, incoming %s treated as nested",
-            window_id,
-            state.session_id,
-            incoming_sid,
-        )
+    log_throttled(
+        logger,
+        f"preserve-primary:{window_id}",
+        "Preserving primary session for window_id %s: existing %s, incoming %s treated as nested",
+        window_id,
+        state.session_id,
+        incoming_sid,
+    )
     return {
         "session_id": state.session_id,
         "cwd": state.cwd,
@@ -429,7 +423,7 @@ class SessionMapSync:
                 "Pruning dead session_map entry: %s (window %s)", key, window_id
             )
             del raw[key]
-            _preserve_log_memo.pop(window_id, None)
+            log_throttle_reset(f"preserve-primary:{window_id}")
             if window_store.has_window(window_id):
                 window_store.remove_window(window_id)
                 changed_state = True
