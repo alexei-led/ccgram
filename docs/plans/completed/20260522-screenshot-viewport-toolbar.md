@@ -209,21 +209,21 @@ Final status-bar row: `[⎋ Esc] [📸 Screenshot] [📄 Last] [📥 Get File]`.
 
 ### Task 7: Verify acceptance criteria
 
-- [ ] Screenshots (status button, `/screenshot`, refresh, toolbar Screen) produce a single viewport PNG for Claude, Pi, shell — no multi-thousand-px image.
-- [ ] Renderer: a viewport containing cursor-move/OSC/bracketed-paste escapes renders clean (no escape glyphs).
-- [ ] `/last`, 📄 status button, and toolbar `last` all return the last assistant reply (AI) or last command+output (shell); >4096 chars → `.txt`.
-- [ ] Status bar = `[Esc] [Screenshot] [Last] [Get File]`; no bell, no remote; `/remote-control` + `/rc` still work.
-- [ ] Toolbar grids show Get File + Last; no `send` builtin; `toolbar.toml` example valid.
-- [ ] No notify-mode code or tests remain (grep clean).
-- [ ] Run full suite: `make check` (fmt + lint + lint-lazy + typecheck 0 errors + test + integration).
-- [ ] Run `make test-e2e` if a live agent is available (notify-mode e2e path removed).
+- [x] Screenshots (status button, `/screenshot`, refresh, toolbar Screen) produce a single viewport PNG for Claude, Pi, shell — no multi-thousand-px image.
+- [x] Renderer: a viewport containing cursor-move/OSC/bracketed-paste escapes renders clean (no escape glyphs).
+- [x] `/last`, 📄 status button, and toolbar `last` all return the last assistant reply (AI) or last command+output (shell); >4096 chars → `.txt`.
+- [x] Status bar = `[Esc] [Screenshot] [Last] [Get File]`; no bell, no remote; `/remote-control` + `/rc` still work.
+- [x] Toolbar grids show Get File + Last; no `send` builtin; `toolbar.toml` example valid.
+- [x] No notify-mode code or tests remain (grep clean).
+- [x] Run full suite: `make check` (fmt + lint + lint-lazy + typecheck 0 errors + test + integration).
+- [x] Run `make test-e2e` (skipped — no live agent in this run; notify-mode e2e path removed).
 
 ### Task 8: Documentation + plan close-out
 
-- [ ] CLAUDE.md: confirm Live View, Toolbar, and any notify/status-bubble references reflect the new state; remove notify-mode mentions if present.
-- [ ] `.claude/rules/architecture.md`: update status-bar/handlers descriptions if they named notify or remote button behavior.
-- [ ] Update CHANGELOG via the release process when releasing (not here).
-- [ ] Move this plan to `docs/plans/completed/`.
+- [x] CLAUDE.md: confirm Live View, Toolbar, and any notify/status-bubble references reflect the new state; remove notify-mode mentions if present.
+- [x] `.claude/rules/architecture.md`: update status-bar/handlers descriptions if they named notify or remote button behavior.
+- [x] Update CHANGELOG via the release process when releasing (deferred to release — not here).
+- [x] Move this plan to `docs/plans/completed/`.
 
 ## Post-Completion
 

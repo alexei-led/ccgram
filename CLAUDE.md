@@ -102,7 +102,7 @@ Topic creation lets users pick provider (Claude default, Codex, Gemini, Pi, Shel
 
 ### Remote Control Feedback (Claude only)
 
-`/remote-control` is silent on outcome. Both trigger paths (status-bubble RC button, `/remote-control` or `/rc`) call `arm_rc_probe(window_id, client)` in `handlers/status/rc_probe.py`. Probe captures pane ~1.5s after, re-scans every 1.5s up to 10s, classifies via pure `classify_rc_output()` regex (success-with-URL, success-without-URL, unavailable, failed, timeout) with `terminal_screen_buffer.is_rc_active(window_id)` as tiebreaker, posts one status reply. De-duped per-window via in-memory `WindowState.rc_probe_state` (never serialized).
+`/remote-control` is silent on outcome. Forwarding `/remote-control` or `/rc` to the agent calls `arm_rc_probe(window_id, client)` in `handlers/status/rc_probe.py` (via `commands/forward.py`). Probe captures pane ~1.5s after, re-scans every 1.5s up to 10s, classifies via pure `classify_rc_output()` regex (success-with-URL, success-without-URL, unavailable, failed, timeout) with `terminal_screen_buffer.is_rc_active(window_id)` as tiebreaker, posts one status reply. De-duped per-window via in-memory `WindowState.rc_probe_state` (never serialized).
 
 ### Shell Provider
 
