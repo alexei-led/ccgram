@@ -107,14 +107,51 @@ def _dim_debug_event(
     return event_dict
 
 
+def _use_colors(stream: object) -> bool:
+    """Colorize only on a TTY, honoring the NO_COLOR / FORCE_COLOR conventions.
+
+    Keeps raw ANSI escapes out of redirected/piped log files while still
+    coloring the interactive tmux pane the daemon runs in.
+    """
+    if os.environ.get("NO_COLOR"):
+        return False
+    if os.environ.get("FORCE_COLOR"):
+        return True
+    isatty = getattr(stream, "isatty", None)
+    return bool(isatty and isatty())
+
+
+def _log_level_styles() -> dict[str, str]:
+    """Per-level colors so anomalies stand out and routine debug recedes.
+
+    Values are raw ANSI escapes, matching structlog's own defaults. The key
+    change from the defaults: debug is grey (was green, indistinct from info),
+    and warning/error/critical are bold so they punctuate the stream.
+    """
+    styles = structlog.dev.ConsoleRenderer.get_default_level_styles().copy()
+    styles.update(
+        {
+            "debug": _GRAY_ON,  # grey — recedes on a dark terminal
+            "info": "\x1b[32m",  # green — normal flow (structlog default)
+            "warning": "\x1b[1;33m",  # bold yellow
+            "warn": "\x1b[1;33m",
+            "error": "\x1b[1;31m",  # bold red
+            "exception": "\x1b[1;31m",  # bold red
+            "critical": "\x1b[1;91m",  # bold bright red
+        }
+    )
+    return styles
+
+
 def setup_logging(log_level: str) -> None:
     """Configure structured, colored logging for interactive CLI use."""
     numeric_level = getattr(logging, log_level, None)
     if not isinstance(numeric_level, int):
         numeric_level = logging.INFO
 
-    level_styles = structlog.dev.ConsoleRenderer.get_default_level_styles(colors=True)
-    level_styles["debug"] = _GRAY_ON
+    level_styles = _log_level_styles()
+    stdout_colors = _use_colors(sys.stdout)
+    stderr_colors = _use_colors(sys.stderr)
 
     structlog.configure(
         processors=[
@@ -126,9 +163,11 @@ def setup_logging(log_level: str) -> None:
             structlog.processors.format_exc_info,
             _dim_debug_event,
             structlog.dev.ConsoleRenderer(
-                colors=True,
+                colors=stdout_colors,
                 pad_event=40,
-                level_styles=level_styles,
+                # level_styles colors the level even when colors=False, so gate
+                # it on the same flag to keep ANSI out of redirected output.
+                level_styles=level_styles if stdout_colors else None,
             ),
         ],
         wrapper_class=structlog.stdlib.BoundLogger,
@@ -143,7 +182,10 @@ def setup_logging(log_level: str) -> None:
     handler = logging.StreamHandler()
     handler.setFormatter(
         structlog.stdlib.ProcessorFormatter(
-            processor=structlog.dev.ConsoleRenderer(colors=True),
+            processor=structlog.dev.ConsoleRenderer(
+                colors=stderr_colors,
+                level_styles=level_styles if stderr_colors else None,
+            ),
             foreign_pre_chain=[
                 structlog.stdlib.add_log_level,
                 structlog.stdlib.add_logger_name,
