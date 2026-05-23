@@ -55,9 +55,12 @@ def get_tool_modes(window_id: str) -> ToolModeProjection | None:
         if state.tool_call_visibility in TOOL_CALL_VISIBILITY_MODES
         else DEFAULT_TOOL_CALL_VISIBILITY
     )
+    batch_mode = (
+        state.batch_mode if state.batch_mode in BATCH_MODES else DEFAULT_BATCH_MODE
+    )
     return ToolModeProjection(
         window_id=window_id,
-        batch_mode=state.batch_mode,
+        batch_mode=batch_mode,
         tool_call_visibility=visibility,
         batch_mode_resolved=_resolve_batch_mode(state.batch_mode),
         tool_calls_hidden_resolved=_resolve_tool_calls_hidden(visibility),

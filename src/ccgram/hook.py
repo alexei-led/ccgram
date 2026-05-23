@@ -960,6 +960,77 @@ def _resolve_transcript_path(
     return ""
 
 
+def _read_session_map_entry(session_window_key: str) -> dict[str, str]:
+    """Return the current session_map entry for ``session_window_key`` or {}."""
+    # Lazy: same hook fast-path rationale as ``_write_event``.
+    from .utils import ccgram_dir
+
+    map_file = ccgram_dir() / "session_map.json"
+    if not map_file.exists():
+        return {}
+    try:
+        raw = json.loads(map_file.read_text())
+    except OSError, json.JSONDecodeError:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    entry = raw.get(session_window_key)
+    return entry if isinstance(entry, dict) else {}
+
+
+def _refresh_session_map_if_stale(
+    session_window_key: str,
+    session_id: str,
+    provider_name: str,
+    window_name: str,
+    payload_cwd: str,
+    payload_transcript_path: str,
+) -> None:
+    """Refresh ``session_map.json`` when a non-SessionStart event reports a
+    different session_id or provider than the stored entry.
+
+    Some installs (notably Pi via cc-thingz hook-runner) deliver Stop/Subagent
+    hooks without a matching SessionStart through this hook path, so the map
+    can keep pointing at the previous provider's session. We use values the
+    hook payload already carries — no external scanning — to avoid the
+    recovery anti-pattern called out in PR #51.
+    """
+    existing = _read_session_map_entry(session_window_key)
+    if not existing:
+        # SessionStart owns initial creation; never extend the map from a
+        # non-SessionStart event. Missing entry means no prior session was
+        # tracked here — leave the fallback (cwd-based discovery in
+        # SessionMonitor) to handle it.
+        return
+    if (
+        existing.get("session_id") == session_id
+        and existing.get("provider_name") == provider_name
+    ):
+        return
+    cwd = payload_cwd or existing.get("cwd", "")
+    transcript_path = _resolve_transcript_path(
+        provider_name, session_id, cwd, payload_transcript_path
+    )
+    tmux_session_name = session_window_key.rsplit(":", 1)[0]
+    _update_session_map(
+        session_window_key,
+        session_id,
+        cwd,
+        window_name,
+        transcript_path,
+        tmux_session_name,
+        provider_name,
+    )
+    logger.info(
+        "Refreshed stale session_map for %s: %s/%s -> %s/%s",
+        session_window_key,
+        existing.get("provider_name") or "<none>",
+        (existing.get("session_id") or "<none>")[:8],
+        provider_name,
+        session_id[:8],
+    )
+
+
 def _provider_from_pane_tty(pane_tty: str) -> ProviderName | None:
     """Best-effort provider detection from foreground tty process commands.
 
@@ -1109,6 +1180,14 @@ def _process_hook_stdin(provider_name: str | None = None) -> None:
         _write_event(event, normalized.session_id, session_window_key, data)
         return
 
+    _refresh_session_map_if_stale(
+        session_window_key,
+        normalized.session_id,
+        detected_provider,
+        window_name,
+        str(normalized.cwd) if normalized.cwd else "",
+        str(normalized.transcript_path) if normalized.transcript_path else "",
+    )
     _write_event(event, normalized.session_id, session_window_key, normalized.data)
 
 

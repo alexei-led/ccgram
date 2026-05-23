@@ -43,12 +43,13 @@ def _resolve_provider_for_file(window_id: str, file_path: Path) -> Any:
     provider_name: str | None = None
     try:
         # Lazy: window_state_ports.identity_state imports the kernel which
-        # may not yet be wired during early transcript-discovery paths; the
-        # ImportError fallback gates on that case explicitly.
+        # may not yet be wired during early transcript-discovery paths.
+        # RuntimeError comes from the unwired _WindowStoreProxy;
+        # ImportError guards against an unfinished port package on disk.
         from .window_state_ports import identity_state
 
         provider_name = identity_state.get_provider_name(window_id)
-    except ImportError:
+    except ImportError, RuntimeError:
         pass
     provider = get_provider_for_window(window_id, provider_name=provider_name)
     inferred = detect_provider_from_transcript_path(str(file_path))

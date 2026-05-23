@@ -104,13 +104,14 @@ def clear_transcript_path(window_id: str) -> None:
 
     Used by provider-switch coordination when the new provider has a
     chat-first command path (shell-like) and the old transcript no
-    longer applies. Matches prior behavior: in-memory mutation only;
-    save scheduling rides along with the surrounding provider change.
+    longer applies. Schedules a save so the cleared field persists
+    even when called outside a surrounding provider write.
     """
     state = window_store.window_states.get(window_id)
     if state is None or not state.transcript_path:
         return
     state.transcript_path = ""
+    window_store._schedule_save()
 
 
 __all__ = [

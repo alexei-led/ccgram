@@ -303,8 +303,7 @@ class WindowStateStore:
         if state.origin == origin:
             return
         state.origin = origin
-        if origin == EXTERNAL_WINDOW_ORIGIN:
-            state.external = True
+        state.external = origin == EXTERNAL_WINDOW_ORIGIN
         self._schedule_save()
 
     def set_worktree(self, window_id: str, worktree_path: str, branch: str) -> None:

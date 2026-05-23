@@ -26,10 +26,13 @@ def view_window(window_id: str) -> WindowView | None:
     if identity is None:
         return None
     # All three ports read from the same window_states dict, so once
-    # identity is non-None the other projections are too.
+    # identity is non-None the other projections are too. The explicit
+    # check survives `python -O` (asserts stripped) and avoids an
+    # AttributeError if the invariant ever breaks.
     lifecycle = _lifecycle_state.get_lifecycle(window_id)
     tools = _tool_state.get_tool_modes(window_id)
-    assert lifecycle is not None and tools is not None
+    if lifecycle is None or tools is None:
+        return None
     return WindowView(
         window_id=window_id,
         cwd=identity.cwd,

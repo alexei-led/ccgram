@@ -56,6 +56,93 @@ _CODEX_SESSION_ID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 _GEMINI_SESSION_ID = "b2c3d4e5-f678-90ab-cdef-1234567890ab"
 
 
+def test_pi_stop_refreshes_stale_claude_entry_in_session_map(
+    tmp_path: Path, monkeypatch
+) -> None:
+    cwd = str(tmp_path / "proj")
+    pi_session_id = "019e557d-01b3-7e20-9a83-76ba0fdaae3d"
+    stale_claude_session_id = "019e557e-f3cc-70c5-95af-d2ea388ed166"
+    transcript_dir = (
+        tmp_path / ".pi" / "agent" / "sessions" / _encode_pi_cwd_dirname(cwd)
+    )
+    transcript_dir.mkdir(parents=True)
+    transcript = transcript_dir / f"2026-05-23T15-38-36-340Z_{pi_session_id}.jsonl"
+    transcript.write_text('{"type":"session"}\n')
+    monkeypatch.setenv("HOME", str(tmp_path))
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    monkeypatch.setenv("CCGRAM_DIR", str(state_dir))
+    (state_dir / "session_map.json").write_text(
+        json.dumps(
+            {
+                "ccgram:@0": {
+                    "session_id": stale_claude_session_id,
+                    "cwd": cwd,
+                    "window_name": "project",
+                    "transcript_path": "",
+                    "provider_name": "claude",
+                }
+            }
+        )
+    )
+
+    _run_hook(
+        monkeypatch,
+        {
+            "session_id": pi_session_id,
+            "cwd": cwd,
+            "hook_event_name": "Stop",
+        },
+        "pi",
+    )
+
+    session_map = json.loads((state_dir / "session_map.json").read_text())
+    entry = session_map["ccgram:@0"]
+    assert entry["session_id"] == pi_session_id
+    assert entry["provider_name"] == "pi"
+    assert entry["transcript_path"] == str(transcript)
+
+
+def test_codex_stop_does_not_refresh_session_map_when_in_sync(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("CCGRAM_DIR", str(tmp_path))
+    (tmp_path / "session_map.json").write_text(
+        json.dumps(
+            {
+                "ccgram:@0": {
+                    "session_id": _CODEX_SESSION_ID,
+                    "cwd": "/tmp/project",
+                    "window_name": "project",
+                    "transcript_path": "/tmp/.codex/session.jsonl",
+                    "provider_name": "codex",
+                }
+            }
+        )
+    )
+
+    _run_hook(
+        monkeypatch,
+        {
+            "session_id": _CODEX_SESSION_ID,
+            "cwd": "/tmp/project",
+            "transcript_path": "/tmp/.codex/session.jsonl",
+            "hook_event_name": "Stop",
+            "model": "gpt-5",
+            "permission_mode": "default",
+            "turn_id": "turn",
+            "stop_hook_active": False,
+        },
+        "codex",
+    )
+
+    session_map = json.loads((tmp_path / "session_map.json").read_text())
+    entry = session_map["ccgram:@0"]
+    assert entry["session_id"] == _CODEX_SESSION_ID
+    assert entry["provider_name"] == "codex"
+    assert entry["transcript_path"] == "/tmp/.codex/session.jsonl"
+
+
 def test_codex_stop_redacts_raw_prompt_and_tool_payload(
     tmp_path: Path, monkeypatch
 ) -> None:
