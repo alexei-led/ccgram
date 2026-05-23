@@ -10,7 +10,6 @@ from ccgram.handlers.messaging_pipeline.message_task import (
     StatusUpdateTask,
 )
 from ccgram.handlers.status.status_bubble import (
-    _status_drafts,
     _status_msg_info,
     clear_status_message,
     clear_status_msg_info,
@@ -21,7 +20,6 @@ from ccgram.handlers.status.status_bubble import (
     process_status_update,
     send_status_text,
 )
-from ccgram.telegram_draft import mark_draft_unavailable, reset_draft_state
 from ccgram.window_state_store import PaneInfo, WindowState, window_store
 
 USER_ID = 1
@@ -33,16 +31,8 @@ CHAT_ID = 42
 @pytest.fixture(autouse=True)
 def _clear_status_tracking():
     _status_msg_info.clear()
-    _status_drafts.clear()
-    reset_draft_state()
-    # All tests run with draft streaming disabled (legacy edit path) so we
-    # observe a deterministic bot.send_message / bot.edit_message_text call
-    # pattern.  Streaming-mode behaviour is covered by test_telegram_draft.py.
-    mark_draft_unavailable("test")
     yield
     _status_msg_info.clear()
-    _status_drafts.clear()
-    reset_draft_state()
 
 
 def _make_bot(send_id: int = 99) -> AsyncMock:
@@ -62,7 +52,7 @@ class TestSendStatusText:
         bot = _make_bot(send_id=99)
         await send_status_text(bot, USER_ID, THREAD_ID, WINDOW_ID, "running...")
 
-        # Legacy DraftStream calls bot.send_message
+        # safe_send uses bot.send_message with entity-based formatting.
         bot.send_message.assert_awaited_once()
         assert _status_msg_info[(USER_ID, THREAD_ID)] == (
             99,
@@ -70,8 +60,6 @@ class TestSendStatusText:
             "running...",
             CHAT_ID,
         )
-        # A DraftStream is recorded for the bubble lifetime
-        assert (USER_ID, THREAD_ID) in _status_drafts
 
     @patch("ccgram.handlers.status.status_bubble.thread_router")
     @patch(
@@ -79,7 +67,6 @@ class TestSendStatusText:
         new_callable=AsyncMock,
     )
     async def test_edits_existing_same_window(self, mock_edit, mock_router):
-        # No active DraftStream for this skey — falls back to edit_with_fallback.
         mock_router.resolve_chat_id.return_value = CHAT_ID
         _status_msg_info[(USER_ID, THREAD_ID)] = (50, WINDOW_ID, "old", CHAT_ID)
         mock_edit.return_value = True
@@ -90,19 +77,6 @@ class TestSendStatusText:
         mock_edit.assert_awaited_once()
         bot.send_message.assert_not_called()
         assert _status_msg_info[(USER_ID, THREAD_ID)][2] == "new text"
-
-    @patch("ccgram.handlers.status.status_bubble.thread_router")
-    async def test_edit_via_draft_stream_replace(self, mock_router):
-        # When a DraftStream is tracked for this skey, replace() drives the edit.
-        mock_router.resolve_chat_id.return_value = CHAT_ID
-        bot = _make_bot(send_id=99)
-        await send_status_text(bot, USER_ID, THREAD_ID, WINDOW_ID, "first")
-        bot.send_message.assert_awaited_once()
-
-        # Second call with new text triggers the streaming/legacy edit path.
-        await send_status_text(bot, USER_ID, THREAD_ID, WINDOW_ID, "second")
-        bot.edit_message_text.assert_awaited_once()
-        assert _status_msg_info[(USER_ID, THREAD_ID)][2] == "second"
 
     @patch("ccgram.handlers.status.status_bubble.thread_router")
     @patch(
@@ -158,23 +132,6 @@ class TestClearStatusMessage:
         bot.delete_message.assert_called_once_with(chat_id=CHAT_ID, message_id=50)
         assert (USER_ID, THREAD_ID) not in _status_msg_info
 
-    async def test_aborts_active_draft_stream(self):
-        # When a DraftStream is tracked, abort() is what cleans up the message.
-        _status_msg_info[(USER_ID, THREAD_ID)] = (50, WINDOW_ID, "text", CHAT_ID)
-        stream = MagicMock()
-        stream.closed = False
-        stream.abort = AsyncMock()
-        _status_drafts[(USER_ID, THREAD_ID)] = stream
-
-        bot = AsyncMock()
-        await clear_status_message(bot, USER_ID, THREAD_ID)
-
-        stream.abort.assert_awaited_once()
-        # bot.delete_message must NOT be called when abort handles cleanup.
-        bot.delete_message.assert_not_called()
-        assert (USER_ID, THREAD_ID) not in _status_msg_info
-        assert (USER_ID, THREAD_ID) not in _status_drafts
-
     async def test_noop_when_no_tracking(self):
         bot = AsyncMock()
         await clear_status_message(bot, USER_ID, THREAD_ID)
@@ -199,23 +156,6 @@ class TestConvertStatusToContent:
         assert result == 50
         mock_edit.assert_called_once()
         assert (USER_ID, THREAD_ID) not in _status_msg_info
-
-    async def test_finalizes_draft_stream_on_convert(self):
-        _status_msg_info[(USER_ID, THREAD_ID)] = (50, WINDOW_ID, "old", CHAT_ID)
-        stream = MagicMock()
-        stream.closed = False
-        stream.finalize = AsyncMock()
-        _status_drafts[(USER_ID, THREAD_ID)] = stream
-
-        bot = AsyncMock()
-        result = await convert_status_to_content(
-            bot, USER_ID, THREAD_ID, WINDOW_ID, "content text"
-        )
-
-        assert result == 50
-        stream.finalize.assert_awaited_once_with("content text", reply_markup=None)
-        assert (USER_ID, THREAD_ID) not in _status_msg_info
-        assert (USER_ID, THREAD_ID) not in _status_drafts
 
     async def test_returns_none_when_no_status(self):
         bot = AsyncMock()

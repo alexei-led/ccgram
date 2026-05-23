@@ -4,10 +4,6 @@ Verifies three invariants:
 1. Edit failure recovers by sending a new status message (no ghost messages).
 2. Content delivery does NOT eagerly recreate status (poll loop handles it).
 3. send_status_text edits existing status instead of sending new.
-
-These tests force ``DraftStream`` into legacy mode so the call pattern
-is deterministic at the ``bot.send_message`` / ``bot.edit_message_text``
-level.  Streaming-mode behaviour is covered by ``test_telegram_draft.py``.
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -20,13 +16,11 @@ from ccgram.handlers.messaging_pipeline.message_task import (
     StatusUpdateTask,
 )
 from ccgram.handlers.status.status_bubble import (
-    _status_drafts,
     _status_msg_info,
     process_status_clear,
     process_status_update,
     send_status_text,
 )
-from ccgram.telegram_draft import mark_draft_unavailable, reset_draft_state
 
 USER_ID = 1
 THREAD_ID = 10
@@ -38,13 +32,8 @@ SKEY = (USER_ID, THREAD_ID)
 @pytest.fixture(autouse=True)
 def _clear_status_tracking():
     _status_msg_info.pop(SKEY, None)
-    _status_drafts.pop(SKEY, None)
-    reset_draft_state()
-    mark_draft_unavailable("test")
     yield
     _status_msg_info.pop(SKEY, None)
-    _status_drafts.pop(SKEY, None)
-    reset_draft_state()
 
 
 def _make_bot(send_id: int = 200) -> AsyncMock:

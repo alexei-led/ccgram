@@ -20,8 +20,7 @@ from telegram.error import TelegramError
 
 from ...claude_task_state import get_claude_task_snapshot, get_claude_wait_header
 from ...expandable_quote import format_expandable_quote
-from ...telegram_client import TelegramClient, unwrap_bot
-from ...telegram_draft import DraftStream
+from ...telegram_client import TelegramClient
 from ...thread_router import thread_router
 from ...window_state_store import PaneInfo, window_store
 
@@ -33,7 +32,7 @@ from ..callback_data import (
     CB_STATUS_SCREENSHOT,
     IDLE_STATUS_TEXT,
 )
-from ..messaging_pipeline.message_sender import edit_with_fallback, rate_limit_send
+from ..messaging_pipeline.message_sender import edit_with_fallback, safe_send
 from ..messaging_pipeline.message_task import (
     StatusClearTask,
     StatusUpdateTask,
@@ -49,9 +48,6 @@ logger = structlog.get_logger()
 
 # Status message tracking: (user_id, thread_key) -> (message_id, window_id, last_text, chat_id)
 _status_msg_info: dict[tuple[int, int], tuple[int, str, str, int]] = {}
-
-# Active DraftStream per status bubble: (user_id, thread_key) -> DraftStream
-_status_drafts: dict[tuple[int, int], DraftStream] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -280,9 +276,8 @@ async def send_status_text(
     """Send a new status message with action buttons and track it.
 
     If a status message already exists for this (user, thread), edit it
-    in-place via the bubble's ``DraftStream`` (streaming when the Bot API
-    supports it, ``editMessageText`` otherwise).  Same-window same-text
-    calls are a no-op.
+    in-place via ``edit_with_fallback`` (entity-formatted, plain-text fallback
+    on TelegramError).  Same-window same-text calls are a no-op.
     """
     skey = (user_id, thread_id_or_0)
     thread_id: int | None = thread_id_or_0 if thread_id_or_0 != 0 else None
@@ -301,75 +296,29 @@ async def send_status_text(
         if stored_wid == window_id and text == last_text:
             return
         if stored_wid == window_id:
-            success = await _replace_or_edit_bubble(
-                client, skey, stored_chat_id, msg_id, text, keyboard
+            success = await edit_with_fallback(
+                client, stored_chat_id, msg_id, text, reply_markup=keyboard
             )
             if success:
                 _status_msg_info[skey] = (msg_id, window_id, text, stored_chat_id)
                 return
-            # Both stream replace and legacy edit failed. The original message
-            # may still exist server-side — best-effort delete to avoid an
-            # orphan bubble before creating its replacement.
+            # Edit failed — original message may still exist server-side.
+            # Best-effort delete to avoid an orphan before creating a replacement.
             with contextlib.suppress(TelegramError):
                 await client.delete_message(chat_id=stored_chat_id, message_id=msg_id)
             _status_msg_info.pop(skey, None)
-            _status_drafts.pop(skey, None)
         else:
             await clear_status_message(client, user_id, thread_id_or_0)
 
-    msg_id = await _start_bubble(client, skey, chat_id, thread_id, text, keyboard)
-    if msg_id is not None:
-        _status_msg_info[skey] = (msg_id, window_id, text, chat_id)
-
-
-async def _start_bubble(
-    client: TelegramClient,
-    skey: tuple[int, int],
-    chat_id: int,
-    thread_id: int | None,
-    text: str,
-    keyboard: InlineKeyboardMarkup,
-) -> int | None:
-    """Open a fresh DraftStream for a status bubble; return message_id."""
-    await rate_limit_send(chat_id)
-    stream = DraftStream(
-        unwrap_bot(client),
+    msg = await safe_send(
+        client,
         chat_id,
+        text,
         message_thread_id=thread_id,
         reply_markup=keyboard,
     )
-    msg_id = await stream.start(text)
-    if msg_id is None:
-        return None
-    _status_drafts[skey] = stream
-    return msg_id
-
-
-async def _replace_or_edit_bubble(
-    client: TelegramClient,
-    skey: tuple[int, int],
-    chat_id: int,
-    msg_id: int,
-    text: str,
-    keyboard: InlineKeyboardMarkup,
-) -> bool:
-    """Update an existing bubble. Use the active DraftStream if present;
-    otherwise fall back to ``edit_with_fallback`` (legacy entity path).
-    """
-    stream = _status_drafts.get(skey)
-    if stream is not None and not stream.closed:
-        try:
-            await stream.replace(text, reply_markup=keyboard)
-        except TelegramError as exc:
-            logger.debug("DraftStream.replace failed for %s: %s", skey, exc)
-            _status_drafts.pop(skey, None)
-            return await edit_with_fallback(
-                client, chat_id, msg_id, text, reply_markup=keyboard
-            )
-        return True
-    return await edit_with_fallback(
-        client, chat_id, msg_id, text, reply_markup=keyboard
-    )
+    if msg is not None:
+        _status_msg_info[skey] = (msg.message_id, window_id, text, chat_id)
 
 
 async def clear_status_message(
@@ -380,12 +329,6 @@ async def clear_status_message(
     """Delete the status message for a user."""
     skey = (user_id, thread_id_or_0)
     info = _status_msg_info.pop(skey, None)
-    stream = _status_drafts.pop(skey, None)
-    if stream is not None and not stream.closed:
-        # abort() deletes the underlying message and closes the stream.
-        with contextlib.suppress(TelegramError):
-            await stream.abort()
-        return
     if info:
         msg_id, _, _, chat_id = info
         try:
@@ -407,26 +350,14 @@ async def convert_status_to_content(
     """
     skey = (user_id, thread_id_or_0)
     info = _status_msg_info.pop(skey, None)
-    stream = _status_drafts.pop(skey, None)
     if not info:
         return None
 
     msg_id, stored_wid, _, chat_id = info
     if stored_wid != window_id:
-        if stream is not None and not stream.closed:
-            with contextlib.suppress(TelegramError):
-                await stream.abort()
-            return None
         with contextlib.suppress(TelegramError):
             await client.delete_message(chat_id=chat_id, message_id=msg_id)
         return None
-
-    if stream is not None and not stream.closed:
-        try:
-            await stream.finalize(content_text, reply_markup=None)
-            return msg_id
-        except TelegramError as exc:
-            logger.debug("DraftStream.finalize failed for %s: %s", skey, exc)
 
     success = await edit_with_fallback(
         client,
@@ -493,4 +424,3 @@ def clear_status_msg_info(user_id: int, thread_id: int | None = None) -> None:
     """
     skey = (user_id, thread_key(thread_id))
     _status_msg_info.pop(skey, None)
-    _status_drafts.pop(skey, None)
