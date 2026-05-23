@@ -258,6 +258,10 @@ async def _dispatch(update: Update, _context: "ContextTypes.DEFAULT_TYPE") -> No
         return
     if query.data.startswith(CB_AGENT_CANCEL):
         window_id = query.data[len(CB_AGENT_CANCEL) :]
+        user = update.effective_user
+        if user is None or not user_owns_window(user.id, window_id):
+            await query.answer("Not your window")
+            return
         await _ack_and_strip(
             query,
             f"Cancelled. Agent still **{identity_state.get_provider_name(window_id) or '(unknown)'}**.",

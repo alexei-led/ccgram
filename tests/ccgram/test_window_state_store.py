@@ -693,6 +693,7 @@ class TestWindowStateFullPersistenceCharacterization:
             worktree_path="/repo.worktrees/ccg-x",
             worktree_branch="ccg/x",
             gemini_external_warned=True,
+            provider_manual_override=True,
         )
         loaded = WindowState.from_dict(original.to_dict())
         assert loaded == original
@@ -760,6 +761,19 @@ class TestWindowStateFullPersistenceCharacterization:
     def test_gemini_external_warned_round_trip(self) -> None:
         ws = WindowState(cwd="/p", gemini_external_warned=True)
         assert WindowState.from_dict(ws.to_dict()).gemini_external_warned is True
+
+    def test_provider_manual_override_omitted_when_false(self) -> None:
+        assert "provider_manual_override" not in WindowState(cwd="/p").to_dict()
+
+    def test_provider_manual_override_round_trip(self) -> None:
+        ws = WindowState(cwd="/p", provider_manual_override=True)
+        d = ws.to_dict()
+        assert d["provider_manual_override"] is True
+        assert WindowState.from_dict(d).provider_manual_override is True
+
+    def test_provider_manual_override_defaults_false_on_load(self) -> None:
+        ws = WindowState.from_dict({"session_id": "s", "cwd": "/p"})
+        assert ws.provider_manual_override is False
 
 
 class TestWindowStateTransientRcProbeFieldsNotSerialized:

@@ -83,6 +83,7 @@ WINDOW_STATE_FIELDS: frozenset[str] = frozenset(
         "worktree_path",
         "worktree_branch",
         "gemini_external_warned",
+        "provider_manual_override",
     }
 )
 

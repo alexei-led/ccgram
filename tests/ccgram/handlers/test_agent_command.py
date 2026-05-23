@@ -238,7 +238,7 @@ async def test_auto_falls_back_to_shell_and_triggers_ensure_setup(monkeypatch):
 
 async def test_callback_cancel_keeps_state(monkeypatch):
     monkeypatch.setattr(
-        "ccgram.handlers.callback_helpers.user_owns_window", lambda u, w: True
+        "ccgram.handlers.agent_command.user_owns_window", lambda u, w: True
     )
     edited: dict[str, str] = {}
 
@@ -251,6 +251,16 @@ async def test_callback_cancel_keeps_state(monkeypatch):
 
     assert window_store.window_states["@7"].provider_name == "claude"
     assert "Cancelled" in edited["text"]
+
+
+async def test_callback_cancel_rejects_foreign_user(monkeypatch):
+    monkeypatch.setattr(
+        "ccgram.handlers.agent_command.user_owns_window", lambda u, w: False
+    )
+    update = _make_query(f"{CB_AGENT_CANCEL}@7")
+    await ac._dispatch(update, MagicMock())
+    update.callback_query.answer.assert_awaited_once_with("Not your window")
+    assert window_store.window_states["@7"].provider_name == "claude"
 
 
 async def test_callback_set_provider_clears_transcript(monkeypatch, clear_map_mock):
