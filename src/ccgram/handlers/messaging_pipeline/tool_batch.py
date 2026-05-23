@@ -618,6 +618,20 @@ def has_active_batch(user_id: int, thread_id_or_0: int) -> bool:
     return (user_id, thread_id_or_0) in _active_batches
 
 
+def has_ephemeral_active_batch(user_id: int, thread_id_or_0: int) -> bool:
+    """Return True if an active batch exists for this (user, thread) and the
+    batch's window is in ephemeral mode.
+
+    Used by the queue dispatcher to suppress status updates while an
+    ephemeral tool batch owns the bubble — the batch itself signals
+    activity, and replacing it with a status bubble causes a visible
+    flicker (formatted tool calls vanish, plain status appears, then the
+    assistant text replaces that).
+    """
+    batch = _active_batches.get((user_id, thread_id_or_0))
+    return batch is not None and is_ephemeral_tools(batch.window_id)
+
+
 @topic_state.register("topic")
 def clear_batch_for_topic(user_id: int, thread_id: int | None = None) -> None:
     """Clear active batch for a specific topic (called on topic cleanup)."""

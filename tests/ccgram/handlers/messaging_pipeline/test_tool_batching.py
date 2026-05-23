@@ -5,11 +5,16 @@ import pytest
 from telegram.error import RetryAfter
 
 from ccgram.handlers.messaging_pipeline.message_queue import (
+    _dispatch,
     _handle_content_task,
     get_or_create_queue,
     shutdown_workers,
 )
-from ccgram.handlers.messaging_pipeline.message_task import ContentTask, MessageTask
+from ccgram.handlers.messaging_pipeline.message_task import (
+    ContentTask,
+    MessageTask,
+    StatusUpdateTask,
+)
 from ccgram.handlers.messaging_pipeline.tool_batch import (
     BATCH_MAX_ENTRIES,
     BATCH_MAX_LENGTH,
@@ -941,3 +946,108 @@ class TestBatchResultTruncation:
         result_text = "line one\nline two\nline three"
         first_line = result_text.split("\n", 1)[0][:200]
         assert first_line == "line one"
+
+
+class TestDispatcherSuppressesStatusOnEphemeralBatch:
+    """Status updates must NOT flush an active ephemeral tool batch.
+
+    Repro for the visible-flicker bug: while tool calls are streaming, a
+    1s status poll would delete the formatted tool bubble and insert a
+    status bubble (with no-markdown text, so it looks plain) in its
+    position — appearing as the tool bubble "flipping to plain text".
+    The dispatcher must drop the StatusUpdateTask in this case.
+    """
+
+    def setup_method(self) -> None:
+        _active_batches.clear()
+
+    def teardown_method(self) -> None:
+        _active_batches.clear()
+
+    async def test_status_update_dropped_when_ephemeral_batch_active(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Ephemeral batch owns the bubble for (user=1, thread=10).
+        monkeypatch.setattr(
+            "ccgram.handlers.messaging_pipeline.tool_batch.is_ephemeral_tools",
+            lambda _wid: True,
+        )
+        _active_batches[(1, 10)] = ToolBatch(window_id="@0", thread_id=10)
+
+        flushed = AsyncMock()
+        processed = AsyncMock()
+        monkeypatch.setattr(
+            "ccgram.handlers.messaging_pipeline.message_queue.flush_batch",
+            flushed,
+        )
+        monkeypatch.setattr(
+            "ccgram.handlers.messaging_pipeline.message_queue.process_status_update",
+            processed,
+        )
+
+        bot = AsyncMock()
+        queue: asyncio.Queue[MessageTask] = asyncio.Queue()
+        lock = asyncio.Lock()
+        task = StatusUpdateTask(window_id="@0", text="working", thread_id=10)
+
+        result = await _dispatch(bot, 1, task, queue, lock)
+
+        assert result == 0
+        flushed.assert_not_called()
+        processed.assert_not_called()
+        # Batch still on screen.
+        assert (1, 10) in _active_batches
+
+    async def test_status_update_processed_when_no_batch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "ccgram.handlers.messaging_pipeline.tool_batch.is_ephemeral_tools",
+            lambda _wid: True,
+        )
+        processed = AsyncMock()
+        monkeypatch.setattr(
+            "ccgram.handlers.messaging_pipeline.message_queue.process_status_update",
+            processed,
+        )
+
+        bot = AsyncMock()
+        queue: asyncio.Queue[MessageTask] = asyncio.Queue()
+        lock = asyncio.Lock()
+        task = StatusUpdateTask(window_id="@0", text="idle", thread_id=10)
+
+        await _dispatch(bot, 1, task, queue, lock)
+
+        processed.assert_awaited_once()
+
+    async def test_status_update_processed_when_batch_non_ephemeral(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Non-ephemeral (batched/verbose) batches don't get suppression —
+        # those modes leave the batch on screen after flush instead of
+        # deleting it, so the flicker doesn't happen.
+        monkeypatch.setattr(
+            "ccgram.handlers.messaging_pipeline.tool_batch.is_ephemeral_tools",
+            lambda _wid: False,
+        )
+        _active_batches[(1, 10)] = ToolBatch(window_id="@0", thread_id=10)
+        flushed = AsyncMock()
+        processed = AsyncMock()
+        monkeypatch.setattr(
+            "ccgram.handlers.messaging_pipeline.message_queue.flush_batch",
+            flushed,
+        )
+        monkeypatch.setattr(
+            "ccgram.handlers.messaging_pipeline.message_queue.process_status_update",
+            processed,
+        )
+
+        bot = AsyncMock()
+        queue: asyncio.Queue[MessageTask] = asyncio.Queue()
+        lock = asyncio.Lock()
+        task = StatusUpdateTask(window_id="@0", text="working", thread_id=10)
+
+        await _dispatch(bot, 1, task, queue, lock)
+
+        flushed.assert_awaited_once()
+        processed.assert_awaited_once()

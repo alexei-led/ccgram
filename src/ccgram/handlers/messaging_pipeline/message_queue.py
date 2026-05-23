@@ -47,6 +47,7 @@ from .tool_batch import (
     flush_batch,
     flush_if_active,
     has_active_batch,
+    has_ephemeral_active_batch,
     is_batch_eligible,
     process_tool_event,
 )
@@ -332,6 +333,18 @@ async def _dispatch(
         case ContentTask() as ct:
             return await _handle_content_task(client, user_id, ct, queue, lock)
         case StatusUpdateTask() as st:
+            # Suppress status polls while an ephemeral tool batch owns the
+            # bubble — the batch itself is the activity indicator. Flushing
+            # to insert a status bubble causes a visible flicker (formatted
+            # tool calls vanish, plain status appears, then the assistant
+            # text replaces that).
+            if has_ephemeral_active_batch(user_id, thread_key(st.thread_id)):
+                # Drop any siblings the coalescer would have consumed so
+                # the next poll cycle sees a clean queue.
+                _, dropped = await _coalesce_status_updates(queue, st, lock)
+                for _ in range(dropped):
+                    queue.task_done()
+                return 0
             await _flush_batch_for_task(user_id, st, client)
             collapsed_task, dropped = await _coalesce_status_updates(queue, st, lock)
             if dropped > 0:

@@ -18,6 +18,8 @@ from ccgram.handlers.messaging_pipeline.tool_batch import (
     flush_batch,
     flush_if_active,
     format_batch_message,
+    has_active_batch,
+    has_ephemeral_active_batch,
     is_batch_eligible,
     process_tool_event,
 )
@@ -178,6 +180,49 @@ class TestIsBatchEligible:
         task = self._make_task(content_type="tool_use", window_id="@7")
         is_batch_eligible(task)
         assert captured == ["@7"]
+
+
+class TestHasEphemeralActiveBatch:
+    """Helper used by the dispatcher to suppress status updates while an
+    ephemeral batch owns the bubble (prevents the visible flicker where the
+    formatted tool bubble is deleted, a plain status bubble takes its place,
+    and the assistant text replaces that)."""
+
+    def setup_method(self) -> None:
+        _active_batches.clear()
+
+    def teardown_method(self) -> None:
+        _active_batches.clear()
+
+    def test_no_batch_returns_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "ccgram.handlers.messaging_pipeline.tool_batch.is_ephemeral_tools",
+            lambda _wid: True,
+        )
+        assert has_active_batch(1, 10) is False
+        assert has_ephemeral_active_batch(1, 10) is False
+
+    def test_ephemeral_batch_returns_true(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "ccgram.handlers.messaging_pipeline.tool_batch.is_ephemeral_tools",
+            lambda _wid: True,
+        )
+        _active_batches[(1, 10)] = ToolBatch(window_id="@0", thread_id=10)
+        assert has_active_batch(1, 10) is True
+        assert has_ephemeral_active_batch(1, 10) is True
+
+    def test_non_ephemeral_batch_returns_false(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "ccgram.handlers.messaging_pipeline.tool_batch.is_ephemeral_tools",
+            lambda _wid: False,
+        )
+        _active_batches[(1, 10)] = ToolBatch(window_id="@0", thread_id=10)
+        assert has_active_batch(1, 10) is True
+        assert has_ephemeral_active_batch(1, 10) is False
 
 
 class TestBatchDataStructures:
