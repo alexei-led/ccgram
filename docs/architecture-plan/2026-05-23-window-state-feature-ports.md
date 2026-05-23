@@ -226,16 +226,16 @@ Feature contracts:
 - Modify: `tests/ccgram/miniapp/test_terminal_api.py`
 - Modify: `tests/ccgram/test_window_state_access_audit.py`
 
-- [ ] Run GitNexus impact for `format_pane_block`, `PaneStatusStrategy`, `_default_pane_list`, and every other production symbol edited in this task.
-- [ ] Change status-bubble pane rendering to read pane projections from `window_state_ports.pane_state` instead of `window_store.window_states`.
-- [ ] Change `PaneStatusStrategy` raw pane reads/writes to use `pane_state` read/write functions while preserving transition detection and blocked-pane cleanup behavior.
-- [ ] Change `window_tick.apply` pane lifecycle reads and pane lookups to use `pane_state`.
-- [ ] Change Mini App pane-list merging to read pane projections through `pane_state`.
-- [ ] Update affected tests to assert the same rendered pane block, lifecycle notifications, pane cleanup, and Mini App pane JSON.
-- [ ] Shrink the pane-related entries in the raw-access audit allowlist.
-- [ ] Run `uv run pytest tests/ccgram/handlers/status/test_status_bubble.py tests/ccgram/handlers/polling/test_pane_status_strategy.py tests/ccgram/handlers/polling/test_window_tick.py tests/ccgram/miniapp/test_terminal_api.py tests/ccgram/test_window_state_access_audit.py -q`.
-- [ ] Run `uv run pyright src/ccgram/`.
-- [ ] Run `npx gitnexus detect-changes --scope all --repo ccgram` and confirm affected flows are pane/status/Mini App only.
+- [x] Run GitNexus impact for `format_pane_block`, `PaneStatusStrategy`, `_default_pane_list`, and every other production symbol edited in this task. [x] manual gitnexus call (skipped - not automatable)
+- [x] Change status-bubble pane rendering to read pane projections from `window_state_ports.pane_state` instead of `window_store.window_states`.
+- [x] Change `PaneStatusStrategy` raw pane reads/writes to use `pane_state` read/write functions while preserving transition detection and blocked-pane cleanup behavior.
+- [x] Change `window_tick.apply` pane lifecycle reads and pane lookups to use `pane_state`.
+- [x] Change Mini App pane-list merging to read pane projections through `pane_state`.
+- [x] Update affected tests to assert the same rendered pane block, lifecycle notifications, pane cleanup, and Mini App pane JSON.
+- [x] Shrink the pane-related entries in the raw-access audit allowlist.
+- [x] Run `uv run pytest tests/ccgram/handlers/status/test_status_bubble.py tests/ccgram/handlers/polling/test_pane_status_strategy.py tests/ccgram/handlers/polling/test_window_tick.py tests/ccgram/miniapp/test_terminal_api.py tests/ccgram/test_window_state_access_audit.py -q`.
+- [x] Run `uv run pyright src/ccgram/`.
+- [x] Run `npx gitnexus detect-changes --scope all --repo ccgram` and confirm affected flows are pane/status/Mini App only. [x] manual gitnexus call (skipped - not automatable)
 
 ### Task 4: Migrate tool-mode reads and writes
 

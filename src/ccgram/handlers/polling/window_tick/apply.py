@@ -30,6 +30,10 @@ from ....providers import get_provider_for_window
 from ....telegram_client import PTBTelegramClient
 from ....thread_router import thread_router
 from ....tmux_manager import tmux_manager
+from ....window_state_ports.pane_state import (
+    get_pane_lifecycle_notify,
+    get_pane_projection,
+)
 from ....window_state_store import window_store
 from ...callback_data import IDLE_STATUS_TEXT
 from ...cleanup import clear_topic_state
@@ -142,7 +146,7 @@ async def _forward_pane_output(
     pane's friendly name when one is set.
     """
 
-    pane = window_store.get_pane(window_id, pane_id)
+    pane = get_pane_projection(window_id, pane_id)
     if pane is None or not pane.subscribed:
         return
     cleaned = pane_text.strip()
@@ -195,9 +199,7 @@ async def _notify_pane_lifecycle(
     transitions: list[PaneTransition],
 ) -> None:
     """Emit one-line "pane created"/"pane closed" notifications when enabled."""
-    enabled = window_store.get_pane_lifecycle_notify(
-        window_id, config.pane_lifecycle_notify
-    )
+    enabled = get_pane_lifecycle_notify(window_id, config.pane_lifecycle_notify)
     if not enabled:
         return
 
@@ -209,7 +211,7 @@ async def _notify_pane_lifecycle(
             label = f"{t.name} ({t.pane_id})" if t.name else t.pane_id
             text = f"➖ pane {label} closed"
         else:
-            pane = window_store.get_pane(window_id, t.pane_id)
+            pane = get_pane_projection(window_id, t.pane_id)
             label = f"{pane.name} ({t.pane_id})" if pane and pane.name else t.pane_id
             text = f"➕ pane {label} created"
         try:

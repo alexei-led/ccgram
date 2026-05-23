@@ -202,8 +202,6 @@ def _collect_all_hits() -> list[tuple[str, str, int, str]]:
 # (path, field, kind) entries from this map; the second test asserts
 # that no stale entries linger.
 BASELINE_RAW_ACCESS: dict[tuple[str, str, str], str] = {
-    # ── handlers/polling/polling_state.py ────────────────────────────
-    ("ccgram/handlers/polling/polling_state.py", "panes", "read"): "pane status scan",
     # ── handlers/recovery/transcript_discovery.py ────────────────────
     ("ccgram/handlers/recovery/transcript_discovery.py", "session_id", "read"): (
         "transcript discovery"
@@ -230,12 +228,6 @@ BASELINE_RAW_ACCESS: dict[tuple[str, str, str], str] = {
     ("ccgram/handlers/status/rc_probe.py", "rc_armed_at", "write"): (
         "rc probe lifecycle"
     ),
-    # ── handlers/status/status_bubble.py ─────────────────────────────
-    ("ccgram/handlers/status/status_bubble.py", "panes", "read"): (
-        "status bubble pane block"
-    ),
-    # ── miniapp/api/terminal.py ──────────────────────────────────────
-    ("ccgram/miniapp/api/terminal.py", "panes", "read"): "mini app pane list",
     # ── session_map.py (coordination seam between hook data and state) ──
     ("ccgram/session_map.py", "cwd", "read"): "session map sync",
     ("ccgram/session_map.py", "cwd", "write"): "session map sync",

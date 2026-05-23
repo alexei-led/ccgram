@@ -89,16 +89,15 @@ async def _default_pane_capture(window_id: str, pane_id: str) -> str | None:
 
 
 async def _default_pane_list(window_id: str) -> list[dict[str, Any]]:
-    """Enumerate panes for a window, merging tmux state + ``WindowState.panes``."""
+    """Enumerate panes for a window, merging tmux state + persisted projections."""
     # Lazy: same DI seam as ``_default_capture``.
     from ...tmux_manager import tmux_manager
 
     # Lazy: miniapp routes resolve singletons per-request so tests can stub them
-    from ...window_state_store import window_store
+    from ...window_state_ports.pane_state import list_pane_projections
 
     panes = await tmux_manager.list_panes(window_id)
-    state = window_store.window_states.get(window_id)
-    persisted = state.panes if state else {}
+    persisted = {p.pane_id: p for p in list_pane_projections(window_id)}
     out: list[dict[str, Any]] = []
     for pane in panes:
         info = persisted.get(pane.pane_id)

@@ -22,7 +22,7 @@ from ...claude_task_state import get_claude_task_snapshot, get_claude_wait_heade
 from ...expandable_quote import format_expandable_quote
 from ...telegram_client import TelegramClient
 from ...thread_router import thread_router
-from ...window_state_store import PaneInfo, window_store
+from ...window_state_ports.pane_state import PaneProjection, list_pane_projections
 
 from ..callback_data import (
     CB_STATUS_ESC,
@@ -147,7 +147,7 @@ _SECONDS_PER_MINUTE = 60
 _MINUTES_PER_HOUR = 60
 
 
-def _format_pane_idle_age(pane: PaneInfo, now_wall: float) -> str:
+def _format_pane_idle_age(pane: PaneProjection, now_wall: float) -> str:
     """Format a pane's idle duration relative to ``now_wall``."""
     if not pane.last_active_ts:
         return "idle"
@@ -161,7 +161,7 @@ def _format_pane_idle_age(pane: PaneInfo, now_wall: float) -> str:
     return f"idle {hours}h"
 
 
-def _format_pane_item(pane: PaneInfo, now_wall: float) -> str:
+def _format_pane_item(pane: PaneProjection, now_wall: float) -> str:
     """Render a single pane as ``"<label> <state>"``."""
     label = pane.name.strip() if pane.name and pane.name.strip() else pane.pane_id
     if pane.state == "active":
@@ -185,10 +185,10 @@ def format_pane_block(window_id: str) -> str | None:
     Dead panes are excluded from the rendered list — pane lifecycle
     notifications are owned by ``PaneStatusStrategy`` and Theme 5 Task 2.5.
     """
-    state = window_store.window_states.get(window_id)
-    if state is None or len(state.panes) <= 1:
+    projections = list_pane_projections(window_id)
+    if len(projections) <= 1:
         return None
-    visible = [p for p in state.panes.values() if p.state != "dead"]
+    visible = [p for p in projections if p.state != "dead"]
     if len(visible) <= 1:
         return None
     # Sort numerically so %2 comes before %10 — lexicographic puts %10 first.

@@ -611,17 +611,15 @@ class PaneStatusStrategy:
 
     def _clear_pane_content_state(self, window_id: str) -> None:
         """Drop cached pane content hashes for a window's panes (cleanup)."""
-        # Lazy: window_state_store wiring runs after polling_state is
-        # imported by the registry; keep at call site so the strategy can
-        # be unit-tested without a live store.
-        # Lazy: window_state_store proxy not yet wired at module load
-        from ...window_state_store import window_store
+        # Lazy: window_state_ports wraps the proxy; same wiring rationale
+        # as the legacy window_store call site — keep at call site so the
+        # strategy can be unit-tested without a live store.
+        # Lazy: window_state_ports proxy not yet wired at module load
+        from ...window_state_ports.pane_state import list_pane_projections
 
-        state = window_store.window_states.get(window_id)
-        pane_ids = set(state.panes) if state else set()
-        for pid in pane_ids:
-            self._pane_content_hash.pop(pid, None)
-            self._pane_forward_ts.pop(pid, None)
+        for projection in list_pane_projections(window_id):
+            self._pane_content_hash.pop(projection.pane_id, None)
+            self._pane_forward_ts.pop(projection.pane_id, None)
         self._scanned_windows.discard(window_id)
 
     def has_scanned_window(self, window_id: str) -> bool:
@@ -656,18 +654,18 @@ class PaneStatusStrategy:
         interactive alerts so they don't linger if the pane is later recreated.
         """
         # Lazy: same wiring rationale as _clear_pane_content_state.
-        from ...window_state_store import window_store
+        from ...window_state_ports.pane_state import (
+            list_pane_projections,
+            remove_pane,
+        )
 
-        state = window_store.window_states.get(window_id)
-        if state is None:
-            return []
         gone = [
-            (pid, state.panes[pid].name)
-            for pid in state.panes
-            if pid not in live_pane_ids
+            (p.pane_id, p.name)
+            for p in list_pane_projections(window_id)
+            if p.pane_id not in live_pane_ids
         ]
         for pid, _ in gone:
-            window_store.remove_pane(window_id, pid)
+            remove_pane(window_id, pid)
             self._interactive.remove_pane_alert(pid)
             self._pane_content_hash.pop(pid, None)
         return gone
@@ -683,11 +681,14 @@ class PaneStatusStrategy:
     ) -> PaneStateName | None:
         """Upsert ``WindowState.panes`` entry; return the prior state or None."""
         # Lazy: same wiring rationale as _clear_pane_content_state.
-        from ...window_state_store import window_store
+        from ...window_state_ports.pane_state import (
+            get_pane_projection,
+            upsert_pane,
+        )
 
-        existing = window_store.get_pane(window_id, pane_id)
+        existing = get_pane_projection(window_id, pane_id)
         prev_state = existing.state if existing else None
-        window_store.upsert_pane(
+        upsert_pane(
             window_id,
             pane_id,
             provider=provider or None,
@@ -972,9 +973,9 @@ class PaneStatusStrategy:
     ) -> None:
         """Forward freshly-captured pane text to subscribers when content changed."""
         # Lazy: same wiring rationale as _clear_pane_content_state.
-        from ...window_state_store import window_store
+        from ...window_state_ports.pane_state import get_pane_projection
 
-        pane = window_store.get_pane(window_id, pane_id)
+        pane = get_pane_projection(window_id, pane_id)
         if pane is None or not pane.subscribed:
             self._pane_content_hash.pop(pane_id, None)
             self._pane_forward_ts.pop(pane_id, None)
