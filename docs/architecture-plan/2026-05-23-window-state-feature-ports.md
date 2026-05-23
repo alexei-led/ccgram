@@ -71,16 +71,16 @@ Out of scope:
 
 ## Success criteria
 
-- [ ] `WindowStateStore` remains the only persisted window-state model.
-- [ ] Feature projections cover panes, provider/session identity, worktree
+- [x] `WindowStateStore` remains the only persisted window-state model.
+- [x] Feature projections cover panes, provider/session identity, worktree
       metadata, tool visibility/batching, and lifecycle/origin.
-- [ ] Handler and Mini App read paths use `window_query` or feature projections;
+- [x] Handler and Mini App read paths use `window_query` or feature projections;
       they do not inspect raw `WindowState` fields directly.
-- [ ] Feature writes go through feature ports or `SessionManager`; duplicate save
+- [x] Feature writes go through feature ports or `SessionManager`; duplicate save
       scheduling is not introduced.
-- [ ] Architecture tests enforce the allowed direct raw-state access sites.
-- [ ] Full quality gate passes.
-- [ ] `npx gitnexus detect-changes --scope all --repo ccgram` reports affected
+- [x] Architecture tests enforce the allowed direct raw-state access sites.
+- [x] Full quality gate passes.
+- [x] `npx gitnexus detect-changes --scope all --repo ccgram` reports affected
       symbols/flows inside the F3 window-state boundary.
 
 ## Development Approach
@@ -324,17 +324,17 @@ Feature contracts:
 - Modify: `docs/ai-agents/codebase-index.md` if it lists state/query modules.
 - Modify: `docs/architecture-plan/2026-05-23-window-state-feature-ports.md`
 
-- [ ] Run `uv run ruff format --check src/ tests/`.
-- [ ] Run `uv run ruff check src/ tests/`.
-- [ ] Run `uv run pyright src/ccgram/`.
-- [ ] Run `uv run deptry src`.
-- [ ] Run `uv run python scripts/lint_lazy_imports.py src/ccgram`.
-- [ ] Run `uv run pytest tests/ -m "not integration and not e2e" --tb=short -v --timeout=30`.
-- [ ] Run `uv run pytest tests/integration/ -m "not llm" --tb=short -v --timeout=30`.
-- [ ] Run `npx gitnexus impact WindowStateStore --direction upstream --depth 3 --include-tests --repo ccgram` and record whether the direct raw-access blast radius is lower or now routed through ports.
-- [ ] Run `npx gitnexus detect-changes --scope all --repo ccgram` and confirm affected flows match F3/window-state feature ports only.
-- [ ] Update relevant docs to name `window_state_ports` as the write/projection seam and to state that `WindowStateStore` remains the persistence kernel.
-- [ ] Mark the top-level success criteria in this plan as `[x]` only when the corresponding code/tests/docs are complete.
+- [x] Run `uv run ruff format --check src/ tests/`.
+- [x] Run `uv run ruff check src/ tests/`.
+- [x] Run `uv run pyright src/ccgram/`.
+- [x] Run `uv run deptry src`.
+- [x] Run `uv run python scripts/lint_lazy_imports.py src/ccgram`.
+- [x] Run `uv run pytest tests/ -m "not integration and not e2e" --tb=short -v --timeout=30`.
+- [x] Run `uv run pytest tests/integration/ -m "not llm" --tb=short -v --timeout=30`.
+- [x] Run `npx gitnexus impact WindowStateStore --direction upstream --depth 3 --include-tests --repo ccgram` and record whether the direct raw-access blast radius is lower or now routed through ports. Result: import-graph count unchanged (42 direct, 172 impacted, CRITICAL) because feature-port adapters import the kernel, but semantic raw-field access shrank — every read/write outside the kernel is now gated by `window_state_ports/*` or `SessionManager`, enforced by `test_window_state_access_audit.py`.
+- [x] Run `npx gitnexus detect-changes --scope all --repo ccgram` and confirm affected flows match F3/window-state feature ports only. Result: docs-only changes (4 files, 10 symbols, low risk) — no production code touched this task.
+- [x] Update relevant docs to name `window_state_ports` as the write/projection seam and to state that `WindowStateStore` remains the persistence kernel.
+- [x] Mark the top-level success criteria in this plan as `[x]` only when the corresponding code/tests/docs are complete.
 
 ## Post-Completion
 

@@ -71,9 +71,10 @@ Change polling types vs strategies:
 
 Change tool-call visibility (hide/show `tool_use`/`tool_result`):
 
-- `src/ccgram/window_state_store.py`: `tool_call_visibility` field (`default`/`shown`/`hidden`).
+- `src/ccgram/window_state_store.py`: `tool_call_visibility` field (`default`/`shown`/`hidden`) — persistence kernel only.
+- `src/ccgram/window_state_ports/tool_state.py`: read projection (`get_tool_call_visibility`, `is_tool_calls_hidden`, `get_batch_mode`) and feature writes (`set_tool_call_visibility`, `set_batch_mode`, cycle helpers).
 - `src/ccgram/handlers/messaging_pipeline/message_queue.py` (`_handle_content_task`): visibility gate before batch eligibility; hidden entries dropped before `_tool_msg_ids` registration. Hook events bypass via `StatusUpdateTask`.
-- `/toolcalls` command in `src/ccgram/handlers/messaging_pipeline/topic_commands.py` cycles mode via `WindowStateStore`.
+- `/toolcalls` command in `src/ccgram/handlers/messaging_pipeline/topic_commands.py` cycles mode via `tool_state` port.
 
 Change topic emoji color scheme:
 
@@ -184,6 +185,10 @@ Symptom: `lint-lazy` fails ("undocumented in-function import")
 Symptom: `test_query_layer_only_for_handlers` fails
 
 - A handler file added a new `session_manager.<attr>` not on the write/admin allow-list. Either route through `window_query` / `session_query`, or add to the allow-list constant if it is genuinely a write/admin call.
+
+Symptom: `test_window_state_access_audit` fails
+
+- A non-port file reads or writes a raw `WindowState` field. Approved sites are `window_state_store.py`, `window_state_ports/*`, `session.py`, `window_query.py`, and the serialization tests. Move the read through the matching projection in `window_state_ports/{pane,identity,worktree,tool,lifecycle}_state.py`, or expose a new feature-port function; do not extend the allowlist.
 
 Symptom: `test_polling_types_purity` fails
 
