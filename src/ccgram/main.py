@@ -77,11 +77,44 @@ def _reraise_shutdown_signal() -> None:
         os.kill(os.getpid(), _shutdown_signal)
 
 
+_GRAY_ON = "\x1b[90m"
+_GRAY_OFF = "\x1b[39m"
+_DEBUG_RESERVED_KEYS = frozenset(
+    {"event", "level", "timestamp", "logger", "logger_name"}
+)
+
+
+def _dim_debug_event(
+    _logger: object, _method: str, event_dict: structlog.typing.EventDict
+) -> structlog.typing.EventDict:
+    """Fold a debug line's event + kv pairs into one gray-ANSI run.
+
+    ConsoleRenderer colors kv keys/values via its column styles (cyan/magenta),
+    which it applies globally — there's no per-level kv coloring API. To make
+    *the whole* debug line recede uniformly, we pre-render the kv pairs into
+    the event string and drop them from the dict so ConsoleRenderer renders
+    only the level chip + our pre-styled event.
+    """
+    if event_dict.get("level") != "debug":
+        return event_dict
+    event = event_dict.pop("event", "")
+    parts = [str(event)] if event else []
+    for key in list(event_dict):
+        if key in _DEBUG_RESERVED_KEYS:
+            continue
+        parts.append(f"{key}={event_dict.pop(key)}")
+    event_dict["event"] = f"{_GRAY_ON}{' '.join(parts)}{_GRAY_OFF}"
+    return event_dict
+
+
 def setup_logging(log_level: str) -> None:
     """Configure structured, colored logging for interactive CLI use."""
     numeric_level = getattr(logging, log_level, None)
     if not isinstance(numeric_level, int):
         numeric_level = logging.INFO
+
+    level_styles = structlog.dev.ConsoleRenderer.get_default_level_styles(colors=True)
+    level_styles["debug"] = _GRAY_ON
 
     structlog.configure(
         processors=[
@@ -91,9 +124,11 @@ def setup_logging(log_level: str) -> None:
             structlog.processors.TimeStamper(fmt="%H:%M:%S"),
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
+            _dim_debug_event,
             structlog.dev.ConsoleRenderer(
                 colors=True,
                 pad_event=40,
+                level_styles=level_styles,
             ),
         ],
         wrapper_class=structlog.stdlib.BoundLogger,
