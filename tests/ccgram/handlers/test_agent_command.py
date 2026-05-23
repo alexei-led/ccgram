@@ -137,7 +137,7 @@ async def test_arg_shell_switches_clears_state_and_marks_override(
     assert state.transcript_path == ""
     assert state.provider_manual_override is True
     clear_map_mock.assert_called_once_with("@7")
-    ensure_setup_mock.assert_awaited_once()
+    assert ensure_setup_mock.await_count == 1
     args, kwargs = ensure_setup_mock.call_args
     assert args == ("@7", "provider_switch")
     assert kwargs["chat_id"] == -100
@@ -229,7 +229,7 @@ async def test_auto_falls_back_to_shell_and_triggers_ensure_setup(monkeypatch):
 
     assert window_store.window_states["@7"].provider_name == "shell"
     assert "shell" in sent["text"]
-    ensure_setup_mock.assert_awaited_once()
+    assert ensure_setup_mock.await_count == 1
     args, kwargs = ensure_setup_mock.call_args
     assert args == ("@7", "provider_switch")
     assert kwargs["chat_id"] == -100
@@ -348,6 +348,41 @@ async def test_same_provider_skips_session_map_clear(monkeypatch, clear_map_mock
     # Transcript bookkeeping must survive — same-provider switch is a flag-only op.
     assert state.transcript_path == "/tmp/old.jsonl"
     assert state.provider_manual_override is True
+    clear_map_mock.assert_not_called()
+
+
+async def test_auto_resolving_to_same_provider_clears_override(
+    monkeypatch, clear_map_mock
+):
+    """/agent auto on a window whose foreground matches the stored provider
+    must preserve the session_map entry (no actual transition) and still
+    clear the manual-override flag."""
+    identity_state.set_provider_manual_override("@7", value=True)
+
+    fake_window = MagicMock()
+    fake_window.pane_current_command = "claude"
+    fake_window.pane_tty = "/dev/ttys00"
+    monkeypatch.setattr(
+        "ccgram.tmux_manager.tmux_manager.find_window_by_id",
+        AsyncMock(return_value=fake_window),
+    )
+    monkeypatch.setattr(
+        "ccgram.providers.detect_provider_from_pane",
+        AsyncMock(return_value="claude"),
+    )
+    sent: dict[str, str] = {}
+
+    async def fake_safe_reply(_msg, text, reply_markup=None):
+        sent["text"] = text
+
+    with patch("ccgram.handlers.agent_command.safe_reply", side_effect=fake_safe_reply):
+        await ac.agent_command(_make_update("/agent auto"), MagicMock())
+
+    state = window_store.window_states["@7"]
+    assert state.provider_name == "claude"
+    assert state.provider_manual_override is False
+    # No actual transition — session_map untouched, transcript preserved.
+    assert state.transcript_path == "/tmp/old.jsonl"
     clear_map_mock.assert_not_called()
 
 
