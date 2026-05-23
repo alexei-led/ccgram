@@ -124,14 +124,14 @@ def compact_arg(text: str, cap: int = _MAX_COMPACT_ARG) -> str:
 def format_tool_line(name: str, summary: str) -> str:
     """Build a compact one-line tool-call display string.
 
-    Returns ``{emoji} {name}: {summary}`` when *summary* is non-empty
-    after applying ``compact_arg``, otherwise ``{emoji} {name}``.
-    The name is lowercased for visual quietness (`📖 read` not `📖 Read`).
-    The summary is rendered bare (no surrounding quotes).
+    Returns ``{emoji} **{name}**: `{summary}` `` when *summary* is non-empty
+    after applying ``compact_arg``, otherwise ``{emoji} **{name}**``.
+    The action word is bold (`**read**`), the argument is inline monospace
+    (`` `src/foo.py` ``).  Names are lowercased for visual quietness.
     """
     emoji = tool_emoji(name)
     display_name = name.lower()
     trimmed = compact_arg(summary)
     if trimmed:
-        return f"{emoji} {display_name}: {trimmed}"
-    return f"{emoji} {display_name}"
+        return f"{emoji} **{display_name}**: `{trimmed}`"
+    return f"{emoji} **{display_name}**"

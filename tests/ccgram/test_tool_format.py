@@ -113,19 +113,22 @@ class TestCompactArg:
 class TestFormatToolLine:
     def test_with_summary(self) -> None:
         result = format_tool_line("Bash", "ls -la")
-        assert result == "\U0001f4bb bash: ls -la"
+        assert result == "\U0001f4bb **bash**: `ls -la`"
 
     def test_without_summary(self) -> None:
         result = format_tool_line("TodoRead", "")
-        assert result == "\U0001f4cb todoread"
+        assert result == "\U0001f4cb **todoread**"
 
-    def test_no_markdown_bold(self) -> None:
+    def test_action_word_is_bold(self) -> None:
         result = format_tool_line("Read", "src/config.py")
-        assert "**" not in result
+        assert "**read**" in result
 
-    def test_no_backtick(self) -> None:
+    def test_backticks_in_input_replaced_with_quotes(self) -> None:
+        """Input backticks must be neutralized to avoid breaking inline-mono wrap."""
         result = format_tool_line("Bash", "run `make`")
-        assert "`" not in result
+        # Output has exactly two backticks — the wrapping pair around the arg.
+        assert result.count("`") == 2
+        assert result == "\U0001f4bb **bash**: `run 'make'`"
 
     def test_no_double_quote_around_summary(self) -> None:
         result = format_tool_line("Read", "src/config.py")
@@ -135,27 +138,27 @@ class TestFormatToolLine:
         cmd = "set -e\nprintf 'git: '\ngit --version"
         result = format_tool_line("Bash", cmd)
         assert "\n" not in result
-        assert result.startswith("\U0001f4bb bash: ")
+        assert result.startswith("\U0001f4bb **bash**: `")
 
     def test_mcp_tool_fallback_emoji(self) -> None:
         result = format_tool_line(
             "mcp__deepwiki__totally_unknown_xyz", "how does X work"
         )
-        assert result.startswith("\U0001f527 mcp__deepwiki__totally_unknown_xyz")
+        assert result.startswith("\U0001f527 **mcp__deepwiki__totally_unknown_xyz**")
 
     def test_grep_with_summary(self) -> None:
         result = format_tool_line(
             "Grep", "config.yaml|auth.json|state.db|longer_pattern"
         )
-        assert result.startswith("\U0001f50e grep: ")
+        assert result.startswith("\U0001f50e **grep**: `")
 
     def test_skill_with_summary(self) -> None:
         result = format_tool_line("Skill", "github-repo-management")
-        assert result == "\U0001f4da skill: github-repo-management"
+        assert result == "\U0001f4da **skill**: `github-repo-management`"
 
     def test_read_with_path(self) -> None:
         result = format_tool_line("Read", "src/ccgram/config.py")
-        assert result == "\U0001f4d6 read: src/ccgram/config.py"
+        assert result == "\U0001f4d6 **read**: `src/ccgram/config.py`"
 
     def test_summary_trimmed_to_cap(self) -> None:
         long_arg = "x" * 90
@@ -170,4 +173,4 @@ class TestFormatToolLine:
 
     def test_unknown_tool_uses_wrench(self) -> None:
         result = format_tool_line("UnknownXYZ", "some arg")
-        assert result.startswith("\U0001f527 unknownxyz")
+        assert result.startswith("\U0001f527 **unknownxyz**")

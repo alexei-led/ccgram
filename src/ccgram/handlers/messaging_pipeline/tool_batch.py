@@ -100,9 +100,7 @@ def format_batch_message(
         lines.append(subagent_label)
     lines.extend(_format_mixed_batch_lines(entries))
 
-    # Triple-backtick fence so Telegram renders the batch in a monospace block,
-    # visually distinct from regular assistant text.
-    return "```\n" + "\n".join(lines) + "\n```"
+    return "\n".join(lines)
 
 
 def _format_task_create_batch(
@@ -277,10 +275,16 @@ def _extract_task_tool_suffix(entry: ToolBatchEntry) -> str:
     if not text:
         return ""
 
-    # Current shape: "📋 taskcreate: TITLE"
+    # Current shape: "📋 taskcreate: `TITLE`" (inline-mono summary).
     if ": " in text:
         _, _, suffix = text.partition(": ")
         suffix = suffix.strip()
+        if (
+            suffix.startswith("`")
+            and suffix.endswith("`")
+            and len(suffix) >= _MIN_BACKTICK_WRAPPED_LENGTH
+        ):
+            suffix = suffix[1:-1].strip()
         if suffix:
             return suffix
 

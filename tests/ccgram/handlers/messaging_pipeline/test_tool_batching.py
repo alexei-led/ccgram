@@ -78,7 +78,8 @@ class TestFormatBatchMessage:
     def test_single_entry(self) -> None:
         entries = [ToolBatchEntry(tool_use_id="t1", tool_use_text="Read src/foo.py")]
         result = format_batch_message(entries)
-        assert result.startswith("```\n") and result.endswith("\n```")
+        # No code-block fence \u2014 plain text with inline mono on summaries only.
+        assert not result.startswith("```")
         assert "Read src/foo.py" in result
         # No status glyphs, no count header.
         assert "\u23f3" not in result
@@ -107,8 +108,8 @@ class TestFormatBatchMessage:
             ToolBatchEntry("t3", "Bash make test"),
         ]
         result = format_batch_message(entries)
-        body = result.removeprefix("```\n").removesuffix("\n```")
-        assert body.split("\n") == [
+        assert "```" not in result
+        assert result.split("\n") == [
             "Read src/a.py",
             "Edit src/a.py",
             "Bash make test",
@@ -117,8 +118,8 @@ class TestFormatBatchMessage:
     def test_subagent_label_renders_as_first_body_line(self) -> None:
         entries = [ToolBatchEntry("t1", "Read x"), ToolBatchEntry("t2", "Edit y")]
         result = format_batch_message(entries, subagent_label="\U0001f916 write-tests")
-        body = result.removeprefix("```\n").removesuffix("\n```")
-        assert body.split("\n", 1)[0] == "\U0001f916 write-tests"
+        assert "```" not in result
+        assert result.split("\n", 1)[0] == "\U0001f916 write-tests"
 
     def test_task_create_batch_renders_numbered_list(self) -> None:
         entries = [
@@ -170,8 +171,8 @@ class TestFormatBatchMessage:
         entries = [ToolBatchEntry("t1", "TaskCreate Understand the Problem Domain")]
 
         result = format_batch_message(entries)
-        body = result.removeprefix("```\n").removesuffix("\n```")
-        assert body == "TaskCreate Understand the Problem Domain"
+        assert "```" not in result
+        assert result == "TaskCreate Understand the Problem Domain"
 
     def test_mixed_batch_groups_task_create_entries(self) -> None:
         entries = [
@@ -191,13 +192,13 @@ class TestFormatBatchMessage:
         ]
 
         result = format_batch_message(entries, subagent_label="\U0001f916 subagent")
-        body = result.removeprefix("```\n").removesuffix("\n```")
-        lines = body.split("\n")
+        assert "```" not in result
+        lines = result.split("\n")
         assert lines[0] == "\U0001f916 subagent"
         assert "toolsearch" in lines[1].lower()
-        assert "Creating 2 tasks\u2026" in body
-        assert "1. Tune regex linter" in body
-        assert "2. Apply fixes to opus agents" in body
+        assert "Creating 2 tasks\u2026" in result
+        assert "1. Tune regex linter" in result
+        assert "2. Apply fixes to opus agents" in result
 
     def test_task_update_entries_render_as_progress_section(self) -> None:
         entries = [
@@ -231,8 +232,8 @@ class TestFormatBatchMessage:
 
         result = format_batch_message(entries)
 
-        body = result.removeprefix("```\n").removesuffix("\n```")
-        assert body == "Refreshing task list\u2026"
+        assert "```" not in result
+        assert result == "Refreshing task list\u2026"
 
 
 class TestIsBatchEligible:

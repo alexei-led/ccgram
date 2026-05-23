@@ -28,8 +28,8 @@ class TestFormatBatchMessage:
     def test_single_entry_pending(self) -> None:
         entries = [ToolBatchEntry(tool_use_id="t1", tool_use_text="Read src/foo.py")]
         result = format_batch_message(entries)
-        assert result.startswith("```\n")
-        assert result.endswith("\n```")
+        # No code-block fence — plain text with inline mono on summaries only.
+        assert "```" not in result
         assert "Read src/foo.py" in result
         # No status glyph, no count header.
         assert (
