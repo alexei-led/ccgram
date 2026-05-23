@@ -190,6 +190,10 @@ Symptom: `test_window_state_access_audit` fails
 
 - A non-port file reads or writes a raw `WindowState` field. Approved sites are `window_state_store.py`, `window_state_ports/*`, `session.py`, `window_query.py`, and the serialization tests. Move the read through the matching projection in `window_state_ports/{pane,identity,worktree,tool,lifecycle}_state.py`, or expose a new feature-port function; do not extend the allowlist.
 
+Symptom: `test_window_store_import_boundary` fails
+
+- A handler or Mini App module imported `window_state_store.window_store` or `get_window_store` directly. Route the read through `window_query` or `window_state_ports/*` instead. Two named coordination seams are pre-approved (`handlers/status/rc_probe.py`, `handlers/commands/forward.py`); any new exception requires an explicit allowlist entry in the test.
+
 Symptom: `test_polling_types_purity` fails
 
 - `polling_types.py` imported a stateful module (likely `polling_state.py` or another non-stdlib besides `ccgram.providers.base`). Move the offending import to `polling_state.py` or to the call site.

@@ -554,30 +554,10 @@ class SessionManager:
         exact fields the caller depends on and insulates them from internal
         WindowState shape changes.
         """
-        identity = _identity_state.get_identity(window_id)
-        if identity is None:
-            return None
-        lifecycle = _lifecycle_state.get_lifecycle(window_id)
-        tools = _tool_state.get_tool_modes(window_id)
-        return WindowView(
-            window_id=window_id,
-            cwd=identity.cwd,
-            provider_name=identity.provider_name,
-            approval_mode=identity.approval_mode,
-            batch_mode=(
-                tools.batch_mode if tools else _tool_state.get_batch_mode(window_id)
-            ),
-            tool_call_visibility=(
-                tools.tool_call_visibility
-                if tools
-                else _tool_state.get_tool_call_visibility(window_id)
-            ),
-            transcript_path=identity.transcript_path,
-            window_name=identity.window_name,
-            session_id=identity.session_id,
-            external=lifecycle.external if lifecycle else False,
-            origin=lifecycle.origin if lifecycle else "",
-        )
+        # Lazy: window_query imports SessionManager-adjacent modules; keep local
+        from .window_query import view_window as _view_window
+
+        return _view_window(window_id)
 
     @property
     def window_count(self) -> int:

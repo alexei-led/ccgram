@@ -307,6 +307,26 @@ class WindowStateStore:
             state.external = True
         self._schedule_save()
 
+    def set_worktree(self, window_id: str, worktree_path: str, branch: str) -> None:
+        """Persist worktree path + branch for a window. No-op when unchanged."""
+        state = self.get_window_state(window_id)
+        if state.worktree_path == worktree_path and state.worktree_branch == branch:
+            return
+        state.worktree_path = worktree_path
+        state.worktree_branch = branch
+        self._schedule_save()
+
+    def clear_worktree(self, window_id: str) -> None:
+        """Clear worktree path/branch metadata for a window. No-op if unset."""
+        state = self.window_states.get(window_id)
+        if state is None:
+            return
+        if state.worktree_path is None and state.worktree_branch is None:
+            return
+        state.worktree_path = None
+        state.worktree_branch = None
+        self._schedule_save()
+
     def clear_session_fields(self, window_id: str) -> None:
         """Clear session_id and cwd for a window (session file gone)."""
         if window_id in self.window_states:

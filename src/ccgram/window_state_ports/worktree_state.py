@@ -40,24 +40,12 @@ def set_worktree(window_id: str, worktree_path: str, branch: str) -> None:
     Writes both fields atomically and schedules a single save. No-op if
     both values already match the current state.
     """
-    state = window_store.get_window_state(window_id)
-    if state.worktree_path == worktree_path and state.worktree_branch == branch:
-        return
-    state.worktree_path = worktree_path
-    state.worktree_branch = branch
-    window_store._schedule_save()
+    window_store.set_worktree(window_id, worktree_path, branch)
 
 
 def clear_worktree(window_id: str) -> None:
     """Clear worktree path/branch metadata for a window."""
-    state = window_store.window_states.get(window_id)
-    if state is None:
-        return
-    if state.worktree_path is None and state.worktree_branch is None:
-        return
-    state.worktree_path = None
-    state.worktree_branch = None
-    window_store._schedule_save()
+    window_store.clear_worktree(window_id)
 
 
 __all__ = [

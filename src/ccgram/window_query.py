@@ -25,24 +25,23 @@ def view_window(window_id: str) -> WindowView | None:
     identity = _identity_state.get_identity(window_id)
     if identity is None:
         return None
+    # All three ports read from the same window_states dict, so once
+    # identity is non-None the other projections are too.
     lifecycle = _lifecycle_state.get_lifecycle(window_id)
     tools = _tool_state.get_tool_modes(window_id)
+    assert lifecycle is not None and tools is not None
     return WindowView(
         window_id=window_id,
         cwd=identity.cwd,
         provider_name=identity.provider_name,
         approval_mode=identity.approval_mode,
-        batch_mode=tools.batch_mode if tools else _tool_state.get_batch_mode(window_id),
-        tool_call_visibility=(
-            tools.tool_call_visibility
-            if tools
-            else _tool_state.get_tool_call_visibility(window_id)
-        ),
+        batch_mode=tools.batch_mode,
+        tool_call_visibility=tools.tool_call_visibility,
         transcript_path=identity.transcript_path,
         window_name=identity.window_name,
         session_id=identity.session_id,
-        external=lifecycle.external if lifecycle else False,
-        origin=lifecycle.origin if lifecycle else "",
+        external=lifecycle.external,
+        origin=lifecycle.origin,
     )
 
 

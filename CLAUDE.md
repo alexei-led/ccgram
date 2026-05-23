@@ -216,7 +216,7 @@ New-topic flow inserts an opt-in worktree step between directory-confirm and pro
 
 Picker: `Use current branch` or `New worktree`. New worktree suggests `ccg/<kebab(topic-title)>` or `ccg/agent-<n>` with branch+worktree collision avoidance, one-tap confirm or edit via text reply. Created at `<repo>.worktrees/<slug>` (slug = branch with `/`→`-`) via `git -C <repo> worktree add`. `WorktreeError` surfaces as one-line error with Cancel button. Dirty source repo allowed with warning.
 
-Chosen branch + worktree path persisted on `WindowState` (`worktree_path`, `worktree_branch`) atomically with rest of topic metadata — omitted from `to_dict` when unset, `.get()`-loaded for back-compat. No behavior reads them yet; forward investment for cleanup UX. `SessionManager.set_window_worktree` is on the query-layer write/admin allow-list.
+Chosen branch + worktree path persisted on `WindowState` (`worktree_path`, `worktree_branch`) atomically with rest of topic metadata — omitted from `to_dict` when unset, `.get()`-loaded for back-compat. Reads go through `window_state_ports.worktree_state` (`get_worktree`); writes through `WindowStateStore.set_worktree` / `clear_worktree`. `SessionManager.set_window_worktree` is on the query-layer write/admin allow-list.
 
 Edit-name is the only free-text input: `AWAITING_WORKTREE_BRANCH_NAME` in `user_data` routes the next text message to branch-name validation (`git check-ref-format --branch`) before `text_handler` forwards it. Cancel is the inline button (`/cancel` is a command and never reaches `text_handler`).
 
@@ -369,6 +369,7 @@ See @.claude/rules/message-handling.md for the message queue and rate limiting.
 `bot.py` is a 172-line factory + lifecycle delegate. Handler registration in `handlers/registry.py` (`register_all`). Post_init wiring in `bootstrap.py` (`bootstrap_application` + `shutdown_runtime`). Handlers depend on `TelegramClient` Protocol (`src/ccgram/telegram_client.py`); `PTBTelegramClient` adapts real PTB `Bot` in production, `FakeTelegramClient` in unit tests.
 
 <!-- gitnexus:start -->
+
 # GitNexus — Code Intelligence
 
 This project is indexed by GitNexus as **ccgram** (16681 symbols, 38134 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
@@ -392,22 +393,22 @@ This project is indexed by GitNexus as **ccgram** (16681 symbols, 38134 relation
 
 ## Resources
 
-| Resource | Use for |
-|----------|---------|
-| `gitnexus://repo/ccgram/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/ccgram/clusters` | All functional areas |
-| `gitnexus://repo/ccgram/processes` | All execution flows |
-| `gitnexus://repo/ccgram/process/{name}` | Step-by-step execution trace |
+| Resource                                | Use for                                  |
+| --------------------------------------- | ---------------------------------------- |
+| `gitnexus://repo/ccgram/context`        | Codebase overview, check index freshness |
+| `gitnexus://repo/ccgram/clusters`       | All functional areas                     |
+| `gitnexus://repo/ccgram/processes`      | All execution flows                      |
+| `gitnexus://repo/ccgram/process/{name}` | Step-by-step execution trace             |
 
 ## CLI
 
-| Task | Read this skill file |
-|------|---------------------|
-| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
-| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
-| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
-| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
-| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
-| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
+| Task                                         | Read this skill file                                        |
+| -------------------------------------------- | ----------------------------------------------------------- |
+| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md`       |
+| Blast radius / "What breaks if I change X?"  | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
+| Trace bugs / "Why is X failing?"             | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md`       |
+| Rename / extract / split / refactor          | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md`     |
+| Tools, resources, schema reference           | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md`           |
+| Index, status, clean, wiki CLI commands      | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md`             |
 
 <!-- gitnexus:end -->
