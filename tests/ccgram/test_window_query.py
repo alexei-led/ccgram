@@ -97,7 +97,7 @@ class TestGetApprovalMode:
 
 class TestGetBatchMode:
     def test_unknown_window_returns_batched(self) -> None:
-        assert get_batch_mode("@missing") == "batched"
+        assert get_batch_mode("@missing") == "ephemeral"
 
     def test_returns_stored_mode(self, populated) -> None:
         assert get_batch_mode("@1") == "verbose"
@@ -106,7 +106,7 @@ class TestGetBatchMode:
         self, _store: WindowStateStore
     ) -> None:
         _store.window_states["@2"] = WindowState(batch_mode="garbage")
-        assert get_batch_mode("@2") == "batched"
+        assert get_batch_mode("@2") == "ephemeral"
 
 
 class TestGetSessionId:

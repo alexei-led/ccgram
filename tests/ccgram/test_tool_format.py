@@ -16,6 +16,7 @@ class TestToolEmoji:
     def test_case_insensitive(self) -> None:
         assert tool_emoji("bash") == "\U0001f4bb"
         assert tool_emoji("READ") == "\U0001f4d6"
+        assert tool_emoji("TASKCREATE") == "\U0001f4cb"
 
     def test_mcp_prefix_stripped(self) -> None:
         assert tool_emoji("mcp__deepwiki__ask_question") == tool_emoji("ask_question")
@@ -80,14 +81,14 @@ class TestCompactArg:
         assert "\n" not in result
         assert "\t" not in result
 
-    def test_trims_at_80_chars(self) -> None:
+    def test_trims_at_cap(self) -> None:
         long_text = "a" * 90
         result = compact_arg(long_text)
-        assert result == "a" * 80 + "…"
-        assert len(result) == 81
+        assert result == "a" * 50 + "…"
+        assert len(result) == 51
 
-    def test_no_trim_at_80(self) -> None:
-        text = "a" * 80
+    def test_no_trim_at_cap(self) -> None:
+        text = "a" * 50
         result = compact_arg(text)
         assert result == text
         assert "…" not in result
@@ -112,11 +113,11 @@ class TestCompactArg:
 class TestFormatToolLine:
     def test_with_summary(self) -> None:
         result = format_tool_line("Bash", "ls -la")
-        assert result == '\U0001f4bb Bash: "ls -la"'
+        assert result == "\U0001f4bb bash: ls -la"
 
     def test_without_summary(self) -> None:
         result = format_tool_line("TodoRead", "")
-        assert result == "\U0001f4cb TodoRead"
+        assert result == "\U0001f4cb todoread"
 
     def test_no_markdown_bold(self) -> None:
         result = format_tool_line("Read", "src/config.py")
@@ -126,11 +127,15 @@ class TestFormatToolLine:
         result = format_tool_line("Bash", "run `make`")
         assert "`" not in result
 
+    def test_no_double_quote_around_summary(self) -> None:
+        result = format_tool_line("Read", "src/config.py")
+        assert '"' not in result
+
     def test_multiline_command_collapsed(self) -> None:
         cmd = "set -e\nprintf 'git: '\ngit --version"
         result = format_tool_line("Bash", cmd)
         assert "\n" not in result
-        assert result.startswith("\U0001f4bb Bash: ")
+        assert result.startswith("\U0001f4bb bash: ")
 
     def test_mcp_tool_fallback_emoji(self) -> None:
         result = format_tool_line(
@@ -142,22 +147,22 @@ class TestFormatToolLine:
         result = format_tool_line(
             "Grep", "config.yaml|auth.json|state.db|longer_pattern"
         )
-        assert result.startswith("\U0001f50e Grep: ")
+        assert result.startswith("\U0001f50e grep: ")
 
     def test_skill_with_summary(self) -> None:
         result = format_tool_line("Skill", "github-repo-management")
-        assert result == '\U0001f4da Skill: "github-repo-management"'
+        assert result == "\U0001f4da skill: github-repo-management"
 
     def test_read_with_path(self) -> None:
         result = format_tool_line("Read", "src/ccgram/config.py")
-        assert result == '\U0001f4d6 Read: "src/ccgram/config.py"'
+        assert result == "\U0001f4d6 read: src/ccgram/config.py"
 
-    def test_summary_trimmed_to_80(self) -> None:
+    def test_summary_trimmed_to_cap(self) -> None:
         long_arg = "x" * 90
         result = format_tool_line("Bash", long_arg)
         assert "…" in result
-        assert "x" * 80 in result
-        assert "x" * 81 not in result
+        assert "x" * 50 in result
+        assert "x" * 51 not in result
 
     def test_format_preserves_real_tool_name(self) -> None:
         result = format_tool_line("exec_command", "ls")
@@ -165,4 +170,4 @@ class TestFormatToolLine:
 
     def test_unknown_tool_uses_wrench(self) -> None:
         result = format_tool_line("UnknownXYZ", "some arg")
-        assert result.startswith("\U0001f527 UnknownXYZ")
+        assert result.startswith("\U0001f527 unknownxyz")

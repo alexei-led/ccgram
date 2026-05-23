@@ -72,22 +72,27 @@ _FALLBACK_EMOJI = "\U0001f527"
 _MCP_PREFIX_RE = re.compile(r"^mcp__[^_]+__(.+)$")
 _WHITESPACE_RE = re.compile(r"\s+")
 
-_MAX_COMPACT_ARG = 80
+_MAX_COMPACT_ARG = 50
+
+# Case-folded index over every TOOL_EMOJI key, so genuine case-insensitive
+# lookup works (e.g. "TASKCREATE" → "TaskCreate"), not just round-trips on
+# entries that happen to have a lowercase alias.
+_TOOL_EMOJI_LOWER: dict[str, str] = {k.lower(): v for k, v in TOOL_EMOJI.items()}
 
 
 def tool_emoji(name: str) -> str:
     """Return the display emoji for a tool name.
 
-    Exact match first; then case-insensitive; for ``mcp__server__tool`` names
-    strip the prefix and try the bare tool name.  Falls back to wrench (🔧).
-    Never returns an empty string.
+    Exact match first; then case-insensitive over the full key set; for
+    ``mcp__server__tool`` names strip the prefix and retry.  Falls back to
+    wrench (🔧).  Never returns an empty string.
     """
     if name in TOOL_EMOJI:
         return TOOL_EMOJI[name]
 
     lower = name.lower()
-    if lower in TOOL_EMOJI:
-        return TOOL_EMOJI[lower]
+    if lower in _TOOL_EMOJI_LOWER:
+        return _TOOL_EMOJI_LOWER[lower]
 
     mcp_match = _MCP_PREFIX_RE.match(name)
     if mcp_match:
@@ -95,8 +100,8 @@ def tool_emoji(name: str) -> str:
         if bare in TOOL_EMOJI:
             return TOOL_EMOJI[bare]
         bare_lower = bare.lower()
-        if bare_lower in TOOL_EMOJI:
-            return TOOL_EMOJI[bare_lower]
+        if bare_lower in _TOOL_EMOJI_LOWER:
+            return _TOOL_EMOJI_LOWER[bare_lower]
 
     return _FALLBACK_EMOJI
 
@@ -119,12 +124,14 @@ def compact_arg(text: str, cap: int = _MAX_COMPACT_ARG) -> str:
 def format_tool_line(name: str, summary: str) -> str:
     """Build a compact one-line tool-call display string.
 
-    Returns ``{emoji} {name}: "{summary}"`` when *summary* is non-empty
+    Returns ``{emoji} {name}: {summary}`` when *summary* is non-empty
     after applying ``compact_arg``, otherwise ``{emoji} {name}``.
-    The name is preserved exactly as given (no remapping).
+    The name is lowercased for visual quietness (`📖 read` not `📖 Read`).
+    The summary is rendered bare (no surrounding quotes).
     """
     emoji = tool_emoji(name)
+    display_name = name.lower()
     trimmed = compact_arg(summary)
     if trimmed:
-        return f'{emoji} {name}: "{trimmed}"'
-    return f"{emoji} {name}"
+        return f"{emoji} {display_name}: {trimmed}"
+    return f"{emoji} {display_name}"

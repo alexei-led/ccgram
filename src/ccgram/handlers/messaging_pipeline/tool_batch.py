@@ -63,13 +63,6 @@ _PLAIN_TASK_CREATE_RE = re.compile(r"^TaskCreate\s+(.+)$")
 _TASK_TOOL_NAMES = frozenset({"TaskCreate", "TaskUpdate", "TaskList"})
 _MIN_BACKTICK_WRAPPED_LENGTH = 2
 
-_BATCH_ERROR_RE = re.compile(
-    r"\b(error|FAILED|fail(ed|ure[s]?)?|Exception|Traceback|exit code [1-9]\d*)\b",
-    re.IGNORECASE,
-)
-_BATCH_SUCCESS_RE = re.compile(r"\b(passed|success|exit code 0)\b", re.IGNORECASE)
-
-
 # ---------------------------------------------------------------------------
 # Public predicates
 # ---------------------------------------------------------------------------
@@ -102,19 +95,14 @@ def format_batch_message(
     if task_create_message is not None:
         return task_create_message
 
-    count = len(entries)
-    label = "tool call" if count == 1 else "tool calls"
-    header = f"\u26a1 {count} {label}"
-    has_task_tools = any(entry.tool_name in _TASK_TOOL_NAMES for entry in entries)
-    if subagent_label and not has_task_tools:
-        header = f"{header} [{subagent_label}]"
-    lines = [header]
-    if subagent_label and has_task_tools:
+    lines: list[str] = []
+    if subagent_label:
         lines.append(subagent_label)
-
     lines.extend(_format_mixed_batch_lines(entries))
 
-    return "\n".join(lines)
+    # Triple-backtick fence so Telegram renders the batch in a monospace block,
+    # visually distinct from regular assistant text.
+    return "```\n" + "\n".join(lines) + "\n```"
 
 
 def _format_task_create_batch(
@@ -265,24 +253,12 @@ def _format_task_list_section(entry: ToolBatchEntry) -> list[str]:
     return [heading]
 
 
-def _batch_result_prefix(result_text: str) -> str:
-    """Choose a result indicator prefix based on content."""
-    if _BATCH_ERROR_RE.search(result_text):
-        return "\u274c"
-    if _BATCH_SUCCESS_RE.search(result_text):
-        return "\u2705"
-    return "\u23bf"
-
-
 def _format_batch_entry(entry: ToolBatchEntry, count: int = 1) -> str:
-    """Render one standard batch row."""
+    """Render one standard batch row \u2014 name + summary only, no status glyph."""
     line = entry.tool_use_text
     if count > 1:
         line = f"{line} \u00d7{count}"
-    if entry.tool_result_text is not None:
-        prefix = _batch_result_prefix(entry.tool_result_text)
-        return f"{line}  {prefix}  {entry.tool_result_text}"
-    return f"{line}  \u23f3"
+    return line
 
 
 def _extract_task_create_title(entry: ToolBatchEntry) -> str:
@@ -291,10 +267,22 @@ def _extract_task_create_title(entry: ToolBatchEntry) -> str:
 
 
 def _extract_task_tool_suffix(entry: ToolBatchEntry) -> str:
-    """Extract the summary text after a markdown/plain task-tool prefix."""
+    """Extract the summary text after a tool-call prefix.
+
+    Handles the current ``{emoji} {name}: {summary}`` shape plus two legacy
+    formats (``**Name** `summary`` and bare ``TaskCreate Title``) for back-
+    compat with anything still sitting in old batches.
+    """
     text = entry.tool_use_text.strip()
     if not text:
         return ""
+
+    # Current shape: "📋 taskcreate: TITLE"
+    if ": " in text:
+        _, _, suffix = text.partition(": ")
+        suffix = suffix.strip()
+        if suffix:
+            return suffix
 
     markdown_match = _MARKDOWN_TOOL_PREFIX_RE.match(text)
     if markdown_match:

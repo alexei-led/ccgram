@@ -39,7 +39,7 @@ class TestWindowViewProjection:
             cwd="/tmp/proj",
             provider_name="claude",
             approval_mode="normal",
-            batch_mode="batched",
+            batch_mode="ephemeral",
             tool_call_visibility="default",
             transcript_path=Path("/tmp/log.jsonl"),
             window_name="",

@@ -261,7 +261,9 @@ def _parse_custom_tool_call(
         if file_count:
             summary = f"{file_count} file(s)"
     if not summary and isinstance(input_text, str) and input_text:
-        summary = input_text
+        # Pre-slice large apply_patch payloads so compact_arg's whitespace
+        # regex never scans tens of KB — the final cap is 80 chars anyway.
+        summary = input_text[:512]
 
     text = format_tool_line(tool_name, summary)
     return (

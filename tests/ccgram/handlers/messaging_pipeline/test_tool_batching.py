@@ -52,6 +52,10 @@ def batch_env():
                 return_value="batched",
             ),
             patch(
+                "ccgram.handlers.messaging_pipeline.tool_batch.is_ephemeral_tools",
+                return_value=False,
+            ),
+            patch(
                 "ccgram.handlers.messaging_pipeline.tool_batch._rate_limit_chat",
                 new=AsyncMock(return_value=None),
             ),
@@ -71,14 +75,18 @@ def batch_env():
 
 
 class TestFormatBatchMessage:
-    def test_single_entry_pending(self) -> None:
+    def test_single_entry(self) -> None:
         entries = [ToolBatchEntry(tool_use_id="t1", tool_use_text="Read src/foo.py")]
         result = format_batch_message(entries)
-        assert result.startswith("\u26a1 1 tool call")
+        assert result.startswith("```\n") and result.endswith("\n```")
         assert "Read src/foo.py" in result
-        assert "\u23f3" in result
+        # No status glyphs, no count header.
+        assert "\u23f3" not in result
+        assert "\u2705" not in result
+        assert "\u274c" not in result
+        assert "tool call" not in result
 
-    def test_single_entry_with_result(self) -> None:
+    def test_result_text_is_dropped(self) -> None:
         entries = [
             ToolBatchEntry(
                 tool_use_id="t1",
@@ -87,89 +95,46 @@ class TestFormatBatchMessage:
             )
         ]
         result = format_batch_message(entries)
-        assert "1 tool call" in result
-        assert "42 lines" in result
-        assert "\u23f3" not in result
+        assert "Read src/foo.py" in result
+        # tool_result_text is intentionally not rendered.
+        assert "42 lines" not in result
+        assert "\u23bf" not in result
 
-    def test_multiple_entries(self) -> None:
+    def test_multiple_entries_one_per_line(self) -> None:
         entries = [
             ToolBatchEntry("t1", "Read src/a.py", "10 lines"),
             ToolBatchEntry("t2", "Edit src/a.py", "+3 -1"),
             ToolBatchEntry("t3", "Bash make test"),
         ]
         result = format_batch_message(entries)
-        assert "3 tool calls" in result
-        assert "Read src/a.py" in result
-        assert "Edit src/a.py" in result
-        assert "Bash make test" in result
-        lines = result.split("\n")
-        assert "\u23f3" in lines[-1]
-        assert "\u23f3" not in lines[1]
-
-    def test_header_pluralization(self) -> None:
-        single = format_batch_message([ToolBatchEntry("t1", "Read x")])
-        assert "tool call\n" in single
-
-        multi = format_batch_message(
-            [ToolBatchEntry("t1", "Read x"), ToolBatchEntry("t2", "Edit y")]
-        )
-        assert "tool calls\n" in multi
-
-    def test_result_separator(self) -> None:
-        entries = [ToolBatchEntry("t1", "Read x", "ok")]
-        result = format_batch_message(entries)
-        assert "\u23bf" in result  # ⎿ separator between tool_use and result
-
-    def test_all_entries_have_results(self) -> None:
-        entries = [
-            ToolBatchEntry("t1", "Read a.py", "10 lines"),
-            ToolBatchEntry("t2", "Edit a.py", "+1 -1"),
-            ToolBatchEntry("t3", "Bash make test", "PASS"),
+        body = result.removeprefix("```\n").removesuffix("\n```")
+        assert body.split("\n") == [
+            "Read src/a.py",
+            "Edit src/a.py",
+            "Bash make test",
         ]
-        result = format_batch_message(entries)
-        assert "\u23f3" not in result
 
-    def test_empty_result_text(self) -> None:
-        entries = [ToolBatchEntry("t1", "Read x", "")]
-        result = format_batch_message(entries)
-        assert "\u23bf" in result
-        assert "\u23f3" not in result
-
-    def test_subagent_label_none(self) -> None:
-        entries = [ToolBatchEntry("t1", "Read x")]
-        result = format_batch_message(entries, subagent_label=None)
-        assert "[" not in result.split("\n")[0]
-
-    def test_subagent_label_single(self) -> None:
+    def test_subagent_label_renders_as_first_body_line(self) -> None:
         entries = [ToolBatchEntry("t1", "Read x"), ToolBatchEntry("t2", "Edit y")]
         result = format_batch_message(entries, subagent_label="\U0001f916 write-tests")
-        header = result.split("\n")[0]
-        assert "2 tool calls" in header
-        assert "[\U0001f916 write-tests]" in header
-
-    def test_subagent_label_multi(self) -> None:
-        entries = [ToolBatchEntry("t1", "Read x")]
-        label = "\U0001f916 2 subagents: write-tests, refactor"
-        result = format_batch_message(entries, subagent_label=label)
-        header = result.split("\n")[0]
-        assert "[" in header
-        assert "2 subagents" in header
+        body = result.removeprefix("```\n").removesuffix("\n```")
+        assert body.split("\n", 1)[0] == "\U0001f916 write-tests"
 
     def test_task_create_batch_renders_numbered_list(self) -> None:
         entries = [
             ToolBatchEntry(
                 "t1",
-                "**TaskCreate** `Understand the Problem Domain`",
+                "📋 taskcreate: Understand the Problem Domain",
                 tool_name="TaskCreate",
             ),
             ToolBatchEntry(
                 "t2",
-                "**TaskCreate** `Map Integrations`",
+                "📋 taskcreate: Map Integrations",
                 tool_name="TaskCreate",
             ),
             ToolBatchEntry(
                 "t3",
-                "**TaskCreate** `Apply the Balance Rule`",
+                "📋 taskcreate: Apply the Balance Rule",
                 tool_name="TaskCreate",
             ),
         ]
@@ -189,7 +154,7 @@ class TestFormatBatchMessage:
         entries = [
             ToolBatchEntry(
                 "t1",
-                "**TaskCreate** `Write the Review`",
+                "📋 taskcreate: Write the Review",
                 tool_name="TaskCreate",
                 tool_result_text="Done",
             )
@@ -205,17 +170,17 @@ class TestFormatBatchMessage:
         entries = [ToolBatchEntry("t1", "TaskCreate Understand the Problem Domain")]
 
         result = format_batch_message(entries)
-
-        assert result.startswith("\u26a1 1 tool call")
+        body = result.removeprefix("```\n").removesuffix("\n```")
+        assert body == "TaskCreate Understand the Problem Domain"
 
     def test_mixed_batch_groups_task_create_entries(self) -> None:
         entries = [
             ToolBatchEntry(
-                "t0", "**ToolSearch** `select:TaskCreate,TaskUpdate,TaskList`"
+                "t0", "🔧 toolsearch: select:TaskCreate,TaskUpdate,TaskList"
             ),
             ToolBatchEntry(
                 "t1",
-                "**TaskCreate** `Tune regex linter`",
+                "📋 taskcreate: Tune regex linter",
                 tool_name="TaskCreate",
             ),
             ToolBatchEntry(
@@ -226,25 +191,24 @@ class TestFormatBatchMessage:
         ]
 
         result = format_batch_message(entries, subagent_label="\U0001f916 subagent")
-
-        lines = result.split("\n")
-        assert lines[0] == "\u26a1 3 tool calls"
-        assert lines[1] == "\U0001f916 subagent"
-        assert "ToolSearch" in lines[2]
-        assert "Creating 2 tasks\u2026" in result
-        assert "1. Tune regex linter" in result
-        assert "2. Apply fixes to opus agents" in result
+        body = result.removeprefix("```\n").removesuffix("\n```")
+        lines = body.split("\n")
+        assert lines[0] == "\U0001f916 subagent"
+        assert "toolsearch" in lines[1].lower()
+        assert "Creating 2 tasks\u2026" in body
+        assert "1. Tune regex linter" in body
+        assert "2. Apply fixes to opus agents" in body
 
     def test_task_update_entries_render_as_progress_section(self) -> None:
         entries = [
             ToolBatchEntry(
                 "t1",
-                "**TaskUpdate** `Tune regex linter -> in progress`",
+                "📋 taskupdate: Tune regex linter -> in progress",
                 tool_name="TaskUpdate",
             ),
             ToolBatchEntry(
                 "t2",
-                "**TaskUpdate** `Apply fixes to opus agents -> completed`",
+                "📋 taskupdate: Apply fixes to opus agents -> completed",
                 tool_name="TaskUpdate",
                 tool_result_text="Done",
             ),
@@ -260,14 +224,15 @@ class TestFormatBatchMessage:
         entries = [
             ToolBatchEntry(
                 "t1",
-                "**TaskList** `refresh`",
+                "📋 tasklist: refresh",
                 tool_name="TaskList",
             )
         ]
 
         result = format_batch_message(entries)
 
-        assert result == "\u26a1 1 tool call\nRefreshing task list\u2026"
+        body = result.removeprefix("```\n").removesuffix("\n```")
+        assert body == "Refreshing task list\u2026"
 
 
 class TestIsBatchEligible:
@@ -319,11 +284,11 @@ class TestWindowStateBatchMode:
     def test_default_batch_mode(self) -> None:
         ws = WindowState()
         assert ws.batch_mode == DEFAULT_BATCH_MODE
-        assert ws.batch_mode == "batched"
+        assert ws.batch_mode == "ephemeral"
 
     @pytest.mark.parametrize(
         ("mode", "expect_key"),
-        [("batched", False), ("verbose", True)],
+        [("ephemeral", False), ("batched", True), ("verbose", True)],
     )
     def test_to_dict_batch_mode(self, mode: str, expect_key: bool) -> None:
         ws = WindowState(session_id="s1", cwd="/tmp", batch_mode=mode)
@@ -336,7 +301,7 @@ class TestWindowStateBatchMode:
     @pytest.mark.parametrize(
         ("data", "expected"),
         [
-            ({"session_id": "s1", "cwd": "/tmp"}, "batched"),
+            ({"session_id": "s1", "cwd": "/tmp"}, "ephemeral"),
             ({"session_id": "s1", "cwd": "/tmp", "batch_mode": "verbose"}, "verbose"),
             ({"session_id": "s1", "cwd": "/tmp", "batch_mode": "batched"}, "batched"),
         ],
@@ -359,10 +324,10 @@ def mgr(monkeypatch) -> SessionManager:
 
 class TestSessionManagerBatchMode:
     def test_get_default(self, mgr: SessionManager) -> None:
-        assert mgr.get_batch_mode("@0") == "batched"
+        assert mgr.get_batch_mode("@0") == "ephemeral"
 
     def test_get_nonexistent_window(self, mgr: SessionManager) -> None:
-        assert mgr.get_batch_mode("@999") == "batched"
+        assert mgr.get_batch_mode("@999") == "ephemeral"
 
     def test_set_mode(self, mgr: SessionManager) -> None:
         mgr.set_batch_mode("@0", "verbose")
@@ -386,12 +351,13 @@ class TestSessionManagerBatchMode:
         assert mgr.get_batch_mode("@0") == expected
 
     def test_cycle_full_circle(self, mgr: SessionManager) -> None:
-        mgr.cycle_batch_mode("@0")
-        assert mgr.get_batch_mode("@0") == "ephemeral"
+        # Default is "ephemeral"; cycle goes ephemeral -> verbose -> batched -> ephemeral.
         mgr.cycle_batch_mode("@0")
         assert mgr.get_batch_mode("@0") == "verbose"
         mgr.cycle_batch_mode("@0")
         assert mgr.get_batch_mode("@0") == "batched"
+        mgr.cycle_batch_mode("@0")
+        assert mgr.get_batch_mode("@0") == "ephemeral"
 
     def test_set_same_mode_no_save(self, mgr: SessionManager, monkeypatch) -> None:
         mgr.set_batch_mode("@0", "verbose")
@@ -405,7 +371,7 @@ class TestSessionManagerBatchMode:
     def test_get_invalid_stored_mode_returns_default(self, mgr: SessionManager) -> None:
         state = window_store.get_window_state("@0")
         state.batch_mode = "garbage"
-        assert mgr.get_batch_mode("@0") == "batched"
+        assert mgr.get_batch_mode("@0") == "ephemeral"
 
 
 @pytest.fixture(autouse=True)
@@ -465,7 +431,7 @@ class TestProcessBatchTask:
             bot,
             1,
             _make_tool_use(
-                text="**TaskCreate** `Understand the Problem Domain`",
+                text="📋 taskcreate: Understand the Problem Domain",
                 tool_name="TaskCreate",
             ),
         )
@@ -688,6 +654,15 @@ class TestHandleContentTask:
 
 
 class TestFlushBatch:
+    @pytest.fixture(autouse=True)
+    def _force_batched_mode(self, monkeypatch):
+        # The new ephemeral default would route flush_batch to delete_message;
+        # these tests exercise the batched-mode edit/send path.
+        monkeypatch.setattr(
+            "ccgram.handlers.messaging_pipeline.tool_batch.is_ephemeral_tools",
+            lambda _wid: False,
+        )
+
     @patch("ccgram.handlers.messaging_pipeline.tool_batch.thread_router")
     async def test_flush_removes_batch(self, mock_tr) -> None:
         mock_tr.resolve_chat_id.return_value = 42
@@ -883,6 +858,13 @@ class TestTopicCleanupClearsBatch:
 
 
 class TestFlushSendFallback:
+    @pytest.fixture(autouse=True)
+    def _force_batched_mode(self, monkeypatch):
+        monkeypatch.setattr(
+            "ccgram.handlers.messaging_pipeline.tool_batch.is_ephemeral_tools",
+            lambda _wid: False,
+        )
+
     @patch(
         "ccgram.handlers.messaging_pipeline.tool_batch._rate_limit_chat",
         new=AsyncMock(return_value=None),
@@ -958,62 +940,3 @@ class TestBatchResultTruncation:
         result_text = "line one\nline two\nline three"
         first_line = result_text.split("\n", 1)[0][:200]
         assert first_line == "line one"
-
-
-class TestBatchResultPrefix:
-    @pytest.mark.parametrize(
-        ("text", "expected"),
-        [
-            ("error: file not found", "\u274c"),
-            ("FAILED test_foo.py::test_bar", "\u274c"),
-            ("Exception: KeyError", "\u274c"),
-            ("Traceback (most recent call last)", "\u274c"),
-            ("exit code 1", "\u274c"),
-            ("exit code 127", "\u274c"),
-            ("2 failures", "\u274c"),
-            ("1 failure", "\u274c"),
-            ("test failure in module", "\u274c"),
-            ("23 passed", "\u2705"),
-            ("Tests passed successfully", "\u2705"),
-            ("success", "\u2705"),
-            ("exit code 0", "\u2705"),
-            ("10 lines read", "\u23bf"),
-            ("file written", "\u23bf"),
-            ("", "\u23bf"),
-        ],
-    )
-    def test_prefix_detection(self, text, expected):
-        from ccgram.handlers.messaging_pipeline.tool_batch import _batch_result_prefix
-
-        assert _batch_result_prefix(text) == expected
-
-    def test_error_takes_priority_over_success(self):
-        from ccgram.handlers.messaging_pipeline.tool_batch import _batch_result_prefix
-
-        text = "3 passed, 1 FAILED"
-        assert _batch_result_prefix(text) == "\u274c"
-
-
-class TestBatchEntryFormatting:
-    def test_success_prefix_in_formatted_entry(self):
-        entry = ToolBatchEntry("t1", "Bash make test", "23 passed")
-        result = format_batch_message([entry])
-        assert "\u2705" in result
-        assert "23 passed" in result
-
-    def test_error_prefix_in_formatted_entry(self):
-        entry = ToolBatchEntry("t1", "Bash make test", "FAILED test_foo")
-        result = format_batch_message([entry])
-        assert "\u274c" in result
-        assert "FAILED test_foo" in result
-
-    def test_neutral_prefix_in_formatted_entry(self):
-        entry = ToolBatchEntry("t1", "Read src/foo.py", "42 lines")
-        result = format_batch_message([entry])
-        assert "\u23bf" in result
-        assert "42 lines" in result
-
-    def test_pending_entry_shows_hourglass(self):
-        entry = ToolBatchEntry("t1", "Bash make test")
-        result = format_batch_message([entry])
-        assert "\u23f3" in result

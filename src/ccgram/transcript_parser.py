@@ -173,7 +173,8 @@ class TranscriptParser:
             cwd: Optional working directory for shortening file paths
 
         Returns:
-            Formatted string like "**Read**(file.py)"
+            Formatted string like ``📖 read: "file.py"`` via
+            ``tool_format.format_tool_line``.
         """
         if not isinstance(input_data, dict):
             return format_tool_line(name, "")
