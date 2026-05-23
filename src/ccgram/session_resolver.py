@@ -26,6 +26,7 @@ import aiofiles
 from .config import config
 from .providers import get_provider_for_window
 from .thread_router import thread_router
+from .window_state_ports import identity_state
 from .window_state_store import window_store
 
 logger = structlog.get_logger()
@@ -54,23 +55,24 @@ class SessionResolver:
     def _session_from_transcript_path(
         self,
         window_id: str,
-        state: Any,
+        identity: identity_state.IdentityProjection,
     ) -> ClaudeSession | None:
         """Build a lightweight session object from persisted transcript_path."""
-        transcript = state.transcript_path
+        transcript = identity.transcript_path
         if not transcript:
             return None
-        file_path = Path(transcript)
-        if not file_path.exists():
+        if not transcript.exists():
             return None
         summary = (
-            state.window_name or thread_router.get_display_name(window_id) or "Untitled"
+            identity.window_name
+            or thread_router.get_display_name(window_id)
+            or "Untitled"
         )
         return ClaudeSession(
-            session_id=state.session_id,
+            session_id=identity.session_id,
             summary=summary,
             message_count=-1,
-            file_path=str(file_path),
+            file_path=str(transcript),
         )
 
     def _resolve_session_file(
@@ -95,12 +97,12 @@ class SessionResolver:
         encoded_dir = file_path.parent.name
         decoded_cwd = encoded_dir.replace("-", "/")
         if window_id and decoded_cwd.startswith("/") and Path(decoded_cwd).is_dir():
-            state = window_store.window_states.get(window_id)
-            if state and state.cwd != decoded_cwd:
+            current_cwd = identity_state.get_cwd(window_id)
+            if current_cwd and current_cwd != decoded_cwd:
                 logger.info(
                     "Glob fallback: updating cwd for window %s: %r -> %r",
                     window_id,
-                    state.cwd,
+                    current_cwd,
                     decoded_cwd,
                 )
                 window_store.update_cwd(window_id, decoded_cwd)
@@ -113,9 +115,8 @@ class SessionResolver:
         summary = ""
         last_user_msg = ""
         message_count = 0
-        state = window_store.window_states.get(window_id)
         provider = get_provider_for_window(
-            window_id, provider_name=state.provider_name if state else None
+            window_id, provider_name=identity_state.get_provider_name(window_id)
         )
         try:
             async with aiofiles.open(file_path, "r", encoding="utf-8") as f:
@@ -164,35 +165,40 @@ class SessionResolver:
         Uses persisted session_id + cwd to construct file path directly.
         Returns None if no session is associated with this window.
         """
-        state = window_store.get_window_state(window_id)
-
-        if not state.session_id or not state.cwd:
+        # Ensure a row exists (preserves prior get_window_state() semantics).
+        window_store.get_window_state(window_id)
+        identity = identity_state.get_identity(window_id)
+        if identity is None or not identity.session_id or not identity.cwd:
             return None
 
-        direct = self._session_from_transcript_path(window_id, state)
+        direct = self._session_from_transcript_path(window_id, identity)
         if direct:
             return direct
 
-        session = await self._get_session_direct(state.session_id, state.cwd, window_id)
+        session = await self._get_session_direct(
+            identity.session_id, identity.cwd, window_id
+        )
         if session:
             return session
 
-        provider = get_provider_for_window(window_id, provider_name=state.provider_name)
+        provider = get_provider_for_window(
+            window_id, provider_name=identity.provider_name
+        )
         if not provider.capabilities.supports_hook:
             logger.debug(
                 "Hookless session unresolved for window_id %s "
                 "(sid=%s, transcript_path=%s); keeping state",
                 window_id,
-                state.session_id,
-                state.transcript_path,
+                identity.session_id,
+                identity.transcript_path,
             )
             return None
 
         logger.debug(
             "Session file no longer exists for window_id %s (sid=%s, cwd=%s)",
             window_id,
-            state.session_id,
-            state.cwd,
+            identity.session_id,
+            identity.cwd,
         )
         window_store.clear_session_fields(window_id)
         return None
@@ -204,8 +210,7 @@ class SessionResolver:
         """Find all users whose thread-bound window maps to the given session_id."""
         result: list[tuple[int, str, int]] = []
         for user_id, thread_id, window_id in thread_router.iter_thread_bindings():
-            state = window_store.window_states.get(window_id)
-            if state and state.session_id == session_id:
+            if identity_state.get_session_id(window_id) == session_id:
                 result.append((user_id, window_id, thread_id))
         return result
 
@@ -230,9 +235,8 @@ class SessionResolver:
         if not file_path.exists():
             return [], 0
 
-        state = window_store.window_states.get(window_id)
         provider = get_provider_for_window(
-            window_id, provider_name=state.provider_name if state else None
+            window_id, provider_name=identity_state.get_provider_name(window_id)
         )
         entries: list[dict[str, Any]] = []
         try:

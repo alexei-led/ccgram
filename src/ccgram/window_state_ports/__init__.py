@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from .identity_state import (
     IdentityProjection,
+    clear_transcript_path,
     get_approval_mode,
     get_cwd,
     get_identity,
@@ -64,6 +65,7 @@ from .worktree_state import (
 __all__ = [
     # Identity
     "IdentityProjection",
+    "clear_transcript_path",
     "get_identity",
     "get_provider_name",
     "get_session_id",

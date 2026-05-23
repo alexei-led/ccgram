@@ -202,22 +202,6 @@ def _collect_all_hits() -> list[tuple[str, str, int, str]]:
 # (path, field, kind) entries from this map; the second test asserts
 # that no stale entries linger.
 BASELINE_RAW_ACCESS: dict[tuple[str, str, str], str] = {
-    # ── handlers/recovery/transcript_discovery.py ────────────────────
-    ("ccgram/handlers/recovery/transcript_discovery.py", "session_id", "read"): (
-        "transcript discovery"
-    ),
-    ("ccgram/handlers/recovery/transcript_discovery.py", "cwd", "read"): (
-        "transcript discovery"
-    ),
-    ("ccgram/handlers/recovery/transcript_discovery.py", "provider_name", "read"): (
-        "transcript discovery"
-    ),
-    ("ccgram/handlers/recovery/transcript_discovery.py", "transcript_path", "read"): (
-        "transcript discovery"
-    ),
-    ("ccgram/handlers/recovery/transcript_discovery.py", "transcript_path", "write"): (
-        "transcript discovery"
-    ),
     # ── handlers/status/rc_probe.py ──────────────────────────────────
     ("ccgram/handlers/status/rc_probe.py", "rc_probe_state", "read"): (
         "rc probe lifecycle"
@@ -243,14 +227,6 @@ BASELINE_RAW_ACCESS: dict[tuple[str, str, str], str] = {
     ("ccgram/session_map.py", "transcript_path", "write"): "session map sync",
     ("ccgram/session_map.py", "window_name", "read"): "session map sync",
     ("ccgram/session_map.py", "window_name", "write"): "session map sync",
-    # ── session_resolver.py ──────────────────────────────────────────
-    ("ccgram/session_resolver.py", "cwd", "read"): "session resolver",
-    ("ccgram/session_resolver.py", "provider_name", "read"): "session resolver",
-    ("ccgram/session_resolver.py", "session_id", "read"): "session resolver",
-    ("ccgram/session_resolver.py", "transcript_path", "read"): "session resolver",
-    ("ccgram/session_resolver.py", "window_name", "read"): "session resolver",
-    # ── transcript_reader.py ─────────────────────────────────────────
-    ("ccgram/transcript_reader.py", "provider_name", "read"): "transcript reader",
 }
 
 

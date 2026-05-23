@@ -28,11 +28,10 @@ from ...session_map import session_map_sync
 from ...telegram_client import TelegramClient
 from ...tmux_manager import tmux_manager
 from ...window_resolver import is_foreign_window
-from ...window_state_store import window_store
+from ...window_state_ports import identity_state
 
 if TYPE_CHECKING:
     from ...providers.base import AgentProvider
-    from ...session import WindowState
     from ...tmux_manager import TmuxWindow
 
 logger = structlog.get_logger()
@@ -52,15 +51,14 @@ def _session_id_already_bound(session_id: str, window_id: str) -> bool:
     for _user_id, _thread_id, bound_window_id in iterator:
         if bound_window_id == window_id:
             continue
-        state = window_store.window_states.get(bound_window_id)
-        if state and state.session_id == session_id:
+        if identity_state.get_session_id(bound_window_id) == session_id:
             return True
     return False
 
 
 async def _detect_and_apply_provider(
     window_id: str,
-    state: "WindowState",
+    identity: identity_state.IdentityProjection,
     w: "TmuxWindow",
     *,
     client: TelegramClient | None = None,
@@ -80,8 +78,8 @@ async def _detect_and_apply_provider(
             pane_title=pane_title,
         )
 
-    if detected and detected != state.provider_name:
-        old_provider = state.provider_name
+    if detected and detected != identity.provider_name:
+        old_provider = identity.provider_name
         session_manager.set_window_provider(window_id, detected, cwd=w.cwd or None)
         # Lazy: providers/__init__.py reaches back into transcript code
         # via provider format modules.
@@ -92,7 +90,7 @@ async def _detect_and_apply_provider(
             get_provider_for_window(window_id, old_provider) if old_provider else None
         )
         if new_caps and new_caps.capabilities.chat_first_command_path:
-            state.transcript_path = ""
+            identity_state.clear_transcript_path(window_id)
             # Lazy: shell.shell_prompt_orchestrator hits the recovery
             # subpackage's discovery code via send-keys callbacks.
             from ..shell.shell_prompt_orchestrator import ensure_setup
@@ -115,14 +113,16 @@ async def _detect_and_apply_provider(
 
             clear_shell_monitor_state(window_id)
             clear_orchestrator(window_id)
-    elif not detected and state.transcript_path:
-        inferred = detect_provider_from_transcript_path(state.transcript_path)
-        if inferred and inferred != state.provider_name:
+    elif not detected and identity.transcript_path:
+        inferred = detect_provider_from_transcript_path(str(identity.transcript_path))
+        if inferred and inferred != identity.provider_name:
             session_manager.set_window_provider(window_id, inferred, cwd=w.cwd or None)
 
 
 def _resolve_providers_to_try(
-    window_id: str, state: "WindowState", w: "TmuxWindow | None"
+    window_id: str,
+    identity: identity_state.IdentityProjection,
+    w: "TmuxWindow | None",
 ) -> list[tuple[str, "AgentProvider"]] | None:
     """Determine which providers to probe for transcripts.
 
@@ -139,8 +139,8 @@ def _resolve_providers_to_try(
     # Lazy: providers registry reaches back through transcripts
     from ...providers import registry
 
-    if state.provider_name:
-        provider = get_provider_for_window(window_id, state.provider_name)
+    if identity.provider_name:
+        provider = get_provider_for_window(window_id, identity.provider_name)
         if not provider.capabilities.supports_mailbox_delivery:
             return []
         return [(provider.capabilities.name, provider)]
@@ -157,7 +157,7 @@ def _resolve_providers_to_try(
 
 async def _find_and_register_transcript(
     window_id: str,
-    state: "WindowState",
+    identity: identity_state.IdentityProjection,
     providers_to_try: list[tuple[str, "AgentProvider"]],
     pane_alive: bool,
 ) -> None:
@@ -168,11 +168,15 @@ async def _find_and_register_transcript(
         else f"{config.tmux_session_name}:{window_id}"
     )
 
+    transcript_path_str = (
+        str(identity.transcript_path) if identity.transcript_path else ""
+    )
+
     for provider_name, provider in providers_to_try:
         max_age = 0 if pane_alive else None
         event = await asyncio.to_thread(
             provider.discover_transcript,
-            state.cwd,
+            identity.cwd,
             window_key,
             max_age=max_age,
         )
@@ -188,9 +192,9 @@ async def _find_and_register_transcript(
             continue
 
         if (
-            state.session_id == event.session_id
-            and state.transcript_path == event.transcript_path
-            and state.provider_name == provider_name
+            identity.session_id == event.session_id
+            and transcript_path_str == event.transcript_path
+            and identity.provider_name == provider_name
         ):
             return
 
@@ -212,6 +216,38 @@ async def _find_and_register_transcript(
         return
 
 
+def _hook_already_resolved(
+    window_id: str, identity: identity_state.IdentityProjection
+) -> bool:
+    """True when a hookful provider has already populated transcript_path."""
+    if not identity.provider_name:
+        return False
+    provider = get_provider_for_window(window_id, identity.provider_name)
+    return bool(provider.capabilities.supports_hook and identity.transcript_path)
+
+
+async def _switch_to_shell(
+    window_id: str,
+    *,
+    client: TelegramClient | None,
+    chat_id: int,
+    thread_id: int,
+) -> None:
+    """Provider-switch to shell and clear transcript bookkeeping."""
+    session_manager.set_window_provider(window_id, "shell")
+    identity_state.clear_transcript_path(window_id)
+    # Lazy: same shell ↔ recovery cycle as _detect_and_apply_provider.
+    from ..shell.shell_prompt_orchestrator import ensure_setup
+
+    await ensure_setup(
+        window_id,
+        "provider_switch",
+        client=client,
+        chat_id=chat_id,
+        thread_id=thread_id,
+    )
+
+
 async def discover_and_register_transcript(
     window_id: str,
     *,
@@ -231,8 +267,8 @@ async def discover_and_register_transcript(
     # Lazy: thread_router proxy resolved when transcript discovery is invoked
     from ...thread_router import thread_router
 
-    state = window_store.window_states.get(window_id)
-    if not state:
+    identity = identity_state.get_identity(window_id)
+    if identity is None:
         return
 
     chat_id = thread_router.resolve_chat_id(user_id, thread_id) if user_id else 0
@@ -241,42 +277,37 @@ async def discover_and_register_transcript(
 
     if w and w.pane_current_command:
         await _detect_and_apply_provider(
-            window_id, state, w, client=client, chat_id=chat_id, thread_id=thread_id
+            window_id, identity, w, client=client, chat_id=chat_id, thread_id=thread_id
         )
-
-    if state.provider_name:
-        provider = get_provider_for_window(window_id, state.provider_name)
-        # Skip discovery only when hook has already populated transcript_path.
-        # Capability alone (supports_hook=True) is insufficient — Codex/Gemini
-        # support hooks but the user may not have installed them yet, in which
-        # case transcript scan is the fallback path.
-        if provider.capabilities.supports_hook and state.transcript_path:
+        refreshed = identity_state.get_identity(window_id)
+        if refreshed is None:
             return
+        identity = refreshed
 
-    if not state.cwd:
+    if _hook_already_resolved(window_id, identity):
+        return
+
+    if not identity.cwd:
         if not w or not w.cwd:
             return
         session_manager.set_window_provider(
-            window_id, state.provider_name or "", cwd=w.cwd
+            window_id, identity.provider_name or "", cwd=w.cwd
         )
+        refreshed = identity_state.get_identity(window_id)
+        if refreshed is None:
+            return
+        identity = refreshed
 
-    providers_to_try = _resolve_providers_to_try(window_id, state, w)
+    providers_to_try = _resolve_providers_to_try(window_id, identity, w)
     if providers_to_try is None:
-        session_manager.set_window_provider(window_id, "shell")
-        state.transcript_path = ""
-        # Lazy: same shell ↔ recovery cycle as _detect_and_apply_provider.
-        from ..shell.shell_prompt_orchestrator import ensure_setup
-
-        await ensure_setup(
-            window_id,
-            "provider_switch",
-            client=client,
-            chat_id=chat_id,
-            thread_id=thread_id,
+        await _switch_to_shell(
+            window_id, client=client, chat_id=chat_id, thread_id=thread_id
         )
         return
     if not providers_to_try:
         return
 
     pane_alive = w is not None and not is_shell_prompt(w.pane_current_command)
-    await _find_and_register_transcript(window_id, state, providers_to_try, pane_alive)
+    await _find_and_register_transcript(
+        window_id, identity, providers_to_try, pane_alive
+    )

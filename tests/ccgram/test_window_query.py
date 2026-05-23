@@ -24,7 +24,10 @@ def _store(monkeypatch) -> WindowStateStore:
     )
     monkeypatch.setattr("ccgram.window_query.window_store", store)
     monkeypatch.setattr("ccgram.window_state_store.window_store", store)
+    monkeypatch.setattr("ccgram.window_state_ports.identity_state.window_store", store)
+    monkeypatch.setattr("ccgram.window_state_ports.lifecycle_state.window_store", store)
     monkeypatch.setattr("ccgram.window_state_ports.tool_state.window_store", store)
+    monkeypatch.setattr("ccgram.window_state_ports.worktree_state.window_store", store)
     return store
 
 

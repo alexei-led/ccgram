@@ -62,7 +62,11 @@ def get_provider_name(window_id: str) -> str | None:
 
 def get_session_id(window_id: str) -> str | None:
     """Non-empty session id for a window, or None."""
-    return window_store.get_session_id_for_window(window_id)
+    state = window_store.window_states.get(window_id)
+    if state is None:
+        return None
+    sid = state.session_id
+    return sid if sid else None
 
 
 def get_cwd(window_id: str) -> str:
@@ -95,8 +99,23 @@ def set_window_approval_mode(window_id: str, mode: str) -> None:
     window_store.set_window_approval_mode(window_id, mode)
 
 
+def clear_transcript_path(window_id: str) -> None:
+    """Clear the persisted transcript path for a window.
+
+    Used by provider-switch coordination when the new provider has a
+    chat-first command path (shell-like) and the old transcript no
+    longer applies. Matches prior behavior: in-memory mutation only;
+    save scheduling rides along with the surrounding provider change.
+    """
+    state = window_store.window_states.get(window_id)
+    if state is None or not state.transcript_path:
+        return
+    state.transcript_path = ""
+
+
 __all__ = [
     "IdentityProjection",
+    "clear_transcript_path",
     "get_approval_mode",
     "get_cwd",
     "get_identity",

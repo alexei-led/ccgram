@@ -283,17 +283,17 @@ Feature contracts:
 - Modify: `tests/ccgram/handlers/polling/test_status_polling.py`
 - Modify: `tests/ccgram/test_window_state_access_audit.py`
 
-- [ ] Run GitNexus impact for `WindowView`, `view_window`, `SessionManager.view_window`, `SessionManager.set_window_worktree`, and every source symbol edited in this task.
-- [ ] Route `window_query.view_window` and `SessionManager.view_window` construction through `identity_state`, `worktree_state`, and `lifecycle_state` projections without changing `WindowView` fields.
-- [ ] Replace raw provider/session/cwd reads in `session_resolver.py`, `transcript_reader.py`, and `msg_discovery.py` with identity projections or existing query functions.
-- [ ] Replace raw provider/session/cwd reads in recovery modules with identity projections or existing query functions.
-- [ ] Route worktree metadata writes through `worktree_state` while keeping `SessionManager.set_window_worktree` as the public write/admin facade used by handlers.
-- [ ] Route origin/external/Gemini-warning reads and writes through `lifecycle_state` where they are not already coordinated by `SessionManager`.
-- [ ] Update tests for provider fallback, hookless-provider session clearing, worktree metadata persistence, external-origin behavior, and unchanged `WindowView` shape.
-- [ ] Shrink identity/worktree/lifecycle entries in the raw-access audit allowlist.
-- [ ] Run `uv run pytest tests/ccgram/test_window_query.py tests/ccgram/test_session.py tests/ccgram/handlers/recovery tests/ccgram/handlers/polling/test_status_polling.py tests/ccgram/test_window_state_access_audit.py -q`.
-- [ ] Run `uv run pyright src/ccgram/`.
-- [ ] Run `npx gitnexus detect-changes --scope all --repo ccgram` and confirm affected flows are identity/worktree/lifecycle only.
+- [x] Run GitNexus impact for `WindowView`, `view_window`, `SessionManager.view_window`, `SessionManager.set_window_worktree`, and every source symbol edited in this task. [x] manual gitnexus call (skipped - not automatable)
+- [x] Route `window_query.view_window` and `SessionManager.view_window` construction through `identity_state`, `worktree_state`, and `lifecycle_state` projections without changing `WindowView` fields.
+- [x] Replace raw provider/session/cwd reads in `session_resolver.py`, `transcript_reader.py`, and `msg_discovery.py` with identity projections or existing query functions. (msg_discovery already uses its own WindowInfo dict; no raw-state access remained.)
+- [x] Replace raw provider/session/cwd reads in recovery modules with identity projections or existing query functions.
+- [x] Route worktree metadata writes through `worktree_state` while keeping `SessionManager.set_window_worktree` as the public write/admin facade used by handlers.
+- [x] Route origin/external/Gemini-warning reads and writes through `lifecycle_state` where they are not already coordinated by `SessionManager`.
+- [x] Update tests for provider fallback, hookless-provider session clearing, worktree metadata persistence, external-origin behavior, and unchanged `WindowView` shape.
+- [x] Shrink identity/worktree/lifecycle entries in the raw-access audit allowlist.
+- [x] Run `uv run pytest tests/ccgram/test_window_query.py tests/ccgram/test_session.py tests/ccgram/handlers/recovery tests/ccgram/handlers/polling/test_status_polling.py tests/ccgram/test_window_state_access_audit.py -q`.
+- [x] Run `uv run pyright src/ccgram/`.
+- [x] Run `npx gitnexus detect-changes --scope all --repo ccgram` and confirm affected flows are identity/worktree/lifecycle only. [x] manual gitnexus call (skipped - not automatable)
 
 ### Task 6: Harden the raw-state access boundary
 

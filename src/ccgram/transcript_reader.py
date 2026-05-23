@@ -40,19 +40,17 @@ _PathResolveError = (OSError, ValueError)
 
 def _resolve_provider_for_file(window_id: str, file_path: Path) -> Any:
     """Prefer transcript-path provider hints when a hookful state goes stale."""
-    state_store = None
+    provider_name: str | None = None
     try:
-        # Lazy: window_state_store may not yet be wired during early
-        # transcript-discovery paths; the ImportError fallback gates on
-        # that case explicitly.
-        from .window_state_store import window_store
+        # Lazy: window_state_ports.identity_state imports the kernel which
+        # may not yet be wired during early transcript-discovery paths; the
+        # ImportError fallback gates on that case explicitly.
+        from .window_state_ports import identity_state
 
-        state_store = window_store.window_states.get(window_id)
+        provider_name = identity_state.get_provider_name(window_id)
     except ImportError:
         pass
-    provider = get_provider_for_window(
-        window_id, provider_name=state_store.provider_name if state_store else None
-    )
+    provider = get_provider_for_window(window_id, provider_name=provider_name)
     inferred = detect_provider_from_transcript_path(str(file_path))
     current = provider.capabilities.name
     if (
