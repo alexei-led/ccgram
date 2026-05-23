@@ -45,11 +45,13 @@ pkg/
 # Claude Code (keep .claude/ tracked)
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
+.claude/skills/gitnexus/
 
 # Spec (keep .spec/ tracked)
 
 # ai artificats to skip
 .brainstorming/
+AGENTS.md
 
 # Blog posts and social media drafts
 posts/
@@ -63,6 +65,7 @@ progress*.txt
 # Contributor tool dirs
 .serena
 .works
+.codegraph/
 
 # Dev run lock
 .ccgram-dev-run.lock.d/
