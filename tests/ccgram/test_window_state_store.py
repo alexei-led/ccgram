@@ -351,6 +351,70 @@ class TestWindowStateGeminiExternalWarned:
         assert window_store.window_states["@4"].gemini_external_warned is True
 
 
+class TestProviderManualOverride:
+    def test_default_is_false(self) -> None:
+        assert WindowState().provider_manual_override is False
+
+    def test_to_dict_omits_when_false(self) -> None:
+        assert "provider_manual_override" not in WindowState(cwd="/p").to_dict()
+
+    def test_to_dict_includes_when_true(self) -> None:
+        ws = WindowState(cwd="/p", provider_manual_override=True)
+        assert ws.to_dict()["provider_manual_override"] is True
+
+    def test_from_dict_round_trip(self) -> None:
+        ws = WindowState(cwd="/p", provider_manual_override=True)
+        loaded = WindowState.from_dict(ws.to_dict())
+        assert loaded.provider_manual_override is True
+
+    def test_from_dict_missing_defaults_false(self) -> None:
+        ws = WindowState.from_dict({"session_id": "s", "cwd": "/p"})
+        assert ws.provider_manual_override is False
+
+    def test_set_schedules_save_and_persists(self, store: WindowStateStore) -> None:
+        store.window_states["@1"] = WindowState()
+        store._save_calls.clear()  # type: ignore[attr-defined]
+        store.set_provider_manual_override("@1", value=True)
+        assert store.window_states["@1"].provider_manual_override is True
+        assert len(store._save_calls) == 1  # type: ignore[attr-defined]
+
+    def test_set_same_value_is_no_op(self, store: WindowStateStore) -> None:
+        store.window_states["@1"] = WindowState()
+        store._save_calls.clear()  # type: ignore[attr-defined]
+        store.set_provider_manual_override("@1", value=False)
+        assert store._save_calls == []  # type: ignore[attr-defined]
+
+    def test_set_missing_window_is_no_op(self, store: WindowStateStore) -> None:
+        store._save_calls.clear()  # type: ignore[attr-defined]
+        store.set_provider_manual_override("@missing", value=True)
+        assert "@missing" not in store.window_states
+        assert store._save_calls == []  # type: ignore[attr-defined]
+
+    def test_clear_transcript_path_clears_and_saves(
+        self, store: WindowStateStore
+    ) -> None:
+        store.window_states["@1"] = WindowState(transcript_path="/t.jsonl")
+        store._save_calls.clear()  # type: ignore[attr-defined]
+        store.clear_transcript_path("@1")
+        assert store.window_states["@1"].transcript_path == ""
+        assert len(store._save_calls) == 1  # type: ignore[attr-defined]
+
+    def test_clear_transcript_path_no_op_when_empty(
+        self, store: WindowStateStore
+    ) -> None:
+        store.window_states["@1"] = WindowState()
+        store._save_calls.clear()  # type: ignore[attr-defined]
+        store.clear_transcript_path("@1")
+        assert store._save_calls == []  # type: ignore[attr-defined]
+
+    def test_clear_transcript_path_no_op_missing_window(
+        self, store: WindowStateStore
+    ) -> None:
+        store._save_calls.clear()  # type: ignore[attr-defined]
+        store.clear_transcript_path("@missing")
+        assert store._save_calls == []  # type: ignore[attr-defined]
+
+
 class TestApprovalMode:
     def test_default_is_normal(self, store: WindowStateStore) -> None:
         assert store.get_approval_mode("@1") == "normal"

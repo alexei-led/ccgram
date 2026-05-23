@@ -37,7 +37,7 @@ class TestReads:
             state="active",
             subscribed=False,
         )
-        with pytest.raises(Exception):
+        with pytest.raises(AttributeError):
             proj.name = "mutated"  # type: ignore[misc]
 
     def test_list_pane_projections_empty(self, store: WindowStateStore) -> None:

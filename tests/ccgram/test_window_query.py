@@ -8,7 +8,10 @@ from ccgram.window_query import (
     get_approval_mode,
     get_batch_mode,
     get_session_id_for_window,
+    get_tool_call_visibility,
     get_window_provider,
+    is_ephemeral_tools,
+    is_tool_calls_hidden,
     iter_window_ids,
     view_window,
     window_count,
@@ -57,6 +60,8 @@ class TestViewWindow:
         assert v.provider_name == "claude"
         assert v.session_id == "sid1"
         assert v.window_name == "myproj"
+        assert v.external is False
+        assert v.origin == "manual_discovered"
 
     def test_transcript_path_as_path_object(self, populated) -> None:
         v = view_window("@1")
@@ -139,3 +144,43 @@ class TestIterWindowIds:
 
     def test_returns_ids(self, populated) -> None:
         assert iter_window_ids() == ["@1"]
+
+
+class TestToolCallDelegations:
+    def test_is_ephemeral_tools_unknown_window(self) -> None:
+        assert is_ephemeral_tools("@missing") is True
+
+    def test_is_ephemeral_tools_returns_false_for_non_ephemeral(
+        self, _store: WindowStateStore
+    ) -> None:
+        _store.window_states["@1"] = WindowState(batch_mode="batched")
+        assert is_ephemeral_tools("@1") is False
+
+    def test_get_tool_call_visibility_unknown_window(self) -> None:
+        assert get_tool_call_visibility("@missing") == "default"
+
+    def test_get_tool_call_visibility_returns_stored_value(
+        self, _store: WindowStateStore
+    ) -> None:
+        _store.window_states["@1"] = WindowState(tool_call_visibility="hidden")
+        assert get_tool_call_visibility("@1") == "hidden"
+
+    def test_is_tool_calls_hidden_unknown_window_uses_global_config(
+        self, _store: WindowStateStore, monkeypatch
+    ) -> None:
+        from ccgram.window_state_ports import tool_state as _ts
+
+        monkeypatch.setattr(_ts, "_resolve_tool_calls_hidden", lambda _v: True)
+        assert is_tool_calls_hidden("@missing") is True
+
+    def test_is_tool_calls_hidden_shown_overrides_global(
+        self, _store: WindowStateStore
+    ) -> None:
+        _store.window_states["@1"] = WindowState(tool_call_visibility="shown")
+        assert is_tool_calls_hidden("@1") is False
+
+    def test_is_tool_calls_hidden_hidden_overrides_global(
+        self, _store: WindowStateStore
+    ) -> None:
+        _store.window_states["@1"] = WindowState(tool_call_visibility="hidden")
+        assert is_tool_calls_hidden("@1") is True

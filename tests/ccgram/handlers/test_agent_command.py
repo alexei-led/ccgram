@@ -405,3 +405,42 @@ async def test_callback_malformed_payload_answers_with_error(monkeypatch):
     await ac._dispatch(update, MagicMock())
     update.callback_query.answer.assert_awaited_once_with("Bad callback")
     assert window_store.window_states["@7"].provider_name == "claude"
+
+
+async def test_disallowed_user_is_rejected():
+    sent: dict[str, str] = {}
+
+    async def fake_safe_reply(_msg, text, reply_markup=None):
+        sent["text"] = text
+
+    with (
+        patch("ccgram.config.Config.is_user_allowed", return_value=False),
+        patch("ccgram.handlers.agent_command.safe_reply", side_effect=fake_safe_reply),
+    ):
+        await ac.agent_command(_make_update("/agent claude"), MagicMock())
+
+    assert "bound topic" in sent["text"]
+    assert window_store.window_states["@7"].provider_name == "claude"
+
+
+async def test_picker_text_shows_manual_override_badge():
+    identity_state.set_provider_manual_override("@7", value=True)
+    captured: dict[str, object] = {}
+
+    async def fake_safe_reply(_msg, text, reply_markup=None):
+        captured["text"] = text
+
+    with patch("ccgram.handlers.agent_command.safe_reply", side_effect=fake_safe_reply):
+        await ac.agent_command(_make_update(), MagicMock())
+
+    assert "(manual override)" in str(captured["text"])
+
+
+async def test_callback_unknown_provider_answers_error(monkeypatch):
+    monkeypatch.setattr(
+        "ccgram.handlers.agent_command.user_owns_window", lambda u, w: True
+    )
+    update = _make_query(f"{CB_AGENT_SET}@7:bogus")
+    await ac._dispatch(update, MagicMock())
+    update.callback_query.answer.assert_awaited_once_with("Unknown provider")
+    assert window_store.window_states["@7"].provider_name == "claude"
