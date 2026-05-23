@@ -38,6 +38,14 @@ EXCLUDED_FILES: frozenset[Path] = frozenset(
         SRC_ROOT / "window_state_store.py",
         SRC_ROOT / "session.py",
         SRC_ROOT / "window_query.py",
+        # Feature ports — the approved seam between handlers and raw WindowState
+        # fields. Pyport access here is intentional.
+        SRC_ROOT / "window_state_ports" / "__init__.py",
+        SRC_ROOT / "window_state_ports" / "pane_state.py",
+        SRC_ROOT / "window_state_ports" / "identity_state.py",
+        SRC_ROOT / "window_state_ports" / "worktree_state.py",
+        SRC_ROOT / "window_state_ports" / "tool_state.py",
+        SRC_ROOT / "window_state_ports" / "lifecycle_state.py",
     }
 )
 
@@ -307,7 +315,10 @@ def test_at_least_one_audited_file_exists() -> None:
     assert len(files) > 50, f"expected many audited files, got {len(files)}"
 
 
-@pytest.mark.parametrize("excluded", sorted(p.name for p in EXCLUDED_FILES))
+@pytest.mark.parametrize(
+    "excluded",
+    sorted(str(p.relative_to(SRC_ROOT)) for p in EXCLUDED_FILES),
+)
 def test_excluded_files_exist(excluded: str) -> None:
     """Guard against rename drift in the excluded set."""
     assert (SRC_ROOT / excluded).is_file(), (

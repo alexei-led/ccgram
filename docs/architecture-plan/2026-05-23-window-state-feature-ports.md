@@ -199,18 +199,18 @@ Feature contracts:
 - Create: `tests/ccgram/window_state_ports/test_tool_state.py`
 - Create: `tests/ccgram/window_state_ports/test_lifecycle_state.py`
 
-- [ ] Run GitNexus impact for each production symbol you edit or add callers around, including `WindowStateStore`, `WindowState`, `PaneInfo`, and `SessionManager` if used.
-- [ ] Add frozen projection dataclasses for pane, identity, worktree, tool mode, and lifecycle state.
-- [ ] Implement read projections as thin adapters over `window_state_store.window_store` or existing `window_query` functions.
-- [ ] Implement write ports only for cohesive feature writes already owned by `WindowStateStore`: pane upsert/remove, pane lifecycle override, worktree metadata, batch mode, tool-call visibility, origin, and Gemini external warning.
-- [ ] For provider/session identity writes, expose only the safe operations that preserve existing coordination; provider changes must delegate to `SessionManager.set_window_provider` or stay out of the port.
-- [ ] Export only stable feature-port functions and projection types from `window_state_ports/__init__.py`; do not re-export `WindowState`.
-- [ ] Add unit tests for each port covering missing window defaults, valid projections, invalid mode validation, one save per real mutation, and zero save calls for no-op setters.
-- [ ] Update `test_window_state_access_audit.py` so the new port modules are approved raw-field access sites.
-- [ ] Run `uv run pytest tests/ccgram/window_state_ports tests/ccgram/test_window_state_access_audit.py -q`.
-- [ ] Run `uv run ruff check src/ccgram/window_state_ports tests/ccgram/window_state_ports`.
-- [ ] Run `uv run pyright src/ccgram/`.
-- [ ] Run `npx gitnexus detect-changes --scope all --repo ccgram` and confirm affected symbols are limited to window-state ports and tests.
+- [x] Run GitNexus impact for each production symbol you edit or add callers around, including `WindowStateStore`, `WindowState`, `PaneInfo`, and `SessionManager` if used.
+- [x] Add frozen projection dataclasses for pane, identity, worktree, tool mode, and lifecycle state.
+- [x] Implement read projections as thin adapters over `window_state_store.window_store` or existing `window_query` functions.
+- [x] Implement write ports only for cohesive feature writes already owned by `WindowStateStore`: pane upsert/remove, pane lifecycle override, worktree metadata, batch mode, tool-call visibility, origin, and Gemini external warning.
+- [x] For provider/session identity writes, expose only the safe operations that preserve existing coordination; provider changes must delegate to `SessionManager.set_window_provider` or stay out of the port.
+- [x] Export only stable feature-port functions and projection types from `window_state_ports/__init__.py`; do not re-export `WindowState`.
+- [x] Add unit tests for each port covering missing window defaults, valid projections, invalid mode validation, one save per real mutation, and zero save calls for no-op setters.
+- [x] Update `test_window_state_access_audit.py` so the new port modules are approved raw-field access sites.
+- [x] Run `uv run pytest tests/ccgram/window_state_ports tests/ccgram/test_window_state_access_audit.py -q`.
+- [x] Run `uv run ruff check src/ccgram/window_state_ports tests/ccgram/window_state_ports`.
+- [x] Run `uv run pyright src/ccgram/`.
+- [x] Run `npx gitnexus detect-changes --scope all --repo ccgram` and confirm affected symbols are limited to window-state ports and tests.
 
 ### Task 3: Migrate pane-state reads and writes
 
