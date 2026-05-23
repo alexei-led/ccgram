@@ -347,6 +347,22 @@ class WindowStateStore:
         self._schedule_save()
         logger.info("Cleared session for window_id %s", window_id)
 
+    def set_provider_manual_override(self, window_id: str, *, value: bool) -> None:
+        """Mark or clear the provider manual-override flag. No-op when unchanged."""
+        state = self.window_states.get(window_id)
+        if state is None or state.provider_manual_override == value:
+            return
+        state.provider_manual_override = value
+        self._schedule_save()
+
+    def clear_transcript_path(self, window_id: str) -> None:
+        """Clear the persisted transcript path for a window. No-op when already empty."""
+        state = self.window_states.get(window_id)
+        if state is None or not state.transcript_path:
+            return
+        state.transcript_path = ""
+        self._schedule_save()
+
     def get_session_id_for_window(self, window_id: str) -> str | None:
         """Look up session_id for a window from window_states."""
         state = self.window_states.get(window_id)

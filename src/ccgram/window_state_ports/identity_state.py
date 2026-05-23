@@ -114,11 +114,7 @@ def is_provider_manually_overridden(window_id: str) -> bool:
 
 def set_provider_manual_override(window_id: str, *, value: bool) -> None:
     """Mark or clear the provider manual-override flag."""
-    state = window_store.window_states.get(window_id)
-    if state is None or state.provider_manual_override == value:
-        return
-    state.provider_manual_override = value
-    window_store._schedule_save()
+    window_store.set_provider_manual_override(window_id, value=value)
 
 
 def clear_transcript_path(window_id: str) -> None:
@@ -129,11 +125,7 @@ def clear_transcript_path(window_id: str) -> None:
     longer applies. Schedules a save so the cleared field persists
     even when called outside a surrounding provider write.
     """
-    state = window_store.window_states.get(window_id)
-    if state is None or not state.transcript_path:
-        return
-    state.transcript_path = ""
-    window_store._schedule_save()
+    window_store.clear_transcript_path(window_id)
 
 
 __all__ = [

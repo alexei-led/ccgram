@@ -21,6 +21,8 @@ from .identity_state import (
     get_session_id,
     get_transcript_path,
     get_window_name,
+    is_provider_manually_overridden,
+    set_provider_manual_override,
     set_window_approval_mode,
 )
 from .lifecycle_state import (
@@ -73,6 +75,8 @@ __all__ = [
     "get_transcript_path",
     "get_window_name",
     "get_approval_mode",
+    "is_provider_manually_overridden",
+    "set_provider_manual_override",
     "set_window_approval_mode",
     # Lifecycle
     "LifecycleProjection",

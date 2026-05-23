@@ -1033,6 +1033,13 @@ class TestProviderSwitchChain:
             ) as mock_clear_orch,
         ):
             mock_ws.window_states = {"@7": state}
+
+            def _clear_transcript(window_id: str) -> None:
+                s = mock_ws.window_states.get(window_id)
+                if s is not None:
+                    s.transcript_path = ""
+
+            mock_ws.clear_transcript_path.side_effect = _clear_transcript
             mock_sm.set_window_provider.side_effect = _set_provider
             mock_config.tmux_session_name = "ccgram"
 
