@@ -39,12 +39,10 @@ from .user_preferences import (
 )
 from .window_resolver import EMDASH_SESSION_PREFIX, is_foreign_window, is_window_id
 from .window_view import WindowView
-from .window_query import get_batch_mode as _wq_get_batch_mode
+from .window_state_ports import tool_state as _tool_state
 from .window_state_store import (
     APPROVAL_MODES,
-    BATCH_MODES,
     DEFAULT_APPROVAL_MODE,
-    _BATCH_CYCLE,
     WindowState,
     WindowStateStore,
     install_window_store,
@@ -660,37 +658,29 @@ class SessionManager:
 
     def get_batch_mode(self, window_id: str) -> str:
         """Get batch mode for a window."""
-        return _wq_get_batch_mode(window_id)
+        return _tool_state.get_batch_mode(window_id)
 
     def set_batch_mode(self, window_id: str, mode: str) -> None:
         """Set batch mode for a window."""
-        if mode not in BATCH_MODES:
-            raise ValueError(f"Invalid batch mode: {mode!r}")
-        state = window_store.get_window_state(window_id)
-        if state.batch_mode != mode:
-            state.batch_mode = mode
-            self._save_state()
+        _tool_state.set_batch_mode(window_id, mode)
 
     def cycle_batch_mode(self, window_id: str) -> str:
         """Cycle batch mode: batched → ephemeral → verbose → batched. Returns new mode."""
-        current = self.get_batch_mode(window_id)
-        new_mode = _BATCH_CYCLE.get(current, "ephemeral")
-        self.set_batch_mode(window_id, new_mode)
-        return new_mode
+        return _tool_state.cycle_batch_mode(window_id)
 
     # --- Tool-call visibility ---
 
     def get_tool_call_visibility(self, window_id: str) -> str:
         """Get tool-call visibility for a window (default: 'default')."""
-        return window_store.get_tool_call_visibility(window_id)
+        return _tool_state.get_tool_call_visibility(window_id)
 
     def set_tool_call_visibility(self, window_id: str, mode: str) -> None:
         """Set tool-call visibility for a window."""
-        window_store.set_tool_call_visibility(window_id, mode)
+        _tool_state.set_tool_call_visibility(window_id, mode)
 
     def cycle_tool_call_visibility(self, window_id: str) -> str:
         """Cycle tool-call visibility: default → shown → hidden → default. Returns new mode."""
-        return window_store.cycle_tool_call_visibility(window_id)
+        return _tool_state.cycle_tool_call_visibility(window_id)
 
 
 session_manager = SessionManager()

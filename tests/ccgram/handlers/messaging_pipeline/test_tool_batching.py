@@ -28,12 +28,11 @@ from ccgram.handlers.messaging_pipeline.tool_batch import (
     process_tool_event,
 )
 from ccgram.session import (
-    BATCH_MODES,
     SessionManager,
     WindowState,
     window_store,
 )
-from ccgram.window_state_store import DEFAULT_BATCH_MODE
+from ccgram.window_state_store import BATCH_MODES, DEFAULT_BATCH_MODE
 from ccgram.telegram_draft import mark_draft_unavailable, reset_draft_state
 
 

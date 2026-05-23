@@ -251,16 +251,16 @@ Feature contracts:
 - Modify: `tests/ccgram/handlers/messaging_pipeline/test_topic_commands.py` if present; otherwise update the existing topic-command test file located by `rg "cycle_batch_mode|cycle_tool_call_visibility" tests/ccgram`.
 - Modify: `tests/ccgram/test_window_state_access_audit.py`
 
-- [ ] Run GitNexus impact for `get_batch_mode`, `get_tool_call_visibility`, `is_tool_calls_hidden`, `SessionManager.set_batch_mode`, `SessionManager.set_tool_call_visibility`, and edited tool-batch/topic-command symbols.
-- [ ] Route `window_query` batch/visibility reads through `window_state_ports.tool_state` while preserving global config fallback semantics.
-- [ ] Route `SessionManager` batch/visibility methods through `tool_state` where doing so does not duplicate validation or save scheduling.
-- [ ] Route `tool_batch.py` and topic-command tool-mode reads/writes through `tool_state` or the existing `SessionManager` write facade according to the current write/admin boundary.
-- [ ] Update tests for default global fallback, explicit per-window override, invalid mode rejection, cycle order, and hidden/shown/default resolution.
-- [ ] Shrink tool-mode entries in the raw-access audit allowlist.
-- [ ] Run `uv run pytest tests/ccgram/test_window_query.py tests/ccgram/test_session.py tests/ccgram/handlers/messaging_pipeline -q`.
-- [ ] Run `uv run pytest tests/ccgram/test_query_layer_only_for_handlers.py tests/ccgram/test_window_state_access_audit.py -q`.
-- [ ] Run `uv run pyright src/ccgram/`.
-- [ ] Run `npx gitnexus detect-changes --scope all --repo ccgram` and confirm affected flows are tool-mode/window-query only.
+- [x] Run GitNexus impact for `get_batch_mode`, `get_tool_call_visibility`, `is_tool_calls_hidden`, `SessionManager.set_batch_mode`, `SessionManager.set_tool_call_visibility`, and edited tool-batch/topic-command symbols. [x] manual gitnexus call (skipped - not automatable)
+- [x] Route `window_query` batch/visibility reads through `window_state_ports.tool_state` while preserving global config fallback semantics.
+- [x] Route `SessionManager` batch/visibility methods through `tool_state` where doing so does not duplicate validation or save scheduling.
+- [x] Route `tool_batch.py` and topic-command tool-mode reads/writes through `tool_state` or the existing `SessionManager` write facade according to the current write/admin boundary.
+- [x] Update tests for default global fallback, explicit per-window override, invalid mode rejection, cycle order, and hidden/shown/default resolution.
+- [x] Shrink tool-mode entries in the raw-access audit allowlist (no tool-mode entries existed; verified audit still clean).
+- [x] Run `uv run pytest tests/ccgram/test_window_query.py tests/ccgram/test_session.py tests/ccgram/handlers/messaging_pipeline -q`.
+- [x] Run `uv run pytest tests/ccgram/test_query_layer_only_for_handlers.py tests/ccgram/test_window_state_access_audit.py -q`.
+- [x] Run `uv run pyright src/ccgram/`.
+- [x] Run `npx gitnexus detect-changes --scope all --repo ccgram` and confirm affected flows are tool-mode/window-query only. [x] manual gitnexus call (skipped - not automatable)
 
 ### Task 5: Migrate identity, worktree, and lifecycle reads
 

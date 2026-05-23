@@ -24,7 +24,7 @@ from ...telegram_client import TelegramClient, unwrap_bot
 from ...telegram_draft import DraftStream
 from ...thread_router import thread_router
 from ...topic_state_registry import topic_state
-from ...window_query import get_batch_mode, is_ephemeral_tools
+from ...window_state_ports.tool_state import get_batch_mode, is_ephemeral_tools
 from .message_task import ContentTask, thread_key
 
 logger = structlog.get_logger()

@@ -15,14 +15,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .config import config
+from .window_state_ports import tool_state as _tool_state
 from .window_state_store import (
     APPROVAL_MODES,
-    BATCH_MODES,
     DEFAULT_APPROVAL_MODE,
-    DEFAULT_BATCH_MODE,
-    DEFAULT_TOOL_CALL_VISIBILITY,
-    TOOL_CALL_VISIBILITY_MODES,
     window_store,
 )
 from .window_view import WindowView
@@ -62,28 +58,23 @@ def get_approval_mode(window_id: str) -> str:
 
 
 def get_batch_mode(window_id: str) -> str:
-    """Get batch mode for a window.
+    """Get batch mode for a window (delegates to ``tool_state`` port).
 
     Per-window value wins when the state row exists with a valid mode.
-    Falls through to global config (ephemeral_tools) only when no row exists
+    Falls through to global config (ephemeral_tools) when no row exists
     or the stored mode is invalid.
     """
-    state = window_store.window_states.get(window_id)
-    if state and state.batch_mode in BATCH_MODES:
-        return state.batch_mode
-    return "ephemeral" if config.ephemeral_tools else DEFAULT_BATCH_MODE
+    return _tool_state.get_batch_mode(window_id)
 
 
 def is_ephemeral_tools(window_id: str) -> bool:
     """Return True if the resolved batch mode for window_id is 'ephemeral'."""
-    return get_batch_mode(window_id) == "ephemeral"
+    return _tool_state.is_ephemeral_tools(window_id)
 
 
 def get_tool_call_visibility(window_id: str) -> str:
     """Get raw per-window tool-call visibility (default/shown/hidden)."""
-    state = window_store.window_states.get(window_id)
-    mode = state.tool_call_visibility if state else DEFAULT_TOOL_CALL_VISIBILITY
-    return mode if mode in TOOL_CALL_VISIBILITY_MODES else DEFAULT_TOOL_CALL_VISIBILITY
+    return _tool_state.get_tool_call_visibility(window_id)
 
 
 def is_tool_calls_hidden(window_id: str) -> bool:
@@ -93,14 +84,7 @@ def is_tool_calls_hidden(window_id: str) -> bool:
     default. Per-window ``shown``/``hidden`` always wins; ``default`` falls
     through to the global setting.
     """
-    visibility = get_tool_call_visibility(window_id)
-    if visibility == "hidden":
-        return True
-    if visibility == "shown":
-        return False
-    # visibility == "default" — fall through to global config
-
-    return config.hide_tool_calls
+    return _tool_state.is_tool_calls_hidden(window_id)
 
 
 def get_session_id_for_window(window_id: str) -> str | None:

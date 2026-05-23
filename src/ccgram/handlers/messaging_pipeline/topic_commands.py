@@ -11,9 +11,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from telegram import Update
 from ...config import config
-from ...session import session_manager
 from ...thread_router import thread_router
 from ...utils import handle_general_topic_message, is_general_topic
+from ...window_state_ports import tool_state
 from ..callback_helpers import get_thread_id as _get_thread_id
 from .message_sender import safe_reply
 
@@ -48,7 +48,7 @@ async def verbose_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -
         await safe_reply(update.message, "❌ This topic is not bound to any session.")
         return
 
-    new_mode = session_manager.cycle_batch_mode(window_id)
+    new_mode = tool_state.cycle_batch_mode(window_id)
     if new_mode == "batched":
         await safe_reply(
             update.message,
@@ -95,7 +95,7 @@ async def toolcalls_command(
         await safe_reply(update.message, "❌ This topic is not bound to any session.")
         return
 
-    new_mode = session_manager.cycle_tool_call_visibility(window_id)
+    new_mode = tool_state.cycle_tool_call_visibility(window_id)
     if new_mode == "shown":
         await safe_reply(
             update.message,
