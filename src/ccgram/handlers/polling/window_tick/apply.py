@@ -30,11 +30,14 @@ from ....providers import get_provider_for_window
 from ....telegram_client import PTBTelegramClient
 from ....thread_router import thread_router
 from ....tmux_manager import tmux_manager
+from ....window_state_ports.lifecycle_state import (
+    mark_gemini_external_warned,
+    was_gemini_external_warned,
+)
 from ....window_state_ports.pane_state import (
     get_pane_lifecycle_notify,
     get_pane_projection,
 )
-from ....window_state_store import window_store
 from ...callback_data import IDLE_STATUS_TEXT
 from ...cleanup import clear_topic_state
 from ...interactive import (
@@ -303,14 +306,14 @@ async def _maybe_warn_external_gemini(
     recoverable hint. The flag is marked before sending so a delivery
     failure does not re-warn every poll cycle.
     """
-    if window_store.was_gemini_external_warned(window_id):
+    if was_gemini_external_warned(window_id):
         return
     view = window_query.view_window(window_id)
     if view is None or not view.external:
         return
     if _get_provider(window_id).capabilities.name != "gemini":
         return
-    window_store.mark_gemini_external_warned(window_id)
+    mark_gemini_external_warned(window_id)
     text = (
         "⚠️ This Gemini window was launched outside ccgram and "
         "lacks ccgram's hardened shell settings. Running a shell tool may "

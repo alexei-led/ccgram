@@ -287,13 +287,12 @@ async def _capture_interactive_content(
 
 def _lookup_pane_name(window_id: str, pane_id: str) -> str | None:
     """Return the user-supplied pane name if recorded, else None."""
-    # Lazy: window_state_store wiring is bootstrapped after this module
+    # Lazy: window_state_ports wiring is bootstrapped after this module
     # is registered as a callback target; keep at call site.
-    # Lazy: window_state_store proxy not yet wired at module load
-    from ...window_state_store import window_store
+    from ...window_state_ports.pane_state import get_pane_projection
 
-    pane_info = window_store.get_pane(window_id, pane_id)
-    return pane_info.name if pane_info else None
+    pane = get_pane_projection(window_id, pane_id)
+    return pane.name if pane else None
 
 
 async def _send_interactive_with_retry(

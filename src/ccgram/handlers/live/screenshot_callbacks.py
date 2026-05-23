@@ -546,8 +546,11 @@ async def panes_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> 
     # Lazy: utils pulls in chat-id helpers that reach back into handlers
     from ...utils import handle_general_topic_message, is_general_topic
 
-    # Lazy: window_state_store proxy not yet wired at module load
-    from ...window_state_store import window_store
+    # Lazy: window_state_ports proxy not yet wired at module load
+    from ...window_state_ports.pane_state import (
+        get_pane_lifecycle_notify,
+        get_pane_projection,
+    )
 
     # Lazy: messaging_pipeline ↔ live cycle through status_bubble
     from ..messaging_pipeline.message_sender import safe_reply
@@ -606,7 +609,7 @@ async def panes_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> 
             suffix_parts.append("blocked")
         elif not pane.active:
             suffix_parts.append("running")
-        stored = window_store.get_pane(window_id, pane.pane_id)
+        stored = get_pane_projection(window_id, pane.pane_id)
         if stored and stored.name:
             suffix_parts.insert(0, stored.name)
         if stored and stored.subscribed:
@@ -621,9 +624,7 @@ async def panes_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> 
             )
         )
 
-    lifecycle_on = window_store.get_pane_lifecycle_notify(
-        window_id, config.pane_lifecycle_notify
-    )
+    lifecycle_on = get_pane_lifecycle_notify(window_id, config.pane_lifecycle_notify)
     rows.append([build_pane_lifecycle_button(window_id, enabled=lifecycle_on)])
     keyboard = InlineKeyboardMarkup(rows) if rows else None
     await safe_reply(update.message, "\n".join(lines), reply_markup=keyboard)

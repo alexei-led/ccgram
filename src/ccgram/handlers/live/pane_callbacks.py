@@ -29,7 +29,12 @@ from ...config import config
 from ...telegram_client import PTBTelegramClient
 from ...thread_router import thread_router
 from ...tmux_manager import tmux_manager
-from ...window_state_store import window_store
+from ...window_state_ports.pane_state import (
+    get_pane_lifecycle_notify,
+    get_pane_projection,
+    set_pane_lifecycle_notify,
+    upsert_pane,
+)
 from ..callback_data import (
     CB_PANE_LIFECYCLE_TOGGLE,
     CB_PANE_RENAME,
@@ -114,7 +119,7 @@ async def _toggle_subscribe(
     if not user_owns_window(user_id, window_id):
         await query.answer("Not your session", show_alert=True)
         return
-    pane = window_store.get_pane(window_id, pane_id)
+    pane = get_pane_projection(window_id, pane_id)
     if pane is None:
         # Pane scanner hasn't seen this pane yet (common right after a split).
         # If tmux still reports the pane, hydrate the entry inline so the
@@ -129,7 +134,7 @@ async def _toggle_subscribe(
         if not any(p.pane_id == pane_id for p in live):
             await query.answer("Pane not found", show_alert=True)
             return
-    window_store.upsert_pane(window_id, pane_id, subscribed=subscribed)
+    upsert_pane(window_id, pane_id, subscribed=subscribed)
     label = "Subscribed" if subscribed else "Unsubscribed"
     await query.answer(f"✓ {label} {pane_id}")
 
@@ -212,7 +217,7 @@ async def apply_pane_rename(
 
     name = text.strip()
     if name == "-" or name == "":
-        window_store.upsert_pane(window_id, pane_id, name=None)
+        upsert_pane(window_id, pane_id, name=None)
         await safe_reply(message, f"✓ Cleared name for {pane_id}")
         return True
     if len(name) > _MAX_PANE_NAME_LEN:
@@ -223,7 +228,7 @@ async def apply_pane_rename(
             f"❌ Name too long ({len(name)} chars, max {_MAX_PANE_NAME_LEN}).",
         )
         return True
-    window_store.upsert_pane(window_id, pane_id, name=name)
+    upsert_pane(window_id, pane_id, name=name)
     await safe_reply(message, f"✓ Renamed {pane_id} → {name}")
     return True
 
@@ -238,11 +243,9 @@ async def _handle_lifecycle_toggle(
     if not user_owns_window(user_id, window_id):
         await query.answer("Not your session", show_alert=True)
         return
-    current = window_store.get_pane_lifecycle_notify(
-        window_id, config.pane_lifecycle_notify
-    )
+    current = get_pane_lifecycle_notify(window_id, config.pane_lifecycle_notify)
     new_value = not current
-    window_store.set_pane_lifecycle_notify(window_id, new_value)
+    set_pane_lifecycle_notify(window_id, new_value)
     label = "on" if new_value else "off"
     await query.answer(f"✓ Pane lifecycle notifications {label}")
 

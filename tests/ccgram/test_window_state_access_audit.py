@@ -1,22 +1,32 @@
-"""Baseline audit of raw WindowState field access across src/ccgram.
+"""Enforced audit of raw WindowState field access across src/ccgram.
 
-Captures the current footprint so subsequent feature-port migrations can
-shrink it. The audit walks every ``.py`` under ``src/ccgram`` (excluding
-the persistence kernel, the SessionManager facade, and the existing read
-projection layer) and reports each direct read or write of a
+Task 6 hardens the F3 boundary: raw ``WindowState`` feature-field access
+outside the persistence kernel, the SessionManager facade, the read
+projection layer, and the ``window_state_ports`` feature ports is only
+permitted for two explicitly named coordination seams:
+
+- ``handlers/status/rc_probe.py`` — transient in-memory RC-probe
+  bookkeeping (``rc_probe_state``, ``rc_armed_at``). Never serialized.
+- ``session_map.py`` — coordinates hook-supplied ``session_map.json``
+  data with the persisted ``WindowState`` shape.
+
+The audit walks every ``.py`` under ``src/ccgram`` (excluding the
+approved files) with ``ast`` and reports each direct read or write of a
 ``WindowState`` feature field on receivers that look syntactically like
 ``WindowState`` instances.
 
 Two assertions:
 
 1. Every reported (path, field, kind) site is present in
-   ``BASELINE_RAW_ACCESS`` — flags any new direct field access added
-   outside the approved seams.
-2. ``BASELINE_RAW_ACCESS`` contains no stale entries — flags fields the
+   ``APPROVED_RAW_ACCESS`` — any new raw field access outside the
+   approved seams is a hard failure. Migrate the site to a feature
+   port instead.
+2. ``APPROVED_RAW_ACCESS`` contains no stale entries — flags fields the
    migration has already lifted.
 
-Kind is split between ``read`` and ``write`` so later tasks can shrink
-the read column without quietly hiding any write coordination.
+Kind is split between ``read`` and ``write`` so a regression that
+re-couples handlers to raw reads cannot hide behind an existing write
+entry.
 """
 
 from __future__ import annotations
@@ -193,15 +203,23 @@ def _collect_all_hits() -> list[tuple[str, str, int, str]]:
     return out
 
 
-# ── Baseline allowlist ────────────────────────────────────────────────
+# ── Enforced allowlist ────────────────────────────────────────────────
 #
 # Keys: (path_relative_to_src, field, kind).
 # Values: a short comment naming the consumer for human readability.
 #
-# When a feature-port migration lands, remove the corresponding
-# (path, field, kind) entries from this map; the second test asserts
-# that no stale entries linger.
-BASELINE_RAW_ACCESS: dict[tuple[str, str, str], str] = {
+# Only two coordination seams are permitted to access raw WindowState
+# fields outside the persistence kernel / SessionManager facade /
+# window_query / window_state_ports:
+#
+# - rc_probe.py — transient in-memory bookkeeping, never serialized.
+# - session_map.py — coordinates hook-written session_map data with
+#   the persisted WindowState shape.
+#
+# Adding a new entry here requires a documented coordination reason.
+# When a feature-port migration lifts an entry, delete it; the stale-
+# entry test will fail otherwise.
+APPROVED_RAW_ACCESS: dict[tuple[str, str, str], str] = {
     # ── handlers/status/rc_probe.py ──────────────────────────────────
     ("ccgram/handlers/status/rc_probe.py", "rc_probe_state", "read"): (
         "rc probe lifecycle"
@@ -238,40 +256,57 @@ def _grouped_hits() -> dict[tuple[str, str, str], list[int]]:
 
 
 def test_no_new_raw_access_sites_added() -> None:
-    """Every (path, field, kind) currently in source must be in the baseline."""
+    """Every (path, field, kind) currently in source must be approved."""
     grouped = _grouped_hits()
     unexpected = {
-        key: lines for key, lines in grouped.items() if key not in BASELINE_RAW_ACCESS
+        key: lines for key, lines in grouped.items() if key not in APPROVED_RAW_ACCESS
     }
     assert not unexpected, (
         "New raw WindowState field access detected outside the approved seams. "
         "Migrate the new site to a window_state_ports feature port, or — if it "
         "is genuinely a coordination seam — add an explicit entry to "
-        "BASELINE_RAW_ACCESS with a one-line justification. New hits:\n"
+        "APPROVED_RAW_ACCESS with a one-line justification. New hits:\n"
         + "\n".join(
             f"  {key} at lines {lines}" for key, lines in sorted(unexpected.items())
         )
     )
 
 
-def test_no_stale_baseline_entries() -> None:
-    """Every baseline entry must still correspond to a real access site."""
+def test_no_stale_approved_entries() -> None:
+    """Every approved entry must still correspond to a real access site."""
     grouped = _grouped_hits()
-    stale = sorted(key for key in BASELINE_RAW_ACCESS if key not in grouped)
+    stale = sorted(key for key in APPROVED_RAW_ACCESS if key not in grouped)
     assert not stale, (
-        "Stale BASELINE_RAW_ACCESS entries — these (path, field, kind) tuples "
+        "Stale APPROVED_RAW_ACCESS entries — these (path, field, kind) tuples "
         "no longer match any source access and should be deleted:\n"
         + "\n".join(f"  {key}" for key in stale)
     )
 
 
+def test_approved_paths_are_documented_coordination_seams() -> None:
+    """Only the two named coordination seams may appear in the approved set.
+
+    Adding a new path here means widening the F3 boundary. Do it
+    deliberately by extending this allowlist with the new seam.
+    """
+    allowed_paths = {
+        "ccgram/handlers/status/rc_probe.py",
+        "ccgram/session_map.py",
+    }
+    bad = sorted({key[0] for key in APPROVED_RAW_ACCESS} - allowed_paths)
+    assert not bad, (
+        "APPROVED_RAW_ACCESS contains paths outside the documented "
+        f"coordination seams: {bad}. Migrate to a feature port instead."
+    )
+
+
 def test_baseline_keys_use_known_fields() -> None:
-    """Catch typos in the baseline by validating field names and kinds."""
+    """Catch typos in the allowlist by validating field names and kinds."""
     bad_fields = sorted(
-        key for key in BASELINE_RAW_ACCESS if key[1] not in WINDOW_STATE_FIELDS
+        key for key in APPROVED_RAW_ACCESS if key[1] not in WINDOW_STATE_FIELDS
     )
     bad_kinds = sorted(
-        key for key in BASELINE_RAW_ACCESS if key[2] not in {"read", "write"}
+        key for key in APPROVED_RAW_ACCESS if key[2] not in {"read", "write"}
     )
     assert not bad_fields, f"Unknown field names in baseline: {bad_fields}"
     assert not bad_kinds, f"Unknown access kinds in baseline: {bad_kinds}"
