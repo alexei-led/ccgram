@@ -291,20 +291,37 @@ async def edit_with_fallback(
         return True
     except RetryAfter:
         raise
-    except TelegramError:
-        try:
-            fallback = plain_text
-            await client.edit_message_text(
-                chat_id=chat_id,
-                message_id=message_id,
-                text=fallback,
-                **kwargs,
-            )
+    except BadRequest as exc:
+        # "Message is not modified" means our payload matches what's already
+        # there — falling back to plain text would strip the entities Telegram
+        # already has, leaving the message visibly unformatted. Treat as success.
+        if "not modified" in str(exc).lower():
             return True
-        except RetryAfter:
-            raise
-        except TelegramError:
-            return False
+        return await _retry_edit_plain(client, chat_id, message_id, plain_text, kwargs)
+    except TelegramError:
+        return await _retry_edit_plain(client, chat_id, message_id, plain_text, kwargs)
+
+
+async def _retry_edit_plain(
+    client: TelegramClient,
+    chat_id: int,
+    message_id: int,
+    plain_text: str,
+    kwargs: dict[str, Any],
+) -> bool:
+    """Retry edit without entities. Returns True on success, False on failure."""
+    try:
+        await client.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=plain_text,
+            **kwargs,
+        )
+        return True
+    except RetryAfter:
+        raise
+    except TelegramError:
+        return False
 
 
 async def ack_reaction(client: TelegramClient, chat_id: int, message_id: int) -> None:

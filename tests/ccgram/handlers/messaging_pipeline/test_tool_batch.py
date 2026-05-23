@@ -293,9 +293,15 @@ class TestDraftStreamIntegration:
         assert batch.draft is not None
         assert batch.telegram_msg_id == 77
 
-    async def test_second_call_replaces_text_via_draft(
+    async def test_noop_re_render_does_not_re_edit(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """Result arrival doesn't change rendered text — must not re-edit.
+
+        Re-editing with identical text would trigger Telegram's "Message is
+        not modified" error and the legacy fallback path would strip the
+        entities, leaving the bubble visibly unformatted.
+        """
         monkeypatch.setattr(
             "ccgram.handlers.status.status_bubble.clear_status_message",
             AsyncMock(return_value=None),
@@ -308,8 +314,31 @@ class TestDraftStreamIntegration:
         )
         await _send_or_edit_batch(bot, 1, batch, 42, 10, 10)
 
-        # Second call (e.g. tool_result arriving) edits the same message.
+        # Standard entries don't render tool_result_text — re-render produces
+        # identical text and the edit must be skipped.
         batch.entries[0].tool_result_text = "42 lines"
+        await _send_or_edit_batch(bot, 1, batch, 42, 10, 10)
+
+        bot.send_message.assert_awaited_once()
+        bot.edit_message_text.assert_not_awaited()
+
+    async def test_second_call_edits_when_text_changes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A second entry arriving genuinely changes the rendered text → real edit."""
+        monkeypatch.setattr(
+            "ccgram.handlers.status.status_bubble.clear_status_message",
+            AsyncMock(return_value=None),
+        )
+        bot = self._make_bot(send_id=77)
+
+        batch = ToolBatch(window_id="@0", thread_id=10)
+        batch.entries.append(
+            ToolBatchEntry(tool_use_id="t1", tool_use_text="Read foo.py")
+        )
+        await _send_or_edit_batch(bot, 1, batch, 42, 10, 10)
+
+        batch.entries.append(ToolBatchEntry(tool_use_id="t2", tool_use_text="Bash ls"))
         await _send_or_edit_batch(bot, 1, batch, 42, 10, 10)
 
         bot.send_message.assert_awaited_once()

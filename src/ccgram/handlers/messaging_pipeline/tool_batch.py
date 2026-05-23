@@ -53,6 +53,7 @@ class ToolBatch:
     telegram_msg_id: int | None = None
     total_length: int = 0
     draft: DraftStream | None = None
+    last_sent_text: str | None = None
 
 
 # Active tool batches: (user_id, thread_id_or_0) -> ToolBatch
@@ -333,6 +334,13 @@ async def _send_or_edit_batch(
     subagent_label = build_subagent_label(get_subagent_names(batch.window_id))
     batch_text = format_batch_message(batch.entries, subagent_label=subagent_label)
 
+    # Skip no-op edits — the rendered text is identical to what's already on
+    # screen. A re-edit with the same text would trigger Telegram's "Message
+    # is not modified" error, and the legacy fallback path used to strip
+    # entities to "succeed", destroying the formatting.
+    if batch.telegram_msg_id is not None and batch.last_sent_text == batch_text:
+        return
+
     if is_ephemeral_tools(batch.window_id):
         # Lazy: message_sender ↔ tool_batch cycle through messaging_pipeline/__init__
         from .message_sender import edit_with_fallback, safe_send
@@ -345,8 +353,13 @@ async def _send_or_edit_batch(
             )
             if msg is not None:
                 batch.telegram_msg_id = msg.message_id
+                batch.last_sent_text = batch_text
         else:
-            await edit_with_fallback(client, chat_id, batch.telegram_msg_id, batch_text)
+            success = await edit_with_fallback(
+                client, chat_id, batch.telegram_msg_id, batch_text
+            )
+            if success:
+                batch.last_sent_text = batch_text
         return
 
     if batch.draft is None:
@@ -360,10 +373,12 @@ async def _send_or_edit_batch(
         msg_id = await batch.draft.start(batch_text)
         if msg_id is not None:
             batch.telegram_msg_id = msg_id
+            batch.last_sent_text = batch_text
         else:
             batch.draft = None
     else:
         await batch.draft.replace(batch_text)
+        batch.last_sent_text = batch_text
 
 
 async def _rate_limit_chat(chat_id: int) -> None:

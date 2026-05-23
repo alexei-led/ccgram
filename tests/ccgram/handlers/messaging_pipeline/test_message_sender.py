@@ -2,7 +2,7 @@ import asyncio
 from unittest.mock import AsyncMock, patch
 
 from telegram import Message
-from telegram.error import RetryAfter, TelegramError
+from telegram.error import BadRequest, RetryAfter, TelegramError
 
 from ccgram.expandable_quote import EXPANDABLE_QUOTE_END as EXP_END
 from ccgram.expandable_quote import EXPANDABLE_QUOTE_START as EXP_START
@@ -232,6 +232,22 @@ class TestEditWithFallback:
         )
         with pytest.raises(RetryAfter):
             await edit_with_fallback(client, 123, 1, "hello")
+
+    async def test_not_modified_returns_true_no_plain_fallback(
+        self, client: FakeTelegramClient
+    ) -> None:
+        """Telegram's 'not modified' error must not strip entities via fallback.
+
+        Re-editing with identical text triggers BadRequest("Message is not
+        modified"); falling back to plain text would clear the entities
+        Telegram already has, leaving the message visibly unformatted.
+        """
+        client.set_side_effect(
+            "edit_message_text", [BadRequest("Message is not modified")]
+        )
+        result = await edit_with_fallback(client, 123, 1, "hello")
+        assert result is True
+        assert client.call_count("edit_message_text") == 1
 
 
 class TestEmptyAndOverlongGuards:
