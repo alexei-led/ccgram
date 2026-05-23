@@ -520,7 +520,7 @@ class TestCodexCustomToolCall:
             }
         ]
         messages, _ = codex.parse_transcript_entries(entries, {})
-        assert "..." in messages[0].text
+        assert "…" in messages[0].text
         assert len(messages[0].text) < 300
 
 

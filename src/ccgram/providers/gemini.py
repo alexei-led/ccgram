@@ -29,6 +29,7 @@ import tomllib
 from typing import Any, cast
 
 from ccgram.providers._jsonl import JsonlProvider
+from ccgram.tool_format import format_tool_line
 from ccgram.providers.base import (
     AgentMessage,
     ContentType,
@@ -412,9 +413,7 @@ def _emit_tool_calls(
             pending[tool_use_id] = tool_name
         if not already_announced:
             summary = _summarize_tool_args(tc.get("args"))
-            tool_use_text = (
-                f"**{tool_name}** `{summary}`" if summary else f"**{tool_name}**"
-            )
+            tool_use_text = format_tool_line(tool_name, summary)
             out.append(
                 AgentMessage(
                     text=tool_use_text,

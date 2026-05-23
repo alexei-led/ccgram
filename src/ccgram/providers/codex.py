@@ -20,6 +20,7 @@ from typing import Any, cast
 from ccgram.expandable_quote import format_expandable_quote
 from ccgram.providers.codex_format import format_codex_interactive_prompt
 from ccgram.providers._jsonl import JsonlProvider
+from ccgram.tool_format import format_tool_line
 from ccgram.providers.base import (
     RESUME_ID_RE,
     AgentMessage,
@@ -55,7 +56,6 @@ _CODEX_BUILTINS: dict[str, str] = {
     "/status": "Show model, approvals, token usage",
 }
 
-_MAX_TOOL_SUMMARY = 200
 _TOOL_NAME_ALIASES: dict[str, str] = {
     "request_user_input": "AskUserQuestion",
     "apply_patch": "Edit",
@@ -161,12 +161,7 @@ def _format_tool_use_text(raw_tool_name: str, args: dict[str, Any]) -> str:
     """Build display text for a Codex tool_use item."""
     tool_name = _canonical_tool_name(raw_tool_name)
     summary = _summarize_tool_use(raw_tool_name, tool_name, args)
-
-    if summary:
-        if len(summary) > _MAX_TOOL_SUMMARY:
-            summary = summary[:_MAX_TOOL_SUMMARY] + "..."
-        return f"**{tool_name}** `{summary}`"
-    return f"**{tool_name}**"
+    return format_tool_line(tool_name, summary)
 
 
 def _summarize_tool_use(
@@ -266,11 +261,9 @@ def _parse_custom_tool_call(
         if file_count:
             summary = f"{file_count} file(s)"
     if not summary and isinstance(input_text, str) and input_text:
-        summary = input_text[:_MAX_TOOL_SUMMARY]
-        if len(input_text) > _MAX_TOOL_SUMMARY:
-            summary += "..."
+        summary = input_text
 
-    text = f"**{tool_name}** `{summary}`" if summary else f"**{tool_name}**"
+    text = format_tool_line(tool_name, summary)
     return (
         [
             AgentMessage(

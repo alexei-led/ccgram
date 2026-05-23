@@ -86,58 +86,58 @@ class TestFormatToolUseSummary:
     @pytest.mark.parametrize(
         "name, input_data, expected",
         [
-            ("Read", {"file_path": "src/main.py"}, "\U0001f4d6 **Read** `src/main.py`"),
-            ("Write", {"file_path": "out.txt"}, "\U0001f4dd **Write** `out.txt`"),
-            ("Bash", {"command": "ls -la"}, "\u26a1 **Bash** `ls -la`"),
-            ("Grep", {"pattern": "TODO"}, "\U0001f50d **Grep** `TODO`"),
-            ("Glob", {"pattern": "*.py"}, "\U0001f4c2 **Glob** `*.py`"),
+            ("Read", {"file_path": "src/main.py"}, '\U0001f4d6 Read: "src/main.py"'),
+            ("Write", {"file_path": "out.txt"}, '\U0001f4dd Write: "out.txt"'),
+            ("Bash", {"command": "ls -la"}, '\U0001f4bb Bash: "ls -la"'),
+            ("Grep", {"pattern": "TODO"}, '\U0001f50e Grep: "TODO"'),
+            ("Glob", {"pattern": "*.py"}, '\U0001f4c2 Glob: "*.py"'),
             (
                 "Task",
                 {"description": "analyze code"},
-                "\U0001f916 **Task** `analyze code`",
+                '\U0001f916 Task: "analyze code"',
             ),
             (
                 "TaskCreate",
                 {"subject": "Understand the problem domain"},
-                "**TaskCreate** `Understand the problem domain`",
+                '\U0001f4cb TaskCreate: "Understand the problem domain"',
             ),
             (
                 "TaskUpdate",
                 {"subject": "Understand the problem domain", "status": "completed"},
-                "**TaskUpdate** `Understand the problem domain -> completed`",
+                '\U0001f4cb TaskUpdate: "Understand the problem domain -> completed"',
             ),
-            ("TaskList", {}, "**TaskList** `refresh`"),
+            ("TaskList", {}, '\U0001f4cb TaskList: "refresh"'),
             (
                 "WebFetch",
                 {"url": "https://example.com"},
-                "\U0001f310 **WebFetch** `https://example.com`",
+                '\U0001f310 WebFetch: "https://example.com"',
             ),
             (
                 "WebSearch",
                 {"query": "python async"},
-                "\U0001f50e **WebSearch** `python async`",
+                '\U0001f50e WebSearch: "python async"',
             ),
             (
                 "TodoWrite",
                 {"todos": [1, 2, 3]},
-                "\u2705 **TodoWrite** `3 item(s)`",
+                '\U0001f4cb TodoWrite: "3 item(s)"',
             ),
-            ("TodoRead", {}, "\U0001f4cb **TodoRead**"),
+            ("TodoRead", {}, "\U0001f4cb TodoRead"),
             (
                 "AskUserQuestion",
                 {"questions": [{"question": "Continue?"}]},
-                "\u2753 **AskUserQuestion** `Continue?`",
+                '\u2753 AskUserQuestion: "Continue?"',
             ),
-            ("ExitPlanMode", {}, "\U0001f4cb **ExitPlanMode**"),
+            ("ExitPlanMode", {}, "\U0001f4cb ExitPlanMode"),
             (
                 "Skill",
                 {"skill": "code-review"},
-                "\u2699\ufe0f **Skill** `code-review`",
+                '\U0001f4da Skill: "code-review"',
             ),
             (
                 "CustomTool",
                 {"first_key": "value1"},
-                "**CustomTool** `value1`",
+                '\U0001f527 CustomTool: "value1"',
             ),
         ],
         ids=[
@@ -166,16 +166,16 @@ class TestFormatToolUseSummary:
     def test_non_dict_input(self):
         assert (
             TranscriptParser.format_tool_use_summary("Read", "not a dict")
-            == "\U0001f4d6 **Read**"
+            == "\U0001f4d6 Read"
         )
 
-    def test_truncation_at_200_chars(self):
-        long_value = "x" * 250
+    def test_truncation_at_80_chars(self):
+        long_value = "x" * 100
         result = TranscriptParser.format_tool_use_summary(
             "Bash", {"command": long_value}
         )
-        assert len(long_value) > 200
-        assert result == f"\u26a1 **Bash** `{'x' * 200}\u2026`"
+        assert len(long_value) > 80
+        assert result == f'\U0001f4bb Bash: "{"x" * 80}\u2026"'
 
 
 class TestExtractToolResultText:
@@ -391,7 +391,7 @@ class TestParseEntries:
         tool_result_entries = [e for e in result if e.content_type == "tool_result"]
         assert len(tool_use_entries) == 1
         assert tool_use_entries[0].tool_use_id == "t1"
-        assert "\U0001f4d6 **Read**" in tool_use_entries[0].text
+        assert "\U0001f4d6 Read" in tool_use_entries[0].text
         assert len(tool_result_entries) == 1
         assert tool_result_entries[0].tool_use_id == "t1"
         assert not pending

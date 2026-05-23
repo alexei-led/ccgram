@@ -210,9 +210,9 @@ class TestParseAssistant:
         ]
         assert [m.text for m in msgs] == [
             "running tools",
-            "**Bash** `ls -la`",
+            '\U0001f4bb Bash: "ls -la"',
             "after",
-            "**Read** `foo.py`",
+            '\U0001f4d6 Read: "foo.py"',
         ]
         assert all(m.timestamp == "2024-12-03T14:00:02.000Z" for m in msgs)
         assert msgs[1].tool_use_id == "t1"
@@ -493,7 +493,11 @@ class TestHistoryEntry:
         }
         msgs, pending = provider.parse_transcript_entries([entry], {})
         assert [m.content_type for m in msgs] == ["text", "tool_use", "text"]
-        assert [m.text for m in msgs] == ["before", "**Read** `foo.py`", "after"]
+        assert [m.text for m in msgs] == [
+            "before",
+            '\U0001f4d6 Read: "foo.py"',
+            "after",
+        ]
         assert all(m.timestamp == "2024-12-03T14:00:02.000Z" for m in msgs)
         assert pending == {"t1": ("read", "Read")}
 

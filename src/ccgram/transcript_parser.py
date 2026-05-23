@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ccgram.expandable_quote import EXPANDABLE_QUOTE_START, format_expandable_quote
+from ccgram.tool_format import format_tool_line
 
 from .utils import shorten_path
 
@@ -72,28 +73,6 @@ class TranscriptParser:
     _NO_CONTENT_PLACEHOLDER = "(no content)"
     _INTERRUPTED_TEXT = "[Request interrupted by user for tool use]"
     _ERROR_SUMMARY_LIMIT = 100
-    _MAX_SUMMARY_LENGTH = 200
-
-    # Tool name → emoji for visual category recognition in Telegram output
-    TOOL_EMOJI: dict[str, str] = {
-        "Read": "\U0001f4d6",
-        "Write": "\U0001f4dd",
-        "Edit": "\u270f\ufe0f",
-        "MultiEdit": "\u270f\ufe0f",
-        "NotebookEdit": "\u270f\ufe0f",
-        "Bash": "\u26a1",
-        "Grep": "\U0001f50d",
-        "Glob": "\U0001f4c2",
-        "Task": "\U0001f916",
-        "WebFetch": "\U0001f310",
-        "WebSearch": "\U0001f50e",
-        "TodoWrite": "\u2705",
-        "TodoRead": "\U0001f4cb",
-        "Skill": "\u2699\ufe0f",
-        "AskUserQuestion": "\u2753",
-        "ExitPlanMode": "\U0001f4cb",
-        "LS": "\U0001f4c2",
-    }
 
     @staticmethod
     def parse_line(line: str) -> dict | None:
@@ -197,9 +176,7 @@ class TranscriptParser:
             Formatted string like "**Read**(file.py)"
         """
         if not isinstance(input_data, dict):
-            emoji = cls.TOOL_EMOJI.get(name, "")
-            prefix = f"{emoji} " if emoji else ""
-            return f"{prefix}**{name}**"
+            return format_tool_line(name, "")
 
         # Pick a meaningful short summary based on tool name
         summary = ""
@@ -253,13 +230,7 @@ class TranscriptParser:
                     summary = v
                     break
 
-        emoji = cls.TOOL_EMOJI.get(name, "")
-        prefix = f"{emoji} " if emoji else ""
-        if summary:
-            if len(summary) > cls._MAX_SUMMARY_LENGTH:
-                summary = summary[: cls._MAX_SUMMARY_LENGTH] + "…"
-            return f"{prefix}**{name}** `{summary}`"
-        return f"{prefix}**{name}**"
+        return format_tool_line(name, summary)
 
     @staticmethod
     def _summarize_task_create(input_data: dict[str, Any]) -> str:

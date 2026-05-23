@@ -22,6 +22,7 @@ from typing import Any
 
 from ccgram.expandable_quote import format_expandable_quote
 from ccgram.providers.base import AgentMessage
+from ccgram.tool_format import format_tool_line
 
 # Pi hands us native tool names in lowercase; ccgram UI expects title-case.
 _TOOL_NAME_ALIASES: dict[str, str] = {
@@ -40,7 +41,6 @@ _TOOL_NAME_ALIASES: dict[str, str] = {
     "web_search": "WebSearch",
 }
 
-_MAX_TOOL_SUMMARY = 200
 _TOOL_RESULT_QUOTE_THRESHOLD = 3
 _PENDING_TUPLE_LEN = 2
 
@@ -81,13 +81,6 @@ def format_tool_result_text(raw_name: str, output: str) -> str:
     return output
 
 
-def _truncate(text: str) -> str:
-    """Clip long strings so a single tool call never dominates the relay."""
-    if len(text) > _MAX_TOOL_SUMMARY:
-        return text[:_MAX_TOOL_SUMMARY] + "..."
-    return text
-
-
 _TOOL_SUMMARY_ARG_KEYS: dict[str, tuple[str, ...]] = {
     "bash": ("command",),
     "read": ("path", "file_path"),
@@ -113,12 +106,12 @@ def _tool_call_summary(raw_name: str, args: dict[str, Any]) -> str:
 
     preferred = _first_string_arg(args, _TOOL_SUMMARY_ARG_KEYS.get(raw_name, ()))
     if preferred:
-        return f"**{display}** `{_truncate(preferred)}`"
+        return format_tool_line(display, preferred)
 
     for value in args.values():
         if isinstance(value, str) and value:
-            return f"**{display}** `{_truncate(value)}`"
-    return f"**{display}**"
+            return format_tool_line(display, value)
+    return format_tool_line(display, "")
 
 
 def parse_session_header(entry: dict[str, Any]) -> dict[str, str] | None:
