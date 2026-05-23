@@ -36,6 +36,9 @@ _HANDLERS_ROOT = _REPO_ROOT / "src" / "ccgram" / "handlers"
 # (``do_api_request`` for ``DraftStream``).
 _PTB_BOT_ALLOWLIST = frozenset(
     {
+        # /agent wraps get_bot() in PTBTelegramClient to pass through to
+        # ensure_setup (so the shell-setup offer keyboard can render).
+        "agent_command.py",
         "cleanup.py",
         "command_history.py",
         "commands/__init__.py",

@@ -137,7 +137,12 @@ async def test_arg_shell_switches_clears_state_and_marks_override(
     assert state.transcript_path == ""
     assert state.provider_manual_override is True
     clear_map_mock.assert_called_once_with("@7")
-    ensure_setup_mock.assert_awaited_once_with("@7", "provider_switch")
+    ensure_setup_mock.assert_awaited_once()
+    args, kwargs = ensure_setup_mock.call_args
+    assert args == ("@7", "provider_switch")
+    assert kwargs["chat_id"] == -100
+    assert kwargs["thread_id"] == 99
+    assert kwargs["client"] is not None
     assert "shell" in sent["text"]
 
 
@@ -300,4 +305,49 @@ async def test_manual_override_blocks_auto_detect(monkeypatch):
     )
 
     assert set_provider_calls == []
+    assert window_store.window_states["@7"].provider_name == "claude"
+
+
+async def test_command_outside_bound_topic_replies_hint(monkeypatch):
+    monkeypatch.setattr(ac.thread_router, "get_window_for_thread", lambda u, t: "")
+    sent: dict[str, str] = {}
+
+    async def fake_safe_reply(_msg, text, reply_markup=None):
+        sent["text"] = text
+
+    with patch("ccgram.handlers.agent_command.safe_reply", side_effect=fake_safe_reply):
+        await ac.agent_command(_make_update("/agent shell"), MagicMock())
+
+    assert "bound topic" in sent["text"]
+    # No state change — state still has the prior provider.
+    assert window_store.window_states["@7"].provider_name == "claude"
+
+
+async def test_same_provider_skips_session_map_clear(monkeypatch, clear_map_mock):
+    """/agent claude on a window that is already claude must not drop the live
+    session_map entry — only re-affirm the manual-override flag."""
+    sent: dict[str, str] = {}
+
+    async def fake_safe_reply(_msg, text, reply_markup=None):
+        sent["text"] = text
+
+    with patch("ccgram.handlers.agent_command.safe_reply", side_effect=fake_safe_reply):
+        await ac.agent_command(_make_update("/agent claude"), MagicMock())
+
+    state = window_store.window_states["@7"]
+    assert state.provider_name == "claude"
+    # Transcript bookkeeping must survive — same-provider switch is a flag-only op.
+    assert state.transcript_path == "/tmp/old.jsonl"
+    assert state.provider_manual_override is True
+    clear_map_mock.assert_not_called()
+
+
+async def test_callback_malformed_payload_answers_with_error(monkeypatch):
+    monkeypatch.setattr(
+        "ccgram.handlers.agent_command.user_owns_window", lambda u, w: True
+    )
+    # CB_AGENT_SET payload missing the ':' separator → "Bad callback" answer.
+    update = _make_query(f"{CB_AGENT_SET}garbled")
+    await ac._dispatch(update, MagicMock())
+    update.callback_query.answer.assert_awaited_once_with("Bad callback")
     assert window_store.window_states["@7"].provider_name == "claude"

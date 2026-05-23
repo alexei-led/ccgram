@@ -30,6 +30,7 @@ from telegram import (
 from ..config import config
 from ..session import session_manager
 from ..session_map import session_map_sync
+from ..telegram_client import PTBTelegramClient, TelegramClient
 from ..thread_router import thread_router
 from ..window_state_ports import identity_state
 from .callback_data import CB_AGENT_CANCEL, CB_AGENT_SET
@@ -107,8 +108,21 @@ def _picker_text(window_id: str) -> str:
     )
 
 
-async def _apply_switch(window_id: str, chosen: str) -> tuple[str, str]:
-    """Apply the provider switch and return ``(resolved_name, reply_text)``."""
+async def _apply_switch(
+    window_id: str,
+    chosen: str,
+    *,
+    client: TelegramClient | None = None,
+    chat_id: int = 0,
+    thread_id: int = 0,
+) -> tuple[str, str]:
+    """Apply the provider switch and return ``(resolved_name, reply_text)``.
+
+    ``client``/``chat_id``/``thread_id`` are threaded to ``ensure_setup`` so
+    the shell-switch path can show the "Set up / Skip" offer keyboard instead
+    of silently mutating PS1.
+    """
+    current = identity_state.get_provider_name(window_id) or ""
     if chosen == "auto":
         identity_state.set_provider_manual_override(window_id, value=False)
         # Lazy: detect_provider_from_pane pulls the providers package — only
@@ -125,17 +139,23 @@ async def _apply_switch(window_id: str, chosen: str) -> tuple[str, str]:
                 w.pane_current_command, pane_tty=w.pane_tty, window_id=window_id
             )
         resolved = detected or "shell"
-        _commit_switch(window_id, resolved, manual=False)
+        _commit_switch(window_id, resolved, current, manual=False)
         reply = f"Auto-detected: **{resolved}**."
         return resolved, reply
 
-    _commit_switch(window_id, chosen, manual=True)
+    _commit_switch(window_id, chosen, current, manual=True)
     if chosen == "shell":
         # Lazy: shell prompt orchestrator hits the recovery subpackage via
         # send-keys callbacks; loading at module level would cycle.
         from .shell.shell_prompt_orchestrator import ensure_setup
 
-        await ensure_setup(window_id, "provider_switch")
+        await ensure_setup(
+            window_id,
+            "provider_switch",
+            client=client,
+            chat_id=chat_id,
+            thread_id=thread_id,
+        )
         reply = "Agent set to **shell**. Prompt markers will install on next prompt."
     else:
         reply = (
@@ -145,11 +165,21 @@ async def _apply_switch(window_id: str, chosen: str) -> tuple[str, str]:
     return chosen, reply
 
 
-def _commit_switch(window_id: str, chosen: str, *, manual: bool) -> None:
-    """Switch provider and clear stale transcript bookkeeping atomically."""
+def _commit_switch(window_id: str, chosen: str, current: str, *, manual: bool) -> None:
+    """Switch provider and clear stale transcript bookkeeping atomically.
+
+    When ``chosen == current`` the provider doesn't change; we still toggle
+    the manual-override flag (the user may be locking in the current pick),
+    but skip the destructive session_map clear and the shell-state teardown
+    — both are appropriate only for an actual provider transition.
+    """
+    same_provider = current == chosen
     session_manager.set_window_provider(window_id, chosen)
-    identity_state.clear_transcript_path(window_id)
+    if not same_provider:
+        identity_state.clear_transcript_path(window_id)
     identity_state.set_provider_manual_override(window_id, value=manual)
+    if same_provider:
+        return
     if chosen != "shell":
         # Hookful providers: explicitly drop the previous provider's
         # session_map entry so SessionMonitor stops polling the old
@@ -176,7 +206,7 @@ async def agent_command(update: Update, _context: "ContextTypes.DEFAULT_TYPE") -
         if update.message:
             await safe_reply(update.message, "Use /agent inside a bound topic.")
         return
-    _user_id, _thread_id, window_id = resolved
+    _user_id, thread_id, window_id = resolved
 
     args = (update.message.text or "").split(maxsplit=1)
     arg = args[1].strip().lower() if len(args) > 1 else ""
@@ -195,7 +225,11 @@ async def agent_command(update: Update, _context: "ContextTypes.DEFAULT_TYPE") -
             f"Unknown agent `{arg}`. Use one of: {', '.join(sorted(_VALID_NAMES))}.",
         )
         return
-    _, reply = await _apply_switch(window_id, arg)
+    client = PTBTelegramClient(update.get_bot())
+    chat_id = update.message.chat.id
+    _, reply = await _apply_switch(
+        window_id, arg, client=client, chat_id=chat_id, thread_id=thread_id
+    )
     await safe_reply(update.message, reply)
 
 
@@ -223,7 +257,12 @@ async def _dispatch(update: Update, _context: "ContextTypes.DEFAULT_TYPE") -> No
     if chosen not in _VALID_NAMES:
         await query.answer("Unknown provider")
         return
-    _, reply = await _apply_switch(window_id, chosen)
+    client = PTBTelegramClient(query.get_bot())
+    chat_id = query.message.chat.id if query.message else 0
+    thread_id = get_thread_id(update) or 0
+    _, reply = await _apply_switch(
+        window_id, chosen, client=client, chat_id=chat_id, thread_id=thread_id
+    )
     await _ack_and_strip(query, reply)
 
 
