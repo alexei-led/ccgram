@@ -655,3 +655,142 @@ class TestToolCallVisibilitySerialization:
     def test_roundtrip(self, mode: str) -> None:
         ws = WindowState(session_id="s1", cwd="/tmp", tool_call_visibility=mode)
         assert WindowState.from_dict(ws.to_dict()).tool_call_visibility == mode
+
+
+class TestWindowStateFullPersistenceCharacterization:
+    """Pin every persisted feature group on WindowState.to_dict/from_dict.
+
+    Locks the persisted shape before the window-state feature-port migration
+    so the per-port refactors cannot silently drop or rename a persisted
+    field. Each block covers one feature group exposed to handlers, the
+    Mini App, or providers.
+    """
+
+    def test_full_round_trip_preserves_all_feature_groups(self) -> None:
+        original = WindowState(
+            session_id="sid-abc",
+            cwd="/repo/path",
+            window_name="proj",
+            transcript_path="/tmp/t.jsonl",
+            provider_name="claude",
+            approval_mode="yolo",
+            batch_mode="verbose",
+            tool_call_visibility="shown",
+            external=True,
+            origin="external",
+            panes={
+                "%5": PaneInfo(
+                    pane_id="%5",
+                    name="api",
+                    provider="claude",
+                    last_active_ts=1700000000.5,
+                    state="blocked",
+                    subscribed=True,
+                ),
+                "%6": PaneInfo(pane_id="%6", state="idle"),
+            },
+            pane_lifecycle_notify=True,
+            worktree_path="/repo.worktrees/ccg-x",
+            worktree_branch="ccg/x",
+            gemini_external_warned=True,
+        )
+        loaded = WindowState.from_dict(original.to_dict())
+        assert loaded == original
+
+    def test_provider_and_session_identity_round_trip(self) -> None:
+        ws = WindowState(
+            session_id="aaaa-bbbb",
+            cwd="/p",
+            window_name="proj",
+            transcript_path="/tmp/t.jsonl",
+            provider_name="codex",
+        )
+        d = ws.to_dict()
+        assert d["session_id"] == "aaaa-bbbb"
+        assert d["cwd"] == "/p"
+        assert d["window_name"] == "proj"
+        assert d["transcript_path"] == "/tmp/t.jsonl"
+        assert d["provider_name"] == "codex"
+        assert WindowState.from_dict(d) == ws
+
+    def test_origin_external_round_trip(self) -> None:
+        ws = WindowState(cwd="/p", external=True, origin="external")
+        d = ws.to_dict()
+        assert d["external"] is True
+        assert d["origin"] == "external"
+        loaded = WindowState.from_dict(d)
+        assert loaded.external is True
+        assert loaded.origin == "external"
+
+    def test_origin_ccgram_created_round_trip(self) -> None:
+        ws = WindowState(cwd="/p", origin="ccgram_created")
+        d = ws.to_dict()
+        assert d["origin"] == "ccgram_created"
+        assert WindowState.from_dict(d).origin == "ccgram_created"
+
+    def test_invalid_origin_falls_back_to_default(self) -> None:
+        ws = WindowState.from_dict({"session_id": "s", "cwd": "/p", "origin": "wat"})
+        assert ws.origin == "manual_discovered"
+
+    def test_approval_mode_round_trip(self) -> None:
+        for mode in ("normal", "yolo"):
+            ws = WindowState(cwd="/p", approval_mode=mode)
+            assert WindowState.from_dict(ws.to_dict()).approval_mode == mode
+
+    def test_batch_mode_round_trip(self) -> None:
+        for mode in ("batched", "ephemeral", "verbose"):
+            ws = WindowState(cwd="/p", batch_mode=mode)
+            assert WindowState.from_dict(ws.to_dict()).batch_mode == mode
+
+    def test_pane_lifecycle_override_round_trip(self) -> None:
+        for value in (True, False):
+            ws = WindowState(cwd="/p", pane_lifecycle_notify=value)
+            assert WindowState.from_dict(ws.to_dict()).pane_lifecycle_notify is value
+
+    def test_worktree_metadata_round_trip(self) -> None:
+        ws = WindowState(
+            cwd="/repo",
+            worktree_path="/repo.worktrees/ccg-y",
+            worktree_branch="ccg/y",
+        )
+        loaded = WindowState.from_dict(ws.to_dict())
+        assert loaded.worktree_path == "/repo.worktrees/ccg-y"
+        assert loaded.worktree_branch == "ccg/y"
+
+    def test_gemini_external_warned_round_trip(self) -> None:
+        ws = WindowState(cwd="/p", gemini_external_warned=True)
+        assert WindowState.from_dict(ws.to_dict()).gemini_external_warned is True
+
+
+class TestWindowStateTransientRcProbeFieldsNotSerialized:
+    """RC probe lifecycle fields are in-memory only — must never survive a round trip."""
+
+    def test_rc_probe_state_absent_from_to_dict(self) -> None:
+        ws = WindowState(cwd="/p")
+        ws.rc_probe_state = "armed"
+        ws.rc_armed_at = 12345.0
+        d = ws.to_dict()
+        assert "rc_probe_state" not in d
+        assert "rc_armed_at" not in d
+
+    def test_rc_probe_state_defaults_after_from_dict(self) -> None:
+        ws = WindowState(cwd="/p")
+        ws.rc_probe_state = "classified"
+        ws.rc_armed_at = 999.0
+        loaded = WindowState.from_dict(ws.to_dict())
+        assert loaded.rc_probe_state is None
+        assert loaded.rc_armed_at is None
+
+    def test_rc_probe_state_ignored_if_present_in_input_dict(self) -> None:
+        # Even if a corrupt state.json carries the transient field, the
+        # dataclass constructor must drop it on the floor.
+        loaded = WindowState.from_dict(
+            {
+                "session_id": "s",
+                "cwd": "/p",
+                "rc_probe_state": "armed",
+                "rc_armed_at": 42.0,
+            }
+        )
+        assert loaded.rc_probe_state is None
+        assert loaded.rc_armed_at is None

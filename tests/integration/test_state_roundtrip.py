@@ -127,6 +127,71 @@ async def test_window_state_survives_reload(make_session_manager) -> None:
     assert reloaded.provider_name == "claude"
 
 
+async def test_full_window_state_feature_groups_survive_reload(
+    make_session_manager,
+) -> None:
+    """Every persisted WindowState feature group survives a SessionManager reload.
+
+    Locks the integration-level persistence contract before the
+    window-state feature-port refactor. If a future port forgets to
+    serialize one of these fields, this test fails before any handler
+    notices.
+    """
+    sm1 = make_session_manager()
+    state = window_store.get_window_state("@7")
+    state.session_id = "ffff-eeee-dddd-cccc"
+    state.cwd = "/repo/x"
+    state.window_name = "proj-x"
+    state.transcript_path = "/tmp/transcripts/x.jsonl"
+    sm1.set_window_provider("@7", "codex")
+    sm1.set_window_approval_mode("@7", "yolo")
+    sm1.set_batch_mode("@7", "verbose")
+    sm1.set_tool_call_visibility("@7", "shown")
+    sm1.set_window_origin("@7", "external")
+    sm1.set_window_worktree("@7", "/repo/x.worktrees/ccg-x", "ccg/x")
+    window_store.set_pane_lifecycle_notify("@7", True)
+    window_store.mark_gemini_external_warned("@7")
+    window_store.upsert_pane(
+        "@7",
+        "%5",
+        name="api",
+        provider="codex",
+        last_active_ts=1700000000.5,
+        state="blocked",
+        subscribed=True,
+    )
+    window_store.upsert_pane("@7", "%6", state="idle")
+    sm1.flush_state()
+
+    _sm2 = make_session_manager()
+    reloaded = window_store.get_window_state("@7")
+    assert reloaded.session_id == "ffff-eeee-dddd-cccc"
+    assert reloaded.cwd == "/repo/x"
+    assert reloaded.window_name == "proj-x"
+    assert reloaded.transcript_path == "/tmp/transcripts/x.jsonl"
+    assert reloaded.provider_name == "codex"
+    assert reloaded.approval_mode == "yolo"
+    assert reloaded.batch_mode == "verbose"
+    assert reloaded.tool_call_visibility == "shown"
+    assert reloaded.external is True
+    assert reloaded.origin == "external"
+    assert reloaded.pane_lifecycle_notify is True
+    assert reloaded.worktree_path == "/repo/x.worktrees/ccg-x"
+    assert reloaded.worktree_branch == "ccg/x"
+    assert reloaded.gemini_external_warned is True
+    assert set(reloaded.panes.keys()) == {"%5", "%6"}
+    pane5 = reloaded.panes["%5"]
+    assert pane5.name == "api"
+    assert pane5.provider == "codex"
+    assert pane5.last_active_ts == 1700000000.5
+    assert pane5.state == "blocked"
+    assert pane5.subscribed is True
+    assert reloaded.panes["%6"].state == "idle"
+    # Transient RC-probe fields must not have been resurrected.
+    assert reloaded.rc_probe_state is None
+    assert reloaded.rc_armed_at is None
+
+
 async def test_duplicate_bindings_deduped_on_load(tmp_path, monkeypatch) -> None:
     """Old state with duplicate bindings — loader keeps highest thread_id."""
     state = {
