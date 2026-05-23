@@ -124,27 +124,25 @@ async def _apply_switch(
     """
     current = identity_state.get_provider_name(window_id) or ""
     if chosen == "auto":
-        identity_state.set_provider_manual_override(window_id, value=False)
-        # Lazy: detect_provider_from_pane pulls the providers package — only
-        # needed when the user actually requests re-detection via /agent auto.
-        from ..providers import detect_provider_from_pane
+        target = await _redetect_provider(window_id)
+        manual = False
+        reply_intro = f"Auto-detected: **{target}**."
+    else:
+        target = chosen
+        manual = True
+        reply_intro = (
+            f"Agent set to **{target}** (manual override)."
+            if target != "shell"
+            else "Agent set to **shell**."
+        )
 
-        # Lazy: tmux_manager imports providers; same cycle-break as above.
-        from ..tmux_manager import tmux_manager
+    _commit_switch(window_id, target, current, manual=manual)
 
-        w = await tmux_manager.find_window_by_id(window_id)
-        detected = ""
-        if w and w.pane_current_command:
-            detected = await detect_provider_from_pane(
-                w.pane_current_command, pane_tty=w.pane_tty, window_id=window_id
-            )
-        resolved = detected or "shell"
-        _commit_switch(window_id, resolved, current, manual=False)
-        reply = f"Auto-detected: **{resolved}**."
-        return resolved, reply
-
-    _commit_switch(window_id, chosen, current, manual=True)
-    if chosen == "shell":
+    if target == "shell":
+        # Always offer prompt-marker setup on a shell-target switch —
+        # whether the user picked shell explicitly or auto-detect resolved
+        # to it. ``ensure_setup`` no-ops when the marker is already present
+        # or the user previously chose Skip.
         # Lazy: shell prompt orchestrator hits the recovery subpackage via
         # send-keys callbacks; loading at module level would cycle.
         from .shell.shell_prompt_orchestrator import ensure_setup
@@ -156,13 +154,33 @@ async def _apply_switch(
             chat_id=chat_id,
             thread_id=thread_id,
         )
-        reply = "Agent set to **shell**. Prompt markers will install on next prompt."
+        reply = f"{reply_intro} Prompt markers will install on next prompt."
+    elif chosen == "auto":
+        reply = reply_intro
     else:
         reply = (
-            f"Agent set to **{chosen}** (manual override).\n"
+            f"{reply_intro}\n"
             "Launch the agent CLI in this pane; next SessionStart hook will track it."
         )
-    return chosen, reply
+    return target, reply
+
+
+async def _redetect_provider(window_id: str) -> str:
+    """Re-run auto-detection for ``/agent auto``; return resolved provider."""
+    # Lazy: detect_provider_from_pane pulls the providers package — only
+    # needed when the user actually requests re-detection via /agent auto.
+    from ..providers import detect_provider_from_pane
+
+    # Lazy: tmux_manager imports providers; same cycle-break as above.
+    from ..tmux_manager import tmux_manager
+
+    w = await tmux_manager.find_window_by_id(window_id)
+    detected = ""
+    if w and w.pane_current_command:
+        detected = await detect_provider_from_pane(
+            w.pane_current_command, pane_tty=w.pane_tty, window_id=window_id
+        )
+    return detected or "shell"
 
 
 def _commit_switch(window_id: str, chosen: str, current: str, *, manual: bool) -> None:

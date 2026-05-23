@@ -190,7 +190,10 @@ async def test_auto_clears_override_and_redetects(monkeypatch):
     assert "codex" in sent["text"]
 
 
-async def test_auto_falls_back_to_shell_when_detection_empty(monkeypatch):
+async def test_auto_falls_back_to_shell_and_triggers_ensure_setup(monkeypatch):
+    """When /agent auto resolves to shell, ensure_setup must run so the
+    'Set up / Skip' offer keyboard can render — same UX as an explicit
+    /agent shell. Regression for: auto→shell silently skipped the offer."""
     fake_window = MagicMock()
     fake_window.pane_current_command = "ralphex"
     fake_window.pane_tty = "/dev/ttys00"
@@ -202,9 +205,10 @@ async def test_auto_falls_back_to_shell_when_detection_empty(monkeypatch):
         "ccgram.providers.detect_provider_from_pane",
         AsyncMock(return_value=""),
     )
+    ensure_setup_mock = AsyncMock()
     monkeypatch.setattr(
         "ccgram.handlers.shell.shell_prompt_orchestrator.ensure_setup",
-        AsyncMock(),
+        ensure_setup_mock,
     )
     monkeypatch.setattr(
         "ccgram.handlers.shell.shell_capture.clear_shell_monitor_state",
@@ -225,6 +229,11 @@ async def test_auto_falls_back_to_shell_when_detection_empty(monkeypatch):
 
     assert window_store.window_states["@7"].provider_name == "shell"
     assert "shell" in sent["text"]
+    ensure_setup_mock.assert_awaited_once()
+    args, kwargs = ensure_setup_mock.call_args
+    assert args == ("@7", "provider_switch")
+    assert kwargs["chat_id"] == -100
+    assert kwargs["thread_id"] == 99
 
 
 async def test_callback_cancel_keeps_state(monkeypatch):
