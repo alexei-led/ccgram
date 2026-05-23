@@ -318,6 +318,23 @@ When an agent session exits or crashes, the bot detects the dead window and offe
 
 The buttons shown adapt to each provider's capabilities. Claude, Codex, Gemini, and Pi support Fresh, Continue, and Resume. Shell supports Fresh only (shell sessions are ephemeral).
 
+## Manual Provider Override (`/agent`)
+
+`/agent` (alias `/provider`) fixes a mis-tagged window. Auto-detection (`detect_provider_from_command` + JS-runtime `ps -t` fallback) returns empty for custom wrappers like `ralphex`, so the window can keep its prior provider tag — SessionMonitor then polls a stale transcript, `/last` returns old text, and tool calls/replies stop showing up.
+
+Forms:
+
+```
+/agent              # show picker (current marked ✓, with (manual override) badge if set)
+/agent shell        # switch to shell
+/agent claude       # switch to Claude (also: codex, gemini, pi)
+/agent auto         # clear manual override and re-run auto-detection
+```
+
+On switch, the bot clears `WindowState.transcript_path`, drops the previous `session_map.json` entry (so SessionMonitor stops reading the wrong transcript), and for shell triggers prompt-marker setup via `shell_prompt_orchestrator.ensure_setup`. The next `SessionStart` hook from the new provider repopulates `session_map`.
+
+Manual overrides set `WindowState.provider_manual_override=True`. The periodic auto-detection in `_detect_and_apply_provider` skips overridden windows until `/agent auto` clears the flag.
+
 ## Live View
 
 Monitor agent terminal output in real-time via auto-refreshing screenshots in Telegram.

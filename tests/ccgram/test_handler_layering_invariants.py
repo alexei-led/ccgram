@@ -66,6 +66,10 @@ _SINGLETON_ATTRS = frozenset(
 )
 _SINGLETON_ALLOWLIST = frozenset(
     {
+        # /agent command resolves window_id via thread_router (same routing
+        # pattern as sync_command/sessions_dashboard) and clears session_map
+        # for hookful provider switches (no equivalent in query layer).
+        "agent_command.py",
         "callback_helpers.py",
         "callback_registry.py",
         "cleanup.py",

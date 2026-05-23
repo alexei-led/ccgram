@@ -99,6 +99,28 @@ def set_window_approval_mode(window_id: str, mode: str) -> None:
     window_store.set_window_approval_mode(window_id, mode)
 
 
+def is_provider_manually_overridden(window_id: str) -> bool:
+    """True if the user explicitly chose this window's provider via /agent.
+
+    Auto-detection (`_detect_and_apply_provider`) must skip overridden
+    windows. Cleared by `/agent auto`.
+    """
+    state = window_store.window_states.get(window_id)
+    # ``is True`` (not truthy) so a stand-in MagicMock attribute in tests
+    # — which would be truthy as a MagicMock instance — doesn't accidentally
+    # short-circuit auto-detection.
+    return state is not None and state.provider_manual_override is True
+
+
+def set_provider_manual_override(window_id: str, *, value: bool) -> None:
+    """Mark or clear the provider manual-override flag."""
+    state = window_store.window_states.get(window_id)
+    if state is None or state.provider_manual_override == value:
+        return
+    state.provider_manual_override = value
+    window_store._schedule_save()
+
+
 def clear_transcript_path(window_id: str) -> None:
     """Clear the persisted transcript path for a window.
 
@@ -124,5 +146,7 @@ __all__ = [
     "get_session_id",
     "get_transcript_path",
     "get_window_name",
+    "is_provider_manually_overridden",
+    "set_provider_manual_override",
     "set_window_approval_mode",
 ]

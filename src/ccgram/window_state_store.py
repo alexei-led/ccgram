@@ -162,6 +162,10 @@ class WindowState:
     # Gemini window lacks ccgram's hardened shell settings (issue #86).
     # Persisted so the warning is not re-shown on every bot restart.
     gemini_external_warned: bool = False
+    # User explicitly chose this provider via /agent — auto-detection
+    # (``_detect_and_apply_provider``) must not overwrite the choice
+    # until the user re-runs ``/agent auto`` (which clears the flag).
+    provider_manual_override: bool = False
 
     def to_dict(self) -> dict[str, Any]:  # noqa: C901
         d: dict[str, Any] = {
@@ -194,6 +198,8 @@ class WindowState:
             d["worktree_branch"] = self.worktree_branch
         if self.gemini_external_warned:
             d["gemini_external_warned"] = True
+        if self.provider_manual_override:
+            d["provider_manual_override"] = True
         return d
 
     @classmethod
@@ -230,6 +236,7 @@ class WindowState:
             worktree_path=data.get("worktree_path"),
             worktree_branch=data.get("worktree_branch"),
             gemini_external_warned=data.get("gemini_external_warned", False),
+            provider_manual_override=data.get("provider_manual_override", False),
         )
 
 

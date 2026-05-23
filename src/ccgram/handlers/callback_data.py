@@ -127,5 +127,9 @@ CB_SEND_PAGE = "sf:pg:"  # sf:pg:<page> — pagination
 CB_SEND_UP = "sf:up"  # navigate to parent directory
 CB_SEND_CANCEL = "sf:x"  # cancel /send browser
 
+# /agent command \u2014 manual provider override picker
+CB_AGENT_SET = "ag:set:"  # ag:set:<window_id>:<provider_or_auto>
+CB_AGENT_CANCEL = "ag:x:"  # ag:x:<window_id>
+
 # Idle status sentinel (shared between status_polling and message_queue)
 IDLE_STATUS_TEXT = "\u2713 Ready"

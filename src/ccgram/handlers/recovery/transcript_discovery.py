@@ -66,6 +66,8 @@ async def _detect_and_apply_provider(
     thread_id: int = 0,
 ) -> None:
     """Detect provider from pane process and apply transitions."""
+    if identity_state.is_provider_manually_overridden(window_id):
+        return
     detected = await detect_provider_from_pane(
         w.pane_current_command, pane_tty=w.pane_tty, window_id=window_id
     )

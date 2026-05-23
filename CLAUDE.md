@@ -24,7 +24,7 @@ ccgram --tmux-session <name>
 ccgram --autoclose-{done,dead} 0
 ```
 
-Bot commands in topics: `/send`, `/toolbar`, `/history`, `/sessions`, `/restore`, `/resume`, `/panes`, `/live`, `/last`, `/sync`, `/upgrade`.
+Bot commands in topics: `/send`, `/toolbar`, `/history`, `/sessions`, `/restore`, `/resume`, `/panes`, `/live`, `/last`, `/sync`, `/agent` (alias `/provider`), `/upgrade`.
 
 ## Core Constraints
 

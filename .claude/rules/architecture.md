@@ -76,7 +76,7 @@ Claude session transcripts live under `~/.claude/projects/` (`sessions-index` + 
 - `window_query.py` — read-only window state free functions for handlers; delegates feature-shaped reads to `window_state_ports/*`.
 - `window_resolver.py` — window ID resolution, format helpers, startup migration.
 - `window_state_store.py` — `WindowState` dataclass + persistence kernel. Remains the only persisted window-state model. Constructed by `SessionManager`; module-level `window_store` is a proxy.
-- `window_state_ports/` — feature-port package (`pane_state`, `identity_state`, `worktree_state`, `tool_state`, `lifecycle_state`). Thin adapters over `WindowStateStore` exposing frozen projection dataclasses and cohesive feature writes (pane upsert/remove/lifecycle, worktree metadata, batch mode, tool-call visibility, origin, Gemini external warning). Provider changes still route through `SessionManager.set_window_provider`. Sole approved raw `WindowState`-field access site outside `window_state_store.py`, `session.py`, and `window_query.py`; enforced by `tests/ccgram/test_window_state_access_audit.py`.
+- `window_state_ports/` — feature-port package (`pane_state`, `identity_state`, `worktree_state`, `tool_state`, `lifecycle_state`). Thin adapters over `WindowStateStore` exposing frozen projection dataclasses and cohesive feature writes (pane upsert/remove/lifecycle, worktree metadata, batch mode, tool-call visibility, origin, Gemini external warning, provider-manual-override). Provider changes still route through `SessionManager.set_window_provider`. Sole approved raw `WindowState`-field access site outside `window_state_store.py`, `session.py`, and `window_query.py`; enforced by `tests/ccgram/test_window_state_access_audit.py`.
 - `window_view.py` — read-only `WindowView` projection (frozen snapshot).
 - `expandable_quote.py` — sentinel constants + `format_expandable_quote()` (markup contract between parsers and presentation).
 
@@ -86,6 +86,7 @@ Grouped into 14 feature subpackages. Each subpackage `__init__.py` re-exports th
 
 Top-level (constants, leaves, top-level commands):
 
+- `agent_command.py` — `/agent` (alias `/provider`) command for manual provider override. Picker UI with `(manual override)` badge + `🔄 Auto`. Sets `WindowState.provider_manual_override` so `_detect_and_apply_provider` skips the window; clears stale `transcript_path` and session_map entry so SessionMonitor stops polling the wrong transcript.
 - `callback_data.py` — `CB_*` callback data constants.
 - `callback_helpers.py` — `user_owns_window`, `get_thread_id`.
 - `callback_registry.py` — prefix-based callback dispatch with self-registration decorator.
