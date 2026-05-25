@@ -344,7 +344,7 @@ Manual checks:
 - [x] Run the task verification commands and record the result.
       (`make lint`, `make typecheck`, `make test` — all green;
       targeted `uv run pytest tests/ccgram/terminal_backends
-  tests/ccgram/test_backend_config_access_audit.py` — 158 tests pass.
+tests/ccgram/test_backend_config_access_audit.py` — 158 tests pass.
       Lazy-import lint clean; ruff/pyright clean on touched modules.
       `make test` reports 5442 passed, 28 skipped.)
 - [x] Run GitNexus detect-changes or the fallback commands and record the scoped
@@ -440,12 +440,12 @@ Manual checks:
 - [x] Run the task verification commands and record the result.
       (`make lint`, `make typecheck`, `make test`, `make test-integration`
       — all green; targeted `uv run pytest tests/ccgram/terminal_backends
-    tests/ccgram/window_state_ports tests/ccgram/handlers/topics
-    tests/ccgram/handlers/test_sessions_dashboard.py
-    tests/ccgram/test_terminal_operations.py
-    tests/ccgram/test_window_state_access_audit.py
-    tests/ccgram/test_query_layer_only_for_handlers.py
-    tests/ccgram/test_window_store_import_boundary.py` — 1032 pass.
+  tests/ccgram/window_state_ports tests/ccgram/handlers/topics
+  tests/ccgram/handlers/test_sessions_dashboard.py
+  tests/ccgram/test_terminal_operations.py
+  tests/ccgram/test_window_state_access_audit.py
+  tests/ccgram/test_query_layer_only_for_handlers.py
+  tests/ccgram/test_window_store_import_boundary.py` — 1032 pass.
       `make test` reports 5472 passed, 28 skipped; integration 307 passed.)
 - [x] Run GitNexus detect-changes or the fallback commands and record the scoped
       blast radius. (Fallback `git diff --name-only` used; GitNexus not
@@ -518,15 +518,127 @@ Manual checks:
 - Decide whether the feature remains hidden behind config or is ready for a
   short user-facing setup note.
 
-- [ ] Run whole-plan validation commands and record results.
-- [ ] Update user-facing docs if cmux bind/send/capture is available behind a
+- [x] Run whole-plan validation commands and record results.
+      (`make lint`, `make typecheck`, `make test` — all green; targeted
+      `uv run pytest tests/ccgram/terminal_backends
+    tests/ccgram/window_state_ports tests/ccgram/handlers/topics` — 438
+      pass; `uv run pytest tests/ccgram/test_window_state_access_audit.py
+    tests/ccgram/test_query_layer_only_for_handlers.py` — 107 pass;
+      `uv run python scripts/lint_lazy_imports.py src/ccgram` — clean;
+      `markdownlint-cli2` on design + plan — 0 errors. `make test` totals
+      5472 passed, 28 skipped.)
+- [x] Update user-facing docs if cmux bind/send/capture is available behind a
       documented flag; otherwise record that public docs are deferred.
-- [ ] Update architecture-fitness allow-lists to match final migrated scope.
-- [ ] Record GitNexus detect-changes output or fallback diff summary.
-- [ ] Record follow-up plan targets: hook/session events, mailbox delivery,
+      Public docs deferred: cmux is hidden behind
+      `CCGRAM_CMUX_ENABLED=false` by default, the real sidecar process is
+      not yet specified/supervised, and the `/cmux` bind flow exercises a
+      fake sidecar only in tests. No reference to cmux exists in
+      `docs/providers.md` or `docs/guides.md` (confirmed by
+      `grep -i cmux docs/*.md` — no matches). User-facing copy will land
+      with the follow-up plan that adds sidecar supervision and a
+      production-ready bind/send/capture path.
+- [x] Update architecture-fitness allow-lists to match final migrated scope.
+      `tests/ccgram/test_tmux_manager_handler_footprint.py` freezes the
+      current 36-file `TMUX_MANAGER_ALLOW_LIST` and requires
+      `handlers/text/text_handler.py` and
+      `handlers/live/screenshot_callbacks.py` to route through
+      `terminal_operations` (`TERMINAL_OPERATIONS_REQUIRED`). A second
+      invariant fails if an allow-list entry stops importing
+      `tmux_manager`, so the ledger cannot rot.
+      `tests/ccgram/test_window_state_access_audit.py` lists
+      `window_state_ports/terminal_identity.py` as the only non-store
+      module allowed to read `terminal_backend` /
+      `terminal_unit_id`. `tests/ccgram/test_backend_config_access_audit.py`
+      restricts `CCGRAM_CMUX_*` and `CCGRAM_TERMINAL_BACKEND*` env reads
+      to `terminal_backends/config.py`.
+      `tests/ccgram/test_query_layer_only_for_handlers.py` keeps the
+      handler write/admin allow-list intact (107 tests pass). No
+      allow-list growth needed for Task 5.
+- [x] Record GitNexus detect-changes output or fallback diff summary.
+      Fallback `git diff --stat main..HEAD` used; GitNexus not invoked.
+      51 files changed, +7118 / -32 lines. Scope split:
+      `docs/architecture-design/2026-05-25-cmux-sidecar-backend.md`
+      (+1064), this plan (+586), new package
+      `src/ccgram/terminal_backends/**` (`base`, `router`, `tmux`,
+      `config`, `cmux`, `cmux_client`, `cmux_protocol`, `lifecycle`,
+      `__init__` — ~1.6k LOC), `src/ccgram/terminal_operations.py`
+      (+140), `src/ccgram/window_state_ports/terminal_identity.py`
+      (+114), small additive edits to `window_state_store.py`,
+      `window_query.py`, `window_view.py`, `bootstrap.py`,
+      `handlers/sessions_dashboard.py`,
+      `handlers/polling/polling_coordinator.py`,
+      `handlers/text/text_handler.py`,
+      `handlers/live/screenshot_callbacks.py`,
+      `handlers/callback_data.py`, `handlers/callback_registry.py`,
+      `handlers/registry.py`, `handlers/topics/__init__.py`, plus a new
+      cmux callback handler `handlers/topics/cmux_callbacks.py` (+314).
+      Test scope: new
+      `tests/ccgram/terminal_backends/**`,
+      `tests/ccgram/window_state_ports/test_terminal_identity.py`,
+      `tests/ccgram/handlers/topics/test_cmux_callbacks.py`,
+      `tests/ccgram/handlers/test_sessions_dashboard.py`,
+      `tests/ccgram/test_terminal_operations.py`,
+      `tests/ccgram/test_tmux_manager_handler_footprint.py`,
+      `tests/ccgram/test_backend_config_access_audit.py`,
+      `tests/ccgram/test_window_state_store.py`,
+      `tests/integration/test_state_roundtrip.py`. No new direct
+      `tmux_manager` callers; `WindowStateStore` raw access surface
+      unchanged outside the new terminal identity port.
+- [x] Record follow-up plan targets: hook/session events, mailbox delivery,
       Mini App cmux streaming, cmux workspace creation, and real sidecar process
-      supervision.
-- [ ] Record scoped architecture-review follow-up and source refs to re-check.
+      supervision. See "Follow-up plan targets" section below.
+- [x] Record scoped architecture-review follow-up and source refs to re-check.
+      See "Re-review" section below — it already enumerates the six
+      review questions and the source design refs that must be
+      re-checked once Tasks 1-4 land. No additional questions added.
+
+## Follow-up plan targets
+
+These items are explicitly out of scope for this MVP horizon and must be
+sequenced in subsequent plans. Each entry names the next plan's source
+design modules so the next architect/engineer pair can pick up cleanly.
+
+- Sidecar process supervision. Define ownership of the
+  `ccgram-cmux-sidecar` lifecycle: where it is launched, how readiness is
+  observed, how restarts are bounded, how `CCGRAM_CMUX_SIDECAR_SOCKET`
+  ties to a managed socket path, and how Telegram surfaces a
+  long-degraded sidecar. Source: `ccgram-cmux-sidecar`, `CmuxBackend`,
+  `Terminal backend config` modules; risk "Sidecar process supervision
+  and availability are not yet specified."
+- Hook/session events for cmux. Extend `session_map.json` and
+  `events.jsonl` ownership to the cmux backend, or design a parallel
+  cmux event log routed through the sidecar. Wire `SessionMonitor`,
+  `claude_task_state`, and `hook_events` dispatch so cmux topics receive
+  Stop / Notification / SessionEnd / Subagent events with the same
+  semantics as tmux topics. Source modules: hook integration, monitor,
+  and provider event flows in the design doc; explicit "Sidecar -> ccgram
+  events" contract.
+- Mailbox delivery for cmux. Today the inter-agent broker
+  (`handlers/messaging/msg_broker.py`) injects messages via tmux
+  `send_keys` and is shell-window aware. Reroute delivery to
+  `terminal_operations.send_text` so cmux topics can receive mailbox
+  messages, with idle detection and rate limiting reimplemented on top
+  of the backend-neutral seam. Source modules: `Terminal operation
+services`, mailbox/broker section, `CCGRAM_WINDOW_ID` injection.
+- Mini App cmux streaming. `src/ccgram/miniapp/api/terminal.py` is
+  tmux-shaped today. Define a cmux read-stream contract (incremental
+  capture / delta frames) over the sidecar, then wire the Mini App
+  terminal websocket and panes endpoints to route by
+  `TerminalUnitRef` instead of tmux pane IDs. Source modules: Mini App
+  surfaces, `Terminal backend contract`, `Terminal operation services
+-> CmuxBackend -> sidecar`.
+- cmux workspace creation. This horizon only binds existing workspaces.
+  The next plan adds a `cmux create` flow with directory/provider
+  selection, sidecar-mediated workspace creation, and rollback on
+  failure. Source modules: `Topic binding/router`, `CmuxBackend`,
+  `Terminal backend config`.
+- Continued `tmux_manager` migration. `TMUX_MANAGER_ALLOW_LIST` still
+  has 36 entries. Sequence handler-by-handler migrations onto
+  `terminal_operations` (recovery, polling, status, voice, messaging,
+  shell, sessions_dashboard, Mini App terminal). Each migration is one
+  task; each removes an allow-list entry and may add to
+  `TERMINAL_OPERATIONS_REQUIRED`. Source modules: `Terminal operation
+services`, `Backend router`.
 
 ## Acceptance criteria
 
