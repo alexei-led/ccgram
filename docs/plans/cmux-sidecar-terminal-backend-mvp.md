@@ -246,15 +246,35 @@ Manual checks:
 - Confirm no UI text changed for existing tmux sessions unless a test explicitly
   captures an improved error message.
 
-- [ ] Add backend router and tmux backend adapter.
-- [ ] Add backend-neutral terminal operation service.
-- [ ] Migrate one text-send path through terminal operations.
-- [ ] Migrate one capture/screenshot path through terminal operations.
-- [ ] Add or update architecture allow-list tests for direct `tmux_manager`
+- [x] Add backend router and tmux backend adapter.
+- [x] Add backend-neutral terminal operation service.
+- [x] Migrate one text-send path through terminal operations.
+- [x] Migrate one capture/screenshot path through terminal operations.
+- [x] Add or update architecture allow-list tests for direct `tmux_manager`
       usage.
-- [ ] Run the task verification commands and record the result.
-- [ ] Run GitNexus detect-changes or the fallback commands and record the scoped
-      blast radius.
+- [x] Run the task verification commands and record the result.
+      (`make lint`, `make typecheck`, `make test` — all green; targeted
+      `uv run pytest tests/ccgram/terminal_backends
+    tests/ccgram/test_terminal_operations.py
+    tests/ccgram/test_tmux_manager_handler_footprint.py
+    tests/ccgram/handlers/text tests/ccgram/handlers/live
+    tests/ccgram/test_query_layer_only_for_handlers.py` — 64+ new tests
+      pass, 5331 total pass, 28 skipped.)
+- [x] Run GitNexus detect-changes or the fallback commands and record the scoped
+      blast radius. (Fallback `git diff --name-only` used; GitNexus not
+      invoked. Scope: new files `src/ccgram/terminal_backends/router.py`,
+      `src/ccgram/terminal_backends/tmux.py`, `src/ccgram/terminal_operations.py`;
+      protocol extension `src/ccgram/terminal_backends/base.py`;
+      migrated handlers `src/ccgram/handlers/text/text_handler.py`,
+      `src/ccgram/handlers/live/screenshot_callbacks.py`; new tests
+      `tests/ccgram/terminal_backends/test_router.py`,
+      `tests/ccgram/terminal_backends/test_tmux_backend.py`,
+      `tests/ccgram/test_terminal_operations.py`,
+      `tests/ccgram/test_tmux_manager_handler_footprint.py`; updated
+      `tests/ccgram/terminal_backends/test_base.py`,
+      `tests/ccgram/handlers/text/test_text_handler.py`. tmux_manager
+      footprint unchanged; only two handler files added a
+      `terminal_operations` route.)
 
 ### Task 3: Add cmux backend config, sidecar protocol client, and fake-sidecar tests
 

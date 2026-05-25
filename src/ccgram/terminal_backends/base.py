@@ -185,10 +185,18 @@ class TerminalOperationRejectedError(TerminalBackendError):
 class TerminalBackend(Protocol):
     """Backend-neutral terminal operations contract.
 
-    The protocol is intentionally minimal in Task 1 — methods are added
-    in Task 2 when ``TmuxBackend`` wraps the existing ``tmux_manager``
-    behaviour. Implementations expose their feature surface through
-    ``capabilities()`` so the router can gate UI before issuing calls.
+    Task 2 wires this up: ``TmuxBackend`` wraps the existing
+    ``tmux_manager`` behaviour and the backend router dispatches to the
+    matching adapter by ``TerminalUnitRef.backend``. Implementations
+    expose their feature surface through ``capabilities()`` so the
+    router can gate UI before issuing calls.
+
+    Operations raise ``TerminalBackendError`` subclasses for normalised
+    failure modes (``TerminalNotFoundError`` for missing units,
+    ``TerminalUnsupportedOperationError`` for backend mismatches,
+    ``TerminalBackendUnavailableError`` when the backend cannot be
+    reached). A ``False`` / ``None`` return models a transient failure
+    the caller may retry or surface as a generic error.
     """
 
     @property
@@ -202,6 +210,43 @@ class TerminalBackend(Protocol):
         Implementations should refresh capability negotiation lazily —
         callers must not assume this is free.
         """
+        ...
+
+    async def list_units(self) -> list[TerminalUnit]:
+        """Enumerate terminal units known to this backend."""
+        ...
+
+    async def capture(
+        self, ref: TerminalUnitRef, *, with_ansi: bool = False
+    ) -> str | None:
+        """Capture the visible text of the target unit.
+
+        Returns the captured text or ``None`` on transient capture
+        failure. Raises ``TerminalNotFoundError`` when the unit is gone.
+        """
+        ...
+
+    async def send_text(
+        self, ref: TerminalUnitRef, text: str, *, raw: bool = False
+    ) -> bool:
+        """Send literal text (followed by Enter) to the target unit.
+
+        ``raw`` requests a TUI-bypass send path for plain shells.
+        Returns ``True`` on success, ``False`` on transient failure.
+        Raises ``TerminalNotFoundError`` when the unit is gone.
+        """
+        ...
+
+    async def send_key(self, ref: TerminalUnitRef, key: str) -> bool:
+        """Send a single non-literal key (``Up``, ``Escape``, ``C-c``).
+
+        Returns ``True`` on success, ``False`` on transient failure.
+        Raises ``TerminalNotFoundError`` when the unit is gone.
+        """
+        ...
+
+    async def close(self, ref: TerminalUnitRef) -> bool:
+        """Close/kill the target unit. Returns ``True`` on success."""
         ...
 
 

@@ -135,6 +135,25 @@ class _FakeBackend:
     def capabilities(self) -> TerminalBackendCapabilities:
         return TerminalBackendCapabilities(backend="tmux")
 
+    async def list_units(self) -> list[TerminalUnit]:
+        return []
+
+    async def capture(
+        self, ref: TerminalUnitRef, *, with_ansi: bool = False
+    ) -> str | None:
+        return None
+
+    async def send_text(
+        self, ref: TerminalUnitRef, text: str, *, raw: bool = False
+    ) -> bool:
+        return True
+
+    async def send_key(self, ref: TerminalUnitRef, key: str) -> bool:
+        return True
+
+    async def close(self, ref: TerminalUnitRef) -> bool:
+        return True
+
 
 def test_terminal_backend_protocol_runtime_check() -> None:
     backend = _FakeBackend()

@@ -438,7 +438,9 @@ class TestShellProviderRouting:
 
 
 class TestForwardMessage:
-    @patch(f"{_TH}.send_to_window", new_callable=AsyncMock, return_value=(True, "ok"))
+    @patch(
+        f"{_TH}.terminal_send_text", new_callable=AsyncMock, return_value=(True, "ok")
+    )
     @patch(f"{_TH}.window_query")
     async def test_sends_to_window(
         self, mock_sm: MagicMock, mock_send: AsyncMock
@@ -453,7 +455,7 @@ class TestForwardMessage:
 
     @patch(f"{_TH}.safe_reply", new_callable=AsyncMock)
     @patch(
-        f"{_TH}.send_to_window",
+        f"{_TH}.terminal_send_text",
         new_callable=AsyncMock,
         return_value=(False, "Window not found"),
     )
@@ -471,7 +473,9 @@ class TestForwardMessage:
 
     @patch(f"{_TH}.get_interactive_window", return_value=None)
     @patch(f"{_TH}._capture_bash_output")
-    @patch(f"{_TH}.send_to_window", new_callable=AsyncMock, return_value=(True, "ok"))
+    @patch(
+        f"{_TH}.terminal_send_text", new_callable=AsyncMock, return_value=(True, "ok")
+    )
     @patch(f"{_TH}.window_query")
     async def test_bash_capture_for_bang_command(
         self,
@@ -495,7 +499,9 @@ class TestForwardMessage:
             await task
 
     @patch(f"{_TH}.get_interactive_window", return_value=None)
-    @patch(f"{_TH}.send_to_window", new_callable=AsyncMock, return_value=(True, "ok"))
+    @patch(
+        f"{_TH}.terminal_send_text", new_callable=AsyncMock, return_value=(True, "ok")
+    )
     @patch(f"{_TH}.window_query")
     async def test_cancels_existing_bash_capture(
         self, mock_sm: MagicMock, _mock_send: AsyncMock, _mock_interactive: MagicMock
@@ -516,7 +522,9 @@ class TestForwardMessage:
 
     @patch(f"{_TH}.handle_interactive_ui", new_callable=AsyncMock)
     @patch(f"{_TH}.get_interactive_window", return_value="@0")
-    @patch(f"{_TH}.send_to_window", new_callable=AsyncMock, return_value=(True, "ok"))
+    @patch(
+        f"{_TH}.terminal_send_text", new_callable=AsyncMock, return_value=(True, "ok")
+    )
     @patch(f"{_TH}.window_query")
     async def test_refreshes_interactive_ui(
         self,
@@ -534,7 +542,9 @@ class TestForwardMessage:
         assert mock_handle_ui.call_args.args[0] is bot
         assert mock_handle_ui.call_args.args[1:] == (100, "@0", 42)
 
-    @patch(f"{_TH}.send_to_window", new_callable=AsyncMock, return_value=(True, "ok"))
+    @patch(
+        f"{_TH}.terminal_send_text", new_callable=AsyncMock, return_value=(True, "ok")
+    )
     @patch(f"{_TH}.window_query")
     async def test_sends_typing_chat_action(
         self, _mock_sm: MagicMock, _mock_send: AsyncMock

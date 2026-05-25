@@ -65,7 +65,8 @@ from ..user_state import (
 from ... import window_query
 from ...thread_router import thread_router
 from ...providers import get_provider_for_window
-from ...tmux_manager import send_to_window, tmux_manager
+from ...terminal_operations import send_text as terminal_send_text
+from ...tmux_manager import tmux_manager
 from ...utils import handle_general_topic_message, is_general_topic, task_done_callback
 
 if TYPE_CHECKING:
@@ -413,7 +414,7 @@ async def _forward_message(
 
     lifecycle_strategy.clear_probe_failures(window_id)
 
-    success, err_message = await send_to_window(window_id, text)
+    success, err_message = await terminal_send_text(window_id, text)
     if not success:
         await safe_reply(message, f"\u274c {err_message}")
         return
