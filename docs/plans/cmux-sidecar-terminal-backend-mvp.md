@@ -255,10 +255,10 @@ Manual checks:
 - [x] Run the task verification commands and record the result.
       (`make lint`, `make typecheck`, `make test` — all green; targeted
       `uv run pytest tests/ccgram/terminal_backends
-    tests/ccgram/test_terminal_operations.py
-    tests/ccgram/test_tmux_manager_handler_footprint.py
-    tests/ccgram/handlers/text tests/ccgram/handlers/live
-    tests/ccgram/test_query_layer_only_for_handlers.py` — 64+ new tests
+  tests/ccgram/test_terminal_operations.py
+  tests/ccgram/test_tmux_manager_handler_footprint.py
+  tests/ccgram/handlers/text tests/ccgram/handlers/live
+  tests/ccgram/test_query_layer_only_for_handlers.py` — 64+ new tests
       pass, 5331 total pass, 28 skipped.)
 - [x] Run GitNexus detect-changes or the fallback commands and record the scoped
       blast radius. (Fallback `git diff --name-only` used; GitNexus not
@@ -336,14 +336,32 @@ Manual checks:
 - Confirm config names are user-comprehensible and do not conflict with provider
   names. Backend means terminal host, provider means agent CLI.
 
-- [ ] Add typed terminal backend config with tmux-only default.
-- [ ] Add cmux sidecar RPC protocol DTOs and stable error codes.
-- [ ] Add fake-transport sidecar client tests before real socket behavior.
-- [ ] Add `CmuxBackend` adapter and keep it disabled unless configured.
-- [ ] Add config access architecture test.
-- [ ] Run the task verification commands and record the result.
-- [ ] Run GitNexus detect-changes or the fallback commands and record the scoped
-      blast radius.
+- [x] Add typed terminal backend config with tmux-only default.
+- [x] Add cmux sidecar RPC protocol DTOs and stable error codes.
+- [x] Add fake-transport sidecar client tests before real socket behavior.
+- [x] Add `CmuxBackend` adapter and keep it disabled unless configured.
+- [x] Add config access architecture test.
+- [x] Run the task verification commands and record the result.
+      (`make lint`, `make typecheck`, `make test` — all green;
+      targeted `uv run pytest tests/ccgram/terminal_backends
+    tests/ccgram/test_backend_config_access_audit.py` — 158 tests pass.
+      Lazy-import lint clean; ruff/pyright clean on touched modules.
+      `make test` reports 5442 passed, 28 skipped.)
+- [x] Run GitNexus detect-changes or the fallback commands and record the scoped
+      blast radius. (Fallback `git diff --name-only` used; GitNexus not
+      invoked. Scope: new files
+      `src/ccgram/terminal_backends/config.py`,
+      `src/ccgram/terminal_backends/cmux_protocol.py`,
+      `src/ccgram/terminal_backends/cmux_client.py`,
+      `src/ccgram/terminal_backends/cmux.py`; new tests
+      `tests/ccgram/terminal_backends/test_config.py`,
+      `tests/ccgram/terminal_backends/test_cmux_protocol.py`,
+      `tests/ccgram/terminal_backends/test_cmux_client.py`,
+      `tests/ccgram/terminal_backends/test_cmux_backend.py`,
+      `tests/ccgram/test_backend_config_access_audit.py`. No handler,
+      bootstrap, or `tmux_manager` files touched — cmux backend stays
+      unregistered by default; router still tmux-only. Public surface
+      of `terminal_backends/__init__.py` unchanged.)
 
 ### Task 4: Bind existing cmux workspace and route basic send/capture
 
