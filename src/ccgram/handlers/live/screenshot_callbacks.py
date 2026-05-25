@@ -32,7 +32,7 @@ from telegram import (
 from telegram.error import TelegramError
 from ...screenshot import text_to_image
 from ...telegram_client import PTBTelegramClient
-from ...terminal_backends import TerminalNotFoundError
+from ...terminal_backends import TerminalBackendError, TerminalNotFoundError
 from ...terminal_operations import capture as terminal_capture
 from ...thread_router import thread_router
 from ...tmux_manager import tmux_manager
@@ -420,6 +420,9 @@ async def screenshot_command(
         pane_text = await terminal_capture(window_id, with_ansi=True)
     except TerminalNotFoundError:
         await safe_reply(update.message, "\u274c Window no longer exists.")
+        return
+    except TerminalBackendError as exc:
+        await safe_reply(update.message, f"\u274c Terminal backend error ({exc.code}).")
         return
     if not pane_text:
         await safe_reply(update.message, "\u274c Failed to capture terminal.")

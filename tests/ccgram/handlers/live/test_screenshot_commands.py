@@ -4,7 +4,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from telegram.error import TelegramError
 
-from ccgram.handlers.live.screenshot_callbacks import live_command
+from ccgram.handlers.live.screenshot_callbacks import (
+    live_command,
+    screenshot_command,
+)
+from ccgram.terminal_backends import (
+    TerminalBackendUnavailableError,
+    TerminalNotFoundError,
+)
 
 _SC = "ccgram.handlers.live.screenshot_callbacks"
 _LV = "ccgram.handlers.live.live_view"
@@ -211,3 +218,58 @@ class TestLiveCommand:
         mock_reply.assert_awaited_once()
         assert "Failed to start" in mock_reply.call_args.args[1]
         assert (100, 42) not in active_views
+
+
+class TestScreenshotCommand:
+    @patch(f"{_SC}.terminal_capture", new_callable=AsyncMock)
+    @patch(f"{_SC}.thread_router")
+    @patch("ccgram.config.config")
+    @patch(
+        "ccgram.handlers.messaging_pipeline.message_sender.safe_reply",
+        new_callable=AsyncMock,
+    )
+    async def test_window_not_found_replies(
+        self,
+        mock_reply: AsyncMock,
+        mock_config: MagicMock,
+        mock_tr: MagicMock,
+        mock_capture: AsyncMock,
+    ) -> None:
+        mock_config.is_user_allowed.return_value = True
+        mock_tr.get_window_for_thread.return_value = "@0"
+        mock_capture.side_effect = TerminalNotFoundError("gone")
+
+        with patch(f"{_SC}.get_thread_id", return_value=42):
+            await screenshot_command(_make_update(), MagicMock())
+
+        mock_reply.assert_awaited_once()
+        assert "no longer exists" in mock_reply.call_args.args[1]
+
+    @patch(f"{_SC}.terminal_capture", new_callable=AsyncMock)
+    @patch(f"{_SC}.thread_router")
+    @patch("ccgram.config.config")
+    @patch(
+        "ccgram.handlers.messaging_pipeline.message_sender.safe_reply",
+        new_callable=AsyncMock,
+    )
+    async def test_backend_unavailable_replies_friendly_error(
+        self,
+        mock_reply: AsyncMock,
+        mock_config: MagicMock,
+        mock_tr: MagicMock,
+        mock_capture: AsyncMock,
+    ) -> None:
+        """cmux sidecar down / backend unregistered must not bubble up."""
+        mock_config.is_user_allowed.return_value = True
+        mock_tr.get_window_for_thread.return_value = "cmux:abc"
+        mock_capture.side_effect = TerminalBackendUnavailableError(
+            "cmux backend not registered"
+        )
+
+        with patch(f"{_SC}.get_thread_id", return_value=42):
+            await screenshot_command(_make_update(), MagicMock())
+
+        mock_reply.assert_awaited_once()
+        body = mock_reply.call_args.args[1]
+        assert "Terminal backend error" in body
+        assert "unavailable" in body

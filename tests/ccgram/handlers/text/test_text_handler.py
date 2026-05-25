@@ -232,6 +232,21 @@ class TestHandleDeadWindow:
 
         assert result is False
 
+    @patch(f"{_TH}.get_backend", return_value="cmux")
+    @patch(f"{_TH}.tmux_manager")
+    async def test_cmux_backed_window_skips_dead_check(
+        self, mock_tm: MagicMock, _mock_get_backend: MagicMock
+    ) -> None:
+        message = AsyncMock()
+
+        result = await _handle_dead_window("cmux:abc123", 100, 42, "hello", {}, message)
+
+        assert result is False
+        # tmux find_window_by_id must not be probed for a cmux row —
+        # otherwise the foreign-id heuristic mis-attributes "cmux" as a
+        # tmux session name and the recovery UI fires on every send.
+        mock_tm.find_window_by_id.assert_not_called()
+
     @patch(f"{_TH}.safe_reply", new_callable=AsyncMock)
     @patch(f"{_TH}.render_banner")
     @patch(f"{_TH}.tmux_manager")

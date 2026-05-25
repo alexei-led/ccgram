@@ -65,8 +65,10 @@ from ..user_state import (
 from ... import window_query
 from ...thread_router import thread_router
 from ...providers import get_provider_for_window
+from ...terminal_backends.base import BACKEND_TMUX
 from ...terminal_operations import send_text as terminal_send_text
 from ...tmux_manager import tmux_manager
+from ...window_state_ports.terminal_identity import get_backend
 from ...utils import handle_general_topic_message, is_general_topic, task_done_callback
 
 if TYPE_CHECKING:
@@ -333,7 +335,13 @@ async def _handle_dead_window(
     """Show recovery UI or directory browser for a dead (killed) window.
 
     Returns True if the window is dead (handled), False if still alive.
+
+    Non-tmux backends own their own liveness — the tmux find-by-id probe
+    can't see a cmux workspace and would otherwise misfire recovery on
+    every cmux text send. Mirror the polling-coordinator skip.
     """
+    if get_backend(window_id) != BACKEND_TMUX:
+        return False
     w = await tmux_manager.find_window_by_id(window_id)
     if w:
         return False
