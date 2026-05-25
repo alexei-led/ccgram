@@ -16,6 +16,20 @@ from ccgram.handlers.sessions_dashboard import (
     sessions_command,
 )
 from ccgram.session import WindowState
+from ccgram.terminal_backends.base import (
+    BACKEND_CMUX,
+    TerminalBackendUnavailableError,
+    TerminalUnit,
+    TerminalUnitRef,
+)
+from ccgram.terminal_backends.router import reset_router_for_testing
+
+
+@pytest.fixture(autouse=True)
+def _isolated_router():
+    reset_router_for_testing()
+    yield
+    reset_router_for_testing()
 
 
 @pytest.fixture(autouse=True)
@@ -25,6 +39,14 @@ def _patch_deps():
         patch("ccgram.handlers.sessions_dashboard.thread_router") as mock_tr,
         patch("ccgram.handlers.sessions_dashboard.tmux_manager") as mock_tm,
         patch("ccgram.handlers.sessions_dashboard.config") as mock_cfg,
+        patch(
+            "ccgram.handlers.sessions_dashboard.get_backend",
+            return_value="tmux",
+        ),
+        patch(
+            "ccgram.handlers.sessions_dashboard.get_unit_id",
+            side_effect=lambda wid: wid,
+        ),
     ):
         mock_tr.get_all_thread_windows.return_value = {}
         mock_tr.get_display_name.side_effect = lambda wid: wid
@@ -296,3 +318,171 @@ class TestKillButtons:
             if isinstance(btn.callback_data, str)
         ]
         assert not any(d.startswith("sess:kill:") for d in data)
+
+
+def _cmux_unit(workspace_id: str, title: str = "alpha") -> TerminalUnit:
+    return TerminalUnit(
+        ref=TerminalUnitRef(backend=BACKEND_CMUX, unit_id=workspace_id),
+        title=title,
+        cwd="/repo/a",
+        provider_name="claude",
+        supports_capture=True,
+        supports_send_text=True,
+        supports_send_key=True,
+    )
+
+
+class TestCmuxRendering:
+    async def test_cmux_row_shown_alive_when_workspace_listed(
+        self, _patch_deps
+    ) -> None:
+        mock_view, mock_tr, mock_tm, _ = _patch_deps
+        mock_tr.get_all_thread_windows.return_value = {42: "cmux:ws-a"}
+        mock_tr.get_display_name.side_effect = lambda wid: "alpha"
+        mock_view.side_effect = lambda wid: WindowState(cwd="/repo/a")
+
+        fake_backend = MagicMock()
+        fake_backend.name = BACKEND_CMUX
+        fake_backend.list_units = AsyncMock(return_value=[_cmux_unit("ws-a")])
+        from ccgram.terminal_backends.router import get_router
+
+        get_router().register(fake_backend)
+
+        with (
+            patch(
+                "ccgram.handlers.sessions_dashboard.get_backend",
+                side_effect=lambda wid: "cmux" if wid == "cmux:ws-a" else "tmux",
+            ),
+            patch(
+                "ccgram.handlers.sessions_dashboard.get_unit_id",
+                side_effect=lambda wid: "ws-a" if wid == "cmux:ws-a" else wid,
+            ),
+        ):
+            text, _kb = await _build_dashboard(100)
+        assert "[cmux]" in text
+        # Alive marker (green circle) — not the warning sign.
+        assert "\U0001f7e2 alpha" in text
+        assert "[cmux unavailable]" not in text
+
+    async def test_cmux_row_renders_unavailable_when_backend_not_registered(
+        self, _patch_deps
+    ) -> None:
+        mock_view, mock_tr, mock_tm, _ = _patch_deps
+        mock_tr.get_all_thread_windows.return_value = {42: "cmux:ws-a"}
+        mock_tr.get_display_name.side_effect = lambda wid: "alpha"
+        mock_view.side_effect = lambda wid: WindowState()
+
+        with (
+            patch(
+                "ccgram.handlers.sessions_dashboard.get_backend",
+                side_effect=lambda wid: "cmux" if wid == "cmux:ws-a" else "tmux",
+            ),
+            patch(
+                "ccgram.handlers.sessions_dashboard.get_unit_id",
+                side_effect=lambda wid: "ws-a" if wid == "cmux:ws-a" else wid,
+            ),
+        ):
+            text, _kb = await _build_dashboard(100)
+        assert "[cmux unavailable]" in text
+
+    async def test_cmux_row_renders_unavailable_when_sidecar_errors(
+        self, _patch_deps
+    ) -> None:
+        mock_view, mock_tr, _mock_tm, _ = _patch_deps
+        mock_tr.get_all_thread_windows.return_value = {42: "cmux:ws-a"}
+        mock_tr.get_display_name.side_effect = lambda wid: "alpha"
+        mock_view.side_effect = lambda wid: WindowState()
+
+        fake_backend = MagicMock()
+        fake_backend.name = BACKEND_CMUX
+        fake_backend.list_units = AsyncMock(
+            side_effect=TerminalBackendUnavailableError("sidecar down")
+        )
+        from ccgram.terminal_backends.router import get_router
+
+        get_router().register(fake_backend)
+
+        with (
+            patch(
+                "ccgram.handlers.sessions_dashboard.get_backend",
+                side_effect=lambda wid: "cmux" if wid == "cmux:ws-a" else "tmux",
+            ),
+            patch(
+                "ccgram.handlers.sessions_dashboard.get_unit_id",
+                side_effect=lambda wid: "ws-a" if wid == "cmux:ws-a" else wid,
+            ),
+        ):
+            text, _kb = await _build_dashboard(100)
+        assert "[cmux unavailable]" in text
+
+    async def test_cmux_row_no_kill_button_when_alive(self, _patch_deps) -> None:
+        mock_view, mock_tr, _mock_tm, _ = _patch_deps
+        mock_tr.get_all_thread_windows.return_value = {42: "cmux:ws-a"}
+        mock_tr.get_display_name.side_effect = lambda wid: "alpha"
+        mock_view.side_effect = lambda wid: WindowState()
+
+        fake_backend = MagicMock()
+        fake_backend.name = BACKEND_CMUX
+        fake_backend.list_units = AsyncMock(return_value=[_cmux_unit("ws-a")])
+        from ccgram.terminal_backends.router import get_router
+
+        get_router().register(fake_backend)
+
+        with (
+            patch(
+                "ccgram.handlers.sessions_dashboard.get_backend",
+                side_effect=lambda wid: "cmux" if wid == "cmux:ws-a" else "tmux",
+            ),
+            patch(
+                "ccgram.handlers.sessions_dashboard.get_unit_id",
+                side_effect=lambda wid: "ws-a" if wid == "cmux:ws-a" else wid,
+            ),
+        ):
+            _text, keyboard = await _build_dashboard(100)
+        data = [
+            btn.callback_data
+            for row in keyboard.inline_keyboard
+            for btn in row
+            if isinstance(btn.callback_data, str)
+        ]
+        # cmux rows expose esc/screenshot but never the tmux-only kill action.
+        assert not any(d.startswith("sess:kill:") for d in data)
+        assert any(d.startswith(CB_STATUS_ESC) for d in data)
+        assert any(d.startswith(CB_STATUS_SCREENSHOT) for d in data)
+
+    async def test_tmux_alive_row_unaffected_by_cmux_backend(self, _patch_deps) -> None:
+        mock_view, mock_tr, mock_tm, _ = _patch_deps
+        mock_tr.get_all_thread_windows.return_value = {10: "@0", 20: "cmux:ws-x"}
+        mock_tr.get_display_name.side_effect = lambda wid: {
+            "@0": "tmux-alive",
+            "cmux:ws-x": "cmux-alive",
+        }[wid]
+        mock_view.side_effect = lambda wid: WindowState()
+        mock_tm.list_windows = AsyncMock(return_value=[MagicMock(window_id="@0")])
+
+        fake_backend = MagicMock()
+        fake_backend.name = BACKEND_CMUX
+        fake_backend.list_units = AsyncMock(
+            return_value=[]
+        )  # sidecar reachable but no workspaces yet
+        from ccgram.terminal_backends.router import get_router
+
+        get_router().register(fake_backend)
+
+        with (
+            patch(
+                "ccgram.handlers.sessions_dashboard.get_backend",
+                side_effect=lambda wid: "cmux" if wid.startswith("cmux:") else "tmux",
+            ),
+            patch(
+                "ccgram.handlers.sessions_dashboard.get_unit_id",
+                side_effect=lambda wid: (
+                    wid.split(":", 1)[1] if wid.startswith("cmux:") else wid
+                ),
+            ),
+        ):
+            text, _kb = await _build_dashboard(100)
+        # tmux row alive.
+        assert "\U0001f7e2 tmux-alive" in text
+        # cmux row dead (sidecar reachable but workspace not in list).
+        assert "⚫ cmux-alive" in text or "⚫ cmux-alive" in text

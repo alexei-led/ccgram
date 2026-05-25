@@ -255,10 +255,10 @@ Manual checks:
 - [x] Run the task verification commands and record the result.
       (`make lint`, `make typecheck`, `make test` — all green; targeted
       `uv run pytest tests/ccgram/terminal_backends
-  tests/ccgram/test_terminal_operations.py
-  tests/ccgram/test_tmux_manager_handler_footprint.py
-  tests/ccgram/handlers/text tests/ccgram/handlers/live
-  tests/ccgram/test_query_layer_only_for_handlers.py` — 64+ new tests
+tests/ccgram/test_terminal_operations.py
+tests/ccgram/test_tmux_manager_handler_footprint.py
+tests/ccgram/handlers/text tests/ccgram/handlers/live
+tests/ccgram/test_query_layer_only_for_handlers.py` — 64+ new tests
       pass, 5331 total pass, 28 skipped.)
 - [x] Run GitNexus detect-changes or the fallback commands and record the scoped
       blast radius. (Fallback `git diff --name-only` used; GitNexus not
@@ -344,7 +344,7 @@ Manual checks:
 - [x] Run the task verification commands and record the result.
       (`make lint`, `make typecheck`, `make test` — all green;
       targeted `uv run pytest tests/ccgram/terminal_backends
-    tests/ccgram/test_backend_config_access_audit.py` — 158 tests pass.
+  tests/ccgram/test_backend_config_access_audit.py` — 158 tests pass.
       Lazy-import lint clean; ruff/pyright clean on touched modules.
       `make test` reports 5442 passed, 28 skipped.)
 - [x] Run GitNexus detect-changes or the fallback commands and record the scoped
@@ -430,16 +430,43 @@ Manual checks:
 - Confirm Telegram copy distinguishes terminal backend from agent provider in
   labels and errors.
 
-- [ ] Add cmux workspace bind callback flow behind backend config flag.
-- [ ] Persist selected cmux workspace through terminal identity port.
-- [ ] Update sessions dashboard to display mixed backends and cmux unavailable
+- [x] Add cmux workspace bind callback flow behind backend config flag.
+- [x] Persist selected cmux workspace through terminal identity port.
+- [x] Update sessions dashboard to display mixed backends and cmux unavailable
       state.
-- [ ] Add cmux fake-backend coverage for send and capture through existing
+- [x] Add cmux fake-backend coverage for send and capture through existing
       terminal operation service.
-- [ ] Add stale/disabled/unavailable callback tests.
-- [ ] Run the task verification commands and record the result.
-- [ ] Run GitNexus detect-changes or the fallback commands and record the scoped
-      blast radius.
+- [x] Add stale/disabled/unavailable callback tests.
+- [x] Run the task verification commands and record the result.
+      (`make lint`, `make typecheck`, `make test`, `make test-integration`
+      — all green; targeted `uv run pytest tests/ccgram/terminal_backends
+    tests/ccgram/window_state_ports tests/ccgram/handlers/topics
+    tests/ccgram/handlers/test_sessions_dashboard.py
+    tests/ccgram/test_terminal_operations.py
+    tests/ccgram/test_window_state_access_audit.py
+    tests/ccgram/test_query_layer_only_for_handlers.py
+    tests/ccgram/test_window_store_import_boundary.py` — 1032 pass.
+      `make test` reports 5472 passed, 28 skipped; integration 307 passed.)
+- [x] Run GitNexus detect-changes or the fallback commands and record the scoped
+      blast radius. (Fallback `git diff --name-only` used; GitNexus not
+      invoked. New files: `src/ccgram/terminal_backends/lifecycle.py`,
+      `src/ccgram/handlers/topics/cmux_callbacks.py`,
+      `tests/ccgram/terminal_backends/test_lifecycle.py`,
+      `tests/ccgram/handlers/topics/test_cmux_callbacks.py`. Edited:
+      `src/ccgram/bootstrap.py` (new `register_terminal_backends` step),
+      `src/ccgram/handlers/callback_data.py` (CB*CMUX*\*),
+      `src/ccgram/handlers/callback_registry.py` (load cmux_callbacks),
+      `src/ccgram/handlers/registry.py` (`/cmux` command),
+      `src/ccgram/handlers/sessions_dashboard.py` (mixed backend rendering + cmux degraded state),
+      `src/ccgram/handlers/polling/polling_coordinator.py` (skip cmux
+      bindings so sidecar outages do not crash the tmux tick),
+      `src/ccgram/handlers/topics/__init__.py` (re-export),
+      `tests/ccgram/test_handler_layering_invariants.py`,
+      `tests/ccgram/handlers/polling/test_polling_coordinator.py`
+      (allow-list extended), `tests/ccgram/test_terminal_operations.py`
+      (cmux send/capture routing tests),
+      `tests/ccgram/handlers/test_sessions_dashboard.py` (cmux rendering
+      tests). No `tmux_manager` handler/Mini App callers added.)
 
 ### Task 5: Final verification and documentation
 

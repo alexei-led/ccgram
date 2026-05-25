@@ -5,6 +5,11 @@ with alive/dead status indicators, per-session action buttons (Esc,
 Screenshot, Kill with two-step confirmation), cwd details, and
 refresh/new-session actions.
 
+Backend-neutral: tmux rows resolve aliveness via tmux_manager.list_windows,
+cmux rows resolve via CmuxBackend.list_units. When cmux is configured but
+the sidecar is unreachable, cmux rows are tagged ``cmux unavailable``
+while tmux rows continue rendering normally.
+
 Key functions:
   - sessions_command(): /sessions command handler
   - handle_sessions_refresh(): refresh button callback
@@ -25,9 +30,12 @@ from telegram import (
 )
 from ..config import config
 from ..telegram_client import PTBTelegramClient, TelegramClient
+from ..terminal_backends.base import BACKEND_CMUX, BACKEND_TMUX, TerminalBackendError
+from ..terminal_backends.router import get_router
 from ..thread_router import thread_router
 from ..tmux_manager import tmux_manager
 from ..window_query import view_window
+from ..window_state_ports.terminal_identity import get_backend, get_unit_id
 from .callback_data import (
     CB_SESSIONS_KILL,
     CB_SESSIONS_KILL_CONFIRM,
@@ -49,7 +57,28 @@ logger = structlog.get_logger()
 _REFRESH_BTN = InlineKeyboardButton(
     "\U0001f504 Refresh", callback_data=CB_SESSIONS_REFRESH
 )
-_NEW_BTN = InlineKeyboardButton("\u2795 New Session", callback_data=CB_SESSIONS_NEW)
+_NEW_BTN = InlineKeyboardButton("➕ New Session", callback_data=CB_SESSIONS_NEW)
+
+
+async def _resolve_cmux_live_ids() -> tuple[set[str], bool]:
+    """Return ``(live_cmux_unit_ids, cmux_backend_reachable)``.
+
+    When the cmux backend is not registered with the router the second
+    value is ``False`` and the set is empty so cmux rows render as
+    "cmux unavailable" instead of "alive". A registered backend that
+    raises ``TerminalBackendError`` (sidecar down) is also reported as
+    unreachable; tmux rows are unaffected either way.
+    """
+    router = get_router()
+    if BACKEND_CMUX not in router.known():
+        return set(), False
+    backend = router.get(BACKEND_CMUX)
+    try:
+        units = await backend.list_units()
+    except TerminalBackendError as exc:
+        logger.debug("cmux list_units failed for dashboard", code=exc.code)
+        return set(), False
+    return {unit.ref.unit_id for unit in units}, True
 
 
 async def _build_dashboard(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
@@ -68,19 +97,40 @@ async def _build_dashboard(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
     all_windows.extend(external_windows)
     live_ids = {w.window_id for w in all_windows}
 
+    has_cmux_binding = any(
+        get_backend(wid) == BACKEND_CMUX for wid in bindings.values()
+    )
+    if has_cmux_binding:
+        cmux_live_unit_ids, cmux_reachable = await _resolve_cmux_live_ids()
+    else:
+        cmux_live_unit_ids, cmux_reachable = set(), False
+
     lines: list[str] = []
     action_rows: list[list[InlineKeyboardButton]] = []
     for _thread_id, window_id in sorted(bindings.items()):
         display_name = thread_router.get_display_name(window_id)
         view = view_window(window_id)
-        alive = window_id in live_ids
-        is_external = view.external if view else False
-        status = "\U0001f7e2" if alive else "\u26ab"
+        backend = get_backend(window_id)
+        if backend == BACKEND_CMUX:
+            unit_id = get_unit_id(window_id)
+            alive = cmux_reachable and unit_id in cmux_live_unit_ids
+            if not cmux_reachable:
+                status = "⚠"  # warning sign — sidecar unavailable
+                backend_tag = " [cmux unavailable]"
+            else:
+                status = "\U0001f7e2" if alive else "⚫"
+                backend_tag = " [cmux]"
+            is_external = False
+        else:
+            alive = window_id in live_ids
+            is_external = view.external if view else False
+            backend_tag = ""
+            status = "\U0001f7e2" if alive else "⚫"
 
-        # Session line with provider + mode tags and cwd detail
+        # Session line with backend + provider + mode tags and cwd detail
         provider_tag = f" [{view.provider_name}]" if view and view.provider_name else ""
         mode_tag = " [YOLO]" if view and view.approval_mode == "yolo" else ""
-        line = f"{status} {display_name}{provider_tag}{mode_tag}"
+        line = f"{status} {display_name}{backend_tag}{provider_tag}{mode_tag}"
         if view and view.cwd:
             line += f"\n    {view.cwd}"
         lines.append(line)
@@ -88,7 +138,7 @@ async def _build_dashboard(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
         if alive:
             row: list[InlineKeyboardButton] = [
                 InlineKeyboardButton(
-                    "\u238b Esc",
+                    "⎋ Esc",
                     callback_data=f"{CB_STATUS_ESC}{window_id}"[:64],
                 ),
                 InlineKeyboardButton(
@@ -96,8 +146,10 @@ async def _build_dashboard(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
                     callback_data=f"{CB_STATUS_SCREENSHOT}{window_id}"[:64],
                 ),
             ]
-            # External windows (emdash) are never killed — only unbind
-            if not is_external:
+            # External windows (emdash) and cmux workspaces are never
+            # killed through the tmux kill path — only unbind via the
+            # topic. cmux close/supervision is deferred past the MVP.
+            if not is_external and backend == BACKEND_TMUX:
                 row.append(
                     InlineKeyboardButton(
                         f"\U0001f5d1 Kill {display_name}",
@@ -144,7 +196,7 @@ async def handle_sessions_kill(
         [
             [
                 InlineKeyboardButton(
-                    f"\u26a0 Confirm kill {display}",
+                    f"⚠ Confirm kill {display}",
                     callback_data=f"{CB_SESSIONS_KILL_CONFIRM}{window_id}"[:64],
                 ),
             ],

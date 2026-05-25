@@ -11,6 +11,7 @@ Public surface re-exported here is the entry point for ``bot.py`` and
 the rest of ``handlers/``; internals stay in the per-module files.
 """
 
+from .cmux_callbacks import build_cmux_picker, cmux_command
 from .directory_browser import (
     BROWSE_DIRS_KEY,
     BROWSE_PAGE_KEY,
@@ -52,6 +53,8 @@ from .window_callbacks import handle_window_callback
 
 __all__ = [
     "BROWSE_DIRS_KEY",
+    "build_cmux_picker",
+    "cmux_command",
     "BROWSE_PAGE_KEY",
     "BROWSE_PATH_KEY",
     "DIRS_PER_PAGE",

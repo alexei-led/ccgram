@@ -281,6 +281,8 @@ class TestImportsAreMinimal:
             "..tmux_manager",
             "..utils",
             "..config",
+            "..terminal_backends.base",
+            "..window_state_ports.terminal_identity",
             ".window_tick",
             ".periodic_tasks",
         }

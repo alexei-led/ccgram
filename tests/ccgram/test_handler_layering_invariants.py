@@ -114,6 +114,9 @@ _SINGLETON_ALLOWLIST = frozenset(
         "sync_command.py",
         "text/text_handler.py",
         "toolbar/toolbar_callbacks.py",
+        # cmux picker binds thread_router and routes through terminal
+        # identity port; same routing pattern as window_callbacks.py.
+        "topics/cmux_callbacks.py",
         "topics/directory_browser.py",
         "topics/directory_callbacks.py",
         "topics/topic_lifecycle.py",

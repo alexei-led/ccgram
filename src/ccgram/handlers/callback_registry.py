@@ -157,7 +157,7 @@ def load_handlers() -> None:
     from .toolbar import toolbar_callbacks  # noqa: F401
 
     # Lazy: handler subpackage modules import callback_registry for the @register_callback decorator; importing them here at module load would cycle
-    from .topics import directory_callbacks, window_callbacks  # noqa: F401
+    from .topics import cmux_callbacks, directory_callbacks, window_callbacks  # noqa: F401
 
     # Lazy: handler subpackage modules import callback_registry for the @register_callback decorator; importing them here at module load would cycle
     from .. import msg_discovery  # noqa: F401

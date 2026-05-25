@@ -43,7 +43,7 @@ from .send import send_command
 from .sessions_dashboard import sessions_command
 from .sync_command import sync_command
 from .text.text_handler import text_handler
-from .topics import new_command
+from .topics import cmux_command, new_command
 from .topics.topic_lifecycle import topic_closed_handler, topic_edited_handler
 from .upgrade import upgrade_command
 from .voice import handle_voice_message
@@ -91,6 +91,7 @@ def register_all(
         CommandSpec("last", last_command),
         CommandSpec("agent", agent_command),
         CommandSpec("provider", agent_command),  # alias
+        CommandSpec("cmux", cmux_command),
     ]
 
     for spec in command_specs:
@@ -166,5 +167,6 @@ COMMAND_NAMES: tuple[str, ...] = (
     "last",
     "agent",
     "provider",
+    "cmux",
 )
 """Sentinel for tests: the exact command names register_all installs, in order."""

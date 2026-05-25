@@ -16,6 +16,8 @@ from telegram.error import TelegramError
 from ...thread_router import thread_router
 from ...tmux_manager import tmux_manager
 from ...utils import log_throttled
+from ...window_state_ports.terminal_identity import get_backend
+from ...terminal_backends.base import BACKEND_TMUX
 from . import window_tick
 
 if TYPE_CHECKING:
@@ -69,6 +71,12 @@ async def status_poll_loop(bot: "Bot") -> None:
             for user_id, thread_id, wid in list(thread_router.iter_thread_bindings()):
                 structlog.contextvars.clear_contextvars()
                 structlog.contextvars.bind_contextvars(window_id=wid)
+                # cmux-bound rows are owned by CmuxBackend, not by the
+                # tmux-shaped tick. Skipping them keeps a degraded
+                # sidecar from masquerading as a dead tmux window and
+                # tripping the unbind path.
+                if get_backend(wid) != BACKEND_TMUX:
+                    continue
                 try:
                     w = window_lookup.get(wid)
                     await window_tick.tick_window(bot, user_id, thread_id, wid, w)

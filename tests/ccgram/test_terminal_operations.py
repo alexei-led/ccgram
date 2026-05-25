@@ -266,3 +266,58 @@ class TestListUnits:
     ) -> None:
         with pytest.raises(TerminalBackendUnavailableError):
             await terminal_operations.list_units(BACKEND_CMUX)
+
+
+class TestCmuxRouting:
+    """Plan Task 4: send/capture for cmux units route through CmuxBackend."""
+
+    @pytest.fixture
+    def cmux_backend(self, fake_backend: _SpyBackend) -> _SpyBackend:
+        backend = _SpyBackend(BACKEND_CMUX)
+        get_router().register(backend)
+        return backend
+
+    def _cmux_identity(self, window_id: str, unit_id: str):
+        from ccgram.window_state_ports.terminal_identity import (
+            TerminalIdentityProjection,
+        )
+
+        return TerminalIdentityProjection(
+            window_id=window_id,
+            backend=BACKEND_CMUX,
+            unit_id=unit_id,
+            legacy_window_id=window_id,
+        )
+
+    async def test_send_text_routes_to_cmux_backend(
+        self, cmux_backend: _SpyBackend, patch_identity: Any
+    ) -> None:
+        patch_identity(self._cmux_identity("cmux:ws-1", "ws-1"))
+        ok, msg = await terminal_operations.send_text("cmux:ws-1", "hello")
+        assert ok is True
+        assert "Sent" in msg
+        cmux_backend.send_text.assert_awaited_once()
+        ref: TerminalUnitRef = cmux_backend.send_text.call_args.args[0]
+        assert ref.backend == BACKEND_CMUX
+        assert ref.unit_id == "ws-1"
+
+    async def test_capture_routes_to_cmux_backend(
+        self, cmux_backend: _SpyBackend, patch_identity: Any
+    ) -> None:
+        cmux_backend.capture.return_value = "screen contents"
+        patch_identity(self._cmux_identity("cmux:ws-1", "ws-1"))
+        text = await terminal_operations.capture("cmux:ws-1")
+        assert text == "screen contents"
+        cmux_backend.capture.assert_awaited_once()
+        ref: TerminalUnitRef = cmux_backend.capture.call_args.args[0]
+        assert ref.backend == BACKEND_CMUX
+        assert ref.unit_id == "ws-1"
+
+    async def test_send_text_returns_scoped_error_when_cmux_unavailable(
+        self, fake_backend: _SpyBackend, patch_identity: Any
+    ) -> None:
+        # cmux NOT registered — router only knows tmux from the autouse fixture.
+        patch_identity(self._cmux_identity("cmux:ws-x", "ws-x"))
+        ok, msg = await terminal_operations.send_text("cmux:ws-x", "hi")
+        assert ok is False
+        assert "unavailable" in msg
