@@ -144,12 +144,14 @@ class TestCleanup:
 class TestBuildLiveKeyboard:
     def test_has_stop_button(self):
         kb = build_live_keyboard("@0")
+        assert kb is not None
         flat = [btn for row in kb.inline_keyboard for btn in row]
         labels = [btn.text for btn in flat]
         assert any("Stop" in label for label in labels)
 
     def test_no_refresh_or_live_button(self):
         kb = build_live_keyboard("@0")
+        assert kb is not None
         flat = [btn for row in kb.inline_keyboard for btn in row]
         labels = [btn.text for btn in flat]
         assert not any("Refresh" in label for label in labels)
@@ -157,6 +159,7 @@ class TestBuildLiveKeyboard:
 
     def test_has_quick_keys(self):
         kb = build_live_keyboard("@0")
+        assert kb is not None
         flat = [btn for row in kb.inline_keyboard for btn in row]
         labels = [btn.text for btn in flat]
         assert any("Esc" in label for label in labels)
@@ -165,6 +168,7 @@ class TestBuildLiveKeyboard:
 
     def test_stop_callback_data_format(self):
         kb = build_live_keyboard("@0")
+        assert kb is not None
         flat = [btn for row in kb.inline_keyboard for btn in row]
         stop_btn = [btn for btn in flat if "Stop" in btn.text][0]
         assert isinstance(stop_btn.callback_data, str)
@@ -172,6 +176,7 @@ class TestBuildLiveKeyboard:
 
     def test_pane_id_in_callback_data(self):
         kb = build_live_keyboard("@0", pane_id="%3")
+        assert kb is not None
         flat = [btn for row in kb.inline_keyboard for btn in row]
         stop_btn = [btn for btn in flat if "Stop" in btn.text][0]
         assert isinstance(stop_btn.callback_data, str)
@@ -179,6 +184,7 @@ class TestBuildLiveKeyboard:
 
     def test_key_callbacks_use_keys_prefix(self):
         kb = build_live_keyboard("@0")
+        assert kb is not None
         flat = [btn for row in kb.inline_keyboard for btn in row]
         key_btns = [btn for btn in flat if "Stop" not in btn.text]
         for btn in key_btns:
@@ -189,18 +195,21 @@ class TestBuildLiveKeyboard:
 class TestBuildScreenshotKeyboard:
     def test_has_live_button(self):
         kb = build_screenshot_keyboard("@0")
+        assert kb is not None
         flat = [btn for row in kb.inline_keyboard for btn in row]
         labels = [btn.text for btn in flat]
         assert any("Live" in label for label in labels)
 
     def test_has_refresh_button(self):
         kb = build_screenshot_keyboard("@0")
+        assert kb is not None
         flat = [btn for row in kb.inline_keyboard for btn in row]
         labels = [btn.text for btn in flat]
         assert any("Refresh" in label for label in labels)
 
     def test_live_callback_data_format(self):
         kb = build_screenshot_keyboard("@0")
+        assert kb is not None
         flat = [btn for row in kb.inline_keyboard for btn in row]
         live_btn = [btn for btn in flat if "Live" in btn.text][0]
         assert isinstance(live_btn.callback_data, str)
@@ -208,6 +217,7 @@ class TestBuildScreenshotKeyboard:
 
     def test_refresh_callback_data_format(self):
         kb = build_screenshot_keyboard("@0")
+        assert kb is not None
         flat = [btn for row in kb.inline_keyboard for btn in row]
         refresh_btn = [btn for btn in flat if "Refresh" in btn.text][0]
         assert isinstance(refresh_btn.callback_data, str)
@@ -215,6 +225,7 @@ class TestBuildScreenshotKeyboard:
 
     def test_pane_id_propagated(self):
         kb = build_screenshot_keyboard("@0", pane_id="%5")
+        assert kb is not None
         flat = [btn for row in kb.inline_keyboard for btn in row]
         live_btn = [btn for btn in flat if "Live" in btn.text][0]
         assert isinstance(live_btn.callback_data, str)
@@ -228,6 +239,7 @@ class TestBuildToolbarKeyboard:
             return_value=False,
         ):
             kb = build_toolbar_keyboard("@0")
+        assert kb is not None
         flat = [btn for row in kb.inline_keyboard for btn in row]
         labels = [btn.text for btn in flat]
         assert any("Live" in label for label in labels)
@@ -252,6 +264,7 @@ class TestBuildToolbarKeyboard:
             return_value=False,
         ):
             kb = build_toolbar_keyboard("@0")
+        assert kb is not None
         flat = [btn for row in kb.inline_keyboard for btn in row]
         live_btn = [btn for btn in flat if "Live" in btn.text][0]
         assert isinstance(live_btn.callback_data, str)

@@ -115,7 +115,6 @@ class TestCapabilitiesBeforeHandshake:
         assert caps.supports_create is True
         assert caps.supports_close is True
         assert caps.supports_event_stream is True
-        # Subsequent sync read uses cached hello.
         synced = backend.capabilities()
         assert synced == caps
 
@@ -281,3 +280,50 @@ class TestErrorMapping:
         ref = TerminalUnitRef(backend=BACKEND_CMUX, unit_id="ws-missing")
         with pytest.raises(TerminalNotFoundError):
             await backend.capture(ref)
+
+
+class TestProtocolErrorTranslation:
+    async def test_list_units_wraps_malformed_response(self) -> None:
+        def respond_hello(request: CmuxRequest) -> CmuxResponse:
+            return _ok(request, _hello())
+
+        def respond_list(request: CmuxRequest) -> CmuxResponse:
+            return _ok(request, {"workspaces": "not-a-list"})
+
+        from ccgram.terminal_backends.base import TerminalBackendError
+
+        backend, _ = _make_backend(
+            {METHOD_HELLO: respond_hello, METHOD_LIST_WORKSPACES: respond_list}
+        )
+        with pytest.raises(TerminalBackendError) as excinfo:
+            await backend.list_units()
+        assert excinfo.value.code == "internal_error"
+
+    async def test_capture_wraps_malformed_screen(self) -> None:
+        def respond_hello(request: CmuxRequest) -> CmuxResponse:
+            return _ok(request, _hello())
+
+        def respond_capture(request: CmuxRequest) -> CmuxResponse:
+            return _ok(request, {"screen": 123})
+
+        from ccgram.terminal_backends.base import TerminalBackendError
+
+        backend, _ = _make_backend(
+            {METHOD_HELLO: respond_hello, METHOD_CAPTURE_SCREEN: respond_capture}
+        )
+        ref = TerminalUnitRef(backend=BACKEND_CMUX, unit_id="ws-a")
+        with pytest.raises(TerminalBackendError) as excinfo:
+            await backend.capture(ref)
+        assert excinfo.value.code == "internal_error"
+        assert excinfo.value.ref == ref
+
+    async def test_negotiate_wraps_id_mismatch(self) -> None:
+        def respond_hello(request: CmuxRequest) -> CmuxResponse:
+            return CmuxResponse(id=request.id + 999, result=_hello())
+
+        from ccgram.terminal_backends.base import TerminalBackendError
+
+        backend, _ = _make_backend({METHOD_HELLO: respond_hello})
+        with pytest.raises(TerminalBackendError) as excinfo:
+            await backend.negotiate()
+        assert excinfo.value.code == "internal_error"

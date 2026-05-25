@@ -169,6 +169,17 @@ async def _handle_status_esc(query: CallbackQuery, user_id: int, data: str) -> N
     if not user_owns_window(user_id, window_id):
         await query.answer("Not your session", show_alert=True)
         return
+    # Defensive: stale status bubbles for cmux topics still carry this
+    # callback. cmux Esc routing through terminal_operations is deferred.
+    # Lazy: terminal_backends pulls in router + libtmux when first imported.
+    from ...terminal_backends.base import BACKEND_CMUX
+
+    # Lazy: terminal identity port reaches into the state store.
+    from ...window_state_ports.terminal_identity import get_backend
+
+    if get_backend(window_id) == BACKEND_CMUX:
+        await query.answer("Esc not yet supported for cmux", show_alert=True)
+        return
     w = await tmux_manager.find_window_by_id(window_id)
     if w:
         await tmux_manager.send_keys(w.window_id, "Escape", enter=False, literal=False)

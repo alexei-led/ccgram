@@ -360,7 +360,6 @@ class TestCmuxRendering:
         ):
             text, _kb = await _build_dashboard(100)
         assert "[cmux]" in text
-        # Alive marker (green circle) — not the warning sign.
         assert "\U0001f7e2 alpha" in text
         assert "[cmux unavailable]" not in text
 
@@ -445,10 +444,9 @@ class TestCmuxRendering:
             for btn in row
             if isinstance(btn.callback_data, str)
         ]
-        # cmux rows expose esc/screenshot but never the tmux-only kill action.
         assert not any(d.startswith("sess:kill:") for d in data)
-        assert any(d.startswith(CB_STATUS_ESC) for d in data)
-        assert any(d.startswith(CB_STATUS_SCREENSHOT) for d in data)
+        assert not any(d.startswith(CB_STATUS_ESC) for d in data)
+        assert not any(d.startswith(CB_STATUS_SCREENSHOT) for d in data)
 
     async def test_tmux_alive_row_unaffected_by_cmux_backend(self, _patch_deps) -> None:
         mock_view, mock_tr, mock_tm, _ = _patch_deps
@@ -462,9 +460,7 @@ class TestCmuxRendering:
 
         fake_backend = MagicMock()
         fake_backend.name = BACKEND_CMUX
-        fake_backend.list_units = AsyncMock(
-            return_value=[]
-        )  # sidecar reachable but no workspaces yet
+        fake_backend.list_units = AsyncMock(return_value=[])
         from ccgram.terminal_backends.router import get_router
 
         get_router().register(fake_backend)
@@ -482,7 +478,5 @@ class TestCmuxRendering:
             ),
         ):
             text, _kb = await _build_dashboard(100)
-        # tmux row alive.
         assert "\U0001f7e2 tmux-alive" in text
-        # cmux row dead (sidecar reachable but workspace not in list).
         assert "⚫ cmux-alive" in text or "⚫ cmux-alive" in text

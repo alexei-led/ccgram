@@ -81,6 +81,71 @@ async def _resolve_cmux_live_ids() -> tuple[set[str], bool]:
     return {unit.ref.unit_id for unit in units}, True
 
 
+def _render_binding_row(
+    window_id: str,
+    *,
+    live_ids: set[str],
+    cmux_live_unit_ids: set[str],
+    cmux_reachable: bool,
+) -> tuple[str, list[InlineKeyboardButton]]:
+    """Render the text line and action row for a single binding."""
+    display_name = thread_router.get_display_name(window_id)
+    view = view_window(window_id)
+    backend = get_backend(window_id)
+    if backend == BACKEND_CMUX:
+        unit_id = get_unit_id(window_id)
+        alive = cmux_reachable and unit_id in cmux_live_unit_ids
+        if not cmux_reachable:
+            status = "⚠"  # warning sign — sidecar unavailable
+            backend_tag = " [cmux unavailable]"
+        else:
+            status = "\U0001f7e2" if alive else "⚫"
+            backend_tag = " [cmux]"
+        is_external = False
+    else:
+        alive = window_id in live_ids
+        is_external = view.external if view else False
+        backend_tag = ""
+        status = "\U0001f7e2" if alive else "⚫"
+
+    provider_tag = f" [{view.provider_name}]" if view and view.provider_name else ""
+    mode_tag = " [YOLO]" if view and view.approval_mode == "yolo" else ""
+    line = f"{status} {display_name}{backend_tag}{provider_tag}{mode_tag}"
+    if view and view.cwd:
+        line += f"\n    {view.cwd}"
+
+    if not alive:
+        return line, []
+
+    # Esc/Screenshot route through tmux_manager today; hide for cmux rows
+    # until terminal_operations migration covers them.
+    row: list[InlineKeyboardButton] = []
+    if backend == BACKEND_TMUX:
+        row.extend(
+            [
+                InlineKeyboardButton(
+                    "⎋ Esc",
+                    callback_data=f"{CB_STATUS_ESC}{window_id}"[:64],
+                ),
+                InlineKeyboardButton(
+                    "\U0001f4f8",
+                    callback_data=f"{CB_STATUS_SCREENSHOT}{window_id}"[:64],
+                ),
+            ]
+        )
+    # External windows (emdash) and cmux workspaces are never killed
+    # through the tmux kill path — only unbind via the topic. cmux
+    # close/supervision is deferred past the MVP.
+    if not is_external and backend == BACKEND_TMUX:
+        row.append(
+            InlineKeyboardButton(
+                f"\U0001f5d1 Kill {display_name}",
+                callback_data=f"{CB_SESSIONS_KILL}{window_id}"[:64],
+            ),
+        )
+    return line, row
+
+
 async def _build_dashboard(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
     """Build dashboard text and keyboard for a user's sessions."""
     bindings = thread_router.get_all_thread_windows(user_id)
@@ -108,54 +173,14 @@ async def _build_dashboard(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
     lines: list[str] = []
     action_rows: list[list[InlineKeyboardButton]] = []
     for _thread_id, window_id in sorted(bindings.items()):
-        display_name = thread_router.get_display_name(window_id)
-        view = view_window(window_id)
-        backend = get_backend(window_id)
-        if backend == BACKEND_CMUX:
-            unit_id = get_unit_id(window_id)
-            alive = cmux_reachable and unit_id in cmux_live_unit_ids
-            if not cmux_reachable:
-                status = "⚠"  # warning sign — sidecar unavailable
-                backend_tag = " [cmux unavailable]"
-            else:
-                status = "\U0001f7e2" if alive else "⚫"
-                backend_tag = " [cmux]"
-            is_external = False
-        else:
-            alive = window_id in live_ids
-            is_external = view.external if view else False
-            backend_tag = ""
-            status = "\U0001f7e2" if alive else "⚫"
-
-        # Session line with backend + provider + mode tags and cwd detail
-        provider_tag = f" [{view.provider_name}]" if view and view.provider_name else ""
-        mode_tag = " [YOLO]" if view and view.approval_mode == "yolo" else ""
-        line = f"{status} {display_name}{backend_tag}{provider_tag}{mode_tag}"
-        if view and view.cwd:
-            line += f"\n    {view.cwd}"
+        line, row = _render_binding_row(
+            window_id,
+            live_ids=live_ids,
+            cmux_live_unit_ids=cmux_live_unit_ids,
+            cmux_reachable=cmux_reachable,
+        )
         lines.append(line)
-
-        if alive:
-            row: list[InlineKeyboardButton] = [
-                InlineKeyboardButton(
-                    "⎋ Esc",
-                    callback_data=f"{CB_STATUS_ESC}{window_id}"[:64],
-                ),
-                InlineKeyboardButton(
-                    "\U0001f4f8",
-                    callback_data=f"{CB_STATUS_SCREENSHOT}{window_id}"[:64],
-                ),
-            ]
-            # External windows (emdash) and cmux workspaces are never
-            # killed through the tmux kill path — only unbind via the
-            # topic. cmux close/supervision is deferred past the MVP.
-            if not is_external and backend == BACKEND_TMUX:
-                row.append(
-                    InlineKeyboardButton(
-                        f"\U0001f5d1 Kill {display_name}",
-                        callback_data=f"{CB_SESSIONS_KILL}{window_id}"[:64],
-                    ),
-                )
+        if row:
             action_rows.append(row)
 
     text = "Sessions\n\n" + "\n".join(lines)

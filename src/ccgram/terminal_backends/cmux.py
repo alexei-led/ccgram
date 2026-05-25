@@ -20,13 +20,19 @@ from .base import (
     BACKEND_CMUX,
     TerminalBackend,
     TerminalBackendCapabilities,
+    TerminalBackendError,
     TerminalUnit,
     TerminalUnitRef,
     TerminalUnitState,
     TerminalUnsupportedOperationError,
 )
 from .cmux_client import CmuxSidecarClient
-from .cmux_protocol import PROTOCOL_VERSION, CmuxHelloResult, CmuxWorkspace
+from .cmux_protocol import (
+    PROTOCOL_VERSION,
+    CmuxHelloResult,
+    CmuxProtocolError,
+    CmuxWorkspace,
+)
 
 
 class CmuxBackend(TerminalBackend):
@@ -47,11 +53,6 @@ class CmuxBackend(TerminalBackend):
 
     def capabilities(self) -> TerminalBackendCapabilities:
         return self._capabilities_from(self._client.cached_hello())
-
-    async def negotiate(self) -> TerminalBackendCapabilities:
-        """Force a handshake and return the resolved capability projection."""
-        hello = await self._client.hello()
-        return self._capabilities_from(hello)
 
     def _capabilities_from(
         self, hello: CmuxHelloResult | None
@@ -89,8 +90,23 @@ class CmuxBackend(TerminalBackend):
                 ref=ref,
             )
 
+    async def negotiate(self) -> TerminalBackendCapabilities:
+        """Force a handshake and return the resolved capability projection.
+
+        Converts sidecar protocol violations into the neutral
+        backend-error taxonomy so callers see a single exception family.
+        """
+        try:
+            hello = await self._client.hello()
+        except CmuxProtocolError as exc:
+            raise TerminalBackendError(str(exc), code="internal_error") from exc
+        return self._capabilities_from(hello)
+
     async def list_units(self) -> list[TerminalUnit]:
-        workspaces = await self._client.list_workspaces()
+        try:
+            workspaces = await self._client.list_workspaces()
+        except CmuxProtocolError as exc:
+            raise TerminalBackendError(str(exc), code="internal_error") from exc
         return [self._workspace_to_unit(ws) for ws in workspaces]
 
     def _workspace_to_unit(self, workspace: CmuxWorkspace) -> TerminalUnit:
@@ -113,21 +129,41 @@ class CmuxBackend(TerminalBackend):
         self, ref: TerminalUnitRef, *, with_ansi: bool = False
     ) -> str | None:
         self._check_backend(ref)
-        return await self._client.capture_screen(ref.unit_id, with_ansi=with_ansi)
+        try:
+            return await self._client.capture_screen(ref.unit_id, with_ansi=with_ansi)
+        except CmuxProtocolError as exc:
+            raise TerminalBackendError(
+                str(exc), code="internal_error", ref=ref
+            ) from exc
 
     async def send_text(
         self, ref: TerminalUnitRef, text: str, *, raw: bool = False
     ) -> bool:
         self._check_backend(ref)
-        return await self._client.send_text(ref.unit_id, text, raw=raw)
+        try:
+            return await self._client.send_text(ref.unit_id, text, raw=raw)
+        except CmuxProtocolError as exc:
+            raise TerminalBackendError(
+                str(exc), code="internal_error", ref=ref
+            ) from exc
 
     async def send_key(self, ref: TerminalUnitRef, key: str) -> bool:
         self._check_backend(ref)
-        return await self._client.send_key(ref.unit_id, key)
+        try:
+            return await self._client.send_key(ref.unit_id, key)
+        except CmuxProtocolError as exc:
+            raise TerminalBackendError(
+                str(exc), code="internal_error", ref=ref
+            ) from exc
 
     async def close(self, ref: TerminalUnitRef) -> bool:
         self._check_backend(ref)
-        return await self._client.close_workspace(ref.unit_id)
+        try:
+            return await self._client.close_workspace(ref.unit_id)
+        except CmuxProtocolError as exc:
+            raise TerminalBackendError(
+                str(exc), code="internal_error", ref=ref
+            ) from exc
 
 
 _VALID_STATES: frozenset[str] = frozenset(

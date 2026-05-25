@@ -82,12 +82,26 @@ KEY_LABELS: dict[str, str] = {
 
 def build_screenshot_keyboard(
     window_id: str, pane_id: str | None = None
-) -> InlineKeyboardMarkup:
+) -> InlineKeyboardMarkup | None:
     """Build inline keyboard for screenshot: control keys + refresh.
 
     When *pane_id* is given, keys and refresh target that specific pane
     instead of the window's active pane.
+
+    Returns ``None`` for cmux windows — refresh/live/key controls all
+    route through tmux-only handlers today, so exposing them on cmux
+    rows would fail. Migration tracked as follow-up plan work.
     """
+    # Lazy: window_state_ports import path is heavy; keep handler bare
+    # imports unaffected.
+    from ...terminal_backends.base import BACKEND_CMUX
+
+    # Lazy: terminal identity port reaches into the state store.
+    from ...window_state_ports.terminal_identity import get_backend
+
+    if get_backend(window_id) == BACKEND_CMUX:
+        return None
+
     target = f"{window_id}:{pane_id}" if pane_id else window_id
 
     def btn(label: str, key_id: str) -> InlineKeyboardButton:
@@ -337,6 +351,18 @@ async def _handle_status_screenshot(
     window_id = data[len(CB_STATUS_SCREENSHOT) :]
     if not user_owns_window(user_id, window_id):
         await query.answer("Not your session", show_alert=True)
+        return
+    # Defensive: stale status bubbles for cmux topics still carry this
+    # callback. cmux capture works via /screenshot today; this fast path
+    # is tmux-only.
+    # Lazy: terminal_backends pulls in router + libtmux when first imported.
+    from ...terminal_backends.base import BACKEND_CMUX
+
+    # Lazy: terminal identity port reaches into the state store.
+    from ...window_state_ports.terminal_identity import get_backend
+
+    if get_backend(window_id) == BACKEND_CMUX:
+        await query.answer("Use /screenshot for cmux topics", show_alert=True)
         return
     w = await tmux_manager.find_window_by_id(window_id)
     if not w:
