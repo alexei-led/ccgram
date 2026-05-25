@@ -34,6 +34,13 @@ from .lifecycle_state import (
     set_window_origin,
     was_gemini_external_warned,
 )
+from .terminal_identity import (
+    TerminalIdentityProjection,
+    get_backend,
+    get_terminal_identity,
+    get_unit_id,
+    set_terminal_identity,
+)
 from .pane_state import (
     PaneProjection,
     WindowPaneSnapshot,
@@ -112,4 +119,10 @@ __all__ = [
     "clear_worktree",
     "get_worktree",
     "set_worktree",
+    # Terminal identity
+    "TerminalIdentityProjection",
+    "get_backend",
+    "get_terminal_identity",
+    "get_unit_id",
+    "set_terminal_identity",
 ]

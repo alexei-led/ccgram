@@ -32,3 +32,5 @@ class WindowView:
     session_id: str
     external: bool
     origin: str
+    terminal_backend: str = "tmux"
+    terminal_unit_id: str = ""

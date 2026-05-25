@@ -194,6 +194,48 @@ async def test_full_window_state_feature_groups_survive_reload(
     assert reloaded.rc_armed_at is None
 
 
+async def test_terminal_identity_survives_reload(make_session_manager) -> None:
+    """cmux backend identity round-trips through state.json."""
+    sm1 = make_session_manager()
+    window_store.set_terminal_identity("@9", backend="cmux", unit_id="workspace-uuid")
+    sm1.flush_state()
+
+    _sm2 = make_session_manager()
+    reloaded = window_store.get_window_state("@9")
+    assert reloaded.terminal_backend == "cmux"
+    assert reloaded.terminal_unit_id == "workspace-uuid"
+
+
+async def test_legacy_state_loads_as_tmux(tmp_path, monkeypatch) -> None:
+    """Legacy state.json without terminal_backend fields loads as tmux backend."""
+    state = {
+        "window_states": {
+            "@3": {
+                "session_id": "abc",
+                "cwd": "/p",
+                "window_name": "proj",
+                "provider_name": "claude",
+            }
+        },
+        "user_window_offsets": {},
+        "thread_bindings": {},
+        "group_chat_ids": {},
+        "window_display_names": {},
+        "user_dir_favorites": {},
+    }
+    sf = tmp_path / "state.json"
+    sf.write_text(json.dumps(state))
+    monkeypatch.setattr("ccgram.config.config.state_file", sf)
+    monkeypatch.setattr(
+        "ccgram.config.config.session_map_file", tmp_path / "session_map.json"
+    )
+
+    SessionManager()
+    reloaded = window_store.get_window_state("@3")
+    assert reloaded.terminal_backend == "tmux"
+    assert reloaded.terminal_unit_id == ""
+
+
 async def test_duplicate_bindings_deduped_on_load(tmp_path, monkeypatch) -> None:
     """Old state with duplicate bindings — loader keeps highest thread_id."""
     state = {

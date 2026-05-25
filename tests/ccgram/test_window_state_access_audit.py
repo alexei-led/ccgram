@@ -56,6 +56,7 @@ EXCLUDED_FILES: frozenset[Path] = frozenset(
         SRC_ROOT / "window_state_ports" / "worktree_state.py",
         SRC_ROOT / "window_state_ports" / "tool_state.py",
         SRC_ROOT / "window_state_ports" / "lifecycle_state.py",
+        SRC_ROOT / "window_state_ports" / "terminal_identity.py",
     }
 )
 
@@ -84,6 +85,8 @@ WINDOW_STATE_FIELDS: frozenset[str] = frozenset(
         "worktree_branch",
         "gemini_external_warned",
         "provider_manual_override",
+        "terminal_backend",
+        "terminal_unit_id",
     }
 )
 

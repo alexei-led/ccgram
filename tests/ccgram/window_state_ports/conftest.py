@@ -24,6 +24,7 @@ def store(monkeypatch, save_calls: list[int]) -> WindowStateStore:
         "ccgram.window_state_ports.worktree_state.window_store",
         "ccgram.window_state_ports.tool_state.window_store",
         "ccgram.window_state_ports.lifecycle_state.window_store",
+        "ccgram.window_state_ports.terminal_identity.window_store",
     )
     for target in targets:
         monkeypatch.setattr(target, s)

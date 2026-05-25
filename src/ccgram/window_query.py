@@ -15,7 +15,9 @@ from __future__ import annotations
 
 from .window_state_ports import identity_state as _identity_state
 from .window_state_ports import lifecycle_state as _lifecycle_state
+from .window_state_ports import terminal_identity as _terminal_identity
 from .window_state_ports import tool_state as _tool_state
+from .window_state_ports.terminal_identity import TerminalIdentityProjection
 from .window_state_store import window_store
 from .window_view import WindowView
 
@@ -25,13 +27,14 @@ def view_window(window_id: str) -> WindowView | None:
     identity = _identity_state.get_identity(window_id)
     if identity is None:
         return None
-    # All three ports read from the same window_states dict, so once
-    # identity is non-None the other projections are too. The explicit
-    # check survives `python -O` (asserts stripped) and avoids an
+    # All ports read from the same window_states dict, so once identity
+    # is non-None the other projections are too. The explicit check
+    # survives `python -O` (asserts stripped) and avoids an
     # AttributeError if the invariant ever breaks.
     lifecycle = _lifecycle_state.get_lifecycle(window_id)
     tools = _tool_state.get_tool_modes(window_id)
-    if lifecycle is None or tools is None:
+    terminal = _terminal_identity.get_terminal_identity(window_id)
+    if lifecycle is None or tools is None or terminal is None:
         return None
     return WindowView(
         window_id=window_id,
@@ -45,6 +48,8 @@ def view_window(window_id: str) -> WindowView | None:
         session_id=identity.session_id,
         external=lifecycle.external,
         origin=lifecycle.origin,
+        terminal_backend=terminal.backend,
+        terminal_unit_id=terminal.unit_id,
     )
 
 
@@ -101,3 +106,17 @@ def window_count() -> int:
 def iter_window_ids() -> list[str]:
     """All tracked window IDs."""
     return list(window_store.window_states.keys())
+
+
+def get_terminal_identity(window_id: str) -> TerminalIdentityProjection | None:
+    """Backend-neutral identity projection for a window, or None if untracked.
+
+    Legacy tmux rows resolve to ``backend=tmux`` and
+    ``unit_id=<window_id>``.
+    """
+    return _terminal_identity.get_terminal_identity(window_id)
+
+
+def get_terminal_backend(window_id: str) -> str:
+    """Resolved terminal backend for a window. Defaults to ``tmux``."""
+    return _terminal_identity.get_backend(window_id)

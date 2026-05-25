@@ -840,6 +840,80 @@ class TestWindowStateFullPersistenceCharacterization:
         assert ws.provider_manual_override is False
 
 
+class TestWindowStateTerminalIdentity:
+    """Terminal backend identity fields — additive, backward compatible."""
+
+    def test_defaults_are_tmux_and_empty_unit_id(self) -> None:
+        ws = WindowState()
+        assert ws.terminal_backend == "tmux"
+        assert ws.terminal_unit_id == ""
+
+    def test_to_dict_omits_when_default(self) -> None:
+        ws = WindowState(cwd="/p")
+        d = ws.to_dict()
+        assert "terminal_backend" not in d
+        assert "terminal_unit_id" not in d
+
+    def test_to_dict_includes_when_set(self) -> None:
+        ws = WindowState(
+            cwd="/p",
+            terminal_backend="cmux",
+            terminal_unit_id="ws-uuid",
+        )
+        d = ws.to_dict()
+        assert d["terminal_backend"] == "cmux"
+        assert d["terminal_unit_id"] == "ws-uuid"
+
+    def test_from_dict_round_trip(self) -> None:
+        original = WindowState(
+            cwd="/p",
+            terminal_backend="cmux",
+            terminal_unit_id="ws-uuid",
+        )
+        loaded = WindowState.from_dict(original.to_dict())
+        assert loaded.terminal_backend == "cmux"
+        assert loaded.terminal_unit_id == "ws-uuid"
+
+    def test_legacy_state_loads_as_tmux(self) -> None:
+        ws = WindowState.from_dict({"session_id": "s", "cwd": "/p"})
+        assert ws.terminal_backend == "tmux"
+        assert ws.terminal_unit_id == ""
+
+    def test_invalid_backend_falls_back_to_tmux(self) -> None:
+        ws = WindowState.from_dict({"terminal_backend": "garbage"})
+        assert ws.terminal_backend == "tmux"
+
+    def test_set_terminal_identity_persists(self, store: WindowStateStore) -> None:
+        save_calls = store._save_calls  # type: ignore[attr-defined]
+        save_calls.clear()
+        store.set_terminal_identity("@1", backend="cmux", unit_id="ws-1")
+        state = store.window_states["@1"]
+        assert state.terminal_backend == "cmux"
+        assert state.terminal_unit_id == "ws-1"
+        assert len(save_calls) == 1
+
+    def test_set_terminal_identity_noop_when_unchanged(
+        self, store: WindowStateStore
+    ) -> None:
+        store.set_terminal_identity("@1", backend="cmux", unit_id="ws-1")
+        save_calls = store._save_calls  # type: ignore[attr-defined]
+        save_calls.clear()
+        store.set_terminal_identity("@1", backend="cmux", unit_id="ws-1")
+        assert save_calls == []
+
+    def test_set_terminal_identity_rejects_unknown_backend(
+        self, store: WindowStateStore
+    ) -> None:
+        with pytest.raises(ValueError):
+            store.set_terminal_identity("@1", backend="nope", unit_id="x")
+
+    def test_set_terminal_identity_rejects_blank_unit_id(
+        self, store: WindowStateStore
+    ) -> None:
+        with pytest.raises(ValueError):
+            store.set_terminal_identity("@1", backend="cmux", unit_id="")
+
+
 class TestWindowStateTransientRcProbeFieldsNotSerialized:
     """RC probe lifecycle fields are in-memory only — must never survive a round trip."""
 

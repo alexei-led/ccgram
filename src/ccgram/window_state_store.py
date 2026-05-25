@@ -49,6 +49,16 @@ CCGRAM_CREATED_WINDOW_ORIGIN = "ccgram_created"
 MANUAL_DISCOVERED_WINDOW_ORIGIN = "manual_discovered"
 EXTERNAL_WINDOW_ORIGIN = "external"
 
+# Terminal backend identity (cmux sidecar backend MVP, Task 1).
+# Legacy records without a backend field load as TMUX so existing tmux
+# bindings keep working with no migration step.
+TERMINAL_BACKEND_TMUX = "tmux"
+TERMINAL_BACKEND_CMUX = "cmux"
+TERMINAL_BACKENDS: frozenset[str] = frozenset(
+    {TERMINAL_BACKEND_TMUX, TERMINAL_BACKEND_CMUX}
+)
+DEFAULT_TERMINAL_BACKEND = TERMINAL_BACKEND_TMUX
+
 PaneState = Literal["active", "idle", "blocked", "dead"]
 PANE_STATES: frozenset[str] = frozenset({"active", "idle", "blocked", "dead"})
 DEFAULT_PANE_STATE: PaneState = "idle"
@@ -166,8 +176,16 @@ class WindowState:
     # (``_detect_and_apply_provider``) must not overwrite the choice
     # until the user re-runs ``/agent auto`` (which clears the flag).
     provider_manual_override: bool = False
+    # Terminal backend identity. ``terminal_backend`` is one of
+    # ``TERMINAL_BACKENDS`` (default tmux for legacy compatibility);
+    # ``terminal_unit_id`` is opaque to handlers and parsed only by the
+    # owning backend adapter. ``""`` means "fall back to the tmux
+    # window_id key" — preserves existing tmux behaviour without a
+    # migration step.
+    terminal_backend: str = DEFAULT_TERMINAL_BACKEND
+    terminal_unit_id: str = ""
 
-    def to_dict(self) -> dict[str, Any]:  # noqa: C901
+    def to_dict(self) -> dict[str, Any]:  # noqa: C901, PLR0912
         d: dict[str, Any] = {
             "session_id": self.session_id,
             "cwd": self.cwd,
@@ -200,10 +218,17 @@ class WindowState:
             d["gemini_external_warned"] = True
         if self.provider_manual_override:
             d["provider_manual_override"] = True
+        # Backend identity — omit when tmux/empty so legacy state.json
+        # round-trips byte-for-byte and existing tmux bindings serialize
+        # without new fields.
+        if self.terminal_backend != DEFAULT_TERMINAL_BACKEND:
+            d["terminal_backend"] = self.terminal_backend
+        if self.terminal_unit_id:
+            d["terminal_unit_id"] = self.terminal_unit_id
         return d
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> Self:  # noqa: C901
+    def from_dict(cls, data: dict[str, Any]) -> Self:  # noqa: C901, PLR0912
         raw_panes = data.get("panes") or {}
         panes: dict[str, PaneInfo] = {}
         if isinstance(raw_panes, dict):
@@ -237,6 +262,13 @@ class WindowState:
             worktree_branch=data.get("worktree_branch"),
             gemini_external_warned=data.get("gemini_external_warned", False),
             provider_manual_override=data.get("provider_manual_override", False),
+            terminal_backend=(
+                data.get("terminal_backend", DEFAULT_TERMINAL_BACKEND)
+                if data.get("terminal_backend", DEFAULT_TERMINAL_BACKEND)
+                in TERMINAL_BACKENDS
+                else DEFAULT_TERMINAL_BACKEND
+            ),
+            terminal_unit_id=data.get("terminal_unit_id", "") or "",
         )
 
 
@@ -346,6 +378,29 @@ class WindowStateStore:
         state.session_id = ""
         self._schedule_save()
         logger.debug("Cleared session for window_id %s", window_id)
+
+    def set_terminal_identity(
+        self,
+        window_id: str,
+        *,
+        backend: str,
+        unit_id: str,
+    ) -> None:
+        """Persist the terminal backend identity for a window.
+
+        ``backend`` must be one of ``TERMINAL_BACKENDS``; ``unit_id`` is
+        opaque to the store. No-op when both values already match.
+        """
+        if backend not in TERMINAL_BACKENDS:
+            raise ValueError(f"Invalid terminal backend: {backend!r}")
+        if not unit_id:
+            raise ValueError("terminal unit_id must be a non-empty string")
+        state = self.get_window_state(window_id)
+        if state.terminal_backend == backend and state.terminal_unit_id == unit_id:
+            return
+        state.terminal_backend = backend
+        state.terminal_unit_id = unit_id
+        self._schedule_save()
 
     def set_provider_manual_override(self, window_id: str, *, value: bool) -> None:
         """Mark or clear the provider manual-override flag. No-op when unchanged."""
