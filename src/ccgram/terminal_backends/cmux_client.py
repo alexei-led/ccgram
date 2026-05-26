@@ -47,6 +47,7 @@ from .cmux_protocol import (
     METHOD_SEND_TEXT,
     PROTOCOL_VERSION,
     CmuxError,
+    CmuxEvent,
     CmuxHelloResult,
     CmuxProtocolError,
     CmuxRequest,
@@ -102,12 +103,17 @@ class UnixSocketTransport:
             payload = (json.dumps(request.to_wire()) + "\n").encode("utf-8")
             writer.write(payload)
             await writer.drain()
-            line = await reader.readline()
-            if not line:
-                raise TerminalBackendUnavailableError(
-                    "cmux sidecar closed the connection before responding"
-                )
-            return _decode_response_line(line)
+            while True:
+                line = await reader.readline()
+                if not line:
+                    raise TerminalBackendUnavailableError(
+                        "cmux sidecar closed the connection before responding"
+                    )
+                frame = _decode_frame_line(line)
+                if isinstance(frame, CmuxEvent):
+                    logger.debug("cmux.event", method=frame.method)
+                    continue
+                return frame
         finally:
             writer.close()
             with contextlib.suppress(OSError):
@@ -117,7 +123,7 @@ class UnixSocketTransport:
         return None
 
 
-def _decode_response_line(line: bytes) -> CmuxResponse:
+def _decode_frame_line(line: bytes) -> CmuxResponse | CmuxEvent:
     try:
         text = line.decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -126,6 +132,8 @@ def _decode_response_line(line: bytes) -> CmuxResponse:
         payload = json.loads(text)
     except json.JSONDecodeError as exc:
         raise CmuxProtocolError(f"response was not valid JSON: {exc.msg}") from exc
+    if isinstance(payload, dict) and "id" not in payload and "method" in payload:
+        return CmuxEvent.from_wire(payload)
     return CmuxResponse.from_wire(payload)
 
 

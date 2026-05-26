@@ -83,6 +83,23 @@ class TestWrites:
         set_terminal_identity("@1", backend="cmux", unit_id="ws-1")
         assert save_calls == []
 
+    def test_set_terminal_identity_persists_metadata(
+        self, store: WindowStateStore, save_calls: list[int]
+    ) -> None:
+        set_terminal_identity(
+            "cmux:ws-1",
+            backend="cmux",
+            unit_id="ws-1",
+            cwd="/repo",
+            provider_name="claude",
+            window_name="alpha",
+        )
+        state = store.window_states["cmux:ws-1"]
+        assert state.cwd == "/repo"
+        assert state.provider_name == "claude"
+        assert state.window_name == "alpha"
+        assert len(save_calls) == 1
+
     def test_rejects_unknown_backend(self, store: WindowStateStore) -> None:
         with pytest.raises(ValueError):
             set_terminal_identity("@1", backend="nope", unit_id="x")

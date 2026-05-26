@@ -27,7 +27,8 @@ unrelated code paths never pay the cost of touching the cmux client.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import secrets
+from typing import TYPE_CHECKING, Any
 
 import structlog
 from telegram import (
@@ -45,7 +46,7 @@ from ..callback_data import CB_CMUX_BIND, CB_CMUX_CANCEL, CB_CMUX_LIST
 from ..callback_helpers import get_thread_id
 from ..callback_registry import register
 from ..messaging_pipeline.message_sender import safe_edit, safe_reply
-from ..user_state import PENDING_THREAD_ID, PENDING_THREAD_TEXT
+from ..user_state import PENDING_THREAD_TEXT
 
 if TYPE_CHECKING:
     from telegram.ext import ContextTypes
@@ -123,11 +124,14 @@ def _label_for_unit(unit: TerminalUnit) -> str:
 
 def build_cmux_picker(
     units: list[TerminalUnit],
+    *,
+    picker_id: str = "default",
 ) -> tuple[str, InlineKeyboardMarkup]:
     """Render the workspace picker keyboard for a list of cmux units.
 
     Empty lists still render a usable picker with a cancel button.
-    Cancel and refresh share the bottom row regardless of count.
+    Cancel and refresh share the bottom row regardless of count. Bind callbacks
+    include a picker token so old messages cannot bind against a newer list.
     """
     lines: list[str] = ["*Bind cmux Workspace*\n"]
     if not units:
@@ -136,15 +140,18 @@ def build_cmux_picker(
         lines.append("Pick an existing cmux workspace to bind here.")
         for unit in units:
             cwd_display = f" — `{unit.cwd}`" if unit.cwd else ""
-            lines.append(f"• `{_label_for_unit(unit)}`{cwd_display}")
+            surface = "" if unit.supports_send_text else " — no terminal surface"
+            lines.append(f"• `{_label_for_unit(unit)}`{cwd_display}{surface}")
 
     buttons: list[list[InlineKeyboardButton]] = []
     for idx, unit in enumerate(units):
+        if not unit.supports_send_text:
+            continue
         buttons.append(
             [
                 InlineKeyboardButton(
                     f"🪟 {_label_for_unit(unit)[:24]}",
-                    callback_data=f"{CB_CMUX_BIND}{idx}",
+                    callback_data=f"{CB_CMUX_BIND}{picker_id}:{idx}",
                 )
             ]
         )
@@ -157,9 +164,51 @@ def build_cmux_picker(
     return "\n".join(lines), InlineKeyboardMarkup(buttons)
 
 
-def _store_units(context: ContextTypes.DEFAULT_TYPE, units: list[TerminalUnit]) -> None:
+def _new_picker_id() -> str:
+    return secrets.token_hex(4)
+
+
+def _workspace_store(context: ContextTypes.DEFAULT_TYPE) -> dict[str, dict[str, Any]]:
+    if context.user_data is None:
+        return {}
+    raw = context.user_data.setdefault(CMUX_WORKSPACES_KEY, {})
+    if not isinstance(raw, dict):
+        raw = {}
+        context.user_data[CMUX_WORKSPACES_KEY] = raw
+    return raw
+
+
+def _store_units(
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    picker_id: str,
+    thread_id: int,
+    units: list[TerminalUnit],
+) -> None:
     if context.user_data is not None:
-        context.user_data[CMUX_WORKSPACES_KEY] = units
+        _workspace_store(context)[picker_id] = {"thread_id": thread_id, "units": units}
+
+
+def _load_picker(
+    context: ContextTypes.DEFAULT_TYPE, picker_id: str
+) -> tuple[int | None, list[TerminalUnit]]:
+    store = _workspace_store(context)
+    entry = store.get(picker_id)
+    if not isinstance(entry, dict):
+        return None, []
+    thread_id = entry.get("thread_id")
+    units = entry.get("units", [])
+    if not isinstance(thread_id, int) or not isinstance(units, list):
+        return None, []
+    return thread_id, units
+
+
+def _clear_picker(context: ContextTypes.DEFAULT_TYPE, picker_id: str) -> None:
+    if context.user_data is not None:
+        store = _workspace_store(context)
+        store.pop(picker_id, None)
+        if not store:
+            context.user_data.pop(CMUX_WORKSPACES_KEY, None)
 
 
 def _clear_units(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -193,18 +242,17 @@ async def cmux_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await safe_reply(message, error)
         return
 
-    _store_units(context, units)
-    if context.user_data is not None:
-        context.user_data[PENDING_THREAD_ID] = thread_id
+    picker_id = _new_picker_id()
+    _store_units(context, picker_id=picker_id, thread_id=thread_id, units=units)
 
-    text, keyboard = build_cmux_picker(units)
+    text, keyboard = build_cmux_picker(units, picker_id=picker_id)
     if not units:
         text = f"{text}\n\n_{_CMUX_NO_WORKSPACES_TEXT}_"
     await safe_reply(message, text, reply_markup=keyboard)
 
 
 async def _handle_refresh(
-    query: CallbackQuery, context: ContextTypes.DEFAULT_TYPE
+    query: CallbackQuery, context: ContextTypes.DEFAULT_TYPE, update: Update
 ) -> None:
     units, error = await _list_cmux_workspaces()
     if error is not None:
@@ -212,8 +260,13 @@ async def _handle_refresh(
         await safe_edit(query, error)
         await query.answer()
         return
-    _store_units(context, units)
-    text, keyboard = build_cmux_picker(units)
+    thread_id = get_thread_id(update)
+    if thread_id is None:
+        await query.answer("Use in a topic", show_alert=True)
+        return
+    picker_id = _new_picker_id()
+    _store_units(context, picker_id=picker_id, thread_id=thread_id, units=units)
+    text, keyboard = build_cmux_picker(units, picker_id=picker_id)
     await safe_edit(query, text, reply_markup=keyboard)
     await query.answer("Refreshed")
 
@@ -225,27 +278,26 @@ async def _handle_bind(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    pending_tid = (
-        context.user_data.get(PENDING_THREAD_ID) if context.user_data else None
-    )
     thread_id = get_thread_id(update)
-    if pending_tid is None or thread_id is None or thread_id != pending_tid:
-        await query.answer("Stale picker (topic mismatch)", show_alert=True)
-        return
     try:
-        idx = int(data[len(CB_CMUX_BIND) :])
+        picker_id, idx_raw = data[len(CB_CMUX_BIND) :].split(":", 1)
+        idx = int(idx_raw)
     except ValueError:
         await query.answer("Invalid selection")
         return
 
-    cached: list[TerminalUnit] = (
-        context.user_data.get(CMUX_WORKSPACES_KEY, []) if context.user_data else []
-    )
+    pending_tid, cached = _load_picker(context, picker_id)
+    if pending_tid is None or thread_id is None or thread_id != pending_tid:
+        await query.answer("Stale picker (topic mismatch)", show_alert=True)
+        return
     if idx < 0 or idx >= len(cached):
         await query.answer("Workspace list changed, please retry", show_alert=True)
         return
 
     unit = cached[idx]
+    if not unit.supports_send_text:
+        await query.answer("Workspace has no terminal surface", show_alert=True)
+        return
     workspace_id = unit.ref.unit_id
     window_id = _qualified_window_id(workspace_id)
     display = unit.title or workspace_id
@@ -253,10 +305,14 @@ async def _handle_bind(
     # Lazy: terminal identity port pulls window_state_store.
     from ...window_state_ports.terminal_identity import set_terminal_identity
 
-    set_terminal_identity(window_id, backend=unit.ref.backend, unit_id=workspace_id)
-    # NOTE: cwd is intentionally not mirrored into WindowState. The cmux
-    # sidecar owns the canonical workspace cwd; surfacing it through the
-    # ``TerminalUnit`` projection is enough for dashboards.
+    set_terminal_identity(
+        window_id,
+        backend=unit.ref.backend,
+        unit_id=workspace_id,
+        cwd=unit.cwd,
+        provider_name=unit.provider_name,
+        window_name=display,
+    )
     thread_router.bind_thread(user_id, thread_id, window_id, window_name=display)
 
     chat = query.message.chat if query.message else None
@@ -273,9 +329,8 @@ async def _handle_bind(
     except TelegramError as exc:
         logger.debug("Failed to rename topic after cmux bind: %s", exc)
 
-    _clear_units(context)
+    _clear_picker(context, picker_id)
     if context.user_data is not None:
-        context.user_data.pop(PENDING_THREAD_ID, None)
         context.user_data.pop(PENDING_THREAD_TEXT, None)
 
     await safe_edit(query, f"✅ Bound cmux workspace `{display}`")
@@ -286,8 +341,6 @@ async def _handle_cancel(
     query: CallbackQuery, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
     _clear_units(context)
-    if context.user_data is not None:
-        context.user_data.pop(PENDING_THREAD_ID, None)
     await safe_edit(query, "Cancelled")
     await query.answer("Cancelled")
 
@@ -300,7 +353,7 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     data = query.data
     if data == CB_CMUX_LIST:
-        await _handle_refresh(query, context)
+        await _handle_refresh(query, context, update)
     elif data.startswith(CB_CMUX_BIND):
         await _handle_bind(query, user.id, data, update, context)
     elif data == CB_CMUX_CANCEL:

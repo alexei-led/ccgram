@@ -12,6 +12,8 @@ from ccgram.handlers.callback_data import (
 )
 from ccgram.handlers.sessions_dashboard import (
     _build_dashboard,
+    handle_sessions_kill,
+    handle_sessions_kill_confirm,
     handle_sessions_refresh,
     sessions_command,
 )
@@ -318,6 +320,38 @@ class TestKillButtons:
             if isinstance(btn.callback_data, str)
         ]
         assert not any(d.startswith("sess:kill:") for d in data)
+
+    async def test_cmux_kill_prompt_is_rejected(self, _patch_deps) -> None:
+        query = AsyncMock()
+
+        with (
+            patch(
+                "ccgram.handlers.sessions_dashboard.get_backend", return_value="cmux"
+            ),
+            patch("ccgram.handlers.sessions_dashboard.safe_edit") as mock_edit,
+        ):
+            await handle_sessions_kill(query, 100, "cmux:ws-a")
+
+        mock_edit.assert_awaited_once()
+        assert "tmux" in mock_edit.call_args[0][1]
+
+    async def test_cmux_kill_confirm_does_not_unbind(self, _patch_deps) -> None:
+        _mock_view, mock_tr, mock_tm, _mock_cfg = _patch_deps
+        query = AsyncMock()
+        client = AsyncMock()
+
+        with (
+            patch(
+                "ccgram.handlers.sessions_dashboard.get_backend", return_value="cmux"
+            ),
+            patch("ccgram.handlers.sessions_dashboard.safe_edit") as mock_edit,
+        ):
+            killed = await handle_sessions_kill_confirm(query, 100, "cmux:ws-a", client)
+
+        assert killed is False
+        mock_edit.assert_awaited_once()
+        mock_tm.find_window_by_id.assert_not_called()
+        mock_tr.unbind_thread.assert_not_called()
 
 
 def _cmux_unit(workspace_id: str, title: str = "alpha") -> TerminalUnit:

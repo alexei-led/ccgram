@@ -175,6 +175,27 @@ class TestCmuxHelloResult:
         with pytest.raises(CmuxProtocolError):
             CmuxHelloResult.from_result({"sidecar_version": "x"})
 
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "supports_create",
+            "supports_capture",
+            "supports_send_text",
+            "supports_send_key",
+            "supports_close",
+            "supports_event_stream",
+        ],
+    )
+    def test_from_result_rejects_non_bool_capability(self, field: str) -> None:
+        with pytest.raises(CmuxProtocolError, match=field):
+            CmuxHelloResult.from_result(
+                {
+                    "protocol_version": "1",
+                    "sidecar_version": "0.2.0",
+                    field: "false",
+                }
+            )
+
 
 class TestCmuxWorkspace:
     def test_from_wire_minimal(self) -> None:
@@ -210,6 +231,12 @@ class TestCmuxWorkspace:
             ({"workspace_id": ""}, "workspace_id"),
             ({"workspace_id": "ok", "cwd": 5}, "cwd"),
             ({"workspace_id": "ok", "provider_name": 5}, "provider_name"),
+            ({"workspace_id": "ok", "title": 5}, "title"),
+            ({"workspace_id": "ok", "state": 5}, "state"),
+            (
+                {"workspace_id": "ok", "has_terminal_surface": "0"},
+                "has_terminal_surface",
+            ),
         ],
     )
     def test_from_wire_malformed(self, payload, fragment: str) -> None:

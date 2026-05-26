@@ -397,6 +397,36 @@ class TestUnixSocketTransport:
             server.close()
             await server.wait_closed()
 
+    async def test_event_before_response_is_ignored(self, short_socket: Path) -> None:
+        socket_path = short_socket
+
+        async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+            line = await reader.readline()
+            request = json.loads(line.decode("utf-8"))
+            writer.write(
+                b'{"method":"workspace_state","params":{"workspace_id":"ws-1"}}\n'
+            )
+            writer.write(
+                (
+                    json.dumps({"id": request["id"], "result": {"ok": True}}) + "\n"
+                ).encode("utf-8")
+            )
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+
+        server = await asyncio.start_unix_server(handle, path=str(socket_path))
+        try:
+            transport = UnixSocketTransport(str(socket_path))
+            response = await transport.request(
+                CmuxRequest(id=7, method=METHOD_HELLO), timeout=1.0
+            )
+            assert response.id == 7
+            assert response.result == {"ok": True}
+        finally:
+            server.close()
+            await server.wait_closed()
+
     async def test_timeout_when_server_never_responds(self, short_socket: Path) -> None:
         socket_path = short_socket
         stop = asyncio.Event()

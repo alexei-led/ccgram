@@ -901,6 +901,25 @@ class TestWindowStateTerminalIdentity:
         store.set_terminal_identity("@1", backend="cmux", unit_id="ws-1")
         assert save_calls == []
 
+    def test_set_terminal_identity_persists_metadata(
+        self, store: WindowStateStore
+    ) -> None:
+        save_calls = store._save_calls  # type: ignore[attr-defined]
+        save_calls.clear()
+        store.set_terminal_identity(
+            "cmux:ws-1",
+            backend="cmux",
+            unit_id="ws-1",
+            cwd="/repo",
+            provider_name="codex",
+            window_name="workspace",
+        )
+        state = store.window_states["cmux:ws-1"]
+        assert state.cwd == "/repo"
+        assert state.provider_name == "codex"
+        assert state.window_name == "workspace"
+        assert len(save_calls) == 1
+
     def test_set_terminal_identity_rejects_unknown_backend(
         self, store: WindowStateStore
     ) -> None:

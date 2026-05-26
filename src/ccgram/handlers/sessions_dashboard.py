@@ -212,6 +212,9 @@ async def handle_sessions_kill(
     query: CallbackQuery, _user_id: int, window_id: str
 ) -> None:
     """First Kill tap — show confirmation prompt."""
+    if get_backend(window_id) != BACKEND_TMUX:
+        await safe_edit(query, "Only tmux sessions can be killed from ccgram.")
+        return
     view = view_window(window_id)
     if view and view.external:
         await safe_edit(query, "External sessions cannot be killed from ccgram.")
@@ -237,8 +240,12 @@ async def handle_sessions_kill(
 
 async def handle_sessions_kill_confirm(
     query: CallbackQuery, user_id: int, window_id: str, client: TelegramClient
-) -> None:
+) -> bool:
     """Second tap — kill the tmux window, unbind all users, refresh dashboard."""
+    if get_backend(window_id) != BACKEND_TMUX:
+        await safe_edit(query, "Only tmux sessions can be killed from ccgram.")
+        return False
+
     display = thread_router.get_display_name(window_id)
 
     w = await tmux_manager.find_window_by_id(window_id)
@@ -264,6 +271,7 @@ async def handle_sessions_kill_confirm(
     await safe_edit(
         query, f"\U0001f5d1 Killed '{display}'\n\n{text}", reply_markup=keyboard
     )
+    return True
 
 
 @register(
@@ -292,10 +300,10 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not user_owns_window(user.id, window_id):
             await query.answer("Not your session", show_alert=True)
             return
-        await handle_sessions_kill_confirm(
+        killed = await handle_sessions_kill_confirm(
             query, user.id, window_id, PTBTelegramClient(context.bot)
         )
-        await query.answer("Killed")
+        await query.answer("Killed" if killed else "Not killed")
     elif data.startswith(CB_SESSIONS_KILL):
         window_id = data[len(CB_SESSIONS_KILL) :]
         if not user_owns_window(user.id, window_id):

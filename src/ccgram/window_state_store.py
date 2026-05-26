@@ -385,22 +385,39 @@ class WindowStateStore:
         *,
         backend: str,
         unit_id: str,
+        cwd: str | None = None,
+        provider_name: str | None = None,
+        window_name: str | None = None,
     ) -> None:
-        """Persist the terminal backend identity for a window.
+        """Persist terminal backend identity plus backend-neutral metadata.
 
         ``backend`` must be one of ``TERMINAL_BACKENDS``; ``unit_id`` is
-        opaque to the store. No-op when both values already match.
+        opaque to the store. Optional metadata is persisted in the same write so
+        a newly-bound non-tmux row has the same query/view data as a tmux row.
         """
         if backend not in TERMINAL_BACKENDS:
             raise ValueError(f"Invalid terminal backend: {backend!r}")
         if not unit_id:
             raise ValueError("terminal unit_id must be a non-empty string")
         state = self.get_window_state(window_id)
-        if state.terminal_backend == backend and state.terminal_unit_id == unit_id:
-            return
-        state.terminal_backend = backend
-        state.terminal_unit_id = unit_id
-        self._schedule_save()
+        changed = False
+        if state.terminal_backend != backend:
+            state.terminal_backend = backend
+            changed = True
+        if state.terminal_unit_id != unit_id:
+            state.terminal_unit_id = unit_id
+            changed = True
+        if cwd is not None and state.cwd != cwd:
+            state.cwd = cwd
+            changed = True
+        if provider_name is not None and state.provider_name != provider_name:
+            state.provider_name = provider_name
+            changed = True
+        if window_name is not None and state.window_name != window_name:
+            state.window_name = window_name
+            changed = True
+        if changed:
+            self._schedule_save()
 
     def set_provider_manual_override(self, window_id: str, *, value: bool) -> None:
         """Mark or clear the provider manual-override flag. No-op when unchanged."""

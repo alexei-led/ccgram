@@ -96,13 +96,28 @@ def get_unit_id(window_id: str) -> str:
     return window_id if backend == TERMINAL_BACKEND_TMUX else ""
 
 
-def set_terminal_identity(window_id: str, *, backend: str, unit_id: str) -> None:
-    """Persist the terminal backend identity for a window.
+def set_terminal_identity(
+    window_id: str,
+    *,
+    backend: str,
+    unit_id: str,
+    cwd: str | None = None,
+    provider_name: str | None = None,
+    window_name: str | None = None,
+) -> None:
+    """Persist terminal backend identity plus backend-neutral metadata.
 
     Raises ``ValueError`` on unknown backend or blank unit id. No-op
-    when both values already match the persisted state.
+    when all supplied values already match the persisted state.
     """
-    window_store.set_terminal_identity(window_id, backend=backend, unit_id=unit_id)
+    window_store.set_terminal_identity(
+        window_id,
+        backend=backend,
+        unit_id=unit_id,
+        cwd=cwd,
+        provider_name=provider_name,
+        window_name=window_name,
+    )
 
 
 __all__ = [

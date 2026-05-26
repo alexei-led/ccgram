@@ -202,6 +202,24 @@ def _parse_result(result_payload: Any, request_id: int) -> dict[str, Any]:
     return dict(result_payload)
 
 
+def _optional_bool(payload: dict[str, Any], key: str, default: bool) -> bool:
+    if key not in payload:
+        return default
+    value = payload[key]
+    if not isinstance(value, bool):
+        raise CmuxProtocolError(f"{key} must be a boolean")
+    return value
+
+
+def _optional_str(payload: dict[str, Any], key: str, default: str) -> str:
+    if key not in payload:
+        return default
+    value = payload[key]
+    if not isinstance(value, str):
+        raise CmuxProtocolError(f"{key} must be a string")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class CmuxEvent:
     """Asynchronous event frame (no ``id``)."""
@@ -248,12 +266,14 @@ class CmuxHelloResult:
         return cls(
             protocol_version=protocol,
             sidecar_version=sidecar,
-            supports_create=bool(result.get("supports_create", False)),
-            supports_capture=bool(result.get("supports_capture", True)),
-            supports_send_text=bool(result.get("supports_send_text", True)),
-            supports_send_key=bool(result.get("supports_send_key", True)),
-            supports_close=bool(result.get("supports_close", False)),
-            supports_event_stream=bool(result.get("supports_event_stream", False)),
+            supports_create=_optional_bool(result, "supports_create", False),
+            supports_capture=_optional_bool(result, "supports_capture", True),
+            supports_send_text=_optional_bool(result, "supports_send_text", True),
+            supports_send_key=_optional_bool(result, "supports_send_key", True),
+            supports_close=_optional_bool(result, "supports_close", False),
+            supports_event_stream=_optional_bool(
+                result, "supports_event_stream", False
+            ),
         )
 
 
@@ -283,11 +303,11 @@ class CmuxWorkspace:
             raise CmuxProtocolError("workspace provider_name must be a string when set")
         return cls(
             workspace_id=workspace_id,
-            title=str(payload.get("title", "")),
+            title=_optional_str(payload, "title", ""),
             cwd=cwd,
             provider_name=provider_name,
-            state=str(payload.get("state", "unknown")),
-            has_terminal_surface=bool(payload.get("has_terminal_surface", True)),
+            state=_optional_str(payload, "state", "unknown"),
+            has_terminal_surface=_optional_bool(payload, "has_terminal_surface", True),
         )
 
 
