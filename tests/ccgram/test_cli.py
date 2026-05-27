@@ -47,6 +47,8 @@ class TestCliCommands:
         assert result.exit_code == 0
         assert "--verbose" in result.output
         assert "--config-dir" in result.output
+        assert "--cmux" in result.output
+        assert "--terminal-backend" in result.output
 
     def test_hook_help(self, runner):
         result = runner.invoke(cli, ["hook", "--help"])
@@ -140,6 +142,8 @@ class TestApplyArgsToEnv:
             instance_name="n",
             autoclose_done=10,
             autoclose_dead=5,
+            cmux=True,
+            terminal_backend="cmux",
         )
 
         assert os.environ["ALLOWED_USERS"] == "1,2"
@@ -149,6 +153,8 @@ class TestApplyArgsToEnv:
         assert os.environ["CCGRAM_INSTANCE_NAME"] == "n"
         assert os.environ["AUTOCLOSE_DONE_MINUTES"] == "10"
         assert os.environ["AUTOCLOSE_DEAD_MINUTES"] == "5"
+        assert os.environ["CCGRAM_CMUX_ENABLED"] == "True"
+        assert os.environ["CCGRAM_TERMINAL_BACKEND"] == "cmux"
 
     def test_autoclose_zero_accepted(self):
         apply_args_to_env(autoclose_done=0, autoclose_dead=0)

@@ -59,12 +59,7 @@ def _unit(terminal_id: str, **overrides: Any) -> TerminalUnit:
 
 
 def _enabled_config() -> TerminalBackendConfig:
-    from pathlib import Path
-
-    return TerminalBackendConfig(
-        cmux_enabled=True,
-        cmux_sidecar_socket=Path("/tmp/cmux-sidecar.sock"),
-    )
+    return TerminalBackendConfig(cmux_enabled=True)
 
 
 def _disabled_config() -> TerminalBackendConfig:
@@ -135,7 +130,7 @@ class TestBuildCmuxPicker:
 
     def test_empty_units_keeps_refresh_and_cancel_only(self) -> None:
         text, keyboard = build_cmux_picker([])
-        assert "No terminal sessions" in text
+        assert "No terminal surfaces" in text
         callbacks = [
             btn.callback_data
             for row in keyboard.inline_keyboard
@@ -228,7 +223,7 @@ class TestCmuxCommandSidecarUnavailable:
             await cmux_command(update, context)
 
         body = mock_reply.call_args[0][1]
-        assert "cmux sidecar error" in body.lower()
+        assert "cmux error" in body.lower()
 
 
 class TestCmuxCommandHappyPath:

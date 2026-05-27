@@ -3,7 +3,7 @@ or ``CCGRAM_CMUX_*`` env vars.
 
 Mirrors :mod:`tests.ccgram.test_window_state_access_audit`. Reading
 these env names anywhere outside :mod:`ccgram.terminal_backends.config`
-(and the future bootstrap glue) would let cmux configuration sprawl
+(or the CLI flag-to-env bridge) would let cmux configuration sprawl
 through handlers, undoing the typed-projection boundary established in
 Task 3 of the cmux sidecar plan.
 
@@ -29,6 +29,7 @@ EXCLUDED_FILES: frozenset[Path] = frozenset(
     {
         SRC_ROOT / "terminal_backends" / "config.py",
         SRC_ROOT / "terminal_backends" / "__init__.py",
+        SRC_ROOT / "cli.py",
     }
 )
 

@@ -12,6 +12,37 @@ CCGram supports multiple agent CLI backends. Each Telegram topic can use a diffe
 | Pi          | `pi`        | Yes         | Yes    | Yes      | JSONL (v3) | Hook-runner Stop + transcript activity heuristic                      |
 | Shell       | `bash`      | No          | No     | No       | None       | Shell prompt idle detection                                           |
 
+## Terminal Backend: tmux or cmux
+
+Providers are agent CLIs. Terminal backends are where those CLIs run. tmux is the default backend. Native cmux support can bind existing cmux terminal surfaces to Telegram topics.
+
+To enable cmux:
+
+```bash
+ccgram --cmux --terminal-backend cmux
+```
+
+Equivalent `.env`:
+
+```ini
+CCGRAM_CMUX_ENABLED=true
+CCGRAM_TERMINAL_BACKEND=cmux
+```
+
+Then open a Telegram topic and run:
+
+```text
+/cmux
+```
+
+Pick the cmux terminal surface to bind. ccgram routes send/capture by the cmux surface ID. Workspace and pane names are labels only, so moving a surface between cmux panes or workspaces does not change the topic binding.
+
+Requirements:
+
+- `cmux` CLI is on `PATH` for the ccgram process.
+- cmux socket access allows the ccgram process to call `cmux rpc`.
+- Browser surfaces are ignored; only terminal surfaces are bindable.
+
 ## Choosing a Provider
 
 **From Telegram**: When you create a new topic and select a directory, then — if the directory is an eligible git repo — choose whether to use the current branch or create a new worktree on a new branch (non-git directories skip this step), a provider picker appears with Claude (default), Codex, Gemini, Pi, and Shell options. After provider selection, CCGram asks for session mode:

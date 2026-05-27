@@ -1,20 +1,15 @@
-"""CmuxBackend — ``TerminalBackend`` adapter over the sidecar JSON-RPC client.
+"""CmuxBackend — ``TerminalBackend`` adapter for cmux terminal surfaces.
 
 The adapter is intentionally thin: it maps :class:`TerminalUnitRef`
-values (``backend="cmux"``, ``unit_id=<terminal_id>``) onto sidecar
-calls and translates :class:`CmuxTerminalSession` results into the
-neutral :class:`TerminalUnit` projection. cmux workspaces stay metadata,
+values (``backend="cmux"``, ``unit_id=<surface_id>``) onto a cmux client
+and translates :class:`CmuxTerminalSession` results into the neutral
+:class:`TerminalUnit` projection. cmux workspaces and panes stay metadata,
 not routing identity.
-
-The backend is never registered automatically — bootstrap consults the
-typed :class:`TerminalBackendConfig` and registers a CmuxBackend only
-when ``cmux_active`` is true. Tests construct backends with an injected
-:class:`CmuxSidecarClient` (and a fake transport behind it).
 """
 
 from __future__ import annotations
 
-from typing import cast
+from typing import Protocol, cast
 
 from .base import (
     BACKEND_CMUX,
@@ -26,7 +21,6 @@ from .base import (
     TerminalUnitState,
     TerminalUnsupportedOperationError,
 )
-from .cmux_client import CmuxSidecarClient
 from .cmux_protocol import (
     PROTOCOL_VERSION,
     CmuxHelloResult,
@@ -35,16 +29,32 @@ from .cmux_protocol import (
 )
 
 
+class CmuxClient(Protocol):
+    """Client shape consumed by :class:`CmuxBackend`."""
+
+    def cached_hello(self) -> CmuxHelloResult | None: ...
+
+    async def hello(self) -> CmuxHelloResult: ...
+
+    async def list_terminal_sessions(self) -> list[CmuxTerminalSession]: ...
+
+    async def capture_screen(
+        self, terminal_id: str, *, with_ansi: bool = False
+    ) -> str: ...
+
+    async def send_text(
+        self, terminal_id: str, text: str, *, raw: bool = False
+    ) -> bool: ...
+
+    async def send_key(self, terminal_id: str, key: str) -> bool: ...
+
+    async def close_terminal_session(self, terminal_id: str) -> bool: ...
+
+
 class CmuxBackend(TerminalBackend):
-    """``TerminalBackend`` adapter delegating to :class:`CmuxSidecarClient`.
+    """``TerminalBackend`` adapter delegating to a cmux client."""
 
-    Capability flags are derived from the sidecar handshake the first
-    time :meth:`capabilities` is called within an async context. Until
-    a handshake is observed a conservative default is returned so the
-    router can still gate UI without forcing a network round-trip.
-    """
-
-    def __init__(self, client: CmuxSidecarClient) -> None:
+    def __init__(self, client: CmuxClient) -> None:
         self._client = client
 
     @property

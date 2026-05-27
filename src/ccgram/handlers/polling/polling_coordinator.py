@@ -72,9 +72,9 @@ async def status_poll_loop(bot: "Bot") -> None:
                 structlog.contextvars.clear_contextvars()
                 structlog.contextvars.bind_contextvars(window_id=wid)
                 # cmux-bound rows are owned by CmuxBackend, not by the
-                # tmux-shaped tick. Skipping them keeps a degraded
-                # sidecar from masquerading as a dead tmux window and
-                # tripping the unbind path.
+                # tmux-shaped tick. Skipping them keeps degraded cmux
+                # from masquerading as a dead tmux window and tripping
+                # the unbind path.
                 if get_backend(wid) != BACKEND_TMUX:
                     continue
                 try:

@@ -3,25 +3,26 @@
 Plain Markdown. Useful to humans, coding agents, and task runners. This plan
 covers the first execution horizon for the cmux sidecar design: backend-neutral
 identity, backend routing, a cmux sidecar client/protocol, and binding existing
-cmux workspaces with basic send/capture operations. It does not implement hook
-integration, mailbox delivery, Mini App cmux streaming, or cmux workspace
+cmux terminal surfaces with basic send/capture operations. It does not implement
+hook integration, mailbox delivery, Mini App cmux streaming, or cmux workspace
 creation; those belong in follow-up plans after this seam is proven.
 
 ## Overview
 
 ccgram currently routes Telegram topics to tmux window IDs and calls
 `tmux_manager` directly from many handlers. The approved target architecture adds
-cmux-native workspaces without replacing tmux by introducing a backend-neutral
-terminal unit model:
+cmux-native terminal surfaces without replacing tmux by introducing a
+backend-neutral terminal unit model:
 
 ```text
 Telegram topic -> TerminalUnitRef -> TmuxBackend | CmuxBackend -> sidecar
 ```
 
 This plan establishes the safety net and first vertical slice. Existing tmux
-behavior remains the default. cmux support is feature-flagged, workspace-level,
+behavior remains the default. cmux support is feature-flagged, surface-level,
 and sidecar-backed. The first user-visible cmux capability is binding an
-existing cmux workspace to a topic, sending text to it, and capturing its screen.
+existing cmux terminal surface to a topic, sending text to it, and capturing its
+screen. cmux workspaces remain grouping metadata; panes remain layout.
 
 ## Source artifact
 
@@ -53,7 +54,8 @@ Source design decisions used by this plan:
 - Keep one ccgram bot for tmux and cmux.
 - Introduce a sidecar process for cmux; do not scatter cmux calls through
   handlers.
-- Map one Telegram topic to one cmux workspace.
+- Map one Telegram topic to one cmux terminal surface/session, never to a
+  workspace or pane.
 - Do not fake tmux IDs for cmux.
 - Keep `WindowStateStore` as the persistence kernel and add terminal identity
   ports.
@@ -86,9 +88,9 @@ Supporting current-code evidence from the design:
   reading cmux env vars directly.
 - A cmux sidecar client/protocol exists with fake-sidecar contract tests for
   list, capture, send, errors, and capabilities.
-- A user can bind an existing cmux workspace to a Telegram topic when cmux is
-  enabled and sidecar capabilities are compatible.
-- Text send and screen capture for the bound cmux workspace route through
+- A user can bind an existing cmux terminal surface to a Telegram topic when
+  cmux is enabled and sidecar capabilities are compatible.
+- Text send and screen capture for the bound cmux terminal surface route through
   `CmuxBackend` and the sidecar client.
 - Sidecar unavailable/degraded states affect cmux topics only; tmux topics keep
   operating.
@@ -363,25 +365,27 @@ tests/ccgram/test_backend_config_access_audit.py` — 158 tests pass.
       unregistered by default; router still tmux-only. Public surface
       of `terminal_backends/__init__.py` unchanged.)
 
-### Task 4: Bind existing cmux workspace and route basic send/capture
+### Task 4: Bind existing cmux terminal surface and route basic send/capture
 
 Justification: addresses design modules `Topic binding/router`, `CmuxBackend`,
 `Terminal operation services`, and `Terminal backend config`; contracts
 `Telegram topic/router -> terminal backend router` and `Terminal operation
 services -> CmuxBackend -> sidecar`; and decision "map one Telegram topic to one
-cmux workspace". This is the first user-visible cmux vertical slice.
+cmux terminal surface/session". This is the first user-visible cmux vertical
+slice.
 
 Files:
 
 - `src/ccgram/handlers/topics/cmux_callbacks.py` — new callback handlers for
-  listing/selecting existing cmux workspaces, if colocating with topic handlers
-  matches current package style.
+  listing/selecting existing cmux terminal surfaces, grouped by workspace/pane if
+  useful for display.
 - `src/ccgram/handlers/topics/new_command.py` or
   `src/ccgram/handlers/topics/directory_browser.py` — add an opt-in entry point
-  to bind existing cmux workspace when cmux backend is enabled.
+  to bind an existing cmux terminal surface when cmux backend is enabled.
 - `src/ccgram/handlers/topics/window_callbacks.py` or topic binding owner —
-  persist `TerminalUnitRef(backend="cmux", unit_id=<workspace_id>)` for selected
-  workspace.
+  persist `TerminalUnitRef(backend="cmux", unit_id=<surface_or_terminal_id>)`
+  for the selected terminal surface. Store workspace and pane IDs only as
+  metadata.
 - `src/ccgram/handlers/sessions_dashboard.py` — display mixed tmux/cmux units
   with backend labels and degraded sidecar state.
 - `src/ccgram/handlers/registry.py` — register cmux callback handlers if needed.
@@ -399,8 +403,8 @@ Files:
 Preconditions: Task 3 passed; fake sidecar can list, capture, and send; cmux is
 disabled by default and enabled only in tests/config.
 
-Postconditions: with cmux enabled and fake sidecar healthy, a workspace can be
-bound to a topic, appears in sessions dashboard, accepts text through
+Postconditions: with cmux enabled and fake sidecar healthy, a terminal surface
+can be bound to a topic, appears in sessions dashboard, accepts text through
 `TerminalBackend`, and returns screen capture through the same operation service.
 When sidecar is down, the topic shows cmux unavailable without affecting tmux
 sessions.
@@ -424,14 +428,15 @@ Verification commands:
 Manual checks:
 
 - With a real cmux app available, manually verify command compatibility for
-  `cmux tree --all --json`, `cmux read-screen --workspace <id>`, and the chosen
-  send command. Record incompatibilities as follow-up work, not silent test
-  assumptions.
+  `cmux identify --json`, `cmux list-surfaces --json`, `cmux send-surface`,
+  surface-specific capture/read-screen support, and the chosen send command.
+  Record incompatibilities as follow-up work, not silent test assumptions.
 - Confirm Telegram copy distinguishes terminal backend from agent provider in
   labels and errors.
 
-- [x] Add cmux workspace bind callback flow behind backend config flag.
-- [x] Persist selected cmux workspace through terminal identity port.
+- [x] Add cmux terminal-surface bind callback flow behind backend config flag.
+- [x] Persist selected cmux terminal surface through terminal identity port;
+      workspace/pane IDs are metadata only.
 - [x] Update sessions dashboard to display mixed backends and cmux unavailable
       state.
 - [x] Add cmux fake-backend coverage for send and capture through existing
@@ -440,12 +445,12 @@ Manual checks:
 - [x] Run the task verification commands and record the result.
       (`make lint`, `make typecheck`, `make test`, `make test-integration`
       — all green; targeted `uv run pytest tests/ccgram/terminal_backends
-  tests/ccgram/window_state_ports tests/ccgram/handlers/topics
-  tests/ccgram/handlers/test_sessions_dashboard.py
-  tests/ccgram/test_terminal_operations.py
-  tests/ccgram/test_window_state_access_audit.py
-  tests/ccgram/test_query_layer_only_for_handlers.py
-  tests/ccgram/test_window_store_import_boundary.py` — 1032 pass.
+    tests/ccgram/window_state_ports tests/ccgram/handlers/topics
+    tests/ccgram/handlers/test_sessions_dashboard.py
+    tests/ccgram/test_terminal_operations.py
+    tests/ccgram/test_window_state_access_audit.py
+    tests/ccgram/test_query_layer_only_for_handlers.py
+    tests/ccgram/test_window_store_import_boundary.py` — 1032 pass.
       `make test` reports 5472 passed, 28 skipped; integration 307 passed.)
 - [x] Run GitNexus detect-changes or the fallback commands and record the scoped
       blast radius. (Fallback `git diff --name-only` used; GitNexus not
@@ -471,10 +476,10 @@ Manual checks:
 ### Task 5: Final verification and documentation
 
 Justification: proves the plan's success criteria and source design handoff:
-backend-neutral identity, backend routing, sidecar contract, cmux workspace bind
-MVP, rollback safety, and architecture-fitness checks. This task also records
-follow-up scope for hook/session events, mailbox delivery, Mini App cmux, and
-cmux workspace creation.
+backend-neutral identity, backend routing, sidecar contract, cmux terminal
+surface bind MVP, rollback safety, and architecture-fitness checks. This task
+also records follow-up scope for hook/session events, mailbox delivery, Mini App
+cmux, and cmux workspace/surface creation.
 
 Files:
 
@@ -585,8 +590,8 @@ Manual checks:
       `tmux_manager` callers; `WindowStateStore` raw access surface
       unchanged outside the new terminal identity port.
 - [x] Record follow-up plan targets: hook/session events, mailbox delivery,
-      Mini App cmux streaming, cmux workspace creation, and real sidecar process
-      supervision. See "Follow-up plan targets" section below.
+      Mini App cmux streaming, cmux workspace/surface creation, and real
+      sidecar process supervision. See "Follow-up plan targets" section below.
 - [x] Record scoped architecture-review follow-up and source refs to re-check.
       See "Re-review" section below — it already enumerates the six
       review questions and the source design refs that must be
@@ -627,10 +632,10 @@ services`, mailbox/broker section, `CCGRAM_WINDOW_ID` injection.
   `TerminalUnitRef` instead of tmux pane IDs. Source modules: Mini App
   surfaces, `Terminal backend contract`, `Terminal operation services
 -> CmuxBackend -> sidecar`.
-- cmux workspace creation. This horizon only binds existing workspaces.
-  The next plan adds a `cmux create` flow with directory/provider
-  selection, sidecar-mediated workspace creation, and rollback on
-  failure. Source modules: `Topic binding/router`, `CmuxBackend`,
+- cmux workspace/surface creation. This horizon only binds existing terminal
+  surfaces. The next plan adds a `cmux create` flow with directory/provider
+  selection, sidecar-mediated workspace and terminal-surface creation, and
+  rollback on failure. Source modules: `Topic binding/router`, `CmuxBackend`,
   `Terminal backend config`.
 - Continued `tmux_manager` migration. `TMUX_MANAGER_ALLOW_LIST` still
   has 36 entries. Sequence handler-by-handler migrations onto
@@ -651,8 +656,8 @@ services`, `Backend router`.
 - cmux sidecar client/protocol has contract tests for capabilities, list,
   capture, send, timeout, unavailable, incompatible version, and malformed
   response.
-- Existing cmux workspace bind flow works against a fake sidecar and is guarded
-  by disabled/unavailable/stale callback tests.
+- Existing cmux terminal-surface bind flow works against a fake sidecar and is
+  guarded by disabled/unavailable/stale callback tests.
 - Direct `tmux_manager` use is removed from the migrated send/capture flow and
   protected by architecture-fitness tests.
 - No handler imports cmux protocol/client modules directly.

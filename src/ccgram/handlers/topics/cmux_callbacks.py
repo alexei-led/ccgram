@@ -1,26 +1,24 @@
-"""``/cmux`` terminal picker — bind a cmux terminal session to a topic.
+"""``/cmux`` terminal picker — bind a cmux terminal surface to a topic.
 
-The ``/cmux`` command queries the cmux sidecar for terminal tabs/panels,
-renders an inline picker, and on selection persists the binding through
-the terminal-identity feature port so subsequent send/capture operations
-route via ``terminal_operations`` → ``CmuxBackend`` → sidecar.
+The ``/cmux`` command queries native cmux for terminal surfaces, renders an
+inline picker, and on selection persists the binding through the
+terminal-identity feature port so subsequent send/capture operations route via
+``terminal_operations`` → ``CmuxBackend`` → cmux RPC.
 
-Persistence shape: the bound row uses ``window_id = "cmux:<terminal_id>"``
-so ``thread_router`` continues to treat the key as opaque and the
-identity matches ``TerminalUnitRef.display_id``. cmux workspace data is
-metadata for display only; it is never the routing key.
+Persistence shape: the bound row uses ``window_id = "cmux:<surface_id>"`` so
+``thread_router`` continues to treat the key as opaque and the identity matches
+``TerminalUnitRef.display_id``. cmux workspace data is metadata for display only;
+it is never the routing key.
 
 Failure modes are scoped to cmux topics only:
 
 * cmux disabled by config → reply with setup hint.
-* cmux backend not registered with the router (sidecar not wired) →
-  same hint, no router lookup attempted.
-* sidecar unreachable / handshake fails → user-safe error text, no
-  partial bind state left behind.
+* cmux backend not registered with the router → same hint, no router lookup.
+* cmux unavailable / RPC fails → user-safe error text, no partial bind state.
 * stale picker (terminal list changed between render and tap) → alert.
 
-The module is import-light: all backend/router imports are lazy so
-unrelated code paths never pay the cost of touching the cmux client.
+The module is import-light: all backend/router imports are lazy so unrelated
+code paths never pay the cost of touching the cmux client.
 """
 
 from __future__ import annotations
@@ -62,12 +60,12 @@ logger = structlog.get_logger()
 CMUX_TERMINAL_SESSIONS_KEY = "cmux_terminal_session_units"
 _CMUX_DISABLED_TEXT = (
     "cmux backend is disabled.\n\n"
-    "Set CCGRAM_CMUX_ENABLED=true and CCGRAM_CMUX_SIDECAR_SOCKET to enable."
+    "Start ccgram with --cmux or set CCGRAM_CMUX_ENABLED=true."
 )
 _CMUX_NOT_REGISTERED_TEXT = (
     "cmux backend is not wired in this bot instance.\n\nRestart with cmux configured."
 )
-_CMUX_NO_TERMINAL_SESSIONS_TEXT = "cmux sidecar reports no terminal sessions yet."
+_CMUX_NO_TERMINAL_SESSIONS_TEXT = "cmux reports no terminal surfaces yet."
 
 
 def _qualified_window_id(terminal_id: str) -> str:
@@ -113,7 +111,7 @@ async def _list_cmux_terminal_sessions() -> tuple[list[TerminalUnit], str | None
         units = await backend.list_units()
     except TerminalBackendError as exc:
         logger.debug("cmux list_units failed", code=exc.code, message=str(exc))
-        return [], f"cmux sidecar error: {exc.code}"
+        return [], f"cmux error: {exc.code}"
     return units, None
 
 
@@ -145,11 +143,11 @@ def build_cmux_picker(
     Cancel and refresh share the bottom row regardless of count. Bind callbacks
     include a picker token so old messages cannot bind against a newer list.
     """
-    lines: list[str] = ["*Bind cmux Terminal Session*\n"]
+    lines: list[str] = ["*Bind cmux Terminal Surface*\n"]
     if not units:
-        lines.append("_No terminal sessions reported by the cmux sidecar._")
+        lines.append("_No terminal surfaces reported by cmux._")
     else:
-        lines.append("Pick an existing cmux terminal tab/panel to bind here.")
+        lines.append("Pick an existing cmux terminal surface to bind here.")
         for unit in units:
             cwd_display = f" — `{unit.cwd}`" if unit.cwd else ""
             workspace = _workspace_label_for_unit(unit)

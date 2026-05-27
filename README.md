@@ -66,6 +66,14 @@ graph LR
 
 Each Telegram Forum topic binds to one tmux window. Messages you type are sent as keystrokes to the pane; responses are parsed from session transcripts and delivered back as Telegram messages.
 
+Native cmux is opt-in for existing cmux terminal surfaces:
+
+```bash
+ccgram --cmux --terminal-backend cmux
+```
+
+Then run `/cmux` inside a Telegram topic and pick the cmux terminal surface to bind. ccgram routes by cmux surface ID; workspace and pane names are display labels only.
+
 ---
 
 ## Features
@@ -298,7 +306,7 @@ Tokens are HMAC-signed with the bot token, scoped to a single window + user, and
 
 ### Reverse-proxy snippet (caddy)
 
-```
+```caddy
 ccgram.example.com {
   reverse_proxy 127.0.0.1:8765
 }

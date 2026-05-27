@@ -13,8 +13,9 @@ artifact.
 
 ccgram currently treats tmux as the source of terminal truth: one Telegram Forum
 topic binds to one tmux window, and that window hosts one agent session. The new
-requirement is to let the same Telegram bot control native cmux workspaces with
-comparable integration, without forcing cmux to run tmux internally.
+requirement is to let the same Telegram bot control native cmux terminal
+surfaces inside cmux workspaces with comparable integration, without forcing
+cmux to run tmux internally.
 
 The chosen target keeps one user-facing ccgram bot and introduces terminal
 backend routing behind it:
@@ -34,10 +35,13 @@ existing tmux sessions keep using the current implementation while cmux sessions
 are added one vertical slice at a time behind the same product surface.
 
 The design intentionally maps one Telegram topic to one cmux terminal session:
-the terminal tab/panel, not the workspace. cmux workspaces are mutable groupings
-of tabs and stay display metadata. This preserves the ccgram invariant that each
-topic has one primary agent session, even when cmux tabs move between
-workspaces.
+the terminal surface/panel, not the workspace. cmux workspaces are mutable
+sidebar groups; panes are split regions; surfaces are tabs inside a pane. A
+workspace can contain multiple panes, and each pane can contain multiple terminal
+surfaces. Each terminal surface is independently routable and may still run tmux
+inside it as an ordinary nested terminal program. This preserves the ccgram
+invariant that each topic has one primary agent session, even when cmux surfaces
+move between workspaces.
 
 The design uses Balanced Coupling: high-strength relationships stay close
 inside a backend adapter or sidecar; higher-distance relationships use explicit
@@ -79,20 +83,23 @@ the code worse. Diagrams are already too agreeable.
     tmux pane capture APIs.
   - Handler search results for `tmux_manager` usage in sessions dashboard,
     topic creation, live/screenshot/toolbar/polling/recovery flows.
-- External cmux repo/docs checked from a shallow clone of
-  `manaflow-ai/cmux`:
-  - `README.md`: cmux purpose, CLI/socket API, notifications, session restore,
-    and native workspace/surface vocabulary.
-  - `docs/cli-contract.md`: commands including `events`, `tree`, `read-screen`,
-    `send`, `send-key`, `notify`, `set-status`, and `surface resume`.
-  - `docs/events.md`: reconnectable event stream, categories, replay contract,
-    and snapshot commands.
-  - `docs/agent-hooks.md`: agent hook support and Pi extension behavior.
-  - `docs/dock.md`: Dock controls as an optional local UI integration.
-  - `Packages/CmuxExtensionKit/README.md` and sources: prototype sidebar API.
-    Current cmux source has `CmuxExtensionSidebarSelection.providers` returning
-    `[]`, so external sidebar providers are not a viable first integration
-    target.
+- External cmux docs checked:
+  - `https://cmux.com/docs/concepts`: cmux hierarchy is Window -> Workspace
+    (sidebar entry) -> Pane (split region) -> Surface (tab within pane) ->
+    Panel (terminal or browser content). The UI often calls workspaces "tabs",
+    while the socket/API uses `workspace`; individual terminal identity belongs
+    at surface/panel level, exposed through `CMUX_SURFACE_ID`.
+  - `https://cmux.com/docs/api`: CLI/socket exposes workspace commands,
+    split/surface commands, `list-surfaces`, `focus-surface`, `send-surface`,
+    and `identify --json`; `CMUX_WORKSPACE_ID` and `CMUX_SURFACE_ID` are
+    auto-set in terminals.
+  - `https://cmux.com/docs/session-restore`: cmux restores layout and metadata,
+    supports surface resume commands including tmux attach commands, and does
+    not checkpoint arbitrary live process state.
+  - Historical shallow clone of `manaflow-ai/cmux`: README, CLI/socket API,
+    notifications, session restore, events, agent hooks, Dock controls, and
+    prototype extension/sidebar APIs. Current extension/sidebar provider loading
+    was not viable as a first integration target at the time of review.
 - External research checked through Perplexity:
   - For local control-plane tools, one product surface with pluggable backends
     usually improves UX and operability; separate backend processes are useful
@@ -143,9 +150,9 @@ Known runtime constraints:
   topics, but it must not stop tmux topics, Telegram polling, or mailbox access.
 - Sidecar communication must be local-only by default: Unix socket, current user
   permissions, no network listener unless explicitly configured later.
-- cmux workspaces may contain browser/file/markdown surfaces. MVP operations
-  expose terminal tabs/panels as bindable units and keep workspace identity as
-  metadata only.
+- cmux workspaces may contain multiple panes, and each pane may contain multiple
+  surfaces. MVP operations expose terminal surfaces/panels as bindable units and
+  keep workspace and pane identity as metadata only.
 
 Non-goals for this design:
 
@@ -160,8 +167,8 @@ Non-goals for this design:
 
 Assumptions accepted for this design:
 
-- The first cmux unit granularity is terminal session: surface/panel terminal,
-  not workspace.
+- The first cmux unit granularity is terminal session: terminal surface/panel,
+  not workspace or pane.
 - Small ccgram source changes are allowed to add the backend seam.
 - Existing tmux behavior must remain default and backward-compatible.
 - The first implementation should prioritize binding existing cmux terminal
@@ -412,8 +419,8 @@ Rules:
 - `unit_id` is backend-local and not parsed by handlers.
 - Existing tmux bindings with only `window_id` load as `backend="tmux"` and
   `unit_id=<window_id>`.
-- cmux unit IDs use cmux terminal-session IDs, never a fake tmux window ID and
-  never workspace IDs.
+- cmux unit IDs use cmux terminal-session/surface IDs, never a fake tmux window
+  ID and never workspace or pane IDs.
 
 ### TerminalUnit
 
@@ -971,14 +978,19 @@ Rollback rules:
     simpler for all required operations.
 
 - Decision: map one Telegram topic to one cmux terminal session.
-  - Chosen because: a cmux workspace is a mutable grouping of tabs; the terminal
-    tab/panel is the controlled session. Topic routing must follow the terminal
-    session when it moves between workspaces.
-  - Alternatives considered: topic per cmux workspace; topic per cmux app window.
+  - Chosen because: a cmux workspace is a mutable sidebar grouping, a cmux pane
+    is layout, and a cmux surface/panel is the controlled terminal. A single
+    workspace can show multiple terminal panes and multiple terminal surfaces;
+    routing at workspace level would make `/send`, capture, toolbar input, and
+    status ambiguous.
+  - Alternatives considered: topic per cmux workspace; topic per cmux pane;
+    topic per cmux app window.
   - Trade-offs: terminal-session mapping creates more rows when users open many
-    tabs, but avoids command routing ambiguity and workspace history pollution.
-  - Revisit when: cmux changes workspace semantics so workspaces become durable
-    terminal-session identity, not mutable grouping.
+    terminal surfaces, but avoids command routing ambiguity and workspace history
+    pollution. Nested tmux inside a cmux terminal remains a normal terminal
+    program handled by existing tmux-aware behavior where applicable.
+  - Revisit when: cmux changes workspace or pane semantics so they become
+    durable single-terminal identity, not mutable grouping/layout.
 
 - Decision: do not fake tmux IDs for cmux.
   - Chosen because: backend identity is core domain language. A fake `@N` would

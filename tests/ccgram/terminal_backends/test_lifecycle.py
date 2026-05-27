@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -24,10 +23,7 @@ def _isolated_router():
 
 
 def _enabled() -> TerminalBackendConfig:
-    return TerminalBackendConfig(
-        cmux_enabled=True,
-        cmux_sidecar_socket=Path("/tmp/cmux-sidecar.sock"),
-    )
+    return TerminalBackendConfig(cmux_enabled=True)
 
 
 def _disabled() -> TerminalBackendConfig:

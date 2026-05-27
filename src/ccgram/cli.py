@@ -77,6 +77,8 @@ _FLAG_TO_ENV: list[tuple[str, str]] = [
     ("ack_reaction", "CCGRAM_ACK_REACTION"),
     ("hide_tool_calls", "CCGRAM_HIDE_TOOL_CALLS"),
     ("status_mode", "CCGRAM_STATUS_MODE"),
+    ("cmux", "CCGRAM_CMUX_ENABLED"),
+    ("terminal_backend", "CCGRAM_TERMINAL_BACKEND"),
 ]
 
 
@@ -213,6 +215,20 @@ def apply_args_to_env(**kwargs: object) -> None:
     default=None,
     envvar="CCGRAM_STATUS_MODE",
     help="Topic emoji color scheme: 'system' (green=active) or 'user' (green=ready for me).",
+)
+@click.option(
+    "--cmux",
+    is_flag=True,
+    default=None,
+    envvar="CCGRAM_CMUX_ENABLED",
+    help="Enable native cmux terminal backend.",
+)
+@click.option(
+    "--terminal-backend",
+    type=click.Choice(["tmux", "cmux"], case_sensitive=False),
+    default=None,
+    envvar="CCGRAM_TERMINAL_BACKEND",
+    help="Default terminal backend for new bindings.",
 )
 def run_cmd(**kwargs: object) -> None:
     """Start the bot with optional overrides."""

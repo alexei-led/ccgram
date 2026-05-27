@@ -150,7 +150,7 @@ def register_terminal_backends() -> None:
     cmux is opt-in and gated on the typed
     :class:`TerminalBackendConfig`. Bootstrap calls this once after
     callbacks are wired so cmux topics can route send/capture through
-    the live sidecar. When cmux is disabled the call is a no-op.
+    native cmux RPC. When cmux is disabled the call is a no-op.
     """
     # Lazy: terminal_backends.config reads env at call time, and
     # terminal_backends.lifecycle imports the cmux client which
@@ -164,9 +164,7 @@ def register_terminal_backends() -> None:
     backend_config = load_terminal_backend_config(config_dir=config.config_dir)
     backend = register_cmux_backend_if_enabled(backend_config)
     if backend is not None:
-        logger.info(
-            "cmux backend registered (socket=%s)", backend_config.cmux_sidecar_socket
-        )
+        logger.info("cmux backend registered")
 
 
 def wire_runtime_callbacks() -> None:

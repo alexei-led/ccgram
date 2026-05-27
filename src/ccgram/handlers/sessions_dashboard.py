@@ -6,9 +6,9 @@ Screenshot, Kill with two-step confirmation), cwd details, and
 refresh/new-session actions.
 
 Backend-neutral: tmux rows resolve aliveness via tmux_manager.list_windows,
-cmux rows resolve terminal-session aliveness via CmuxBackend.list_units. When
-cmux is configured but the sidecar is unreachable, cmux rows are tagged
-``cmux unavailable`` while tmux rows continue rendering normally.
+cmux rows resolve terminal-surface aliveness via CmuxBackend.list_units. When
+cmux is enabled but unavailable, cmux rows are tagged ``cmux unavailable`` while
+tmux rows continue rendering normally.
 
 Key functions:
   - sessions_command(): /sessions command handler
@@ -66,8 +66,8 @@ async def _resolve_cmux_live_ids() -> tuple[set[str], bool]:
     When the cmux backend is not registered with the router the second
     value is ``False`` and the set is empty so cmux rows render as
     "cmux unavailable" instead of "alive". A registered backend that
-    raises ``TerminalBackendError`` (sidecar down) is also reported as
-    unreachable; tmux rows are unaffected either way.
+    raises ``TerminalBackendError`` is also reported as unreachable; tmux rows
+    are unaffected either way.
     """
     router = get_router()
     if BACKEND_CMUX not in router.known():
@@ -96,7 +96,7 @@ def _render_binding_row(
         unit_id = get_unit_id(window_id)
         alive = cmux_reachable and unit_id in cmux_live_unit_ids
         if not cmux_reachable:
-            status = "⚠"  # warning sign — sidecar unavailable
+            status = "⚠"  # warning sign — cmux unavailable
             backend_tag = " [cmux unavailable]"
         else:
             status = "\U0001f7e2" if alive else "⚫"
