@@ -1,20 +1,10 @@
-"""cmux sidecar JSON-RPC protocol — request/response DTOs and error codes.
+"""cmux sidecar JSON-RPC protocol — request/response DTOs and errors.
 
-The sidecar uses newline-delimited JSON over a local Unix socket. Each
-request carries a stable ``method`` name and an ``id``; responses echo
-the ``id`` and either include a ``result`` payload or an ``error``
-object with one of :data:`SIDECAR_ERROR_CODES`. The codes map cleanly
-onto :data:`ccgram.terminal_backends.base.TerminalBackendErrorCode` —
-the mapping in :func:`map_sidecar_error_to_terminal` is the only
-boundary that widens that taxonomy.
-
-Event frames (``method`` set, ``id`` absent) describe asynchronous
-state changes. They are parsed for future streaming work; the MVP
-client only logs unexpected frames.
-
-DTOs are frozen dataclasses with explicit ``from_wire``/``to_wire``
-adapters so the wire schema remains the source of truth and tests can
-assert it without depending on dataclass internals.
+The sidecar speaks newline-delimited JSON over a local Unix socket.
+Protocol v2 treats a cmux terminal tab/panel as the bindable unit;
+workspaces are metadata only, because cmux tabs can move between them.
+DTOs use explicit ``from_wire``/``to_wire`` adapters so tests assert the
+wire schema instead of dataclass internals.
 """
 
 from __future__ import annotations
@@ -24,7 +14,7 @@ from typing import Any, Final, Literal, get_args
 
 from .base import TerminalBackendErrorCode
 
-PROTOCOL_VERSION: Final[str] = "1"
+PROTOCOL_VERSION: Final[str] = "2"
 
 SidecarErrorCode = Literal[
     "unavailable",
@@ -41,28 +31,28 @@ SidecarErrorCode = Literal[
 SIDECAR_ERROR_CODES: Final[frozenset[str]] = frozenset(get_args(SidecarErrorCode))
 
 METHOD_HELLO: Final[str] = "hello"
-METHOD_LIST_WORKSPACES: Final[str] = "list_workspaces"
+METHOD_LIST_TERMINAL_SESSIONS: Final[str] = "list_terminal_sessions"
 METHOD_CAPTURE_SCREEN: Final[str] = "capture_screen"
 METHOD_SEND_TEXT: Final[str] = "send_text"
 METHOD_SEND_KEY: Final[str] = "send_key"
-METHOD_CLOSE_WORKSPACE: Final[str] = "close_workspace"
+METHOD_CLOSE_TERMINAL_SESSION: Final[str] = "close_terminal_session"
 
 KNOWN_METHODS: Final[frozenset[str]] = frozenset(
     {
         METHOD_HELLO,
-        METHOD_LIST_WORKSPACES,
+        METHOD_LIST_TERMINAL_SESSIONS,
         METHOD_CAPTURE_SCREEN,
         METHOD_SEND_TEXT,
         METHOD_SEND_KEY,
-        METHOD_CLOSE_WORKSPACE,
+        METHOD_CLOSE_TERMINAL_SESSION,
     }
 )
 
-EVENT_WORKSPACE_STATE: Final[str] = "workspace_state"
-EVENT_WORKSPACE_CLOSED: Final[str] = "workspace_closed"
+EVENT_TERMINAL_SESSION_STATE: Final[str] = "terminal_session_state"
+EVENT_TERMINAL_SESSION_CLOSED: Final[str] = "terminal_session_closed"
 
 KNOWN_EVENTS: Final[frozenset[str]] = frozenset(
-    {EVENT_WORKSPACE_STATE, EVENT_WORKSPACE_CLOSED}
+    {EVENT_TERMINAL_SESSION_STATE, EVENT_TERMINAL_SESSION_CLOSED}
 )
 
 # Map sidecar codes to the existing TerminalBackendErrorCode taxonomy.
@@ -220,6 +210,26 @@ def _optional_str(payload: dict[str, Any], key: str, default: str) -> str:
     return value
 
 
+def _optional_nonempty_str(payload: dict[str, Any], key: str) -> str | None:
+    if key not in payload or payload[key] is None:
+        return None
+    value = payload[key]
+    if not isinstance(value, str) or not value:
+        raise CmuxProtocolError(f"{key} must be a non-empty string when set")
+    return value
+
+
+def _first_nonempty_str(payload: dict[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        if key not in payload:
+            continue
+        value = payload[key]
+        if not isinstance(value, str) or not value:
+            raise CmuxProtocolError(f"{key} must be a non-empty string")
+        return value
+    raise CmuxProtocolError(f"terminal entry missing {keys[0]}")
+
+
 @dataclass(frozen=True, slots=True)
 class CmuxEvent:
     """Asynchronous event frame (no ``id``)."""
@@ -278,48 +288,56 @@ class CmuxHelloResult:
 
 
 @dataclass(frozen=True, slots=True)
-class CmuxWorkspace:
-    """Workspace description returned by ``list_workspaces``."""
+class CmuxTerminalSession:
+    """Terminal tab/panel returned by ``list_terminal_sessions``."""
 
-    workspace_id: str
+    terminal_id: str
     title: str = ""
     cwd: str | None = None
     provider_name: str | None = None
     state: str = "unknown"
-    has_terminal_surface: bool = True
+    workspace_id: str | None = None
+    workspace_title: str = ""
+    pane_id: str | None = None
+    surface_id: str | None = None
+    panel_id: str | None = None
 
     @classmethod
-    def from_wire(cls, payload: Any) -> CmuxWorkspace:
+    def from_wire(cls, payload: Any) -> CmuxTerminalSession:
         if not isinstance(payload, dict):
-            raise CmuxProtocolError("workspace entry must be an object")
-        workspace_id = payload.get("workspace_id") or payload.get("id")
-        if not isinstance(workspace_id, str) or not workspace_id:
-            raise CmuxProtocolError("workspace entry missing workspace_id")
+            raise CmuxProtocolError("terminal entry must be an object")
+        terminal_id = _first_nonempty_str(
+            payload, ("terminal_id", "surface_id", "panel_id", "id")
+        )
         cwd = payload.get("cwd")
         if cwd is not None and not isinstance(cwd, str):
-            raise CmuxProtocolError("workspace cwd must be a string when set")
+            raise CmuxProtocolError("terminal cwd must be a string when set")
         provider_name = payload.get("provider_name")
         if provider_name is not None and not isinstance(provider_name, str):
-            raise CmuxProtocolError("workspace provider_name must be a string when set")
+            raise CmuxProtocolError("terminal provider_name must be a string when set")
         return cls(
-            workspace_id=workspace_id,
+            terminal_id=terminal_id,
             title=_optional_str(payload, "title", ""),
             cwd=cwd,
             provider_name=provider_name,
             state=_optional_str(payload, "state", "unknown"),
-            has_terminal_surface=_optional_bool(payload, "has_terminal_surface", True),
+            workspace_id=_optional_nonempty_str(payload, "workspace_id"),
+            workspace_title=_optional_str(payload, "workspace_title", ""),
+            pane_id=_optional_nonempty_str(payload, "pane_id"),
+            surface_id=_optional_nonempty_str(payload, "surface_id"),
+            panel_id=_optional_nonempty_str(payload, "panel_id"),
         )
 
 
 __all__ = [
-    "EVENT_WORKSPACE_CLOSED",
-    "EVENT_WORKSPACE_STATE",
+    "EVENT_TERMINAL_SESSION_CLOSED",
+    "EVENT_TERMINAL_SESSION_STATE",
     "KNOWN_EVENTS",
     "KNOWN_METHODS",
     "METHOD_CAPTURE_SCREEN",
-    "METHOD_CLOSE_WORKSPACE",
+    "METHOD_CLOSE_TERMINAL_SESSION",
     "METHOD_HELLO",
-    "METHOD_LIST_WORKSPACES",
+    "METHOD_LIST_TERMINAL_SESSIONS",
     "METHOD_SEND_KEY",
     "METHOD_SEND_TEXT",
     "PROTOCOL_VERSION",
@@ -330,7 +348,7 @@ __all__ = [
     "CmuxProtocolError",
     "CmuxRequest",
     "CmuxResponse",
-    "CmuxWorkspace",
+    "CmuxTerminalSession",
     "SidecarErrorCode",
     "map_sidecar_error_to_terminal",
 ]

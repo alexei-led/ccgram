@@ -1,10 +1,10 @@
 """CmuxBackend — ``TerminalBackend`` adapter over the sidecar JSON-RPC client.
 
 The adapter is intentionally thin: it maps :class:`TerminalUnitRef`
-values (``backend="cmux"``, ``unit_id=<workspace_id>``) onto sidecar
-calls and translates :class:`CmuxWorkspace` results into the neutral
-:class:`TerminalUnit` projection. Capability negotiation is delegated
-to the sidecar's ``hello`` handshake.
+values (``backend="cmux"``, ``unit_id=<terminal_id>``) onto sidecar
+calls and translates :class:`CmuxTerminalSession` results into the
+neutral :class:`TerminalUnit` projection. cmux workspaces stay metadata,
+not routing identity.
 
 The backend is never registered automatically — bootstrap consults the
 typed :class:`TerminalBackendConfig` and registers a CmuxBackend only
@@ -31,7 +31,7 @@ from .cmux_protocol import (
     PROTOCOL_VERSION,
     CmuxHelloResult,
     CmuxProtocolError,
-    CmuxWorkspace,
+    CmuxTerminalSession,
 )
 
 
@@ -62,9 +62,9 @@ class CmuxBackend(TerminalBackend):
                 backend=BACKEND_CMUX,
                 supports_create=False,
                 supports_list=True,
-                supports_capture=True,
-                supports_send_text=True,
-                supports_send_key=True,
+                supports_capture=False,
+                supports_send_text=False,
+                supports_send_key=False,
                 supports_close=False,
                 supports_resume=False,
                 supports_event_stream=False,
@@ -104,25 +104,36 @@ class CmuxBackend(TerminalBackend):
 
     async def list_units(self) -> list[TerminalUnit]:
         try:
-            workspaces = await self._client.list_workspaces()
+            sessions = await self._client.list_terminal_sessions()
         except CmuxProtocolError as exc:
             raise TerminalBackendError(str(exc), code="internal_error") from exc
-        return [self._workspace_to_unit(ws) for ws in workspaces]
+        return [self._terminal_session_to_unit(session) for session in sessions]
 
-    def _workspace_to_unit(self, workspace: CmuxWorkspace) -> TerminalUnit:
-        ref = TerminalUnitRef(backend=BACKEND_CMUX, unit_id=workspace.workspace_id)
+    def _terminal_session_to_unit(self, session: CmuxTerminalSession) -> TerminalUnit:
+        ref = TerminalUnitRef(backend=BACKEND_CMUX, unit_id=session.terminal_id)
+        caps = self._capabilities_from(self._client.cached_hello())
         return TerminalUnit(
             ref=ref,
-            title=workspace.title,
-            cwd=workspace.cwd,
-            provider_name=workspace.provider_name,
-            state=_normalise_state(workspace.state),
-            supports_capture=workspace.has_terminal_surface,
-            supports_send_text=workspace.has_terminal_surface,
-            supports_send_key=workspace.has_terminal_surface,
-            supports_close=False,
+            title=session.title,
+            cwd=session.cwd,
+            provider_name=session.provider_name,
+            state=_normalise_state(session.state),
+            supports_capture=caps.supports_capture,
+            supports_send_text=caps.supports_send_text,
+            supports_send_key=caps.supports_send_key,
+            supports_close=caps.supports_close,
             supports_resume=False,
-            backend_metadata={"has_terminal_surface": workspace.has_terminal_surface},
+            backend_metadata={
+                key: value
+                for key, value in {
+                    "workspace_id": session.workspace_id,
+                    "workspace_title": session.workspace_title,
+                    "pane_id": session.pane_id,
+                    "surface_id": session.surface_id,
+                    "panel_id": session.panel_id,
+                }.items()
+                if value
+            },
         )
 
     async def capture(
@@ -135,6 +146,8 @@ class CmuxBackend(TerminalBackend):
             raise TerminalBackendError(
                 str(exc), code="internal_error", ref=ref
             ) from exc
+        except TerminalBackendError as exc:
+            raise _error_with_ref(exc, ref) from exc
 
     async def send_text(
         self, ref: TerminalUnitRef, text: str, *, raw: bool = False
@@ -146,6 +159,8 @@ class CmuxBackend(TerminalBackend):
             raise TerminalBackendError(
                 str(exc), code="internal_error", ref=ref
             ) from exc
+        except TerminalBackendError as exc:
+            raise _error_with_ref(exc, ref) from exc
 
     async def send_key(self, ref: TerminalUnitRef, key: str) -> bool:
         self._check_backend(ref)
@@ -155,15 +170,30 @@ class CmuxBackend(TerminalBackend):
             raise TerminalBackendError(
                 str(exc), code="internal_error", ref=ref
             ) from exc
+        except TerminalBackendError as exc:
+            raise _error_with_ref(exc, ref) from exc
 
     async def close(self, ref: TerminalUnitRef) -> bool:
         self._check_backend(ref)
         try:
-            return await self._client.close_workspace(ref.unit_id)
+            return await self._client.close_terminal_session(ref.unit_id)
         except CmuxProtocolError as exc:
             raise TerminalBackendError(
                 str(exc), code="internal_error", ref=ref
             ) from exc
+        except TerminalBackendError as exc:
+            raise _error_with_ref(exc, ref) from exc
+
+
+def _error_with_ref(
+    exc: TerminalBackendError, ref: TerminalUnitRef
+) -> TerminalBackendError:
+    if exc.ref is not None:
+        return exc
+    message = str(exc.args[0]) if exc.args else str(exc)
+    if type(exc) is TerminalBackendError:
+        return TerminalBackendError(message, code=exc.code, ref=ref)
+    return type(exc)(message, ref=ref)
 
 
 _VALID_STATES: frozenset[str] = frozenset(

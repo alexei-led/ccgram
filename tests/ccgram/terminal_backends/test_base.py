@@ -27,8 +27,8 @@ class TestTerminalUnitRef:
         assert ref.display_id == "tmux:@3"
 
     def test_construct_cmux(self) -> None:
-        ref = TerminalUnitRef(backend=BACKEND_CMUX, unit_id="workspace-uuid")
-        assert ref.display_id == "cmux:workspace-uuid"
+        ref = TerminalUnitRef(backend=BACKEND_CMUX, unit_id="term-uuid")
+        assert ref.display_id == "cmux:term-uuid"
 
     def test_frozen(self) -> None:
         ref = TerminalUnitRef(backend="tmux", unit_id="@0")
@@ -60,7 +60,7 @@ class TestTerminalUnit:
         assert unit.backend_metadata == {}
 
     def test_full(self) -> None:
-        ref = TerminalUnitRef(backend="cmux", unit_id="ws-1")
+        ref = TerminalUnitRef(backend="cmux", unit_id="term-1")
         unit = TerminalUnit(
             ref=ref,
             title="proj",
@@ -114,11 +114,11 @@ class TestErrorTaxonomy:
         assert err.code == "internal_error"
 
     def test_str_includes_code_and_ref(self) -> None:
-        ref = TerminalUnitRef(backend="cmux", unit_id="ws-1")
-        err = TerminalNotFoundError("workspace gone", ref=ref)
+        ref = TerminalUnitRef(backend="cmux", unit_id="term-1")
+        err = TerminalNotFoundError("terminal session gone", ref=ref)
         msg = str(err)
         assert "not_found" in msg
-        assert "cmux:ws-1" in msg
+        assert "cmux:term-1" in msg
 
     def test_explicit_code_override(self) -> None:
         err = TerminalBackendError("noop", code="rejected")

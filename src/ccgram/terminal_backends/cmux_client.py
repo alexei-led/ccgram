@@ -15,8 +15,8 @@ Responsibilities are kept narrow:
 * Run the ``hello`` handshake on first use and reject incompatible
   protocol versions.
 
-The client knows nothing about workspace bind UX or capabilities gating
-— that lives in :class:`CmuxBackend`. It also never logs raw chat
+The client knows nothing about terminal-session bind UX or capabilities
+gating — that lives in :class:`CmuxBackend`. It also never logs raw chat
 payloads; only method names and ids are emitted.
 """
 
@@ -40,9 +40,9 @@ from .base import (
 )
 from .cmux_protocol import (
     METHOD_CAPTURE_SCREEN,
-    METHOD_CLOSE_WORKSPACE,
+    METHOD_CLOSE_TERMINAL_SESSION,
     METHOD_HELLO,
-    METHOD_LIST_WORKSPACES,
+    METHOD_LIST_TERMINAL_SESSIONS,
     METHOD_SEND_KEY,
     METHOD_SEND_TEXT,
     PROTOCOL_VERSION,
@@ -52,7 +52,7 @@ from .cmux_protocol import (
     CmuxProtocolError,
     CmuxRequest,
     CmuxResponse,
-    CmuxWorkspace,
+    CmuxTerminalSession,
 )
 
 logger = structlog.get_logger()
@@ -156,6 +156,13 @@ def _default_error_mapper(error: CmuxError) -> TerminalBackendError:
     return TerminalBackendError(message, code=code)
 
 
+def _ok_result(method: str, result: dict[str, Any]) -> bool:
+    ok = result.get("ok", True)
+    if not isinstance(ok, bool):
+        raise CmuxProtocolError(f"{method}: result.ok must be a boolean")
+    return ok
+
+
 class CmuxSidecarClient:
     """JSON-RPC client wrapping a :class:`CmuxTransport`.
 
@@ -193,9 +200,11 @@ class CmuxSidecarClient:
         timeout_ms: int,
         required_protocol_version: str | None = None,
     ) -> CmuxSidecarClient:
+        if timeout_ms <= 0:
+            raise ValueError(f"timeout_ms must be > 0, got {timeout_ms}")
         return cls(
             transport=UnixSocketTransport(socket_path),
-            timeout=max(timeout_ms, 1) / 1000.0,
+            timeout=timeout_ms / 1000.0,
             required_protocol_version=required_protocol_version,
         )
 
@@ -247,22 +256,22 @@ class CmuxSidecarClient:
         assert response.result is not None
         return response.result
 
-    async def list_workspaces(self) -> list[CmuxWorkspace]:
+    async def list_terminal_sessions(self) -> list[CmuxTerminalSession]:
         await self._ensure_hello()
-        response = await self._send(METHOD_LIST_WORKSPACES, {})
+        response = await self._send(METHOD_LIST_TERMINAL_SESSIONS, {})
         result = self._require_result(response)
-        entries = result.get("workspaces", [])
+        entries = result.get("terminal_sessions", [])
         if not isinstance(entries, list):
-            raise CmuxProtocolError("list_workspaces: result.workspaces must be a list")
-        return [CmuxWorkspace.from_wire(entry) for entry in entries]
+            raise CmuxProtocolError(
+                "list_terminal_sessions: result.terminal_sessions must be a list"
+            )
+        return [CmuxTerminalSession.from_wire(entry) for entry in entries]
 
-    async def capture_screen(
-        self, workspace_id: str, *, with_ansi: bool = False
-    ) -> str:
+    async def capture_screen(self, terminal_id: str, *, with_ansi: bool = False) -> str:
         await self._ensure_hello()
         response = await self._send(
             METHOD_CAPTURE_SCREEN,
-            {"workspace_id": workspace_id, "with_ansi": with_ansi},
+            {"terminal_id": terminal_id, "with_ansi": with_ansi},
         )
         result = self._require_result(response)
         screen = result.get("screen", "")
@@ -271,32 +280,32 @@ class CmuxSidecarClient:
         return screen
 
     async def send_text(
-        self, workspace_id: str, text: str, *, raw: bool = False
+        self, terminal_id: str, text: str, *, raw: bool = False
     ) -> bool:
         await self._ensure_hello()
         response = await self._send(
             METHOD_SEND_TEXT,
-            {"workspace_id": workspace_id, "text": text, "raw": raw},
+            {"terminal_id": terminal_id, "text": text, "raw": raw},
         )
         result = self._require_result(response)
-        return bool(result.get("ok", True))
+        return _ok_result("send_text", result)
 
-    async def send_key(self, workspace_id: str, key: str) -> bool:
+    async def send_key(self, terminal_id: str, key: str) -> bool:
         await self._ensure_hello()
         response = await self._send(
             METHOD_SEND_KEY,
-            {"workspace_id": workspace_id, "key": key},
+            {"terminal_id": terminal_id, "key": key},
         )
         result = self._require_result(response)
-        return bool(result.get("ok", True))
+        return _ok_result("send_key", result)
 
-    async def close_workspace(self, workspace_id: str) -> bool:
+    async def close_terminal_session(self, terminal_id: str) -> bool:
         await self._ensure_hello()
         response = await self._send(
-            METHOD_CLOSE_WORKSPACE, {"workspace_id": workspace_id}
+            METHOD_CLOSE_TERMINAL_SESSION, {"terminal_id": terminal_id}
         )
         result = self._require_result(response)
-        return bool(result.get("ok", True))
+        return _ok_result("close_terminal_session", result)
 
     async def close(self) -> None:
         await self._transport.close()

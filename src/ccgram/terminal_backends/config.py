@@ -17,9 +17,9 @@ Env vars:
 * ``CCGRAM_CMUX_SIDECAR_SOCKET`` — Unix socket path; defaults to
   ``$CCGRAM_DIR/cmux-sidecar.sock``.
 * ``CCGRAM_CMUX_SIDECAR_TIMEOUT_MS`` — per-request timeout (default
-  ``5000``; clamped to a non-negative integer).
-* ``CCGRAM_CMUX_PROTOCOL_VERSION`` — optional minimum protocol version
-  the client requires from the sidecar.
+  ``5000``; must be a positive integer).
+* ``CCGRAM_CMUX_PROTOCOL_VERSION`` — optional exact protocol version
+  the client requires from the sidecar; only protocol v2 is supported.
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .base import BACKEND_CMUX, BACKEND_TMUX, KNOWN_BACKENDS
+from .cmux_protocol import PROTOCOL_VERSION as CMUX_PROTOCOL_VERSION
 
 ENV_TERMINAL_BACKEND_DEFAULT = "CCGRAM_TERMINAL_BACKEND_DEFAULT"
 ENV_CMUX_ENABLED = "CCGRAM_CMUX_ENABLED"
@@ -63,9 +64,9 @@ def _parse_positive_int(raw: str | None, *, default: int, name: str) -> int:
     try:
         value = int(raw)
     except ValueError as exc:
-        raise ValueError(f"{name} must be a non-negative integer: {raw!r}") from exc
-    if value < 0:
-        raise ValueError(f"{name} must be non-negative, got {value}")
+        raise ValueError(f"{name} must be a positive integer: {raw!r}") from exc
+    if value <= 0:
+        raise ValueError(f"{name} must be positive, got {value}")
     return value
 
 
@@ -92,10 +93,18 @@ class TerminalBackendConfig:
                 f"default_backend must be one of {sorted(KNOWN_BACKENDS)!r}, "
                 f"got {self.default_backend!r}"
             )
-        if self.cmux_sidecar_timeout_ms < 0:
+        if self.cmux_sidecar_timeout_ms <= 0:
             raise ValueError(
-                f"cmux_sidecar_timeout_ms must be non-negative, "
+                f"cmux_sidecar_timeout_ms must be positive, "
                 f"got {self.cmux_sidecar_timeout_ms}"
+            )
+        if (
+            self.cmux_protocol_version is not None
+            and self.cmux_protocol_version != CMUX_PROTOCOL_VERSION
+        ):
+            raise ValueError(
+                f"cmux_protocol_version must be {CMUX_PROTOCOL_VERSION!r}, "
+                f"got {self.cmux_protocol_version!r}"
             )
         if self.cmux_enabled and self.cmux_sidecar_socket is None:
             raise ValueError("cmux_enabled=True requires cmux_sidecar_socket to be set")

@@ -98,13 +98,13 @@ class TestResolveRef:
             TerminalIdentityProjection(
                 window_id="@7",
                 backend=BACKEND_CMUX,
-                unit_id="ws-1",
+                unit_id="term-1",
                 legacy_window_id="@7",
             )
         )
         ref = terminal_operations._resolve_ref("@7")
         assert ref.backend == BACKEND_CMUX
-        assert ref.unit_id == "ws-1"
+        assert ref.unit_id == "term-1"
 
     def test_blank_unit_id_falls_back_to_window_id(self, patch_identity: Any) -> None:
         from ccgram.window_state_ports.terminal_identity import (
@@ -269,7 +269,7 @@ class TestListUnits:
 
 
 class TestCmuxRouting:
-    """Plan Task 4: send/capture for cmux units route through CmuxBackend."""
+    """cmux terminal sessions route through CmuxBackend."""
 
     @pytest.fixture
     def cmux_backend(self, fake_backend: _SpyBackend) -> _SpyBackend:
@@ -292,32 +292,32 @@ class TestCmuxRouting:
     async def test_send_text_routes_to_cmux_backend(
         self, cmux_backend: _SpyBackend, patch_identity: Any
     ) -> None:
-        patch_identity(self._cmux_identity("cmux:ws-1", "ws-1"))
-        ok, msg = await terminal_operations.send_text("cmux:ws-1", "hello")
+        patch_identity(self._cmux_identity("cmux:term-1", "term-1"))
+        ok, msg = await terminal_operations.send_text("cmux:term-1", "hello")
         assert ok is True
         assert "Sent" in msg
         cmux_backend.send_text.assert_awaited_once()
         ref: TerminalUnitRef = cmux_backend.send_text.call_args.args[0]
         assert ref.backend == BACKEND_CMUX
-        assert ref.unit_id == "ws-1"
+        assert ref.unit_id == "term-1"
 
     async def test_capture_routes_to_cmux_backend(
         self, cmux_backend: _SpyBackend, patch_identity: Any
     ) -> None:
         cmux_backend.capture.return_value = "screen contents"
-        patch_identity(self._cmux_identity("cmux:ws-1", "ws-1"))
-        text = await terminal_operations.capture("cmux:ws-1")
+        patch_identity(self._cmux_identity("cmux:term-1", "term-1"))
+        text = await terminal_operations.capture("cmux:term-1")
         assert text == "screen contents"
         cmux_backend.capture.assert_awaited_once()
         ref: TerminalUnitRef = cmux_backend.capture.call_args.args[0]
         assert ref.backend == BACKEND_CMUX
-        assert ref.unit_id == "ws-1"
+        assert ref.unit_id == "term-1"
 
     async def test_send_text_returns_scoped_error_when_cmux_unavailable(
         self, fake_backend: _SpyBackend, patch_identity: Any
     ) -> None:
         # cmux NOT registered — router only knows tmux from the autouse fixture.
-        patch_identity(self._cmux_identity("cmux:ws-x", "ws-x"))
-        ok, msg = await terminal_operations.send_text("cmux:ws-x", "hi")
+        patch_identity(self._cmux_identity("cmux:term-x", "term-x"))
+        ok, msg = await terminal_operations.send_text("cmux:term-x", "hi")
         assert ok is False
         assert "unavailable" in msg

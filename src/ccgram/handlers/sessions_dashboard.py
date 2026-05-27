@@ -6,9 +6,9 @@ Screenshot, Kill with two-step confirmation), cwd details, and
 refresh/new-session actions.
 
 Backend-neutral: tmux rows resolve aliveness via tmux_manager.list_windows,
-cmux rows resolve via CmuxBackend.list_units. When cmux is configured but
-the sidecar is unreachable, cmux rows are tagged ``cmux unavailable``
-while tmux rows continue rendering normally.
+cmux rows resolve terminal-session aliveness via CmuxBackend.list_units. When
+cmux is configured but the sidecar is unreachable, cmux rows are tagged
+``cmux unavailable`` while tmux rows continue rendering normally.
 
 Key functions:
   - sessions_command(): /sessions command handler
@@ -61,7 +61,7 @@ _NEW_BTN = InlineKeyboardButton("➕ New Session", callback_data=CB_SESSIONS_NEW
 
 
 async def _resolve_cmux_live_ids() -> tuple[set[str], bool]:
-    """Return ``(live_cmux_unit_ids, cmux_backend_reachable)``.
+    """Return ``(live_cmux_terminal_ids, cmux_backend_reachable)``.
 
     When the cmux backend is not registered with the router the second
     value is ``False`` and the set is empty so cmux rows render as
@@ -133,7 +133,7 @@ def _render_binding_row(
                 ),
             ]
         )
-    # External windows (emdash) and cmux workspaces are never killed
+    # External windows (emdash) and cmux terminal sessions are never killed
     # through the tmux kill path — only unbind via the topic. cmux
     # close/supervision is deferred past the MVP.
     if not is_external and backend == BACKEND_TMUX:

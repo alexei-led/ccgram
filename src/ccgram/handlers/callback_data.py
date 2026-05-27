@@ -131,10 +131,10 @@ CB_SEND_CANCEL = "sf:x"  # cancel /send browser
 CB_AGENT_SET = "ag:set:"  # ag:set:<window_id>:<provider_or_auto>
 CB_AGENT_CANCEL = "ag:x:"  # ag:x:<window_id>
 
-# /cmux command \u2014 bind existing cmux workspace to current topic
-CB_CMUX_LIST = "cmx:ls"  # refresh picker
-CB_CMUX_BIND = "cmx:bind:"  # cmx:bind:<index>
-CB_CMUX_CANCEL = "cmx:x"  # cancel picker
+# /cmux command — bind existing cmux terminal session to current topic
+CB_CMUX_LIST = "cmx:ls:"  # cmx:ls:<picker_id>
+CB_CMUX_BIND = "cmx:bind:"  # cmx:bind:<picker_id>:<index>
+CB_CMUX_CANCEL = "cmx:x:"  # cmx:x:<picker_id>
 
 # Idle status sentinel (shared between status_polling and message_queue)
 IDLE_STATUS_TEXT = "\u2713 Ready"

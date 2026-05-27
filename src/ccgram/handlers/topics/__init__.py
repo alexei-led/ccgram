@@ -1,6 +1,6 @@
 """Topics subpackage — topic creation, lifecycle, directory browser, window picker.
 
-Bundles the modules that drive Telegram-topic ↔ tmux-window binding:
+Bundles the modules that drive Telegram-topic ↔ terminal-session binding:
 ``topic_orchestration`` (new-window/new-topic flow, retries),
 ``topic_lifecycle`` (autoclose timers, unbound TTL, topic close/edit
 handlers), ``directory_browser`` (directory + window picker UI),

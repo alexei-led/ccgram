@@ -117,14 +117,14 @@ class TestTimeout:
         )
         assert config.cmux_sidecar_timeout_ms == 2500
 
-    def test_zero_allowed(self, tmp_path: Path) -> None:
-        config = load_terminal_backend_config(
-            {ENV_CMUX_SIDECAR_TIMEOUT_MS: "0"}, config_dir=tmp_path
-        )
-        assert config.cmux_sidecar_timeout_ms == 0
+    def test_zero_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="positive"):
+            load_terminal_backend_config(
+                {ENV_CMUX_SIDECAR_TIMEOUT_MS: "0"}, config_dir=tmp_path
+            )
 
     def test_negative_rejected(self, tmp_path: Path) -> None:
-        with pytest.raises(ValueError, match="non-negative"):
+        with pytest.raises(ValueError, match="positive"):
             load_terminal_backend_config(
                 {ENV_CMUX_SIDECAR_TIMEOUT_MS: "-5"}, config_dir=tmp_path
             )
@@ -149,9 +149,15 @@ class TestProtocolVersion:
 
     def test_whitespace_stripped(self, tmp_path: Path) -> None:
         config = load_terminal_backend_config(
-            {ENV_CMUX_PROTOCOL_VERSION: "  1  "}, config_dir=tmp_path
+            {ENV_CMUX_PROTOCOL_VERSION: "  2  "}, config_dir=tmp_path
         )
-        assert config.cmux_protocol_version == "1"
+        assert config.cmux_protocol_version == "2"
+
+    def test_unsupported_value_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="cmux_protocol_version"):
+            load_terminal_backend_config(
+                {ENV_CMUX_PROTOCOL_VERSION: "1"}, config_dir=tmp_path
+            )
 
     def test_blank_treated_as_unset(self, tmp_path: Path) -> None:
         config = load_terminal_backend_config(
@@ -185,9 +191,14 @@ class TestDataclass:
         with pytest.raises(ValueError):
             TerminalBackendConfig(default_backend="unknown")
 
-    def test_post_init_rejects_negative_timeout(self) -> None:
+    @pytest.mark.parametrize("timeout", [0, -1])
+    def test_post_init_rejects_non_positive_timeout(self, timeout: int) -> None:
         with pytest.raises(ValueError):
-            TerminalBackendConfig(cmux_sidecar_timeout_ms=-1)
+            TerminalBackendConfig(cmux_sidecar_timeout_ms=timeout)
+
+    def test_post_init_rejects_unsupported_protocol_version(self) -> None:
+        with pytest.raises(ValueError):
+            TerminalBackendConfig(cmux_protocol_version="1")
 
     def test_post_init_rejects_enabled_without_socket(self) -> None:
         with pytest.raises(ValueError, match="cmux_sidecar_socket"):

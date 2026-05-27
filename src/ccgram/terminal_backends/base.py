@@ -2,8 +2,8 @@
 
 This module is the published vocabulary that handlers and the backend
 router share. Backend implementations (``tmux.py``, ``cmux.py``) consume
-the protocol; backend-specific identifiers (``@N`` for tmux, workspace
-UUIDs for cmux) never escape the adapter that owns them.
+the protocol; backend-specific identifiers (``@N`` for tmux, terminal
+session IDs for cmux) never escape the adapter that owns them.
 
 Key types:
 
@@ -49,7 +49,7 @@ class TerminalUnitRef:
     ``backend`` must be one of ``KNOWN_BACKENDS``; ``unit_id`` is
     backend-local. Handlers never parse the unit id — they call backend
     operations through the router. ``display_id`` is a stable human/debug
-    string (``tmux:@3``, ``cmux:workspace:<uuid>``) safe to log.
+    string (``tmux:@3``, ``cmux:<terminal-id>``) safe to log.
     """
 
     backend: str
@@ -158,7 +158,7 @@ class TerminalBackendUnavailableError(TerminalBackendError):
 
 
 class TerminalNotFoundError(TerminalBackendError):
-    """Target unit (workspace/window) no longer exists."""
+    """Target unit (terminal session/window) no longer exists."""
 
     code: TerminalBackendErrorCode = "not_found"
 

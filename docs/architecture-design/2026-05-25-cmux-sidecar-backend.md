@@ -23,7 +23,7 @@ backend routing behind it:
 Telegram topic
   -> TerminalUnitRef(backend, unit_id)
       -> TmuxBackend -> tmux window
-      -> CmuxBackend -> ccgram-cmux-sidecar -> cmux workspace
+      -> CmuxBackend -> ccgram-cmux-sidecar -> cmux terminal session
 ```
 
 The cmux integration is not a separate Telegram bot. It is a sidecar process
@@ -33,22 +33,22 @@ operations and cmux event-stream updates. This follows a strangler-style design:
 existing tmux sessions keep using the current implementation while cmux sessions
 are added one vertical slice at a time behind the same product surface.
 
-The design intentionally maps one Telegram topic to one cmux workspace, not to a
-cmux surface or app window. cmux surfaces, panes, and tabs remain workspace
-internals unless a feature explicitly needs to expose them. This preserves the
-ccgram invariant that each topic has one primary agent session, while allowing
-cmux to own its richer native layout model.
+The design intentionally maps one Telegram topic to one cmux terminal session:
+the terminal tab/panel, not the workspace. cmux workspaces are mutable groupings
+of tabs and stay display metadata. This preserves the ccgram invariant that each
+topic has one primary agent session, even when cmux tabs move between
+workspaces.
 
 The design uses Balanced Coupling: high-strength relationships stay close
 inside a backend adapter or sidecar; higher-distance relationships use explicit
-contracts. It does not try to make cmux look like tmux. A cmux workspace UUID is
-not a tmux `@N`. Pretending otherwise would make the diagram prettier and the
-code worse. Diagrams are already too agreeable.
+contracts. It does not try to make cmux look like tmux. A cmux terminal-session
+ID is not a tmux `@N`. Pretending otherwise would make the diagram prettier and
+the code worse. Diagrams are already too agreeable.
 
 ## Source inputs and drift notes
 
 - Requirements:
-  - Add no-tmux cmux integration where every relevant cmux terminal workspace
+  - Add no-tmux cmux integration where every relevant cmux terminal session
     can be bound to a Telegram topic in ccgram.
   - Prefer one mixed ccgram bot over separate tmux/cmux bots unless clear
     trade-offs show otherwise.
@@ -119,13 +119,13 @@ Functional areas and business capabilities:
   whether a topic is backed by tmux or cmux for ordinary send/capture/status
   actions.
 - Terminal-unit routing becomes the core model below topics. A terminal unit is
-  the runtime controlled by a topic. tmux windows and cmux workspaces are two
-  implementations of that model.
+  the runtime controlled by a topic. tmux windows and cmux terminal sessions are
+  two implementations of that model.
 - Provider lifecycle/status remains provider-owned. The terminal backend may
   supply host context and capture, but it should not parse Claude/Codex/Gemini/Pi
   transcripts or own provider business rules.
-- The cmux sidecar owns cmux process integration: workspace discovery, event
-  replay, focused terminal-surface choice, command execution, and cmux version
+- The cmux sidecar owns cmux process integration: terminal-session discovery,
+  workspace metadata, event replay, command execution, and cmux version
   compatibility.
 - ccgram remains the owner of Telegram auth, topic bindings, message queues,
   user preferences, mailbox state, and persistent topic-to-terminal mappings.
@@ -144,8 +144,8 @@ Known runtime constraints:
 - Sidecar communication must be local-only by default: Unix socket, current user
   permissions, no network listener unless explicitly configured later.
 - cmux workspaces may contain browser/file/markdown surfaces. MVP operations
-  target the focused terminal surface within the workspace and return a stable
-  unsupported/non-terminal error when no terminal target is available.
+  expose terminal tabs/panels as bindable units and keep workspace identity as
+  metadata only.
 
 Non-goals for this design:
 
@@ -160,11 +160,12 @@ Non-goals for this design:
 
 Assumptions accepted for this design:
 
-- The first cmux unit granularity is workspace, not surface.
+- The first cmux unit granularity is terminal session: surface/panel terminal,
+  not workspace.
 - Small ccgram source changes are allowed to add the backend seam.
 - Existing tmux behavior must remain default and backward-compatible.
-- The first implementation should prioritize binding existing cmux workspaces
-  before creating new cmux workspaces from Telegram.
+- The first implementation should prioritize binding existing cmux terminal
+  sessions before creating new cmux terminals/workspaces from Telegram.
 
 ## Domain and volatility map
 
@@ -172,40 +173,40 @@ Core = differentiating behavior and likely to change. Supporting = necessary but
 not differentiating. Generic = solved infrastructure, with possible
 implementation churn.
 
-| Area                          | Classification     | Volatility  | Rationale                                                                                                                 | Open questions                                                           |
-| ----------------------------- | ------------------ | ----------- | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| Telegram topic control plane  | Core               | High        | The product value is controlling agents from Telegram topics with status, replies, toolbar controls, files, and recovery. | None.                                                                    |
-| Terminal unit routing         | Core               | High        | Topic-to-terminal identity becomes the new spine: tmux windows and cmux workspaces must coexist.                          | Exact persisted field migration sequence.                                |
-| cmux backend integration      | Core               | High        | New capability and likely to change as cmux APIs and user expectations evolve.                                            | Which cmux commands need socket-level calls for performance.             |
-| Provider lifecycle/status     | Core               | High        | Provider hooks/transcripts/status determine when Telegram topics update and mailbox messages inject.                      | How much cmux agent-hook state can replace current terminal scraping.    |
-| Terminal live capture/control | Core               | Medium/High | Capture, send, key controls, screenshots, and live view are user-visible and backend-specific.                            | Whether cmux read-screen is fast enough for current live-view cadence.   |
-| ccgram-cmux sidecar runtime   | Supporting         | Medium      | Needed to isolate cmux event/socket behavior and cache workspace state.                                                   | Supervisor ownership and launch policy.                                  |
-| Window state persistence      | Core               | High        | State must store backend identity without spreading raw storage knowledge.                                                | Compatibility with existing `state.json` and topic bindings.             |
-| Hook/session-map ingestion    | Supporting         | Medium      | Needed for instant session/status updates; implementation differs by backend.                                             | Whether to extend existing hook files or introduce terminal-event files. |
-| Inter-agent messaging         | Core               | Medium      | Mailbox peers must include cmux units; delivery should remain topic/user-visible.                                         | Whether cmux sessions can self-identify with a stable `CCGRAM_UNIT_ID`.  |
-| Mini App terminal view        | Core               | High        | Optional but product-visible; terminal streaming currently assumes tmux panes.                                            | Whether cmux surfaces should be exposed after workspace MVP.             |
-| Telegram Bot API adapter      | Generic            | Low         | Existing protocol seam remains valid regardless of terminal backend.                                                      | None.                                                                    |
-| tmux backend                  | Generic/Supporting | Low         | Existing stable backend, must keep working.                                                                               | None.                                                                    |
-| cmux CLI/socket API           | Generic/External   | Medium      | External local tool; command contracts exist but are still new.                                                           | Version/capability detection policy.                                     |
+| Area                          | Classification     | Volatility  | Rationale                                                                                                                 | Open questions                                                                    |
+| ----------------------------- | ------------------ | ----------- | ------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Telegram topic control plane  | Core               | High        | The product value is controlling agents from Telegram topics with status, replies, toolbar controls, files, and recovery. | None.                                                                             |
+| Terminal unit routing         | Core               | High        | Topic-to-terminal identity becomes the new spine: tmux windows and cmux terminal sessions must coexist.                   | Exact persisted field migration sequence.                                         |
+| cmux backend integration      | Core               | High        | New capability and likely to change as cmux APIs and user expectations evolve.                                            | Which cmux commands need socket-level calls for performance.                      |
+| Provider lifecycle/status     | Core               | High        | Provider hooks/transcripts/status determine when Telegram topics update and mailbox messages inject.                      | How much cmux agent-hook state can replace current terminal scraping.             |
+| Terminal live capture/control | Core               | Medium/High | Capture, send, key controls, screenshots, and live view are user-visible and backend-specific.                            | Whether cmux read-screen is fast enough for current live-view cadence.            |
+| ccgram-cmux sidecar runtime   | Supporting         | Medium      | Needed to isolate cmux event/socket behavior and cache workspace state.                                                   | Supervisor ownership and launch policy.                                           |
+| Window state persistence      | Core               | High        | State must store backend identity without spreading raw storage knowledge.                                                | Compatibility with existing `state.json` and topic bindings.                      |
+| Hook/session-map ingestion    | Supporting         | Medium      | Needed for instant session/status updates; implementation differs by backend.                                             | Whether to extend existing hook files or introduce terminal-event files.          |
+| Inter-agent messaging         | Core               | Medium      | Mailbox peers must include cmux units; delivery should remain topic/user-visible.                                         | Whether cmux sessions can self-identify with a stable `CCGRAM_UNIT_ID`.           |
+| Mini App terminal view        | Core               | High        | Optional but product-visible; terminal streaming currently assumes tmux panes.                                            | Whether cmux multi-surface controls should be exposed after terminal-session MVP. |
+| Telegram Bot API adapter      | Generic            | Low         | Existing protocol seam remains valid regardless of terminal backend.                                                      | None.                                                                             |
+| tmux backend                  | Generic/Supporting | Low         | Existing stable backend, must keep working.                                                                               | None.                                                                             |
+| cmux CLI/socket API           | Generic/External   | Medium      | External local tool; command contracts exist but are still new.                                                           | Version/capability detection policy.                                              |
 
 ## Module map
 
-| Module                      | Responsibility                                                                        | Owned knowledge                                                                                   | Public interface                                                                                                      | Private internals                                                                                 | Owner/deploy expectation                                    | Change vectors                                                |
-| --------------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------- |
-| Terminal backend contract   | Define backend-neutral terminal unit operations and identity.                         | Terminal unit vocabulary, operation semantics, capability flags, backend error taxonomy.          | `TerminalBackend` protocol, `TerminalUnit`, `TerminalUnitRef`, `TerminalBackendCapabilities`, `TerminalBackendError`. | None beyond simple DTO validation.                                                                | Same ccgram process.                                        | New operations, capability flags, backend selection.          |
-| Backend router              | Resolve topic/window state to the right backend and delegate operations.              | Mapping from persisted backend/unit ID to backend implementation; default tmux behavior.          | `get_backend(ref)`, `terminal_backends.create/list/capture/send/close`.                                               | Backend registry, config defaults, feature flag checks.                                           | Same ccgram process.                                        | Mixed mode rollout, future backends.                          |
-| TmuxBackend                 | Preserve current behavior behind the new contract.                                    | tmux window IDs, pane capture, send keys, window creation/kill, external session scan.            | Implements `TerminalBackend`; delegates to existing `tmux_manager`.                                                   | libtmux/subprocess quirks, `@N` IDs, tmux session names.                                          | Same process; no new deploy.                                | Gradual handler migration, existing tmux bug fixes.           |
-| CmuxBackend                 | Translate ccgram terminal operations to sidecar calls.                                | cmux workspace-level semantics as seen by ccgram; timeout/retry policy.                           | Implements `TerminalBackend`; local RPC client to sidecar.                                                            | Sidecar socket path, protocol version, response normalization.                                    | Same process client; sidecar process server.                | cmux command coverage, event-driven status/capture cache.     |
-| ccgram-cmux-sidecar         | Own live cmux socket/CLI/event integration and workspace cache.                       | cmux workspace/surface IDs, event cursor/replay, focused surface selection, cmux command details. | Local Unix socket JSON-RPC: list/create/close/capture/send/send_key/stream_events/capabilities.                       | `cmux events`, `cmux tree`, `cmux read-screen`, `cmux send`, socket auth, reconnect loops, cache. | Separate local process supervised by ccgram or user launch. | cmux API changes, performance tuning, event enrichment.       |
-| Terminal unit state port    | Store and read backend identity without leaking `WindowState` internals.              | `backend`, `unit_id`, display name, cwd, provider, origin, lifecycle flags.                       | Feature projection and setters in `window_state_ports` or successor package.                                          | Mapping to existing `WindowStateStore` schema; compatibility defaults.                            | Same process; same state file.                              | Additive fields, migration of `window_id` assumptions.        |
-| Topic binding/router        | Bind Telegram topics to terminal units instead of only tmux windows.                  | User/thread ownership, display names, topic lifecycle, binding cleanup.                           | Existing thread router plus backend-aware `TerminalUnitRef` accessors.                                                | Legacy `thread_id -> window_id` compatibility.                                                    | Same process.                                               | Binding migration, sessions dashboard, topic close semantics. |
-| Terminal operation services | Replace handler-level `tmux_manager` calls with backend-neutral use cases.            | User-visible terminal actions: send, key, capture, screenshot, live stream, close, recover.       | `send_to_unit`, `capture_unit`, `close_unit`, `create_unit`, `list_units`.                                            | Backend selection, permission checks, error-to-Telegram messages.                                 | Same process.                                               | Handler migration, new controls.                              |
-| Hook resolution adapter     | Map provider hook events to terminal units for tmux and cmux.                         | Hook source environment, provider session IDs, terminal unit lookup priority.                     | `resolve_hook_terminal_unit(event, env)` returning `TerminalUnitRef` and display metadata.                            | `TMUX_PANE`, `CCGRAM_WINDOW_ID`, `CCGRAM_UNIT_ID`, `CMUX_WORKSPACE_ID`, sidecar lookup.           | Hook subprocess plus ccgram process.                        | cmux hook support, provider changes.                          |
-| Session/event coordinator   | Merge tmux hook events and cmux sidecar events into ccgram session monitoring.        | Event cursoring, session map updates, done/idle/notification translation.                         | Existing session monitor event interface plus cmux event reader adapter.                                              | File offsets, sidecar event stream, dedupe, provider-specific mapping.                            | Same process plus sidecar.                                  | Lifecycle semantics, mailbox idle gating.                     |
-| Messaging peer discovery    | Include cmux terminal units in peer listings and mailbox delivery.                    | Peer ID format, declared task/team metadata, idle delivery eligibility.                           | `ccgram msg list-peers --json`, mailbox send/read/reply, peer projections.                                            | State-file lookup, sidecar workspace cache, delivery injection.                                   | Same process; CLI reads state files.                        | Cross-backend messaging, spawn requests.                      |
-| Mini App terminal adapter   | Stream terminal output for tmux and cmux units through one read-only API.             | Terminal frame shape, auth scope, pane/surface listing.                                           | Existing Mini App routes using backend-neutral capture/list operations.                                               | tmux pane capture, cmux workspace/surface capture, throttling.                                    | Same optional aiohttp process.                              | cmux multi-surface support, write actions later.              |
-| cmux Dock/config helpers    | Optional user convenience for exposing ccgram controls inside cmux.                   | Local cmux config snippets and bridge commands.                                                   | Generated/example `.cmux/dock.json` and `cmux.json` snippets.                                                         | Project trust prompts, local path resolution.                                                     | User/project config, not core runtime.                      | UX polish only.                                               |
-| Terminal backend config     | Own backend enablement, default backend selection, sidecar socket path, and timeouts. | Runtime policy for which backends are available and how users opt into cmux.                      | `CCGRAM_TERMINAL_BACKENDS`, `CCGRAM_DEFAULT_TERMINAL_BACKEND`, `CCGRAM_CMUX_SIDECAR_SOCKET`, config projection.       | Env/config parsing, validation, warning text.                                                     | Same ccgram process.                                        | Rollout flags, local setup, sidecar supervision.              |
+| Module                      | Responsibility                                                                        | Owned knowledge                                                                                  | Public interface                                                                                                      | Private internals                                                                                 | Owner/deploy expectation                                    | Change vectors                                                |
+| --------------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------- |
+| Terminal backend contract   | Define backend-neutral terminal unit operations and identity.                         | Terminal unit vocabulary, operation semantics, capability flags, backend error taxonomy.         | `TerminalBackend` protocol, `TerminalUnit`, `TerminalUnitRef`, `TerminalBackendCapabilities`, `TerminalBackendError`. | None beyond simple DTO validation.                                                                | Same ccgram process.                                        | New operations, capability flags, backend selection.          |
+| Backend router              | Resolve topic/window state to the right backend and delegate operations.              | Mapping from persisted backend/unit ID to backend implementation; default tmux behavior.         | `get_backend(ref)`, `terminal_backends.create/list/capture/send/close`.                                               | Backend registry, config defaults, feature flag checks.                                           | Same ccgram process.                                        | Mixed mode rollout, future backends.                          |
+| TmuxBackend                 | Preserve current behavior behind the new contract.                                    | tmux window IDs, pane capture, send keys, window creation/kill, external session scan.           | Implements `TerminalBackend`; delegates to existing `tmux_manager`.                                                   | libtmux/subprocess quirks, `@N` IDs, tmux session names.                                          | Same process; no new deploy.                                | Gradual handler migration, existing tmux bug fixes.           |
+| CmuxBackend                 | Translate ccgram terminal operations to sidecar calls.                                | cmux terminal-session semantics as seen by ccgram; workspace metadata; timeout/retry policy.     | Implements `TerminalBackend`; local RPC client to sidecar.                                                            | Sidecar socket path, protocol version, response normalization.                                    | Same process client; sidecar process server.                | cmux command coverage, event-driven status/capture cache.     |
+| ccgram-cmux-sidecar         | Own live cmux socket/CLI/event integration and terminal-session cache.                | cmux workspace/surface/panel IDs, event cursor/replay, terminal filtering, cmux command details. | Local Unix socket JSON-RPC: list/create/close/capture/send/send_key/stream_events/capabilities.                       | `cmux events`, `cmux tree`, `cmux read-screen`, `cmux send`, socket auth, reconnect loops, cache. | Separate local process supervised by ccgram or user launch. | cmux API changes, performance tuning, event enrichment.       |
+| Terminal unit state port    | Store and read backend identity without leaking `WindowState` internals.              | `backend`, `unit_id`, display name, cwd, provider, origin, lifecycle flags.                      | Feature projection and setters in `window_state_ports` or successor package.                                          | Mapping to existing `WindowStateStore` schema; compatibility defaults.                            | Same process; same state file.                              | Additive fields, migration of `window_id` assumptions.        |
+| Topic binding/router        | Bind Telegram topics to terminal units instead of only tmux windows.                  | User/thread ownership, display names, topic lifecycle, binding cleanup.                          | Existing thread router plus backend-aware `TerminalUnitRef` accessors.                                                | Legacy `thread_id -> window_id` compatibility.                                                    | Same process.                                               | Binding migration, sessions dashboard, topic close semantics. |
+| Terminal operation services | Replace handler-level `tmux_manager` calls with backend-neutral use cases.            | User-visible terminal actions: send, key, capture, screenshot, live stream, close, recover.      | `send_to_unit`, `capture_unit`, `close_unit`, `create_unit`, `list_units`.                                            | Backend selection, permission checks, error-to-Telegram messages.                                 | Same process.                                               | Handler migration, new controls.                              |
+| Hook resolution adapter     | Map provider hook events to terminal units for tmux and cmux.                         | Hook source environment, provider session IDs, terminal unit lookup priority.                    | `resolve_hook_terminal_unit(event, env)` returning `TerminalUnitRef` and display metadata.                            | `TMUX_PANE`, `CCGRAM_WINDOW_ID`, `CCGRAM_UNIT_ID`, `CMUX_TERMINAL_ID`, sidecar lookup.            | Hook subprocess plus ccgram process.                        | cmux hook support, provider changes.                          |
+| Session/event coordinator   | Merge tmux hook events and cmux sidecar events into ccgram session monitoring.        | Event cursoring, session map updates, done/idle/notification translation.                        | Existing session monitor event interface plus cmux event reader adapter.                                              | File offsets, sidecar event stream, dedupe, provider-specific mapping.                            | Same process plus sidecar.                                  | Lifecycle semantics, mailbox idle gating.                     |
+| Messaging peer discovery    | Include cmux terminal units in peer listings and mailbox delivery.                    | Peer ID format, declared task/team metadata, idle delivery eligibility.                          | `ccgram msg list-peers --json`, mailbox send/read/reply, peer projections.                                            | State-file lookup, sidecar terminal cache, delivery injection.                                    | Same process; CLI reads state files.                        | Cross-backend messaging, spawn requests.                      |
+| Mini App terminal adapter   | Stream terminal output for tmux and cmux units through one read-only API.             | Terminal frame shape, auth scope, pane/surface listing.                                          | Existing Mini App routes using backend-neutral capture/list operations.                                               | tmux pane capture, cmux terminal-session capture, throttling.                                     | Same optional aiohttp process.                              | cmux multi-surface support, write actions later.              |
+| cmux Dock/config helpers    | Optional user convenience for exposing ccgram controls inside cmux.                   | Local cmux config snippets and bridge commands.                                                  | Generated/example `.cmux/dock.json` and `cmux.json` snippets.                                                         | Project trust prompts, local path resolution.                                                     | User/project config, not core runtime.                      | UX polish only.                                               |
+| Terminal backend config     | Own backend enablement, default backend selection, sidecar socket path, and timeouts. | Runtime policy for which backends are available and how users opt into cmux.                     | `CCGRAM_TERMINAL_BACKENDS`, `CCGRAM_DEFAULT_TERMINAL_BACKEND`, `CCGRAM_CMUX_SIDECAR_SOCKET`, config projection.       | Env/config parsing, validation, warning text.                                                     | Same ccgram process.                                        | Rollout flags, local setup, sidecar supervision.              |
 
 ## Integration contracts
 
@@ -254,17 +255,17 @@ implementation churn.
 - Balanced: yes only if the contract is narrow and versioned. High distance
   needs low strength.
 - Contract: local JSON-RPC over Unix socket with versioned capabilities and
-  request IDs. Required methods for MVP: `capabilities`, `list_workspaces`,
-  `get_workspace`, `create_workspace`, `close_workspace`, `capture_workspace`,
-  `send_text`, `send_key`, `stream_events`.
-- Knowledge shared: workspace-level IDs, cwd/title/provider hints, status,
-  focused terminal availability, event sequence. cmux surface selection,
-  command retries, event replay, and socket-path details stay private.
+  request IDs. Required methods for MVP: `hello`, `list_terminal_sessions`,
+  `capture_screen`, `send_text`, `send_key`, `close_terminal_session`,
+  `stream_events`.
+- Knowledge shared: terminal-session IDs, workspace metadata, cwd/title/provider
+  hints, status, event sequence. cmux command retries, event replay, and
+  socket-path details stay private.
 - Balancing move: lower strength through anti-corruption. The sidecar translates
   cmux vocabulary to ccgram terminal-unit vocabulary.
-- Failure modes: sidecar unavailable, protocol version mismatch, stale workspace
-  cache after cmux restart, slow capture, partial command send, or command
-  routed to browser surface instead of terminal surface.
+- Failure modes: sidecar unavailable, protocol version mismatch, stale terminal
+  cache after cmux restart, slow capture, partial command send, or command routed
+  to a moved/closed terminal session.
 
 ### ccgram-cmux-sidecar -> cmux CLI/socket/events
 
@@ -277,8 +278,8 @@ implementation churn.
   the sidecar. It would be unbalanced if spread across handlers.
 - Contract: documented cmux CLI/socket behavior from `docs/cli-contract.md` and
   `docs/events.md`; sidecar owns compatibility checks.
-- Knowledge shared: cmux workspace/surface IDs, event sequence/cursor, command
-  arguments, and capability responses. ccgram core does not share this
+- Knowledge shared: cmux workspace/surface/panel IDs, event sequence/cursor,
+  command arguments, and capability responses. ccgram core does not share this
   knowledge.
 - Balancing move: lower distance locally by keeping cmux-specific code in one
   sidecar package and lower strength upstream by normalizing to ccgram DTOs.
@@ -294,14 +295,14 @@ implementation churn.
 - Balanced: not yet; current tmux-only hook resolution is too strong for cmux.
 - Contract: resolve hook terminal unit in priority order:
   1. `CCGRAM_UNIT_ID` or `CCGRAM_WINDOW_ID` when explicitly set.
-  2. `CMUX_WORKSPACE_ID`/`CMUX_SURFACE_ID` via sidecar lookup.
+  2. `CMUX_TERMINAL_ID`/`CMUX_SURFACE_ID`/`CMUX_PANEL_ID` via sidecar lookup.
   3. `TMUX_PANE` via existing tmux resolution.
 - Knowledge shared: hook env vars and resolved terminal unit reference. Provider
   hook payloads remain provider parser concern.
 - Balancing move: lower strength by making hook resolution backend-neutral;
   keep provider-specific hook parsing separate.
 - Failure modes: duplicate events if both cmux and ccgram hooks are installed,
-  missing env vars in cmux terminals, stale cmux workspace mapping, or old hooks
+  missing env vars in cmux terminals, stale cmux terminal mapping, or old hooks
   writing only tmux-shaped session-map keys.
 
 ### Session monitor -> sidecar event stream
@@ -347,8 +348,8 @@ legacy_window_id, cwd, provider_name, origin, external)` and setters that
 - Volatility: medium.
 - Balanced: acceptable if peer ID format is explicit and stable.
 - Contract: peer IDs become backend-qualified. Examples: `tmux:ccgram:@3` and
-  `cmux:workspace:9B6920C1`. CLI output includes backend separately so humans
-  are not forced to parse it.
+  `cmux:term:9B6920C1`. CLI output includes backend separately so humans are
+  not forced to parse it.
 - Knowledge shared: peer identity and user-declared metadata. Injection details
   stay in backend delivery service.
 - Balancing move: lower strength by making peer IDs opaque and using metadata
@@ -388,8 +389,7 @@ legacy_window_id, cwd, provider_name, origin, external)` and setters that
   surface internals stay behind backend adapters.
 - Balancing move: lower strength by keeping Mini App read-only in MVP.
 - Failure modes: token authorizes tmux-style `window_id` but not cmux unit,
-  capture floods sidecar, or cmux workspace has multiple terminal surfaces and
-  the focused surface changes mid-stream.
+  capture floods sidecar, or cmux terminal session moves/closes mid-stream.
 
 ## Target data model
 
@@ -403,7 +403,7 @@ router.
 TerminalUnitRef
   backend: "tmux" | "cmux"
   unit_id: string
-  display_id: string        # stable human/debug form, e.g. tmux:@3 or cmux:workspace:...
+  display_id: string        # stable human/debug form, e.g. tmux:@3 or cmux:<terminal-id>
 ```
 
 Rules:
@@ -412,8 +412,8 @@ Rules:
 - `unit_id` is backend-local and not parsed by handlers.
 - Existing tmux bindings with only `window_id` load as `backend="tmux"` and
   `unit_id=<window_id>`.
-- cmux unit IDs use cmux workspace UUID or cmux workspace ref, never a fake tmux
-  window ID.
+- cmux unit IDs use cmux terminal-session IDs, never a fake tmux window ID and
+  never workspace IDs.
 
 ### TerminalUnit
 
@@ -437,18 +437,20 @@ TerminalUnit
 `backend_metadata` is for diagnostics only. User-visible code should prefer
 first-class fields so backend-specific metadata does not become a covert API.
 
-### Sidecar workspace cache
+### Sidecar terminal-session cache
 
 The sidecar may cache cmux state for performance:
 
 ```text
-CmuxWorkspaceRecord
-  workspace_id: string
-  workspace_ref: string | null
+CmuxTerminalSessionRecord
+  terminal_id: string
+  workspace_id: string | null
+  workspace_title: string
+  pane_id: string | null
+  surface_id: string | null
+  panel_id: string | null
   title: string
   cwd: string | null
-  selected_surface_id: string | null
-  selected_surface_kind: "terminal" | "browser" | "markdown" | "unknown"
   provider_name: string | null
   status: string
   latest_notification_text: string | null
@@ -459,7 +461,7 @@ CmuxWorkspaceRecord
 
 The cache is sidecar-private. ccgram requests snapshots when it needs durable
 truth and treats cache-backed responses as operational read models, not
-persistence.
+persistence. Workspace fields are metadata, not identity.
 
 ### Sidecar RPC envelope
 
@@ -471,8 +473,8 @@ contracts.
 {
   "jsonrpc": "2.0",
   "id": "req-1",
-  "method": "capture_workspace",
-  "params": { "workspace_id": "...", "ansi": true }
+  "method": "capture_screen",
+  "params": { "terminal_id": "...", "with_ansi": true }
 }
 ```
 
@@ -490,16 +492,16 @@ Responses use one of two shapes:
 {
   "jsonrpc": "2.0",
   "id": "req-1",
-  "error": { "code": "not_found", "message": "workspace not found" }
+  "error": { "code": "not_found", "message": "terminal session not found" }
 }
 ```
 
 Stable error codes:
 
 - `unavailable`: cmux app/socket/CLI is unavailable.
-- `not_found`: workspace or surface no longer exists.
+- `not_found`: terminal session no longer exists.
 - `unsupported`: operation is not supported for the target or sidecar version.
-- `no_terminal_surface`: workspace has no selected terminal target.
+- `no_terminal_surface`: target is not a terminal-capable panel.
 - `timeout`: operation exceeded configured deadline.
 - `rejected`: sidecar rejected invalid input or unsafe target.
 - `internal_error`: unexpected sidecar failure; logs hold details.
@@ -512,7 +514,7 @@ The sidecar event stream normalizes cmux events before ccgram sees them:
 {
   "seq": 42,
   "backend": "cmux",
-  "unit_id": "workspace-uuid",
+  "unit_id": "terminal-session-uuid",
   "event": "unit.status.changed",
   "status": "ready",
   "provider_name": "claude",
@@ -534,28 +536,28 @@ Rules:
 
 ## Key flows
 
-1. Bind existing cmux workspace to a Telegram topic.
+1. Bind existing cmux terminal session to a Telegram topic.
    - Participants: user, Telegram topic handler, backend router, CmuxBackend,
      sidecar, cmux app, thread router, terminal unit state port.
-   - Data/control path: user selects "Bind cmux workspace" -> ccgram calls
-     `CmuxBackend.list_units()` -> sidecar refreshes `cmux tree --all --json` or
-     socket snapshot -> handler renders workspace picker -> user selects
-     workspace -> ccgram stores topic binding with `backend=cmux` and
-     `unit_id=<workspace_id>` -> topic title/status initializes from
-     `TerminalUnit` projection.
+   - Data/control path: user selects "Bind cmux terminal session" -> ccgram
+     calls `CmuxBackend.list_units()` -> sidecar refreshes `cmux tree --all --json`
+     or socket snapshot -> handler renders terminal-session picker -> user selects
+     terminal -> ccgram stores topic binding with `backend=cmux` and
+     `unit_id=<terminal_id>` -> topic title/status initializes from
+     `TerminalUnit` projection. Workspace id/title are metadata.
    - Boundary contracts: `TerminalUnit`, backend-neutral picker callbacks,
-     sidecar `list_workspaces`.
+     sidecar `list_terminal_sessions`.
    - Local-change expectation: cmux discovery changes stay in sidecar; Telegram
      picker UX changes stay in handlers; state field changes stay in terminal
      identity port.
 
-2. Create new cmux workspace from Telegram.
+2. Create new cmux terminal session from Telegram.
    - Participants: topic creation flow, provider/mode picker, backend router,
      CmuxBackend, sidecar, cmux app, provider registry.
    - Data/control path: directory/provider/mode selected -> launch request has
-     `backend=cmux` -> sidecar calls cmux workspace creation with cwd and
+     `backend=cmux` -> sidecar calls cmux terminal/workspace creation with cwd and
      command -> cmux starts terminal with `CCGRAM_UNIT_ID` and provider command
-     when supported -> sidecar returns workspace ID -> ccgram persists binding
+     when supported -> sidecar returns terminal ID -> ccgram persists binding
      and waits for provider hook/session discovery.
    - Boundary contracts: backend-neutral `create_unit` request and `TerminalUnit`
      result, provider launch command contract.
@@ -563,12 +565,12 @@ Rules:
      cmux launch mechanics stay in sidecar; topic flow only knows selected
      backend.
 
-3. Send a Telegram message to a cmux workspace.
+3. Send a Telegram message to a cmux terminal session.
    - Participants: text handler, terminal operation service, CmuxBackend,
      sidecar, cmux app.
    - Data/control path: text handler resolves topic -> `TerminalUnitRef` ->
-     `send_text(ref, text, enter=True)` -> sidecar validates focused terminal
-     surface -> calls cmux send/socket command -> returns success/failure ->
+     `send_text(ref, text, enter=True)` -> sidecar validates the terminal
+     session -> calls cmux send/socket command -> returns success/failure ->
      handler replies with sent/failure status as today.
    - Boundary contracts: `send_text` idempotence/timeout semantics and sidecar
      error codes.
@@ -579,7 +581,7 @@ Rules:
    - Participants: screenshot/live handlers or Mini App, terminal operation
      service, backend, sidecar, cmux app.
    - Data/control path: request resolves ref -> `capture(ref, ansi=True)` ->
-     sidecar calls `cmux read-screen --workspace <id>` or socket method ->
+     sidecar calls `cmux read-screen` for the terminal session or socket method ->
      returns text/ANSI plus truncation metadata -> existing rendering/splitting
      code handles response.
    - Boundary contracts: capture response includes text, `truncated`,
@@ -591,7 +593,7 @@ Rules:
    - Participants: provider CLI, ccgram hook command, hook resolution adapter,
      sidecar, session map/event writer, session monitor.
    - Data/control path: provider hook runs -> env contains `CCGRAM_UNIT_ID` or
-     `CMUX_WORKSPACE_ID` -> hook resolution returns `TerminalUnitRef` -> event
+     `CMUX_TERMINAL_ID` -> hook resolution returns `TerminalUnitRef` -> event
      is written with backend-qualified unit reference -> session monitor routes
      status/message updates to the bound topic.
    - Boundary contracts: backend-aware hook event shape and resolution priority.
@@ -658,7 +660,7 @@ Boundary tests:
 
 - Handlers cannot import `tmux_manager` directly after their feature is migrated;
   allow-list only adapter modules and legacy unmigrated files.
-- Backend-neutral services never parse cmux workspace IDs or tmux `@N` IDs.
+- Backend-neutral services never parse cmux terminal IDs or tmux `@N` IDs.
 
 Architecture-fitness checks:
 
@@ -728,17 +730,17 @@ Architecture-fitness checks:
 
 Behavior tests:
 
-- Lists workspaces from a fake cmux tree snapshot.
-- Sends text to the focused terminal surface of a workspace.
+- Lists terminal sessions from a fake cmux tree snapshot.
+- Sends text to the selected terminal session.
 - Captures terminal text and returns truncation metadata.
 - Reconnects event stream after EOF and resumes from the last processed seq.
 - Refreshes snapshot after a cmux event replay gap.
 
 Unit tests:
 
-- Normalizes cmux workspace/surface events into sidecar event frames.
-- Rejects commands for non-terminal focused surfaces unless an explicit terminal
-  surface is selected.
+- Normalizes cmux workspace/surface/panel events into terminal-session event
+  frames.
+- Rejects commands for non-terminal panels.
 - Applies command timeouts and returns stable error categories.
 - Handles multiple cmux socket paths/app variants by explicit configuration.
 
@@ -791,7 +793,7 @@ Architecture-fitness checks:
 Behavior tests:
 
 - Hook with `CCGRAM_UNIT_ID=cmux:...` resolves without tmux.
-- Hook with `CMUX_WORKSPACE_ID` resolves through sidecar lookup.
+- Hook with `CMUX_TERMINAL_ID` resolves through sidecar lookup.
 - Hook with only `TMUX_PANE` keeps existing tmux behavior.
 
 Unit tests:
@@ -879,7 +881,7 @@ Architecture-fitness checks:
 Behavior tests:
 
 - Existing tmux Mini App terminal stream remains unchanged.
-- cmux workspace terminal stream returns frames through the same WebSocket
+- cmux terminal-session stream returns frames through the same WebSocket
   protocol.
 
 Unit tests:
@@ -929,8 +931,8 @@ Architecture-fitness checks:
 2. Wrap existing tmux operations in `TmuxBackend` and keep tmux as the default.
 3. Add cmux backend behind an explicit feature flag. Hidden unless sidecar is
    configured and healthy.
-4. Ship bind-existing-cmux-workspace before create-cmux-workspace. Discovery is
-   easier to validate than launch orchestration.
+4. Ship bind-existing-cmux-terminal-session before create-cmux-terminal-session.
+   Discovery is easier to validate than launch orchestration.
 5. Add cmux send/capture/status slices one at a time. Each slice shrinks direct
    `tmux_manager` access for the touched feature.
 6. Add cmux hook/session event support after basic terminal control works.
@@ -968,14 +970,15 @@ Rollback rules:
   - Revisit when: the cmux CLI/socket API is stable enough and direct calls prove
     simpler for all required operations.
 
-- Decision: map one Telegram topic to one cmux workspace.
-  - Chosen because: workspace is closest to ccgram's current one topic = one
-    controlled session model. Surfaces and panes are layout details.
-  - Alternatives considered: topic per cmux surface; topic per cmux app window.
-  - Trade-offs: workspace mapping is less precise for multi-agent/multi-terminal
-    workspaces, but avoids topic churn and preserves session-level UX.
-  - Revisit when: users need independent Telegram topics for multiple agents
-    inside one cmux workspace.
+- Decision: map one Telegram topic to one cmux terminal session.
+  - Chosen because: a cmux workspace is a mutable grouping of tabs; the terminal
+    tab/panel is the controlled session. Topic routing must follow the terminal
+    session when it moves between workspaces.
+  - Alternatives considered: topic per cmux workspace; topic per cmux app window.
+  - Trade-offs: terminal-session mapping creates more rows when users open many
+    tabs, but avoids command routing ambiguity and workspace history pollution.
+  - Revisit when: cmux changes workspace semantics so workspaces become durable
+    terminal-session identity, not mutable grouping.
 
 - Decision: do not fake tmux IDs for cmux.
   - Chosen because: backend identity is core domain language. A fake `@N` would
@@ -1015,8 +1018,8 @@ events`.
 - cmux hooks and ccgram hooks may duplicate provider events. Owner: hook
   implementation. Revisit when installing cmux and ccgram hooks together for
   Claude/Codex/Gemini/Pi.
-- cmux workspaces can contain multiple terminal surfaces. Owner: sidecar design.
-  Revisit if users regularly run multiple independent agents per workspace.
+- cmux terminal-session IDs must remain stable across workspace moves. Owner:
+  sidecar design. Revisit if cmux exposes only workspace-scoped ephemeral IDs.
 - Sidecar process supervision is not specified by current ccgram runtime.
   Owner: implementation plan. Revisit before coding sidecar startup/shutdown.
 - Telegram topic binding schema migration may touch many handlers. Owner:
@@ -1033,10 +1036,10 @@ events`.
 | Issue                                                        | Severity | Evidence/rationale                                                                      | Resolution                                                                                                         |
 | ------------------------------------------------------------ | -------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | Mixed backend identity could become a new god model          | High     | Topic routing, state, hooks, messaging, Mini App, and sessions all need identity.       | Use `TerminalUnitRef` as the published language and terminal identity feature port as the only raw-state boundary. |
-| Sidecar RPC can become a distributed monolith                | Medium   | If ccgram depends on broad sidecar internals, every cmux change cascades.               | Keep sidecar contract workspace-level and versioned; sidecar owns raw cmux vocabulary.                             |
-| Initial MVP may underdeliver versus tmux multi-pane features | Medium   | tmux pane-level capture/listing is richer than workspace-only cmux MVP.                 | Declare workspace-first scope and expose subtargets only through optional backend capabilities.                    |
+| Sidecar RPC can become a distributed monolith                | Medium   | If ccgram depends on broad sidecar internals, every cmux change cascades.               | Keep sidecar contract terminal-session-level and versioned; sidecar owns raw cmux vocabulary.                      |
+| Initial MVP may underdeliver versus tmux multi-pane features | Medium   | tmux pane-level capture/listing is richer than cmux terminal-session MVP.               | Declare terminal-session-first scope and expose subtargets only through optional backend capabilities.             |
 | Existing code has many direct `tmux_manager` calls           | High     | Search shows handlers, Mini App, sessions dashboard, and hook paths call tmux directly. | Migration must be incremental through terminal operation services and structural allow-list tests.                 |
-| Hook/session-map compatibility is underspecified             | Medium   | Current hooks resolve via `TMUX_PANE`; cmux uses `CMUX_WORKSPACE_ID`/surface IDs.       | Add hook resolution adapter and backend-qualified event schema before relying on cmux hooks.                       |
+| Hook/session-map compatibility is underspecified             | Medium   | Current hooks resolve via `TMUX_PANE`; cmux uses terminal/surface/panel IDs.            | Add hook resolution adapter and backend-qualified event schema before relying on cmux hooks.                       |
 | Sidecar launch policy could leak into product design         | Low      | A Docker-style sidecar would fight macOS local app sockets.                             | Treat sidecar as a local process by default; containerization is out of scope unless later required.               |
 
 ## Handoff
@@ -1046,8 +1049,8 @@ events`.
 - Implementation notes:
   - Start with backend-neutral identity and `TmuxBackend` wrapper before adding
     cmux behavior. Prove the existing tmux path still works behind the seam.
-  - Add cmux discovery/bind existing workspace before cmux workspace creation.
-    Binding is easier to test than launch orchestration.
+  - Add cmux discovery/bind existing terminal session before cmux terminal
+    creation. Binding is easier to test than launch orchestration.
   - Keep sidecar protocol small and versioned from day one.
   - Add structural tests with allow-lists so direct `tmux_manager` usage shrinks
     instead of silently growing.
@@ -1055,8 +1058,8 @@ events`.
     current cmux extension provider list is not externally pluggable.
 - Acceptance signals:
   - Existing tmux session flows pass unchanged through `TmuxBackend`.
-  - A cmux workspace can be bound to a Telegram topic, receive text, return
-    screen capture, and show status without tmux running.
+  - A cmux terminal session can be bound to a Telegram topic, receive text,
+    return screen capture, and show status without tmux running.
   - `/sessions` shows both tmux and cmux units in one bot.
   - Hook events from a cmux-hosted provider resolve to a backend-qualified topic.
   - Sidecar outage marks only cmux topics degraded; tmux topics keep working.

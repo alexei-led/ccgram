@@ -337,8 +337,8 @@ async def _handle_dead_window(
     Returns True if the window is dead (handled), False if still alive.
 
     Non-tmux backends own their own liveness — the tmux find-by-id probe
-    can't see a cmux workspace and would otherwise misfire recovery on
-    every cmux text send. Mirror the polling-coordinator skip.
+    can't see a cmux terminal session and would otherwise misfire recovery
+    on every cmux text send. Mirror the polling-coordinator skip.
     """
     if get_backend(window_id) != BACKEND_TMUX:
         return False

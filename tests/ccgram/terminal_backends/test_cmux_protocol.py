@@ -4,8 +4,8 @@ import pytest
 
 from ccgram.terminal_backends.base import TerminalBackendErrorCode
 from ccgram.terminal_backends.cmux_protocol import (
-    EVENT_WORKSPACE_CLOSED,
-    EVENT_WORKSPACE_STATE,
+    EVENT_TERMINAL_SESSION_CLOSED,
+    EVENT_TERMINAL_SESSION_STATE,
     KNOWN_EVENTS,
     KNOWN_METHODS,
     METHOD_HELLO,
@@ -17,7 +17,7 @@ from ccgram.terminal_backends.cmux_protocol import (
     CmuxProtocolError,
     CmuxRequest,
     CmuxResponse,
-    CmuxWorkspace,
+    CmuxTerminalSession,
     map_sidecar_error_to_terminal,
 )
 
@@ -31,11 +31,11 @@ class TestCmuxRequest:
     def test_default_params_independent_per_instance(self) -> None:
         a = CmuxRequest(id=1, method=METHOD_HELLO)
         b = CmuxRequest(id=2, method=METHOD_HELLO)
-        a.params["x"] = 1  # type: ignore[index]
+        a.params["x"] = 1
         assert "x" not in b.params
 
     def test_to_wire_copies_params(self) -> None:
-        params = {"workspace_id": "abc"}
+        params = {"terminal_id": "abc"}
         req = CmuxRequest(id=1, method="x", params=params)
         wire = req.to_wire()
         wire["params"]["mutated"] = True
@@ -127,13 +127,13 @@ class TestCmuxResponse:
 class TestCmuxEvent:
     def test_from_wire(self) -> None:
         event = CmuxEvent.from_wire(
-            {"method": EVENT_WORKSPACE_STATE, "params": {"workspace_id": "abc"}}
+            {"method": EVENT_TERMINAL_SESSION_STATE, "params": {"terminal_id": "abc"}}
         )
-        assert event.method == EVENT_WORKSPACE_STATE
-        assert event.params == {"workspace_id": "abc"}
+        assert event.method == EVENT_TERMINAL_SESSION_STATE
+        assert event.params == {"terminal_id": "abc"}
 
     def test_from_wire_defaults_params_empty(self) -> None:
-        event = CmuxEvent.from_wire({"method": EVENT_WORKSPACE_CLOSED})
+        event = CmuxEvent.from_wire({"method": EVENT_TERMINAL_SESSION_CLOSED})
         assert event.params == {}
 
     def test_from_wire_malformed(self) -> None:
@@ -141,23 +141,23 @@ class TestCmuxEvent:
             CmuxEvent.from_wire({"params": {}})
 
     def test_known_events_listed(self) -> None:
-        assert EVENT_WORKSPACE_STATE in KNOWN_EVENTS
-        assert EVENT_WORKSPACE_CLOSED in KNOWN_EVENTS
+        assert EVENT_TERMINAL_SESSION_STATE in KNOWN_EVENTS
+        assert EVENT_TERMINAL_SESSION_CLOSED in KNOWN_EVENTS
 
 
 class TestCmuxHelloResult:
     def test_from_result_minimal(self) -> None:
         hello = CmuxHelloResult.from_result(
-            {"protocol_version": "1", "sidecar_version": "0.1.0"}
+            {"protocol_version": PROTOCOL_VERSION, "sidecar_version": "0.1.0"}
         )
-        assert hello.protocol_version == "1"
+        assert hello.protocol_version == PROTOCOL_VERSION
         assert hello.sidecar_version == "0.1.0"
         assert hello.supports_capture is True
 
     def test_from_result_full(self) -> None:
         hello = CmuxHelloResult.from_result(
             {
-                "protocol_version": "1",
+                "protocol_version": PROTOCOL_VERSION,
                 "sidecar_version": "0.2.0",
                 "supports_create": True,
                 "supports_capture": False,
@@ -190,58 +190,65 @@ class TestCmuxHelloResult:
         with pytest.raises(CmuxProtocolError, match=field):
             CmuxHelloResult.from_result(
                 {
-                    "protocol_version": "1",
+                    "protocol_version": PROTOCOL_VERSION,
                     "sidecar_version": "0.2.0",
                     field: "false",
                 }
             )
 
 
-class TestCmuxWorkspace:
+class TestCmuxTerminalSession:
     def test_from_wire_minimal(self) -> None:
-        ws = CmuxWorkspace.from_wire({"workspace_id": "abc"})
-        assert ws.workspace_id == "abc"
-        assert ws.has_terminal_surface is True
-        assert ws.state == "unknown"
+        session = CmuxTerminalSession.from_wire({"terminal_id": "abc"})
+        assert session.terminal_id == "abc"
+        assert session.workspace_id is None
+        assert session.state == "unknown"
 
     def test_from_wire_full(self) -> None:
-        ws = CmuxWorkspace.from_wire(
+        session = CmuxTerminalSession.from_wire(
             {
-                "workspace_id": "ws-1",
+                "terminal_id": "term-1",
                 "title": "demo",
                 "cwd": "/tmp",
                 "provider_name": "claude",
                 "state": "ready",
-                "has_terminal_surface": False,
+                "workspace_id": "ws-1",
+                "workspace_title": "Feature A",
+                "pane_id": "pane-1",
+                "surface_id": "surface-1",
+                "panel_id": "panel-1",
             }
         )
-        assert ws.title == "demo"
-        assert ws.cwd == "/tmp"
-        assert ws.state == "ready"
-        assert ws.has_terminal_surface is False
+        assert session.title == "demo"
+        assert session.cwd == "/tmp"
+        assert session.state == "ready"
+        assert session.workspace_id == "ws-1"
+        assert session.workspace_title == "Feature A"
+        assert session.pane_id == "pane-1"
+        assert session.surface_id == "surface-1"
+        assert session.panel_id == "panel-1"
 
-    def test_from_wire_accepts_legacy_id_alias(self) -> None:
-        ws = CmuxWorkspace.from_wire({"id": "legacy-1"})
-        assert ws.workspace_id == "legacy-1"
+    def test_from_wire_accepts_surface_id_alias(self) -> None:
+        session = CmuxTerminalSession.from_wire({"surface_id": "surface-1"})
+        assert session.terminal_id == "surface-1"
+        assert session.surface_id == "surface-1"
 
     @pytest.mark.parametrize(
         "payload, fragment",
         [
-            ({}, "workspace_id"),
-            ({"workspace_id": ""}, "workspace_id"),
-            ({"workspace_id": "ok", "cwd": 5}, "cwd"),
-            ({"workspace_id": "ok", "provider_name": 5}, "provider_name"),
-            ({"workspace_id": "ok", "title": 5}, "title"),
-            ({"workspace_id": "ok", "state": 5}, "state"),
-            (
-                {"workspace_id": "ok", "has_terminal_surface": "0"},
-                "has_terminal_surface",
-            ),
+            ({}, "terminal_id"),
+            ({"terminal_id": ""}, "terminal_id"),
+            ({"terminal_id": "ok", "cwd": 5}, "cwd"),
+            ({"terminal_id": "ok", "provider_name": 5}, "provider_name"),
+            ({"terminal_id": "ok", "title": 5}, "title"),
+            ({"terminal_id": "ok", "state": 5}, "state"),
+            ({"terminal_id": "ok", "workspace_id": ""}, "workspace_id"),
+            ({"terminal_id": "ok", "pane_id": 5}, "pane_id"),
         ],
     )
     def test_from_wire_malformed(self, payload, fragment: str) -> None:
         with pytest.raises(CmuxProtocolError, match=fragment):
-            CmuxWorkspace.from_wire(payload)
+            CmuxTerminalSession.from_wire(payload)
 
 
 class TestErrorMapping:
@@ -265,8 +272,8 @@ class TestErrorMapping:
 
 
 class TestConstants:
-    def test_protocol_version_is_one(self) -> None:
-        assert PROTOCOL_VERSION == "1"
+    def test_protocol_version_is_two(self) -> None:
+        assert PROTOCOL_VERSION == "2"
 
     def test_method_constants_known(self) -> None:
         assert METHOD_HELLO in KNOWN_METHODS

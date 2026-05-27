@@ -1,16 +1,14 @@
-"""``/cmux`` workspace picker — bind an existing cmux workspace to a topic.
+"""``/cmux`` terminal picker — bind a cmux terminal session to a topic.
 
-This is the first user-visible cmux vertical slice (plan Task 4). The
-``/cmux`` command queries the cmux sidecar for workspaces, renders an
-inline picker, and on selection persists the binding through the
-terminal-identity feature port so subsequent send/capture operations
+The ``/cmux`` command queries the cmux sidecar for terminal tabs/panels,
+renders an inline picker, and on selection persists the binding through
+the terminal-identity feature port so subsequent send/capture operations
 route via ``terminal_operations`` → ``CmuxBackend`` → sidecar.
 
-Persistence shape: the bound row uses ``window_id = "cmux:<workspace_id>"``
+Persistence shape: the bound row uses ``window_id = "cmux:<terminal_id>"``
 so ``thread_router`` continues to treat the key as opaque and the
-identity matches ``TerminalUnitRef.display_id``. The actual backend unit
-id is the bare workspace id, persisted via
-:func:`set_terminal_identity` — handlers never parse the prefix.
+identity matches ``TerminalUnitRef.display_id``. cmux workspace data is
+metadata for display only; it is never the routing key.
 
 Failure modes are scoped to cmux topics only:
 
@@ -19,7 +17,7 @@ Failure modes are scoped to cmux topics only:
   same hint, no router lookup attempted.
 * sidecar unreachable / handshake fails → user-safe error text, no
   partial bind state left behind.
-* stale picker (workspace list changed between render and tap) → alert.
+* stale picker (terminal list changed between render and tap) → alert.
 
 The module is import-light: all backend/router imports are lazy so
 unrelated code paths never pay the cost of touching the cmux client.
@@ -46,7 +44,12 @@ from ..callback_data import CB_CMUX_BIND, CB_CMUX_CANCEL, CB_CMUX_LIST
 from ..callback_helpers import get_thread_id
 from ..callback_registry import register
 from ..messaging_pipeline.message_sender import safe_edit, safe_reply
-from ..user_state import PENDING_THREAD_TEXT
+from ..user_state import PENDING_THREAD_ID, PENDING_THREAD_TEXT
+from .directory_browser import (
+    clear_browse_state,
+    clear_window_picker_state,
+    clear_worktree_state,
+)
 
 if TYPE_CHECKING:
     from telegram.ext import ContextTypes
@@ -56,7 +59,7 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger()
 
-CMUX_WORKSPACES_KEY = "cmux_workspace_units"
+CMUX_TERMINAL_SESSIONS_KEY = "cmux_terminal_session_units"
 _CMUX_DISABLED_TEXT = (
     "cmux backend is disabled.\n\n"
     "Set CCGRAM_CMUX_ENABLED=true and CCGRAM_CMUX_SIDECAR_SOCKET to enable."
@@ -64,12 +67,12 @@ _CMUX_DISABLED_TEXT = (
 _CMUX_NOT_REGISTERED_TEXT = (
     "cmux backend is not wired in this bot instance.\n\nRestart with cmux configured."
 )
-_CMUX_NO_WORKSPACES_TEXT = "cmux sidecar reports no workspaces yet."
+_CMUX_NO_TERMINAL_SESSIONS_TEXT = "cmux sidecar reports no terminal sessions yet."
 
 
-def _qualified_window_id(workspace_id: str) -> str:
-    """Build the persisted ``window_id`` key for a cmux workspace."""
-    return f"cmux:{workspace_id}"
+def _qualified_window_id(terminal_id: str) -> str:
+    """Build the persisted ``window_id`` key for a cmux terminal session."""
+    return f"cmux:{terminal_id}"
 
 
 def _load_backend_config():
@@ -80,7 +83,7 @@ def _load_backend_config():
     return load_terminal_backend_config(config_dir=config.config_dir)
 
 
-async def _list_cmux_workspaces() -> tuple[list[TerminalUnit], str | None]:
+async def _list_cmux_terminal_sessions() -> tuple[list[TerminalUnit], str | None]:
     """Return ``(units, error_message)`` for the picker.
 
     ``error_message`` is None on success. Non-None values are
@@ -115,11 +118,20 @@ async def _list_cmux_workspaces() -> tuple[list[TerminalUnit], str | None]:
 
 
 def _label_for_unit(unit: TerminalUnit) -> str:
-    """Human label for a cmux workspace in the picker."""
+    """Human label for a cmux terminal session in the picker."""
     title = unit.title or unit.ref.unit_id
     if unit.provider_name:
         return f"{title} [{unit.provider_name}]"
     return title
+
+
+def _workspace_label_for_unit(unit: TerminalUnit) -> str:
+    raw = unit.backend_metadata.get("workspace_title") or unit.backend_metadata.get(
+        "workspace_id"
+    )
+    if isinstance(raw, str) and raw:
+        return raw
+    return ""
 
 
 def build_cmux_picker(
@@ -127,21 +139,25 @@ def build_cmux_picker(
     *,
     picker_id: str = "default",
 ) -> tuple[str, InlineKeyboardMarkup]:
-    """Render the workspace picker keyboard for a list of cmux units.
+    """Render the terminal-session picker keyboard for cmux units.
 
     Empty lists still render a usable picker with a cancel button.
     Cancel and refresh share the bottom row regardless of count. Bind callbacks
     include a picker token so old messages cannot bind against a newer list.
     """
-    lines: list[str] = ["*Bind cmux Workspace*\n"]
+    lines: list[str] = ["*Bind cmux Terminal Session*\n"]
     if not units:
-        lines.append("_No workspaces reported by the cmux sidecar._")
+        lines.append("_No terminal sessions reported by the cmux sidecar._")
     else:
-        lines.append("Pick an existing cmux workspace to bind here.")
+        lines.append("Pick an existing cmux terminal tab/panel to bind here.")
         for unit in units:
             cwd_display = f" — `{unit.cwd}`" if unit.cwd else ""
-            surface = "" if unit.supports_send_text else " — no terminal surface"
-            lines.append(f"• `{_label_for_unit(unit)}`{cwd_display}{surface}")
+            workspace = _workspace_label_for_unit(unit)
+            workspace_display = f" — workspace `{workspace}`" if workspace else ""
+            unavailable = "" if unit.supports_send_text else " — unavailable"
+            lines.append(
+                f"• `{_label_for_unit(unit)}`{workspace_display}{cwd_display}{unavailable}"
+            )
 
     buttons: list[list[InlineKeyboardButton]] = []
     for idx, unit in enumerate(units):
@@ -150,15 +166,19 @@ def build_cmux_picker(
         buttons.append(
             [
                 InlineKeyboardButton(
-                    f"🪟 {_label_for_unit(unit)[:24]}",
+                    f"💻 {_label_for_unit(unit)[:24]}",
                     callback_data=f"{CB_CMUX_BIND}{picker_id}:{idx}",
                 )
             ]
         )
     buttons.append(
         [
-            InlineKeyboardButton("🔄 Refresh", callback_data=CB_CMUX_LIST),
-            InlineKeyboardButton("Cancel", callback_data=CB_CMUX_CANCEL),
+            InlineKeyboardButton(
+                "🔄 Refresh", callback_data=f"{CB_CMUX_LIST}{picker_id}"
+            ),
+            InlineKeyboardButton(
+                "Cancel", callback_data=f"{CB_CMUX_CANCEL}{picker_id}"
+            ),
         ]
     )
     return "\n".join(lines), InlineKeyboardMarkup(buttons)
@@ -168,13 +188,22 @@ def _new_picker_id() -> str:
     return secrets.token_hex(4)
 
 
-def _workspace_store(context: ContextTypes.DEFAULT_TYPE) -> dict[str, dict[str, Any]]:
+def _raw_session_store(context: ContextTypes.DEFAULT_TYPE) -> dict[str, Any]:
     if context.user_data is None:
         return {}
-    raw = context.user_data.setdefault(CMUX_WORKSPACES_KEY, {})
+    raw = context.user_data.get(CMUX_TERMINAL_SESSIONS_KEY)
+    if not isinstance(raw, dict):
+        return {}
+    return raw
+
+
+def _session_store(context: ContextTypes.DEFAULT_TYPE) -> dict[str, dict[str, Any]]:
+    if context.user_data is None:
+        return {}
+    raw = context.user_data.setdefault(CMUX_TERMINAL_SESSIONS_KEY, {})
     if not isinstance(raw, dict):
         raw = {}
-        context.user_data[CMUX_WORKSPACES_KEY] = raw
+        context.user_data[CMUX_TERMINAL_SESSIONS_KEY] = raw
     return raw
 
 
@@ -186,13 +215,13 @@ def _store_units(
     units: list[TerminalUnit],
 ) -> None:
     if context.user_data is not None:
-        _workspace_store(context)[picker_id] = {"thread_id": thread_id, "units": units}
+        _session_store(context)[picker_id] = {"thread_id": thread_id, "units": units}
 
 
 def _load_picker(
     context: ContextTypes.DEFAULT_TYPE, picker_id: str
 ) -> tuple[int | None, list[TerminalUnit]]:
-    store = _workspace_store(context)
+    store = _raw_session_store(context)
     entry = store.get(picker_id)
     if not isinstance(entry, dict):
         return None, []
@@ -205,19 +234,14 @@ def _load_picker(
 
 def _clear_picker(context: ContextTypes.DEFAULT_TYPE, picker_id: str) -> None:
     if context.user_data is not None:
-        store = _workspace_store(context)
+        store = _raw_session_store(context)
         store.pop(picker_id, None)
         if not store:
-            context.user_data.pop(CMUX_WORKSPACES_KEY, None)
-
-
-def _clear_units(context: ContextTypes.DEFAULT_TYPE) -> None:
-    if context.user_data is not None:
-        context.user_data.pop(CMUX_WORKSPACES_KEY, None)
+            context.user_data.pop(CMUX_TERMINAL_SESSIONS_KEY, None)
 
 
 async def cmux_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """``/cmux`` — show the cmux workspace picker.
+    """``/cmux`` — show the cmux terminal-session picker.
 
     Authorization, topic context, and cmux-active config are checked
     here so callback handlers can assume a well-formed state.
@@ -237,7 +261,7 @@ async def cmux_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         return
 
-    units, error = await _list_cmux_workspaces()
+    units, error = await _list_cmux_terminal_sessions()
     if error is not None:
         await safe_reply(message, error)
         return
@@ -247,28 +271,55 @@ async def cmux_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     text, keyboard = build_cmux_picker(units, picker_id=picker_id)
     if not units:
-        text = f"{text}\n\n_{_CMUX_NO_WORKSPACES_TEXT}_"
+        text = f"{text}\n\n_{_CMUX_NO_TERMINAL_SESSIONS_TEXT}_"
     await safe_reply(message, text, reply_markup=keyboard)
 
 
 async def _handle_refresh(
-    query: CallbackQuery, context: ContextTypes.DEFAULT_TYPE, update: Update
+    query: CallbackQuery,
+    data: str,
+    context: ContextTypes.DEFAULT_TYPE,
+    update: Update,
 ) -> None:
-    units, error = await _list_cmux_workspaces()
+    old_picker_id = data[len(CB_CMUX_LIST) :]
+    if not old_picker_id:
+        await query.answer("Stale picker", show_alert=True)
+        return
+    thread_id = get_thread_id(update)
+    pending_tid, _ = _load_picker(context, old_picker_id)
+    if pending_tid is None or thread_id is None or thread_id != pending_tid:
+        await query.answer("Stale picker (topic mismatch)", show_alert=True)
+        return
+    units, error = await _list_cmux_terminal_sessions()
     if error is not None:
-        _clear_units(context)
+        _clear_picker(context, old_picker_id)
         await safe_edit(query, error)
         await query.answer()
         return
-    thread_id = get_thread_id(update)
-    if thread_id is None:
-        await query.answer("Use in a topic", show_alert=True)
-        return
     picker_id = _new_picker_id()
+    _clear_picker(context, old_picker_id)
     _store_units(context, picker_id=picker_id, thread_id=thread_id, units=units)
     text, keyboard = build_cmux_picker(units, picker_id=picker_id)
     await safe_edit(query, text, reply_markup=keyboard)
     await query.answer("Refreshed")
+
+
+async def _resolve_live_bind_unit(
+    cached_unit: TerminalUnit,
+) -> tuple[TerminalUnit | None, str | None]:
+    if not cached_unit.supports_send_text:
+        return None, "Terminal session is unavailable"
+
+    units, error = await _list_cmux_terminal_sessions()
+    if error is not None:
+        return None, error
+    live_by_id = {unit.ref.unit_id: unit for unit in units}
+    unit = live_by_id.get(cached_unit.ref.unit_id)
+    if unit is None:
+        return None, "Terminal session no longer exists"
+    if not unit.supports_send_text:
+        return None, "Terminal session is unavailable"
+    return unit, None
 
 
 async def _handle_bind(
@@ -291,16 +342,20 @@ async def _handle_bind(
         await query.answer("Stale picker (topic mismatch)", show_alert=True)
         return
     if idx < 0 or idx >= len(cached):
-        await query.answer("Workspace list changed, please retry", show_alert=True)
+        await query.answer(
+            "Terminal session list changed, please retry", show_alert=True
+        )
         return
 
-    unit = cached[idx]
-    if not unit.supports_send_text:
-        await query.answer("Workspace has no terminal surface", show_alert=True)
+    unit, alert = await _resolve_live_bind_unit(cached[idx])
+    if alert is not None:
+        await query.answer(alert, show_alert=True)
         return
-    workspace_id = unit.ref.unit_id
-    window_id = _qualified_window_id(workspace_id)
-    display = unit.title or workspace_id
+    assert unit is not None
+
+    terminal_id = unit.ref.unit_id
+    window_id = _qualified_window_id(terminal_id)
+    display = unit.title or terminal_id
 
     # Lazy: terminal identity port pulls window_state_store.
     from ...window_state_ports.terminal_identity import set_terminal_identity
@@ -308,7 +363,7 @@ async def _handle_bind(
     set_terminal_identity(
         window_id,
         backend=unit.ref.backend,
-        unit_id=workspace_id,
+        unit_id=terminal_id,
         cwd=unit.cwd,
         provider_name=unit.provider_name,
         window_name=display,
@@ -329,18 +384,34 @@ async def _handle_bind(
     except TelegramError as exc:
         logger.debug("Failed to rename topic after cmux bind: %s", exc)
 
-    _clear_picker(context, picker_id)
     if context.user_data is not None:
+        context.user_data.pop(CMUX_TERMINAL_SESSIONS_KEY, None)
+        clear_browse_state(context.user_data)
+        clear_window_picker_state(context.user_data)
+        clear_worktree_state(context.user_data)
+        context.user_data.pop(PENDING_THREAD_ID, None)
         context.user_data.pop(PENDING_THREAD_TEXT, None)
 
-    await safe_edit(query, f"✅ Bound cmux workspace `{display}`")
+    await safe_edit(query, f"✅ Bound cmux terminal session `{display}`")
     await query.answer("Bound")
 
 
 async def _handle_cancel(
-    query: CallbackQuery, context: ContextTypes.DEFAULT_TYPE
+    query: CallbackQuery,
+    data: str,
+    context: ContextTypes.DEFAULT_TYPE,
+    update: Update,
 ) -> None:
-    _clear_units(context)
+    picker_id = data[len(CB_CMUX_CANCEL) :]
+    if not picker_id:
+        await query.answer("Stale picker", show_alert=True)
+        return
+    thread_id = get_thread_id(update)
+    pending_tid, _ = _load_picker(context, picker_id)
+    if pending_tid is None or thread_id is None or thread_id != pending_tid:
+        await query.answer("Stale picker (topic mismatch)", show_alert=True)
+        return
+    _clear_picker(context, picker_id)
     await safe_edit(query, "Cancelled")
     await query.answer("Cancelled")
 
@@ -352,16 +423,16 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if query is None or query.data is None or user is None:
         return
     data = query.data
-    if data == CB_CMUX_LIST:
-        await _handle_refresh(query, context, update)
+    if data.startswith(CB_CMUX_LIST):
+        await _handle_refresh(query, data, context, update)
     elif data.startswith(CB_CMUX_BIND):
         await _handle_bind(query, user.id, data, update, context)
-    elif data == CB_CMUX_CANCEL:
-        await _handle_cancel(query, context)
+    elif data.startswith(CB_CMUX_CANCEL):
+        await _handle_cancel(query, data, context, update)
 
 
 __all__ = [
-    "CMUX_WORKSPACES_KEY",
+    "CMUX_TERMINAL_SESSIONS_KEY",
     "build_cmux_picker",
     "cmux_command",
 ]

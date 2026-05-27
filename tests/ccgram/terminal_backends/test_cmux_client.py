@@ -23,9 +23,9 @@ from ccgram.terminal_backends.cmux_client import (
 )
 from ccgram.terminal_backends.cmux_protocol import (
     METHOD_CAPTURE_SCREEN,
-    METHOD_CLOSE_WORKSPACE,
+    METHOD_CLOSE_TERMINAL_SESSION,
     METHOD_HELLO,
-    METHOD_LIST_WORKSPACES,
+    METHOD_LIST_TERMINAL_SESSIONS,
     METHOD_SEND_KEY,
     METHOD_SEND_TEXT,
     PROTOCOL_VERSION,
@@ -136,16 +136,19 @@ class TestHandshake:
             return _ok(request, _hello_result())
 
         def respond_list(request: CmuxRequest) -> CmuxResponse:
-            return _ok(request, {"workspaces": []})
+            return _ok(request, {"terminal_sessions": []})
 
         client, transport = _make_client(
             _scripted_responder(
-                {METHOD_HELLO: respond_hello, METHOD_LIST_WORKSPACES: respond_list}
+                {
+                    METHOD_HELLO: respond_hello,
+                    METHOD_LIST_TERMINAL_SESSIONS: respond_list,
+                }
             )
         )
-        await client.list_workspaces()
+        await client.list_terminal_sessions()
         methods = [r.method for r in transport.requests]
-        assert methods == [METHOD_HELLO, METHOD_LIST_WORKSPACES]
+        assert methods == [METHOD_HELLO, METHOD_LIST_TERMINAL_SESSIONS]
 
     async def test_incompatible_version_raises_unsupported(self) -> None:
         def respond(request: CmuxRequest) -> CmuxResponse:
@@ -185,15 +188,15 @@ class TestRequestIdMismatch:
         def respond(request: CmuxRequest) -> CmuxResponse:
             if request.method == METHOD_HELLO:
                 return _ok(request, _hello_result())
-            return CmuxResponse(id=request.id + 9, result={"workspaces": []})
+            return CmuxResponse(id=request.id + 9, result={"terminal_sessions": []})
 
         client, _ = _make_client(
             _scripted_responder(
-                {METHOD_HELLO: respond, METHOD_LIST_WORKSPACES: respond}
+                {METHOD_HELLO: respond, METHOD_LIST_TERMINAL_SESSIONS: respond}
             )
         )
         with pytest.raises(CmuxProtocolError, match="id mismatch"):
-            await client.list_workspaces()
+            await client.list_terminal_sessions()
 
 
 class TestErrorMapping:
@@ -219,37 +222,41 @@ class TestErrorMapping:
             _scripted_responder(
                 {
                     METHOD_HELLO: respond,
-                    METHOD_LIST_WORKSPACES: respond,
+                    METHOD_LIST_TERMINAL_SESSIONS: respond,
                 }
             )
         )
         with pytest.raises(exc):
-            await client.list_workspaces()
+            await client.list_terminal_sessions()
 
 
 class TestOperations:
-    async def test_list_workspaces_returns_parsed_entries(self) -> None:
+    async def test_list_terminal_sessions_returns_parsed_entries(self) -> None:
         def respond(request: CmuxRequest) -> CmuxResponse:
             if request.method == METHOD_HELLO:
                 return _ok(request, _hello_result())
             return _ok(
                 request,
                 {
-                    "workspaces": [
-                        {"workspace_id": "a", "title": "Alpha"},
-                        {"workspace_id": "b"},
+                    "terminal_sessions": [
+                        {
+                            "terminal_id": "term-a",
+                            "title": "Alpha",
+                            "workspace_id": "ws-a",
+                        },
+                        {"terminal_id": "term-b"},
                     ]
                 },
             )
 
         client, _ = _make_client(
             _scripted_responder(
-                {METHOD_HELLO: respond, METHOD_LIST_WORKSPACES: respond}
+                {METHOD_HELLO: respond, METHOD_LIST_TERMINAL_SESSIONS: respond}
             )
         )
-        workspaces = await client.list_workspaces()
-        ids = [w.workspace_id for w in workspaces]
-        assert ids == ["a", "b"]
+        sessions = await client.list_terminal_sessions()
+        ids = [session.terminal_id for session in sessions]
+        assert ids == ["term-a", "term-b"]
 
     async def test_capture_screen_returns_string(self) -> None:
         def respond(request: CmuxRequest) -> CmuxResponse:
@@ -260,10 +267,10 @@ class TestOperations:
         client, transport = _make_client(
             _scripted_responder({METHOD_HELLO: respond, METHOD_CAPTURE_SCREEN: respond})
         )
-        screen = await client.capture_screen("ws-1", with_ansi=True)
+        screen = await client.capture_screen("term-1", with_ansi=True)
         assert screen == "hello\n$ "
         capture_call = transport.requests[1]
-        assert capture_call.params == {"workspace_id": "ws-1", "with_ansi": True}
+        assert capture_call.params == {"terminal_id": "term-1", "with_ansi": True}
 
     async def test_send_text_passes_params(self) -> None:
         def respond(request: CmuxRequest) -> CmuxResponse:
@@ -274,10 +281,10 @@ class TestOperations:
         client, transport = _make_client(
             _scripted_responder({METHOD_HELLO: respond, METHOD_SEND_TEXT: respond})
         )
-        ok = await client.send_text("ws-1", "hi", raw=True)
+        ok = await client.send_text("term-1", "hi", raw=True)
         assert ok is True
         params = transport.requests[1].params
-        assert params == {"workspace_id": "ws-1", "text": "hi", "raw": True}
+        assert params == {"terminal_id": "term-1", "text": "hi", "raw": True}
 
     async def test_send_key_passes_key(self) -> None:
         def respond(request: CmuxRequest) -> CmuxResponse:
@@ -288,10 +295,13 @@ class TestOperations:
         client, transport = _make_client(
             _scripted_responder({METHOD_HELLO: respond, METHOD_SEND_KEY: respond})
         )
-        await client.send_key("ws-1", "Escape")
-        assert transport.requests[1].params == {"workspace_id": "ws-1", "key": "Escape"}
+        await client.send_key("term-1", "Escape")
+        assert transport.requests[1].params == {
+            "terminal_id": "term-1",
+            "key": "Escape",
+        }
 
-    async def test_close_workspace(self) -> None:
+    async def test_close_terminal_session(self) -> None:
         def respond(request: CmuxRequest) -> CmuxResponse:
             if request.method == METHOD_HELLO:
                 return _ok(request, _hello_result())
@@ -299,24 +309,56 @@ class TestOperations:
 
         client, _ = _make_client(
             _scripted_responder(
-                {METHOD_HELLO: respond, METHOD_CLOSE_WORKSPACE: respond}
+                {METHOD_HELLO: respond, METHOD_CLOSE_TERMINAL_SESSION: respond}
             )
         )
-        assert await client.close_workspace("ws-1") is True
+        assert await client.close_terminal_session("term-1") is True
 
-    async def test_list_workspaces_rejects_non_list(self) -> None:
+    @pytest.mark.parametrize(
+        "method_name, call, method",
+        [
+            (
+                "send_text",
+                lambda client: client.send_text("term-1", "hi"),
+                METHOD_SEND_TEXT,
+            ),
+            (
+                "send_key",
+                lambda client: client.send_key("term-1", "Escape"),
+                METHOD_SEND_KEY,
+            ),
+            (
+                "close_terminal_session",
+                lambda client: client.close_terminal_session("term-1"),
+                METHOD_CLOSE_TERMINAL_SESSION,
+            ),
+        ],
+    )
+    async def test_ok_result_must_be_bool(self, method_name, call, method) -> None:
         def respond(request: CmuxRequest) -> CmuxResponse:
             if request.method == METHOD_HELLO:
                 return _ok(request, _hello_result())
-            return _ok(request, {"workspaces": "nope"})
+            return _ok(request, {"ok": "false"})
+
+        client, _ = _make_client(
+            _scripted_responder({METHOD_HELLO: respond, method: respond})
+        )
+        with pytest.raises(CmuxProtocolError, match=method_name):
+            await call(client)
+
+    async def test_list_terminal_sessions_rejects_non_list(self) -> None:
+        def respond(request: CmuxRequest) -> CmuxResponse:
+            if request.method == METHOD_HELLO:
+                return _ok(request, _hello_result())
+            return _ok(request, {"terminal_sessions": "nope"})
 
         client, _ = _make_client(
             _scripted_responder(
-                {METHOD_HELLO: respond, METHOD_LIST_WORKSPACES: respond}
+                {METHOD_HELLO: respond, METHOD_LIST_TERMINAL_SESSIONS: respond}
             )
         )
         with pytest.raises(CmuxProtocolError):
-            await client.list_workspaces()
+            await client.list_terminal_sessions()
 
 
 class TestUnixSocketTransport:
@@ -404,7 +446,7 @@ class TestUnixSocketTransport:
             line = await reader.readline()
             request = json.loads(line.decode("utf-8"))
             writer.write(
-                b'{"method":"workspace_state","params":{"workspace_id":"ws-1"}}\n'
+                b'{"method":"terminal_session_state","params":{"terminal_id":"term-1"}}\n'
             )
             writer.write(
                 (
@@ -462,3 +504,7 @@ class TestConstruction:
             str(tmp_path / "x.sock"), timeout_ms=1000
         )
         assert client._timeout == 1.0  # type: ignore[attr-defined]
+
+    def test_with_unix_socket_rejects_non_positive_timeout(self, tmp_path) -> None:
+        with pytest.raises(ValueError):
+            CmuxSidecarClient.with_unix_socket(str(tmp_path / "x.sock"), timeout_ms=0)

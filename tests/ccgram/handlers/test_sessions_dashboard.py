@@ -330,7 +330,7 @@ class TestKillButtons:
             ),
             patch("ccgram.handlers.sessions_dashboard.safe_edit") as mock_edit,
         ):
-            await handle_sessions_kill(query, 100, "cmux:ws-a")
+            await handle_sessions_kill(query, 100, "cmux:term-a")
 
         mock_edit.assert_awaited_once()
         assert "tmux" in mock_edit.call_args[0][1]
@@ -346,7 +346,9 @@ class TestKillButtons:
             ),
             patch("ccgram.handlers.sessions_dashboard.safe_edit") as mock_edit,
         ):
-            killed = await handle_sessions_kill_confirm(query, 100, "cmux:ws-a", client)
+            killed = await handle_sessions_kill_confirm(
+                query, 100, "cmux:term-a", client
+            )
 
         assert killed is False
         mock_edit.assert_awaited_once()
@@ -354,9 +356,9 @@ class TestKillButtons:
         mock_tr.unbind_thread.assert_not_called()
 
 
-def _cmux_unit(workspace_id: str, title: str = "alpha") -> TerminalUnit:
+def _cmux_unit(terminal_id: str, title: str = "alpha") -> TerminalUnit:
     return TerminalUnit(
-        ref=TerminalUnitRef(backend=BACKEND_CMUX, unit_id=workspace_id),
+        ref=TerminalUnitRef(backend=BACKEND_CMUX, unit_id=terminal_id),
         title=title,
         cwd="/repo/a",
         provider_name="claude",
@@ -367,17 +369,17 @@ def _cmux_unit(workspace_id: str, title: str = "alpha") -> TerminalUnit:
 
 
 class TestCmuxRendering:
-    async def test_cmux_row_shown_alive_when_workspace_listed(
+    async def test_cmux_row_shown_alive_when_terminal_session_listed(
         self, _patch_deps
     ) -> None:
         mock_view, mock_tr, mock_tm, _ = _patch_deps
-        mock_tr.get_all_thread_windows.return_value = {42: "cmux:ws-a"}
+        mock_tr.get_all_thread_windows.return_value = {42: "cmux:term-a"}
         mock_tr.get_display_name.side_effect = lambda wid: "alpha"
         mock_view.side_effect = lambda wid: WindowState(cwd="/repo/a")
 
         fake_backend = MagicMock()
         fake_backend.name = BACKEND_CMUX
-        fake_backend.list_units = AsyncMock(return_value=[_cmux_unit("ws-a")])
+        fake_backend.list_units = AsyncMock(return_value=[_cmux_unit("term-a")])
         from ccgram.terminal_backends.router import get_router
 
         get_router().register(fake_backend)
@@ -385,11 +387,11 @@ class TestCmuxRendering:
         with (
             patch(
                 "ccgram.handlers.sessions_dashboard.get_backend",
-                side_effect=lambda wid: "cmux" if wid == "cmux:ws-a" else "tmux",
+                side_effect=lambda wid: "cmux" if wid == "cmux:term-a" else "tmux",
             ),
             patch(
                 "ccgram.handlers.sessions_dashboard.get_unit_id",
-                side_effect=lambda wid: "ws-a" if wid == "cmux:ws-a" else wid,
+                side_effect=lambda wid: "term-a" if wid == "cmux:term-a" else wid,
             ),
         ):
             text, _kb = await _build_dashboard(100)
@@ -401,18 +403,18 @@ class TestCmuxRendering:
         self, _patch_deps
     ) -> None:
         mock_view, mock_tr, mock_tm, _ = _patch_deps
-        mock_tr.get_all_thread_windows.return_value = {42: "cmux:ws-a"}
+        mock_tr.get_all_thread_windows.return_value = {42: "cmux:term-a"}
         mock_tr.get_display_name.side_effect = lambda wid: "alpha"
         mock_view.side_effect = lambda wid: WindowState()
 
         with (
             patch(
                 "ccgram.handlers.sessions_dashboard.get_backend",
-                side_effect=lambda wid: "cmux" if wid == "cmux:ws-a" else "tmux",
+                side_effect=lambda wid: "cmux" if wid == "cmux:term-a" else "tmux",
             ),
             patch(
                 "ccgram.handlers.sessions_dashboard.get_unit_id",
-                side_effect=lambda wid: "ws-a" if wid == "cmux:ws-a" else wid,
+                side_effect=lambda wid: "term-a" if wid == "cmux:term-a" else wid,
             ),
         ):
             text, _kb = await _build_dashboard(100)
@@ -422,7 +424,7 @@ class TestCmuxRendering:
         self, _patch_deps
     ) -> None:
         mock_view, mock_tr, _mock_tm, _ = _patch_deps
-        mock_tr.get_all_thread_windows.return_value = {42: "cmux:ws-a"}
+        mock_tr.get_all_thread_windows.return_value = {42: "cmux:term-a"}
         mock_tr.get_display_name.side_effect = lambda wid: "alpha"
         mock_view.side_effect = lambda wid: WindowState()
 
@@ -438,11 +440,11 @@ class TestCmuxRendering:
         with (
             patch(
                 "ccgram.handlers.sessions_dashboard.get_backend",
-                side_effect=lambda wid: "cmux" if wid == "cmux:ws-a" else "tmux",
+                side_effect=lambda wid: "cmux" if wid == "cmux:term-a" else "tmux",
             ),
             patch(
                 "ccgram.handlers.sessions_dashboard.get_unit_id",
-                side_effect=lambda wid: "ws-a" if wid == "cmux:ws-a" else wid,
+                side_effect=lambda wid: "term-a" if wid == "cmux:term-a" else wid,
             ),
         ):
             text, _kb = await _build_dashboard(100)
@@ -450,13 +452,13 @@ class TestCmuxRendering:
 
     async def test_cmux_row_no_kill_button_when_alive(self, _patch_deps) -> None:
         mock_view, mock_tr, _mock_tm, _ = _patch_deps
-        mock_tr.get_all_thread_windows.return_value = {42: "cmux:ws-a"}
+        mock_tr.get_all_thread_windows.return_value = {42: "cmux:term-a"}
         mock_tr.get_display_name.side_effect = lambda wid: "alpha"
         mock_view.side_effect = lambda wid: WindowState()
 
         fake_backend = MagicMock()
         fake_backend.name = BACKEND_CMUX
-        fake_backend.list_units = AsyncMock(return_value=[_cmux_unit("ws-a")])
+        fake_backend.list_units = AsyncMock(return_value=[_cmux_unit("term-a")])
         from ccgram.terminal_backends.router import get_router
 
         get_router().register(fake_backend)
@@ -464,11 +466,11 @@ class TestCmuxRendering:
         with (
             patch(
                 "ccgram.handlers.sessions_dashboard.get_backend",
-                side_effect=lambda wid: "cmux" if wid == "cmux:ws-a" else "tmux",
+                side_effect=lambda wid: "cmux" if wid == "cmux:term-a" else "tmux",
             ),
             patch(
                 "ccgram.handlers.sessions_dashboard.get_unit_id",
-                side_effect=lambda wid: "ws-a" if wid == "cmux:ws-a" else wid,
+                side_effect=lambda wid: "term-a" if wid == "cmux:term-a" else wid,
             ),
         ):
             _text, keyboard = await _build_dashboard(100)
@@ -484,10 +486,10 @@ class TestCmuxRendering:
 
     async def test_tmux_alive_row_unaffected_by_cmux_backend(self, _patch_deps) -> None:
         mock_view, mock_tr, mock_tm, _ = _patch_deps
-        mock_tr.get_all_thread_windows.return_value = {10: "@0", 20: "cmux:ws-x"}
+        mock_tr.get_all_thread_windows.return_value = {10: "@0", 20: "cmux:term-x"}
         mock_tr.get_display_name.side_effect = lambda wid: {
             "@0": "tmux-alive",
-            "cmux:ws-x": "cmux-alive",
+            "cmux:term-x": "cmux-alive",
         }[wid]
         mock_view.side_effect = lambda wid: WindowState()
         mock_tm.list_windows = AsyncMock(return_value=[MagicMock(window_id="@0")])

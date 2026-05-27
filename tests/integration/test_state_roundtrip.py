@@ -197,13 +197,13 @@ async def test_full_window_state_feature_groups_survive_reload(
 async def test_terminal_identity_survives_reload(make_session_manager) -> None:
     """cmux backend identity round-trips through state.json."""
     sm1 = make_session_manager()
-    window_store.set_terminal_identity("@9", backend="cmux", unit_id="workspace-uuid")
+    window_store.set_terminal_identity("@9", backend="cmux", unit_id="term-uuid")
     sm1.flush_state()
 
     _sm2 = make_session_manager()
     reloaded = window_store.get_window_state("@9")
     assert reloaded.terminal_backend == "cmux"
-    assert reloaded.terminal_unit_id == "workspace-uuid"
+    assert reloaded.terminal_unit_id == "term-uuid"
 
 
 async def test_legacy_state_loads_as_tmux(tmp_path, monkeypatch) -> None:

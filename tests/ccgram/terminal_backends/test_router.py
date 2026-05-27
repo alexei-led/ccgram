@@ -65,7 +65,7 @@ class TestTerminalBackendRouter:
         router.register(cmux)
 
         tmux_ref = TerminalUnitRef(backend=BACKEND_TMUX, unit_id="@3")
-        cmux_ref = TerminalUnitRef(backend=BACKEND_CMUX, unit_id="ws-1")
+        cmux_ref = TerminalUnitRef(backend=BACKEND_CMUX, unit_id="term-1")
 
         assert router.for_ref(tmux_ref) is tmux
         assert router.for_ref(cmux_ref) is cmux

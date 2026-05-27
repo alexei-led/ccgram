@@ -1,7 +1,6 @@
-"""Tests for the /cmux workspace picker (Task 4)."""
-
 from __future__ import annotations
 
+import importlib
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -11,10 +10,27 @@ from telegram.ext import ContextTypes
 
 from ccgram.handlers.callback_data import CB_CMUX_BIND, CB_CMUX_CANCEL, CB_CMUX_LIST
 from ccgram.handlers.topics.cmux_callbacks import (
-    CMUX_WORKSPACES_KEY,
+    CMUX_TERMINAL_SESSIONS_KEY,
     _dispatch,
     build_cmux_picker,
     cmux_command,
+)
+from ccgram.handlers.topics.directory_browser import (
+    BROWSE_DIRS_KEY,
+    BROWSE_PAGE_KEY,
+    BROWSE_PATH_KEY,
+    STATE_KEY,
+    STATE_SELECTING_WINDOW,
+    UNBOUND_WINDOWS_KEY,
+)
+from ccgram.handlers.user_state import (
+    AWAITING_WORKTREE_BRANCH_NAME,
+    PENDING_THREAD_ID,
+    PENDING_THREAD_TEXT,
+    PENDING_WORKTREE_BRANCH,
+    PENDING_WORKTREE_DIRTY,
+    PENDING_WORKTREE_PATH,
+    PENDING_WORKTREE_REPO,
 )
 from ccgram.terminal_backends.base import (
     BACKEND_CMUX,
@@ -26,15 +42,19 @@ from ccgram.terminal_backends.config import TerminalBackendConfig
 from ccgram.terminal_backends.router import reset_router_for_testing
 
 
-def _unit(workspace_id: str, **overrides: Any) -> TerminalUnit:
+def _unit(terminal_id: str, **overrides: Any) -> TerminalUnit:
     return TerminalUnit(
-        ref=TerminalUnitRef(backend=BACKEND_CMUX, unit_id=workspace_id),
-        title=overrides.pop("title", workspace_id),
+        ref=TerminalUnitRef(backend=BACKEND_CMUX, unit_id=terminal_id),
+        title=overrides.pop("title", terminal_id),
         cwd=overrides.pop("cwd", "/repo"),
         provider_name=overrides.pop("provider_name", "claude"),
         supports_capture=overrides.pop("supports_capture", True),
         supports_send_text=overrides.pop("supports_send_text", True),
         supports_send_key=overrides.pop("supports_send_key", True),
+        backend_metadata=overrides.pop(
+            "backend_metadata",
+            {"workspace_id": "ws-a", "workspace_title": "Workspace A"},
+        ),
     )
 
 
@@ -85,10 +105,11 @@ def _make_query_update_context(
 
 class TestBuildCmuxPicker:
     def test_renders_units_with_token_callbacks(self) -> None:
-        units = [_unit("ws-a"), _unit("ws-b", title="beta", provider_name="codex")]
+        units = [_unit("term-a"), _unit("term-b", title="beta", provider_name="codex")]
         text, keyboard = build_cmux_picker(units, picker_id="pick")
-        assert "ws-a" in text
+        assert "term-a" in text
         assert "beta" in text
+        assert "Workspace A" in text
         callbacks = [
             btn.callback_data
             for row in keyboard.inline_keyboard
@@ -97,11 +118,11 @@ class TestBuildCmuxPicker:
         ]
         assert f"{CB_CMUX_BIND}pick:0" in callbacks
         assert f"{CB_CMUX_BIND}pick:1" in callbacks
-        assert CB_CMUX_LIST in callbacks
-        assert CB_CMUX_CANCEL in callbacks
+        assert f"{CB_CMUX_LIST}pick" in callbacks
+        assert f"{CB_CMUX_CANCEL}pick" in callbacks
 
-    def test_no_terminal_surface_unit_has_no_bind_button(self) -> None:
-        units = [_unit("ws-a", supports_send_text=False)]
+    def test_unavailable_unit_has_no_bind_button(self) -> None:
+        units = [_unit("term-a", supports_send_text=False)]
         text, keyboard = build_cmux_picker(units, picker_id="pick")
         callbacks = [
             btn.callback_data
@@ -109,19 +130,19 @@ class TestBuildCmuxPicker:
             for btn in row
             if isinstance(btn.callback_data, str)
         ]
-        assert "no terminal surface" in text
+        assert "unavailable" in text
         assert f"{CB_CMUX_BIND}pick:0" not in callbacks
 
     def test_empty_units_keeps_refresh_and_cancel_only(self) -> None:
         text, keyboard = build_cmux_picker([])
-        assert "No workspaces" in text
+        assert "No terminal sessions" in text
         callbacks = [
             btn.callback_data
             for row in keyboard.inline_keyboard
             for btn in row
             if isinstance(btn.callback_data, str)
         ]
-        assert callbacks == [CB_CMUX_LIST, CB_CMUX_CANCEL]
+        assert callbacks == [f"{CB_CMUX_LIST}default", f"{CB_CMUX_CANCEL}default"]
 
 
 class TestCmuxCommandDisabledBackend:
@@ -211,7 +232,7 @@ class TestCmuxCommandSidecarUnavailable:
 
 
 class TestCmuxCommandHappyPath:
-    async def test_lists_workspaces_and_stores_state(self) -> None:
+    async def test_lists_terminal_sessions_and_stores_state(self) -> None:
         update = MagicMock(spec=Update)
         update.effective_user = MagicMock(id=100)
         update.message = AsyncMock()
@@ -222,7 +243,7 @@ class TestCmuxCommandHappyPath:
 
         fake_backend = MagicMock()
         fake_backend.name = BACKEND_CMUX
-        units = [_unit("ws-a"), _unit("ws-b", title="beta")]
+        units = [_unit("term-a"), _unit("term-b", title="beta")]
         fake_backend.list_units = AsyncMock(return_value=units)
 
         from ccgram.terminal_backends.router import get_router
@@ -240,13 +261,13 @@ class TestCmuxCommandHappyPath:
             mock_cfg.is_user_allowed.return_value = True
             await cmux_command(update, context)
 
-        store = context.user_data[CMUX_WORKSPACES_KEY]
+        store = context.user_data[CMUX_TERMINAL_SESSIONS_KEY]
         assert len(store) == 1
         entry = next(iter(store.values()))
         assert entry["thread_id"] == 42
         assert entry["units"] == units
         body = mock_reply.call_args[0][1]
-        assert "ws-a" in body
+        assert "term-a" in body
         assert "beta" in body
 
     async def test_outside_topic_replies_without_listing(self) -> None:
@@ -262,7 +283,7 @@ class TestCmuxCommandHappyPath:
             patch("ccgram.handlers.topics.cmux_callbacks.config") as mock_cfg,
             patch("ccgram.handlers.topics.cmux_callbacks.safe_reply") as mock_reply,
             patch(
-                "ccgram.handlers.topics.cmux_callbacks._list_cmux_workspaces"
+                "ccgram.handlers.topics.cmux_callbacks._list_cmux_terminal_sessions"
             ) as mock_list,
         ):
             mock_cfg.is_user_allowed.return_value = True
@@ -273,17 +294,75 @@ class TestCmuxCommandHappyPath:
         assert "topic" in body.lower()
 
 
+class TestCmuxRefreshCallback:
+    async def test_refresh_replaces_only_matching_picker(self) -> None:
+        user_data = {
+            CMUX_TERMINAL_SESSIONS_KEY: {
+                "old": {"thread_id": 42, "units": [_unit("term-old")]},
+                "new": {"thread_id": 42, "units": [_unit("term-new")]},
+            }
+        }
+        query, update, context = _make_query_update_context(user_data=user_data)
+        query.data = f"{CB_CMUX_LIST}old"
+        refreshed_units = [_unit("term-refreshed")]
+
+        with (
+            patch(
+                "ccgram.handlers.topics.cmux_callbacks._list_cmux_terminal_sessions",
+                AsyncMock(return_value=(refreshed_units, None)),
+            ),
+            patch("ccgram.handlers.topics.cmux_callbacks.safe_edit") as mock_edit,
+        ):
+            await _dispatch(update, context)
+
+        store = context.user_data[CMUX_TERMINAL_SESSIONS_KEY]
+        assert "old" not in store
+        assert "new" in store
+        assert any(entry["units"] == refreshed_units for entry in store.values())
+        mock_edit.assert_awaited_once()
+
+    async def test_refresh_rejects_missing_picker(self) -> None:
+        query, update, context = _make_query_update_context(user_data={})
+        query.data = f"{CB_CMUX_LIST}old"
+
+        with (
+            patch(
+                "ccgram.handlers.topics.cmux_callbacks._list_cmux_terminal_sessions"
+            ) as mock_list,
+            patch("ccgram.handlers.topics.cmux_callbacks.safe_edit") as mock_edit,
+        ):
+            await _dispatch(update, context)
+
+        mock_list.assert_not_called()
+        mock_edit.assert_not_called()
+        query.answer.assert_awaited()
+        assert "stale" in query.answer.call_args[0][0].lower()
+
+
 class TestCmuxBindCallback:
     async def test_bind_persists_identity_and_renames_topic(self) -> None:
-        # Trigger SessionManager construction so window_store proxy is wired.
-        import ccgram.session  # noqa: F401
+        importlib.import_module("ccgram.session")
         from ccgram.window_state_store import get_window_store
 
         store = get_window_store()
         store.window_states.clear()
 
-        units = [_unit("ws-a", title="alpha", cwd="/repo/a")]
-        user_data = {CMUX_WORKSPACES_KEY: {"pick": {"thread_id": 42, "units": units}}}
+        units = [_unit("term-a", title="alpha", cwd="/repo/a")]
+        user_data = {
+            CMUX_TERMINAL_SESSIONS_KEY: {"pick": {"thread_id": 42, "units": units}},
+            STATE_KEY: STATE_SELECTING_WINDOW,
+            UNBOUND_WINDOWS_KEY: ["@0"],
+            BROWSE_PATH_KEY: "/repo",
+            BROWSE_PAGE_KEY: 0,
+            BROWSE_DIRS_KEY: [("src", "/repo/src")],
+            PENDING_THREAD_ID: 42,
+            PENDING_THREAD_TEXT: "queued text",
+            PENDING_WORKTREE_REPO: "/repo",
+            PENDING_WORKTREE_BRANCH: "ccg/test",
+            PENDING_WORKTREE_PATH: "/repo.worktrees/test",
+            PENDING_WORKTREE_DIRTY: True,
+            AWAITING_WORKTREE_BRANCH_NAME: True,
+        }
         query, update, context = _make_query_update_context(user_data=user_data)
         query.data = f"{CB_CMUX_BIND}pick:0"
 
@@ -293,6 +372,10 @@ class TestCmuxBindCallback:
             patch(
                 "ccgram.handlers.topics.cmux_callbacks.PTBTelegramClient"
             ) as mock_client_cls,
+            patch(
+                "ccgram.handlers.topics.cmux_callbacks._list_cmux_terminal_sessions",
+                AsyncMock(return_value=(units, None)),
+            ),
         ):
             mock_tr.resolve_chat_id.return_value = -100123
             client = AsyncMock()
@@ -300,23 +383,37 @@ class TestCmuxBindCallback:
 
             await _dispatch(update, context)
 
-        bound = store.window_states["cmux:ws-a"]
+        bound = store.window_states["cmux:term-a"]
         assert bound.terminal_backend == BACKEND_CMUX
-        assert bound.terminal_unit_id == "ws-a"
+        assert bound.terminal_unit_id == "term-a"
         assert bound.cwd == "/repo/a"
         assert bound.provider_name == "claude"
         assert bound.window_name == "alpha"
 
         mock_tr.bind_thread.assert_called_once_with(
-            100, 42, "cmux:ws-a", window_name="alpha"
+            100, 42, "cmux:term-a", window_name="alpha"
         )
         mock_tr.set_group_chat_id.assert_called_once_with(100, 42, -100123)
         mock_edit.assert_awaited_once()
         assert "alpha" in mock_edit.call_args[0][1]
-        assert CMUX_WORKSPACES_KEY not in context.user_data
+        assert CMUX_TERMINAL_SESSIONS_KEY not in context.user_data
+        assert STATE_KEY not in context.user_data
+        assert UNBOUND_WINDOWS_KEY not in context.user_data
+        assert BROWSE_PATH_KEY not in context.user_data
+        assert BROWSE_PAGE_KEY not in context.user_data
+        assert BROWSE_DIRS_KEY not in context.user_data
+        assert PENDING_THREAD_ID not in context.user_data
+        assert PENDING_THREAD_TEXT not in context.user_data
+        assert PENDING_WORKTREE_REPO not in context.user_data
+        assert PENDING_WORKTREE_BRANCH not in context.user_data
+        assert PENDING_WORKTREE_PATH not in context.user_data
+        assert PENDING_WORKTREE_DIRTY not in context.user_data
+        assert AWAITING_WORKTREE_BRANCH_NAME not in context.user_data
 
     async def test_bind_invalid_index_alerts_user(self) -> None:
-        user_data = {CMUX_WORKSPACES_KEY: {"pick": {"thread_id": 42, "units": []}}}
+        user_data = {
+            CMUX_TERMINAL_SESSIONS_KEY: {"pick": {"thread_id": 42, "units": []}}
+        }
         query, update, context = _make_query_update_context(user_data=user_data)
         query.data = f"{CB_CMUX_BIND}pick:0"
 
@@ -326,7 +423,9 @@ class TestCmuxBindCallback:
 
     async def test_bind_non_integer_index_rejected(self) -> None:
         user_data = {
-            CMUX_WORKSPACES_KEY: {"pick": {"thread_id": 42, "units": [_unit("ws-a")]}}
+            CMUX_TERMINAL_SESSIONS_KEY: {
+                "pick": {"thread_id": 42, "units": [_unit("term-a")]}
+            }
         }
         query, update, context = _make_query_update_context(user_data=user_data)
         query.data = f"{CB_CMUX_BIND}pick:abc"
@@ -337,7 +436,9 @@ class TestCmuxBindCallback:
 
     async def test_bind_stale_topic_blocked(self) -> None:
         user_data = {
-            CMUX_WORKSPACES_KEY: {"pick": {"thread_id": 999, "units": [_unit("ws-a")]}}
+            CMUX_TERMINAL_SESSIONS_KEY: {
+                "pick": {"thread_id": 999, "units": [_unit("term-a")]}
+            }
         }
         query, update, context = _make_query_update_context(user_data=user_data)
         query.data = f"{CB_CMUX_BIND}pick:0"
@@ -347,27 +448,46 @@ class TestCmuxBindCallback:
         body = query.answer.call_args[0][0].lower()
         assert "stale" in body or "topic mismatch" in body
 
-    async def test_bind_no_terminal_surface_rejected(self) -> None:
-        units = [_unit("ws-a", supports_send_text=False)]
-        user_data = {CMUX_WORKSPACES_KEY: {"pick": {"thread_id": 42, "units": units}}}
+    async def test_bind_unavailable_terminal_session_rejected(self) -> None:
+        units = [_unit("term-a", supports_send_text=False)]
+        user_data = {
+            CMUX_TERMINAL_SESSIONS_KEY: {"pick": {"thread_id": 42, "units": units}}
+        }
         query, update, context = _make_query_update_context(user_data=user_data)
         query.data = f"{CB_CMUX_BIND}pick:0"
 
         await _dispatch(update, context)
 
         query.answer.assert_awaited()
-        assert "no terminal" in query.answer.call_args[0][0].lower()
+        assert "unavailable" in query.answer.call_args[0][0].lower()
 
-    async def test_old_picker_token_keeps_original_workspace_list(self) -> None:
-        import ccgram.session  # noqa: F401
+    async def test_bind_rejects_terminal_session_missing_from_fresh_list(self) -> None:
+        units = [_unit("term-a")]
+        user_data = {
+            CMUX_TERMINAL_SESSIONS_KEY: {"pick": {"thread_id": 42, "units": units}}
+        }
+        query, update, context = _make_query_update_context(user_data=user_data)
+        query.data = f"{CB_CMUX_BIND}pick:0"
+
+        with patch(
+            "ccgram.handlers.topics.cmux_callbacks._list_cmux_terminal_sessions",
+            AsyncMock(return_value=([_unit("term-b")], None)),
+        ):
+            await _dispatch(update, context)
+
+        query.answer.assert_awaited()
+        assert "no longer exists" in query.answer.call_args[0][0].lower()
+
+    async def test_old_picker_token_keeps_original_terminal_session_list(self) -> None:
+        importlib.import_module("ccgram.session")
         from ccgram.window_state_store import get_window_store
 
         store = get_window_store()
         store.window_states.clear()
         user_data = {
-            CMUX_WORKSPACES_KEY: {
-                "old": {"thread_id": 42, "units": [_unit("ws-old", title="old")]},
-                "new": {"thread_id": 42, "units": [_unit("ws-new", title="new")]},
+            CMUX_TERMINAL_SESSIONS_KEY: {
+                "old": {"thread_id": 42, "units": [_unit("term-old", title="old")]},
+                "new": {"thread_id": 42, "units": [_unit("term-new", title="new")]},
             }
         }
         query, update, context = _make_query_update_context(user_data=user_data)
@@ -380,23 +500,24 @@ class TestCmuxBindCallback:
                 "ccgram.handlers.topics.cmux_callbacks.PTBTelegramClient",
                 return_value=AsyncMock(),
             ),
+            patch(
+                "ccgram.handlers.topics.cmux_callbacks._list_cmux_terminal_sessions",
+                AsyncMock(return_value=([_unit("term-old", title="old")], None)),
+            ),
         ):
             await _dispatch(update, context)
 
-        assert "cmux:ws-old" in store.window_states
-        assert "cmux:ws-new" not in store.window_states
+        assert "cmux:term-old" in store.window_states
+        assert "cmux:term-new" not in store.window_states
 
 
 class TestCmuxBindCallbackPrefixSelectorWiresDispatcher:
-    """Smoke check that the @register decorator picks up the prefixes."""
-
     def test_dispatch_is_wired_for_known_prefixes(self) -> None:
         from ccgram.handlers.callback_registry import _registry
 
         assert CB_CMUX_LIST in _registry
         assert CB_CMUX_BIND in _registry
         assert CB_CMUX_CANCEL in _registry
-        # All three route to the same dispatch func
         assert _registry[CB_CMUX_LIST] is _dispatch
         assert _registry[CB_CMUX_BIND] is _dispatch
         assert _registry[CB_CMUX_CANCEL] is _dispatch
@@ -405,13 +526,43 @@ class TestCmuxBindCallbackPrefixSelectorWiresDispatcher:
 class TestCmuxCancelCallback:
     async def test_cancel_clears_state(self) -> None:
         user_data = {
-            CMUX_WORKSPACES_KEY: {"pick": {"thread_id": 42, "units": [_unit("ws-a")]}},
+            CMUX_TERMINAL_SESSIONS_KEY: {
+                "pick": {"thread_id": 42, "units": [_unit("term-a")]}
+            },
         }
         query, update, context = _make_query_update_context(user_data=user_data)
-        query.data = CB_CMUX_CANCEL
+        query.data = f"{CB_CMUX_CANCEL}pick"
 
         with patch("ccgram.handlers.topics.cmux_callbacks.safe_edit") as mock_edit:
             await _dispatch(update, context)
 
         mock_edit.assert_awaited_once()
-        assert CMUX_WORKSPACES_KEY not in context.user_data
+        assert CMUX_TERMINAL_SESSIONS_KEY not in context.user_data
+
+    async def test_cancel_only_clears_matching_picker(self) -> None:
+        user_data = {
+            CMUX_TERMINAL_SESSIONS_KEY: {
+                "old": {"thread_id": 42, "units": [_unit("term-old")]},
+                "new": {"thread_id": 42, "units": [_unit("term-new")]},
+            },
+        }
+        query, update, context = _make_query_update_context(user_data=user_data)
+        query.data = f"{CB_CMUX_CANCEL}old"
+
+        with patch("ccgram.handlers.topics.cmux_callbacks.safe_edit"):
+            await _dispatch(update, context)
+
+        store = context.user_data[CMUX_TERMINAL_SESSIONS_KEY]
+        assert "old" not in store
+        assert "new" in store
+
+    async def test_cancel_rejects_missing_picker(self) -> None:
+        query, update, context = _make_query_update_context(user_data={})
+        query.data = f"{CB_CMUX_CANCEL}old"
+
+        with patch("ccgram.handlers.topics.cmux_callbacks.safe_edit") as mock_edit:
+            await _dispatch(update, context)
+
+        mock_edit.assert_not_called()
+        query.answer.assert_awaited()
+        assert "stale" in query.answer.call_args[0][0].lower()

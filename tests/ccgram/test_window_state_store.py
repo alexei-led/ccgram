@@ -858,21 +858,21 @@ class TestWindowStateTerminalIdentity:
         ws = WindowState(
             cwd="/p",
             terminal_backend="cmux",
-            terminal_unit_id="ws-uuid",
+            terminal_unit_id="term-uuid",
         )
         d = ws.to_dict()
         assert d["terminal_backend"] == "cmux"
-        assert d["terminal_unit_id"] == "ws-uuid"
+        assert d["terminal_unit_id"] == "term-uuid"
 
     def test_from_dict_round_trip(self) -> None:
         original = WindowState(
             cwd="/p",
             terminal_backend="cmux",
-            terminal_unit_id="ws-uuid",
+            terminal_unit_id="term-uuid",
         )
         loaded = WindowState.from_dict(original.to_dict())
         assert loaded.terminal_backend == "cmux"
-        assert loaded.terminal_unit_id == "ws-uuid"
+        assert loaded.terminal_unit_id == "term-uuid"
 
     def test_legacy_state_loads_as_tmux(self) -> None:
         ws = WindowState.from_dict({"session_id": "s", "cwd": "/p"})
@@ -886,19 +886,19 @@ class TestWindowStateTerminalIdentity:
     def test_set_terminal_identity_persists(self, store: WindowStateStore) -> None:
         save_calls = store._save_calls  # type: ignore[attr-defined]
         save_calls.clear()
-        store.set_terminal_identity("@1", backend="cmux", unit_id="ws-1")
+        store.set_terminal_identity("@1", backend="cmux", unit_id="term-1")
         state = store.window_states["@1"]
         assert state.terminal_backend == "cmux"
-        assert state.terminal_unit_id == "ws-1"
+        assert state.terminal_unit_id == "term-1"
         assert len(save_calls) == 1
 
     def test_set_terminal_identity_noop_when_unchanged(
         self, store: WindowStateStore
     ) -> None:
-        store.set_terminal_identity("@1", backend="cmux", unit_id="ws-1")
+        store.set_terminal_identity("@1", backend="cmux", unit_id="term-1")
         save_calls = store._save_calls  # type: ignore[attr-defined]
         save_calls.clear()
-        store.set_terminal_identity("@1", backend="cmux", unit_id="ws-1")
+        store.set_terminal_identity("@1", backend="cmux", unit_id="term-1")
         assert save_calls == []
 
     def test_set_terminal_identity_persists_metadata(
@@ -907,14 +907,14 @@ class TestWindowStateTerminalIdentity:
         save_calls = store._save_calls  # type: ignore[attr-defined]
         save_calls.clear()
         store.set_terminal_identity(
-            "cmux:ws-1",
+            "cmux:term-1",
             backend="cmux",
-            unit_id="ws-1",
+            unit_id="term-1",
             cwd="/repo",
             provider_name="codex",
             window_name="workspace",
         )
-        state = store.window_states["cmux:ws-1"]
+        state = store.window_states["cmux:term-1"]
         assert state.cwd == "/repo"
         assert state.provider_name == "codex"
         assert state.window_name == "workspace"

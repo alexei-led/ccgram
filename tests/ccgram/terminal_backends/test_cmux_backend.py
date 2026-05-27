@@ -18,9 +18,9 @@ from ccgram.terminal_backends.cmux import CmuxBackend
 from ccgram.terminal_backends.cmux_client import CmuxSidecarClient, CmuxTransport
 from ccgram.terminal_backends.cmux_protocol import (
     METHOD_CAPTURE_SCREEN,
-    METHOD_CLOSE_WORKSPACE,
+    METHOD_CLOSE_TERMINAL_SESSION,
     METHOD_HELLO,
-    METHOD_LIST_WORKSPACES,
+    METHOD_LIST_TERMINAL_SESSIONS,
     METHOD_SEND_KEY,
     METHOD_SEND_TEXT,
     PROTOCOL_VERSION,
@@ -96,8 +96,9 @@ class TestCapabilitiesBeforeHandshake:
         assert caps.supports_create is False
         assert caps.supports_close is False
         assert caps.supports_resume is False
-        assert caps.supports_capture is True
-        assert caps.supports_send_text is True
+        assert caps.supports_capture is False
+        assert caps.supports_send_text is False
+        assert caps.supports_send_key is False
 
     async def test_capabilities_after_negotiate_reflect_hello(self) -> None:
         def respond_hello(request: CmuxRequest) -> CmuxResponse:
@@ -128,7 +129,7 @@ class TestBackendChecks:
 
 
 class TestListUnits:
-    async def test_list_units_translates_workspaces(self) -> None:
+    async def test_list_units_translates_terminal_sessions(self) -> None:
         def respond_hello(request: CmuxRequest) -> CmuxResponse:
             return _ok(request, _hello())
 
@@ -136,17 +137,18 @@ class TestListUnits:
             return _ok(
                 request,
                 {
-                    "workspaces": [
+                    "terminal_sessions": [
                         {
-                            "workspace_id": "ws-a",
+                            "terminal_id": "term-a",
                             "title": "alpha",
                             "cwd": "/tmp/a",
                             "provider_name": "claude",
                             "state": "ready",
+                            "workspace_id": "ws-a",
+                            "workspace_title": "Feature A",
                         },
                         {
-                            "workspace_id": "ws-b",
-                            "has_terminal_surface": False,
+                            "terminal_id": "term-b",
                             "state": "unknown",
                         },
                     ]
@@ -154,20 +156,56 @@ class TestListUnits:
             )
 
         backend, _ = _make_backend(
-            {METHOD_HELLO: respond_hello, METHOD_LIST_WORKSPACES: respond_list}
+            {
+                METHOD_HELLO: respond_hello,
+                METHOD_LIST_TERMINAL_SESSIONS: respond_list,
+            }
         )
         units = await backend.list_units()
         assert len(units) == 2
         first, second = units
-        assert first.ref == TerminalUnitRef(backend=BACKEND_CMUX, unit_id="ws-a")
+        assert first.ref == TerminalUnitRef(backend=BACKEND_CMUX, unit_id="term-a")
         assert first.cwd == "/tmp/a"
         assert first.provider_name == "claude"
         assert first.state == "ready"
         assert first.supports_capture is True
+        assert first.backend_metadata["workspace_id"] == "ws-a"
+        assert first.backend_metadata["workspace_title"] == "Feature A"
 
-        assert second.ref.unit_id == "ws-b"
-        assert second.supports_capture is False
+        assert second.ref.unit_id == "term-b"
+        assert second.supports_capture is True
         assert second.state == "unknown"
+
+    async def test_list_units_reflects_negotiated_operation_capabilities(self) -> None:
+        def respond_hello(request: CmuxRequest) -> CmuxResponse:
+            return _ok(
+                request,
+                _hello(
+                    supports_capture=False,
+                    supports_send_text=False,
+                    supports_send_key=False,
+                    supports_close=True,
+                ),
+            )
+
+        def respond_list(request: CmuxRequest) -> CmuxResponse:
+            return _ok(
+                request,
+                {"terminal_sessions": [{"terminal_id": "term-a", "state": "ready"}]},
+            )
+
+        backend, _ = _make_backend(
+            {
+                METHOD_HELLO: respond_hello,
+                METHOD_LIST_TERMINAL_SESSIONS: respond_list,
+            }
+        )
+        units = await backend.list_units()
+        unit = units[0]
+        assert unit.supports_capture is False
+        assert unit.supports_send_text is False
+        assert unit.supports_send_key is False
+        assert unit.supports_close is True
 
     async def test_unknown_state_normalised_to_unknown(self) -> None:
         def respond_hello(request: CmuxRequest) -> CmuxResponse:
@@ -176,11 +214,14 @@ class TestListUnits:
         def respond_list(request: CmuxRequest) -> CmuxResponse:
             return _ok(
                 request,
-                {"workspaces": [{"workspace_id": "ws-x", "state": "exploded"}]},
+                {"terminal_sessions": [{"terminal_id": "term-x", "state": "exploded"}]},
             )
 
         backend, _ = _make_backend(
-            {METHOD_HELLO: respond_hello, METHOD_LIST_WORKSPACES: respond_list}
+            {
+                METHOD_HELLO: respond_hello,
+                METHOD_LIST_TERMINAL_SESSIONS: respond_list,
+            }
         )
         units = await backend.list_units()
         assert units[0].state == "unknown"
@@ -200,10 +241,10 @@ class TestSendAndCapture:
         backend, _ = _make_backend(
             {METHOD_HELLO: respond_hello, METHOD_CAPTURE_SCREEN: respond_capture}
         )
-        ref = TerminalUnitRef(backend=BACKEND_CMUX, unit_id="ws-1")
+        ref = TerminalUnitRef(backend=BACKEND_CMUX, unit_id="term-1")
         screen = await backend.capture(ref, with_ansi=True)
         assert screen == "hi"
-        assert captured == {"workspace_id": "ws-1", "with_ansi": True}
+        assert captured == {"terminal_id": "term-1", "with_ansi": True}
 
     async def test_send_text_forwards_raw_flag(self) -> None:
         captured: dict[str, Any] = {}
@@ -218,9 +259,9 @@ class TestSendAndCapture:
         backend, _ = _make_backend(
             {METHOD_HELLO: respond_hello, METHOD_SEND_TEXT: respond_send}
         )
-        ref = TerminalUnitRef(backend=BACKEND_CMUX, unit_id="ws-1")
+        ref = TerminalUnitRef(backend=BACKEND_CMUX, unit_id="term-1")
         assert await backend.send_text(ref, "hello", raw=True) is True
-        assert captured == {"workspace_id": "ws-1", "text": "hello", "raw": True}
+        assert captured == {"terminal_id": "term-1", "text": "hello", "raw": True}
 
     async def test_send_key_forwards_key(self) -> None:
         captured: dict[str, Any] = {}
@@ -235,9 +276,9 @@ class TestSendAndCapture:
         backend, _ = _make_backend(
             {METHOD_HELLO: respond_hello, METHOD_SEND_KEY: respond_send_key}
         )
-        ref = TerminalUnitRef(backend=BACKEND_CMUX, unit_id="ws-1")
+        ref = TerminalUnitRef(backend=BACKEND_CMUX, unit_id="term-1")
         await backend.send_key(ref, "Up")
-        assert captured == {"workspace_id": "ws-1", "key": "Up"}
+        assert captured == {"terminal_id": "term-1", "key": "Up"}
 
     async def test_close_forwards(self) -> None:
         def respond_hello(request: CmuxRequest) -> CmuxResponse:
@@ -247,9 +288,12 @@ class TestSendAndCapture:
             return _ok(request, {"ok": True})
 
         backend, _ = _make_backend(
-            {METHOD_HELLO: respond_hello, METHOD_CLOSE_WORKSPACE: respond_close}
+            {
+                METHOD_HELLO: respond_hello,
+                METHOD_CLOSE_TERMINAL_SESSION: respond_close,
+            }
         )
-        ref = TerminalUnitRef(backend=BACKEND_CMUX, unit_id="ws-1")
+        ref = TerminalUnitRef(backend=BACKEND_CMUX, unit_id="term-1")
         assert await backend.close(ref) is True
 
 
@@ -262,7 +306,10 @@ class TestErrorMapping:
             return _err(request, "unavailable", "sidecar down")
 
         backend, _ = _make_backend(
-            {METHOD_HELLO: respond_hello, METHOD_LIST_WORKSPACES: respond_list}
+            {
+                METHOD_HELLO: respond_hello,
+                METHOD_LIST_TERMINAL_SESSIONS: respond_list,
+            }
         )
         with pytest.raises(TerminalBackendUnavailableError):
             await backend.list_units()
@@ -277,9 +324,10 @@ class TestErrorMapping:
         backend, _ = _make_backend(
             {METHOD_HELLO: respond_hello, METHOD_CAPTURE_SCREEN: respond_capture}
         )
-        ref = TerminalUnitRef(backend=BACKEND_CMUX, unit_id="ws-missing")
-        with pytest.raises(TerminalNotFoundError):
+        ref = TerminalUnitRef(backend=BACKEND_CMUX, unit_id="term-missing")
+        with pytest.raises(TerminalNotFoundError) as excinfo:
             await backend.capture(ref)
+        assert excinfo.value.ref == ref
 
 
 class TestProtocolErrorTranslation:
@@ -288,12 +336,15 @@ class TestProtocolErrorTranslation:
             return _ok(request, _hello())
 
         def respond_list(request: CmuxRequest) -> CmuxResponse:
-            return _ok(request, {"workspaces": "not-a-list"})
+            return _ok(request, {"terminal_sessions": "not-a-list"})
 
         from ccgram.terminal_backends.base import TerminalBackendError
 
         backend, _ = _make_backend(
-            {METHOD_HELLO: respond_hello, METHOD_LIST_WORKSPACES: respond_list}
+            {
+                METHOD_HELLO: respond_hello,
+                METHOD_LIST_TERMINAL_SESSIONS: respond_list,
+            }
         )
         with pytest.raises(TerminalBackendError) as excinfo:
             await backend.list_units()
@@ -311,7 +362,7 @@ class TestProtocolErrorTranslation:
         backend, _ = _make_backend(
             {METHOD_HELLO: respond_hello, METHOD_CAPTURE_SCREEN: respond_capture}
         )
-        ref = TerminalUnitRef(backend=BACKEND_CMUX, unit_id="ws-a")
+        ref = TerminalUnitRef(backend=BACKEND_CMUX, unit_id="term-a")
         with pytest.raises(TerminalBackendError) as excinfo:
             await backend.capture(ref)
         assert excinfo.value.code == "internal_error"

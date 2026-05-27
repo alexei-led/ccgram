@@ -87,7 +87,7 @@ class TestTmuxBackendCapture:
 
     async def test_capture_rejects_foreign_backend_ref(self) -> None:
         backend = TmuxBackend(_make_manager())
-        ref = TerminalUnitRef(backend=BACKEND_CMUX, unit_id="ws-1")
+        ref = TerminalUnitRef(backend=BACKEND_CMUX, unit_id="term-1")
         with pytest.raises(TerminalUnsupportedOperationError):
             await backend.capture(ref)
 
