@@ -219,6 +219,15 @@ def _optional_nonempty_str(payload: dict[str, Any], key: str) -> str | None:
     return value
 
 
+def _optional_bool_or_none(payload: dict[str, Any], key: str) -> bool | None:
+    if key not in payload or payload[key] is None:
+        return None
+    value = payload[key]
+    if not isinstance(value, bool):
+        raise CmuxProtocolError(f"{key} must be a boolean when set")
+    return value
+
+
 def _first_nonempty_str(payload: dict[str, Any], keys: tuple[str, ...]) -> str:
     for key in keys:
         if key not in payload:
@@ -301,6 +310,13 @@ class CmuxTerminalSession:
     pane_id: str | None = None
     surface_id: str | None = None
     panel_id: str | None = None
+    window_id: str | None = None
+    window_ref: str | None = None
+    workspace_ref: str | None = None
+    pane_ref: str | None = None
+    surface_ref: str | None = None
+    focused: bool | None = None
+    selected_in_pane: bool | None = None
 
     @classmethod
     def from_wire(cls, payload: Any) -> CmuxTerminalSession:
@@ -326,6 +342,13 @@ class CmuxTerminalSession:
             pane_id=_optional_nonempty_str(payload, "pane_id"),
             surface_id=_optional_nonempty_str(payload, "surface_id"),
             panel_id=_optional_nonempty_str(payload, "panel_id"),
+            window_id=_optional_nonempty_str(payload, "window_id"),
+            window_ref=_optional_nonempty_str(payload, "window_ref"),
+            workspace_ref=_optional_nonempty_str(payload, "workspace_ref"),
+            pane_ref=_optional_nonempty_str(payload, "pane_ref"),
+            surface_ref=_optional_nonempty_str(payload, "surface_ref"),
+            focused=_optional_bool_or_none(payload, "focused"),
+            selected_in_pane=_optional_bool_or_none(payload, "selected_in_pane"),
         )
 
 

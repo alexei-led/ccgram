@@ -78,6 +78,7 @@ _FLAG_TO_ENV: list[tuple[str, str]] = [
     ("hide_tool_calls", "CCGRAM_HIDE_TOOL_CALLS"),
     ("status_mode", "CCGRAM_STATUS_MODE"),
     ("cmux", "CCGRAM_CMUX_ENABLED"),
+    ("cmux_workspace_id", "CCGRAM_CMUX_WORKSPACE_ID"),
     ("terminal_backend", "CCGRAM_TERMINAL_BACKEND"),
 ]
 
@@ -222,6 +223,12 @@ def apply_args_to_env(**kwargs: object) -> None:
     default=None,
     envvar="CCGRAM_CMUX_ENABLED",
     help="Enable native cmux terminal backend.",
+)
+@click.option(
+    "--cmux-workspace-id",
+    default=None,
+    envvar="CCGRAM_CMUX_WORKSPACE_ID",
+    help="Limit native cmux terminal routing to one workspace UUID.",
 )
 @click.option(
     "--terminal-backend",

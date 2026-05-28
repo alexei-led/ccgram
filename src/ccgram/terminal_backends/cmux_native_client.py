@@ -162,15 +162,29 @@ def _sessions_from_tree(payload: Mapping[str, Any]) -> list[CmuxTerminalSession]
 
 
 def _sessions_from_window(window: Mapping[str, Any]) -> list[CmuxTerminalSession]:
+    window_id = _str_or_none(window.get("id"))
+    window_ref = _str_or_none(window.get("ref"))
     sessions: list[CmuxTerminalSession] = []
     for workspace in _list_field(window, "workspaces", context="window"):
         if isinstance(workspace, Mapping):
-            sessions.extend(_sessions_from_workspace(workspace))
+            sessions.extend(
+                _sessions_from_workspace(
+                    workspace,
+                    window_id=window_id,
+                    window_ref=window_ref,
+                )
+            )
     return sessions
 
 
-def _sessions_from_workspace(workspace: Mapping[str, Any]) -> list[CmuxTerminalSession]:
+def _sessions_from_workspace(
+    workspace: Mapping[str, Any],
+    *,
+    window_id: str | None,
+    window_ref: str | None,
+) -> list[CmuxTerminalSession]:
     workspace_id = _str_or_none(workspace.get("id"))
+    workspace_ref = _str_or_none(workspace.get("ref"))
     workspace_title = _str_or_none(workspace.get("title")) or ""
     sessions: list[CmuxTerminalSession] = []
     for pane in _list_field(workspace, "panes", context="workspace"):
@@ -178,7 +192,10 @@ def _sessions_from_workspace(workspace: Mapping[str, Any]) -> list[CmuxTerminalS
             sessions.extend(
                 _sessions_from_pane(
                     pane,
+                    window_id=window_id,
+                    window_ref=window_ref,
                     workspace_id=workspace_id,
+                    workspace_ref=workspace_ref,
                     workspace_title=workspace_title,
                 )
             )
@@ -188,19 +205,27 @@ def _sessions_from_workspace(workspace: Mapping[str, Any]) -> list[CmuxTerminalS
 def _sessions_from_pane(
     pane: Mapping[str, Any],
     *,
+    window_id: str | None,
+    window_ref: str | None,
     workspace_id: str | None,
+    workspace_ref: str | None,
     workspace_title: str,
 ) -> list[CmuxTerminalSession]:
     pane_id = _str_or_none(pane.get("id"))
+    pane_ref = _str_or_none(pane.get("ref"))
     sessions: list[CmuxTerminalSession] = []
     for surface in _list_field(pane, "surfaces", context="pane"):
         if not isinstance(surface, Mapping):
             continue
         session = _session_from_surface(
             surface,
+            window_id=window_id,
+            window_ref=window_ref,
             workspace_id=workspace_id,
+            workspace_ref=workspace_ref,
             workspace_title=workspace_title,
             pane_id=pane_id,
+            pane_ref=pane_ref,
         )
         if session is not None:
             sessions.append(session)
@@ -210,9 +235,13 @@ def _sessions_from_pane(
 def _session_from_surface(
     surface: Mapping[str, Any],
     *,
+    window_id: str | None,
+    window_ref: str | None,
     workspace_id: str | None,
+    workspace_ref: str | None,
     workspace_title: str,
     pane_id: str | None,
+    pane_ref: str | None,
 ) -> CmuxTerminalSession | None:
     if surface.get("type") != "terminal":
         return None
@@ -235,6 +264,13 @@ def _session_from_surface(
         panel_id=None,
         cwd=None,
         provider_name=None,
+        window_id=window_id,
+        window_ref=window_ref,
+        workspace_ref=workspace_ref,
+        pane_ref=pane_ref,
+        surface_ref=_str_or_none(surface.get("ref")),
+        focused=_bool_or_none(surface.get("focused")),
+        selected_in_pane=_bool_or_none(surface.get("selected_in_pane")),
     )
 
 
@@ -262,6 +298,10 @@ def _read_text_payload(payload: Mapping[str, Any]) -> str:
 
 def _str_or_none(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _bool_or_none(value: Any) -> bool | None:
+    return value if isinstance(value, bool) else None
 
 
 __all__ = ["CmuxNativeClient", "FakeCmuxNativeClient"]

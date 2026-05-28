@@ -48,6 +48,7 @@ class TestCliCommands:
         assert "--verbose" in result.output
         assert "--config-dir" in result.output
         assert "--cmux" in result.output
+        assert "--cmux-workspace-id" in result.output
         assert "--terminal-backend" in result.output
 
     def test_hook_help(self, runner):
@@ -143,6 +144,7 @@ class TestApplyArgsToEnv:
             autoclose_done=10,
             autoclose_dead=5,
             cmux=True,
+            cmux_workspace_id="ws-uuid",
             terminal_backend="cmux",
         )
 
@@ -154,6 +156,7 @@ class TestApplyArgsToEnv:
         assert os.environ["AUTOCLOSE_DONE_MINUTES"] == "10"
         assert os.environ["AUTOCLOSE_DEAD_MINUTES"] == "5"
         assert os.environ["CCGRAM_CMUX_ENABLED"] == "True"
+        assert os.environ["CCGRAM_CMUX_WORKSPACE_ID"] == "ws-uuid"
         assert os.environ["CCGRAM_TERMINAL_BACKEND"] == "cmux"
 
     def test_autoclose_zero_accepted(self):

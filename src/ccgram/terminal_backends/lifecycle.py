@@ -18,7 +18,7 @@ def register_cmux_backend_if_enabled(
     if not config.cmux_active:
         return None
     if backend is None:
-        backend = CmuxBackend(CmuxNativeClient())
+        backend = CmuxBackend(CmuxNativeClient(), workspace_id=config.cmux_workspace_id)
     if backend.name != BACKEND_CMUX:
         raise ValueError(f"expected a cmux backend, got {backend.name!r}")
     get_router().register(backend)

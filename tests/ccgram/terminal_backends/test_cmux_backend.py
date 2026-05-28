@@ -62,6 +62,8 @@ def _hello(**overrides: Any) -> dict[str, Any]:
 
 def _make_backend(
     responses: dict[str, Callable[[CmuxRequest], CmuxResponse]],
+    *,
+    workspace_id: str | None = None,
 ) -> tuple[CmuxBackend, FakeTransport]:
     def respond(request: CmuxRequest) -> CmuxResponse:
         handler = responses.get(request.method)
@@ -71,7 +73,7 @@ def _make_backend(
 
     transport = FakeTransport(respond)
     client = CmuxSidecarClient(transport, timeout=0.5)
-    return CmuxBackend(client), transport
+    return CmuxBackend(client, workspace_id=workspace_id), transport
 
 
 def _ok(request: CmuxRequest, result: dict[str, Any]) -> CmuxResponse:
@@ -226,6 +228,32 @@ class TestListUnits:
         units = await backend.list_units()
         assert units[0].state == "unknown"
 
+    async def test_workspace_scoped_backend_lists_only_matching_workspace(self) -> None:
+        def respond_hello(request: CmuxRequest) -> CmuxResponse:
+            return _ok(request, _hello())
+
+        def respond_list(request: CmuxRequest) -> CmuxResponse:
+            return _ok(
+                request,
+                {
+                    "terminal_sessions": [
+                        {"terminal_id": "term-a", "workspace_id": "ws-a"},
+                        {"terminal_id": "term-b", "workspace_id": "ws-b"},
+                        {"terminal_id": "term-c"},
+                    ]
+                },
+            )
+
+        backend, _ = _make_backend(
+            {
+                METHOD_HELLO: respond_hello,
+                METHOD_LIST_TERMINAL_SESSIONS: respond_list,
+            },
+            workspace_id="ws-a",
+        )
+        units = await backend.list_units()
+        assert [unit.ref.unit_id for unit in units] == ["term-a"]
+
 
 class TestSendAndCapture:
     async def test_capture_forwards_with_ansi(self) -> None:
@@ -245,6 +273,72 @@ class TestSendAndCapture:
         screen = await backend.capture(ref, with_ansi=True)
         assert screen == "hi"
         assert captured == {"terminal_id": "term-1", "with_ansi": True}
+
+    async def test_workspace_scope_checks_membership_before_capture(self) -> None:
+        captured: dict[str, Any] = {}
+
+        def respond_hello(request: CmuxRequest) -> CmuxResponse:
+            return _ok(request, _hello())
+
+        def respond_list(request: CmuxRequest) -> CmuxResponse:
+            return _ok(
+                request,
+                {
+                    "terminal_sessions": [
+                        {"terminal_id": "term-1", "workspace_id": "ws-a"}
+                    ]
+                },
+            )
+
+        def respond_capture(request: CmuxRequest) -> CmuxResponse:
+            captured.update(request.params)
+            return _ok(request, {"screen": "hi"})
+
+        backend, _ = _make_backend(
+            {
+                METHOD_HELLO: respond_hello,
+                METHOD_LIST_TERMINAL_SESSIONS: respond_list,
+                METHOD_CAPTURE_SCREEN: respond_capture,
+            },
+            workspace_id="ws-a",
+        )
+        ref = TerminalUnitRef(backend=BACKEND_CMUX, unit_id="term-1")
+        assert await backend.capture(ref) == "hi"
+        assert captured == {"terminal_id": "term-1", "with_ansi": False}
+
+    async def test_workspace_scope_rejects_moved_out_terminal(self) -> None:
+        capture_called = False
+
+        def respond_hello(request: CmuxRequest) -> CmuxResponse:
+            return _ok(request, _hello())
+
+        def respond_list(request: CmuxRequest) -> CmuxResponse:
+            return _ok(
+                request,
+                {
+                    "terminal_sessions": [
+                        {"terminal_id": "term-1", "workspace_id": "ws-b"}
+                    ]
+                },
+            )
+
+        def respond_capture(request: CmuxRequest) -> CmuxResponse:
+            nonlocal capture_called
+            capture_called = True
+            return _ok(request, {"screen": "hi"})
+
+        backend, _ = _make_backend(
+            {
+                METHOD_HELLO: respond_hello,
+                METHOD_LIST_TERMINAL_SESSIONS: respond_list,
+                METHOD_CAPTURE_SCREEN: respond_capture,
+            },
+            workspace_id="ws-a",
+        )
+        ref = TerminalUnitRef(backend=BACKEND_CMUX, unit_id="term-1")
+        with pytest.raises(TerminalNotFoundError):
+            await backend.capture(ref)
+        assert capture_called is False
 
     async def test_send_text_forwards_raw_flag(self) -> None:
         captured: dict[str, Any] = {}

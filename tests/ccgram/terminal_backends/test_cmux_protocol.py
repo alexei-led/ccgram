@@ -217,6 +217,13 @@ class TestCmuxTerminalSession:
                 "pane_id": "pane-1",
                 "surface_id": "surface-1",
                 "panel_id": "panel-1",
+                "window_id": "window-1",
+                "window_ref": "window:1",
+                "workspace_ref": "workspace:1",
+                "pane_ref": "pane:1",
+                "surface_ref": "surface:1",
+                "focused": True,
+                "selected_in_pane": False,
             }
         )
         assert session.title == "demo"
@@ -227,6 +234,13 @@ class TestCmuxTerminalSession:
         assert session.pane_id == "pane-1"
         assert session.surface_id == "surface-1"
         assert session.panel_id == "panel-1"
+        assert session.window_id == "window-1"
+        assert session.window_ref == "window:1"
+        assert session.workspace_ref == "workspace:1"
+        assert session.pane_ref == "pane:1"
+        assert session.surface_ref == "surface:1"
+        assert session.focused is True
+        assert session.selected_in_pane is False
 
     def test_from_wire_accepts_surface_id_alias(self) -> None:
         session = CmuxTerminalSession.from_wire({"surface_id": "surface-1"})
@@ -244,6 +258,8 @@ class TestCmuxTerminalSession:
             ({"terminal_id": "ok", "state": 5}, "state"),
             ({"terminal_id": "ok", "workspace_id": ""}, "workspace_id"),
             ({"terminal_id": "ok", "pane_id": 5}, "pane_id"),
+            ({"terminal_id": "ok", "window_ref": ""}, "window_ref"),
+            ({"terminal_id": "ok", "focused": "true"}, "focused"),
         ],
     )
     def test_from_wire_malformed(self, payload, fragment: str) -> None:

@@ -7,6 +7,7 @@ import pytest
 from ccgram.terminal_backends.config import (
     DEFAULT_BACKEND,
     ENV_CMUX_ENABLED,
+    ENV_CMUX_WORKSPACE_ID,
     ENV_TERMINAL_BACKEND,
     ENV_TERMINAL_BACKEND_DEFAULT,
     TerminalBackendConfig,
@@ -20,6 +21,7 @@ class TestLoadDefaults:
         assert config.default_backend == DEFAULT_BACKEND == "tmux"
         assert config.cmux_enabled is False
         assert config.cmux_active is False
+        assert config.cmux_workspace_id is None
 
 
 class TestDefaultBackendOverride:
@@ -77,11 +79,30 @@ class TestCmuxEnabled:
             )
 
 
+class TestCmuxWorkspace:
+    def test_workspace_id_is_optional(self, tmp_path: Path) -> None:
+        config = load_terminal_backend_config({}, config_dir=tmp_path)
+        assert config.cmux_workspace_id is None
+
+    def test_workspace_id_is_trimmed(self, tmp_path: Path) -> None:
+        config = load_terminal_backend_config(
+            {ENV_CMUX_WORKSPACE_ID: " ws-uuid "}, config_dir=tmp_path
+        )
+        assert config.cmux_workspace_id == "ws-uuid"
+
+    def test_blank_workspace_id_is_none(self, tmp_path: Path) -> None:
+        config = load_terminal_backend_config(
+            {ENV_CMUX_WORKSPACE_ID: "  "}, config_dir=tmp_path
+        )
+        assert config.cmux_workspace_id is None
+
+
 class TestRawEnvCapture:
     def test_only_terminal_backend_vars_captured(self, tmp_path: Path) -> None:
         env = {
             ENV_TERMINAL_BACKEND: "cmux",
             ENV_CMUX_ENABLED: "true",
+            ENV_CMUX_WORKSPACE_ID: "ws-uuid",
             "TELEGRAM_BOT_TOKEN": "secret",
             "PATH": "/usr/bin",
         }
@@ -89,6 +110,7 @@ class TestRawEnvCapture:
         assert config.raw_env == {
             ENV_TERMINAL_BACKEND: "cmux",
             ENV_CMUX_ENABLED: "true",
+            ENV_CMUX_WORKSPACE_ID: "ws-uuid",
         }
 
 
@@ -107,3 +129,8 @@ class TestDataclass:
         switched = config.with_default("cmux")
         assert config.default_backend == "tmux"
         assert switched.default_backend == "cmux"
+
+    def test_with_default_keeps_workspace_id(self) -> None:
+        config = TerminalBackendConfig(cmux_workspace_id="ws-uuid")
+        switched = config.with_default("cmux")
+        assert switched.cmux_workspace_id == "ws-uuid"

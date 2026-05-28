@@ -29,6 +29,8 @@ def _tree_payload():
                                         "ref": "surface:1",
                                         "type": "terminal",
                                         "title": "claude",
+                                        "focused": True,
+                                        "selected_in_pane": True,
                                     },
                                     {
                                         "id": "surface-b",
@@ -60,6 +62,13 @@ class TestListTerminalSessions:
         assert session.workspace_id == "ws-id"
         assert session.workspace_title == "dev"
         assert session.pane_id == "pane-id"
+        assert session.window_id == "win-id"
+        assert session.window_ref == "window:1"
+        assert session.workspace_ref == "workspace:1"
+        assert session.pane_ref == "pane:1"
+        assert session.surface_ref == "surface:1"
+        assert session.focused is True
+        assert session.selected_in_pane is True
         assert client.requests == [("system.tree", {"all": True})]
 
 

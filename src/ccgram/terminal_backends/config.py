@@ -9,6 +9,7 @@ User-facing knobs are intentionally small:
 * ``CCGRAM_TERMINAL_BACKEND_DEFAULT`` — ``tmux`` (default) or ``cmux``.
 * ``CCGRAM_TERMINAL_BACKEND`` — alias for ``CCGRAM_TERMINAL_BACKEND_DEFAULT``.
 * ``CCGRAM_CMUX_ENABLED`` — ``false`` by default; truthy enables native cmux.
+* ``CCGRAM_CMUX_WORKSPACE_ID`` — optional cmux workspace UUID scope.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from .base import BACKEND_CMUX, BACKEND_TMUX, KNOWN_BACKENDS
 ENV_TERMINAL_BACKEND = "CCGRAM_TERMINAL_BACKEND"
 ENV_TERMINAL_BACKEND_DEFAULT = "CCGRAM_TERMINAL_BACKEND_DEFAULT"
 ENV_CMUX_ENABLED = "CCGRAM_CMUX_ENABLED"
+ENV_CMUX_WORKSPACE_ID = "CCGRAM_CMUX_WORKSPACE_ID"
 
 DEFAULT_BACKEND = BACKEND_TMUX
 
@@ -41,12 +43,20 @@ def _parse_bool(raw: str | None, *, default: bool) -> bool:
     )
 
 
+def _parse_optional_nonempty(raw: str | None) -> str | None:
+    if raw is None:
+        return None
+    value = raw.strip()
+    return value or None
+
+
 @dataclass(frozen=True, slots=True)
 class TerminalBackendConfig:
     """Typed projection of terminal-backend related env vars."""
 
     default_backend: str = DEFAULT_BACKEND
     cmux_enabled: bool = False
+    cmux_workspace_id: str | None = None
     raw_env: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -55,6 +65,9 @@ class TerminalBackendConfig:
                 f"default_backend must be one of {sorted(KNOWN_BACKENDS)!r}, "
                 f"got {self.default_backend!r}"
             )
+        if self.cmux_workspace_id is not None:
+            workspace_id = self.cmux_workspace_id.strip()
+            object.__setattr__(self, "cmux_workspace_id", workspace_id or None)
 
     @property
     def cmux_active(self) -> bool:
@@ -66,6 +79,7 @@ class TerminalBackendConfig:
         return TerminalBackendConfig(
             default_backend=backend,
             cmux_enabled=self.cmux_enabled,
+            cmux_workspace_id=self.cmux_workspace_id,
             raw_env=dict(self.raw_env),
         )
 
@@ -88,6 +102,7 @@ def load_terminal_backend_config(
         ENV_TERMINAL_BACKEND,
         ENV_TERMINAL_BACKEND_DEFAULT,
         ENV_CMUX_ENABLED,
+        ENV_CMUX_WORKSPACE_ID,
     ):
         if name in source:
             raw_env[name] = source[name]
@@ -104,10 +119,12 @@ def load_terminal_backend_config(
         )
 
     cmux_enabled = _parse_bool(source.get(ENV_CMUX_ENABLED), default=False)
+    cmux_workspace_id = _parse_optional_nonempty(source.get(ENV_CMUX_WORKSPACE_ID))
 
     return TerminalBackendConfig(
         default_backend=default_backend,
         cmux_enabled=cmux_enabled,
+        cmux_workspace_id=cmux_workspace_id,
         raw_env=raw_env,
     )
 
@@ -115,6 +132,7 @@ def load_terminal_backend_config(
 __all__ = [
     "DEFAULT_BACKEND",
     "ENV_CMUX_ENABLED",
+    "ENV_CMUX_WORKSPACE_ID",
     "ENV_TERMINAL_BACKEND",
     "ENV_TERMINAL_BACKEND_DEFAULT",
     "TerminalBackendConfig",

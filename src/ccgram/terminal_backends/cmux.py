@@ -3,8 +3,8 @@
 The adapter is intentionally thin: it maps :class:`TerminalUnitRef`
 values (``backend="cmux"``, ``unit_id=<surface_id>``) onto a cmux client
 and translates :class:`CmuxTerminalSession` results into the neutral
-:class:`TerminalUnit` projection. cmux workspaces and panes stay metadata,
-not routing identity.
+:class:`TerminalUnit` projection. cmux workspaces can scope a ccgram instance;
+panes stay metadata because terminal surfaces move between panes.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from .base import (
     TerminalBackend,
     TerminalBackendCapabilities,
     TerminalBackendError,
+    TerminalNotFoundError,
     TerminalUnit,
     TerminalUnitRef,
     TerminalUnitState,
@@ -54,8 +55,13 @@ class CmuxClient(Protocol):
 class CmuxBackend(TerminalBackend):
     """``TerminalBackend`` adapter delegating to a cmux client."""
 
-    def __init__(self, client: CmuxClient) -> None:
+    def __init__(self, client: CmuxClient, *, workspace_id: str | None = None) -> None:
         self._client = client
+        if workspace_id is None:
+            self._workspace_id = None
+            return
+        cleaned = workspace_id.strip()
+        self._workspace_id = cleaned or None
 
     @property
     def name(self) -> str:
@@ -117,7 +123,30 @@ class CmuxBackend(TerminalBackend):
             sessions = await self._client.list_terminal_sessions()
         except CmuxProtocolError as exc:
             raise TerminalBackendError(str(exc), code="internal_error") from exc
-        return [self._terminal_session_to_unit(session) for session in sessions]
+        return [
+            self._terminal_session_to_unit(session)
+            for session in sessions
+            if self._session_in_workspace(session)
+        ]
+
+    def _session_in_workspace(self, session: CmuxTerminalSession) -> bool:
+        if self._workspace_id is None:
+            return True
+        return session.workspace_id == self._workspace_id
+
+    async def _require_workspace_membership(self, ref: TerminalUnitRef) -> None:
+        if self._workspace_id is None:
+            return
+        sessions = await self._client.list_terminal_sessions()
+        for session in sessions:
+            if session.terminal_id == ref.unit_id and self._session_in_workspace(
+                session
+            ):
+                return
+        raise TerminalNotFoundError(
+            f"cmux terminal surface not found in workspace {self._workspace_id}",
+            ref=ref,
+        )
 
     def _terminal_session_to_unit(self, session: CmuxTerminalSession) -> TerminalUnit:
         ref = TerminalUnitRef(backend=BACKEND_CMUX, unit_id=session.terminal_id)
@@ -141,8 +170,15 @@ class CmuxBackend(TerminalBackend):
                     "pane_id": session.pane_id,
                     "surface_id": session.surface_id,
                     "panel_id": session.panel_id,
+                    "window_id": session.window_id,
+                    "window_ref": session.window_ref,
+                    "workspace_ref": session.workspace_ref,
+                    "pane_ref": session.pane_ref,
+                    "surface_ref": session.surface_ref,
+                    "focused": session.focused,
+                    "selected_in_pane": session.selected_in_pane,
                 }.items()
-                if value
+                if value is not None and value != ""
             },
         )
 
@@ -151,6 +187,7 @@ class CmuxBackend(TerminalBackend):
     ) -> str | None:
         self._check_backend(ref)
         try:
+            await self._require_workspace_membership(ref)
             return await self._client.capture_screen(ref.unit_id, with_ansi=with_ansi)
         except CmuxProtocolError as exc:
             raise TerminalBackendError(
@@ -164,6 +201,7 @@ class CmuxBackend(TerminalBackend):
     ) -> bool:
         self._check_backend(ref)
         try:
+            await self._require_workspace_membership(ref)
             return await self._client.send_text(ref.unit_id, text, raw=raw)
         except CmuxProtocolError as exc:
             raise TerminalBackendError(
@@ -175,6 +213,7 @@ class CmuxBackend(TerminalBackend):
     async def send_key(self, ref: TerminalUnitRef, key: str) -> bool:
         self._check_backend(ref)
         try:
+            await self._require_workspace_membership(ref)
             return await self._client.send_key(ref.unit_id, key)
         except CmuxProtocolError as exc:
             raise TerminalBackendError(
@@ -186,6 +225,7 @@ class CmuxBackend(TerminalBackend):
     async def close(self, ref: TerminalUnitRef) -> bool:
         self._check_backend(ref)
         try:
+            await self._require_workspace_membership(ref)
             return await self._client.close_terminal_session(ref.unit_id)
         except CmuxProtocolError as exc:
             raise TerminalBackendError(

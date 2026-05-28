@@ -72,7 +72,19 @@ Native cmux is opt-in for existing cmux terminal surfaces:
 ccgram --cmux --terminal-backend cmux
 ```
 
-Then run `/cmux` inside a Telegram topic and pick the cmux terminal surface to bind. ccgram routes by cmux surface ID; workspace and pane names are display labels only.
+To run one ccgram instance per cmux workspace, scope the instance to the workspace UUID:
+
+```bash
+ccgram --cmux --terminal-backend cmux --cmux-workspace-id <workspace-uuid>
+```
+
+You can get the active workspace UUID from cmux:
+
+```bash
+cmux rpc system.tree '{"all":true}' | jq -r .active.workspace_id
+```
+
+Then run `/cmux` inside a Telegram topic and pick the cmux terminal surface to bind. ccgram routes by stable cmux surface ID; workspace IDs scope an instance, and pane IDs are metadata because terminal surfaces can move between panes/workspaces.
 
 ---
 
