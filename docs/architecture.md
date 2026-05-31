@@ -149,7 +149,7 @@ graph LR
 Read paths bypass `SessionManager`:
 
 - `window_query.py` — `get_window_provider()`, `get_approval_mode()`, `get_notification_mode()`, `view_window()`; feature-shaped reads delegate to `window_state_ports/*`.
-- `window_state_ports/` — `pane_state`, `identity_state`, `worktree_state`, `tool_state`, `lifecycle_state`. Frozen projection dataclasses for handlers and Mini App, plus cohesive feature writes (pane upsert/remove/lifecycle, worktree metadata, batch mode, tool-call visibility, origin, Gemini external warning). Provider/session identity writes still delegate to `SessionManager.set_window_provider`.
+- `window_state_ports/` — `pane_state`, `identity_state`, `worktree_state`, `tool_state`, `lifecycle_state`. Frozen projection dataclasses for handlers and Mini App, plus cohesive feature writes (pane upsert/remove/lifecycle, worktree metadata, batch mode, tool-call visibility, origin). Provider/session identity writes still delegate to `SessionManager.set_window_provider`.
 - `session_query.py` — `resolve_session_for_window()`, `find_users_for_session()`, `get_recent_messages()`.
 - `session_map_sync` (direct imports) — `load/prune/register`.
 - `thread_router` (direct imports) — `get_display_name()`.
