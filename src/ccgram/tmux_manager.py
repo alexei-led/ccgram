@@ -44,9 +44,6 @@ _vim_state: dict[str, bool] = {}
 # preventing interleaved keystrokes from concurrent send_keys() calls.
 _vim_locks: dict[str, asyncio.Lock] = {}
 
-# Delay between sending probe 'i' and recapturing pane (seconds).
-_VIM_PROBE_DELAY = 0.12
-
 
 _VIM_INSERT_RE = re.compile(r"^--\s*INSERT\s*--\s*$")
 
@@ -619,55 +616,43 @@ class TmuxManager:
             return False
 
     async def _ensure_vim_insert_mode(self, window_id: str) -> None:
-        """Detect vim NORMAL mode and auto-enter INSERT before sending text.
+        """Enter vim INSERT mode before sending text — only when vim is known on.
 
-        Uses a per-window cache (_vim_state) to minimize overhead:
-        - False (vim off): returns immediately, zero cost.
-        - True (vim on): captures pane to check INSERT indicator.
-          If missing (NORMAL mode), sends ``i`` to enter INSERT.
-        - Missing (unknown): probes once to determine vim state.
+        Vim state is observed by status polling: notify_vim_insert_seen sets the
+        cache to True when it renders ``-- INSERT --``. We act only on a
+        positively-confirmed vim window:
+        - True (vim on): capture the pane; if INSERT is not showing we are in
+          NORMAL mode, so send ``i`` to enter INSERT.
+        - False / unknown (None): no-op. We never speculatively type ``i`` here.
+          Doing so leaked a literal ``i`` into the message whenever the pane was
+          not actually in vim NORMAL mode — the common case, since Claude Code's
+          default prompt is not vim. The old probe could not tell ``i entered
+          INSERT`` from ``i typed while already in INSERT``, so it leaked the
+          probe key on capture failures and on stale captures.
+
+        Resilient by construction: a capture failure or an already-INSERT pane
+        sends nothing, so no key can leak. The only ``i`` ever sent is into a
+        window polling has confirmed is in vim and that currently shows no
+        INSERT indicator — i.e. genuine NORMAL mode.
+
+        Residual caveat: if a confirmed-vim window leaves vim mode, the cache
+        stays True until the window is cleaned up, so the first post-exit send
+        may still emit a stray ``i``. Far narrower than the previous
+        every-message leak and only affects users who toggle vim off mid-window.
         """
-        cached = _vim_state.get(window_id)
-
-        # Fast path: vim is definitely off
-        if cached is False:
+        if _vim_state.get(window_id) is not True:
             return
 
-        # Check current pane for INSERT indicator
         pane_text = await self.capture_pane(window_id)
         if not pane_text:
             return
 
         if has_insert_indicator(pane_text):
-            _vim_state[window_id] = True
-            return
+            return  # already in INSERT
 
-        # No INSERT indicator visible.
-        # If cache is None (unknown), we need to probe.
-        # If cache is True (was vim), INSERT disappeared → likely NORMAL mode.
-        # Both cases: send `i` and check result.
-        if not await asyncio.to_thread(
-            self._pane_send, window_id, "i", enter=False, literal=True
-        ):
-            return
-
-        await asyncio.sleep(_VIM_PROBE_DELAY)
-
-        pane_text = await self.capture_pane(window_id)
-        if not pane_text:
-            # Transient capture failure — leave state unchanged, don't backspace
-            return
-
-        if has_insert_indicator(pane_text):
-            # Vim is on — we just entered INSERT mode
-            _vim_state[window_id] = True
-            return
-
-        # No INSERT indicator → vim is off (or was turned off)
-        _vim_state[window_id] = False
-        # Clean up the stray 'i' we typed
+        # vim on, no INSERT indicator → NORMAL mode; enter INSERT.
         await asyncio.to_thread(
-            self._pane_send, window_id, "BSpace", enter=False, literal=False
+            self._pane_send, window_id, "i", enter=False, literal=True
         )
 
     async def _send_literal_then_enter(self, window_id: str, text: str) -> bool:

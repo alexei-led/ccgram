@@ -6,7 +6,6 @@ import pytest
 
 from ccgram.tmux_manager import (
     TmuxManager,
-    _VIM_PROBE_DELAY,
     has_insert_indicator,
     _vim_locks,
     _vim_state,
@@ -114,145 +113,68 @@ class TestEnsureVimInsertMode:
 
     async def test_cache_false_skips_entirely(self, manager):
         _vim_state["@1"] = False
-        with patch.object(manager, "capture_pane", new_callable=AsyncMock) as cap:
-            await manager._ensure_vim_insert_mode("@1")
-            cap.assert_not_called()
-
-    async def test_insert_visible_sets_cache_true(self, manager):
-        with patch.object(
-            manager,
-            "capture_pane",
-            new_callable=AsyncMock,
-            return_value="prompt\n-- INSERT --",
+        with (
+            patch.object(manager, "capture_pane", new_callable=AsyncMock) as cap,
+            patch.object(manager, "_pane_send") as send,
         ):
             await manager._ensure_vim_insert_mode("@1")
+        cap.assert_not_called()
+        send.assert_not_called()
+
+    async def test_unknown_state_skips_entirely(self, manager):
+        """Unknown vim state never speculatively probes — no 'i' can leak."""
+        assert "@1" not in _vim_state
+        with (
+            patch.object(manager, "capture_pane", new_callable=AsyncMock) as cap,
+            patch.object(manager, "_pane_send") as send,
+        ):
+            await manager._ensure_vim_insert_mode("@1")
+        cap.assert_not_called()
+        send.assert_not_called()
+        assert "@1" not in _vim_state
+
+    async def test_cache_true_already_insert_sends_nothing(self, manager):
+        _vim_state["@1"] = True
+        with (
+            patch.object(
+                manager,
+                "capture_pane",
+                new_callable=AsyncMock,
+                return_value="prompt\n-- INSERT --",
+            ),
+            patch.object(manager, "_pane_send") as send,
+        ):
+            await manager._ensure_vim_insert_mode("@1")
+        send.assert_not_called()
         assert _vim_state["@1"] is True
 
     async def test_cache_true_normal_mode_enters_insert(self, manager):
         _vim_state["@1"] = True
-        captures = iter(["prompt>", "prompt>\n-- INSERT --"])
-
-        async def fake_capture(_wid):
-            return next(captures)
-
-        with (
-            patch.object(manager, "capture_pane", side_effect=fake_capture),
-            patch.object(manager, "_pane_send", return_value=True) as send,
-            patch(
-                "ccgram.tmux_manager.asyncio.sleep", new_callable=AsyncMock
-            ) as mock_sleep,
-        ):
-            await manager._ensure_vim_insert_mode("@1")
-        assert _vim_state["@1"] is True
-        send.assert_called_once_with("@1", "i", enter=False, literal=True)
-        mock_sleep.assert_awaited_once_with(_VIM_PROBE_DELAY)
-
-    async def test_cache_true_vim_turned_off_sends_backspace(self, manager):
-        _vim_state["@1"] = True
-        captures = iter(["prompt>", "prompt> i"])
-
-        async def fake_capture(_wid):
-            return next(captures)
-
-        calls = []
-
-        def fake_send(_wid, chars, *, enter, literal):
-            calls.append((chars, literal))
-            return True
-
-        with (
-            patch.object(manager, "capture_pane", side_effect=fake_capture),
-            patch.object(manager, "_pane_send", side_effect=fake_send),
-            patch("ccgram.tmux_manager.asyncio.sleep", new_callable=AsyncMock),
-        ):
-            await manager._ensure_vim_insert_mode("@1")
-        assert _vim_state["@1"] is False
-        assert calls == [("i", True), ("BSpace", False)]
-
-    async def test_probe_unknown_vim_on(self, manager):
-        assert "@1" not in _vim_state
-        captures = iter(["prompt>", "prompt>\n-- INSERT --"])
-
-        async def fake_capture(_wid):
-            return next(captures)
-
-        with (
-            patch.object(manager, "capture_pane", side_effect=fake_capture),
-            patch.object(manager, "_pane_send", return_value=True),
-            patch("ccgram.tmux_manager.asyncio.sleep", new_callable=AsyncMock),
-        ):
-            await manager._ensure_vim_insert_mode("@1")
-        assert _vim_state["@1"] is True
-
-    async def test_probe_unknown_vim_off(self, manager):
-        assert "@1" not in _vim_state
-        captures = iter(["prompt>", "prompt> i"])
-
-        async def fake_capture(_wid):
-            return next(captures)
-
-        calls = []
-
-        def fake_send(_wid, chars, *, enter, literal):
-            calls.append((chars, literal))
-            return True
-
-        with (
-            patch.object(manager, "capture_pane", side_effect=fake_capture),
-            patch.object(manager, "_pane_send", side_effect=fake_send),
-            patch("ccgram.tmux_manager.asyncio.sleep", new_callable=AsyncMock),
-        ):
-            await manager._ensure_vim_insert_mode("@1")
-        assert _vim_state["@1"] is False
-        assert calls == [("i", True), ("BSpace", False)]
-
-    async def test_first_capture_failure_returns_early(self, manager):
         with (
             patch.object(
-                manager, "capture_pane", new_callable=AsyncMock, return_value=None
+                manager,
+                "capture_pane",
+                new_callable=AsyncMock,
+                return_value="prompt>",
             ),
             patch.object(manager, "_pane_send", return_value=True) as send,
         ):
             await manager._ensure_vim_insert_mode("@1")
-        send.assert_not_called()
-
-    async def test_post_probe_capture_none_leaves_state_unchanged(self, manager):
-        """Second capture returns None → don't change cache, don't backspace."""
-        _vim_state["@1"] = True
-        captures = iter(["prompt>", None])
-
-        async def fake_capture(_wid):
-            return next(captures)
-
-        calls = []
-
-        def fake_send(_wid, chars, *, enter, literal):
-            calls.append((chars, literal))
-            return True
-
-        with (
-            patch.object(manager, "capture_pane", side_effect=fake_capture),
-            patch.object(manager, "_pane_send", side_effect=fake_send),
-            patch("ccgram.tmux_manager.asyncio.sleep", new_callable=AsyncMock),
-        ):
-            await manager._ensure_vim_insert_mode("@1")
-        # State still True — not corrupted by transient failure
+        send.assert_called_once_with("@1", "i", enter=False, literal=True)
         assert _vim_state["@1"] is True
-        # Only the probe 'i' was sent, no backspace
-        assert calls == [("i", True)]
 
-    async def test_pane_send_failure_returns_early(self, manager):
-        captures = iter(["prompt>"])
-
-        async def fake_capture(_wid):
-            return next(captures)
-
+    async def test_cache_true_capture_failure_sends_nothing(self, manager):
+        """Capture failure on a vim window sends nothing — resilient, no leak."""
+        _vim_state["@1"] = True
         with (
-            patch.object(manager, "capture_pane", side_effect=fake_capture),
-            patch.object(manager, "_pane_send", return_value=False),
+            patch.object(
+                manager, "capture_pane", new_callable=AsyncMock, return_value=None
+            ),
+            patch.object(manager, "_pane_send") as send,
         ):
             await manager._ensure_vim_insert_mode("@1")
-        assert "@1" not in _vim_state
+        send.assert_not_called()
+        assert _vim_state["@1"] is True
 
 
 # ── Self-correction scenarios ──────────────────────────────────────────
@@ -271,21 +193,6 @@ class TestSelfCorrection:
 
         notify_vim_insert_seen("@1")
         assert _vim_state["@1"] is True
-
-    async def test_vim_disabled_mid_session(self, manager):
-        _vim_state["@1"] = True
-        captures = iter(["prompt>", "prompt> i"])
-
-        async def fake_capture(_wid):
-            return next(captures)
-
-        with (
-            patch.object(manager, "capture_pane", side_effect=fake_capture),
-            patch.object(manager, "_pane_send", return_value=True),
-            patch("ccgram.tmux_manager.asyncio.sleep", new_callable=AsyncMock),
-        ):
-            await manager._ensure_vim_insert_mode("@1")
-        assert _vim_state["@1"] is False
 
 
 # ── _send_literal_then_enter integration ───────────────────────────────
