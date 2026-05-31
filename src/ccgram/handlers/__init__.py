@@ -7,7 +7,6 @@ added ``commands/``):
     command_orchestration.py)
   - interactive/: AskUserQuestion / ExitPlanMode / Permission UI
   - live/: live terminal view, screenshots, pane callbacks
-  - messaging/: inter-agent message broker, spawn approval, Telegram notifications
   - messaging_pipeline/: outbound message queue, routing, sender, tool batching
   - polling/: status polling coordinator, per-window tick (decide/observe/apply)
   - recovery/: dead-window recovery, /restore, /resume, transcript discovery, history

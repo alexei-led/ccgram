@@ -9,7 +9,7 @@ Provides `react()` for setting a single emoji reaction on a message, with:
 
 Intended replacement for `query.answer(...)` toasts where a persistent
 acknowledgement is more useful than a one-shot popup (voice send, /send
-delivery, inter-agent messages, shell command lifecycle).
+delivery, shell command lifecycle).
 
 Note on allowed reactions: Telegram restricts bots to a fixed set of free
 emoji reactions; the audit's preferred icons (✅ ❌ 📬 ⚙) are not on the

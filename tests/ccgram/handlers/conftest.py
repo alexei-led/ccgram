@@ -7,13 +7,11 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _instant_session_map_wait(monkeypatch):
-    from ccgram.session_map import session_map_sync
+    from ccgram.session_map import SessionMapSync, install_session_map_sync
 
-    monkeypatch.setattr(
-        session_map_sync,
-        "wait_for_session_map_entry",
-        AsyncMock(return_value=True),
-    )
+    dummy = SessionMapSync(schedule_save=lambda: None)
+    dummy.wait_for_session_map_entry = AsyncMock(return_value=True)
+    install_session_map_sync(dummy)
 
 
 @pytest.fixture(autouse=True)

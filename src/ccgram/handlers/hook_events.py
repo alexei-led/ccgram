@@ -131,7 +131,7 @@ async def _handle_stop(event: HookEvent, client: TelegramClient) -> None:
 
     Topic emoji remains poller-owned. Hook-driven idle flips can fight the
     transcript/activity heuristic and cause active/idle rename churn on quiet
-    topics, so Stop only updates the status bubble and broker delivery state.
+    topics, so Stop only updates the status bubble.
     """
 
     users = _resolve_users_for_window_key(event.window_key)

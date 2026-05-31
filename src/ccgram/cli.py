@@ -6,7 +6,7 @@ bot-configuration flags.  Precedence: CLI flag > env var > .env > default.
 Config reads the overridden values.
 
 Every subcommand body lazy-loads its workers (``run_bot``, ``hook_main``,
-``status_main``, ``msg_group``, ``doctor_main``).  ``ccgram --help`` and
+``status_main``, ``doctor_main``).  ``ccgram --help`` and
 ``ccgram --version`` stay snappy and avoid pulling PTB / aiohttp /
 provider chains; only the invoked subcommand pays its import cost.
 """
@@ -39,9 +39,9 @@ class _DefaultToRun(click.Group):
     """Click group that runs the ``run`` command when invoked without a subcommand."""
 
     def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
-        # If the first arg is not a known command and not --help/--version,
-        # prepend "run" so flags like -v go to the run command.
-        if args and args[0] not in self.commands and not args[0].startswith("--"):
+        # Prepend "run" only for run-command flags. Bare unknown tokens should
+        # stay unknown subcommands so removed commands like "msg" fail clearly.
+        if args and args[0].startswith("-") and args[0] not in {"--help", "--version"}:
             args = ["run", *args]
         return super().parse_args(ctx, args)
 

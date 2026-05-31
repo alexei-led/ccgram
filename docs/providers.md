@@ -176,7 +176,7 @@ Names collide-dedupe with first-source wins (skills > prompts > extensions).
 
 ### Status Detection
 
-With hook-runner installed, Pi `Stop` hooks mark the topic ready immediately and trigger pending mailbox delivery. Without hooks, status is inferred from transcript activity — idle when the latest assistant message has no pending tool calls, working when there are unreturned tool uses.
+With hook-runner installed, Pi `Stop` hooks mark the topic ready immediately. Without hooks, status is inferred from transcript activity — idle when the latest assistant message has no pending tool calls, working when there are unreturned tool uses.
 
 ### Toolbar
 
