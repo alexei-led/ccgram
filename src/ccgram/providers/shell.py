@@ -44,7 +44,6 @@ class ShellProvider(JsonlProvider):
         supports_structured_transcript=False,
         supports_incremental_read=False,
         transcript_format="plain",
-        supports_mailbox_delivery=False,
         chat_first_command_path=True,
     )
 

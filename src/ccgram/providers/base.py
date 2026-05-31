@@ -131,9 +131,6 @@ class ProviderCapabilities:
     # the configured command sources (currently ~/.claude skills/commands).
     supports_user_command_discovery: bool = False
     supports_status_snapshot: bool = False
-    supports_mailbox_delivery: bool = (
-        True  # False for shell (no agent to receive send_keys)
-    )
     # True for shell-like providers that route inbound text through an LLM
     # → command flow with a prompt-marker terminal loop. Used by handlers to
     # gate shell-specific behavior without checking ``provider_name == "shell"``.

@@ -139,7 +139,7 @@ async def _handle_status_recall(
     provider = get_provider_for_window(
         window_id, provider_name=window_query.get_window_provider(window_id)
     )
-    if not provider.capabilities.supports_mailbox_delivery:
+    if provider.capabilities.chat_first_command_path:
         # Lazy: shell.shell_commands ↔ status via the approval callback
         # wired in bootstrap.
         from ..shell.shell_commands import handle_shell_message

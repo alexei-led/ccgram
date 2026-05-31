@@ -4,7 +4,7 @@ Bundles the modules that drive the per-window polling cycle:
 ``polling_coordinator`` (the outer loop), ``window_tick`` (per-window
 work), ``polling_types`` (pure data types and constants), ``polling_state``
 (stateful strategy classes + module-level singletons), and
-``periodic_tasks`` (broker delivery, mailbox sweep, lifecycle ticking).
+``periodic_tasks`` (lifecycle ticking, live view).
 
 Only the **pure** ``polling_types`` symbols are re-exported at the
 package level so that callers can ``from ccgram.handlers.polling import
@@ -22,9 +22,8 @@ provable at the import level — see
 ``periodic_tasks`` is intentionally NOT re-exported here: it imports
 ``topics.topic_lifecycle``, which itself imports ``polling_state``,
 and re-exporting would force the load through ``polling/__init__.py``.
-Callers that need ``run_periodic_tasks`` / ``run_lifecycle_tasks`` /
-``run_broker_cycle`` import them directly from
-``handlers.polling.periodic_tasks``.
+Callers that need ``run_periodic_tasks`` / ``run_lifecycle_tasks``
+import them directly from ``handlers.polling.periodic_tasks``.
 """
 
 from .polling_types import (

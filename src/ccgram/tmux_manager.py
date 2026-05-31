@@ -18,7 +18,6 @@ Module-level: _vim_state cache, _vim_locks for per-window send serialization.
 import asyncio
 import contextlib
 import re
-import shlex
 import structlog
 import subprocess
 from dataclasses import dataclass
@@ -871,15 +870,9 @@ class TmuxManager:
                 new_window_id = window.window_id or ""
                 pane = window.active_pane
 
-                # Set CCGRAM_WINDOW_ID so agents can self-identify
-                qualified_id = f"{self.session_name}:{new_window_id}"
+                # Disable interactive editors — Telegram users can't see
+                # tmux popups or terminal overlays opened by plugins
                 if pane and new_window_id:
-                    pane.send_keys(
-                        f"export CCGRAM_WINDOW_ID={shlex.quote(qualified_id)}",
-                        enter=True,
-                    )
-                    # Disable interactive editors — Telegram users can't see
-                    # tmux popups or terminal overlays opened by plugins
                     pane.send_keys(
                         "export EDITOR=true VISUAL=true",
                         enter=True,

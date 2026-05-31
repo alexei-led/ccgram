@@ -43,26 +43,19 @@ class TestBootstrapApplicationOrdering:
 
 
 class TestWireRuntimeCallbacks:
-    def test_wires_all_three_register_callbacks(self):
-        from ccgram.handlers import hook_events
+    def test_wires_approval_callback(self):
         from ccgram.handlers.shell import shell_capture
 
         bootstrap.wire_runtime_callbacks()
 
-        assert hook_events._stop_callback_registered is True
         assert shell_capture._approval_callback_registered is True
         assert bootstrap._callbacks_wired is True
 
     def test_double_wire_is_idempotent(self):
-        from ccgram.handlers import hook_events
-
         bootstrap.wire_runtime_callbacks()
-        first_callback = hook_events._stop_callback
-
         bootstrap.wire_runtime_callbacks()
 
         assert bootstrap._callbacks_wired is True
-        assert hook_events._stop_callback is first_callback
 
 
 class TestBootstrapApplication:
@@ -140,13 +133,11 @@ class TestShutdownRuntime:
             patch(
                 "ccgram.bootstrap.shutdown_workers", new_callable=AsyncMock
             ) as workers,
-            patch("ccgram.mailbox.Mailbox") as mailbox_cls,
             patch(
                 "ccgram.main.stop_miniapp_if_enabled", new_callable=AsyncMock
             ) as stop_mini,
             patch("ccgram.bootstrap.session_manager") as sm,
         ):
-            mailbox_cls.return_value.sweep = MagicMock()
             await bootstrap.shutdown_runtime()
 
         monitor.stop.assert_called_once()
@@ -162,7 +153,6 @@ class TestShutdownRuntime:
 
         with (
             patch("ccgram.bootstrap.shutdown_workers", new_callable=AsyncMock),
-            patch("ccgram.mailbox.Mailbox"),
             patch("ccgram.main.stop_miniapp_if_enabled", new_callable=AsyncMock),
             patch("ccgram.bootstrap.session_manager"),
         ):
@@ -203,17 +193,14 @@ class TestResetForTesting:
 
         with (
             patch("ccgram.bootstrap.shutdown_workers", new_callable=AsyncMock),
-            patch("ccgram.mailbox.Mailbox") as mailbox_cls,
             patch("ccgram.main.stop_miniapp_if_enabled", new_callable=AsyncMock),
             patch("ccgram.bootstrap.session_manager"),
         ):
-            mailbox_cls.return_value.sweep = MagicMock()
             await bootstrap.shutdown_runtime()
 
         assert sm_mod.get_active_monitor() is None
 
     def test_resets_inner_callback_registrations(self):
-        from ccgram.handlers import hook_events
         from ccgram.handlers.shell import shell_capture
 
         bootstrap.wire_runtime_callbacks()
@@ -221,11 +208,10 @@ class TestResetForTesting:
 
         # After reset, re-wiring must succeed (i.e., the F2.6 fail-loud
         # double-registration guard sees a clean slate).
-        assert hook_events._stop_callback_registered is False
         assert shell_capture._approval_callback_registered is False
 
         bootstrap.wire_runtime_callbacks()
-        assert hook_events._stop_callback_registered is True
+        assert shell_capture._approval_callback_registered is True
 
 
 class TestVerifyHooksInstalled:

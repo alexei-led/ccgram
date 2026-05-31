@@ -142,7 +142,7 @@ def _resolve_providers_to_try(
 
     if identity.provider_name:
         provider = get_provider_for_window(window_id, identity.provider_name)
-        if not provider.capabilities.supports_mailbox_delivery:
+        if provider.capabilities.chat_first_command_path:
             return []
         return [(provider.capabilities.name, provider)]
 

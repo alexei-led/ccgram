@@ -26,12 +26,10 @@ import structlog
 from telegram.error import TelegramError
 
 from .cc_commands import register_commands
-from .config import config
 from .handlers.commands import setup_menu_refresh_job
-from .handlers.hook_events import dispatch_hook_event, register_stop_callback
+from .handlers.hook_events import dispatch_hook_event
 from .handlers.messaging_pipeline.message_queue import shutdown_workers
 from .handlers.messaging_pipeline.message_routing import handle_new_message
-from .handlers.polling.periodic_tasks import run_broker_cycle
 from .handlers.polling.polling_coordinator import status_poll_loop
 from .handlers.shell import register_approval_callback, show_command_approval
 from .handlers.topics.topic_orchestration import (
@@ -147,18 +145,14 @@ def wire_runtime_callbacks() -> None:
     """Wire module-level callbacks that break cross-subsystem direct imports.
 
     Idempotent — safe to call multiple times. Must run before
-    ``start_session_monitor`` — the monitor dispatches Stop events to
-    ``register_stop_callback``, which raises if not wired.
+    ``start_session_monitor`` — the monitor dispatches approval prompts to
+    ``register_approval_callback``, which raises if not wired.
     """
     global _callbacks_wired
 
     if _callbacks_wired:
         return
 
-    async def _on_stop(client_, window_key: str) -> None:  # type: ignore[no-untyped-def]
-        await run_broker_cycle(client_, idle_windows=frozenset({window_key}))
-
-    register_stop_callback(_on_stop)
     register_approval_callback(show_command_approval)
     _callbacks_wired = True
 
@@ -253,13 +247,6 @@ async def shutdown_runtime() -> None:
 
     await shutdown_workers()
 
-    # Lazy: mailbox is a leaf module; importing it lazily here avoids
-    # paying the cost on bootstrap when shutdown is the only caller.
-    # Lazy: mailbox sweep helper used only by the periodic-task wire-up
-    from .mailbox import Mailbox
-
-    Mailbox(config.mailbox_dir).sweep()
-
     # Lazy: main → bot → bootstrap cycle (same as start path).
     from .main import stop_miniapp_if_enabled
 
@@ -280,10 +267,8 @@ def reset_for_testing() -> None:
 
     # Lazy: each module's _reset_*_for_testing hook is only needed by the
     # test harness; production callers never reach reset_for_testing().
-    from .handlers import hook_events
     from .handlers.shell import shell_capture
 
-    hook_events._reset_stop_callback_for_testing()
     shell_capture._reset_approval_callback_for_testing()
 
     _callbacks_wired = False

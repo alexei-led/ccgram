@@ -62,7 +62,6 @@ graph TD
         VoicePkg["voice/<br>voice_handler, voice_callbacks"]
         ShellPkg["shell/<br>shell_commands, shell_capture,<br>shell_context, shell_prompt_orchestrator"]
         MsgPipePkg["messaging_pipeline/<br>message_queue, message_routing,<br>message_sender, message_task,<br>tool_batch, topic_commands"]
-        MessagingPkg["messaging/<br>msg_broker, msg_delivery,<br>msg_telegram, msg_spawn"]
         RecoveryPkg["recovery/<br>recovery_callbacks (dispatcher),<br>recovery_banner, resume_picker,<br>restore_command, resume_command,<br>transcript_discovery,<br>history, history_callbacks"]
         CommandsPkg["commands/<br>forward, menu_sync,<br>failure_probe, status_snapshot"]
         PollingPkg["polling/<br>polling_coordinator,<br>polling_types (pure), polling_state (stateful),<br>periodic_tasks,<br>window_tick/{decide, observe, apply}"]
@@ -287,26 +286,6 @@ graph TB
     SM2 -- "load_session_map()<br>prune_session_map()" --> SMS2["session_map_sync"]
 ```
 
-## Inter-Agent Messaging
-
-```mermaid
-graph LR
-    AgentA["Agent A<br>(ccgram:@1)"]
-    Mailbox["~/.ccgram/mailbox/<br>per-window inbox dirs"]
-    AgentB["Agent B<br>(ccgram:@3)"]
-    MsgBroker2["msg_broker.py<br>broker delivery cycle<br>idle detection"]
-    TelegramNotif["Telegram<br>silent notifications"]
-    SpawnRequest["spawn_request.py<br>user approval flow"]
-
-    AgentA -- "ccgram msg send" --> Mailbox
-    MsgBroker2 -- "poll + inject<br>send_keys" --> AgentB
-    MsgBroker2 -- "notify" --> TelegramNotif
-    AgentA -- "ccgram msg spawn" --> SpawnRequest
-    SpawnRequest -- "inline keyboard" --> TelegramNotif
-
-    Mailbox --> MsgBroker2
-```
-
 ## Key Design Decisions
 
 | Decision                                | Rationale                                                                                                                                                                                                                                                                                                                                                                                                                                             |
@@ -317,7 +296,6 @@ graph LR
 | `window_state_ports/` feature ports     | `WindowStateStore` is the single persistence kernel; `window_state_ports/{pane,identity,worktree,tool,lifecycle}_state` are thin adapters exposing frozen projections plus cohesive feature writes. Raw `WindowState`-field access outside the kernel, the ports, `session.py`, `window_query.py`, and serialization tests fails `test_window_state_access_audit.py`. Provider identity writes still delegate to `SessionManager.set_window_provider` |
 | Provider protocol with capability flags | Gate UX features (resume, continue, hooks, YOLO, mode scraping, RC, picker hints) without `if provider == "claude"` checks                                                                                                                                                                                                                                                                                                                            |
 | `supports_task_tracking` capability     | `transcript_reader` is provider-agnostic; only Claude implements task state                                                                                                                                                                                                                                                                                                                                                                           |
-| File-based mailbox                      | Agents exchange messages via `~/.ccgram/mailbox/`; broker injects via `send_keys` on idle                                                                                                                                                                                                                                                                                                                                                             |
 | Tool-call visibility on `WindowState`   | Per-window `tool_call_visibility` (`default`/`shown`/`hidden`) gates `_handle_content_task` before batch eligibility; hook events bypass                                                                                                                                                                                                                                                                                                              |
 | Status-mode color schemes               | `CCGRAM_STATUS_MODE` selects `system` (green = working) or `user` (green = ready) — only emoji rendering changes, not internal state names                                                                                                                                                                                                                                                                                                            |
 | Gemini JSONL incremental reads          | Gemini CLI v0.40+ uses append-only JSONL; provider inherits `JsonlProvider` byte-offset reader, dedupes by message id and pending tool_use                                                                                                                                                                                                                                                                                                            |
@@ -331,4 +309,4 @@ graph LR
 | Pure types vs stateful polling          | `polling_types.py` holds contracts (stdlib + `providers.base.StatusUpdate` only); `polling_state.py` holds strategies + module-level singletons; `decide.py` imports only from `polling_types`. Pinned by `test_polling_types_purity.py`                                                                                                                                                                                                              |
 | Recovery split                          | `recovery_callbacks.py` is a thin dispatcher; `recovery_banner.py` owns dead-window banner UX; `resume_picker.py` owns the resume picker + transcript scan. `recovery/__init__.py` re-exports the public surface                                                                                                                                                                                                                                      |
 | Commands subpackage                     | `handlers/commands/` mirrors the `shell/` pattern: `forward.py`, `menu_sync.py`, `failure_probe.py`, `status_snapshot.py`. `commands/__init__.py` hosts `commands_command` + `toolbar_command`                                                                                                                                                                                                                                                        |
-| Lazy-import contract                    | In-function `Import`/`ImportFrom` must carry `# Lazy: <reason>` (or live inside `if TYPE_CHECKING:` / `_reset_*_for_testing`). `scripts/lint_lazy_imports.py` runs in `make lint`; cycle regressions caught by `tests/integration/test_import_no_cycles.py` (182 modules)                                                                                                                                                                             |
+| Lazy-import contract                    | In-function `Import`/`ImportFrom` must carry `# Lazy: <reason>` (or live inside `if TYPE_CHECKING:` / `_reset_*_for_testing`). `scripts/lint_lazy_imports.py` runs in `make lint`; cycle regressions caught by `tests/integration/test_import_no_cycles.py`                                                                                                                                                                                           |

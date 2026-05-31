@@ -139,9 +139,6 @@ def load_handlers() -> None:
     from .live import pane_callbacks, screenshot_callbacks  # noqa: F401
 
     # Lazy: handler subpackage modules import callback_registry for the @register_callback decorator; importing them here at module load would cycle
-    from .messaging import msg_spawn, msg_telegram  # noqa: F401
-
-    # Lazy: handler subpackage modules import callback_registry for the @register_callback decorator; importing them here at module load would cycle
     from .recovery import history_callbacks, recovery_callbacks, resume_command  # noqa: F401
 
     # Lazy: handler subpackage modules import callback_registry for the @register_callback decorator; importing them here at module load would cycle
@@ -158,6 +155,3 @@ def load_handlers() -> None:
 
     # Lazy: handler subpackage modules import callback_registry for the @register_callback decorator; importing them here at module load would cycle
     from .topics import directory_callbacks, window_callbacks  # noqa: F401
-
-    # Lazy: handler subpackage modules import callback_registry for the @register_callback decorator; importing them here at module load would cycle
-    from .. import msg_discovery  # noqa: F401

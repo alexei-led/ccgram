@@ -983,11 +983,9 @@ class TestProviderSwitchChain:
         shell_caps = MagicMock()
         shell_caps.capabilities.supports_hook = False
         shell_caps.capabilities.chat_first_command_path = True
-        shell_caps.capabilities.supports_mailbox_delivery = False
         gemini_caps = MagicMock()
         gemini_caps.capabilities.supports_hook = False
         gemini_caps.capabilities.chat_first_command_path = False
-        gemini_caps.capabilities.supports_mailbox_delivery = True
         gemini_caps.capabilities.name = "gemini"
         gemini_caps.discover_transcript.return_value = None
 
@@ -1102,6 +1100,7 @@ class TestMaybeDiscoverTranscript:
 
         mock_provider = MagicMock()
         mock_provider.capabilities.supports_hook = False
+        mock_provider.capabilities.chat_first_command_path = False
         mock_provider.capabilities.name = "codex"
         mock_provider.discover_transcript.return_value = SessionStartEvent(
             session_id="existing-id",
@@ -1171,6 +1170,7 @@ class TestMaybeDiscoverTranscript:
 
         mock_provider = MagicMock()
         mock_provider.capabilities.supports_hook = False
+        mock_provider.capabilities.chat_first_command_path = False
         mock_provider.capabilities.name = "codex"
         event = SessionStartEvent(
             session_id="uuid-xyz",
@@ -1259,6 +1259,7 @@ class TestMaybeDiscoverTranscript:
 
         mock_provider = MagicMock()
         mock_provider.capabilities.supports_hook = False
+        mock_provider.capabilities.chat_first_command_path = False
         mock_provider.capabilities.name = "codex"
         event = SessionStartEvent(
             session_id="uuid-abc",
@@ -1319,6 +1320,7 @@ class TestMaybeDiscoverTranscript:
 
         mock_provider = MagicMock()
         mock_provider.capabilities.supports_hook = False
+        mock_provider.capabilities.chat_first_command_path = False
         mock_provider.capabilities.name = "codex"
         event = SessionStartEvent(
             session_id="shared-session",
@@ -1382,6 +1384,7 @@ class TestMaybeDiscoverTranscript:
 
         mock_provider = MagicMock()
         mock_provider.capabilities.supports_hook = False
+        mock_provider.capabilities.chat_first_command_path = False
         mock_provider.capabilities.name = "codex"
         event = SessionStartEvent(
             session_id="uuid-new",
@@ -1440,6 +1443,7 @@ class TestMaybeDiscoverTranscript:
 
         mock_provider = MagicMock()
         mock_provider.capabilities.supports_hook = False
+        mock_provider.capabilities.chat_first_command_path = False
         mock_provider.discover_transcript.return_value = None
 
         with (
@@ -1479,6 +1483,7 @@ class TestMaybeDiscoverTranscript:
 
         mock_provider = MagicMock()
         mock_provider.capabilities.supports_hook = False
+        mock_provider.capabilities.chat_first_command_path = False
         mock_provider.capabilities.name = "codex"
         event = SessionStartEvent(
             session_id="uuid-abc",
@@ -1542,11 +1547,13 @@ class TestMaybeDiscoverTranscript:
 
         mock_codex = MagicMock()
         mock_codex.capabilities.supports_hook = False
+        mock_codex.capabilities.chat_first_command_path = False
         mock_codex.capabilities.name = "codex"
         mock_codex.discover_transcript.return_value = event
 
         mock_gemini = MagicMock()
         mock_gemini.capabilities.supports_hook = False
+        mock_gemini.capabilities.chat_first_command_path = False
         mock_gemini.capabilities.name = "gemini"
         mock_gemini.discover_transcript.return_value = None
 
@@ -1621,11 +1628,13 @@ class TestMaybeDiscoverTranscript:
 
         mock_codex = MagicMock()
         mock_codex.capabilities.supports_hook = False
+        mock_codex.capabilities.chat_first_command_path = False
         mock_codex.capabilities.name = "codex"
         mock_codex.discover_transcript.return_value = conflicting_event
 
         mock_gemini = MagicMock()
         mock_gemini.capabilities.supports_hook = False
+        mock_gemini.capabilities.chat_first_command_path = False
         mock_gemini.capabilities.name = "gemini"
         mock_gemini.discover_transcript.return_value = alternative_event
 
@@ -1714,6 +1723,7 @@ class TestMaybeDiscoverTranscript:
 
         mock_provider = MagicMock()
         mock_provider.capabilities.supports_hook = False
+        mock_provider.capabilities.chat_first_command_path = False
         mock_provider.capabilities.name = "codex"
         mock_provider.discover_transcript.return_value = None
 
@@ -1758,6 +1768,7 @@ class TestMaybeDiscoverTranscript:
 
         mock_provider = MagicMock()
         mock_provider.capabilities.supports_hook = False
+        mock_provider.capabilities.chat_first_command_path = False
         mock_provider.capabilities.name = "codex"
         mock_provider.discover_transcript.return_value = None
 
@@ -1800,6 +1811,7 @@ class TestMaybeDiscoverTranscript:
 
         mock_codex = MagicMock()
         mock_codex.capabilities.supports_hook = False
+        mock_codex.capabilities.chat_first_command_path = False
         mock_codex.capabilities.name = "codex"
         mock_codex.discover_transcript.return_value = None
 
@@ -1811,6 +1823,7 @@ class TestMaybeDiscoverTranscript:
         )
         mock_gemini = MagicMock()
         mock_gemini.capabilities.supports_hook = False
+        mock_gemini.capabilities.chat_first_command_path = False
         mock_gemini.capabilities.name = "gemini"
         mock_gemini.discover_transcript.return_value = gemini_event
 
@@ -1901,6 +1914,7 @@ class TestMaybeDiscoverTranscript:
         )
         mock_codex = MagicMock()
         mock_codex.capabilities.supports_hook = False
+        mock_codex.capabilities.chat_first_command_path = False
         mock_codex.capabilities.name = "codex"
         mock_codex.discover_transcript.return_value = codex_event
 

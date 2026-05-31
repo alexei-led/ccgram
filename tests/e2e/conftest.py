@@ -23,8 +23,7 @@ def _reset_runtime_callbacks():
     """Reset register-once callbacks AND bootstrap wire flag between tests.
 
     Each e2e test runs ``app.post_init(app)`` which calls
-    ``wire_runtime_callbacks`` → ``register_stop_callback`` /
-    ``register_rc_active_provider`` / ``register_approval_callback``.
+    ``wire_runtime_callbacks`` → ``register_approval_callback``.
     F2.6 made those fail loud on double registration AND
     ``wire_runtime_callbacks`` is idempotent (short-circuits on
     ``_callbacks_wired``), so without resetting both layers, test N+1

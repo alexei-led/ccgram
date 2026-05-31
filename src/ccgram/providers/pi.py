@@ -135,7 +135,6 @@ class PiProvider(JsonlProvider):
         builtin_commands=tuple(_PI_TELEGRAM_BUILTINS.keys()),
         supports_user_command_discovery=False,
         supports_status_snapshot=False,
-        supports_mailbox_delivery=True,
         # Pickers verified by sending each command to a live pi process and
         # inspecting tmux capture-pane output (see PR #93 follow-up).
         tui_picker_commands=frozenset(

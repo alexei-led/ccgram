@@ -136,9 +136,6 @@ async def test_new_worktree_creates_and_persists_to_window_state(
         patch(
             "ccgram.handlers.topics.directory_callbacks.provider_registry"
         ) as mock_registry,
-        patch(
-            "ccgram.handlers.topics.directory_callbacks._try_install_messaging_skill"
-        ),
     ):
         mock_tmux.create_window = AsyncMock(
             return_value=(True, "Created window 'repo'", "repo", "@7")

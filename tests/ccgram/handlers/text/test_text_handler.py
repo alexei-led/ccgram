@@ -356,7 +356,7 @@ class TestShellProviderRouting:
 
         provider = MagicMock()
         provider.capabilities.name = "shell"
-        provider.capabilities.supports_mailbox_delivery = False
+        provider.capabilities.chat_first_command_path = True
         mock_get_provider.return_value = provider
 
         with patch(
@@ -403,6 +403,7 @@ class TestShellProviderRouting:
 
         provider = MagicMock()
         provider.capabilities.name = "claude"
+        provider.capabilities.chat_first_command_path = False
         mock_get_provider.return_value = provider
 
         with (

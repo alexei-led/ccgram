@@ -1,7 +1,5 @@
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
-import pytest
-
 from telegram import Bot
 
 from ccgram.claude_task_state import claude_task_state
@@ -816,37 +814,3 @@ class TestHandleSessionEnd:
             event = _make_event(event_type="SessionEnd", data={"reason": "logout"})
             await dispatch_hook_event(event, bot)
             mock_enqueue.assert_not_called()
-
-
-class TestRegisterStopCallback:
-    def test_double_registration_raises(self) -> None:
-        from ccgram.handlers import hook_events
-
-        hook_events._reset_stop_callback_for_testing()
-        hook_events.register_stop_callback(AsyncMock())
-        with pytest.raises(RuntimeError, match="already registered"):
-            hook_events.register_stop_callback(AsyncMock())
-
-    async def test_default_raises_when_not_wired(self) -> None:
-        from ccgram.handlers import hook_events
-
-        hook_events._reset_stop_callback_for_testing()
-        with pytest.raises(RuntimeError, match="not wired"):
-            await hook_events._stop_callback(AsyncMock(spec=Bot), "ccgram:@0")
-
-    async def test_dispatch_stop_raises_when_not_wired(self, monkeypatch) -> None:
-        from ccgram.handlers import hook_events
-
-        hook_events._reset_stop_callback_for_testing()
-        monkeypatch.setattr(
-            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
-            lambda: iter([(100, 42, "@0")]),
-        )
-        bot = AsyncMock(spec=Bot)
-        with (
-            patch("ccgram.handlers.hook_events.update_topic_emoji"),
-            patch("ccgram.handlers.hook_events.enqueue_status_update"),
-        ):
-            event = _make_event(event_type="Stop", data={"stop_reason": "done"})
-            with pytest.raises(RuntimeError, match="not wired"):
-                await dispatch_hook_event(event, bot)

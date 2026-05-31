@@ -8,7 +8,7 @@ Component flow:
 - TranscriptParser (`transcript_parser.py`) parses JSONL, pairs tool_use ↔ tool_result, emits expandable quotes for thinking/history.
 - Hook (`hook.py`) receives Claude Code hook stdin, writes `session_map.json` + `events.jsonl`.
 - SessionManager + ThreadRouter resolve window ↔ session, own thread bindings and message history.
-- State files in `~/.ccgram/`: `state.json` (thread bindings, window states, display names, read offsets), `session_map.json` (hook-generated window_id → session), `events.jsonl` (append-only hook event log), `monitor_state.json` (byte offsets per JSONL file), `mailbox/` (inter-agent inboxes).
+- State files in `~/.ccgram/`: `state.json` (thread bindings, window states, display names, read offsets), `session_map.json` (hook-generated window_id → session), `events.jsonl` (append-only hook event log), `monitor_state.json` (byte offsets per JSONL file).
 
 Claude session transcripts live under `~/.claude/projects/` (`sessions-index` + `*.jsonl`).
 
@@ -44,7 +44,7 @@ Claude session transcripts live under `~/.claude/projects/` (`sessions-index` + 
 ### `src/ccgram/` (core)
 
 - `bot.py` — PTB Application factory + lifecycle delegates (172 lines); compat re-exports for handlers patched in tests.
-- `bootstrap.py` — `bootstrap_application()` (post_init) + `shutdown_runtime()` (post_shutdown). Named steps: `register_provider_commands`, `verify_hooks_installed`, `wire_runtime_callbacks`, `start_session_monitor`, `start_status_polling`, `start_miniapp_if_enabled`. Ordering invariant: `wire_runtime_callbacks` must run before `start_session_monitor`.
+- `bootstrap.py` — `bootstrap_application()` (post_init) + `shutdown_runtime()` (post_shutdown). Named steps: `register_provider_commands`, `verify_hooks_installed`, `wire_runtime_callbacks`, `start_session_monitor`, `start_status_polling`, `start_miniapp_if_enabled`. Ordering invariant: `wire_runtime_callbacks` must run before `start_session_monitor` — the monitor dispatches approval prompts to `register_approval_callback`, which raises if unwired.
 - `telegram_client.py` — `TelegramClient` Protocol covering 18 grep-verified bot API methods. `PTBTelegramClient(bot)` adapter; `FakeTelegramClient` for tests. `unwrap_bot(client)` is the escape hatch for PTB-only helpers (`do_api_request` for `DraftStream`).
 - `cc_commands.py` — CC command discovery (skills, custom) + menu registration.
 - `command_catalog.py` — provider-agnostic command discovery and caching.
@@ -52,19 +52,14 @@ Claude session transcripts live under `~/.claude/projects/` (`sessions-index` + 
 - `cli.py` — Click CLI entry (run + bot-config flags).
 - `config.py` — application config singleton (env, .env, defaults).
 - `doctor_cmd.py` — `ccgram doctor [--fix]`.
-- `mailbox.py` — file-based mailbox CRUD, TTL expiration, sweep, ID migration, broadcast.
 - `monitor_state.py` — byte-offset persistence per session.
 - `main.py` — Click dispatcher + run_bot bootstrap.
-- `msg_cmd.py` — `ccgram msg` CLI group.
-- `msg_discovery.py` — peer discovery: view over SessionManager + self-declared overlay (task, team).
-- `msg_skill.py` — messaging skill auto-installation for Claude Code agents.
 - `screen_buffer.py` — pyte VT100 buffer (ANSI → clean lines, separator detection).
 - `screenshot.py` — terminal text → PNG (ANSI color, font fallback).
 - `session.py` — `SessionManager` constructs and owns `WindowStateStore`, `ThreadRouter`, `UserPreferences`, `SessionMapSync` via constructor DI with explicit `schedule_save` and store-specific callbacks.
 - `session_map.py` — reads/writes `session_map.json`, syncs window states against hook data.
 - `session_query.py` — read-only session resolution free functions wrapping `session_resolver`.
 - `session_resolver.py` — JSONL session resolution + message history extraction.
-- `spawn_request.py` — spawn request types + file CRUD + accessor API.
 - `state_persistence.py` — atomic/debounced JSON persistence for `state.json`.
 - `status_cmd.py` — `ccgram status`.
 - `telegram_request.py` — resilient long-polling helpers (custom HTTPX transport).
@@ -123,13 +118,6 @@ Top-level (constants, leaves, top-level commands):
 - `screenshot_callbacks.py` — capture, quick-key, live view toggle.
 - `pane_callbacks.py` — per-pane rename, screenshot select.
 
-`handlers/messaging/` — inter-agent messaging:
-
-- `msg_broker.py` — broker delivery: idle detection, send_keys injection, rate limiting, loop detection.
-- `msg_delivery.py` — delivery state (per-window tracking, rate limiting, loop detection).
-- `msg_spawn.py` — spawn requests with Telegram approval and auto-topic creation.
-- `msg_telegram.py` — Telegram notifications (silent, grouped, edit-in-place).
-
 `handlers/messaging_pipeline/` — outbound message queue:
 
 - `message_queue.py` — per-user FIFO + worker; merge, status dedup, tool-use batching. Worker takes `client: TelegramClient`.
@@ -144,7 +132,7 @@ Top-level (constants, leaves, top-level commands):
 - `polling_coordinator.py` — iterates thread bindings, delegates per-window work to `window_tick`, runs periodic/lifecycle tasks.
 - `polling_types.py` — pure types module: `TickContext`, `TickDecision`, `PaneTransition`, `WindowPollState`, `TopicPollState`, constants (`STARTUP_TIMEOUT`, `RC_DEBOUNCE_SECONDS`, `MAX_PROBE_FAILURES`, `TYPING_INTERVAL`, `PANE_COUNT_TTL`, `ACTIVITY_THRESHOLD`, `SHELL_COMMANDS`), pure `is_shell_prompt`. Imports stdlib + `ccgram.providers.base.StatusUpdate` only.
 - `polling_state.py` — stateful: `TerminalPollState`, `TerminalScreenBuffer`, `InteractiveUIStrategy`, `TopicLifecycleStrategy`, `PaneStatusStrategy`, the five module-level singletons, `reset_window_polling_state`.
-- `periodic_tasks.py` — broker delivery, mailbox sweep, spawn processing, lifecycle, live view.
+- `periodic_tasks.py` — topic lifecycle management, live view ticking, state pruning.
 - `window_tick/__init__.py` — `tick_window` (thin orchestrator).
 - `window_tick/decide.py` — pure decision kernel (`decide_tick`, `build_status_line`, `is_shell_prompt`). Zero deps on tmux/PTB/singletons.
 - `window_tick/observe.py` — pure inputs → `TickContext` (pane-text capture, last-activity lookup, screen-buffer parsing, status resolve, vim-insert detection).
@@ -215,7 +203,6 @@ Top-level (constants, leaves, top-level commands):
 - Notifications routed via thread bindings (topic → window_id → session).
 - Startup re-resolution. Window IDs reset on tmux server restart. `resolve_stale_ids()` matches persisted display names against live windows to re-map. Old name-keyed `state.json` auto-migrated.
 - Per-window provider. CLI-specific behavior (launch args, transcript parsing, status, command discovery) delegated to `AgentProvider`. `ProviderCapabilities` gate UX per-window: hook checks, resume/continue buttons, command registration. `WindowState.provider_name` is source of truth; `get_provider_for_window(window_id)` resolves with config-default fallback. External windows auto-detected via `detect_provider_from_command()`. `get_provider()` is the no-window-context fallback (`doctor`, `status`).
-- Inter-agent messaging. File-based mailbox (`~/.ccgram/mailbox/`), qualified IDs (`session:@N`). Broker injects messages into idle windows via `send_keys`; shell windows are inbox-only. Telegram notifications silent, grouped. Spawn approval via Telegram keyboard. `CCGRAM_WINDOW_ID` env var set on window creation.
 - Live terminal view. Auto-refreshing screenshots via `editMessageMedia` (default 5s). Content-hash gating skips API calls when unchanged. One active view per topic, auto-stop after timeout (default 300s). Managed by `handlers/live/live_view.py`, ticked from `handlers/polling/periodic_tasks.py`.
 - Completion summaries. On agent Stop, `llm/summarizer.py` reads transcript, produces one line, edits Ready message in place. Non-blocking: static enriched Ready appears immediately, LLM enhancement ~1-2s later.
 - Constructor DI for stores. `SessionManager` constructs `WindowStateStore`, `ThreadRouter`, `UserPreferences`, `SessionMapSync` with explicit `schedule_save` (and store-specific) callbacks. Module-level singletons are proxy objects forwarding to the wired instance. `register_*_callback` helpers raise on double-registration; unwired callees raise `RuntimeError("not wired")`.
@@ -224,4 +211,4 @@ Top-level (constants, leaves, top-level commands):
 - Pure types vs stateful split for polling. `polling_types.py` holds contracts (stdlib + `StatusUpdate` only); `polling_state.py` holds strategies + singletons. `decide.py` imports only from `polling_types`. Codified by `tests/ccgram/handlers/polling/test_polling_types_purity.py`.
 - Single read path through query layer. Handler reads of window/session state go through `window_query` / `session_query` free functions or `window_state_ports/*` feature projections. Direct `session_manager.<attr>` access in `handlers/**` is restricted to a documented write/admin allow-list (`set_window_provider`, `set_window_origin`, `set_window_approval_mode`, `set_window_worktree`, `cycle_*`, `audit_state`, `prune_*`, `sync_display_names`). Codified by `tests/ccgram/test_query_layer_only_for_handlers.py` (AST walk over 86 handler files).
 - Window-state feature ports. `WindowStateStore` remains the single persistence kernel. `window_state_ports/{pane,identity,worktree,tool,lifecycle}_state.py` expose frozen projection dataclasses and cohesive feature writes. Reads return projections, not raw `WindowState`; writes only touch fields owned by the port. Provider/session identity writes still delegate to `SessionManager.set_window_provider` to preserve capability coordination. Boundary enforced by `tests/ccgram/test_window_state_access_audit.py`: raw feature-field access outside `window_state_store.py`, `window_state_ports/*`, `session.py`, `window_query.py`, and serialization tests fails the audit. A second import-boundary check (`tests/ccgram/test_window_store_import_boundary.py`) forbids handler/Mini App modules from importing `window_state_store.window_store` directly; the only allowed exceptions are `handlers/status/rc_probe.py` (transient in-memory RC-probe state never persisted) and `handlers/commands/forward.py` (`clear_window_session` coordination).
-- Lazy-import contract. `scripts/lint_lazy_imports.py` flags every in-function `Import`/`ImportFrom` not preceded by `# Lazy:`, not inside `if TYPE_CHECKING:`, and not inside `_reset_*_for_testing`. Walker recurses through compound statements (try/except/finally/if/else/with/for/while) and nested def/class bodies. Multi-line `# Lazy:` blocks supported. Wired into `make lint` as `lint-lazy`. All in-function imports annotated. Cycle test (`tests/integration/test_import_no_cycles.py`) enumerates all 182 modules under `src/ccgram/`.
+- Lazy-import contract. `scripts/lint_lazy_imports.py` flags every in-function `Import`/`ImportFrom` not preceded by `# Lazy:`, not inside `if TYPE_CHECKING:`, and not inside `_reset_*_for_testing`. Walker recurses through compound statements (try/except/finally/if/else/with/for/while) and nested def/class bodies. Multi-line `# Lazy:` blocks supported. Wired into `make lint` as `lint-lazy`. All in-function imports annotated. Cycle test (`tests/integration/test_import_no_cycles.py`) enumerates all modules under `src/ccgram/`.

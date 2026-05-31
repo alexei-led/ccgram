@@ -278,19 +278,6 @@ def status_cmd() -> None:
 # --- doctor command --------------------------------------------------------
 
 
-# --- msg command group -----------------------------------------------------
-
-
-def _register_msg_group() -> None:
-    # Lazy: defer subcommand import until that command is invoked, keeping `ccgram --help` fast
-    from .msg_cmd import msg_group
-
-    cli.add_command(msg_group, "msg")
-
-
-_register_msg_group()
-
-
 # --- doctor command --------------------------------------------------------
 
 

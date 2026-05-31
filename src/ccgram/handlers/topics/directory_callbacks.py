@@ -789,19 +789,6 @@ async def _accept_yolo_confirmation(window_id: str, *, timeout: float = 8.0) -> 
     return False
 
 
-def _try_install_messaging_skill(provider_name: str, cwd: str) -> None:
-    """Install the messaging skill for Claude windows (no-op for other providers)."""
-    if provider_name != "claude":
-        return
-    # Lazy: msg_skill is only needed for Claude topics.
-    from ...msg_skill import ensure_skill_installed
-
-    try:
-        ensure_skill_installed(cwd)
-    except Exception:
-        logger.exception("Failed to install messaging skill at %s", cwd)
-
-
 def _cwd_within(cwd: str, worktree_path: str) -> bool:
     """True if *cwd* is the worktree root or nested inside it."""
     try:
@@ -909,8 +896,6 @@ async def _create_window_and_bind(  # noqa: PLR0915
 
         await _wait_for_shell_ready(created_wid)
         await ensure_setup(created_wid, "auto")
-
-    _try_install_messaging_skill(provider_name, selected_path)
 
     if pending_thread_id is not None:
         thread_router.bind_thread(

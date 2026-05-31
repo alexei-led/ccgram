@@ -2,8 +2,8 @@
 
 Orchestrates topic teardown: dispatches registered cleanups via
 TopicStateRegistry, then handles infrastructure and bot-specific async
-cleanup that cannot be registered (log throttle, mailbox I/O, status
-messages, interactive UI, user_data).
+cleanup that cannot be registered (log throttle, status messages,
+interactive UI, user_data).
 
 Functions:
   - clear_topic_state: Clean up all memory state for a specific topic
@@ -20,7 +20,6 @@ if TYPE_CHECKING:
     from telegram.ext import ContextTypes
 
 from ..config import config
-from ..mailbox import Mailbox
 from ..thread_router import thread_router
 from ..topic_state_registry import topic_state
 from ..utils import handle_general_topic_message, is_general_topic, log_throttle_reset
@@ -48,7 +47,7 @@ async def clear_topic_state(
     registered as simple callbacks.
 
     Args:
-        window_dead: When False, skip mailbox/qualified-scope cleanup because
+        window_dead: When False, skip qualified-scope cleanup because
             the tmux window is still alive (e.g. topic close, /unbind).
             Window-scope callbacks (toolbar labels, screen buffer, etc.) always
             run.  Shell prompt orchestrator state is cleared separately, only
@@ -96,9 +95,6 @@ async def clear_topic_state(
     log_throttle_reset(f"status-update:{user_id}:{thread_id}")
     if window_id:
         log_throttle_reset(f"topic-probe:{window_id}")
-        mb = Mailbox(config.mailbox_dir)
-        if qualified_id is not None:
-            mb.clear_inbox(qualified_id)
 
     await clear_interactive_msg(user_id, client, thread_id)
 

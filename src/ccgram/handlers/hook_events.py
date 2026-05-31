@@ -9,7 +9,6 @@ Key function: dispatch_hook_event().
 """
 
 import asyncio
-from collections.abc import Awaitable, Callable
 
 import structlog
 
@@ -28,42 +27,6 @@ from .interactive import (
 from .messaging_pipeline.message_queue import enqueue_status_update
 from .polling.polling_state import reset_window_polling_state
 from .status.topic_emoji import update_topic_emoji
-
-
-async def _stop_callback_unwired(_client: TelegramClient, _window_key: str) -> None:
-    raise RuntimeError(
-        "register_stop_callback not wired — call register_stop_callback() at startup"
-    )
-
-
-# Wired at startup by bot.py to trigger broker delivery on Stop events.
-# Avoids a direct hook_events → periodic_tasks import.
-_stop_callback: Callable[[TelegramClient, str], Awaitable[None]] = (
-    _stop_callback_unwired
-)
-_stop_callback_registered: bool = False
-
-
-def register_stop_callback(
-    fn: Callable[[TelegramClient, str], Awaitable[None]],
-) -> None:
-    """Register the function called when a Stop event fires (wired by bot.py).
-
-    Raises RuntimeError if called more than once — wiring should happen exactly
-    once at startup; double registration is a programming error.
-    """
-    global _stop_callback, _stop_callback_registered
-    if _stop_callback_registered:
-        raise RuntimeError("register_stop_callback already registered")
-    _stop_callback = fn
-    _stop_callback_registered = True
-
-
-def _reset_stop_callback_for_testing() -> None:
-    """Restore the unwired default — only for tests."""
-    global _stop_callback, _stop_callback_registered
-    _stop_callback = _stop_callback_unwired
-    _stop_callback_registered = False
 
 
 logger = structlog.get_logger()
@@ -215,9 +178,6 @@ async def _handle_stop(event: HookEvent, client: TelegramClient) -> None:
         await enqueue_status_update(
             client, user_id, window_id, status_text, thread_id=thread_id
         )
-
-    # Trigger immediate broker delivery for the idle window via registered callback.
-    await _stop_callback(client, event.window_key)
 
 
 async def _handle_subagent_start(event: HookEvent, _client: TelegramClient) -> None:

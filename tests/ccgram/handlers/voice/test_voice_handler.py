@@ -605,7 +605,7 @@ class TestHandleVoiceCallback:
 
         mock_provider = MagicMock()
         mock_provider.capabilities.name = "shell"
-        mock_provider.capabilities.supports_mailbox_delivery = False
+        mock_provider.capabilities.chat_first_command_path = True
         mock_get_provider.return_value = mock_provider
 
         update = MagicMock()
@@ -650,7 +650,7 @@ class TestHandleVoiceCallback:
 
         mock_provider = MagicMock()
         mock_provider.capabilities.name = "shell"
-        mock_provider.capabilities.supports_mailbox_delivery = False
+        mock_provider.capabilities.chat_first_command_path = True
         mock_get_provider.return_value = mock_provider
 
         update = MagicMock()

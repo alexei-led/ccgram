@@ -100,7 +100,6 @@ class Config:
         self.session_map_file = self.config_dir / "session_map.json"
         self.monitor_state_file = self.config_dir / "monitor_state.json"
         self.events_file = self.config_dir / "events.jsonl"
-        self.mailbox_dir = self.config_dir / "mailbox"
 
         # Claude Code session monitoring configuration
         _claude_config_dir = os.getenv("CLAUDE_CONFIG_DIR")
@@ -178,7 +177,6 @@ class Config:
         # Empty string means "use built-in defaults". The handler layer passes
         # this path to ``toolbar_config.load_toolbar_config()`` once at startup.
         self._init_shell_and_llm()
-        self._init_messaging()
         self._init_live_view()
         self._init_send()
         self._init_lifecycle()
@@ -212,18 +210,6 @@ class Config:
             len(self.allowed_users),
             self.tmux_session_name,
         )
-
-    def _init_messaging(self) -> None:
-        self.msg_auto_spawn: bool = os.getenv("CCGRAM_MSG_AUTO_SPAWN", "").lower() in (
-            "1",
-            "true",
-            "yes",
-        )
-        self.msg_max_windows: int = _parse_int_env("CCGRAM_MSG_MAX_WINDOWS", 10)
-        self.msg_wait_timeout: int = _parse_int_env("CCGRAM_MSG_WAIT_TIMEOUT", 60)
-        self.msg_spawn_timeout: int = _parse_int_env("CCGRAM_MSG_SPAWN_TIMEOUT", 300)
-        self.msg_spawn_rate: int = _parse_int_env("CCGRAM_MSG_SPAWN_RATE", 3)
-        self.msg_rate_limit: int = _parse_int_env("CCGRAM_MSG_RATE_LIMIT", 10)
 
     def _init_live_view(self) -> None:
         self.live_view_interval: int = max(

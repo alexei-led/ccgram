@@ -17,7 +17,6 @@ from ccgram.handlers.topics.directory_callbacks import (
     _handle_confirm,
     _handle_mode_select,
     _handle_provider_select,
-    _try_install_messaging_skill,
 )
 from ccgram.handlers.user_state import PENDING_THREAD_ID, PENDING_THREAD_TEXT
 
@@ -443,31 +442,6 @@ class TestHandleModeSelect:
 
         mock_send_to_window.assert_called_once_with("@1", "hello world")
         assert PENDING_THREAD_TEXT not in user_data
-
-
-class TestTryInstallMessagingSkill:
-    @patch("ccgram.msg_skill.ensure_skill_installed")
-    def test_calls_ensure_for_claude(self, mock_ensure: MagicMock) -> None:
-        _try_install_messaging_skill("claude", "/tmp/proj")
-        mock_ensure.assert_called_once_with("/tmp/proj")
-
-    @patch("ccgram.msg_skill.ensure_skill_installed")
-    def test_skips_for_non_claude(self, mock_ensure: MagicMock) -> None:
-        for provider in ("codex", "gemini", "shell"):
-            _try_install_messaging_skill(provider, "/tmp/proj")
-        mock_ensure.assert_not_called()
-
-    @patch("ccgram.msg_skill.ensure_skill_installed")
-    def test_swallows_oserror(self, mock_ensure: MagicMock) -> None:
-        mock_ensure.side_effect = OSError("disk full")
-        _try_install_messaging_skill("claude", "/tmp/proj")
-        mock_ensure.assert_called_once()
-
-    @patch("ccgram.msg_skill.ensure_skill_installed")
-    def test_swallows_unexpected_error(self, mock_ensure: MagicMock) -> None:
-        mock_ensure.side_effect = RuntimeError("unexpected")
-        _try_install_messaging_skill("claude", "/tmp/proj")
-        mock_ensure.assert_called_once()
 
 
 class TestAcceptYoloConfirmation:

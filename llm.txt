@@ -38,7 +38,6 @@ State and data files:
 - session_map.json: tmux window -> provider session mappings
 - events.jsonl: append-only hook events stream
 - monitor_state.json: incremental read offsets
-- mailbox/ : inter-agent message inboxes (per-window)
 
 Canonical project references:
 - README.md

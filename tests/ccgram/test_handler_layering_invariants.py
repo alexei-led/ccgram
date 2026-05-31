@@ -48,7 +48,6 @@ _PTB_BOT_ALLOWLIST = frozenset(
         "last_reply.py",  # wraps get_bot() in PTBTelegramClient for send_last_reply
         "live/pane_callbacks.py",
         "live/screenshot_callbacks.py",
-        "messaging/msg_spawn.py",
         "messaging_pipeline/topic_commands.py",
         "status/status_bar_actions.py",
         "sync_command.py",
@@ -85,7 +84,6 @@ _SINGLETON_ALLOWLIST = frozenset(
         "last_reply.py",  # reads thread_router for window/chat resolution in last_command
         "live/pane_callbacks.py",
         "live/screenshot_callbacks.py",
-        "messaging/msg_telegram.py",
         "messaging_pipeline/message_queue.py",
         "messaging_pipeline/message_routing.py",
         "messaging_pipeline/tool_batch.py",
@@ -106,7 +104,7 @@ _SINGLETON_ALLOWLIST = frozenset(
         "shell/shell_commands.py",
         # rc_probe iterates thread bindings to route the RC outcome reply
         # to the bound topic — same notification-routing pattern as
-        # hook_events.py / msg_telegram.py (read-only over thread_router).
+        # hook_events.py (read-only over thread_router).
         "status/rc_probe.py",
         "status/status_bar_actions.py",
         "status/status_bubble.py",
