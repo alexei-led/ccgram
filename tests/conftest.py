@@ -15,6 +15,9 @@ import pytest
 # CCGRAM_GROUP_ID, CCGRAM_CLAUDE_COMMAND, MONITOR_POLL_INTERVAL, … which would
 # otherwise leak into tests asserting config defaults and into import-time
 # state like bot._group_filter). Cleared before the config singleton is built.
+# Both the CCGRAM_ prefix and the legacy CCBOT_ fallback (Config._env_with_fallback)
+# are scrubbed, plus the non-prefixed vars Config reads directly.
+_CONFIG_ENV_PREFIXES = ("CCGRAM_", "CCBOT_")
 _NON_PREFIXED_CONFIG_ENV = (
     "AUTOCLOSE_DEAD_MINUTES",
     "AUTOCLOSE_DONE_MINUTES",
@@ -23,7 +26,7 @@ _NON_PREFIXED_CONFIG_ENV = (
     "TMUX_SESSION_NAME",
 )
 for _key in list(os.environ):
-    if _key.startswith("CCGRAM_") or _key in _NON_PREFIXED_CONFIG_ENV:
+    if _key.startswith(_CONFIG_ENV_PREFIXES) or _key in _NON_PREFIXED_CONFIG_ENV:
         del os.environ[_key]
 
 # Force-set (not setdefault) to prevent real env vars from leaking into tests
