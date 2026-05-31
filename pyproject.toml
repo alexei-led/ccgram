@@ -132,6 +132,12 @@ pythonVersion = "3.14"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# importlib avoids "import file mismatch" when duplicate-basename files
+# (multiple conftest.py) are passed explicitly as collection targets (the
+# test-runner hook does this). pythonpath keeps the bare `_helpers` imports in
+# tests/ccgram/** resolvable, since importlib does not prepend the test's dir.
+addopts = "--import-mode=importlib"
+pythonpath = ["tests/ccgram"]
 timeout = 30
 markers = [
     "integration: tests using real filesystem or external processes",
