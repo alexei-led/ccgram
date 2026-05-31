@@ -66,9 +66,8 @@ _RENAME_PROMPT = (
 def _parse_target(data: str, prefix: str) -> tuple[str, str] | None:
     """Parse ``<prefix><window_id>:<pane_id>`` callback data.
 
-    Window IDs may contain colons (foreign emdash IDs use the
-    ``session:@id`` form). The pane id is always ``%N``, so we split on
-    the rightmost ``:`` that immediately precedes ``%``.
+    The pane id is always ``%N``, so we split on the rightmost ``:`` that
+    immediately precedes ``%``.
     """
     rest = data[len(prefix) :]
     sep = rest.rfind(":%")

@@ -102,8 +102,7 @@ def _build_message_context(my_id: str) -> dict[str, str]:
     ctx: dict[str, str] = {}
     states = _load_window_states()
     # Try qualified ID first, then bare ID (state.json keys are bare local IDs).
-    # Only fall back to bare ID for local-session windows so that a foreign
-    # agent (e.g. emdash) never picks up a local window's context.
+    # Only fall back to bare ID for local-session windows.
     ws = states.get(my_id)
     if ws is None and ":" in my_id:
         session_prefix = my_id.rsplit(":", 1)[0]

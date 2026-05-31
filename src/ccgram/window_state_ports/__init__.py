@@ -29,10 +29,7 @@ from .lifecycle_state import (
     LifecycleProjection,
     get_lifecycle,
     get_origin,
-    is_external,
-    mark_gemini_external_warned,
     set_window_origin,
-    was_gemini_external_warned,
 )
 from .pane_state import (
     PaneProjection,
@@ -82,10 +79,7 @@ __all__ = [
     "LifecycleProjection",
     "get_lifecycle",
     "get_origin",
-    "is_external",
-    "mark_gemini_external_warned",
     "set_window_origin",
-    "was_gemini_external_warned",
     # Pane
     "PaneProjection",
     "WindowPaneSnapshot",

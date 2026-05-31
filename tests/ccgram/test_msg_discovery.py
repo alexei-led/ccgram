@@ -88,22 +88,6 @@ class TestListPeers:
         )
         assert peers == []
 
-    def test_external_windows_use_qualified_id(self, declared_path: Path) -> None:
-        window_states = {
-            "emdash-claude-main-abc:@0": WindowInfo(
-                cwd="/proj",
-                window_name="proj",
-                provider_name="claude",
-                external=True,
-            ),
-        }
-        peers = list_peers(
-            window_states=window_states,
-            tmux_session="ccgram",
-            declared_path=declared_path,
-        )
-        assert peers[0].window_id == "emdash-claude-main-abc:@0"
-
 
 class TestFiltering:
     @pytest.fixture()

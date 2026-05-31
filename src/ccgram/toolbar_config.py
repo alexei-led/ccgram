@@ -65,8 +65,8 @@ _VALID_STYLES: frozenset[str] = frozenset({"emoji", "text", "emoji_text"})
 _VALID_TYPES: frozenset[str] = frozenset({"key", "text", "builtin"})
 
 # Action names appear in callback_data as "tb:<window_id>:<name>". With a
-# 64-byte Telegram limit and worst-case ~30-char foreign window IDs (e.g.
-# "emdash-claude-main-abc123:@0"), names must stay ≤24 chars to fit.
+# 64-byte Telegram limit and the "ccgram:@N" qualified window-id prefix,
+# names must stay ≤24 chars to fit.
 _MAX_NAME_LEN = 24
 
 # Telegram allows at most 8 inline buttons per row.

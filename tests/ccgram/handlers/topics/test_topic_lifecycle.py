@@ -82,7 +82,6 @@ def _window_view(origin: str) -> WindowView:
         transcript_path=None,
         window_name="test",
         session_id="s1",
-        external=False,
         origin=origin,
     )
 

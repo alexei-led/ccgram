@@ -95,16 +95,14 @@ def resolve_topic(
 ) -> tuple[int, int, int, str] | None:
     """Find the Telegram topic for a qualified window ID.
 
-    Tries the full qualified ID first (for foreign/emdash windows whose
-    bindings store the full ID), then falls back to the bare window ID
-    (for local windows stored as ``@N``).  The bare-ID fallback is
-    restricted to the local tmux session so that foreign IDs like
-    ``other-session:@0`` never match local ``@0``.
+    Tries the full qualified ID first, then falls back to the bare window
+    ID (for local windows stored as ``@N``).  The bare-ID fallback is
+    restricted to the local tmux session.
 
     Returns (user_id, thread_id, chat_id, window_id) or None.
     """
     bare_id = _extract_window_id(qualified_id)
-    # First pass: exact qualified ID match (prevents local @N from shadowing foreign IDs)
+    # First pass: exact qualified ID match
     for user_id, thread_id, bound_wid in thread_router.iter_thread_bindings():
         if bound_wid == qualified_id:
             chat_id = thread_router.resolve_chat_id(user_id, thread_id)
@@ -120,15 +118,13 @@ def resolve_topic(
 
 def _display_name(qualified_id: str) -> str:
     """Get display name for a qualified window ID."""
-    # Try full qualified ID first (foreign windows store names under qualified IDs)
+    # Try full qualified ID first
     name = thread_router.get_display_name(qualified_id)
     if name != qualified_id:
         return name
     bare_id = _extract_window_id(qualified_id)
     if bare_id == qualified_id:
         return qualified_id
-    # Only fall back to bare ID for local windows — foreign windows
-    # must not pick up a local window's display name that shares the same bare @N
     if not _is_local_qualified(qualified_id):
         return qualified_id
     return thread_router.get_display_name(bare_id)

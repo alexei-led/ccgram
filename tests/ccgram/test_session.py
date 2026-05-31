@@ -1062,7 +1062,6 @@ class TestExportWindowInfo:
                             "cwd": "/home/user/proj",
                             "window_name": "proj",
                             "provider_name": "claude",
-                            "external": False,
                         }
                     }
                 }
@@ -1074,7 +1073,6 @@ class TestExportWindowInfo:
         assert result["@0"].cwd == "/home/user/proj"
         assert result["@0"].window_name == "proj"
         assert result["@0"].provider_name == "claude"
-        assert result["@0"].external is False
 
     def test_empty_state(self, tmp_path, monkeypatch) -> None:
         from ccgram.msg_discovery import export_window_info

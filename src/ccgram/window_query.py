@@ -43,7 +43,6 @@ def view_window(window_id: str) -> WindowView | None:
         transcript_path=identity.transcript_path,
         window_name=identity.window_name,
         session_id=identity.session_id,
-        external=lifecycle.external,
         origin=lifecycle.origin,
     )
 

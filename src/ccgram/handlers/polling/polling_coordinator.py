@@ -60,8 +60,6 @@ async def status_poll_loop(bot: "Bot") -> None:
     while True:
         try:
             all_windows = await tmux_manager.list_windows()
-            external_windows = await tmux_manager.discover_external_sessions()
-            all_windows.extend(external_windows)
             window_lookup = {w.window_id: w for w in all_windows}
 
             await run_periodic_tasks(client, all_windows, timers)

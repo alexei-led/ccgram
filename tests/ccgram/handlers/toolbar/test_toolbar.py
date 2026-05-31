@@ -117,12 +117,6 @@ class TestParseCallbackData:
     def test_simple_window_id(self) -> None:
         assert _parse_callback_data("tb:@5:mode") == ("@5", "mode")
 
-    def test_foreign_window_id_with_colon(self) -> None:
-        assert _parse_callback_data("tb:emdash-x:@0:close") == (
-            "emdash-x:@0",
-            "close",
-        )
-
     def test_missing_prefix_returns_none(self) -> None:
         assert _parse_callback_data("foo:bar") is None
 

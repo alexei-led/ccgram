@@ -26,12 +26,6 @@ class TestSanitizeDirName:
     def test_replaces_colon_with_equals(self):
         assert sanitize_dir_name("ccgram:@0") == "ccgram=@0"
 
-    def test_handles_emdash_qualified_id(self):
-        assert (
-            sanitize_dir_name("emdash-claude-main-abc:@0")
-            == "emdash-claude-main-abc=@0"
-        )
-
     def test_roundtrip(self):
         original = "ccgram:@12"
         assert _unsanitize_dir_name(sanitize_dir_name(original)) == original
@@ -186,11 +180,6 @@ class TestMailboxQualifiedIds:
     def test_ccgram_qualified_id(self, mailbox: Mailbox):
         mailbox.send("ccgram:@0", "ccgram:@0", "self-msg")
         inbox_dir = mailbox.base_dir / "ccgram=@0"
-        assert inbox_dir.is_dir()
-
-    def test_emdash_qualified_id(self, mailbox: Mailbox):
-        mailbox.send("ccgram:@0", "emdash-claude-main-abc:@0", "cross-session")
-        inbox_dir = mailbox.base_dir / "emdash-claude-main-abc=@0"
         assert inbox_dir.is_dir()
 
     def test_no_bare_window_id_dirs(self, mailbox: Mailbox):
@@ -368,12 +357,6 @@ class TestPruneDead:
         assert mailbox._inbox_dir("ccgram:@0").is_dir()
         assert not mailbox._inbox_dir("ccgram:@5").exists()
         assert not mailbox._inbox_dir("ccgram:@9").exists()
-
-    def test_preserves_emdash_windows(self, mailbox: Mailbox):
-        mailbox.send("a", "emdash-claude-main-abc:@0", "foreign msg")
-        removed = mailbox.prune_dead(set())
-        assert removed == 0
-        assert mailbox._inbox_dir("emdash-claude-main-abc:@0").is_dir()
 
     def test_noop_on_empty_mailbox(self, mailbox: Mailbox):
         assert mailbox.prune_dead(set()) == 0

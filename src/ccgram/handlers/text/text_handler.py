@@ -269,8 +269,6 @@ async def _handle_unbound_topic(
         return False
 
     all_windows = await tmux_manager.list_windows()
-    external_windows = await tmux_manager.discover_external_sessions()
-    all_windows.extend(external_windows)
     bound_ids = {bound_wid for _, _, bound_wid in thread_router.iter_thread_bindings()}
     unbound = [
         (w.window_id, w.window_name, w.cwd)

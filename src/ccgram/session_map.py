@@ -15,7 +15,7 @@ has constructed the sync). The legacy module attribute
 for backward compat.
 
 Key class: SessionMapSync.
-Free functions: parse_session_map, parse_emdash_provider.
+Free functions: parse_session_map.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ import aiofiles
 
 from .config import config
 from .utils import atomic_write_json, log_throttle_reset, log_throttled
-from .window_resolver import EMDASH_SESSION_PREFIX, is_foreign_window, is_window_id
+from .window_resolver import is_window_id
 
 logger = structlog.get_logger()
 
@@ -185,18 +185,6 @@ def parse_session_map(raw: dict[str, Any], prefix: str) -> dict[str, dict[str, s
     return result
 
 
-def parse_emdash_provider(session_name: str) -> str:
-    """Extract provider name from emdash session name.
-
-    Format: emdash-{provider}-main-{id} or emdash-{provider}-chat-{id}
-    """
-    for sep in ("-main-", "-chat-"):
-        if sep in session_name:
-            prefix = session_name.split(sep)[0]
-            return prefix.removeprefix(EMDASH_SESSION_PREFIX)
-    return ""
-
-
 class SessionMapSync:
     """Session map I/O and window-state synchronisation.
 
@@ -219,8 +207,7 @@ class SessionMapSync:
         """Read session_map.json and update window_states with new session associations.
 
         Keys in session_map are formatted as "tmux_session:window_id" (e.g. "ccgram:@12").
-        Native entries (matching our tmux_session_name) and emdash entries (prefixed
-        with "emdash-") are both processed. Emdash windows are marked as external.
+        Only native entries (matching our tmux_session_name) are processed.
         Also cleans up window_states entries not in current session_map.
         Updates window_display_names from the "window_name" field in values.
 
@@ -260,11 +247,6 @@ class SessionMapSync:
         for key, info in session_map.items():
             if not isinstance(info, dict):
                 continue
-            if key.startswith(EMDASH_SESSION_PREFIX):
-                valid_wids.add(key)
-                if self._sync_emdash_entry(key, info):
-                    changed = True
-                continue
             if not key.startswith(prefix):
                 continue
             window_id = key[len(prefix) :]
@@ -279,23 +261,6 @@ class SessionMapSync:
                 changed = True
 
         return valid_wids, old_format_sids, old_format_keys, changed
-
-    def _sync_emdash_entry(self, key: str, info: dict[str, Any]) -> bool:
-        """Sync one emdash session_map entry; infer provider if missing.
-
-        Returns True if any state changed.
-        """
-        # Lazy: see _prefer_existing_primary — same cycle + wiring contract.
-        from .window_state_store import window_store
-
-        changed = self._sync_window_from_session_map(key, info, mark_external=True)
-        state = window_store.get_window_state(key)
-        if not state.provider_name:
-            detected = parse_emdash_provider(key.rsplit(":", 1)[0])
-            if detected:
-                state.provider_name = detected
-                changed = True
-        return changed
 
     def _remove_stale_window_states(
         self,
@@ -435,8 +400,7 @@ class SessionMapSync:
     def get_session_map_window_ids(self) -> set[str]:
         """Read session_map.json and return window IDs tracked by ccgram.
 
-        Includes native windows (stripped to @id) and emdash windows
-        (full qualified key like "emdash-claude-main-xxx:@0").
+        Native windows are stripped to their @id form.
         """
         if not config.session_map_file.exists():
             return set()
@@ -451,8 +415,6 @@ class SessionMapSync:
                 wid = key[len(prefix) :]
                 if is_window_id(wid):
                     result.add(wid)
-            elif key.startswith(EMDASH_SESSION_PREFIX):
-                result.add(key)
         return result
 
     def register_hookless_session(
@@ -500,11 +462,7 @@ class SessionMapSync:
 
         map_file = config.session_map_file
         map_file.parent.mkdir(parents=True, exist_ok=True)
-        # Foreign windows (emdash) are already fully qualified
-        if is_foreign_window(window_id):
-            window_key = window_id
-        else:
-            window_key = f"{config.tmux_session_name}:{window_id}"
+        window_key = f"{config.tmux_session_name}:{window_id}"
         lock_path = map_file.with_suffix(".lock")
         try:
             with open(lock_path, "w") as lock_f:
@@ -585,8 +543,6 @@ class SessionMapSync:
         self,
         window_id: str,
         info: dict[str, Any],
-        *,
-        mark_external: bool = False,
     ) -> bool:
         """Sync a single window's state from session_map entry.
 
@@ -608,12 +564,6 @@ class SessionMapSync:
         changed = False
 
         state = window_store.get_window_state(window_id)
-        if mark_external and not state.external:
-            state.external = True
-            changed = True
-        if mark_external and state.origin != "external":
-            state.origin = "external"
-            changed = True
         if state.session_id != new_sid or state.cwd != new_cwd:
             logger.info(
                 "Session map: window_id %s updated sid=%s, cwd=%s",

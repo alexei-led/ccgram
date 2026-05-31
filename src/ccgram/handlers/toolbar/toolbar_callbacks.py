@@ -260,9 +260,8 @@ _BUILTIN_DISPATCH: dict[str, _BuiltinHandler] = {
 def _parse_callback_data(data: str) -> tuple[str, str] | None:
     """Parse ``tb:<window_id>:<action_name>`` into ``(window_id, name)``.
 
-    Returns None if the format is invalid. Window IDs may themselves
-    contain a colon (foreign emdash IDs like ``emdash-claude-main-x:@0``),
-    so the action_name is the substring after the LAST colon.
+    Returns None if the format is invalid. The action_name is the
+    substring after the LAST colon.
     """
     if not data.startswith(CB_TOOLBAR):
         return None

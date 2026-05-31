@@ -41,13 +41,9 @@ _BATCH_CYCLE: dict[str, str] = {
 TOOL_CALL_VISIBILITY_MODES: tuple[str, ...] = ("default", "shown", "hidden")
 DEFAULT_TOOL_CALL_VISIBILITY: str = "default"
 
-WINDOW_ORIGINS: frozenset[str] = frozenset(
-    {"manual_discovered", "ccgram_created", "external"}
-)
+WINDOW_ORIGINS: frozenset[str] = frozenset({"manual_discovered", "ccgram_created"})
 DEFAULT_WINDOW_ORIGIN = "manual_discovered"
 CCGRAM_CREATED_WINDOW_ORIGIN = "ccgram_created"
-MANUAL_DISCOVERED_WINDOW_ORIGIN = "manual_discovered"
-EXTERNAL_WINDOW_ORIGIN = "external"
 
 PaneState = Literal["active", "idle", "blocked", "dead"]
 PANE_STATES: frozenset[str] = frozenset({"active", "idle", "blocked", "dead"})
@@ -124,8 +120,7 @@ class WindowState:
         approval_mode: "normal" | "yolo"
         batch_mode: "batched" | "ephemeral" | "verbose"
         tool_call_visibility: "default" | "shown" | "hidden"
-        external: True for windows owned by external tools (emdash) — never killed by ccgram
-        origin: Lifecycle origin. Manual/external windows are never auto-killed by ccgram.
+        origin: Lifecycle origin. Manually-discovered windows are never auto-killed by ccgram.
         panes: Per-pane runtime state, keyed by tmux pane id (e.g. ``%5``).
         pane_lifecycle_notify: Per-window override for pane created/closed
             notifications. ``None`` means "use the global config default".
@@ -148,7 +143,6 @@ class WindowState:
     approval_mode: str = DEFAULT_APPROVAL_MODE
     batch_mode: str = DEFAULT_BATCH_MODE
     tool_call_visibility: str = DEFAULT_TOOL_CALL_VISIBILITY
-    external: bool = False
     origin: str = DEFAULT_WINDOW_ORIGIN
     panes: dict[str, PaneInfo] = field(default_factory=dict)
     pane_lifecycle_notify: bool | None = None
@@ -158,10 +152,6 @@ class WindowState:
     rc_armed_at: float | None = None
     worktree_path: str | None = None
     worktree_branch: str | None = None
-    # Set once after the user has been warned that this externally-launched
-    # Gemini window lacks ccgram's hardened shell settings (issue #86).
-    # Persisted so the warning is not re-shown on every bot restart.
-    gemini_external_warned: bool = False
     # User explicitly chose this provider via /agent — auto-detection
     # (``_detect_and_apply_provider``) must not overwrite the choice
     # until the user re-runs ``/agent auto`` (which clears the flag).
@@ -184,8 +174,6 @@ class WindowState:
             d["batch_mode"] = self.batch_mode
         if self.tool_call_visibility != DEFAULT_TOOL_CALL_VISIBILITY:
             d["tool_call_visibility"] = self.tool_call_visibility
-        if self.external:
-            d["external"] = True
         if self.origin != DEFAULT_WINDOW_ORIGIN:
             d["origin"] = self.origin
         if self.panes:
@@ -196,8 +184,6 @@ class WindowState:
             d["worktree_path"] = self.worktree_path
         if self.worktree_branch:
             d["worktree_branch"] = self.worktree_branch
-        if self.gemini_external_warned:
-            d["gemini_external_warned"] = True
         if self.provider_manual_override:
             d["provider_manual_override"] = True
         return d
@@ -225,7 +211,6 @@ class WindowState:
             tool_call_visibility=data.get(
                 "tool_call_visibility", DEFAULT_TOOL_CALL_VISIBILITY
             ),
-            external=data.get("external", False),
             origin=(
                 data.get("origin", DEFAULT_WINDOW_ORIGIN)
                 if data.get("origin", DEFAULT_WINDOW_ORIGIN) in WINDOW_ORIGINS
@@ -235,7 +220,6 @@ class WindowState:
             pane_lifecycle_notify=data.get("pane_lifecycle_notify"),
             worktree_path=data.get("worktree_path"),
             worktree_branch=data.get("worktree_branch"),
-            gemini_external_warned=data.get("gemini_external_warned", False),
             provider_manual_override=data.get("provider_manual_override", False),
         )
 
@@ -310,7 +294,6 @@ class WindowStateStore:
         if state.origin == origin:
             return
         state.origin = origin
-        state.external = origin == EXTERNAL_WINDOW_ORIGIN
         self._schedule_save()
 
     def set_worktree(self, window_id: str, worktree_path: str, branch: str) -> None:
@@ -465,19 +448,6 @@ class WindowStateStore:
         if state.pane_lifecycle_notify == value:
             return
         state.pane_lifecycle_notify = value
-        self._schedule_save()
-
-    def was_gemini_external_warned(self, window_id: str) -> bool:
-        """True if the external-Gemini shell-mode warning was already shown."""
-        state = self.window_states.get(window_id)
-        return bool(state and state.gemini_external_warned)
-
-    def mark_gemini_external_warned(self, window_id: str) -> None:
-        """Record that the external-Gemini warning was shown for this window."""
-        state = self.get_window_state(window_id)
-        if state.gemini_external_warned:
-            return
-        state.gemini_external_warned = True
         self._schedule_save()
 
     # ------------------------------------------------------------------

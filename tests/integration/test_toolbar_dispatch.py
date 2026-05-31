@@ -126,9 +126,7 @@ class TestKeyboardBuild:
                 assert TEST_WINDOW_ID in cb
 
     def test_callback_data_under_64_bytes(self) -> None:
-        # Even with a long foreign window id, callback_data stays under 64 bytes.
-        long_id = "emdash-claude-main-abc12345:@0"
-        kb = build_toolbar_keyboard(long_id, "claude")
+        kb = build_toolbar_keyboard("@99999", "claude")
         for row in kb.inline_keyboard:
             for btn in row:
                 cb = btn.callback_data

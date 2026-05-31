@@ -255,20 +255,6 @@ Shell provider has dedicated tests:
 - `tests/ccgram/handlers/shell/test_shell_capture.py` — output extraction, passive monitoring, relay formatting, error suggestions.
 - `tests/integration/test_shell_{flow,dispatch,llm_integration}.py` — full round-trips.
 
-## Emdash Integration
-
-Auto-discovers [emdash](https://github.com/generalaction/emdash) tmux sessions. Zero config when both tools run on the same machine.
-
-Prerequisites: `"tmux": true` in `.emdash.json`; `ccgram hook --install` (global hooks coexist with emdash's per-project hooks).
-
-How: emdash creates a tmux session (e.g. `emdash-claude-main-abc123`), ccgram's global hook fires and writes session to `session_map.json`. Session monitor picks it up; emdash sessions appear in window picker.
-
-- Discovery: `tmux list-sessions` filtered by `emdash-` prefix.
-- Window IDs: qualified — `emdash-claude-main-abc123:@0` (valid tmux `-t` targets).
-- Lifecycle: ccgram never kills emdash windows. Marked `WindowState.external=True`.
-- Provider detection: parsed from session name (`emdash-{provider}-main-{id}`).
-- Hook coexistence: ccgram hooks in `~/.claude/settings.json` (global), emdash hooks in `.claude/settings.local.json` (per-project). Claude Code merges both.
-
 ## Hooks
 
 `ccgram hook --install` installs hooks for Claude Code event types:

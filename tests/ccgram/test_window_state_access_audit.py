@@ -74,7 +74,6 @@ WINDOW_STATE_FIELDS: frozenset[str] = frozenset(
         "approval_mode",
         "batch_mode",
         "tool_call_visibility",
-        "external",
         "origin",
         "panes",
         "pane_lifecycle_notify",
@@ -82,7 +81,6 @@ WINDOW_STATE_FIELDS: frozenset[str] = frozenset(
         "rc_armed_at",
         "worktree_path",
         "worktree_branch",
-        "gemini_external_warned",
         "provider_manual_override",
     }
 )
@@ -234,10 +232,6 @@ APPROVED_RAW_ACCESS: dict[tuple[str, str, str], str] = {
     # ── session_map.py (coordination seam between hook data and state) ──
     ("ccgram/session_map.py", "cwd", "read"): "session map sync",
     ("ccgram/session_map.py", "cwd", "write"): "session map sync",
-    ("ccgram/session_map.py", "external", "read"): "session map sync",
-    ("ccgram/session_map.py", "external", "write"): "session map sync",
-    ("ccgram/session_map.py", "origin", "read"): "session map sync",
-    ("ccgram/session_map.py", "origin", "write"): "session map sync",
     ("ccgram/session_map.py", "provider_name", "read"): "session map sync",
     ("ccgram/session_map.py", "provider_name", "write"): "session map sync",
     ("ccgram/session_map.py", "session_id", "read"): "session map sync",

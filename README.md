@@ -132,7 +132,6 @@ graph TB
 
 - **Per-topic provider** — different topics can use different agents simultaneously
 - **Auto-detect** — externally created tmux windows are detected via process name, with `ps -t` TTY fallback for JS runtime wrappers (node/bun)
-- **[Emdash](https://emdash.ai) integration** — auto-discovers emdash tmux sessions; bind Telegram topics to emdash-managed agents with zero configuration
 
 ### Shell Provider
 

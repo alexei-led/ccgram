@@ -36,7 +36,7 @@ from .user_preferences import (
     install_user_preferences,
     user_preferences,
 )
-from .window_resolver import EMDASH_SESSION_PREFIX, is_foreign_window, is_window_id
+from .window_resolver import is_window_id
 from .window_view import WindowView
 from .window_state_ports import identity_state as _identity_state
 from .window_state_ports import lifecycle_state as _lifecycle_state
@@ -202,16 +202,15 @@ class SessionManager:
         thread_router.from_dict(state)
 
         # Detect old format: keys that don't look like window IDs
-        # Foreign windows (emdash) use qualified IDs — not old format.
         needs_migration = False
         for k in window_store.window_states:
-            if not self._is_window_id(k) and not is_foreign_window(k):
+            if not self._is_window_id(k):
                 needs_migration = True
                 break
         if not needs_migration:
             for bindings in thread_router.thread_bindings.values():
                 for wid in bindings.values():
-                    if not self._is_window_id(wid) and not is_foreign_window(wid):
+                    if not self._is_window_id(wid):
                         needs_migration = True
                         break
                 if needs_migration:
@@ -342,12 +341,9 @@ class SessionManager:
         offsets_changed = user_preferences.prune_stale_offsets(all_known)
 
         # Prune dead mailbox directories
-        qualified_live: set[str] = set()
-        for wid in all_known:
-            if is_foreign_window(wid):
-                qualified_live.add(wid)
-            else:
-                qualified_live.add(f"{config.tmux_session_name}:{wid}")
+        qualified_live: set[str] = {
+            f"{config.tmux_session_name}:{wid}" for wid in all_known
+        }
 
         Mailbox(config.mailbox_dir).prune_dead(qualified_live)
 
@@ -372,8 +368,7 @@ class SessionManager:
     def _get_session_map_window_ids(self) -> set[str]:
         """Read session_map.json and return window IDs tracked by ccgram.
 
-        Includes native windows (stripped to @id) and emdash windows
-        (full qualified key like "emdash-claude-main-xxx:@0").
+        Native windows are stripped to their @id form.
         """
         if not config.session_map_file.exists():
             return set()
@@ -388,8 +383,6 @@ class SessionManager:
                 wid = key[len(prefix) :]
                 if self._is_window_id(wid):
                     result.add(wid)
-            elif key.startswith(EMDASH_SESSION_PREFIX):
-                result.add(key)
         return result
 
     def audit_state(

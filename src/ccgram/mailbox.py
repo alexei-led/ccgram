@@ -482,11 +482,7 @@ class Mailbox:
                         continue
 
     def prune_dead(self, live_ids: set[str]) -> int:
-        """Remove mailbox directories for windows not in live_ids.
-
-        Preserves foreign (emdash) windows — only prunes dirs whose
-        unsanitized ID starts with the local tmux session prefix.
-        """
+        """Remove mailbox directories for windows not in live_ids."""
         removed = 0
         if not self.base_dir.is_dir():
             return removed
@@ -496,9 +492,6 @@ class Mailbox:
                 continue
             qualified_id = _unsanitize_dir_name(entry.name)
             if qualified_id in live_ids:
-                continue
-            # Only prune local windows (foreign windows managed externally)
-            if "emdash-" in qualified_id:
                 continue
             try:
                 self._remove_inbox_dir(Path(entry.path))

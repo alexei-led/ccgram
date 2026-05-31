@@ -21,7 +21,6 @@ from ...telegram_client import PTBTelegramClient, TelegramClient
 from ...thread_router import thread_router
 from ...tmux_manager import tmux_manager
 from ...utils import log_throttled
-from ...window_resolver import is_foreign_window
 from ...window_state_store import CCGRAM_CREATED_WINDOW_ORIGIN
 from ..cleanup import clear_topic_state
 from ..messaging_pipeline.message_sender import is_thread_gone
@@ -129,7 +128,7 @@ async def check_unbound_window_ttl(
 
     now = time.monotonic()
     for w in live_windows:
-        if w.window_id in bound_ids or is_foreign_window(w.window_id):
+        if w.window_id in bound_ids:
             continue
         view = window_query.view_window(w.window_id)
         if view is None or view.origin != CCGRAM_CREATED_WINDOW_ORIGIN:
@@ -155,9 +154,7 @@ async def _kill_expired_unbound(now: float, timeout: float) -> None:
         from ...topic_state_registry import topic_state
 
         topic_state.clear_window(wid)
-        qualified_id = (
-            wid if is_foreign_window(wid) else f"{config.tmux_session_name}:{wid}"
-        )
+        qualified_id = f"{config.tmux_session_name}:{wid}"
         topic_state.clear_qualified(qualified_id)
         logger.info("auto_killed_unbound_window", window_id=wid)
 

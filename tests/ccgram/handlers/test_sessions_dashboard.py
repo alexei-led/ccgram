@@ -30,7 +30,6 @@ def _patch_deps():
         mock_tr.get_display_name.side_effect = lambda wid: wid
         mock_view.side_effect = lambda wid: WindowState()
         mock_tm.list_windows = AsyncMock(return_value=[])
-        mock_tm.discover_external_sessions = AsyncMock(return_value=[])
         mock_cfg.is_user_allowed.return_value = True
         yield mock_view, mock_tr, mock_tm, mock_cfg
 

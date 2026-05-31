@@ -3,8 +3,6 @@
 Provides shared window ID helpers used across session, tmux_manager, and
 handler modules (no intra-package imports — safe from circular dependencies):
   - is_window_id(): validate tmux window ID format (@0, @12).
-  - is_foreign_window(): detect foreign session IDs (emdash-...:@N).
-  - EMDASH_SESSION_PREFIX: shared constant for emdash session naming.
   - resolve_stale_ids(): full startup recovery — remaps persisted window IDs
     against live tmux windows, handles old-format migration, prunes dead entries.
 """
@@ -29,18 +27,6 @@ def is_window_id(key: str) -> bool:
     return key.startswith("@") and len(key) > 1 and key[1:].isdigit()
 
 
-EMDASH_SESSION_PREFIX = "emdash-"
-
-
-def is_foreign_window(window_id: str) -> bool:
-    """Check if window_id refers to a foreign tmux session (e.g. emdash).
-
-    Foreign IDs use the format "session_name:@N" (contain a colon and don't
-    start with "@").
-    """
-    return ":" in window_id and not window_id.startswith("@")
-
-
 def _resolve_window_states(
     window_states: dict,
     window_display_names: dict,
@@ -51,10 +37,6 @@ def _resolve_window_states(
     changed = False
     new_states: dict = {}
     for key, ws in window_states.items():
-        # Foreign windows (emdash) are managed externally — preserve as-is
-        if is_foreign_window(key):
-            new_states[key] = ws
-            continue
         if is_window_id(key):
             if key in live_ids:
                 new_states[key] = ws
@@ -100,10 +82,6 @@ def _resolve_thread_bindings(
     for uid, bindings in thread_bindings.items():
         new_bindings: dict[int, str] = {}
         for tid, val in bindings.items():
-            # Foreign windows (emdash) — preserve as-is
-            if is_foreign_window(val):
-                new_bindings[tid] = val
-                continue
             if is_window_id(val):
                 if val in live_ids:
                     new_bindings[tid] = val
@@ -148,10 +126,6 @@ def _resolve_offsets(
     for _uid, offsets in user_window_offsets.items():
         new_offsets: dict[str, int] = {}
         for key, offset in offsets.items():
-            # Foreign windows (emdash) — preserve as-is
-            if is_foreign_window(key):
-                new_offsets[key] = offset
-                continue
             if is_window_id(key):
                 if key in live_ids:
                     new_offsets[key] = offset

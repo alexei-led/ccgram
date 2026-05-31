@@ -30,10 +30,6 @@ from ....providers import get_provider_for_window
 from ....telegram_client import PTBTelegramClient
 from ....thread_router import thread_router
 from ....tmux_manager import tmux_manager
-from ....window_state_ports.lifecycle_state import (
-    mark_gemini_external_warned,
-    was_gemini_external_warned,
-)
 from ....window_state_ports.pane_state import (
     get_pane_lifecycle_notify,
     get_pane_projection,
@@ -289,44 +285,6 @@ async def _maybe_check_passive_shell(
     )
 
 
-# ── External Gemini hardening warning (issue #86) ────────────────────────
-
-
-async def _maybe_warn_external_gemini(
-    bot: "Bot", user_id: int, window_id: str, thread_id: int
-) -> None:
-    """Warn once when an externally-launched Gemini window is adopted.
-
-    ccgram-managed Gemini launches disable node-pty interactive-shell mode
-    to avoid the ``ioctl(2) failed, EBADF`` crash. Windows launched outside
-    ccgram (external bind, emdash discovery) run without that hardening, so
-    a shell tool can kill the window with no actionable signal. We cannot
-    inspect an external process's environment portably, so treat every
-    external Gemini window as potentially vulnerable and surface one
-    recoverable hint. The flag is marked before sending so a delivery
-    failure does not re-warn every poll cycle.
-    """
-    if was_gemini_external_warned(window_id):
-        return
-    view = window_query.view_window(window_id)
-    if view is None or not view.external:
-        return
-    if _get_provider(window_id).capabilities.name != "gemini":
-        return
-    mark_gemini_external_warned(window_id)
-    text = (
-        "⚠️ This Gemini window was launched outside ccgram and "
-        "lacks ccgram's hardened shell settings. Running a shell tool may "
-        "crash it with `ioctl(2) failed, EBADF`. For stable shell mode, "
-        "relaunch it from a new topic via /new."
-    )
-    chat_id = thread_router.resolve_chat_id(user_id, thread_id)
-    with contextlib.suppress(TelegramError):
-        await safe_send(
-            PTBTelegramClient(bot), chat_id, text, message_thread_id=thread_id
-        )
-
-
 # ── Dead window notification ─────────────────────────────────────────────
 
 
@@ -574,7 +532,6 @@ __all__ = [
     "_forward_pane_output",
     "_handle_dead_window_notification",
     "_maybe_check_passive_shell",
-    "_maybe_warn_external_gemini",
     "_notify_pane_lifecycle",
     "_scan_window_panes",
     "_send_typing_throttled",

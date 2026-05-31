@@ -30,7 +30,6 @@ class WindowInfo:
     cwd: str = ""
     window_name: str = ""
     provider_name: str = ""
-    external: bool = False
 
 
 @dataclass
@@ -44,7 +43,6 @@ class PeerInfo:
     branch: str
     task: str
     team: str
-    external: bool
 
 
 def export_window_info() -> dict[str, WindowInfo]:
@@ -68,7 +66,6 @@ def export_window_info() -> dict[str, WindowInfo]:
                 cwd=ws_data.get("cwd", ""),
                 window_name=ws_data.get("window_name", ""),
                 provider_name=ws_data.get("provider_name", ""),
-                external=ws_data.get("external", False),
             )
     return result
 
@@ -193,7 +190,6 @@ def list_peers(
                 branch=branch,
                 task=decl.get("task", ""),
                 team=decl.get("team", ""),
-                external=ws.external,
             )
         )
 

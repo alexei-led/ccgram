@@ -326,31 +326,6 @@ class TestWindowStateWorktree:
         assert state.worktree_branch == "ccg/y"
 
 
-class TestWindowStateGeminiExternalWarned:
-    def test_default_is_false(self) -> None:
-        assert WindowState().gemini_external_warned is False
-
-    def test_to_dict_omits_when_false(self) -> None:
-        assert "gemini_external_warned" not in WindowState(cwd="/p").to_dict()
-
-    def test_round_trip_when_true(self) -> None:
-        ws = WindowState(cwd="/p", gemini_external_warned=True)
-        d = ws.to_dict()
-        assert d["gemini_external_warned"] is True
-        assert WindowState.from_dict(d).gemini_external_warned is True
-
-    def test_from_dict_missing_defaults_false(self) -> None:
-        ws = WindowState.from_dict({"session_id": "s", "cwd": "/p"})
-        assert ws.gemini_external_warned is False
-
-    def test_mark_is_idempotent_and_persists(self, mgr: SessionManager) -> None:
-        assert window_store.was_gemini_external_warned("@4") is False
-        window_store.mark_gemini_external_warned("@4")
-        assert window_store.was_gemini_external_warned("@4") is True
-        window_store.mark_gemini_external_warned("@4")
-        assert window_store.window_states["@4"].gemini_external_warned is True
-
-
 class TestProviderManualOverride:
     def test_default_is_false(self) -> None:
         assert WindowState().provider_manual_override is False
@@ -491,20 +466,6 @@ class TestSetWindowOrigin:
     def test_set_ccgram_created(self, store: WindowStateStore) -> None:
         store.set_window_origin("@1", "ccgram_created")
         assert store.window_states["@1"].origin == "ccgram_created"
-
-    def test_set_external_also_sets_external_flag(
-        self, store: WindowStateStore
-    ) -> None:
-        store.set_window_origin("@1", "external")
-        state = store.window_states["@1"]
-        assert state.origin == "external"
-        assert state.external is True
-
-    def test_non_external_origin_does_not_set_external_flag(
-        self, store: WindowStateStore
-    ) -> None:
-        store.set_window_origin("@1", "ccgram_created")
-        assert store.window_states["@1"].external is False
 
     def test_invalid_origin_raises(self, store: WindowStateStore) -> None:
         with pytest.raises(ValueError):
@@ -740,8 +701,7 @@ class TestWindowStateFullPersistenceCharacterization:
             approval_mode="yolo",
             batch_mode="verbose",
             tool_call_visibility="shown",
-            external=True,
-            origin="external",
+            origin="ccgram_created",
             panes={
                 "%5": PaneInfo(
                     pane_id="%5",
@@ -756,7 +716,6 @@ class TestWindowStateFullPersistenceCharacterization:
             pane_lifecycle_notify=True,
             worktree_path="/repo.worktrees/ccg-x",
             worktree_branch="ccg/x",
-            gemini_external_warned=True,
             provider_manual_override=True,
         )
         loaded = WindowState.from_dict(original.to_dict())
@@ -777,15 +736,6 @@ class TestWindowStateFullPersistenceCharacterization:
         assert d["transcript_path"] == "/tmp/t.jsonl"
         assert d["provider_name"] == "codex"
         assert WindowState.from_dict(d) == ws
-
-    def test_origin_external_round_trip(self) -> None:
-        ws = WindowState(cwd="/p", external=True, origin="external")
-        d = ws.to_dict()
-        assert d["external"] is True
-        assert d["origin"] == "external"
-        loaded = WindowState.from_dict(d)
-        assert loaded.external is True
-        assert loaded.origin == "external"
 
     def test_origin_ccgram_created_round_trip(self) -> None:
         ws = WindowState(cwd="/p", origin="ccgram_created")
@@ -821,10 +771,6 @@ class TestWindowStateFullPersistenceCharacterization:
         loaded = WindowState.from_dict(ws.to_dict())
         assert loaded.worktree_path == "/repo.worktrees/ccg-y"
         assert loaded.worktree_branch == "ccg/y"
-
-    def test_gemini_external_warned_round_trip(self) -> None:
-        ws = WindowState(cwd="/p", gemini_external_warned=True)
-        assert WindowState.from_dict(ws.to_dict()).gemini_external_warned is True
 
     def test_provider_manual_override_omitted_when_false(self) -> None:
         assert "provider_manual_override" not in WindowState(cwd="/p").to_dict()

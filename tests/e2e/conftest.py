@@ -88,10 +88,6 @@ def e2e_tmux(monkeypatch):
     from ccgram.tmux_manager import TmuxManager
 
     monkeypatch.setattr(config, "tmux_session_name", E2E_TMUX_SESSION)
-    # Suppress external-session discovery so the dev's own tmux sessions
-    # don't bleed into the test's window picker. The pattern matches
-    # nothing, which short-circuits ``discover_external_sessions``.
-    monkeypatch.setattr(config, "tmux_external_patterns", "__no_external_in_e2e__")
 
     server = libtmux.Server()
 

@@ -147,10 +147,9 @@ async def test_full_window_state_feature_groups_survive_reload(
     sm1.set_window_approval_mode("@7", "yolo")
     sm1.set_batch_mode("@7", "verbose")
     sm1.set_tool_call_visibility("@7", "shown")
-    sm1.set_window_origin("@7", "external")
+    sm1.set_window_origin("@7", "ccgram_created")
     sm1.set_window_worktree("@7", "/repo/x.worktrees/ccg-x", "ccg/x")
     window_store.set_pane_lifecycle_notify("@7", True)
-    window_store.mark_gemini_external_warned("@7")
     window_store.set_provider_manual_override("@7", value=True)
     window_store.upsert_pane(
         "@7",
@@ -174,12 +173,10 @@ async def test_full_window_state_feature_groups_survive_reload(
     assert reloaded.approval_mode == "yolo"
     assert reloaded.batch_mode == "verbose"
     assert reloaded.tool_call_visibility == "shown"
-    assert reloaded.external is True
-    assert reloaded.origin == "external"
+    assert reloaded.origin == "ccgram_created"
     assert reloaded.pane_lifecycle_notify is True
     assert reloaded.worktree_path == "/repo/x.worktrees/ccg-x"
     assert reloaded.worktree_branch == "ccg/x"
-    assert reloaded.gemini_external_warned is True
     assert reloaded.provider_manual_override is True
     assert set(reloaded.panes.keys()) == {"%5", "%6"}
     pane5 = reloaded.panes["%5"]

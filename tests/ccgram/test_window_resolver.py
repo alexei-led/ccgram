@@ -8,7 +8,6 @@ import pytest
 
 from ccgram.window_resolver import (
     LiveWindow,
-    is_foreign_window,
     is_window_id,
     resolve_stale_ids,
 )
@@ -24,27 +23,10 @@ class TestIsWindowId:
             pytest.param("0", False, id="no_at"),
             pytest.param("", False, id="empty"),
             pytest.param("mywindow", False, id="name"),
-            pytest.param("emdash-claude-main-abc:@0", False, id="foreign_qualified"),
         ],
     )
     def test_is_window_id(self, key: str, expected: bool) -> None:
         assert is_window_id(key) == expected
-
-
-class TestIsForeignWindow:
-    @pytest.mark.parametrize(
-        ("window_id", "expected"),
-        [
-            pytest.param("emdash-claude-main-abc:@0", True, id="emdash_qualified"),
-            pytest.param("some-session:@5", True, id="generic_qualified"),
-            pytest.param("@0", False, id="local_id"),
-            pytest.param("@12", False, id="local_id_multi"),
-            pytest.param("mywindow", False, id="bare_name"),
-            pytest.param("@0:extra", False, id="starts_with_at"),
-        ],
-    )
-    def test_is_foreign_window(self, window_id: str, expected: bool) -> None:
-        assert is_foreign_window(window_id) == expected
 
 
 def _ws(name: str) -> SimpleNamespace:
@@ -139,24 +121,6 @@ class TestResolveStaleIds:
 
         assert changed
         assert "oldname" not in window_states
-
-    def test_foreign_window_preserved_unchanged(self) -> None:
-        live: list[LiveWindow] = []
-        foreign_id = "emdash-claude-main-abc:@0"
-        ws = _ws("emdash-proj")
-        window_states = {foreign_id: ws}
-        thread_bindings: dict = {100: {1: foreign_id}}
-        offsets: dict = {100: {foreign_id: 5}}
-        display_names: dict = {}
-
-        changed = resolve_stale_ids(
-            live, window_states, thread_bindings, offsets, display_names
-        )
-
-        assert not changed
-        assert foreign_id in window_states
-        assert thread_bindings[100][1] == foreign_id
-        assert offsets[100][foreign_id] == 5
 
     def test_empty_user_bindings_pruned(self) -> None:
         # After migration drops the only binding for a user, that user is removed

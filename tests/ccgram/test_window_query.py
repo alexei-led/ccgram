@@ -60,7 +60,6 @@ class TestViewWindow:
         assert v.provider_name == "claude"
         assert v.session_id == "sid1"
         assert v.window_name == "myproj"
-        assert v.external is False
         assert v.origin == "manual_discovered"
 
     def test_transcript_path_as_path_object(self, populated) -> None:

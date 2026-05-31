@@ -44,7 +44,6 @@ class TestWindowViewProjection:
             transcript_path=Path("/tmp/log.jsonl"),
             window_name="",
             session_id="",
-            external=False,
             origin="manual_discovered",
         )
         # cleanup
