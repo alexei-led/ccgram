@@ -41,6 +41,7 @@ class TestCliCommands:
         assert "hook" in result.output
         assert "status" in result.output
         assert "doctor" in result.output
+        assert "msg" not in result.output
 
     def test_run_help(self, runner):
         result = runner.invoke(cli, ["run", "--help"])
