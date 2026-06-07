@@ -22,6 +22,7 @@ from ...providers import (
     get_provider_for_window,
     should_probe_pane_title_for_provider_detection,
 )
+from ...providers.process_detection import get_cached_foreground_pgid
 from ...session import session_manager
 from ...session_map import session_map_prefix, session_map_sync
 from ...telegram_client import TelegramClient
@@ -222,6 +223,24 @@ def _hook_already_resolved(
     return bool(provider.capabilities.supports_hook and identity.transcript_path)
 
 
+def _foreground_process_restarted(
+    *,
+    before_pgid: int,
+    after_pgid: int,
+    old_identity: identity_state.IdentityProjection,
+    new_identity: identity_state.IdentityProjection,
+) -> bool:
+    """True when the same provider is running in a new foreground process group."""
+    return bool(
+        before_pgid
+        and after_pgid
+        and before_pgid != after_pgid
+        and old_identity.session_id
+        and old_identity.provider_name
+        and old_identity.provider_name == new_identity.provider_name
+    )
+
+
 async def _switch_to_shell(
     window_id: str,
     *,
@@ -271,6 +290,9 @@ async def discover_and_register_transcript(
 
     w = _window or await tmux_manager.find_window_by_id(window_id)
 
+    pgid_before = get_cached_foreground_pgid(window_id)
+    original_identity = identity
+    process_restarted = False
     if w and w.pane_current_command:
         await _detect_and_apply_provider(
             window_id, identity, w, client=client, chat_id=chat_id, thread_id=thread_id
@@ -279,8 +301,15 @@ async def discover_and_register_transcript(
         if refreshed is None:
             return
         identity = refreshed
+        pgid_after = get_cached_foreground_pgid(window_id)
+        process_restarted = _foreground_process_restarted(
+            before_pgid=pgid_before,
+            after_pgid=pgid_after,
+            old_identity=original_identity,
+            new_identity=identity,
+        )
 
-    if _hook_already_resolved(window_id, identity):
+    if _hook_already_resolved(window_id, identity) and not process_restarted:
         return
 
     if not identity.cwd:

@@ -115,6 +115,12 @@ def classify_provider_from_args(args: str) -> str:
 _pgid_cache: dict[str, tuple[int, str]] = {}
 
 
+def get_cached_foreground_pgid(window_id: str) -> int:
+    """Return the cached foreground PGID for a window, or 0 if unknown."""
+    cached = _pgid_cache.get(window_id)
+    return cached[0] if cached else 0
+
+
 async def detect_provider_cached(window_id: str, fg: ForegroundInfo | None) -> str:
     """Classify the provider from a foreground process, cached by PGID.
 

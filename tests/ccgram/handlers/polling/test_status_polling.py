@@ -31,7 +31,7 @@ from ccgram.handlers.polling.polling_types import (
     is_shell_prompt,
 )
 from ccgram.telegram_client import PTBTelegramClient
-from ccgram.multiplexer.base import PaneInfo
+from ccgram.multiplexer.base import ForegroundInfo, PaneInfo
 
 
 def _assert_handle_called_once_with_client(mock_handle, bot, *args, **kwargs):
@@ -1805,6 +1805,157 @@ class TestMaybeDiscoverTranscript:
         discover_call = mock_asyncio.to_thread.call_args_list[0]
         assert discover_call.args[0] == mock_provider.discover_transcript
         assert discover_call.kwargs["max_age"] is None
+
+    async def test_rebinds_hookful_provider_when_foreground_agent_process_restarted(
+        self,
+    ) -> None:
+        from ccgram.handlers.recovery.transcript_discovery import (
+            discover_and_register_transcript,
+        )
+        from ccgram.providers.base import SessionStartEvent
+        from ccgram.providers.process_detection import _pgid_cache
+
+        event = SessionStartEvent(
+            session_id="new-codex-id",
+            cwd="/proj",
+            transcript_path="/path/to/new-codex.jsonl",
+            window_key="ccgram:@7",
+        )
+        mock_provider = MagicMock()
+        mock_provider.capabilities.supports_hook = True
+        mock_provider.capabilities.chat_first_command_path = False
+        mock_provider.capabilities.name = "codex"
+        mock_provider.discover_transcript.return_value = event
+
+        old_state = MagicMock(
+            session_id="old-codex-id",
+            cwd="/proj",
+            transcript_path="/path/to/old-codex.jsonl",
+            provider_name="codex",
+        )
+
+        _pgid_cache.clear()
+        _pgid_cache["@7"] = (111, "codex")
+        try:
+            with (
+                patch(
+                    "ccgram.handlers.recovery.transcript_discovery.session_map_sync"
+                ) as mock_sms,
+                patch(
+                    "ccgram.window_state_ports.identity_state.window_store"
+                ) as mock_ws,  # noqa: F841
+                patch(
+                    "ccgram.handlers.recovery.transcript_discovery.get_provider_for_window",
+                    return_value=mock_provider,
+                ),
+                patch(
+                    "ccgram.handlers.recovery.transcript_discovery.session_map_prefix",
+                    return_value="ccgram:",
+                ),
+                patch("ccgram.multiplexer.multiplexer") as mock_mux,
+            ):
+                mock_ws.window_states = {"@7": old_state}
+                mock_mux.foreground = AsyncMock(
+                    return_value=ForegroundInfo(
+                        pid=222,
+                        pgid=222,
+                        argv=["node", "/opt/@openai/codex/bin/codex.js"],
+                        cwd="/proj",
+                    )
+                )
+
+                await discover_and_register_transcript(
+                    "@7",
+                    _window=MagicMock(
+                        pane_current_command="node",
+                        pane_tty="/dev/ttys007",
+                        cwd="/proj",
+                    ),
+                )
+        finally:
+            _pgid_cache.clear()
+
+        mock_provider.discover_transcript.assert_called_once()
+        assert mock_provider.discover_transcript.call_args.kwargs["max_age"] == 0
+        mock_sms.register_hookless_session.assert_called_once_with(
+            window_id="@7",
+            session_id="new-codex-id",
+            cwd="/proj",
+            transcript_path="/path/to/new-codex.jsonl",
+            provider_name="codex",
+        )
+
+    async def test_does_not_rebind_hookful_provider_when_agent_process_unchanged(
+        self,
+    ) -> None:
+        from ccgram.handlers.recovery.transcript_discovery import (
+            discover_and_register_transcript,
+        )
+        from ccgram.providers.base import SessionStartEvent
+        from ccgram.providers.process_detection import _pgid_cache
+
+        event = SessionStartEvent(
+            session_id="new-codex-id",
+            cwd="/proj",
+            transcript_path="/path/to/new-codex.jsonl",
+            window_key="ccgram:@7",
+        )
+        mock_provider = MagicMock()
+        mock_provider.capabilities.supports_hook = True
+        mock_provider.capabilities.chat_first_command_path = False
+        mock_provider.capabilities.name = "codex"
+        mock_provider.discover_transcript.return_value = event
+
+        old_state = MagicMock(
+            session_id="old-codex-id",
+            cwd="/proj",
+            transcript_path="/path/to/old-codex.jsonl",
+            provider_name="codex",
+        )
+
+        _pgid_cache.clear()
+        _pgid_cache["@7"] = (111, "codex")
+        try:
+            with (
+                patch(
+                    "ccgram.handlers.recovery.transcript_discovery.session_map_sync"
+                ) as mock_sms,
+                patch(
+                    "ccgram.window_state_ports.identity_state.window_store"
+                ) as mock_ws,  # noqa: F841
+                patch(
+                    "ccgram.handlers.recovery.transcript_discovery.get_provider_for_window",
+                    return_value=mock_provider,
+                ),
+                patch(
+                    "ccgram.handlers.recovery.transcript_discovery.session_map_prefix",
+                    return_value="ccgram:",
+                ),
+                patch("ccgram.multiplexer.multiplexer") as mock_mux,
+            ):
+                mock_ws.window_states = {"@7": old_state}
+                mock_mux.foreground = AsyncMock(
+                    return_value=ForegroundInfo(
+                        pid=111,
+                        pgid=111,
+                        argv=["node", "/opt/@openai/codex/bin/codex.js"],
+                        cwd="/proj",
+                    )
+                )
+
+                await discover_and_register_transcript(
+                    "@7",
+                    _window=MagicMock(
+                        pane_current_command="node",
+                        pane_tty="/dev/ttys007",
+                        cwd="/proj",
+                    ),
+                )
+        finally:
+            _pgid_cache.clear()
+
+        mock_provider.discover_transcript.assert_not_called()
+        mock_sms.register_hookless_session.assert_not_called()
 
     async def test_rebinds_stale_codex_window_to_gemini_from_pane_title(self) -> None:
         from ccgram.handlers.recovery.transcript_discovery import (
