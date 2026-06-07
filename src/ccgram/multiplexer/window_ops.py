@@ -17,6 +17,21 @@ from . import multiplexer
 
 logger = structlog.get_logger(__name__)
 
+SEND_KEYS_TIMEOUT_SECONDS = 5.0
+
+
+async def _send_to_window_once(
+    window_id: str, text: str, *, raw: bool, display: str
+) -> tuple[bool, str]:
+    window = await multiplexer.find_window_by_id(window_id)
+    if not window:
+        return False, "Window not found (may have been closed)"
+    success = await multiplexer.send_keys(window.window_id, text, raw=raw)
+    if success:
+        logger.debug("send_to_window complete: window_id=%s (%s)", window_id, display)
+        return True, f"Sent to {display}"
+    return False, "Failed to send keys"
+
 
 async def send_to_window(
     window_id: str, text: str, *, raw: bool = False
@@ -33,13 +48,19 @@ async def send_to_window(
         display,
         len(text),
     )
-    window = await multiplexer.find_window_by_id(window_id)
-    if not window:
-        return False, "Window not found (may have been closed)"
-    success = await multiplexer.send_keys(window.window_id, text, raw=raw)
-    if success:
-        return True, f"Sent to {display}"
-    return False, "Failed to send keys"
+    try:
+        return await asyncio.wait_for(
+            _send_to_window_once(window_id, text, raw=raw, display=display),
+            timeout=SEND_KEYS_TIMEOUT_SECONDS,
+        )
+    except TimeoutError:
+        logger.warning(
+            "send_to_window timed out",
+            window_id=window_id,
+            display=display,
+            timeout=SEND_KEYS_TIMEOUT_SECONDS,
+        )
+        return False, f"Timed out sending keys to {display}"
 
 
 async def send_followup_to_window(window_id: str, text: str) -> tuple[bool, str]:
