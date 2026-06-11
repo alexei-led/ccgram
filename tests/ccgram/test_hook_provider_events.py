@@ -258,6 +258,30 @@ def test_codex_stop_redacts_raw_prompt_and_tool_payload(
     assert "last_assistant_message" not in event["data"]
 
 
+def test_codex_stop_outputs_valid_stop_hook_json(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    monkeypatch.setenv("CCGRAM_DIR", str(tmp_path))
+    _run_hook(
+        monkeypatch,
+        {
+            "session_id": _CODEX_SESSION_ID,
+            "cwd": "/tmp/project",
+            "transcript_path": "/tmp/.codex/session.jsonl",
+            "hook_event_name": "Stop",
+            "model": "gpt-5",
+            "permission_mode": "default",
+            "turn_id": "turn",
+            "stop_hook_active": False,
+            "last_assistant_message": "secret output",
+        },
+        "codex",
+    )
+
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == {}
+
+
 def test_codex_adapter_rejects_non_uuid_session_id() -> None:
     from ccgram.hooks.adapters import get_hook_adapter
 

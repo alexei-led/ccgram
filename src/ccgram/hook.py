@@ -31,7 +31,7 @@ from ccgram.hooks.adapters import (
     detect_provider_from_payload,
     get_hook_adapter,
 )
-from ccgram.hooks.model import ProviderName
+from ccgram.hooks.model import NormalizedHookEvent, ProviderName
 from ccgram.multiplexer.self_identify import resolve_self_identity
 
 logger = structlog.get_logger()
@@ -1184,17 +1184,19 @@ def _locate_primary_window(
     return identity.session_window_key, identity.window_id, identity.window_name
 
 
-def _process_hook_stdin(provider_name: str | None = None) -> None:
+def _process_hook_stdin(
+    provider_name: str | None = None,
+) -> NormalizedHookEvent | None:
     """Process an agent hook event from stdin."""
     logger.debug("Processing hook event from stdin")
     try:
         raw_payload = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError) as e:
         logger.warning("Failed to parse stdin JSON: %s", e)
-        return
+        return None
     if not isinstance(raw_payload, dict):
         logger.warning("Hook stdin JSON must be an object")
-        return
+        return None
     payload: dict[str, object] = raw_payload
 
     payload_provider = detect_provider_from_payload(payload)
@@ -1216,22 +1218,22 @@ def _process_hook_stdin(provider_name: str | None = None) -> None:
     adapter = get_hook_adapter(detected_provider)
     if adapter is None:
         logger.debug("Ignoring hook for unsupported provider: %s", detected_provider)
-        return
+        return None
     normalized = adapter.normalize(payload)
     if normalized is None:
         logger.debug(
             "Ignoring invalid hook payload for provider: %s", detected_provider
         )
-        return
+        return None
 
     event = normalized.canonical_event_name
     if event not in _HOOK_EVENT_TYPES and event not in {"PreCompact", "PostCompact"}:
         logger.debug("Ignoring unhandled event: %s", event)
-        return
+        return None
 
     located = _locate_primary_window(normalized.session_id, event, detected_provider)
     if located is None:
-        return
+        return None
     session_window_key, _window_id, window_name = located
 
     if event == "SessionStart":
@@ -1263,7 +1265,7 @@ def _process_hook_stdin(provider_name: str | None = None) -> None:
             }
         )
         _write_event(event, normalized.session_id, session_window_key, data)
-        return
+        return normalized
 
     _refresh_session_map_if_stale(
         session_window_key,
@@ -1274,6 +1276,28 @@ def _process_hook_stdin(provider_name: str | None = None) -> None:
         str(normalized.transcript_path) if normalized.transcript_path else "",
     )
     _write_event(event, normalized.session_id, session_window_key, normalized.data)
+    return normalized
+
+
+def _configure_hook_logging() -> None:
+    """Keep hook diagnostics off stdout, which some providers parse as protocol."""
+    logging.basicConfig(
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        level=logging.DEBUG,
+        stream=sys.stderr,
+        force=True,
+    )
+    structlog.configure(
+        processors=[
+            structlog.stdlib.add_log_level,
+            structlog.processors.TimeStamper(fmt="%Y-%m-%d %H:%M:%S"),
+            structlog.processors.StackInfoRenderer(),
+            structlog.processors.format_exc_info,
+            structlog.dev.ConsoleRenderer(colors=False),
+        ],
+        logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
+        cache_logger_on_first_use=False,
+    )
 
 
 def hook_main(
@@ -1283,11 +1307,7 @@ def hook_main(
     provider_name: str = "claude",
 ) -> None:
     """Process a Claude Code hook event from stdin, or manage hook installation."""
-    logging.basicConfig(
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        level=logging.DEBUG,
-        stream=sys.stderr,
-    )
+    _configure_hook_logging()
 
     if install:
         logger.info("Hook install requested")
@@ -1304,4 +1324,10 @@ def hook_main(
     # keeps the explicit flag to surface the mismatch warning when payload
     # heuristics disagree). The CLI default also resolves to "claude", so the
     # None path covers the common case of an unannotated hook command.
-    _process_hook_stdin(provider_name if provider_name != "claude" else None)
+    normalized = _process_hook_stdin(
+        provider_name if provider_name != "claude" else None
+    )
+    if normalized and normalized.provider_name == "codex" and (
+        normalized.canonical_event_name == "Stop"
+    ):
+        print("{}")
