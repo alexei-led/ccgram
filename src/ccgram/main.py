@@ -172,7 +172,7 @@ def setup_logging(log_level: str) -> None:
                 level_styles=level_styles if stdout_colors else None,
             ),
         ],
-        wrapper_class=structlog.stdlib.BoundLogger,
+        wrapper_class=structlog.make_filtering_bound_logger(numeric_level),
         context_class=dict,
         logger_factory=structlog.PrintLoggerFactory(),
         cache_logger_on_first_use=True,
