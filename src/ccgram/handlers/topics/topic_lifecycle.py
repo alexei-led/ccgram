@@ -191,9 +191,14 @@ async def prune_stale_state(live_windows: "list[TmuxWindow]") -> None:
 # ── Topic existence probing ───────────────────────────────────────────────
 
 
+_probe_pin_disabled: set = set()
+
+
 async def probe_topic_existence(client: TelegramClient) -> None:
     """Probe all bound topics via Telegram API; detect deleted topics."""
     for user_id, thread_id, wid in list(thread_router.iter_thread_bindings()):
+        if wid in _probe_pin_disabled:
+            continue
         if lifecycle_strategy.should_skip_probe(wid):
             continue
         try:
@@ -224,6 +229,10 @@ async def probe_topic_existence(client: TelegramClient) -> None:
                     thread_id,
                     user_id,
                 )
+            elif isinstance(e, BadRequest) and "Not enough rights" in e.message:
+                if wid not in _probe_pin_disabled:
+                    _probe_pin_disabled.add(wid)
+                    logger.info("Topic probe disabled for %s: bot lacks pin rights", wid)
             else:
                 lifecycle_strategy.record_probe_failure(wid)
                 if not lifecycle_strategy.should_skip_probe(wid):
