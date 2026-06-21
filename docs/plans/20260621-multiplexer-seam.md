@@ -76,11 +76,11 @@ Whole-plan commands (repo Makefile targets):
 - Fitness gate: add F3 assertion that `multiplexer.base` imports neither a backend nor `libtmux`/`subprocess`/`asyncio.subprocess`; extend later in Task 4.
 - Verification: `make typecheck`; `uv run pytest tests/integration/test_import_no_cycles.py -v`.
 - Manual checks: None.
-- [ ] add `multiplexer/base.py` with the `Multiplexer` Protocol covering today's `tmux_manager` public surface, normalized to value types (`ensure_session`, `list_windows`, `find_window`, `capture`, `capture_scrollback`, `pane_dims`, `send`, `send_to_pane`, `kill_window`, `rename_window`, `list_panes`, `create_window`, `set_title`, `foreground`)
-- [ ] add `MultiplexerCapabilities` dataclass with the six capability fields plus `name`
-- [ ] add field-compatible value types `WindowRef`, `PaneInfo`, `CaptureResult`, `ForegroundInfo`, `PaneDims`
-- [ ] write tests asserting value-type construction and that `multiplexer.base` imports no I/O module
-- [ ] run project tests (`make test`) - must pass before next task
+- [x] add `multiplexer/base.py` with the `Multiplexer` Protocol covering today's `tmux_manager` public surface, normalized to value types (`ensure_session`, `list_windows`, `find_window`, `capture`, `capture_scrollback`, `pane_dims`, `send`, `send_to_pane`, `kill_window`, `rename_window`, `list_panes`, `create_window`, `set_title`, `foreground`)
+- [x] add `MultiplexerCapabilities` dataclass with the six capability fields plus `name`
+- [x] add field-compatible value types `WindowRef`, `PaneInfo`, `CaptureResult`, `ForegroundInfo`, `PaneDims`
+- [x] write tests asserting value-type construction and that `multiplexer.base` imports no I/O module
+- [x] run project tests (`make test`) - must pass before next task
 
 ### Task 2: Make tmux the first backend behind the Protocol (zero behavior change)
 
