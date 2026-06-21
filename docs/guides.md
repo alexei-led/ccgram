@@ -110,6 +110,7 @@ All settings accept both CLI flags and environment variables. CLI flags take pre
 | `CCGRAM_DIR` / `--config-dir`                        | `~/.ccgram`                    | Config and state directory                                                                           |
 | `CLAUDE_CONFIG_DIR` / `--claude-config-dir`          | `~/.claude`                    | Override Claude config directory (for wrappers like ce, cc-mirror)                                   |
 | `TMUX_SESSION_NAME` / `--tmux-session`               | `ccgram`                       | tmux session name                                                                                    |
+| `CCGRAM_MULTIPLEXER`                                 | `tmux`                         | Terminal multiplexer backend: `tmux` (default) or `herdr`                                            |
 | `CCGRAM_PROVIDER` / `--provider`                     | `claude`                       | Default agent provider (`claude`, `codex`, `gemini`, `pi`, `shell`)                                  |
 | `CCGRAM_<NAME>_COMMAND`                              | _(from provider)_              | Per-provider launch command (env only, see below)                                                    |
 | `CCGRAM_PROMPT_MODE` / `--prompt-mode`               | `wrap`                         | Shell prompt marker mode (`wrap` or `replace`)                                                       |

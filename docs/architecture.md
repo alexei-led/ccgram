@@ -4,7 +4,7 @@ Generated from code state 2026-05-21.
 
 ## System Overview
 
-ccgram maps each Telegram Forum topic to one tmux window running one agent CLI (Claude Code, Codex, Gemini, Pi, or Shell). All internal routing is keyed by tmux window ID (`@0`, `@12`).
+ccgram maps each Telegram Forum topic to one terminal-multiplexer window running one agent CLI (Claude Code, Codex, Gemini, Pi, or Shell). All internal routing is keyed by window ID (`@0`, `@12`). Multiplexer access goes through the `multiplexer/` seam (`Multiplexer` Protocol); tmux is the default backend and herdr is selectable via `CCGRAM_MULTIPLEXER=herdr`.
 
 ```mermaid
 graph TB
@@ -14,8 +14,8 @@ graph TB
     Registry["handlers/registry.py<br>PTB handler wiring"]
     TC["telegram_client.py<br>TelegramClient Protocol<br>+ PTBTelegramClient adapter"]
     Handlers["handlers/<br>14 feature subpackages"]
-    TmuxMgr["tmux_manager.py <br> libtmux + subprocess"]
-    Windows["tmux windows <br> (Claude, Codex, Gemini, Pi, Shell)"]
+    TmuxMgr["multiplexer/ seam <br> Multiplexer Protocol <br> (tmux default, herdr)"]
+    Windows["multiplexer windows <br> (Claude, Codex, Gemini, Pi, Shell)"]
     Hook["hook.py<br>Claude Code hooks"]
     Monitor["session_monitor.py<br>poll loop"]
     State["State files<br>~/.ccgram/"]
@@ -26,7 +26,7 @@ graph TB
     Registry -- "dispatch" --> Handlers
     Handlers -- "depend on Protocol" --> TC
     TC -- "PTBTelegramClient" --> Bot
-    Handlers -- "send_keys / capture_pane" --> TmuxMgr
+    Handlers -- "send_keys / capture_pane (via multiplexer proxy)" --> TmuxMgr
     TmuxMgr --> Windows
     Windows -- "hook events" --> Hook
     Hook -- "session_map.json<br>events.jsonl" --> State
@@ -83,7 +83,7 @@ graph TD
     end
 
     subgraph infra["Infrastructure"]
-        TmuxMgr2["tmux_manager.py"]
+        TmuxMgr2["multiplexer/ seam<br>(tmux / herdr backends)"]
         WR["window_resolver.py"]
         SP["state_persistence.py"]
     end

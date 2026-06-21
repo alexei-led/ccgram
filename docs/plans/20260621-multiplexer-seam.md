@@ -256,12 +256,12 @@ Whole-plan commands (repo Makefile targets):
 - Fitness gate: F1–F5 green; F6 noted as follow-up.
 - Verification: `make check`; the seam audits; with herdr running, `uv run pytest tests/integration/ -m "herdr" -v`.
 - Manual checks: run `architecture-review` scoped to the multiplexer seam and topic mapping and confirm code matches the design.
-- [ ] verify all requirements from Overview are implemented for both `CCGRAM_MULTIPLEXER=tmux` and `=herdr`
-- [ ] verify herdr topic mapping: one topic per agent pane, adaptive prefix, cwd→workspace
-- [ ] run the full project test suite and the seam audits
-- [ ] run the project linter (`make lint`, including `lint-lazy`) - all issues fixed
-- [ ] update architecture docs and the `CCGRAM_MULTIPLEXER` env-var note
-- [ ] run project tests (`make test`) - must pass
+- [x] verify all requirements from Overview are implemented for both `CCGRAM_MULTIPLEXER=tmux` and `=herdr` — tmux path: full suite green (5158 passed, 28 skipped) + F1/F2 seam audits (181 passed); herdr backend covered by `test_herdr_backend.py` unit + contract legs. The live herdr run (`-m herdr`, needs a running socket) is integration-only and not automatable here.
+- [x] verify herdr topic mapping: one topic per agent pane, adaptive prefix, cwd→workspace — covered by `test_topic_mapping.py` (`TestHerdrPaneRouting`, `TestFormatAgentTopicPrefix`) + herdr backend adaptive-label/workspace-resolution tests, all passing
+- [x] run the full project test suite and the seam audits — `make test` 5158 passed; `test_multiplexer_boundary.py`+`test_multiplexer_contract.py` 181 passed
+- [x] run the project linter (`make lint`, including `lint-lazy`) - all issues fixed — lint-lazy clean, ruff all checks passed; pyright 0 errors; deptry no issues
+- [x] update architecture docs and the `CCGRAM_MULTIPLEXER` env-var note — README + `docs/guides.md` config tables add the `CCGRAM_MULTIPLEXER` row; `docs/architecture.md` overview/diagrams updated to the `multiplexer/` seam (stale `tmux_manager.py` references removed); `.claude/rules/architecture.md` inventory already covers the seam
+- [x] run project tests (`make test`) - must pass — 5158 passed, 28 skipped
 
 ## Acceptance criteria
 

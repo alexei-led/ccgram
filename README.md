@@ -207,6 +207,7 @@ Open your Telegram group, create a new topic, send a message — a directory bro
 | `CCGRAM_DIR`                   | `~/.ccgram`                    | Config and state directory                                                                                  |
 | `CCGRAM_PROVIDER`              | `claude`                       | Default provider (`claude`, `codex`, `gemini`, `pi`, `shell`)                                               |
 | `CCGRAM_<NAME>_COMMAND`        | _(from provider)_              | Override launch command per provider                                                                        |
+| `CCGRAM_MULTIPLEXER`           | `tmux`                         | Terminal multiplexer backend: `tmux` (default) or `herdr`                                                   |
 | `CCGRAM_GROUP_ID`              | _(all groups)_                 | Restrict to one Telegram group                                                                              |
 | `CCGRAM_STATUS_MODE`           | `system`                       | Topic emoji color scheme: `system` (green=working) or `user` (green=ready)                                  |
 | `CCGRAM_HIDE_TOOL_CALLS`       | `false`                        | Set `true` to hide `tool_use`/`tool_result` messages globally (shown by default)                            |
