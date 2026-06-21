@@ -109,11 +109,11 @@ Whole-plan commands:
 - Fitness gate: Task 2 audit stays green; no new archfit rule.
 - Verification: `uv run pytest tests/ccgram/test_herdr_backend.py -k "foreground or read or clamp" -v`; `make test`.
 - Manual checks: with a running herdr, confirm `foreground()` resolves a running command's argv and that a >1000-line command reports `truncated`.
-- [ ] implement herdr `foreground()` from `pane process-info.foreground_processes[]`
-- [ ] clamp shell scrollback capture to `read_max_lines`; surface `CaptureResult.truncated`
-- [ ] ensure `exposes_pane_tty == False` short-circuits any tty-dependent path
-- [ ] write unit tests (process-info fixtures → ForegroundInfo; read clamp/truncation)
-- [ ] run project tests (`make test`) - must pass before next task
+- [x] implement herdr `foreground()` from `pane process-info.foreground_processes[]`
+- [x] clamp shell scrollback capture to `read_max_lines`; surface `CaptureResult.truncated`
+- [x] ensure `exposes_pane_tty == False` short-circuits any tty-dependent path
+- [x] write unit tests (process-info fixtures → ForegroundInfo; read clamp/truncation)
+- [x] run project tests (`make test`) - must pass before next task
 
 ### Task 4: Verify shell end-to-end on herdr (integration)
 

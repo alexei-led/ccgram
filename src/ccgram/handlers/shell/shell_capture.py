@@ -28,6 +28,7 @@ from ...telegram_client import TelegramClient
 from ...providers.shell import match_prompt
 from ...thread_router import thread_router
 from ...multiplexer import multiplexer as tmux_manager
+from ...multiplexer.base import CaptureResult
 from ..messaging_pipeline.message_sender import (
     REACT_DONE,
     REACT_FAIL,
@@ -117,12 +118,23 @@ _GLYPH_RE = re.compile(r"[\ue000-\uf8ff\U000f0000-\U000ffffd]")
 
 _SCROLLBACK_LINES = 200
 
+# Prepended to relayed output when the backend clamped the scrollback capture
+# (e.g. herdr's 1000-line read cap) so the tail was dropped — a clipped
+# capture must not be mistaken for the command's full output.
+_TRUNCATION_NOTICE = "… [earlier output truncated]"
+
 
 async def _capture_with_scrollback(
     window_id: str, history: int = _SCROLLBACK_LINES
-) -> str | None:
-    """Capture pane text including scrollback history via tmux_manager."""
-    return await tmux_manager.capture_pane_scrollback(window_id, history)
+) -> CaptureResult | None:
+    """Capture pane scrollback as a ``CaptureResult`` via the multiplexer.
+
+    The backend clamps ``history`` to its ``read_max_lines`` (herdr caps at
+    1000; tmux is unlimited) and sets ``truncated`` when it dropped the tail,
+    so the monitor can flag a clipped capture instead of treating it as the
+    command's full output.
+    """
+    return await tmux_manager.capture_scrollback(window_id, lines=history)
 
 
 @dataclass
@@ -488,15 +500,21 @@ async def check_passive_shell_output(
         return
 
     # Capture with scrollback for reliable command echo finding
-    scrollback = await _capture_with_scrollback(window_id)
-    if not scrollback:
+    capture = await _capture_with_scrollback(window_id)
+    if capture is None or not capture.text:
         return
 
-    passive = _extract_passive_output(scrollback)
+    passive = _extract_passive_output(capture.text)
     if passive is None:
         if not (state.last_command_echo and state.msg_id is not None):
             _reset_monitor(state)
         return
+
+    # The backend clamped the scrollback (herdr's 1000-line cap) and dropped
+    # the tail: flag it so the relayed output is not read as the full command
+    # output. The notice rides the relayed text and stays stable across polls.
+    if capture.truncated and passive.text:
+        passive.text = f"{_TRUNCATION_NOTICE}\n{passive.text}"
 
     if (
         passive.command_echo != state.last_command_echo

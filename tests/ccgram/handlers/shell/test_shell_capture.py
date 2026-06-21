@@ -7,6 +7,7 @@ from ccgram.handlers.shell.shell_capture import (
     _extract_command_output,
     strip_terminal_glyphs,
 )
+from ccgram.multiplexer.base import CaptureResult
 
 _MOD = "ccgram.handlers.shell.shell_capture"
 
@@ -314,7 +315,7 @@ class TestCheckPassiveShellOutput:
             patch(
                 f"{_MOD}._capture_with_scrollback",
                 new_callable=AsyncMock,
-                return_value=pane,
+                return_value=CaptureResult(text=pane),
             ),
         ):
             mock_sm.resolve_chat_id.return_value = -100
@@ -344,7 +345,7 @@ class TestCheckPassiveShellOutput:
             patch(
                 f"{_MOD}._capture_with_scrollback",
                 new_callable=AsyncMock,
-                return_value=pane,
+                return_value=CaptureResult(text=pane),
             ),
         ):
             mock_sm.resolve_chat_id.return_value = -100
@@ -358,7 +359,7 @@ class TestCheckPassiveShellOutput:
             patch(
                 f"{_MOD}._capture_with_scrollback",
                 new_callable=AsyncMock,
-                return_value=pane,
+                return_value=CaptureResult(text=pane),
             ),
         ):
             mock_sm2.resolve_chat_id.return_value = -100
@@ -389,7 +390,7 @@ class TestCheckPassiveShellOutput:
             patch(
                 f"{_MOD}._capture_with_scrollback",
                 new_callable=AsyncMock,
-                return_value=pane,
+                return_value=CaptureResult(text=pane),
             ),
         ):
             mock_sm.resolve_chat_id.return_value = -100
@@ -423,7 +424,7 @@ class TestCheckPassiveShellOutput:
             patch(
                 f"{_MOD}._capture_with_scrollback",
                 new_callable=AsyncMock,
-                return_value=pane1,
+                return_value=CaptureResult(text=pane1),
             ),
         ):
             mock_sm.resolve_chat_id.return_value = -100
@@ -443,7 +444,7 @@ class TestCheckPassiveShellOutput:
             patch(
                 f"{_MOD}._capture_with_scrollback",
                 new_callable=AsyncMock,
-                return_value=pane2,
+                return_value=CaptureResult(text=pane2),
             ),
         ):
             mock_sm2.resolve_chat_id.return_value = -100
@@ -477,7 +478,7 @@ class TestCheckPassiveShellOutput:
             patch(
                 f"{_MOD}._capture_with_scrollback",
                 new_callable=AsyncMock,
-                return_value=scrollback,
+                return_value=CaptureResult(text=scrollback),
             ),
         ):
             mock_sm.resolve_chat_id.return_value = -100
@@ -487,6 +488,76 @@ class TestCheckPassiveShellOutput:
         state = _shell_monitor_state["@0"]
         assert state.msg_id == 88
         assert state.last_command_echo == "ccgram:0❯ ls -al"
+
+
+@pytest.mark.usefixtures("_clean_monitor_state")
+class TestScrollbackTruncation:
+    """The herdr read cap (1000 lines) clips scrollback; a clipped capture must
+    surface a truncation notice rather than read as the full command output."""
+
+    @pytest.mark.asyncio()
+    async def test_truncated_capture_prepends_notice(self) -> None:
+        from ccgram.handlers.shell.shell_capture import (
+            _TRUNCATION_NOTICE,
+            check_passive_shell_output,
+        )
+
+        bot = AsyncMock(spec=Bot)
+        mock_sent = MagicMock()
+        mock_sent.message_id = 400
+
+        pane = "ccgram:0❯ dump\nlots of output\nccgram:0❯"
+        with (
+            patch(
+                f"{_MOD}.rate_limit_send_message",
+                new_callable=AsyncMock,
+                return_value=mock_sent,
+            ) as mock_send,
+            patch(f"{_MOD}.thread_router") as mock_sm,
+            patch(
+                f"{_MOD}._capture_with_scrollback",
+                new_callable=AsyncMock,
+                return_value=CaptureResult(text=pane, truncated=True),
+            ),
+        ):
+            mock_sm.resolve_chat_id.return_value = -100
+            await check_passive_shell_output(bot, 1, 42, "@0", pane)
+
+        sent_text = mock_send.call_args[0][2]
+        assert _TRUNCATION_NOTICE in sent_text
+        assert "lots of output" in sent_text
+
+    @pytest.mark.asyncio()
+    async def test_untruncated_capture_has_no_notice(self) -> None:
+        from ccgram.handlers.shell.shell_capture import (
+            _TRUNCATION_NOTICE,
+            check_passive_shell_output,
+        )
+
+        bot = AsyncMock(spec=Bot)
+        mock_sent = MagicMock()
+        mock_sent.message_id = 401
+
+        pane = "ccgram:0❯ dump\nshort output\nccgram:0❯"
+        with (
+            patch(
+                f"{_MOD}.rate_limit_send_message",
+                new_callable=AsyncMock,
+                return_value=mock_sent,
+            ) as mock_send,
+            patch(f"{_MOD}.thread_router") as mock_sm,
+            patch(
+                f"{_MOD}._capture_with_scrollback",
+                new_callable=AsyncMock,
+                return_value=CaptureResult(text=pane, truncated=False),
+            ),
+        ):
+            mock_sm.resolve_chat_id.return_value = -100
+            await check_passive_shell_output(bot, 1, 42, "@0", pane)
+
+        sent_text = mock_send.call_args[0][2]
+        assert _TRUNCATION_NOTICE not in sent_text
+        assert "short output" in sent_text
 
 
 class TestClearShellMonitorState:
@@ -545,7 +616,7 @@ class TestPassiveEdgeCases:
             patch(
                 f"{_MOD}._capture_with_scrollback",
                 new_callable=AsyncMock,
-                return_value=pane1,
+                return_value=CaptureResult(text=pane1),
             ),
         ):
             mock_sm.resolve_chat_id.return_value = -100
@@ -564,7 +635,7 @@ class TestPassiveEdgeCases:
             patch(
                 f"{_MOD}._capture_with_scrollback",
                 new_callable=AsyncMock,
-                return_value=pane2,
+                return_value=CaptureResult(text=pane2),
             ),
         ):
             mock_sm2.resolve_chat_id.return_value = -100
@@ -668,7 +739,7 @@ class TestPassiveRelayFormatting:
             patch(
                 f"{_MOD}._capture_with_scrollback",
                 new_callable=AsyncMock,
-                return_value=pane,
+                return_value=CaptureResult(text=pane),
             ),
         ):
             mock_sm.resolve_chat_id.return_value = -100
@@ -698,7 +769,7 @@ class TestPassiveRelayFormatting:
             patch(
                 f"{_MOD}._capture_with_scrollback",
                 new_callable=AsyncMock,
-                return_value=pane,
+                return_value=CaptureResult(text=pane),
             ),
         ):
             mock_sm.resolve_chat_id.return_value = -100
@@ -731,7 +802,7 @@ class TestPassiveRelayFormatting:
             patch(
                 f"{_MOD}._capture_with_scrollback",
                 new_callable=AsyncMock,
-                return_value=pane,
+                return_value=CaptureResult(text=pane),
             ),
         ):
             mock_sm.resolve_chat_id.return_value = -100
@@ -770,7 +841,7 @@ class TestPassiveRelayFormatting:
             patch(
                 f"{_MOD}._capture_with_scrollback",
                 new_callable=AsyncMock,
-                return_value=pane,
+                return_value=CaptureResult(text=pane),
             ),
             patch(f"{_MOD}.react", new_callable=AsyncMock) as mock_react,
         ):
@@ -813,7 +884,7 @@ class TestPassiveRelayFormatting:
             patch(
                 f"{_MOD}._capture_with_scrollback",
                 new_callable=AsyncMock,
-                return_value=pane,
+                return_value=CaptureResult(text=pane),
             ),
             patch(
                 f"{_MOD}._maybe_suggest_fix", new_callable=AsyncMock
@@ -857,7 +928,7 @@ class TestPassiveRelayFormatting:
             patch(
                 f"{_MOD}._capture_with_scrollback",
                 new_callable=AsyncMock,
-                return_value=pane,
+                return_value=CaptureResult(text=pane),
             ),
             patch(f"{_MOD}.react", new_callable=AsyncMock) as mock_react,
         ):
@@ -881,7 +952,7 @@ class TestCaptureWithScrollback:
             mock_exec.return_value = mock_proc
             result = await _capture_with_scrollback("@4")
 
-        assert result == "line1\nline2"
+        assert result == CaptureResult(text="line1\nline2", truncated=False)
 
     @pytest.mark.asyncio()
     async def test_returns_none_on_empty(self) -> None:
@@ -916,6 +987,21 @@ class TestCaptureWithScrollback:
         assert "-S" in args
         assert "-100" in args
         assert "@4" in args
+
+    @pytest.mark.asyncio()
+    async def test_delegates_clamp_and_surfaces_truncation(self) -> None:
+        # The line cap lives in the backend: shell passes its requested depth
+        # straight through and surfaces the backend's truncated flag.
+        from ccgram.handlers.shell.shell_capture import _capture_with_scrollback
+
+        clamped = CaptureResult(text="tail only", truncated=True)
+        fake_mux = MagicMock()
+        fake_mux.capture_scrollback = AsyncMock(return_value=clamped)
+        with patch(f"{_MOD}.tmux_manager", fake_mux):
+            result = await _capture_with_scrollback("@4", history=5000)
+
+        assert result == clamped
+        fake_mux.capture_scrollback.assert_awaited_once_with("@4", lines=5000)
 
 
 class TestMarkTelegramCommand:
