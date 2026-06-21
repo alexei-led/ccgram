@@ -4,7 +4,7 @@ Component flow:
 
 - Telegram Bot (`bot.py` + `handlers/`) drives outbound to tmux via `send_keys` and receives inbound via SessionMonitor callbacks. Handler registration in `handlers/registry.py`. Post_init wiring in `bootstrap.py`. Outbound formatting goes through `entity_formatting.py` (MD → plain + `MessageEntity`) and `telegram_sender.py` (`split_message`, 4096 limit). Per-user FIFO queue + worker + rate limiting in `messaging_pipeline/`. Terminal parsing via pyte (`screen_buffer.py`, `terminal_parser.py`).
 - SessionMonitor (`session_monitor.py`) polls JSONL transcripts (2s, mtime cache, byte-offset incremental reads) and reads `events.jsonl` incrementally for instant hook dispatch.
-- TmuxManager (`tmux_manager.py`) wraps tmux: list/find/create/kill windows, `send_keys`, `capture_pane`, `list_panes`, `send_keys_to_pane`.
+- Multiplexer seam (`multiplexer/`) abstracts the terminal multiplexer behind the `Multiplexer` Protocol. tmux is the default backend (`multiplexer/tmux.py`, `TmuxManager`): list/find/create/kill windows, `send`, `capture`, `list_panes`, `send_to_pane`. Callers import the module-level `multiplexer` proxy, never a concrete backend.
 - TranscriptParser (`transcript_parser.py`) parses JSONL, pairs tool_use ↔ tool_result, emits expandable quotes for thinking/history.
 - Hook (`hook.py`) receives Claude Code hook stdin, writes `session_map.json` + `events.jsonl`.
 - SessionManager + ThreadRouter resolve window ↔ session, own thread bindings and message history.
@@ -13,6 +13,17 @@ Component flow:
 Claude session transcripts live under `~/.claude/projects/` (`sessions-index` + `*.jsonl`).
 
 ## Module Inventory
+
+### `multiplexer/`
+
+Backend-neutral terminal-multiplexer seam (mirrors the `providers/` seam). Callers import the module-level `multiplexer` proxy and type against `multiplexer.base.Multiplexer`; they must not import a concrete backend (`multiplexer.tmux`/`multiplexer.herdr`). Enforced by the F1 boundary audit (`tests/ccgram/test_multiplexer_boundary.py`). Backend selected by `CCGRAM_MULTIPLEXER` (default `tmux`), wired in `bootstrap.py` from `config.multiplexer_name`.
+
+- `base.py` — core, pure: `Multiplexer` Protocol, `MultiplexerCapabilities` dataclass (`name` + six capability flags: `ids_stable_across_restart`, `exposes_pane_tty`, `native_agent_status`, `read_max_lines`, `self_identify_env`, `supports_event_stream`), and neutral value types `WindowRef`, `PaneInfo`, `CaptureResult`, `ForegroundInfo`, `PaneDims`. No backend imports, no I/O library (F3 core-purity audit).
+- `tmux.py` — adapter: `TmuxManager` (tmux backend) satisfying `Multiplexer`, returns the neutral value types, exposes tmux `capabilities` (`ids_stable_across_restart=True`, `exposes_pane_tty=True`, `native_agent_status=False`, `read_max_lines=None`, `self_identify_env="TMUX_PANE"`, `supports_event_stream=False`). Owns the single `tmux_manager` singleton.
+- `registry.py` — `get_multiplexer(name)` + singleton cache (mirrors `providers/registry.py`); backends imported lazily inside their factory so the core stays I/O-free. `UnknownMultiplexerError` on unknown names.
+- `__init__.py` — `multiplexer` proxy (forwards to the wired backend; raises a clear "not wired" error before bootstrap), `install_multiplexer`/`get_active_multiplexer` wiring, re-exports `get_multiplexer`.
+- `vim_state.py` — backend-neutral vim-insert detection cache (`_vim_state`/`_vim_locks`, `notify_vim_insert_seen`). Lives outside the tmux backend so the polling layer can import the detection helpers without importing a concrete backend (F1 boundary).
+- `window_ops.py` — backend-neutral `send_to_window`/`send_followup_to_window` convenience wrappers over the active `multiplexer` proxy + thread router.
 
 ### `providers/`
 
@@ -203,6 +214,7 @@ Top-level (constants, leaves, top-level commands):
 - Notifications routed via thread bindings (topic → window_id → session).
 - Startup re-resolution. Window IDs reset on tmux server restart. `resolve_stale_ids()` matches persisted display names against live windows to re-map. Old name-keyed `state.json` auto-migrated.
 - Per-window provider. CLI-specific behavior (launch args, transcript parsing, status, command discovery) delegated to `AgentProvider`. `ProviderCapabilities` gate UX per-window: hook checks, resume/continue buttons, command registration. `WindowState.provider_name` is source of truth; `get_provider_for_window(window_id)` resolves with config-default fallback. External windows auto-detected via `detect_provider_from_command()`. `get_provider()` is the no-window-context fallback (`doctor`, `status`).
+- Multiplexer seam. Terminal-multiplexer access is abstracted behind the `Multiplexer` Protocol (`multiplexer/base.py`, core, I/O-free). tmux is the default backend (`multiplexer/tmux.py`); a `CCGRAM_MULTIPLEXER` switch (default `tmux`) selects it, wired in `bootstrap.py` from `config.multiplexer_name`. Callers depend only on the module-level `multiplexer` proxy and `MultiplexerCapabilities` flags — never a concrete backend or `name == "<backend>"` conditional. Boundary enforced by `tests/ccgram/test_multiplexer_boundary.py` (F1, concrete-backend imports forbidden outside `multiplexer/**`, `bootstrap.py`, `main.py`), contract by `tests/ccgram/test_multiplexer_contract.py` (F2, parametrized per backend), core purity by `tests/integration/test_import_no_cycles.py` (F3, `base` imports no backend/I/O). Mirrors the `AgentProvider` seam and the `window_store`/`thread_router` proxy pattern.
 - Live terminal view. Auto-refreshing screenshots via `editMessageMedia` (default 5s). Content-hash gating skips API calls when unchanged. One active view per topic, auto-stop after timeout (default 300s). Managed by `handlers/live/live_view.py`, ticked from `handlers/polling/periodic_tasks.py`.
 - Completion summaries. On agent Stop, `llm/summarizer.py` reads transcript, produces one line, edits Ready message in place. Non-blocking: static enriched Ready appears immediately, LLM enhancement ~1-2s later.
 - Constructor DI for stores. `SessionManager` constructs `WindowStateStore`, `ThreadRouter`, `UserPreferences`, `SessionMapSync` with explicit `schedule_save` (and store-specific) callbacks. Module-level singletons are proxy objects forwarding to the wired instance. `register_*_callback` helpers raise on double-registration; unwired callees raise `RuntimeError("not wired")`.

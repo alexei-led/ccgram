@@ -145,10 +145,10 @@ Whole-plan commands (repo Makefile targets):
 - Fitness gate: F1–F3 all green.
 - Verification: `make check`; `uv run pytest tests/ccgram/test_multiplexer_boundary.py tests/ccgram/test_multiplexer_contract.py -v`.
 - Manual checks: confirm tmux behavior is unchanged by exercising one real flow (create window, send, capture) under `CCGRAM_MULTIPLEXER=tmux`. Recommended: run `architecture-review` on the seam before continuing.
-- [ ] run the full gate and the seam audits; all green
-- [ ] update `.claude/rules/architecture.md` module inventory for the `multiplexer/` package
-- [ ] write/refresh any characterization test that proves tmux behavior is unchanged
-- [ ] run project tests (`make test`) - must pass before next task
+- [x] run the full gate and the seam audits; all green
+- [x] update `.claude/rules/architecture.md` module inventory for the `multiplexer/` package
+- [x] write/refresh any characterization test that proves tmux behavior is unchanged
+- [x] run project tests (`make test`) - must pass before next task
 
 ### Task 6: Neutral hook identity resolver (tmux behavior unchanged)
 

@@ -1,11 +1,12 @@
 """Tests for multiplexer/tmux.py — Task 2 (tmux as the first backend).
 
 Covers:
-- tmux ``MultiplexerCapabilities`` are pinned to the design values.
+- tmux ``MultiplexerCapabilities`` are pinned to the design values
+  (per-field and as a full snapshot — the Task 5 characterization guard that
+  the tmux behavior contract is unchanged).
 - ``TmuxManager`` satisfies the ``Multiplexer`` Protocol structurally.
 - One round-trip per Protocol wrapper method (neutral value types in/out),
   with the libtmux/subprocess legacy methods mocked.
-- The ``tmux_manager`` compat shim re-exports the public surface unchanged.
 """
 
 from __future__ import annotations
@@ -47,6 +48,22 @@ class TestTmuxCapabilities:
     def test_capabilities_is_frozen(self, mgr: TmuxManager) -> None:
         with pytest.raises(Exception):  # frozen dataclass → FrozenInstanceError
             mgr.capabilities.name = "other"  # type: ignore[misc]
+
+    def test_capabilities_full_snapshot(self, mgr: TmuxManager) -> None:
+        """Characterization guard (Task 5): the entire tmux capability surface
+        is locked. Any change to a flag is a behavior change and must fail here.
+        """
+        from dataclasses import asdict
+
+        assert asdict(mgr.capabilities) == {
+            "name": "tmux",
+            "ids_stable_across_restart": True,
+            "exposes_pane_tty": True,
+            "native_agent_status": False,
+            "read_max_lines": None,
+            "self_identify_env": "TMUX_PANE",
+            "supports_event_stream": False,
+        }
 
 
 # ── Protocol conformance ───────────────────────────────────────────────
