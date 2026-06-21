@@ -142,12 +142,12 @@ Whole-plan commands:
 - Fitness gate: the no-tty drift gate and seam F1 green.
 - Verification: `make check`; `uv run pytest tests/ccgram/test_no_tty_outside_backend.py -v`; with herdr running, `uv run pytest tests/integration/ -m "herdr" -v`.
 - Manual checks: run `architecture-review` scoped to the shell/foreground seam and confirm code matches the design.
-- [ ] verify all Overview requirements hold for both `CCGRAM_MULTIPLEXER=tmux` and `=herdr`
-- [ ] verify the no-tty drift gate is part of the suite and green
-- [ ] run the full project test suite and the drift gate
-- [ ] run the project linter (`make lint`, including `lint-lazy`) - all issues fixed
-- [ ] update architecture docs for the foreground seam and the no-tty gate
-- [ ] run project tests (`make test`) - must pass
+- [x] verify all Overview requirements hold for both `CCGRAM_MULTIPLEXER=tmux` and `=herdr` (tmux: full suite 5374 passed; herdr: 5 `-m herdr` integration tests pass against live socket)
+- [x] verify the no-tty drift gate is part of the suite and green (`test_no_tty_outside_backend.py`, 186 passed)
+- [x] run the full project test suite and the drift gate
+- [x] run the project linter (`make lint`, including `lint-lazy`) - all issues fixed (lint-lazy clean + ruff clean; typecheck 0 errors)
+- [x] update architecture docs for the foreground seam and the no-tty gate (`.claude/rules/architecture.md`: process_detection now a tty-free classifier, tmux `foreground()` sole `ps -t` site, herdr `foreground()` via process-info, no-tty drift-gate decision; `docs/providers.md`: backend-neutral foreground detection)
+- [x] run project tests (`make test`) - must pass
 
 ## Acceptance criteria
 

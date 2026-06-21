@@ -19,7 +19,7 @@ CCGram supports multiple agent CLI backends. Each Telegram topic can use a diffe
 - `✅ Standard` (normal approvals)
 - `🚀 YOLO` (provider-specific permissive mode)
 
-**From the terminal**: If you create a tmux window manually and start an agent CLI, CCGram auto-detects the provider from the running process name. When the pane command is a JS runtime wrapper (node, bun), it falls back to `ps -t` foreground process inspection to reliably identify the actual CLI. As a last resort, Gemini pane-title symbols (`✦`, `✋`, `◇`) are checked.
+**From the terminal**: If you create a window manually and start an agent CLI, CCGram auto-detects the provider from the running process name. When the pane command is a JS runtime wrapper (node, bun), it inspects the pane's foreground process to reliably identify the actual CLI. How the foreground process is read is owned by the multiplexer backend — tmux uses `ps -t <tty>`, herdr reads `pane process-info` (no tty needed) — so detection works the same on both. The shell provider uses the same seam to classify a bare shell pane. As a last resort, Gemini pane-title symbols (`✦`, `✋`, `◇`) are checked.
 
 **Default provider**: Set `CCGRAM_PROVIDER=codex` (or `gemini`, `pi`, `shell`) to change the default. Claude is the default if unset.
 
