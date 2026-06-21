@@ -137,6 +137,11 @@ modules:
   # --- Adapter: concrete multiplexer backends (private internals) ---
   # tmux/herdr socket + JSON shapes stay quarantined here. No caller may import
   # these — enforced today by the F1 pytest audit (test_multiplexer_boundary).
+  # These backends also own the foreground/tty internals: the tmux backend is
+  # the only sanctioned home for `pane_tty` reads + `ps -t`, exposed to callers
+  # solely through `Multiplexer.foreground()`. That no-tty boundary is enforced
+  # by tests/ccgram/test_no_tty_outside_backend.py (allow-list: multiplexer.tmux
+  # and hook.py, the separate tmux-identity subprocess).
   multiplexer_backends:
     paths:
       - ccgram.multiplexer.tmux
@@ -145,6 +150,20 @@ modules:
     layer: adapter
     subdomain: generic
     volatility: medium # implementation: herdr protocol 14 / id scheme may change
+  # --- Adapter: provider-detection classifier (foreground → provider name) ---
+  # The backend-neutral half of foreground detection. After the herdr-shell-
+  # provider plan (Task 1) the tty/ps half lives in the tmux backend
+  # (multiplexer_backends); `process_detection` only classifies a neutral
+  # `ForegroundInfo.argv` it receives from `Multiplexer.foreground()` — no tty,
+  # no `ps`. The sanctioned consumer is the providers facade
+  # (`detect_provider_from_pane` in providers/__init__); handlers must route
+  # through that facade, not import the classifier internals.
+  provider_detection:
+    paths:
+      - ccgram.providers.process_detection
+    layer: adapter
+    subdomain: generic
+    volatility: low
   # --- Adapter: terminal infrastructure ---
   terminal_adapter:
     paths:
@@ -189,6 +208,17 @@ rules:
     gate: warn
     from: telegram_adapter
     to: multiplexer_backends
+  # No-tty drift gate (herdr-shell-provider Task 2) — handlers must learn the
+  # foreground process through the `detect_provider_from_pane` providers facade
+  # (which calls `Multiplexer.foreground()`), never by importing the
+  # provider-detection classifier directly. `gate: warn` because the ENFORCED
+  # gate is the pytest drift audit (test_no_tty_outside_backend.py); this edge is
+  # the recommended archfit promotion (archfit not yet wired into CI).
+  - id: no-handlers-to-provider-detection
+    type: forbidden_dependency
+    gate: warn
+    from: handlers
+    to: provider_detection
   - id: no-import-cycles
     type: cycle
     gate: fail

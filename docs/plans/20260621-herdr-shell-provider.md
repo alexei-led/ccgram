@@ -93,11 +93,11 @@ Whole-plan commands:
 - Fitness gate: this task _is_ the gate. Before-fail/after-pass: planting `get_foreground_args(pane_tty)` in `shell_infra.py` must fail `test_no_tty_outside_backend.py`; removing it must pass. archfit rule is the recommended promotion (archfit not in CI).
 - Verification: `uv run pytest tests/ccgram/test_no_tty_outside_backend.py -v`; `archfit check --config .archfit.yaml --full` if available, else record the missing-tool note.
 - Manual checks: confirm the audit allow-list is exactly `multiplexer/tmux.py` (and the relocated `process_detection` if it stays a tmux-backend submodule).
-- [ ] add `test_no_tty_outside_backend.py` forbidding tty/ps/`get_foreground_args` outside the tmux backend
-- [ ] confirm the gate fails on a planted tty reference, then passes after removal
-- [ ] update `.archfit.yaml`: `process_detection` under the tmux backend + forbidden-dependency rule
-- [ ] write tests for the audit itself
-- [ ] run project tests (`make test`) - must pass before next task
+- [x] add `test_no_tty_outside_backend.py` forbidding tty/ps/`get_foreground_args` outside the tmux backend
+- [x] confirm the gate fails on a planted tty reference, then passes after removal
+- [x] update `.archfit.yaml`: `process_detection` under the tmux backend + forbidden-dependency rule
+- [x] write tests for the audit itself
+- [x] run project tests (`make test`) - must pass before next task
 
 ### Task 3: herdr `foreground()` via process-info + shell capture clamp
 
