@@ -160,11 +160,11 @@ Whole-plan commands (repo Makefile targets):
 - Fitness gate: none archfit; the resolver is dependency-light so the hook (separate process) can import it without the backend wiring.
 - Verification: table-driven unit test for the resolver; `make test`.
 - Manual checks: confirm the tmux branch output is byte-identical to the previous `_resolve_window_id` result.
-- [ ] add `resolve_self_identity(env)` returning the neutral `SelfIdentity` (mux, session_window_key, window_id, window_name)
-- [ ] route `hook.py` through the resolver; keep the tmux branch behavior identical
-- [ ] add the herdr branch reading `$HERDR_PANE_ID` (+ `$HERDR_SOCKET_PATH` for cwd)
-- [ ] write table-driven tests (tmux env / herdr env / neither / nested-session)
-- [ ] run project tests (`make test`) - must pass before next task
+- [x] add `resolve_self_identity(env)` returning the neutral `SelfIdentity` (mux, session_window_key, window_id, window_name)
+- [x] route `hook.py` through the resolver; keep the tmux branch behavior identical
+- [x] add the herdr branch reading `$HERDR_PANE_ID` (+ `$HERDR_SOCKET_PATH` for cwd)
+- [x] write table-driven tests (tmux env / herdr env / neither / nested-session)
+- [x] run project tests (`make test`) - must pass before next task
 
 ### Task 7: Implement the herdr backend and wire the contract-test leg
 

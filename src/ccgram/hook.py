@@ -32,6 +32,7 @@ from ccgram.hooks.adapters import (
     get_hook_adapter,
 )
 from ccgram.hooks.model import ProviderName
+from ccgram.multiplexer.self_identify import resolve_self_identity
 
 logger = structlog.get_logger()
 
@@ -1085,31 +1086,35 @@ def _locate_primary_window(
     claude in the pane. Returns ``None`` when the pane can't be resolved or
     when a nested claude (e.g. claude-mem observer) fired the hook — the
     nested case is logged at info so the rejection is visible to operators.
+
+    Identity resolution is backend-neutral via ``resolve_self_identity``: tmux
+    panes resolve through ``_resolve_window_id`` (``display-message``), herdr
+    panes through ``$HERDR_PANE_ID``. The tmux branch is byte-identical to the
+    previous direct ``_resolve_window_id`` path.
     """
-    pane_id = os.environ.get("TMUX_PANE", "")
-    if not pane_id:
-        logger.warning("TMUX_PANE not set, cannot determine window")
+    identity = resolve_self_identity(os.environ, tmux_query=_resolve_window_id)
+    if identity is None:
+        if not os.environ.get("TMUX_PANE") and not os.environ.get("HERDR_PANE_ID"):
+            logger.warning("TMUX_PANE not set, cannot determine window")
         return None
-    resolved = _resolve_window_id(pane_id)
-    if not resolved:
-        return None
-    session_window_key, window_id, window_name, pane_tty = resolved
     logger.debug(
         "tmux key=%s, window_name=%s, session_id=%s, event=%s",
-        session_window_key,
-        window_name,
+        identity.session_window_key,
+        identity.window_name,
         session_id,
         event,
     )
-    if provider_name == "claude" and _is_nested_session(pane_tty):
+    # pane_tty is "" for herdr (no tty exposed), so _is_nested_session fails
+    # open to False there — the nested-observer guard stays a tmux-only no-op.
+    if provider_name == "claude" and _is_nested_session(identity.pane_tty):
         logger.info(
             "Skipping hook from nested claude (window_key=%s, session_id=%s, event=%s)",
-            session_window_key,
+            identity.session_window_key,
             session_id,
             event,
         )
         return None
-    return session_window_key, window_id, window_name
+    return identity.session_window_key, identity.window_id, identity.window_name
 
 
 def _process_hook_stdin(provider_name: str | None = None) -> None:
@@ -1135,10 +1140,9 @@ def _process_hook_stdin(provider_name: str | None = None) -> None:
         )
     detected_provider = provider_name or payload_provider
     if detected_provider is None:
-        pane_id = os.environ.get("TMUX_PANE", "")
-        resolved = _resolve_window_id(pane_id) if pane_id else None
-        if resolved:
-            detected_provider = _provider_from_pane_tty(resolved[3])
+        identity = resolve_self_identity(os.environ, tmux_query=_resolve_window_id)
+        if identity:
+            detected_provider = _provider_from_pane_tty(identity.pane_tty)
     if detected_provider is None:
         detected_provider = "claude"
 
