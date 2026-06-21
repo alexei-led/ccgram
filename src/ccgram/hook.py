@@ -1024,7 +1024,9 @@ def _refresh_session_map_if_stale(
         )
     ):
         return
-    tmux_session_name = session_window_key.rsplit(":", 1)[0]
+    # Backend prefix token: split on the FIRST colon so herdr keys
+    # ("herdr:w2:p1") yield "herdr", not "herdr:w2" (the pane id has a colon).
+    tmux_session_name = session_window_key.split(":", 1)[0]
     _update_session_map(
         session_window_key,
         session_id,
@@ -1095,10 +1097,13 @@ def _locate_primary_window(
     identity = resolve_self_identity(os.environ, tmux_query=_resolve_window_id)
     if identity is None:
         if not os.environ.get("TMUX_PANE") and not os.environ.get("HERDR_PANE_ID"):
-            logger.warning("TMUX_PANE not set, cannot determine window")
+            logger.warning(
+                "Neither TMUX_PANE nor HERDR_PANE_ID set, cannot determine window"
+            )
         return None
     logger.debug(
-        "tmux key=%s, window_name=%s, session_id=%s, event=%s",
+        "%s key=%s, window_name=%s, session_id=%s, event=%s",
+        identity.mux,
         identity.session_window_key,
         identity.window_name,
         session_id,
@@ -1168,7 +1173,9 @@ def _process_hook_stdin(provider_name: str | None = None) -> None:
     session_window_key, _window_id, window_name = located
 
     if event == "SessionStart":
-        tmux_session_name = session_window_key.rsplit(":", 1)[0]
+        # Backend prefix token (see _refresh_session_map_if_stale): split on the
+        # first colon so herdr keys ("herdr:w2:p1") yield "herdr".
+        tmux_session_name = session_window_key.split(":", 1)[0]
         transcript_path = _resolve_transcript_path(
             detected_provider,
             normalized.session_id,

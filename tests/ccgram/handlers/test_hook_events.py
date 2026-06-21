@@ -47,6 +47,18 @@ class TestResolveUsersForWindowKey:
         result = _resolve_users_for_window_key("ccgram:@0")
         assert result == [(111, 42, "@0")]
 
+    def test_extracts_herdr_window_id_with_colon(self, monkeypatch) -> None:
+        # herdr keys are "herdr:<pane_id>" where the pane id itself contains a
+        # colon (w2:p1). Splitting on the FIRST colon must recover "w2:p1", not
+        # "p1" — the latter (rsplit) never matches the bound window id.
+        bindings = [(111, 42, "w2:p1")]
+        monkeypatch.setattr(
+            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
+            lambda: iter(bindings),
+        )
+        result = _resolve_users_for_window_key("herdr:w2:p1")
+        assert result == [(111, 42, "w2:p1")]
+
     def test_no_match(self, monkeypatch) -> None:
         monkeypatch.setattr(
             "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",

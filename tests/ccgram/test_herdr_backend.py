@@ -271,11 +271,10 @@ def test_capabilities_are_pinned() -> None:
 
 
 def test_constructor_does_no_io() -> None:
-    # A runner that explodes if called proves construction touches no socket.
-    async def boom(_args: Sequence[str]) -> tuple[int, str, str]:
-        raise AssertionError("constructor must not call the runner")
-
-    HerdrManager(runner=boom)  # no exception
+    # Construction must touch no socket: the injected runner records zero calls.
+    fake = FakeHerdr()
+    HerdrManager(socket_path="/tmp/herdr.sock", runner=fake)
+    assert fake.calls == []
 
 
 # ── Value-type mapping (wN:pN → window_id) ─────────────────────────────
@@ -639,6 +638,14 @@ async def test_foreground_missing_process_returns_none() -> None:
 async def test_ensure_session_accepts_pinned_protocol() -> None:
     fake = FakeHerdr().on("status", out=_status_json())
     await _manager(fake).ensure_session()  # no raise
+    # The protocol check must actually probe the server, not no-op.
+    assert fake.sent("status") is not None
+
+
+async def test_ensure_session_raises_on_non_json_status() -> None:
+    fake = FakeHerdr().on("status", out="not json {{{")
+    with pytest.raises(HerdrError, match="non-JSON"):
+        await _manager(fake).ensure_session()
 
 
 async def test_ensure_session_refuses_protocol_mismatch() -> None:
