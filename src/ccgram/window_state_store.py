@@ -322,9 +322,18 @@ class WindowStateStore:
             self._schedule_save()
 
     def clear_window_session(self, window_id: str) -> None:
-        """Clear session association for a window (e.g., after /clear command)."""
+        """Clear session association for a window (e.g., after /clear command).
+
+        Session-reset commands such as Codex ``/clear`` can move the active
+        conversation to a new transcript while the tmux window stays alive. If
+        the old transcript path remains cached, transcript discovery treats the
+        hook-backed session as already resolved and the monitor keeps tailing the
+        stale file. Clear both fields so the next polling tick can discover and
+        register the new active transcript for the same topic.
+        """
         state = self.get_window_state(window_id)
         state.session_id = ""
+        state.transcript_path = ""
         self._schedule_save()
         logger.debug("Cleared session for window_id %s", window_id)
 

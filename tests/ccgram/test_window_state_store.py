@@ -214,6 +214,25 @@ class TestStoreCRUD:
         store.from_dict(legacy)
         assert store.window_states["@1"].panes == {}
 
+    def test_clear_window_session_clears_transcript_path_for_rediscovery(
+        self, store: WindowStateStore
+    ) -> None:
+        store.window_states["@1"] = WindowState(
+            session_id="old-session",
+            cwd="/proj",
+            window_name="proj",
+            transcript_path="/home/user/.codex/sessions/old.jsonl",
+            provider_name="codex",
+        )
+
+        store.clear_window_session("@1")
+
+        state = store.window_states["@1"]
+        assert state.session_id == ""
+        assert state.transcript_path == ""
+        assert state.cwd == "/proj"
+        assert state.provider_name == "codex"
+
 
 class TestPaneLifecycleNotify:
     def test_window_state_default_is_none(self) -> None:
