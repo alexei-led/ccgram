@@ -18,6 +18,7 @@ from ccgram.handlers.shell.shell_commands import (
     show_command_approval,
 )
 from ccgram.llm.base import CommandResult
+from ccgram.multiplexer.base import CaptureResult
 
 pytestmark = pytest.mark.integration
 
@@ -108,7 +109,7 @@ class TestRawCommandFlow:
             patch(
                 f"{_MOD_CAP}._capture_with_scrollback",
                 new_callable=AsyncMock,
-                return_value=pane,
+                return_value=CaptureResult(text=pane),
             ),
         ):
             mock_sm.resolve_chat_id.return_value = TEST_CHAT_ID
@@ -153,7 +154,7 @@ class TestRawCommandFlow:
             patch(
                 f"{_MOD_CAP}._capture_with_scrollback",
                 new_callable=AsyncMock,
-                return_value=pane,
+                return_value=CaptureResult(text=pane),
             ),
         ):
             mock_sm.resolve_chat_id.return_value = TEST_CHAT_ID
@@ -289,7 +290,7 @@ class TestErrorRecovery:
             patch(
                 f"{_MOD_CAP}._capture_with_scrollback",
                 new_callable=AsyncMock,
-                return_value=pane,
+                return_value=CaptureResult(text=pane),
             ),
             patch("ccgram.llm.get_completer", return_value=mock_completer),
             patch(
@@ -343,7 +344,7 @@ class TestErrorRecovery:
             patch(
                 f"{_MOD_CAP}._capture_with_scrollback",
                 new_callable=AsyncMock,
-                return_value=pane,
+                return_value=CaptureResult(text=pane),
             ),
             patch("ccgram.llm.get_completer", return_value=None),
             patch(
@@ -385,7 +386,7 @@ class TestPassiveMonitoringRoundTrip:
             patch(
                 f"{_MOD_CAP}._capture_with_scrollback",
                 new_callable=AsyncMock,
-                return_value=pane_in_progress,
+                return_value=CaptureResult(text=pane_in_progress),
             ),
         ):
             mock_sm.resolve_chat_id.return_value = TEST_CHAT_ID
@@ -411,7 +412,7 @@ class TestPassiveMonitoringRoundTrip:
             patch(
                 f"{_MOD_CAP}._capture_with_scrollback",
                 new_callable=AsyncMock,
-                return_value=pane_completed,
+                return_value=CaptureResult(text=pane_completed),
             ),
         ):
             mock_sm2.resolve_chat_id.return_value = TEST_CHAT_ID
