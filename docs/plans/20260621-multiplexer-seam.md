@@ -92,12 +92,12 @@ Whole-plan commands (repo Makefile targets):
 - Fitness gate: none new; rely on the existing suite as characterization.
 - Verification: `make check` (full gate must stay green — proves zero behavior change).
 - Manual checks: confirm value-type field names match the old `TmuxWindow`/`PaneInfo` so no call site changed semantics.
-- [ ] move the tmux implementation into `multiplexer/tmux.py` and make it satisfy `Multiplexer`
-- [ ] return `WindowRef`/`PaneInfo`/`CaptureResult`/`ForegroundInfo`/`PaneDims` from the relevant methods, preserving field names
-- [ ] add the tmux `MultiplexerCapabilities`
-- [ ] leave a `tmux_manager.py` compat shim re-exporting the singleton (removed in Task 4)
-- [ ] write tests pinning tmux capabilities and one round-trip per refactored method
-- [ ] run project tests (`make test`) - must pass before next task
+- [x] move the tmux implementation into `multiplexer/tmux.py` and make it satisfy `Multiplexer`
+- [x] return `WindowRef`/`PaneInfo`/`CaptureResult`/`ForegroundInfo`/`PaneDims` from the relevant methods, preserving field names
+- [x] add the tmux `MultiplexerCapabilities`
+- [x] leave a `tmux_manager.py` compat shim re-exporting the singleton (removed in Task 4)
+- [x] write tests pinning tmux capabilities and one round-trip per refactored method
+- [x] run project tests (`make test`) - must pass before next task
 
 ### Task 3: Registry, proxy, and CCGRAM_MULTIPLEXER switch (tmux-only)
 

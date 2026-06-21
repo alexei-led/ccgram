@@ -6,9 +6,9 @@ from ccgram.tmux_manager import send_followup_to_window
 
 async def test_send_followup_to_window_sends_text_then_alt_enter() -> None:
     with (
-        patch("ccgram.tmux_manager.thread_router") as mock_router,
-        patch("ccgram.tmux_manager.tmux_manager") as mock_tmux,
-        patch("ccgram.tmux_manager.asyncio.sleep", new_callable=AsyncMock) as sleep,
+        patch("ccgram.multiplexer.tmux.thread_router") as mock_router,
+        patch("ccgram.multiplexer.tmux.tmux_manager") as mock_tmux,
+        patch("ccgram.multiplexer.tmux.asyncio.sleep", new_callable=AsyncMock) as sleep,
     ):
         mock_router.get_display_name.return_value = "project"
         mock_tmux.find_window_by_id = AsyncMock(
@@ -31,8 +31,8 @@ async def test_send_followup_to_window_sends_text_then_alt_enter() -> None:
 
 async def test_send_followup_to_window_reports_missing_window() -> None:
     with (
-        patch("ccgram.tmux_manager.thread_router") as mock_router,
-        patch("ccgram.tmux_manager.tmux_manager") as mock_tmux,
+        patch("ccgram.multiplexer.tmux.thread_router") as mock_router,
+        patch("ccgram.multiplexer.tmux.tmux_manager") as mock_tmux,
     ):
         mock_router.get_display_name.return_value = "project"
         mock_tmux.find_window_by_id = AsyncMock(return_value=None)

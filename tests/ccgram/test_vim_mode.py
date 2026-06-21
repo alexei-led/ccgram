@@ -211,7 +211,7 @@ class TestSendLiteralVimIntegration:
                 manager, "_ensure_vim_insert_mode", new_callable=AsyncMock
             ) as vim_check,
             patch.object(manager, "_pane_send", return_value=True),
-            patch("ccgram.tmux_manager.asyncio.sleep", new_callable=AsyncMock),
+            patch("ccgram.multiplexer.tmux.asyncio.sleep", new_callable=AsyncMock),
         ):
             result = await manager._send_literal_then_enter("@1", "hello")
         assert result is True
@@ -233,7 +233,7 @@ class TestSendLiteralVimIntegration:
                 manager, "_ensure_vim_insert_mode", side_effect=slow_vim_check
             ),
             patch.object(manager, "_pane_send", return_value=True),
-            patch("ccgram.tmux_manager.asyncio.sleep", new_callable=AsyncMock),
+            patch("ccgram.multiplexer.tmux.asyncio.sleep", new_callable=AsyncMock),
         ):
             await asyncio.gather(
                 manager._send_literal_then_enter("@1", "a"),
