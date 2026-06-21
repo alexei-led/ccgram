@@ -32,6 +32,7 @@ from .providers import get_provider_for_window, registry  # noqa: F401 (used by 
 from .session_map import parse_session_map, read_session_map_raw
 from .session_lifecycle import session_lifecycle
 from .multiplexer import multiplexer as tmux_manager
+from .multiplexer.topic_mapping import is_agent_topic_window
 from .monitor_events import NewMessage, NewWindowEvent, SessionInfo
 from .transcript_reader import TranscriptReader
 from .utils import task_done_callback
@@ -323,6 +324,46 @@ class SessionMonitor:
 
         return result.current_map
 
+    async def _emit_unbound_window_events(
+        self, all_windows: list, known_window_ids: set[str]
+    ) -> None:
+        """Fire a NewWindowEvent for each live window not in session_map / bound.
+
+        Surfaces windows the hook never registered (no session_map entry) so
+        they can become topics. On backends that expose agent status natively
+        (herdr), only agent panes qualify — a bare shell pane is not a topic;
+        tmux surfaces every window, preserving today's behavior. The gate is the
+        ``native_agent_status`` capability, not a backend name.
+        """
+        if not self._new_window_callback:
+            return
+        # Lazy: thread_router is wired into session_manager which imports
+        # session_monitor; hoisting forms a startup cycle.
+        from .thread_router import thread_router
+
+        caps = tmux_manager.capabilities
+        bound_window_ids = {wid for _, _, wid in thread_router.iter_thread_bindings()}
+        for window in all_windows:
+            if window.window_id in known_window_ids:
+                continue
+            if window.window_id in bound_window_ids:
+                continue
+            if not is_agent_topic_window(window, caps):
+                continue
+            event = NewWindowEvent(
+                window_id=window.window_id,
+                session_id="",
+                window_name=window.window_name,
+                cwd=window.cwd,
+            )
+            try:
+                await self._new_window_callback(event)
+            except _CallbackError:
+                logger.exception(
+                    "New window callback error (unbound window path) for %s",
+                    window.window_id,
+                )
+
     async def _monitor_loop(self) -> None:
         """Background poll loop."""
         logger.info("Session monitor started, polling every %ss", self.poll_interval)
@@ -349,30 +390,7 @@ class SessionMonitor:
                 live_window_ids = {w.window_id for w in all_windows}
                 session_map_sync.prune_session_map(live_window_ids)
                 known_window_ids = set(current_map.keys())
-                for window in all_windows:
-                    if window.window_id in known_window_ids:
-                        continue
-                    # Lazy: same cycle as the earlier thread_router import.
-                    from .thread_router import thread_router
-
-                    already_bound = any(
-                        wid == window.window_id
-                        for _, _, wid in thread_router.iter_thread_bindings()
-                    )
-                    if not already_bound and self._new_window_callback:
-                        event = NewWindowEvent(
-                            window_id=window.window_id,
-                            session_id="",
-                            window_name=window.window_name,
-                            cwd=window.cwd,
-                        )
-                        try:
-                            await self._new_window_callback(event)
-                        except _CallbackError:
-                            logger.exception(
-                                "New window callback error (unbound window path) for %s",
-                                window.window_id,
-                            )
+                await self._emit_unbound_window_events(all_windows, known_window_ids)
 
                 new_messages = await self.check_for_updates(current_map)
 

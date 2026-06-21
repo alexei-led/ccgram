@@ -2,14 +2,19 @@
 
 import json
 import os
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from ccgram.monitor_state import TrackedSession
+from ccgram.multiplexer.base import MultiplexerCapabilities, WindowRef
 from ccgram.providers.claude import ClaudeProvider
 from ccgram.providers.codex import CodexProvider
+from ccgram.session import SessionManager
 from ccgram.session_monitor import NewWindowEvent, SessionMonitor
+from ccgram.thread_router import thread_router
+from ccgram.window_state_store import window_store
 
 
 @pytest.fixture
@@ -127,6 +132,106 @@ class TestNewWindowDetection:
             await monitor._detect_and_cleanup_changes()
 
         cb.assert_called_once()
+
+
+_TMUX_CAPS = MultiplexerCapabilities(
+    name="tmux",
+    ids_stable_across_restart=True,
+    exposes_pane_tty=True,
+    native_agent_status=False,
+    read_max_lines=None,
+    self_identify_env="TMUX_PANE",
+    supports_event_stream=False,
+)
+_HERDR_CAPS = MultiplexerCapabilities(
+    name="herdr",
+    ids_stable_across_restart=False,
+    exposes_pane_tty=False,
+    native_agent_status=True,
+    read_max_lines=1000,
+    self_identify_env="HERDR_PANE_ID",
+    supports_event_stream=True,
+)
+
+
+def _winref(window_id: str, command: str) -> WindowRef:
+    return WindowRef(
+        window_id=window_id,
+        window_name=window_id,
+        cwd="/proj",
+        pane_current_command=command,
+    )
+
+
+class TestEmitUnboundWindowEvents:
+    """The unbound-window discovery path is capability-gated (Task 10)."""
+
+    @pytest.fixture
+    def wired(self, monkeypatch) -> None:
+        # Wire thread_router via a real SessionManager and start empty.
+        thread_router.reset()
+        window_store.window_states.clear()
+        monkeypatch.setattr(SessionManager, "_load_state", lambda self: None)
+        monkeypatch.setattr(SessionManager, "_save_state", lambda self: None)
+        SessionManager()
+
+    async def test_tmux_surfaces_every_unbound_window(
+        self, monitor: SessionMonitor, wired, monkeypatch
+    ) -> None:
+        cb = AsyncMock(spec=lambda event: None)
+        monitor.set_new_window_callback(cb)
+        monkeypatch.setattr(
+            "ccgram.session_monitor.tmux_manager",
+            SimpleNamespace(capabilities=_TMUX_CAPS),
+        )
+
+        windows = [_winref("@1", "zsh"), _winref("@2", "claude")]
+        await monitor._emit_unbound_window_events(windows, known_window_ids=set())
+
+        surfaced = {c.args[0].window_id for c in cb.call_args_list}
+        assert surfaced == {"@1", "@2"}
+
+    async def test_herdr_surfaces_only_agent_panes(
+        self, monitor: SessionMonitor, wired, monkeypatch
+    ) -> None:
+        cb = AsyncMock(spec=lambda event: None)
+        monitor.set_new_window_callback(cb)
+        monkeypatch.setattr(
+            "ccgram.session_monitor.tmux_manager",
+            SimpleNamespace(capabilities=_HERDR_CAPS),
+        )
+
+        # w2:p1 + w2:p2 are agent panes (a tab split); w3:p1 is a bare shell.
+        windows = [
+            _winref("w2:p1", "claude"),
+            _winref("w2:p2", "claude"),
+            _winref("w3:p1", ""),
+        ]
+        await monitor._emit_unbound_window_events(windows, known_window_ids=set())
+
+        surfaced = {c.args[0].window_id for c in cb.call_args_list}
+        assert surfaced == {"w2:p1", "w2:p2"}
+
+    async def test_skips_known_and_bound_windows(
+        self, monitor: SessionMonitor, wired, monkeypatch
+    ) -> None:
+        thread_router.bind_thread(100, 1, "w2:p2")
+        cb = AsyncMock(spec=lambda event: None)
+        monitor.set_new_window_callback(cb)
+        monkeypatch.setattr(
+            "ccgram.session_monitor.tmux_manager",
+            SimpleNamespace(capabilities=_HERDR_CAPS),
+        )
+
+        windows = [
+            _winref("w2:p1", "claude"),  # already in session_map (known)
+            _winref("w2:p2", "claude"),  # already bound to a topic
+            _winref("w2:p3", "claude"),  # genuinely new → surfaces
+        ]
+        await monitor._emit_unbound_window_events(windows, known_window_ids={"w2:p1"})
+
+        surfaced = {c.args[0].window_id for c in cb.call_args_list}
+        assert surfaced == {"w2:p3"}
 
 
 class TestPerWindowProviderResolution:

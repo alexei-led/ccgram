@@ -224,11 +224,11 @@ Whole-plan commands (repo Makefile targets):
 - Fitness gate: F1 keeps topic handlers off the concrete backend; routing covered by unit tests.
 - Verification: unit tests for pane→topic routing and session-id binding; with herdr running, integration test: two panes → two topics with independent streams.
 - Manual checks: split a herdr tab into two agents → confirm two topics, no stream cross-talk.
-- [ ] route each herdr agent pane to its own topic, bound by agent session id
-- [ ] surface newly-detected agent panes (including tab splits) as new topics
-- [ ] keep the tmux topic flow unchanged (gate on capabilities, not backend name)
-- [ ] write tests for pane→topic routing and session-id binding
-- [ ] run project tests (`make test`) - must pass before next task
+- [x] route each herdr agent pane to its own topic, bound by agent session id
+- [x] surface newly-detected agent panes (including tab splits) as new topics
+- [x] keep the tmux topic flow unchanged (gate on capabilities, not backend name)
+- [x] write tests for pane→topic routing and session-id binding
+- [x] run project tests (`make test`) - must pass before next task
 
 ### Task 11: Adaptive topic prefix and cwd→workspace creation
 
