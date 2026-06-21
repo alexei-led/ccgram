@@ -100,10 +100,12 @@ async def _detect_and_setup_provider(
     # Lazy: providers package heavy bootstrap
     from ...providers import detect_provider_from_pane
 
-    detected = (
-        await detect_provider_from_pane(pane_current_command, window_id=window_id)
-        if pane_current_command
-        else ""
+    # Pass through even when the command is empty: herdr leaves
+    # pane_current_command empty for a bare shell pane, and
+    # detect_provider_from_pane consults the foreground process via window_id
+    # to classify it (e.g. as "shell"). tmux always reports a command.
+    detected = await detect_provider_from_pane(
+        pane_current_command or "", window_id=window_id
     )
     if detected:
         session_manager.set_window_provider(window_id, detected)

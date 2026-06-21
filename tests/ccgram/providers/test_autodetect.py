@@ -71,6 +71,27 @@ class TestDetectProviderFromPane:
         assert result == ""
         mock_mux.foreground.assert_awaited_once_with("@0")
 
+    async def test_empty_command_classifies_shell_via_foreground(self) -> None:
+        # herdr reports no pane_current_command for a bare shell pane; the
+        # foreground argv must still classify it as a shell so binding/adopting
+        # the pane sets the shell provider.
+        mock_mux = MagicMock()
+        mock_mux.foreground = AsyncMock(
+            return_value=ForegroundInfo(pid=4242, pgid=4242, argv=["-fish"], cwd="/tmp")
+        )
+        with patch("ccgram.multiplexer.multiplexer", mock_mux):
+            result = await detect_provider_from_pane("", window_id="@7")
+        assert result == "shell"
+        mock_mux.foreground.assert_awaited_once_with("@7")
+
+    async def test_empty_command_without_window_skips_foreground(self) -> None:
+        mock_mux = MagicMock()
+        mock_mux.foreground = AsyncMock()
+        with patch("ccgram.multiplexer.multiplexer", mock_mux):
+            result = await detect_provider_from_pane("", window_id="")
+        assert result == ""
+        mock_mux.foreground.assert_not_called()
+
 
 class TestDetectProviderFromCommand:
     @pytest.fixture(autouse=True)

@@ -124,6 +124,19 @@ _SCROLLBACK_LINES = 200
 _TRUNCATION_NOTICE = "… [earlier output truncated]"
 
 
+def _passive_scrollback_lines() -> int:
+    """Scrollback depth to request for the passive monitor.
+
+    Capped backends (herdr caps ``read`` at 1000 lines) get the full cap so a
+    command's echo stays inside the readable window for as long as the backend
+    allows — a 200-line request would drop the echo (and thus all output) for
+    any command longer than ~200 lines that herdr could still return. Uncapped
+    backends (tmux) keep the lighter default.
+    """
+    cap = tmux_manager.capabilities.read_max_lines
+    return cap if cap is not None else _SCROLLBACK_LINES
+
+
 async def _capture_with_scrollback(
     window_id: str, history: int = _SCROLLBACK_LINES
 ) -> CaptureResult | None:
@@ -169,6 +182,9 @@ class _ShellMonitorState:
     msg_id: int | None = None  # Telegram message ID for in-place editing
     last_output: str = ""  # last relayed output text
     exit_code_sent: bool = False  # already showed error indicator for this command
+    tracked_done: bool = (
+        False  # current command's completion (exit code) already relayed
+    )
     telegram_command: str = ""  # command sent via Telegram (for error suggestions)
     telegram_user_id: int = 0
     telegram_thread_id: int = 0
@@ -290,6 +306,112 @@ def _extract_passive_output(text: str) -> _PassiveOutput | None:
 
     # No bare prompt — check for in-progress command
     return _find_in_progress(lines)
+
+
+def _truncated_tail_output(text: str) -> _PassiveOutput | None:
+    """Build truncated output when a completed command's echo scrolled beyond
+    the backend's readable history.
+
+    Reached only when ``_extract_passive_output`` found no command echo, so no
+    prompt-with-command exists in the captured window: the running command's
+    echo fell outside it. The capture still ends in a completed-command bare
+    prompt, so everything above that prompt is the command's visible tail.
+    Relay it (the caller prepends ``_TRUNCATION_NOTICE``) instead of dropping
+    the output entirely.
+
+    Returns ``None`` when there is no completed prompt (in-progress) or nothing
+    but prompts above it (genuinely idle), so the caller relays nothing then.
+    """
+    lines = text.rstrip().splitlines()
+    tail_start = max(0, len(lines) - 10)
+    end_idx = None
+    exit_code = None
+    for i in range(len(lines) - 1, tail_start - 1, -1):
+        m = match_prompt(lines[i])
+        if m and not m.trailing_text.strip():
+            end_idx = i
+            exit_code = m.exit_code
+            break
+    if end_idx is None:
+        return None
+
+    output_lines = lines[:end_idx]
+    # A stale bare prompt from a prior command may sit at the top of the
+    # readable window; drop leading prompt lines so only real output remains.
+    while output_lines:
+        m = match_prompt(output_lines[0])
+        if m and not m.trailing_text.strip():
+            output_lines.pop(0)
+        else:
+            break
+    tail = "\n".join(output_lines).rstrip()
+    if not tail.strip():
+        return None
+    return _PassiveOutput(
+        command_echo="",
+        echo_index=-1,
+        text=tail,
+        exit_code=exit_code,
+    )
+
+
+def _extract_passive_with_truncation(
+    capture: CaptureResult, requested: int, *, allow_echoless_recovery: bool
+) -> tuple[_PassiveOutput, bool] | None:
+    """Extract passive output from a capture, recovering an over-long tail.
+
+    Returns ``(passive, truncated)`` or ``None`` when there is nothing to relay
+    (idle / no markers). On capped backends (herdr) a command whose echo
+    scrolled beyond the full readable window is recovered via
+    ``_truncated_tail_output`` and flagged truncated; uncapped backends (tmux,
+    ``read_max_lines`` is ``None``) keep the echo-anchored behavior and never
+    relay an ambiguous tail.
+
+    ``allow_echoless_recovery`` gates that echoless tail: it is only honored
+    when the monitor has evidence a command actually ran in the current prompt
+    session. Without it, stale scrollback left above a freshly set-up prompt
+    (an existing shell bound with ``clear=False``) is structurally identical to
+    a truncated long command and would be relayed as new output.
+    """
+    passive = _extract_passive_output(capture.text)
+    if passive is not None:
+        return passive, capture.truncated
+
+    if not allow_echoless_recovery:
+        return None
+
+    cap = tmux_manager.capabilities.read_max_lines
+    if cap is not None and requested >= cap:
+        tail = _truncated_tail_output(capture.text)
+        if tail is not None:
+            return tail, True
+    return None
+
+
+def _apply_echoless_identity(
+    state: _ShellMonitorState, passive: _PassiveOutput
+) -> None:
+    """Give an echoless recovered tail a stable command discriminator.
+
+    ``_truncated_tail_output`` returns no echo (``command_echo=""``,
+    ``echo_index=-1``), so the caller's state comparison can't tell one echoless
+    command from the next. Synthesize one in place:
+      - tail of the command still on screen (not yet completed) -> reuse its
+        tracked identity so it edits the existing message, not a duplicate;
+      - a fresh echoless command -> key on ``telegram_generation`` (the
+        per-command token), so consecutive Telegram commands each get their own
+        message instead of the second overwriting the first.
+
+    Two consecutive echoless *typed* commands still collide — no per-command
+    token exists for them, so they are unrecoverable without a visible echo.
+    """
+    if passive.echo_index != -1 or passive.command_echo:
+        return
+    if not state.tracked_done and (state.last_command_echo or state.msg_id is not None):
+        passive.command_echo = state.last_command_echo
+        passive.echo_index = state.last_echo_index
+    else:
+        passive.echo_index = state.telegram_generation
 
 
 def mark_telegram_command(
@@ -460,6 +582,7 @@ def _reset_monitor(state: _ShellMonitorState) -> None:
     state.msg_id = None
     state.last_output = ""
     state.exit_code_sent = False
+    state.tracked_done = False
 
 
 def _has_markers_in_tail(rendered_text: str) -> bool:
@@ -499,21 +622,35 @@ async def check_passive_shell_output(
             _reset_monitor(state)
         return
 
-    # Capture with scrollback for reliable command echo finding
-    capture = await _capture_with_scrollback(window_id)
+    # Capture with scrollback for reliable command echo finding. On capped
+    # backends (herdr) request the full readable history so the echo stays in
+    # the window for as long as the backend allows.
+    requested = _passive_scrollback_lines()
+    capture = await _capture_with_scrollback(window_id, history=requested)
     if capture is None or not capture.text:
         return
 
-    passive = _extract_passive_output(capture.text)
-    if passive is None:
+    # Echoless tail recovery is only safe when a command actually ran in this
+    # prompt session: a Telegram-issued command, or an echo/output the monitor
+    # already tracked. Fresh state (existing shell just bound, provider switch)
+    # has none, so stale scrollback above the new prompt is not relayed.
+    command_in_flight = bool(
+        state.last_command_echo or state.msg_id is not None or state.telegram_command
+    )
+    extracted = _extract_passive_with_truncation(
+        capture, requested, allow_echoless_recovery=command_in_flight
+    )
+    if extracted is None:
         if not (state.last_command_echo and state.msg_id is not None):
             _reset_monitor(state)
         return
+    passive, truncated = extracted
+    _apply_echoless_identity(state, passive)
 
     # The backend clamped the scrollback (herdr's 1000-line cap) and dropped
     # the tail: flag it so the relayed output is not read as the full command
     # output. The notice rides the relayed text and stays stable across polls.
-    if capture.truncated and passive.text:
+    if truncated and passive.text:
         passive.text = f"{_TRUNCATION_NOTICE}\n{passive.text}"
 
     if (
@@ -525,8 +662,13 @@ async def check_passive_shell_output(
         state.msg_id = None
         state.last_output = ""
         state.exit_code_sent = False
+        state.tracked_done = False
 
     await _relay_passive_output(client, user_id, thread_id, state, passive, window_id)
+    # A completed command's exit code has now been relayed; an echoless tail
+    # seen after this marks a new command, not a continuation of this one.
+    if passive.exit_code is not None:
+        state.tracked_done = True
 
 
 def _command_from_echo(echo: str) -> str:

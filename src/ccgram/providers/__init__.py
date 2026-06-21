@@ -227,34 +227,39 @@ async def detect_provider_from_pane(
     """Detect provider using fast path + foreground-process inspection.
 
     1. Fast path: basename match via ``detect_provider_from_command()``
-    2. If command is a JS runtime (node/bun/npx) and a ``window_id`` is
-       available, fall back to the multiplexer's foreground process
-       (``Multiplexer.foreground``) with PGID cache.  The backend owns how
-       the foreground process is read (tmux ``ps -t``; herdr ``process-info``).
+    2. When the command alone is inconclusive — a JS runtime (node/bun/npx)
+       hiding the real CLI, *or* empty (herdr reports no
+       ``pane_current_command`` for a bare shell pane; tmux always reports
+       one) — and a ``window_id`` is available, fall back to the multiplexer's
+       foreground process (``Multiplexer.foreground``) with PGID cache.  The
+       backend owns how the foreground process is read (tmux ``ps -t``; herdr
+       ``process-info``).
     """
     detected = detect_provider_from_command(pane_current_command)
     if detected:
         return detected
 
-    cmd = pane_current_command.strip().lower()
-    if not cmd or not window_id:
+    if not window_id:
         return ""
-    basename = os.path.basename(cmd.split()[0])
-    if basename in JS_RUNTIMES:
-        # Lazy: process_detection pulls the providers internals; only worth
-        # loading on the JS-runtime fallback.
-        from .process_detection import detect_provider_cached
 
-        # Lazy: multiplexer proxy resolves the active backend; foreground()
-        # reads the pane's foreground process via the seam.
-        from ..multiplexer import multiplexer
+    cmd = pane_current_command.strip().lower()
+    basename = os.path.basename(cmd.split()[0]) if cmd else ""
+    # A non-empty, non-runtime command already failed the fast path and won't
+    # be clarified by the foreground process, so stop here. Empty commands fall
+    # through (herdr bare shell) so the foreground argv can classify them.
+    if cmd and basename not in JS_RUNTIMES:
+        return ""
 
-        fg = await multiplexer.foreground(window_id)
-        detected = await detect_provider_cached(window_id, fg)
-        if detected:
-            return detected
+    # Lazy: process_detection pulls the providers internals; only worth
+    # loading on the foreground fallback.
+    from .process_detection import detect_provider_cached
 
-    return ""
+    # Lazy: multiplexer proxy resolves the active backend; foreground()
+    # reads the pane's foreground process via the seam.
+    from ..multiplexer import multiplexer
+
+    fg = await multiplexer.foreground(window_id)
+    return await detect_provider_cached(window_id, fg)
 
 
 def resolve_launch_command(

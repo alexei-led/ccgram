@@ -286,6 +286,45 @@ class TestBindProviderDetection:
         call_args = mock_ensure.call_args
         assert call_args[0] == ("@5", "external_bind")
 
+    async def test_bind_bare_herdr_shell_still_detects_via_foreground(self) -> None:
+        # herdr leaves pane_current_command empty for a bare shell pane; the
+        # bind path must still run detection (which consults the foreground
+        # process via window_id) instead of skipping it.
+        user_data = {UNBOUND_WINDOWS_KEY: ["@5"], PENDING_THREAD_ID: 42}
+        query, update, context = _make_query_update_context(user_data=user_data)
+
+        mock_window = MagicMock()
+        mock_window.window_name = "bare-shell"
+        mock_window.pane_current_command = ""
+
+        with (
+            patch("ccgram.handlers.topics.window_callbacks.session_manager") as mock_sm,
+            patch("ccgram.handlers.topics.window_callbacks.thread_router") as mock_tr,
+            patch(
+                "ccgram.multiplexer.tmux.tmux_manager.find_window_by_id",
+                new_callable=AsyncMock,
+                return_value=mock_window,
+            ),
+            patch("ccgram.handlers.topics.window_callbacks.safe_edit"),
+            patch("ccgram.handlers.topics.window_callbacks.format_topic_name_for_mode"),
+            patch(
+                "ccgram.providers.detect_provider_from_pane",
+                new_callable=AsyncMock,
+                return_value="shell",
+            ) as mock_detect,
+            patch(
+                "ccgram.handlers.shell.shell_prompt_orchestrator.ensure_setup",
+                new_callable=AsyncMock,
+            ) as mock_ensure,
+        ):
+            mock_tr.resolve_chat_id.return_value = -100
+            mock_sm.get_approval_mode.return_value = "normal"
+            await handle_window_callback(query, 100, f"{CB_WIN_BIND}0", update, context)
+
+        mock_detect.assert_awaited_once_with("", window_id="@5")
+        mock_sm.set_window_provider.assert_called_once_with("@5", "shell")
+        mock_ensure.assert_awaited_once()
+
     async def test_bind_claude_window_does_not_offer_prompt_setup(self) -> None:
         user_data = {UNBOUND_WINDOWS_KEY: ["@5"], PENDING_THREAD_ID: 42}
         query, update, context = _make_query_update_context(user_data=user_data)
