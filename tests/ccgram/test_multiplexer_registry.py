@@ -45,16 +45,24 @@ class TestRegistryResolution:
     def test_tmux_registered(self) -> None:
         assert "tmux" in multiplexer_names()
 
+    def test_herdr_registered(self) -> None:
+        assert "herdr" in multiplexer_names()
+
     def test_get_tmux_returns_tmux_backend(self) -> None:
         backend = get_multiplexer("tmux")
         assert backend.capabilities.name == "tmux"
+
+    def test_get_herdr_returns_herdr_backend(self) -> None:
+        # Construction is I/O-free, so this resolves without a running herdr.
+        backend = get_multiplexer("herdr")
+        assert backend.capabilities.name == "herdr"
 
     def test_get_caches_one_instance_per_name(self) -> None:
         assert get_multiplexer("tmux") is get_multiplexer("tmux")
 
     def test_unknown_name_raises(self) -> None:
-        with pytest.raises(UnknownMultiplexerError, match="herdr"):
-            get_multiplexer("herdr")
+        with pytest.raises(UnknownMultiplexerError, match="screen"):
+            get_multiplexer("screen")
 
     def test_unknown_name_lists_available(self) -> None:
         with pytest.raises(UnknownMultiplexerError, match="tmux"):

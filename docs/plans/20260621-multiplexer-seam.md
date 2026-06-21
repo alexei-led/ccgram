@@ -176,12 +176,12 @@ Whole-plan commands (repo Makefile targets):
 - Fitness gate: F2 contract test now runs the herdr leg when a socket is present; F1 keeps `polling/**` and handlers off `multiplexer.herdr`.
 - Verification: `uv run pytest tests/ccgram/test_herdr_backend.py -v`; with a running herdr: `uv run pytest tests/integration/ -m "herdr" -v`.
 - Manual checks: drive a real agent under `CCGRAM_MULTIPLEXER=herdr` — create window, send, capture, kill; confirm `foreground()` comes from `pane process-info` (no `ps -t`), scrollback clamps at 1000 lines, protocol-version mismatch refuses cleanly.
-- [ ] implement the `Multiplexer` methods over the herdr socket/CLI (`pane get/list/read/run/send-text/send-keys/close`, `tab`/`workspace` create/rename, `pane layout`, `pane process-info`)
-- [ ] map `wN:pN` ↔ `window_id`, parse JSON fixtures into neutral value types, clamp scrollback to `read_max_lines`
-- [ ] check and pin the herdr `protocol` version from `herdr status`; refuse on mismatch
-- [ ] register herdr in `registry.py` and enable the herdr contract-test leg
-- [ ] write unit tests (fixtures) + boundary tests (socket down, bad id, truncation)
-- [ ] run project tests (`make test`) - must pass before next task
+- [x] implement the `Multiplexer` methods over the herdr socket/CLI (`pane get/list/read/run/send-text/send-keys/close`, `tab`/`workspace` create/rename, `pane layout`, `pane process-info`)
+- [x] map `wN:pN` ↔ `window_id`, parse JSON fixtures into neutral value types, clamp scrollback to `read_max_lines`
+- [x] check and pin the herdr `protocol` version from `herdr status`; refuse on mismatch
+- [x] register herdr in `registry.py` and enable the herdr contract-test leg
+- [x] write unit tests (fixtures) + boundary tests (socket down, bad id, truncation)
+- [x] run project tests (`make test`) - must pass before next task
 
 ### Task 8: Extend restart re-resolution for non-stable ids (herdr)
 

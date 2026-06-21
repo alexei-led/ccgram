@@ -96,3 +96,19 @@ def test_tmux_capability_values() -> None:
     assert caps.read_max_lines is None
     assert caps.self_identify_env == "TMUX_PANE"
     assert caps.supports_event_stream is False
+
+
+def test_herdr_capability_values() -> None:
+    """herdr capability flags are pinned (design "MultiplexerCapabilities").
+
+    Resolving the backend touches no socket (the constructor is I/O-free), so
+    this runs in the unit suite even without a running herdr.
+    """
+    caps = get_multiplexer("herdr").capabilities
+    assert caps.name == "herdr"
+    assert caps.ids_stable_across_restart is False
+    assert caps.exposes_pane_tty is False
+    assert caps.native_agent_status is True
+    assert caps.read_max_lines == 1000
+    assert caps.self_identify_env == "HERDR_PANE_ID"
+    assert caps.supports_event_stream is True

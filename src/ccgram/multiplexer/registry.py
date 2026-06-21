@@ -6,8 +6,8 @@ their factory so importing this module pulls in no backend I/O library
 (``libtmux``, herdr socket client) — the core stays I/O-free.
 
 The "tmux" backend reuses the existing ``multiplexer.tmux.tmux_manager``
-singleton so there is exactly one tmux server connection. "herdr" is added in
-Task 7.
+singleton so there is exactly one tmux server connection. The "herdr" backend
+(Task 7) is constructed lazily and is I/O-free until its first real call.
 """
 
 from __future__ import annotations
@@ -34,8 +34,17 @@ def _make_tmux() -> Multiplexer:
     return tmux_manager
 
 
+def _make_herdr() -> Multiplexer:
+    # Lazy: keep the herdr backend out of the registry's import-time deps so
+    # importing the seam stays I/O-free; construction itself touches no socket.
+    from ccgram.multiplexer.herdr import HerdrManager
+
+    return HerdrManager()
+
+
 _FACTORIES: dict[str, Callable[[], Multiplexer]] = {
     "tmux": _make_tmux,
+    "herdr": _make_herdr,
 }
 
 _instances: dict[str, Multiplexer] = {}

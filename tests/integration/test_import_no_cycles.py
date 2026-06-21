@@ -69,6 +69,7 @@ def test_multiplexer_package_is_covered() -> None:
         "ccgram.multiplexer",
         "ccgram.multiplexer.base",
         "ccgram.multiplexer.tmux",
+        "ccgram.multiplexer.herdr",
         "ccgram.multiplexer.registry",
         "ccgram.multiplexer.vim_state",
         "ccgram.multiplexer.window_ops",
