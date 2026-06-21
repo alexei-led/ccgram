@@ -648,6 +648,13 @@ async def test_ensure_session_raises_on_non_json_status() -> None:
         await _manager(fake).ensure_session()
 
 
+async def test_ensure_session_raises_on_non_object_json_status() -> None:
+    # Valid JSON of the wrong shape (a list) must not crash with AttributeError.
+    fake = FakeHerdr().on("status", out="[]")
+    with pytest.raises(HerdrError, match="non-object JSON"):
+        await _manager(fake).ensure_session()
+
+
 async def test_ensure_session_refuses_protocol_mismatch() -> None:
     fake = FakeHerdr().on("status", out=_status_json(protocol=99))
     with pytest.raises(HerdrProtocolError, match="99"):

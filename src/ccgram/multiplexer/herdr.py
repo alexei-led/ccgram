@@ -316,6 +316,8 @@ class HerdrManager:
             status = json.loads(out)
         except (json.JSONDecodeError, ValueError) as exc:
             raise HerdrError("herdr status returned non-JSON") from exc
+        if not isinstance(status, dict):
+            raise HerdrError("herdr status returned non-object JSON")
         server = status.get("server") or {}
         if not server.get("running"):
             raise HerdrError("herdr server is not running")
