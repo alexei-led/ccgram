@@ -214,6 +214,8 @@ Leave `CCGRAM_WHISPER_PROVIDER` empty (the default) to disable voice transcripti
 
 ## Tmux Session Auto-Detection
 
+> This section applies when `CCGRAM_MULTIPLEXER=tmux` (the default). The herdr backend uses its own workspace/tab model and does not use a tmux session name.
+
 When ccgram starts inside an existing tmux session, it auto-detects the session name and attaches to it instead of creating a new `ccgram` session. This is useful when you already have a tmux session with agent windows.
 
 **How it works:**
@@ -232,6 +234,43 @@ When ccgram starts inside an existing tmux session, it auto-detects the session 
 | Outside tmux, `--tmux-session=X` | Creates/attaches `X` + `__main__` window            |
 | Inside tmux, no flags            | Auto-detects session, skips own window, no creation |
 | Inside tmux, `--tmux-session=X`  | Overrides auto-detect, uses `X`                     |
+
+## Herdr Backend (Alternative Multiplexer)
+
+ccgram talks to the terminal multiplexer through a backend-neutral seam. tmux is the default; [herdr](https://github.com/ogulcancelik/herdr) is an opt-in alternative selected with `CCGRAM_MULTIPLEXER=herdr`. Everything else — topics, providers, hooks, status, recovery — works the same; only the multiplexer underneath changes.
+
+### Setup
+
+1. **Install herdr** and make sure the `herdr` binary is in `PATH`. Start its server so the control socket exists.
+2. **Select the backend:** set `CCGRAM_MULTIPLEXER=herdr` (env var or `.env`). The default is `tmux`.
+3. **Socket path (optional):** ccgram reads `$HERDR_SOCKET_PATH` to find the server. Leave it unset to use herdr's default socket; set it to target a specific server.
+4. **Install the ccgram hook as usual:** `ccgram hook --install`. The same Claude Code hook works on both backends — it resolves which window fired from `$HERDR_PANE_ID` (tmux uses `$TMUX_PANE`), so no herdr-specific hook step is required.
+5. **Verify:** `ccgram doctor`. When `CCGRAM_MULTIPLEXER=herdr`, doctor checks the `herdr` binary, socket reachability, the pinned protocol version, and that ccgram's and herdr's own Claude hooks coexist in `settings.json` (instead of the tmux checks).
+
+```bash
+# .env or shell environment
+CCGRAM_MULTIPLEXER=herdr
+# HERDR_SOCKET_PATH=/path/to/herdr.sock   # optional; defaults to herdr's socket
+```
+
+### Protocol version pinning
+
+ccgram pins the herdr socket protocol version it was built against (herdr v0.7.0 speaks protocol 14). On the first call it reads `herdr status` and **refuses to run on a mismatch** rather than risk misparsing a changed JSON shape. If you upgrade herdr and see a protocol error, the ccgram build needs to be updated to match the new protocol.
+
+### Differences from tmux
+
+herdr advertises its own capabilities through the seam; the behavioral consequences a user sees:
+
+| Aspect                    | tmux                            | herdr                                                                      |
+| ------------------------- | ------------------------------- | -------------------------------------------------------------------------- |
+| Topic = window            | every window is eligible        | only **agent panes** surface as topics — a bare shell pane does not        |
+| Foreground detection      | `ps -t <tty>`                   | `pane process-info` (no tty)                                               |
+| Scrollback capture        | unbounded                       | clamped to **1000 lines**; longer output is flagged as truncated           |
+| Agent status              | inferred from terminal scraping | native (herdr reports agent status directly)                               |
+| Window IDs across restart | stable                          | re-minted on a herdr **server** restart — ccgram re-resolves by session id |
+| Topic labels              | window name                     | adaptive `"<workspace> ▸ <agent>"` (`/<tab>` appended only when split)     |
+
+Creating sessions from the terminal on herdr is covered in [Creating Sessions from the Terminal](#creating-sessions-from-the-terminal).
 
 ## Auto-Close Behavior
 
@@ -289,7 +328,9 @@ Without `CCGRAM_GROUP_ID`, a single instance processes all groups (the default).
 
 ## Creating Sessions from the Terminal
 
-Besides creating sessions through Telegram topics, you can create tmux windows directly:
+Besides creating sessions through Telegram topics, you can create windows directly in your terminal multiplexer.
+
+### tmux (default)
 
 ```bash
 # Attach to the ccgram tmux session
@@ -302,7 +343,15 @@ tmux new-window -n myproject -c ~/Code/myproject
 claude     # or: codex, gemini, pi
 ```
 
-The window must be in the ccgram tmux session (configurable via `TMUX_SESSION_NAME`). For Claude, the SessionStart hook registers it automatically. For Codex, Gemini, and Pi, CCGram auto-detects the provider from the running process name and discovers the session from transcript files on disk. In all cases, the bot creates a matching Telegram topic.
+The window must be in the ccgram tmux session (configurable via `TMUX_SESSION_NAME`).
+
+### herdr (`CCGRAM_MULTIPLEXER=herdr`)
+
+Open a new herdr tab in the appropriate workspace, then start any supported agent CLI. CCGram discovers agent panes automatically; bare shell panes are not surfaced as topics (only active agent panes are).
+
+### Both backends
+
+For Claude, the SessionStart hook registers the session automatically. For Codex, Gemini, and Pi, CCGram auto-detects the provider from the running process name and discovers the session from transcript files on disk. In all cases, the bot creates a matching Telegram topic.
 
 This works even on a fresh instance with no existing topic bindings (cold-start).
 
@@ -318,7 +367,7 @@ The buttons shown adapt to each provider's capabilities. Claude, Codex, Gemini, 
 
 ## Manual Provider Override (`/agent`)
 
-`/agent` (alias `/provider`) fixes a mis-tagged window. Auto-detection (`detect_provider_from_command` + JS-runtime `ps -t` fallback) returns empty for custom wrappers like `ralphex`, so the window can keep its prior provider tag — SessionMonitor then polls a stale transcript, `/last` returns old text, and tool calls/replies stop showing up.
+`/agent` (alias `/provider`) fixes a mis-tagged window. Auto-detection (`detect_provider_from_command` + JS-runtime foreground-process fallback via the multiplexer seam) returns empty for custom wrappers like `ralphex`, so the window can keep its prior provider tag — SessionMonitor then polls a stale transcript, `/last` returns old text, and tool calls/replies stop showing up.
 
 Forms:
 
