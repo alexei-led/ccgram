@@ -150,15 +150,38 @@ def resolve_stale_ids(
     thread_bindings: dict,
     user_window_offsets: dict,
     window_display_names: dict,
+    *,
+    ids_stable: bool = True,
+    live_session_ids: dict[str, str] | None = None,
 ) -> bool:
-    """Re-resolve persisted window IDs against live tmux windows.
+    """Re-resolve persisted window IDs against live multiplexer windows.
 
     Mutates all dicts in-place. Returns True if any changes were made.
 
-    Handles two cases:
-    1. Old-format migration: window_name keys -> window_id keys
-    2. Stale IDs: window_id no longer exists but display name matches a live window
+    ``ids_stable`` gates the strategy on the backend capability
+    ``ids_stable_across_restart`` (never the backend name):
+
+    - True (tmux): window IDs survive a restart, so re-resolution matches a
+      stale ID's display name against a live window. Handles two cases —
+      old-format migration (window_name keys -> window_id keys) and stale IDs
+      (window_id gone but display name matches a live window).
+    - False (herdr): a server restart re-mints pane IDs, so display names are
+      unreliable (tab labels collide across team splits). Re-resolution anchors
+      on the durable agent ``session_id`` instead: a persisted state's stale ID
+      is re-mapped to the live window currently running the same session
+      (``live_session_ids``, from the hook-written session_map). No match keeps
+      the entry as a dead window for /restore recovery.
     """
+    if not ids_stable:
+        return _resolve_by_session_id(
+            live_windows,
+            window_states,
+            thread_bindings,
+            user_window_offsets,
+            window_display_names,
+            live_session_ids or {},
+        )
+
     live_by_name: dict[str, str] = {w.window_name: w.window_id for w in live_windows}
     live_ids: set[str] = {w.window_id for w in live_windows}
 
@@ -171,4 +194,106 @@ def resolve_stale_ids(
     changed |= _resolve_offsets(
         user_window_offsets, window_display_names, live_by_name, live_ids
     )
+    return changed
+
+
+def _build_session_remap(
+    live_windows: list[LiveWindow],
+    window_states: dict,
+    live_session_ids: dict[str, str],
+) -> dict[str, str]:
+    """Map each stale persisted window ID to its current live ID via session id.
+
+    A persisted state with ``session_id`` S is re-mapped to the live window
+    whose current session_map entry also carries S. Stale (pre-restart) ids and
+    ids that are still live are skipped, so the result holds only genuine
+    relocations (``old_id != new_id``).
+    """
+    live_ids: set[str] = {w.window_id for w in live_windows}
+    by_session: dict[str, str] = {}
+    for wid, sid in live_session_ids.items():
+        if sid and wid in live_ids:
+            by_session.setdefault(sid, wid)
+
+    remap: dict[str, str] = {}
+    for old_id, ws in window_states.items():
+        if old_id in live_ids:
+            continue
+        sid = getattr(ws, "session_id", "") or ""
+        new_id = by_session.get(sid) if sid else None
+        if new_id and new_id != old_id:
+            remap[old_id] = new_id
+    return remap
+
+
+def _remap_window_states(
+    window_states: dict, window_display_names: dict, remap: dict[str, str]
+) -> bool:
+    """Re-key window_states (and their display names) per ``remap``."""
+    changed = False
+    new_states: dict = {}
+    for key, ws in window_states.items():
+        new_id = remap.get(key)
+        if new_id:
+            logger.debug(
+                "Re-resolved herdr window_id %s -> %s (session match)", key, new_id
+            )
+            new_states[new_id] = ws
+            display = window_display_names.pop(key, None)
+            if display is not None:
+                window_display_names[new_id] = display
+            changed = True
+        else:
+            new_states[key] = ws
+    window_states.clear()
+    window_states.update(new_states)
+    return changed
+
+
+def _remap_thread_bindings(thread_bindings: dict, remap: dict[str, str]) -> bool:
+    """Re-point thread bindings to the new pane so bound topics re-attach."""
+    changed = False
+    for bindings in thread_bindings.values():
+        for tid, val in list(bindings.items()):
+            new_id = remap.get(val)
+            if new_id:
+                logger.debug("Re-resolved herdr thread binding %s -> %s", val, new_id)
+                bindings[tid] = new_id
+                changed = True
+    return changed
+
+
+def _remap_offsets(user_window_offsets: dict, remap: dict[str, str]) -> bool:
+    """Re-key per-user read offsets per ``remap``."""
+    changed = False
+    for offsets in user_window_offsets.values():
+        for key in list(offsets):
+            new_id = remap.get(key)
+            if new_id:
+                offsets[new_id] = offsets.pop(key)
+                changed = True
+    return changed
+
+
+def _resolve_by_session_id(
+    live_windows: list[LiveWindow],
+    window_states: dict,
+    thread_bindings: dict,
+    user_window_offsets: dict,
+    window_display_names: dict,
+    live_session_ids: dict[str, str],
+) -> bool:
+    """Re-resolve stale IDs by agent session id (non-stable-id backends).
+
+    Used when ``ids_stable_across_restart`` is False. Unlike the tmux path this
+    does not consult display names or ``is_window_id`` (herdr ids are ``wN:pM``,
+    not ``@N``) and it re-points thread bindings to the new pane so a bound
+    topic re-attaches to its agent after a herdr restart.
+    """
+    remap = _build_session_remap(live_windows, window_states, live_session_ids)
+    if not remap:
+        return False
+    changed = _remap_window_states(window_states, window_display_names, remap)
+    changed |= _remap_thread_bindings(thread_bindings, remap)
+    changed |= _remap_offsets(user_window_offsets, remap)
     return changed

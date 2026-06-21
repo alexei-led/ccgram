@@ -193,11 +193,11 @@ Whole-plan commands (repo Makefile targets):
 - Fitness gate: none archfit; covered by unit tests on the re-resolution branch.
 - Verification: unit test simulating a herdr restart (changed pane ids, stable session id) → correct re-map; `make test`.
 - Manual checks: restart a real herdr server and confirm a bound topic re-attaches to its agent.
-- [ ] branch `resolve_stale_ids` on `caps.ids_stable_across_restart`
-- [ ] add the herdr session-id → live-pane re-resolution using `agent_session`
-- [ ] keep the tmux display-name path unchanged
-- [ ] write tests for the herdr restart re-map and the tmux no-op
-- [ ] run project tests (`make test`) - must pass before next task
+- [x] branch `resolve_stale_ids` on `caps.ids_stable_across_restart`
+- [x] add the herdr session-id → live-pane re-resolution using `agent_session` (joined via the hook-written session_map: live pane id → durable agent session id)
+- [x] keep the tmux display-name path unchanged
+- [x] write tests for the herdr restart re-map and the tmux no-op
+- [x] run project tests (`make test`) - must pass before next task
 
 ### Task 9: herdr-aware doctor and archfit re-shape (F5)
 

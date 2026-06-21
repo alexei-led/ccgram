@@ -75,6 +75,32 @@ async def read_session_map_raw() -> dict[str, Any] | None:
         return None
 
 
+def live_window_session_ids(
+    raw: dict[str, Any], live_window_ids: set[str]
+) -> dict[str, str]:
+    """Map each live window id to its session_id from a raw session_map.
+
+    Backend-neutral: a session_map key is ``<prefix>:<window_id>`` (e.g.
+    ``ccgram:@12`` for tmux, ``herdr:w2:p1`` for herdr, whose id itself contains
+    a colon), so this matches the key to a live window id by suffix rather than
+    splitting on ``:``. Only ids in ``live_window_ids`` are returned, so stale
+    pre-restart entries are ignored. Used by herdr restart re-resolution to join
+    persisted ``session_id`` -> current pane id (``window_resolver``).
+    """
+    result: dict[str, str] = {}
+    for key, info in raw.items():
+        if not isinstance(info, dict):
+            continue
+        sid = info.get("session_id", "")
+        if not sid:
+            continue
+        for wid in live_window_ids:
+            if key == wid or key.endswith(f":{wid}"):
+                result[wid] = sid
+                break
+    return result
+
+
 def _transcript_mtime(transcript_path: str) -> float | None:
     if not transcript_path:
         return None

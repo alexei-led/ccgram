@@ -25,6 +25,8 @@ from .config import config
 from .session_map import (
     SessionMapSync,
     install_session_map_sync,
+    live_window_session_ids,
+    read_session_map_raw,
     session_map_sync,
 )
 from .state_persistence import StatePersistence
@@ -206,12 +208,25 @@ class SessionManager:
             for w in windows
         ]
 
+        # Backends whose ids are not stable across a server restart (herdr)
+        # re-resolve by durable agent session id instead of display name. The
+        # live id -> session_id map comes from the hook-written session_map.
+        caps = tmux_manager.capabilities
+        live_session_ids: dict[str, str] | None = None
+        if not caps.ids_stable_across_restart:
+            raw = await read_session_map_raw() or {}
+            live_session_ids = live_window_session_ids(
+                raw, {w.window_id for w in windows}
+            )
+
         changed = _resolve(
             live,
             self.window_states,
             thread_router.thread_bindings,
             user_preferences.user_window_offsets,
             thread_router.window_display_names,
+            ids_stable=caps.ids_stable_across_restart,
+            live_session_ids=live_session_ids,
         )
 
         if changed:
