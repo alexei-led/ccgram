@@ -12,7 +12,10 @@ from __future__ import annotations
 import pytest
 
 from ccgram.multiplexer.base import MultiplexerCapabilities, WindowRef
-from ccgram.multiplexer.topic_mapping import is_agent_topic_window
+from ccgram.multiplexer.topic_mapping import (
+    format_agent_topic_prefix,
+    is_agent_topic_window,
+)
 from ccgram.session import SessionManager
 from ccgram.session_resolver import session_resolver
 from ccgram.thread_router import thread_router
@@ -81,6 +84,47 @@ class TestIsAgentTopicWindow:
         assert is_agent_topic_window(pane_a, HERDR_CAPS) is True
         assert is_agent_topic_window(pane_b, HERDR_CAPS) is True
         assert pane_a.window_id != pane_b.window_id
+
+
+class TestFormatAgentTopicPrefix:
+    @pytest.mark.parametrize(
+        ("workspace", "agent", "tab", "split", "expected"),
+        [
+            # Lone agent → "<workspace> ▸ <agent>", no "/tab".
+            ("ccgram", "claude", "feature", False, "ccgram ▸ claude"),
+            ("ccgram", "claude", "", False, "ccgram ▸ claude"),
+            # Split tab (agent team) → append "/<tab>" to distinguish members.
+            ("ccgram", "claude", "feature", True, "ccgram ▸ claude/feature"),
+            ("ccgram", "codex", "feature", True, "ccgram ▸ codex/feature"),
+            # A split with no tab label has nothing to append.
+            ("ccgram", "claude", "", True, "ccgram ▸ claude"),
+            ("", "claude", "feature", True, "claude/feature"),
+            # Missing parts degrade without a stray separator.
+            ("", "claude", "", False, "claude"),
+            ("ccgram", "", "", False, "ccgram"),
+            ("", "", "", False, ""),
+            # Whitespace is trimmed off every part.
+            (
+                "  ccgram  ",
+                "  claude  ",
+                "  feature  ",
+                True,
+                "ccgram ▸ claude/feature",
+            ),
+        ],
+    )
+    def test_renders_adaptive_prefix(
+        self, workspace: str, agent: str, tab: str, split: bool, expected: str
+    ) -> None:
+        assert format_agent_topic_prefix(workspace, agent, tab, split=split) == expected
+
+    def test_rename_changes_label_not_identity(self) -> None:
+        """Renaming the workspace re-renders the label; nothing else is a key."""
+        before = format_agent_topic_prefix("ccgram", "claude")
+        after = format_agent_topic_prefix("ccgram-v2", "claude")
+        assert before == "ccgram ▸ claude"
+        assert after == "ccgram-v2 ▸ claude"
+        assert before != after
 
 
 @pytest.fixture

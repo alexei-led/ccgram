@@ -44,6 +44,7 @@ from .base import (
     PaneInfo,
     WindowRef,
 )
+from .topic_mapping import format_agent_topic_prefix
 
 __all__ = [
     "HERDR_PROTOCOL_VERSION",
@@ -246,14 +247,51 @@ class HerdrManager:
             return ""
         return (result.get("tab") or {}).get("label", "") or ""
 
+    async def _workspace_labels(self) -> dict[str, str]:
+        """Map every ``workspace_id`` → its label (one ``workspace list`` call).
+
+        Empty when herdr exposes no workspace addressing (older server) — the
+        adaptive label then degrades to the agent name alone.
+        """
+        result = await self._call_json(["workspace", "list"])
+        if not result:
+            return {}
+        return {
+            w.get("workspace_id", ""): w.get("label", "")
+            for w in result.get("workspaces", [])
+            if w.get("workspace_id")
+        }
+
+    @staticmethod
+    def _adaptive_label(
+        pane: Mapping,
+        tab_labels: Mapping[str, str],
+        workspace_labels: Mapping[str, str],
+        pane_counts: Mapping[str, int],
+    ) -> str:
+        """Build a pane's adaptive topic label from the herdr label maps.
+
+        ``"<workspace> ▸ <agent>"`` (+ ``"/<tab>"`` when the pane's tab is
+        split). Agent label prefers ``display_agent`` over the bare ``agent``.
+        """
+        tab_id = pane.get("tab_id", "")
+        workspace = workspace_labels.get(pane.get("workspace_id", ""), "")
+        agent = pane.get("display_agent") or pane.get("agent", "")
+        split = pane_counts.get(tab_id, 1) > 1
+        return format_agent_topic_prefix(
+            workspace, agent, tab_labels.get(tab_id, ""), split=split
+        )
+
     @staticmethod
     def _to_window_ref(pane: Mapping, window_name: str) -> WindowRef:
         """Project a private herdr pane dict onto the neutral ``WindowRef``.
 
-        ``window_name`` is the tab label (herdr's window analog);
-        ``pane_current_command`` carries the agent label so provider detection
-        and status code keep working. herdr has no tty and dimensions come from
-        ``pane_dims`` on demand, so ``pane_tty``/width/height stay defaults.
+        ``window_name`` is the display label the caller resolved (a cheap tab
+        label for ``find_window``, the full adaptive topic label for
+        ``list_windows``); ``pane_current_command`` carries the agent label so
+        provider detection and status code keep working. herdr has no tty and
+        dimensions come from ``pane_dims`` on demand, so ``pane_tty``/width/
+        height stay defaults.
         """
         return WindowRef(
             window_id=pane.get("pane_id", ""),
@@ -289,19 +327,33 @@ class HerdrManager:
             )
 
     async def list_windows(self) -> list[WindowRef]:
-        """List every agent pane as a window (``pane list`` + tab labels)."""
+        """List every agent pane as a window with its adaptive topic label.
+
+        ``window_name`` is the derived topic label ``"<workspace> ▸ <agent>"``
+        (+ ``"/<tab>"`` when the pane's tab is split), sourced from one
+        ``pane list`` + ``tab list`` + ``workspace list`` plus the per-tab pane
+        counts. This is the single source that drives both topic discovery (the
+        session monitor) and display-name re-sync, so a workspace/tab rename
+        re-labels the bound topic on the next poll — the binding key (the
+        durable agent session id, Task 8) is never touched.
+        """
         result = await self._call_json(["pane", "list"])
         if not result:
             return []
-        labels = await self._tab_labels()
-        windows: list[WindowRef] = []
-        for pane in result.get("panes", []):
-            if not pane.get("pane_id"):
-                continue
-            windows.append(
-                self._to_window_ref(pane, labels.get(pane.get("tab_id", ""), ""))
+        panes = [p for p in result.get("panes", []) if p.get("pane_id")]
+        tab_labels = await self._tab_labels()
+        workspace_labels = await self._workspace_labels()
+        pane_counts: dict[str, int] = {}
+        for pane in panes:
+            tab_id = pane.get("tab_id", "")
+            pane_counts[tab_id] = pane_counts.get(tab_id, 0) + 1
+        return [
+            self._to_window_ref(
+                pane,
+                self._adaptive_label(pane, tab_labels, workspace_labels, pane_counts),
             )
-        return windows
+            for pane in panes
+        ]
 
     async def find_window(self, window_id: str) -> WindowRef | None:
         """Find a window by its opaque pane id; None when gone."""
@@ -454,6 +506,38 @@ class HerdrManager:
             )
         ]
 
+    async def _resolve_workspace_id(self, cwd: str) -> str:
+        """Return the workspace rooted at *cwd*, creating one if none matches.
+
+        Reuses the herdr workspace whose cwd matches the target directory so a
+        new agent lands in the repo's existing workspace and inherits its label
+        as the topic prefix (design "cwd → workspace"). Returns "" when herdr
+        exposes no workspace addressing (older server / command unavailable) —
+        ``create_window`` then falls back to a plain ``tab create`` in the
+        active workspace (Task 7 behavior).
+        """
+        result = await self._call_json(["workspace", "list"])
+        if result:
+            for ws in result.get("workspaces", []):
+                if self._same_path(ws.get("cwd", ""), cwd):
+                    wid = ws.get("workspace_id", "")
+                    if wid:
+                        return wid
+        created = await self._call_json(["workspace", "create", "--cwd", cwd])
+        if not created:
+            return ""
+        return (created.get("workspace") or {}).get("workspace_id", "") or ""
+
+    @staticmethod
+    def _same_path(a: str, b: str) -> bool:
+        """True when two paths point at the same directory (symlinks resolved)."""
+        if not a or not b:
+            return False
+        try:
+            return Path(a).expanduser().resolve() == Path(b).expanduser().resolve()
+        except OSError:
+            return a == b
+
     async def create_window(
         self,
         work_dir: str,
@@ -464,9 +548,10 @@ class HerdrManager:
     ) -> tuple[bool, str, str, str]:
         """Create a herdr tab at *work_dir* and optionally launch an agent.
 
-        Creates a ``tab`` (its root pane becomes the window), then ``pane run``s
-        the launch command. cwd→workspace reuse is layered on top in Task 11;
-        here the tab lands in herdr's default/active workspace.
+        Resolves *work_dir* to its herdr workspace (reusing the matching one,
+        creating it only if absent — design "cwd → workspace"), creates a
+        ``tab`` inside it (its root pane becomes the window), then ``pane run``s
+        the launch command.
 
         Returns ``(success, message, window_name, window_id)`` where
         ``window_id`` is the new pane id.
@@ -477,7 +562,11 @@ class HerdrManager:
         if not path.is_dir():
             return False, f"Not a directory: {work_dir}", "", ""
 
-        args = ["tab", "create", "--cwd", str(path), "--no-focus"]
+        cwd = str(path)
+        workspace_id = await self._resolve_workspace_id(cwd)
+        args = ["tab", "create", "--cwd", cwd, "--no-focus"]
+        if workspace_id:
+            args += ["--workspace", workspace_id]
         if window_name:
             args += ["--label", window_name]
         result = await self._call_json(args)

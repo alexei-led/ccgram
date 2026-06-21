@@ -240,11 +240,11 @@ Whole-plan commands (repo Makefile targets):
 - Fitness gate: none archfit; table-driven label-rendering tests.
 - Verification: unit tests for prefix rendering (single-pane vs split tab) and cwd→workspace resolution; `make test`.
 - Manual checks: rename a workspace in herdr → topic re-labels; create a second agent in the same repo → same workspace prefix, distinct topic.
-- [ ] render the adaptive topic title from `agent_status` + workspace/tab labels (add `/tab` only on splits)
-- [ ] resolve new-topic cwd to an existing herdr workspace, creating one only if absent, then add tab+pane
-- [ ] re-label topics on `workspace.renamed`/`tab.renamed` without rebinding
-- [ ] write table-driven tests for prefix rendering and cwd→workspace resolution
-- [ ] run project tests (`make test`) - must pass before next task
+- [x] render the adaptive topic title from `agent_status` + workspace/tab labels (add `/tab` only on splits) — `format_agent_topic_prefix` (pure, in `multiplexer/topic_mapping.py`); the herdr adapter stamps it into `WindowRef.window_name` in `list_windows`, the existing `topic_emoji` machinery prepends the status emoji
+- [x] resolve new-topic cwd to an existing herdr workspace, creating one only if absent, then add tab+pane — `HerdrManager._resolve_workspace_id` (`workspace list` match by cwd, `workspace create` if absent) + `tab create --workspace`; lives in the adapter so `directory_callbacks`/`topic_orchestration` delegate through the seam unchanged
+- [x] re-label topics on `workspace.renamed`/`tab.renamed` without rebinding — poll-driven (event stream deferred per design): each `list_windows` recomputes the derived label, `sync_display_names` propagates it, the binding key (durable session id, Task 8) is untouched
+- [x] write table-driven tests for prefix rendering and cwd→workspace resolution — `TestFormatAgentTopicPrefix` (10-case table) + herdr adaptive-label/split/rename + workspace-reuse/create/fallback tests
+- [x] run project tests (`make test`) - must pass before next task — 5158 passed, 28 skipped; lint + typecheck + deptry clean
 
 ### Task 12: Verify acceptance criteria
 
