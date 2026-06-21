@@ -209,10 +209,10 @@ Whole-plan commands (repo Makefile targets):
 - Fitness gate: F5. `archfit check --config .archfit.yaml --full` should report the new rule satisfied. Before-fail/after-pass: a temporary handler import of `multiplexer_backends` should make the archfit rule fail; removing it passes. Note: archfit is not installed/CI-wired, so the enforced equivalent remains the F1 pytest audit; F5 is the recommended promotion and F6 (CI wiring) is in Post-Completion.
 - Verification: `uv run pytest` doctor tests; `archfit check --config .archfit.yaml --full` if `archfit` is available, else record the missing-tool note and rely on F1.
 - Manual checks: confirm ccgram's hook and `herdr integration install claude` coexist without clobbering `~/.claude/settings.json`.
-- [ ] extend `doctor_cmd.py` with multiplexer + herdr socket/hook checks
-- [ ] re-shape `.archfit.yaml` modules and add the forbidden-dependency rule + labels
-- [ ] write doctor tests for tmux and herdr modes
-- [ ] run project tests (`make test`) - must pass before next task
+- [x] extend `doctor_cmd.py` with multiplexer + herdr socket/hook checks
+- [x] re-shape `.archfit.yaml` modules and add the forbidden-dependency rule + labels
+- [x] write doctor tests for tmux and herdr modes
+- [x] run project tests (`make test`) - must pass before next task
 
 ### Task 10: Bind herdr agent panes to Telegram topics (one topic per agent)
 

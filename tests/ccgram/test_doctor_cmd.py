@@ -8,7 +8,10 @@ from ccgram.doctor_cmd import (
     _check_allowed_users,
     _check_config_dir,
     _check_draft_streaming,
+    _check_herdr,
+    _check_herdr_hook_coexistence,
     _check_hooks,
+    _check_multiplexer,
     _check_tmux,
     _find_orphaned_windows,
     doctor_main,
@@ -282,6 +285,161 @@ class TestCheckProviderCommand:
         status, msg = _check_provider_command("codex")
         assert status == "pass"
         assert "my-codex-wrapper" in msg
+
+
+class _FakeHerdrBackend:
+    """Minimal stand-in for the herdr backend's ``ensure_session`` probe."""
+
+    def __init__(self, fail: Exception | None = None) -> None:
+        self._fail = fail
+
+    async def ensure_session(self) -> None:
+        if self._fail is not None:
+            raise self._fail
+
+
+class TestCheckMultiplexer:
+    def test_tmux_default(self, monkeypatch) -> None:
+        monkeypatch.delenv("CCGRAM_MULTIPLEXER", raising=False)
+        status, msg = _check_multiplexer()
+        assert status == "pass"
+        assert "tmux" in msg
+
+    def test_herdr_selected(self, monkeypatch) -> None:
+        monkeypatch.setenv("CCGRAM_MULTIPLEXER", "herdr")
+        status, msg = _check_multiplexer()
+        assert status == "pass"
+        assert "herdr" in msg
+
+    def test_unknown_backend_fails(self, monkeypatch) -> None:
+        monkeypatch.setenv("CCGRAM_MULTIPLEXER", "bogus")
+        status, msg = _check_multiplexer()
+        assert status == "fail"
+        assert "bogus" in msg
+
+
+class TestCheckHerdr:
+    def test_binary_missing(self, monkeypatch) -> None:
+        monkeypatch.setattr("ccgram.doctor_cmd.shutil.which", lambda _cmd: None)
+        status, msg = _check_herdr()
+        assert status == "fail"
+        assert "not found" in msg
+
+    def test_socket_reachable(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "ccgram.doctor_cmd.shutil.which", lambda _cmd: "/usr/bin/herdr"
+        )
+        monkeypatch.setattr(
+            "ccgram.multiplexer.get_multiplexer", lambda _name: _FakeHerdrBackend()
+        )
+        status, msg = _check_herdr()
+        assert status == "pass"
+        assert "protocol OK" in msg
+
+    def test_protocol_mismatch_fails(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "ccgram.doctor_cmd.shutil.which", lambda _cmd: "/usr/bin/herdr"
+        )
+        boom = RuntimeError("herdr protocol 99 unsupported (ccgram pins 14)")
+        monkeypatch.setattr(
+            "ccgram.multiplexer.get_multiplexer",
+            lambda _name: _FakeHerdrBackend(fail=boom),
+        )
+        status, msg = _check_herdr()
+        assert status == "fail"
+        assert "protocol 99 unsupported" in msg
+
+
+class TestCheckHerdrHookCoexistence:
+    def _write_claude_settings(self, tmp_path, monkeypatch, commands) -> None:
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "SessionStart": [
+                            {"hooks": [{"type": "command", "command": c}]}
+                            for c in commands
+                        ]
+                    }
+                }
+            )
+        )
+        monkeypatch.setattr("ccgram.hook._claude_settings_file", lambda: settings_file)
+
+    def test_both_present(self, tmp_path, monkeypatch) -> None:
+        self._write_claude_settings(
+            tmp_path, monkeypatch, ["ccgram hook", "herdr integration hook"]
+        )
+        status, msg = _check_herdr_hook_coexistence()
+        assert status == "pass"
+        assert "coexist" in msg
+
+    def test_only_ccgram_warns(self, tmp_path, monkeypatch) -> None:
+        self._write_claude_settings(tmp_path, monkeypatch, ["ccgram hook"])
+        status, msg = _check_herdr_hook_coexistence()
+        assert status == "warn"
+        assert "herdr" in msg
+
+    def test_ccgram_missing_fails(self, tmp_path, monkeypatch) -> None:
+        self._write_claude_settings(tmp_path, monkeypatch, ["herdr integration hook"])
+        status, msg = _check_herdr_hook_coexistence()
+        assert status == "fail"
+        assert "ccgram" in msg
+
+    def test_settings_missing_warns(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "ccgram.hook._claude_settings_file",
+            lambda: tmp_path / "nonexistent.json",
+        )
+        status, msg = _check_herdr_hook_coexistence()
+        assert status == "warn"
+        assert "missing" in msg
+
+
+class TestDoctorMainHerdrMode:
+    def test_runs_herdr_branch(self, tmp_path, monkeypatch, capsys) -> None:
+        monkeypatch.setenv("CCGRAM_DIR", str(tmp_path))
+        monkeypatch.setenv("CCGRAM_MULTIPLEXER", "herdr")
+        monkeypatch.setenv("ALLOWED_USERS", "123")
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "fake-token")
+        tmp_path.mkdir(exist_ok=True)
+
+        monkeypatch.setattr(
+            "ccgram.doctor_cmd.shutil.which", lambda _cmd: f"/usr/bin/{_cmd}"
+        )
+        # Avoid touching a real herdr socket / settings.json.
+        monkeypatch.setattr(
+            "ccgram.doctor_cmd._check_herdr",
+            lambda: ("pass", "herdr server reachable, protocol OK"),
+        )
+        monkeypatch.setattr(
+            "ccgram.doctor_cmd._check_herdr_hook_coexistence",
+            lambda: ("pass", "ccgram + herdr Claude hooks coexist"),
+        )
+        monkeypatch.setattr(
+            "ccgram.doctor_cmd._check_hooks",
+            lambda _provider="claude": (
+                "pass",
+                "all 5 hook events installed",
+                _all_hooks_status(),
+            ),
+        )
+
+        # Orphan scan would shell out to tmux; it must be skipped on herdr.
+        def _fail_orphans():
+            raise AssertionError("orphan scan must not run on herdr")
+
+        monkeypatch.setattr("ccgram.doctor_cmd._find_orphaned_windows", _fail_orphans)
+
+        with pytest.raises(SystemExit) as exc_info:
+            doctor_main()
+
+        assert exc_info.value.code == 0
+        captured = capsys.readouterr()
+        assert "multiplexer backend: herdr" in captured.out
+        assert "tmux session" not in captured.out
+        assert "orphaned" not in captured.out
 
 
 class TestCheckDraftStreaming:

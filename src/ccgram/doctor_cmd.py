@@ -12,6 +12,7 @@ No Config import needed — uses utils.ccgram_dir() and subprocess.
 machinery on providers that have no hooks.
 """
 
+import asyncio
 import json
 import os
 import shutil
@@ -33,6 +34,103 @@ _SYMBOLS = {_PASS: "\u2713", _FAIL: "\u2717", _WARN: "\u26a0"}
 
 _TMUX_FORMAT_PARTS = 2
 _MAIN_WINDOW_NAME = "__main__"
+
+# Multiplexer backend selection (mirrors config.multiplexer_name; doctor reads
+# the env directly to keep its "no Config import" startup contract).
+_MULTIPLEXER_ENV = "CCGRAM_MULTIPLEXER"
+_DEFAULT_MULTIPLEXER = "tmux"
+_HERDR_BACKEND = "herdr"
+
+
+def _active_multiplexer_name() -> str:
+    """Return the configured multiplexer backend name (``CCGRAM_MULTIPLEXER``)."""
+    return os.environ.get(_MULTIPLEXER_ENV, _DEFAULT_MULTIPLEXER)
+
+
+def _check_multiplexer() -> tuple[str, str]:
+    """Report the active multiplexer backend and confirm it resolves.
+
+    Reads ``capabilities`` through the neutral seam (``get_multiplexer``), never
+    a concrete backend, so doctor stays on the right side of the F1 boundary.
+    The backend *name* is sanctioned here — it is for logging and doctor only
+    (see ``MultiplexerCapabilities.name``), not for control flow in callers.
+    """
+    name = _active_multiplexer_name()
+    # Lazy: the registry lazy-imports a backend; defer so `ccgram doctor`
+    # startup stays light and doctor touches only the neutral seam (F1).
+    from .multiplexer import UnknownMultiplexerError, get_multiplexer
+
+    try:
+        caps = get_multiplexer(name).capabilities
+    except UnknownMultiplexerError as exc:
+        return _FAIL, str(exc)
+    return _PASS, f"multiplexer backend: {caps.name}"
+
+
+def _check_herdr() -> tuple[str, str]:
+    """Check the herdr binary, socket reachability, and pinned protocol.
+
+    Drives the backend's ``ensure_session`` so the pinned protocol version
+    lives in one place (the herdr adapter); doctor never duplicates it nor
+    reaches past the seam. A mismatched protocol or unreachable socket fails
+    with the backend's own message.
+    """
+    if not shutil.which(_HERDR_BACKEND):
+        return _FAIL, "herdr not found in PATH"
+    socket = os.environ.get("HERDR_SOCKET_PATH", "")
+    # Lazy: defer the registry import (see _check_multiplexer).
+    from .multiplexer import get_multiplexer
+
+    backend = get_multiplexer(_HERDR_BACKEND)
+    try:
+        asyncio.run(backend.ensure_session())
+    except Exception as exc:  # noqa: BLE001 — surface any backend failure verbatim
+        return _FAIL, f"herdr server unreachable: {exc}"
+    where = f" ({socket})" if socket else " (default socket)"
+    return _PASS, f"herdr server reachable, protocol OK{where}"
+
+
+def _all_hook_commands(settings: dict) -> list[str]:
+    """Flatten every hook command string in a Claude ``settings.json``."""
+    return [
+        hook_config.get("command", "")
+        for groups in settings.get("hooks", {}).values()
+        if isinstance(groups, list)
+        for group in groups
+        if isinstance(group, dict)
+        for hook_config in group.get("hooks", [])
+        if isinstance(hook_config, dict)
+    ]
+
+
+def _check_herdr_hook_coexistence() -> tuple[str, str]:
+    """Verify ccgram and herdr's Claude hooks coexist in ``settings.json``.
+
+    Both ccgram and ``herdr integration install claude`` append hooks to
+    ``~/.claude/settings.json``; this confirms one did not clobber the other.
+    """
+    # Lazy: hook helpers reach back into bot wiring; defer until doctor runs.
+    from .hook import _claude_settings_file
+
+    settings_file = _claude_settings_file()
+    if not settings_file.exists():
+        return _WARN, f"hook coexistence: {settings_file} missing"
+    try:
+        settings = json.loads(settings_file.read_text())
+    except (json.JSONDecodeError, OSError):  # fmt: skip
+        return _WARN, "hook coexistence: settings.json unreadable"
+    commands = _all_hook_commands(settings)
+    has_ccgram = any("ccgram" in c for c in commands)
+    has_herdr = any(_HERDR_BACKEND in c for c in commands)
+    if has_ccgram and has_herdr:
+        return _PASS, "ccgram + herdr Claude hooks coexist"
+    if has_ccgram:
+        return (
+            _WARN,
+            "herdr Claude hook absent "
+            "(run `herdr integration install claude` for herdr's own hook)",
+        )
+    return _FAIL, "ccgram Claude hook missing from settings.json"
 
 
 def _print_check(status: str, message: str) -> None:
@@ -368,15 +466,26 @@ def doctor_main(fix: bool = False) -> None:
 
     print(f"Provider: {caps.name}")
 
-    # Core checks
-    _, _, failed = _run_check(_check_tmux)
+    mux_name = _active_multiplexer_name()
+
+    # Multiplexer backend (reports the active backend; validates it resolves)
+    _, _, failed = _run_check(_check_multiplexer)
     has_failures = has_failures or failed
 
     _, _, failed = _run_check(lambda: _check_provider_command(caps.name))
     has_failures = has_failures or failed
 
-    _, _, failed = _run_check(_check_tmux_session)
-    has_failures = has_failures or failed
+    # Backend-specific terminal/session health
+    if mux_name == _HERDR_BACKEND:
+        _, _, failed = _run_check(_check_herdr)
+        has_failures = has_failures or failed
+        _, _, failed = _run_check(_check_herdr_hook_coexistence)
+        has_failures = has_failures or failed
+    else:
+        _, _, failed = _run_check(_check_tmux)
+        has_failures = has_failures or failed
+        _, _, failed = _run_check(_check_tmux_session)
+        has_failures = has_failures or failed
 
     # Hook checks — only relevant for providers with hook support
     if caps.supports_hook:
@@ -399,13 +508,14 @@ def doctor_main(fix: bool = False) -> None:
     # Bot API draft-streaming availability (Bot API 9.5+)
     _run_check(_check_draft_streaming)
 
-    # Orphaned windows
-    orphans = _find_orphaned_windows()
-    if orphans:
-        names = ", ".join(f"{wid} ({wname})" for wid, wname in orphans)
-        _print_check(_WARN, f"{len(orphans)} orphaned window(s): {names}")
-        _fix_orphans(orphans, fix)
-    else:
-        _print_check(_PASS, "no orphaned windows")
+    # Orphaned windows — tmux-only (herdr panes are not tmux windows)
+    if mux_name != _HERDR_BACKEND:
+        orphans = _find_orphaned_windows()
+        if orphans:
+            names = ", ".join(f"{wid} ({wname})" for wid, wname in orphans)
+            _print_check(_WARN, f"{len(orphans)} orphaned window(s): {names}")
+            _fix_orphans(orphans, fix)
+        else:
+            _print_check(_PASS, "no orphaned windows")
 
     sys.exit(1 if has_failures else 0)
