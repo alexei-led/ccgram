@@ -204,10 +204,31 @@ async def test_shell_flow_marker_run_isolation_exit_interrupt_clear(
 
 
 async def test_shell_scrollback_clamp_surfaces_truncation(herdr_shell) -> None:
-    """A capture asking past the 1000-line cap reports ``truncated`` to the shell."""
+    """A >1000-line capture clamps to herdr's cap and surfaces ``truncated``."""
     _, window_id = herdr_shell
+
+    # Emit more lines than herdr's 1000-line read cap so the pane genuinely has
+    # scrollback to clip. A freshly created pane is otherwise near-empty, and an
+    # empty herdr read returns None — there would be nothing to surface
+    # truncation on, masking whether the clamp works at all.
+    sentinel = "clamp_sentinel_1500"
+    assert await multiplexer.send(window_id, f"seq 1 1500; echo {sentinel}") is True
+
+    async def _scrollback_has(needle: str) -> None:
+        deadline = asyncio.get_event_loop().time() + _POLL_TIMEOUT
+        while asyncio.get_event_loop().time() < deadline:
+            cap = await _capture_with_scrollback(window_id, history=_SCROLLBACK)
+            if cap and needle in cap.text:
+                return
+            await asyncio.sleep(0.3)
+        raise AssertionError(f"{needle!r} never appeared in scrollback")
+
+    await _scrollback_has(sentinel)
+
     # The shell-capture helper requests more than herdr will return; the clamp
-    # must surface so a clipped capture is not read as the full command output.
+    # must surface so a clipped capture is not mistaken for the full output.
     cap = await _capture_with_scrollback(window_id, history=5000)
-    if cap is not None:
-        assert cap.truncated is True
+    assert cap is not None
+    assert cap.truncated is True
+    # The recent tail survives the clamp (the earliest lines are what get dropped).
+    assert sentinel in cap.text
