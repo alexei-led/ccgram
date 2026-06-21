@@ -90,9 +90,28 @@ class SessionLifecycle:
                 idle_tracker.clear_session(old_details["session_id"])
                 claude_task_state.clear_window(window_id)
 
-        # Deleted: window in old map but not current
+        current_session_ids = {
+            details.get("session_id")
+            for details in current_map.values()
+            if details.get("session_id")
+        }
+
+        # Deleted: window in old map but not current.  A window may also be
+        # re-keyed while the underlying agent session stays the same (for
+        # example during migration from window-name keys to stable window_id
+        # keys, or when a tmux window rename refreshes session_map display
+        # metadata).  In that case the transcript offset and pending-tool state
+        # are still live for another current window, so do not clear them.
         for window_id in old_windows - current_windows:
             old_sid = self._last_session_map[window_id]["session_id"]
+            if old_sid in current_session_ids:
+                logger.debug(
+                    "Window '%s' deleted/re-keyed but session %s remains active; "
+                    "preserving per-session state",
+                    window_id,
+                    old_sid,
+                )
+                continue
             logger.info(
                 "Window '%s' deleted, removing session %s",
                 window_id,

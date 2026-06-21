@@ -1017,6 +1017,7 @@ def _refresh_session_map_if_stale(
     if (
         existing.get("session_id") == session_id
         and existing.get("provider_name") == provider_name
+        and (not window_name or existing.get("window_name", "") == window_name)
         and (
             not transcript_path
             or existing.get("transcript_path", "") == transcript_path

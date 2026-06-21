@@ -409,6 +409,46 @@ class TestHookMainValidation:
         assert event["window_key"] == "ccgram:@0"
         assert event["data"]["stop_reason"] == "end_turn"
 
+    def test_non_session_start_refreshes_changed_window_name(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        monkeypatch.setenv("CCGRAM_DIR", str(tmp_path))
+        monkeypatch.setenv("TMUX_PANE", "%0")
+        session_id = "550e8400-e29b-41d4-a716-446655440000"
+        (tmp_path / "session_map.json").write_text(
+            json.dumps(
+                {
+                    "ccgram:@0": {
+                        "session_id": session_id,
+                        "cwd": "/tmp",
+                        "window_name": "old-name",
+                        "transcript_path": "/tmp/transcript.jsonl",
+                        "provider_name": "claude",
+                    }
+                }
+            )
+        )
+
+        mock_result = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="ccgram\t@0\tnew-name\n", stderr=""
+        )
+        with patch("ccgram.hook.subprocess.run", return_value=mock_result):
+            self._run_hook_main(
+                monkeypatch,
+                {
+                    "session_id": session_id,
+                    "cwd": "/tmp",
+                    "hook_event_name": "Stop",
+                    "transcript_path": "/tmp/transcript.jsonl",
+                    "stop_reason": "end_turn",
+                },
+                tmux_pane="%0",
+            )
+
+        session_map = json.loads((tmp_path / "session_map.json").read_text())
+        assert session_map["ccgram:@0"]["window_name"] == "new-name"
+        assert session_map["ccgram:@0"]["session_id"] == session_id
+
     def test_unhandled_event_ignored(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path
     ) -> None:

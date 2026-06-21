@@ -67,6 +67,48 @@ class TestPendingToolsCleanup:
 
         assert old_sid not in monitor._pending_tools
 
+    async def test_rekeyed_same_session_preserves_pending_tools_and_offset(
+        self, monitor: SessionMonitor
+    ) -> None:
+        """Dropping a stale display-name key must not reset the live session."""
+        session_id = "same-session"
+        monitor._pending_tools[session_id] = {"tool_1": {"name": "Write"}}
+        monitor._last_session_map = {
+            "old-window-name": {
+                "session_id": session_id,
+                "cwd": "/a",
+                "window_name": "old-window-name",
+            }
+        }
+        monitor.state.update_session(
+            TrackedSession(
+                session_id=session_id,
+                file_path="/fake/path",
+                last_byte_offset=123,
+            )
+        )
+
+        new_map = {
+            "@7": {
+                "session_id": session_id,
+                "cwd": "/a",
+                "window_name": "renamed-window",
+            }
+        }
+        with patch.object(
+            monitor,
+            "_load_current_session_map",
+            spec=True,
+            new_callable=AsyncMock,
+            return_value=new_map,
+        ):
+            await monitor._detect_and_cleanup_changes()
+
+        assert monitor._pending_tools[session_id] == {"tool_1": {"name": "Write"}}
+        tracked = monitor.state.get_session(session_id)
+        assert tracked is not None
+        assert tracked.last_byte_offset == 123
+
 
 class TestNewWindowDetection:
     async def test_callback_fires_for_new_window(self, monitor: SessionMonitor) -> None:
