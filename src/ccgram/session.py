@@ -25,8 +25,10 @@ from .config import config
 from .session_map import (
     SessionMapSync,
     install_session_map_sync,
+    is_backend_window_id,
     live_window_session_ids,
     read_session_map_raw,
+    session_map_prefix,
     session_map_sync,
 )
 from .state_persistence import StatePersistence
@@ -37,7 +39,6 @@ from .user_preferences import (
     install_user_preferences,
     user_preferences,
 )
-from .window_resolver import is_window_id
 from .window_view import WindowView
 from .window_state_ports import identity_state as _identity_state
 from .window_state_ports import lifecycle_state as _lifecycle_state
@@ -149,8 +150,13 @@ class SessionManager:
         self._persistence.flush()
 
     def _is_window_id(self, key: str) -> bool:
-        """Check if a key looks like a tmux window ID (e.g. '@0', '@12')."""
-        return is_window_id(key)
+        """Check if a key looks like a window ID for the active backend.
+
+        Backend-aware: tmux ``@N`` ids, herdr ``wN:pM`` ids (see
+        ``session_map.is_backend_window_id``). Old-format (window-name) keys
+        return False on tmux so startup re-resolution migrates them.
+        """
+        return is_backend_window_id(key)
 
     def _load_state(self) -> None:
         """Load state during initialization.
@@ -340,7 +346,7 @@ class SessionManager:
             raw = json.loads(config.session_map_file.read_text())
         except (json.JSONDecodeError, OSError):  # fmt: skip
             return set()
-        prefix = f"{config.tmux_session_name}:"
+        prefix = session_map_prefix()
         result: set[str] = set()
         for key in raw:
             if key.startswith(prefix):

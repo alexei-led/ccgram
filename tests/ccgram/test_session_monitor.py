@@ -234,6 +234,41 @@ class TestEmitUnboundWindowEvents:
         assert surfaced == {"w2:p3"}
 
 
+class TestLoadCurrentSessionMapBackend:
+    """The monitor's session_map reader must honor the active backend prefix.
+
+    Regression: under herdr the hook writes ``herdr:<wN:pM>`` keys; a tmux-only
+    ``ccgram:`` prefix silently dropped every herdr session so none was tracked.
+    """
+
+    async def test_herdr_keys_surface(
+        self, monitor: SessionMonitor, monkeypatch
+    ) -> None:
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "multiplexer_name", "herdr")
+        raw = {
+            "herdr:w2:p1": {
+                "session_id": "S1",
+                "cwd": "/repo",
+                "window_name": "agent",
+                "transcript_path": "",
+                "provider_name": "claude",
+            }
+        }
+        result = await monitor._load_current_session_map(raw)
+        assert result.get("w2:p1", {}).get("session_id") == "S1"
+
+    async def test_tmux_skips_herdr_keys(
+        self, monitor: SessionMonitor, monkeypatch
+    ) -> None:
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "multiplexer_name", "tmux")
+        raw = {"herdr:w2:p1": {"session_id": "S1", "cwd": "/repo"}}
+        assert await monitor._load_current_session_map(raw) == {}
+
+
 class TestPerWindowProviderResolution:
     async def test_process_session_file_passes_window_id(self, tmp_path) -> None:
         """_process_session_file uses window_id for per-window provider resolution."""

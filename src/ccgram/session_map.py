@@ -101,6 +101,36 @@ def live_window_session_ids(
     return result
 
 
+def session_map_prefix() -> str:
+    """Return the session_map key prefix for the active multiplexer backend.
+
+    The hook encodes the backend into each key's prefix: tmux keys are
+    ``<tmux_session_name>:<@id>`` (the live tmux session name), herdr keys are
+    ``herdr:<wN:pM>`` (the backend name — see ``multiplexer.self_identify``).
+    Readers mirror that here so they match the writer regardless of the active
+    backend; the tmux branch is byte-identical to the previous hard-coded
+    ``f"{config.tmux_session_name}:"``.
+    """
+    name = config.multiplexer_name
+    if name == "tmux":
+        return f"{config.tmux_session_name}:"
+    return f"{name}:"
+
+
+def is_backend_window_id(window_id: str) -> bool:
+    """Validate a prefix-stripped session_map window id for the active backend.
+
+    tmux requires the ``@N`` form so legacy window-name-keyed entries are still
+    detected and purged as old format; non-stable-id backends (herdr) use
+    ``wN:pM`` ids that ``is_window_id`` rejects, so any non-empty token after the
+    prefix is valid there (mirrors ``window_resolver._resolve_by_session_id``,
+    which likewise does not apply ``is_window_id`` to herdr ids).
+    """
+    if config.multiplexer_name == "tmux":
+        return is_window_id(window_id)
+    return bool(window_id)
+
+
 def _transcript_mtime(transcript_path: str) -> float | None:
     if not transcript_path:
         return None
@@ -240,7 +270,7 @@ class SessionMapSync:
             return
         session_map = raw
 
-        prefix = f"{config.tmux_session_name}:"
+        prefix = session_map_prefix()
         valid_wids, old_format_sids, old_format_keys, changed = (
             self._process_session_map_entries(session_map, prefix)
         )
@@ -270,7 +300,7 @@ class SessionMapSync:
             if not key.startswith(prefix):
                 continue
             window_id = key[len(prefix) :]
-            if not is_window_id(window_id):
+            if not is_backend_window_id(window_id):
                 sid = info.get("session_id", "")
                 if sid:
                     old_format_sids.add(sid)
@@ -345,7 +375,7 @@ class SessionMapSync:
             window_id,
             timeout,
         )
-        key = f"{config.tmux_session_name}:{window_id}"
+        key = f"{session_map_prefix()}{window_id}"
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         while loop.time() < deadline:
@@ -390,13 +420,13 @@ class SessionMapSync:
         except (json.JSONDecodeError, OSError):  # fmt: skip
             return
 
-        prefix = f"{config.tmux_session_name}:"
+        prefix = session_map_prefix()
         dead_entries: list[tuple[str, str]] = []  # (map_key, window_id)
         for key in raw:
             if not key.startswith(prefix):
                 continue
             window_id = key[len(prefix) :]
-            if is_window_id(window_id) and window_id not in live_window_ids:
+            if is_backend_window_id(window_id) and window_id not in live_window_ids:
                 dead_entries.append((key, window_id))
 
         if not dead_entries:
@@ -462,7 +492,7 @@ class SessionMapSync:
 
         map_file = config.session_map_file
         map_file.parent.mkdir(parents=True, exist_ok=True)
-        window_key = f"{config.tmux_session_name}:{window_id}"
+        window_key = f"{session_map_prefix()}{window_id}"
         lock_path = map_file.with_suffix(".lock")
         try:
             with open(lock_path, "w") as lock_f:
@@ -520,7 +550,7 @@ class SessionMapSync:
                 fcntl.flock(lock_f, fcntl.LOCK_EX)
                 try:
                     raw = json.loads(config.session_map_file.read_text())
-                    key = f"{config.tmux_session_name}:{window_id}"
+                    key = f"{session_map_prefix()}{window_id}"
                     if key in raw:
                         del raw[key]
                         atomic_write_json(config.session_map_file, raw)

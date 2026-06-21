@@ -29,7 +29,7 @@ from .event_reader import read_new_events
 from .idle_tracker import IdleTracker
 from .monitor_state import MonitorState
 from .providers import get_provider_for_window, registry  # noqa: F401 (used by test patches)
-from .session_map import parse_session_map, read_session_map_raw
+from .session_map import parse_session_map, read_session_map_raw, session_map_prefix
 from .session_lifecycle import session_lifecycle
 from .multiplexer import multiplexer as tmux_manager
 from .multiplexer.topic_mapping import is_agent_topic_window
@@ -255,7 +255,7 @@ class SessionMonitor:
             raw = await read_session_map_raw()
         if not raw:
             return {}
-        prefix = f"{config.tmux_session_name}:"
+        prefix = session_map_prefix()
         return parse_session_map(raw, prefix)
 
     async def _cleanup_all_stale_sessions(self) -> None:
