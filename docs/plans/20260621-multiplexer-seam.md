@@ -109,12 +109,12 @@ Whole-plan commands (repo Makefile targets):
 - Fitness gate: none new yet (F1 lands in Task 4 after migration).
 - Verification: `make test`; a unit test that the proxy raises a clear "not wired" error before bootstrap and forwards after wiring (mirrors existing proxy tests).
 - Manual checks: confirm bootstrap ordering — the multiplexer proxy is wired before `start_session_monitor` / status polling use it.
-- [ ] add `registry.py` with `get_multiplexer(name)` + singleton cache
-- [ ] add the `multiplexer` proxy and `get_multiplexer()` in `__init__.py`
-- [ ] add `config.multiplexer_name` (`CCGRAM_MULTIPLEXER`, default `tmux`)
-- [ ] wire the proxy in `bootstrap.py` before monitor/polling start
-- [ ] write tests for registry resolution, proxy not-wired/forwarding, and config default
-- [ ] run project tests (`make test`) - must pass before next task
+- [x] add `registry.py` with `get_multiplexer(name)` + singleton cache
+- [x] add the `multiplexer` proxy and `get_multiplexer()` in `__init__.py`
+- [x] add `config.multiplexer_name` (`CCGRAM_MULTIPLEXER`, default `tmux`)
+- [x] wire the proxy in `bootstrap.py` before monitor/polling start
+- [x] write tests for registry resolution, proxy not-wired/forwarding, and config default
+- [x] run project tests (`make test`) - must pass before next task
 
 ### Task 4: Migrate call sites to the proxy and land the F1–F3 fitness audits
 
