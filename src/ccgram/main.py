@@ -254,22 +254,27 @@ def run_bot() -> None:
 
     logger = structlog.get_logger()
 
-    # Lazy: main runs `ccgram` startup; defer imports until the relevant subcommand executes
-    from .multiplexer.tmux import tmux_manager
-
     logger.info("Allowed users: %d configured", len(config.allowed_users))
     logger.info("Claude projects path: %s", config.claude_projects_path)
 
-    # In auto-detect mode, session must already exist
-    if auto_detected:
-        session = tmux_manager.get_session()
-        if not session:
-            logger.error("Tmux session '%s' not found", config.tmux_session_name)
-            sys.exit(1)
-        logger.info("Using auto-detected tmux session '%s'", session.session_name)
-    else:
-        session = tmux_manager.get_or_create_session()
-        logger.info("Tmux session '%s' ready", session.session_name)
+    # tmux needs its session created/validated before the bot starts; the
+    # auto-detect path is inherently tmux-specific. Other backends (herdr)
+    # ensure their session through the seam in `bootstrap_application` via
+    # `multiplexer.ensure_session()`, so don't touch tmux here.
+    if config.multiplexer_name == "tmux":
+        # Lazy: main runs `ccgram` startup; defer imports until the relevant subcommand executes
+        from .multiplexer.tmux import tmux_manager
+
+        # In auto-detect mode, session must already exist
+        if auto_detected:
+            session = tmux_manager.get_session()
+            if not session:
+                logger.error("Tmux session '%s' not found", config.tmux_session_name)
+                sys.exit(1)
+            logger.info("Using auto-detected tmux session '%s'", session.session_name)
+        else:
+            session = tmux_manager.get_or_create_session()
+            logger.info("Tmux session '%s' ready", session.session_name)
 
     # Lazy: main runs `ccgram` startup; defer imports until the relevant subcommand executes
     from . import __version__

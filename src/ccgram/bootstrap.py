@@ -39,7 +39,7 @@ from .handlers.topics.topic_orchestration import (
 from .handlers.topics.topic_orchestration import (
     handle_new_window as _handle_new_window,
 )
-from .multiplexer import get_multiplexer, install_multiplexer
+from .multiplexer import get_multiplexer, install_multiplexer, multiplexer
 from .providers import get_provider
 from .session import session_manager
 from .telegram_client import PTBTelegramClient
@@ -156,6 +156,17 @@ def wire_multiplexer() -> None:
     logger.info("Multiplexer backend wired: %s", backend.capabilities.name)
 
 
+async def ensure_multiplexer_session() -> None:
+    """Ensure the active backend's session/server is reachable before polling.
+
+    tmux creates/finds the session; herdr verifies the socket is alive and the
+    pinned protocol version matches (raising on mismatch). Runs once at startup
+    via the seam so a misconfigured backend fails loudly here rather than later
+    as silent ``None`` returns in the polling loop.
+    """
+    await multiplexer.ensure_session()
+
+
 def wire_runtime_callbacks() -> None:
     """Wire module-level callbacks that break cross-subsystem direct imports.
 
@@ -228,6 +239,7 @@ async def bootstrap_application(application: Application) -> None:
     """Run the full post_init sequence in the prescribed order."""
     install_global_exception_handler()
     wire_multiplexer()
+    await ensure_multiplexer_session()
     await register_provider_commands(application)
     await session_manager.resolve_stale_ids()
     await _adopt_unbound_windows(PTBTelegramClient(application.bot))
