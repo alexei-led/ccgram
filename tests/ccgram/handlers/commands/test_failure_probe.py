@@ -122,7 +122,7 @@ class TestMaybeSendCommandFailureMessage:
                 return_value=None,
             ),
             patch(
-                f"{_FP}.tmux_manager.capture_pane",
+                "ccgram.multiplexer.tmux.tmux_manager.capture_pane",
                 new_callable=AsyncMock,
                 return_value="before\nunknown command: /foo",
             ),
@@ -154,7 +154,7 @@ class TestMaybeSendCommandFailureMessage:
                 return_value=None,
             ),
             patch(
-                f"{_FP}.tmux_manager.capture_pane",
+                "ccgram.multiplexer.tmux.tmux_manager.capture_pane",
                 new_callable=AsyncMock,
                 return_value="before\nall good",
             ),

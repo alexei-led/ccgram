@@ -14,7 +14,7 @@ from ccgram.handlers.polling.polling_state import (
 )
 from ccgram.handlers.polling.polling_types import PaneTransition
 from ccgram.providers.base import StatusUpdate
-from ccgram.tmux_manager import PaneInfo as TmuxPaneInfo
+from ccgram.multiplexer.base import PaneInfo as TmuxPaneInfo
 from ccgram.window_state_store import PaneInfo, window_store
 
 
@@ -163,7 +163,7 @@ class TestScanWindowSinglePane:
         strategy._scanned_windows.add("@0")
         bot = AsyncMock(spec=Bot)
         on_blocked = AsyncMock()
-        with patch("ccgram.tmux_manager.tmux_manager") as mock_tm:
+        with patch("ccgram.multiplexer.multiplexer") as mock_tm:
             mock_tm.list_panes = AsyncMock(return_value=[_pane("%1", active=True)])
             transitions = await strategy.scan_window(
                 bot, 1, "@0", 42, on_blocked=on_blocked
@@ -182,7 +182,7 @@ class TestScanWindowSinglePane:
         # single-pane windows that were already alive.
         bot = AsyncMock(spec=Bot)
         on_blocked = AsyncMock()
-        with patch("ccgram.tmux_manager.tmux_manager") as mock_tm:
+        with patch("ccgram.multiplexer.multiplexer") as mock_tm:
             mock_tm.list_panes = AsyncMock(return_value=[_pane("%1", active=True)])
             transitions = await strategy.scan_window(
                 bot, 1, "@0", 42, on_blocked=on_blocked
@@ -200,7 +200,7 @@ class TestScanWindowSinglePane:
         strategy.record_pane_state("@0", "%1", "active", provider="claude")
         bot = AsyncMock(spec=Bot)
         on_blocked = AsyncMock()
-        with patch("ccgram.tmux_manager.tmux_manager") as mock_tm:
+        with patch("ccgram.multiplexer.multiplexer") as mock_tm:
             mock_tm.list_panes = AsyncMock(return_value=[_pane("%1", active=True)])
             transitions = await strategy.scan_window(
                 bot, 1, "@0", 42, on_blocked=on_blocked
@@ -216,7 +216,7 @@ class TestScanWindowMultiPane:
         on_blocked = AsyncMock()
         provider = _idle_provider()
         with (
-            patch("ccgram.tmux_manager.tmux_manager") as mock_tm,
+            patch("ccgram.multiplexer.multiplexer") as mock_tm,
             patch("ccgram.providers.get_provider_for_window", return_value=provider),
         ):
             mock_tm.list_panes = AsyncMock(
@@ -242,7 +242,7 @@ class TestScanWindowMultiPane:
         on_blocked = AsyncMock()
         provider = _interactive_provider("Allow?")
         with (
-            patch("ccgram.tmux_manager.tmux_manager") as mock_tm,
+            patch("ccgram.multiplexer.multiplexer") as mock_tm,
             patch("ccgram.providers.get_provider_for_window", return_value=provider),
         ):
             mock_tm.list_panes = AsyncMock(
@@ -266,7 +266,7 @@ class TestScanWindowMultiPane:
         on_blocked = AsyncMock()
         provider = _interactive_provider("Allow?")
         with (
-            patch("ccgram.tmux_manager.tmux_manager") as mock_tm,
+            patch("ccgram.multiplexer.multiplexer") as mock_tm,
             patch("ccgram.providers.get_provider_for_window", return_value=provider),
         ):
             mock_tm.list_panes = AsyncMock(
@@ -289,7 +289,7 @@ class TestScanWindowMultiPane:
         second = _interactive_provider("Allow write?")
         providers = iter([first, second])
         with (
-            patch("ccgram.tmux_manager.tmux_manager") as mock_tm,
+            patch("ccgram.multiplexer.multiplexer") as mock_tm,
             patch(
                 "ccgram.providers.get_provider_for_window",
                 side_effect=lambda *_a, **_k: next(providers),
@@ -314,7 +314,7 @@ class TestScanWindowMultiPane:
         on_blocked = AsyncMock()
         provider = _idle_provider()
         with (
-            patch("ccgram.tmux_manager.tmux_manager") as mock_tm,
+            patch("ccgram.multiplexer.multiplexer") as mock_tm,
             patch("ccgram.providers.get_provider_for_window", return_value=provider),
         ):
             mock_tm.list_panes = AsyncMock(return_value=[_pane("%1", active=True)])
@@ -332,7 +332,7 @@ class TestScanWindowMultiPane:
         on_blocked = AsyncMock()
         provider = _idle_provider()
         with (
-            patch("ccgram.tmux_manager.tmux_manager") as mock_tm,
+            patch("ccgram.multiplexer.multiplexer") as mock_tm,
             patch("ccgram.providers.get_provider_for_window", return_value=provider),
         ):
             mock_tm.list_panes = AsyncMock(
@@ -356,7 +356,7 @@ class TestScanWindowMultiPane:
         on_blocked = AsyncMock()
         window_provider = _idle_provider("claude")
         with (
-            patch("ccgram.tmux_manager.tmux_manager") as mock_tm,
+            patch("ccgram.multiplexer.multiplexer") as mock_tm,
             patch(
                 "ccgram.providers.get_provider_for_window",
                 return_value=window_provider,
@@ -382,7 +382,7 @@ class TestScanWindowMultiPane:
         on_blocked = AsyncMock()
         provider = _idle_provider()
         with (
-            patch("ccgram.tmux_manager.tmux_manager") as mock_tm,
+            patch("ccgram.multiplexer.multiplexer") as mock_tm,
             patch("ccgram.providers.get_provider_for_window", return_value=provider),
         ):
             mock_tm.list_panes = AsyncMock(
@@ -403,7 +403,7 @@ class TestScanWindowFastPath:
     ) -> None:
         bot = AsyncMock(spec=Bot)
         on_blocked = AsyncMock()
-        with patch("ccgram.tmux_manager.tmux_manager") as mock_tm:
+        with patch("ccgram.multiplexer.multiplexer") as mock_tm:
             mock_tm.list_panes = AsyncMock(return_value=[_pane("%1", active=True)])
             await strategy.scan_window(bot, 1, "@0", 42, on_blocked=on_blocked)
             transitions = await strategy.scan_window(

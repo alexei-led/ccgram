@@ -25,7 +25,7 @@ from ..topics.topic_lifecycle import (
 )
 
 if TYPE_CHECKING:
-    from ...tmux_manager import TmuxWindow
+    from ...multiplexer.base import WindowRef as TmuxWindow
 
 logger = structlog.get_logger()
 

@@ -75,7 +75,7 @@ class TestScrapeCurrentModeEdit:
     async def test_edit_mode(self):
         provider = ClaudeProvider()
         mock_capture = AsyncMock(return_value="some output\n⏵⏵ auto-accept edits on  >")
-        with patch("ccgram.tmux_manager.tmux_manager", capture_pane=mock_capture):
+        with patch("ccgram.multiplexer.multiplexer", capture_pane=mock_capture):
             result = await provider.scrape_current_mode("@0")
         assert result == "Edit"
 
@@ -84,7 +84,7 @@ class TestScrapeCurrentModePlan:
     async def test_plan_mode(self):
         provider = ClaudeProvider()
         mock_capture = AsyncMock(return_value="some output\n⏸ plan mode  >")
-        with patch("ccgram.tmux_manager.tmux_manager", capture_pane=mock_capture):
+        with patch("ccgram.multiplexer.multiplexer", capture_pane=mock_capture):
             result = await provider.scrape_current_mode("@0")
         assert result == "Plan"
 
@@ -93,7 +93,7 @@ class TestScrapeCurrentModeFull:
     async def test_yolo_mode(self):
         provider = ClaudeProvider()
         mock_capture = AsyncMock(return_value="some output\n⏵⏵ bypass permissions  >")
-        with patch("ccgram.tmux_manager.tmux_manager", capture_pane=mock_capture):
+        with patch("ccgram.multiplexer.multiplexer", capture_pane=mock_capture):
             result = await provider.scrape_current_mode("@0")
         assert result == "YOLO"
 
@@ -102,21 +102,21 @@ class TestScrapeCurrentModeNone:
     async def test_no_mode_line(self):
         provider = ClaudeProvider()
         mock_capture = AsyncMock(return_value="just regular output\nno mode here")
-        with patch("ccgram.tmux_manager.tmux_manager", capture_pane=mock_capture):
+        with patch("ccgram.multiplexer.multiplexer", capture_pane=mock_capture):
             result = await provider.scrape_current_mode("@0")
         assert result is None
 
     async def test_empty_capture(self):
         provider = ClaudeProvider()
         mock_capture = AsyncMock(return_value="")
-        with patch("ccgram.tmux_manager.tmux_manager", capture_pane=mock_capture):
+        with patch("ccgram.multiplexer.multiplexer", capture_pane=mock_capture):
             result = await provider.scrape_current_mode("@0")
         assert result is None
 
     async def test_capture_failure(self):
         provider = ClaudeProvider()
         mock_capture = AsyncMock(side_effect=OSError("tmux gone"))
-        with patch("ccgram.tmux_manager.tmux_manager", capture_pane=mock_capture):
+        with patch("ccgram.multiplexer.multiplexer", capture_pane=mock_capture):
             result = await provider.scrape_current_mode("@0")
         assert result is None
 

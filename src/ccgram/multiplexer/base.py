@@ -259,3 +259,82 @@ class Multiplexer(Protocol):
         Returns None when the window is gone or no foreground process exists.
         """
         ...
+
+    # ── Transitional surface ───────────────────────────────────────────
+    #
+    # Methods below mirror the historical ``tmux_manager`` public API that
+    # callers still use directly.  They are part of the contract so callers can
+    # depend only on the ``multiplexer`` proxy (typed against this Protocol)
+    # without importing a concrete backend (F1) and without being rewritten to
+    # the value-type surface above (design BC rule: "do not rewrite callers").
+    # The value-type methods (``find_window`` / ``capture`` / ``send`` / …) are
+    # the forward surface for new herdr-aware code; both backends implement
+    # both.  An ``architecture-review`` may prune these once callers adopt the
+    # value-type surface (Tasks 10–11).
+
+    async def find_window_by_id(self, window_id: str) -> WindowRef | None:
+        """Find a window by its opaque ID (legacy alias of ``find_window``)."""
+        ...
+
+    async def capture_pane(self, window_id: str, with_ansi: bool = False) -> str | None:
+        """Capture the active pane's visible text as a plain string.
+
+        Returns the captured text (stripped) or None on failure/empty.
+        """
+        ...
+
+    async def capture_pane_by_id(
+        self,
+        pane_id: str,
+        *,
+        with_ansi: bool = False,
+        window_id: str | None = None,
+    ) -> str | None:
+        """Capture a specific pane's visible text by stable pane ID.
+
+        ``window_id`` limits the lookup to that window (cross-window guard).
+        Returns the text or None on failure.
+        """
+        ...
+
+    async def capture_pane_scrollback(
+        self, window_id: str, history: int = 200
+    ) -> str | None:
+        """Capture pane text including scrollback history (plain text).
+
+        ``history`` is clamped to ``capabilities.read_max_lines`` when set.
+        Returns the text or None on failure.
+        """
+        ...
+
+    async def send_keys(
+        self,
+        window_id: str,
+        text: str,
+        enter: bool = True,
+        literal: bool = True,
+        *,
+        raw: bool = False,
+    ) -> bool:
+        """Send text to a window's active pane (legacy alias of ``send``)."""
+        ...
+
+    async def send_keys_to_pane(
+        self,
+        pane_id: str,
+        text: str,
+        *,
+        enter: bool = True,
+        literal: bool = True,
+        window_id: str | None = None,
+    ) -> bool:
+        """Send text to a specific pane (legacy alias of ``send_to_pane``)."""
+        ...
+
+    async def get_pane_title(self, window_id: str) -> str:
+        """Return the active pane's terminal title, or '' on failure."""
+        ...
+
+    async def stamp_pane_title(self, window_id: str, provider_name: str) -> None:
+        """Set the pane title for re-detection (legacy alias of ``set_title``)."""
+        ...

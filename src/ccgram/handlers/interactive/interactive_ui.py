@@ -27,7 +27,7 @@ from ...providers import get_provider_for_window
 from ...telegram_client import TelegramClient
 from ...window_query import get_window_provider
 from ...thread_router import thread_router
-from ...tmux_manager import tmux_manager
+from ...multiplexer import multiplexer as tmux_manager
 from ...topic_state_registry import topic_state
 from ..callback_data import (
     CB_ASK_DOWN,

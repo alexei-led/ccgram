@@ -49,7 +49,7 @@ class TestBindWindowCallback:
             patch("ccgram.handlers.topics.window_callbacks.session_manager") as mock_sm,
             patch("ccgram.handlers.topics.window_callbacks.thread_router") as mock_tr,
             patch(
-                "ccgram.handlers.topics.window_callbacks.tmux_manager.find_window_by_id",
+                "ccgram.multiplexer.tmux.tmux_manager.find_window_by_id",
                 new_callable=AsyncMock,
                 return_value=mock_window,
             ),
@@ -110,7 +110,7 @@ class TestBindWindowCallback:
             await new_command(nc_update, context)
 
         with patch(
-            "ccgram.handlers.topics.window_callbacks.tmux_manager.find_window_by_id",
+            "ccgram.multiplexer.tmux.tmux_manager.find_window_by_id",
             new_callable=AsyncMock,
         ) as mock_find:
             await handle_window_callback(query, 100, f"{CB_WIN_BIND}0", update, context)
@@ -135,7 +135,7 @@ class TestBindWindowCallback:
             patch("ccgram.handlers.topics.window_callbacks.session_manager") as mock_sm,
             patch("ccgram.handlers.topics.window_callbacks.thread_router") as mock_tr,
             patch(
-                "ccgram.handlers.topics.window_callbacks.tmux_manager.find_window_by_id",
+                "ccgram.multiplexer.tmux.tmux_manager.find_window_by_id",
                 new_callable=AsyncMock,
                 return_value=mock_window,
             ),
@@ -261,7 +261,7 @@ class TestBindProviderDetection:
             patch("ccgram.handlers.topics.window_callbacks.session_manager") as mock_sm,
             patch("ccgram.handlers.topics.window_callbacks.thread_router") as mock_tr,
             patch(
-                "ccgram.handlers.topics.window_callbacks.tmux_manager.find_window_by_id",
+                "ccgram.multiplexer.tmux.tmux_manager.find_window_by_id",
                 new_callable=AsyncMock,
                 return_value=mock_window,
             ),
@@ -298,7 +298,7 @@ class TestBindProviderDetection:
             patch("ccgram.handlers.topics.window_callbacks.session_manager") as mock_sm,
             patch("ccgram.handlers.topics.window_callbacks.thread_router") as mock_tr,
             patch(
-                "ccgram.handlers.topics.window_callbacks.tmux_manager.find_window_by_id",
+                "ccgram.multiplexer.tmux.tmux_manager.find_window_by_id",
                 new_callable=AsyncMock,
                 return_value=mock_window,
             ),
@@ -336,7 +336,7 @@ class TestBindProviderDetection:
             patch("ccgram.handlers.topics.window_callbacks.session_manager") as mock_sm,
             patch("ccgram.handlers.topics.window_callbacks.thread_router") as mock_tr,
             patch(
-                "ccgram.handlers.topics.window_callbacks.tmux_manager.find_window_by_id",
+                "ccgram.multiplexer.tmux.tmux_manager.find_window_by_id",
                 new_callable=AsyncMock,
                 return_value=mock_window,
             ),

@@ -5,7 +5,7 @@ import shutil
 
 import pytest
 
-from ccgram.tmux_manager import TmuxManager
+from ccgram.multiplexer.tmux import TmuxManager
 
 pytestmark = [
     pytest.mark.integration,

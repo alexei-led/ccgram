@@ -31,7 +31,7 @@ from ..session import AuditIssue, AuditResult, session_manager
 from ..session_map import session_map_sync
 from ..telegram_client import PTBTelegramClient, TelegramClient
 from ..thread_router import thread_router
-from ..tmux_manager import tmux_manager
+from ..multiplexer import multiplexer as tmux_manager
 from ..user_preferences import user_preferences
 from .callback_data import CB_SYNC_DISMISS, CB_SYNC_FIX
 from .callback_registry import register

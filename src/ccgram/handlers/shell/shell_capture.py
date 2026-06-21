@@ -27,7 +27,7 @@ from ...telegram_client import TelegramClient
 
 from ...providers.shell import match_prompt
 from ...thread_router import thread_router
-from ...tmux_manager import tmux_manager
+from ...multiplexer import multiplexer as tmux_manager
 from ..messaging_pipeline.message_sender import (
     REACT_DONE,
     REACT_FAIL,

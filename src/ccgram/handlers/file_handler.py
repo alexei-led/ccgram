@@ -23,7 +23,7 @@ from telegram.error import TelegramError
 from ..config import config
 from ..telegram_client import PTBTelegramClient
 from ..window_query import view_window
-from ..tmux_manager import send_to_window
+from ..multiplexer.window_ops import send_to_window
 from ..thread_router import thread_router
 from .callback_helpers import get_thread_id
 from .messaging_pipeline.message_sender import ack_reaction, safe_reply

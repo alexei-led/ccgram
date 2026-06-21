@@ -18,14 +18,15 @@ from .... import window_query
 from ....providers import get_provider_for_window
 from ....providers.base import StatusUpdate
 from ....session_monitor import get_active_monitor
-from ....tmux_manager import has_insert_indicator, notify_vim_insert_seen, tmux_manager
+from ....multiplexer import multiplexer as tmux_manager
+from ....multiplexer.vim_state import has_insert_indicator, notify_vim_insert_seen
 from ..polling_state import terminal_poll_state, terminal_screen_buffer
 from ..polling_types import TickContext, is_shell_prompt
 from .decide import build_status_line
 
 if TYPE_CHECKING:
     from ....providers.base import AgentProvider
-    from ....tmux_manager import TmuxWindow
+    from ....multiplexer.base import WindowRef as TmuxWindow
 
 logger = structlog.get_logger()
 

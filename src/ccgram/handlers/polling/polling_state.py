@@ -48,7 +48,7 @@ if TYPE_CHECKING:
 
     from ...providers.base import AgentProvider
     from ...screen_buffer import ScreenBuffer
-    from ...tmux_manager import PaneInfo as TmuxPaneInfo
+    from ...multiplexer.base import PaneInfo as TmuxPaneInfo
 
 logger = structlog.get_logger()
 
@@ -743,7 +743,7 @@ class PaneStatusStrategy:
         forward the text to subscribers.
         """
         # Lazy: tmux_manager → providers → polling_state cycle.
-        from ...tmux_manager import tmux_manager
+        from ...multiplexer import multiplexer as tmux_manager
 
         pane_text = await tmux_manager.capture_pane_by_id(
             pane.pane_id, window_id=window_id
@@ -809,7 +809,7 @@ class PaneStatusStrategy:
         from ...providers import get_provider_for_window
 
         # Lazy: tmux_manager imports providers eagerly; resolved per-call
-        from ...tmux_manager import tmux_manager
+        from ...multiplexer import multiplexer as tmux_manager
 
         # Lazy: window_query proxy resolved per-call
         from ...window_query import get_window_provider

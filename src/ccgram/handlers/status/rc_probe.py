@@ -34,7 +34,7 @@ import structlog
 from ... import window_query
 from ...providers import get_provider_for_window
 from ...thread_router import thread_router
-from ...tmux_manager import tmux_manager
+from ...multiplexer import multiplexer as tmux_manager
 from ...utils import task_done_callback
 from ...window_state_store import get_window_store
 from ..messaging_pipeline.message_sender import safe_send

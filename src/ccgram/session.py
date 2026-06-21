@@ -28,7 +28,7 @@ from .session_map import (
     session_map_sync,
 )
 from .state_persistence import StatePersistence
-from .tmux_manager import tmux_manager
+from .multiplexer import multiplexer as tmux_manager
 from .thread_router import ThreadRouter, install_thread_router, thread_router
 from .user_preferences import (
     UserPreferences,

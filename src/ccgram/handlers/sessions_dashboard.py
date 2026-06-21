@@ -26,7 +26,7 @@ from telegram import (
 from ..config import config
 from ..telegram_client import PTBTelegramClient, TelegramClient
 from ..thread_router import thread_router
-from ..tmux_manager import tmux_manager
+from ..multiplexer import multiplexer as tmux_manager
 from ..window_query import view_window
 from .callback_data import (
     CB_SESSIONS_KILL,

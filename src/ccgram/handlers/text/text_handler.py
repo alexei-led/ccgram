@@ -65,7 +65,8 @@ from ..user_state import (
 from ... import window_query
 from ...thread_router import thread_router
 from ...providers import get_provider_for_window
-from ...tmux_manager import send_to_window, tmux_manager
+from ...multiplexer import multiplexer as tmux_manager
+from ...multiplexer.window_ops import send_to_window
 from ...utils import handle_general_topic_message, is_general_topic, task_done_callback
 
 if TYPE_CHECKING:

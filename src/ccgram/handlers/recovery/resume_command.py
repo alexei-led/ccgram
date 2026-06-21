@@ -37,7 +37,7 @@ from ...session import session_manager
 from ...session_map import session_map_sync
 from ...telegram_client import PTBTelegramClient
 from ...thread_router import thread_router
-from ...tmux_manager import tmux_manager
+from ...multiplexer import multiplexer as tmux_manager
 from ...window_state_store import CCGRAM_CREATED_WINDOW_ORIGIN
 from ...utils import read_session_metadata_from_jsonl
 from ..callback_data import CB_RESUME_CANCEL, CB_RESUME_PAGE, CB_RESUME_PICK

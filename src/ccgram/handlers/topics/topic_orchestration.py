@@ -30,7 +30,7 @@ from ...session import session_manager
 from ...session_monitor import NewWindowEvent
 from ...telegram_client import TelegramClient
 from ...thread_router import thread_router
-from ...tmux_manager import tmux_manager
+from ...multiplexer import multiplexer as tmux_manager
 from ..messaging_pipeline.message_sender import is_thread_gone
 from ..status.topic_emoji import strip_emoji_prefix
 

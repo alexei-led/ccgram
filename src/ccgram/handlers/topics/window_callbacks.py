@@ -20,7 +20,8 @@ from ... import window_query
 from ...telegram_client import PTBTelegramClient, TelegramClient
 from ...session import session_manager
 from ...thread_router import thread_router
-from ...tmux_manager import send_to_window, tmux_manager
+from ...multiplexer import multiplexer as tmux_manager
+from ...multiplexer.window_ops import send_to_window
 from ..callback_data import CB_WIN_BIND, CB_WIN_CANCEL, CB_WIN_NEW
 from ..callback_helpers import get_thread_id
 from .directory_browser import (

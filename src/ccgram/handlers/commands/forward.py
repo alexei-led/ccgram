@@ -32,7 +32,8 @@ from ... import window_query
 from ...telegram_client import PTBTelegramClient
 from ...window_state_store import window_store
 from ...thread_router import thread_router
-from ...tmux_manager import send_followup_to_window, send_to_window, tmux_manager
+from ...multiplexer import multiplexer as tmux_manager
+from ...multiplexer.window_ops import send_followup_to_window, send_to_window
 from ..callback_helpers import get_thread_id as _get_thread_id
 from ..command_history import record_command
 from ..messaging_pipeline.message_queue import enqueue_status_update

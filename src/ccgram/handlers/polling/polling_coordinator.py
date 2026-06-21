@@ -14,7 +14,7 @@ import structlog
 from telegram.error import TelegramError
 
 from ...thread_router import thread_router
-from ...tmux_manager import tmux_manager
+from ...multiplexer import multiplexer as tmux_manager
 from ...utils import log_throttled
 from . import window_tick
 

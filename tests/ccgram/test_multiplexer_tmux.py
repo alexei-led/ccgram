@@ -19,7 +19,6 @@ from ccgram.multiplexer.base import (
     ForegroundInfo,
     Multiplexer,
     PaneDims,
-    PaneInfo,
     WindowRef,
 )
 from ccgram.multiplexer.tmux import TmuxManager, tmux_manager
@@ -214,26 +213,3 @@ class TestParsePsLine:
             321,
             ["node", "x"],
         )
-
-
-# ── Compat shim ────────────────────────────────────────────────────────
-
-
-def test_shim_reexports_public_surface() -> None:
-    import ccgram.tmux_manager as shim
-    from ccgram.multiplexer import tmux as backend
-
-    assert shim.tmux_manager is backend.tmux_manager
-    assert shim.TmuxManager is backend.TmuxManager
-    assert shim.PaneInfo is backend.PaneInfo
-    assert shim.TmuxWindow is backend.TmuxWindow
-    assert shim.send_to_window is backend.send_to_window
-    assert shim.send_followup_to_window is backend.send_followup_to_window
-
-
-def test_shim_value_type_aliases() -> None:
-    import ccgram.tmux_manager as shim
-
-    # TmuxWindow is the neutral WindowRef; PaneInfo is the neutral PaneInfo.
-    assert shim.TmuxWindow is WindowRef
-    assert shim.PaneInfo is PaneInfo

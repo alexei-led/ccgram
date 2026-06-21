@@ -128,7 +128,7 @@ async def has_prompt_marker(
     if capture_fn is None:
         # Lazy: tmux_manager imports providers; lazy fallback when tests
         # don't inject capture_fn keeps the providers ↔ tmux_manager cycle broken.
-        from ccgram.tmux_manager import tmux_manager
+        from ccgram.multiplexer import multiplexer as tmux_manager
 
         capture_fn = tmux_manager.capture_pane
     capture = await capture_fn(window_id)
@@ -152,7 +152,7 @@ async def detect_pane_shell(window_id: str) -> str:
     its command is not a recognized shell.
     """
     # Lazy: tmux_manager pulls providers; resolved per-call
-    from ccgram.tmux_manager import tmux_manager
+    from ccgram.multiplexer import multiplexer as tmux_manager
 
     window = await tmux_manager.find_window_by_id(window_id)
     if window and window.pane_current_command:
@@ -228,7 +228,7 @@ async def _is_interactive_shell(window_id: str) -> bool:
     or if detection fails (fail-safe: don't send C-c to unknown targets).
     """
     # Lazy: tmux_manager pulls providers; resolved per-call
-    from ccgram.tmux_manager import tmux_manager
+    from ccgram.multiplexer import multiplexer as tmux_manager
 
     w = await tmux_manager.find_window_by_id(window_id)
     if not w or not w.pane_tty:
@@ -290,7 +290,7 @@ async def setup_shell_prompt(
     if send_keys_fn is None:
         # Lazy: tmux_manager imports providers; lazy fallback for the same
         # cycle-break reason as has_prompt_marker above.
-        from ccgram.tmux_manager import tmux_manager
+        from ccgram.multiplexer import multiplexer as tmux_manager
 
         send_keys_fn = tmux_manager.send_keys
 

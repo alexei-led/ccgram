@@ -295,7 +295,7 @@ class ClaudeProvider:
         else:
             # Lazy: tmux_manager imports providers; lazy fallback avoids the
             # cycle when tests inject capture_fn directly.
-            from ccgram.tmux_manager import tmux_manager
+            from ccgram.multiplexer import multiplexer as tmux_manager
 
             _fn = tmux_manager.capture_pane
         try:

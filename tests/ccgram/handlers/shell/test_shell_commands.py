@@ -554,7 +554,7 @@ class TestGatherLlmContext:
 
 class TestCancelStuckInput:
     def _mock_window(self, pane_cmd: str = "fish"):  # noqa: ANN202
-        from ccgram.tmux_manager import TmuxWindow
+        from ccgram.multiplexer.base import WindowRef as TmuxWindow
 
         return TmuxWindow(
             window_id="@0",
@@ -707,7 +707,7 @@ class TestHasPromptMarker:
     ) -> None:
         from ccgram.providers.shell import has_prompt_marker
 
-        with patch("ccgram.tmux_manager.tmux_manager") as mock_tm:
+        with patch("ccgram.multiplexer.multiplexer") as mock_tm:
             mock_tm.capture_pane = AsyncMock(return_value=capture_value)
             assert await has_prompt_marker("@0") is expected
 

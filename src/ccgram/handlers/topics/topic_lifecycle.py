@@ -19,7 +19,7 @@ from ...config import config
 from ...session import session_manager
 from ...telegram_client import PTBTelegramClient, TelegramClient
 from ...thread_router import thread_router
-from ...tmux_manager import tmux_manager
+from ...multiplexer import multiplexer as tmux_manager
 from ...utils import log_throttled
 from ...window_state_store import CCGRAM_CREATED_WINDOW_ORIGIN
 from ..cleanup import clear_topic_state
@@ -31,7 +31,7 @@ from ..polling.polling_state import (
 
 if TYPE_CHECKING:
     from telegram.ext import ContextTypes
-    from ...tmux_manager import TmuxWindow
+    from ...multiplexer.base import WindowRef as TmuxWindow
 
 logger = structlog.get_logger()
 

@@ -74,7 +74,7 @@ async def _default_capture(window_id: str) -> str | None:
     # request arrives; resolving the singleton inside the default
     # factory keeps the injection seam clean.
     # Lazy: miniapp routes resolve singletons per-request so tests can stub them
-    from ...tmux_manager import tmux_manager
+    from ...multiplexer import multiplexer as tmux_manager
 
     return await tmux_manager.capture_pane(window_id, with_ansi=True)
 
@@ -82,7 +82,7 @@ async def _default_capture(window_id: str) -> str | None:
 async def _default_pane_capture(window_id: str, pane_id: str) -> str | None:
     """Capture a specific pane by ID, scoped to ``window_id``."""
     # Lazy: same DI seam as ``_default_capture``.
-    from ...tmux_manager import tmux_manager
+    from ...multiplexer import multiplexer as tmux_manager
 
     return await tmux_manager.capture_pane_by_id(
         pane_id, with_ansi=True, window_id=window_id
@@ -92,7 +92,7 @@ async def _default_pane_capture(window_id: str, pane_id: str) -> str | None:
 async def _default_pane_list(window_id: str) -> list[dict[str, Any]]:
     """Enumerate panes for a window, merging tmux state + persisted projections."""
     # Lazy: same DI seam as ``_default_capture``.
-    from ...tmux_manager import tmux_manager
+    from ...multiplexer import multiplexer as tmux_manager
 
     # Lazy: miniapp routes resolve singletons per-request so tests can stub them
     from ...window_state_ports.pane_state import list_pane_projections

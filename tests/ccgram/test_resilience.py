@@ -315,7 +315,7 @@ class TestShellDetectionSafety:
         mock_tmux.find_window_by_id = AsyncMock(return_value=mock_window)
 
         with (
-            patch("ccgram.tmux_manager.tmux_manager", mock_tmux),
+            patch("ccgram.multiplexer.multiplexer", mock_tmux),
             patch(
                 "ccgram.providers.process_detection.get_foreground_args",
                 new_callable=AsyncMock,
@@ -333,7 +333,7 @@ class TestShellDetectionSafety:
         mock_tmux.find_window_by_id = AsyncMock(return_value=mock_window)
 
         with (
-            patch("ccgram.tmux_manager.tmux_manager", mock_tmux),
+            patch("ccgram.multiplexer.multiplexer", mock_tmux),
             patch(
                 "ccgram.providers.process_detection.get_foreground_args",
                 new_callable=AsyncMock,

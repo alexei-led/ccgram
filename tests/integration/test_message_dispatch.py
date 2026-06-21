@@ -190,7 +190,7 @@ async def test_new_command_forwarded(app) -> None:
             return_value="@0",
         ),
         patch(
-            "ccgram.handlers.commands.forward.tmux_manager.find_window_by_id",
+            "ccgram.multiplexer.tmux.tmux_manager.find_window_by_id",
             new_callable=AsyncMock,
             return_value=MagicMock(window_id="@0"),
         ),
@@ -224,7 +224,7 @@ async def test_unknown_command_forwarded(app) -> None:
             return_value="@0",
         ),
         patch(
-            "ccgram.handlers.commands.forward.tmux_manager.find_window_by_id",
+            "ccgram.multiplexer.tmux.tmux_manager.find_window_by_id",
             new_callable=AsyncMock,
             return_value=MagicMock(window_id="@0"),
         ),

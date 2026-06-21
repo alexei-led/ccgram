@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 
 from ..telegram_client import TelegramClient
 from ..thread_router import thread_router
-from ..tmux_manager import tmux_manager
+from ..multiplexer import multiplexer as tmux_manager
 from ..window_query import get_window_provider
 
 if TYPE_CHECKING:

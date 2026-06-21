@@ -33,7 +33,8 @@ from ...screenshot import text_to_image
 from ... import window_query
 from ...telegram_client import PTBTelegramClient
 from ...thread_router import thread_router
-from ...tmux_manager import send_to_window, tmux_manager
+from ...multiplexer import multiplexer as tmux_manager
+from ...multiplexer.window_ops import send_to_window
 from ...topic_state_registry import topic_state
 from ..callback_data import (
     CB_KEYS_PREFIX,

@@ -33,7 +33,8 @@ from ...telegram_client import PTBTelegramClient, TelegramClient
 from ...llm import get_completer
 from ...llm import CommandResult
 from ...thread_router import thread_router
-from ...tmux_manager import send_to_window, tmux_manager
+from ...multiplexer import multiplexer as tmux_manager
+from ...multiplexer.window_ops import send_to_window
 from ..callback_data import (
     CB_SHELL_CANCEL,
     CB_SHELL_CONFIRM_DANGER,

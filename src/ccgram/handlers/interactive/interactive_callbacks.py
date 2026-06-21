@@ -15,7 +15,7 @@ import structlog
 
 from telegram import CallbackQuery, Update
 from ...telegram_client import PTBTelegramClient
-from ...tmux_manager import tmux_manager
+from ...multiplexer import multiplexer as tmux_manager
 from ..callback_data import (
     CB_ASK_DOWN,
     CB_ASK_ENTER,

@@ -84,7 +84,7 @@ def e2e_tmux(monkeypatch):
     import libtmux
 
     from ccgram.config import config
-    from ccgram.tmux_manager import TmuxManager
+    from ccgram.multiplexer.tmux import TmuxManager
 
     monkeypatch.setattr(config, "tmux_session_name", E2E_TMUX_SESSION)
 
@@ -103,11 +103,15 @@ def e2e_tmux(monkeypatch):
     if session.windows:
         session.windows[0].rename_window("__main__")
 
-    # Replace the global tmux_manager singleton in every importing module.
+    # Replace the global tmux_manager singleton in every importing module, and
+    # wire the multiplexer proxy so proxy/lazy callers resolve to it too.
     manager = TmuxManager(session_name=E2E_TMUX_SESSION)
 
+    from ccgram.multiplexer import install_multiplexer
+
+    install_multiplexer(manager)
+
     _tm_modules = [
-        "ccgram.tmux_manager",
         "ccgram.bot",
         "ccgram.session",
         "ccgram.session_monitor",

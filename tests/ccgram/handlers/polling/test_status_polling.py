@@ -31,7 +31,7 @@ from ccgram.handlers.polling.polling_types import (
     is_shell_prompt,
 )
 from ccgram.telegram_client import PTBTelegramClient
-from ccgram.tmux_manager import PaneInfo
+from ccgram.multiplexer.base import PaneInfo
 
 
 def _assert_handle_called_once_with_client(mock_handle, bot, *args, **kwargs):
@@ -2126,7 +2126,7 @@ class TestScanWindowPanes:
     async def test_skips_single_pane_window(self) -> None:
         bot = AsyncMock(spec=Bot)
         with (
-            patch("ccgram.tmux_manager.tmux_manager") as mock_tm,
+            patch("ccgram.multiplexer.multiplexer") as mock_tm,
             patch(
                 "ccgram.handlers.polling.window_tick.apply.handle_interactive_ui",
                 new_callable=AsyncMock,
@@ -2149,7 +2149,7 @@ class TestScanWindowPanes:
         mock_provider = MagicMock()
         mock_provider.parse_terminal_status.return_value = interactive
         with (
-            patch("ccgram.tmux_manager.tmux_manager") as mock_tm,
+            patch("ccgram.multiplexer.multiplexer") as mock_tm,
             patch(
                 "ccgram.providers.get_provider_for_window",
                 return_value=mock_provider,
@@ -2173,7 +2173,7 @@ class TestScanWindowPanes:
         mock_provider = MagicMock()
         mock_provider.parse_terminal_status.return_value = None
         with (
-            patch("ccgram.tmux_manager.tmux_manager") as mock_tm,
+            patch("ccgram.multiplexer.multiplexer") as mock_tm,
             patch(
                 "ccgram.providers.get_provider_for_window",
                 return_value=mock_provider,
@@ -2204,7 +2204,7 @@ class TestScanWindowPanes:
         mock_provider = MagicMock()
         mock_provider.parse_terminal_status.return_value = interactive
         with (
-            patch("ccgram.tmux_manager.tmux_manager") as mock_tm,
+            patch("ccgram.multiplexer.multiplexer") as mock_tm,
             patch(
                 "ccgram.providers.get_provider_for_window",
                 return_value=mock_provider,
@@ -2225,7 +2225,7 @@ class TestScanWindowPanes:
     async def test_clears_stale_alert_when_pane_disappears(self) -> None:
         _pane_alert_hashes["%2"] = ("old prompt", 100.0, "@0")
         bot = AsyncMock(spec=Bot)
-        with patch("ccgram.tmux_manager.tmux_manager") as mock_tm:
+        with patch("ccgram.multiplexer.multiplexer") as mock_tm:
             mock_tm.list_panes = AsyncMock(return_value=[_make_pane()])
             await _scan_window_panes(bot, 1, "@0", 42)
         assert "%2" not in _pane_alert_hashes
@@ -2236,7 +2236,7 @@ class TestScanWindowPanes:
         mock_provider = MagicMock()
         mock_provider.parse_terminal_status.return_value = None
         with (
-            patch("ccgram.tmux_manager.tmux_manager") as mock_tm,
+            patch("ccgram.multiplexer.multiplexer") as mock_tm,
             patch(
                 "ccgram.providers.get_provider_for_window",
                 return_value=mock_provider,
@@ -2256,7 +2256,7 @@ class TestScanWindowPanes:
 
     async def test_cached_pane_count_skips_subprocess(self) -> None:
         bot = AsyncMock(spec=Bot)
-        with patch("ccgram.tmux_manager.tmux_manager") as mock_tm:
+        with patch("ccgram.multiplexer.multiplexer") as mock_tm:
             mock_tm.list_panes = AsyncMock(return_value=[_make_pane()])
             await _scan_window_panes(bot, 1, "@0", 42)
             await _scan_window_panes(bot, 1, "@0", 42)
@@ -2386,8 +2386,10 @@ class TestUpdateStatusMessageEdgeCases:
                 "ccgram.handlers.polling.window_tick.observe._parse_with_pyte",
                 return_value=pyte_status,
             ),
-            patch("ccgram.tmux_manager.has_insert_indicator", return_value=False),
-            patch("ccgram.tmux_manager.notify_vim_insert_seen"),
+            patch(
+                "ccgram.multiplexer.vim_state.has_insert_indicator", return_value=False
+            ),
+            patch("ccgram.multiplexer.vim_state.notify_vim_insert_seen"),
             patch("ccgram.handlers.polling.window_tick.apply._send_typing_throttled"),
             patch(
                 "ccgram.handlers.polling.window_tick.apply.get_subagent_names",
@@ -2442,8 +2444,10 @@ class TestUpdateStatusMessageEdgeCases:
                 "ccgram.handlers.polling.window_tick.observe._parse_with_pyte",
                 return_value=pyte_status,
             ),
-            patch("ccgram.tmux_manager.has_insert_indicator", return_value=False),
-            patch("ccgram.tmux_manager.notify_vim_insert_seen"),
+            patch(
+                "ccgram.multiplexer.vim_state.has_insert_indicator", return_value=False
+            ),
+            patch("ccgram.multiplexer.vim_state.notify_vim_insert_seen"),
             patch("ccgram.handlers.polling.window_tick.apply._send_typing_throttled"),
             patch(
                 "ccgram.handlers.polling.window_tick.apply.get_subagent_names",
@@ -2492,8 +2496,10 @@ class TestUpdateStatusMessageEdgeCases:
                 "ccgram.handlers.polling.window_tick.apply.clear_interactive_msg",
                 new_callable=AsyncMock,
             ) as mock_clear,
-            patch("ccgram.tmux_manager.has_insert_indicator", return_value=False),
-            patch("ccgram.tmux_manager.notify_vim_insert_seen"),
+            patch(
+                "ccgram.multiplexer.vim_state.has_insert_indicator", return_value=False
+            ),
+            patch("ccgram.multiplexer.vim_state.notify_vim_insert_seen"),
             patch("ccgram.handlers.polling.window_tick.apply._send_typing_throttled"),
             patch(
                 "ccgram.handlers.polling.window_tick.apply.get_subagent_names",
@@ -2543,8 +2549,10 @@ class TestUpdateStatusMessageEdgeCases:
                 "ccgram.handlers.polling.window_tick.apply.handle_interactive_ui",
                 new_callable=AsyncMock,
             ) as mock_handle,
-            patch("ccgram.tmux_manager.has_insert_indicator", return_value=False),
-            patch("ccgram.tmux_manager.notify_vim_insert_seen"),
+            patch(
+                "ccgram.multiplexer.vim_state.has_insert_indicator", return_value=False
+            ),
+            patch("ccgram.multiplexer.vim_state.notify_vim_insert_seen"),
         ):
             mock_tm.find_window_by_id = AsyncMock(return_value=mock_window)
             mock_tm.capture_pane = AsyncMock(return_value="Allow?\nEsc\n")

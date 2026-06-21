@@ -288,7 +288,7 @@ class TranscriptReader:
         # Lazy: tmux_manager imports providers which transitively imports
         # transcript_reader through provider format modules.
         # Lazy: tmux_manager pulls providers eagerly; defer until pane lookup runs
-        from .tmux_manager import tmux_manager
+        from .multiplexer import multiplexer as tmux_manager
 
         cwds: set[str] = set()
         windows = await tmux_manager.list_windows()

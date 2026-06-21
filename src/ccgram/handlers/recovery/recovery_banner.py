@@ -36,7 +36,8 @@ from ...session import session_manager
 from ...session_map import session_map_sync
 from ...telegram_client import PTBTelegramClient
 from ...thread_router import thread_router
-from ...tmux_manager import send_to_window, tmux_manager
+from ...multiplexer import multiplexer as tmux_manager
+from ...multiplexer.window_ops import send_to_window
 from ...window_state_store import CCGRAM_CREATED_WINDOW_ORIGIN
 from ..callback_data import (
     CB_RECOVERY_BACK,

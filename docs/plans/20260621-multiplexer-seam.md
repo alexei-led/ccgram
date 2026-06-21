@@ -126,14 +126,14 @@ Whole-plan commands (repo Makefile targets):
 - Fitness gate: F1 boundary audit (AST walk modeled on `tests/ccgram/test_window_state_access_audit.py`). Before-fail/after-pass: planting a direct `from ccgram.multiplexer.tmux import ...` in a handler must fail the audit; removing it must pass.
 - Verification: `uv run pytest tests/ccgram/test_multiplexer_boundary.py tests/ccgram/test_multiplexer_contract.py -v`; then `make check`.
 - Manual checks: spot-check that no `if multiplexer.name == "tmux"` conditional leaked into handlers (gate on capabilities, not names).
-- [ ] migrate all call sites from `tmux_manager` to the `multiplexer` proxy + `Multiplexer` type
-- [ ] delete the `tmux_manager.py` compat shim
-- [ ] add `test_multiplexer_boundary.py` (F1) forbidding backend/`libtmux`/raw-shell imports outside `multiplexer/**`, `bootstrap.py`, `main.py`
-- [ ] add `test_multiplexer_contract.py` (F2) parametrized over backends, tmux leg active
-- [ ] extend `test_import_no_cycles.py` (F3) to include `multiplexer/**` and assert `base` imports no backend
-- [ ] confirm F1 fails on a planted direct-backend import, then passes after removal
-- [ ] write tests covering the above audits
-- [ ] run project tests (`make test`) - must pass before next task
+- [x] migrate all call sites from `tmux_manager` to the `multiplexer` proxy + `Multiplexer` type
+- [x] delete the `tmux_manager.py` compat shim
+- [x] add `test_multiplexer_boundary.py` (F1) forbidding backend/`libtmux`/raw-shell imports outside `multiplexer/**`, `bootstrap.py`, `main.py`
+- [x] add `test_multiplexer_contract.py` (F2) parametrized over backends, tmux leg active
+- [x] extend `test_import_no_cycles.py` (F3) to include `multiplexer/**` and assert `base` imports no backend
+- [x] confirm F1 fails on a planted direct-backend import, then passes after removal
+- [x] write tests covering the above audits
+- [x] run project tests (`make test`) - must pass before next task
 
 ### Task 5: Phase-1 verification checkpoint (seam locked, zero behavior change)
 

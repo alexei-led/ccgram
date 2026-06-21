@@ -20,7 +20,7 @@ from telegram import Update
 from ... import window_query
 from ...config import config
 from ...thread_router import thread_router
-from ...tmux_manager import tmux_manager
+from ...multiplexer import multiplexer as tmux_manager
 from ..messaging_pipeline.message_sender import safe_reply
 from ..user_state import PENDING_THREAD_ID, RECOVERY_WINDOW_ID
 from .recovery_banner import RecoveryBanner, render_banner

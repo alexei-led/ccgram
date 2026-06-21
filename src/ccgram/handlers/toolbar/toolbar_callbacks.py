@@ -26,7 +26,7 @@ from telegram.error import TelegramError
 
 from ...window_query import view_window
 from ...thread_router import thread_router
-from ...tmux_manager import tmux_manager
+from ...multiplexer import multiplexer as tmux_manager
 from ...toolbar_config import ToolbarAction
 from ..callback_data import CB_TOOLBAR
 from ..callback_helpers import get_thread_id, user_owns_window

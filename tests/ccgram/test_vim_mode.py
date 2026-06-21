@@ -4,12 +4,12 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from ccgram.tmux_manager import (
-    TmuxManager,
-    has_insert_indicator,
+from ccgram.multiplexer.tmux import TmuxManager
+from ccgram.multiplexer.vim_state import (
     _vim_locks,
     _vim_state,
     clear_vim_state,
+    has_insert_indicator,
     notify_vim_insert_seen,
     reset_vim_state,
 )
@@ -291,11 +291,11 @@ class TestPollingAndCleanupIntegration:
         """Polling calls notify_vim_insert_seen when INSERT is in last 3 lines."""
         with (
             patch(
-                "ccgram.handlers.polling.window_tick.apply.tmux_manager.find_window_by_id",
+                "ccgram.multiplexer.tmux.tmux_manager.find_window_by_id",
                 new_callable=AsyncMock,
             ) as mock_find,
             patch(
-                "ccgram.handlers.polling.window_tick.apply.tmux_manager.capture_pane",
+                "ccgram.multiplexer.tmux.tmux_manager.capture_pane",
                 new_callable=AsyncMock,
                 return_value="output\nprompt\n-- INSERT --",
             ),
@@ -341,11 +341,11 @@ class TestPollingAndCleanupIntegration:
         """Polling does NOT call notify when INSERT is only in historical output."""
         with (
             patch(
-                "ccgram.handlers.polling.window_tick.apply.tmux_manager.find_window_by_id",
+                "ccgram.multiplexer.tmux.tmux_manager.find_window_by_id",
                 new_callable=AsyncMock,
             ) as mock_find,
             patch(
-                "ccgram.handlers.polling.window_tick.apply.tmux_manager.capture_pane",
+                "ccgram.multiplexer.tmux.tmux_manager.capture_pane",
                 new_callable=AsyncMock,
                 return_value="-- INSERT --\nline2\nline3\nline4",
             ),

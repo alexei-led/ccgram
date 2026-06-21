@@ -364,7 +364,7 @@ class TestScanPanes:
         bot = AsyncMock(spec=Bot)
         terminal_screen_buffer.update_pane_count_cache("@0", 1)
 
-        with patch("ccgram.tmux_manager.tmux_manager") as mock_tm:
+        with patch("ccgram.multiplexer.multiplexer") as mock_tm:
             await _scan_window_panes(bot, 1, "@0", 100)
             mock_tm.list_panes.assert_not_called()
 
@@ -375,7 +375,7 @@ class TestScanPanes:
         interactive_status = _make_status(raw_text="Permission?", is_interactive=True)
 
         with (
-            patch("ccgram.tmux_manager.tmux_manager") as mock_tm,
+            patch("ccgram.multiplexer.multiplexer") as mock_tm,
             patch("ccgram.providers.get_provider_for_window") as mock_prov,
             patch(
                 "ccgram.handlers.polling.window_tick.apply.handle_interactive_ui",

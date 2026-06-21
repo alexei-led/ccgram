@@ -6,7 +6,7 @@ import subprocess
 
 import pytest
 
-from ccgram.tmux_manager import TmuxManager
+from ccgram.multiplexer.tmux import TmuxManager
 from ccgram.utils import check_duplicate_ccgram, detect_tmux_context
 
 pytestmark = [

@@ -26,7 +26,7 @@ from telegram import Message
 
 from ...providers import AgentProvider
 from ... import window_query
-from ...tmux_manager import tmux_manager
+from ...multiplexer import multiplexer as tmux_manager
 from ...utils import task_done_callback
 from ..messaging_pipeline.message_sender import safe_reply
 

@@ -254,7 +254,7 @@ async def test_build_app_includes_terminal_route():
 
 async def test_default_capture_delegates_to_tmux_singleton(monkeypatch):
     from ccgram.miniapp.api import terminal as term_mod
-    from ccgram import tmux_manager as tmux_mod
+    from ccgram.multiplexer import tmux as tmux_mod
 
     captured: list[tuple[str, bool]] = []
 
@@ -270,7 +270,7 @@ async def test_default_capture_delegates_to_tmux_singleton(monkeypatch):
 
 async def test_default_pane_capture_delegates_to_tmux_singleton(monkeypatch):
     from ccgram.miniapp.api import terminal as term_mod
-    from ccgram import tmux_manager as tmux_mod
+    from ccgram.multiplexer import tmux as tmux_mod
 
     seen: list[tuple[str, str, bool]] = []
 
@@ -288,13 +288,13 @@ async def test_default_pane_capture_delegates_to_tmux_singleton(monkeypatch):
 
 async def test_default_pane_list_merges_window_state(monkeypatch):
     from ccgram.miniapp.api import terminal as term_mod
-    from ccgram import tmux_manager as tmux_mod
+    from ccgram.multiplexer import tmux as tmux_mod
     from ccgram.window_state_store import (
         WindowState,
         PaneInfo as StatePaneInfo,
         window_store,
     )
-    from ccgram.tmux_manager import PaneInfo as TmuxPaneInfo
+    from ccgram.multiplexer.base import PaneInfo as TmuxPaneInfo
 
     tmux_panes = [
         TmuxPaneInfo(
@@ -348,8 +348,8 @@ async def test_default_pane_list_merges_window_state(monkeypatch):
 
 async def test_default_pane_list_handles_missing_window(monkeypatch):
     from ccgram.miniapp.api import terminal as term_mod
-    from ccgram import tmux_manager as tmux_mod
-    from ccgram.tmux_manager import PaneInfo as TmuxPaneInfo
+    from ccgram.multiplexer import tmux as tmux_mod
+    from ccgram.multiplexer.base import PaneInfo as TmuxPaneInfo
 
     async def fake_list(window_id: str):
         return [

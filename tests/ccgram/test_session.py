@@ -1011,7 +1011,7 @@ class TestResolveStaleIdsPreservesDeadBindings:
         mgr.window_states["@2"] = WindowState(cwd="/tmp/dead", provider_name="claude")
 
         alive = SimpleNamespace(window_id="@1", window_name="alive-proj")
-        from ccgram.tmux_manager import tmux_manager
+        from ccgram.multiplexer.tmux import tmux_manager
 
         with patch.object(
             tmux_manager, "list_windows", AsyncMock(return_value=[alive])
@@ -1025,7 +1025,7 @@ class TestResolveStaleIdsPreservesDeadBindings:
     async def test_alive_bindings_unchanged(self, mgr: SessionManager) -> None:
         thread_router.bind_thread(100, 1, "@1", window_name="proj")
         alive = SimpleNamespace(window_id="@1", window_name="proj")
-        from ccgram.tmux_manager import tmux_manager
+        from ccgram.multiplexer.tmux import tmux_manager
 
         with patch.object(
             tmux_manager, "list_windows", AsyncMock(return_value=[alive])
@@ -1037,7 +1037,7 @@ class TestResolveStaleIdsPreservesDeadBindings:
     async def test_dead_window_state_preserved(self, mgr: SessionManager) -> None:
         thread_router.bind_thread(100, 1, "@1", window_name="proj")
         mgr.window_states["@1"] = WindowState(cwd="/my/project", provider_name="codex")
-        from ccgram.tmux_manager import tmux_manager
+        from ccgram.multiplexer.tmux import tmux_manager
 
         with patch.object(tmux_manager, "list_windows", AsyncMock(return_value=[])):
             await mgr.resolve_stale_ids()

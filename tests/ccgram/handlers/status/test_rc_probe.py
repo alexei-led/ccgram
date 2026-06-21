@@ -169,8 +169,7 @@ class TestClassifyLoop:
         monkeypatch.setattr(rc_probe, "_RETRY_INTERVAL", 0.0)
         monkeypatch.setattr(rc_probe, "_TOTAL_TIMEOUT", 5.0)
         monkeypatch.setattr(
-            rc_probe.tmux_manager,
-            "capture_pane",
+            "ccgram.multiplexer.tmux.tmux_manager.capture_pane",
             AsyncMock(
                 side_effect=[
                     "still working\n$ ",
@@ -202,7 +201,8 @@ class TestClassifyLoop:
         monkeypatch.setattr(rc_probe, "_RETRY_INTERVAL", 0.0)
         monkeypatch.setattr(rc_probe, "_TOTAL_TIMEOUT", 0.0)
         monkeypatch.setattr(
-            rc_probe.tmux_manager, "capture_pane", AsyncMock(return_value="nothing")
+            "ccgram.multiplexer.tmux.tmux_manager.capture_pane",
+            AsyncMock(return_value="nothing"),
         )
         monkeypatch.setattr(
             thread_router, "iter_thread_bindings", lambda: iter([(111, 42, "@8")])

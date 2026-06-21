@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from ccgram.providers.shell import PromptMatch, ShellProvider, detect_pane_shell
-from ccgram.tmux_manager import TmuxWindow
+from ccgram.multiplexer.base import WindowRef as TmuxWindow
 
 
 class TestShellCapabilities:
@@ -88,7 +88,7 @@ class TestShellOverrides:
 class TestDetectPaneShell:
     @pytest.fixture
     def mock_tmux(self):
-        with patch("ccgram.tmux_manager.tmux_manager") as mock_tm:
+        with patch("ccgram.multiplexer.multiplexer") as mock_tm:
             yield mock_tm
 
     @pytest.mark.parametrize(
@@ -183,7 +183,7 @@ class TestSetupShellPrompt:
     @pytest.fixture
     def mock_tmux(self):
         with (
-            patch("ccgram.tmux_manager.tmux_manager") as mock_tm,
+            patch("ccgram.multiplexer.multiplexer") as mock_tm,
             patch(
                 "ccgram.providers.shell_infra._is_interactive_shell",
                 new_callable=AsyncMock,
@@ -393,7 +393,7 @@ class TestWrapModeSetup:
     @pytest.fixture
     def mock_tmux(self):
         with (
-            patch("ccgram.tmux_manager.tmux_manager") as mock_tm,
+            patch("ccgram.multiplexer.multiplexer") as mock_tm,
             patch(
                 "ccgram.providers.shell_infra._is_interactive_shell",
                 new_callable=AsyncMock,
@@ -623,7 +623,7 @@ class TestSetupShellPromptClearsBefore:
     @pytest.fixture
     def mock_tmux(self):
         with (
-            patch("ccgram.tmux_manager.tmux_manager") as mock_tm,
+            patch("ccgram.multiplexer.multiplexer") as mock_tm,
             patch(
                 "ccgram.providers.shell_infra._is_interactive_shell",
                 new_callable=AsyncMock,

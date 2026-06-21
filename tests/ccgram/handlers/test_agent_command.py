@@ -168,7 +168,7 @@ async def test_auto_clears_override_and_redetects(monkeypatch):
     fake_window.pane_current_command = "codex"
     fake_window.pane_tty = "/dev/ttys00"
     monkeypatch.setattr(
-        "ccgram.tmux_manager.tmux_manager.find_window_by_id",
+        "ccgram.multiplexer.tmux.tmux_manager.find_window_by_id",
         AsyncMock(return_value=fake_window),
     )
     monkeypatch.setattr(
@@ -198,7 +198,7 @@ async def test_auto_falls_back_to_shell_and_triggers_ensure_setup(monkeypatch):
     fake_window.pane_current_command = "ralphex"
     fake_window.pane_tty = "/dev/ttys00"
     monkeypatch.setattr(
-        "ccgram.tmux_manager.tmux_manager.find_window_by_id",
+        "ccgram.multiplexer.tmux.tmux_manager.find_window_by_id",
         AsyncMock(return_value=fake_window),
     )
     monkeypatch.setattr(
@@ -373,7 +373,7 @@ async def test_auto_resolving_to_same_provider_clears_override(
     fake_window.pane_current_command = "claude"
     fake_window.pane_tty = "/dev/ttys00"
     monkeypatch.setattr(
-        "ccgram.tmux_manager.tmux_manager.find_window_by_id",
+        "ccgram.multiplexer.tmux.tmux_manager.find_window_by_id",
         AsyncMock(return_value=fake_window),
     )
     monkeypatch.setattr(

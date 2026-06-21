@@ -260,7 +260,7 @@ class TestImportsAreMinimal:
             "telegram.error",
             "telegram",
             "..thread_router",
-            "..tmux_manager",
+            "..multiplexer",
             "..utils",
             "..config",
             ".window_tick",

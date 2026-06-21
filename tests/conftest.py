@@ -49,3 +49,25 @@ def _clear_window_store():
     yield
     claude_task_state.reset()
     _clear()
+
+
+@pytest.fixture(autouse=True)
+def _wire_multiplexer():
+    """Wire the multiplexer proxy to the tmux backend for the duration of a test.
+
+    Production wires the proxy in ``bootstrap_application``; unit tests don't run
+    bootstrap, so callers using the ``multiplexer`` proxy would hit the unwired
+    error. Installing the tmux backend mirrors the default config and keeps the
+    proxy forwarding to the same ``multiplexer.tmux.tmux_manager`` singleton that
+    tests patch. Tests that replace the whole proxy via ``patch(...)`` are
+    unaffected (the patch shadows this wiring).
+    """
+    from ccgram.multiplexer import (
+        _reset_multiplexer_for_testing,
+        get_multiplexer,
+        install_multiplexer,
+    )
+
+    install_multiplexer(get_multiplexer("tmux"))
+    yield
+    _reset_multiplexer_for_testing()

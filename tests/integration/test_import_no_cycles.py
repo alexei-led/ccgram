@@ -57,3 +57,42 @@ def test_module_imports_in_clean_interpreter(module: str) -> None:
         f"stdout:\n{result.stdout}\n"
         f"stderr:\n{result.stderr}"
     )
+
+
+# F3: the multiplexer seam is enumerated above (the walk covers
+# ``ccgram.multiplexer`` and its submodules); these assertions pin the package
+# coverage and prove the core contract layer pulls in no backend.
+
+
+def test_multiplexer_package_is_covered() -> None:
+    expected = {
+        "ccgram.multiplexer",
+        "ccgram.multiplexer.base",
+        "ccgram.multiplexer.tmux",
+        "ccgram.multiplexer.registry",
+        "ccgram.multiplexer.vim_state",
+        "ccgram.multiplexer.window_ops",
+    }
+    assert expected <= set(_MODULES)
+
+
+def test_multiplexer_base_imports_no_backend_in_clean_interpreter() -> None:
+    """Importing ``multiplexer.base`` must not pull in a backend or libtmux."""
+    probe = (
+        "import sys; import ccgram.multiplexer.base; "
+        "bad=[m for m in sys.modules "
+        "if m.startswith('ccgram.multiplexer.tmux') "
+        "or m.startswith('ccgram.multiplexer.herdr') "
+        "or m=='libtmux']; "
+        "assert not bad, bad"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        "multiplexer.base must import no backend/libtmux.\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )

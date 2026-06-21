@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import re
 import structlog
 import subprocess
 from pathlib import Path
@@ -35,8 +34,6 @@ import libtmux
 from libtmux.exc import LibTmuxException
 
 from ..config import config
-from ..thread_router import thread_router
-from ..topic_state_registry import topic_state
 from .base import (
     CaptureResult,
     ForegroundInfo,
@@ -45,6 +42,27 @@ from .base import (
     PaneInfo,
     WindowRef,
 )
+from .vim_state import (
+    _vim_locks,
+    _vim_state,
+    clear_vim_state,
+    has_insert_indicator,
+    notify_vim_insert_seen,
+    reset_vim_state,
+)
+
+__all__ = [
+    "PaneInfo",
+    "TmuxManager",
+    "TmuxWindow",
+    "_vim_locks",
+    "_vim_state",
+    "clear_vim_state",
+    "has_insert_indicator",
+    "notify_vim_insert_seen",
+    "reset_vim_state",
+    "tmux_manager",
+]
 
 logger = structlog.get_logger()
 
@@ -52,47 +70,10 @@ logger = structlog.get_logger()
 # ``WindowRef`` is field-compatible (Task 1), so the alias is exact.
 TmuxWindow = WindowRef
 
-# ── Vim mode state cache ───────────────────────────────────────────────
-# window_id → True (vim mode on) / False (vim mode off)
-# Missing key = unknown, needs probe on first send.
-_vim_state: dict[str, bool] = {}
-
-# Per-window locks to serialize vim probe + send sequences,
-# preventing interleaved keystrokes from concurrent send_keys() calls.
-_vim_locks: dict[str, asyncio.Lock] = {}
-
-
-_VIM_INSERT_RE = re.compile(r"^--\s*INSERT\s*--\s*$")
-
-
-def has_insert_indicator(pane_text: str) -> bool:
-    """Check if vim's ``-- INSERT --`` appears in the last 3 lines of pane text.
-
-    Only matches lines where ``-- INSERT --`` is the sole content (with optional
-    whitespace), avoiding false positives from Claude Code's own status bar which
-    renders ``-- INSERT -- ⏸ plan mode on ...`` with trailing text.
-    """
-    return any(
-        _VIM_INSERT_RE.search(line.strip()) for line in pane_text.splitlines()[-3:]
-    )
-
-
-def notify_vim_insert_seen(window_id: str) -> None:
-    """Record that vim INSERT mode was observed (called from status polling)."""
-    _vim_state[window_id] = True
-
-
-@topic_state.register("window")
-def clear_vim_state(window_id: str) -> None:
-    """Remove vim state cache entry and lock for a window (called on cleanup)."""
-    _vim_state.pop(window_id, None)
-    _vim_locks.pop(window_id, None)
-
-
-def reset_vim_state() -> None:
-    """Reset all vim state (for testing)."""
-    _vim_state.clear()
-    _vim_locks.clear()
+# Vim-insert detection state moved to ``multiplexer.vim_state`` (backend-neutral)
+# so the polling layer can import the helpers without importing this backend
+# (F1 boundary).  ``send`` below reads ``_vim_state`` / ``_vim_locks`` and the
+# ``has_insert_indicator`` probe imported above.
 
 
 _TmuxError = (
@@ -1107,51 +1088,5 @@ class TmuxManager:
 # Global instance with default session name
 tmux_manager = TmuxManager()
 
-
-async def send_to_window(
-    window_id: str, text: str, *, raw: bool = False
-) -> tuple[bool, str]:
-    """Send text to a tmux window by ID.
-
-    Returns (success, message). Looks up the display name for logging, then
-    delegates to tmux_manager.find_window_by_id + send_keys.
-    """
-
-    display = thread_router.get_display_name(window_id)
-    logger.debug(
-        "send_to_window: window_id=%s (%s), text_len=%d",
-        window_id,
-        display,
-        len(text),
-    )
-    window = await tmux_manager.find_window_by_id(window_id)
-    if not window:
-        return False, "Window not found (may have been closed)"
-    success = await tmux_manager.send_keys(window.window_id, text, raw=raw)
-    if success:
-        return True, f"Sent to {display}"
-    return False, "Failed to send keys"
-
-
-async def send_followup_to_window(window_id: str, text: str) -> tuple[bool, str]:
-    """Send text to a Pi window as an Alt+Enter follow-up message."""
-    display = thread_router.get_display_name(window_id)
-    logger.debug(
-        "send_followup_to_window: window_id=%s (%s), text_len=%d",
-        window_id,
-        display,
-        len(text),
-    )
-    window = await tmux_manager.find_window_by_id(window_id)
-    if not window:
-        return False, "Window not found (may have been closed)"
-    if not await tmux_manager.send_keys(
-        window.window_id, text, enter=False, literal=True
-    ):
-        return False, "Failed to send follow-up text"
-    await asyncio.sleep(0.5)
-    if await tmux_manager.send_keys(
-        window.window_id, "M-Enter", enter=False, literal=False
-    ):
-        return True, f"Follow-up queued for {display}"
-    return False, "Failed to send follow-up key"
+# ``send_to_window`` / ``send_followup_to_window`` moved to
+# ``multiplexer.window_ops`` (backend-neutral; they route through the proxy).

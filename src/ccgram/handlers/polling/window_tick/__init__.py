@@ -57,7 +57,7 @@ from .observe import (
 if TYPE_CHECKING:
     from telegram import Bot
 
-    from ....tmux_manager import TmuxWindow
+    from ....multiplexer.base import WindowRef as TmuxWindow
 
 
 async def tick_window(
