@@ -68,7 +68,7 @@ async def _detect_and_apply_provider(
     if identity_state.is_provider_manually_overridden(window_id):
         return
     detected = await detect_provider_from_pane(
-        w.pane_current_command, pane_tty=w.pane_tty, window_id=window_id
+        w.pane_current_command, window_id=window_id
     )
     if not detected and should_probe_pane_title_for_provider_detection(
         w.pane_current_command

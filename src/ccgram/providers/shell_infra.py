@@ -219,37 +219,28 @@ def _replace_setup_commands(shell: str, prefix: str) -> str:
 async def _is_interactive_shell(window_id: str) -> bool:
     """Check if the pane has an interactive shell at a prompt (not running a script).
 
-    Uses ``ps -t`` to inspect the foreground process. A shell running a script
-    (e.g. ``bash ./scripts/restart.sh``) has child processes in the foreground
-    group, while an idle interactive shell is its own foreground leader with
-    bare args like ``-bash``, ``fish``, or ``/bin/zsh``.
+    Inspects the pane's foreground process via the multiplexer seam. A shell
+    running a script (e.g. ``bash ./scripts/restart.sh``) has child processes
+    in the foreground group, while an idle interactive shell is its own
+    foreground leader with a single bare argv like ``-bash``, ``fish``, or
+    ``/bin/zsh``.
 
     Returns True if the shell looks interactive, False if it's running a script
     or if detection fails (fail-safe: don't send C-c to unknown targets).
     """
-    # Lazy: tmux_manager pulls providers; resolved per-call
-    from ccgram.multiplexer import multiplexer as tmux_manager
+    # Lazy: multiplexer proxy pulls providers; resolved per-call.
+    from ccgram.multiplexer import multiplexer
 
-    w = await tmux_manager.find_window_by_id(window_id)
-    if not w or not w.pane_tty:
+    fg = await multiplexer.foreground(window_id)
+    if fg is None or not fg.argv:
         return False
 
-    # Lazy: process_detection runs `ps` subprocesses; only loaded when an
-    # interactive-shell pane is being verified.
-    # Lazy: only needed when reading TTY foreground processes
-    from .process_detection import get_foreground_args
-
-    args, _ = await get_foreground_args(w.pane_tty)
-    if not args:
-        return False
-
-    first_token = args.split()[0]
+    first_token = fg.argv[0]
     basename = first_token.rsplit("/", 1)[-1].lstrip("-")
     if basename not in KNOWN_SHELLS:
         return False
 
-    tokens = args.split()
-    return len(tokens) == 1
+    return len(fg.argv) == 1
 
 
 async def setup_shell_prompt(

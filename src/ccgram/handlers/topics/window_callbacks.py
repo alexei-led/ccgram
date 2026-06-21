@@ -85,26 +85,23 @@ async def _detect_and_setup_provider(
     window_id: str,
     pane_current_command: str | None,
     *,
-    pane_tty: str = "",
     client: TelegramClient | None = None,
     user_id: int = 0,
     thread_id: int = 0,
 ) -> str:
     """Detect provider from pane process and set up prompt if shell.
 
-    Uses TTY-based detection (ps foreground process) when available,
-    falling back to basename-only matching.
+    Uses foreground-process detection (via the multiplexer seam) when the
+    pane command is a JS runtime, falling back to basename-only matching.
     Returns the detected provider name (empty string if undetected).
     """
-    # Lazy: providers/__init__ loads process_detection (subprocess fork)
-    # eagerly; gate behind actual adoption.
+    # Lazy: providers/__init__ loads process_detection; gate behind actual
+    # adoption.
     # Lazy: providers package heavy bootstrap
     from ...providers import detect_provider_from_pane
 
     detected = (
-        await detect_provider_from_pane(
-            pane_current_command, pane_tty=pane_tty, window_id=window_id
-        )
+        await detect_provider_from_pane(pane_current_command, window_id=window_id)
         if pane_current_command
         else ""
     )
@@ -223,7 +220,6 @@ async def _handle_bind(
     detected = await _detect_and_setup_provider(
         selected_wid,
         w.pane_current_command,
-        pane_tty=w.pane_tty,
         client=client,
         user_id=user_id,
         thread_id=thread_id,

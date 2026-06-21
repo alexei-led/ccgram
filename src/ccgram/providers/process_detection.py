@@ -1,33 +1,40 @@
-"""Foreground process detection for tmux panes via ``ps -t``.
+"""Provider classification from a pane's foreground process.
 
-All supported CLIs (claude, codex, gemini) are Node.js scripts — tmux's
-``pane_current_command`` shows ``bun`` or ``node`` instead of the CLI name.
-This module inspects the actual foreground process group on the pane's TTY
-to reliably identify which provider is running.
+All supported CLIs (claude, codex, gemini, pi) are Node.js scripts — the
+multiplexer's ``pane_current_command`` shows ``bun`` or ``node`` instead of
+the CLI name.  This module classifies the *foreground* process — resolved by
+the multiplexer seam via ``Multiplexer.foreground(window_id)`` — to reliably
+identify which provider is running.
 
-Detection flow:
-1. Run ``ps -t <tty> -o pid=,pgid=,stat=,args=``
-2. Filter for ``+`` in stat → foreground process group
-3. Find the group leader (pid == pgid) among foreground processes
-4. Match the leader's full args against provider patterns, skipping wrapper
-   tokens (sudo, env, node, bun, …)
-5. Cache by ``(window_id, fg_pgid)`` to avoid repeated subprocess calls
+The backend owns how the foreground process is read (tmux: ``ps -t <tty>``;
+herdr: ``pane process-info``); this module never touches a tty or forks
+``ps``.  It only classifies a ``ForegroundInfo.argv`` and caches the result.
+
+Classification flow:
+1. Skip wrapper tokens (sudo, env, node, bun, …) in the foreground argv
+2. Match the first meaningful token against provider patterns / path markers
+3. Cache by ``(window_id, fg_pgid)`` to skip re-classification when unchanged
 
 Exposed entry points:
-- ``detect_provider_from_tty`` — uncached, single-shot detection
-- ``detect_provider_cached`` — cached by foreground PGID per window
+- ``classify_provider_from_argv`` / ``classify_provider_from_args`` — pure
+  classification of a foreground argv
+- ``detect_provider_cached`` — cached classification by foreground PGID
 - ``clear_detection_cache`` — invalidate cache entries on cleanup
 """
 
 from __future__ import annotations
 
-import asyncio
 import os
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 import structlog
 
 from ..topic_state_registry import topic_state
 from .shell import KNOWN_SHELLS as _KNOWN_SHELLS
+
+if TYPE_CHECKING:
+    from ..multiplexer.base import ForegroundInfo
 
 logger = structlog.get_logger()
 
@@ -78,18 +85,15 @@ def _match_token(token: str) -> str:
     return ""
 
 
-def classify_provider_from_args(args: str) -> str:
-    """Classify provider from a process's full argv string.
+def classify_provider_from_argv(argv: Sequence[str]) -> str:
+    """Classify provider from a foreground process's argv tokens.
 
     Skips wrapper tokens (``node``, ``bun``, ``sudo``, …) and matches the
     first meaningful token against known provider names or path markers.
-    Returns provider name (``"claude"``, ``"codex"``, ``"gemini"``,
+    Returns provider name (``"claude"``, ``"codex"``, ``"gemini"``, ``"pi"``,
     ``"shell"``) or empty string if unrecognised.
     """
-    if not args:
-        return ""
-
-    for token in args.split():
+    for token in argv:
         cleaned = os.path.basename(token).lower().lstrip("-")
         if cleaned in _WRAPPER_TOKENS:
             continue
@@ -98,81 +102,9 @@ def classify_provider_from_args(args: str) -> str:
     return ""
 
 
-async def _run_ps(tty_path: str) -> bytes | None:
-    """Run ``ps -t <tty>`` with timeout, kill on timeout. None on error."""
-    # Lazy: only needed inside the suppression branch
-    import contextlib
-
-    proc: asyncio.subprocess.Process | None = None
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "ps",
-            "-t",
-            tty_path,
-            "-o",
-            "pid=,pgid=,stat=,args=",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        async with asyncio.timeout(3.0):
-            stdout, _ = await proc.communicate()
-    except TimeoutError:
-        if proc:
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-                await proc.wait()
-        return None
-    except OSError:
-        return None
-    return stdout if proc.returncode == 0 else None
-
-
-async def get_foreground_args(tty_path: str) -> tuple[str, int]:
-    """Get the full argv and PGID of the foreground process on a TTY.
-
-    Runs ``ps -t <tty> -o pid=,pgid=,stat=,args=`` and filters for
-    processes with ``+`` in their stat field (foreground group).  Among
-    those, returns the group leader's (pid == pgid) argv string.
-
-    Returns:
-        ``(args_string, fg_pgid)`` on success, ``("", 0)`` on any error.
-    """
-    if not tty_path:
-        return "", 0
-
-    stdout = await _run_ps(tty_path)
-    if not stdout:
-        return "", 0
-
-    best_args = ""
-    best_pgid = 0
-    for line in stdout.decode("utf-8", errors="replace").strip().splitlines():
-        parts = line.split(None, 3)
-        if len(parts) < 4:  # noqa: PLR2004
-            continue
-        pid_s, pgid_s, stat, args = parts
-        if "+" not in stat:
-            continue
-        try:
-            pid = int(pid_s)
-            pgid = int(pgid_s)
-        except ValueError:
-            continue
-        # Prefer the group leader (pid == pgid)
-        if pid == pgid:
-            return args, pgid
-        # Track any foreground process as fallback
-        if not best_args:
-            best_args = args
-            best_pgid = pgid
-
-    return best_args, best_pgid
-
-
-async def detect_provider_from_tty(tty_path: str) -> str:
-    """Detect provider from the foreground process on a TTY (uncached)."""
-    args, _ = await get_foreground_args(tty_path)
-    return classify_provider_from_args(args)
+def classify_provider_from_args(args: str) -> str:
+    """Classify provider from a whitespace-joined argv string."""
+    return classify_provider_from_argv(args.split())
 
 
 # ---------------------------------------------------------------------------
@@ -183,24 +115,24 @@ async def detect_provider_from_tty(tty_path: str) -> str:
 _pgid_cache: dict[str, tuple[int, str]] = {}
 
 
-async def detect_provider_cached(window_id: str, tty_path: str) -> str:
-    """Detect provider with PGID-based caching.
+async def detect_provider_cached(window_id: str, fg: ForegroundInfo | None) -> str:
+    """Classify the provider from a foreground process, cached by PGID.
 
-    Always calls ``ps`` to read the current foreground PGID, but skips
-    the more expensive ``classify_provider_from_args`` when the PGID
-    matches the cached value.
+    ``fg`` comes from ``Multiplexer.foreground(window_id)``.  When the
+    foreground PGID matches the cached value, the more expensive
+    ``classify_provider_from_argv`` is skipped.  Returns ``""`` when there is
+    no foreground process to classify.
     """
-    args, pgid = await get_foreground_args(tty_path)
-    if not args or pgid == 0:
+    if fg is None or not fg.argv or fg.pgid == 0:
         return ""
 
     cached = _pgid_cache.get(window_id)
-    if cached and cached[0] == pgid:
+    if cached and cached[0] == fg.pgid:
         return cached[1]
 
-    provider = classify_provider_from_args(args)
+    provider = classify_provider_from_argv(fg.argv)
     if provider:
-        _pgid_cache[window_id] = (pgid, provider)
+        _pgid_cache[window_id] = (fg.pgid, provider)
     return provider
 
 

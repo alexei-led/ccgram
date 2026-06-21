@@ -307,40 +307,44 @@ class TestShutdownNotificationLifecycle:
 
 class TestShellDetectionSafety:
     async def test_script_shell_not_interactive(self):
+        from ccgram.multiplexer.base import ForegroundInfo
         from ccgram.providers.shell_infra import _is_interactive_shell
 
         mock_tmux = MagicMock()
-        mock_window = MagicMock()
-        mock_window.pane_tty = "/dev/ttys005"
-        mock_tmux.find_window_by_id = AsyncMock(return_value=mock_window)
+        # A shell running a script has child argv → not interactive.
+        mock_tmux.foreground = AsyncMock(
+            return_value=ForegroundInfo(
+                pid=0,
+                pgid=0,
+                argv=["bash", "./scripts/restart.sh", "run"],
+                cwd="/tmp",
+            )
+        )
 
-        with (
-            patch("ccgram.multiplexer.multiplexer", mock_tmux),
-            patch(
-                "ccgram.providers.process_detection.get_foreground_args",
-                new_callable=AsyncMock,
-                return_value=("bash ./scripts/restart.sh run", 0),
-            ),
-        ):
+        with patch("ccgram.multiplexer.multiplexer", mock_tmux):
             assert await _is_interactive_shell("@0") is False
 
     async def test_idle_shell_is_interactive(self):
+        from ccgram.multiplexer.base import ForegroundInfo
         from ccgram.providers.shell_infra import _is_interactive_shell
 
         mock_tmux = MagicMock()
-        mock_window = MagicMock()
-        mock_window.pane_tty = "/dev/ttys005"
-        mock_tmux.find_window_by_id = AsyncMock(return_value=mock_window)
+        # An idle interactive shell is its own single-token foreground leader.
+        mock_tmux.foreground = AsyncMock(
+            return_value=ForegroundInfo(pid=1234, pgid=1234, argv=["-bash"], cwd="/tmp")
+        )
 
-        with (
-            patch("ccgram.multiplexer.multiplexer", mock_tmux),
-            patch(
-                "ccgram.providers.process_detection.get_foreground_args",
-                new_callable=AsyncMock,
-                return_value=("-bash", 1234),
-            ),
-        ):
+        with patch("ccgram.multiplexer.multiplexer", mock_tmux):
             assert await _is_interactive_shell("@0") is True
+
+    async def test_no_foreground_not_interactive(self):
+        from ccgram.providers.shell_infra import _is_interactive_shell
+
+        mock_tmux = MagicMock()
+        mock_tmux.foreground = AsyncMock(return_value=None)
+
+        with patch("ccgram.multiplexer.multiplexer", mock_tmux):
+            assert await _is_interactive_shell("@0") is False
 
     async def test_setup_shell_prompt_skips_own_window(self):
         from ccgram.providers.shell import setup_shell_prompt

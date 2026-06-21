@@ -76,12 +76,12 @@ Whole-plan commands:
 - Fitness gate: relies on the seam's F1; the dedicated no-tty gate lands in Task 2.
 - Verification: `make check` (characterization — must stay green); `uv run pytest tests/ -k "provider_detection or shell" -v`.
 - Manual checks: confirm `ForegroundInfo` field names match what `_detect_shell_tools` and detection already consume, so no logic changed.
-- [ ] move `ps -t`/`get_foreground_args` into the tmux backend as the private `foreground()` implementation
-- [ ] switch `shell_infra._detect_shell_tools` to `multiplexer.foreground(window_id)`
-- [ ] switch `detect_provider_from_tty`/`detect_provider_cached`/`detect_provider_from_pane` to consume `ForegroundInfo` from `foreground()`
-- [ ] remove all direct `pane_tty`/`get_foreground_args` reads outside `multiplexer/tmux.py`
-- [ ] write tests pinning foreground-based shell tool detection and provider detection (tmux)
-- [ ] run project tests (`make test`) - must pass before next task
+- [x] move `ps -t`/`get_foreground_args` into the tmux backend as the private `foreground()` implementation
+- [x] switch `shell_infra._detect_shell_tools` to `multiplexer.foreground(window_id)`
+- [x] switch `detect_provider_from_tty`/`detect_provider_cached`/`detect_provider_from_pane` to consume `ForegroundInfo` from `foreground()`
+- [x] remove all direct `pane_tty`/`get_foreground_args` reads outside `multiplexer/tmux.py`
+- [x] write tests pinning foreground-based shell tool detection and provider detection (tmux)
+- [x] run project tests (`make test`) - must pass before next task
 
 ### Task 2: No-tty drift gate (fitness) + archfit rule
 

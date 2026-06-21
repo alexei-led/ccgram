@@ -2,13 +2,74 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from ccgram.multiplexer.base import ForegroundInfo
 from ccgram.providers import (
     _reset_provider,
     detect_provider_from_command,
+    detect_provider_from_pane,
     detect_provider_from_runtime,
     should_probe_pane_title_for_provider_detection,
 )
+from ccgram.providers.process_detection import _pgid_cache
 from ccgram.session_monitor import SessionMonitor
+
+
+class TestDetectProviderFromPane:
+    """``detect_provider_from_pane`` resolves the foreground process through
+    the multiplexer seam (``Multiplexer.foreground``) — never a tty/ps path."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_cache(self):
+        _pgid_cache.clear()
+        yield
+        _pgid_cache.clear()
+
+    async def test_fast_path_skips_foreground(self) -> None:
+        mock_mux = MagicMock()
+        mock_mux.foreground = AsyncMock()
+        with patch("ccgram.multiplexer.multiplexer", mock_mux):
+            result = await detect_provider_from_pane("claude", window_id="@0")
+        assert result == "claude"
+        mock_mux.foreground.assert_not_called()
+
+    async def test_js_runtime_routes_through_foreground(self) -> None:
+        mock_mux = MagicMock()
+        mock_mux.foreground = AsyncMock(
+            return_value=ForegroundInfo(
+                pid=8668,
+                pgid=8668,
+                argv=["bun", "/Users/x/.bun/bin/codex", "--full-auto"],
+                cwd="/tmp",
+            )
+        )
+        with patch("ccgram.multiplexer.multiplexer", mock_mux):
+            result = await detect_provider_from_pane("bun", window_id="@0")
+        assert result == "codex"
+        mock_mux.foreground.assert_awaited_once_with("@0")
+
+    async def test_non_runtime_command_skips_foreground(self) -> None:
+        mock_mux = MagicMock()
+        mock_mux.foreground = AsyncMock()
+        with patch("ccgram.multiplexer.multiplexer", mock_mux):
+            result = await detect_provider_from_pane("vim", window_id="@0")
+        assert result == ""
+        mock_mux.foreground.assert_not_called()
+
+    async def test_missing_window_id_returns_empty(self) -> None:
+        mock_mux = MagicMock()
+        mock_mux.foreground = AsyncMock()
+        with patch("ccgram.multiplexer.multiplexer", mock_mux):
+            result = await detect_provider_from_pane("bun", window_id="")
+        assert result == ""
+        mock_mux.foreground.assert_not_called()
+
+    async def test_no_foreground_returns_empty(self) -> None:
+        mock_mux = MagicMock()
+        mock_mux.foreground = AsyncMock(return_value=None)
+        with patch("ccgram.multiplexer.multiplexer", mock_mux):
+            result = await detect_provider_from_pane("node", window_id="@0")
+        assert result == ""
+        mock_mux.foreground.assert_awaited_once_with("@0")
 
 
 class TestDetectProviderFromCommand:

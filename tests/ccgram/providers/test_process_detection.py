@@ -1,17 +1,22 @@
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
+from ccgram.multiplexer.base import ForegroundInfo
 from ccgram.providers.process_detection import (
     _pgid_cache,
     classify_provider_from_args,
+    classify_provider_from_argv,
     clear_detection_cache,
     detect_provider_cached,
-    detect_provider_from_tty,
-    get_foreground_args,
 )
+
+
+def _fg(argv: list[str], pgid: int) -> ForegroundInfo:
+    """Build a ForegroundInfo as the multiplexer seam would return it."""
+    return ForegroundInfo(pid=pgid, pgid=pgid, argv=argv, cwd="/tmp")
 
 
 class TestClassifyProviderFromArgs:
@@ -62,111 +67,29 @@ class TestClassifyProviderFromArgs:
         assert classify_provider_from_args("vim /path/to/claude") == ""
 
 
-PS_OUTPUT_CLAUDE = (
-    " 8617  8617 Ss   -fish\n"
-    " 8668  8668 S+   bun /Users/x/.bun/bin/claude\n"
-    " 8690  8668 S+   bun /var/folders/context7-mcp\n"
-)
+class TestClassifyProviderFromArgv:
+    """``classify_provider_from_argv`` is the list-native core; the string
+    variant just splits and delegates."""
 
-PS_OUTPUT_CODEX = (
-    "10001 10001 Ss   -zsh\n10050 10050 S+   bun /Users/x/.bun/bin/codex --full-auto\n"
-)
+    @pytest.mark.parametrize(
+        ("argv", "expected"),
+        [
+            (["bun", "/Users/x/.bun/bin/claude"], "claude"),
+            (["sudo", "env", "bun", "/Users/x/.bun/bin/codex"], "codex"),
+            (["-bash"], "shell"),
+            (["bash", "./scripts/restart.sh", "run"], "shell"),
+            (["vim", "/path/to/claude"], ""),
+            ([], ""),
+        ],
+    )
+    def test_classification(self, argv: list[str], expected: str) -> None:
+        assert classify_provider_from_argv(argv) == expected
 
-PS_OUTPUT_SHELL_ONLY = " 5000  5000 Ss+  -bash\n"
-
-PS_OUTPUT_NO_LEADER = " 9000  9000 Ss   -fish\n 9100  9050 S+   node /some/script.js\n"
-
-
-class TestGetForegroundArgs:
-    async def test_returns_group_leader_args(self) -> None:
-        mock_proc = AsyncMock()
-        mock_proc.returncode = 0
-        mock_proc.communicate.return_value = (PS_OUTPUT_CLAUDE.encode(), b"")
-
-        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-            args, pgid = await get_foreground_args("/dev/ttys003")
-
-        assert args == "bun /Users/x/.bun/bin/claude"
-        assert pgid == 8668
-
-    async def test_returns_fallback_when_no_leader(self) -> None:
-        mock_proc = AsyncMock()
-        mock_proc.returncode = 0
-        mock_proc.communicate.return_value = (PS_OUTPUT_NO_LEADER.encode(), b"")
-
-        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-            args, pgid = await get_foreground_args("/dev/ttys005")
-
-        assert args == "node /some/script.js"
-        assert pgid == 9050
-
-    async def test_returns_empty_on_error(self) -> None:
-        mock_proc = AsyncMock()
-        mock_proc.returncode = 1
-        mock_proc.communicate.return_value = (b"", b"error")
-
-        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-            args, pgid = await get_foreground_args("/dev/ttys003")
-
-        assert args == ""
-        assert pgid == 0
-
-    async def test_returns_empty_on_timeout(self) -> None:
-        with patch(
-            "asyncio.create_subprocess_exec",
-            side_effect=TimeoutError,
-        ):
-            args, pgid = await get_foreground_args("/dev/ttys003")
-
-        assert args == ""
-        assert pgid == 0
-
-    async def test_returns_empty_for_empty_tty(self) -> None:
-        args, pgid = await get_foreground_args("")
-        assert args == ""
-        assert pgid == 0
-
-    async def test_returns_empty_on_oserror(self) -> None:
-        with patch(
-            "asyncio.create_subprocess_exec",
-            side_effect=OSError("no such file"),
-        ):
-            args, pgid = await get_foreground_args("/dev/ttys003")
-
-        assert args == ""
-        assert pgid == 0
-
-
-class TestDetectProviderFromTty:
-    async def test_detects_claude(self) -> None:
-        mock_proc = AsyncMock()
-        mock_proc.returncode = 0
-        mock_proc.communicate.return_value = (PS_OUTPUT_CLAUDE.encode(), b"")
-
-        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-            result = await detect_provider_from_tty("/dev/ttys003")
-
-        assert result == "claude"
-
-    async def test_detects_codex(self) -> None:
-        mock_proc = AsyncMock()
-        mock_proc.returncode = 0
-        mock_proc.communicate.return_value = (PS_OUTPUT_CODEX.encode(), b"")
-
-        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-            result = await detect_provider_from_tty("/dev/ttys004")
-
-        assert result == "codex"
-
-    async def test_detects_shell(self) -> None:
-        mock_proc = AsyncMock()
-        mock_proc.returncode = 0
-        mock_proc.communicate.return_value = (PS_OUTPUT_SHELL_ONLY.encode(), b"")
-
-        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-            result = await detect_provider_from_tty("/dev/ttys005")
-
-        assert result == "shell"
+    def test_matches_string_variant(self) -> None:
+        args: str = "sudo env bun /Users/x/.bun/bin/codex --full-auto"
+        assert classify_provider_from_argv(args.split()) == classify_provider_from_args(
+            args
+        )
 
 
 class TestDetectProviderCached:
@@ -174,58 +97,51 @@ class TestDetectProviderCached:
     def _clear_cache(self) -> None:
         _pgid_cache.clear()
 
-    async def test_cache_miss_calls_ps(self) -> None:
-        mock_proc = AsyncMock()
-        mock_proc.returncode = 0
-        mock_proc.communicate.return_value = (PS_OUTPUT_CLAUDE.encode(), b"")
+    async def test_cache_miss_classifies(self) -> None:
+        fg = _fg(["bun", "/Users/x/.bun/bin/claude"], 8668)
+        result = await detect_provider_cached("@0", fg)
+        assert result == "claude"
+        assert _pgid_cache["@0"] == (8668, "claude")
+
+    async def test_cache_hit_skips_classification(self) -> None:
+        _pgid_cache["@0"] = (8668, "claude")
+        fg = _fg(["bun", "/Users/x/.bun/bin/claude"], 8668)
 
         with patch(
-            "asyncio.create_subprocess_exec", return_value=mock_proc
-        ) as mock_exec:
-            result = await detect_provider_cached("@0", "/dev/ttys003")
-
-        assert result == "claude"
-        assert mock_exec.called
-
-    async def test_cache_hit_returns_cached(self) -> None:
-        _pgid_cache["@0"] = (8668, "claude")
-
-        mock_proc = AsyncMock()
-        mock_proc.returncode = 0
-        mock_proc.communicate.return_value = (PS_OUTPUT_CLAUDE.encode(), b"")
-
-        with (
-            patch("asyncio.create_subprocess_exec", return_value=mock_proc),
-            patch(
-                "ccgram.providers.process_detection.classify_provider_from_args"
-            ) as mock_classify,
-        ):
-            result = await detect_provider_cached("@0", "/dev/ttys003")
+            "ccgram.providers.process_detection.classify_provider_from_argv"
+        ) as mock_classify:
+            result = await detect_provider_cached("@0", fg)
 
         assert result == "claude"
         mock_classify.assert_not_called()
 
     async def test_cache_invalidates_on_pgid_change(self) -> None:
         _pgid_cache["@0"] = (9999, "shell")
+        fg = _fg(["bun", "/Users/x/.bun/bin/codex", "--full-auto"], 10050)
 
-        mock_proc = AsyncMock()
-        mock_proc.returncode = 0
-        mock_proc.communicate.return_value = (PS_OUTPUT_CODEX.encode(), b"")
-
-        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-            result = await detect_provider_cached("@0", "/dev/ttys003")
+        result = await detect_provider_cached("@0", fg)
 
         assert result == "codex"
         assert _pgid_cache["@0"] == (10050, "codex")
 
-    async def test_empty_args_returns_empty(self) -> None:
-        mock_proc = AsyncMock()
-        mock_proc.returncode = 1
-        mock_proc.communicate.return_value = (b"", b"error")
+    async def test_none_foreground_returns_empty(self) -> None:
+        result = await detect_provider_cached("@0", None)
+        assert result == ""
+        assert "@0" not in _pgid_cache
 
-        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-            result = await detect_provider_cached("@0", "/dev/ttys003")
+    async def test_empty_argv_returns_empty(self) -> None:
+        result = await detect_provider_cached("@0", _fg([], 1234))
+        assert result == ""
+        assert "@0" not in _pgid_cache
 
+    async def test_zero_pgid_returns_empty(self) -> None:
+        fg = ForegroundInfo(pid=0, pgid=0, argv=["bun", "claude"], cwd="/tmp")
+        result = await detect_provider_cached("@0", fg)
+        assert result == ""
+        assert "@0" not in _pgid_cache
+
+    async def test_unrecognized_argv_not_cached(self) -> None:
+        result = await detect_provider_cached("@0", _fg(["vim", "x.py"], 555))
         assert result == ""
         assert "@0" not in _pgid_cache
 

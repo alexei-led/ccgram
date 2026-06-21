@@ -178,7 +178,7 @@ async def _redetect_provider(window_id: str) -> str:
     detected = ""
     if w and w.pane_current_command:
         detected = await detect_provider_from_pane(
-            w.pane_current_command, pane_tty=w.pane_tty, window_id=window_id
+            w.pane_current_command, window_id=window_id
         )
     return detected or "shell"
 
