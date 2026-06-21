@@ -24,7 +24,7 @@ from collections.abc import Callable
 
 from .providers import resolve_capabilities
 from .telegram_draft import draft_unavailable_reason, is_draft_unavailable
-from .utils import ccgram_dir, tmux_session_name
+from .utils import ccgram_dir, load_ccgram_env, tmux_session_name
 
 _PASS = "pass"
 _FAIL = "fail"
@@ -290,17 +290,7 @@ def _check_config_dir() -> tuple[str, str]:
 
 def _check_bot_token() -> tuple[str, str]:
     """Check bot token is set (without printing it)."""
-    # Lazy: dotenv is optional
-    from dotenv import load_dotenv
-
-    config_dir = ccgram_dir()
-    local_env = Path(".env")
-    global_env = config_dir / ".env"
-    if local_env.is_file():
-        load_dotenv(local_env)
-    if global_env.is_file():
-        load_dotenv(global_env)
-
+    load_ccgram_env()
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     if token:
         return _PASS, "TELEGRAM_BOT_TOKEN set"
@@ -461,6 +451,10 @@ def _fix_orphans(orphans: list[tuple[str, str]], fix: bool) -> None:
 
 def doctor_main(fix: bool = False) -> None:
     """Entry point for `ccgram doctor [--fix]`."""
+    # Honor CCGRAM_* (e.g. CCGRAM_MULTIPLEXER) set only in ~/.ccgram/.env,
+    # like the bot does via Config — must run before _active_multiplexer_name().
+    load_ccgram_env()
+
     caps = resolve_capabilities()
     has_failures = False
 

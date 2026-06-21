@@ -104,6 +104,23 @@ def ccgram_dir() -> Path:
     return Path.home() / ".ccgram"
 
 
+def load_ccgram_env() -> None:
+    """Load ``.env`` files into ``os.environ``: local cwd, then ``$CCGRAM_DIR``.
+
+    Mirrors ``Config``'s load order so the bot-token-free CLIs (``status``,
+    ``doctor``) honor ``CCGRAM_*`` (e.g. ``CCGRAM_MULTIPLEXER``) set only in
+    ``~/.ccgram/.env`` — not just the exported shell environment. ``load_dotenv``
+    defaults to ``override=False`` (already-set env wins, local ``.env`` wins
+    over the config-dir one). Idempotent.
+    """
+    # Lazy: dotenv is only needed by CLIs that read config without Config
+    from dotenv import load_dotenv
+
+    for env_path in (Path(".env"), ccgram_dir() / ".env"):
+        if env_path.is_file():
+            load_dotenv(env_path)
+
+
 def tmux_session_name() -> str:
     """Get tmux session name from TMUX_SESSION_NAME env var or default 'ccgram'."""
     return os.environ.get("TMUX_SESSION_NAME", "ccgram")

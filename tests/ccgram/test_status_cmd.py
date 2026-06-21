@@ -127,3 +127,85 @@ class TestStatusMain:
         captured = capsys.readouterr()
         assert "Provider: codex" in captured.out
         assert "hook" in captured.out.split("Provider:")[1].split("\n")[0]
+
+
+class TestStatusMainHerdr:
+    def test_herdr_counts_keys_and_lists_panes(
+        self, tmp_path, monkeypatch, capsys
+    ) -> None:
+        # In herdr mode, session_map keys are "herdr:wN:pM" — the tmux session
+        # prefix would never match them. Status must use the herdr prefix and
+        # the herdr pane listing, not shell out to tmux.
+        monkeypatch.setenv("CCGRAM_DIR", str(tmp_path))
+        monkeypatch.setenv("CCGRAM_MULTIPLEXER", "herdr")
+        monkeypatch.setenv("TMUX_SESSION_NAME", "ccgram")
+
+        state = {
+            "thread_bindings": {"12345": {"42": "w2:p1"}},
+            "window_display_names": {"w2:p1": "ws ▸ claude"},
+        }
+        (tmp_path / "state.json").write_text(json.dumps(state))
+
+        session_map = {
+            "herdr:w2:p1": {"session_id": "abc-123", "cwd": "/tmp"},
+            "ccgram:@5": {"session_id": "stale", "cwd": "/old"},
+        }
+        (tmp_path / "session_map.json").write_text(json.dumps(session_map))
+
+        monkeypatch.setattr(
+            "ccgram.status_cmd._list_herdr_windows",
+            lambda: [{"id": "w2:p1", "name": "ws ▸ claude"}],
+        )
+
+        with contextlib.suppress(SystemExit):
+            status_main()
+
+        captured = capsys.readouterr()
+        # herdr key counted, tmux-prefixed key ignored
+        assert "Monitored sessions: 1" in captured.out
+        assert "Herdr: 1 pane(s)" in captured.out
+        assert "Tmux session" not in captured.out
+        assert "w2:p1" in captured.out
+        assert "topic 42" in captured.out
+        assert "alive" in captured.out
+
+    def test_reads_multiplexer_from_config_dir_env(
+        self, tmp_path, monkeypatch, capsys
+    ) -> None:
+        # CCGRAM_MULTIPLEXER set only in ~/.ccgram/.env (the documented config
+        # path), not exported. status must load that .env like the bot does, so
+        # it counts herdr: keys and lists herdr panes — not default to tmux.
+        monkeypatch.setenv("CCGRAM_DIR", str(tmp_path))
+        monkeypatch.setenv("TMUX_SESSION_NAME", "ccgram")
+        # Registers the key so the load_dotenv-set value is restored on teardown.
+        monkeypatch.delenv("CCGRAM_MULTIPLEXER", raising=False)
+        (tmp_path / ".env").write_text("CCGRAM_MULTIPLEXER=herdr\n")
+
+        session_map = {"herdr:w2:p1": {"session_id": "abc-123", "cwd": "/tmp"}}
+        (tmp_path / "session_map.json").write_text(json.dumps(session_map))
+
+        monkeypatch.setattr(
+            "ccgram.status_cmd._list_herdr_windows",
+            lambda: [{"id": "w2:p1", "name": "ws ▸ claude"}],
+        )
+
+        with contextlib.suppress(SystemExit):
+            status_main()
+
+        captured = capsys.readouterr()
+        assert "Herdr: 1 pane(s)" in captured.out
+        assert "Tmux session" not in captured.out
+        assert "Monitored sessions: 1" in captured.out
+
+    def test_herdr_listing_degrades_to_empty_on_backend_error(
+        self, monkeypatch
+    ) -> None:
+        # Socket unreachable / backend error must degrade to [] (best-effort),
+        # not crash `ccgram status`.
+        from ccgram.status_cmd import _list_herdr_windows
+
+        def _boom(_name):
+            raise RuntimeError("socket down")
+
+        monkeypatch.setattr("ccgram.multiplexer.get_multiplexer", _boom)
+        assert _list_herdr_windows() == []
