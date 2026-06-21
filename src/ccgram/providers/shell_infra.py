@@ -146,10 +146,13 @@ def get_shell_name() -> str:
 
 
 async def detect_pane_shell(window_id: str) -> str:
-    """Detect the shell running in a tmux pane via pane_current_command.
+    """Detect the shell running in a pane via the multiplexer seam.
 
-    Falls back to ``get_shell_name()`` when the pane is unavailable or
-    its command is not a recognized shell.
+    Prefers ``pane_current_command`` (tmux names the shell there); when the
+    backend leaves it empty or non-shell (herdr carries the agent name, empty
+    for a bare shell), falls back to the pane's foreground process argv via
+    ``Multiplexer.foreground``. Only if neither identifies a known shell does it
+    fall back to the bot's own ``$SHELL``, which may not match the pane.
     """
     # Lazy: tmux_manager pulls providers; resolved per-call
     from ccgram.multiplexer import multiplexer as tmux_manager
@@ -157,12 +160,17 @@ async def detect_pane_shell(window_id: str) -> str:
     window = await tmux_manager.find_window_by_id(window_id)
     if window and window.pane_current_command:
         tokens = window.pane_current_command.split()
-        if not tokens:
-            return get_shell_name()
-        basename = os.path.basename(tokens[0])
-        cleaned = basename.lstrip("-")
+        if tokens:
+            cleaned = os.path.basename(tokens[0]).lstrip("-")
+            if cleaned in KNOWN_SHELLS:
+                return cleaned
+
+    fg = await tmux_manager.foreground(window_id)
+    if fg and fg.argv:
+        cleaned = os.path.basename(fg.argv[0]).lstrip("-")
         if cleaned in KNOWN_SHELLS:
             return cleaned
+
     return get_shell_name()
 
 

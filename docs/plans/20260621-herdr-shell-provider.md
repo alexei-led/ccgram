@@ -125,10 +125,12 @@ Whole-plan commands:
 - Fitness gate: Task 2 audit green; no new gate.
 - Verification: `uv run pytest tests/integration/ -m "herdr" -v` (with herdr running).
 - Manual checks: drive a real shell window over Telegram on a herdr backend; confirm command output and exit code render correctly; confirm a plain shell pane is detected as shell via herdr `agent_status`/foreground.
-- [ ] add a herdr-marked integration test covering PS1 setup, run, output isolation, exit code, `C-c`, `clear`
-- [ ] assert shell-vs-agent classification uses herdr data, not a tty
-- [ ] write the integration test fixtures/skips for the no-socket case
-- [ ] run project tests (`make test`) - must pass before next task
+- [x] add a herdr-marked integration test covering PS1 setup, run, output isolation, exit code, `C-c`, `clear`
+- [x] assert shell-vs-agent classification uses herdr data, not a tty
+- [x] write the integration test fixtures/skips for the no-socket case
+- [x] run project tests (`make test`) - must pass before next task
+
+> Verification note: ran live against a herdr socket (3 herdr-marked tests pass). The test surfaced a real gap — `detect_pane_shell` relied on `pane_current_command`, which herdr leaves empty for a bare shell pane, so marker setup built the wrong shell's prompt. Fixed by adding a `Multiplexer.foreground()` fallback (behavior-preserving on tmux; uses herdr data, not a tty). Covered by new unit tests in `tests/ccgram/providers/test_shell.py`.
 
 ### Task 5: Verify acceptance criteria
 
