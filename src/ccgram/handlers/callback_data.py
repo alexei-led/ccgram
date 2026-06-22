@@ -15,6 +15,10 @@ Constants:
   - CB_KEYS_PREFIX: Screenshot control keys (kb:<key_id>:<window>)
 """
 
+# Delimiter between window_id and pane_id in pane-targeted callback data.
+# Must not be colon (:) — herdr ids already contain colons (e.g. w2:t1, w2:p1).
+CB_PANE_DELIMITER = "|"
+
 # History pagination
 CB_HISTORY_PREV = "hp:"  # history page older
 CB_HISTORY_NEXT = "hn:"  # history page newer
@@ -87,16 +91,16 @@ CB_WT_CONFIRM = "wt:ok"  # create the worktree, fall through to provider pick
 CB_WT_EDIT_NAME = "wt:ed"  # prompt for branch name via text reply
 
 # Pane screenshot (from /panes command)
-CB_PANE_SCREENSHOT = "pn:ss:"  # pn:ss:<window_id>:<pane_id>
+CB_PANE_SCREENSHOT = "pn:ss:"  # pn:ss:<window_id>|<pane_id>
 
 # Pane subscription / rename / lifecycle (Theme 5)
-CB_PANE_SUBSCRIBE = "pn:sub:"  # pn:sub:<window_id>:<pane_id>
-CB_PANE_UNSUBSCRIBE = "pn:uns:"  # pn:uns:<window_id>:<pane_id>
-CB_PANE_RENAME = "pn:rn:"  # pn:rn:<window_id>:<pane_id>
+CB_PANE_SUBSCRIBE = "pn:sub:"  # pn:sub:<window_id>|<pane_id>
+CB_PANE_UNSUBSCRIBE = "pn:uns:"  # pn:uns:<window_id>|<pane_id>
+CB_PANE_RENAME = "pn:rn:"  # pn:rn:<window_id>|<pane_id>
 CB_PANE_LIFECYCLE_TOGGLE = "pn:lc:"  # pn:lc:<window_id> — per-window toggle
 
 # Screenshot control keys
-CB_KEYS_PREFIX = "kb:"  # kb:<key_id>:<window>
+CB_KEYS_PREFIX = "kb:"  # kb:<key_id>:<window> or kb:<key_id>:<window_id>|<pane_id>
 
 # Toolbar — single prefix; the suffix encodes "<window_id>:<action_name>".
 # The action_name is looked up in the loaded ToolbarConfig.actions pool to

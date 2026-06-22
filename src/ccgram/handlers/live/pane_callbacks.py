@@ -36,6 +36,7 @@ from ...window_state_ports.pane_state import (
     upsert_pane,
 )
 from ..callback_data import (
+    CB_PANE_DELIMITER,
     CB_PANE_LIFECYCLE_TOGGLE,
     CB_PANE_RENAME,
     CB_PANE_SCREENSHOT,
@@ -64,13 +65,14 @@ _RENAME_PROMPT = (
 
 
 def _parse_target(data: str, prefix: str) -> tuple[str, str] | None:
-    """Parse ``<prefix><window_id>:<pane_id>`` callback data.
+    """Parse ``<prefix><window_id>|<pane_id>`` callback data.
 
-    The pane id is always ``%N``, so we split on the rightmost ``:`` that
-    immediately precedes ``%``.
+    Splits on ``CB_PANE_DELIMITER`` (``|``) so both tmux ids (``@12``,
+    ``%5``) and herdr ids (``w2:t1``, ``w2:p1``) round-trip without
+    colliding on the colons inside herdr ids.
     """
     rest = data[len(prefix) :]
-    sep = rest.rfind(":%")
+    sep = rest.find(CB_PANE_DELIMITER)
     if sep < 0:
         return None
     return rest[:sep], rest[sep + 1 :]
@@ -81,16 +83,20 @@ def build_pane_buttons(
 ) -> list[InlineKeyboardButton]:
     """Return the per-pane action row used in the ``/panes`` keyboard."""
     sub_label = "\U0001f515 Unsub" if subscribed else "\U0001f514 Sub"
-    sub_data = f"{CB_PANE_UNSUBSCRIBE if subscribed else CB_PANE_SUBSCRIBE}{window_id}:{pane_id}"
+    sub_data = f"{CB_PANE_UNSUBSCRIBE if subscribed else CB_PANE_SUBSCRIBE}{window_id}{CB_PANE_DELIMITER}{pane_id}"
     return [
         InlineKeyboardButton(
             f"\U0001f4f7 {pane_id}",
-            callback_data=f"{CB_PANE_SCREENSHOT}{window_id}:{pane_id}"[:64],
+            callback_data=f"{CB_PANE_SCREENSHOT}{window_id}{CB_PANE_DELIMITER}{pane_id}"[
+                :64
+            ],
         ),
         InlineKeyboardButton(sub_label, callback_data=sub_data[:64]),
         InlineKeyboardButton(
             "✏️ Rename",
-            callback_data=f"{CB_PANE_RENAME}{window_id}:{pane_id}"[:64],
+            callback_data=f"{CB_PANE_RENAME}{window_id}{CB_PANE_DELIMITER}{pane_id}"[
+                :64
+            ],
         ),
     ]
 

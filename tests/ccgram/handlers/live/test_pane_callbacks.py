@@ -113,7 +113,7 @@ class TestSubscribeToggle:
     async def test_subscribe_marks_pane(self) -> None:
         _bind(1, 99, "@0")
         window_store.upsert_pane("@0", "%5", state="idle")
-        query = _query(f"{CB_PANE_SUBSCRIBE}@0:%5")
+        query = _query(f"{CB_PANE_SUBSCRIBE}@0|%5")
         update = _update(query)
         ctx = _ctx()
         await pane_callbacks._dispatch(update, ctx)
@@ -124,7 +124,7 @@ class TestSubscribeToggle:
     async def test_unsubscribe_clears_flag(self) -> None:
         _bind(1, 99, "@0")
         window_store.upsert_pane("@0", "%5", state="idle", subscribed=True)
-        query = _query(f"{CB_PANE_UNSUBSCRIBE}@0:%5")
+        query = _query(f"{CB_PANE_UNSUBSCRIBE}@0|%5")
         await pane_callbacks._dispatch(_update(query), _ctx())
         pane = window_store.get_pane("@0", "%5")
         assert pane is not None and pane.subscribed is False
@@ -133,7 +133,7 @@ class TestSubscribeToggle:
         _bind(1, 99, "@0")
         window_store.upsert_pane("@0", "%5", state="idle")
         # User 2 has no binding to @0
-        query = _query(f"{CB_PANE_SUBSCRIBE}@0:%5", user_id=2)
+        query = _query(f"{CB_PANE_SUBSCRIBE}@0|%5", user_id=2)
         await pane_callbacks._dispatch(_update(query, user_id=2), _ctx())
         pane = window_store.get_pane("@0", "%5")
         assert pane is not None and pane.subscribed is False
@@ -143,7 +143,7 @@ class TestSubscribeToggle:
 
     async def test_subscribe_rejects_unknown_pane(self) -> None:
         _bind(1, 99, "@0")
-        query = _query(f"{CB_PANE_SUBSCRIBE}@0:%9")
+        query = _query(f"{CB_PANE_SUBSCRIBE}@0|%9")
         with patch(
             "ccgram.multiplexer.tmux.tmux_manager.list_panes",
             AsyncMock(return_value=[]),
@@ -154,7 +154,7 @@ class TestSubscribeToggle:
 
     async def test_subscribe_hydrates_pane_from_tmux(self) -> None:
         _bind(1, 99, "@0")
-        query = _query(f"{CB_PANE_SUBSCRIBE}@0:%9")
+        query = _query(f"{CB_PANE_SUBSCRIBE}@0|%9")
         live = [
             TmuxPaneInfo(
                 pane_id="%9",
@@ -185,7 +185,7 @@ class TestRenamePrompt:
     async def test_rename_records_pending_state_and_sends_prompt(self) -> None:
         _bind(1, 99, "@0")
         window_store.upsert_pane("@0", "%5", state="idle")
-        query = _query(f"{CB_PANE_RENAME}@0:%5")
+        query = _query(f"{CB_PANE_RENAME}@0|%5")
         ctx = _ctx()
         await pane_callbacks._dispatch(_update(query), ctx)
         assert ctx.user_data[PANE_RENAME_WINDOW_ID] == "@0"
@@ -196,7 +196,7 @@ class TestRenamePrompt:
 
     async def test_rename_rejects_non_owner(self) -> None:
         _bind(1, 99, "@0")
-        query = _query(f"{CB_PANE_RENAME}@0:%5", user_id=2)
+        query = _query(f"{CB_PANE_RENAME}@0|%5", user_id=2)
         ctx = _ctx()
         await pane_callbacks._dispatch(_update(query, user_id=2), ctx)
         assert PANE_RENAME_WINDOW_ID not in ctx.user_data

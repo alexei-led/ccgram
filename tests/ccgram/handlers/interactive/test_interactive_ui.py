@@ -72,7 +72,7 @@ class TestBuildInteractiveKeyboard:
 
     def test_pane_id_appended_to_target(self) -> None:
         data = _cb_data(_build_interactive_keyboard("@12", pane_id="%5"))
-        assert all("@12:%5" in d for d in data)
+        assert all("@12|%5" in d for d in data)
 
     def test_callback_data_truncated_to_64_bytes(self) -> None:
         data = _cb_data(

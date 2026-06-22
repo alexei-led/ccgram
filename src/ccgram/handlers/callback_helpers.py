@@ -8,6 +8,7 @@ Provides utility functions used by multiple callback handler modules:
 from telegram import Update
 
 from ..thread_router import thread_router
+from .callback_data import CB_PANE_DELIMITER
 
 
 def user_owns_window(user_id: int, window_id: str) -> bool:
@@ -18,10 +19,14 @@ def user_owns_window(user_id: int, window_id: str) -> bool:
 def parse_target(target: str) -> tuple[str, str | None]:
     """Parse window_id and optional pane_id from callback target string.
 
-    Target format: ``@0`` (window only) or ``@0:%3`` (window + pane).
+    Target format: ``@0`` (window only) or ``@0|%3`` (tmux window + pane)
+    or ``w2:t1|w2:p1`` (herdr tab + pane).
+
+    The delimiter is ``CB_PANE_DELIMITER`` (``|``), not a colon, so herdr
+    ids (which contain colons) round-trip without ambiguity.
     """
-    if ":%" in target:
-        idx = target.index(":%")
+    if CB_PANE_DELIMITER in target:
+        idx = target.index(CB_PANE_DELIMITER)
         return target[:idx], target[idx + 1 :]
     return target, None
 

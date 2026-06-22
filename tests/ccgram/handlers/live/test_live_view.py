@@ -175,7 +175,7 @@ class TestBuildLiveKeyboard:
         flat = [btn for row in kb.inline_keyboard for btn in row]
         stop_btn = [btn for btn in flat if "Stop" in btn.text][0]
         assert isinstance(stop_btn.callback_data, str)
-        assert "@0:%3" in stop_btn.callback_data
+        assert "@0|%3" in stop_btn.callback_data
 
     def test_key_callbacks_use_keys_prefix(self):
         kb = build_live_keyboard("@0")
@@ -218,7 +218,7 @@ class TestBuildScreenshotKeyboard:
         flat = [btn for row in kb.inline_keyboard for btn in row]
         live_btn = [btn for btn in flat if "Live" in btn.text][0]
         assert isinstance(live_btn.callback_data, str)
-        assert "@0:%5" in live_btn.callback_data
+        assert "@0|%5" in live_btn.callback_data
 
 
 class TestBuildToolbarKeyboard:
@@ -658,7 +658,7 @@ class TestHandleLiveStart:
             )
             mock_tmux.capture_pane_by_id = AsyncMock(return_value="pane text")
             mock_router.resolve_chat_id.return_value = 100
-            await _handle_live_start(query, 1, f"{CB_LIVE_START}@0:%3", update)
+            await _handle_live_start(query, 1, f"{CB_LIVE_START}@0|%3", update)
         mock_tmux.capture_pane_by_id.assert_awaited_once_with(
             "%3", with_ansi=True, window_id="@0"
         )

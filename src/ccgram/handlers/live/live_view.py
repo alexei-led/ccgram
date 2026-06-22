@@ -81,7 +81,9 @@ def build_live_keyboard(
     window_id: str, pane_id: str | None = None
 ) -> InlineKeyboardMarkup:
     """Build inline keyboard for live view: quick keys + stop button."""
-    target = f"{window_id}:{pane_id}" if pane_id else window_id
+    from ..callback_data import CB_PANE_DELIMITER  # Lazy: pane delimiter constant
+
+    target = f"{window_id}{CB_PANE_DELIMITER}{pane_id}" if pane_id else window_id
 
     def btn(label: str, key_id: str) -> InlineKeyboardButton:
         return InlineKeyboardButton(

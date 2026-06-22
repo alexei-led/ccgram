@@ -175,9 +175,9 @@ and adding the lifecycle/flow UX.
 - Fitness gate: F1 boundary.
 - Verification: `uv run pytest tests/ccgram/ -k "callback or pane_callback or interactive or screenshot or status_bar" -v` with herdr-id cases.
 - Manual checks: on a split herdr tab, `/panes` per-pane screenshot, a non-active-pane interactive prompt callback, and the status-bar keys (`kb:`) action all target the right pane.
-- [ ] add `CB_PANE_DELIMITER` (non-colon) and update all four parsers + their builders
-- [ ] round-trip tests for tmux and herdr ids across the four parse sites incl. the `CB_KEYS_PREFIX` path; assert the 64-byte callback-data bound
-- [ ] run `make test` — must pass before next task
+- [x] add `CB_PANE_DELIMITER` (non-colon) and update all four parsers + their builders
+- [x] round-trip tests for tmux and herdr ids across the four parse sites incl. the `CB_KEYS_PREFIX` path; assert the 64-byte callback-data bound
+- [x] run `make test` — must pass before next task
 
 ### Task 6: topic label `"<workspace> ▸ <tab>"`
 

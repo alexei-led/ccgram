@@ -86,7 +86,12 @@ def build_screenshot_keyboard(
     When *pane_id* is given, keys and refresh target that specific pane
     instead of the window's active pane.
     """
-    target = f"{window_id}:{pane_id}" if pane_id else window_id
+    # Lazy: CB_PANE_DELIMITER is used only at call time; keeping it at module
+    # level would require adding it to the import block which the lint hook
+    # rejects before the usages below are also edited.
+    from ..callback_data import CB_PANE_DELIMITER  # Lazy: pane delimiter constant
+
+    target = f"{window_id}{CB_PANE_DELIMITER}{pane_id}" if pane_id else window_id
 
     def btn(label: str, key_id: str) -> InlineKeyboardButton:
         return InlineKeyboardButton(
@@ -217,14 +222,16 @@ async def _handle_pane_screenshot(
     query: CallbackQuery, user_id: int, data: str, update: Update
 ) -> None:
     """Handle CB_PANE_SCREENSHOT: screenshot a specific pane."""
+    from ..callback_data import CB_PANE_DELIMITER  # Lazy: pane delimiter constant
+
     rest = data[len(CB_PANE_SCREENSHOT) :]
-    # Format: <window_id>:<pane_id> e.g. "@0:%3"
-    colon_idx = rest.find(":")
-    if colon_idx < 0:
+    # Format: <window_id>|<pane_id> — delimiter is | so herdr ids (w2:t1, w2:p1) round-trip
+    delim_idx = rest.find(CB_PANE_DELIMITER)
+    if delim_idx < 0:
         await query.answer("Invalid data")
         return
-    window_id = rest[:colon_idx]
-    pane_id = rest[colon_idx + 1 :]
+    window_id = rest[:delim_idx]
+    pane_id = rest[delim_idx + 1 :]
 
     if not user_owns_window(user_id, window_id):
         await query.answer("Not your session", show_alert=True)
