@@ -203,10 +203,10 @@ and adding the lifecycle/flow UX.
 - Fitness gate: F1 boundary.
 - Verification: `uv run pytest tests/ccgram/test_session_monitor.py -k "unbound or discovery or adopt" -v`.
 - Manual checks: with three unbound claude tabs, all three bind on startup; restart the bot and confirm they rebind; `__main__` never binds.
-- [ ] confirm `audit_state`→`orphaned_window`→`adopt_unbound_windows` binds all agent tabs on startup with tab-id keys
-- [ ] add a bounded steady-state re-adoption for known-but-unbound agent tabs (idempotent; no re-fire for bound)
-- [ ] tests: known-but-unbound surfaces; bound skipped; `__*__` skipped; no per-poll spam
-- [ ] run `make test` — must pass before next task
+- [x] confirm `audit_state`→`orphaned_window`→`adopt_unbound_windows` binds all agent tabs on startup with tab-id keys
+- [x] add a bounded steady-state re-adoption for known-but-unbound agent tabs (idempotent; no re-fire for bound)
+- [x] tests: known-but-unbound surfaces; bound skipped; `__*__` skipped; no per-poll spam
+- [x] run `make test` — must pass before next task
 
 ### Task 8: lifecycle sync — create/delete/rename both directions
 

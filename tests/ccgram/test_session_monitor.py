@@ -234,6 +234,135 @@ class TestEmitUnboundWindowEvents:
         assert surfaced == {"w2:p3"}
 
 
+class TestEmitKnownUnboundWindowEvents:
+    """Steady-state self-heal: session_map windows not bound to a topic retry on each poll."""
+
+    @pytest.fixture
+    def wired(self, monkeypatch) -> None:
+        thread_router.reset()
+        window_store.window_states.clear()
+        monkeypatch.setattr(SessionManager, "_load_state", lambda self: None)
+        monkeypatch.setattr(SessionManager, "_save_state", lambda self: None)
+        SessionManager()
+
+    async def test_known_unbound_window_surfaces(
+        self, monitor: SessionMonitor, wired
+    ) -> None:
+        """A tab in session_map but not bound fires NewWindowEvent (self-heal path)."""
+        cb = AsyncMock(spec=lambda event: None)
+        monitor.set_new_window_callback(cb)
+
+        current_map = {
+            "w1:t1": {
+                "session_id": "S1",
+                "cwd": "/repo",
+                "window_name": "agent",
+            }
+        }
+        live_window_ids = {"w1:t1"}  # tab is live
+
+        await monitor._emit_known_unbound_window_events(current_map, live_window_ids)
+
+        cb.assert_called_once()
+        event = cb.call_args[0][0]
+        assert isinstance(event, NewWindowEvent)
+        assert event.window_id == "w1:t1"
+        assert event.session_id == "S1"
+        assert event.window_name == "agent"
+
+    async def test_bound_window_not_re_fired(
+        self, monitor: SessionMonitor, wired
+    ) -> None:
+        """A tab already bound to a topic is skipped (no spam)."""
+        thread_router.bind_thread(100, 42, "w1:t1")
+        cb = AsyncMock(spec=lambda event: None)
+        monitor.set_new_window_callback(cb)
+
+        current_map = {
+            "w1:t1": {"session_id": "S1", "cwd": "/repo", "window_name": "agent"}
+        }
+        live_window_ids = {"w1:t1"}
+
+        await monitor._emit_known_unbound_window_events(current_map, live_window_ids)
+
+        cb.assert_not_called()
+
+    async def test_dead_window_not_surfaced(
+        self, monitor: SessionMonitor, wired
+    ) -> None:
+        """A session_map entry for a window not in live_window_ids is skipped."""
+        cb = AsyncMock(spec=lambda event: None)
+        monitor.set_new_window_callback(cb)
+
+        current_map = {
+            "w9:t9": {"session_id": "S9", "cwd": "/gone", "window_name": "dead"}
+        }
+        live_window_ids: set[str] = set()  # tab not alive / __*__-filtered
+
+        await monitor._emit_known_unbound_window_events(current_map, live_window_ids)
+
+        cb.assert_not_called()
+
+    async def test_star_tab_not_surfaced(self, monitor: SessionMonitor, wired) -> None:
+        """__*__ tabs are absent from live_window_ids (filtered by list_windows) — never adopted."""
+        cb = AsyncMock(spec=lambda event: None)
+        monitor.set_new_window_callback(cb)
+
+        # Simulate a __*__ tab somehow in session_map; list_windows filtered it out
+        current_map = {
+            "w0:t0": {"session_id": "S0", "cwd": "/self", "window_name": "__main__"}
+        }
+        live_window_ids: set[str] = set()  # __*__ absent from list_windows output
+
+        await monitor._emit_known_unbound_window_events(current_map, live_window_ids)
+
+        cb.assert_not_called()
+
+    async def test_multiple_windows_mixed(self, monitor: SessionMonitor, wired) -> None:
+        """Only unbound live tabs surface; bound and dead are skipped."""
+        thread_router.bind_thread(100, 1, "w1:t1")  # already bound
+        cb = AsyncMock(spec=lambda event: None)
+        monitor.set_new_window_callback(cb)
+
+        current_map = {
+            "w1:t1": {"session_id": "S1", "cwd": "/a", "window_name": "bound"},
+            "w2:t2": {"session_id": "S2", "cwd": "/b", "window_name": "unbound"},
+            "w3:t3": {"session_id": "S3", "cwd": "/c", "window_name": "dead"},
+        }
+        live_window_ids = {"w1:t1", "w2:t2"}  # w3:t3 not live
+
+        await monitor._emit_known_unbound_window_events(current_map, live_window_ids)
+
+        surfaced = {c.args[0].window_id for c in cb.call_args_list}
+        assert surfaced == {"w2:t2"}
+
+    async def test_no_callback_is_noop(self, monitor: SessionMonitor, wired) -> None:
+        """No callback registered — returns without error."""
+        current_map = {
+            "w1:t1": {"session_id": "S1", "cwd": "/repo", "window_name": "agent"}
+        }
+        # No callback set — must not raise
+        await monitor._emit_known_unbound_window_events(current_map, {"w1:t1"})
+
+    async def test_callback_error_does_not_crash(
+        self, monitor: SessionMonitor, wired
+    ) -> None:
+        """Callback error is caught and logged; loop continues."""
+        cb = AsyncMock(side_effect=RuntimeError("boom"))
+        monitor.set_new_window_callback(cb)
+
+        current_map = {
+            "w1:t1": {"session_id": "S1", "cwd": "/a", "window_name": "a"},
+            "w2:t2": {"session_id": "S2", "cwd": "/b", "window_name": "b"},
+        }
+        live_window_ids = {"w1:t1", "w2:t2"}
+
+        # Should not raise despite the callback error
+        await monitor._emit_known_unbound_window_events(current_map, live_window_ids)
+
+        assert cb.call_count == 2
+
+
 class TestLoadCurrentSessionMapBackend:
     """The monitor's session_map reader must honor the active backend prefix.
 

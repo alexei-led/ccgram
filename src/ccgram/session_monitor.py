@@ -364,6 +364,48 @@ class SessionMonitor:
                     window.window_id,
                 )
 
+    async def _emit_known_unbound_window_events(
+        self,
+        current_map: dict,
+        live_window_ids: set[str],
+    ) -> None:
+        """Fire a NewWindowEvent for each session_map window that is not bound.
+
+        Steady-state self-heal: a tab that was in session_map at startup (known,
+        so never a delta) but not yet bound to a Telegram topic retries on every
+        poll until it succeeds. ``handle_new_window`` is idempotent — it skips
+        windows that are already bound — so this generates no spam for bound tabs.
+
+        ``live_window_ids`` is the set from ``list_windows``. Because ``list_windows``
+        already filters ``__*__`` workspace/tab labels, any such tab is absent from
+        ``live_window_ids`` and is silently skipped here as well.
+        """
+        if not self._new_window_callback:
+            return
+        # Lazy: thread_router is wired into session_manager which imports
+        # session_monitor; hoisting forms a startup cycle.
+        from .thread_router import thread_router
+
+        bound_window_ids = {wid for _, _, wid in thread_router.iter_thread_bindings()}
+        for window_id, details in current_map.items():
+            if window_id not in live_window_ids:
+                continue  # dead / __*__-filtered — skip
+            if window_id in bound_window_ids:
+                continue  # already has a topic
+            event = NewWindowEvent(
+                window_id=window_id,
+                session_id=details.get("session_id", ""),
+                window_name=details.get("window_name", ""),
+                cwd=details.get("cwd", ""),
+            )
+            try:
+                await self._new_window_callback(event)
+            except _CallbackError:
+                logger.exception(
+                    "New window callback error (known-unbound path) for %s",
+                    window_id,
+                )
+
     async def _monitor_loop(self) -> None:
         """Background poll loop."""
         logger.info("Session monitor started, polling every %ss", self.poll_interval)
@@ -391,6 +433,9 @@ class SessionMonitor:
                 session_map_sync.prune_session_map(live_window_ids)
                 known_window_ids = set(current_map.keys())
                 await self._emit_unbound_window_events(all_windows, known_window_ids)
+                await self._emit_known_unbound_window_events(
+                    current_map, live_window_ids
+                )
 
                 new_messages = await self.check_for_updates(current_map)
 
