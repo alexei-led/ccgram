@@ -86,6 +86,21 @@ class PaneDims:
     height: int  # Rows
 
 
+@dataclass
+class WorkspaceRef:
+    """Neutral representation of a multiplexer workspace (herdr workspace).
+
+    tmux has no workspace concept; its backend returns ``[]`` from
+    ``list_workspaces``.  herdr backends return one entry per workspace.
+    The ``workspace_id`` is an opaque string (herdr-internal; callers treat
+    it as a token to pass back to ``create_window``).
+    """
+
+    workspace_id: str  # Opaque ID — pass to create_window to pin the workspace
+    label: str  # Human-readable name
+    cwd: str  # Root directory of the workspace
+
+
 # ── Capabilities ───────────────────────────────────────────────────────
 
 
@@ -150,6 +165,16 @@ class Multiplexer(Protocol):
 
     async def list_windows(self) -> list[WindowRef]:
         """List all agent windows in the session."""
+        ...
+
+    async def list_workspaces(self) -> list[WorkspaceRef]:
+        """List all workspaces in the session.
+
+        tmux returns ``[]`` (no workspace concept).
+        herdr returns one ``WorkspaceRef`` per workspace.
+        The ``workspace_id`` is an opaque token — pass it to ``create_window``
+        to pin the new tab inside an existing workspace.
+        """
         ...
 
     async def find_window(self, window_id: str) -> WindowRef | None:
@@ -237,8 +262,15 @@ class Multiplexer(Protocol):
         start_agent: bool = True,
         agent_args: str = "",
         launch_command: str | None = None,
+        *,
+        workspace_id: str | None = None,
     ) -> tuple[bool, str, str, str]:
         """Create a new window and optionally start an agent CLI.
+
+        ``workspace_id`` is only meaningful on backends that have a workspace
+        concept (herdr).  When provided, the new window is created inside the
+        given workspace instead of resolving one from *work_dir*.  tmux ignores
+        the parameter.
 
         Returns ``(success, message, window_name, window_id)``.
         """

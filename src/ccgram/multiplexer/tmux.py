@@ -41,6 +41,7 @@ from .base import (
     PaneDims,
     PaneInfo,
     WindowRef,
+    WorkspaceRef,
 )
 from .vim_state import (
     _vim_locks,
@@ -815,6 +816,10 @@ class TmuxManager:
             cmd = f"{cmd} {agent_args}"
         pane.send_keys(cmd, enter=True, literal=True)
 
+    async def list_workspaces(self) -> list[WorkspaceRef]:
+        """tmux has no workspace concept — always returns ``[]``."""
+        return []
+
     async def create_window(
         self,
         work_dir: str,
@@ -822,6 +827,8 @@ class TmuxManager:
         start_agent: bool = True,
         agent_args: str = "",
         launch_command: str | None = None,
+        *,
+        workspace_id: str | None = None,  # noqa: ARG002 — tmux has no workspaces
     ) -> tuple[bool, str, str, str]:
         """Create a new tmux window and optionally start an agent CLI.
 
@@ -832,6 +839,7 @@ class TmuxManager:
             agent_args: Extra arguments appended to the launch command
                         (e.g. "--continue", "--resume <id>")
             launch_command: The CLI command to run (e.g. "claude", "codex", "gemini")
+            workspace_id: Ignored — tmux has no workspace concept.
 
         Returns:
             Tuple of (success, message, window_name, window_id)

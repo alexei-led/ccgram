@@ -296,6 +296,7 @@ class TestHandleModeSelect:
         mock_tmux.create_window.assert_called_once_with(
             "/tmp/proj",
             launch_command="codex --dangerously-bypass-approvals-and-sandbox",
+            workspace_id=None,
         )
         mock_tmux.stamp_pane_title.assert_awaited_once_with("@5", "codex")
         mock_sm.set_window_provider.assert_called_once_with("@5", "codex")

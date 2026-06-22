@@ -45,6 +45,7 @@ from .base import (
     PaneDims,
     PaneInfo,
     WindowRef,
+    WorkspaceRef,
 )
 from .topic_mapping import format_agent_topic_prefix
 
@@ -695,6 +696,26 @@ class HerdrManager:
             )
         return result
 
+    async def list_workspaces(self) -> list[WorkspaceRef]:
+        """List all herdr workspaces as neutral ``WorkspaceRef`` objects.
+
+        Returns ``[]`` when the workspace command is unavailable (older herdr
+        server) — callers must handle the empty case gracefully (fall through
+        to cwd-resolve).
+        """
+        result = await self._call_json(["workspace", "list"])
+        if not result:
+            return []
+        return [
+            WorkspaceRef(
+                workspace_id=ws.get("workspace_id", ""),
+                label=ws.get("label", ""),
+                cwd=ws.get("cwd", ""),
+            )
+            for ws in result.get("workspaces", [])
+            if ws.get("workspace_id")
+        ]
+
     async def _resolve_workspace_id(self, cwd: str) -> str:
         """Return the workspace rooted at *cwd*, creating one if none matches.
 
@@ -734,6 +755,8 @@ class HerdrManager:
         start_agent: bool = True,
         agent_args: str = "",
         launch_command: str | None = None,
+        *,
+        workspace_id: str | None = None,
     ) -> tuple[bool, str, str, str]:
         """Create a herdr tab at *work_dir* and optionally launch an agent.
 
@@ -741,6 +764,10 @@ class HerdrManager:
         creating it only if absent — design "cwd → workspace"), creates a
         ``tab`` inside it, then ``pane run``s the launch command in the root
         pane.
+
+        When *workspace_id* is provided (from the UI workspace picker), the
+        cwd-resolve step is skipped and the tab is created inside that workspace
+        directly.
 
         Returns ``(success, message, window_name, window_id)`` where
         ``window_id`` is the new **tab id** (tab identity — Task 1). The agent
@@ -754,7 +781,8 @@ class HerdrManager:
             return False, f"Not a directory: {work_dir}", "", ""
 
         cwd = str(path)
-        workspace_id = await self._resolve_workspace_id(cwd)
+        if workspace_id is None:
+            workspace_id = await self._resolve_workspace_id(cwd)
         args = ["tab", "create", "--cwd", cwd, "--no-focus"]
         if workspace_id:
             args += ["--workspace", workspace_id]

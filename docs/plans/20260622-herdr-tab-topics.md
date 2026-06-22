@@ -234,10 +234,10 @@ and adding the lifecycle/flow UX.
 - Fitness gate: F1 boundary; query-layer audit.
 - Verification: `uv run pytest tests/ccgram/ -k "new_command or directory or topic_orchestration" -v`.
 - Manual checks: `/new` on herdr creates a tab in the chosen workspace with the chosen agent; worktree path honored; shell agent creates a shell tab.
-- [ ] insert capability-gated workspace pick/create step into the directory flow
-- [ ] thread the chosen workspace id into `create_window`; keep worktree via `worktree.py`
-- [ ] tests for the herdr branch (workspace reuse vs create, shell agent); tmux flow regression
-- [ ] run `make test` — must pass before next task
+- [x] insert capability-gated workspace pick/create step into the directory flow
+- [x] thread the chosen workspace id into `create_window`; keep worktree via `worktree.py`
+- [x] tests for the herdr branch (workspace reuse vs create, shell agent); tmux flow regression
+- [x] run `make test` — must pass before next task
 
 ### Task 10: server-restart re-resolution by agent session-id
 

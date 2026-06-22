@@ -23,6 +23,12 @@ PANE_RENAME_WINDOW_ID = "_pane_rename_window_id"
 PANE_RENAME_PANE_ID = "_pane_rename_pane_id"
 PANE_RENAME_THREAD_ID = "_pane_rename_thread_id"
 
+# Workspace picker flow (between worktree-resolve and provider-pick, herdr only)
+PENDING_WORKSPACES = (
+    "_pending_workspaces"  # list[tuple[str,str,str]] — cached workspace list
+)
+PENDING_WORKSPACE_ID = "_pending_workspace_id"  # str — chosen workspace id (or "")
+
 # Worktree picker flow (between directory-confirm and provider-pick)
 PENDING_WORKTREE_REPO = "_pending_worktree_repo"
 PENDING_WORKTREE_BRANCH = "_pending_worktree_branch"

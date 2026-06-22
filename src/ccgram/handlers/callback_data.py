@@ -90,6 +90,11 @@ CB_WT_NEW = "wt:new"  # show confirm/edit screen with suggested branch
 CB_WT_CONFIRM = "wt:ok"  # create the worktree, fall through to provider pick
 CB_WT_EDIT_NAME = "wt:ed"  # prompt for branch name via text reply
 
+# Workspace picker (directory browser flow — inserted before provider pick on
+# backends with native_agent_status=True, e.g. herdr; skipped on tmux).
+CB_WS_SELECT = "ws:sel:"  # ws:sel:<index> — select workspace at cached index
+CB_WS_SKIP = "ws:skip"  # skip picker, auto-resolve workspace from cwd
+
 # Pane screenshot (from /panes command)
 CB_PANE_SCREENSHOT = "pn:ss:"  # pn:ss:<window_id>|<pane_id>
 

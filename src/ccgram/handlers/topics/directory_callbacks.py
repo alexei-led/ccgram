@@ -52,6 +52,8 @@ from ..callback_data import (
     CB_WT_EDIT_NAME,
     CB_WT_NEW,
     CB_WT_USE_CURRENT,
+    CB_WS_SELECT,
+    CB_WS_SKIP,
 )
 from ..callback_helpers import get_thread_id
 from .directory_browser import (
@@ -61,9 +63,11 @@ from .directory_browser import (
     build_directory_browser,
     build_mode_picker,
     build_provider_picker,
+    build_workspace_picker,
     build_worktree_confirm,
     build_worktree_picker,
     clear_browse_state,
+    clear_workspace_state,
     clear_worktree_state,
     get_favorites,
 )
@@ -82,6 +86,8 @@ from ..user_state import (
     AWAITING_WORKTREE_BRANCH_NAME,
     PENDING_THREAD_ID,
     PENDING_THREAD_TEXT,
+    PENDING_WORKSPACE_ID,
+    PENDING_WORKSPACES,
     PENDING_WORKTREE_BRANCH,
     PENDING_WORKTREE_CREATING,
     PENDING_WORKTREE_DIRTY,
@@ -128,6 +134,8 @@ async def handle_directory_callback(
         await _handle_mode_select(query, user_id, data, update, context)
     elif data in (CB_WT_USE_CURRENT, CB_WT_NEW, CB_WT_CONFIRM, CB_WT_EDIT_NAME):
         await _handle_worktree_callback(query, data, update, context)
+    elif data.startswith(CB_WS_SELECT) or data == CB_WS_SKIP:
+        await _handle_workspace_callback(query, data, update, context)
     elif data == CB_DIR_CANCEL:
         await _handle_cancel(query, update, context)
 
@@ -463,6 +471,82 @@ async def _handle_confirm(
         return
 
     # Show provider selection keyboard (keep browse state for _handle_provider_select)
+    await _show_workspace_picker_or_provider(query, selected_path)
+
+
+async def _show_workspace_picker_or_provider(
+    query: CallbackQuery,
+    selected_path: str,
+    context: ContextTypes.DEFAULT_TYPE | None = None,
+) -> None:
+    """Gate on native_agent_status: show workspace picker (herdr) or go straight to provider.
+
+    On backends where ``native_agent_status`` is True (herdr), fetch the workspace list and
+    show the picker so the user can pin the new tab in a workspace.  On tmux (False) fall
+    through directly to provider pick — byte-identical to the previous behaviour.
+    When only one workspace matches the cwd exactly, skip the picker and pre-select it.
+    """
+    if tmux_manager.capabilities.native_agent_status:
+        workspaces = await tmux_manager.list_workspaces()
+        ws_triples = [(w.workspace_id, w.label, w.cwd) for w in workspaces]
+        if context is not None and context.user_data is not None:
+            context.user_data[PENDING_WORKSPACES] = ws_triples
+        if ws_triples:
+            text, keyboard = build_workspace_picker(selected_path, ws_triples)
+            await safe_edit(query, text, reply_markup=keyboard)
+            return
+        # No workspaces returned (older herdr) — fall through to provider pick
+    await _show_provider_picker(query, selected_path)
+
+
+async def _handle_workspace_callback(
+    query: CallbackQuery,
+    data: str,
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """Dispatch CB_WS_SELECT / CB_WS_SKIP (shared stale guard)."""
+    pending_tid = (
+        context.user_data.get(PENDING_THREAD_ID) if context.user_data else None
+    )
+    if pending_tid is None:
+        await query.answer("Stale browser (flow reset)", show_alert=True)
+        return
+    if get_thread_id(update) != pending_tid:
+        await query.answer("Stale browser (topic mismatch)", show_alert=True)
+        return
+
+    selected_path = _required_selected_path(context)
+    if selected_path is None:
+        await query.answer("Stale browser (flow reset)", show_alert=True)
+        return
+
+    await query.answer()
+
+    if data == CB_WS_SKIP:
+        # User chose auto-resolve: clear any cached selection, go to provider pick
+        if context.user_data is not None:
+            context.user_data.pop(PENDING_WORKSPACE_ID, None)
+        await _show_provider_picker(query, selected_path)
+        return
+
+    # CB_WS_SELECT<index>
+    try:
+        idx = int(data[len(CB_WS_SELECT) :])
+    except ValueError, IndexError:
+        await safe_edit(query, "❌ Invalid workspace selection. Tap Cancel and retry.")
+        return
+
+    workspaces: list[tuple[str, str, str]] = (
+        context.user_data.get(PENDING_WORKSPACES, []) if context.user_data else []
+    )
+    if idx < 0 or idx >= len(workspaces):
+        await safe_edit(query, "❌ Workspace list changed. Tap Cancel and retry.")
+        return
+
+    chosen_ws_id = workspaces[idx][0]
+    if context.user_data is not None:
+        context.user_data[PENDING_WORKSPACE_ID] = chosen_ws_id
     await _show_provider_picker(query, selected_path)
 
 
@@ -536,7 +620,7 @@ async def _handle_wt_use_current(
         await safe_edit(query, "❌ Worktree state lost. Tap Cancel and retry.")
         return
     clear_worktree_state(context.user_data)
-    await _show_provider_picker(query, selected_path)
+    await _show_workspace_picker_or_provider(query, selected_path, context)
 
 
 async def _handle_wt_new(
@@ -626,7 +710,7 @@ async def _handle_wt_confirm(
         branch,
         target_str,
     )
-    await _show_provider_picker(query, target_str)
+    await _show_workspace_picker_or_provider(query, target_str, context)
 
 
 async def _handle_wt_edit_name(
@@ -834,6 +918,7 @@ async def _abort_topic_creation(
         context.user_data.pop(PENDING_THREAD_ID, None)
         context.user_data.pop(PENDING_THREAD_TEXT, None)
     clear_worktree_state(context.user_data)
+    clear_workspace_state(context.user_data)
 
 
 async def _create_window_and_bind(  # noqa: PLR0915
@@ -858,8 +943,14 @@ async def _create_window_and_bind(  # noqa: PLR0915
 
     launch_command = resolve_launch_command(provider_name, approval_mode=approval_mode)
 
+    chosen_workspace_id: str | None = (
+        context.user_data.get(PENDING_WORKSPACE_ID) if context.user_data else None
+    ) or None
+
     success, message, created_wname, created_wid = await tmux_manager.create_window(
-        selected_path, launch_command=launch_command
+        selected_path,
+        launch_command=launch_command,
+        workspace_id=chosen_workspace_id,
     )
     if not success:
         await _abort_topic_creation(query, message, context)
@@ -1044,6 +1135,7 @@ async def _handle_cancel(
         return
     clear_browse_state(context.user_data)
     clear_worktree_state(context.user_data)
+    clear_workspace_state(context.user_data)
     if context.user_data is not None:
         context.user_data.pop(PENDING_THREAD_ID, None)
         context.user_data.pop(PENDING_THREAD_TEXT, None)
@@ -1068,6 +1160,8 @@ async def _handle_cancel(
     CB_WT_NEW,
     CB_WT_CONFIRM,
     CB_WT_EDIT_NAME,
+    CB_WS_SELECT,
+    CB_WS_SKIP,
     CB_DIR_CANCEL,
 )
 async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

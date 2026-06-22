@@ -39,9 +39,13 @@ from ..callback_data import (
     CB_WT_EDIT_NAME,
     CB_WT_NEW,
     CB_WT_USE_CURRENT,
+    CB_WS_SELECT,
+    CB_WS_SKIP,
 )
 from ..user_state import (
     AWAITING_WORKTREE_BRANCH_NAME,
+    PENDING_WORKSPACE_ID,
+    PENDING_WORKSPACES,
     PENDING_WORKTREE_BRANCH,
     PENDING_WORKTREE_CREATING,
     PENDING_WORKTREE_DIRTY,
@@ -373,6 +377,58 @@ def build_mode_picker(
         ],
         [InlineKeyboardButton("Cancel", callback_data=CB_DIR_CANCEL)],
     ]
+    return text, InlineKeyboardMarkup(buttons)
+
+
+def clear_workspace_state(user_data: dict | None) -> None:
+    """Clear workspace-picker flow state keys from user_data."""
+    if user_data is not None:
+        user_data.pop(PENDING_WORKSPACES, None)
+        user_data.pop(PENDING_WORKSPACE_ID, None)
+
+
+def build_workspace_picker(
+    selected_path: str,
+    workspaces: list[tuple[str, str, str]],
+) -> tuple[str, InlineKeyboardMarkup]:
+    """Build workspace selection keyboard shown before provider pick on herdr.
+
+    *workspaces* is a list of ``(workspace_id, label, cwd)`` tuples — the
+    caller caches this list and stores the chosen index in user_data so the
+    callback can recover the ``workspace_id`` without embedding it in the
+    64-byte callback_data limit.
+
+    A "Skip / auto-resolve" button is always present: it lets the backend's
+    cwd-matching logic pick (or create) the workspace without user input,
+    preserving the tmux-equivalent behaviour on herdr.
+
+    Returns: (text, keyboard).
+    """
+    display_path = selected_path.replace(str(Path.home()), "~")
+    text = (
+        f"*Select Workspace*\n\nDirectory: `{display_path}`\n\n"
+        "Pick an existing workspace or let ccgram resolve one from the folder."
+    )
+    buttons: list[list[InlineKeyboardButton]] = []
+    for i, (_wid, label, cwd) in enumerate(workspaces):
+        display_cwd = cwd.replace(str(Path.home()), "~")
+        trunc_label = (
+            label[:_MAX_BUTTON_LABEL_LEN] + "…"
+            if len(label) > _MAX_BUTTON_LABEL_LEN
+            else label
+        )
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    f"🗂 {trunc_label} ({display_cwd})",
+                    callback_data=f"{CB_WS_SELECT}{i}",
+                )
+            ]
+        )
+    buttons.append(
+        [InlineKeyboardButton("🔍 Auto-resolve from folder", callback_data=CB_WS_SKIP)]
+    )
+    buttons.append([InlineKeyboardButton("Cancel", callback_data=CB_DIR_CANCEL)])
     return text, InlineKeyboardMarkup(buttons)
 
 
