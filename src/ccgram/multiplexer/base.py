@@ -131,7 +131,12 @@ class MultiplexerCapabilities:
     """Environment variable set by the backend for hook identity resolution."""
 
     supports_event_stream: bool
-    """True when the backend has a push event stream (deferred; herdr: True)."""
+    """True when the backend has a push event stream (herdr: True, tmux: False).
+
+    Reserved for future event-stream wiring; no consumers yet outside the
+    multiplexer package itself (contract tests + session_monitor capability
+    fixture). The flag is intentional forward-looking design — do not remove.
+    """
 
 
 # ── Protocol ───────────────────────────────────────────────────────────

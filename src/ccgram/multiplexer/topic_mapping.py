@@ -2,15 +2,15 @@
 
 Consumes the multiplexer seam; it is **not** part of the ``Multiplexer``
 contract (which stops at opaque ``window_id``). It defines how a backend's
-windows/panes project onto ccgram's flat ``group → topic`` structure.
+windows/tabs project onto ccgram's flat ``group → topic`` structure.
 
-The design ("Telegram topic mapping (herdr)") maps one herdr agent pane to one
-Telegram topic — "topic = pane = agent". Because herdr uses thin identity
-(``window_id`` *is* the ``wN:pN`` pane id), per-pane topics, per-pane inbound
+The design ("Telegram topic mapping (herdr)") maps one herdr agent tab to one
+Telegram topic — "topic = tab = agent". Because herdr uses tab identity
+(``window_id`` *is* the ``wN:tM`` tab id), per-tab topics, per-tab inbound
 routing, and session-id-anchored restart re-resolution (Task 8) already fall out
 of ccgram's window-id-centric machinery. The behaviors this module adds are the
-discovery filter — on a backend that exposes agent status natively, only panes
-herdr reports as running an agent become topics, a bare shell pane does not —
+discovery filter — on a backend that exposes agent status natively, only tabs
+herdr reports as running an agent become topics, a bare shell tab does not —
 and the adaptive topic-title rendering (``format_agent_topic_prefix``) the herdr
 adapter stamps into ``WindowRef.window_name``.
 
@@ -58,11 +58,12 @@ def is_agent_topic_window(window: WindowRef, caps: MultiplexerCapabilities) -> b
 
     * Backends without native agent status (tmux): every window is eligible,
       so the historical auto-topic behavior is unchanged.
-    * Backends with native agent status (herdr): only agent panes qualify.
+    * Backends with native agent status (herdr): only agent tabs qualify.
       herdr carries the agent label in ``WindowRef.pane_current_command``
-      (empty for a bare shell pane), so a non-empty label marks an agent. Each
-      agent pane — including the extra panes a tab split (agent team) spawns —
-      has a distinct ``window_id`` and therefore becomes a distinct topic.
+      (empty for a bare shell tab), so a non-empty label marks an agent. Each
+      agent tab has a distinct ``window_id`` and therefore becomes a distinct
+      topic. A split tab (agent team) is one topic with multiple panes — not
+      multiple topics.
     """
     if not caps.native_agent_status:
         return True

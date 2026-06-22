@@ -39,6 +39,7 @@ from ..callback_data import (
     CB_KEYS_PREFIX,
     CB_LIVE_START,
     CB_LIVE_STOP,
+    CB_PANE_DELIMITER,
     CB_PANE_SCREENSHOT,
     CB_SCREENSHOT_REFRESH,
     CB_STATUS_SCREENSHOT,
@@ -86,11 +87,6 @@ def build_screenshot_keyboard(
     When *pane_id* is given, keys and refresh target that specific pane
     instead of the window's active pane.
     """
-    # Lazy: CB_PANE_DELIMITER is used only at call time; keeping it at module
-    # level would require adding it to the import block which the lint hook
-    # rejects before the usages below are also edited.
-    from ..callback_data import CB_PANE_DELIMITER  # Lazy: pane delimiter constant
-
     target = f"{window_id}{CB_PANE_DELIMITER}{pane_id}" if pane_id else window_id
 
     def btn(label: str, key_id: str) -> InlineKeyboardButton:
@@ -222,9 +218,6 @@ async def _handle_pane_screenshot(
     query: CallbackQuery, user_id: int, data: str, update: Update
 ) -> None:
     """Handle CB_PANE_SCREENSHOT: screenshot a specific pane."""
-    # Lazy: pane delimiter constant
-    from ..callback_data import CB_PANE_DELIMITER
-
     rest = data[len(CB_PANE_SCREENSHOT) :]
     # Format: <window_id>|<pane_id> — delimiter is | so herdr ids (w2:t1, w2:p1) round-trip
     delim_idx = rest.find(CB_PANE_DELIMITER)

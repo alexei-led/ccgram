@@ -170,42 +170,14 @@ class TestResolveStaleIdsBySession:
     """Re-resolution for backends with non-stable ids (herdr), keyed on the
     durable agent session id rather than display name (ids_stable=False)."""
 
-    def test_herdr_restart_remaps_state_binding_and_offset(self) -> None:
-        # herdr server restarted: pane w2:p1 (session S1) came back as w3:p1.
-        # State, thread binding, and read offset all follow to the new pane so
-        # the bound topic re-attaches to its agent.
-        live = [LiveWindow("w3:p1", "ccgram")]
-        window_states = {"w2:p1": _ws_sid("ccgram", "S1")}
-        thread_bindings: dict = {100: {42: "w2:p1"}}
-        offsets: dict = {100: {"w2:p1": 7}}
-        display_names = {"w2:p1": "ccgram ▸ claude"}
-
-        changed = resolve_stale_ids(
-            live,
-            window_states,
-            thread_bindings,
-            offsets,
-            display_names,
-            ids_stable=False,
-            live_session_ids={"w3:p1": "S1"},
-        )
-
-        assert changed
-        assert "w3:p1" in window_states
-        assert "w2:p1" not in window_states
-        assert thread_bindings[100][42] == "w3:p1"
-        assert offsets[100] == {"w3:p1": 7}
-        assert display_names.get("w3:p1") == "ccgram ▸ claude"
-        assert "w2:p1" not in display_names
-
     def test_herdr_no_session_match_keeps_dead_window(self) -> None:
-        # The agent's session is not present among live panes (hook hasn't
+        # The agent's session is not present among live tabs (hook hasn't
         # re-fired yet) — keep the entry for /restore rather than dropping it.
-        live = [LiveWindow("w3:p1", "other")]
-        window_states = {"w2:p1": _ws_sid("ccgram", "S1")}
-        thread_bindings: dict = {100: {42: "w2:p1"}}
+        live = [LiveWindow("w3:t1", "other")]
+        window_states = {"w2:t1": _ws_sid("ccgram", "S1")}
+        thread_bindings: dict = {100: {42: "w2:t1"}}
         offsets: dict = {}
-        display_names = {"w2:p1": "ccgram ▸ claude"}
+        display_names = {"w2:t1": "ccgram ▸ claude"}
 
         changed = resolve_stale_ids(
             live,
@@ -214,20 +186,20 @@ class TestResolveStaleIdsBySession:
             offsets,
             display_names,
             ids_stable=False,
-            live_session_ids={"w3:p1": "S-other"},
+            live_session_ids={"w3:t1": "S-other"},
         )
 
         assert not changed
-        assert "w2:p1" in window_states
-        assert thread_bindings[100][42] == "w2:p1"
+        assert "w2:t1" in window_states
+        assert thread_bindings[100][42] == "w2:t1"
 
     def test_herdr_live_id_unchanged(self) -> None:
-        # Pane id survived the restart (still live) — no remap, no churn.
-        live = [LiveWindow("w2:p1", "ccgram")]
-        window_states = {"w2:p1": _ws_sid("ccgram", "S1")}
-        thread_bindings: dict = {100: {42: "w2:p1"}}
+        # Tab id survived the restart (still live) — no remap, no churn.
+        live = [LiveWindow("w2:t1", "ccgram")]
+        window_states = {"w2:t1": _ws_sid("ccgram", "S1")}
+        thread_bindings: dict = {100: {42: "w2:t1"}}
         offsets: dict = {}
-        display_names = {"w2:p1": "ccgram ▸ claude"}
+        display_names = {"w2:t1": "ccgram ▸ claude"}
 
         changed = resolve_stale_ids(
             live,
@@ -236,20 +208,20 @@ class TestResolveStaleIdsBySession:
             offsets,
             display_names,
             ids_stable=False,
-            live_session_ids={"w2:p1": "S1"},
+            live_session_ids={"w2:t1": "S1"},
         )
 
         assert not changed
-        assert "w2:p1" in window_states
+        assert "w2:t1" in window_states
 
     def test_herdr_no_live_session_ids_keeps_state(self) -> None:
         # No session map available yet (empty map) — nothing to join on, keep
         # all state. Display-name matching is never used on the herdr path.
-        live = [LiveWindow("w3:p1", "ccgram")]
-        window_states = {"w2:p1": _ws_sid("ccgram", "S1")}
-        thread_bindings: dict = {100: {42: "w2:p1"}}
+        live = [LiveWindow("w3:t1", "ccgram")]
+        window_states = {"w2:t1": _ws_sid("ccgram", "S1")}
+        thread_bindings: dict = {100: {42: "w2:t1"}}
         offsets: dict = {}
-        display_names = {"w2:p1": "ccgram"}
+        display_names = {"w2:t1": "ccgram"}
 
         changed = resolve_stale_ids(
             live,
@@ -262,17 +234,17 @@ class TestResolveStaleIdsBySession:
         )
 
         assert not changed
-        assert "w2:p1" in window_states
-        assert thread_bindings[100][42] == "w2:p1"
+        assert "w2:t1" in window_states
+        assert thread_bindings[100][42] == "w2:t1"
 
     def test_herdr_skips_dead_session_map_entry(self) -> None:
-        # session_map still lists the old pane id (stale, not live) for the same
+        # session_map still lists the old tab id (stale, not live) for the same
         # session — must not re-map onto a dead id.
-        live = [LiveWindow("w3:p1", "ccgram")]
-        window_states = {"w2:p1": _ws_sid("ccgram", "S1")}
+        live = [LiveWindow("w3:t1", "ccgram")]
+        window_states = {"w2:t1": _ws_sid("ccgram", "S1")}
         thread_bindings: dict = {}
         offsets: dict = {}
-        display_names = {"w2:p1": "ccgram"}
+        display_names = {"w2:t1": "ccgram"}
 
         changed = resolve_stale_ids(
             live,
@@ -281,12 +253,12 @@ class TestResolveStaleIdsBySession:
             offsets,
             display_names,
             ids_stable=False,
-            # Only a stale w2:p1 entry; w3:p1 has no session yet.
-            live_session_ids={"w2:p1": "S1"},
+            # Only a stale w2:t1 entry; w3:t1 has no session yet.
+            live_session_ids={"w2:t1": "S1"},
         )
 
         assert not changed
-        assert "w2:p1" in window_states
+        assert "w2:t1" in window_states
 
     def test_herdr_tab_id_restart_remaps_state_binding_and_offset(self) -> None:
         # After Task 1's tab-identity flip herdr ids are ``wN:tM`` (not ``wN:pM``).

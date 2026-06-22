@@ -27,6 +27,20 @@ def is_window_id(key: str) -> bool:
     return key.startswith("@") and len(key) > 1 and key[1:].isdigit()
 
 
+def session_map_prefix_for(mux_name: str, session_name: str) -> str:
+    """Return the session_map key prefix for a given multiplexer backend.
+
+    tmux keys are ``<tmux_session_name>:<window_id>`` (e.g. ``ccgram:@12``);
+    non-tmux backends (herdr) key by backend name (e.g. ``herdr:w2:t1``).
+
+    This is the pure, config-free version used by status_cmd and session_map.
+    ``session_map.session_map_prefix()`` wraps this with ``config`` values.
+    """
+    if mux_name == "tmux":
+        return f"{session_name}:"
+    return f"{mux_name}:"
+
+
 def _resolve_window_states(
     window_states: dict,
     window_display_names: dict,
@@ -251,7 +265,7 @@ def _remap_window_states(
 
 
 def _remap_thread_bindings(thread_bindings: dict, remap: dict[str, str]) -> bool:
-    """Re-point thread bindings to the new pane so bound topics re-attach."""
+    """Re-point thread bindings to the new window/tab id so bound topics re-attach."""
     changed = False
     for bindings in thread_bindings.values():
         for tid, val in list(bindings.items()):
@@ -286,8 +300,8 @@ def _resolve_by_session_id(
     """Re-resolve stale IDs by agent session id (non-stable-id backends).
 
     Used when ``ids_stable_across_restart`` is False. Unlike the tmux path this
-    does not consult display names or ``is_window_id`` (herdr ids are ``wN:pM``,
-    not ``@N``) and it re-points thread bindings to the new pane so a bound
+    does not consult display names or ``is_window_id`` (herdr ids are ``wN:tM``,
+    not ``@N``) and it re-points thread bindings to the new tab so a bound
     topic re-attaches to its agent after a herdr restart.
     """
     remap = _build_session_remap(live_windows, window_states, live_session_ids)

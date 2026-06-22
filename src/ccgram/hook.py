@@ -663,18 +663,38 @@ def _resolve_herdr_tab_id(pane_id: str) -> str | None:
             text=True,
             timeout=5,
         )
-    except subprocess.TimeoutExpired, OSError:
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        logger.warning("herdr pane get failed for pane %s: %s", pane_id, exc)
         return None
     if result.returncode != 0:
+        logger.warning(
+            "herdr pane get returned non-zero for pane %s (rc=%d): %s",
+            pane_id,
+            result.returncode,
+            result.stderr.strip(),
+        )
         return None
     try:
         payload = json.loads(result.stdout)
-    except json.JSONDecodeError, ValueError:
+    except (json.JSONDecodeError, ValueError) as exc:
+        logger.warning(
+            "herdr pane get returned unparseable JSON for pane %s: %s", pane_id, exc
+        )
         return None
     if not isinstance(payload, dict):
+        logger.warning(
+            "herdr pane get returned unexpected type %s for pane %s",
+            type(payload).__name__,
+            pane_id,
+        )
         return None
     tab_id = payload.get("result", {}).get("pane", {}).get("tab_id")
-    return tab_id if isinstance(tab_id, str) and tab_id else None
+    if not isinstance(tab_id, str) or not tab_id:
+        logger.warning(
+            "herdr pane get missing tab_id for pane %s (payload=%r)", pane_id, payload
+        )
+        return None
+    return tab_id
 
 
 def _resolve_window_id(pane_id: str) -> tuple[str, str, str, str] | None:
@@ -1056,7 +1076,7 @@ def _refresh_session_map_if_stale(
     ):
         return
     # Backend prefix token: split on the FIRST colon so herdr keys
-    # ("herdr:w2:p1") yield "herdr", not "herdr:w2" (the pane id has a colon).
+    # ("herdr:w2:t1") yield "herdr", not "herdr:w2" (the tab id has a colon).
     tmux_session_name = session_window_key.split(":", 1)[0]
     _update_session_map(
         session_window_key,
@@ -1135,6 +1155,13 @@ def _locate_primary_window(
             logger.warning(
                 "Neither TMUX_PANE nor HERDR_PANE_ID set, cannot determine window"
             )
+        elif os.environ.get("HERDR_PANE_ID"):
+            logger.warning(
+                "HERDR_PANE_ID=%s set but tab resolution failed "
+                "(herdr not installed, socket down, or pane gone); "
+                "hook event dropped",
+                os.environ.get("HERDR_PANE_ID"),
+            )
         return None
     logger.debug(
         "%s key=%s, window_name=%s, session_id=%s, event=%s",
@@ -1209,7 +1236,7 @@ def _process_hook_stdin(provider_name: str | None = None) -> None:
 
     if event == "SessionStart":
         # Backend prefix token (see _refresh_session_map_if_stale): split on the
-        # first colon so herdr keys ("herdr:w2:p1") yield "herdr".
+        # first colon so herdr keys ("herdr:w2:t1") yield "herdr".
         tmux_session_name = session_window_key.split(":", 1)[0]
         transcript_path = _resolve_transcript_path(
             detected_provider,

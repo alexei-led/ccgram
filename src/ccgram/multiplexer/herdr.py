@@ -262,10 +262,6 @@ class HerdrManager:
             return []
         return [t for t in result.get("tabs", []) if t.get("tab_id")]
 
-    async def _tab_labels(self) -> dict[str, str]:
-        """Map every ``tab_id`` → its label (one ``tab list`` call)."""
-        return {t["tab_id"]: t.get("label", "") for t in await self._tab_list()}
-
     async def _tab_get(self, tab_id: str) -> dict | None:
         """Return the raw tab dict from ``tab get <tab_id>``; None when gone."""
         if not tab_id:
@@ -275,11 +271,6 @@ class HerdrManager:
             return None
         tab = result.get("tab")
         return tab if isinstance(tab, dict) else None
-
-    async def _tab_label(self, tab_id: str) -> str:
-        """Return one tab's label, or '' when missing."""
-        tab = await self._tab_get(tab_id)
-        return (tab or {}).get("label", "") or ""
 
     async def _workspace_labels(self) -> dict[str, str]:
         """Map every ``workspace_id`` → its label (one ``workspace list`` call).
@@ -297,21 +288,6 @@ class HerdrManager:
         }
 
     @staticmethod
-    def _adaptive_label(
-        pane: Mapping,
-        tab_labels: Mapping[str, str],
-        workspace_labels: Mapping[str, str],
-    ) -> str:
-        """Build a pane's adaptive topic label from the herdr label maps.
-
-        ``"<workspace> ▸ <tab>"`` — tab name is primary so same-agent tabs in
-        one workspace get distinct titles.
-        """
-        tab_id = pane.get("tab_id", "")
-        workspace = workspace_labels.get(pane.get("workspace_id", ""), "")
-        return format_agent_topic_prefix(workspace, tab_labels.get(tab_id, ""))
-
-    @staticmethod
     def _to_window_ref(
         tab_id: str,
         window_name: str,
@@ -321,8 +297,8 @@ class HerdrManager:
         """Build a neutral ``WindowRef`` from resolved tab fields.
 
         ``window_id`` is the ``tab_id`` (tab identity — design Task 1).
-        ``window_name`` is the display label (bare tab label for
-        ``find_window``; full adaptive topic label for ``list_windows``).
+        ``window_name`` is the display label (full adaptive topic label
+        ``"<workspace> ▸ <tab>"`` for both ``find_window`` and ``list_windows``).
         ``pane_current_command`` carries the representative agent label so
         provider detection and the status pipeline keep working.
         herdr has no tty and dimensions come from ``pane_dims`` on demand.
@@ -437,11 +413,18 @@ class HerdrManager:
         Uses ``tab get`` (tab identity — Task 1). Bypasses the ``__*__`` filter
         so an explicitly bound ``__*__`` tab still resolves for send/capture.
         cwd and representative agent come from the first available pane.
+        Produces the same full ``"<workspace> ▸ <tab>"`` label as ``list_windows``
+        so display-name consumers see a consistent topic title.
         """
         tab = await self._tab_get(window_id)
         if tab is None:
             return None
         tab_label = tab.get("label", "")
+
+        # Resolve workspace label for the full adaptive topic label.
+        workspace_labels = await self._workspace_labels()
+        workspace_label = workspace_labels.get(tab.get("workspace_id", ""), "")
+        window_name = format_agent_topic_prefix(workspace_label, tab_label)
 
         # Resolve cwd and agent from panes (tab get carries no pane detail).
         pane_result = await self._call_json(["pane", "list"])
@@ -457,7 +440,7 @@ class HerdrManager:
                 rep_agent = rep_pane.get("display_agent") or rep_pane.get("agent", "")
                 rep_cwd = rep_pane.get("cwd", "") or rep_cwd
 
-        return self._to_window_ref(window_id, tab_label, rep_cwd, rep_agent)
+        return self._to_window_ref(window_id, window_name, rep_cwd, rep_agent)
 
     # ── Raw pane-id ops (private) ──────────────────────────────────────
     # These accept a resolved *pane* id — not a tab id. Tab-keyed public

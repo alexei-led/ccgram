@@ -263,14 +263,18 @@ herdr advertises its own capabilities through the seam; the behavioral consequen
 
 | Aspect                    | tmux                            | herdr                                                                      |
 | ------------------------- | ------------------------------- | -------------------------------------------------------------------------- |
-| Topic = window            | every window is eligible        | only **agent panes** surface as topics — a bare shell pane does not        |
+| Topic = window            | every window is eligible        | only **agent tabs** surface as topics — a bare shell tab does not          |
 | Foreground detection      | `ps -t <tty>`                   | `pane process-info` (no tty)                                               |
 | Scrollback capture        | unbounded                       | clamped to **1000 lines**; longer output is flagged as truncated           |
 | Agent status              | inferred from terminal scraping | native (herdr reports agent status directly)                               |
 | Window IDs across restart | stable                          | re-minted on a herdr **server** restart — ccgram re-resolves by session id |
-| Topic labels              | window name                     | adaptive `"<workspace> ▸ <agent>"` (`/<tab>` appended only when split)     |
+| Topic labels              | window name                     | adaptive `"<workspace> ▸ <tab>"` (tab name is primary)                     |
 
 Creating sessions from the terminal on herdr is covered in [Creating Sessions from the Terminal](#creating-sessions-from-the-terminal).
+
+> **Workspace picker:** On herdr, `/new` shows an extra step after directory selection — a workspace picker that lets you pin the new tab inside an existing herdr workspace. If no workspaces exist yet (or none matches the selected directory), the picker is skipped and ccgram creates a new workspace automatically.
+>
+> **Self-hosting escape hatch:** Workspaces or tabs whose label matches `__*__` (e.g. `__main__`) are invisible to ccgram. Use this naming convention to run ccgram itself inside herdr without it auto-adopting its own terminal as a topic.
 
 ## Auto-Close Behavior
 

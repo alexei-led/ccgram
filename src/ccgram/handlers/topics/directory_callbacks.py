@@ -471,7 +471,7 @@ async def _handle_confirm(
         return
 
     # Show provider selection keyboard (keep browse state for _handle_provider_select)
-    await _show_workspace_picker_or_provider(query, selected_path)
+    await _show_workspace_picker_or_provider(query, selected_path, context)
 
 
 async def _show_workspace_picker_or_provider(

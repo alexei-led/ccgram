@@ -26,6 +26,7 @@ import sys
 from pathlib import Path
 
 from .utils import ccgram_dir, load_ccgram_env, tmux_session_name
+from .window_resolver import session_map_prefix_for
 
 _TMUX_FORMAT_PARTS = 2
 
@@ -39,19 +40,6 @@ _HERDR_BACKEND = "herdr"
 def _active_multiplexer_name() -> str:
     """Return the configured multiplexer backend (``CCGRAM_MULTIPLEXER``)."""
     return os.environ.get(_MULTIPLEXER_ENV, _DEFAULT_MULTIPLEXER)
-
-
-def _session_map_prefix(mux_name: str, session_name: str) -> str:
-    """Session_map key prefix for the active backend.
-
-    Mirrors ``session_map.session_map_prefix``: tmux keys are
-    ``<tmux_session_name>:<@id>``; non-tmux backends (herdr) key by backend
-    name (``herdr:<wN:pM>``). The tmux branch is byte-identical to the previous
-    hard-coded ``f"{session_name}:"``.
-    """
-    if mux_name == _DEFAULT_MULTIPLEXER:
-        return f"{session_name}:"
-    return f"{mux_name}:"
 
 
 def _list_herdr_windows() -> list[dict[str, str]]:
@@ -160,7 +148,7 @@ def status_main() -> None:
             bound_windows[window_id] = (int(thread_id_str), int(user_id_str))
 
     # Count monitored sessions (backend-aware prefix)
-    prefix = _session_map_prefix(mux_name, session_name)
+    prefix = session_map_prefix_for(mux_name, session_name)
     monitored = sum(1 for k in session_map if k.startswith(prefix))
 
     # Output

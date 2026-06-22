@@ -318,16 +318,18 @@ def test_constructor_does_no_io() -> None:
 
 
 async def test_find_window_uses_tab_get_and_returns_tab_id() -> None:
-    # find_window(tab_id) → tab get + pane list for agent/cwd → WindowRef.
+    # find_window(tab_id) → tab get + workspace list + pane list → WindowRef
+    # with the same full "<workspace> ▸ <tab>" label as list_windows.
     fake = (
         FakeHerdr()
         .on("tab", "get", out=TAB_GET)
+        .on("workspace", "list", out=WORKSPACE_LIST)
         .on("pane", "list", out=PANE_LIST_FOR_FIND)
     )
     win = await _manager(fake).find_window("w2:t1")
     assert win == WindowRef(
         window_id="w2:t1",
-        window_name="herdr-support",
+        window_name="ccgram ▸ herdr-support",
         cwd="/Users/alexei/Workspace/ccgram",
         pane_current_command="claude",
     )
@@ -343,6 +345,8 @@ async def test_find_window_returns_none_when_tab_gone() -> None:
 
 async def test_find_window_bypasses_internal_label_filter() -> None:
     # __*__ tabs are filtered in list_windows but find_window always resolves.
+    # workspace_id "w3" is absent from workspace list → workspace label "" →
+    # format_agent_topic_prefix("", "__main__") == "__main__" (no stray separator).
     internal_tab = json.dumps(
         {
             "result": {
@@ -357,9 +361,13 @@ async def test_find_window_bypasses_internal_label_filter() -> None:
         }
     )
     pane_list_empty = json.dumps({"result": {"panes": [], "type": "pane_list"}})
+    workspace_list_empty = json.dumps(
+        {"result": {"workspaces": [], "type": "workspace_list"}}
+    )
     fake = (
         FakeHerdr()
         .on("tab", "get", out=internal_tab)
+        .on("workspace", "list", out=workspace_list_empty)
         .on("pane", "list", out=pane_list_empty)
     )
     win = await _manager(fake).find_window("w3:t1")

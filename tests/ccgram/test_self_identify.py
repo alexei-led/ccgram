@@ -33,27 +33,21 @@ class TestResolveSelfIdentity:
                 {"HERDR_PANE_ID": "w2:p1", "HERDR_SOCKET_PATH": "/tmp/herdr.sock"},
                 None,
                 lambda _pane: "w2:t1",
-                SelfIdentity(
-                    "herdr", "herdr:w2:t1", "w2:t1", "", socket_path="/tmp/herdr.sock"
-                ),
+                SelfIdentity("herdr", "herdr:w2:t1", "w2:t1", ""),
             ),
-            # herdr: no herdr_query → falls back to pane id
+            # herdr: no herdr_query → probe unavailable → None (symmetric with tmux)
             (
                 {"HERDR_PANE_ID": "w2:p1", "HERDR_SOCKET_PATH": "/tmp/herdr.sock"},
                 None,
                 None,
-                SelfIdentity(
-                    "herdr", "herdr:w2:p1", "w2:p1", "", socket_path="/tmp/herdr.sock"
-                ),
+                None,
             ),
-            # herdr: herdr_query returns None (probe failure) → falls back to pane id
+            # herdr: herdr_query returns None (probe failure) → None (skip session_map write)
             (
                 {"HERDR_PANE_ID": "w2:p1", "HERDR_SOCKET_PATH": "/tmp/herdr.sock"},
                 None,
                 lambda _pane: None,
-                SelfIdentity(
-                    "herdr", "herdr:w2:p1", "w2:p1", "", socket_path="/tmp/herdr.sock"
-                ),
+                None,
             ),
             ({}, None, None, None),
             ({"TMUX_PANE": "%0"}, None, None, None),
@@ -75,11 +69,12 @@ class TestResolveSelfIdentity:
         )
         assert ident == expected
 
-    def test_herdr_without_socket_path_defaults_empty(self) -> None:
+    def test_herdr_without_herdr_query_returns_none(self) -> None:
+        # No herdr_query supplied → probe unavailable → None (skip session_map write).
         ident = resolve_self_identity(
             {"HERDR_PANE_ID": "w0:p0"}, tmux_query=_fail_query
         )
-        assert ident == SelfIdentity("herdr", "herdr:w0:p0", "w0:p0", "")
+        assert ident is None
 
     def test_herdr_query_resolves_tab_id(self) -> None:
         ident = resolve_self_identity(
@@ -154,8 +149,8 @@ class TestLocatePrimaryWindowThroughResolver:
             "",
         )
 
-    def test_herdr_pane_fallback_on_probe_failure(self, monkeypatch) -> None:
-        # probe returns None → falls back to pane id; no tty → nested check is no-op.
+    def test_herdr_pane_probe_failure_returns_none(self, monkeypatch) -> None:
+        # probe returns None → resolve_self_identity returns None → hook skips write.
         monkeypatch.delenv("TMUX_PANE", raising=False)
         monkeypatch.setenv("HERDR_PANE_ID", "w2:p1")
         monkeypatch.setattr(
@@ -164,8 +159,4 @@ class TestLocatePrimaryWindowThroughResolver:
         )
         from ccgram.hook import _locate_primary_window
 
-        assert _locate_primary_window("sid", "Stop", "claude") == (
-            "herdr:w2:p1",
-            "w2:p1",
-            "",
-        )
+        assert _locate_primary_window("sid", "Stop", "claude") is None

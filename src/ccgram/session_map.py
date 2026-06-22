@@ -35,7 +35,7 @@ import aiofiles
 
 from .config import config
 from .utils import atomic_write_json, log_throttle_reset, log_throttled
-from .window_resolver import is_window_id
+from .window_resolver import is_window_id, session_map_prefix_for
 
 logger = structlog.get_logger()
 
@@ -81,11 +81,11 @@ def live_window_session_ids(
     """Map each live window id to its session_id from a raw session_map.
 
     Backend-neutral: a session_map key is ``<prefix>:<window_id>`` (e.g.
-    ``ccgram:@12`` for tmux, ``herdr:w2:p1`` for herdr, whose id itself contains
+    ``ccgram:@12`` for tmux, ``herdr:w2:t1`` for herdr, whose id itself contains
     a colon), so this matches the key to a live window id by suffix rather than
     splitting on ``:``. Only ids in ``live_window_ids`` are returned, so stale
     pre-restart entries are ignored. Used by herdr restart re-resolution to join
-    persisted ``session_id`` -> current pane id (``window_resolver``).
+    persisted ``session_id`` -> current tab id (``window_resolver``).
     """
     result: dict[str, str] = {}
     for key, info in raw.items():
@@ -106,15 +106,12 @@ def session_map_prefix() -> str:
 
     The hook encodes the backend into each key's prefix: tmux keys are
     ``<tmux_session_name>:<@id>`` (the live tmux session name), herdr keys are
-    ``herdr:<wN:pM>`` (the backend name — see ``multiplexer.self_identify``).
+    ``herdr:<wN:tM>`` (the backend name — see ``multiplexer.self_identify``).
     Readers mirror that here so they match the writer regardless of the active
     backend; the tmux branch is byte-identical to the previous hard-coded
     ``f"{config.tmux_session_name}:"``.
     """
-    name = config.multiplexer_name
-    if name == "tmux":
-        return f"{config.tmux_session_name}:"
-    return f"{name}:"
+    return session_map_prefix_for(config.multiplexer_name, config.tmux_session_name)
 
 
 def is_backend_window_id(window_id: str) -> bool:
@@ -122,8 +119,8 @@ def is_backend_window_id(window_id: str) -> bool:
 
     tmux requires the ``@N`` form so legacy window-name-keyed entries are still
     detected and purged as old format; non-stable-id backends (herdr) use
-    ``wN:pM`` ids that ``is_window_id`` rejects, so any non-empty token after the
-    prefix is valid there (mirrors ``window_resolver._resolve_by_session_id``,
+    ``wN:tM`` tab ids that ``is_window_id`` rejects, so any non-empty token after
+    the prefix is valid there (mirrors ``window_resolver._resolve_by_session_id``,
     which likewise does not apply ``is_window_id`` to herdr ids).
     """
     if config.multiplexer_name == "tmux":
@@ -212,9 +209,11 @@ def effective_session_map_info(
 
 
 def parse_session_map(raw: dict[str, Any], prefix: str) -> dict[str, dict[str, str]]:
-    """Parse session_map.json entries matching a tmux session prefix.
+    """Parse session_map.json entries matching a backend prefix.
 
-    Returns {window_name: {"session_id": ..., "cwd": ...}} for matching entries.
+    Returns {window_id: {"session_id": ..., "cwd": ...}} for matching entries,
+    where window_id is the bare id after stripping the prefix — e.g. ``"@12"``
+    for tmux (``"ccgram:@12"``) or ``"w2:t1"`` for herdr (``"herdr:w2:t1"``).
 
     Safe to call from a clean interpreter (no SessionManager wired): the
     nested-session preference logic in ``_prefer_existing_primary`` short-
@@ -256,8 +255,9 @@ class SessionMapSync:
     async def load_session_map(self, raw: dict[str, Any] | None = None) -> None:
         """Read session_map.json and update window_states with new session associations.
 
-        Keys in session_map are formatted as "tmux_session:window_id" (e.g. "ccgram:@12").
-        Only native entries (matching our tmux_session_name) are processed.
+        Keys in session_map are formatted as "tmux_session:window_id" for tmux
+        (e.g. "ccgram:@12") or "herdr:tab_id" for herdr (e.g. "herdr:w2:t1").
+        Only native entries (matching our tmux_session_name or the "herdr:" prefix) are processed.
         Also cleans up window_states entries not in current session_map.
         Updates window_display_names from the "window_name" field in values.
 

@@ -27,7 +27,8 @@ TmuxQuery = Callable[[str], "tuple[str, str, str, str] | None"]
 
 # herdr_query returns the ``tab_id`` string for a given pane id, or None on
 # failure (herdr not available, socket down, …). When None the herdr branch
-# falls back to the pane id so the key degrades gracefully to ``herdr:<pane_id>``.
+# returns None from ``resolve_self_identity`` (symmetric with the tmux branch),
+# so the hook skips the session_map write rather than binding a phantom key.
 HerdrQuery = Callable[[str], "str | None"]
 
 
@@ -37,8 +38,7 @@ class SelfIdentity:
 
     ``session_window_key`` is the ``session_map.json`` key (``<session>:<id>``
     for tmux, ``herdr:<tab_id>`` for herdr). ``pane_tty`` is tmux-only (herdr
-    does not expose a tty); ``socket_path`` is herdr-only (``$HERDR_SOCKET_PATH``,
-    carried for later cwd resolution once the herdr backend lands).
+    does not expose a tty).
     """
 
     mux: str
@@ -46,7 +46,6 @@ class SelfIdentity:
     window_id: str
     window_name: str
     pane_tty: str = ""
-    socket_path: str = ""
 
 
 def resolve_self_identity(
@@ -65,8 +64,9 @@ def resolve_self_identity(
 
     For herdr: ``herdr_query(pane_id)`` resolves the pane to its containing tab
     id so ``session_window_key`` becomes ``herdr:<tab_id>`` (matching
-    ``list_windows``). Falls back to ``herdr:<pane_id>`` when the probe is None
-    or returns None (herdr not installed, socket down).
+    ``list_windows``). Returns None when the probe is None or returns None
+    (herdr not installed, socket down) — symmetric with the tmux branch;
+    the hook skips the session_map write until the socket is available.
     """
     tmux_pane = env.get("TMUX_PANE", "")
     if tmux_pane:
@@ -84,15 +84,14 @@ def resolve_self_identity(
 
     herdr_pane = env.get("HERDR_PANE_ID", "")
     if herdr_pane:
-        tab_id = (
-            herdr_query(herdr_pane) if herdr_query is not None else None
-        ) or herdr_pane
+        tab_id = herdr_query(herdr_pane) if herdr_query is not None else None
+        if tab_id is None:
+            return None
         return SelfIdentity(
             mux="herdr",
             session_window_key=f"herdr:{tab_id}",
             window_id=tab_id,
             window_name="",
-            socket_path=env.get("HERDR_SOCKET_PATH", ""),
         )
 
     return None
