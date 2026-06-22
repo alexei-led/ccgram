@@ -1,11 +1,9 @@
-"""Task 7 unit + boundary tests for the herdr backend.
+"""Task 1 unit + boundary tests for the herdr backend (tab identity).
 
 The backend shells out to the ``herdr`` CLI; here the command runner is
 replaced by ``FakeHerdr`` so every test feeds real captured JSON fixtures
-(``pane get`` / ``pane list`` / ``process-info`` / ``layout`` / ``tab create``)
-with no socket. Boundary tests cover socket-down, bad id, scrollback
-truncation, and protocol-version refusal (design "herdr backend (unit,
-boundary)").
+(``tab get`` / ``tab list`` / ``pane list`` / ``workspace list`` /
+``process-info`` / ``layout`` / ``tab create``) with no socket.
 
 Fixtures are trimmed from live herdr 0.7.0 output.
 """
@@ -54,6 +52,67 @@ PANE_GET = json.dumps(
     }
 )
 
+# TAB_GET for find_window("w2:t1") — tab identity (Task 1).
+TAB_GET = json.dumps(
+    {
+        "id": "cli:tab:get",
+        "result": {
+            "tab": {
+                "label": "herdr-support",
+                "tab_id": "w2:t1",
+                "workspace_id": "w2",
+                "cwd": "/Users/alexei/Workspace/ccgram",
+            },
+            "type": "tab_info",
+        },
+    }
+)
+
+# PANE_LIST used by find_window to resolve representative agent/cwd.
+PANE_LIST_FOR_FIND = json.dumps(
+    {
+        "id": "cli:pane:list",
+        "result": {
+            "panes": [
+                {
+                    "agent": "claude",
+                    "agent_status": "idle",
+                    "cwd": "/Users/alexei/Workspace/ccgram",
+                    "focused": True,
+                    "pane_id": "w2:p1",
+                    "tab_id": "w2:t1",
+                    "workspace_id": "w2",
+                },
+            ],
+            "type": "pane_list",
+        },
+    }
+)
+
+# TAB_LIST + PANE_LIST + WORKSPACE_LIST for list_windows.
+TAB_LIST = json.dumps(
+    {
+        "id": "cli:tab:list",
+        "result": {
+            "tabs": [
+                {
+                    "label": "archfit",
+                    "tab_id": "w1:t1",
+                    "workspace_id": "w1",
+                    "cwd": "/Users/alexei/Workspace/archfit",
+                },
+                {
+                    "label": "ralphex",
+                    "tab_id": "w2:t2",
+                    "workspace_id": "w2",
+                    "cwd": "/Users/alexei/Workspace/ccgram",
+                },
+            ],
+            "type": "tab_list",
+        },
+    }
+)
+
 PANE_LIST = json.dumps(
     {
         "id": "cli:pane:list",
@@ -78,29 +137,6 @@ PANE_LIST = json.dumps(
                 },
             ],
             "type": "pane_list",
-        },
-    }
-)
-
-TAB_LIST = json.dumps(
-    {
-        "id": "cli:tab:list",
-        "result": {
-            "tabs": [
-                {"label": "archfit", "tab_id": "w1:t1", "workspace_id": "w1"},
-                {"label": "ralphex", "tab_id": "w2:t2", "workspace_id": "w2"},
-            ],
-            "type": "tab_list",
-        },
-    }
-)
-
-TAB_GET = json.dumps(
-    {
-        "id": "cli:tab:get",
-        "result": {
-            "tab": {"label": "herdr-support", "tab_id": "w2:t1", "workspace_id": "w2"},
-            "type": "tab_info",
         },
     }
 )
@@ -172,6 +208,7 @@ LAYOUT = json.dumps(
     }
 )
 
+# tab create returns tab_id in result["tab"]["tab_id"] (Task 1).
 TAB_CREATE = json.dumps(
     {
         "id": "cli:tab:create",
@@ -277,36 +314,265 @@ def test_constructor_does_no_io() -> None:
     assert fake.calls == []
 
 
-# ── Value-type mapping (wN:pN → window_id) ─────────────────────────────
+# ── find_window: tab identity (window_id = tab_id) ─────────────────────
 
 
-async def test_find_window_parses_pane_get() -> None:
-    fake = FakeHerdr().on("pane", "get", out=PANE_GET).on("tab", "get", out=TAB_GET)
-    win = await _manager(fake).find_window("w2:p1")
+async def test_find_window_uses_tab_get_and_returns_tab_id() -> None:
+    # find_window(tab_id) → tab get + pane list for agent/cwd → WindowRef.
+    fake = (
+        FakeHerdr()
+        .on("tab", "get", out=TAB_GET)
+        .on("pane", "list", out=PANE_LIST_FOR_FIND)
+    )
+    win = await _manager(fake).find_window("w2:t1")
     assert win == WindowRef(
-        window_id="w2:p1",
+        window_id="w2:t1",
         window_name="herdr-support",
         cwd="/Users/alexei/Workspace/ccgram",
         pane_current_command="claude",
     )
+    # Must use tab get, not pane get.
+    assert fake.sent("tab", "get") is not None
+    assert fake.sent("pane", "get") is None
+
+
+async def test_find_window_returns_none_when_tab_gone() -> None:
+    fake = FakeHerdr().on("tab", "get", rc=1, out=ERROR_NOT_FOUND)
+    assert await _manager(fake).find_window("w9:t9") is None
+
+
+async def test_find_window_bypasses_internal_label_filter() -> None:
+    # __*__ tabs are filtered in list_windows but find_window always resolves.
+    internal_tab = json.dumps(
+        {
+            "result": {
+                "tab": {
+                    "label": "__main__",
+                    "tab_id": "w3:t1",
+                    "workspace_id": "w3",
+                    "cwd": "/tmp",
+                },
+                "type": "tab_info",
+            }
+        }
+    )
+    pane_list_empty = json.dumps({"result": {"panes": [], "type": "pane_list"}})
+    fake = (
+        FakeHerdr()
+        .on("tab", "get", out=internal_tab)
+        .on("pane", "list", out=pane_list_empty)
+    )
+    win = await _manager(fake).find_window("w3:t1")
+    assert win is not None
+    assert win.window_id == "w3:t1"
+    assert win.window_name == "__main__"
+
+
+# ── list_windows: one WindowRef per tab ────────────────────────────────
+
+
+async def test_list_windows_returns_one_ref_per_tab() -> None:
+    # Two tabs → two WindowRefs with tab_id as window_id, not pane ids.
+    fake = (
+        FakeHerdr()
+        .on("tab", "list", out=TAB_LIST)
+        .on("pane", "list", out=PANE_LIST)
+        .on("workspace", "list", out=WORKSPACE_LIST)
+    )
+    wins = await _manager(fake).list_windows()
+    ids = {w.window_id: w for w in wins}
+    # window_ids are tab ids, not pane ids.
+    assert set(ids) == {"w1:t1", "w2:t2"}
+    # Agent tab → representative pane's agent.
+    assert ids["w1:t1"].pane_current_command == "claude"
+    assert ids["w1:t1"].window_name == "archfit ▸ claude"
+    # Tab with no agent → empty pane_current_command; name degrades.
+    assert ids["w2:t2"].pane_current_command == ""
+    assert ids["w2:t2"].window_name == "ccgram"
+
+
+async def test_list_windows_uses_focused_pane_as_representative() -> None:
+    # When a tab has multiple panes, the focused one's agent is used.
+    split_tab_list = json.dumps(
+        {
+            "result": {
+                "tabs": [
+                    {
+                        "label": "feature",
+                        "tab_id": "w2:t1",
+                        "workspace_id": "w2",
+                        "cwd": "/Users/alexei/Workspace/ccgram",
+                    }
+                ],
+                "type": "tab_list",
+            }
+        }
+    )
+    split_pane_list = json.dumps(
+        {
+            "result": {
+                "panes": [
+                    {
+                        "agent": "codex",
+                        "cwd": "/Users/alexei/Workspace/ccgram",
+                        "pane_id": "w2:p1",
+                        "tab_id": "w2:t1",
+                        "workspace_id": "w2",
+                        "focused": False,
+                    },
+                    {
+                        "agent": "claude",
+                        "cwd": "/Users/alexei/Workspace/ccgram",
+                        "pane_id": "w2:p2",
+                        "tab_id": "w2:t1",
+                        "workspace_id": "w2",
+                        "focused": True,
+                    },
+                ],
+                "type": "pane_list",
+            }
+        }
+    )
+    fake = (
+        FakeHerdr()
+        .on("tab", "list", out=split_tab_list)
+        .on("pane", "list", out=split_pane_list)
+        .on("workspace", "list", out=WORKSPACE_LIST)
+    )
+    wins = await _manager(fake).list_windows()
+    assert len(wins) == 1
+    win = wins[0]
+    assert win.window_id == "w2:t1"
+    # Focused pane is claude (not codex).
+    assert win.pane_current_command == "claude"
+    # Split tab → tab label appended.
+    assert win.window_name == "ccgram ▸ claude/feature"
+
+
+async def test_list_windows_filters_internal_workspace_label() -> None:
+    # Tabs in a __*__ workspace must not appear in list_windows.
+    tab_list = json.dumps(
+        {
+            "result": {
+                "tabs": [
+                    {
+                        "label": "normal",
+                        "tab_id": "w1:t1",
+                        "workspace_id": "w1",
+                        "cwd": "/a",
+                    },
+                    {
+                        "label": "agent",
+                        "tab_id": "w2:t1",
+                        "workspace_id": "w2",
+                        "cwd": "/b",
+                    },
+                ],
+                "type": "tab_list",
+            }
+        }
+    )
+    workspace_list = json.dumps(
+        {
+            "result": {
+                "workspaces": [
+                    {"workspace_id": "w1", "label": "myproject", "cwd": "/a"},
+                    {"workspace_id": "w2", "label": "__main__", "cwd": "/b"},
+                ],
+                "type": "workspace_list",
+            }
+        }
+    )
+    pane_list_empty = json.dumps({"result": {"panes": [], "type": "pane_list"}})
+    fake = (
+        FakeHerdr()
+        .on("tab", "list", out=tab_list)
+        .on("pane", "list", out=pane_list_empty)
+        .on("workspace", "list", out=workspace_list)
+    )
+    wins = await _manager(fake).list_windows()
+    ids = {w.window_id for w in wins}
+    assert "w1:t1" in ids  # normal workspace — included
+    assert "w2:t1" not in ids  # __main__ workspace — filtered
+
+
+async def test_list_windows_filters_internal_tab_label() -> None:
+    # Tabs whose own label is __*__ must not appear in list_windows.
+    tab_list = json.dumps(
+        {
+            "result": {
+                "tabs": [
+                    {
+                        "label": "normal",
+                        "tab_id": "w1:t1",
+                        "workspace_id": "w1",
+                        "cwd": "/a",
+                    },
+                    {
+                        "label": "__internal__",
+                        "tab_id": "w1:t2",
+                        "workspace_id": "w1",
+                        "cwd": "/a",
+                    },
+                ],
+                "type": "tab_list",
+            }
+        }
+    )
+    workspace_list = json.dumps(
+        {
+            "result": {
+                "workspaces": [
+                    {"workspace_id": "w1", "label": "myproject", "cwd": "/a"},
+                ],
+                "type": "workspace_list",
+            }
+        }
+    )
+    pane_list_empty = json.dumps({"result": {"panes": [], "type": "pane_list"}})
+    fake = (
+        FakeHerdr()
+        .on("tab", "list", out=tab_list)
+        .on("pane", "list", out=pane_list_empty)
+        .on("workspace", "list", out=workspace_list)
+    )
+    wins = await _manager(fake).list_windows()
+    ids = {w.window_id for w in wins}
+    assert "w1:t1" in ids  # normal tab — included
+    assert "w1:t2" not in ids  # __internal__ tab — filtered
 
 
 async def test_list_windows_renders_adaptive_labels() -> None:
     fake = (
         FakeHerdr()
-        .on("pane", "list", out=PANE_LIST)
         .on("tab", "list", out=TAB_LIST)
+        .on("pane", "list", out=PANE_LIST)
         .on("workspace", "list", out=WORKSPACE_LIST)
     )
     wins = await _manager(fake).list_windows()
     ids = {w.window_id: w for w in wins}
-    assert set(ids) == {"w1:p1", "w2:p2"}
     # Single agent pane in its tab → "<workspace> ▸ <agent>", no "/tab".
-    assert ids["w1:p1"].window_name == "archfit ▸ claude"
-    assert ids["w1:p1"].pane_current_command == "claude"
-    # A pane with no agent degrades to the workspace label, no stray separator.
-    assert ids["w2:p2"].window_name == "ccgram"
+    assert ids["w1:t1"].window_name == "archfit ▸ claude"
+    assert ids["w1:t1"].pane_current_command == "claude"
+    # A tab with no agent degrades to the workspace label.
+    assert ids["w2:t2"].window_name == "ccgram"
 
+
+_SPLIT_TABS = json.dumps(
+    {
+        "result": {
+            "tabs": [
+                {
+                    "label": "feature",
+                    "tab_id": "w2:t1",
+                    "workspace_id": "w2",
+                    "cwd": "/Users/alexei/Workspace/ccgram",
+                }
+            ],
+            "type": "tab_list",
+        }
+    }
+)
 
 _SPLIT_PANES = json.dumps(
     {
@@ -318,6 +584,7 @@ _SPLIT_PANES = json.dumps(
                     "pane_id": "w2:p1",
                     "tab_id": "w2:t1",
                     "workspace_id": "w2",
+                    "focused": True,
                 },
                 {
                     "agent": "codex",
@@ -325,50 +592,44 @@ _SPLIT_PANES = json.dumps(
                     "pane_id": "w2:p2",
                     "tab_id": "w2:t1",
                     "workspace_id": "w2",
+                    "focused": False,
                 },
             ],
             "type": "pane_list",
         }
     }
 )
-_SPLIT_TABS = json.dumps(
-    {
-        "result": {
-            "tabs": [{"label": "feature", "tab_id": "w2:t1", "workspace_id": "w2"}],
-            "type": "tab_list",
-        }
-    }
-)
 
 
-async def test_list_windows_appends_tab_label_on_split() -> None:
-    # Two agent panes share one tab (an agent team) → each label carries the
-    # tab name so the two topics stay distinguishable.
+async def test_list_windows_split_tab_produces_one_ref_with_tab_suffix() -> None:
+    # A split tab (two panes) → ONE WindowRef with tab label suffix.
     fake = (
         FakeHerdr()
-        .on("pane", "list", out=_SPLIT_PANES)
         .on("tab", "list", out=_SPLIT_TABS)
+        .on("pane", "list", out=_SPLIT_PANES)
         .on("workspace", "list", out=WORKSPACE_LIST)
     )
-    wins = {w.window_id: w.window_name for w in await _manager(fake).list_windows()}
-    assert wins["w2:p1"] == "ccgram ▸ claude/feature"
-    assert wins["w2:p2"] == "ccgram ▸ codex/feature"
+    wins = await _manager(fake).list_windows()
+    assert len(wins) == 1
+    win = wins[0]
+    assert win.window_id == "w2:t1"
+    # Focused pane is claude; split → tab label "/feature" appended.
+    assert win.window_name == "ccgram ▸ claude/feature"
 
 
-async def test_workspace_rename_relabels_without_changing_pane_id() -> None:
-    # Renaming a workspace re-labels the topic on the next poll; the pane id —
-    # the live handle the binding is anchored to — is unchanged (design
-    # "Binding key = agent session id … renaming re-labels, never rebinds").
+async def test_workspace_rename_relabels_without_changing_tab_id() -> None:
+    # Renaming a workspace re-labels the topic on the next poll; the tab id
+    # (the binding handle) is unchanged.
     before = {
         w.window_id: w.window_name
         for w in await _manager(
             FakeHerdr()
-            .on("pane", "list", out=PANE_LIST)
             .on("tab", "list", out=TAB_LIST)
+            .on("pane", "list", out=PANE_LIST)
             .on("workspace", "list", out=WORKSPACE_LIST)
         ).list_windows()
     }
-    renamed = json.dumps(
+    renamed_ws = json.dumps(
         {
             "result": {
                 "workspaces": [
@@ -383,14 +644,133 @@ async def test_workspace_rename_relabels_without_changing_pane_id() -> None:
         w.window_id: w.window_name
         for w in await _manager(
             FakeHerdr()
-            .on("pane", "list", out=PANE_LIST)
             .on("tab", "list", out=TAB_LIST)
-            .on("workspace", "list", out=renamed)
+            .on("pane", "list", out=PANE_LIST)
+            .on("workspace", "list", out=renamed_ws)
         ).list_windows()
     }
-    assert before["w1:p1"] == "archfit ▸ claude"
-    assert after["w1:p1"] == "archfit-v2 ▸ claude"
-    assert set(after) == set(before)  # same pane ids → no rebind
+    assert before["w1:t1"] == "archfit ▸ claude"
+    assert after["w1:t1"] == "archfit-v2 ▸ claude"
+    assert set(after) == set(before)  # same tab ids → no rebind
+
+
+# ── CRUD: kill/rename use tab commands ────────────────────────────────
+
+
+async def test_kill_window_uses_tab_close() -> None:
+    fake = FakeHerdr().on("tab", "close", out=OK)
+    assert await _manager(fake).kill_window("w2:t1") is True
+    assert fake.sent("tab", "close") == ["tab", "close", "w2:t1"]
+    assert fake.sent("pane", "close") is None  # must NOT use pane close
+
+
+async def test_rename_window_uses_tab_rename() -> None:
+    fake = FakeHerdr().on("tab", "rename", out=OK)
+    assert await _manager(fake).rename_window("w2:t1", "newname") is True
+    assert fake.sent("tab", "rename") == ["tab", "rename", "w2:t1", "newname"]
+    assert fake.sent("pane", "rename") is None  # must NOT use pane rename
+
+
+# ── create_window: returns tab_id ──────────────────────────────────────
+
+
+async def test_create_window_returns_tab_id_and_launches(tmp_path) -> None:
+    fake = FakeHerdr().on("tab", "create", out=TAB_CREATE).on("pane", "run", out=OK)
+    ok, msg, name, win_id = await _manager(fake).create_window(
+        str(tmp_path),
+        window_name="work",
+        launch_command="claude",
+        agent_args="--continue",
+    )
+    assert ok is True
+    # window_id must be the tab id, not the pane id.
+    assert win_id == "w2:t9"
+    assert name == "work"
+    assert str(tmp_path) in msg
+    # The launch command still targets the root pane id.
+    assert fake.sent("pane", "run") == ["pane", "run", "w2:p9", "claude --continue"]
+
+
+async def test_create_window_rejects_missing_directory() -> None:
+    fake = FakeHerdr()
+    ok, msg, _name, win_id = await _manager(fake).create_window("/no/such/dir")
+    assert ok is False
+    assert "does not exist" in msg
+    assert win_id == ""
+    assert fake.calls == []  # bailed before touching herdr
+
+
+async def test_create_window_reuses_matching_workspace(tmp_path) -> None:
+    ws_list = json.dumps(
+        {
+            "result": {
+                "workspaces": [
+                    {"workspace_id": "w5", "label": "repo", "cwd": str(tmp_path)}
+                ],
+                "type": "workspace_list",
+            }
+        }
+    )
+    fake = (
+        FakeHerdr()
+        .on("workspace", "list", out=ws_list)
+        .on("tab", "create", out=TAB_CREATE)
+        .on("pane", "run", out=OK)
+    )
+    ok, _msg, _name, win_id = await _manager(fake).create_window(
+        str(tmp_path), launch_command="claude"
+    )
+    assert ok is True
+    assert win_id == "w2:t9"
+    assert fake.sent("workspace", "create") is None  # reused, not created
+    tab_call = fake.sent("tab", "create")
+    assert tab_call is not None
+    assert "--workspace" in tab_call and "w5" in tab_call
+
+
+async def test_create_window_creates_workspace_when_absent(tmp_path) -> None:
+    ws_list = json.dumps({"result": {"workspaces": [], "type": "workspace_list"}})
+    ws_create = json.dumps(
+        {
+            "result": {
+                "workspace": {"workspace_id": "w7", "cwd": str(tmp_path)},
+                "type": "workspace_created",
+            }
+        }
+    )
+    fake = (
+        FakeHerdr()
+        .on("workspace", "list", out=ws_list)
+        .on("workspace", "create", out=ws_create)
+        .on("tab", "create", out=TAB_CREATE)
+        .on("pane", "run", out=OK)
+    )
+    ok, _msg, _name, win_id = await _manager(fake).create_window(
+        str(tmp_path), launch_command="claude"
+    )
+    assert ok is True
+    assert win_id == "w2:t9"
+    create_call = fake.sent("workspace", "create")
+    assert create_call is not None and "--cwd" in create_call
+    tab_call = fake.sent("tab", "create")
+    assert tab_call is not None
+    assert "--workspace" in tab_call and "w7" in tab_call
+
+
+async def test_create_window_falls_back_when_no_workspace_support(tmp_path) -> None:
+    # An older herdr without workspace addressing → tab create in active workspace.
+    fake = FakeHerdr().on("tab", "create", out=TAB_CREATE).on("pane", "run", out=OK)
+    ok, _msg, _name, win_id = await _manager(fake).create_window(
+        str(tmp_path), launch_command="claude"
+    )
+    assert ok is True
+    assert win_id == "w2:t9"
+    tab_call = fake.sent("tab", "create")
+    assert tab_call is not None
+    assert "--workspace" not in tab_call
+
+
+# ── Pane ops (unchanged pending Task 4) ────────────────────────────────
 
 
 async def test_foreground_from_process_info() -> None:
@@ -454,7 +834,6 @@ async def test_scrollback_clamps_to_read_max_lines_and_flags_truncated() -> None
     assert res.truncated is True
     call = fake.sent("pane", "read")
     assert call is not None
-    # Requested 5000 but herdr caps at 1000 → request clamped.
     assert "1000" in call
     assert "5000" not in call
 
@@ -496,126 +875,20 @@ async def test_send_keys_appends_enter_when_requested() -> None:
     assert fake.sent("pane", "send-keys") == ["pane", "send-keys", "w2:p1", "Enter"]
 
 
-async def test_kill_and_rename() -> None:
-    fake = FakeHerdr().on("pane", "close", out=OK).on("pane", "rename", out=OK)
-    mgr = _manager(fake)
-    assert await mgr.kill_window("w2:p1") is True
-    assert await mgr.rename_window("w2:p1", "newname") is True
-    assert fake.sent("pane", "close") == ["pane", "close", "w2:p1"]
-    assert fake.sent("pane", "rename") == ["pane", "rename", "w2:p1", "newname"]
-
-
-# ── create_window ──────────────────────────────────────────────────────
-
-
-async def test_create_window_returns_pane_id_and_launches(tmp_path) -> None:
-    fake = FakeHerdr().on("tab", "create", out=TAB_CREATE).on("pane", "run", out=OK)
-    ok, msg, name, win_id = await _manager(fake).create_window(
-        str(tmp_path),
-        window_name="work",
-        launch_command="claude",
-        agent_args="--continue",
-    )
-    assert ok is True
-    assert win_id == "w2:p9"
-    assert name == "work"
-    assert str(tmp_path) in msg
-    # The launch command + args ran in the new pane.
-    assert fake.sent("pane", "run") == ["pane", "run", "w2:p9", "claude --continue"]
-
-
-async def test_create_window_rejects_missing_directory() -> None:
-    fake = FakeHerdr()
-    ok, msg, name, win_id = await _manager(fake).create_window("/no/such/dir")
-    assert ok is False
-    assert "does not exist" in msg
-    assert win_id == ""
-    assert fake.calls == []  # bailed before touching herdr
-
-
-async def test_create_window_reuses_matching_workspace(tmp_path) -> None:
-    # A workspace already rooted at the chosen cwd → reuse it (no create), and
-    # scope the new tab to it via --workspace (design "cwd → workspace").
-    ws_list = json.dumps(
-        {
-            "result": {
-                "workspaces": [
-                    {"workspace_id": "w5", "label": "repo", "cwd": str(tmp_path)}
-                ],
-                "type": "workspace_list",
-            }
-        }
-    )
-    fake = (
-        FakeHerdr()
-        .on("workspace", "list", out=ws_list)
-        .on("tab", "create", out=TAB_CREATE)
-        .on("pane", "run", out=OK)
-    )
-    ok, *_ = await _manager(fake).create_window(str(tmp_path), launch_command="claude")
-    assert ok is True
-    assert fake.sent("workspace", "create") is None  # reused, not created
-    tab_call = fake.sent("tab", "create")
-    assert tab_call is not None
-    assert "--workspace" in tab_call and "w5" in tab_call
-
-
-async def test_create_window_creates_workspace_when_absent(tmp_path) -> None:
-    # No workspace matches the cwd → create one, then scope the tab to it.
-    ws_list = json.dumps({"result": {"workspaces": [], "type": "workspace_list"}})
-    ws_create = json.dumps(
-        {
-            "result": {
-                "workspace": {"workspace_id": "w7", "cwd": str(tmp_path)},
-                "type": "workspace_created",
-            }
-        }
-    )
-    fake = (
-        FakeHerdr()
-        .on("workspace", "list", out=ws_list)
-        .on("workspace", "create", out=ws_create)
-        .on("tab", "create", out=TAB_CREATE)
-        .on("pane", "run", out=OK)
-    )
-    ok, *_ = await _manager(fake).create_window(str(tmp_path), launch_command="claude")
-    assert ok is True
-    create_call = fake.sent("workspace", "create")
-    assert create_call is not None and "--cwd" in create_call
-    tab_call = fake.sent("tab", "create")
-    assert tab_call is not None
-    assert "--workspace" in tab_call and "w7" in tab_call
-
-
-async def test_create_window_falls_back_when_no_workspace_support(tmp_path) -> None:
-    # An older herdr without workspace addressing → tab create lands in the
-    # active workspace, no --workspace flag, behavior unchanged (Task 7).
-    fake = FakeHerdr().on("tab", "create", out=TAB_CREATE).on("pane", "run", out=OK)
-    ok, _msg, _name, win_id = await _manager(fake).create_window(
-        str(tmp_path), launch_command="claude"
-    )
-    assert ok is True
-    assert win_id == "w2:p9"
-    tab_call = fake.sent("tab", "create")
-    assert tab_call is not None
-    assert "--workspace" not in tab_call
-
-
 # ── Boundary: socket down, bad id, protocol ────────────────────────────
 
 
 async def test_socket_down_returns_none_not_crash() -> None:
-    # rc=127 simulates the herdr binary/socket being unavailable.
-    fake = FakeHerdr().on("pane", "get", rc=127, err="connection refused")
+    fake = FakeHerdr().on("tab", "get", rc=127, err="connection refused")
     mgr = _manager(fake)
-    assert await mgr.find_window("w2:p1") is None
+    assert await mgr.find_window("w2:t1") is None
     fake.on("pane", "read", rc=127, err="connection refused")
     assert await mgr.capture("w2:p1") is None
 
 
 async def test_bad_id_error_payload_returns_none() -> None:
-    fake = FakeHerdr().on("pane", "get", rc=1, out=ERROR_NOT_FOUND)
-    assert await _manager(fake).find_window("w9:p9") is None
+    fake = FakeHerdr().on("tab", "get", rc=1, out=ERROR_NOT_FOUND)
+    assert await _manager(fake).find_window("w9:t9") is None
 
 
 async def test_foreground_missing_process_returns_none() -> None:
@@ -638,7 +911,6 @@ async def test_foreground_missing_process_returns_none() -> None:
 async def test_ensure_session_accepts_pinned_protocol() -> None:
     fake = FakeHerdr().on("status", out=_status_json())
     await _manager(fake).ensure_session()  # no raise
-    # The protocol check must actually probe the server, not no-op.
     assert fake.sent("status") is not None
 
 
@@ -649,7 +921,6 @@ async def test_ensure_session_raises_on_non_json_status() -> None:
 
 
 async def test_ensure_session_raises_on_non_object_json_status() -> None:
-    # Valid JSON of the wrong shape (a list) must not crash with AttributeError.
     fake = FakeHerdr().on("status", out="[]")
     with pytest.raises(HerdrError, match="non-object JSON"):
         await _manager(fake).ensure_session()
