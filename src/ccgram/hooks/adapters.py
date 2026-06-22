@@ -355,7 +355,13 @@ def detect_provider_from_payload(payload: dict[str, object]) -> ProviderName | N
         provider = "pi"
     elif event_name in _GEMINI_ONLY_EVENT_TYPES:
         provider = "gemini"
-    elif _str_field(payload, "permission_mode") or _str_field(payload, "model"):
+    elif (
+        _str_field(payload, "permission_mode") or _str_field(payload, "model")
+    ) and "/.claude/" not in transcript_path:
+        # ``model``/``permission_mode`` are weak codex signals: Claude's Stop and
+        # Notification payloads now also carry ``model``, so without this guard a
+        # Claude session (transcript under ~/.claude/) installed with no
+        # --provider flag is misdetected as codex.
         provider = "codex"
     elif _str_field(payload, "end_reason") or (
         session_id and not UUID_RE.match(session_id)
