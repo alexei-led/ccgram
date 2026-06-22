@@ -359,6 +359,44 @@ class TestTopicNamePreservation:
         )
 
 
+class TestHerdrToTelegramRename:
+    """herdr tab rename propagates to Telegram topic via display-name sync."""
+
+    async def test_display_name_change_triggers_topic_relabel(self) -> None:
+        """When herdr renames a tab, the next update_topic_emoji call relabels the topic.
+
+        Flow: sync_display_names updates display_name → update_topic_emoji receives
+        new display_name → _resolve_topic_name detects change → edit_forum_topic called.
+        """
+        bot = AsyncMock()
+        # Prime the cache with the old label (simulates a prior poll cycle)
+        await _debounced_update(bot, -100, 42, "idle", "workspace ▸ old-agent")
+        bot.edit_forum_topic.reset_mock()
+
+        # herdr renames the tab: next poll delivers the new display_name.
+        # Same state (idle), same debounce; name change bypasses debounce.
+        with patch(_PATCH_MONOTONIC, return_value=1000.0):
+            await update_topic_emoji(bot, -100, 42, "idle", "workspace ▸ new-agent")
+
+        bot.edit_forum_topic.assert_called_once_with(
+            chat_id=-100,
+            message_thread_id=42,
+            name=f"{EMOJI_IDLE} workspace ▸ new-agent",
+        )
+
+    async def test_same_display_name_after_sync_does_not_relabel(self) -> None:
+        """No Telegram call when the tab name did not change."""
+        bot = AsyncMock()
+        await _debounced_update(bot, -100, 42, "idle", "workspace ▸ agent")
+        bot.edit_forum_topic.reset_mock()
+
+        # Same display name — no relabel expected (state already set, name unchanged)
+        with patch(_PATCH_MONOTONIC, return_value=1000.0):
+            await update_topic_emoji(bot, -100, 42, "idle", "workspace ▸ agent")
+
+        bot.edit_forum_topic.assert_not_called()
+
+
 class TestClearTopicEmojiState:
     async def test_clear_allows_re_update(self) -> None:
         bot = AsyncMock()

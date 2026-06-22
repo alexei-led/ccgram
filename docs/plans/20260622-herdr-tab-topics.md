@@ -218,11 +218,11 @@ and adding the lifecycle/flow UX.
 - Fitness gate: F1 boundary (handlers use the proxy).
 - Verification: `uv run pytest tests/ccgram/ -k "lifecycle or rename or topic_edit" -v`; herdr leg under `-m herdr`.
 - Manual checks: rename a topic in Telegram → `tab list` shows the new label; rename a tab in herdr → topic re-labels; delete a topic → tab gone.
-- [ ] confirm kill paths route through the `multiplexer` proxy for herdr; align close/delete semantics with tmux
-- [ ] add `FORUM_TOPIC_EDITED` → `rename_window` (works for tmux `rename-window` too)
-- [ ] verify herdr→Telegram rename via adaptive-label re-sync
-- [ ] tests for both rename directions + delete sync
-- [ ] run `make test` — must pass before next task
+- [x] confirm kill paths route through the `multiplexer` proxy for herdr; align close/delete semantics with tmux
+- [x] add `FORUM_TOPIC_EDITED` → `rename_window` (works for tmux `rename-window` too)
+- [x] verify herdr→Telegram rename via adaptive-label re-sync
+- [x] tests for both rename directions + delete sync
+- [x] run `make test` — must pass before next task
 
 ### Task 9: new-window flow — folder → workspace → agent → tab
 

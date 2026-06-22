@@ -124,6 +124,31 @@ class TestTopicEditedHandler:
 
     @_PATCH_ALLOWED
     @patch("ccgram.handlers.topics.topic_lifecycle.tmux_manager")
+    @patch("ccgram.handlers.topics.topic_lifecycle.session_manager")
+    @patch("ccgram.handlers.topics.topic_lifecycle.thread_router")
+    async def test_renames_herdr_tab_via_proxy(
+        self,
+        mock_tr: MagicMock,
+        mock_sm: MagicMock,
+        mock_tm: MagicMock,
+        _allowed: MagicMock,
+    ) -> None:
+        """FORUM_TOPIC_EDITED calls rename_window via the multiplexer proxy for herdr IDs."""
+        from ccgram.handlers.topics.topic_lifecycle import topic_edited_handler
+
+        herdr_id = "w1:t1"
+        mock_tr.get_window_for_chat_thread.return_value = herdr_id
+        mock_tr.get_display_name.return_value = "workspace ▸ old-agent"
+        mock_tm.rename_window = AsyncMock(return_value=True)
+
+        update = _make_update("new-agent", thread_id=42, chat_id=-100)
+        await topic_edited_handler(update, MagicMock())
+
+        mock_tm.rename_window.assert_called_once_with(herdr_id, "new-agent")
+        mock_sm.set_display_name.assert_called_once_with(herdr_id, "new-agent")
+
+    @_PATCH_ALLOWED
+    @patch("ccgram.handlers.topics.topic_lifecycle.tmux_manager")
     @patch("ccgram.handlers.topics.topic_lifecycle.thread_router")
     async def test_caches_unchanged_when_rename_fails(
         self, mock_tr: MagicMock, mock_tm: MagicMock, _allowed: MagicMock
