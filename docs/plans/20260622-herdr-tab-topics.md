@@ -130,10 +130,10 @@ and adding the lifecycle/flow UX.
 - Fitness gate: F3 core purity (`self_identify` imports no backend/I/O).
 - Verification: `uv run pytest tests/ccgram/ -k "self_identify or hook" -v`.
 - Manual checks: trigger a claude event in a herdr tab; `session_map.json` shows `herdr:<tab_id>` matching `list_windows`.
-- [ ] add injected `herdr_query` to `resolve_self_identity`; build `herdr:<tab_id>`
-- [ ] implement the pane→tab probe in `hook.py`
-- [ ] table-test herdr identity resolution with a fake `herdr_query`
-- [ ] run `make test` — must pass before next task
+- [x] add injected `herdr_query` to `resolve_self_identity`; build `herdr:<tab_id>`
+- [x] implement the pane→tab probe in `hook.py`
+- [x] table-test herdr identity resolution with a fake `herdr_query`
+- [x] run `make test` — must pass before next task
 
 ### Task 3: backend-neutral qualified-id surface (delivery/cleanup/discovery)
 

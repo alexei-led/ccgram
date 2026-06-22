@@ -18,29 +18,61 @@ def _fail_query(_pane_id: str):
 
 class TestResolveSelfIdentity:
     @pytest.mark.parametrize(
-        ("env", "tmux_result", "expected"),
+        ("env", "tmux_result", "herdr_query", "expected"),
         [
             (
                 {"TMUX_PANE": "%0"},
                 ("ccgram:@0", "@0", "project", "/dev/ttys012"),
+                None,
                 SelfIdentity(
                     "tmux", "ccgram:@0", "@0", "project", pane_tty="/dev/ttys012"
                 ),
             ),
+            # herdr: herdr_query resolves pane→tab; key and window_id use tab id
             (
                 {"HERDR_PANE_ID": "w2:p1", "HERDR_SOCKET_PATH": "/tmp/herdr.sock"},
+                None,
+                lambda _pane: "w2:t1",
+                SelfIdentity(
+                    "herdr", "herdr:w2:t1", "w2:t1", "", socket_path="/tmp/herdr.sock"
+                ),
+            ),
+            # herdr: no herdr_query → falls back to pane id
+            (
+                {"HERDR_PANE_ID": "w2:p1", "HERDR_SOCKET_PATH": "/tmp/herdr.sock"},
+                None,
                 None,
                 SelfIdentity(
                     "herdr", "herdr:w2:p1", "w2:p1", "", socket_path="/tmp/herdr.sock"
                 ),
             ),
-            ({}, None, None),
-            ({"TMUX_PANE": "%0"}, None, None),
+            # herdr: herdr_query returns None (probe failure) → falls back to pane id
+            (
+                {"HERDR_PANE_ID": "w2:p1", "HERDR_SOCKET_PATH": "/tmp/herdr.sock"},
+                None,
+                lambda _pane: None,
+                SelfIdentity(
+                    "herdr", "herdr:w2:p1", "w2:p1", "", socket_path="/tmp/herdr.sock"
+                ),
+            ),
+            ({}, None, None, None),
+            ({"TMUX_PANE": "%0"}, None, None, None),
         ],
-        ids=["tmux", "herdr", "neither", "tmux-query-fail"],
+        ids=[
+            "tmux",
+            "herdr-with-query",
+            "herdr-no-query-fallback",
+            "herdr-query-fail-fallback",
+            "neither",
+            "tmux-query-fail",
+        ],
     )
-    def test_resolution_table(self, env, tmux_result, expected) -> None:
-        ident = resolve_self_identity(env, tmux_query=lambda _pane: tmux_result)
+    def test_resolution_table(self, env, tmux_result, herdr_query, expected) -> None:
+        ident = resolve_self_identity(
+            env,
+            tmux_query=lambda _pane: tmux_result,
+            herdr_query=herdr_query,
+        )
         assert ident == expected
 
     def test_herdr_without_socket_path_defaults_empty(self) -> None:
@@ -48,6 +80,14 @@ class TestResolveSelfIdentity:
             {"HERDR_PANE_ID": "w0:p0"}, tmux_query=_fail_query
         )
         assert ident == SelfIdentity("herdr", "herdr:w0:p0", "w0:p0", "")
+
+    def test_herdr_query_resolves_tab_id(self) -> None:
+        ident = resolve_self_identity(
+            {"HERDR_PANE_ID": "w0:p0"},
+            tmux_query=_fail_query,
+            herdr_query=lambda _pane: "w0:t1",
+        )
+        assert ident == SelfIdentity("herdr", "herdr:w0:t1", "w0:t1", "")
 
     def test_tmux_wins_when_both_present(self) -> None:
         # A herdr pane nested inside a tmux pane reports the outer tmux identity.
@@ -98,10 +138,30 @@ class TestLocatePrimaryWindowThroughResolver:
 
         assert _locate_primary_window("sid", "Stop", "claude") is None
 
-    def test_herdr_pane_resolves_without_tty_nested_check(self, monkeypatch) -> None:
-        # herdr exposes no tty → pane_tty="" → _is_nested_session fails open.
+    def test_herdr_pane_resolves_to_tab_id(self, monkeypatch) -> None:
+        # herdr_query maps pane→tab; session_window_key and window_id use tab id.
         monkeypatch.delenv("TMUX_PANE", raising=False)
         monkeypatch.setenv("HERDR_PANE_ID", "w2:p1")
+        monkeypatch.setattr(
+            "ccgram.hook._resolve_herdr_tab_id",
+            lambda _pane: "w2:t1",
+        )
+        from ccgram.hook import _locate_primary_window
+
+        assert _locate_primary_window("sid", "Stop", "claude") == (
+            "herdr:w2:t1",
+            "w2:t1",
+            "",
+        )
+
+    def test_herdr_pane_fallback_on_probe_failure(self, monkeypatch) -> None:
+        # probe returns None → falls back to pane id; no tty → nested check is no-op.
+        monkeypatch.delenv("TMUX_PANE", raising=False)
+        monkeypatch.setenv("HERDR_PANE_ID", "w2:p1")
+        monkeypatch.setattr(
+            "ccgram.hook._resolve_herdr_tab_id",
+            lambda _pane: None,
+        )
         from ccgram.hook import _locate_primary_window
 
         assert _locate_primary_window("sid", "Stop", "claude") == (

@@ -646,6 +646,37 @@ def _hook_status(provider_name: str = "claude") -> int:  # noqa: PLR0911
     return 1
 
 
+def _resolve_herdr_tab_id(pane_id: str) -> str | None:
+    """Resolve a herdr pane id to its containing tab id.
+
+    Runs ``herdr pane get <pane_id>`` and extracts ``result["pane"]["tab_id"]``.
+    The socket path is picked up from ``$HERDR_SOCKET_PATH`` by the herdr CLI
+    automatically (same as the multiplexer backend's subprocess runner).
+
+    Returns None on any failure (herdr not installed, socket down, pane gone)
+    so the caller degrades gracefully to the pane id.
+    """
+    try:
+        result = subprocess.run(
+            ["herdr", "pane", "get", pane_id],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except subprocess.TimeoutExpired, OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError, ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    tab_id = payload.get("result", {}).get("pane", {}).get("tab_id")
+    return tab_id if isinstance(tab_id, str) and tab_id else None
+
+
 def _resolve_window_id(pane_id: str) -> tuple[str, str, str, str] | None:
     """Resolve tmux pane ID to (session_window_key, window_id, window_name, pane_tty).
 
@@ -1091,10 +1122,14 @@ def _locate_primary_window(
 
     Identity resolution is backend-neutral via ``resolve_self_identity``: tmux
     panes resolve through ``_resolve_window_id`` (``display-message``), herdr
-    panes through ``$HERDR_PANE_ID``. The tmux branch is byte-identical to the
-    previous direct ``_resolve_window_id`` path.
+    panes resolve pane→tab via ``_resolve_herdr_tab_id`` so the session_map key
+    becomes ``herdr:<tab_id>`` (matching ``list_windows``).
     """
-    identity = resolve_self_identity(os.environ, tmux_query=_resolve_window_id)
+    identity = resolve_self_identity(
+        os.environ,
+        tmux_query=_resolve_window_id,
+        herdr_query=_resolve_herdr_tab_id,
+    )
     if identity is None:
         if not os.environ.get("TMUX_PANE") and not os.environ.get("HERDR_PANE_ID"):
             logger.warning(
