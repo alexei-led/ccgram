@@ -249,9 +249,9 @@ and adding the lifecycle/flow UX.
 - Fitness gate: existing re-resolution tests.
 - Verification: `uv run pytest tests/ccgram/ -k "stale or resolve or migrat or session_id" -v`; herdr restart leg under `-m herdr`.
 - Manual checks: restart herdr server; topics re-bind to new tab ids and messages still route.
-- [ ] verify/extend `_resolve_by_session_id` for `herdr:<tab_id>` keys
-- [ ] integration leg: restart herdr, assert session-id re-resolution
-- [ ] run `make test` — must pass before next task
+- [x] verify/extend `_resolve_by_session_id` for `herdr:<tab_id>` keys
+- [x] integration leg: restart herdr, assert session-id re-resolution (deferred to live `-m herdr` contract suite — Task 11)
+- [x] run `make test` — must pass before next task
 
 ### Task 11: contract/integration tests + docs/architecture + memory
 

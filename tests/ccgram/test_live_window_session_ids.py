@@ -50,3 +50,30 @@ def test_similar_ids_do_not_cross_match() -> None:
 def test_empty_inputs() -> None:
     assert live_window_session_ids({}, set()) == {}
     assert live_window_session_ids({}, {"w2:p1"}) == {}
+
+
+# --- Tab-identity (Task 1 flip): ids are w2:t1, not w2:p1 ---
+
+
+def test_herdr_tab_id_key_matches_by_suffix() -> None:
+    # After Task 1, herdr uses tab ids (``wN:tM``); the suffix match must work
+    # identically because ``live_window_session_ids`` is format-agnostic.
+    raw = {"herdr:w2:t1": {"session_id": "S1"}}
+    assert live_window_session_ids(raw, {"w2:t1"}) == {"w2:t1": "S1"}
+
+
+def test_herdr_tab_id_no_cross_match_on_similar_prefix() -> None:
+    # ``w2:t1`` must NOT match ``herdr:w12:t1`` — the leading ``:`` in the
+    # suffix anchor prevents partial-prefix collisions.
+    raw = {"herdr:w12:t1": {"session_id": "S12"}}
+    assert live_window_session_ids(raw, {"w2:t1"}) == {}
+
+
+def test_herdr_tab_id_stale_pre_restart_entry_ignored() -> None:
+    # After restart, session_map still has the pre-restart entry (``herdr:w2:t1``);
+    # the live set contains only the new id (``herdr:w3:t1``).  Only live ids count.
+    raw = {
+        "herdr:w2:t1": {"session_id": "S1"},  # stale — not in live set
+        "herdr:w3:t1": {"session_id": "S1"},  # new id, same session
+    }
+    assert live_window_session_ids(raw, {"w3:t1"}) == {"w3:t1": "S1"}

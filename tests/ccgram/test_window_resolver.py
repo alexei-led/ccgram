@@ -288,6 +288,34 @@ class TestResolveStaleIdsBySession:
         assert not changed
         assert "w2:p1" in window_states
 
+    def test_herdr_tab_id_restart_remaps_state_binding_and_offset(self) -> None:
+        # After Task 1's tab-identity flip herdr ids are ``wN:tM`` (not ``wN:pM``).
+        # The remap logic treats ids as opaque strings, so the contract is identical —
+        # this test pins the tab-id namespace explicitly.
+        live = [LiveWindow("w3:t1", "ccgram")]
+        window_states = {"w2:t1": _ws_sid("ccgram", "T1")}
+        thread_bindings: dict = {100: {42: "w2:t1"}}
+        offsets: dict = {100: {"w2:t1": 5}}
+        display_names = {"w2:t1": "myws ▸ claude"}
+
+        changed = resolve_stale_ids(
+            live,
+            window_states,
+            thread_bindings,
+            offsets,
+            display_names,
+            ids_stable=False,
+            live_session_ids={"w3:t1": "T1"},
+        )
+
+        assert changed
+        assert "w3:t1" in window_states
+        assert "w2:t1" not in window_states
+        assert thread_bindings[100][42] == "w3:t1"
+        assert offsets[100] == {"w3:t1": 5}
+        assert display_names.get("w3:t1") == "myws ▸ claude"
+        assert "w2:t1" not in display_names
+
     def test_stable_path_ignores_session_ids(self) -> None:
         # ids_stable=True must keep using display-name matching even when a
         # live_session_ids map is supplied (tmux behavior unchanged).
