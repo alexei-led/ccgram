@@ -88,42 +88,50 @@ class TestIsAgentTopicWindow:
 
 class TestFormatAgentTopicPrefix:
     @pytest.mark.parametrize(
-        ("workspace", "agent", "tab", "split", "expected"),
+        ("workspace", "tab", "expected"),
         [
-            # Lone agent → "<workspace> ▸ <agent>", no "/tab".
-            ("ccgram", "claude", "feature", False, "ccgram ▸ claude"),
-            ("ccgram", "claude", "", False, "ccgram ▸ claude"),
-            # Split tab (agent team) → append "/<tab>" to distinguish members.
-            ("ccgram", "claude", "feature", True, "ccgram ▸ claude/feature"),
-            ("ccgram", "codex", "feature", True, "ccgram ▸ codex/feature"),
-            # A split with no tab label has nothing to append.
-            ("ccgram", "claude", "", True, "ccgram ▸ claude"),
-            ("", "claude", "feature", True, "claude/feature"),
+            # Lone tab → "<workspace> ▸ <tab>".
+            ("ccgram", "herdr-support", "ccgram ▸ herdr-support"),
+            ("ccgram", "ralphex", "ccgram ▸ ralphex"),
+            # Same workspace, different tab labels → distinct titles (no collision).
+            ("ccgram", "herdr-support", "ccgram ▸ herdr-support"),
+            ("ccgram", "ralphex", "ccgram ▸ ralphex"),
+            # Numeric / auto-generated tab labels still render usefully.
+            ("myproject", "tab-1", "myproject ▸ tab-1"),
+            ("myproject", "Tab 1", "myproject ▸ Tab 1"),
+            # Shell tab (no agent) renders the same way — label is tab name.
+            ("ccgram", "zsh", "ccgram ▸ zsh"),
             # Missing parts degrade without a stray separator.
-            ("", "claude", "", False, "claude"),
-            ("ccgram", "", "", False, "ccgram"),
-            ("", "", "", False, ""),
+            ("", "herdr-support", "herdr-support"),
+            ("ccgram", "", "ccgram"),
+            ("", "", ""),
             # Whitespace is trimmed off every part.
-            (
-                "  ccgram  ",
-                "  claude  ",
-                "  feature  ",
-                True,
-                "ccgram ▸ claude/feature",
-            ),
+            ("  ccgram  ", "  herdr-support  ", "ccgram ▸ herdr-support"),
         ],
     )
-    def test_renders_adaptive_prefix(
-        self, workspace: str, agent: str, tab: str, split: bool, expected: str
+    def test_renders_workspace_tab_label(
+        self, workspace: str, tab: str, expected: str
     ) -> None:
-        assert format_agent_topic_prefix(workspace, agent, tab, split=split) == expected
+        assert format_agent_topic_prefix(workspace, tab) == expected
+
+    def test_same_agent_different_tabs_are_distinct(self) -> None:
+        """Two tabs in the same workspace with different labels produce distinct titles.
+
+        This is the core requirement: "ccgram ▸ herdr-support" and
+        "ccgram ▸ ralphex" are distinct even when both run claude.
+        """
+        label_a = format_agent_topic_prefix("ccgram", "herdr-support")
+        label_b = format_agent_topic_prefix("ccgram", "ralphex")
+        assert label_a == "ccgram ▸ herdr-support"
+        assert label_b == "ccgram ▸ ralphex"
+        assert label_a != label_b
 
     def test_rename_changes_label_not_identity(self) -> None:
-        """Renaming the workspace re-renders the label; nothing else is a key."""
-        before = format_agent_topic_prefix("ccgram", "claude")
-        after = format_agent_topic_prefix("ccgram-v2", "claude")
-        assert before == "ccgram ▸ claude"
-        assert after == "ccgram-v2 ▸ claude"
+        """Renaming the workspace re-renders the label; the tab id is the key."""
+        before = format_agent_topic_prefix("ccgram", "herdr-support")
+        after = format_agent_topic_prefix("ccgram-v2", "herdr-support")
+        assert before == "ccgram ▸ herdr-support"
+        assert after == "ccgram-v2 ▸ herdr-support"
         assert before != after
 
 

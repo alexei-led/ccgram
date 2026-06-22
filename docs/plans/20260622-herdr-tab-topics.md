@@ -189,9 +189,9 @@ and adding the lifecycle/flow UX.
 - Fitness gate: F1 boundary (topic_mapping stays pure, backend-neutral).
 - Verification: `uv run pytest tests/ccgram/test_topic_mapping.py -v`.
 - Manual checks: the four agent tabs get distinct titles; a `/new` shell tab binds despite no agent.
-- [ ] `format_agent_topic_prefix` renders workspace ▸ tab (tab name primary); update `_adaptive_label` call site
-- [ ] table-test labels (lone, team, numeric tab) + shell-tab note
-- [ ] run `make test` — must pass before next task
+- [x] `format_agent_topic_prefix` renders workspace ▸ tab (tab name primary); update `_adaptive_label` call site
+- [x] table-test labels (lone, team, numeric tab) + shell-tab note
+- [x] run `make test` — must pass before next task
 
 ### Task 7: startup rescan + steady-state self-heal of unbound tabs
 

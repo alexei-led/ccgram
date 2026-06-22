@@ -383,12 +383,13 @@ async def test_list_windows_returns_one_ref_per_tab() -> None:
     ids = {w.window_id: w for w in wins}
     # window_ids are tab ids, not pane ids.
     assert set(ids) == {"w1:t1", "w2:t2"}
-    # Agent tab → representative pane's agent.
+    # Agent tab → representative pane's agent in pane_current_command.
     assert ids["w1:t1"].pane_current_command == "claude"
-    assert ids["w1:t1"].window_name == "archfit ▸ claude"
-    # Tab with no agent → empty pane_current_command; name degrades.
+    # window_name is "<workspace> ▸ <tab label>", not agent name.
+    assert ids["w1:t1"].window_name == "archfit ▸ archfit"
+    # Tab with no agent → empty pane_current_command; name uses tab label.
     assert ids["w2:t2"].pane_current_command == ""
-    assert ids["w2:t2"].window_name == "ccgram"
+    assert ids["w2:t2"].window_name == "ccgram ▸ ralphex"
 
 
 async def test_list_windows_uses_focused_pane_as_representative() -> None:
@@ -443,10 +444,10 @@ async def test_list_windows_uses_focused_pane_as_representative() -> None:
     assert len(wins) == 1
     win = wins[0]
     assert win.window_id == "w2:t1"
-    # Focused pane is claude (not codex).
+    # Focused pane is claude (not codex) — pane_current_command is agent-based.
     assert win.pane_current_command == "claude"
-    # Split tab → tab label appended.
-    assert win.window_name == "ccgram ▸ claude/feature"
+    # window_name is "<workspace> ▸ <tab label>"; agent name does not appear.
+    assert win.window_name == "ccgram ▸ feature"
 
 
 async def test_list_windows_filters_internal_workspace_label() -> None:
@@ -551,11 +552,11 @@ async def test_list_windows_renders_adaptive_labels() -> None:
     )
     wins = await _manager(fake).list_windows()
     ids = {w.window_id: w for w in wins}
-    # Single agent pane in its tab → "<workspace> ▸ <agent>", no "/tab".
-    assert ids["w1:t1"].window_name == "archfit ▸ claude"
+    # Tab label is primary → "<workspace> ▸ <tab>"; agent name does not appear.
+    assert ids["w1:t1"].window_name == "archfit ▸ archfit"
     assert ids["w1:t1"].pane_current_command == "claude"
-    # A tab with no agent degrades to the workspace label.
-    assert ids["w2:t2"].window_name == "ccgram"
+    # Tab with no agent still gets a label from workspace ▸ tab.
+    assert ids["w2:t2"].window_name == "ccgram ▸ ralphex"
 
 
 _SPLIT_TABS = json.dumps(
@@ -613,8 +614,8 @@ async def test_list_windows_split_tab_produces_one_ref_with_tab_suffix() -> None
     assert len(wins) == 1
     win = wins[0]
     assert win.window_id == "w2:t1"
-    # Focused pane is claude; split → tab label "/feature" appended.
-    assert win.window_name == "ccgram ▸ claude/feature"
+    # Tab label is primary → "<workspace> ▸ <tab>"; agent name not in label.
+    assert win.window_name == "ccgram ▸ feature"
 
 
 async def test_workspace_rename_relabels_without_changing_tab_id() -> None:
@@ -649,8 +650,8 @@ async def test_workspace_rename_relabels_without_changing_tab_id() -> None:
             .on("workspace", "list", out=renamed_ws)
         ).list_windows()
     }
-    assert before["w1:t1"] == "archfit ▸ claude"
-    assert after["w1:t1"] == "archfit-v2 ▸ claude"
+    assert before["w1:t1"] == "archfit ▸ archfit"
+    assert after["w1:t1"] == "archfit-v2 ▸ archfit"
     assert set(after) == set(before)  # same tab ids → no rebind
 
 

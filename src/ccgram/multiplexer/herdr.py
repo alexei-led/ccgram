@@ -300,20 +300,15 @@ class HerdrManager:
         pane: Mapping,
         tab_labels: Mapping[str, str],
         workspace_labels: Mapping[str, str],
-        pane_counts: Mapping[str, int],
     ) -> str:
         """Build a pane's adaptive topic label from the herdr label maps.
 
-        ``"<workspace> ▸ <agent>"`` (+ ``"/<tab>"`` when the pane's tab is
-        split). Agent label prefers ``display_agent`` over the bare ``agent``.
+        ``"<workspace> ▸ <tab>"`` — tab name is primary so same-agent tabs in
+        one workspace get distinct titles.
         """
         tab_id = pane.get("tab_id", "")
         workspace = workspace_labels.get(pane.get("workspace_id", ""), "")
-        agent = pane.get("display_agent") or pane.get("agent", "")
-        split = pane_counts.get(tab_id, 1) > 1
-        return format_agent_topic_prefix(
-            workspace, agent, tab_labels.get(tab_id, ""), split=split
-        )
+        return format_agent_topic_prefix(workspace, tab_labels.get(tab_id, ""))
 
     @staticmethod
     def _to_window_ref(
@@ -431,10 +426,7 @@ class HerdrManager:
             rep_agent, rep_cwd = self._representative_pane(
                 tab_panes, tab.get("cwd", "")
             )
-            split = len(tab_panes) > 1
-            window_name = format_agent_topic_prefix(
-                workspace_label, rep_agent, tab_label, split=split
-            )
+            window_name = format_agent_topic_prefix(workspace_label, tab_label)
             refs.append(self._to_window_ref(tab_id, window_name, rep_cwd, rep_agent))
         return refs
 

@@ -23,39 +23,31 @@ from __future__ import annotations
 
 from .base import MultiplexerCapabilities, WindowRef
 
-# Separates the workspace prefix from the agent name in a herdr topic title
-# (design "Adaptive topic title": ``"<workspace> ▸ <agent>"``).
+# Separates the workspace prefix from the tab name in a herdr topic title
+# (design "Adaptive topic title": ``"<workspace> ▸ <tab>"``).
 TOPIC_PREFIX_SEPARATOR = " ▸ "
 
 
-def format_agent_topic_prefix(
-    workspace: str, agent: str, tab: str = "", *, split: bool = False
-) -> str:
-    """Render a herdr agent pane's adaptive topic label (no status emoji).
+def format_agent_topic_prefix(workspace: str, tab: str) -> str:
+    """Render a herdr tab's adaptive topic label (no status emoji).
 
-    Produces ``"<workspace> ▸ <agent>"`` and appends ``"/<tab>"`` only when the
-    pane's tab holds more than one pane (``split`` — an agent team), so a lone
-    agent stays terse while team members stay distinguishable (design "Adaptive
-    topic title"). The status emoji is prepended later by the topic-emoji
-    machinery; this is the clean name it composes onto.
+    Produces ``"<workspace> ▸ <tab>"`` — the tab name is primary so two tabs
+    running the same agent in one workspace get distinct titles
+    (``"ccgram ▸ herdr-support"`` vs ``"ccgram ▸ ralphex"``). The status emoji
+    is prepended later by the topic-emoji machinery; this is the clean name it
+    composes onto.
 
     Backend-neutral and pure: the herdr adapter sources the labels (workspace
-    from ``workspace list``, agent from ``display_agent``/``agent``, tab from
-    ``tab list``) and the split flag (pane count per tab) and calls this. Empty
-    parts degrade gracefully so a half-populated pane never renders a stray
-    separator: missing workspace falls back to the agent alone, missing agent to
-    the workspace alone.
+    from ``workspace list``, tab label from ``tab list``) and calls this. Empty
+    parts degrade gracefully so a half-populated tab never renders a stray
+    separator: missing workspace falls back to the tab label alone, missing tab
+    to the workspace alone.
     """
     workspace = workspace.strip()
-    agent = agent.strip()
     tab = tab.strip()
-    if workspace and agent:
-        label = f"{workspace}{TOPIC_PREFIX_SEPARATOR}{agent}"
-    else:
-        label = workspace or agent
-    if split and tab:
-        label = f"{label}/{tab}" if label else tab
-    return label
+    if workspace and tab:
+        return f"{workspace}{TOPIC_PREFIX_SEPARATOR}{tab}"
+    return workspace or tab
 
 
 def is_agent_topic_window(window: WindowRef, caps: MultiplexerCapabilities) -> bool:
