@@ -160,10 +160,10 @@ and adding the lifecycle/flow UX.
 - Fitness gate: `test_no_tty_outside_backend.py`, F2 contract green.
 - Verification: `uv run pytest tests/ccgram/test_herdr_backend.py -k "pane or capture or foreground or send or list_panes" -v`; `uv run pytest tests/integration -m herdr -k shell -v` if socket present.
 - Manual checks: `capture`/`foreground` of a tab id return the active pane; `list_panes` of a split tab returns >1 pane; a shell tab still runs end to end.
-- [ ] add `_active_pane(tab_id)` and route all pane ops through it
-- [ ] `list_panes(tab_id)` returns all panes in the tab
-- [ ] unit tests: single-pane and split-tab fixtures (resolution + multi-pane); shell-on-herdr regression
-- [ ] run `make test` — must pass before next task
+- [x] add `_active_pane(tab_id)` and route all pane ops through it
+- [x] `list_panes(tab_id)` returns all panes in the tab
+- [x] unit tests: single-pane and split-tab fixtures (resolution + multi-pane); shell-on-herdr regression
+- [x] run `make test` — must pass before next task
 
 ### Task 5: pane callback-data encoding for herdr ids
 

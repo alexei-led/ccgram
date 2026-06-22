@@ -770,12 +770,158 @@ async def test_create_window_falls_back_when_no_workspace_support(tmp_path) -> N
     assert "--workspace" not in tab_call
 
 
-# ── Pane ops (unchanged pending Task 4) ────────────────────────────────
+# ── Task 4 fixtures: tab→pane resolution ──────────────────────────────
+
+# Single-pane tab: w2:t1 → pane w2:p1 (focused).
+PANE_LIST_SINGLE = json.dumps(
+    {
+        "id": "cli:pane:list",
+        "result": {
+            "panes": [
+                {
+                    "agent": "claude",
+                    "agent_status": "idle",
+                    "cwd": "/Users/alexei/Workspace/ccgram",
+                    "focused": True,
+                    "pane_id": "w2:p1",
+                    "tab_id": "w2:t1",
+                    "workspace_id": "w2",
+                },
+            ],
+            "type": "pane_list",
+        },
+    }
+)
+
+# Split tab: w2:t1 → panes w2:p1 (focused) + w2:p2 (not focused).
+PANE_LIST_SPLIT = json.dumps(
+    {
+        "id": "cli:pane:list",
+        "result": {
+            "panes": [
+                {
+                    "agent": "claude",
+                    "agent_status": "working",
+                    "cwd": "/Users/alexei/Workspace/ccgram",
+                    "focused": True,
+                    "pane_id": "w2:p1",
+                    "tab_id": "w2:t1",
+                    "workspace_id": "w2",
+                },
+                {
+                    "agent": "codex",
+                    "agent_status": "idle",
+                    "cwd": "/Users/alexei/Workspace/ccgram",
+                    "focused": False,
+                    "pane_id": "w2:p2",
+                    "tab_id": "w2:t1",
+                    "workspace_id": "w2",
+                },
+            ],
+            "type": "pane_list",
+        },
+    }
+)
+
+# Split tab with no focused pane: _active_pane falls back to first.
+PANE_LIST_SPLIT_NO_FOCUS = json.dumps(
+    {
+        "id": "cli:pane:list",
+        "result": {
+            "panes": [
+                {
+                    "agent": "claude",
+                    "agent_status": "idle",
+                    "cwd": "/Users/alexei/Workspace/ccgram",
+                    "focused": False,
+                    "pane_id": "w2:p1",
+                    "tab_id": "w2:t1",
+                    "workspace_id": "w2",
+                },
+                {
+                    "agent": "codex",
+                    "agent_status": "idle",
+                    "cwd": "/Users/alexei/Workspace/ccgram",
+                    "focused": False,
+                    "pane_id": "w2:p2",
+                    "tab_id": "w2:t1",
+                    "workspace_id": "w2",
+                },
+            ],
+            "type": "pane_list",
+        },
+    }
+)
+
+# Layout for a split tab (two pane rects).
+LAYOUT_SPLIT = json.dumps(
+    {
+        "id": "cli:pane:layout",
+        "result": {
+            "layout": {
+                "area": {"height": 63, "width": 199, "x": 26, "y": 1},
+                "focused_pane_id": "w2:p1",
+                "panes": [
+                    {
+                        "focused": True,
+                        "pane_id": "w2:p1",
+                        "rect": {"height": 50, "width": 120, "x": 0, "y": 0},
+                    },
+                    {
+                        "focused": False,
+                        "pane_id": "w2:p2",
+                        "rect": {"height": 50, "width": 79, "x": 120, "y": 0},
+                    },
+                ],
+                "splits": [],
+                "tab_id": "w2:t1",
+                "workspace_id": "w2",
+                "zoomed": False,
+            },
+            "type": "pane_layout",
+        },
+    }
+)
+
+
+# ── _active_pane resolution ────────────────────────────────────────────
+
+
+async def test_active_pane_returns_focused_pane() -> None:
+    fake = FakeHerdr().on("pane", "list", out=PANE_LIST_SPLIT)
+    pane_id = await _manager(fake)._active_pane("w2:t1")
+    assert pane_id == "w2:p1"
+
+
+async def test_active_pane_returns_first_when_no_focused() -> None:
+    fake = FakeHerdr().on("pane", "list", out=PANE_LIST_SPLIT_NO_FOCUS)
+    pane_id = await _manager(fake)._active_pane("w2:t1")
+    assert pane_id == "w2:p1"  # first in list
+
+
+async def test_active_pane_returns_none_for_empty_tab() -> None:
+    empty = json.dumps({"result": {"panes": [], "type": "pane_list"}})
+    fake = FakeHerdr().on("pane", "list", out=empty)
+    assert await _manager(fake)._active_pane("w2:t1") is None
+
+
+async def test_active_pane_single_tab_returns_that_pane() -> None:
+    fake = FakeHerdr().on("pane", "list", out=PANE_LIST_SINGLE)
+    pane_id = await _manager(fake)._active_pane("w2:t1")
+    assert pane_id == "w2:p1"
+
+
+# ── Pane ops: tab→pane resolution (Task 4) ─────────────────────────────
 
 
 async def test_foreground_from_process_info() -> None:
-    fake = FakeHerdr().on("pane", "process-info", out=PROCESS_INFO)
-    fg = await _manager(fake).foreground("w2:p1")
+    # foreground(tab_id) resolves tab→active pane, then reads process-info.
+    fake = (
+        FakeHerdr()
+        .on("pane", "list", out=PANE_LIST_SINGLE)
+        .on("pane", "process-info", out=PROCESS_INFO)
+    )
+    fg = await _manager(fake).foreground("w2:t1")
     assert fg == ForegroundInfo(
         pid=40777,
         pgid=40777,
@@ -783,17 +929,47 @@ async def test_foreground_from_process_info() -> None:
         cwd="/Users/alexei/Workspace/ccgram",
         tty="",
     )
+    # Must resolve through pane list first.
+    assert fake.sent("pane", "list") is not None
+    # process-info must target the resolved pane id, not the tab id.
+    pi_call = fake.sent("pane", "process-info")
+    assert pi_call is not None and "w2:p1" in pi_call
+
+
+async def test_foreground_split_tab_uses_focused_pane() -> None:
+    # Split tab: focused is w2:p1; process-info must target w2:p1, not w2:p2.
+    fake = (
+        FakeHerdr()
+        .on("pane", "list", out=PANE_LIST_SPLIT)
+        .on("pane", "process-info", out=PROCESS_INFO)
+    )
+    fg = await _manager(fake).foreground("w2:t1")
+    assert fg is not None
+    pi_call = fake.sent("pane", "process-info")
+    assert pi_call is not None and "w2:p1" in pi_call
 
 
 async def test_pane_dims_from_layout() -> None:
-    fake = FakeHerdr().on("pane", "layout", out=LAYOUT)
-    dims = await _manager(fake).pane_dims("w2:p1")
+    # pane_dims(tab_id) resolves tab→active pane, then fetches layout.
+    fake = (
+        FakeHerdr()
+        .on("pane", "list", out=PANE_LIST_SINGLE)
+        .on("pane", "layout", out=LAYOUT)
+    )
+    dims = await _manager(fake).pane_dims("w2:t1")
     assert dims == PaneDims(width=120, height=50)
+    layout_call = fake.sent("pane", "layout")
+    assert layout_call is not None and "w2:p1" in layout_call
 
 
 async def test_list_panes_returns_single_pane() -> None:
-    fake = FakeHerdr().on("pane", "get", out=PANE_GET).on("pane", "layout", out=LAYOUT)
-    panes = await _manager(fake).list_panes("w2:p1")
+    # list_panes(tab_id) returns the one pane in a single-pane tab.
+    fake = (
+        FakeHerdr()
+        .on("pane", "list", out=PANE_LIST_SINGLE)
+        .on("pane", "layout", out=LAYOUT)
+    )
+    panes = await _manager(fake).list_panes("w2:t1")
     assert panes == [
         PaneInfo(
             pane_id="w2:p1",
@@ -807,40 +983,95 @@ async def test_list_panes_returns_single_pane() -> None:
     ]
 
 
+async def test_list_panes_returns_all_panes_in_split_tab() -> None:
+    # list_panes(tab_id) returns ALL panes in a split tab (team awareness).
+    fake = (
+        FakeHerdr()
+        .on("pane", "list", out=PANE_LIST_SPLIT)
+        .on("pane", "layout", out=LAYOUT_SPLIT)
+    )
+    panes = await _manager(fake).list_panes("w2:t1")
+    assert len(panes) == 2
+    pane_ids = {p.pane_id for p in panes}
+    assert pane_ids == {"w2:p1", "w2:p2"}
+    # Active (focused) pane.
+    p1 = next(p for p in panes if p.pane_id == "w2:p1")
+    assert p1.active is True
+    assert p1.command == "claude"
+    assert p1.width == 120
+    # Non-focused pane.
+    p2 = next(p for p in panes if p.pane_id == "w2:p2")
+    assert p2.active is False
+    assert p2.command == "codex"
+    assert p2.width == 79
+
+
+async def test_list_panes_returns_empty_for_empty_tab() -> None:
+    empty = json.dumps({"result": {"panes": [], "type": "pane_list"}})
+    fake = FakeHerdr().on("pane", "list", out=empty)
+    assert await _manager(fake).list_panes("w2:t1") == []
+
+
 # ── Capture / scrollback ───────────────────────────────────────────────
 
 
 async def test_capture_returns_text() -> None:
-    fake = FakeHerdr().on("pane", "read", out=PANE_READ_TEXT)
-    res = await _manager(fake).capture("w2:p1")
+    # capture(tab_id) resolves tab→active pane, then reads visible text.
+    fake = (
+        FakeHerdr()
+        .on("pane", "list", out=PANE_LIST_SINGLE)
+        .on("pane", "read", out=PANE_READ_TEXT)
+    )
+    res = await _manager(fake).capture("w2:t1")
     assert res == CaptureResult(text="line one\nline two", truncated=False)
     call = fake.sent("pane", "read")
     assert call is not None
     assert "--source" in call and "visible" in call
     assert "text" in call
+    # Must target the resolved pane id, not the tab id.
+    assert "w2:p1" in call
 
 
 async def test_capture_ansi_requests_ansi_format() -> None:
-    fake = FakeHerdr().on("pane", "read", out=PANE_READ_TEXT)
-    await _manager(fake).capture("w2:p1", ansi=True)
+    fake = (
+        FakeHerdr()
+        .on("pane", "list", out=PANE_LIST_SINGLE)
+        .on("pane", "read", out=PANE_READ_TEXT)
+    )
+    await _manager(fake).capture("w2:t1", ansi=True)
     call = fake.sent("pane", "read")
     assert call is not None and "ansi" in call
 
 
+async def test_capture_returns_none_when_tab_has_no_panes() -> None:
+    empty = json.dumps({"result": {"panes": [], "type": "pane_list"}})
+    fake = FakeHerdr().on("pane", "list", out=empty)
+    assert await _manager(fake).capture("w2:t1") is None
+
+
 async def test_scrollback_clamps_to_read_max_lines_and_flags_truncated() -> None:
-    fake = FakeHerdr().on("pane", "read", out=PANE_READ_TEXT)
-    res = await _manager(fake).capture_scrollback("w2:p1", lines=5000)
+    fake = (
+        FakeHerdr()
+        .on("pane", "list", out=PANE_LIST_SINGLE)
+        .on("pane", "read", out=PANE_READ_TEXT)
+    )
+    res = await _manager(fake).capture_scrollback("w2:t1", lines=5000)
     assert res is not None
     assert res.truncated is True
     call = fake.sent("pane", "read")
     assert call is not None
     assert "1000" in call
     assert "5000" not in call
+    assert "w2:p1" in call
 
 
 async def test_scrollback_under_cap_is_not_truncated() -> None:
-    fake = FakeHerdr().on("pane", "read", out=PANE_READ_TEXT)
-    res = await _manager(fake).capture_scrollback("w2:p1", lines=200)
+    fake = (
+        FakeHerdr()
+        .on("pane", "list", out=PANE_LIST_SINGLE)
+        .on("pane", "read", out=PANE_READ_TEXT)
+    )
+    res = await _manager(fake).capture_scrollback("w2:t1", lines=200)
     assert res is not None and res.truncated is False
     call = fake.sent("pane", "read")
     assert call is not None and "200" in call
@@ -850,29 +1081,65 @@ async def test_scrollback_under_cap_is_not_truncated() -> None:
 
 
 async def test_send_literal_enter_uses_pane_run() -> None:
-    fake = FakeHerdr().on("pane", "run", out=OK)
-    assert await _manager(fake).send("w2:p1", "hello world") is True
+    # send(tab_id, ...) resolves tab→active pane, then runs pane run.
+    fake = (
+        FakeHerdr().on("pane", "list", out=PANE_LIST_SINGLE).on("pane", "run", out=OK)
+    )
+    assert await _manager(fake).send("w2:t1", "hello world") is True
     assert fake.sent("pane", "run") == ["pane", "run", "w2:p1", "hello world"]
 
 
 async def test_send_no_enter_uses_send_text() -> None:
-    fake = FakeHerdr().on("pane", "send-text", out=OK)
-    assert await _manager(fake).send("w2:p1", "draft", enter=False) is True
+    fake = (
+        FakeHerdr()
+        .on("pane", "list", out=PANE_LIST_SINGLE)
+        .on("pane", "send-text", out=OK)
+    )
+    assert await _manager(fake).send("w2:t1", "draft", enter=False) is True
     assert fake.sent("pane", "send-text") == ["pane", "send-text", "w2:p1", "draft"]
 
 
 async def test_send_special_keys_uses_send_keys() -> None:
-    fake = FakeHerdr().on("pane", "send-keys", out=OK)
+    fake = (
+        FakeHerdr()
+        .on("pane", "list", out=PANE_LIST_SINGLE)
+        .on("pane", "send-keys", out=OK)
+    )
     assert (
-        await _manager(fake).send("w2:p1", "Down", enter=False, literal=False) is True
+        await _manager(fake).send("w2:t1", "Down", enter=False, literal=False) is True
     )
     assert fake.sent("pane", "send-keys") == ["pane", "send-keys", "w2:p1", "Down"]
 
 
 async def test_send_keys_appends_enter_when_requested() -> None:
-    fake = FakeHerdr().on("pane", "send-keys", out=OK)
-    await _manager(fake).send("w2:p1", "", enter=True, literal=False)
+    fake = (
+        FakeHerdr()
+        .on("pane", "list", out=PANE_LIST_SINGLE)
+        .on("pane", "send-keys", out=OK)
+    )
+    await _manager(fake).send("w2:t1", "", enter=True, literal=False)
     assert fake.sent("pane", "send-keys") == ["pane", "send-keys", "w2:p1", "Enter"]
+
+
+async def test_send_returns_false_when_tab_has_no_panes() -> None:
+    empty = json.dumps({"result": {"panes": [], "type": "pane_list"}})
+    fake = FakeHerdr().on("pane", "list", out=empty)
+    assert await _manager(fake).send("w2:t1", "hello") is False
+
+
+async def test_send_split_tab_targets_focused_pane() -> None:
+    # Split tab: send must go to the focused pane (w2:p1), not w2:p2.
+    fake = FakeHerdr().on("pane", "list", out=PANE_LIST_SPLIT).on("pane", "run", out=OK)
+    assert await _manager(fake).send("w2:t1", "go") is True
+    assert fake.sent("pane", "run") == ["pane", "run", "w2:p1", "go"]
+
+
+async def test_send_to_pane_bypasses_tab_resolution() -> None:
+    # send_to_pane(pane_id, ...) sends directly to the pane id — no pane list call.
+    fake = FakeHerdr().on("pane", "run", out=OK)
+    assert await _manager(fake).send_to_pane("w2:p2", "msg") is True
+    assert fake.sent("pane", "run") == ["pane", "run", "w2:p2", "msg"]
+    assert fake.sent("pane", "list") is None  # no resolution
 
 
 # ── Boundary: socket down, bad id, protocol ────────────────────────────
@@ -882,8 +1149,8 @@ async def test_socket_down_returns_none_not_crash() -> None:
     fake = FakeHerdr().on("tab", "get", rc=127, err="connection refused")
     mgr = _manager(fake)
     assert await mgr.find_window("w2:t1") is None
-    fake.on("pane", "read", rc=127, err="connection refused")
-    assert await mgr.capture("w2:p1") is None
+    # capture with no pane list response → pane list fails → None.
+    assert await mgr.capture("w2:t1") is None
 
 
 async def test_bad_id_error_payload_returns_none() -> None:
@@ -892,7 +1159,7 @@ async def test_bad_id_error_payload_returns_none() -> None:
 
 
 async def test_foreground_missing_process_returns_none() -> None:
-    empty = json.dumps(
+    empty_proc = json.dumps(
         {
             "result": {
                 "process_info": {
@@ -904,8 +1171,12 @@ async def test_foreground_missing_process_returns_none() -> None:
             }
         }
     )
-    fake = FakeHerdr().on("pane", "process-info", out=empty)
-    assert await _manager(fake).foreground("w2:p1") is None
+    fake = (
+        FakeHerdr()
+        .on("pane", "list", out=PANE_LIST_SINGLE)
+        .on("pane", "process-info", out=empty_proc)
+    )
+    assert await _manager(fake).foreground("w2:t1") is None
 
 
 async def test_ensure_session_accepts_pinned_protocol() -> None:

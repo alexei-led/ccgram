@@ -226,13 +226,33 @@ class HerdrManager:
         text = out.rstrip()
         return text or None
 
-    async def _pane_get(self, window_id: str) -> dict | None:
-        """Return the private ``pane`` dict for a window id, or None if gone."""
-        result = await self._call_json(["pane", "get", window_id])
+    async def _pane_get(self, pane_id: str) -> dict | None:
+        """Return the private ``pane`` dict for a pane id, or None if gone."""
+        result = await self._call_json(["pane", "get", pane_id])
         if not result:
             return None
         pane = result.get("pane")
         return pane if isinstance(pane, dict) else None
+
+    async def _panes_for_tab(self, tab_id: str) -> list[dict]:
+        """Return all pane dicts belonging to *tab_id* (one ``pane list`` call)."""
+        pane_result = await self._call_json(["pane", "list"])
+        if not pane_result:
+            return []
+        return [p for p in pane_result.get("panes", []) if p.get("tab_id") == tab_id]
+
+    async def _active_pane(self, tab_id: str) -> str | None:
+        """Resolve a tab id to its active pane id.
+
+        Prefers the focused pane; falls back to the first pane in the tab.
+        Returns ``None`` when the tab has no panes (gone or empty).
+        """
+        panes = await self._panes_for_tab(tab_id)
+        if not panes:
+            return None
+        focused = next((p for p in panes if p.get("focused")), None)
+        chosen = focused or panes[0]
+        return chosen.get("pane_id") or None
 
     async def _tab_list(self) -> list[dict]:
         """Return the raw tab dicts from ``tab list`` (private, full objects)."""
@@ -446,57 +466,43 @@ class HerdrManager:
 
         return self._to_window_ref(window_id, tab_label, rep_cwd, rep_agent)
 
-    async def capture(
-        self, window_id: str, *, ansi: bool = False
-    ) -> CaptureResult | None:
-        """Capture visible pane text (``pane read --source visible``)."""
+    # ── Raw pane-id ops (private) ──────────────────────────────────────
+    # These accept a resolved *pane* id — not a tab id. Tab-keyed public
+    # methods resolve tab→active-pane via ``_active_pane`` before calling here.
+
+    async def _read_visible_pane(
+        self, pane_id: str, *, ansi: bool = False
+    ) -> str | None:
+        """Read visible pane text for a resolved pane id; None on failure."""
         fmt = "ansi" if ansi else "text"
-        text = await self._call_text(
-            ["pane", "read", window_id, "--source", "visible", "--format", fmt]
+        return await self._call_text(
+            ["pane", "read", pane_id, "--source", "visible", "--format", fmt]
         )
-        if text is None:
-            return None
-        return CaptureResult(text=text)
 
-    async def capture_scrollback(
-        self, window_id: str, lines: int = 200
-    ) -> CaptureResult | None:
-        """Capture recent scrollback, clamped to ``read_max_lines`` (1000).
-
-        ``truncated`` is True when the caller asked for more lines than herdr
-        will return.
-        """
-        max_lines = self.capabilities.read_max_lines
-        effective = lines
-        truncated = False
-        if max_lines is not None and lines > max_lines:
-            effective = max_lines
-            truncated = True
-        text = await self._call_text(
+    async def _read_recent_pane(self, pane_id: str, *, lines: int) -> str | None:
+        """Read recent scrollback for a resolved pane id; None on failure."""
+        return await self._call_text(
             [
                 "pane",
                 "read",
-                window_id,
+                pane_id,
                 "--source",
                 "recent",
                 "--lines",
-                str(effective),
+                str(lines),
                 "--format",
                 "text",
             ]
         )
-        if text is None:
-            return None
-        return CaptureResult(text=text, truncated=truncated)
 
-    async def pane_dims(self, window_id: str) -> PaneDims | None:
-        """Return the pane's columns/rows from ``pane layout``; None if gone."""
-        result = await self._call_json(["pane", "layout", "--pane", window_id])
+    async def _dims_for_pane(self, pane_id: str) -> PaneDims | None:
+        """Return dimensions for a resolved pane id from ``pane layout``."""
+        result = await self._call_json(["pane", "layout", "--pane", pane_id])
         if not result:
             return None
         layout = result.get("layout") or {}
         for pane in layout.get("panes", []):
-            if pane.get("pane_id") == window_id:
+            if pane.get("pane_id") == pane_id:
                 rect = pane.get("rect") or {}
                 w, h = rect.get("width"), rect.get("height")
                 if isinstance(w, int) and isinstance(h, int):
@@ -507,6 +513,76 @@ class HerdrManager:
             return PaneDims(width=w, height=h)
         return None
 
+    async def _foreground_for_pane(self, pane_id: str) -> ForegroundInfo | None:
+        """Return foreground process info for a resolved pane id."""
+        result = await self._call_json(["pane", "process-info", "--pane", pane_id])
+        if not result:
+            return None
+        info = result.get("process_info") or {}
+        procs = info.get("foreground_processes") or []
+        if not procs:
+            return None
+        pgid = info.get("foreground_process_group_id") or 0
+        leader = next((p for p in procs if p.get("pid") == pgid), procs[0])
+        return ForegroundInfo(
+            pid=int(leader.get("pid", 0)),
+            pgid=int(pgid or leader.get("pid", 0)),
+            argv=list(leader.get("argv") or []),
+            cwd=leader.get("cwd", "") or "",
+            tty="",
+        )
+
+    # ── Tab-keyed public ops (resolve tab→active-pane first) ───────────
+
+    async def capture(
+        self, window_id: str, *, ansi: bool = False
+    ) -> CaptureResult | None:
+        """Capture visible pane text.
+
+        *window_id* is a tab id. Resolves the tab to its active pane first,
+        then reads visible text via ``pane read --source visible``.
+        """
+        pane_id = await self._active_pane(window_id)
+        if pane_id is None:
+            return None
+        text = await self._read_visible_pane(pane_id, ansi=ansi)
+        if text is None:
+            return None
+        return CaptureResult(text=text)
+
+    async def capture_scrollback(
+        self, window_id: str, lines: int = 200
+    ) -> CaptureResult | None:
+        """Capture recent scrollback, clamped to ``read_max_lines`` (1000).
+
+        *window_id* is a tab id. Resolves to the active pane first.
+        ``truncated`` is True when the caller asked for more lines than herdr
+        will return.
+        """
+        pane_id = await self._active_pane(window_id)
+        if pane_id is None:
+            return None
+        max_lines = self.capabilities.read_max_lines
+        effective = lines
+        truncated = False
+        if max_lines is not None and lines > max_lines:
+            effective = max_lines
+            truncated = True
+        text = await self._read_recent_pane(pane_id, lines=effective)
+        if text is None:
+            return None
+        return CaptureResult(text=text, truncated=truncated)
+
+    async def pane_dims(self, window_id: str) -> PaneDims | None:
+        """Return the active pane's columns/rows from ``pane layout``.
+
+        *window_id* is a tab id. Resolves to the active pane first.
+        """
+        pane_id = await self._active_pane(window_id)
+        if pane_id is None:
+            return None
+        return await self._dims_for_pane(pane_id)
+
     async def send(
         self,
         window_id: str,
@@ -516,14 +592,18 @@ class HerdrManager:
         literal: bool = True,
         raw: bool = False,  # noqa: ARG002  # pyright: ignore[reportUnusedVariable]
     ) -> bool:
-        """Send text/keys to a pane.
+        """Send text/keys to the active pane in a tab.
 
+        *window_id* is a tab id. Resolves to the active pane first.
         ``literal``+``enter`` → ``pane run`` (atomic text+Enter); ``literal``
         without ``enter`` → ``pane send-text``; ``literal=False`` treats *text*
         as space-separated key names → ``pane send-keys``. herdr needs no vim
         workaround, so ``raw`` is accepted for parity and ignored.
         """
-        return await self._send_to(window_id, text, enter=enter, literal=literal)
+        pane_id = await self._active_pane(window_id)
+        if pane_id is None:
+            return False
+        return await self._send_to(pane_id, text, enter=enter, literal=literal)
 
     async def send_to_pane(
         self,
@@ -532,13 +612,13 @@ class HerdrManager:
         *,
         enter: bool = True,
         literal: bool = True,
-        window_id: str | None = None,  # noqa: ARG002 — protocol signature; herdr panes are single-pane windows
+        window_id: str | None = None,  # noqa: ARG002 — protocol signature
     ) -> bool:
-        """Send to a specific pane id.
+        """Send to a specific pane id directly (no tab resolution).
 
-        herdr panes are globally addressable single-pane windows, so the
-        ``window_id`` cross-window guard is a no-op here (each pane *is* its
-        own window).
+        Unlike ``send``, *pane_id* here is a real herdr pane id (e.g.
+        ``"w2:p1"``), not a tab id — callers that target a specific pane in a
+        split tab pass the pane id directly.
         """
         return await self._send_to(pane_id, text, enter=enter, literal=literal)
 
@@ -574,27 +654,54 @@ class HerdrManager:
         return await self._call_ok(["tab", "rename", window_id, new_name])
 
     async def list_panes(self, window_id: str) -> list[PaneInfo]:
-        """Return the window's pane(s).
+        """Return ALL panes in a herdr tab (team awareness).
 
-        A herdr window is a single agent pane (tab splits surface as separate
-        windows/topics — design "topic = pane = agent"), so this returns a
-        one-element list, or ``[]`` when the pane is gone.
+        *window_id* is a tab id. Fetches all panes in the tab from ``pane list``
+        and resolves per-pane dimensions from a single ``pane layout`` call.
+        Returns ``[]`` when the tab has no panes.
         """
-        pane = await self._pane_get(window_id)
-        if pane is None:
+        panes = await self._panes_for_tab(window_id)
+        if not panes:
             return []
-        dims = await self.pane_dims(window_id)
-        return [
-            PaneInfo(
-                pane_id=pane.get("pane_id", ""),
-                index=_pane_index(pane.get("pane_id", "")),
-                active=bool(pane.get("focused", False)),
-                command=pane.get("agent", ""),
-                path=pane.get("cwd", ""),
-                width=dims.width if dims else 0,
-                height=dims.height if dims else 0,
+        # Fetch layout once for the active pane; extract per-pane rects.
+        active_pane_id = next(
+            (p.get("pane_id", "") for p in panes if p.get("focused")),
+            panes[0].get("pane_id", ""),
+        )
+        layout_result = await self._call_json(
+            ["pane", "layout", "--pane", active_pane_id]
+        )
+        layout_rects: dict[str, PaneDims] = {}
+        if layout_result:
+            layout = layout_result.get("layout") or {}
+            area = layout.get("area") or {}
+            area_w, area_h = area.get("width", 0), area.get("height", 0)
+            for lp in layout.get("panes", []):
+                pid = lp.get("pane_id", "")
+                if pid:
+                    rect = lp.get("rect") or {}
+                    lw = rect.get("width")
+                    lh = rect.get("height")
+                    if isinstance(lw, int) and isinstance(lh, int):
+                        layout_rects[pid] = PaneDims(width=lw, height=lh)
+                    elif isinstance(area_w, int) and isinstance(area_h, int):
+                        layout_rects[pid] = PaneDims(width=area_w, height=area_h)
+        result: list[PaneInfo] = []
+        for pane in panes:
+            pid = pane.get("pane_id", "")
+            dims = layout_rects.get(pid)
+            result.append(
+                PaneInfo(
+                    pane_id=pid,
+                    index=_pane_index(pid),
+                    active=bool(pane.get("focused", False)),
+                    command=pane.get("agent", ""),
+                    path=pane.get("cwd", ""),
+                    width=dims.width if dims else 0,
+                    height=dims.height if dims else 0,
+                )
             )
-        ]
+        return result
 
     async def _resolve_workspace_id(self, cwd: str) -> str:
         """Return the workspace rooted at *cwd*, creating one if none matches.
@@ -686,16 +793,20 @@ class HerdrManager:
         return True, f"Created herdr tab '{label}' at {path}", label, tab_id
 
     async def set_title(self, window_id: str, provider_name: str) -> None:
-        """Stamp the pane title for instant provider re-detection.
+        """Stamp the active pane title for instant provider re-detection.
 
+        *window_id* is a tab id. Resolves to the active pane first.
         Uses ``pane report-metadata --title ccgram:<provider>`` (herdr's
         title channel); best-effort, failures are swallowed like tmux.
         """
+        pane_id = await self._active_pane(window_id)
+        if pane_id is None:
+            return
         await self._call_ok(
             [
                 "pane",
                 "report-metadata",
-                window_id,
+                pane_id,
                 "--source",
                 "ccgram",
                 "--title",
@@ -704,28 +815,17 @@ class HerdrManager:
         )
 
     async def foreground(self, window_id: str) -> ForegroundInfo | None:
-        """Foreground process info from ``pane process-info``.
+        """Foreground process info for the active pane in a tab.
 
+        *window_id* is a tab id. Resolves to the active pane first.
         No ``ps -t`` and no tty (``exposes_pane_tty`` is False — macOS herdr
         reports no tty). Picks the process-group leader, else the first
         foreground process.
         """
-        result = await self._call_json(["pane", "process-info", "--pane", window_id])
-        if not result:
+        pane_id = await self._active_pane(window_id)
+        if pane_id is None:
             return None
-        info = result.get("process_info") or {}
-        procs = info.get("foreground_processes") or []
-        if not procs:
-            return None
-        pgid = info.get("foreground_process_group_id") or 0
-        leader = next((p for p in procs if p.get("pid") == pgid), procs[0])
-        return ForegroundInfo(
-            pid=int(leader.get("pid", 0)),
-            pgid=int(pgid or leader.get("pid", 0)),
-            argv=list(leader.get("argv") or []),
-            cwd=leader.get("cwd", "") or "",
-            tty="",
-        )
+        return await self._foreground_for_pane(pane_id)
 
     # ── Transitional surface (legacy aliases) ──────────────────────────
     # Mirror the historical ``tmux_manager`` names callers still use, so the
@@ -745,11 +845,15 @@ class HerdrManager:
         pane_id: str,
         *,
         with_ansi: bool = False,
-        window_id: str | None = None,  # noqa: ARG002 — protocol signature; herdr panes are single-pane windows
+        window_id: str | None = None,  # noqa: ARG002 — protocol signature
     ) -> str | None:
-        """Capture a specific pane's visible text by id (herdr: pane == window)."""
-        result = await self.capture(pane_id, ansi=with_ansi)
-        return result.text if result else None
+        """Capture a specific pane's visible text by pane id (no tab resolution).
+
+        *pane_id* is a real herdr pane id (e.g. ``"w2:p1"``). Reads directly
+        without resolving through a tab so callers that target a specific pane
+        in a split tab get the right pane, not the active one.
+        """
+        return await self._read_visible_pane(pane_id, ansi=with_ansi)
 
     async def capture_pane_scrollback(
         self, window_id: str, history: int = 200
@@ -785,8 +889,15 @@ class HerdrManager:
         )
 
     async def get_pane_title(self, window_id: str) -> str:
-        """Return the pane's reported title (herdr ``pane get`` → ``title``)."""
-        pane = await self._pane_get(window_id)
+        """Return the active pane's reported title.
+
+        *window_id* is a tab id. Resolves to the active pane first, then reads
+        ``pane get`` → ``title``.
+        """
+        pane_id = await self._active_pane(window_id)
+        if pane_id is None:
+            return ""
+        pane = await self._pane_get(pane_id)
         if pane is None:
             return ""
         return pane.get("title", "") or ""
