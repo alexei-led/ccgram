@@ -166,7 +166,11 @@ async def _kill_expired_unbound(now: float, timeout: float) -> None:
         from ...topic_state_registry import topic_state
 
         topic_state.clear_window(wid)
-        qualified_id = f"{config.tmux_session_name}:{wid}"
+        # Lazy: session_map_prefix() is safe to call at runtime; imported here
+        # to keep this import co-located with the topic_state_registry lazy import above.
+        from ...session_map import session_map_prefix
+
+        qualified_id = f"{session_map_prefix()}{wid}"
         topic_state.clear_qualified(qualified_id)
         logger.info("auto_killed_unbound_window", window_id=wid)
 

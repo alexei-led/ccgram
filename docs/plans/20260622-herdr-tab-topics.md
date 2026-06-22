@@ -145,10 +145,10 @@ and adding the lifecycle/flow UX.
 - Fitness gate: F1 boundary; no `name == "herdr"`.
 - Verification: `grep -rn "config\.tmux_session_name}:" src/ccgram/handlers/` returns nothing (scoped to handlers — `session_map.py:116` is the canonical helper and `hook.py:685/896` are the legitimate tmux-path local-var key constructions, both intentional); `uv run pytest tests/ccgram/ -k "cleanup or lifecycle or transcript_discovery" -v`.
 - Manual checks: on herdr, closing a topic clears its topic-state callbacks; a hookless agent tab is discovered by transcript discovery.
-- [ ] replace the three hardcoded `tmux_session_name}:` keys with `session_map_prefix()`-derived keys
-- [ ] grep-audit for any remaining tmux-namespace key construction
-- [ ] tests for the herdr key path (cleanup + transcript discovery)
-- [ ] run `make test` — must pass before next task
+- [x] replace the three hardcoded `tmux_session_name}:` keys with `session_map_prefix()`-derived keys
+- [x] grep-audit for any remaining tmux-namespace key construction
+- [x] tests for the herdr key path (cleanup + transcript discovery)
+- [x] run `make test` — must pass before next task
 
 ### Task 4: tab→pane resolution for pane ops + multi-pane awareness
 

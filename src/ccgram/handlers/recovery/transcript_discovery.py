@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from ...config import config
 from ...providers import (
     detect_provider_from_pane,
     detect_provider_from_runtime,
@@ -24,7 +23,7 @@ from ...providers import (
     should_probe_pane_title_for_provider_detection,
 )
 from ...session import session_manager
-from ...session_map import session_map_sync
+from ...session_map import session_map_prefix, session_map_sync
 from ...telegram_client import TelegramClient
 from ...multiplexer import multiplexer as tmux_manager
 from ...window_state_ports import identity_state
@@ -163,7 +162,7 @@ async def _find_and_register_transcript(
     pane_alive: bool,
 ) -> None:
     """Search for transcripts among candidate providers and register if found."""
-    window_key = f"{config.tmux_session_name}:{window_id}"
+    window_key = f"{session_map_prefix()}{window_id}"
 
     transcript_path_str = (
         str(identity.transcript_path) if identity.transcript_path else ""

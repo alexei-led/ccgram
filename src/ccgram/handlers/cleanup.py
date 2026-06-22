@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from telegram.ext import ContextTypes
 
 from ..config import config
+from ..session_map import session_map_prefix
 from ..thread_router import thread_router
 from ..topic_state_registry import topic_state
 from ..utils import handle_general_topic_message, is_general_topic, log_throttle_reset
@@ -58,7 +59,7 @@ async def clear_topic_state(
 
     qualified_id: str | None = None
     if window_id and window_dead:
-        qualified_id = f"{config.tmux_session_name}:{window_id}"
+        qualified_id = f"{session_map_prefix()}{window_id}"
 
     # Enqueue status-message delete BEFORE registry clears the message ID
     if client is not None:
