@@ -291,3 +291,35 @@ class TestProbeTopicExistence:
             mock_router.iter_thread_bindings.return_value = [(1, 100, "@0")]
             await probe_topic_existence(bot)
         bot.unpin_all_forum_topic_messages.assert_not_called()
+
+    async def test_missing_pin_rights_disables_probe_without_suspending(self):
+        from ccgram.handlers.topics import topic_lifecycle as tl
+
+        bot = AsyncMock(spec=Bot)
+        # Real Telegram error for unpin without can_pin_messages is lowercase.
+        bot.unpin_all_forum_topic_messages = AsyncMock(
+            side_effect=BadRequest("not enough rights to manage pinned messages")
+        )
+        wid = "@probe-pin"
+        tl._probe_pin_disabled.discard(wid)
+        try:
+            with (
+                patch.object(tl, "thread_router") as mock_router,
+                patch.object(tl, "lifecycle_strategy") as mock_strategy,
+            ):
+                mock_router.iter_thread_bindings.return_value = [(1, 100, wid)]
+                mock_router.resolve_chat_id.return_value = 42
+                mock_strategy.should_skip_probe.return_value = False
+
+                await probe_topic_existence(bot)
+
+                # Permission error must not count as a probe failure (no suspend).
+                mock_strategy.record_probe_failure.assert_not_called()
+                assert wid in tl._probe_pin_disabled
+
+                # Next tick skips the window entirely — no further API call.
+                bot.unpin_all_forum_topic_messages.reset_mock()
+                await probe_topic_existence(bot)
+                bot.unpin_all_forum_topic_messages.assert_not_called()
+        finally:
+            tl._probe_pin_disabled.discard(wid)

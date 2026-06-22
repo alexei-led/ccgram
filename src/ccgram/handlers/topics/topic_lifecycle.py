@@ -192,10 +192,18 @@ async def prune_stale_state(live_windows: "list[TmuxWindow]") -> None:
 # ── Topic existence probing ───────────────────────────────────────────────
 
 
+# Windows whose chat lacks can_pin_messages: the unpin-based probe can never
+# succeed there, so disable it permanently (per process) instead of counting it
+# as a probe failure (which would suspend deleted-topic detection and re-arm on
+# every inbound message). Reset on restart; mirrors _disabled_chats in
+# handlers/status/topic_emoji.py.
+_probe_pin_disabled: set[str] = set()
+
+
 async def probe_topic_existence(client: TelegramClient) -> None:
     """Probe all bound topics via Telegram API; detect deleted topics."""
     for user_id, thread_id, wid in list(thread_router.iter_thread_bindings()):
-        if lifecycle_strategy.should_skip_probe(wid):
+        if wid in _probe_pin_disabled or lifecycle_strategy.should_skip_probe(wid):
             continue
         try:
             await client.unpin_all_forum_topic_messages(
@@ -224,6 +232,12 @@ async def probe_topic_existence(client: TelegramClient) -> None:
                     wid,
                     thread_id,
                     user_id,
+                )
+            elif isinstance(e, BadRequest) and "not enough rights" in e.message.lower():
+                _probe_pin_disabled.add(wid)
+                logger.info(
+                    "Topic probe disabled for window_id '%s': bot lacks pin rights",
+                    wid,
                 )
             else:
                 lifecycle_strategy.record_probe_failure(wid)
