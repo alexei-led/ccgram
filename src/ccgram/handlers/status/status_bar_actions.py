@@ -83,7 +83,8 @@ def build_dashboard_button(window_id: str, user_id: int) -> InlineKeyboardButton
 @topic_state.register("window")
 def _clear_key_refreshes(window_id: str) -> None:
     """Cancel in-flight debounced key-refresh tasks for a closing window."""
-    from ..callback_data import CB_PANE_DELIMITER  # Lazy: pane delimiter constant
+    # Lazy: pane delimiter constant
+    from ..callback_data import CB_PANE_DELIMITER
 
     stale = [
         k

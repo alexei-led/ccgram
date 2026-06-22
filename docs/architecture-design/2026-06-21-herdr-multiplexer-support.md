@@ -2,6 +2,20 @@
 
 Plain Markdown. Target architecture for adding [herdr](https://github.com/ogulcancelik/herdr) as a second terminal multiplexer alongside tmux, behind one contract seam. Design only; production source changes belong in a follow-up implementation plan. tmux stays the default; herdr is additive.
 
+## Design Revision (2026-06-22)
+
+The original scoping decision 1 ("Identity keying — thin: treat herdr's `pane_id` as the opaque `window_id`") and the Telegram topic mapping section ("topic = pane = agent") were **superseded** during implementation (plan `docs/plans/20260622-herdr-tab-topics.md`).
+
+**Actual implemented identity:** `window_id = tab_id` (`"wN:tM"`), not pane id. One ccgram topic = one herdr tab, mirroring the tmux-window analog. A split tab (agent team) is one topic with N panes — handled by ccgram's existing multi-pane awareness (`/panes`, `list_panes`), not N separate topics.
+
+**Topic label:** `"<workspace> ▸ <tab>"` (tab name primary, not agent name). This fixes the `"ccgram ▸ claude"` collision when a workspace runs two sessions of the same agent.
+
+**Session-map key:** `herdr:<tab_id>` (hook resolves pane→tab via injected probe before writing).
+
+**Restart re-resolution:** `_resolve_by_session_id` in `window_resolver.py` maps a stale `herdr:<tab_id>` key to the new tab id via the shared Claude session uuid — same anchor as original, different key shape.
+
+The rest of the design (Multiplexer Protocol, capability flags, anti-corruption layer, polling-first, hook identity from `$HERDR_PANE_ID`, additive scope) remains as written.
+
 ## Overview
 
 ccgram is a Telegram control plane for terminal-hosted AI coding agents. Today every terminal operation goes through the concrete `tmux_manager` singleton; there is no multiplexer abstraction. This design introduces a `Multiplexer` contract that both tmux and herdr satisfy, mirroring the existing `AgentProvider` seam, so the rest of the system stops knowing which multiplexer it is talking to.

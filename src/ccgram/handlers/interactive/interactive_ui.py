@@ -162,7 +162,8 @@ def _build_interactive_keyboard(
     When ``pane_id`` is set, it is appended to each callback data so
     responses route to a specific pane instead of the window's active pane.
     """
-    from ..callback_data import CB_PANE_DELIMITER  # Lazy: pane delimiter constant
+    # Lazy: pane delimiter constant
+    from ..callback_data import CB_PANE_DELIMITER
 
     vertical_only = ui_name == "RestoreCheckpoint"
     # Target suffix: "@12" or "@12|%5" (tmux) / "w2:t1|w2:p1" (herdr) when pane-targeted

@@ -222,7 +222,8 @@ async def _handle_pane_screenshot(
     query: CallbackQuery, user_id: int, data: str, update: Update
 ) -> None:
     """Handle CB_PANE_SCREENSHOT: screenshot a specific pane."""
-    from ..callback_data import CB_PANE_DELIMITER  # Lazy: pane delimiter constant
+    # Lazy: pane delimiter constant
+    from ..callback_data import CB_PANE_DELIMITER
 
     rest = data[len(CB_PANE_SCREENSHOT) :]
     # Format: <window_id>|<pane_id> — delimiter is | so herdr ids (w2:t1, w2:p1) round-trip

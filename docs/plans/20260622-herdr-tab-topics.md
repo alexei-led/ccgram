@@ -263,7 +263,7 @@ and adding the lifecycle/flow UX.
 - Fitness gate: full `make check`; F1/F2/F3 audits green.
 - Verification: `make check`; `uv run pytest tests/integration/ -m herdr -v`.
 - Manual checks: docs read true against behavior.
-- [ ] extend `test_herdr_contract.py` for tab identity + lifecycle + restart
-- [ ] update `.claude/rules/architecture.md` and the design doc
-- [ ] sync memory `project_herdr_multiplexer.md`
-- [ ] run `make check` — must pass to close the plan
+- [x] extend `test_herdr_contract.py` for tab identity + lifecycle + restart
+- [x] update `.claude/rules/architecture.md` and the design doc
+- [x] sync memory `project_herdr_multiplexer.md`
+- [x] run `make check` — must pass to close the plan
