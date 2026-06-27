@@ -34,3 +34,42 @@ jobs:
         run: uv run pytest tests/ -m "not integration and not e2e" --tb=short -v --timeout=30
       - name: Integration tests
         run: uv run pytest tests/integration/ -m "not llm" --tb=short -v --timeout=30
+  # Advisory architecture-drift report (archfit). Non-blocking: it surfaces
+  # boundary/coupling drift and publishes the scorecard, but never fails the
+  # merge (continue-on-error). The enforced boundary gate is the pytest F1-F6
+  # audits in the `check` job above + the pre-push hook.
+  architecture:
+    name: Architecture drift (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.14"
+      - run: uv sync --all-extras
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+      - name: Install archfit + analyzers
+        run: |
+          go install github.com/alexei-led/archfit/cmd/archfit@v0.12.1
+          npm install -g @sourcegraph/scip-python jscpd @ast-grep/cli
+          uv tool install lizard
+      - name: Architecture drift gate (archfit)
+        run: make arch-check
+      - name: Architecture scorecard
+        if: always()
+        run: make arch-score | tee archfit-scorecard.md
+      - name: Upload scorecard
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: archfit-scorecard
+          path: archfit-scorecard.md

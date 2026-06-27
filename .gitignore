@@ -82,6 +82,8 @@ progress*.txt
 .serena
 .works
 .codegraph/
+.gitnexus/
+pkg/mod/
 
 # Dev run lock
 .ccgram-dev-run.lock.d/

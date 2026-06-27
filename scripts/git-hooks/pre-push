@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Architecture drift gate (pre-push).
+#
+# Runs only when the commits being pushed touch source or its architecture
+# config, so doc/test-only pushes stay instant:
+#   1. make arch-guard  — fast (~3s), comprehensive, reliable pytest boundary
+#                         audits (the authoritative drift gate).
+#   2. make arch-check  — archfit whole-graph gate (~45s): forbidden-dep + cycle
+#                         + coupling. Adds the cross-module view on top of (1).
+#
+# Installed via: git config --local core.hooksPath scripts/git-hooks
+# To skip ad hoc:  git push --no-verify   (or comment out the arch-check line).
+set -euo pipefail
+
+z40=0000000000000000000000000000000000000000
+need=0
+
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+  [ "$local_sha" = "$z40" ] && continue # branch deletion — nothing to check
+  if [ "$remote_sha" = "$z40" ]; then
+    # New branch on the remote: diff against the merge-base with origin's default
+    # branch when known, else check the pushed tip's tree.
+    base="$(git merge-base "$local_sha" origin/HEAD 2>/dev/null || true)"
+    range="${base:+$base..}$local_sha"
+  else
+    range="$remote_sha..$local_sha"
+  fi
+  if git diff --name-only "$range" -- src .archfit.yaml | grep -q .; then
+    need=1
+  fi
+done
+
+if [ "$need" != 1 ]; then
+  echo "pre-push: no src/.archfit.yaml changes — skipping architecture gate"
+  exit 0
+fi
+
+echo "pre-push: source changed — running architecture drift gate"
+make arch-guard
+make arch-check
