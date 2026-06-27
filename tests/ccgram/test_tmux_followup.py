@@ -65,9 +65,7 @@ async def test_send_to_window_times_out_when_window_lookup_hangs(monkeypatch) ->
 
 
 async def test_send_followup_to_window_sends_text_then_alt_enter() -> None:
-    mock_router = SimpleNamespace(
-        get_display_name=MagicMock(return_value="project")
-    )
+    mock_router = SimpleNamespace(get_display_name=MagicMock(return_value="project"))
     with (
         patch("ccgram.multiplexer.window_ops.thread_router", new=mock_router),
         patch("ccgram.multiplexer.window_ops.multiplexer") as mock_tmux,
@@ -94,9 +92,7 @@ async def test_send_followup_to_window_sends_text_then_alt_enter() -> None:
 
 
 async def test_send_followup_to_window_reports_missing_window() -> None:
-    mock_router = SimpleNamespace(
-        get_display_name=MagicMock(return_value="project")
-    )
+    mock_router = SimpleNamespace(get_display_name=MagicMock(return_value="project"))
     with (
         patch("ccgram.multiplexer.window_ops.thread_router", new=mock_router),
         patch("ccgram.multiplexer.window_ops.multiplexer") as mock_tmux,

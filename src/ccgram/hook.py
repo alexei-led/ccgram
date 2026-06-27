@@ -1327,7 +1327,9 @@ def hook_main(
     normalized = _process_hook_stdin(
         provider_name if provider_name != "claude" else None
     )
-    if normalized and normalized.provider_name == "codex" and (
-        normalized.canonical_event_name == "Stop"
+    if (
+        normalized
+        and normalized.provider_name == "codex"
+        and (normalized.canonical_event_name == "Stop")
     ):
         print("{}")
