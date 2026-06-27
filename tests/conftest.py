@@ -7,7 +7,9 @@ discovers any test that transitively imports ccgram.
 
 import contextlib
 import os
+import subprocess
 import tempfile
+from collections.abc import Iterator
 
 import pytest
 
@@ -71,3 +73,85 @@ def _wire_multiplexer():
     install_multiplexer(get_multiplexer("tmux"))
     yield
     _reset_multiplexer_for_testing()
+
+
+def _close_created_windows(created: list[tuple[str, str]]) -> None:
+    """Close recorded multiplexer windows via the backend CLI (best-effort)."""
+    closed_workspaces: set[str] = set()
+    for backend, window_id in created:
+        if backend == "tmux":
+            # tmux window ids (``@N``) are server-global, so target directly.
+            subprocess.run(
+                ["tmux", "kill-window", "-t", window_id], capture_output=True
+            )
+            continue
+        # herdr: close the tab and the (often auto-created, empty) workspace.
+        subprocess.run(["herdr", "tab", "close", window_id], capture_output=True)
+        workspace_id = window_id.split(":")[0]
+        if workspace_id in closed_workspaces:
+            continue
+        closed_workspaces.add(workspace_id)
+        # A worktree-backed workspace needs `worktree remove` (deletes the
+        # checkout + closes); a plain one just `workspace close`. Try both.
+        subprocess.run(
+            ["herdr", "worktree", "remove", "--workspace", workspace_id, "--force"],
+            capture_output=True,
+        )
+        subprocess.run(
+            ["herdr", "workspace", "close", workspace_id], capture_output=True
+        )
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_created_windows(request, monkeypatch) -> Iterator[None]:
+    """Close multiplexer windows/tabs created by integration/e2e tests.
+
+    Real-window tests spin up tmux windows and herdr tabs (plus the workspaces
+    herdr auto-creates per cwd); when a test forgets — or fails before — its own
+    teardown, they leak and must be closed by hand. Wrap ``create_window`` /
+    ``create_worktree_window`` on both backends to record the ids THIS test
+    creates, then close them after. Recording only this-test ids keeps it
+    race-free under ``-n auto`` (it never touches another worker's windows).
+
+    Gated on the ``integration`` / ``e2e`` markers: unit tests drive the backends
+    with fake runners returning fake ids (e.g. ``"w2:t9"``) that must never reach
+    the live herdr socket.
+    """
+    if not (
+        request.node.get_closest_marker("integration")
+        or request.node.get_closest_marker("e2e")
+    ):
+        yield
+        return
+
+    created: list[tuple[str, str]] = []
+
+    def _wrap(cls: type, attr: str, backend: str) -> None:
+        orig = getattr(cls, attr, None)
+        if orig is None:
+            return
+
+        async def wrapper(self, *args, **kwargs):  # noqa: ANN001, ANN202
+            result = await orig(self, *args, **kwargs)
+            if (
+                isinstance(result, tuple)
+                and len(result) >= 4
+                and result[0]
+                and isinstance(result[3], str)
+                and result[3]
+            ):
+                created.append((backend, result[3]))
+            return result
+
+        monkeypatch.setattr(cls, attr, wrapper)
+
+    from ccgram.multiplexer.herdr import HerdrManager
+    from ccgram.multiplexer.tmux import TmuxManager
+
+    _wrap(TmuxManager, "create_window", "tmux")
+    _wrap(HerdrManager, "create_window", "herdr")
+    _wrap(HerdrManager, "create_worktree_window", "herdr")
+    try:
+        yield
+    finally:
+        _close_created_windows(created)

@@ -119,15 +119,17 @@ async def test_create_send_capture_kill_roundtrip(
     assert await herdr.find_window(window_id) is None
 
 
-def _workspace_ids() -> set[str]:
-    """Current herdr workspace ids (via the live socket)."""
+def _source_workspace_id(repo: str) -> str:
+    """The herdr workspace id auto-created for *repo* (via the live socket)."""
     out = subprocess.run(
-        ["herdr", "workspace", "list"], capture_output=True, text=True
+        ["herdr", "worktree", "list", "--cwd", repo, "--json"],
+        capture_output=True,
+        text=True,
     ).stdout
     try:
-        return {w["workspace_id"] for w in json.loads(out)["result"]["workspaces"]}
-    except ValueError, KeyError:
-        return set()
+        return json.loads(out)["result"]["source"]["source_workspace_id"] or ""
+    except ValueError, KeyError, TypeError:
+        return ""
 
 
 async def test_create_worktree_window_delegates(herdr: HerdrManager, tmp_path) -> None:
@@ -151,7 +153,6 @@ async def test_create_worktree_window_delegates(herdr: HerdrManager, tmp_path) -
     )
 
     wt_path = str(tmp_path / "wt")
-    before = _workspace_ids()
     ok, _msg, _name, window_id = await herdr.create_worktree_window(
         str(repo), wt_path, "ccg-itest", window_name="ccgram-wt-itest"
     )
@@ -169,15 +170,14 @@ async def test_create_worktree_window_delegates(herdr: HerdrManager, tmp_path) -
         ).stdout.strip()
         assert branch == "ccg-itest"
     finally:
-        # Remove every workspace this test created: the worktree workspace (via
-        # worktree remove → also deletes the checkout) and the auto-created
-        # source workspace for the repo (workspace close).
-        for wsid in _workspace_ids() - before:
+        # The autouse cleanup fixture closes the worktree workspace (the returned
+        # tab's). `worktree create` also auto-creates a *source* workspace for the
+        # repo — close it explicitly here (race-free: only this repo's).
+        source_ws = _source_workspace_id(str(repo))
+        if source_ws:
             subprocess.run(
-                ["herdr", "worktree", "remove", "--workspace", wsid, "--force"],
-                capture_output=True,
+                ["herdr", "workspace", "close", source_ws], capture_output=True
             )
-            subprocess.run(["herdr", "workspace", "close", wsid], capture_output=True)
 
 
 async def test_agent_status_returns_valid_state(herdr: HerdrManager, tmp_path) -> None:
