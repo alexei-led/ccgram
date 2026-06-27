@@ -1,6 +1,6 @@
 """On-demand state audit and cleanup — /sync command.
 
-Audits all state maps against live tmux windows and reports issues.
+Audits all state maps against live multiplexer windows and reports issues.
 A "Fix" button runs cleanup operations and re-audits in place.
 Enforcement: closes ghost topics, recreates dead topics, and adopts orphaned windows.
 
@@ -55,12 +55,12 @@ _CATEGORY_LABELS: dict[str, str] = {
     "stale_window_state": "stale window state",
     "stale_offset": "stale offset entry",
     "display_name_drift": "display name drift",
-    "orphaned_window": "unbound tmux window (no topic)",
+    "orphaned_window": "unbound window (no topic)",
 }
 
 
 async def _run_audit() -> AuditResult:
-    """Fetch live tmux state and run audit."""
+    """Fetch live multiplexer state and run audit."""
     all_windows = await tmux_manager.list_windows()
     live_ids = {w.window_id for w in all_windows}
     live_pairs = [(w.window_id, w.window_name) for w in all_windows]
@@ -251,7 +251,7 @@ async def _close_ghost_topics(client: TelegramClient, issues: list[AuditIssue]) 
 async def _adopt_orphaned_windows(
     client: TelegramClient, issues: list[AuditIssue]
 ) -> None:
-    """Create Telegram topics for unbound tmux windows."""
+    """Create Telegram topics for unbound multiplexer windows."""
     # Lazy: bidirectional cycle — topic_orchestration.adopt_unbound_windows
     # also lazy-imports _adopt_orphaned_windows from this module.  Either
     # side must remain lazy until one is split into a third module.
@@ -493,8 +493,8 @@ async def _dispatch(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     if query.data == CB_SYNC_FIX:
+        await query.answer("Running fix...")
         await handle_sync_fix(query)
-        await query.answer("Fixed")
     elif query.data == CB_SYNC_DISMISS:
-        await handle_sync_dismiss(query)
         await query.answer("Dismissed")
+        await handle_sync_dismiss(query)

@@ -439,7 +439,7 @@ class TestSyncFix:
             live_binding_count=1,
         )
         text, keyboard = _format_report(audit)
-        assert "unbound tmux window" in text
+        assert "unbound window" in text
         assert keyboard is not None
 
 
