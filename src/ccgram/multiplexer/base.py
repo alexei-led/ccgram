@@ -321,6 +321,17 @@ class Multiplexer(Protocol):
         """
         ...
 
+    async def split_window(self, window_id: str) -> str | None:
+        """Split the window's active pane; return the new pane id, or None.
+
+        Adds a sibling pane to the window/tab (the multi-pane "agent team"
+        shape): herdr ``pane split``, tmux ``window.split()``. The returned id
+        is a real pane id (``%N`` for tmux, ``wN:pK`` for herdr) and is
+        discoverable via ``list_panes`` / the ``/panes`` command. None on
+        failure (window gone, backend error).
+        """
+        ...
+
     # ── Transitional surface ───────────────────────────────────────────
     #
     # Methods below mirror the historical ``tmux_manager`` public API that

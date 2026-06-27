@@ -100,6 +100,8 @@ _SINGLETON_ALLOWLIST = frozenset(
         "send/send_callbacks.py",
         "send/send_command.py",
         "sessions_dashboard.py",
+        # /split resolves window_id via thread_router (same routing as /last, /panes).
+        "split_command.py",
         "shell/shell_capture.py",
         "shell/shell_commands.py",
         # rc_probe iterates thread bindings to route the RC outcome reply

@@ -134,6 +134,25 @@ async def test_agent_status_returns_valid_state(herdr: HerdrManager, tmp_path) -
         assert await herdr.kill_window(window_id) is True
 
 
+async def test_split_window_adds_pane(herdr: HerdrManager, tmp_path) -> None:
+    """split_window adds a sibling pane to the tab, discoverable via list_panes."""
+    ok, _msg, _name, window_id = await herdr.create_window(
+        str(tmp_path), window_name="ccgram-split-itest", start_agent=False
+    )
+    assert ok is True
+    try:
+        before = await herdr.list_panes(window_id)
+        new_pane = await herdr.split_window(window_id)
+        assert new_pane is not None
+        # New pane is a real pane id (wN:pK), distinct from the tab id.
+        assert new_pane != window_id
+        after = await herdr.list_panes(window_id)
+        assert len(after) == len(before) + 1
+        assert any(p.pane_id == new_pane for p in after)
+    finally:
+        assert await herdr.kill_window(window_id) is True
+
+
 async def test_list_windows_tab_identity(herdr: HerdrManager, tmp_path) -> None:
     """list_windows returns one WindowRef per tab; window_id is the tab id."""
     ok, _msg, tab_label, window_id = await herdr.create_window(

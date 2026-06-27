@@ -134,6 +134,25 @@ async def test_list_panes_missing_window(tmux) -> None:
     assert panes == []
 
 
+async def test_split_window_adds_pane(tmux, tmp_path) -> None:
+    ok, _msg, _name, window_id = await tmux.create_window(
+        str(tmp_path), window_name="split-me", start_agent=False
+    )
+    assert ok
+
+    new_pane = await tmux.split_window(window_id)
+    assert new_pane is not None
+    assert new_pane.startswith("%")
+
+    panes = await tmux.list_panes(window_id)
+    assert len(panes) == 2
+    assert any(p.pane_id == new_pane for p in panes)
+
+
+async def test_split_window_missing_returns_none(tmux) -> None:
+    assert await tmux.split_window("@99999") is None
+
+
 async def test_capture_pane_by_id_missing(tmux) -> None:
     output = await tmux.capture_pane_by_id("%99999")
     assert output is None

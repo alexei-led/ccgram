@@ -704,6 +704,29 @@ class TmuxManager:
 
         return await asyncio.to_thread(_sync_list_panes)
 
+    async def split_window(self, window_id: str) -> str | None:
+        """Split a window's active pane via libtmux; return the new pane id.
+
+        Returns None when the window is gone or the split fails.
+        """
+
+        def _sync_split() -> str | None:
+            session = self.get_session()
+            if not session:
+                return None
+            try:
+                window = session.windows.get(window_id=window_id, default=None)
+                if not window:
+                    return None
+                pane = window.split()
+                return pane.pane_id or None
+            except _TmuxError as exc:
+                logger.debug("Failed to split window %s: %s", window_id, exc)
+                self._reset_server()
+                return None
+
+        return await asyncio.to_thread(_sync_split)
+
     async def capture_pane_by_id(
         self,
         pane_id: str,

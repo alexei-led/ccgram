@@ -980,6 +980,52 @@ async def test_agent_status_none_when_status_field_absent() -> None:
     assert await _manager(fake).agent_status("w2:t1") is None
 
 
+# ── split_window: add a sibling pane ───────────────────────────────────
+
+
+async def test_split_window_returns_new_pane_id() -> None:
+    # _active_pane → pane list (focused w2:p1), then pane split → new pane id.
+    split_out = json.dumps(
+        {
+            "result": {
+                "pane": {"pane_id": "w2:p2", "tab_id": "w2:t1"},
+                "type": "pane_info",
+            }
+        }
+    )
+    fake = (
+        FakeHerdr()
+        .on("pane", "list", out=PANE_LIST_SINGLE)
+        .on("pane", "split", out=split_out)
+    )
+    new_id = await _manager(fake).split_window("w2:t1")
+    assert new_id == "w2:p2"
+    # Splits the focused pane, no-focus, direction down.
+    assert fake.sent("pane", "split") == [
+        "pane",
+        "split",
+        "w2:p1",
+        "--direction",
+        "down",
+        "--no-focus",
+    ]
+
+
+async def test_split_window_none_for_empty_tab() -> None:
+    empty = json.dumps({"result": {"panes": [], "type": "pane_list"}})
+    fake = FakeHerdr().on("pane", "list", out=empty)
+    assert await _manager(fake).split_window("w2:t1") is None
+
+
+async def test_split_window_none_on_split_failure() -> None:
+    fake = (
+        FakeHerdr()
+        .on("pane", "list", out=PANE_LIST_SINGLE)
+        .on("pane", "split", rc=1, err="boom")
+    )
+    assert await _manager(fake).split_window("w2:t1") is None
+
+
 async def test_active_pane_single_tab_returns_that_pane() -> None:
     fake = FakeHerdr().on("pane", "list", out=PANE_LIST_SINGLE)
     pane_id = await _manager(fake)._active_pane("w2:t1")

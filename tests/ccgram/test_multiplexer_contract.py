@@ -38,6 +38,7 @@ CONTRACT_METHODS = (
     "set_title",
     "foreground",
     "agent_status",
+    "split_window",
     "find_window_by_id",
     "capture_pane",
     "capture_pane_by_id",
