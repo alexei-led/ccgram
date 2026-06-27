@@ -12,6 +12,11 @@ tools:
     enabled: "on"
   typescript:
     enabled: "off"
+  syntax:
+    enabled: "on"
+  llm:
+    provider: anthropic
+    model: claude-opus-4-8
 layers:
   - core
   - adapter

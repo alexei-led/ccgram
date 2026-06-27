@@ -1,0 +1,63 @@
+version: 1
+field: volatility
+drafts:
+- module: app_bootstrap
+  value: medium
+  rationale: CLI and bootstrap entry points evolve as commands and startup flow change.
+  status: draft
+- module: domain_config
+  value: low
+  rationale: Config, version, and shared utility models are foundational and change infrequently.
+  status: draft
+- module: handlers
+  value: high
+  rationale: Large surface of command, callback, and feature handlers where active feature work churns.
+  status: draft
+- module: hooks
+  value: low
+  rationale: Small adapters and model files for hook events tend to be stable.
+  status: draft
+- module: llm
+  value: medium
+  rationale: Completion and summarizer interfaces shift as model integrations are tuned.
+  status: draft
+- module: miniapp
+  value: medium
+  rationale: Auth and server endpoints evolve as the mini app feature grows.
+  status: draft
+- module: providers
+  value: high
+  rationale: Many provider adapters with format and detection logic change as backends evolve.
+  status: draft
+- module: session_state
+  value: high
+  rationale: Many interlocking session lifecycle, monitor, and tracking modules under active development.
+  status: draft
+- module: telegram_adapter
+  value: medium
+  rationale: Telegram client and sender adapters change as messaging features and formatting land.
+  status: draft
+- module: terminal_adapter
+  value: medium
+  rationale: Thread routing and screenshot logic shifts occasionally with terminal interaction needs.
+  status: draft
+- module: transcript
+  value: medium
+  rationale: Parsers and readers adjust as transcript and terminal output formats change.
+  status: draft
+- module: tts
+  value: low
+  rationale: TTS base and provider implementations have stable interfaces.
+  status: draft
+- module: whisper
+  value: low
+  rationale: Transcriber abstraction is small and rarely changes.
+  status: draft
+- module: window_state
+  value: medium
+  rationale: Window query, resolver, and store evolve with window tracking features.
+  status: draft
+- module: window_state_ports
+  value: low
+  rationale: Port state interfaces are foundational contracts that change infrequently.
+  status: draft
