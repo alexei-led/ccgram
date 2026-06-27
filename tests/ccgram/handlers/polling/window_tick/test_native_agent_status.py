@@ -14,8 +14,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ccgram.multiplexer.base import AgentStatus
 from ccgram.handlers.polling.window_tick.observe import _native_agent_status
+from ccgram.multiplexer import agent_status_cache
+from ccgram.multiplexer.base import AgentStatus
+
+
+@pytest.fixture(autouse=True)
+def _clear_status_cache():
+    # The push-status cache is a process-global; isolate every test so the
+    # subprocess-fallback tests see a cold cache regardless of run order.
+    agent_status_cache.reset()
+    yield
+    agent_status_cache.reset()
 
 
 def _fake_mux(native: bool, status: AgentStatus | None) -> MagicMock:
@@ -71,3 +81,26 @@ async def test_none_native_status_yields_none() -> None:
     mux = _fake_mux(native=True, status=None)
     with patch("ccgram.handlers.polling.window_tick.observe.tmux_manager", mux):
         assert await _native_agent_status("w2:t1") is None
+
+
+async def test_cache_hit_skips_subprocess() -> None:
+    # A warm push cache is read synchronously; the subprocess agent_status()
+    # call is skipped (the per-tick subprocess the event stream replaces).
+    mux = _fake_mux(native=True, status=AgentStatus(state="idle"))
+    agent_status_cache.set_status(
+        "w2:t1", AgentStatus(state="working", agent="codex", custom_status="linking")
+    )
+    with patch("ccgram.handlers.polling.window_tick.observe.tmux_manager", mux):
+        status = await _native_agent_status("w2:t1")
+    assert status is not None
+    assert status.raw_text == "linking"  # from the cache, not the subprocess
+    mux.agent_status.assert_not_awaited()
+
+
+async def test_cold_cache_falls_back_to_subprocess() -> None:
+    mux = _fake_mux(native=True, status=AgentStatus(state="working", agent="codex"))
+    with patch("ccgram.handlers.polling.window_tick.observe.tmux_manager", mux):
+        status = await _native_agent_status("w2:t1")
+    assert status is not None
+    assert status.raw_text == "working"
+    mux.agent_status.assert_awaited_once()  # cold cache → one subprocess call

@@ -12,6 +12,7 @@ refactor in Task 2 is mechanical.
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -116,6 +117,26 @@ class AgentStatus:
     custom_status: str = ""  # Optional short activity label (herdr custom_status)
 
 
+@dataclass(frozen=True)
+class MuxEvent:
+    """A push event from a backend's event stream (``supports_event_stream``).
+
+    Backends that lack an event stream (tmux) never emit these. The backend
+    resolves the event to a ``window_id`` (tab/window id) so consumers stay
+    backend-neutral. ``kind``:
+
+    - ``"agent_status"`` — the pane's native agent run-state changed; ``status``
+      carries the new ``AgentStatus``.
+    - ``"window_died"`` — the window's agent process exited or the window/tab
+      closed (``pane.exited`` / ``tab.closed`` on herdr).
+    """
+
+    kind: str
+    window_id: str
+    pane_id: str = ""
+    status: AgentStatus | None = None
+
+
 # ── Capabilities ───────────────────────────────────────────────────────
 
 
@@ -148,9 +169,9 @@ class MultiplexerCapabilities:
     supports_event_stream: bool
     """True when the backend has a push event stream (herdr: True, tmux: False).
 
-    Reserved for future event-stream wiring; no consumers yet outside the
-    multiplexer package itself (contract tests + session_monitor capability
-    fixture). The flag is intentional forward-looking design — do not remove.
+    Gates ``watch_events`` consumption: ``bootstrap.start_event_stream`` only
+    starts the ``EventStreamMonitor`` on backends with this flag (herdr); tmux's
+    ``watch_events`` is an empty async generator that is never consumed.
     """
 
     native_worktrees: bool
@@ -360,6 +381,21 @@ class Multiplexer(Protocol):
         is a real pane id (``%N`` for tmux, ``wN:pK`` for herdr) and is
         discoverable via ``list_panes`` / the ``/panes`` command. None on
         failure (window gone, backend error).
+        """
+        ...
+
+    def watch_events(self, window_ids: Sequence[str]) -> AsyncGenerator[MuxEvent, None]:
+        """Yield push events for *window_ids* until the iterator is cancelled.
+
+        Only meaningful on backends with ``capabilities.supports_event_stream``
+        (herdr). herdr opens a persistent subscription — global window-death
+        plus per-pane agent-status for the active panes of *window_ids* — and
+        reconnects with backoff on a dropped connection, repriming agent status
+        on each (re)connect. tmux returns an empty async iterator.
+
+        The watched set is fixed for the lifetime of one call; herdr cannot add
+        subscriptions to a live connection, so the consumer cancels this
+        iterator and calls again with the new set when bindings change.
         """
         ...
 

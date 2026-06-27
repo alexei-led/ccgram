@@ -27,6 +27,7 @@ Tests cover:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import subprocess
@@ -196,6 +197,43 @@ async def test_agent_status_returns_valid_state(herdr: HerdrManager, tmp_path) -
         assert status.state in {"working", "idle", "done", "blocked", "unknown"}
     finally:
         assert await herdr.kill_window(window_id) is True
+
+
+async def test_watch_events_streams_window_death(herdr: HerdrManager, tmp_path) -> None:
+    """watch_events delivers a window_died MuxEvent when the tab is killed.
+
+    Exercises the full path against a live socket: subscribe, then kill the tab
+    and assert the pushed ``pane.exited`` / ``tab.closed`` is translated to a
+    neutral ``window_died`` event for the right window id.
+    """
+    ok, _msg, _name, window_id = await herdr.create_window(
+        str(tmp_path), window_name="ccgram-evt-itest", start_agent=False
+    )
+    assert ok is True
+
+    seen: list = []
+
+    async def consume() -> None:
+        async for event in herdr.watch_events([window_id]):
+            seen.append(event)
+            if event.kind == "window_died" and event.window_id == window_id:
+                return
+
+    task = asyncio.create_task(consume())
+    try:
+        await asyncio.sleep(0.5)  # let the subscription establish
+        assert await herdr.kill_window(window_id) is True
+        await asyncio.wait_for(task, timeout=8.0)
+    except TimeoutError:
+        task.cancel()
+        raise AssertionError(f"no window_died event; saw {seen}") from None
+    finally:
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+
+    assert any(e.kind == "window_died" and e.window_id == window_id for e in seen)
 
 
 async def test_split_window_adds_pane(herdr: HerdrManager, tmp_path) -> None:

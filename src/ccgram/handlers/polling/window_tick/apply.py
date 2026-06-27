@@ -29,6 +29,7 @@ from ....config import config
 from ....providers import get_provider_for_window
 from ....telegram_client import PTBTelegramClient
 from ....thread_router import thread_router
+from ....multiplexer import agent_status_cache
 from ....multiplexer import multiplexer as tmux_manager
 from ....window_state_ports.pane_state import (
     get_pane_lifecycle_notify,
@@ -293,6 +294,13 @@ async def _handle_dead_window_notification(
 ) -> None:
     if lifecycle_strategy.is_dead_notified(user_id, thread_id, wid):
         return
+    # Mark notified before the first await: the push (event-stream) and poll
+    # paths both call this for the same window and could otherwise both pass the
+    # guard above before either marks, sending two banners + two autoclose timers.
+    lifecycle_strategy.mark_dead_notified(user_id, thread_id, wid)
+    # Evict any push-cached status so a dead/replaced window (herdr reuses tab
+    # ids across restart) can't serve a stale "working" to the status poll.
+    agent_status_cache.clear(wid)
     terminal_poll_state.clear_seen_status(wid)
 
     clear_tool_msg_ids_for_topic(user_id, thread_id)
@@ -360,7 +368,6 @@ async def _handle_dead_window_notification(
                 )
         except TelegramError:
             pass
-    lifecycle_strategy.mark_dead_notified(user_id, thread_id, wid)
 
 
 # ── Decision-application transitions ───────────────────────────────────

@@ -28,6 +28,7 @@ import asyncio
 import contextlib
 import structlog
 import subprocess
+from collections.abc import AsyncGenerator, Sequence
 from pathlib import Path
 
 import libtmux
@@ -39,6 +40,7 @@ from .base import (
     CaptureResult,
     ForegroundInfo,
     MultiplexerCapabilities,
+    MuxEvent,
     PaneDims,
     PaneInfo,
     WindowRef,
@@ -1046,6 +1048,18 @@ class TmuxManager:
         reached. Returns a failure tuple for safety rather than raising.
         """
         return False, "worktree delegation unsupported on tmux", "", ""
+
+    async def watch_events(
+        self,
+        window_ids: Sequence[str],  # noqa: ARG002 — tmux has no event stream
+    ) -> AsyncGenerator[MuxEvent, None]:
+        """No event stream on tmux (``supports_event_stream`` is False).
+
+        Yields nothing; consumers gate on ``capabilities.supports_event_stream``
+        and never call this. The empty ``for`` loop makes it an async generator.
+        """
+        for _ in ():  # pragma: no cover
+            yield MuxEvent(kind="", window_id="")
 
     async def set_title(self, window_id: str, provider_name: str) -> None:
         """Set the pane title for re-detection (alias of ``stamp_pane_title``)."""

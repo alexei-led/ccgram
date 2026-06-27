@@ -33,7 +33,14 @@ import contextlib
 import json
 import os
 import re
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import (
+    AsyncGenerator,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Mapping,
+    Sequence,
+)
 from pathlib import Path
 
 import structlog
@@ -43,10 +50,16 @@ from .base import (
     CaptureResult,
     ForegroundInfo,
     MultiplexerCapabilities,
+    MuxEvent,
     PaneDims,
     PaneInfo,
     WindowRef,
     WorkspaceRef,
+)
+from .herdr_events import (
+    is_subscribed_sentinel,
+    open_socket_stream,
+    translate_event,
 )
 from .topic_mapping import format_agent_topic_prefix
 
@@ -91,10 +104,19 @@ _KEY_ALIASES: Mapping[str, str] = {
 # Runner contract: ``(returncode, stdout, stderr)``. Injectable for tests.
 HerdrRunner = Callable[[Sequence[str]], "Awaitable[tuple[int, str, str]]"]
 
+# Stream-opener contract: ``(subscriptions) -> async iterator of event dicts``.
+# Injectable for tests so ``watch_events`` can be driven with canned event lines
+# (no socket). The default opens the live unix socket via ``open_socket_stream``.
+HerdrStreamOpener = Callable[[Sequence[Mapping[str, object]]], "AsyncIterator[dict]"]
+
 # Synthetic return codes from the default runner for non-exec failures.
 _RC_TIMEOUT = 124
 _RC_NO_BINARY = 127
 _CALL_TIMEOUT_SECONDS = 8.0
+
+# Event-stream reconnect backoff (seconds): exponential, capped.
+_STREAM_BACKOFF_BASE = 1.0
+_STREAM_BACKOFF_MAX = 30.0
 
 
 class HerdrError(RuntimeError):
@@ -131,6 +153,7 @@ class HerdrManager:
         socket_path: str | None = None,
         binary: str = "herdr",
         runner: HerdrRunner | None = None,
+        stream_opener: HerdrStreamOpener | None = None,
     ) -> None:
         """Build the backend without touching the socket (I/O-free).
 
@@ -138,10 +161,19 @@ class HerdrManager:
             socket_path: herdr socket; defaults to ``$HERDR_SOCKET_PATH``.
             binary: the ``herdr`` executable name/path.
             runner: async ``(args) -> (rc, stdout, stderr)`` override for tests.
+            stream_opener: event-stream opener override for tests; defaults to
+                the live unix-socket reader (``open_socket_stream``).
         """
         self._socket_path = socket_path or os.environ.get("HERDR_SOCKET_PATH", "")
         self._binary = binary
         self._run: HerdrRunner = runner or self._subprocess_run
+        self._open_stream: HerdrStreamOpener = stream_opener or self._default_stream
+
+    def _default_stream(
+        self, subscriptions: Sequence[Mapping[str, object]]
+    ) -> AsyncIterator[dict]:
+        """Open the live herdr socket and subscribe (default stream opener)."""
+        return open_socket_stream(self._socket_path, subscriptions)
 
     # ── CLI plumbing (private) ─────────────────────────────────────────
 
@@ -943,6 +975,68 @@ class HerdrManager:
             return None
         new_id = pane.get("pane_id")
         return new_id if isinstance(new_id, str) and new_id else None
+
+    async def _resolve_panes(self, window_ids: Sequence[str]) -> dict[str, str]:
+        """Map each tab *window_id* to its active pane id (skip empty tabs)."""
+        pane_to_window: dict[str, str] = {}
+        for window_id in window_ids:
+            pane_id = await self._active_pane(window_id)
+            if pane_id:
+                pane_to_window[pane_id] = window_id
+        return pane_to_window
+
+    async def watch_events(
+        self, window_ids: Sequence[str]
+    ) -> AsyncGenerator[MuxEvent, None]:
+        """Stream push events for *window_ids* (see ``Multiplexer.watch_events``).
+
+        Subscribes to global ``tab.closed`` plus per-pane
+        ``pane.agent_status_changed`` for the active panes of *window_ids*
+        (agent-status subscriptions require a pane id). Reprimes each pane's
+        current status once the subscription is live (on the ``SUBSCRIBED``
+        sentinel, so a status change during reprime is buffered, not lost), then
+        yields translated events until the stream drops and reconnects with
+        backoff. Cancelling the iterator closes the socket. The watched set is
+        fixed per call: herdr cannot add subscriptions to a live connection, so
+        the consumer restarts this iterator with a new set when bindings change.
+        """
+        ids = list(window_ids)
+        backoff = _STREAM_BACKOFF_BASE
+        while True:
+            pane_to_window = await self._resolve_panes(ids)
+            subscriptions: list[Mapping[str, object]] = [
+                {"type": "tab.closed"},
+                *(
+                    {"type": "pane.agent_status_changed", "pane_id": pane}
+                    for pane in pane_to_window
+                ),
+            ]
+            try:
+                async for obj in self._open_stream(subscriptions):
+                    if is_subscribed_sentinel(obj):
+                        # Subscription is live — reprime now so the status cache
+                        # isn't cold; events during reprime are buffered + read
+                        # on the next iterations (no reprime-vs-subscribe race).
+                        backoff = _STREAM_BACKOFF_BASE
+                        for pane_id, window_id in pane_to_window.items():
+                            status = await self.agent_status(window_id)
+                            if status is not None:
+                                yield MuxEvent(
+                                    kind="agent_status",
+                                    window_id=window_id,
+                                    pane_id=pane_id,
+                                    status=status,
+                                )
+                        continue
+                    event = translate_event(obj, pane_to_window)
+                    if event is not None:
+                        yield event
+            except OSError as exc:
+                logger.debug("herdr event stream error: %s", exc)
+            # Clean EOF or socket error → back off, then reconnect with the full
+            # set (incremental subscribe is unsupported) and reprime.
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, _STREAM_BACKOFF_MAX)
 
     # ── Transitional surface (legacy aliases) ──────────────────────────
     # Mirror the historical ``tmux_manager`` names callers still use, so the

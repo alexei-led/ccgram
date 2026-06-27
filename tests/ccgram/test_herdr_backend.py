@@ -19,6 +19,7 @@ from ccgram.multiplexer.base import (
     AgentStatus,
     CaptureResult,
     ForegroundInfo,
+    MuxEvent,
     PaneDims,
     PaneInfo,
     WindowRef,
@@ -29,6 +30,7 @@ from ccgram.multiplexer.herdr import (
     HerdrManager,
     HerdrProtocolError,
 )
+from ccgram.multiplexer.herdr_events import SUBSCRIBED, translate_event
 
 # ── Captured JSON fixtures (live herdr 0.7.0) ──────────────────────────
 
@@ -1427,3 +1429,135 @@ async def test_ensure_session_raises_when_server_not_running() -> None:
     fake = FakeHerdr().on("status", out=_status_json(running=False))
     with pytest.raises(HerdrError, match="not running"):
         await _manager(fake).ensure_session()
+
+
+# ── Event stream: translate_event + watch_events ──────────────────────
+
+
+def test_translate_event_maps_and_filters() -> None:
+    p2w = {"w2:p1": "w2:t1"}
+    # agent status for a watched pane → MuxEvent(agent_status). Event name is the
+    # live dot form; the translator also accepts the underscore form.
+    assert translate_event(
+        {
+            "event": "pane.agent_status_changed",
+            "data": {"pane_id": "w2:p1", "agent_status": "working", "agent": "codex"},
+        },
+        p2w,
+    ) == MuxEvent("agent_status", "w2:t1", "w2:p1", AgentStatus("working", "codex", ""))
+    # tab closed for a watched tab → window_died (no pane_id).
+    assert translate_event(
+        {"event": "tab_closed", "data": {"tab_id": "w2:t1"}}, p2w
+    ) == MuxEvent("window_died", "w2:t1")
+    # pane.exited is NOT a death signal (would falsely kill multi-pane tabs).
+    assert (
+        translate_event({"event": "pane_exited", "data": {"pane_id": "w2:p1"}}, p2w)
+        is None
+    )
+    # tab closed for an unwatched tab → None (firehose filter).
+    assert (
+        translate_event({"event": "tab_closed", "data": {"tab_id": "w9:t9"}}, p2w)
+        is None
+    )
+    # unknown event → None
+    assert translate_event({"event": "pane_focused", "data": {}}, p2w) is None
+
+
+def _stream_of(*batches: list[dict]):
+    """A stream_opener yielding the SUBSCRIBED sentinel + one batch per (re)connect.
+
+    Mimics ``open_socket_stream``, which yields the sentinel after the ack so the
+    caller reprimes once the subscription is live. Records each connect's
+    subscriptions on ``.seen``.
+    """
+    seen: list[list] = []
+
+    async def opener(subscriptions):
+        index = len(seen)
+        seen.append(list(subscriptions))
+        yield SUBSCRIBED
+        for event in batches[index] if index < len(batches) else []:
+            yield event
+
+    opener.seen = seen  # type: ignore[attr-defined]
+    return opener
+
+
+async def test_watch_events_reprimes_filters_and_streams() -> None:
+    opener = _stream_of(
+        [
+            {
+                "event": "pane.agent_status_changed",
+                "data": {
+                    "pane_id": "w2:p1",
+                    "agent_status": "working",
+                    "agent": "codex",
+                },
+            },
+            # unwatched pane → filtered out
+            {"event": "pane.agent_status_changed", "data": {"pane_id": "w9:p9"}},
+            {"event": "tab_closed", "data": {"tab_id": "w2:t1"}},
+        ]
+    )
+    fake = (
+        FakeHerdr()
+        .on("pane", "list", out=PANE_LIST_SINGLE)
+        .on("pane", "get", out=PANE_GET)
+    )
+    mgr = HerdrManager(socket_path="/tmp/s.sock", runner=fake, stream_opener=opener)
+
+    got: list[MuxEvent] = []
+    async for event in mgr.watch_events(["w2:t1"]):
+        got.append(event)
+        if len(got) >= 3:
+            break
+
+    # reprime (idle from pane get, after the sentinel) + stream working + death;
+    # the w9:p9 status is dropped (not in the watched set).
+    assert got == [
+        MuxEvent("agent_status", "w2:t1", "w2:p1", AgentStatus("idle", "claude", "")),
+        MuxEvent("agent_status", "w2:t1", "w2:p1", AgentStatus("working", "codex", "")),
+        MuxEvent("window_died", "w2:t1"),
+    ]
+    # Subscriptions: global tab.closed + the watched pane's agent status (no
+    # pane.exited — it is not used for death).
+    subs = opener.seen[0]  # type: ignore[attr-defined]
+    assert {"type": "tab.closed"} in subs
+    assert {"type": "pane.agent_status_changed", "pane_id": "w2:p1"} in subs
+    assert {"type": "pane.exited"} not in subs
+
+
+async def test_watch_events_reconnects_after_stream_drops(monkeypatch) -> None:
+    # Zero backoff so the reconnect is instant (no real sleep in the test).
+    monkeypatch.setattr("ccgram.multiplexer.herdr._STREAM_BACKOFF_BASE", 0.0)
+    opener = _stream_of(
+        [{"event": "tab_closed", "data": {"tab_id": "w2:t1"}}],  # connect 1, then EOF
+        [
+            {
+                "event": "pane.agent_status_changed",
+                "data": {"pane_id": "w2:p1", "agent_status": "done"},
+            }
+        ],  # connect 2
+    )
+    fake = (
+        FakeHerdr()
+        .on("pane", "list", out=PANE_LIST_SINGLE)
+        .on("pane", "get", out=PANE_GET)
+    )
+    mgr = HerdrManager(socket_path="/tmp/s.sock", runner=fake, stream_opener=opener)
+
+    got: list[MuxEvent] = []
+    async for event in mgr.watch_events(["w2:t1"]):
+        got.append(event)
+        if len(got) >= 4:
+            break
+
+    kinds = [(e.kind, e.status.state if e.status else None) for e in got]
+    # connect1: reprime(idle) + death ; reconnect → connect2: reprime(idle) + done
+    assert kinds == [
+        ("agent_status", "idle"),
+        ("window_died", None),
+        ("agent_status", "idle"),
+        ("agent_status", "done"),
+    ]
+    assert len(opener.seen) >= 2  # type: ignore[attr-defined]  # reconnected

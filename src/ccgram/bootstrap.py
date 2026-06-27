@@ -235,6 +235,31 @@ def start_status_polling(application: Application) -> asyncio.Task[None]:
     return _status_poll_task
 
 
+def start_event_stream(application: Application) -> object | None:
+    """Start the push event-stream consumer on event-stream backends (herdr).
+
+    No-op on backends without ``capabilities.supports_event_stream`` (tmux).
+    Returns the monitor (or None) so callers/tests can inspect it.
+    """
+    if not multiplexer.capabilities.supports_event_stream:
+        return None
+    # Lazy: keep the event-stream consumer (and its handler graph) out of the
+    # cold-import path; only event-stream backends ever load it.
+    from .event_stream_monitor import EventStreamMonitor, set_active_event_stream
+
+    # Lazy: thread_router proxy, used only to seed the bound-window set.
+    from .thread_router import thread_router
+
+    def _bound_window_ids() -> set[str]:
+        return {wid for _u, _t, wid in thread_router.iter_thread_bindings()}
+
+    monitor = EventStreamMonitor(PTBTelegramClient(application.bot), _bound_window_ids)
+    monitor.start()
+    set_active_event_stream(monitor)
+    logger.info("Event-stream consumer started")
+    return monitor
+
+
 async def bootstrap_application(application: Application) -> None:
     """Run the full post_init sequence in the prescribed order."""
     install_global_exception_handler()
@@ -247,6 +272,7 @@ async def bootstrap_application(application: Application) -> None:
     wire_runtime_callbacks()
     await start_session_monitor(application)
     start_status_polling(application)
+    start_event_stream(application)
 
     # Lazy: main imports bot at top, bot imports bootstrap; hoisting forms
     # main → bot → bootstrap → main on cold import.
@@ -272,6 +298,15 @@ async def shutdown_runtime() -> None:
         logger.info("Session monitor stopped")
         session_monitor = None
     clear_active_monitor()
+
+    # Lazy: event-stream consumer is only loaded on event-stream backends.
+    from .event_stream_monitor import get_active_event_stream, set_active_event_stream
+
+    event_stream = get_active_event_stream()
+    if event_stream is not None:
+        event_stream.stop()
+        set_active_event_stream(None)
+        logger.info("Event-stream consumer stopped")
 
     await shutdown_workers()
 
@@ -303,3 +338,15 @@ def reset_for_testing() -> None:
     session_monitor = None
     _status_poll_task = None
     clear_active_monitor()
+
+    # Stop any event-stream consumer this run started and clear its caches so the
+    # supervisor task + module-global state don't leak into the next test.
+    # Lazy: event-stream consumer is only loaded on event-stream backends.
+    from .event_stream_monitor import get_active_event_stream, set_active_event_stream
+    from .multiplexer import agent_status_cache
+
+    event_stream = get_active_event_stream()
+    if event_stream is not None:
+        event_stream.stop()
+        set_active_event_stream(None)
+    agent_status_cache.reset()

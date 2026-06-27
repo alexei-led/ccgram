@@ -18,6 +18,7 @@ from .... import window_query
 from ....providers import get_provider_for_window
 from ....providers.base import StatusUpdate
 from ....session_monitor import get_active_monitor
+from ....multiplexer import agent_status_cache
 from ....multiplexer import multiplexer as tmux_manager
 from ....multiplexer.vim_state import has_insert_indicator, notify_vim_insert_seen
 from ..polling_state import terminal_poll_state, terminal_screen_buffer
@@ -100,7 +101,13 @@ async def _native_agent_status(window_id: str) -> StatusUpdate | None:
     """
     if not tmux_manager.capabilities.native_agent_status:
         return None
-    native = await tmux_manager.agent_status(window_id)
+    # Push-primary: read the event-stream cache (no subprocess). On a cold cache
+    # (just-bound, before the first push — or a backend without an event stream)
+    # fall back to one ``agent_status`` subprocess call. On event-stream backends
+    # the push keeps the cache warm, so the per-tick subprocess is skipped.
+    native = agent_status_cache.get_status(window_id)
+    if native is None:
+        native = await tmux_manager.agent_status(window_id)
     if native is None:
         return None
     if native.state == "working":

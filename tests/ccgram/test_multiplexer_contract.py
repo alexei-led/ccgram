@@ -77,6 +77,20 @@ def test_backend_exposes_every_contract_method(backend: Multiplexer) -> None:
         assert inspect.iscoroutinefunction(attr), f"{method!r} must be async"
 
 
+def test_backend_watch_events_is_async_generator(backend: Multiplexer) -> None:
+    # watch_events streams (async generator), so it is checked here rather than
+    # in CONTRACT_METHODS (which asserts plain coroutine functions).
+    assert inspect.isasyncgenfunction(backend.watch_events), (
+        "watch_events must be an async generator"
+    )
+
+
+async def test_tmux_watch_events_yields_nothing() -> None:
+    """tmux has no event stream — watch_events is an empty async iterator."""
+    events = [event async for event in get_multiplexer("tmux").watch_events([])]
+    assert events == []
+
+
 def test_backend_capabilities_shape(backend: Multiplexer) -> None:
     caps = backend.capabilities
     assert isinstance(caps, MultiplexerCapabilities)
