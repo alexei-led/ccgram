@@ -1,6 +1,7 @@
 """Integration tests for TmuxManager with a real tmux server."""
 
 import asyncio
+import os
 import shutil
 
 import pytest
@@ -12,7 +13,11 @@ pytestmark = [
     pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux not installed"),
 ]
 
-TEST_SESSION = "ccgram-test-integration"
+# Unique per xdist worker so parallel workers (``--dist=worksteal``) never share
+# the one real tmux session — concurrent create/kill on a shared name races.
+TEST_SESSION = (
+    f"ccgram-test-integration-{os.environ.get('PYTEST_XDIST_WORKER', 'main')}"
+)
 
 
 @pytest.fixture()
