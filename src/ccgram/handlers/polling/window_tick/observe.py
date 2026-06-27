@@ -82,7 +82,33 @@ async def _resolve_status(
     pane_title = ""
     if provider.capabilities.uses_pane_title:
         pane_title = await tmux_manager.get_pane_title(w.window_id)
-    return provider.parse_terminal_status(clean_text, pane_title=pane_title)
+    status = provider.parse_terminal_status(clean_text, pane_title=pane_title)
+    if status is not None:
+        return status
+    # Gap-fill: backends with native agent status (herdr) report a busy state
+    # for non-Claude agents whose terminal chrome the scrapers can't read.
+    return await _native_agent_status(window_id)
+
+
+async def _native_agent_status(window_id: str) -> StatusUpdate | None:
+    """Synthesize a busy StatusUpdate from the backend's native agent status.
+
+    Only on ``native_agent_status`` backends (herdr). Surfaces ``working`` and
+    ``blocked`` (agent waiting for input) when terminal scraping yielded
+    nothing; ``idle`` / ``done`` / ``unknown`` return None so the existing
+    activity-based idle/done logic stays in control.
+    """
+    if not tmux_manager.capabilities.native_agent_status:
+        return None
+    native = await tmux_manager.agent_status(window_id)
+    if native is None:
+        return None
+    if native.state == "working":
+        label = native.custom_status or "working"
+        return StatusUpdate(raw_text=label, display_label=label)
+    if native.state == "blocked":
+        return StatusUpdate(raw_text="waiting for input", display_label="waiting")
+    return None
 
 
 def build_context(

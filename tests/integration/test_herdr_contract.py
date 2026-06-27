@@ -115,6 +115,25 @@ async def test_create_send_capture_kill_roundtrip(
     assert await herdr.find_window(window_id) is None
 
 
+async def test_agent_status_returns_valid_state(herdr: HerdrManager, tmp_path) -> None:
+    """agent_status reads the active pane's native run-state from a live tab.
+
+    A freshly created shell tab (no agent) reports ``unknown``; the contract is
+    that the call returns an ``AgentStatus`` whose ``state`` is one of herdr's
+    known labels (never an empty string).
+    """
+    ok, _msg, _name, window_id = await herdr.create_window(
+        str(tmp_path), window_name="ccgram-status-itest", start_agent=False
+    )
+    assert ok is True
+    try:
+        status = await herdr.agent_status(window_id)
+        assert status is not None
+        assert status.state in {"working", "idle", "done", "blocked", "unknown"}
+    finally:
+        assert await herdr.kill_window(window_id) is True
+
+
 async def test_list_windows_tab_identity(herdr: HerdrManager, tmp_path) -> None:
     """list_windows returns one WindowRef per tab; window_id is the tab id."""
     ok, _msg, tab_label, window_id = await herdr.create_window(

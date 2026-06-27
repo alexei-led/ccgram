@@ -37,6 +37,7 @@ CONTRACT_METHODS = (
     "create_window",
     "set_title",
     "foreground",
+    "agent_status",
     "find_window_by_id",
     "capture_pane",
     "capture_pane_by_id",
@@ -96,6 +97,12 @@ def test_tmux_capability_values() -> None:
     assert caps.read_max_lines is None
     assert caps.self_identify_env == "TMUX_PANE"
     assert caps.supports_event_stream is False
+
+
+async def test_tmux_agent_status_returns_none() -> None:
+    """tmux has no native agent status — agent_status() always returns None."""
+    status = await get_multiplexer("tmux").agent_status("@0")
+    assert status is None
 
 
 def test_herdr_capability_values() -> None:

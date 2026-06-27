@@ -39,6 +39,7 @@ from pathlib import Path
 import structlog
 
 from .base import (
+    AgentStatus,
     CaptureResult,
     ForegroundInfo,
     MultiplexerCapabilities,
@@ -829,6 +830,28 @@ class HerdrManager:
         if pane_id is None:
             return None
         return await self._foreground_for_pane(pane_id)
+
+    async def agent_status(self, window_id: str) -> AgentStatus | None:
+        """Native agent run-state for the active pane in a tab.
+
+        *window_id* is a tab id. Reads ``pane.agent_status`` (herdr reports
+        ``working`` / ``idle`` / ``done`` / ``blocked`` / ``unknown``). Returns
+        None when the tab is gone, has no pane, or carries no status string.
+        """
+        pane_id = await self._active_pane(window_id)
+        if pane_id is None:
+            return None
+        pane = await self._pane_get(pane_id)
+        if pane is None:
+            return None
+        state = (pane.get("agent_status") or "").strip()
+        if not state:
+            return None
+        return AgentStatus(
+            state=state,
+            agent=(pane.get("agent") or "").strip(),
+            custom_status=(pane.get("custom_status") or "").strip(),
+        )
 
     # ── Transitional surface (legacy aliases) ──────────────────────────
     # Mirror the historical ``tmux_manager`` names callers still use, so the

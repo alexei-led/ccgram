@@ -532,6 +532,9 @@ def _mock_update_status_patches(*, pyte_result, provider):
         patch("ccgram.handlers.polling.window_tick.observe.tmux_manager")
     )
     observe_tm.get_pane_title = AsyncMock(return_value="")
+    # Model a tmux window (the "@0" test fixture): no native agent status, so
+    # _resolve_status does not take the herdr native-status gap-fill path.
+    observe_tm.capabilities.native_agent_status = False
     stack.enter_context(
         patch("ccgram.handlers.polling.window_tick.observe.window_query")
     )

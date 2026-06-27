@@ -16,6 +16,7 @@ from collections.abc import Sequence
 import pytest
 
 from ccgram.multiplexer.base import (
+    AgentStatus,
     CaptureResult,
     ForegroundInfo,
     PaneDims,
@@ -912,6 +913,71 @@ async def test_active_pane_returns_none_for_empty_tab() -> None:
     empty = json.dumps({"result": {"panes": [], "type": "pane_list"}})
     fake = FakeHerdr().on("pane", "list", out=empty)
     assert await _manager(fake)._active_pane("w2:t1") is None
+
+
+# ── agent_status: native run-state ─────────────────────────────────────
+
+
+async def test_agent_status_maps_active_pane_state() -> None:
+    # _active_pane → pane list (focused), then pane get → agent_status field.
+    fake = (
+        FakeHerdr()
+        .on("pane", "list", out=PANE_LIST_SINGLE)
+        .on("pane", "get", out=PANE_GET)
+    )
+    status = await _manager(fake).agent_status("w2:t1")
+    assert status == AgentStatus(state="idle", agent="claude", custom_status="")
+
+
+async def test_agent_status_reads_focused_pane_in_split_tab() -> None:
+    # Split tab: the focused pane (w2:p1) is the one queried via pane get.
+    pane_get_working = json.dumps(
+        {
+            "result": {
+                "pane": {
+                    "agent": "claude",
+                    "agent_status": "working",
+                    "custom_status": "running tests",
+                    "pane_id": "w2:p1",
+                    "tab_id": "w2:t1",
+                },
+                "type": "pane_info",
+            }
+        }
+    )
+    fake = (
+        FakeHerdr()
+        .on("pane", "list", out=PANE_LIST_SPLIT)
+        .on("pane", "get", out=pane_get_working)
+    )
+    status = await _manager(fake).agent_status("w2:t1")
+    assert status == AgentStatus(
+        state="working", agent="claude", custom_status="running tests"
+    )
+    assert fake.sent("pane", "get", "w2:p1") is not None
+
+
+async def test_agent_status_none_for_empty_tab() -> None:
+    empty = json.dumps({"result": {"panes": [], "type": "pane_list"}})
+    fake = FakeHerdr().on("pane", "list", out=empty)
+    assert await _manager(fake).agent_status("w2:t1") is None
+
+
+async def test_agent_status_none_when_status_field_absent() -> None:
+    pane_get_no_status = json.dumps(
+        {
+            "result": {
+                "pane": {"pane_id": "w2:p1", "tab_id": "w2:t1"},
+                "type": "pane_info",
+            }
+        }
+    )
+    fake = (
+        FakeHerdr()
+        .on("pane", "list", out=PANE_LIST_SINGLE)
+        .on("pane", "get", out=pane_get_no_status)
+    )
+    assert await _manager(fake).agent_status("w2:t1") is None
 
 
 async def test_active_pane_single_tab_returns_that_pane() -> None:

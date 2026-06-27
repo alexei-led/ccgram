@@ -35,6 +35,7 @@ from libtmux.exc import LibTmuxException
 
 from ..config import config
 from .base import (
+    AgentStatus,
     CaptureResult,
     ForegroundInfo,
     MultiplexerCapabilities,
@@ -1008,6 +1009,16 @@ class TmuxManager:
     async def set_title(self, window_id: str, provider_name: str) -> None:
         """Set the pane title for re-detection (alias of ``stamp_pane_title``)."""
         await self.stamp_pane_title(window_id, provider_name)
+
+    async def agent_status(
+        self,
+        window_id: str,  # noqa: ARG002 — protocol signature
+    ) -> AgentStatus | None:
+        """tmux has no native agent status (``native_agent_status`` is False).
+
+        Returns None so callers fall back to terminal scraping.
+        """
+        return None
 
     async def foreground(self, window_id: str) -> ForegroundInfo | None:
         """Return foreground process info for the active pane via ``ps -t``.
