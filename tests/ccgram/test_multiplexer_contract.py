@@ -35,6 +35,7 @@ CONTRACT_METHODS = (
     "rename_window",
     "list_panes",
     "create_window",
+    "create_worktree_window",
     "set_title",
     "foreground",
     "agent_status",
@@ -86,6 +87,7 @@ def test_backend_capabilities_shape(backend: Multiplexer) -> None:
     assert caps.read_max_lines is None or isinstance(caps.read_max_lines, int)
     assert isinstance(caps.self_identify_env, str) and caps.self_identify_env
     assert isinstance(caps.supports_event_stream, bool)
+    assert isinstance(caps.native_worktrees, bool)
 
 
 def test_tmux_capability_values() -> None:
@@ -98,12 +100,23 @@ def test_tmux_capability_values() -> None:
     assert caps.read_max_lines is None
     assert caps.self_identify_env == "TMUX_PANE"
     assert caps.supports_event_stream is False
+    assert caps.native_worktrees is False
 
 
 async def test_tmux_agent_status_returns_none() -> None:
     """tmux has no native agent status — agent_status() always returns None."""
     status = await get_multiplexer("tmux").agent_status("@0")
     assert status is None
+
+
+async def test_tmux_create_worktree_window_unsupported() -> None:
+    """tmux has no native worktrees — create_worktree_window() fails cleanly."""
+    ok, msg, name, win_id = await get_multiplexer("tmux").create_worktree_window(
+        "/repo", "/repo.worktrees/x", "ccg/x"
+    )
+    assert ok is False
+    assert (name, win_id) == ("", "")
+    assert "tmux" in msg
 
 
 def test_herdr_capability_values() -> None:
@@ -120,3 +133,4 @@ def test_herdr_capability_values() -> None:
     assert caps.read_max_lines == 1000
     assert caps.self_identify_env == "HERDR_PANE_ID"
     assert caps.supports_event_stream is True
+    assert caps.native_worktrees is True

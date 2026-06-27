@@ -40,6 +40,7 @@ def _capabilities(native_agent_status: bool) -> MultiplexerCapabilities:
         read_max_lines=1000 if native_agent_status else None,
         self_identify_env="HERDR_PANE_ID" if native_agent_status else "TMUX_PANE",
         supports_event_stream=native_agent_status,
+        native_worktrees=native_agent_status,
     )
 
 

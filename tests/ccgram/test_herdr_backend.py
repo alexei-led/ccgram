@@ -228,6 +228,40 @@ TAB_CREATE = json.dumps(
 
 OK = json.dumps({"id": "cli:ok", "result": {"type": "ok"}})
 
+# Live ``worktree create --json`` envelope (trimmed): creates the checkout AND a
+# workspace+tab+pane grouped under the parent repo. Carries tab_id + root pane.
+WORKTREE_CREATE = json.dumps(
+    {
+        "id": "cli:worktree:create",
+        "result": {
+            "root_pane": {
+                "cwd": "/repo.worktrees/ccg-feature",
+                "pane_id": "w5:p1",
+                "tab_id": "w5:t1",
+                "workspace_id": "w5",
+            },
+            "tab": {"label": "feature", "tab_id": "w5:t1", "workspace_id": "w5"},
+            "type": "worktree_created",
+            "workspace": {"active_tab_id": "w5:t1", "workspace_id": "w5"},
+            "worktree": {
+                "branch": "ccg/feature",
+                "path": "/repo.worktrees/ccg-feature",
+            },
+        },
+    }
+)
+
+# A thin response (no tab/root_pane ids) → tab_id resolves from workspace.
+WORKTREE_CREATE_THIN = json.dumps(
+    {
+        "id": "cli:worktree:create",
+        "result": {
+            "type": "worktree_created",
+            "workspace": {"active_tab_id": "w5:t1", "workspace_id": "w5"},
+        },
+    }
+)
+
 PANE_READ_TEXT = "line one\nline two\n"
 
 ERROR_NOT_FOUND = json.dumps(
@@ -306,6 +340,7 @@ def test_capabilities_are_pinned() -> None:
     assert caps.read_max_lines == 1000
     assert caps.self_identify_env == "HERDR_PANE_ID"
     assert caps.supports_event_stream is True
+    assert caps.native_worktrees is True
 
 
 def test_constructor_does_no_io() -> None:
@@ -778,6 +813,64 @@ async def test_create_window_falls_back_when_no_workspace_support(tmp_path) -> N
     tab_call = fake.sent("tab", "create")
     assert tab_call is not None
     assert "--workspace" not in tab_call
+
+
+# ── create_worktree_window (native herdr worktrees) ───────────────────
+
+
+async def test_create_worktree_window_delegates_and_launches(tmp_path) -> None:
+    fake = (
+        FakeHerdr()
+        .on("worktree", "create", out=WORKTREE_CREATE)
+        .on("pane", "run", out=OK)
+    )
+    ok, msg, name, win_id = await _manager(fake).create_worktree_window(
+        str(tmp_path),
+        "/repo.worktrees/ccg-feature",
+        "ccg/feature",
+        window_name="feature",
+        launch_command="claude",
+    )
+    assert ok is True
+    # window_id is the new tab id (not a pane id).
+    assert win_id == "w5:t1"
+    assert name == "feature"
+    assert "ccg/feature" in msg
+    # One worktree-create call carrying the deterministic flags.
+    create_call = fake.sent("worktree", "create")
+    assert create_call is not None
+    assert create_call[:2] == ["worktree", "create"]
+    for flag, value in (
+        ("--cwd", str(tmp_path)),
+        ("--branch", "ccg/feature"),
+        ("--path", "/repo.worktrees/ccg-feature"),
+        ("--label", "feature"),
+    ):
+        assert flag in create_call and create_call[create_call.index(flag) + 1] == value
+    assert "--no-focus" in create_call
+    # The agent launches in the worktree's root pane.
+    assert fake.sent("pane", "run") == ["pane", "run", "w5:p1", "claude"]
+
+
+async def test_create_worktree_window_rejects_missing_repo() -> None:
+    fake = FakeHerdr()
+    ok, msg, _name, win_id = await _manager(fake).create_worktree_window(
+        "/no/such/repo", "/no/such/repo.worktrees/x", "ccg/x"
+    )
+    assert ok is False
+    assert "not a directory" in msg.lower()
+    assert win_id == ""
+    assert fake.calls == []  # bailed before touching herdr
+
+
+async def test_create_worktree_window_resolves_tab_from_workspace(tmp_path) -> None:
+    # Thin response (no tab/root_pane ids) → tab_id falls back to active_tab_id.
+    fake = FakeHerdr().on("worktree", "create", out=WORKTREE_CREATE_THIN)
+    ok, _msg, _name, win_id = await _manager(fake).create_worktree_window(
+        str(tmp_path), "/wt", "ccg/x"
+    )
+    assert ok is True
+    assert win_id == "w5:t1"
 
 
 # ── Task 4 fixtures: tab→pane resolution ──────────────────────────────

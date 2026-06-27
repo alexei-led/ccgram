@@ -153,6 +153,14 @@ class MultiplexerCapabilities:
     fixture). The flag is intentional forward-looking design — do not remove.
     """
 
+    native_worktrees: bool
+    """True when the backend creates git worktrees natively (herdr: True).
+
+    Gates the ``/new`` worktree step onto ``create_worktree_window``: herdr makes
+    the checkout and groups it under the parent repo in its workspace UI. tmux
+    (False) keeps ccgram's own ``git worktree add`` + ``create_window`` path.
+    """
+
 
 # ── Protocol ───────────────────────────────────────────────────────────
 
@@ -293,6 +301,29 @@ class Multiplexer(Protocol):
         the parameter.
 
         Returns ``(success, message, window_name, window_id)``.
+        """
+        ...
+
+    async def create_worktree_window(
+        self,
+        repo_path: str,
+        worktree_path: str,
+        branch: str,
+        *,
+        window_name: str | None = None,
+        launch_command: str | None = None,
+    ) -> tuple[bool, str, str, str]:
+        """Create a git worktree *and* the window that runs in it (one step).
+
+        Only called on backends with ``capabilities.native_worktrees`` (herdr):
+        the backend makes the checkout at *worktree_path* on *branch* (off the
+        repo at *repo_path*) and opens a window/workspace grouped under the
+        parent repo, then launches *launch_command*. Backends without the
+        capability return ``(False, "<reason>", "", "")`` — callers gate on the
+        flag and never reach them.
+
+        Returns ``(success, message, window_name, window_id)`` like
+        ``create_window`` (``window_id`` is the new tab/window id).
         """
         ...
 

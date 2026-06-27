@@ -93,6 +93,7 @@ _TMUX_CAPABILITIES = MultiplexerCapabilities(
     read_max_lines=None,
     self_identify_env="TMUX_PANE",
     supports_event_stream=False,
+    native_worktrees=False,
 )
 
 
@@ -1028,6 +1029,23 @@ class TmuxManager:
         return await self.send_keys_to_pane(
             pane_id, text, enter=enter, literal=literal, window_id=window_id
         )
+
+    async def create_worktree_window(
+        self,
+        repo_path: str,  # noqa: ARG002 — tmux has no native worktrees
+        worktree_path: str,  # noqa: ARG002
+        branch: str,  # noqa: ARG002
+        *,
+        window_name: str | None = None,  # noqa: ARG002
+        launch_command: str | None = None,  # noqa: ARG002
+    ) -> tuple[bool, str, str, str]:
+        """Not supported on tmux (``native_worktrees`` is False).
+
+        Callers gate on ``capabilities.native_worktrees`` and use ccgram's own
+        ``git worktree add`` + ``create_window`` path instead, so this is never
+        reached. Returns a failure tuple for safety rather than raising.
+        """
+        return False, "worktree delegation unsupported on tmux", "", ""
 
     async def set_title(self, window_id: str, provider_name: str) -> None:
         """Set the pane title for re-detection (alias of ``stamp_pane_title``)."""

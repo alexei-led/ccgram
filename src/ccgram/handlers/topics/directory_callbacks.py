@@ -653,15 +653,20 @@ async def _handle_wt_confirm(
 ) -> None:
     """Create the worktree, then continue to provider pick rooted in it."""
     user_data = context.user_data
-    # Re-entrancy guard set synchronously *before* the first await: a
-    # fast double-tap on "Use this" would otherwise run create_worktree
-    # twice and the second call would overwrite the provider picker with
-    # a "branch already exists" error even though the first succeeded.
-    if user_data is not None and user_data.get(PENDING_WORKTREE_CREATING):
-        await query.answer("Creating worktree…")
-        return
-    if user_data is not None:
-        user_data[PENDING_WORKTREE_CREATING] = True
+    # On herdr the worktree is created later (delegated to `worktree create`
+    # in _create_window_and_bind), so no slow git op runs here and no
+    # re-entrancy guard is needed. On tmux the guard is set synchronously
+    # *before* the first await: a fast double-tap on "Use this" would otherwise
+    # run `git worktree add` twice and the second call would overwrite the
+    # provider picker with a "branch already exists" error even though the
+    # first succeeded.
+    delegate = tmux_manager.capabilities.native_worktrees
+    if not delegate:
+        if user_data is not None and user_data.get(PENDING_WORKTREE_CREATING):
+            await query.answer("Creating worktree…")
+            return
+        if user_data is not None:
+            user_data[PENDING_WORKTREE_CREATING] = True
     await query.answer()
     repo = user_data.get(PENDING_WORKTREE_REPO) if user_data else None
     branch = user_data.get(PENDING_WORKTREE_BRANCH) if user_data else None
@@ -670,6 +675,16 @@ async def _handle_wt_confirm(
         if user_data is not None:
             user_data.pop(PENDING_WORKTREE_CREATING, None)
         await safe_edit(query, "❌ Worktree state lost. Tap Cancel and retry.")
+        return
+    if delegate:
+        # herdr makes the checkout + grouped workspace itself at creation time.
+        # Skip ccgram's `git worktree add` and the workspace picker (herdr
+        # assigns the worktree its own workspace); keep the PENDING_WORKTREE_*
+        # keys so _create_window_and_bind issues `worktree create` at this path.
+        if user_data is not None:
+            user_data[BROWSE_PATH_KEY] = worktree_path
+        logger.info("Deferring worktree %s (branch %s) to herdr", worktree_path, branch)
+        await _show_provider_picker(query, worktree_path)
         return
     try:
         # Offloaded: create_worktree runs a blocking `git worktree add`
@@ -921,6 +936,38 @@ async def _abort_topic_creation(
     clear_workspace_state(context.user_data)
 
 
+async def _create_topic_window(
+    selected_path: str,
+    launch_command: str | None,
+    chosen_workspace_id: str | None,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> tuple[bool, str, str, str]:
+    """Create the topic's window, returning ``(success, message, name, id)``.
+
+    Native worktree delegation (herdr): when the flow carries a pending worktree
+    intent, one ``worktree create`` makes the checkout + grouped workspace + the
+    window in a single step. Gated on ``native_worktrees``; tmux always takes the
+    ``create_window`` branch (its worktree was already created on disk earlier).
+    """
+    ud = context.user_data
+    wt_repo = ud.get(PENDING_WORKTREE_REPO) if ud else None
+    wt_branch = ud.get(PENDING_WORKTREE_BRANCH) if ud else None
+    wt_path = ud.get(PENDING_WORKTREE_PATH) if ud else None
+    if tmux_manager.capabilities.native_worktrees and wt_repo and wt_branch and wt_path:
+        return await tmux_manager.create_worktree_window(
+            wt_repo,
+            wt_path,
+            wt_branch,
+            window_name=Path(wt_path).name,
+            launch_command=launch_command,
+        )
+    return await tmux_manager.create_window(
+        selected_path,
+        launch_command=launch_command,
+        workspace_id=chosen_workspace_id,
+    )
+
+
 async def _create_window_and_bind(  # noqa: PLR0915
     query: CallbackQuery,
     user_id: int,
@@ -947,10 +994,8 @@ async def _create_window_and_bind(  # noqa: PLR0915
         context.user_data.get(PENDING_WORKSPACE_ID) if context.user_data else None
     ) or None
 
-    success, message, created_wname, created_wid = await tmux_manager.create_window(
-        selected_path,
-        launch_command=launch_command,
-        workspace_id=chosen_workspace_id,
+    success, message, created_wname, created_wid = await _create_topic_window(
+        selected_path, launch_command, chosen_workspace_id, context
     )
     if not success:
         await _abort_topic_creation(query, message, context)

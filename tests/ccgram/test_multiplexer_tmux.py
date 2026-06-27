@@ -63,6 +63,7 @@ class TestTmuxCapabilities:
             "read_max_lines": None,
             "self_identify_env": "TMUX_PANE",
             "supports_event_stream": False,
+            "native_worktrees": False,
         }
 
 

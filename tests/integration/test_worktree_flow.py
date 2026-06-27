@@ -137,6 +137,7 @@ async def test_new_worktree_creates_and_persists_to_window_state(
             "ccgram.handlers.topics.directory_callbacks.provider_registry"
         ) as mock_registry,
     ):
+        mock_tmux.capabilities.native_worktrees = False
         mock_tmux.create_window = AsyncMock(
             return_value=(True, "Created window 'repo'", "repo", "@7")
         )
@@ -180,6 +181,7 @@ async def test_create_window_failure_clears_worktree_state(
         ),
         patch("ccgram.handlers.topics.directory_callbacks.tmux_manager") as mock_tmux,
     ):
+        mock_tmux.capabilities.native_worktrees = False
         mock_tmux.create_window = AsyncMock(
             return_value=(False, "tmux refused", None, None)
         )
@@ -203,6 +205,64 @@ async def test_create_window_failure_clears_worktree_state(
         q = _make_query()
         await _handle_wt_confirm(q, context)
     assert ("Creating worktree…",) not in [c.args for c in q.answer.await_args_list]
+
+
+async def test_herdr_delegates_worktree_creation(
+    session_manager: SessionManager, git_repo: Path
+) -> None:
+    # native_worktrees backend: _create_window_and_bind routes through
+    # create_worktree_window (one herdr `worktree create`), never create_window.
+    worktree_path = str(git_repo.parent / "repo.worktrees" / "ccg-feature")
+    user_data = {
+        PENDING_WORKTREE_REPO: str(git_repo),
+        PENDING_WORKTREE_BRANCH: "ccg/feature",
+        PENDING_WORKTREE_PATH: worktree_path,
+        PENDING_THREAD_ID: 42,
+    }
+    context = _make_context(user_data)
+
+    mock_provider = MagicMock()
+    mock_provider.capabilities.supports_hook = False
+    mock_provider.capabilities.chat_first_command_path = False
+    mock_provider.capabilities.has_yolo_confirmation = False
+
+    with (
+        patch("ccgram.providers.resolve_launch_command", return_value="claude"),
+        patch(
+            "ccgram.handlers.topics.directory_callbacks.safe_edit",
+            new_callable=AsyncMock,
+        ),
+        patch("ccgram.handlers.topics.directory_callbacks.thread_router"),
+        patch("ccgram.handlers.topics.directory_callbacks.tmux_manager") as mock_tmux,
+        patch(
+            "ccgram.handlers.topics.directory_callbacks.provider_registry"
+        ) as mock_registry,
+    ):
+        mock_tmux.capabilities.native_worktrees = True
+        mock_tmux.create_worktree_window = AsyncMock(
+            return_value=(True, "Created herdr worktree", "ccg-feature", "w5:t1")
+        )
+        mock_tmux.stamp_pane_title = AsyncMock()
+        mock_registry.is_valid.return_value = True
+        mock_registry.get.return_value = mock_provider
+
+        await _create_window_and_bind(
+            _make_query(), 100, worktree_path, "claude", "normal", context
+        )
+
+    # Delegated to herdr; the git create_window path is never used.
+    mock_tmux.create_worktree_window.assert_awaited_once()
+    call = mock_tmux.create_worktree_window.await_args
+    assert call is not None
+    assert call.args == (str(git_repo), worktree_path, "ccg/feature")
+    assert call.kwargs["window_name"] == "ccg-feature"
+    assert call.kwargs["launch_command"] == "claude"
+    mock_tmux.create_window.assert_not_called()
+
+    state = window_store.window_states["w5:t1"]
+    assert state.worktree_path == worktree_path
+    assert state.worktree_branch == "ccg/feature"
+    assert PENDING_WORKTREE_PATH not in user_data
 
 
 @patch("ccgram.handlers.topics.directory_callbacks.thread_router")

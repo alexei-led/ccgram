@@ -73,6 +73,7 @@ _HERDR_CAPABILITIES = MultiplexerCapabilities(
     read_max_lines=1000,
     self_identify_env="HERDR_PANE_ID",
     supports_event_stream=True,
+    native_worktrees=True,
 )
 
 # Filter for self-hosted / internal workspaces and tabs (e.g. ``__main__``).
@@ -795,6 +796,75 @@ class HerdrManager:
 
         logger.info("Created herdr tab %r (id=%s) at %s", label, tab_id, path)
         return True, f"Created herdr tab '{label}' at {path}", label, tab_id
+
+    async def create_worktree_window(
+        self,
+        repo_path: str,
+        worktree_path: str,
+        branch: str,
+        *,
+        window_name: str | None = None,
+        launch_command: str | None = None,
+    ) -> tuple[bool, str, str, str]:
+        """Delegate worktree creation to herdr (``worktree create``).
+
+        One ``worktree create`` makes the git checkout at *worktree_path* on
+        *branch* (off the repo at *repo_path*), opens it as a herdr
+        workspace+tab grouped under the parent repo, and returns the new tab +
+        root pane. We then ``pane run`` *launch_command* in the root pane — the
+        same launch path as ``create_window``. Returns
+        ``(success, message, window_name, window_id)`` where ``window_id`` is
+        the new tab id.
+        """
+        repo = Path(repo_path).expanduser()
+        if not repo.is_dir():
+            return False, f"Repo path is not a directory: {repo_path}", "", ""
+
+        args = [
+            "worktree",
+            "create",
+            "--cwd",
+            str(repo),
+            "--branch",
+            branch,
+            "--path",
+            worktree_path,
+            "--no-focus",
+            "--json",
+        ]
+        if window_name:
+            args += ["--label", window_name]
+        result = await self._call_json(args)
+        if not result:
+            return False, f"Failed to create herdr worktree at {worktree_path}", "", ""
+
+        tab = result.get("tab") or {}
+        root_pane = result.get("root_pane") or {}
+        # tab_id from tab/root_pane; fall back to the new workspace's active tab.
+        tab_id = tab.get("tab_id") or root_pane.get("tab_id", "")
+        if not tab_id:
+            tab_id = (result.get("workspace") or {}).get("active_tab_id", "")
+        if not tab_id:
+            return False, "herdr worktree created without a tab id", "", ""
+        label = tab.get("label", window_name or "")
+
+        if launch_command:
+            pane_id = root_pane.get("pane_id") or await self._active_pane(tab_id)
+            if pane_id:
+                await self._call_ok(["pane", "run", pane_id, launch_command])
+
+        logger.info(
+            "Created herdr worktree window %r (id=%s) at %s",
+            label,
+            tab_id,
+            worktree_path,
+        )
+        return (
+            True,
+            f"Created herdr worktree '{branch}' at {worktree_path}",
+            label,
+            tab_id,
+        )
 
     async def set_title(self, window_id: str, provider_name: str) -> None:
         """Stamp the active pane title for instant provider re-detection.

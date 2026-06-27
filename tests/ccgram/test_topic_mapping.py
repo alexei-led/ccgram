@@ -30,6 +30,7 @@ TMUX_CAPS = MultiplexerCapabilities(
     read_max_lines=None,
     self_identify_env="TMUX_PANE",
     supports_event_stream=False,
+    native_worktrees=False,
 )
 
 # herdr-like: native agent status → only agent panes are topics.
@@ -41,6 +42,7 @@ HERDR_CAPS = MultiplexerCapabilities(
     read_max_lines=1000,
     self_identify_env="HERDR_PANE_ID",
     supports_event_stream=True,
+    native_worktrees=True,
 )
 
 

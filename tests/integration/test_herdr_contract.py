@@ -27,7 +27,10 @@ Tests cover:
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -113,6 +116,67 @@ async def test_create_send_capture_kill_roundtrip(
     # Window is gone after kill (tab closed).
     await asyncio.sleep(0.3)
     assert await herdr.find_window(window_id) is None
+
+
+def _workspace_ids() -> set[str]:
+    """Current herdr workspace ids (via the live socket)."""
+    out = subprocess.run(
+        ["herdr", "workspace", "list"], capture_output=True, text=True
+    ).stdout
+    try:
+        return {w["workspace_id"] for w in json.loads(out)["result"]["workspaces"]}
+    except ValueError, KeyError:
+        return set()
+
+
+async def test_create_worktree_window_delegates(herdr: HerdrManager, tmp_path) -> None:
+    """create_worktree_window makes a git worktree + grouped window in one step."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for argv in (
+        ["init"],
+        ["config", "user.email", "t@e"],
+        ["config", "user.name", "t"],
+    ):
+        subprocess.run(["git", "-C", str(repo), *argv], check=True, capture_output=True)
+    (repo / "f.txt").write_text("hi")
+    subprocess.run(
+        ["git", "-C", str(repo), "add", "."], check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-m", "init"],
+        check=True,
+        capture_output=True,
+    )
+
+    wt_path = str(tmp_path / "wt")
+    before = _workspace_ids()
+    ok, _msg, _name, window_id = await herdr.create_worktree_window(
+        str(repo), wt_path, "ccg-itest", window_name="ccgram-wt-itest"
+    )
+    try:
+        assert ok is True
+        # window_id is a tab id ("wN:tM"); the worktree tab resolves like any tab.
+        assert ":t" in window_id
+        assert await herdr.find_window(window_id) is not None
+        # The git checkout exists on the requested branch.
+        assert (Path(wt_path) / "f.txt").exists()
+        branch = subprocess.run(
+            ["git", "-C", wt_path, "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert branch == "ccg-itest"
+    finally:
+        # Remove every workspace this test created: the worktree workspace (via
+        # worktree remove → also deletes the checkout) and the auto-created
+        # source workspace for the repo (workspace close).
+        for wsid in _workspace_ids() - before:
+            subprocess.run(
+                ["herdr", "worktree", "remove", "--workspace", wsid, "--force"],
+                capture_output=True,
+            )
+            subprocess.run(["herdr", "workspace", "close", wsid], capture_output=True)
 
 
 async def test_agent_status_returns_valid_state(herdr: HerdrManager, tmp_path) -> None:
