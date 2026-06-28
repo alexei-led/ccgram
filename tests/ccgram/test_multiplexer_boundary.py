@@ -148,3 +148,53 @@ def test_audit_allows_the_neutral_seam_surface() -> None:
         clean, SRC_ROOT / "handlers" / "live" / "fake_handler.py"
     )
     assert offenders == []
+
+
+# ── New topic-creation submodules use only the seam, not concrete backends ──
+
+
+NEW_TOPIC_MODULES: tuple[str, ...] = (
+    "topic_creation_draft",
+    "provider_mode_callbacks",
+    "workspace_callbacks",
+    "window_launch_service",
+)
+
+
+@pytest.mark.parametrize("module_name", NEW_TOPIC_MODULES)
+def test_new_topic_submodule_does_not_import_concrete_backend(
+    module_name: str,
+) -> None:
+    """Topic-creation submodules must depend only on the multiplexer seam."""
+    path = SRC_ROOT / "handlers" / "topics" / f"{module_name}.py"
+    assert path.exists(), f"Expected {path} to exist"
+    offenders = _forbidden_imports_in_source(path.read_text(), path)
+    assert not offenders, (
+        f"{module_name}.py imports a concrete multiplexer backend: {offenders}. "
+        "Use the multiplexer proxy or multiplexer.base types instead."
+    )
+
+
+def test_window_launch_service_does_not_import_window_store() -> None:
+    """window_launch_service imports CCGRAM_CREATED_WINDOW_ORIGIN (a constant),
+    not the window_store singleton — confirmed by AST check."""
+    import ast
+
+    path = SRC_ROOT / "handlers" / "topics" / "window_launch_service.py"
+    source = path.read_text()
+    tree = ast.parse(source)
+    store_symbols = frozenset(
+        {"window_store", "get_window_store", "install_window_store", "WindowStateStore"}
+    )
+    hits = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            if mod.endswith("window_state_store"):
+                for alias in node.names:
+                    if alias.name in store_symbols:
+                        hits.append(alias.name)
+    assert not hits, (
+        f"window_launch_service.py imports the raw window store: {hits}. "
+        "Import only CCGRAM_CREATED_WINDOW_ORIGIN (a constant), not the store itself."
+    )

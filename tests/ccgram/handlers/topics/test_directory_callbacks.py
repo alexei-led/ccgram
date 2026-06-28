@@ -99,7 +99,7 @@ class TestConfirmWorktreeGating:
         assert user_data[PENDING_WORKTREE_DIRTY] is False
 
     @patch(
-        "ccgram.handlers.topics.directory_callbacks.safe_edit", new_callable=AsyncMock
+        "ccgram.handlers.topics.workspace_callbacks.safe_edit", new_callable=AsyncMock
     )
     @patch("ccgram.handlers.topics.directory_callbacks.thread_router")
     async def test_non_git_dir_shows_provider_picker(
@@ -171,7 +171,7 @@ class TestConfirmWorktreeGating:
 
 class TestHandleWtUseCurrent:
     @patch(
-        "ccgram.handlers.topics.directory_callbacks.safe_edit", new_callable=AsyncMock
+        "ccgram.handlers.topics.workspace_callbacks.safe_edit", new_callable=AsyncMock
     )
     async def test_clears_state_and_shows_provider_picker(
         self, mock_edit: AsyncMock
@@ -277,7 +277,7 @@ class TestHandleWtNew:
 
 class TestHandleWtConfirm:
     @patch(
-        "ccgram.handlers.topics.directory_callbacks.safe_edit", new_callable=AsyncMock
+        "ccgram.handlers.topics.workspace_callbacks.safe_edit", new_callable=AsyncMock
     )
     async def test_creates_worktree_and_shows_provider_picker(
         self, mock_edit: AsyncMock, git_repo: Path
@@ -321,6 +321,41 @@ class TestHandleWtConfirm:
         callbacks = [b.callback_data for row in keyboard.inline_keyboard for b in row]
         assert CB_DIR_CANCEL in callbacks
         assert not wt_path.exists()
+
+
+class TestHandleWtConfirmNativeWorktrees:
+    """native_worktrees (herdr) path must skip the workspace picker and go
+    straight to the provider picker (MAJOR-2 regression)."""
+
+    @patch("ccgram.handlers.topics.directory_callbacks.tmux_manager")
+    @patch(
+        "ccgram.handlers.topics.workspace_callbacks._show_workspace_picker_or_provider",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "ccgram.handlers.topics.workspace_callbacks.safe_edit", new_callable=AsyncMock
+    )
+    async def test_native_worktrees_skips_workspace_picker(
+        self,
+        mock_edit: AsyncMock,
+        mock_workspace_picker: AsyncMock,
+        mock_mux: MagicMock,
+    ) -> None:
+        mock_mux.capabilities.native_worktrees = True
+        user_data = {
+            PENDING_WORKTREE_REPO: "/repo",
+            PENDING_WORKTREE_BRANCH: "ccg/feat",
+            PENDING_WORKTREE_PATH: "/wt/path",
+        }
+        context = _make_context(user_data)
+
+        await _handle_wt_confirm(_make_query(), context)
+
+        # workspace picker must NOT be called on the native_worktrees path
+        mock_workspace_picker.assert_not_called()
+        # provider picker edit must have been called (shows "Select Provider")
+        assert mock_edit.called
+        assert "Select Provider" in mock_edit.call_args[0][1]
 
 
 class TestHandleWtEditName:

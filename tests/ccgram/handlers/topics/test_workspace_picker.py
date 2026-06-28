@@ -19,6 +19,7 @@ from ccgram.handlers.topics.directory_callbacks import (
     _handle_workspace_callback,
     _show_workspace_picker_or_provider,
 )
+from ccgram.handlers.topics.window_launch_service import WindowLaunchRequest
 from ccgram.handlers.user_state import (
     PENDING_THREAD_ID,
     PENDING_WORKSPACE_ID,
@@ -81,9 +82,9 @@ _WORKSPACES = [
 
 class TestShowWorkspacePickerOrProvider:
     @patch(
-        "ccgram.handlers.topics.directory_callbacks.safe_edit", new_callable=AsyncMock
+        "ccgram.handlers.topics.workspace_callbacks.safe_edit", new_callable=AsyncMock
     )
-    @patch("ccgram.handlers.topics.directory_callbacks.tmux_manager")
+    @patch("ccgram.handlers.topics.workspace_callbacks.tmux_manager")
     async def test_herdr_with_workspaces_shows_picker(
         self, mock_mux: MagicMock, mock_edit: AsyncMock, tmp_path: Path
     ) -> None:
@@ -103,9 +104,9 @@ class TestShowWorkspacePickerOrProvider:
         ]
 
     @patch(
-        "ccgram.handlers.topics.directory_callbacks.safe_edit", new_callable=AsyncMock
+        "ccgram.handlers.topics.workspace_callbacks.safe_edit", new_callable=AsyncMock
     )
-    @patch("ccgram.handlers.topics.directory_callbacks.tmux_manager")
+    @patch("ccgram.handlers.topics.workspace_callbacks.tmux_manager")
     async def test_herdr_empty_workspaces_shows_provider_picker(
         self, mock_mux: MagicMock, mock_edit: AsyncMock, tmp_path: Path
     ) -> None:
@@ -120,9 +121,9 @@ class TestShowWorkspacePickerOrProvider:
         assert "Select Provider" in text
 
     @patch(
-        "ccgram.handlers.topics.directory_callbacks.safe_edit", new_callable=AsyncMock
+        "ccgram.handlers.topics.workspace_callbacks.safe_edit", new_callable=AsyncMock
     )
-    @patch("ccgram.handlers.topics.directory_callbacks.tmux_manager")
+    @patch("ccgram.handlers.topics.workspace_callbacks.tmux_manager")
     async def test_tmux_skips_workspace_picker(
         self, mock_mux: MagicMock, mock_edit: AsyncMock, tmp_path: Path
     ) -> None:
@@ -143,7 +144,7 @@ class TestShowWorkspacePickerOrProvider:
 
 class TestHandleWorkspaceCallback:
     @patch(
-        "ccgram.handlers.topics.directory_callbacks.safe_edit", new_callable=AsyncMock
+        "ccgram.handlers.topics.workspace_callbacks.safe_edit", new_callable=AsyncMock
     )
     async def test_select_stores_workspace_id_and_shows_provider(
         self, mock_edit: AsyncMock, tmp_path: Path
@@ -169,7 +170,7 @@ class TestHandleWorkspaceCallback:
         assert "Select Provider" in text
 
     @patch(
-        "ccgram.handlers.topics.directory_callbacks.safe_edit", new_callable=AsyncMock
+        "ccgram.handlers.topics.workspace_callbacks.safe_edit", new_callable=AsyncMock
     )
     async def test_skip_clears_workspace_id_and_shows_provider(
         self, mock_edit: AsyncMock, tmp_path: Path
@@ -218,7 +219,7 @@ class TestHandleWorkspaceCallback:
         assert query.answer.call_args[1].get("show_alert") is True
 
     @patch(
-        "ccgram.handlers.topics.directory_callbacks.safe_edit", new_callable=AsyncMock
+        "ccgram.handlers.topics.workspace_callbacks.safe_edit", new_callable=AsyncMock
     )
     async def test_out_of_range_index_shows_error(
         self, mock_edit: AsyncMock, tmp_path: Path
@@ -244,14 +245,14 @@ class TestHandleWorkspaceCallback:
 
 class TestWorkspaceIdThreaded:
     @patch(
-        "ccgram.handlers.topics.directory_callbacks.safe_edit", new_callable=AsyncMock
+        "ccgram.handlers.topics.window_launch_service.safe_edit", new_callable=AsyncMock
     )
-    @patch("ccgram.handlers.topics.directory_callbacks.tmux_manager")
-    @patch("ccgram.handlers.topics.directory_callbacks.session_manager")
-    @patch("ccgram.handlers.topics.directory_callbacks.thread_router")
-    @patch("ccgram.handlers.topics.directory_callbacks.topic_orchestration")
-    @patch("ccgram.handlers.topics.directory_callbacks.user_preferences")
-    @patch("ccgram.handlers.topics.directory_callbacks.session_map_sync")
+    @patch("ccgram.handlers.topics.window_launch_service.tmux_manager")
+    @patch("ccgram.handlers.topics.window_launch_service.session_manager")
+    @patch("ccgram.handlers.topics.window_launch_service.thread_router")
+    @patch("ccgram.handlers.topics.window_launch_service.topic_orchestration")
+    @patch("ccgram.handlers.topics.window_launch_service.user_preferences")
+    @patch("ccgram.handlers.topics.window_launch_service.session_map_sync")
     async def test_chosen_workspace_id_passed_to_create_window(
         self,
         mock_sms: MagicMock,
@@ -268,6 +269,7 @@ class TestWorkspaceIdThreaded:
 
         mock_mux.create_window = AsyncMock(return_value=(True, "ok", "my-tab", "w1:t1"))
         mock_mux.stamp_pane_title = AsyncMock()
+        mock_mux.capabilities.native_worktrees = False
         mock_tr.get_window_for_thread.return_value = None
         mock_tr.resolve_chat_id.return_value = -100999
         mock_sm.set_window_provider = MagicMock()
@@ -280,7 +282,7 @@ class TestWorkspaceIdThreaded:
         with (
             patch("ccgram.providers.resolve_launch_command", return_value="claude"),
             patch(
-                "ccgram.handlers.topics.directory_callbacks.provider_registry"
+                "ccgram.handlers.topics.window_launch_service.provider_registry"
             ) as mock_reg,
         ):
             mock_caps = MagicMock()
@@ -297,7 +299,16 @@ class TestWorkspaceIdThreaded:
             context = _make_context(user_data)
 
             await _create_window_and_bind(
-                query, 100, str(tmp_path), "claude", "normal", context
+                query,
+                context,
+                WindowLaunchRequest(
+                    user_id=100,
+                    thread_id=user_data.get(PENDING_THREAD_ID),
+                    provider_name="claude",
+                    cwd=str(tmp_path),
+                    mode="normal",
+                    pending_text=None,
+                ),
             )
 
         mock_mux.create_window.assert_awaited_once()
@@ -305,14 +316,14 @@ class TestWorkspaceIdThreaded:
         assert call_kwargs.get("workspace_id") == "ws-chosen"
 
     @patch(
-        "ccgram.handlers.topics.directory_callbacks.safe_edit", new_callable=AsyncMock
+        "ccgram.handlers.topics.window_launch_service.safe_edit", new_callable=AsyncMock
     )
-    @patch("ccgram.handlers.topics.directory_callbacks.tmux_manager")
-    @patch("ccgram.handlers.topics.directory_callbacks.session_manager")
-    @patch("ccgram.handlers.topics.directory_callbacks.thread_router")
-    @patch("ccgram.handlers.topics.directory_callbacks.topic_orchestration")
-    @patch("ccgram.handlers.topics.directory_callbacks.user_preferences")
-    @patch("ccgram.handlers.topics.directory_callbacks.session_map_sync")
+    @patch("ccgram.handlers.topics.window_launch_service.tmux_manager")
+    @patch("ccgram.handlers.topics.window_launch_service.session_manager")
+    @patch("ccgram.handlers.topics.window_launch_service.thread_router")
+    @patch("ccgram.handlers.topics.window_launch_service.topic_orchestration")
+    @patch("ccgram.handlers.topics.window_launch_service.user_preferences")
+    @patch("ccgram.handlers.topics.window_launch_service.session_map_sync")
     async def test_no_workspace_id_passes_none(
         self,
         mock_sms: MagicMock,
@@ -329,6 +340,7 @@ class TestWorkspaceIdThreaded:
 
         mock_mux.create_window = AsyncMock(return_value=(True, "ok", "my-tab", "w1:t1"))
         mock_mux.stamp_pane_title = AsyncMock()
+        mock_mux.capabilities.native_worktrees = False
         mock_tr.get_window_for_thread.return_value = None
         mock_tr.resolve_chat_id.return_value = -100999
         mock_sm.set_window_provider = MagicMock()
@@ -340,7 +352,7 @@ class TestWorkspaceIdThreaded:
         with (
             patch("ccgram.providers.resolve_launch_command", return_value="claude"),
             patch(
-                "ccgram.handlers.topics.directory_callbacks.provider_registry"
+                "ccgram.handlers.topics.window_launch_service.provider_registry"
             ) as mock_reg,
         ):
             mock_caps = MagicMock()
@@ -355,7 +367,16 @@ class TestWorkspaceIdThreaded:
             context = _make_context(user_data)
 
             await _create_window_and_bind(
-                query, 100, str(tmp_path), "claude", "normal", context
+                query,
+                context,
+                WindowLaunchRequest(
+                    user_id=100,
+                    thread_id=user_data.get(PENDING_THREAD_ID),
+                    provider_name="claude",
+                    cwd=str(tmp_path),
+                    mode="normal",
+                    pending_text=None,
+                ),
             )
 
         call_kwargs = mock_mux.create_window.call_args[1]

@@ -53,6 +53,10 @@ _PTB_BOT_ALLOWLIST = frozenset(
         "sync_command.py",
         "toolbar/toolbar_callbacks.py",
         "topics/directory_callbacks.py",
+        # window_launch_service calls context.bot.edit_forum_topic to rename
+        # the Telegram topic after binding — a PTB-only forum API with no
+        # equivalent on the TelegramClient Protocol.
+        "topics/window_launch_service.py",
         "voice/voice_callbacks.py",
         "voice/voice_handler.py",
     }
@@ -116,9 +120,17 @@ _SINGLETON_ALLOWLIST = frozenset(
         "toolbar/toolbar_callbacks.py",
         "topics/directory_browser.py",
         "topics/directory_callbacks.py",
+        # provider_mode_callbacks uses thread_router for the double-click guard
+        # (same routing pattern as directory_callbacks).
+        "topics/provider_mode_callbacks.py",
         "topics/topic_lifecycle.py",
         "topics/topic_orchestration.py",
         "topics/window_callbacks.py",
+        # window_launch_service owns the full window-creation + topic-binding
+        # sequence: thread_router.bind_thread, user_preferences.update_user_mru,
+        # session_map_sync.wait_for_session_map_entry — all direct singleton
+        # calls matching the pattern established in directory_callbacks.py.
+        "topics/window_launch_service.py",
         "voice/voice_callbacks.py",
         "voice/voice_handler.py",
     }
