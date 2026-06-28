@@ -226,22 +226,6 @@ class Multiplexer(Protocol):
         """
         ...
 
-    async def find_window(self, window_id: str) -> WindowRef | None:
-        """Find a window by its opaque ID string.
-
-        Returns None when the window does not exist or is no longer alive.
-        """
-        ...
-
-    async def capture(
-        self, window_id: str, *, ansi: bool = False
-    ) -> CaptureResult | None:
-        """Capture the visible text of the active pane.
-
-        Returns None on failure (window gone, timeout, socket error).
-        """
-        ...
-
     async def capture_scrollback(
         self, window_id: str, lines: int = 200
     ) -> CaptureResult | None:
@@ -348,14 +332,6 @@ class Multiplexer(Protocol):
         """
         ...
 
-    async def set_title(self, window_id: str, provider_name: str) -> None:
-        """Set the pane title for instant provider re-detection.
-
-        tmux: ``select-pane -T ccgram:<provider>``.
-        herdr: ``pane report-metadata --title``.
-        """
-        ...
-
     async def foreground(self, window_id: str) -> ForegroundInfo | None:
         """Return foreground process info for the active pane.
 
@@ -402,17 +378,14 @@ class Multiplexer(Protocol):
     # ── Transitional surface ───────────────────────────────────────────
     #
     # Methods below mirror the historical ``tmux_manager`` public API that
-    # callers still use directly.  They are part of the contract so callers can
-    # depend only on the ``multiplexer`` proxy (typed against this Protocol)
-    # without importing a concrete backend (F1) and without being rewritten to
-    # the value-type surface above (design BC rule: "do not rewrite callers").
-    # The value-type methods (``find_window`` / ``capture`` / ``send`` / …) are
-    # the forward surface for new herdr-aware code; both backends implement
-    # both.  An ``architecture-review`` may prune these once callers adopt the
-    # value-type surface (Tasks 10–11).
+    # callers still use directly. They remain the stable contract on the
+    # multiplexer proxy for read/write pane operations.
 
     async def find_window_by_id(self, window_id: str) -> WindowRef | None:
-        """Find a window by its opaque ID (legacy alias of ``find_window``)."""
+        """Find a window by its opaque ID.
+
+        Returns None when the window does not exist or is no longer alive.
+        """
         ...
 
     async def capture_pane(self, window_id: str, with_ansi: bool = False) -> str | None:
@@ -475,5 +448,9 @@ class Multiplexer(Protocol):
         ...
 
     async def stamp_pane_title(self, window_id: str, provider_name: str) -> None:
-        """Set the pane title for re-detection (legacy alias of ``set_title``)."""
+        """Set the pane title for instant provider re-detection.
+
+        tmux: ``select-pane -T ccgram:<provider>``.
+        herdr: ``pane report-metadata --title``.
+        """
         ...

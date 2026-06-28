@@ -91,7 +91,7 @@ _HERDR_CAPABILITIES = MultiplexerCapabilities(
 
 # Filter for self-hosted / internal workspaces and tabs (e.g. ``__main__``).
 # Entries matching this pattern are skipped in ``list_windows`` so ccgram
-# never auto-adopts itself. ``find_window`` deliberately bypasses this filter.
+# never auto-adopts itself. ``find_window_by_id`` deliberately bypasses it.
 _INTERNAL_LABEL_RE = re.compile(r"^__.*__$")
 
 # The send-keys path uses tmux key vocabulary ("Up"/"BSpace"/…); map the few
@@ -332,7 +332,7 @@ class HerdrManager:
 
         ``window_id`` is the ``tab_id`` (tab identity — design Task 1).
         ``window_name`` is the display label (full adaptive topic label
-        ``"<workspace> ▸ <tab>"`` for both ``find_window`` and ``list_windows``).
+        ``"<workspace> ▸ <tab>"`` for both ``find_window_by_id`` and ``list_windows``).
         ``pane_current_command`` carries the representative agent label so
         provider detection and the status pipeline keep working.
         herdr has no tty and dimensions come from ``pane_dims`` on demand.
@@ -441,7 +441,7 @@ class HerdrManager:
             refs.append(self._to_window_ref(tab_id, window_name, rep_cwd, rep_agent))
         return refs
 
-    async def find_window(self, window_id: str) -> WindowRef | None:
+    async def find_window_by_id(self, window_id: str) -> WindowRef | None:
         """Find a window by its tab id; None when gone.
 
         Uses ``tab get`` (tab identity — Task 1). Bypasses the ``__*__`` filter
@@ -544,9 +544,7 @@ class HerdrManager:
 
     # ── Tab-keyed public ops (resolve tab→active-pane first) ───────────
 
-    async def capture(
-        self, window_id: str, *, ansi: bool = False
-    ) -> CaptureResult | None:
+    async def capture_pane(self, window_id: str, with_ansi: bool = False) -> str | None:
         """Capture visible pane text.
 
         *window_id* is a tab id. Resolves the tab to its active pane first,
@@ -555,10 +553,7 @@ class HerdrManager:
         pane_id = await self._active_pane(window_id)
         if pane_id is None:
             return None
-        text = await self._read_visible_pane(pane_id, ansi=ansi)
-        if text is None:
-            return None
-        return CaptureResult(text=text)
+        return await self._read_visible_pane(pane_id, ansi=with_ansi)
 
     async def capture_scrollback(
         self, window_id: str, lines: int = 200
@@ -898,7 +893,7 @@ class HerdrManager:
             tab_id,
         )
 
-    async def set_title(self, window_id: str, provider_name: str) -> None:
+    async def stamp_pane_title(self, window_id: str, provider_name: str) -> None:
         """Stamp the active pane title for instant provider re-detection.
 
         *window_id* is a tab id. Resolves to the active pane first.
@@ -1038,19 +1033,7 @@ class HerdrManager:
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, _STREAM_BACKOFF_MAX)
 
-    # ── Transitional surface (legacy aliases) ──────────────────────────
-    # Mirror the historical ``tmux_manager`` names callers still use, so the
-    # herdr backend satisfies the same contract (F2) without rewriting callers.
-
-    async def find_window_by_id(self, window_id: str) -> WindowRef | None:
-        """Legacy alias of ``find_window``."""
-        return await self.find_window(window_id)
-
-    async def capture_pane(self, window_id: str, with_ansi: bool = False) -> str | None:
-        """Visible pane text as a plain string (legacy alias of ``capture``)."""
-        result = await self.capture(window_id, ansi=with_ansi)
-        return result.text if result else None
-
+    # ── Transitional surface (remaining legacy helpers) ───────────────
     async def capture_pane_by_id(
         self,
         pane_id: str,
@@ -1112,7 +1095,3 @@ class HerdrManager:
         if pane is None:
             return ""
         return pane.get("title", "") or ""
-
-    async def stamp_pane_title(self, window_id: str, provider_name: str) -> None:
-        """Legacy alias of ``set_title``."""
-        await self.set_title(window_id, provider_name)

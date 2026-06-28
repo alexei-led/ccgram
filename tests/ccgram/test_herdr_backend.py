@@ -17,7 +17,6 @@ import pytest
 
 from ccgram.multiplexer.base import (
     AgentStatus,
-    CaptureResult,
     ForegroundInfo,
     MuxEvent,
     PaneDims,
@@ -55,7 +54,7 @@ PANE_GET = json.dumps(
     }
 )
 
-# TAB_GET for find_window("w2:t1") — tab identity (Task 1).
+# TAB_GET for find_window_by_id("w2:t1") — tab identity (Task 1).
 TAB_GET = json.dumps(
     {
         "id": "cli:tab:get",
@@ -71,7 +70,7 @@ TAB_GET = json.dumps(
     }
 )
 
-# PANE_LIST used by find_window to resolve representative agent/cwd.
+# PANE_LIST used by find_window_by_id to resolve representative agent/cwd.
 PANE_LIST_FOR_FIND = json.dumps(
     {
         "id": "cli:pane:list",
@@ -352,11 +351,11 @@ def test_constructor_does_no_io() -> None:
     assert fake.calls == []
 
 
-# ── find_window: tab identity (window_id = tab_id) ─────────────────────
+# ── find_window_by_id: tab identity (window_id = tab_id) ───────────────
 
 
-async def test_find_window_uses_tab_get_and_returns_tab_id() -> None:
-    # find_window(tab_id) → tab get + workspace list + pane list → WindowRef
+async def test_find_window_by_id_uses_tab_get_and_returns_tab_id() -> None:
+    # find_window_by_id(tab_id) → tab get + workspace list + pane list → WindowRef
     # with the same full "<workspace> ▸ <tab>" label as list_windows.
     fake = (
         FakeHerdr()
@@ -364,7 +363,7 @@ async def test_find_window_uses_tab_get_and_returns_tab_id() -> None:
         .on("workspace", "list", out=WORKSPACE_LIST)
         .on("pane", "list", out=PANE_LIST_FOR_FIND)
     )
-    win = await _manager(fake).find_window("w2:t1")
+    win = await _manager(fake).find_window_by_id("w2:t1")
     assert win == WindowRef(
         window_id="w2:t1",
         window_name="ccgram ▸ herdr-support",
@@ -376,13 +375,13 @@ async def test_find_window_uses_tab_get_and_returns_tab_id() -> None:
     assert fake.sent("pane", "get") is None
 
 
-async def test_find_window_returns_none_when_tab_gone() -> None:
+async def test_find_window_by_id_returns_none_when_tab_gone() -> None:
     fake = FakeHerdr().on("tab", "get", rc=1, out=ERROR_NOT_FOUND)
-    assert await _manager(fake).find_window("w9:t9") is None
+    assert await _manager(fake).find_window_by_id("w9:t9") is None
 
 
-async def test_find_window_bypasses_internal_label_filter() -> None:
-    # __*__ tabs are filtered in list_windows but find_window always resolves.
+async def test_find_window_by_id_bypasses_internal_label_filter() -> None:
+    # __*__ tabs are filtered in list_windows but find_window_by_id always resolves.
     # workspace_id "w3" is absent from workspace list → workspace label "" →
     # format_agent_topic_prefix("", "__main__") == "__main__" (no stray separator).
     internal_tab = json.dumps(
@@ -408,7 +407,7 @@ async def test_find_window_bypasses_internal_label_filter() -> None:
         .on("workspace", "list", out=workspace_list_empty)
         .on("pane", "list", out=pane_list_empty)
     )
-    win = await _manager(fake).find_window("w3:t1")
+    win = await _manager(fake).find_window_by_id("w3:t1")
     assert win is not None
     assert win.window_id == "w3:t1"
     assert win.window_name == "__main__"
@@ -1231,15 +1230,15 @@ async def test_list_panes_returns_empty_for_empty_tab() -> None:
 # ── Capture / scrollback ───────────────────────────────────────────────
 
 
-async def test_capture_returns_text() -> None:
-    # capture(tab_id) resolves tab→active pane, then reads visible text.
+async def test_capture_pane_returns_text() -> None:
+    # capture_pane(tab_id) resolves tab→active pane, then reads visible text.
     fake = (
         FakeHerdr()
         .on("pane", "list", out=PANE_LIST_SINGLE)
         .on("pane", "read", out=PANE_READ_TEXT)
     )
-    res = await _manager(fake).capture("w2:t1")
-    assert res == CaptureResult(text="line one\nline two", truncated=False)
+    res = await _manager(fake).capture_pane("w2:t1")
+    assert res == "line one\nline two"
     call = fake.sent("pane", "read")
     assert call is not None
     assert "--source" in call and "visible" in call
@@ -1248,21 +1247,21 @@ async def test_capture_returns_text() -> None:
     assert "w2:p1" in call
 
 
-async def test_capture_ansi_requests_ansi_format() -> None:
+async def test_capture_pane_ansi_requests_ansi_format() -> None:
     fake = (
         FakeHerdr()
         .on("pane", "list", out=PANE_LIST_SINGLE)
         .on("pane", "read", out=PANE_READ_TEXT)
     )
-    await _manager(fake).capture("w2:t1", ansi=True)
+    await _manager(fake).capture_pane("w2:t1", with_ansi=True)
     call = fake.sent("pane", "read")
     assert call is not None and "ansi" in call
 
 
-async def test_capture_returns_none_when_tab_has_no_panes() -> None:
+async def test_capture_pane_returns_none_when_tab_has_no_panes() -> None:
     empty = json.dumps({"result": {"panes": [], "type": "pane_list"}})
     fake = FakeHerdr().on("pane", "list", out=empty)
-    assert await _manager(fake).capture("w2:t1") is None
+    assert await _manager(fake).capture_pane("w2:t1") is None
 
 
 async def test_scrollback_clamps_to_read_max_lines_and_flags_truncated() -> None:
@@ -1364,14 +1363,14 @@ async def test_send_to_pane_bypasses_tab_resolution() -> None:
 async def test_socket_down_returns_none_not_crash() -> None:
     fake = FakeHerdr().on("tab", "get", rc=127, err="connection refused")
     mgr = _manager(fake)
-    assert await mgr.find_window("w2:t1") is None
-    # capture with no pane list response → pane list fails → None.
-    assert await mgr.capture("w2:t1") is None
+    assert await mgr.find_window_by_id("w2:t1") is None
+    # capture_pane with no pane list response → pane list fails → None.
+    assert await mgr.capture_pane("w2:t1") is None
 
 
 async def test_bad_id_error_payload_returns_none() -> None:
     fake = FakeHerdr().on("tab", "get", rc=1, out=ERROR_NOT_FOUND)
-    assert await _manager(fake).find_window("w9:t9") is None
+    assert await _manager(fake).find_window_by_id("w9:t9") is None
 
 
 async def test_foreground_missing_process_returns_none() -> None:

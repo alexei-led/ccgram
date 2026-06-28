@@ -202,22 +202,7 @@ def _collect_all_hits() -> list[tuple[str, str, int, str]]:
     return out
 
 
-# ── Enforced allowlist ────────────────────────────────────────────────
-#
-# Keys: (path_relative_to_src, field, kind).
-# Values: a short comment naming the consumer for human readability.
-#
-# Only two coordination seams are permitted to access raw WindowState
-# fields outside the persistence kernel / SessionManager facade /
-# window_query / window_state_ports:
-#
-# - rc_probe.py — transient in-memory bookkeeping, never serialized.
-# - session_map.py — coordinates hook-written session_map data with
-#   the persisted WindowState shape.
-#
-# Adding a new entry here requires a documented coordination reason.
-# When a feature-port migration lifts an entry, delete it; the stale-
-# entry test will fail otherwise.
+# Approved raw WindowState access seams. Delete entries as migrations remove them.
 APPROVED_RAW_ACCESS: dict[tuple[str, str, str], str] = {
     # ── handlers/status/rc_probe.py ──────────────────────────────────
     ("ccgram/handlers/status/rc_probe.py", "rc_probe_state", "read"): (

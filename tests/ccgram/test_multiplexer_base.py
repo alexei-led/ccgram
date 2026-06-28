@@ -256,8 +256,6 @@ def test_multiplexer_protocol_has_expected_methods() -> None:
         "capabilities",
         "ensure_session",
         "list_windows",
-        "find_window",
-        "capture",
         "capture_scrollback",
         "pane_dims",
         "send",
@@ -266,8 +264,10 @@ def test_multiplexer_protocol_has_expected_methods() -> None:
         "rename_window",
         "list_panes",
         "create_window",
-        "set_title",
         "foreground",
+        "find_window_by_id",
+        "capture_pane",
+        "stamp_pane_title",
     }
     actual = {name for name in dir(Multiplexer) if not name.startswith("_")}
     missing = expected - actual

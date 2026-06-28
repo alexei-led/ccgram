@@ -1,25 +1,24 @@
 # archfit architecture-drift config for ccgram.
 #
-# Design notes (2026-06-27 review + design):
-# - VOLATILITY is the coupling lever, not owner. Measured: declaring
-#   subdomain+volatility moved mean book balance 2.9 -> 6.0 and critical edges
-#   387 -> 62. Declaring `owner` left distance unchanged (archfit distance is
-#   code_structure-based).
-# - `owner: alexei-led` is declared on every module for hygiene (single owner;
-#   silences omit-owner warnings) — NOT to influence coupling. See the
-#   solo-developer note below: a single owner adds zero ownership distance.
-# - Subdomain/volatility are architect-inferred (core=differentiator/high,
-#   supporting=needed/medium, generic=solved-problem/low). Treat as labels to
-#   confirm; tune against how each area actually churns.
-# - The boundary rules are the enforced drift gate (gate: fail; they pass today).
-#   The pytest audits (test_multiplexer_boundary, test_no_tty_*,
-#   test_query_layer_*) remain the in-process truth; archfit is the fast pre-push
-#   + CI mirror.
-# - no-import-cycles is gate: warn ON PURPOSE. archfit's SCIP graph counts
-#   in-function (lazy) imports as cycle edges; ccgram breaks load-time cycles
-#   with a deliberate lazy-import contract (lint_lazy_imports + the
-#   clean-interpreter test_import_no_cycles, the real runtime gate). Keep the
-#   archfit cycle signal visible, but do not let it block.
+# Design notes (2026-06-27 review + current code):
+# - VOLATILITY is the coupling lever, not owner. The current design docs record
+#   the calibrated book result: declaring subdomain+volatility moved mean book
+#   balance 2.9 -> 6.0 and critical edges 387 -> 62. Declaring `owner` left
+#   distance unchanged (archfit distance is code_structure-based), so owner is
+#   a hygiene label only.
+# - `owner: alexei-led` remains declared on every module for hygiene (single
+#   owner; silences omit-owner warnings) — NOT to influence coupling.
+# - Subdomain/volatility are architect-inferred labels. Current map in docs and
+#   config is aligned to the code/tests: core=session/window-state and handler
+#   orchestration; supporting=provider/multiplexer adapters plus transcript and
+#   miniapp; generic=config, utils, provider detection, protocol facades, and
+#   concrete backends. Confirm labels against churn when design changes.
+# - The pytest audits are the enforced drift gate. `archfit` is the whole-graph
+#   mirror and advisory gate: keep `no-import-cycles` as warn because the repo
+#   intentionally uses lazy imports that runtime tests accept.
+# - The config below is intended for full scans and delta scans. Keep it aligned
+#   with the current package map before running `archfit check --full` or
+#   `archfit check --base <ref>`.
 #
 # Solo-developer / distance note (Balanced Coupling):
 #   Distance is socio-technical — different-TEAM ownership RAISES it. A single
@@ -302,7 +301,7 @@ modules:
 rules:
   # IMPORTANT — forbidden_dependency `from`/`to` are PATH GLOBS (e.g.
   # `ccgram.handlers**`), NOT module-group names. Using a module name (`handlers`)
-  # silently matches nothing and the rule never fires (verified, archfit 0.10).
+  # silently matches nothing and the rule never fires.
   # The pytest test_multiplexer_boundary audit stays the COMPREHENSIVE in-process
   # gate (all callers, both import forms, allow-list); these glob rules mirror the
   # highest-risk source->backend edges as a fast archfit drift signal.

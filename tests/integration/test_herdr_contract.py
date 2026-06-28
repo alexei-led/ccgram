@@ -11,14 +11,14 @@ id.  ``create_window`` returns the tab id; ``list_panes(tab_id)`` returns panes
 whose ``pane_id`` values are ``"wN:pK"`` — distinct from the tab id.
 
 Tests cover:
-- create → send → capture → kill round-trip
+- create → send → capture_pane → kill round-trip
 - tab identity: ``list_windows`` returns one ``WindowRef`` per tab; the
   ``window_id`` field is a tab id (not a pane id), and ``window_name`` is
   formatted as ``"<workspace> ▸ <tab>"``
 - ``__*__`` workspace/tab labels are not surfaced in ``list_windows``
 - ``create_window`` returns a tab id (``window_id``)
-- ``kill_window`` closes the tab and ``find_window`` returns None afterwards
-- ``rename_window`` changes the tab label visible in the next ``find_window``
+- ``kill_window`` closes the tab and ``find_window_by_id`` returns None afterwards
+- ``rename_window`` changes the tab label visible in the next ``find_window_by_id``
 - restart re-resolution: ``_resolve_by_session_id`` maps an old tab id to a
   new tab id via shared session id (simulated — no live server restart needed)
 - scrollback: requesting >1000 lines sets ``CaptureResult.truncated``
@@ -62,12 +62,12 @@ async def herdr() -> HerdrManager:
 async def _capture_until(
     mgr: HerdrManager, window_id: str, needle: str, *, timeout: float = 8.0
 ) -> str:
-    """Poll ``capture`` until *needle* appears, or fail after *timeout*."""
+    """Poll ``capture_pane`` until *needle* appears, or fail after *timeout*."""
     deadline = asyncio.get_event_loop().time() + timeout
     last = ""
     while asyncio.get_event_loop().time() < deadline:
-        result = await mgr.capture(window_id)
-        last = result.text if result else ""
+        result = await mgr.capture_pane(window_id)
+        last = result or ""
         if needle in last:
             return last
         await asyncio.sleep(0.3)
@@ -116,7 +116,7 @@ async def test_create_send_capture_kill_roundtrip(
 
     # Window is gone after kill (tab closed).
     await asyncio.sleep(0.3)
-    assert await herdr.find_window(window_id) is None
+    assert await herdr.find_window_by_id(window_id) is None
 
 
 def _source_workspace_id(repo: str) -> str:
@@ -160,7 +160,7 @@ async def test_create_worktree_window_delegates(herdr: HerdrManager, tmp_path) -
         assert ok is True
         # window_id is a tab id ("wN:tM"); the worktree tab resolves like any tab.
         assert ":t" in window_id
-        assert await herdr.find_window(window_id) is not None
+        assert await herdr.find_window_by_id(window_id) is not None
         # The git checkout exists on the requested branch.
         assert (Path(wt_path) / "f.txt").exists()
         branch = subprocess.run(
@@ -291,15 +291,15 @@ async def test_list_windows_internal_label_hidden(herdr: HerdrManager) -> None:
 
 
 async def test_rename_window(herdr: HerdrManager, tmp_path) -> None:
-    """rename_window changes the tab label; find_window reflects the new name."""
+    """rename_window changes the tab label; find_window_by_id reflects the new name."""
     ok, _msg, _name, window_id = await herdr.create_window(
         str(tmp_path), window_name="ccgram-rename-before", start_agent=False
     )
     assert ok is True
     try:
         assert await herdr.rename_window(window_id, "ccgram-rename-after") is True
-        # find_window should reflect the updated label.
-        ref = await herdr.find_window(window_id)
+        # find_window_by_id should reflect the updated label.
+        ref = await herdr.find_window_by_id(window_id)
         assert ref is not None
         assert "ccgram-rename-after" in ref.window_name
     finally:
@@ -307,14 +307,14 @@ async def test_rename_window(herdr: HerdrManager, tmp_path) -> None:
 
 
 async def test_kill_window_closes_tab(herdr: HerdrManager, tmp_path) -> None:
-    """kill_window closes the herdr tab; find_window returns None afterwards."""
+    """kill_window closes the herdr tab; find_window_by_id returns None afterwards."""
     ok, _msg, _name, window_id = await herdr.create_window(
         str(tmp_path), window_name="ccgram-kill-itest", start_agent=False
     )
     assert ok is True
     assert await herdr.kill_window(window_id) is True
     await asyncio.sleep(0.3)
-    assert await herdr.find_window(window_id) is None
+    assert await herdr.find_window_by_id(window_id) is None
 
 
 # ── Restart re-resolution (simulated — no live restart needed) ──────────────

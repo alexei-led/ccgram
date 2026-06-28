@@ -13,10 +13,10 @@ libtmux to provide async-friendly operations on a single tmux session:
 All blocking libtmux calls are wrapped in asyncio.to_thread().
 
 ``TmuxManager`` satisfies the ``Multiplexer`` Protocol (neutral value types +
-``capabilities``).  The Protocol method names (``find_window``, ``capture``,
-``send``, ``set_title``, ``foreground``, …) and the legacy names
-(``find_window_by_id``, ``capture_pane``, ``send_keys``, ``stamp_pane_title``,
-…) coexist during call-site migration; the legacy names are removed in Task 4.
+``capabilities``). Callers use the stable pane/window helpers
+(``find_window_by_id``, ``capture_pane``, ``send_keys``, ``stamp_pane_title``)
+alongside the richer value-returning operations such as ``capture_scrollback``
+and ``foreground``.
 
 Key class: TmuxManager (singleton instantiated as `tmux_manager`).
 Module-level: _vim_state cache, _vim_locks for per-window send serialization.
@@ -935,25 +935,10 @@ class TmuxManager:
 
     # ── Multiplexer Protocol surface ───────────────────────────────────
     # Neutral-typed wrappers over the libtmux-specific methods above.
-    # Call sites migrate to these names in Task 4; the legacy names are
-    # then removed.  Behavior is identical — these only rename/repackage.
 
     async def ensure_session(self) -> None:
         """Ensure the tmux session exists (``get_or_create_session``)."""
         await asyncio.to_thread(self.get_or_create_session)
-
-    async def find_window(self, window_id: str) -> WindowRef | None:
-        """Find a window by its opaque ID string (alias of ``find_window_by_id``)."""
-        return await self.find_window_by_id(window_id)
-
-    async def capture(
-        self, window_id: str, *, ansi: bool = False
-    ) -> CaptureResult | None:
-        """Capture the visible text of the active pane as a ``CaptureResult``."""
-        text = await self.capture_pane(window_id, with_ansi=ansi)
-        if text is None:
-            return None
-        return CaptureResult(text=text)
 
     async def capture_scrollback(
         self, window_id: str, lines: int = 200
@@ -1060,10 +1045,6 @@ class TmuxManager:
         """
         for _ in ():  # pragma: no cover
             yield MuxEvent(kind="", window_id="")
-
-    async def set_title(self, window_id: str, provider_name: str) -> None:
-        """Set the pane title for re-detection (alias of ``stamp_pane_title``)."""
-        await self.stamp_pane_title(window_id, provider_name)
 
     async def agent_status(
         self,

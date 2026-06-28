@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import structlog
-from telegram import Message, Update
+from telegram import CallbackQuery, Message, Update
 from telegram.error import TelegramError
 
 from ...config import config
@@ -73,6 +73,28 @@ def _clear_send_state(context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     for key in _SEND_STATE_KEYS:
         context.user_data.pop(key, None)
+
+
+async def _render_send_browser(
+    query: CallbackQuery,
+    context: ContextTypes.DEFAULT_TYPE,
+    path: Path,
+    cwd: Path,
+    *,
+    page: int = 0,
+) -> None:
+    assert context.user_data is not None
+
+    display_text, markup, new_items = build_file_browser(path, cwd, page)
+    context.user_data[SEND_ITEMS_KEY] = new_items
+    context.user_data[SEND_PATH_KEY] = str(path)
+    context.user_data[SEND_PAGE_KEY] = page
+
+    await query.answer()
+    msg = query.message if isinstance(query.message, Message) else None
+    if msg is not None:
+        with contextlib.suppress(TelegramError):
+            await msg.edit_text(display_text, reply_markup=markup)
 
 
 @register(CB_SEND_FILE, CB_SEND_DIR, CB_SEND_PAGE, CB_SEND_UP, CB_SEND_CANCEL)
@@ -201,16 +223,7 @@ async def _handle_dir(
         await query.answer("Directory is outside project root", show_alert=True)
         return
 
-    display_text, markup, new_items = build_file_browser(target_dir, cwd, 0)
-    context.user_data[SEND_ITEMS_KEY] = new_items
-    context.user_data[SEND_PATH_KEY] = str(target_dir)
-    context.user_data[SEND_PAGE_KEY] = 0
-
-    await query.answer()
-    msg = query.message if isinstance(query.message, Message) else None
-    if msg is not None:
-        with contextlib.suppress(TelegramError):
-            await msg.edit_text(display_text, reply_markup=markup)
+    await _render_send_browser(query, context, target_dir, cwd)
 
 
 async def _handle_page(
@@ -237,15 +250,7 @@ async def _handle_page(
     current_path = Path(path_str)
     cwd = Path(cwd_str)
 
-    display_text, markup, new_items = build_file_browser(current_path, cwd, page)
-    context.user_data[SEND_ITEMS_KEY] = new_items
-    context.user_data[SEND_PAGE_KEY] = page
-
-    await query.answer()
-    msg = query.message if isinstance(query.message, Message) else None
-    if msg is not None:
-        with contextlib.suppress(TelegramError):
-            await msg.edit_text(display_text, reply_markup=markup)
+    await _render_send_browser(query, context, current_path, cwd, page=page)
 
 
 async def _handle_up(
@@ -273,16 +278,7 @@ async def _handle_up(
     if not is_path_contained(parent, cwd):
         parent = cwd
 
-    display_text, markup, new_items = build_file_browser(parent, cwd, 0)
-    context.user_data[SEND_ITEMS_KEY] = new_items
-    context.user_data[SEND_PATH_KEY] = str(parent)
-    context.user_data[SEND_PAGE_KEY] = 0
-
-    await query.answer()
-    msg = query.message if isinstance(query.message, Message) else None
-    if msg is not None:
-        with contextlib.suppress(TelegramError):
-            await msg.edit_text(display_text, reply_markup=markup)
+    await _render_send_browser(query, context, parent, cwd)
 
 
 async def _handle_cancel(

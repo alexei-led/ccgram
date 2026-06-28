@@ -132,9 +132,9 @@ async def _setup_shell_marker(window_id: str) -> None:
         await setup_shell_prompt(window_id)
         if await _marker_within(window_id, timeout=2.5):
             return
-    cap = await multiplexer.capture(window_id)
+    cap = await multiplexer.capture_pane(window_id)
     raise AssertionError(
-        f"prompt marker never appeared:\n{cap.text if cap else '<no capture>'}"
+        f"prompt marker never appeared:\n{cap if cap else '<no capture>'}"
     )
 
 

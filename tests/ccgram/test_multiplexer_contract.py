@@ -25,8 +25,6 @@ CANDIDATE_BACKENDS = ["tmux", "herdr"]
 CONTRACT_METHODS = (
     "ensure_session",
     "list_windows",
-    "find_window",
-    "capture",
     "capture_scrollback",
     "pane_dims",
     "send",
@@ -36,7 +34,6 @@ CONTRACT_METHODS = (
     "list_panes",
     "create_window",
     "create_worktree_window",
-    "set_title",
     "foreground",
     "agent_status",
     "split_window",

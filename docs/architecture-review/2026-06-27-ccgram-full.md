@@ -535,14 +535,14 @@ are instructive for the tool:
    `test_import_no_cycles` imports every module in a clean interpreter and passes in CI.
 3. **The couplings that actually carry risk are invisible to archfit** because they have no import edge: the
    hook↔monitor file contract, the herdr socket/protocol-14 contract, and provider↔external-format coupling.
-4. **Cohesion=5/critical is a clone-count artifact.** Enabling jscpd surfaced 46 clone *pairs*, but measured
+4. **Cohesion=5/critical is a clone-count artifact.** Enabling jscpd surfaced 46 clone _pairs_, but measured
    duplication is only **1.44%** and the top clones are a font-LICENSE text pair + frontend JS. Real Python
    duplication is minor boilerplate. archfit scores raw pair count, not duplication ratio.
 
 Calibrated scores (mine, with the swings explained below): boundary 78, coupling_balance 52,
 dependency_graph_health 52, cohesion 68, change_locality 58, **architecture_fitness 85**, analysis_confidence 85.
 Overall a **serviceable** architecture with a strong fitness/boundary story. The genuine coupling residual —
-which archfit surfaces correctly *once volatility is declared* — is 62 functional + high-volatility edges into
+which archfit surfaces correctly _once volatility is declared_ — is 62 functional + high-volatility edges into
 the live-session core (claude_task_state, session, session_monitor); the ~10 highest-fan-in are real
 contract candidates. The other real risks are the external-contract seams archfit can't see (already
 well-mitigated by anti-corruption layers).
@@ -592,17 +592,17 @@ well-mitigated by anti-corruption layers).
 
 ## Coupling review (focus dimension)
 
-| Relationship | Strength | Distance (code/own/runtime/deploy) | Volatility | Balance | Severity | Move |
-|---|---|---|---|---|---|---|
-| handlers → core query layer / window_state_ports | functional (intra-app, contract-mediated) | code med / own low / runtime in-proc / deploy same | low–med | balanced (high strength + low distance = cohesion) | low | leave alone |
-| bootstrap → modules (wiring) | functional | code med / own low / in-proc / same | low | balanced (composition root) | low | leave alone |
-| caller → Multiplexer/AgentProvider/TelegramClient Protocols | **contract** | code high / own low / in-proc / same | low fn, med impl | well-balanced (low strength vs high distance) | low | leave alone — textbook ACL |
-| herdr.py ↔ herdr daemon (socket + proto 14) | contract (ACL) | code high / own high (external) / **socket** / **separate process** | **medium-high** (young CLI) | balanced by the ACL + protocol pin | medium (watch) | keep ACL; add proto-pin test |
-| hook.py ↔ session_monitor (session_map/events) | functional/contract via file schema | code high / own low / **cross-process** / separate | low–med | acceptable; stable schema | medium (watch) | version the schema + contract test |
-| provider parsers ↔ external CLI JSONL | **functional** | code high / own high (external) / file / external | medium | least-balanced of the seams | medium | shared _jsonl base already helps; add format contract tests |
-| tmux ↔ vim_state (private `_vim_state`) | intrusive | code low (same module) / own low / in-proc | low | balanced (score 8) | low | leave alone — documented neutral-cache seam |
+| Relationship                                                | Strength                                  | Distance (code/own/runtime/deploy)                                  | Volatility                  | Balance                                            | Severity       | Move                                                        |
+| ----------------------------------------------------------- | ----------------------------------------- | ------------------------------------------------------------------- | --------------------------- | -------------------------------------------------- | -------------- | ----------------------------------------------------------- |
+| handlers → core query layer / window_state_ports            | functional (intra-app, contract-mediated) | code med / own low / runtime in-proc / deploy same                  | low–med                     | balanced (high strength + low distance = cohesion) | low            | leave alone                                                 |
+| bootstrap → modules (wiring)                                | functional                                | code med / own low / in-proc / same                                 | low                         | balanced (composition root)                        | low            | leave alone                                                 |
+| caller → Multiplexer/AgentProvider/TelegramClient Protocols | **contract**                              | code high / own low / in-proc / same                                | low fn, med impl            | well-balanced (low strength vs high distance)      | low            | leave alone — textbook ACL                                  |
+| herdr.py ↔ herdr daemon (socket + proto 14)                 | contract (ACL)                            | code high / own high (external) / **socket** / **separate process** | **medium-high** (young CLI) | balanced by the ACL + protocol pin                 | medium (watch) | keep ACL; add proto-pin test                                |
+| hook.py ↔ session_monitor (session_map/events)              | functional/contract via file schema       | code high / own low / **cross-process** / separate                  | low–med                     | acceptable; stable schema                          | medium (watch) | version the schema + contract test                          |
+| provider parsers ↔ external CLI JSONL                       | **functional**                            | code high / own high (external) / file / external                   | medium                      | least-balanced of the seams                        | medium         | shared _jsonl base already helps; add format contract tests |
+| tmux ↔ vim_state (private `_vim_state`)                     | intrusive                                 | code low (same module) / own low / in-proc                          | low                         | balanced (score 8)                                 | low            | leave alone — documented neutral-cache seam                 |
 
-The one cluster that *does* approach the critical corner is **internal**, not at the seams: the 62 residual
+The one cluster that _does_ approach the critical corner is **internal**, not at the seams: the 62 residual
 edges into the live-session core (claude_task_state, session, session_monitor) are functional strength +
 high volatility + high code_structure distance (F6). archfit surfaces these correctly once volatility is
 declared. The external seams, by contrast, are well-balanced — held at contract strength by anti-corruption
@@ -613,6 +613,7 @@ shared `_jsonl.py` base.
 ## Recommendations for ccgram (prioritized, incremental)
 
 **A. Make archfit honest about this repo (config, no code change) — highest ROI, measured**
+
 1. Add `subdomain:` + `volatility:` to the ~14 modules that omit them (the LLM review's subdomain map is a
    starting point: config=generic, handlers=core, providers.base/multiplexer.base=supporting, session=core).
    **Measured effect: mean balance 2.9→6.0, critical edges 387→62.**
@@ -622,28 +623,22 @@ shared `_jsonl.py` base.
    from the clone scan** so the cohesion score reflects Python duplication (1.44%), not font-license text.
    Refresh the gitnexus index and ensure `.gitnexus/`/`.archfit-cache/` are gitignored.
 
-**B. Address the real residual coupling (the 62 surviving edges)**
-4. The residual is functional+high-volatility edges into the live-session core. Most are healthy cohesion;
-   the ~10 with `cheapest_move=reduce_strength` (several into `claude_task_state`) are contract candidates —
-   introduce a narrow read-interface for the highest-fan-in volatile targets. Leave the rest alone.
+**B. Address the real residual coupling (the 62 surviving edges)** 4. The residual is functional+high-volatility edges into the live-session core. Most are healthy cohesion;
+the ~10 with `cheapest_move=reduce_strength` (several into `claude_task_state`) are contract candidates —
+introduce a narrow read-interface for the highest-fan-in volatile targets. Leave the rest alone.
 
-**C. Resolve the false cycle failure**
-5. Keep archfit's `no-import-cycles` rule **advisory**; the runtime gate is already `test_import_no_cycles`.
-   The 28-node handler SCC is real latent fragility — keep it visible, don't let it fail CI.
+**C. Resolve the false cycle failure** 5. Keep archfit's `no-import-cycles` rule **advisory**; the runtime gate is already `test_import_no_cycles`.
+The 28-node handler SCC is real latent fragility — keep it visible, don't let it fail CI.
 
-**D. Tackle the genuine complexity hotspot + minor DRY**
-6. Refactor `parse_entries` (CCN 72, transcript_parser.py:401) — by far the worst complexity outlier; also
-   `audit_state` (28) and `_apply_ansi_codes` (27). DRY the small cleanup.py boilerplate repeated across ~5
-   handlers if cheap; the rest of the 1.44% duplication is not worth chasing.
+**D. Tackle the genuine complexity hotspot + minor DRY** 6. Refactor `parse_entries` (CCN 72, transcript_parser.py:401) — by far the worst complexity outlier; also
+`audit_state` (28) and `_apply_ansi_codes` (27). DRY the small cleanup.py boilerplate repeated across ~5
+handlers if cheap; the rest of the 1.44% duplication is not worth chasing.
 
-**E. Make the invisible contracts executable (small code/test additions)**
-7. Add a schema-version constant + contract test for `session_map.json` / `events.jsonl`; a unit test asserting
-   the pinned `HERDR_PROTOCOL_VERSION`; and lightweight format-contract tests for the provider JSONL parsers.
+**E. Make the invisible contracts executable (small code/test additions)** 7. Add a schema-version constant + contract test for `session_map.json` / `events.jsonl`; a unit test asserting
+the pinned `HERDR_PROTOCOL_VERSION`; and lightweight format-contract tests for the provider JSONL parsers.
 
-**F. Promote the gate (after A & C)**
-8. Wire `archfit check` into CI as an **advisory** step (the pending F6), now that false alarms are addressed.
-9. Decide on the 56 draft LLM labels: review+approve the ones you trust (they then override SCIP and sharpen
-   coupling scoring), or delete them so they don't rot.
+**F. Promote the gate (after A & C)** 8. Wire `archfit check` into CI as an **advisory** step (the pending F6), now that false alarms are addressed. 9. Decide on the 56 draft LLM labels: review+approve the ones you trust (they then override SCIP and sharpen
+coupling scoring), or delete them so they don't rot.
 
 ## Plan summary
 
@@ -663,7 +658,8 @@ Re-run on **archfit v0.12.1** (book-verbatim `bc_score.v3` scorer) with the Anth
 assist, after correcting the config. The original review above used v0.10; my calibrated
 architect scores (boundary 78, coupling 52, dep_health 52, cohesion 68, change_locality 58,
 fitness 85, analysis_confidence 85) still hold — the v0.12.1 deltas below are deterministic
-inputs to those, not replacements.
+inputs to those, not replacements. For future scans, use `archfit check --config .archfit.yaml --full`
+for the full scan and `archfit check --config .archfit.yaml --base <ref>` for delta scans.
 
 ### A.1 Config corrections (the design model is now right)
 
@@ -678,9 +674,9 @@ inputs to those, not replacements.
   `agent_status_cache`+`topic_mapping`→`multiplexer`, `herdr_events`→`multiplexer_backends`.
   Now mapped (edge coverage 471→**484**). Re-check coverage after any feature work.
 - **`volatility_cascade_enabled: true`** added (book Ch9; archfit self-config enables it).
-- **Owner confirmed inert — by design.** v0.12.1's degenerate-owner suppression: a single-owner
-  repo keeps cross-module distance at the code-structure ordinal (7) regardless of `owner`.
-  Volatility is the only lever — exactly the Balanced-Coupling answer for a solo developer.
+- **Owner is a hygiene label, not a coupling lever.** The current config keeps `owner: alexei-led`
+  on every module for completeness, but the calibrated evidence still says only `subdomain` +
+  `volatility` move coupling. Treat owner as documentation, not score input.
 
 ### A.2 v0.12.1 deterministic scorecard (HEAD, corrected config)
 
@@ -698,15 +694,15 @@ inputs to those, not replacements.
 
 v4.1.0's code analyzed under the current config (throwaway worktree):
 
-| Dimension | v4.1.0 | HEAD | Δ |
-|---|---|---|---|
-| Overall | 48 | 43 | −5 |
-| change_locality | 84 | 66 | **−18** |
-| cohesion_modularity | 11 | 5 | −6 |
-| boundary_integrity | 60 | 58 | −2 |
-| coupling_balance | 40 | 40 | 0 |
-| dependency_graph_health | 24 | 24 | 0 |
-| architecture_fitness | 67 | 67 | 0 |
+| Dimension               | v4.1.0 | HEAD | Δ       |
+| ----------------------- | ------ | ---- | ------- |
+| Overall                 | 48     | 43   | −5      |
+| change_locality         | 84     | 66   | **−18** |
+| cohesion_modularity     | 11     | 5    | −6      |
+| boundary_integrity      | 60     | 58   | −2      |
+| coupling_balance        | 40     | 40   | 0       |
+| dependency_graph_health | 24     | 24   | 0       |
+| architecture_fitness    | 67     | 67   | 0       |
 
 The v4.2.0 release (push-event-stream + worktrees: 10 files, +723 lines, 3 new modules) was a
 **cross-cutting seam addition** — it threaded an event-streaming concern through

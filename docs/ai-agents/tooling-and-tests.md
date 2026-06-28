@@ -1,6 +1,6 @@
 # Tooling and Tests
 
-Commands and toolchain are in `/CLAUDE.md`. This file is for fast test targeting.
+Commands and toolchain are in `docs/guides.md`. This file is for fast test targeting.
 
 ## Workflow
 

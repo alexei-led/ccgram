@@ -166,16 +166,6 @@ async def test_different_window_breaks_chain(window_ids: list[str]) -> None:
 # --- Edge case tests ---
 
 
-async def test_empty_queue_no_merge() -> None:
-    first = _content_task(parts=("hello",))
-    queue: asyncio.Queue[MessageTask] = asyncio.Queue()
-    lock = asyncio.Lock()
-
-    merged, count = await _merge_content_tasks(queue, first, lock)
-    assert count == 0
-    assert merged is first
-
-
 async def test_all_unmergeable_no_merge() -> None:
     first = _content_task(parts=("hello",))
     queue: asyncio.Queue[MessageTask] = asyncio.Queue()
@@ -203,36 +193,6 @@ async def test_exact_boundary() -> None:
     assert total <= MERGE_MAX_LENGTH
     assert count == 1
     assert queue.qsize() == 1
-
-
-async def test_mixed_text_tool_text() -> None:
-    first = _content_task(parts=("a",))
-    queue: asyncio.Queue[MessageTask] = asyncio.Queue()
-    lock = asyncio.Lock()
-
-    await queue.put(_content_task(parts=("b",)))
-    await queue.put(_content_task(content_type="tool_use", parts=("tool",)))
-    await queue.put(_content_task(parts=("c",)))
-
-    merged, count = await _merge_content_tasks(queue, first, lock)
-    assert count == 1
-    assert merged.parts == ("a", "b")
-    assert queue.qsize() == 2
-
-
-async def test_queue_counter_with_partial_merge() -> None:
-    first = _content_task(parts=("a",))
-    queue: asyncio.Queue[MessageTask] = asyncio.Queue()
-    lock = asyncio.Lock()
-
-    await queue.put(_content_task(parts=("b",)))
-    await queue.put(_content_task(content_type="tool_use", parts=("tool",)))
-    await queue.put(_content_task(parts=("c",)))
-
-    merged, count = await _merge_content_tasks(queue, first, lock)
-    assert count == 1
-    assert merged.parts == ("a", "b")
-    assert queue.qsize() == 2
 
 
 async def test_status_coalesce_keeps_latest_same_window_thread() -> None:

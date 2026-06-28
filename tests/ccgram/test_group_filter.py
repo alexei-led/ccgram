@@ -12,8 +12,6 @@ from telegram.ext import CommandHandler, MessageHandler, filters
 from ccgram.bot import create_bot
 from ccgram.handlers.callback_registry import dispatch as callback_handler
 
-# ── Helpers ──────────────────────────────────────────────────────────────
-
 
 def _make_update(*, chat_id: int | None = -100999, user_id: int = 100) -> MagicMock:
     update = MagicMock()
@@ -38,9 +36,6 @@ def _has_chat_filter(f: filters.BaseFilter) -> bool:
     return "filters.Chat" in str(f)
 
 
-# ── _group_filter module-level tests ────────────────────────────────────
-
-
 class TestGroupFilterModule:
     def test_default_is_filters_all(self) -> None:
         """In test env CCGRAM_GROUP_ID is unset, so _group_filter should be ALL."""
@@ -56,9 +51,6 @@ class TestGroupFilterModule:
 
         result_none = filters.Chat(chat_id=None) if None else filters.ALL
         assert result_none is filters.ALL
-
-
-# ── Handler registration tests ──────────────────────────────────────────
 
 
 class TestGroupFilterRegistration:
@@ -97,9 +89,6 @@ class TestGroupFilterRegistration:
             for handler in group_handlers:
                 if isinstance(handler, (CommandHandler, MessageHandler)):
                     assert not _has_chat_filter(handler.filters)
-
-
-# ── callback_handler inline check tests ─────────────────────────────────
 
 
 @pytest.fixture(autouse=True)

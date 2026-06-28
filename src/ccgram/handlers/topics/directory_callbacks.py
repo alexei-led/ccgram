@@ -150,6 +150,37 @@ __all__ = [
 ]
 
 
+def _current_browse_path(context: ContextTypes.DEFAULT_TYPE) -> str:
+    default_path = str(Path.cwd())
+    if context.user_data is None:
+        return default_path
+    return context.user_data.get(BROWSE_PATH_KEY, default_path)
+
+
+def _current_browse_page(context: ContextTypes.DEFAULT_TYPE) -> int:
+    if context.user_data is None:
+        return 0
+    return context.user_data.get(BROWSE_PAGE_KEY, 0)
+
+
+async def _render_directory_browser(
+    query: CallbackQuery,
+    context: ContextTypes.DEFAULT_TYPE,
+    path: str,
+    *,
+    user_id: int,
+    page: int = 0,
+) -> None:
+    if context.user_data is not None:
+        context.user_data[BROWSE_PATH_KEY] = path
+        context.user_data[BROWSE_PAGE_KEY] = page
+
+    msg_text, keyboard, subdirs = build_directory_browser(path, page, user_id=user_id)
+    if context.user_data is not None:
+        context.user_data[BROWSE_DIRS_KEY] = subdirs
+    await safe_edit(query, msg_text, reply_markup=keyboard)
+
+
 async def handle_directory_callback(
     query: CallbackQuery,
     user_id: int,
@@ -229,14 +260,7 @@ async def _handle_fav(
         await query.answer("Directory no longer exists", show_alert=True)
         return
 
-    if context.user_data is not None:
-        context.user_data[BROWSE_PATH_KEY] = fav_path
-        context.user_data[BROWSE_PAGE_KEY] = 0
-
-    msg_text, keyboard, subdirs = build_directory_browser(fav_path, user_id=user_id)
-    if context.user_data is not None:
-        context.user_data[BROWSE_DIRS_KEY] = subdirs
-    await safe_edit(query, msg_text, reply_markup=keyboard)
+    await _render_directory_browser(query, context, fav_path, user_id=user_id)
     await query.answer()
 
 
@@ -255,20 +279,15 @@ async def _handle_star(
         return
     now_starred = user_preferences.toggle_user_star(user_id, fav_path)
 
-    # Rebuild browser at current path to update star icons
-    default_path = str(Path.cwd())
-    current_path = (
-        context.user_data.get(BROWSE_PATH_KEY, default_path)
-        if context.user_data
-        else default_path
+    current_path = _current_browse_path(context)
+    current_page = _current_browse_page(context)
+    await _render_directory_browser(
+        query,
+        context,
+        current_path,
+        user_id=user_id,
+        page=current_page,
     )
-    current_page = context.user_data.get(BROWSE_PAGE_KEY, 0) if context.user_data else 0
-    msg_text, keyboard, subdirs = build_directory_browser(
-        current_path, current_page, user_id=user_id
-    )
-    if context.user_data is not None:
-        context.user_data[BROWSE_DIRS_KEY] = subdirs
-    await safe_edit(query, msg_text, reply_markup=keyboard)
     await query.answer("⭐ Starred" if now_starred else "☆ Unstarred")
 
 
@@ -297,12 +316,7 @@ async def _handle_select(
         return
     subdir_name = cached_dirs[idx]
 
-    default_path = str(Path.cwd())
-    current_path = (
-        context.user_data.get(BROWSE_PATH_KEY, default_path)
-        if context.user_data
-        else default_path
-    )
+    current_path = _current_browse_path(context)
     new_path = (Path(current_path) / subdir_name).resolve()
 
     if not new_path.exists() or not new_path.is_dir():
@@ -310,14 +324,7 @@ async def _handle_select(
         return
 
     new_path_str = str(new_path)
-    if context.user_data is not None:
-        context.user_data[BROWSE_PATH_KEY] = new_path_str
-        context.user_data[BROWSE_PAGE_KEY] = 0
-
-    msg_text, keyboard, subdirs = build_directory_browser(new_path_str, user_id=user_id)
-    if context.user_data is not None:
-        context.user_data[BROWSE_DIRS_KEY] = subdirs
-    await safe_edit(query, msg_text, reply_markup=keyboard)
+    await _render_directory_browser(query, context, new_path_str, user_id=user_id)
     await query.answer()
 
 
@@ -331,24 +338,11 @@ async def _handle_up(
     if _browser_flow_stale(update, context):
         await query.answer("Stale browser (flow reset)", show_alert=True)
         return
-    default_path = str(Path.cwd())
-    current_path = (
-        context.user_data.get(BROWSE_PATH_KEY, default_path)
-        if context.user_data
-        else default_path
-    )
-    current = Path(current_path).resolve()
+    current = Path(_current_browse_path(context)).resolve()
     parent = current.parent
 
     parent_path = str(parent)
-    if context.user_data is not None:
-        context.user_data[BROWSE_PATH_KEY] = parent_path
-        context.user_data[BROWSE_PAGE_KEY] = 0
-
-    msg_text, keyboard, subdirs = build_directory_browser(parent_path, user_id=user_id)
-    if context.user_data is not None:
-        context.user_data[BROWSE_DIRS_KEY] = subdirs
-    await safe_edit(query, msg_text, reply_markup=keyboard)
+    await _render_directory_browser(query, context, parent_path, user_id=user_id)
     await query.answer()
 
 
@@ -364,14 +358,7 @@ async def _handle_home(
         return
 
     home_path = str(Path.home())
-    if context.user_data is not None:
-        context.user_data[BROWSE_PATH_KEY] = home_path
-        context.user_data[BROWSE_PAGE_KEY] = 0
-
-    msg_text, keyboard, subdirs = build_directory_browser(home_path, user_id=user_id)
-    if context.user_data is not None:
-        context.user_data[BROWSE_DIRS_KEY] = subdirs
-    await safe_edit(query, msg_text, reply_markup=keyboard)
+    await _render_directory_browser(query, context, home_path, user_id=user_id)
     await query.answer()
 
 
@@ -391,21 +378,14 @@ async def _handle_page(
     except ValueError:
         await query.answer("Invalid data")
         return
-    default_path = str(Path.cwd())
-    current_path = (
-        context.user_data.get(BROWSE_PATH_KEY, default_path)
-        if context.user_data
-        else default_path
+    current_path = _current_browse_path(context)
+    await _render_directory_browser(
+        query,
+        context,
+        current_path,
+        user_id=user_id,
+        page=pg,
     )
-    if context.user_data is not None:
-        context.user_data[BROWSE_PAGE_KEY] = pg
-
-    msg_text, keyboard, subdirs = build_directory_browser(
-        current_path, pg, user_id=user_id
-    )
-    if context.user_data is not None:
-        context.user_data[BROWSE_DIRS_KEY] = subdirs
-    await safe_edit(query, msg_text, reply_markup=keyboard)
     await query.answer()
 
 

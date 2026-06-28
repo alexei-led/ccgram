@@ -251,9 +251,7 @@ async def probe_topic_existence(client: TelegramClient) -> None:
                     )
 
 
-# ------------------------------------------------------------------
-# Telegram topic event handlers (moved from bot.py)
-# ------------------------------------------------------------------
+# Telegram topic event handlers.
 
 
 async def topic_closed_handler(

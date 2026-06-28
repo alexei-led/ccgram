@@ -33,32 +33,25 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger()
 
-# Upload directory name inside project cwd
 _UPLOAD_DIR = ".ccgram-uploads"
 
-# Max filename length after sanitization
 _MAX_FILENAME_LEN = 200
 
 # Max file size in bytes (50 MB — Telegram Bot API limit for getFile)
 _MAX_FILE_SIZE = 50 * 1024 * 1024
 
-# Pattern for allowed filename characters
 _SAFE_FILENAME_RE = re.compile(r"[^a-zA-Z0-9._-]")
 
 # Control characters to strip from captions (keep \n and \t)
 _CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
-# Max caption length forwarded to Claude
 _MAX_CAPTION_LEN = 500
 
 
 def _sanitize_filename(name: str) -> str:
     """Sanitize a filename: allow a-zA-Z0-9._-, reject path traversal."""
-    # Strip path components
     name = Path(name).name
-    # Replace unsafe chars with underscore
     name = _SAFE_FILENAME_RE.sub("_", name)
-    # Reject filenames that are only dots
     if not name.strip("."):
         name = "unnamed"
     # Truncate

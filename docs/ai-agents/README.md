@@ -7,21 +7,21 @@ Codebase index for AI agents working on `ccgram`. Read in order:
 3. `tooling-and-tests.md` — fast test targeting.
 4. `extension-and-fix-playbook.md` — recipes.
 
-Authoritative architecture lives in `/CLAUDE.md` and `/.claude/rules/architecture.md`. These docs cover what those don't: request/response lifecycles, decision maps for common tasks, and debug entrypoints by symptom.
+Authoritative architecture lives in `docs/architecture.md` and `/.claude/rules/architecture.md`. These docs cover request/response lifecycles, decision maps for common tasks, and debug entrypoints by symptom.
 
 ## Project Summary
 
-`ccgram` bridges Telegram topics to tmux windows running AI coding agents.
+`ccgram` bridges Telegram topics to terminal multiplexer windows running AI coding agents.
 
-- 1 Telegram topic = 1 tmux window (`@id`) = 1 provider session.
-- Internal identity is `window_id` (`@3`), not window name.
+- 1 Telegram topic = 1 multiplexer window/tab = 1 provider session.
+- Internal identity is `window_id`, not a display name.
 - Message parsing preserves full content; splitting only at Telegram send.
 - Provider behavior is per-window and capability-driven.
 
 ## Non-Negotiable Rules
 
-- Topic-centric routing; one topic ↔ one window.
-- tmux `window_id`-keyed identity everywhere.
+- Topic-centric routing; one topic ↔ one window/tab.
+- Use `window_id` for identity; never key by display name.
 - No parse-layer truncation.
 - Per-window provider via `WindowState.provider_name` + `ProviderCapabilities`.
 - Handlers depend on `TelegramClient` Protocol, never `telegram.Bot`.
