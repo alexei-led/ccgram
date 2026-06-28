@@ -4,6 +4,7 @@ Orchestrates the background polling cycle: iterates thread bindings,
 delegates per-window work to window_tick, and runs periodic/lifecycle tasks.
 
 Key components:
+  - _tick_bound_windows: Per-iteration helper (injectable runtime for tests)
   - status_poll_loop: Background polling task (entry point for bot.py)
 """
 
@@ -17,9 +18,12 @@ from ...thread_router import thread_router
 from ...multiplexer import multiplexer as tmux_manager
 from ...utils import log_throttled
 from . import window_tick
+from .polling_runtime import PollingRuntime
 
 if TYPE_CHECKING:
     from telegram import Bot
+
+    from ...multiplexer.base import WindowRef as TmuxWindow
 
 logger = structlog.get_logger()
 
@@ -29,6 +33,39 @@ _BACKOFF_MIN = 2.0
 _BACKOFF_MAX = 30.0
 
 _LoopError = (TelegramError, OSError, RuntimeError, ValueError)
+
+
+# ── Per-iteration tick helper ─────────────────────────────────────────────
+
+
+async def _tick_bound_windows(
+    bot: "Bot",
+    window_lookup: "dict[str, TmuxWindow]",
+    *,
+    runtime: PollingRuntime | None = None,
+) -> None:
+    """Tick every thread-bound window once.
+
+    Extracted so tests can drive a single iteration with an isolated
+    ``PollingRuntime``. Production callers pass no runtime; default singletons.
+    """
+    for user_id, thread_id, wid in list(thread_router.iter_thread_bindings()):
+        structlog.contextvars.clear_contextvars()
+        structlog.contextvars.bind_contextvars(window_id=wid)
+        try:
+            w = window_lookup.get(wid)
+            await window_tick.tick_window(
+                bot, user_id, thread_id, wid, w, runtime=runtime
+            )
+        except (TelegramError, OSError) as e:
+            log_throttled(
+                logger,
+                f"status-update:{user_id}:{thread_id}",
+                "Status update error for user %s thread %s: %s",
+                user_id,
+                thread_id,
+                e,
+            )
 
 
 # ── Main loop ─────────────────────────────────────────────────────────────
@@ -63,23 +100,7 @@ async def status_poll_loop(bot: "Bot") -> None:
             window_lookup = {w.window_id: w for w in all_windows}
 
             await run_periodic_tasks(client, all_windows, timers)
-
-            for user_id, thread_id, wid in list(thread_router.iter_thread_bindings()):
-                structlog.contextvars.clear_contextvars()
-                structlog.contextvars.bind_contextvars(window_id=wid)
-                try:
-                    w = window_lookup.get(wid)
-                    await window_tick.tick_window(bot, user_id, thread_id, wid, w)
-                except (TelegramError, OSError) as e:
-                    log_throttled(
-                        logger,
-                        f"status-update:{user_id}:{thread_id}",
-                        "Status update error for user %s thread %s: %s",
-                        user_id,
-                        thread_id,
-                        e,
-                    )
-
+            await _tick_bound_windows(bot, window_lookup)
             await run_lifecycle_tasks(client, all_windows)
 
         except _LoopError:

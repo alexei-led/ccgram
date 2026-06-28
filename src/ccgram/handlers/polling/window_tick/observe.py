@@ -28,6 +28,7 @@ from .decide import build_status_line
 if TYPE_CHECKING:
     from ....providers.base import AgentProvider
     from ....multiplexer.base import WindowRef as TmuxWindow
+    from ..polling_runtime import PollingRuntime
 
 logger = structlog.get_logger()
 
@@ -45,14 +46,22 @@ def _parse_with_pyte(
     rows: int = 0,
     *,
     parse_claude_chrome: bool = True,
+    runtime: "PollingRuntime | None" = None,
 ) -> StatusUpdate | None:
-    return terminal_screen_buffer.parse_with_pyte(
+    sb = runtime.screen_buffer if runtime is not None else terminal_screen_buffer
+    return sb.parse_with_pyte(
         window_id, pane_text, columns, rows, parse_claude_chrome=parse_claude_chrome
     )
 
 
-def _check_vim_insert(window_id: str, pane_text: str, w: "TmuxWindow") -> None:
-    vim_text = terminal_screen_buffer.get_rendered_text(window_id, pane_text)
+def _check_vim_insert(
+    window_id: str,
+    pane_text: str,
+    w: "TmuxWindow",
+    runtime: "PollingRuntime | None" = None,
+) -> None:
+    sb = runtime.screen_buffer if runtime is not None else terminal_screen_buffer
+    vim_text = sb.get_rendered_text(window_id, pane_text)
     if has_insert_indicator(vim_text):
         notify_vim_insert_seen(w.window_id)
 
@@ -67,8 +76,12 @@ def _get_last_activity_ts(window_id: str) -> float | None:
 
 
 async def _resolve_status(
-    window_id: str, pane_text: str, w: "TmuxWindow"
+    window_id: str,
+    pane_text: str,
+    w: "TmuxWindow",
+    runtime: "PollingRuntime | None" = None,
 ) -> StatusUpdate | None:
+    sb = runtime.screen_buffer if runtime is not None else terminal_screen_buffer
     provider = _get_provider(window_id)
     status = _parse_with_pyte(
         window_id,
@@ -76,10 +89,11 @@ async def _resolve_status(
         columns=w.pane_width,
         rows=w.pane_height,
         parse_claude_chrome=provider.capabilities.uses_pyte_status_parsing,
+        runtime=runtime,
     )
     if status is not None:
         return status
-    clean_text = terminal_screen_buffer.get_rendered_text(window_id, pane_text)
+    clean_text = sb.get_rendered_text(window_id, pane_text)
     pane_title = ""
     if provider.capabilities.uses_pane_title:
         pane_title = await tmux_manager.get_pane_title(w.window_id)
@@ -122,6 +136,7 @@ def build_context(
     window_id: str,
     w: "TmuxWindow",
     status: StatusUpdate | None,
+    runtime: "PollingRuntime | None" = None,
 ) -> TickContext:
     """Build the TickContext that ``decide_tick`` will consume.
 
@@ -131,18 +146,17 @@ def build_context(
     (``mark_seen_status``) — keeping it inside this builder rather than
     inside ``decide_tick`` preserves the existing behaviour.
     """
+    ps = runtime.poll_state if runtime is not None else terminal_poll_state
     last_activity_ts = _get_last_activity_ts(window_id)
-    is_recently_active = terminal_poll_state.is_recently_active(
-        window_id, last_activity_ts
-    )
+    is_recently_active = ps.is_recently_active(window_id, last_activity_ts)
     resolved_status_text = build_status_line(status)
-    ws = terminal_poll_state.peek_state(window_id)
+    ws = ps.peek_state(window_id)
     provider = _get_provider(window_id)
     return TickContext(
         window_id=window_id,
         resolved_status_text=resolved_status_text,
         is_shell_prompt=is_shell_prompt(w.pane_current_command),
-        has_seen_status=terminal_poll_state.check_seen_status(window_id),
+        has_seen_status=ps.check_seen_status(window_id),
         is_recently_active=is_recently_active,
         startup_time=ws.startup_time if ws else None,
         is_dead_window=False,

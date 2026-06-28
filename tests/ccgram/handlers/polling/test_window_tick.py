@@ -66,7 +66,9 @@ class TestTickWindowDeadWindow:
             window_tick, "_handle_dead_window_notification", new_callable=AsyncMock
         ) as mock_dead:
             await tick_window(bot, 1, 100, "@0", None)
-            mock_dead.assert_called_once_with(bot, 1, 100, "@0")
+            mock_dead.assert_called_once()
+            args, kwargs = mock_dead.call_args
+            assert args == (bot, 1, 100, "@0")
 
     async def test_dead_window_skips_other_work(self):
         bot = AsyncMock(spec=Bot)

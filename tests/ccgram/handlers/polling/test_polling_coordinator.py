@@ -11,6 +11,7 @@ from telegram.error import TelegramError
 from ccgram.handlers.polling.polling_coordinator import (
     _BACKOFF_MAX,
     _BACKOFF_MIN,
+    _tick_bound_windows,
     status_poll_loop,
 )
 
@@ -219,7 +220,7 @@ class TestPerBindingError:
         call_order: list[str] = []
 
         async def _tick_side_effect(
-            _bot: Bot, uid: int, tid: int, wid: str, _w: Any
+            _bot: Bot, uid: int, tid: int, wid: str, _w: Any, **_kwargs: Any
         ) -> None:
             call_order.append(wid)
             if wid == "@1":
@@ -264,6 +265,7 @@ class TestImportsAreMinimal:
             "..utils",
             "..config",
             ".window_tick",
+            ".polling_runtime",
             ".periodic_tasks",
         }
 
@@ -405,3 +407,62 @@ class TestBackoffBehavior:
 
         assert sleep_calls[0] == _BACKOFF_MIN
         assert sleep_calls[1] == 0.5
+
+
+class TestTickBoundWindowsIsolatedRuntime:
+    """Verify _tick_bound_windows threads runtime into tick_window.
+
+    Pre-seeding the isolated runtime's lifecycle as dead-notified causes
+    tick_window to early-return before calling discover_and_register_transcript.
+    This confirms the coordinator honours the injected runtime rather than
+    the default singletons.
+    """
+
+    async def test_isolated_runtime_used_not_default(self):
+        from ccgram.handlers.polling.polling_runtime import (
+            PollingRuntime,
+            get_default_runtime,
+        )
+        from ccgram.topic_state_registry import topic_state
+
+        # Snapshot/restore topic_state so PollingRuntime.create() registrations
+        # don't leak into other tests.
+        snapshot = {
+            scope: list(bucket) for scope, bucket in topic_state._cleanups.items()
+        }
+        try:
+            isolated = PollingRuntime.create()
+            default = get_default_runtime()
+
+            user_id, thread_id, wid = 42, 999, "@iso-coord"
+            isolated.lifecycle.mark_dead_notified(user_id, thread_id, wid)
+
+            from typing import cast
+
+            from ccgram.multiplexer.base import WindowRef as TmuxWindow
+
+            bot = AsyncMock(spec=Bot)
+            w = _make_window(wid)
+            window_lookup = cast(dict[str, TmuxWindow], {wid: w})
+
+            with (
+                patch(
+                    "ccgram.handlers.polling.polling_coordinator.thread_router"
+                ) as mock_router,
+                patch(
+                    "ccgram.handlers.polling.window_tick.discover_and_register_transcript",
+                    new_callable=AsyncMock,
+                ) as mock_discover,
+            ):
+                mock_router.iter_thread_bindings.return_value = [
+                    (user_id, thread_id, wid)
+                ]
+                await _tick_bound_windows(bot, window_lookup, runtime=isolated)
+
+            # tick_window early-returns on dead-notified; discover never reached.
+            mock_discover.assert_not_called()
+            # Default runtime was not consulted — its lifecycle is clean.
+            assert not default.lifecycle.is_dead_notified(user_id, thread_id, wid)
+        finally:
+            for scope, bucket in topic_state._cleanups.items():
+                bucket[:] = snapshot[scope]

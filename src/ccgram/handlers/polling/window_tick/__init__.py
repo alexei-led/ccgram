@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 from ....telegram_client import PTBTelegramClient
 from ...messaging_pipeline.message_queue import get_message_queue
 from ...recovery.transcript_discovery import discover_and_register_transcript
+from ..polling_runtime import PollingRuntime, get_default_runtime
 from ..polling_state import (
     lifecycle_strategy,
     pane_status_strategy,
@@ -66,13 +67,17 @@ async def tick_window(
     thread_id: int,
     window_id: str,
     window: "TmuxWindow | None",
+    runtime: PollingRuntime | None = None,
 ) -> None:
     """Run one poll cycle for one window."""
-    if lifecycle_strategy.is_dead_notified(user_id, thread_id, window_id):
+    rt = runtime if runtime is not None else get_default_runtime()
+    if rt.lifecycle.is_dead_notified(user_id, thread_id, window_id):
         return
 
     if window is None:
-        await _handle_dead_window_notification(bot, user_id, thread_id, window_id)
+        await _handle_dead_window_notification(
+            bot, user_id, thread_id, window_id, runtime=rt
+        )
         return
 
     await discover_and_register_transcript(
@@ -86,18 +91,21 @@ async def tick_window(
     queue = get_message_queue(user_id)
     if queue and not queue.empty():
         await _check_interactive_only(
-            bot, user_id, window_id, thread_id, _window=window
+            bot, user_id, window_id, thread_id, _window=window, runtime=rt
         )
-        await _scan_window_panes(bot, user_id, window_id, thread_id)
-        await _maybe_check_passive_shell(bot, user_id, window_id, thread_id)
+        await _scan_window_panes(bot, user_id, window_id, thread_id, runtime=rt)
+        await _maybe_check_passive_shell(bot, user_id, window_id, thread_id, runtime=rt)
         return
 
-    await _update_status(bot, user_id, window_id, thread_id=thread_id, _window=window)
-    await _scan_window_panes(bot, user_id, window_id, thread_id)
-    await _maybe_check_passive_shell(bot, user_id, window_id, thread_id)
+    await _update_status(
+        bot, user_id, window_id, thread_id=thread_id, _window=window, runtime=rt
+    )
+    await _scan_window_panes(bot, user_id, window_id, thread_id, runtime=rt)
+    await _maybe_check_passive_shell(bot, user_id, window_id, thread_id, runtime=rt)
 
 
 __all__ = [
+    "PollingRuntime",
     "TickContext",
     "TickDecision",
     "_apply_active_transition",
@@ -122,6 +130,7 @@ __all__ = [
     "build_context",
     "build_status_line",
     "decide_tick",
+    "get_default_runtime",
     "is_shell_prompt",
     "lifecycle_strategy",
     "pane_status_strategy",
