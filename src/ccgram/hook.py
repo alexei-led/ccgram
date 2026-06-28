@@ -22,7 +22,6 @@ import shlex
 import subprocess
 import structlog
 import sys
-import time
 from pathlib import Path
 from collections.abc import Callable
 from typing import Any
@@ -861,14 +860,12 @@ def _write_event(
     events_file = ccgram_dir() / "events.jsonl"
     events_file.parent.mkdir(parents=True, exist_ok=True)
 
+    # Lazy: hooks.state_files only imported when an event fires (same rationale
+    # as the utils import above: keep the hook fast path lean).
+    from .hooks.state_files import serialize_event_record
+
     event_line = json.dumps(
-        {
-            "ts": time.time(),
-            "event": event_type,
-            "window_key": window_key,
-            "session_id": session_id,
-            "data": data,
-        },
+        serialize_event_record(event_type, session_id, window_key, data),
         separators=(",", ":"),
     )
 
@@ -935,13 +932,12 @@ def _update_session_map(
                     except OSError:
                         logger.warning("Failed to read session_map.json")
 
-                session_map[session_window_key] = {
-                    "session_id": session_id,
-                    "cwd": cwd,
-                    "window_name": window_name,
-                    "transcript_path": transcript_path,
-                    "provider_name": provider_name,
-                }
+                # Lazy: same hook fast-path rationale as _write_event.
+                from .hooks.state_files import serialize_session_map_entry
+
+                session_map[session_window_key] = serialize_session_map_entry(
+                    session_id, cwd, window_name, transcript_path, provider_name
+                )
 
                 # Clean up old-format key ("session:window_name") if it exists
                 old_key = f"{tmux_session_name}:{window_name}"

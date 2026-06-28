@@ -34,6 +34,7 @@ from typing import Any, cast
 import aiofiles
 
 from .config import config
+from .hooks.state_files import StateFileValidationError, parse_session_map_entry
 from .utils import atomic_write_json, log_throttle_reset, log_throttled
 from .window_resolver import is_window_id, session_map_prefix_for
 
@@ -228,6 +229,19 @@ def parse_session_map(raw: dict[str, Any], prefix: str) -> dict[str, dict[str, s
         window_name = key[len(prefix) :]
         if not isinstance(info, dict):
             continue
+        try:
+            # parse_session_map_entry is used as a validation gate: it raises
+            # StateFileValidationError for malformed entries (missing session_id,
+            # unsupported schema_version) so they are skipped. The returned
+            # SessionMapEntry is intentionally discarded; the raw dict is passed
+            # downstream because effective_session_map_info/_prefer_existing_primary
+            # merge it with in-memory window state and return a computed dict,
+            # not a passthrough — rewiring to SessionMapEntry would add indirection
+            # across two divergent call paths for no behavioral gain.
+            parse_session_map_entry(info)
+        except StateFileValidationError as exc:
+            logger.debug("Skipping invalid session_map entry %s: %s", key, exc)
+            continue
         effective = effective_session_map_info(window_name, info)
         if effective["session_id"]:
             result[window_name] = effective
@@ -306,7 +320,19 @@ class SessionMapSync:
                     old_format_sids.add(sid)
                 old_format_keys.append(key)
                 continue
+            # Protect this window_id from stale-state deletion regardless of
+            # whether the entry passes schema validation.  Validation failures
+            # are forward-compat / corruption guards; they must not delete
+            # in-memory state for a window that is present in the file.
             valid_wids.add(window_id)
+            try:
+                # Validation gate — see the identical pattern in parse_session_map()
+                # for the full rationale. Returned SessionMapEntry is discarded;
+                # raw dict is consumed by _sync_window_from_session_map below.
+                parse_session_map_entry(info)
+            except StateFileValidationError as exc:
+                logger.debug("Skipping invalid session_map entry %s: %s", key, exc)
+                continue
             if self._sync_window_from_session_map(window_id, info):
                 changed = True
 
@@ -521,13 +547,12 @@ class SessionMapSync:
                                 "Failed to read session_map.json for hookless write"
                             )
                     display_name = thread_router.get_display_name(window_id)
-                    session_map[window_key] = {
-                        "session_id": session_id,
-                        "cwd": cwd,
-                        "window_name": display_name,
-                        "transcript_path": transcript_path,
-                        "provider_name": provider_name,
-                    }
+                    # Lazy: same session_map ↔ stores cycle as _prefer_existing_primary
+                    from .hooks.state_files import serialize_session_map_entry
+
+                    session_map[window_key] = serialize_session_map_entry(
+                        session_id, cwd, display_name, transcript_path, provider_name
+                    )
                     atomic_write_json(map_file, session_map)
                     logger.info(
                         "Registered hookless session: %s -> session_id=%s, cwd=%s",

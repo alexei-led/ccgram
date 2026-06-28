@@ -13,6 +13,7 @@ from pathlib import Path
 import aiofiles
 import structlog
 
+from .hooks.state_files import StateFileValidationError, parse_event_record
 from .providers.base import HookEvent
 
 logger = structlog.get_logger()
@@ -49,17 +50,24 @@ async def read_new_events(
                 try:
                     data = json.loads(line)
                 except json.JSONDecodeError:
-                    logger.debug("Skipping malformed event line")
+                    logger.debug("Skipping malformed event line (invalid JSON)")
+                    new_offset = await f.tell()
+                    continue
+
+                try:
+                    record = parse_event_record(data)
+                except StateFileValidationError as exc:
+                    logger.debug("Skipping invalid event record: %s", exc)
                     new_offset = await f.tell()
                     continue
 
                 events.append(
                     HookEvent(
-                        event_type=data.get("event", ""),
-                        window_key=data.get("window_key", ""),
-                        session_id=data.get("session_id", ""),
-                        data=data.get("data", {}),
-                        timestamp=data.get("ts", 0.0),
+                        event_type=record.event,
+                        window_key=record.window_key,
+                        session_id=record.session_id,
+                        data=record.data,
+                        timestamp=record.ts,
                     )
                 )
                 new_offset = await f.tell()

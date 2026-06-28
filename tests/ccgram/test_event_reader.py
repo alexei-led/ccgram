@@ -87,6 +87,23 @@ async def test_resets_offset_on_truncation(tmp_path: Path) -> None:
     assert offset <= file_size
 
 
+async def test_skips_non_dict_json_line_and_advances_offset(tmp_path: Path) -> None:
+    """A valid JSON line that is not a dict (e.g. []) must be skipped,
+    the byte offset must advance past it, and subsequent valid events
+    must still be read (regression for MAJOR-3 poll-wedge bug).
+    """
+    path = tmp_path / "events.jsonl"
+    path.write_text("[]\n")  # valid JSON, not a dict
+    offset_after_bad = path.stat().st_size
+    _write_event(path, "Stop", "ccgram:@0", "sess-1")
+
+    events, offset = await read_new_events(path, 0)
+    assert len(events) == 1
+    assert events[0].event_type == "Stop"
+    # Offset must advance past the bad line — not stall at 0
+    assert offset > offset_after_bad
+
+
 async def test_returns_hook_event_dataclass(tmp_path: Path) -> None:
     path = tmp_path / "events.jsonl"
     _write_event(path, "Notification", "ccgram:@5", "abc-123")
