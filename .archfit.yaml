@@ -135,6 +135,20 @@ modules:
     owner: alexei-led
     subdomain: core
     volatility: medium
+  # --- Core: live-session read contract ---
+  # Mirrors window_state_ports for the volatile session-state cluster.
+  # Handlers read frozen LiveSessionSnapshot projections via free functions;
+  # direct imports of claude_task_state / get_claude_task_snapshot / idle_tracker
+  # from handlers are banned. Write authority stays in session_lifecycle.
+  # Fitness gate: tests/ccgram/test_session_state_ports_audit.py.
+  session_state_ports:
+    paths:
+      - ccgram.session_state_ports
+      - ccgram.session_state_ports.*
+    layer: core
+    owner: alexei-led
+    subdomain: core
+    volatility: medium
   # --- Core: session and lifecycle management (the live-session core) ---
   # Highest-fan-in volatile target cluster from the review (claude_task_state,
   # session, session_monitor, monitor_state). The 62 residual critical edges

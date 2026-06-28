@@ -58,6 +58,14 @@ Change `/commands` failure probe / status snapshot:
 - `src/ccgram/handlers/commands/failure_probe.py` for transcript-based failure detection.
 - `src/ccgram/handlers/commands/status_snapshot.py` for status snapshot delegation.
 
+Change topic-creation flow (directory browser → worktree → workspace → provider → window):
+
+- `src/ccgram/handlers/topics/topic_creation_draft.py` — typed accessor for `context.user_data` flow state; `TopicCreationDraft`, `_browser_flow_stale`, `_required_selected_path`.
+- `src/ccgram/handlers/topics/workspace_callbacks.py` — CB_WS_SELECT / CB_WS_SKIP workspace picker callbacks and `_show_workspace_picker_or_provider`.
+- `src/ccgram/handlers/topics/provider_mode_callbacks.py` — CB_PROV_SELECT / CB_MODE_SELECT callbacks; calls `launch_window` after provider/mode is chosen.
+- `src/ccgram/handlers/topics/window_launch_service.py` — `launch_window` entry point: creates window, registers pending-creation race guard, binds thread, forwards pending text.
+- `src/ccgram/handlers/topics/directory_callbacks.py` — directory navigation callbacks; orchestrates the full flow.
+
 Change recovery UX:
 
 - `src/ccgram/handlers/recovery/recovery_banner.py` — dead-window banner UX.
@@ -109,7 +117,19 @@ Change session binding logic:
 
 Adjust transcript/status parsing:
 
-- Provider-specific in `providers/*.py`. Shared in `transcript_parser.py` / `terminal_parser.py`.
+- Provider-specific in `providers/*.py`. Shared in `transcript_parser.py` / `terminal_parser.py`. Entry-type dispatch is in the small `_handle_*` functions inside `transcript_parser.py`; add new entry types there without touching the public `parse_entries` signature.
+
+Change hook event record or session-map record schema:
+
+- Canonical types and helpers are in `hooks/state_files.py` (`EventLogRecord`, `SessionMapEntry`, `SCHEMA_VERSION_*` constants, `serialize_*` / `parse_*`). File I/O and locking stay in `hook.py` (event writes) and `session_map.py` (map reads/writes). `state_files.py` is stdlib-only — no I/O, no config imports.
+
+Change live-session read behavior (task snapshot, wait header, session-id, last-activity):
+
+- Reads go through `session_state_ports/live_session_state.py` free functions (`get_task_snapshot`, `get_wait_header`, `has_task_snapshot`, `get_session_id`, `get_last_activity_ts`) and the `LiveSessionSnapshot` frozen dataclass. Do not import `claude_task_state` or `idle_tracker` directly from handlers. Fitness gate: `tests/ccgram/test_session_state_ports_audit.py`.
+
+Change polling strategies or add test isolation for polling:
+
+- Strategy singletons live in `polling_state.py`. The injectable bundle is `polling_runtime.PollingRuntime`; `PollingRuntime.create()` builds an isolated copy for tests. Pass `runtime=` to `tick_window`, `observe`, and `apply`. Import direction: `polling_runtime` → `polling_state` only.
 
 Touch tmux behavior: `tmux_manager.py` only.
 
@@ -197,3 +217,15 @@ Symptom: `test_window_store_import_boundary` fails
 Symptom: `test_polling_types_purity` fails
 
 - `polling_types.py` imported a stateful module (likely `polling_state.py` or another non-stdlib besides `ccgram.providers.base`). Move the offending import to `polling_state.py` or to the call site.
+
+Symptom: `test_polling_runtime` fails
+
+- A `PollingRuntime.create()` instance shares state with the default singletons, or `reset_window()` on an isolated bundle touches a default singleton. Verify that `PollingRuntime.create()` constructs fresh strategy instances and that `reset_window` calls only on the bundle's own fields.
+
+Symptom: `test_session_state_ports_audit` fails
+
+- A handler (or module reachable from handlers) directly imports `get_claude_task_snapshot`, `get_claude_wait_header`, or `claude_task_state.has_snapshot`. Route through `session_state_ports/live_session_state.py` free functions instead. If the module is genuinely not a handler, it may be added to the audit allow-list in the test.
+
+Symptom: hook record rejected (version mismatch or missing required field)
+
+- `hooks/state_files.py` `parse_event_record` or `parse_session_map_entry` returned `None` or raised. Check `SCHEMA_VERSION_EVENTS` / `SCHEMA_VERSION_SESSION_MAP` constants against the actual record's `_v` field. Missing required fields (e.g. `session_id`, `hook_event_name`) cause silent `None` returns; add the field or bump the schema version with a migration in `parse_*`.

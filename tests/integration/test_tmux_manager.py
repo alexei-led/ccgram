@@ -224,7 +224,7 @@ async def test_accept_yolo_confirmation_detects_prompt(tmux, tmp_path) -> None:
     )
     await asyncio.sleep(0.5)
 
-    with patch("ccgram.handlers.topics.directory_callbacks.tmux_manager", tmux):
+    with patch("ccgram.handlers.topics.window_launch_service.tmux_manager", tmux):
         from ccgram.handlers.topics.directory_callbacks import _accept_yolo_confirmation
 
         result = await _accept_yolo_confirmation(window_id, timeout=3.0)
@@ -270,7 +270,7 @@ async def test_accept_yolo_confirmation_timeout_on_no_prompt(tmux, tmp_path) -> 
     await tmux.send_keys(window_id, "echo hello world")
     await asyncio.sleep(0.3)
 
-    with patch("ccgram.handlers.topics.directory_callbacks.tmux_manager", tmux):
+    with patch("ccgram.handlers.topics.window_launch_service.tmux_manager", tmux):
         from ccgram.handlers.topics.directory_callbacks import _accept_yolo_confirmation
 
         result = await _accept_yolo_confirmation(window_id, timeout=1.0)

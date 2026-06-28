@@ -12,6 +12,7 @@ from ccgram.handlers.topics.directory_callbacks import (
     _handle_wt_new,
     _handle_wt_use_current,
 )
+from ccgram.handlers.topics.window_launch_service import WindowLaunchRequest
 from ccgram.handlers.text.text_handler import _handle_worktree_name_reply
 from ccgram.handlers.user_state import (
     AWAITING_WORKTREE_BRANCH_NAME,
@@ -82,20 +83,27 @@ def _make_context(user_data: dict) -> MagicMock:
     return ctx
 
 
+@patch("ccgram.handlers.topics.workspace_callbacks.safe_edit", new_callable=AsyncMock)
 @patch("ccgram.handlers.topics.directory_callbacks.safe_edit", new_callable=AsyncMock)
+@patch("ccgram.handlers.topics.workspace_callbacks.tmux_manager")
 @patch("ccgram.handlers.topics.directory_callbacks.thread_router")
 async def test_use_current_branch_skips_to_provider_picker(
-    mock_tr: MagicMock, mock_edit: AsyncMock, git_repo: Path
+    mock_tr: MagicMock,
+    mock_mux: MagicMock,
+    mock_edit_dc: AsyncMock,
+    mock_edit_wc: AsyncMock,
+    git_repo: Path,
 ) -> None:
     mock_tr.get_window_for_thread.return_value = None
+    mock_mux.capabilities.native_agent_status = False
     user_data = {BROWSE_PATH_KEY: str(git_repo), PENDING_THREAD_ID: 42}
     context = _make_context(user_data)
 
     await _handle_confirm(_make_query(), 100, _make_update(42), context)
-    assert "Git Worktree" in mock_edit.call_args[0][1]
+    assert "Git Worktree" in mock_edit_dc.call_args[0][1]
 
     await _handle_wt_use_current(_make_query(), context)
-    assert "Select Provider" in mock_edit.call_args[0][1]
+    assert "Select Provider" in mock_edit_wc.call_args[0][1]
     assert PENDING_WORKTREE_REPO not in user_data
 
 
@@ -132,9 +140,9 @@ async def test_new_worktree_creates_and_persists_to_window_state(
             "ccgram.handlers.topics.directory_callbacks.safe_edit",
             new_callable=AsyncMock,
         ),
-        patch("ccgram.handlers.topics.directory_callbacks.tmux_manager") as mock_tmux,
+        patch("ccgram.handlers.topics.window_launch_service.tmux_manager") as mock_tmux,
         patch(
-            "ccgram.handlers.topics.directory_callbacks.provider_registry"
+            "ccgram.handlers.topics.window_launch_service.provider_registry"
         ) as mock_registry,
     ):
         mock_tmux.capabilities.native_worktrees = False
@@ -146,7 +154,16 @@ async def test_new_worktree_creates_and_persists_to_window_state(
         mock_registry.get.return_value = mock_provider
 
         await _create_window_and_bind(
-            _make_query(), 100, str(worktree_path), "claude", "normal", context
+            _make_query(),
+            context,
+            WindowLaunchRequest(
+                user_id=100,
+                thread_id=user_data.get(PENDING_THREAD_ID),
+                provider_name="claude",
+                cwd=str(worktree_path),
+                mode="normal",
+                pending_text=None,
+            ),
         )
 
     state = window_store.window_states["@7"]
@@ -179,7 +196,7 @@ async def test_create_window_failure_clears_worktree_state(
             "ccgram.handlers.topics.directory_callbacks.safe_edit",
             new_callable=AsyncMock,
         ),
-        patch("ccgram.handlers.topics.directory_callbacks.tmux_manager") as mock_tmux,
+        patch("ccgram.handlers.topics.window_launch_service.tmux_manager") as mock_tmux,
     ):
         mock_tmux.capabilities.native_worktrees = False
         mock_tmux.create_window = AsyncMock(
@@ -187,11 +204,15 @@ async def test_create_window_failure_clears_worktree_state(
         )
         await _create_window_and_bind(
             _make_query(),
-            100,
-            user_data[BROWSE_PATH_KEY],
-            "claude",
-            "normal",
             context,
+            WindowLaunchRequest(
+                user_id=100,
+                thread_id=user_data.get(PENDING_THREAD_ID),
+                provider_name="claude",
+                cwd=user_data[BROWSE_PATH_KEY],
+                mode="normal",
+                pending_text=None,
+            ),
         )
 
     assert PENDING_WORKTREE_CREATING not in user_data
@@ -232,10 +253,10 @@ async def test_herdr_delegates_worktree_creation(
             "ccgram.handlers.topics.directory_callbacks.safe_edit",
             new_callable=AsyncMock,
         ),
-        patch("ccgram.handlers.topics.directory_callbacks.thread_router"),
-        patch("ccgram.handlers.topics.directory_callbacks.tmux_manager") as mock_tmux,
+        patch("ccgram.handlers.topics.window_launch_service.thread_router"),
+        patch("ccgram.handlers.topics.window_launch_service.tmux_manager") as mock_tmux,
         patch(
-            "ccgram.handlers.topics.directory_callbacks.provider_registry"
+            "ccgram.handlers.topics.window_launch_service.provider_registry"
         ) as mock_registry,
     ):
         mock_tmux.capabilities.native_worktrees = True
@@ -247,7 +268,16 @@ async def test_herdr_delegates_worktree_creation(
         mock_registry.get.return_value = mock_provider
 
         await _create_window_and_bind(
-            _make_query(), 100, worktree_path, "claude", "normal", context
+            _make_query(),
+            context,
+            WindowLaunchRequest(
+                user_id=100,
+                thread_id=user_data.get(PENDING_THREAD_ID),
+                provider_name="claude",
+                cwd=worktree_path,
+                mode="normal",
+                pending_text=None,
+            ),
         )
 
     # Delegated to herdr; the git create_window path is never used.
@@ -486,12 +516,14 @@ async def test_edit_name_inactive_when_flag_unset() -> None:
     assert handled is False
 
 
-@patch("ccgram.handlers.topics.directory_callbacks.safe_edit", new_callable=AsyncMock)
+@patch("ccgram.handlers.topics.workspace_callbacks.safe_edit", new_callable=AsyncMock)
+@patch("ccgram.handlers.topics.workspace_callbacks.tmux_manager")
 @patch("ccgram.handlers.topics.directory_callbacks.thread_router")
 async def test_non_git_directory_skips_worktree_picker(
-    mock_tr: MagicMock, mock_edit: AsyncMock, tmp_path: Path
+    mock_tr: MagicMock, mock_mux: MagicMock, mock_edit: AsyncMock, tmp_path: Path
 ) -> None:
     mock_tr.get_window_for_thread.return_value = None
+    mock_mux.capabilities.native_agent_status = False
     plain = tmp_path / "plain"
     plain.mkdir()
     user_data = {BROWSE_PATH_KEY: str(plain), PENDING_THREAD_ID: 42}
