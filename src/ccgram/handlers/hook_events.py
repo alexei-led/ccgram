@@ -15,6 +15,7 @@ import structlog
 from ..claude_task_state import classify_wait_message, claude_task_state
 from ..providers.base import HookEvent
 from ..session_lifecycle import session_lifecycle
+from ..session_state_ports.live_session_state import has_task_snapshot
 from ..telegram_client import TelegramClient
 from ..thread_router import thread_router
 from ..window_query import view_window
@@ -336,7 +337,7 @@ async def _handle_task_completed(event: HookEvent, client: TelegramClient) -> No
                 task_id,
                 subject=task_subject,
             )
-        if tracked or claude_task_state.has_snapshot(window_id):
+        if tracked or has_task_snapshot(window_id):
             await enqueue_status_update(
                 client, user_id, window_id, None, thread_id=thread_id
             )

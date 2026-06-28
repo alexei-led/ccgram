@@ -18,7 +18,7 @@ import structlog
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import TelegramError
 
-from ...claude_task_state import get_claude_task_snapshot, get_claude_wait_header
+from ...session_state_ports.live_session_state import get_task_snapshot, get_wait_header
 from ...expandable_quote import format_expandable_quote
 from ...telegram_client import TelegramClient
 from ...thread_router import thread_router
@@ -244,8 +244,8 @@ def _format_task_lines(snapshot: object) -> list[str]:
 
 def format_claude_task_status(window_id: str, base_text: str | None) -> str | None:
     """Compose Claude wait/task state plus the per-pane block (if any)."""
-    snapshot = get_claude_task_snapshot(window_id)
-    wait_header = get_claude_wait_header(window_id)
+    snapshot = get_task_snapshot(window_id)
+    wait_header = get_wait_header(window_id)
     pane_block = format_pane_block(window_id)
     if snapshot is None and not wait_header and pane_block is None:
         return base_text

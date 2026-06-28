@@ -183,32 +183,28 @@ class TestConvertStatusToContent:
 
 class TestFormatClaudeTaskStatus:
     @patch(
-        "ccgram.handlers.status.status_bubble.get_claude_task_snapshot",
+        "ccgram.handlers.status.status_bubble.get_task_snapshot",
         return_value=None,
     )
-    @patch(
-        "ccgram.handlers.status.status_bubble.get_claude_wait_header", return_value=None
-    )
+    @patch("ccgram.handlers.status.status_bubble.get_wait_header", return_value=None)
     def test_no_tasks_returns_base_text(self, mock_wait, mock_snap):
         result = format_claude_task_status(WINDOW_ID, "Running")
         assert result == "Running"
 
     @patch(
-        "ccgram.handlers.status.status_bubble.get_claude_task_snapshot",
+        "ccgram.handlers.status.status_bubble.get_task_snapshot",
         return_value=None,
     )
     @patch(
-        "ccgram.handlers.status.status_bubble.get_claude_wait_header",
+        "ccgram.handlers.status.status_bubble.get_wait_header",
         return_value="Waiting for input...",
     )
     def test_with_wait_header(self, mock_wait, mock_snap):
         result = format_claude_task_status(WINDOW_ID, "Running")
         assert result == "Waiting for input..."
 
-    @patch("ccgram.handlers.status.status_bubble.get_claude_task_snapshot")
-    @patch(
-        "ccgram.handlers.status.status_bubble.get_claude_wait_header", return_value=None
-    )
+    @patch("ccgram.handlers.status.status_bubble.get_task_snapshot")
+    @patch("ccgram.handlers.status.status_bubble.get_wait_header", return_value=None)
     def test_with_task_list(self, mock_wait, mock_snap):
         item = MagicMock()
         item.status = "in_progress"
@@ -486,12 +482,10 @@ class TestFormatPaneBlock:
 
 class TestFormatClaudeTaskStatusWithPanes:
     @patch(
-        "ccgram.handlers.status.status_bubble.get_claude_task_snapshot",
+        "ccgram.handlers.status.status_bubble.get_task_snapshot",
         return_value=None,
     )
-    @patch(
-        "ccgram.handlers.status.status_bubble.get_claude_wait_header", return_value=None
-    )
+    @patch("ccgram.handlers.status.status_bubble.get_wait_header", return_value=None)
     def test_pane_block_appended_to_base_text(
         self, mock_wait, mock_snap, _isolated_window_store
     ):
@@ -509,12 +503,10 @@ class TestFormatClaudeTaskStatusWithPanes:
         assert "%6" in result
 
     @patch(
-        "ccgram.handlers.status.status_bubble.get_claude_task_snapshot",
+        "ccgram.handlers.status.status_bubble.get_task_snapshot",
         return_value=None,
     )
-    @patch(
-        "ccgram.handlers.status.status_bubble.get_claude_wait_header", return_value=None
-    )
+    @patch("ccgram.handlers.status.status_bubble.get_wait_header", return_value=None)
     def test_no_pane_block_for_single_pane(
         self, mock_wait, mock_snap, _isolated_window_store
     ):
@@ -522,10 +514,8 @@ class TestFormatClaudeTaskStatusWithPanes:
         result = format_claude_task_status("@0", "Running")
         assert result == "Running"
 
-    @patch("ccgram.handlers.status.status_bubble.get_claude_task_snapshot")
-    @patch(
-        "ccgram.handlers.status.status_bubble.get_claude_wait_header", return_value=None
-    )
+    @patch("ccgram.handlers.status.status_bubble.get_task_snapshot")
+    @patch("ccgram.handlers.status.status_bubble.get_wait_header", return_value=None)
     def test_pane_block_inserted_between_header_and_tasks(
         self, mock_wait, mock_snap, _isolated_window_store
     ):
