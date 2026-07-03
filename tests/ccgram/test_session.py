@@ -1046,6 +1046,36 @@ class TestResolveStaleIdsPreservesDeadBindings:
         assert mgr.window_states["@1"].cwd == "/my/project"
         assert mgr.window_states["@1"].provider_name == "codex"
 
+    async def test_empty_list_windows_does_not_wipe_session_map(
+        self, mgr: SessionManager, tmp_path, monkeypatch
+    ) -> None:
+        """A transient list_windows() failure must not prune live bindings.
+
+        Regression test: list_windows() returns [] both when the session
+        genuinely has no windows and when the underlying tmux/herdr call
+        failed transiently (get_session() swallows the error). Previously
+        resolve_stale_ids() trusted an empty result unconditionally and
+        pruned session_map.json for every known window, permanently
+        breaking Telegram routing until the next SessionStart.
+        """
+        session_map_file = tmp_path / "session_map.json"
+        session_map_file.write_text(
+            json.dumps({"ccgram:@1": {"session_id": "sid-1", "cwd": "/a"}})
+        )
+        monkeypatch.setattr("ccgram.session.config.session_map_file", session_map_file)
+        monkeypatch.setattr("ccgram.session.config.tmux_session_name", "ccgram")
+
+        thread_router.bind_thread(100, 1, "@1", window_name="proj")
+        mgr.window_states["@1"] = WindowState(cwd="/a", provider_name="claude")
+        from ccgram.multiplexer.tmux import tmux_manager
+
+        with patch.object(tmux_manager, "list_windows", AsyncMock(return_value=[])):
+            await mgr.resolve_stale_ids()
+
+        result = json.loads(session_map_file.read_text())
+        assert "ccgram:@1" in result
+        assert "@1" in mgr.window_states
+
 
 class _FakeMux:
     """Minimal multiplexer stand-in: capability flag + live window list."""

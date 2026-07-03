@@ -206,7 +206,11 @@ class SessionManager:
         # Lazy: window_resolver imports session-state types; hoisting forms
         # session → window_resolver → session.WindowState cycle.
         # Lazy: window_resolver pulls back into session manager
-        from .window_resolver import LiveWindow, resolve_stale_ids as _resolve
+        from .window_resolver import (
+            LiveWindow,
+            is_suspicious_empty_window_list,
+            resolve_stale_ids as _resolve,
+        )
 
         windows = await tmux_manager.list_windows()
         live = [
@@ -240,9 +244,19 @@ class SessionManager:
             self._save_state()
             logger.info("Startup re-resolution complete")
 
-        # Prune session_map.json entries for dead windows
+        # Prune session_map.json entries for dead windows — unless the
+        # empty result looks like a transient multiplexer failure rather
+        # than every window actually closing (see is_suspicious_empty_window_list).
         live_ids = {w.window_id for w in live}
-        session_map_sync.prune_session_map(live_ids)
+        if is_suspicious_empty_window_list(live_ids, len(self.window_states)):
+            logger.warning(
+                "Startup: list_windows() returned no windows while %d "
+                "window_state(s) are persisted; skipping session_map prune "
+                "(likely transient multiplexer failure)",
+                len(self.window_states),
+            )
+        else:
+            session_map_sync.prune_session_map(live_ids)
 
         # Sync display names from live tmux windows (detect external renames)
         live_pairs = [(w.window_id, w.window_name) for w in live]

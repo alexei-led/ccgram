@@ -8,6 +8,7 @@ import pytest
 
 from ccgram.window_resolver import (
     LiveWindow,
+    is_suspicious_empty_window_list,
     is_window_id,
     resolve_stale_ids,
 )
@@ -27,6 +28,25 @@ class TestIsWindowId:
     )
     def test_is_window_id(self, key: str, expected: bool) -> None:
         assert is_window_id(key) == expected
+
+
+class TestIsSuspiciousEmptyWindowList:
+    def test_empty_result_with_known_windows_is_suspicious(self) -> None:
+        # list_windows() failing transiently and returning [] while state
+        # still expects windows is exactly the case that should be flagged
+        # so callers don't prune every live binding on a single hiccup.
+        assert is_suspicious_empty_window_list(set(), known_count=3) is True
+
+    def test_empty_result_with_no_known_windows_is_not_suspicious(self) -> None:
+        # Genuinely nothing tracked yet (e.g. fresh install) — an empty
+        # live-window list is expected, not evidence of a failed poll.
+        assert is_suspicious_empty_window_list(set(), known_count=0) is False
+
+    def test_nonempty_result_is_never_suspicious(self) -> None:
+        # The multiplexer call clearly succeeded, so trust it regardless
+        # of how many windows are currently known.
+        assert is_suspicious_empty_window_list({"@1"}, known_count=5) is False
+        assert is_suspicious_empty_window_list({"@1"}, known_count=0) is False
 
 
 def _ws(name: str) -> SimpleNamespace:

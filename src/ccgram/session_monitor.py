@@ -36,6 +36,7 @@ from .multiplexer.topic_mapping import is_agent_topic_window
 from .monitor_events import NewMessage, NewWindowEvent, SessionInfo
 from .transcript_reader import TranscriptReader
 from .utils import task_done_callback
+from .window_resolver import is_suspicious_empty_window_list
 
 import json
 
@@ -430,7 +431,20 @@ class SessionMonitor:
 
                 all_windows = await tmux_manager.list_windows()
                 live_window_ids = {w.window_id for w in all_windows}
-                session_map_sync.prune_session_map(live_window_ids)
+                if is_suspicious_empty_window_list(live_window_ids, len(current_map)):
+                    # See is_suspicious_empty_window_list: an empty result here
+                    # is more likely a transient multiplexer failure than every
+                    # window closing simultaneously. Skip pruning this cycle
+                    # and retry on the next poll instead of permanently
+                    # breaking Telegram routing for those windows.
+                    logger.warning(
+                        "list_windows() returned no windows while session_map "
+                        "still tracks %d; skipping prune this cycle "
+                        "(likely transient multiplexer failure)",
+                        len(current_map),
+                    )
+                else:
+                    session_map_sync.prune_session_map(live_window_ids)
                 known_window_ids = set(current_map.keys())
                 await self._emit_unbound_window_events(all_windows, known_window_ids)
                 await self._emit_known_unbound_window_events(

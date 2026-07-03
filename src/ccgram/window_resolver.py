@@ -27,6 +27,22 @@ def is_window_id(key: str) -> bool:
     return key.startswith("@") and len(key) > 1 and key[1:].isdigit()
 
 
+def is_suspicious_empty_window_list(live_window_ids: set, known_count: int) -> bool:
+    """True if a live-window poll came back empty while state expects windows.
+
+    ``multiplexer.list_windows()`` returns an empty list both when the
+    session genuinely has no windows and when the underlying tmux/herdr
+    call failed transiently (``get_session()`` swallows the error into
+    ``None``, and the caller can't tell the two apart from the return
+    value alone). When ``known_count`` (session_map entries or persisted
+    window_states) is non-zero, "every window closed at once" is far less
+    likely than "the multiplexer call hiccuped" — callers should treat
+    this as a transient failure and skip destructive pruning for this
+    cycle rather than trusting the empty result.
+    """
+    return not live_window_ids and known_count > 0
+
+
 def session_map_prefix_for(mux_name: str, session_name: str) -> str:
     """Return the session_map key prefix for a given multiplexer backend.
 
