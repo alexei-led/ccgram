@@ -45,6 +45,17 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger()
 
+
+def _resolve_bound_group_chat_id(user_id: int, thread_id: int) -> int:
+    """Resolve a forum group chat ID for a bound thread, with config fallback."""
+    chat_id = thread_router.resolve_chat_id(user_id, thread_id)
+    if chat_id != user_id:
+        return chat_id
+    if config.group_id is not None:
+        return config.group_id
+    return user_id
+
+
 _GHOST_RE = re.compile(r"user:(\d+)\s+thread:(\d+)\s+window:([^\s(]+)")
 _WINDOW_RE = re.compile(r"([^\s(]+)")
 
@@ -97,7 +108,7 @@ async def _sync_live_topic_names(
     for user_id, thread_id, window_id in thread_router.iter_thread_bindings():
         if window_id not in live_ids:
             continue
-        chat_id = thread_router.resolve_chat_id(user_id, thread_id)
+        chat_id = _resolve_bound_group_chat_id(user_id, thread_id)
         if chat_id == user_id:
             continue
         await sync_topic_name(
@@ -228,7 +239,7 @@ async def _close_ghost_topics(
         current_window_id = thread_router.get_window_for_thread(user_id, thread_id)
         if current_window_id != window_id:
             continue
-        chat_id = thread_router.resolve_chat_id(user_id, thread_id)
+        chat_id = _resolve_bound_group_chat_id(user_id, thread_id)
         topic_removed = False
         if chat_id == user_id:
             logger.warning(
@@ -253,7 +264,7 @@ async def _close_ghost_topics(
                 thread_router.unbind_thread(user_id, thread_id)
                 if topic_removed:
                     closed_count += 1
-            except OSError, TelegramError:
+            except (OSError, TelegramError):
                 logger.exception(
                     "Failed to clean up ghost binding thread=%d window=%s",
                     thread_id,
@@ -306,7 +317,7 @@ async def _probe_dead_topics(client: TelegramClient) -> list[AuditIssue]:
     only ``send_message`` reliably throws "thread not found" for deleted topics.
     """
     bindings = [
-        (uid, tid, wid, thread_router.resolve_chat_id(uid, tid))
+        (uid, tid, wid, _resolve_bound_group_chat_id(uid, tid))
         for uid, tid, wid in thread_router.iter_thread_bindings()
     ]
     # Only probe bindings with a group chat (chat_id != user_id)
@@ -396,7 +407,7 @@ async def _recreate_dead_topics(
 
         # Preserve group_chat_id before unbinding — unbind_thread deletes it,
         # but _handle_new_window needs it to know which chat to create the topic in.
-        chat_id = thread_router.resolve_chat_id(user_id, thread_id)
+        chat_id = _resolve_bound_group_chat_id(user_id, thread_id)
 
         # Unbind THEN recreate — must unbind first so _handle_new_window
         # doesn't skip the window as "already bound".  On failure, restore.
@@ -412,7 +423,7 @@ async def _recreate_dead_topics(
         try:
             await _handle_new_window(event, client)
             recreated += 1
-        except TelegramError, OSError:
+        except (TelegramError, OSError):
             logger.exception("Failed to recreate topic for window %s", window_id)
             # Restore binding so the window isn't orphaned
             thread_router.bind_thread(user_id, thread_id, window_id, window_name=name)

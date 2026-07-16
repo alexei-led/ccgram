@@ -14,7 +14,7 @@ from ccgram.providers.codex import CodexProvider
 from ccgram.session import SessionManager
 from ccgram.session_monitor import NewWindowEvent, SessionMonitor
 from ccgram.thread_router import thread_router
-from ccgram.window_state_store import window_store
+from ccgram.window_state_store import WindowState, window_store
 
 
 @pytest.fixture
@@ -396,6 +396,48 @@ class TestEmitKnownUnboundWindowEvents:
         await monitor._emit_known_unbound_window_events(current_map, live_window_ids)
 
         assert cb.call_count == 2
+
+
+class TestPersistedSessionMapRecovery:
+    async def test_recovers_live_window_from_persisted_identity(
+        self, monitor: SessionMonitor, monkeypatch, tmp_path
+    ) -> None:
+        transcript = tmp_path / "session.jsonl"
+        transcript.write_text('{"type":"assistant"}\n')
+        window_store.window_states["@19"] = WindowState(
+            provider_name="claude",
+            session_id="sess-19",
+            cwd="/repo",
+            transcript_path=str(transcript),
+            window_name="agent",
+        )
+
+        result = await monitor._load_current_session_map({}, {"@19"})
+
+        assert result == {
+            "@19": {
+                "session_id": "sess-19",
+                "cwd": "/repo",
+                "window_name": "agent",
+                "transcript_path": str(transcript),
+                "provider_name": "claude",
+            }
+        }
+
+    async def test_ignores_missing_transcript_in_persisted_identity(
+        self, monitor: SessionMonitor
+    ) -> None:
+        window_store.window_states["@19"] = WindowState(
+            provider_name="claude",
+            session_id="sess-19",
+            cwd="/repo",
+            transcript_path="/tmp/does-not-exist.jsonl",
+            window_name="agent",
+        )
+
+        result = await monitor._load_current_session_map({}, {"@19"})
+
+        assert result == {}
 
 
 class TestLoadCurrentSessionMapBackend:

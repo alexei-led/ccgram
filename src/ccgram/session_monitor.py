@@ -60,6 +60,24 @@ _MSG_PREVIEW_LENGTH = 80
 logger = structlog.get_logger()
 
 
+def _persisted_session_map_info(window_id: str) -> dict[str, str] | None:
+    """Return session-map-like info from persisted window state, if usable."""
+    from .window_state_ports.identity_state import get_identity
+
+    identity = get_identity(window_id)
+    if identity is None or not identity.session_id or identity.transcript_path is None:
+        return None
+    if not identity.transcript_path.exists():
+        return None
+    return {
+        "session_id": identity.session_id,
+        "cwd": identity.cwd,
+        "window_name": identity.window_name,
+        "transcript_path": str(identity.transcript_path),
+        "provider_name": identity.provider_name,
+    }
+
+
 class SessionMonitor:
     """Monitors Claude Code sessions for new assistant messages.
 
@@ -245,7 +263,9 @@ class SessionMonitor:
                 logger.exception("Hook event callback error for %s", event.event_type)
 
     async def _load_current_session_map(
-        self, raw: dict | None = None
+        self,
+        raw: dict | None = None,
+        live_window_ids: set[str] | None = None,
     ) -> dict[str, dict[str, str]]:
         """Load current session_map and return window_key -> details mapping.
 
@@ -254,10 +274,24 @@ class SessionMonitor:
         """
         if raw is None:
             raw = await read_session_map_raw()
+        if live_window_ids is None:
+            windows = await list_windows_for_reconciliation(tmux_manager)
+            live_window_ids = {w.window_id for w in windows} if windows else set()
         if not raw:
-            return {}
+            return {
+                window_id: details
+                for window_id in live_window_ids
+                if (details := _persisted_session_map_info(window_id)) is not None
+            }
         prefix = session_map_prefix()
-        return parse_session_map(raw, prefix)
+        current_map = parse_session_map(raw, prefix)
+        for window_id in live_window_ids:
+            if window_id in current_map:
+                continue
+            details = _persisted_session_map_info(window_id)
+            if details is not None:
+                current_map[window_id] = details
+        return current_map
 
     async def _cleanup_all_stale_sessions(self) -> None:
         """Clean up all tracked sessions not in current session_map (startup)."""
@@ -277,10 +311,12 @@ class SessionMonitor:
             self.state.save_if_dirty()
 
     async def _detect_and_cleanup_changes(
-        self, raw: dict | None = None
+        self,
+        raw: dict | None = None,
+        live_window_ids: set[str] | None = None,
     ) -> dict[str, dict[str, str]]:
         """Reconcile session_map; clean up replaced/removed sessions; fire new-window events."""
-        current_map = await self._load_current_session_map(raw)
+        current_map = await self._load_current_session_map(raw, live_window_ids)
         result = session_lifecycle.reconcile(current_map, self._idle_tracker)
 
         for session_id in result.sessions_to_remove:
@@ -427,9 +463,12 @@ class SessionMonitor:
                 raw_session_map = await read_session_map_raw()
                 await session_map_sync.load_session_map(raw_session_map)
 
-                current_map = await self._detect_and_cleanup_changes(raw_session_map)
-
                 all_windows = await list_windows_for_reconciliation(tmux_manager)
+                live_window_ids = {w.window_id for w in all_windows} if all_windows else None
+                current_map = await self._detect_and_cleanup_changes(
+                    raw_session_map, live_window_ids
+                )
+
                 if all_windows is None:
                     logger.warning(
                         "Multiplexer listing unavailable; skipping window reconciliation"
