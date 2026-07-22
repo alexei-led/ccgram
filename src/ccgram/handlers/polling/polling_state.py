@@ -29,6 +29,7 @@ import structlog
 from ...providers.base import StatusUpdate
 from ...topic_state_registry import topic_state
 from .polling_types import (
+    MAX_MISSING_POLLS,
     MAX_PROBE_FAILURES,
     PANE_COUNT_TTL,
     RC_DEBOUNCE_SECONDS,
@@ -324,6 +325,23 @@ class TerminalPollState:
         ws = self._states.get(window_id)
         if ws:
             ws.probe_failures = 0
+
+    def record_missing_poll(self, window_id: str) -> int:
+        """Increment the consecutive-missing counter and return the new count."""
+        ws = self.get_state(window_id)
+        ws.missing_polls += 1
+        return ws.missing_polls
+
+    def clear_missing_polls(self, window_id: str) -> None:
+        """Reset the consecutive-missing counter for a single window."""
+        ws = self._states.get(window_id)
+        if ws:
+            ws.missing_polls = 0
+
+    def is_confirmed_missing(self, window_id: str) -> bool:
+        """Check whether a window has been absent for enough consecutive polls."""
+        ws = self._states.get(window_id)
+        return bool(ws) and ws.missing_polls >= MAX_MISSING_POLLS
 
     def clear_seen_status(self, window_id: str) -> None:
         """Clear startup status tracking for a single window."""

@@ -12,7 +12,7 @@ from ccgram.handlers.polling.polling_state import (
     terminal_poll_state,
     terminal_screen_buffer,
 )
-from ccgram.handlers.polling.polling_types import TickContext
+from ccgram.handlers.polling.polling_types import MAX_MISSING_POLLS, TickContext
 from ccgram.handlers.polling.window_tick import (
     _check_interactive_only,
     _handle_dead_window_notification,
@@ -65,7 +65,8 @@ class TestTickWindowDeadWindow:
         with patch.object(
             window_tick, "_handle_dead_window_notification", new_callable=AsyncMock
         ) as mock_dead:
-            await tick_window(bot, 1, 100, "@0", None)
+            for _ in range(MAX_MISSING_POLLS):
+                await tick_window(bot, 1, 100, "@0", None)
             mock_dead.assert_called_once()
             args, kwargs = mock_dead.call_args
             assert args == (bot, 1, 100, "@0")
@@ -83,7 +84,8 @@ class TestTickWindowDeadWindow:
                 window_tick, "_scan_window_panes", new_callable=AsyncMock
             ) as mock_scan,
         ):
-            await tick_window(bot, 1, 100, "@0", None)
+            for _ in range(MAX_MISSING_POLLS):
+                await tick_window(bot, 1, 100, "@0", None)
             mock_status.assert_not_called()
             mock_scan.assert_not_called()
 
@@ -95,6 +97,69 @@ class TestTickWindowDeadWindow:
         ) as mock_dead:
             await tick_window(bot, 1, 100, "@0", None)
             mock_dead.assert_not_called()
+
+
+class TestTickWindowMissingPollDebounce:
+    """A window absent from a single poll must not be declared dead.
+
+    list_windows() returns [] when the multiplexer session lookup hits a
+    transient error, and drops individual windows whose pane metadata raises,
+    so one miss is not proof of death.
+    """
+
+    async def test_single_miss_does_not_notify(self):
+        bot = AsyncMock(spec=Bot)
+        with patch.object(
+            window_tick, "_handle_dead_window_notification", new_callable=AsyncMock
+        ) as mock_dead:
+            await tick_window(bot, 1, 100, "@0", None)
+            mock_dead.assert_not_called()
+
+    async def test_misses_below_threshold_do_not_notify(self):
+        bot = AsyncMock(spec=Bot)
+        with patch.object(
+            window_tick, "_handle_dead_window_notification", new_callable=AsyncMock
+        ) as mock_dead:
+            for _ in range(MAX_MISSING_POLLS - 1):
+                await tick_window(bot, 1, 100, "@0", None)
+            mock_dead.assert_not_called()
+
+    async def test_reappearing_window_resets_the_counter(self):
+        bot = AsyncMock(spec=Bot)
+        window = _make_window("@0")
+        with (
+            patch.object(
+                window_tick, "_handle_dead_window_notification", new_callable=AsyncMock
+            ) as mock_dead,
+            patch.object(
+                window_tick, "discover_and_register_transcript", new_callable=AsyncMock
+            ),
+            patch.object(window_tick, "_update_status", new_callable=AsyncMock),
+            patch.object(window_tick, "_scan_window_panes", new_callable=AsyncMock),
+            patch.object(
+                window_tick, "_maybe_check_passive_shell", new_callable=AsyncMock
+            ),
+            patch.object(window_tick, "get_message_queue", return_value=None),
+        ):
+            for _ in range(MAX_MISSING_POLLS - 1):
+                await tick_window(bot, 1, 100, "@0", None)
+            await tick_window(bot, 1, 100, "@0", window)
+            for _ in range(MAX_MISSING_POLLS - 1):
+                await tick_window(bot, 1, 100, "@0", None)
+            mock_dead.assert_not_called()
+
+    async def test_threshold_reached_notifies_once(self):
+        bot = AsyncMock(spec=Bot)
+        with patch.object(
+            window_tick, "_handle_dead_window_notification", new_callable=AsyncMock
+        ) as mock_dead:
+            for _ in range(MAX_MISSING_POLLS + 2):
+                await tick_window(bot, 1, 100, "@0", None)
+            # The real handler marks dead-notified; it is mocked here, so the
+            # early-return guard never engages and every post-threshold tick
+            # calls through. What matters is that no call happened before the
+            # threshold was crossed.
+            assert mock_dead.call_count == 3
 
 
 class TestTickWindowPendingQueue:

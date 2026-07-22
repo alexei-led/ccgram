@@ -38,6 +38,12 @@ RC_DEBOUNCE_SECONDS = 3.0
 # Consecutive topic probe failure threshold.
 MAX_PROBE_FAILURES = 3
 
+# Consecutive poll cycles a bound window must be absent from the multiplexer
+# listing before it is treated as dead. TmuxManager.list_windows() returns an
+# empty list when get_session() hits a transient error, and drops individual
+# windows whose pane metadata raises, so a single miss is not proof of death.
+MAX_MISSING_POLLS = 3
+
 # Typing indicator throttle interval (seconds).
 TYPING_INTERVAL = 4.0
 
@@ -64,6 +70,7 @@ class WindowPollState:
     has_seen_status: bool = False
     startup_time: float | None = None
     probe_failures: int = 0
+    missing_polls: int = 0
     screen_buffer: ScreenBuffer | None = field(default=None, repr=False)
     pane_count_cache: tuple[int, float] | None = None
     unbound_timer: float | None = None

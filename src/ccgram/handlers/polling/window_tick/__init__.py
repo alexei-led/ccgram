@@ -75,10 +75,21 @@ async def tick_window(
         return
 
     if window is None:
+        # A single absent poll is not proof of death: list_windows() returns []
+        # when the multiplexer session lookup hits a transient error, and drops
+        # individual windows whose pane metadata raises. Require the window to
+        # be missing from MAX_MISSING_POLLS consecutive cycles before showing
+        # the recovery banner, otherwise one bad poll kills a live session's
+        # topic. Genuine deaths still arrive instantly via the event stream.
+        rt.poll_state.record_missing_poll(window_id)
+        if not rt.poll_state.is_confirmed_missing(window_id):
+            return
         await _handle_dead_window_notification(
             bot, user_id, thread_id, window_id, runtime=rt
         )
         return
+
+    rt.poll_state.clear_missing_polls(window_id)
 
     await discover_and_register_transcript(
         window_id,
