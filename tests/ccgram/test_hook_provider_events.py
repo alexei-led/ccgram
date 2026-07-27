@@ -404,6 +404,83 @@ def test_detect_provider_from_payload_codex_model_field_still_codex() -> None:
     assert detect_provider_from_payload({"model": "gpt-5-codex"}) == "codex"
 
 
+def test_detect_provider_claude_config_dir_redirect_not_codex(monkeypatch) -> None:
+    from ccgram.hooks.adapters import detect_provider_from_payload
+
+    # When CLAUDE_CONFIG_DIR redirects the config home (a documented Claude
+    # Code setting used by multi-account setups, dev containers, and cc-mirror
+    # clones), Claude writes transcripts under the redirected dir, not ~/.claude.
+    # Such a Stop payload must still be recognized as Claude (None), not codex.
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/home/u/.cc-mirror/zai/config")
+    payload: dict[str, object] = {
+        "session_id": "550e8400-e29b-41d4-a716-446655440000",
+        "hook_event_name": "Stop",
+        "transcript_path": "/home/u/.cc-mirror/zai/config/projects/proj/sess.jsonl",
+        "model": "claude-sonnet-5",
+        "permission_mode": "default",
+    }
+    assert detect_provider_from_payload(payload) is None
+
+
+def test_detect_provider_claude_config_dir_redirect_no_false_positive(
+    monkeypatch,
+) -> None:
+    from ccgram.hooks.adapters import detect_provider_from_payload
+
+    # A redirected config dir must not over-match: an unrelated transcript path
+    # that merely contains a generic component like "config" is still codex.
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/home/u/.cc-mirror/zai/config")
+    assert (
+        detect_provider_from_payload(
+            {
+                "session_id": "550e8400-e29b-41d4-a716-446655440000",
+                "transcript_path": "/tmp/some-config/app/sess.jsonl",
+                "model": "gpt-5",
+            }
+        )
+        == "codex"
+    )
+
+
+def test_detect_provider_claude_config_dir_home_value_no_overmatch(monkeypatch) -> None:
+    from ccgram.hooks.adapters import detect_provider_from_payload
+
+    # CLAUDE_CONFIG_DIR="~" resolves to the home directory; the markers must
+    # still anchor on <dir>/projects/ so a codex transcript under the home dir
+    # is not swept up and misdetected as Claude.
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "~")
+    assert (
+        detect_provider_from_payload(
+            {
+                "session_id": "550e8400-e29b-41d4-a716-446655440000",
+                "transcript_path": "/home/u/.codex/sessions/sess.jsonl",
+                "model": "gpt-5",
+            }
+        )
+        == "codex"
+    )
+
+
+def test_detect_provider_claude_config_dir_claude_suffix_redirect(monkeypatch) -> None:
+    from ccgram.hooks.adapters import detect_provider_from_payload
+
+    # A redirect named like ".claude.custom" must be honored as its own config
+    # dir; the default /.claude/projects/ marker must not shadow it.
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/home/u/.claude.custom")
+    assert (
+        detect_provider_from_payload(
+            {
+                "session_id": "550e8400-e29b-41d4-a716-446655440000",
+                "hook_event_name": "Stop",
+                "transcript_path": "/home/u/.claude.custom/projects/proj/sess.jsonl",
+                "model": "claude-sonnet-5",
+                "permission_mode": "default",
+            }
+        )
+        is None
+    )
+
+
 def test_gemini_install_adds_provider_specific_hooks(
     tmp_path: Path, monkeypatch
 ) -> None:

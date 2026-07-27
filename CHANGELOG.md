@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Respect `CLAUDE_CONFIG_DIR` when detecting the Claude provider from hook
+  payloads. A Claude session whose config home was redirected away from
+  `~/.claude` (multi-account setups, dev containers, cc-mirror-style clones)
+  was misdetected as codex because the transcript path no longer contained
+  `/.claude/`, dropping the turn's status update on Stop.
+
 ## [4.3.11] - 2026-07-11
 
 ### Fixed

@@ -337,6 +337,31 @@ def get_hook_adapter(provider_name: str) -> HookAdapter | None:
     return _ADAPTERS[cast(ProviderName, provider_name)]
 
 
+def _claude_transcript_markers() -> tuple[str, ...]:
+    """Path substrings that identify a Claude transcript file.
+
+    Claude writes session transcripts under ``<config_dir>/projects/``. The
+    config dir defaults to ``~/.claude`` but follows the ``CLAUDE_CONFIG_DIR``
+    environment variable (a documented Claude Code setting), so a redirected
+    config home (dev containers, multi-account setups, cc-mirror-style clones)
+    must be honored in addition to the default.
+
+    Each marker ends in ``/projects/`` (Claude's actual transcript subtree) so
+    that the match is specific to Claude's layout and does not fire on
+    unrelated files that merely share a directory prefix, including:
+    - a bare ``CLAUDE_CONFIG_DIR`` of ``~`` (would otherwise match every file
+      under the home directory), and
+    - a codex transcript that happens to live inside the redirected tree.
+    """
+    markers = ["/.claude/projects/"]
+    raw = os.getenv("CLAUDE_CONFIG_DIR")
+    if raw:
+        config_dir = str(Path(raw).expanduser()).rstrip("/")
+        if config_dir:
+            markers.append(f"{config_dir}/projects/")
+    return tuple(markers)
+
+
 def detect_provider_from_payload(payload: dict[str, object]) -> ProviderName | None:
     """Best-effort provider detection when installed hook lacks --provider."""
     explicit = _str_field(payload, "provider_name")
@@ -357,11 +382,12 @@ def detect_provider_from_payload(payload: dict[str, object]) -> ProviderName | N
         provider = "gemini"
     elif (
         _str_field(payload, "permission_mode") or _str_field(payload, "model")
-    ) and "/.claude/" not in transcript_path:
+    ) and not any(m in transcript_path for m in _claude_transcript_markers()):
         # ``model``/``permission_mode`` are weak codex signals: Claude's Stop and
         # Notification payloads now also carry ``model``, so without this guard a
-        # Claude session (transcript under ~/.claude/) installed with no
-        # --provider flag is misdetected as codex.
+        # Claude session installed with no --provider flag is misdetected as
+        # codex. _claude_transcript_markers honors CLAUDE_CONFIG_DIR (defaults to
+        # /.claude/) so redirected config homes are still recognized as Claude.
         provider = "codex"
     elif _str_field(payload, "end_reason") or (
         session_id and not UUID_RE.match(session_id)
