@@ -298,6 +298,8 @@ def resolve_launch_command(
         return command
 
     yolo_flag = _YOLO_FLAGS.get(provider)
+    if provider == "gemini" and "agy" in command:
+        yolo_flag = "--dangerously-skip-permissions"
     if not yolo_flag or yolo_flag in command:
         return command
     return f"{command} {yolo_flag}"

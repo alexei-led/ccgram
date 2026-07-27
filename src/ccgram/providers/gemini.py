@@ -338,6 +338,16 @@ def _entry_text(entry: dict[str, Any]) -> str:
     return _extract_gemini_text(entry.get("displayContent"))
 
 
+def _clean_user_content(content: str) -> str:
+    """Extract only the human user request from XML metadata wrappers."""
+    if not isinstance(content, str):
+        return content
+    match = re.search(r"<USER_REQUEST>(.*?)</USER_REQUEST>", content, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    return content
+
+
 def _summarize_tool_args(args: Any) -> str:
     """Create a short summary from Gemini tool-call args."""
     if not isinstance(args, dict):
@@ -636,41 +646,42 @@ class GeminiProvider(JsonlProvider):
     ) -> tuple[list[AgentMessage], dict[str, Any]]:
         """Parse Gemini transcript entries into AgentMessages.
 
-        Gemini messages use ``type`` field ("user"/"gemini"/"info"/"error")
-        instead of ``role`` and support mixed content formats (string or list
-        of text fragments). Tool calls are emitted as ``tool_use`` and
-        ``tool_result`` messages when possible.
+        Supports both old Gemini CLI schema and the new Antigravity CLI schema.
         """
         messages: list[AgentMessage] = []
         pending = dict(pending_tools)
-        # Gemini's JSONL transcript re-appends the same message id on every
-        # toolCalls update (see chatRecordingService.pushMessage upstream).
-        # Track seen message ids to avoid duplicate text emission; track
-        # tool_use ids in `pending` so we only announce a tool once and emit
-        # tool_result on the update that carries the result payload.
         seen_msg_ids: set[str] = pending.setdefault("__seen_msg_ids__", set())
 
         for entry in entries:
             msg_type = entry.get("type", "")
-            role = _GEMINI_ROLE_MAP.get(msg_type)
+            source = entry.get("source", "")
+
+            role = None
+            if msg_type in ("user", "USER_INPUT") or source in ("USER_EXPLICIT", "USER_IMPLICIT"):
+                role = "user"
+            elif msg_type in ("gemini", "info", "error", "PLANNER_RESPONSE"):
+                role = "assistant"
+
             if not role:
                 continue
 
-            entry_id = entry.get("id")
-            msg_id = entry_id if isinstance(entry_id, str) else ""
+            entry_id = entry.get("id") or entry.get("step_index")
+            msg_id = str(entry_id) if entry_id is not None else ""
 
             tool_calls = entry.get("toolCalls", [])
             if isinstance(tool_calls, list):
                 messages.extend(_emit_tool_calls(tool_calls, entry, pending))
 
             text = _entry_text(entry)
+            if role == "user":
+                text = _clean_user_content(text)
             if text and msg_id not in seen_msg_ids:
                 messages.append(
                     AgentMessage(
                         text=text,
                         role=cast(MessageRole, role),
                         content_type=cast(ContentType, "text"),
-                        timestamp=entry.get("timestamp"),
+                        timestamp=entry.get("timestamp") or entry.get("created_at"),
                     )
                 )
 
@@ -681,22 +692,34 @@ class GeminiProvider(JsonlProvider):
 
     def is_user_transcript_entry(self, entry: dict[str, Any]) -> bool:
         """Check if this Gemini entry is a human turn."""
-        return entry.get("type") == "user"
+        msg_type = entry.get("type", "")
+        source = entry.get("source", "")
+        return msg_type in ("user", "USER_INPUT") or source in ("USER_EXPLICIT", "USER_IMPLICIT")
 
     def parse_history_entry(self, entry: dict[str, Any]) -> AgentMessage | None:
         """Parse a single Gemini transcript entry for history display."""
         msg_type = entry.get("type", "")
-        role = _GEMINI_ROLE_MAP.get(msg_type)
+        source = entry.get("source", "")
+        role = None
+        if msg_type in ("user", "USER_INPUT") or source in ("USER_EXPLICIT", "USER_IMPLICIT"):
+            role = "user"
+        elif msg_type in ("gemini", "info", "error", "PLANNER_RESPONSE"):
+            role = "assistant"
+
         if not role:
             return None
+
         text = _entry_text(entry)
+        if role == "user":
+            text = _clean_user_content(text)
         if not text:
             return None
+
         return AgentMessage(
             text=text,
             role=cast(MessageRole, role),
             content_type="text",
-            timestamp=entry.get("timestamp"),
+            timestamp=entry.get("timestamp") or entry.get("created_at"),
         )
 
     @staticmethod
