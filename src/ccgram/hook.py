@@ -56,6 +56,7 @@ _PATH_HOOK_MARKER = "ccgram hook"
 # optional so older test mocks keep working with a 3-part stdout.
 _TMUX_FORMAT_PARTS = 3
 _TMUX_FORMAT_PARTS_WITH_TTY = 4
+_TMUX_FORMAT_PARTS_WITH_LINKS = 5
 
 # ps -A output is split into 5 fields: pid, ppid, pgid, stat, command.
 _PS_SNAPSHOT_FIELDS = 5
@@ -710,7 +711,8 @@ def _resolve_window_id(pane_id: str) -> tuple[str, str, str, str] | None:
                 "-t",
                 pane_id,
                 "-p",
-                "#{session_name}\t#{window_id}\t#{window_name}\t#{pane_tty}",
+                "#{session_name}\t#{window_id}\t#{window_name}\t#{pane_tty}"
+                "\t#{window_linked_sessions}",
             ],
             capture_output=True,
             text=True,
@@ -720,7 +722,7 @@ def _resolve_window_id(pane_id: str) -> tuple[str, str, str, str] | None:
         logger.warning("tmux display-message timed out for pane %s", pane_id)
         return None
     raw_output = result.stdout.strip()
-    parts = raw_output.split("\t", 3)
+    parts = raw_output.split("\t", 4)
     if len(parts) < _TMUX_FORMAT_PARTS:
         logger.warning(
             "Failed to parse session:window_id:window_name from tmux "
@@ -732,8 +734,46 @@ def _resolve_window_id(pane_id: str) -> tuple[str, str, str, str] | None:
 
     tmux_session_name, window_id, window_name = parts[0], parts[1], parts[2]
     pane_tty = parts[3] if len(parts) >= _TMUX_FORMAT_PARTS_WITH_TTY else ""
-    session_window_key = f"{tmux_session_name}:{window_id}"
+    linked = parts[4] if len(parts) >= _TMUX_FORMAT_PARTS_WITH_LINKS else ""
+    key_session = tmux_session_name
+    if linked not in ("", "0", "1"):
+        key_session = _session_map_session_for(window_id, tmux_session_name)
+    session_window_key = f"{key_session}:{window_id}"
     return session_window_key, window_id, window_name, pane_tty
+
+
+def _session_map_session_for(window_id: str, pane_session: str) -> str:
+    """Return the tmux session ``session_map`` should be keyed under.
+
+    Window ids are server-global and a linked window belongs to more than one
+    session, so the session tmux reports for the firing pane is not necessarily
+    the one ccgram lists windows from. Readers resolve entries by
+    ``<ccgram session>:<window_id>`` (``session_map_prefix_for``), so a hook
+    keyed under the session that happens to own the pane is invisible to every
+    reader and the binding silently never takes effect.
+
+    Falls back to the pane's own session whenever the window is not linked into
+    ccgram's session, which is the single-session case and today's behaviour.
+    """
+    # Lazy: config reads the environment at import time; the hook path should
+    # not pay that cost, nor fail, when the window cannot be resolved at all.
+    from .config import config
+
+    target = getattr(config, "tmux_session_name", "")
+    if not target or target == pane_session:
+        return pane_session
+    try:
+        result = subprocess.run(
+            ["tmux", "list-windows", "-t", target, "-F", "#{window_id}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except subprocess.TimeoutExpired, OSError:
+        return pane_session
+    if result.returncode != 0:
+        return pane_session
+    return target if window_id in result.stdout.split() else pane_session
 
 
 def _ps_snapshot() -> dict[int, tuple[int, int, str, str]]:

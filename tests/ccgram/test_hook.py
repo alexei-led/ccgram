@@ -15,10 +15,12 @@ from ccgram.hook import (
     _install_hook,
     _is_nested_session,
     _provider_from_pane_tty,
+    _session_map_session_for,
     _uninstall_hook,
     get_installed_events,
     hook_main,
 )
+from ccgram.config import config
 from ccgram.providers.base import UUID_RE
 
 
@@ -682,6 +684,62 @@ class TestClaudeSettingsFile:
 
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "custom"))
         assert _claude_settings_file() == tmp_path / "custom" / "settings.json"
+
+
+class TestSessionMapKeyForLinkedWindow:
+    """A window linked into ccgram's session belongs to more than one tmux
+    session. The hook must key session_map under the session readers resolve
+    against (config.tmux_session_name), not whichever session tmux happens to
+    report for the firing pane, or the binding is written and never found.
+    """
+
+    @staticmethod
+    def _run(stdout: str, returncode: int = 0):
+        def _fake(*_args, **_kwargs):
+            return subprocess.CompletedProcess(
+                args=[], returncode=returncode, stdout=stdout, stderr=""
+            )
+
+        return _fake
+
+    def test_linked_window_keys_under_ccgram_session(self, monkeypatch) -> None:
+        monkeypatch.setattr(config, "tmux_session_name", "ccgram")
+        monkeypatch.setattr(subprocess, "run", self._run("@12\n@34\n"))
+        assert _session_map_session_for("@34", "agentdeck_foo_1234") == "ccgram"
+
+    def test_unlinked_window_keeps_pane_session(self, monkeypatch) -> None:
+        monkeypatch.setattr(config, "tmux_session_name", "ccgram")
+        monkeypatch.setattr(subprocess, "run", self._run("@12\n"))
+        assert (
+            _session_map_session_for("@99", "agentdeck_foo_1234")
+            == "agentdeck_foo_1234"
+        )
+
+    def test_pane_already_in_ccgram_session_is_unchanged(self, monkeypatch) -> None:
+        monkeypatch.setattr(config, "tmux_session_name", "ccgram")
+        monkeypatch.setattr(
+            subprocess, "run", lambda *a, **k: pytest.fail("no tmux probe needed")
+        )
+        assert _session_map_session_for("@12", "ccgram") == "ccgram"
+
+    def test_tmux_failure_falls_back_to_pane_session(self, monkeypatch) -> None:
+        monkeypatch.setattr(config, "tmux_session_name", "ccgram")
+        monkeypatch.setattr(subprocess, "run", self._run("", returncode=1))
+        assert (
+            _session_map_session_for("@34", "agentdeck_foo_1234")
+            == "agentdeck_foo_1234"
+        )
+
+    def test_tmux_timeout_falls_back_to_pane_session(self, monkeypatch) -> None:
+        def _boom(*_args, **_kwargs):
+            raise subprocess.TimeoutExpired(cmd="tmux", timeout=5)
+
+        monkeypatch.setattr(config, "tmux_session_name", "ccgram")
+        monkeypatch.setattr(subprocess, "run", _boom)
+        assert (
+            _session_map_session_for("@34", "agentdeck_foo_1234")
+            == "agentdeck_foo_1234"
+        )
 
 
 class TestNestedSessionDetection:
