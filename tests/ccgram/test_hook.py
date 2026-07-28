@@ -725,6 +725,35 @@ class TestNestedSessionDetection:
         monkeypatch.setattr("os.getpid", lambda: 99999)
         assert _is_nested_session("/dev/ttys005") is True
 
+    def test_shell_wrapped_primary_claude_is_not_nested(self, monkeypatch) -> None:
+        """A launcher running `bash -lc "... && claude ..."` keeps the shell as
+        group leader, so the primary claude's PID never equals the foreground
+        PGID. No claude sits above it, so it is still the primary."""
+        snapshot = {
+            14053: (1, 14053, "Ss+", "bash"),
+            14058: (14053, 14053, "S+", "claude"),
+            99999: (14058, 14053, "S+", "python"),
+        }
+        monkeypatch.setattr("ccgram.hook._ps_snapshot", lambda: snapshot)
+        monkeypatch.setattr("ccgram.hook._foreground_pgid_on_tty", lambda *_: 14053)
+        monkeypatch.setattr("os.getpid", lambda: 99999)
+        assert _is_nested_session("/dev/ttys002") is False
+
+    def test_observer_under_shell_wrapped_primary_is_nested(self, monkeypatch) -> None:
+        """The nested case must still be caught when the primary is itself a
+        child of the foreground shell rather than the group leader."""
+        snapshot = {
+            14053: (1, 14053, "Ss+", "bash"),
+            14058: (14053, 14053, "S+", "claude"),
+            14100: (14058, 14053, "S+", "bun"),
+            14200: (14100, 14053, "S+", "claude"),
+            99999: (14200, 14053, "S+", "python"),
+        }
+        monkeypatch.setattr("ccgram.hook._ps_snapshot", lambda: snapshot)
+        monkeypatch.setattr("ccgram.hook._foreground_pgid_on_tty", lambda *_: 14053)
+        monkeypatch.setattr("os.getpid", lambda: 99999)
+        assert _is_nested_session("/dev/ttys002") is True
+
     def test_empty_pane_tty_fails_open(self, monkeypatch) -> None:
         monkeypatch.setattr(
             "ccgram.hook._ps_snapshot", lambda: pytest.fail("should not be called")

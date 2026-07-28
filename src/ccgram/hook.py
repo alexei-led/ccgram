@@ -821,11 +821,17 @@ def _closest_claude_ancestor(
 def _is_nested_session(pane_tty: str) -> bool:
     """Return True if the hook was fired by a nested (non-foreground) claude.
 
-    The "primary" claude in a tmux pane is launched by the user's shell, so
-    its PID equals the foreground process group id on the pane's tty. Any
-    claude spawned beneath that primary (e.g. an MCP-server-launched observer
-    such as claude-mem) is a *descendant* — its PID differs from the
-    foreground PGID even though it shares the pgid via inheritance.
+    A claude whose PID equals the foreground process group id on the pane's
+    tty is the primary by definition. It is not the only primary shape: a
+    launcher that starts the agent as ``bash -lc "... && claude ..."`` leaves
+    the shell leading the group, so the primary claude is a child of the
+    foreground process and its PID never equals the foreground PGID.
+
+    What actually distinguishes a nested claude (e.g. an MCP-server-launched
+    observer such as claude-mem) is that another claude sits above it in the
+    process tree. Testing ancestry rather than group leadership covers both
+    primary shapes, and is what the pgid comparison was approximating anyway,
+    since a nested claude inherits the same pgid.
 
     Fails open: returns False on any subprocess error or missing data so
     hook delivery is never made *more* fragile than the status quo.
@@ -841,7 +847,12 @@ def _is_nested_session(pane_tty: str) -> bool:
     owner = _closest_claude_ancestor(snapshot, os.getpid())
     if owner is None:
         return False
-    return owner != fg_pgid
+    if owner == fg_pgid:
+        return False
+    owner_info = snapshot.get(owner)
+    if owner_info is None:
+        return False
+    return _closest_claude_ancestor(snapshot, owner_info[0]) is not None
 
 
 def _write_event(
