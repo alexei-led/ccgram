@@ -63,6 +63,22 @@ TOOL_EMOJI: dict[str, str] = {
     "ripgrep": "\U0001f50e",
     "search": "\U0001f50e",
     "fetch": "\U0001f310",
+    # Kimi Code native names
+    "TodoList": "\U0001f4cb",
+    "EnterPlanMode": "\U0001f4cb",
+    "FetchURL": "\U0001f310",
+    "ReadMediaFile": "\U0001f4d6",
+    "Agent": "\U0001f916",
+    "AgentSwarm": "\U0001f916",
+    "TaskOutput": "\U0001f4cb",
+    "TaskStop": "\U0001f4cb",
+    "CreateGoal": "\U0001f3af",
+    "GetGoal": "\U0001f3af",
+    "UpdateGoal": "\U0001f3af",
+    "SetGoalBudget": "\U0001f3af",
+    "CronCreate": "⏰",
+    "CronDelete": "⏰",
+    "CronList": "⏰",
     # MCP bare tool names (used after prefix stripping)
     "ask_question": "❓",
 }

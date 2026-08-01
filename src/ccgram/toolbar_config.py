@@ -219,6 +219,17 @@ DEFAULT_LAYOUTS: dict[str, ToolbarLayout] = {
             ("last", "getfile", "close"),
         ),
     ),
+    # Kimi drives its approval prompts and pickers with ↑/↓ + Enter/Esc, and
+    # Shift+Tab (the shared "mode" action) toggles plan mode.
+    "kimi": ToolbarLayout(
+        style="emoji_text",
+        buttons=(
+            ("screen", "ctrlc", "live"),
+            ("mode", "model", "esc"),
+            ("up", "enter", "down"),
+            ("last", "getfile", "close"),
+        ),
+    ),
     "pi": ToolbarLayout(
         style="emoji_text",
         buttons=(

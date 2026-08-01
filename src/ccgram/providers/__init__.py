@@ -32,6 +32,7 @@ _YOLO_FLAGS: dict[str, str] = {
     "claude": "--dangerously-skip-permissions",
     "codex": "--dangerously-bypass-approvals-and-sandbox",
     "gemini": "--yolo",
+    "kimi": "--yolo",
 }
 
 
@@ -62,6 +63,9 @@ def _ensure_registered() -> None:
     from ccgram.providers.gemini import GeminiProvider
 
     # Lazy: provider classes register against the registry at import; defer until the registry factory runs
+    from ccgram.providers.kimi import KimiProvider
+
+    # Lazy: provider classes register against the registry at import; defer until the registry factory runs
     from ccgram.providers.pi import PiProvider
 
     # Lazy: provider classes register against the registry at import; defer until the registry factory runs
@@ -70,6 +74,7 @@ def _ensure_registered() -> None:
     registry.register("claude", ClaudeProvider)
     registry.register("codex", CodexProvider)
     registry.register("gemini", GeminiProvider)
+    registry.register("kimi", KimiProvider)
     registry.register("pi", PiProvider)
     registry.register("shell", ShellProvider)
     _registered = True
@@ -140,7 +145,7 @@ def detect_provider_from_command(pane_current_command: str) -> str:
     # Match basename only (first token) to avoid false positives
     # from paths like /home/claude/bin/vim
     basename = os.path.basename(cmd.split()[0])
-    for name in ("claude", "codex", "gemini", "pi"):
+    for name in ("claude", "codex", "gemini", "kimi", "pi"):
         if basename == name or basename.startswith(name + "-"):
             return name
 
@@ -177,6 +182,8 @@ def detect_provider_from_transcript_path(transcript_path: str) -> str:
         return "claude"
     if "/.gemini/" in normalized and "/chats/" in normalized:
         return "gemini"
+    if "/.kimi-code/sessions/" in normalized:
+        return "kimi"
     if "/.pi/agent/sessions/" in normalized:
         return "pi"
     return ""

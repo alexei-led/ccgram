@@ -34,8 +34,10 @@ Backend-neutral terminal-multiplexer seam (mirrors the `providers/` seam). Calle
 
 - `base.py` — `AgentProvider` protocol, `ProviderCapabilities`, event types.
 - `registry.py` — `ProviderRegistry` (name→factory, singleton cache).
-- `_jsonl.py` — shared JSONL parsing base for Codex + Gemini + Pi.
-- `claude.py`, `codex.py`, `gemini.py`, `pi.py` — provider implementations.
+- `_jsonl.py` — shared JSONL parsing base for Codex + Gemini + Kimi + Pi.
+- `claude.py`, `codex.py`, `gemini.py`, `kimi.py`, `pi.py` — provider implementations.
+- `kimi.py` — Kimi Code provider (hookless, native binary so `pane_current_command` is `kimi`; a resumed session re-execs as `kimi-code` and both match via the `kimi-` prefix rule). Discovery scans `~/.kimi-code/session_index.jsonl` for the entry whose `workDir` matches the window cwd, newest transcript wins. Resume is `-S <session_id>` (an explicit id skips Kimi's picker; resuming appends to the same `wire.jsonl`, so byte offsets survive a restart). `parse_terminal_status` extracts the last complete `─`-fenced block and requires an interactive affordance (footer hint / `▶`❯ cursor / ≥2 numbered options); a cursor-marked question is `PermissionPrompt`, a plain heading is `SelectionUI`. Busy state comes from the bottom-of-pane spinner line (`<moon|braille>[ label] · Tip: …`). `parse_status_modes` reads `yolo`/`auto`/`plan` off the status bar for `scrape_current_mode`.
+- `kimi_format.py` — Kimi `wire.jsonl` parsers (`turn.prompt`, `context.append_loop_event` → `content.part`/`tool.call`/`tool.result`, epoch-ms → ISO-8601). `context.append_message` is deliberately skipped: it duplicates the user turn and carries injected system reminders.
 - `pi_format.py` — Pi transcript parsers (user/assistant/toolResult/bashExecution, session header, pending-tool tracking).
 - `pi_discovery.py` — Pi command discovery (builtins + skills + prompts + `pi.registerCommand` scans).
 - `codex_status.py`, `codex_format.py` — Codex status snapshot + permission/tool prompt formatter.

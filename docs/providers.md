@@ -9,19 +9,20 @@ CCGram supports multiple agent CLI backends. Each Telegram topic can use a diffe
 | Claude Code | `claude`    | Yes         | Yes    | Yes      | JSONL      | Hook events + pyte VT100 + spinner                                    |
 | Codex CLI   | `codex`     | Yes         | Yes    | Yes      | JSONL      | Hook Stop + pyte VT100 interactive UI + transcript activity heuristic |
 | Gemini CLI  | `gemini`    | Yes         | Yes    | Yes      | JSONL      | Hook AfterAgent + pane title + interactive UI + `/status` snapshot    |
+| Kimi Code   | `kimi`      | No          | Yes    | Yes      | JSONL wire | Fenced interactive block + spinner line + transcript activity          |
 | Pi          | `pi`        | Yes         | Yes    | Yes      | JSONL (v3) | Hook-runner Stop + transcript activity heuristic                      |
 | Shell       | `bash`      | No          | No     | No       | None       | Shell prompt idle detection                                           |
 
 ## Choosing a Provider
 
-**From Telegram**: When you create a new topic and select a directory, then — if the directory is an eligible git repo — choose whether to use the current branch or create a new worktree on a new branch (non-git directories skip this step), a provider picker appears with Claude (default), Codex, Gemini, Pi, and Shell options. After provider selection, CCGram asks for session mode:
+**From Telegram**: When you create a new topic and select a directory, then — if the directory is an eligible git repo — choose whether to use the current branch or create a new worktree on a new branch (non-git directories skip this step), a provider picker appears with Claude (default), Codex, Gemini, Kimi, Pi, and Shell options. After provider selection, CCGram asks for session mode:
 
 - `✅ Standard` (normal approvals)
 - `🚀 YOLO` (provider-specific permissive mode)
 
 **From the terminal**: If you create a window manually and start an agent CLI, CCGram auto-detects the provider from the running process name. When the pane command is a JS runtime wrapper (node, bun), it inspects the pane's foreground process to reliably identify the actual CLI. How the foreground process is read is owned by the multiplexer backend — tmux uses `ps -t <tty>`, herdr reads `pane process-info` (no tty needed) — so detection works the same on both. The shell provider uses the same seam to classify a bare shell pane. As a last resort, Gemini pane-title symbols (`✦`, `✋`, `◇`) are checked.
 
-**Default provider**: Set `CCGRAM_PROVIDER=codex` (or `gemini`, `pi`, `shell`) to change the default. Claude is the default if unset.
+**Default provider**: Set `CCGRAM_PROVIDER=codex` (or `gemini`, `kimi`, `pi`, `shell`) to change the default. Claude is the default if unset.
 
 ## Session Mode (Standard vs YOLO)
 
@@ -43,10 +44,11 @@ Override the CLI command used to launch each provider via `CCGRAM_<NAME>_COMMAND
 CCGRAM_CLAUDE_COMMAND=ce --current
 CCGRAM_CODEX_COMMAND=my-codex-wrapper
 CCGRAM_GEMINI_COMMAND=/opt/gemini/run
+CCGRAM_KIMI_COMMAND=kimi --model k3-256k
 CCGRAM_PI_COMMAND=pi --model sonnet
 ```
 
-`<NAME>` is uppercase: `CLAUDE`, `CODEX`, `GEMINI`, `PI`. Defaults to the provider's built-in command (`claude`, `codex`, `gemini`, `pi`) when unset. New providers automatically support `CCGRAM_<NAME>_COMMAND` without code changes.
+`<NAME>` is uppercase: `CLAUDE`, `CODEX`, `GEMINI`, `KIMI`, `PI`. Defaults to the provider's built-in command (`claude`, `codex`, `gemini`, `kimi`, `pi`) when unset. New providers automatically support `CCGRAM_<NAME>_COMMAND` without code changes.
 
 You can use this for a global "today" setup (all new sessions), for example:
 
@@ -63,6 +65,7 @@ Each provider exposes its own slash commands to the Telegram menu. Examples:
 - **Claude**: `/clear`, `/compact`, `/cost`, `/doctor`, `/permissions`...
 - **Codex**: `/model`, `/mode`, `/status`, `/diff`, `/compact`, `/mcp`...
 - **Gemini**: `/chat`, `/clear`, `/compress`, `/model`, `/memory`, `/vim`...
+- **Kimi**: `/new`, `/compact`, `/model`, `/effort`, `/permission`, `/plan`, `/yolo`, `/goal`, `/swarm`, `/usage`... (plus discovered skills)
 - **Pi**: `/new`, `/compact`, `/followup`, `/scoped_models`, `/export`, `/name`, `/reload`, `/session`, `/share`, `/changelog`... (plus discovered skills/prompts/extensions)
 
 ---
@@ -147,6 +150,66 @@ Older `session-*.json` whole-file transcripts are no longer monitored; only `.js
 ### Status Snapshot
 
 Gemini supports `/status` snapshots: CCGram parses recent transcript activity to render an inline summary of the current session (last activity, pending tools, tool_use counts) without waiting for the next pane refresh.
+
+## Kimi Code
+
+[Kimi Code](https://moonshotai.github.io/kimi-code/) is Moonshot AI's agent CLI. Unlike the other providers it ships as a **native binary**, so the multiplexer reports `kimi` as the pane command directly — no JS-runtime shim to see through. A resumed session re-execs as `kimi-code`; both spellings detect as the same provider.
+
+Kimi has no Claude-style lifecycle hooks, so it is a hookless provider like Codex and Gemini: session tracking works by scanning `~/.kimi-code/session_index.jsonl` for the entry whose `workDir` matches the window directory, then following it to the transcript. Nothing needs to be installed into Kimi's config.
+
+### Kimi Launch
+
+The default command is `kimi`. Override via `CCGRAM_KIMI_COMMAND`. YOLO mode appends `--yolo`, which takes effect straight from the flag — there is no in-TUI confirmation dialog to accept.
+
+Resume uses `-S <session_id>`. Passing an explicit id resumes non-interactively; bare `-S` would open Kimi's session picker, which ccgram can't drive over `send_keys`. `--continue` backs the Continue recovery button.
+
+### Kimi Transcript
+
+State lives under `~/.kimi-code`:
+
+```
+session_index.jsonl                                     {sessionId, sessionDir, workDir}
+sessions/<workspace>/<session>/agents/main/wire.jsonl   transcript
+```
+
+The transcript is a newline-delimited "wire" log (protocol 1.4). Each line is one record keyed by `type`:
+
+- `turn.prompt` — the human turn (`input` blocks + `origin.kind`)
+- `context.append_loop_event` — the agent loop, discriminated by `event.type`:
+  - `content.part` → `text` (assistant prose) or `think` (reasoning)
+  - `tool.call` → `toolCallId`, `name`, `args`, `description`
+  - `tool.result` → `toolCallId`, `result.output` (+ a `<system>` `result.note`)
+  - `step.begin` / `step.end` → bookkeeping, not relayed
+- `context.append_message` — **deliberately ignored**: it re-appends the same user turn *and* injected system reminders to the model context, so relaying it would duplicate every prompt and leak `<system-reminder>` text.
+
+Resuming appends to the existing `wire.jsonl`, so byte offsets stay valid across a restart and ccgram keeps reading incrementally without re-sending history. Kimi timestamps are epoch milliseconds and are normalised to ISO-8601 UTC.
+
+### Kimi Status Detection
+
+Kimi fences its approval prompts and pickers between full-width `─` rules. CCGram extracts the last complete fence and accepts it only when it carries an interactive affordance (footer hint like `↑/↓ select · 1/2/3/4 choose · ↵ confirm`, a `▶`/`❯` cursor, or a numbered option list), so a plain boxed notice is not mistaken for a prompt. A cursor-marked question (`▶ Run this command?`) is reported as `PermissionPrompt`; a plain heading (`Select permission mode`) as `SelectionUI` — option text mentioning "Approve" does not make a picker an approval.
+
+When no prompt is showing, the busy line above the input box decides: `<spinner>[ <label>] · Tip: …`, where the spinner is a moon phase (thinking) or a braille frame (streaming, labelled `working...`). Only the bottom of the pane is scanned, so a spinner left in scrollback does not read as busy.
+
+The status bar carries the active modes — `yolo`, `auto`, `plan`, combinable — which back the toolbar's Mode button. Shift+Tab toggles plan mode.
+
+### Kimi Commands
+
+Kimi's Telegram-safe built-ins include `/new`, `/compact`, `/model`, `/effort`, `/permission`, `/plan`, `/yolo`, `/auto`, `/goal`, `/swarm`, `/btw`, `/usage`, `/status`, `/init`, `/undo`, `/fork`, `/title`, and `/mcp`. `SKILL.md`-backed skills under `~/.kimi-code/skills/<name>/` and `<project>/.kimi/skills/<name>/` are discovered dynamically.
+
+`/clear` is accepted as a hidden compatibility alias for Kimi's `/new` (Kimi has no `/clear`). `/sessions` is not advertised because it collides with ccgram's bot-native session picker.
+
+### Kimi Toolbar
+
+Kimi's default toolbar uses Shift+Tab for plan mode and a nav row for driving its pickers:
+
+```
+[📸 Screen] [⛔ CtrlC] [📺 Live]
+[🔀 Mode]   [π Model]  [⎋ Esc]
+[🔼 Up]     [⏎ Enter]  [🔽 Down]
+[💬 Last]   [📎 File]  [✖️ Close]
+```
+
+Override with a `[providers.kimi]` block in `~/.ccgram/toolbar.toml`.
 
 ## Pi
 

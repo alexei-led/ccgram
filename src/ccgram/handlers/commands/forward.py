@@ -59,9 +59,13 @@ logger = structlog.get_logger()
 
 
 _NAV_KEYS = ("up", "down", "enter", "esc")
-_PI_CLEAR_ALIAS_COMMAND = "clear"
+_CLEAR_ALIAS_COMMAND = "clear"
+_NEW_COMMAND = "new"
 _PI_FOLLOWUP_COMMAND = "followup"
-_PI_NEW_COMMAND = "new"
+
+# Providers whose documented session reset is ``/new`` — ``/clear`` is kept as
+# a hidden compatibility alias so muscle memory from Claude Code still works.
+_NEW_RESET_PROVIDERS = frozenset({"kimi", "pi"})
 
 
 def _picker_hint(provider_name: str) -> str:
@@ -95,8 +99,11 @@ def _default_command_args(cc_name: str, args: str, display: str) -> str:
 
 def _provider_command_name(provider_name: str, cc_name: str) -> str:
     """Apply provider-specific compatibility aliases before forwarding."""
-    if provider_name == "pi" and cc_name.lower() == _PI_CLEAR_ALIAS_COMMAND:
-        return _PI_NEW_COMMAND
+    if (
+        provider_name in _NEW_RESET_PROVIDERS
+        and cc_name.lower() == _CLEAR_ALIAS_COMMAND
+    ):
+        return _NEW_COMMAND
     return cc_name
 
 
@@ -106,8 +113,8 @@ def _is_session_reset_command(provider_name: str, cc_slash: str) -> bool:
     command = parts[0].lstrip("/").lower()
     if len(parts) > 1:
         return False
-    return command == _PI_CLEAR_ALIAS_COMMAND or (
-        provider_name == "pi" and command == _PI_NEW_COMMAND
+    return command == _CLEAR_ALIAS_COMMAND or (
+        provider_name in _NEW_RESET_PROVIDERS and command == _NEW_COMMAND
     )
 
 

@@ -15,6 +15,7 @@ from ccgram.providers._jsonl import JsonlProvider
 from ccgram.providers.claude import ClaudeProvider
 from ccgram.providers.codex import CodexProvider
 from ccgram.providers.gemini import GeminiProvider
+from ccgram.providers.kimi import KimiProvider
 from ccgram.providers.pi import PiProvider
 from ccgram.providers.shell import ShellProvider
 
@@ -49,6 +50,7 @@ PROVIDER_FIXTURES: list[type] = [
     ClaudeProvider,
     CodexProvider,
     GeminiProvider,
+    KimiProvider,
     PiProvider,
     ShellProvider,
 ]
@@ -134,6 +136,11 @@ def _make_assistant_entry(
         }
     if name == "gemini":
         return {"type": "gemini", "content": text}
+    if name == "kimi":
+        return {
+            "type": "context.append_loop_event",
+            "event": {"type": "content.part", "part": {"type": "text", "text": text}},
+        }
     return {
         "type": "assistant",
         "message": {"content": [{"type": "text", "text": text}]},
@@ -157,6 +164,17 @@ def _make_tool_use_entry(provider: AgentProvider) -> dict[str, Any]:
             "type": "gemini",
             "content": "Using tool",
             "toolCalls": [{"id": "t1", "name": "Read"}],
+        }
+    if name == "kimi":
+        return {
+            "type": "context.append_loop_event",
+            "event": {
+                "type": "tool.call",
+                "uuid": "t1",
+                "toolCallId": "t1",
+                "name": "Read",
+                "args": {"path": "foo.py"},
+            },
         }
     if name == "pi":
         return {
@@ -193,6 +211,16 @@ def _make_tool_result_entry(provider: AgentProvider) -> dict[str, Any]:
         }
     if name == "gemini":
         return {"type": "gemini", "content": "result ok"}
+    if name == "kimi":
+        return {
+            "type": "context.append_loop_event",
+            "event": {
+                "type": "tool.result",
+                "parentUuid": "t1",
+                "toolCallId": "t1",
+                "result": {"output": "ok"},
+            },
+        }
     if name == "pi":
         return {
             "type": "toolResult",
@@ -302,6 +330,8 @@ class TestIsUserTranscriptEntry:
             entry = {"type": "input_item", "payload": {"role": "user"}}
         elif name == "gemini":
             entry = {"type": "user"}
+        elif name == "kimi":
+            entry = {"type": "turn.prompt", "origin": {"kind": "user"}}
         else:
             entry = {"type": "user"}
         assert provider.is_user_transcript_entry(entry) is True
@@ -312,6 +342,8 @@ class TestIsUserTranscriptEntry:
             entry = {"type": "response_item", "payload": {"role": "assistant"}}
         elif name == "gemini":
             entry = {"type": "gemini"}
+        elif name == "kimi":
+            entry = {"type": "context.append_loop_event", "event": {"type": "step.end"}}
         else:
             entry = {"type": "assistant"}
         assert provider.is_user_transcript_entry(entry) is False
@@ -345,6 +377,12 @@ class TestParseHistoryEntry:
             }
         elif name == "gemini":
             entry = {"type": "user", "content": "my question"}
+        elif name == "kimi":
+            entry = {
+                "type": "turn.prompt",
+                "input": [{"type": "text", "text": "my question"}],
+                "origin": {"kind": "user"},
+            }
         else:
             entry = {
                 "type": "user",
@@ -471,7 +509,7 @@ class TestStatusSnapshot:
 
     def test_supports_status_snapshot_flag(self, provider: AgentProvider) -> None:
         caps = provider.capabilities
-        if caps.name in ("codex", "gemini"):
+        if caps.name in ("codex", "gemini", "kimi"):
             assert caps.supports_status_snapshot is True
         else:
             assert caps.supports_status_snapshot is False

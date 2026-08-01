@@ -63,7 +63,7 @@ Each Telegram topic maps to one multiplexer window. Type in Telegram → keystro
 ## What You Can Do
 
 - **Bind agents to topics** — one agent per Telegram topic; create via directory browser
-- **Auto-detect providers** — Supports Claude Code, Codex, Gemini, Pi, and Shell simultaneously
+- **Auto-detect providers** — Supports Claude Code, Codex, Gemini, Kimi Code, Pi, and Shell simultaneously
 - **Monitor live** — Terminal screenshots on demand or auto-refresh every 5 seconds
 - **Send commands** — Slash commands, voice messages (transcribed via Whisper), or raw shell input
 - **Run multiple agents in parallel** — each topic independent; run different agents at once
@@ -102,16 +102,16 @@ Get user ID from [@userinfobot](https://t.me/userinfobot). Get group ID via [@Ra
 ccgram
 ```
 
-Open your Telegram group, create a topic, send a message — directory browser appears. Pick a project directory, choose your agent (Claude, Codex, Gemini, Pi, or Shell), and you're connected.
+Open your Telegram group, create a topic, send a message — directory browser appears. Pick a project directory, choose your agent (Claude, Codex, Gemini, Kimi, Pi, or Shell), and you're connected.
 
-**Prerequisites:** Python 3.14+, [tmux](https://github.com/tmux/tmux) or [herdr](https://github.com/ogulcancelik/herdr) (CCGram controls a terminal multiplexer; no agent SDK modifications needed), and one agent CLI (`claude`, `codex`, `gemini`, `pi` installed and authenticated, or use `shell` with no extra install).
+**Prerequisites:** Python 3.14+, [tmux](https://github.com/tmux/tmux) or [herdr](https://github.com/ogulcancelik/herdr) (CCGram controls a terminal multiplexer; no agent SDK modifications needed), and one agent CLI (`claude`, `codex`, `gemini`, `kimi`, `pi` installed and authenticated, or use `shell` with no extra install).
 
 ---
 
 ## Documentation
 
 - **[Guides](docs/guides.md)** — CLI reference, configuration, voice transcription, multi-instance setup, session recovery, testing
-- **[Providers](docs/providers.md)** — Claude Code, Codex, Gemini, Pi, Shell; session modes, LLM config, custom commands, git worktrees
+- **[Providers](docs/providers.md)** — Claude Code, Codex, Gemini, Kimi Code, Pi, Shell; session modes, LLM config, custom commands, git worktrees
 
 ---
 
