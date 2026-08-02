@@ -50,6 +50,10 @@ def _patch_loop_deps(
         "tmux_manager": patch(
             "ccgram.handlers.polling.polling_coordinator.tmux_manager"
         ),
+        "reconciliation_listing": patch(
+            "ccgram.handlers.polling.polling_coordinator.list_windows_for_reconciliation",
+            new_callable=AsyncMock,
+        ),
         "tick_window": patch(
             "ccgram.handlers.polling.polling_coordinator.window_tick.tick_window",
             new_callable=AsyncMock,
@@ -77,7 +81,7 @@ def _patch_loop_deps(
             for name, p in patches.items():
                 mocks[name] = stack.enter_context(p)
 
-            mocks["tmux_manager"].list_windows = AsyncMock(return_value=windows)
+            mocks["reconciliation_listing"].return_value = windows
             mocks["thread_router"].iter_thread_bindings.return_value = bindings
             mocks["config"].status_poll_interval = 1.0
 
@@ -130,6 +134,28 @@ class TestStatusPollLoopDelegatesPeriodicTasks:
 
         ctx.mocks["run_periodic"].assert_called_once()
         ctx.mocks["run_lifecycle"].assert_called_once()
+
+    async def test_unavailable_listing_skips_destructive_tasks(self):
+        bot = AsyncMock(spec=Bot)
+        combined, ctx = _patch_loop_deps()
+
+        async def _stop_sleep(_delay: float) -> None:
+            raise asyncio.CancelledError
+
+        with (
+            combined(),
+            patch(
+                "ccgram.handlers.polling.polling_coordinator.asyncio.sleep",
+                side_effect=_stop_sleep,
+            ),
+            contextlib.suppress(asyncio.CancelledError),
+        ):
+            ctx.mocks["reconciliation_listing"].return_value = None
+            await status_poll_loop(bot)
+
+        ctx.mocks["tick_window"].assert_not_called()
+        ctx.mocks["run_periodic"].assert_not_called()
+        ctx.mocks["run_lifecycle"].assert_not_called()
 
 
 class TestStatusPollLoopPassesWindowLookup:
@@ -185,13 +211,11 @@ class TestBackoffOnTelegramError:
                 raise asyncio.CancelledError
 
         with combined():
-            ctx.mocks["tmux_manager"].list_windows = AsyncMock(
-                side_effect=[
-                    TelegramError("err"),
-                    TelegramError("err"),
-                    TelegramError("err"),
-                ]
-            )
+            ctx.mocks["reconciliation_listing"].side_effect = [
+                TelegramError("err"),
+                TelegramError("err"),
+                TelegramError("err"),
+            ]
             with (
                 patch(
                     "ccgram.handlers.polling.polling_coordinator.asyncio.sleep",
@@ -262,6 +286,7 @@ class TestImportsAreMinimal:
             "telegram",
             "..thread_router",
             "..multiplexer",
+            "..multiplexer.reconciliation",
             "..utils",
             "..config",
             ".window_tick",
@@ -335,8 +360,8 @@ class TestBackoffBehavior:
             raise asyncio.CancelledError
 
         with combined():
-            ctx.mocks["tmux_manager"].list_windows = AsyncMock(
-                side_effect=TelegramError("loop-error")
+            ctx.mocks["reconciliation_listing"].side_effect = TelegramError(
+                "loop-error"
             )
             with (
                 patch(
@@ -363,8 +388,8 @@ class TestBackoffBehavior:
                 raise asyncio.CancelledError
 
         with combined():
-            ctx.mocks["tmux_manager"].list_windows = AsyncMock(
-                side_effect=TelegramError("loop-error")
+            ctx.mocks["reconciliation_listing"].side_effect = TelegramError(
+                "loop-error"
             )
             with (
                 patch(
@@ -392,9 +417,10 @@ class TestBackoffBehavior:
                 raise asyncio.CancelledError
 
         with combined():
-            ctx.mocks["tmux_manager"].list_windows = AsyncMock(
-                side_effect=[TelegramError("boom"), []]
-            )
+            ctx.mocks["reconciliation_listing"].side_effect = [
+                TelegramError("boom"),
+                [],
+            ]
             ctx.mocks["config"].status_poll_interval = 0.5
             with (
                 patch(

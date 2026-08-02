@@ -75,6 +75,7 @@ _FLAG_TO_ENV: list[tuple[str, str]] = [
     ("whisper_provider", "CCGRAM_WHISPER_PROVIDER"),
     ("ack_reaction", "CCGRAM_ACK_REACTION"),
     ("hide_tool_calls", "CCGRAM_HIDE_TOOL_CALLS"),
+    ("hide_thinking", "CCGRAM_HIDE_THINKING"),
     ("status_mode", "CCGRAM_STATUS_MODE"),
 ]
 
@@ -199,6 +200,13 @@ def apply_args_to_env(**kwargs: object) -> None:
     default=None,
     envvar="CCGRAM_HIDE_TOOL_CALLS",
     help="Hide tool_use/tool_result messages globally (per-window override via /toolcalls).",
+)
+@click.option(
+    "--hide-thinking",
+    is_flag=True,
+    default=None,
+    envvar="CCGRAM_HIDE_THINKING",
+    help="Hide thinking messages globally.",
 )
 @click.option(
     "--status-mode",

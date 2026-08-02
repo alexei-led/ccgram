@@ -24,6 +24,12 @@ ccgram -v                     # Run with debug logging
 
 ## Getting Started
 
+### Platform Support
+
+CCGram supports Linux, macOS, and WSL2. Native Windows is not supported.
+
+On Windows, install and run CCGram inside WSL2. Install the multiplexer and agent CLI inside the WSL distribution.
+
 ### BotFather Setup
 
 You need a Telegram bot token to run CCGram. Create one via [@BotFather](https://t.me/BotFather).
@@ -177,6 +183,7 @@ All settings accept both CLI flags and environment variables. CLI flags take pre
 | `CCGRAM_LIVE_VIEW_TIMEOUT` / `--live-view-timeout`   | `300`                          | Live view auto-stop timeout in seconds (min 1)                                                       |
 | `CCGRAM_STATUS_MODE` / `--status-mode`               | `system`                       | Topic emoji color scheme: `system` (green=working) or `user` (green=ready)                           |
 | `CCGRAM_HIDE_TOOL_CALLS` / `--hide-tool-calls`       | `false`                        | Set `true` to globally hide `tool_use`/`tool_result` messages (per-window override via `/toolcalls`) |
+| `CCGRAM_HIDE_THINKING` / `--hide-thinking`           | `false`                        | Set `true` to globally hide thinking messages                                                        |
 | `CCGRAM_PROMPT_MODE` / `--prompt-mode`               | `wrap`                         | Shell prompt marker: `wrap` (append `⌘N⌘`) or `replace` (legacy `{prefix}:N❯`)                       |
 | `CCGRAM_PROMPT_MARKER`                               | `ccgram`                       | Marker prefix used only by `replace` mode                                                            |
 | `CCGRAM_PANE_LIFECYCLE_NOTIFY`                       | `false`                        | Default for per-window pane create/close notifications (toggle via `/panes`)                         |
@@ -212,6 +219,12 @@ By default, `tool_use` and `tool_result` events from Claude/Codex/Gemini are for
 - **Per-window**: `/toolcalls` in a topic cycles `default → shown → hidden`. The per-window setting always wins over the global default.
 
 Hook events (Stop, StopFailure, SubagentStart/Stop, TaskCompleted, TeammateIdle) are **never** suppressed — they bypass the gate so you still see what matters.
+
+## Thinking Visibility
+
+By default, thinking messages are forwarded to Telegram. Set `CCGRAM_HIDE_THINKING=true` or use `--hide-thinking` to hide them globally.
+
+This option does not hide responses, tool messages, or hook events. It has no per-window override.
 
 ## Voice Message Transcription
 

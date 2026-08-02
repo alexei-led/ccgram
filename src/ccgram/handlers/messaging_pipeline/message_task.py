@@ -8,13 +8,13 @@ keeping the dependency graph acyclic.
 from dataclasses import dataclass
 from typing import Literal, TypeAlias
 
-ContentType: TypeAlias = Literal["text", "tool_use", "tool_result"]
+ContentType: TypeAlias = Literal["text", "thinking", "tool_use", "tool_result"]
 MessageRole: TypeAlias = Literal["assistant", "user"]
 
 
 @dataclass(frozen=True, slots=True)
 class ContentTask:
-    """A Telegram message to deliver — text, tool_use, or tool_result."""
+    """A Telegram message to deliver."""
 
     window_id: str
     parts: tuple[str, ...]

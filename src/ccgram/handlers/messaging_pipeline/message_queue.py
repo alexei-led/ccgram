@@ -284,6 +284,8 @@ async def _handle_content_task(
 
     Returns the number of additional merged tasks (caller must call task_done for each).
     """
+    if task.content_type == "thinking" and config.hide_thinking:
+        return 0
     if task.content_type in ("tool_use", "tool_result") and is_tool_calls_hidden(
         task.window_id
     ):

@@ -126,6 +126,9 @@ class TestGetSynthesizerOpenAI:
         monkeypatch.setenv("CCGRAM_TTS_PROVIDER", "openai")
         monkeypatch.delenv("CCGRAM_TTS_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(
+            "ccgram.config.load_dotenv", lambda *_args, **_kwargs: False
+        )
 
         from ccgram.config import Config
         from ccgram.tts import get_synthesizer

@@ -158,6 +158,13 @@ class Config:
         self.hide_tool_calls: bool = os.getenv(
             "CCGRAM_HIDE_TOOL_CALLS", "false"
         ).lower() in ("1", "true", "yes")
+        self.hide_thinking: bool = os.getenv(
+            "CCGRAM_HIDE_THINKING", "false"
+        ).lower() in (
+            "1",
+            "true",
+            "yes",
+        )
 
         # Global default batch mode: ephemeral tools (single rolling message deleted
         # on completion). Off by default. Per-window batch_mode takes precedence when

@@ -132,6 +132,23 @@ class TestHideToolCalls:
 
 
 @pytest.mark.usefixtures("_base_env")
+class TestHideThinking:
+    def test_hide_thinking_default_false(self, monkeypatch):
+        monkeypatch.delenv("CCGRAM_HIDE_THINKING", raising=False)
+        assert Config().hide_thinking is False
+
+    @pytest.mark.parametrize("value", ["1", "true", "yes", "True", "YES"])
+    def test_hide_thinking_enabled(self, monkeypatch, value):
+        monkeypatch.setenv("CCGRAM_HIDE_THINKING", value)
+        assert Config().hide_thinking is True
+
+    @pytest.mark.parametrize("value", ["", "0", "false", "no", "off"])
+    def test_hide_thinking_disabled(self, monkeypatch, value):
+        monkeypatch.setenv("CCGRAM_HIDE_THINKING", value)
+        assert Config().hide_thinking is False
+
+
+@pytest.mark.usefixtures("_base_env")
 class TestStatusMode:
     def test_default_is_system(self, monkeypatch):
         monkeypatch.delenv("CCGRAM_STATUS_MODE", raising=False)

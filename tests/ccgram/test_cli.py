@@ -168,3 +168,7 @@ class TestApplyArgsToEnv:
         apply_args_to_env(autoclose_done=0, autoclose_dead=0)
         assert os.environ["AUTOCLOSE_DONE_MINUTES"] == "0"
         assert os.environ["AUTOCLOSE_DEAD_MINUTES"] == "0"
+
+    def test_hide_thinking(self):
+        apply_args_to_env(hide_thinking=True)
+        assert os.environ["CCGRAM_HIDE_THINKING"] == "True"

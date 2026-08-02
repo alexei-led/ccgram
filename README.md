@@ -104,7 +104,15 @@ ccgram
 
 Open your Telegram group, create a topic, send a message — directory browser appears. Pick a project directory, choose your agent (Claude, Codex, Gemini, Pi, or Shell), and you're connected.
 
-**Prerequisites:** Python 3.14+, [tmux](https://github.com/tmux/tmux) or [herdr](https://github.com/ogulcancelik/herdr) (CCGram controls a terminal multiplexer; no agent SDK modifications needed), and one agent CLI (`claude`, `codex`, `gemini`, `pi` installed and authenticated, or use `shell` with no extra install).
+**Prerequisites:** Python 3.14+, [tmux](https://github.com/tmux/tmux) or [herdr](https://github.com/ogulcancelik/herdr), and one agent CLI. CCGram does not modify agent SDKs.
+
+## Platform Support
+
+CCGram supports Linux, macOS, and WSL2. Native Windows is not supported.
+
+On Windows, install and run CCGram inside WSL2. Install `tmux` or `herdr` and the agent CLI inside the WSL distribution.
+
+Native Windows does not provide the Unix file locking, signal handling, and terminal multiplexer features that CCGram requires.
 
 ---
 

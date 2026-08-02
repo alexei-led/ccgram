@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from ccgram.hook import _encode_pi_cwd_dirname, _install_hook, hook_main
 
 
@@ -402,6 +404,31 @@ def test_detect_provider_from_payload_codex_model_field_still_codex() -> None:
 
     # A model-bearing payload that is not a Claude transcript still infers codex.
     assert detect_provider_from_payload({"model": "gpt-5-codex"}) == "codex"
+
+
+@pytest.mark.parametrize("event_name", ["Stop", "Notification"])
+def test_hook_detects_claude_with_custom_config_dir(
+    tmp_path: Path, monkeypatch, event_name: str
+) -> None:
+    custom_config_dir = tmp_path / "claude-config"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(custom_config_dir))
+    monkeypatch.setenv("CCGRAM_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("TMUX_PANE", "%0")
+    payload = {
+        "session_id": "550e8400-e29b-41d4-a716-446655440000",
+        "hook_event_name": event_name,
+        "transcript_path": str(custom_config_dir / "projects" / "proj" / "sess.jsonl"),
+        "model": "claude-opus-4-8",
+        "permission_mode": "default",
+    }
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+
+    with patch("ccgram.hook.subprocess.run", return_value=_tmux_result()):
+        hook_main()
+
+    event = json.loads((tmp_path / "state" / "events.jsonl").read_text())
+    assert event["event"] == event_name
+    assert event["data"]["provider_name"] == "claude"
 
 
 def test_gemini_install_adds_provider_specific_hooks(
