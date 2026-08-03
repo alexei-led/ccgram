@@ -62,6 +62,15 @@ async def split_command(update: "Update", context: "ContextTypes.DEFAULT_TYPE") 
 
     command = " ".join(context.args).strip() if context.args else ""
     if command:
+        # Herdr panes are short-lived locators.  Do not pass the newly returned
+        # raw pane ID back through the public seam: only its session target can
+        # authorize I/O after the new agent reports a session.
+        if tmux_manager.capabilities.native_agent_status:
+            await safe_reply(
+                update.message,
+                "✅ Split created. Start the new agent in Herdr, then bind its reported session.",
+            )
+            return
         await tmux_manager.send_to_pane(new_pane, command, window_id=window_id)
         await safe_reply(
             update.message,

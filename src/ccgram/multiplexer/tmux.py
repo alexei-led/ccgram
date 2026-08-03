@@ -43,6 +43,7 @@ from .base import (
     MuxEvent,
     PaneDims,
     PaneInfo,
+    TopicTargetResult,
     WindowRef,
     WorkspaceRef,
 )
@@ -988,6 +989,26 @@ class TmuxManager:
                 return False, f"Failed to create window: {e}", "", ""
 
         return await asyncio.to_thread(_create_and_start)
+
+    async def create_topic_target(
+        self,
+        work_dir: str,
+        *,
+        launch_command: str | None,
+        workspace_id: str | None,  # noqa: ARG002 - tmux has no workspaces
+        window_name: str | None = None,
+        agent_args: str = "",
+    ) -> TopicTargetResult:
+        """Create a tmux topic target; the window ID is its durable target."""
+        success, message, label, window_id = await self.create_window(
+            work_dir,
+            window_name=window_name,
+            launch_command=launch_command,
+            agent_args=agent_args,
+        )
+        if not success:
+            raise RuntimeError(message)
+        return TopicTargetResult(target_id=window_id, label=label, window_id=window_id)
 
     # ── Multiplexer Protocol surface ───────────────────────────────────
     # Neutral-typed wrappers over the libtmux-specific methods above.

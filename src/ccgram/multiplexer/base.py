@@ -103,6 +103,21 @@ class WorkspaceRef:
 
 
 @dataclass(frozen=True)
+class TopicTargetResult:
+    """Result of creating a target for a new Telegram topic.
+
+    ``target_id`` is the durable opaque binding.  The locator fields describe
+    only the newly-created backend object and must never be persisted as the
+    topic identity.
+    """
+
+    target_id: str
+    label: str
+    window_id: str
+    pane_id: str = ""
+
+
+@dataclass(frozen=True)
 class AgentStatus:
     """Native agent run-state reported by the multiplexer.
 
@@ -306,6 +321,23 @@ class Multiplexer(Protocol):
         the parameter.
 
         Returns ``(success, message, window_name, window_id)``.
+        """
+        ...
+
+    async def create_topic_target(
+        self,
+        work_dir: str,
+        *,
+        launch_command: str | None,
+        workspace_id: str | None,
+        window_name: str | None = None,
+        agent_args: str = "",
+    ) -> TopicTargetResult:
+        """Create a topic target, pinned to an opaque selected workspace.
+
+        The returned ``target_id`` is the only value callers may bind to a
+        Telegram topic.  ``workspace_id`` is opaque and may be required by a
+        backend with workspace support.
         """
         ...
 

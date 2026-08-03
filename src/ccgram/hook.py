@@ -14,6 +14,7 @@ Key functions: hook_main() (CLI entry), _install_hook().
 """
 
 import fcntl
+import hashlib
 import json
 import logging
 import os
@@ -645,55 +646,44 @@ def _hook_status(provider_name: str = "claude") -> int:  # noqa: PLR0911
     return 1
 
 
-def _resolve_herdr_tab_id(pane_id: str) -> str | None:
-    """Resolve a herdr pane id to its containing tab id.
+def _resolve_herdr_target_id(pane_id: str) -> str | None:
+    """Resolve this exact Herdr pane to one guarded opaque session target.
 
-    Runs ``herdr pane get <pane_id>`` and extracts ``result["pane"]["tab_id"]``.
-    The socket path is picked up from ``$HERDR_SOCKET_PATH`` by the herdr CLI
-    automatically (same as the multiplexer backend's subprocess runner).
-
-    Returns None on any failure (herdr not installed, socket down, pane gone)
-    so the caller degrades gracefully to the pane id.
+    A hook must not bind a tab or raw pane locator: a fresh ``agent list``
+    snapshot must contain exactly one complete session record for this pane.
     """
     try:
         result = subprocess.run(
-            ["herdr", "pane", "get", pane_id],
-            capture_output=True,
-            text=True,
-            timeout=5,
+            ["herdr", "agent", "list"], capture_output=True, text=True, timeout=5
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
-        logger.warning("herdr pane get failed for pane %s: %s", pane_id, exc)
+        logger.warning("herdr agent list failed for pane %s: %s", pane_id, exc)
         return None
     if result.returncode != 0:
-        logger.warning(
-            "herdr pane get returned non-zero for pane %s (rc=%d): %s",
-            pane_id,
-            result.returncode,
-            result.stderr.strip(),
-        )
         return None
     try:
-        payload = json.loads(result.stdout)
-    except (json.JSONDecodeError, ValueError) as exc:
-        logger.warning(
-            "herdr pane get returned unparseable JSON for pane %s: %s", pane_id, exc
-        )
+        agents = json.loads(result.stdout).get("result", {}).get("agents", [])
+    except (json.JSONDecodeError, AttributeError):
         return None
-    if not isinstance(payload, dict):
-        logger.warning(
-            "herdr pane get returned unexpected type %s for pane %s",
-            type(payload).__name__,
-            pane_id,
+    matches: list[str] = []
+    for record in agents if isinstance(agents, list) else []:
+        if not isinstance(record, dict) or record.get("pane_id") != pane_id:
+            continue
+        session = record.get("agent_session")
+        if not isinstance(session, dict):
+            continue
+        fields = [session.get(key) for key in ("source", "agent", "kind", "value")]
+        if not all(isinstance(field, str) and field for field in fields):
+            return None
+        payload = json.dumps(
+            dict(zip(("source", "agent", "kind", "value"), fields, strict=True)),
+            ensure_ascii=False, separators=(",", ":"),
+        ).encode("utf-8")
+        matches.append(
+            "herdr-session-v1-"
+            + hashlib.sha256(b"ccgram-herdr-session-v1\0" + payload).hexdigest()
         )
-        return None
-    tab_id = payload.get("result", {}).get("pane", {}).get("tab_id")
-    if not isinstance(tab_id, str) or not tab_id:
-        logger.warning(
-            "herdr pane get missing tab_id for pane %s (payload=%r)", pane_id, payload
-        )
-        return None
-    return tab_id
+    return matches[0] if len(matches) == 1 else None
 
 
 def _resolve_window_id(pane_id: str) -> tuple[str, str, str, str] | None:
@@ -1144,7 +1134,7 @@ def _locate_primary_window(
     identity = resolve_self_identity(
         os.environ,
         tmux_query=_resolve_window_id,
-        herdr_query=_resolve_herdr_tab_id,
+        herdr_query=_resolve_herdr_target_id,
     )
     if identity is None:
         if not os.environ.get("TMUX_PANE") and not os.environ.get("HERDR_PANE_ID"):

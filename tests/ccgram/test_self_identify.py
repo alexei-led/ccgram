@@ -133,19 +133,18 @@ class TestLocatePrimaryWindowThroughResolver:
 
         assert _locate_primary_window("sid", "Stop", "claude") is None
 
-    def test_herdr_pane_resolves_to_tab_id(self, monkeypatch) -> None:
-        # herdr_query maps pane→tab; session_window_key and window_id use tab id.
+    def test_herdr_pane_resolves_to_session_target(self, monkeypatch) -> None:
         monkeypatch.delenv("TMUX_PANE", raising=False)
         monkeypatch.setenv("HERDR_PANE_ID", "w2:p1")
         monkeypatch.setattr(
-            "ccgram.hook._resolve_herdr_tab_id",
-            lambda _pane: "w2:t1",
+            "ccgram.hook._resolve_herdr_target_id",
+            lambda _pane: "herdr-session-v1-target",
         )
         from ccgram.hook import _locate_primary_window
 
         assert _locate_primary_window("sid", "Stop", "claude") == (
-            "herdr:w2:t1",
-            "w2:t1",
+            "herdr:herdr-session-v1-target",
+            "herdr-session-v1-target",
             "",
         )
 
@@ -154,7 +153,7 @@ class TestLocatePrimaryWindowThroughResolver:
         monkeypatch.delenv("TMUX_PANE", raising=False)
         monkeypatch.setenv("HERDR_PANE_ID", "w2:p1")
         monkeypatch.setattr(
-            "ccgram.hook._resolve_herdr_tab_id",
+            "ccgram.hook._resolve_herdr_target_id",
             lambda _pane: None,
         )
         from ccgram.hook import _locate_primary_window

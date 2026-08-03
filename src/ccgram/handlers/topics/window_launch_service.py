@@ -146,6 +146,10 @@ async def _create_topic_window(
     wt_branch = ud.get(PENDING_WORKTREE_BRANCH) if ud else None
     wt_path = ud.get(PENDING_WORKTREE_PATH) if ud else None
     if tmux_manager.capabilities.native_worktrees and wt_repo and wt_branch and wt_path:
+        # The native worktree API cannot pin a preselected workspace.  Creating
+        # into an implicit workspace would violate the user's selection.
+        if chosen_workspace_id:
+            return False, "Selected workspace cannot create a native worktree", "", ""
         return await tmux_manager.create_worktree_window(
             wt_repo,
             wt_path,
@@ -153,11 +157,15 @@ async def _create_topic_window(
             window_name=Path(wt_path).name,
             launch_command=launch_command,
         )
-    return await tmux_manager.create_window(
-        selected_path,
-        launch_command=launch_command,
-        workspace_id=chosen_workspace_id,
-    )
+    try:
+        target = await tmux_manager.create_topic_target(
+            selected_path,
+            launch_command=launch_command,
+            workspace_id=chosen_workspace_id,
+        )
+    except RuntimeError as exc:
+        return False, str(exc), "", ""
+    return True, f"Created topic target '{target.label}'", target.label, target.target_id
 
 
 async def _wait_for_shell_ready(window_id: str, *, attempts: int = 5) -> None:

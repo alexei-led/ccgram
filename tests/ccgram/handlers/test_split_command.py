@@ -37,6 +37,7 @@ async def _run(
     )
     mock_tm.split_window = AsyncMock(return_value=new_pane)
     mock_tm.send_to_pane = AsyncMock(return_value=True)
+    mock_tm.capabilities.native_agent_status = False
 
     with (
         patch("ccgram.config.config") as mock_cfg,

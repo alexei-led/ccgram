@@ -62,8 +62,7 @@ def resolve_self_identity(
     "cannot determine window" path). tmux wins when both are present (a herdr
     pane running inside a tmux pane still reports the outer tmux identity).
 
-    For herdr: ``herdr_query(pane_id)`` resolves the pane to its containing tab
-    id so ``session_window_key`` becomes ``herdr:<tab_id>`` (matching
+    For herdr: ``herdr_query(pane_id)`` resolves the pane to its guarded session target so ``session_window_key`` becomes ``herdr:<tab_id>`` (matching
     ``list_windows``). Returns None when the probe is None or returns None
     (herdr not installed, socket down) — symmetric with the tmux branch;
     the hook skips the session_map write until the socket is available.
@@ -84,13 +83,13 @@ def resolve_self_identity(
 
     herdr_pane = env.get("HERDR_PANE_ID", "")
     if herdr_pane:
-        tab_id = herdr_query(herdr_pane) if herdr_query is not None else None
-        if tab_id is None:
+        target_id = herdr_query(herdr_pane) if herdr_query is not None else None
+        if target_id is None:
             return None
         return SelfIdentity(
             mux="herdr",
-            session_window_key=f"herdr:{tab_id}",
-            window_id=tab_id,
+            session_window_key=f"herdr:{target_id}",
+            window_id=target_id,
             window_name="",
         )
 

@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from ccgram.multiplexer.base import TopicTargetResult
 from ccgram.handlers.topics.window_launch_service import (
     WindowLaunchRequest,
     _cwd_within,
@@ -185,8 +186,8 @@ class TestLaunchWindowSuccess:
             ) as mock_reg,
             patch("ccgram.providers.resolve_launch_command", return_value="claude"),
         ):
-            mock_mux.create_window = AsyncMock(
-                return_value=(True, "created", "my-win", "@5")
+            mock_mux.create_topic_target = AsyncMock(
+                return_value=TopicTargetResult("@5", "my-win", "@5")
             )
             mock_mux.stamp_pane_title = AsyncMock()
             mock_mux.capabilities.native_worktrees = False
@@ -217,7 +218,7 @@ class TestLaunchWindowSuccess:
                 ),
             )
 
-        mock_mux.create_window.assert_awaited_once()
+        mock_mux.create_topic_target.assert_awaited_once()
         mock_tr.bind_thread.assert_called_once()
         mock_orch.register_pending_creation.assert_called_once_with("@5")
         mock_orch.clear_pending_creation.assert_called_once_with("@5")
@@ -250,8 +251,8 @@ class TestLaunchWindowSuccess:
             ) as mock_reg,
             patch("ccgram.providers.resolve_launch_command", return_value="claude"),
         ):
-            mock_mux.create_window = AsyncMock(
-                return_value=(False, "tmux error", "", "")
+            mock_mux.create_topic_target = AsyncMock(
+                side_effect=RuntimeError("tmux error")
             )
             mock_mux.capabilities.native_worktrees = False
 
@@ -318,8 +319,8 @@ class TestLaunchWindowSuccess:
                 return_value=(True, "ok"),
             ) as mock_send,
         ):
-            mock_mux.create_window = AsyncMock(
-                return_value=(True, "created", "my-win", "@5")
+            mock_mux.create_topic_target = AsyncMock(
+                return_value=TopicTargetResult("@5", "my-win", "@5")
             )
             mock_mux.stamp_pane_title = AsyncMock()
             mock_mux.capabilities.native_worktrees = False
