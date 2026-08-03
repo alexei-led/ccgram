@@ -528,10 +528,14 @@ async def handle_sync_dismiss(query: CallbackQuery) -> None:
 @register(CB_SYNC_FIX, CB_SYNC_DISMISS)
 async def _dispatch(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
+    user = update.effective_user
     if not query or not query.data:
         return
 
     if query.data == CB_SYNC_FIX:
+        if user is None or not config.is_user_allowed(user.id):
+            await query.answer("You are not authorized", show_alert=True)
+            return
         await query.answer("Running fix...")
         await handle_sync_fix(query)
     elif query.data == CB_SYNC_DISMISS:

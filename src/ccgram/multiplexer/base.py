@@ -384,11 +384,11 @@ class Multiplexer(Protocol):
     async def split_window(self, window_id: str) -> str | None:
         """Split the window's active pane; return the new pane id, or None.
 
-        Adds a sibling pane to the window/tab (the multi-pane "agent team"
-        shape): herdr ``pane split``, tmux ``window.split()``. The returned id
-        is a real pane id (``%N`` for tmux, ``wN:pK`` for herdr) and is
-        discoverable via ``list_panes`` / the ``/panes`` command. None on
-        failure (window gone, backend error).
+        Adds a sibling pane to the window/tab where the backend can safely
+        expose its handle (tmux ``window.split()``). Backends whose sibling
+        locators cannot satisfy their public identity boundary return None;
+        callers must report that split is unsupported rather than use a raw
+        locator. None also covers a gone window or backend error.
         """
         ...
 

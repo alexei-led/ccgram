@@ -307,11 +307,6 @@ async def launch_window(  # noqa: PLR0912, PLR0915, C901
         chat = query_message.chat if query_message else None
         if chat and chat.type in ("group", "supergroup"):
             thread_router.set_group_chat_id(user_id, pending_thread_id, chat.id)
-        # Bind is durable now — handle_new_window's `_is_window_already_bound`
-        # check will find the binding, so the pending-creation race-guard can
-        # be released. (Late SessionMonitor polls are still safe: they will
-        # take the already-bound branch instead.)
-        topic_orchestration.clear_pending_creation(created_wid)
 
     provider = provider_registry.get(provider_name)
     if approval_mode == "yolo" and provider.capabilities.has_yolo_confirmation:
@@ -320,20 +315,26 @@ async def launch_window(  # noqa: PLR0912, PLR0915, C901
     if provider.capabilities.supports_hook:
         map_entry_found = await session_map_sync.wait_for_session_map_entry(created_wid)
         if not map_entry_found:
-            # Keep the topic binding intact until the just-created target is
-            # gone. A late hook otherwise could observe an unbound live target
-            # and create an orphan topic. ``kill_window`` is the neutral
-            # adapter operation: tmux kills its new window and Herdr freshly
-            # guards then closes only its target pane, never a sibling session
-            # in the same tab.
-            await tmux_manager.kill_window(created_wid)
-            topic_orchestration.clear_pending_creation(created_wid)
-            if pending_thread_id is not None:
-                thread_router.unbind_thread(user_id, pending_thread_id)
-            message = "Session did not register with ccgram in time"
+            # Do not release the guard or binding unless the target is actually
+            # gone. A late hook could otherwise adopt a still-live target into
+            # an orphan topic. Herdr's neutral close only affects its guarded
+            # target pane, never a sibling session in the shared tab.
+            if await tmux_manager.kill_window(created_wid):
+                topic_orchestration.clear_pending_creation(created_wid)
+                if pending_thread_id is not None:
+                    thread_router.unbind_thread(user_id, pending_thread_id)
+                message = "Session did not register with ccgram in time"
+            else:
+                message = (
+                    "Session did not register with ccgram in time and cleanup "
+                    "failed; the topic remains quarantined for safe recovery"
+                )
             await _abort_topic_creation(query, message, context)
             return WindowLaunchResult(success=False, error_message=message)
 
+    # The target either has a hook record or never needed one. This also clears
+    # the no-thread path, which otherwise has no topic bind to release the guard.
+    topic_orchestration.clear_pending_creation(created_wid)
     if pending_thread_id is None:
         await safe_edit(query, f"✅ {message}")
         return WindowLaunchResult(success=True, window_id=created_wid)

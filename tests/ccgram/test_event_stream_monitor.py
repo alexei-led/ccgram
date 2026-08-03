@@ -43,6 +43,31 @@ async def test_dispatch_window_died_clears_cache_and_notifies_bound_users() -> N
     notify.assert_awaited_once_with("BOT", 7, 42, "w2:t1")
 
 
+async def test_supervisor_backs_off_after_normal_stream_eof(monkeypatch) -> None:
+    starts = 0
+
+    async def eof_watch(_window_ids):
+        nonlocal starts
+        starts += 1
+        if False:  # pragma: no cover - async generator marker
+            yield
+
+    monkeypatch.setattr("ccgram.event_stream_monitor._SET_POLL_INTERVAL", 0.02)
+    fake_mux = MagicMock()
+    fake_mux.watch_events = eof_watch
+    monkeypatch.setattr("ccgram.event_stream_monitor.mux", fake_mux)
+    monitor = EventStreamMonitor(MagicMock(), lambda: {"target"})
+    monitor.start()
+    try:
+        await asyncio.sleep(0.055)
+    finally:
+        monitor.stop()
+        await asyncio.sleep(0)
+
+    # EOF is delayed by the supervisor interval rather than a hot-loop.
+    assert 1 <= starts <= 3
+
+
 async def test_supervisor_restarts_watch_on_set_change(monkeypatch) -> None:
     agent_status_cache.reset()
     started: list[list[str]] = []

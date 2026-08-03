@@ -24,7 +24,13 @@ def _ctx(args=None):
 
 
 async def _run(
-    update, ctx, *, window_id, window_alive=True, new_pane: str | None = "w2:p2"
+    update,
+    ctx,
+    *,
+    window_id,
+    window_alive=True,
+    new_pane: str | None = "w2:p2",
+    native_agent_status=False,
 ):
     from ccgram.handlers.split_command import split_command
 
@@ -37,7 +43,7 @@ async def _run(
     )
     mock_tm.split_window = AsyncMock(return_value=new_pane)
     mock_tm.send_to_pane = AsyncMock(return_value=True)
-    mock_tm.capabilities.native_agent_status = False
+    mock_tm.capabilities.native_agent_status = native_agent_status
 
     with (
         patch("ccgram.config.config") as mock_cfg,
@@ -73,6 +79,18 @@ async def test_split_failure_sends_error() -> None:
     tm.split_window.assert_awaited_once_with("@0")
     reply.assert_called_once()
     assert "could not split" in reply.call_args[0][1].lower()
+
+
+async def test_herdr_split_command_is_rejected_before_pane_creation() -> None:
+    reply, tm = await _run(
+        _make_update(),
+        _ctx(["claude"]),
+        window_id="herdr-session-v1-" + "a" * 64,
+        native_agent_status=True,
+    )
+    tm.split_window.assert_not_called()
+    tm.send_to_pane.assert_not_called()
+    assert "not supported" in reply.call_args.args[1].lower()
 
 
 async def test_split_no_args_reports_new_pane() -> None:

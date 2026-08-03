@@ -82,7 +82,9 @@ def session_map_prefix() -> str:
 
     The hook encodes the backend into each key's prefix: tmux keys are
     ``<tmux_session_name>:<@id>`` (the live tmux session name), herdr keys are
-    ``herdr:<wN:tM>`` (the backend name — see ``multiplexer.self_identify``).
+    ``herdr:<opaque-session-target>`` (the backend name plus a durable opaque
+    target — see ``multiplexer.self_identify``). Raw Herdr pane/tab locators
+    are never valid persisted identities.
     Readers mirror that here so they match the writer regardless of the active
     backend; the tmux branch is byte-identical to the previous hard-coded
     ``f"{config.tmux_session_name}:"``.

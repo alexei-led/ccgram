@@ -72,14 +72,18 @@ class EventStreamMonitor:
                 await asyncio.sleep(_SET_POLL_INTERVAL)
                 continue
             try:
-                await self._run_until_set_change(ids)
+                stream_ended = await self._run_until_set_change(ids)
+                if stream_ended:
+                    # A backend may end a stream normally (EOF). Treat that as
+                    # a reconnect failure, not a successful tight-loop restart.
+                    await asyncio.sleep(_SET_POLL_INTERVAL)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # never let the supervisor die  # noqa: BLE001
                 logger.warning("event stream supervisor error: %s", exc)
                 await asyncio.sleep(_SET_POLL_INTERVAL)
 
-    async def _run_until_set_change(self, ids: set[str]) -> None:
+    async def _run_until_set_change(self, ids: set[str]) -> bool:
         """Consume ``watch_events(ids)`` until the bound set changes or we stop.
 
         Re-raises an unexpected ``_consume`` failure so ``_supervise`` logs it and
@@ -89,7 +93,7 @@ class EventStreamMonitor:
         try:
             while self._running and not consume.done():
                 if self._list_window_ids() != ids:
-                    return
+                    return False
                 await asyncio.sleep(_SET_POLL_INTERVAL)
         finally:
             if not consume.done():
@@ -100,6 +104,7 @@ class EventStreamMonitor:
         # on an unexpected error (it reconnects internally), so surface it.
         if not consume.cancelled() and (exc := consume.exception()) is not None:
             raise exc
+        return True
 
     async def _consume(self, ids: set[str]) -> None:
         # aclosing → the watch_events generator (and its socket) is closed

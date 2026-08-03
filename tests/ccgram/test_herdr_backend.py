@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from ccgram.multiplexer.base import AgentStatus, ForegroundInfo, PaneDims, PaneInfo
+from ccgram.multiplexer.herdr_events import translate_event
 from ccgram.multiplexer.herdr import (
     HERDR_PROTOCOL_VERSION,
     HerdrAgentListError,
@@ -330,13 +331,64 @@ async def test_status_panes_dims_foreground_and_title_are_guarded() -> None:
     ] * 5
 
 
-async def test_split_and_watch_resolution_use_target_guard() -> None:
-    fake = _live_fake(_agent(pane_id="w7:p4")).on(
-        "pane", "split", out=_result(pane={"pane_id": "w7:p5"})
+async def test_herdr_split_is_unsupported_without_any_raw_pane_side_effect() -> None:
+    fake = _live_fake(_agent(pane_id="w7:p4"))
+    mux = _manager(fake)
+    assert await mux.split_window(_target()) is None
+    assert fake.calls == []
+    assert await mux._resolve_panes([_target(), "w7:p4"]) == {"w7:p4": _target()}
+
+
+async def test_nested_dims_and_foreground_payloads_fail_closed() -> None:
+    fake = (
+        _live_fake(_agent(pane_id="w7:p4"))
+        .on("pane", "layout", out=_result(layout={"panes": {"bad": "shape"}}))
+        .on("pane", "process-info", out=_result(process_info={"foreground_processes": {}}))
     )
     mux = _manager(fake)
-    assert await mux.split_window(_target()) == "w7:p5"
-    assert await mux._resolve_panes([_target(), "w7:p4"]) == {"w7:p4": _target()}
+    assert await mux._dims_for_pane("w7:p4") is None
+    assert await mux._foreground_for_pane("w7:p4") is None
+
+
+def test_translate_event_maps_shared_tab_closure_to_each_opaque_target() -> None:
+    first, second = _target("first"), _target("second")
+    events = translate_event(
+        {"event": "tab.closed", "data": {"tab": {"tab_id": "w7:t3"}}},
+        {"w7:p4": first, "w7:p5": second},
+        {"w7:t3": (first, second)},
+    )
+    assert [(event.kind, event.window_id) for event in events] == [
+        ("window_died", first),
+        ("window_died", second),
+    ]
+
+
+def test_translate_event_uses_refreshed_locator_after_a_target_move() -> None:
+    target = _target()
+    event = {"event": "pane.agent_status_changed", "data": {"pane_id": "w7:p9"}}
+    assert translate_event(event, {"w7:p4": target}, {}) == ()
+    translated = translate_event(event, {"w7:p9": target}, {})
+    assert translated and translated[0].window_id == target
+    assert translated[0].pane_id == "w7:p9"
+
+
+async def test_watch_events_emits_each_guarded_target_for_shared_tab_close() -> None:
+    first = _agent(pane_id="w7:p4", tab_id="w7:t3", value="first")
+    second = _agent(pane_id="w7:p5", tab_id="w7:t3", value="second")
+
+    async def stream(_subscriptions: Sequence[Mapping[str, object]]):
+        yield {"__subscribed__": True}
+        yield {"event": "tab_closed", "data": {"tab_id": "w7:t3"}}
+
+    fake = _live_fake(first, second).on("pane", "get", out=_result(pane={}))
+    events = _manager(fake)
+    events._open_stream = stream
+    watcher = events.watch_events([_target("first"), _target("second")])
+    try:
+        assert (await anext(watcher)).window_id == _target("first")
+        assert (await anext(watcher)).window_id == _target("second")
+    finally:
+        await watcher.aclose()
 
 
 async def test_raw_pane_helpers_cannot_bypass_target_guard() -> None:
@@ -482,6 +534,98 @@ async def test_create_topic_target_without_selection_creates_workspace_at_cwd(
             "created",
         ],
         ["agent", "list"],
+    ]
+
+
+@pytest.mark.parametrize(
+    "tab_response, agent_response, expected_error",
+    [
+        (_result(), None, "no tab id"),
+        (_created(), _agents(), "did not report a session"),
+        (
+            _created(),
+            _agents(
+                _agent(pane_id="w9:p1", tab_id="w9:t1", workspace_id="owned"),
+                _agent(pane_id="w9:p1", tab_id="w9:t1", workspace_id="owned"),
+            ),
+            "duplicate sessions",
+        ),
+    ],
+)
+async def test_implicit_workspace_is_closed_for_tab_and_session_failures(
+    tmp_path: Path,
+    tab_response: str,
+    agent_response: str | None,
+    expected_error: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def no_sleep(_: float) -> None:
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", no_sleep)
+    fake = (
+        FakeHerdr()
+        .on("workspace", "create", out=_result(workspace={"workspace_id": "owned"}))
+        .on("tab", "create", out=tab_response)
+        .on("workspace", "close", out=_result(type="ok"))
+    )
+    if agent_response is not None:
+        fake.on("agent", "list", out=agent_response).on(
+            "tab", "close", out=_result(type="ok")
+        )
+    with pytest.raises(HerdrError, match=expected_error):
+        await _manager(fake).create_topic_target(
+            str(tmp_path), launch_command=None, workspace_id=None
+        )
+    assert fake.calls[-1] == ["workspace", "close", "owned"]
+
+
+async def test_implicit_workspace_is_closed_when_agent_launch_fails(tmp_path: Path) -> None:
+    fake = (
+        FakeHerdr()
+        .on("workspace", "create", out=_result(workspace={"workspace_id": "owned"}))
+        .on("tab", "create", out=_created())
+        .on("pane", "run", rc=1, err="launch failed")
+        .on("tab", "close", out=_result(type="ok"))
+        .on("workspace", "close", out=_result(type="ok"))
+    )
+    with pytest.raises(HerdrError, match="Failed to start"):
+        await _manager(fake).create_topic_target(
+            str(tmp_path), launch_command="claude", workspace_id=None
+        )
+    assert fake.calls[-2:] == [
+        ["tab", "close", "w9:t1"],
+        ["workspace", "close", "owned"],
+    ]
+
+
+async def test_implicit_workspace_is_closed_when_creation_is_cancelled(
+    tmp_path: Path,
+) -> None:
+    class CancellingRunner:
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+
+        async def __call__(self, args: Sequence[str]) -> tuple[int, str, str]:
+            self.calls.append(list(args))
+            if args[:2] == ["workspace", "create"]:
+                return 0, _result(workspace={"workspace_id": "owned"}), ""
+            if args[:2] == ["tab", "create"]:
+                return 0, _created(), ""
+            if args == ["agent", "list"]:
+                raise asyncio.CancelledError()
+            if args in (["tab", "close", "w9:t1"], ["workspace", "close", "owned"]):
+                return 0, _result(type="ok"), ""
+            return 1, "", "unexpected call"
+
+    runner = CancellingRunner()
+    with pytest.raises(asyncio.CancelledError):
+        await HerdrManager(runner=runner).create_topic_target(
+            str(tmp_path), launch_command=None, workspace_id=None
+        )
+    assert runner.calls[-2:] == [
+        ["tab", "close", "w9:t1"],
+        ["workspace", "close", "owned"],
     ]
 
 

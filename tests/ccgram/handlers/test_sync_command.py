@@ -9,6 +9,7 @@ from ccgram.handlers.sync_command import (
     _format_report,
     _probe_dead_topics,
     _recreate_dead_topics,
+    _dispatch,
     handle_sync_dismiss,
     handle_sync_fix,
     sync_command,
@@ -188,6 +189,26 @@ class TestSyncCommand:
             await sync_command(update, MagicMock())
             mock_reply.assert_called_once()
             assert "not authorized" in mock_reply.call_args[0][1]
+
+    async def test_unauthorized_fix_callback_cannot_start_destructive_cleanup(
+        self, _patch_deps
+    ) -> None:
+        *_, mock_cfg = _patch_deps
+        mock_cfg.is_user_allowed.return_value = False
+        update = MagicMock()
+        update.effective_user = MagicMock(id=100)
+        update.callback_query = AsyncMock()
+        update.callback_query.data = CB_SYNC_FIX
+
+        with patch(
+            "ccgram.handlers.sync_command.handle_sync_fix", new_callable=AsyncMock
+        ) as fix:
+            await _dispatch(update, MagicMock())
+
+        fix.assert_not_awaited()
+        update.callback_query.answer.assert_awaited_once_with(
+            "You are not authorized", show_alert=True
+        )
 
     async def test_no_user_returns_early(self, _patch_deps) -> None:
         update = MagicMock()

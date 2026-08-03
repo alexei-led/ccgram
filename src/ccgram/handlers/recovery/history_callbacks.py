@@ -62,6 +62,12 @@ async def handle_history_callback(
         await query.answer("Invalid data")
         return
 
+    # Raw callbacks and compact token callbacks both reach this public seam;
+    # enforce ownership here before any multiplexer lookup or history output.
+    if not user_owns_window(_user_id, window_id):
+        await query.answer("Not your session", show_alert=True)
+        return
+
     w = await tmux_manager.find_window_by_id(window_id)
     if w:
         await send_history(

@@ -31,7 +31,8 @@ def session_map_prefix_for(mux_name: str, session_name: str) -> str:
     """Return the session_map key prefix for a given multiplexer backend.
 
     tmux keys are ``<tmux_session_name>:<window_id>`` (e.g. ``ccgram:@12``);
-    non-tmux backends (herdr) key by backend name (e.g. ``herdr:w2:t1``).
+    non-tmux backends key by backend name plus their opaque durable target
+    (e.g. ``herdr:herdr-session-v1-<digest>``), never a raw pane/tab locator.
 
     This is the pure, config-free version used by status_cmd and session_map.
     ``session_map.session_map_prefix()`` wraps this with ``config`` values.

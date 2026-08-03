@@ -5,8 +5,9 @@ shape). With an argument, the text is run in the new pane — e.g.
 ``/split claude`` spawns a sibling agent, ``/split npm test`` starts a watcher.
 The new pane is discoverable via /panes and the existing multi-pane scanning.
 
-Backend-neutral: rides ``multiplexer.split_window`` (herdr ``pane split``,
-tmux ``window.split()``), so it works on both backends.
+Backend-neutral: rides ``multiplexer.split_window``. Tmux supports sibling
+pane handles; Herdr rejects splits because a raw new-pane locator cannot satisfy
+the guarded opaque-target API.
 """
 
 from __future__ import annotations
@@ -55,22 +56,22 @@ async def split_command(update: "Update", context: "ContextTypes.DEFAULT_TYPE") 
         await safe_reply(update.message, "❌ Window no longer exists.")
         return
 
+    command = " ".join(context.args).strip() if context.args else ""
+    # Herdr cannot return a durable sibling target from a raw split pane. Reject
+    # before creation so `/split <command>` never claims to have run a command.
+    if tmux_manager.capabilities.native_agent_status:
+        await safe_reply(
+            update.message,
+            "❌ Splitting is not supported by this multiplexer backend.",
+        )
+        return
+
     new_pane = await tmux_manager.split_window(window_id)
     if not new_pane:
         await safe_reply(update.message, "❌ Could not split the window.")
         return
 
-    command = " ".join(context.args).strip() if context.args else ""
     if command:
-        # Herdr panes are short-lived locators.  Do not pass the newly returned
-        # raw pane ID back through the public seam: only its session target can
-        # authorize I/O after the new agent reports a session.
-        if tmux_manager.capabilities.native_agent_status:
-            await safe_reply(
-                update.message,
-                "✅ Split created. Start the new agent in Herdr, then bind its reported session.",
-            )
-            return
         await tmux_manager.send_to_pane(new_pane, command, window_id=window_id)
         await safe_reply(
             update.message,
