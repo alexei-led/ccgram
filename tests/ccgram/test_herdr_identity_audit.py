@@ -20,6 +20,9 @@ def test_one_canonical_digest_owner_and_no_layout_identity() -> None:
         assert forbidden not in identity_section
 
 
-def test_legacy_target_predicate_is_exact_version_prefix() -> None:
+def test_persisted_target_predicate_uses_the_shared_exact_validator() -> None:
     source = (ROOT / "src/ccgram/window_state_store.py").read_text()
-    assert 'window_id.startswith("herdr-session-v1-")' in source
+    validator = (ROOT / "src/ccgram/herdr_targets.py").read_text()
+    assert "is_herdr_session_target(window_id)" in source
+    assert "[0-9a-f]{{64}}" in validator
+    assert "fullmatch(value)" in validator

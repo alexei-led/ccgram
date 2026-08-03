@@ -52,14 +52,18 @@ def test_is_backend_window_id_tmux(tmux_backend) -> None:
 
 
 def test_is_backend_window_id_herdr(herdr_backend) -> None:
-    assert is_backend_window_id("herdr-session-v1-target")
+    target = "herdr-session-v1-" + "a" * 64
+    assert is_backend_window_id(target)
+    assert not is_backend_window_id("herdr-session-v1-target")
+    assert not is_backend_window_id("herdr-session-v1-" + "A" * 64)
+    assert not is_backend_window_id("herdr-session-v1-" + "a" * 63)
     assert not is_backend_window_id("w2:p1")
     assert not is_backend_window_id("")
 
 
 def test_parse_session_map_surfaces_herdr_entry(herdr_backend) -> None:
     """The monitor's read path must see hook-written Herdr keys."""
-    target = "herdr-session-v1-target"
+    target = "herdr-session-v1-" + "a" * 64
     raw = {f"herdr:{target}": _entry("S1")}
     parsed = parse_session_map(raw, session_map_prefix())
     assert target in parsed
@@ -68,5 +72,5 @@ def test_parse_session_map_surfaces_herdr_entry(herdr_backend) -> None:
 
 def test_parse_session_map_tmux_skips_other_backend(tmux_backend) -> None:
     """A tmux run ignores stale Herdr-prefixed entries (no cross-backend leak)."""
-    raw = {"herdr:herdr-session-v1-target": _entry("S1")}
+    raw = {"herdr:herdr-session-v1-" + "a" * 64: _entry("S1")}
     assert parse_session_map(raw, session_map_prefix()) == {}

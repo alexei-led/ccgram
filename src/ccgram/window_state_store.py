@@ -24,6 +24,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal, Self, cast
 
+from .herdr_targets import is_herdr_session_target
+
 logger = structlog.get_logger()
 
 APPROVAL_MODES: frozenset[str] = frozenset({"normal", "yolo"})
@@ -394,7 +396,7 @@ class WindowStateStore:
     @staticmethod
     def is_herdr_session_target(window_id: str) -> bool:
         """Return whether *window_id* is the current opaque Herdr target form."""
-        return window_id.startswith("herdr-session-v1-")
+        return is_herdr_session_target(window_id)
 
     def mark_legacy_herdr(self, window_id: str, *, schedule_save: bool = True) -> bool:
         """Mark a non-session Herdr binding as migration-only and blocked.

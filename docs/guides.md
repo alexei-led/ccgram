@@ -335,7 +335,7 @@ herdr advertises its own capabilities through the seam; the behavioral consequen
 
 Creating sessions from the terminal on herdr is covered in [Creating Sessions from the Terminal](#creating-sessions-from-the-terminal).
 
-> **Workspace picker:** On herdr, `/new` shows an extra step after directory selection — a workspace picker that lets you pin the new tab inside an existing herdr workspace. If no workspaces exist yet (or none matches the selected directory), the picker is skipped and ccgram creates a new workspace automatically.
+> **Workspace picker:** On herdr, `/new` shows an extra step after directory selection. Choose a workspace to pin the new tab there, or skip it: ccgram then explicitly creates a workspace from the requested directory and uses only its returned ID. It never infers the active or a matching workspace.
 >
 > **Self-hosting escape hatch:** Workspaces or tabs whose label matches `__*__` (e.g. `__main__`) are invisible to ccgram. Use this naming convention to run ccgram itself inside herdr without it auto-adopting its own terminal as a topic.
 

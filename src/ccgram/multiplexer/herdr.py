@@ -49,6 +49,7 @@ from pathlib import Path
 
 import structlog
 
+from ..herdr_targets import is_herdr_session_target
 from .base import (
     AgentStatus,
     CaptureResult,
@@ -66,6 +67,7 @@ from .herdr_events import (
     open_socket_stream,
     translate_event,
 )
+from .topic_mapping import format_agent_topic_prefix
 
 __all__ = [
     "HERDR_PROTOCOL_VERSION",
@@ -471,7 +473,11 @@ class HerdrManager:
         return live.target_id if live is not None else None
 
     async def guard_session_target(self, target_id: str) -> HerdrLiveRecord:
-        """Resolve one target against exactly one fresh live session record."""
+        """Resolve one exact target against one fresh live session record."""
+        if not is_herdr_session_target(target_id):
+            raise HerdrUnresolvedTargetError(
+                f"herdr session target has invalid format: {target_id}"
+            )
         records = await self._agent_list_snapshot()
         matches = [record for record in records if record.target_id == target_id]
         if not matches:
@@ -485,23 +491,67 @@ class HerdrManager:
         return matches[0]
 
     @staticmethod
-    def _live_ref(record: HerdrLiveRecord) -> WindowRef:
+    def _live_ref(record: HerdrLiveRecord, label: str) -> WindowRef:
         """Project a guarded session record without exposing its locator."""
         return WindowRef(
             window_id=record.target_id,
-            window_name=record.composite.agent,
+            window_name=label,
             cwd="",
             pane_current_command=record.composite.agent,
         )
 
+    async def _reconciliation_labels(
+        self, records: Sequence[HerdrLiveRecord]
+    ) -> dict[tuple[str, str], tuple[str, str, str]]:
+        """Resolve safe display labels for live locators without using them as identity."""
+        workspace_result = await self._call_json(["workspace", "list"])
+        tab_result = await self._call_json(["tab", "list"])
+        if workspace_result is None or tab_result is None:
+            raise HerdrError("Herdr labels unavailable during reconciliation")
+        workspace_labels = {
+            workspace.get("workspace_id"): workspace.get("label")
+            for workspace in workspace_result.get("workspaces", [])
+            if isinstance(workspace, Mapping)
+            and isinstance(workspace.get("workspace_id"), str)
+            and isinstance(workspace.get("label"), str)
+        }
+        tab_labels = {
+            tab.get("tab_id"): tab.get("label")
+            for tab in tab_result.get("tabs", [])
+            if isinstance(tab, Mapping)
+            and isinstance(tab.get("tab_id"), str)
+            and isinstance(tab.get("label"), str)
+        }
+        labels: dict[tuple[str, str], tuple[str, str, str]] = {}
+        for record in records:
+            workspace_label = workspace_labels.get(record.workspace_id)
+            tab_label = tab_labels.get(record.tab_id)
+            if workspace_label is None or tab_label is None:
+                raise HerdrError("Herdr live locator has no display label")
+            labels[(record.workspace_id, record.tab_id)] = (
+                workspace_label,
+                tab_label,
+                format_agent_topic_prefix(workspace_label, tab_label),
+            )
+        return labels
+
     async def list_windows(self) -> list[WindowRef]:
-        """List only sessionful agents, keyed by their opaque session target."""
+        """List reconcilable sessionful agents keyed by opaque session targets."""
         return await self.list_windows_for_reconciliation() or []
 
     async def list_windows_for_reconciliation(self) -> list[WindowRef] | None:
         try:
+            records = await self._agent_list_snapshot()
+            labels = await self._reconciliation_labels(records)
             return [
-                self._live_ref(record) for record in await self._agent_list_snapshot()
+                self._live_ref(record, labels[(record.workspace_id, record.tab_id)][2])
+                for record in records
+                if not _INTERNAL_LABEL_RE.match(
+                    labels[(record.workspace_id, record.tab_id)][0]
+                )
+                and not _INTERNAL_LABEL_RE.match(
+                    labels[(record.workspace_id, record.tab_id)][1]
+                )
             ]
         except HerdrError:
             return None
@@ -509,7 +559,11 @@ class HerdrManager:
     async def find_window_by_id(self, window_id: str) -> WindowRef | None:
         """Resolve a topic target through a fresh session snapshot."""
         try:
-            return self._live_ref(await self.guard_session_target(window_id))
+            record = await self.guard_session_target(window_id)
+            labels = await self._reconciliation_labels([record])
+            return self._live_ref(
+                record, labels[(record.workspace_id, record.tab_id)][2]
+            )
         except HerdrError:
             return None
 
@@ -824,14 +878,14 @@ class HerdrManager:
     ) -> tuple[bool, str, str, str]:
         """Compatibility creation API that never returns a Herdr tab binding.
 
-        Callers that cannot provide a selected workspace or a sessionful launch
-        are rejected rather than silently creating an actionable tab target.
-        Tmux retains its existing behavior through its own implementation.
+        A sessionful launch without a picker selection creates a workspace at
+        *work_dir* explicitly and uses its returned opaque ID. Tmux retains its
+        existing behavior through its own implementation.
         """
-        if not start_agent or not launch_command or not workspace_id:
+        if not start_agent or not launch_command:
             return (
                 False,
-                "Herdr topic creation requires a selected workspace and sessionful agent",
+                "Herdr topic creation requires a sessionful agent",
                 "",
                 "",
             )
@@ -886,22 +940,31 @@ class HerdrManager:
         window_name: str | None = None,
         agent_args: str = "",
     ) -> TopicTargetResult:
-        """Create an agent tab in the selected workspace and return its session ID.
+        """Create an agent tab and return its guarded session target.
 
-        Herdr locators are used only during this transaction.  A failed launch,
+        A picker-selected workspace is validated exactly. Without a selection,
+        this transaction creates a workspace at *work_dir* and uses only its
+        returned ID; it never infers an active or matching workspace. Herdr
+        locators are used only during this transaction. A failed launch,
         missing report, or duplicate report closes the newly-created tab; it
-        never closes the selected workspace.
+        never closes a picker-selected workspace.
         """
-        if not workspace_id:
-            raise HerdrError(
-                "A Herdr workspace must be selected before creating a topic"
-            )
         path = Path(work_dir).expanduser()
         if not path.is_dir():
             raise HerdrError(f"Directory does not exist: {work_dir}")
-        workspaces = await self.list_workspaces()
-        if workspace_id not in {workspace.workspace_id for workspace in workspaces}:
-            raise HerdrError("Selected Herdr workspace no longer exists")
+        if workspace_id:
+            workspaces = await self.list_workspaces()
+            if workspace_id not in {workspace.workspace_id for workspace in workspaces}:
+                raise HerdrError("Selected Herdr workspace no longer exists")
+        else:
+            created_workspace = await self._call_json(
+                ["workspace", "create", "--cwd", str(path), "--no-focus"]
+            )
+            workspace_id = (
+                (created_workspace or {}).get("workspace", {}).get("workspace_id")
+            )
+            if not isinstance(workspace_id, str) or not workspace_id:
+                raise HerdrError("herdr workspace creation returned no workspace id")
         args = [
             "tab",
             "create",
@@ -1009,9 +1072,11 @@ class HerdrManager:
             record = await self._await_created_session_target(
                 tab_id=tab_id, pane_id=pane_id, workspace_id=workspace_id
             )
-        except HerdrError as exc:
+        except BaseException as exc:
             await self._call_ok(["tab", "close", tab_id])
-            return False, str(exc), "", ""
+            if isinstance(exc, HerdrError):
+                return False, str(exc), "", ""
+            raise
 
         logger.info("Created herdr worktree target %r at %s", label, worktree_path)
         return (

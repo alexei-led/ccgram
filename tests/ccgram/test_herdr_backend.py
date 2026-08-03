@@ -90,7 +90,26 @@ def _target(value: str = "session-a", agent: str = "claude") -> str:
 
 
 def _live_fake(*records: Mapping[str, object]) -> FakeHerdr:
-    return FakeHerdr().on("agent", "list", out=_agents(*records))
+    workspaces = {
+        str(record.get("workspace_id", "w2")): {
+            "workspace_id": record.get("workspace_id", "w2"),
+            "label": "workspace",
+        }
+        for record in records
+    }
+    tabs = {
+        str(record.get("tab_id", "w2:t1")): {
+            "tab_id": record.get("tab_id", "w2:t1"),
+            "label": "tab",
+        }
+        for record in records
+    }
+    return (
+        FakeHerdr()
+        .on("agent", "list", out=_agents(*records))
+        .on("workspace", "list", out=_result(workspaces=list(workspaces.values())))
+        .on("tab", "list", out=_result(tabs=list(tabs.values())))
+    )
 
 
 # ── session identity and discovery ─────────────────────────────────────
@@ -128,7 +147,7 @@ async def test_list_windows_exposes_only_session_targets() -> None:
     windows = await _manager(_live_fake(live, sessionless)).list_windows()
     assert [
         (win.window_id, win.window_name, win.pane_current_command) for win in windows
-    ] == [(_target("one"), "claude", "claude")]
+    ] == [(_target("one"), "workspace ▸ tab", "claude")]
     assert all("w2:" not in win.window_id for win in windows)
 
 
@@ -137,9 +156,13 @@ async def test_find_window_requires_a_fresh_matching_session_target() -> None:
     found = await _manager(fake).find_window_by_id(_target("one"))
     assert found is not None
     assert found.window_id == _target("one")
-    assert found.window_name == "claude"
+    assert found.window_name == "workspace ▸ tab"
     assert await _manager(fake).find_window_by_id("w2:t1") is None
-    assert fake.calls == [["agent", "list"], ["agent", "list"]]
+    assert fake.calls == [
+        ["agent", "list"],
+        ["workspace", "list"],
+        ["tab", "list"],
+    ]
 
 
 async def test_reconciliation_distinguishes_empty_snapshot_from_agent_list_failure() -> (
@@ -411,6 +434,44 @@ async def test_create_topic_target_uses_selected_workspace_and_returns_session_t
     ]
 
 
+async def test_create_topic_target_without_selection_creates_workspace_at_cwd(
+    tmp_path: Path,
+) -> None:
+    fake = (
+        FakeHerdr()
+        .on(
+            "workspace",
+            "create",
+            out=_result(workspace={"workspace_id": "created"}),
+        )
+        .on("tab", "create", out=_created())
+        .on(
+            "agent",
+            "list",
+            out=_agents(
+                _agent(pane_id="w9:p1", tab_id="w9:t1", workspace_id="created")
+            ),
+        )
+    )
+    target = await _manager(fake).create_topic_target(
+        str(tmp_path), launch_command=None, workspace_id=None
+    )
+    assert target.target_id == _target()
+    assert fake.calls == [
+        ["workspace", "create", "--cwd", str(tmp_path), "--no-focus"],
+        [
+            "tab",
+            "create",
+            "--cwd",
+            str(tmp_path),
+            "--no-focus",
+            "--workspace",
+            "created",
+        ],
+        ["agent", "list"],
+    ]
+
+
 async def test_create_topic_target_rejects_missing_selected_workspace(
     tmp_path: Path,
 ) -> None:
@@ -533,6 +594,85 @@ async def test_native_worktree_returns_session_target_or_fails_unbound(
     )
     assert not ok and target == "" and "root pane" in message
     assert malformed.calls[-1] == ["tab", "close", "w10:t1"]
+
+
+async def test_worktree_cancellation_closes_allocated_tab_and_reraises(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    class CancellingRunner:
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+
+        async def __call__(self, args: Sequence[str]) -> tuple[int, str, str]:
+            self.calls.append(list(args))
+            if args[:2] == ["worktree", "create"]:
+                return (
+                    0,
+                    _result(
+                        tab={"tab_id": "w10:t1", "label": "worktree"},
+                        root_pane={"pane_id": "w10:p1"},
+                        workspace={"workspace_id": "worktree-ws"},
+                    ),
+                    "",
+                )
+            if args == ["agent", "list"]:
+                raise asyncio.CancelledError()
+            if args == ["tab", "close", "w10:t1"]:
+                return 0, _result(type="ok"), ""
+            return 1, "", "unexpected call"
+
+    runner = CancellingRunner()
+    with pytest.raises(asyncio.CancelledError):
+        await HerdrManager(runner=runner).create_worktree_window(
+            str(repo), str(tmp_path / "worktree"), "ccg/topic"
+        )
+    assert runner.calls[-1] == ["tab", "close", "w10:t1"]
+
+
+async def test_reconciliation_filters_internal_workspace_and_tab_labels() -> None:
+    visible = _agent(value="visible")
+    internal_workspace = _agent(value="workspace-internal", workspace_id="internal")
+    internal_tab = _agent(value="tab-internal", tab_id="internal-tab")
+    fake = (
+        FakeHerdr()
+        .on("agent", "list", out=_agents(visible, internal_workspace, internal_tab))
+        .on(
+            "workspace",
+            "list",
+            out=_result(
+                workspaces=[
+                    {"workspace_id": "w2", "label": "workspace"},
+                    {"workspace_id": "internal", "label": "__main__"},
+                ]
+            ),
+        )
+        .on(
+            "tab",
+            "list",
+            out=_result(
+                tabs=[
+                    {"tab_id": "w2:t1", "label": "tab"},
+                    {"tab_id": "internal-tab", "label": "__worker__"},
+                ]
+            ),
+        )
+    )
+    windows = await _manager(fake).list_windows_for_reconciliation()
+    assert windows is not None
+    assert [(window.window_id, window.window_name) for window in windows] == [
+        (_target("visible"), "workspace ▸ tab")
+    ]
+
+
+async def test_malformed_prefixed_target_never_reads_agent_list() -> None:
+    fake = _live_fake(_agent())
+    assert (
+        await _manager(fake).find_window_by_id("herdr-session-v1-not-a-digest") is None
+    )
+    assert fake.calls == []
 
 
 # ── non-target transport/protocol behavior ─────────────────────────────

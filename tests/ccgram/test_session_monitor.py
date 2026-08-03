@@ -17,6 +17,19 @@ from ccgram.thread_router import thread_router
 from ccgram.window_state_store import window_store
 
 
+HERDR_TARGETS = {
+    name: "herdr-session-v1-" + digest * 64
+    for name, digest in {
+        "a": "a",
+        "b": "b",
+        "shell": "c",
+        "bound": "d",
+        "known": "e",
+        "new": "f",
+    }.items()
+}
+
+
 @pytest.fixture
 def monitor(tmp_path) -> SessionMonitor:
     return SessionMonitor(
@@ -238,19 +251,19 @@ class TestEmitUnboundWindowEvents:
 
         # Each sessionful agent target gets a topic; a bare shell does not.
         windows = [
-            _winref("herdr-session-v1-a", "claude"),
-            _winref("herdr-session-v1-b", "claude"),
-            _winref("herdr-session-v1-shell", ""),
+            _winref(HERDR_TARGETS["a"], "claude"),
+            _winref(HERDR_TARGETS["b"], "claude"),
+            _winref(HERDR_TARGETS["shell"], ""),
         ]
         await monitor._emit_unbound_window_events(windows, known_window_ids=set())
 
         surfaced = {c.args[0].window_id for c in cb.call_args_list}
-        assert surfaced == {"herdr-session-v1-a", "herdr-session-v1-b"}
+        assert surfaced == {HERDR_TARGETS["a"], HERDR_TARGETS["b"]}
 
     async def test_skips_known_and_bound_windows(
         self, monitor: SessionMonitor, wired, monkeypatch
     ) -> None:
-        thread_router.bind_thread(100, 1, "herdr-session-v1-bound")
+        thread_router.bind_thread(100, 1, HERDR_TARGETS["bound"])
         cb = AsyncMock(spec=lambda event: None)
         monitor.set_new_window_callback(cb)
         monkeypatch.setattr(
@@ -259,16 +272,16 @@ class TestEmitUnboundWindowEvents:
         )
 
         windows = [
-            _winref("herdr-session-v1-known", "claude"),  # in session_map
-            _winref("herdr-session-v1-bound", "claude"),  # bound to a topic
-            _winref("herdr-session-v1-new", "claude"),  # genuinely new
+            _winref(HERDR_TARGETS["known"], "claude"),  # in session_map
+            _winref(HERDR_TARGETS["bound"], "claude"),  # bound to a topic
+            _winref(HERDR_TARGETS["new"], "claude"),  # genuinely new
         ]
         await monitor._emit_unbound_window_events(
-            windows, known_window_ids={"herdr-session-v1-known"}
+            windows, known_window_ids={HERDR_TARGETS["known"]}
         )
 
         surfaced = {c.args[0].window_id for c in cb.call_args_list}
-        assert surfaced == {"herdr-session-v1-new"}
+        assert surfaced == {HERDR_TARGETS["new"]}
 
 
 class TestEmitKnownUnboundWindowEvents:

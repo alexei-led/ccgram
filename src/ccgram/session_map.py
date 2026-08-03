@@ -34,6 +34,7 @@ from typing import Any, cast
 import aiofiles
 
 from .config import config
+from .herdr_targets import is_herdr_session_target
 from .hooks.state_files import StateFileValidationError, parse_session_map_entry
 from .utils import atomic_write_json, log_throttle_reset, log_throttled
 from .window_resolver import is_window_id, session_map_prefix_for
@@ -100,7 +101,7 @@ def is_backend_window_id(window_id: str) -> bool:
     if config.multiplexer_name == "tmux":
         return is_window_id(window_id)
     if config.multiplexer_name == "herdr":
-        return window_id.startswith("herdr-session-v1-")
+        return is_herdr_session_target(window_id)
     return bool(window_id)
 
 

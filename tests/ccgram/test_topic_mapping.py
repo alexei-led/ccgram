@@ -34,6 +34,8 @@ TMUX_CAPS = MultiplexerCapabilities(
 )
 
 # herdr-like: native agent status → only agent panes are topics.
+HERDR_TARGET = "herdr-session-v1-" + "a" * 64
+
 HERDR_CAPS = MultiplexerCapabilities(
     name="herdr",
     ids_stable_across_restart=False,
@@ -77,15 +79,22 @@ class TestIsAgentTopicWindow:
         ],
     )
     def test_herdr_only_agent_panes(self, command: str, expected: bool) -> None:
-        assert is_agent_topic_window(_win("herdr-session-v1-a", command), HERDR_CAPS) is expected
+        assert (
+            is_agent_topic_window(_win(HERDR_TARGET, command), HERDR_CAPS) is expected
+        )
 
     def test_herdr_sessions_have_distinct_topic_targets(self) -> None:
         """Agent sessions, not their current panes, are independently bound."""
-        session_a = _win("herdr-session-v1-a", "claude")
-        session_b = _win("herdr-session-v1-b", "claude")
+        session_a = _win(HERDR_TARGET, "claude")
+        session_b = _win("herdr-session-v1-" + "b" * 64, "claude")
         assert is_agent_topic_window(session_a, HERDR_CAPS) is True
         assert is_agent_topic_window(session_b, HERDR_CAPS) is True
         assert session_a.window_id != session_b.window_id
+
+    def test_herdr_rejects_malformed_prefixed_target(self) -> None:
+        assert not is_agent_topic_window(
+            _win("herdr-session-v1-not-a-sha256", "claude"), HERDR_CAPS
+        )
 
 
 class TestFormatAgentTopicPrefix:
@@ -154,11 +163,19 @@ class TestHerdrSessionRouting:
         target_b = "herdr-session-v1-b"
         thread_router.bind_thread(100, 11, target_a)
         thread_router.bind_thread(100, 12, target_b)
-        window_store.window_states[target_a] = WindowState(session_id="sess-A", cwd="/proj")
-        window_store.window_states[target_b] = WindowState(session_id="sess-B", cwd="/proj")
+        window_store.window_states[target_a] = WindowState(
+            session_id="sess-A", cwd="/proj"
+        )
+        window_store.window_states[target_b] = WindowState(
+            session_id="sess-B", cwd="/proj"
+        )
 
-        assert session_resolver.find_users_for_session("sess-A") == [(100, target_a, 11)]
-        assert session_resolver.find_users_for_session("sess-B") == [(100, target_b, 12)]
+        assert session_resolver.find_users_for_session("sess-A") == [
+            (100, target_a, 11)
+        ]
+        assert session_resolver.find_users_for_session("sess-B") == [
+            (100, target_b, 12)
+        ]
 
     def test_binding_is_keyed_per_session_target(self, mgr: SessionManager) -> None:
         target_a = "herdr-session-v1-a"
@@ -171,13 +188,21 @@ class TestHerdrSessionRouting:
         assert thread_router.get_thread_for_window(100, target_a) == 11
         assert thread_router.get_thread_for_window(100, target_b) == 12
 
-    def test_no_stream_crosstalk_between_session_targets(self, mgr: SessionManager) -> None:
+    def test_no_stream_crosstalk_between_session_targets(
+        self, mgr: SessionManager
+    ) -> None:
         target_a = "herdr-session-v1-a"
         target_b = "herdr-session-v1-b"
         thread_router.bind_thread(100, 11, target_a)
         thread_router.bind_thread(100, 12, target_b)
-        window_store.window_states[target_a] = WindowState(session_id="sess-A", cwd="/proj")
-        window_store.window_states[target_b] = WindowState(session_id="sess-B", cwd="/proj")
+        window_store.window_states[target_a] = WindowState(
+            session_id="sess-A", cwd="/proj"
+        )
+        window_store.window_states[target_b] = WindowState(
+            session_id="sess-B", cwd="/proj"
+        )
 
-        threads_for_a = {t for _, _, t in session_resolver.find_users_for_session("sess-A")}
+        threads_for_a = {
+            t for _, _, t in session_resolver.find_users_for_session("sess-A")
+        }
         assert threads_for_a == {11}

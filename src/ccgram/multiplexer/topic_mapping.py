@@ -17,6 +17,7 @@ because it is pure logic over the neutral value types.
 
 from __future__ import annotations
 
+from ..herdr_targets import is_herdr_session_target
 from .base import MultiplexerCapabilities, WindowRef
 
 # Separates the workspace prefix from the tab name in a herdr topic title
@@ -60,7 +61,6 @@ def is_agent_topic_window(window: WindowRef, caps: MultiplexerCapabilities) -> b
     """
     if not caps.native_agent_status:
         return True
-    return (
-        window.window_id.startswith("herdr-session-v1-")
-        and bool(window.pane_current_command.strip())
+    return is_herdr_session_target(window.window_id) and bool(
+        window.pane_current_command.strip()
     )

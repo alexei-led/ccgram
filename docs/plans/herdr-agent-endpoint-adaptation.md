@@ -184,11 +184,11 @@ A post-guard change can cause misdelivery. Tests must separate these two cases.
 
 ## Telegram topic creation contract
 
-A user creates a Telegram forum topic and selects a Herdr workspace in the existing workspace picker.
+A user creates a Telegram forum topic and may select a Herdr workspace in the existing workspace picker.
 
 The picker stores `PENDING_WORKSPACE_ID`. The launch service passes this opaque value to the neutral target creation contract.
 
-Herdr topic creation requires this value. If the user skips workspace selection, CCGram returns to the workspace picker.
+When selected, Herdr topic creation requires that exact value. If the user skips workspace selection, CCGram explicitly creates a workspace from the requested cwd and uses only its returned opaque ID.
 
 The Herdr adapter performs this sequence:
 
@@ -214,7 +214,7 @@ The adapter does not close the selected workspace. The workspace existed before 
 
 The launch service clears pending state and leaves the Telegram topic unbound. It shows the failure and retry action.
 
-Do not fall back to the active workspace, a matching directory workspace, a tab, a pane, or a shell record.
+Do not fall back to the active workspace, a matching directory workspace, a tab, a pane, or a shell record. An explicitly created workspace from the requested cwd is the sole no-selection path.
 
 ## Test contract
 
@@ -406,7 +406,7 @@ The current adapter uses focused-pane and tab behavior.
 **Done when**
 
 - If a native-worktree request cannot carry the selected workspace ID, it stops.
-- `create_topic_target` creates one tab in the selected workspace.
+- `create_topic_target` creates one tab in the exact selected workspace, or in a workspace explicitly created from the requested cwd when none was selected.
 - A missing selected workspace returns to the workspace picker.
 - A new topic binds to the returned session target ID, not the tab ID.
 - A creation timeout or ambiguous report closes the new tab and leaves the topic unbound.
