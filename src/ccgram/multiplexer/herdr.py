@@ -930,6 +930,31 @@ class HerdrManager:
         logger.info("Created herdr tab %r (id=%s) at %s", label, tab_id, path)
         return True, f"Created herdr tab '{label}' at {path}", label, tab_id
 
+    async def _await_created_session_target(
+        self,
+        *,
+        tab_id: str,
+        pane_id: str,
+        workspace_id: str | None,
+    ) -> HerdrLiveRecord:
+        """Wait for exactly one session reported for a newly-created pane."""
+        for _ in range(10):
+            matches = [
+                record
+                for record in await self._agent_list_snapshot()
+                if record.tab_id == tab_id
+                and record.pane_id == pane_id
+                and (workspace_id is None or record.workspace_id == workspace_id)
+            ]
+            if len(matches) == 1:
+                return matches[0]
+            if len(matches) > 1:
+                raise HerdrAmbiguousTargetError(
+                    "new Herdr pane reported duplicate sessions"
+                )
+            await asyncio.sleep(0.1)
+        raise HerdrUnresolvedTargetError("new Herdr pane did not report a session")
+
     async def create_topic_target(  # noqa: C901
         self,
         work_dir: str,
@@ -961,28 +986,26 @@ class HerdrManager:
         root = (result or {}).get("root_pane") or {}
         tab_id = tab.get("tab_id")
         pane_id = root.get("pane_id")
-        if not isinstance(tab_id, str) or not isinstance(pane_id, str):
-            raise HerdrError("herdr tab creation returned no root pane")
+        if not isinstance(tab_id, str) or not tab_id:
+            raise HerdrError("herdr tab creation returned no tab id")
         try:
+            # A tab may have been allocated even when the response omitted its
+            # root pane.  Close that exact tab before reporting failure.
+            if not isinstance(pane_id, str) or not pane_id:
+                raise HerdrError("herdr tab creation returned no root pane")
             if launch_command:
                 command = f"{launch_command} {agent_args}".strip()
                 if not await self._call_ok(["pane", "run", pane_id, command]):
                     raise HerdrError("Failed to start agent in Herdr tab")
-            # The official integration reports a session asynchronously.  Do
-            # not infer identity from focus/layout; accept exactly one record.
-            for _ in range(10):
-                matches = [
-                    record for record in await self._agent_list_snapshot()
-                    if record.workspace_id == workspace_id and record.tab_id == tab_id
-                    and record.pane_id == pane_id
-                ]
-                if len(matches) == 1:
-                    record = matches[0]
-                    return TopicTargetResult(record.target_id, tab.get("label", window_name or ""), tab_id, pane_id)
-                if len(matches) > 1:
-                    raise HerdrAmbiguousTargetError("new Herdr pane reported duplicate sessions")
-                await asyncio.sleep(0.1)
-            raise HerdrUnresolvedTargetError("new Herdr pane did not report a session")
+            record = await self._await_created_session_target(
+                tab_id=tab_id, pane_id=pane_id, workspace_id=workspace_id
+            )
+            return TopicTargetResult(
+                record.target_id,
+                tab.get("label", window_name or ""),
+                tab_id,
+                pane_id,
+            )
         except BaseException:
             await self._call_ok(["tab", "close", tab_id])
             raise
@@ -1000,11 +1023,11 @@ class HerdrManager:
 
         One ``worktree create`` makes the git checkout at *worktree_path* on
         *branch* (off the repo at *repo_path*), opens it as a herdr
-        workspace+tab grouped under the parent repo, and returns the new tab +
-        root pane. We then ``pane run`` *launch_command* in the root pane — the
-        same launch path as ``create_window``. Returns
-        ``(success, message, window_name, window_id)`` where ``window_id`` is
-        the new tab id.
+        workspace+tab grouped under the parent repo, and returns a topic-safe
+        opaque agent-session target. We then ``pane run`` *launch_command* in
+        the root pane and wait for that exact pane to report its session.
+        ``window_id`` in the legacy tuple is therefore the durable target, not
+        the transient tab locator.
         """
         repo = Path(repo_path).expanduser()
         if not repo.is_dir():
@@ -1034,26 +1057,38 @@ class HerdrManager:
         tab_id = tab.get("tab_id") or root_pane.get("tab_id", "")
         if not tab_id:
             tab_id = (result.get("workspace") or {}).get("active_tab_id", "")
-        if not tab_id:
+        pane_id = root_pane.get("pane_id")
+        if not isinstance(tab_id, str) or not tab_id:
             return False, "herdr worktree created without a tab id", "", ""
+        if not isinstance(pane_id, str) or not pane_id:
+            # The worktree exists, but it is unsafe to bind a topic without a
+            # specific pane/session. Close only the new tab, never the workspace.
+            await self._call_ok(["tab", "close", tab_id])
+            return False, "herdr worktree created without a root pane", "", ""
         label = tab.get("label", window_name or "")
+        created_workspace = (result.get("workspace") or {}).get("workspace_id")
+        workspace_id = created_workspace if isinstance(created_workspace, str) else None
 
-        if launch_command:
-            pane_id = root_pane.get("pane_id")
-            if pane_id:
-                await self._call_ok(["pane", "run", pane_id, launch_command])
+        try:
+            if launch_command and not await self._call_ok(
+                ["pane", "run", pane_id, launch_command]
+            ):
+                raise HerdrError("Failed to start agent in Herdr worktree")
+            record = await self._await_created_session_target(
+                tab_id=tab_id, pane_id=pane_id, workspace_id=workspace_id
+            )
+        except HerdrError as exc:
+            await self._call_ok(["tab", "close", tab_id])
+            return False, str(exc), "", ""
 
         logger.info(
-            "Created herdr worktree window %r (id=%s) at %s",
-            label,
-            tab_id,
-            worktree_path,
+            "Created herdr worktree target %r at %s", label, worktree_path
         )
         return (
             True,
             f"Created herdr worktree '{branch}' at {worktree_path}",
             label,
-            tab_id,
+            record.target_id,
         )
 
     async def watch_events(

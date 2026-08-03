@@ -244,6 +244,14 @@ async def test_raw_pane_helpers_cannot_bypass_target_guard() -> None:
     assert fake.calls == []
 
 
+async def test_action_error_refreshes_guard_without_retargeting() -> None:
+    fake = _live_fake(_agent(pane_id="w2:p1")).on("pane", "run", rc=1, err="closed")
+    assert not await _manager(fake).send(_target(), "hello")
+    assert fake.calls == [
+        ["agent", "list"], ["pane", "run", "w2:p1", "hello"], ["agent", "list"]
+    ]
+
+
 async def test_post_guard_dispatch_race_never_retargets_another_pane() -> None:
     class RacingRunner:
         def __init__(self) -> None:
@@ -301,6 +309,17 @@ async def test_create_topic_target_rejects_missing_selected_workspace(tmp_path: 
     assert fake.calls == [["workspace", "list"]]
 
 
+async def test_create_topic_target_rolls_back_malformed_root_pane_response(tmp_path: Path) -> None:
+    fake = FakeHerdr().on("workspace", "list", out=_workspace("selected", tmp_path)).on(
+        "tab", "create", out=_result(tab={"tab_id": "w9:t1", "label": "new"})
+    ).on("tab", "close", out=_result(type="ok"))
+    with pytest.raises(HerdrError, match="no root pane"):
+        await _manager(fake).create_topic_target(
+            str(tmp_path), launch_command="claude", workspace_id="selected"
+        )
+    assert fake.calls[-1] == ["tab", "close", "w9:t1"]
+
+
 async def test_create_topic_target_rolls_back_only_its_new_tab_when_launch_fails(tmp_path: Path) -> None:
     fake = FakeHerdr().on("workspace", "list", out=_workspace("selected", tmp_path)).on(
         "tab", "create", out=_created()
@@ -333,6 +352,37 @@ async def test_create_topic_target_rolls_back_on_duplicate_or_missing_session(tm
     with pytest.raises(HerdrUnresolvedTargetError):
         await _manager(missing).create_topic_target(str(tmp_path), launch_command=None, workspace_id="selected")
     assert ["tab", "close", "w9:t1"] in missing.calls
+
+
+async def test_native_worktree_returns_session_target_or_fails_unbound(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    worktree = tmp_path / "worktree"
+    created = _result(
+        tab={"tab_id": "w10:t1", "label": "worktree"},
+        root_pane={"pane_id": "w10:p1"},
+        workspace={"workspace_id": "worktree-ws"},
+    )
+    fake = FakeHerdr().on("worktree", "create", out=created).on(
+        "pane", "run", out=_result(type="ok")
+    ).on(
+        "agent", "list",
+        out=_agents(_agent(pane_id="w10:p1", tab_id="w10:t1", workspace_id="worktree-ws")),
+    )
+    ok, _message, _label, target = await _manager(fake).create_worktree_window(
+        str(repo), str(worktree), "ccg/topic", launch_command="claude"
+    )
+    assert ok and target == _target()
+    assert ["pane", "run", "w10:p1", "claude"] in fake.calls
+
+    malformed = FakeHerdr().on(
+        "worktree", "create", out=_result(tab={"tab_id": "w10:t1"})
+    ).on("tab", "close", out=_result(type="ok"))
+    ok, message, _label, target = await _manager(malformed).create_worktree_window(
+        str(repo), str(worktree), "ccg/topic", launch_command="claude"
+    )
+    assert not ok and target == "" and "root pane" in message
+    assert malformed.calls[-1] == ["tab", "close", "w10:t1"]
 
 
 # ── non-target transport/protocol behavior ─────────────────────────────

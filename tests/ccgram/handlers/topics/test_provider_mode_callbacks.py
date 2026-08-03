@@ -41,7 +41,9 @@ async def test_normal_provider_callback_launches_normal_mode_without_picker() ->
         await _handle_provider_select(query, 99, f"{CB_PROV_SELECT}shell", update, context)
 
     launch.assert_awaited_once()
-    request = launch.await_args.args[2]
+    call = launch.await_args
+    assert call is not None
+    request = call.args[2]
     assert request.provider_name == "shell"
     assert request.mode == "normal"
     assert request.cwd == "/workspace/project"
@@ -61,7 +63,9 @@ async def test_yolo_mode_callback_launches_selected_provider_and_yolo_mode() -> 
         await _handle_mode_select(query, 99, f"{CB_MODE_SELECT}claude:yolo", update, context)
 
     launch.assert_awaited_once()
-    request = launch.await_args.args[2]
+    call = launch.await_args
+    assert call is not None
+    request = call.args[2]
     assert request.provider_name == "claude"
     assert request.mode == "yolo"
     assert request.thread_id == 42
