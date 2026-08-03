@@ -14,6 +14,7 @@ import it.
 from __future__ import annotations
 
 from .window_state_ports import identity_state as _identity_state
+from .window_state_ports import legacy_state as _legacy_state
 from .window_state_ports import lifecycle_state as _lifecycle_state
 from .window_state_ports import tool_state as _tool_state
 from .window_state_store import window_store
@@ -90,6 +91,11 @@ def is_tool_calls_hidden(window_id: str) -> bool:
 def get_session_id_for_window(window_id: str) -> str | None:
     """Look up session_id for a window from window_states."""
     return window_store.get_session_id_for_window(window_id)
+
+
+def is_legacy_herdr(window_id: str) -> bool:
+    """Return whether a persisted Herdr binding is blocked pending rebind."""
+    return _legacy_state.is_legacy_herdr(window_id)
 
 
 def window_count() -> int:

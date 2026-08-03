@@ -332,6 +332,14 @@ async def _handle_dead_window(
 
     Returns True if the window is dead (handled), False if still alive.
     """
+    if window_query.is_legacy_herdr(window_id) is True:
+        await safe_reply(
+            message,
+            "⚠ This topic uses a legacy Herdr tab or pane binding and is blocked. "
+            "Archive it with /unbind, then explicitly bind a listed session target.",
+        )
+        return True
+
     w = await tmux_manager.find_window_by_id(window_id)
     if w:
         lifecycle_strategy.clear_autoclose_timer(user_id, thread_id)

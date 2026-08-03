@@ -191,6 +191,7 @@ class TestLaunchWindowSuccess:
             )
             mock_mux.stamp_pane_title = AsyncMock()
             mock_mux.capabilities.native_worktrees = False
+            mock_mux.capabilities.native_agent_status = True
             mock_tr.get_window_for_thread.return_value = None
             mock_tr.resolve_chat_id.return_value = -100999
             mock_sm.set_window_provider = MagicMock()
@@ -255,6 +256,7 @@ class TestLaunchWindowSuccess:
                 side_effect=RuntimeError("tmux error")
             )
             mock_mux.capabilities.native_worktrees = False
+            mock_mux.capabilities.native_agent_status = True
 
             caps = MagicMock()
             caps.chat_first_command_path = False
@@ -324,6 +326,7 @@ class TestLaunchWindowSuccess:
             )
             mock_mux.stamp_pane_title = AsyncMock()
             mock_mux.capabilities.native_worktrees = False
+            mock_mux.capabilities.native_agent_status = True
             mock_tr.get_window_for_thread.return_value = None
             mock_tr.resolve_chat_id.return_value = -100999
             mock_sm.set_window_provider = MagicMock()

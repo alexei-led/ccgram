@@ -72,6 +72,14 @@ ccgram doctor         # Check configuration, hooks, multiplexer, agent CLIs
 ccgram doctor --fix   # Auto-fix common issues (install hooks, kill orphans, etc.)
 ```
 
+## Herdr guarded-session migration
+
+Herdr topics use `agent.list` as their sole identity source. CCGram stores only an opaque `herdr-session-v1-…` target; tabs, panes, terminal IDs, names, directories, and focus are live locators, not topic identity. Each action takes a fresh snapshot and fails closed when its target is missing, duplicate, malformed, or sessionless.
+
+Existing Herdr tab/pane bindings are marked `legacy_herdr` and blocked. Use `/unbind` to archive the CCGram binding without closing the Herdr session; rollback can restore that record but it remains blocked. Send a message in the topic and explicitly choose a listed session target to rebind. CCGram never guesses a migration target.
+
+A session can change after the fresh guard and before Herdr receives an action. CCGram records that post-guard dispatch race and does not claim atomic delivery. Run live Herdr tests only against a disposable server and redact target/session evidence.
+
 ## Local Dev in tmux
 
 Recommended local development model:

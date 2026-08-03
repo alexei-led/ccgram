@@ -4,7 +4,7 @@ Generated from code state 2026-05-21.
 
 ## System Overview
 
-ccgram maps each Telegram Forum topic to one terminal-multiplexer window running one agent CLI (Claude Code, Codex, Gemini, Pi, or Shell). All internal routing is keyed by window ID (`@0`, `@12`). Multiplexer access goes through the `multiplexer/` seam (`Multiplexer` Protocol); tmux is the default backend and herdr is selectable via `CCGRAM_MULTIPLEXER=herdr`.
+ccgram maps each Telegram Forum topic to one terminal-multiplexer target running one agent CLI (Claude Code, Codex, Gemini, Pi, or Shell). Tmux routing remains keyed by window ID (`@0`, `@12`). Herdr routing is keyed only by opaque `herdr-session-v1-…` targets derived from `agent.list`; tab, pane, terminal, workspace, display, and focus values are short-lived locators inside a fresh guarded action, never persisted identity. Missing, duplicate, malformed, sessionless, and legacy targets fail closed. A target can change after the guard and before Herdr dispatches, so the adapter records a possible post-guard race rather than claiming atomic delivery. Multiplexer access goes through the `multiplexer/` seam (`Multiplexer` Protocol); tmux is the default backend and herdr is selectable via `CCGRAM_MULTIPLEXER=herdr`.
 
 ```mermaid
 graph TB
@@ -123,6 +123,8 @@ graph TD
 ```
 
 ## State Flow: Topic → Window → Session
+
+For Herdr, the topic binding is an opaque guarded session target, not a window or pane. `multiplexer/herdr.py` alone parses `agent.list`, derives the digest, and uses the matched live locator for one action. Legacy tab/pane bindings are persisted as `legacy_herdr`, blocked, and retained only for archive/rollback until an explicit rebind.
 
 ```mermaid
 graph LR

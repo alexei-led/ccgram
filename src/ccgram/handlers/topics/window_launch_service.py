@@ -157,6 +157,14 @@ async def _create_topic_window(
             window_name=Path(wt_path).name,
             launch_command=launch_command,
         )
+    # Tmux preserves its long-standing creation behavior. Herdr's native
+    # agent-status capability selects the guarded-session creation transaction.
+    if tmux_manager.capabilities.native_agent_status is not True:
+        return await tmux_manager.create_window(
+            selected_path,
+            launch_command=launch_command,
+            workspace_id=chosen_workspace_id,
+        )
     try:
         target = await tmux_manager.create_topic_target(
             selected_path,
@@ -165,7 +173,12 @@ async def _create_topic_window(
         )
     except RuntimeError as exc:
         return False, str(exc), "", ""
-    return True, f"Created topic target '{target.label}'", target.label, target.target_id
+    return (
+        True,
+        f"Created topic target '{target.label}'",
+        target.label,
+        target.target_id,
+    )
 
 
 async def _wait_for_shell_ready(window_id: str, *, attempts: int = 5) -> None:

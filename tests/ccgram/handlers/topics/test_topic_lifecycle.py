@@ -12,6 +12,7 @@ from ccgram.handlers.topics.topic_lifecycle import (
     check_unbound_window_ttl,
     probe_topic_existence,
     prune_stale_state,
+    rollback_legacy_herdr_binding,
 )
 from ccgram.handlers.polling.polling_state import (
     lifecycle_strategy,
@@ -28,6 +29,26 @@ def _clean_strategy_state():
     terminal_poll_state._states.clear()
     lifecycle_strategy._states.clear()
     lifecycle_strategy._dead_notified.clear()
+
+
+class TestLegacyHerdrMigration:
+    def test_rollback_restores_binding_but_remains_action_blocked(self) -> None:
+        with (
+            patch(
+                "ccgram.handlers.topics.topic_lifecycle.legacy_state"
+            ) as legacy_state,
+            patch("ccgram.handlers.topics.topic_lifecycle.thread_router") as router,
+        ):
+            legacy_state.rollback_legacy_herdr_archive.return_value = True
+            assert rollback_legacy_herdr_binding(1, 100, "w2:t1") is True
+            router.bind_thread.assert_called_once_with(1, 100, "w2:t1")
+
+    def test_rollback_rejects_non_archived_record(self) -> None:
+        with patch(
+            "ccgram.handlers.topics.topic_lifecycle.legacy_state"
+        ) as legacy_state:
+            legacy_state.rollback_legacy_herdr_archive.return_value = False
+            assert rollback_legacy_herdr_binding(1, 100, "w2:t1") is False
 
 
 class TestCheckAutocloseTimers:
@@ -171,9 +192,9 @@ class TestCheckUnboundWindowTtl:
 class TestHerdrKillPaths:
     """Kill paths route through the multiplexer proxy regardless of window-ID format."""
 
-    async def test_herdr_unbound_window_killed_via_proxy(self):
-        """herdr-format window ID w1:t1 is passed through the proxy to kill_window."""
-        herdr_id = "w1:t1"
+    async def test_guarded_herdr_unbound_target_killed_via_proxy(self):
+        """An opaque guarded target is passed through the multiplexer proxy."""
+        herdr_id = "herdr-session-v1-" + "a" * 64
         ws = terminal_poll_state.get_state(herdr_id)
         ws.unbound_timer = time.monotonic() - 100
         mock_window = MagicMock(window_id=herdr_id, window_name="workspace ▸ agent")
@@ -203,13 +224,13 @@ class TestHerdrKillPaths:
             await check_unbound_window_ttl([mock_window])
         mock_tmux.kill_window.assert_called_once_with(herdr_id)
 
-    async def test_herdr_deleted_topic_kills_window_via_proxy(self):
-        """probe_topic_existence kills the herdr window via proxy on topic deletion."""
+    async def test_guarded_herdr_deleted_topic_kills_target_via_proxy(self):
+        """Topic deletion reaches the proxy with its opaque guarded target."""
         bot = AsyncMock(spec=Bot)
         bot.unpin_all_forum_topic_messages = AsyncMock(
             side_effect=BadRequest("Topic_id_invalid")
         )
-        herdr_id = "w1:t1"
+        herdr_id = "herdr-session-v1-" + "b" * 64
         with (
             patch(
                 "ccgram.handlers.topics.topic_lifecycle.thread_router"

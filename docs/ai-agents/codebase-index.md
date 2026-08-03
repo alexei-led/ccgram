@@ -8,7 +8,9 @@ Change topic/window routing:
 
 - `src/ccgram/session.py` for bindings + state model.
 - `src/ccgram/handlers/callback_helpers.py` for thread/window extraction.
-- `src/ccgram/window_resolver.py` for stale ID re-resolution.
+- `src/ccgram/window_resolver.py` for tmux stale-ID re-resolution only.
+- `src/ccgram/multiplexer/herdr.py` for the sole Herdr identity source (`agent.list`), opaque session digest, fresh action guard, and private live locators. Do not add Herdr tab/pane/display/focus fallback outside this adapter.
+- `src/ccgram/window_state_store.py` and `window_state_ports/legacy_state.py` for `legacy_herdr` detection, archive, and rollback. Legacy records remain action-blocked until an explicit rebind to a listed opaque target.
 
 Change monitor/event dispatch:
 
@@ -141,7 +143,7 @@ Add or change live view:
 
 ## Contracts You Must Not Break
 
-- Topic-window identity 1:1, window-id keyed.
+- Tmux topic-window identity remains 1:1 and window-ID keyed. Herdr identity is `agent.list` only: persist opaque `herdr-session-v1-…` targets, fail closed on ambiguity, and never claim atomic delivery after the documented post-guard dispatch race.
 - tool-use ↔ tool-result pairing + in-order delivery.
 - Provider logic behind interfaces/capabilities.
 - Parsing full-fidelity; split only in send path.

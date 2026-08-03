@@ -57,6 +57,7 @@ _CATEGORY_LABELS: dict[str, str] = {
     "stale_offset": "stale offset entry",
     "display_name_drift": "display name drift",
     "orphaned_window": "unbound window (no topic)",
+    "legacy_herdr": "legacy Herdr binding (blocked; archive or explicitly rebind)",
 }
 
 

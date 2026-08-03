@@ -76,32 +76,6 @@ async def read_session_map_raw() -> dict[str, Any] | None:
         return None
 
 
-def live_window_session_ids(
-    raw: dict[str, Any], live_window_ids: set[str]
-) -> dict[str, str]:
-    """Map each live window id to its session_id from a raw session_map.
-
-    Backend-neutral: a session_map key is ``<prefix>:<window_id>`` (e.g.
-    ``ccgram:@12`` for tmux, ``herdr:w2:t1`` for herdr, whose id itself contains
-    a colon), so this matches the key to a live window id by suffix rather than
-    splitting on ``:``. Only ids in ``live_window_ids`` are returned, so stale
-    pre-restart entries are ignored. Used by herdr restart re-resolution to join
-    persisted ``session_id`` -> current tab id (``window_resolver``).
-    """
-    result: dict[str, str] = {}
-    for key, info in raw.items():
-        if not isinstance(info, dict):
-            continue
-        sid = info.get("session_id", "")
-        if not sid:
-            continue
-        for wid in live_window_ids:
-            if key == wid or key.endswith(f":{wid}"):
-                result[wid] = sid
-                break
-    return result
-
-
 def session_map_prefix() -> str:
     """Return the session_map key prefix for the active multiplexer backend.
 
@@ -215,7 +189,7 @@ def parse_session_map(raw: dict[str, Any], prefix: str) -> dict[str, dict[str, s
 
     Returns {window_id: {"session_id": ..., "cwd": ...}} for matching entries,
     where window_id is the bare id after stripping the prefix — e.g. ``"@12"``
-    for tmux (``"ccgram:@12"``) or ``"w2:t1"`` for herdr (``"herdr:w2:t1"``).
+    for tmux (``"ccgram:@12"``) or a guarded opaque target for herdr.
 
     Safe to call from a clean interpreter (no SessionManager wired): the
     nested-session preference logic in ``_prefer_existing_primary`` short-
@@ -308,7 +282,7 @@ class SessionMapSync:
         """Read session_map.json and update window_states with new session associations.
 
         Keys in session_map are formatted as "tmux_session:window_id" for tmux
-        (e.g. "ccgram:@12") or "herdr:tab_id" for herdr (e.g. "herdr:w2:t1").
+        (e.g. "ccgram:@12") or "herdr:<opaque-session-target>" for herdr.
         Only native entries (matching our tmux_session_name or the "herdr:" prefix) are processed.
         Also cleans up window_states entries not in current session_map.
         Updates window_display_names from the "window_name" field in values.

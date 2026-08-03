@@ -7,10 +7,10 @@ Unix-socket JSON-RPC CLI. Every herdr JSON shape (``pane_info`` / ``pane_list``
 only the neutral value types from ``multiplexer.base`` (design "Module map":
 herdr.py is adapter, anti-corruption).
 
-Identity mapping: herdr's ``tab_id`` (``"w2:t1"``) *is* the ``window_id``
-string (tab identity — one ccgram topic = one herdr tab). A split tab (team)
-is one topic with multiple panes; pane ops are resolved tab→active-pane in
-Task 4.
+Identity mapping: Herdr ``agent.list`` is the sole identity source.  One
+complete agent-session composite becomes an opaque durable target; tab, pane,
+workspace, and terminal identifiers are short-lived locators used only after
+a fresh guard authorizes one action.
 
 The backend shells out to the ``herdr`` CLI (which the design explicitly allows
 as an alternative to talking the socket directly); the socket path is passed
@@ -195,7 +195,9 @@ def _session_composite(record: Mapping[str, object]) -> HerdrSessionComposite | 
         for key in ("source", "agent", "kind", "value")
     }
     if any(value is None for value in values.values()):
-        raise HerdrMalformedRecordError("agent.list contains an incomplete agent_session")
+        raise HerdrMalformedRecordError(
+            "agent.list contains an incomplete agent_session"
+        )
     return HerdrSessionComposite(
         source=values["source"] or "",
         agent=values["agent"] or "",
@@ -234,7 +236,9 @@ def _parse_live_record(record: Mapping[str, object]) -> HerdrLiveRecord | None:
         for key in ("terminal_id", "pane_id", "tab_id", "workspace_id")
     }
     if any(value is None for value in locators.values()):
-        raise HerdrMalformedRecordError("agent.list contains an incomplete live locator")
+        raise HerdrMalformedRecordError(
+            "agent.list contains an incomplete live locator"
+        )
     return HerdrLiveRecord(
         target_id=herdr_session_target_id(composite),
         composite=composite,
@@ -390,81 +394,6 @@ class HerdrManager:
         pane = result.get("pane")
         return pane if isinstance(pane, dict) else None
 
-    async def _panes_for_tab(self, tab_id: str) -> list[dict]:
-        """Return all pane dicts belonging to *tab_id* (one ``pane list`` call)."""
-        pane_result = await self._call_json(["pane", "list"])
-        if not pane_result:
-            return []
-        return [p for p in pane_result.get("panes", []) if p.get("tab_id") == tab_id]
-
-    async def _active_pane(self, tab_id: str) -> str | None:
-        """Resolve a tab id to its active pane id.
-
-        Prefers the focused pane; falls back to the first pane in the tab.
-        Returns ``None`` when the tab has no panes (gone or empty).
-        """
-        panes = await self._panes_for_tab(tab_id)
-        if not panes:
-            return None
-        focused = next((p for p in panes if p.get("focused")), None)
-        chosen = focused or panes[0]
-        return chosen.get("pane_id") or None
-
-    async def _tab_list(self) -> list[dict] | None:
-        """Return raw tab dicts, or None when ``tab list`` is unavailable."""
-        result = await self._call_json(["tab", "list"])
-        if result is None:
-            return None
-        return [t for t in result.get("tabs", []) if t.get("tab_id")]
-
-    async def _tab_get(self, tab_id: str) -> dict | None:
-        """Return the raw tab dict from ``tab get <tab_id>``; None when gone."""
-        if not tab_id:
-            return None
-        result = await self._call_json(["tab", "get", tab_id])
-        if not result:
-            return None
-        tab = result.get("tab")
-        return tab if isinstance(tab, dict) else None
-
-    async def _workspace_labels(self) -> dict[str, str]:
-        """Map every ``workspace_id`` → its label (one ``workspace list`` call).
-
-        Empty when herdr exposes no workspace addressing (older server) — the
-        adaptive label then degrades to the agent name alone.
-        """
-        result = await self._call_json(["workspace", "list"])
-        if not result:
-            return {}
-        return {
-            w.get("workspace_id", ""): w.get("label", "")
-            for w in result.get("workspaces", [])
-            if w.get("workspace_id")
-        }
-
-    @staticmethod
-    def _to_window_ref(
-        tab_id: str,
-        window_name: str,
-        cwd: str,
-        agent: str,
-    ) -> WindowRef:
-        """Build a neutral ``WindowRef`` from resolved tab fields.
-
-        ``window_id`` is the ``tab_id`` (tab identity — design Task 1).
-        ``window_name`` is the display label (full adaptive topic label
-        ``"<workspace> ▸ <tab>"`` for both ``find_window_by_id`` and ``list_windows``).
-        ``pane_current_command`` carries the representative agent label so
-        provider detection and the status pipeline keep working.
-        herdr has no tty and dimensions come from ``pane_dims`` on demand.
-        """
-        return WindowRef(
-            window_id=tab_id,
-            window_name=window_name or agent,
-            cwd=cwd,
-            pane_current_command=agent,
-        )
-
     # ── Multiplexer Protocol surface ───────────────────────────────────
 
     async def ensure_session(self) -> None:
@@ -505,26 +434,6 @@ class HerdrManager:
                 cli_server_compatible=cli_server_compatible,
             )
 
-    @staticmethod
-    def _representative_pane(tab_panes: list[dict], tab_cwd: str) -> tuple[str, str]:
-        """Return ``(agent, cwd)`` for the representative pane in *tab_panes*.
-
-        Prefers the focused pane's agent; falls back to the first pane with a
-        non-empty agent. ``tab_cwd`` is the fallback when no pane has a cwd.
-        """
-        focused = next((p for p in tab_panes if p.get("focused")), None)
-        if focused:
-            agent = focused.get("display_agent") or focused.get("agent", "")
-            cwd = focused.get("cwd", "") or tab_cwd
-            if agent:
-                return agent, cwd
-        for pane in tab_panes:
-            candidate = pane.get("display_agent") or pane.get("agent", "")
-            if candidate:
-                return candidate, pane.get("cwd", "") or tab_cwd
-        cwd = (focused or {}).get("cwd", "") or tab_cwd if focused else tab_cwd
-        return "", cwd
-
     async def _agent_list_snapshot(self) -> list[HerdrLiveRecord]:
         """Read and parse one fresh ``agent.list`` snapshot.
 
@@ -540,7 +449,9 @@ class HerdrManager:
         records: list[HerdrLiveRecord] = []
         for agent in agents:
             if not isinstance(agent, Mapping):
-                raise HerdrMalformedRecordError("agent.list contains a malformed record")
+                raise HerdrMalformedRecordError(
+                    "agent.list contains a malformed record"
+                )
             parsed = _parse_live_record(agent)
             if parsed is not None:
                 records.append(parsed)
@@ -589,7 +500,9 @@ class HerdrManager:
 
     async def list_windows_for_reconciliation(self) -> list[WindowRef] | None:
         try:
-            return [self._live_ref(record) for record in await self._agent_list_snapshot()]
+            return [
+                self._live_ref(record) for record in await self._agent_list_snapshot()
+            ]
         except HerdrError:
             return None
 
@@ -600,9 +513,8 @@ class HerdrManager:
         except HerdrError:
             return None
 
-    # ── Raw pane-id ops (private) ──────────────────────────────────────
-    # These accept a resolved *pane* id — not a tab id. Tab-keyed public
-    # methods resolve tab→active-pane via ``_active_pane`` before calling here.
+    # ── Guarded locator operations (private) ───────────────────────────
+    # These receive a locator only from the fresh session guard above.
 
     async def _read_visible_pane(
         self, pane_id: str, *, ansi: bool = False
@@ -688,7 +600,9 @@ class HerdrManager:
             await self._after_action_failure(window_id)
         return text
 
-    async def capture_scrollback(self, window_id: str, lines: int = 200) -> CaptureResult | None:
+    async def capture_scrollback(
+        self, window_id: str, lines: int = 200
+    ) -> CaptureResult | None:
         try:
             record = await self.guard_session_target(window_id)
         except HerdrError:
@@ -710,8 +624,16 @@ class HerdrManager:
             await self._after_action_failure(window_id)
         return dims
 
-    async def send(self, window_id: str, text: str, *, enter: bool = True,
-                   literal: bool = True, raw: bool = False) -> bool:  # noqa: ARG002
+    async def send(
+        self,
+        window_id: str,
+        text: str,
+        *,
+        enter: bool = True,
+        literal: bool = True,
+        raw: bool = False,
+    ) -> bool:
+        del raw
         try:
             record = await self.guard_session_target(window_id)
         except HerdrError:
@@ -721,21 +643,34 @@ class HerdrManager:
             await self._after_action_failure(window_id)
         return ok
 
-    async def send_to_pane(self, pane_id: str, text: str, *, enter: bool = True,
-                           literal: bool = True, window_id: str | None = None) -> bool:
+    async def send_to_pane(
+        self,
+        pane_id: str,
+        text: str,
+        *,
+        enter: bool = True,
+        literal: bool = True,
+        window_id: str | None = None,
+    ) -> bool:
         """Reject raw Herdr pane IDs; only a session target may authorize I/O."""
         if window_id is None or pane_id != window_id:
             logger.warning("Rejected raw Herdr pane operation")
             return False
         return await self.send(window_id, text, enter=enter, literal=literal)
 
-    async def _send_to(self, pane_id: str, text: str, *, enter: bool, literal: bool) -> bool:
+    async def _send_to(
+        self, pane_id: str, text: str, *, enter: bool, literal: bool
+    ) -> bool:
         if not literal:
             keys = [_KEY_ALIASES.get(tok, tok) for tok in text.split() if tok]
             if enter:
                 keys.append("Enter")
-            return bool(keys) and await self._call_ok(["pane", "send-keys", pane_id, *keys])
-        return await self._call_ok(["pane", "run" if enter else "send-text", pane_id, text])
+            return bool(keys) and await self._call_ok(
+                ["pane", "send-keys", pane_id, *keys]
+            )
+        return await self._call_ok(
+            ["pane", "run" if enter else "send-text", pane_id, text]
+        )
 
     async def kill_window(self, window_id: str) -> bool:
         try:
@@ -767,17 +702,34 @@ class HerdrManager:
             await self._after_action_failure(window_id)
             return []
         dims = await self._dims_for_pane(record.pane_id) or PaneDims(0, 0)
-        return [PaneInfo(pane_id=record.target_id, index=_pane_index(record.pane_id),
-                         active=True, command=record.composite.agent, path="",
-                         width=dims.width, height=dims.height)]
+        return [
+            PaneInfo(
+                pane_id=record.target_id,
+                index=_pane_index(record.pane_id),
+                active=True,
+                command=record.composite.agent,
+                path="",
+                width=dims.width,
+                height=dims.height,
+            )
+        ]
 
     async def stamp_pane_title(self, window_id: str, provider_name: str) -> None:
         try:
             record = await self.guard_session_target(window_id)
         except HerdrError:
             return
-        ok = await self._call_ok(["pane", "report-metadata", record.pane_id, "--source",
-                                  "ccgram", "--title", f"ccgram:{provider_name}"])
+        ok = await self._call_ok(
+            [
+                "pane",
+                "report-metadata",
+                record.pane_id,
+                "--source",
+                "ccgram",
+                "--title",
+                f"ccgram:{provider_name}",
+            ]
+        )
         if not ok:
             await self._after_action_failure(window_id)
 
@@ -801,20 +753,33 @@ class HerdrManager:
             await self._after_action_failure(window_id)
             return None
         state = (pane.get("agent_status") or "").strip()
-        return AgentStatus(state=state, agent=record.composite.agent,
-                           custom_status=(pane.get("custom_status") or "").strip()) if state else None
+        return (
+            AgentStatus(
+                state=state,
+                agent=record.composite.agent,
+                custom_status=(pane.get("custom_status") or "").strip(),
+            )
+            if state
+            else None
+        )
 
     async def split_window(self, window_id: str) -> str | None:
         try:
             record = await self.guard_session_target(window_id)
         except HerdrError:
             return None
-        result = await self._call_json(["pane", "split", record.pane_id, "--direction", "down", "--no-focus"])
+        result = await self._call_json(
+            ["pane", "split", record.pane_id, "--direction", "down", "--no-focus"]
+        )
         if not result:
             await self._after_action_failure(window_id)
             return None
         pane = result.get("pane")
-        return pane.get("pane_id") if isinstance(pane, dict) and isinstance(pane.get("pane_id"), str) else None
+        return (
+            pane.get("pane_id")
+            if isinstance(pane, dict) and isinstance(pane.get("pane_id"), str)
+            else None
+        )
 
     async def _resolve_panes(self, window_ids: Sequence[str]) -> dict[str, str]:
         """Resolve watch subscriptions through fresh guarded targets."""
@@ -847,38 +812,6 @@ class HerdrManager:
             if ws.get("workspace_id")
         ]
 
-    async def _resolve_workspace_id(self, cwd: str) -> str:
-        """Return the workspace rooted at *cwd*, creating one if none matches.
-
-        Reuses the herdr workspace whose cwd matches the target directory so a
-        new agent lands in the repo's existing workspace and inherits its label
-        as the topic prefix (design "cwd → workspace"). Returns "" when herdr
-        exposes no workspace addressing (older server / command unavailable) —
-        ``create_window`` then falls back to a plain ``tab create`` in the
-        active workspace (Task 7 behavior).
-        """
-        result = await self._call_json(["workspace", "list"])
-        if result:
-            for ws in result.get("workspaces", []):
-                if self._same_path(ws.get("cwd", ""), cwd):
-                    wid = ws.get("workspace_id", "")
-                    if wid:
-                        return wid
-        created = await self._call_json(["workspace", "create", "--cwd", cwd])
-        if not created:
-            return ""
-        return (created.get("workspace") or {}).get("workspace_id", "") or ""
-
-    @staticmethod
-    def _same_path(a: str, b: str) -> bool:
-        """True when two paths point at the same directory (symlinks resolved)."""
-        if not a or not b:
-            return False
-        try:
-            return Path(a).expanduser().resolve() == Path(b).expanduser().resolve()
-        except OSError:
-            return a == b
-
     async def create_window(
         self,
         work_dir: str,
@@ -889,59 +822,35 @@ class HerdrManager:
         *,
         workspace_id: str | None = None,
     ) -> tuple[bool, str, str, str]:
-        """Create a herdr tab at *work_dir* and optionally launch an agent.
+        """Compatibility creation API that never returns a Herdr tab binding.
 
-        Resolves *work_dir* to its herdr workspace (reusing the matching one,
-        creating it only if absent — design "cwd → workspace"), creates a
-        ``tab`` inside it, then ``pane run``s the launch command in the root
-        pane.
-
-        When *workspace_id* is provided (from the UI workspace picker), the
-        cwd-resolve step is skipped and the tab is created inside that workspace
-        directly.
-
-        Returns ``(success, message, window_name, window_id)`` where
-        ``window_id`` is the new **tab id** (tab identity — Task 1). The agent
-        launch still targets the root pane id (pane ops are resolved via
-        tab→active-pane in Task 4).
+        Callers that cannot provide a selected workspace or a sessionful launch
+        are rejected rather than silently creating an actionable tab target.
+        Tmux retains its existing behavior through its own implementation.
         """
-        path = Path(work_dir).expanduser()
-        if not path.exists():
-            return False, f"Directory does not exist: {work_dir}", "", ""
-        if not path.is_dir():
-            return False, f"Not a directory: {work_dir}", "", ""
-
-        cwd = str(path)
-        if workspace_id is None:
-            workspace_id = await self._resolve_workspace_id(cwd)
-        args = ["tab", "create", "--cwd", cwd, "--no-focus"]
-        if workspace_id:
-            args += ["--workspace", workspace_id]
-        if window_name:
-            args += ["--label", window_name]
-        result = await self._call_json(args)
-        if not result:
-            return False, f"Failed to create herdr tab at {path}", "", ""
-
-        tab = result.get("tab") or {}
-        tab_id = tab.get("tab_id", "")
-        label = tab.get("label", window_name or "")
-        if not tab_id:
-            return False, "herdr tab created without a tab id", "", ""
-
-        if start_agent and launch_command:
-            root_pane = result.get("root_pane") or {}
-            pane_id = root_pane.get("pane_id", "")
-            if pane_id:
-                cmd = (
-                    f"{launch_command} {agent_args}".strip()
-                    if agent_args
-                    else launch_command
-                )
-                await self._call_ok(["pane", "run", pane_id, cmd])
-
-        logger.info("Created herdr tab %r (id=%s) at %s", label, tab_id, path)
-        return True, f"Created herdr tab '{label}' at {path}", label, tab_id
+        if not start_agent or not launch_command or not workspace_id:
+            return (
+                False,
+                "Herdr topic creation requires a selected workspace and sessionful agent",
+                "",
+                "",
+            )
+        try:
+            target = await self.create_topic_target(
+                work_dir,
+                launch_command=launch_command,
+                workspace_id=workspace_id,
+                window_name=window_name,
+                agent_args=agent_args,
+            )
+        except HerdrError as exc:
+            return False, str(exc), "", ""
+        return (
+            True,
+            f"Created Herdr session target '{target.label}'",
+            target.label,
+            target.target_id,
+        )
 
     async def _await_created_session_target(
         self,
@@ -984,14 +893,24 @@ class HerdrManager:
         never closes the selected workspace.
         """
         if not workspace_id:
-            raise HerdrError("A Herdr workspace must be selected before creating a topic")
+            raise HerdrError(
+                "A Herdr workspace must be selected before creating a topic"
+            )
         path = Path(work_dir).expanduser()
         if not path.is_dir():
             raise HerdrError(f"Directory does not exist: {work_dir}")
         workspaces = await self.list_workspaces()
         if workspace_id not in {workspace.workspace_id for workspace in workspaces}:
             raise HerdrError("Selected Herdr workspace no longer exists")
-        args = ["tab", "create", "--cwd", str(path), "--no-focus", "--workspace", workspace_id]
+        args = [
+            "tab",
+            "create",
+            "--cwd",
+            str(path),
+            "--no-focus",
+            "--workspace",
+            workspace_id,
+        ]
         if window_name:
             args += ["--label", window_name]
         result = await self._call_json(args)
@@ -1094,9 +1013,7 @@ class HerdrManager:
             await self._call_ok(["tab", "close", tab_id])
             return False, str(exc), "", ""
 
-        logger.info(
-            "Created herdr worktree target %r at %s", label, worktree_path
-        )
+        logger.info("Created herdr worktree target %r at %s", label, worktree_path)
         return (
             True,
             f"Created herdr worktree '{branch}' at {worktree_path}",

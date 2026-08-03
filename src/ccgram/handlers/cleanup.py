@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 from ..config import config
 from ..session_map import session_map_prefix
 from ..thread_router import thread_router
+from ..window_state_ports import legacy_state
 from ..topic_state_registry import topic_state
 from ..utils import handle_general_topic_message, is_general_topic, log_throttle_reset
 from .callback_helpers import get_thread_id
@@ -139,6 +140,9 @@ async def unbind_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     display = thread_router.get_display_name(window_id)
+    is_legacy_herdr = legacy_state.is_legacy_herdr(window_id)
+    if is_legacy_herdr:
+        legacy_state.archive_legacy_herdr(window_id)
     client = PTBTelegramClient(context.bot)
     await enqueue_status_update(client, user.id, window_id, None, thread_id)
     await clear_topic_state(
@@ -150,6 +154,13 @@ async def unbind_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         window_dead=False,
     )
     thread_router.unbind_thread(user.id, thread_id)
+    if is_legacy_herdr:
+        await safe_reply(
+            update.message,
+            f"📦 Archived legacy Herdr binding `{display}` without closing its session.\n"
+            "It remains blocked if restored; send a message to explicitly bind a listed session target.",
+        )
+        return
     await safe_reply(
         update.message,
         f"✂ Unbound from window `{display}`. The session is still running.\n"

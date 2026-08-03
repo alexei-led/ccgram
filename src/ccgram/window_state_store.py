@@ -154,6 +154,10 @@ class WindowState:
     # (``_detect_and_apply_provider``) must not overwrite the choice
     # until the user re-runs ``/agent auto`` (which clears the flag).
     provider_manual_override: bool = False
+    # A pre-session-model Herdr tab/pane binding.  It is retained for an
+    # explicit archive/rollback migration, but never authorizes an action.
+    legacy_herdr: bool = False
+    legacy_herdr_archived: bool = False
 
     def to_dict(self) -> dict[str, Any]:  # noqa: C901
         d: dict[str, Any] = {
@@ -184,6 +188,10 @@ class WindowState:
             d["worktree_branch"] = self.worktree_branch
         if self.provider_manual_override:
             d["provider_manual_override"] = True
+        if self.legacy_herdr:
+            d["legacy_herdr"] = True
+        if self.legacy_herdr_archived:
+            d["legacy_herdr_archived"] = True
         return d
 
     @classmethod
@@ -218,7 +226,9 @@ class WindowState:
             pane_lifecycle_notify=data.get("pane_lifecycle_notify"),
             worktree_path=data.get("worktree_path"),
             worktree_branch=data.get("worktree_branch"),
-            provider_manual_override=data.get("provider_manual_override", False),
+            provider_manual_override=bool(data.get("provider_manual_override", False)),
+            legacy_herdr=bool(data.get("legacy_herdr", False)),
+            legacy_herdr_archived=bool(data.get("legacy_herdr_archived", False)),
         )
 
 
@@ -374,6 +384,56 @@ class WindowStateStore:
         if window_id not in self.window_states:
             return False
         del self.window_states[window_id]
+        self._schedule_save()
+        return True
+
+    # ------------------------------------------------------------------
+    # Herdr legacy-binding migration
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def is_herdr_session_target(window_id: str) -> bool:
+        """Return whether *window_id* is the current opaque Herdr target form."""
+        return window_id.startswith("herdr-session-v1-")
+
+    def mark_legacy_herdr(self, window_id: str, *, schedule_save: bool = True) -> bool:
+        """Mark a non-session Herdr binding as migration-only and blocked.
+
+        The target itself is deliberately retained: archive and rollback must
+        never guess a replacement from a tab, pane, title, or focused layout.
+        """
+        if self.is_herdr_session_target(window_id):
+            return False
+        state = self.get_window_state(window_id)
+        if state.legacy_herdr:
+            return False
+        state.legacy_herdr = True
+        if schedule_save:
+            self._schedule_save()
+        return True
+
+    def is_legacy_herdr(self, window_id: str) -> bool:
+        """Return True only for a persisted, blocked legacy Herdr record."""
+        state = self.window_states.get(window_id)
+        return bool(state and state.legacy_herdr)
+
+    def archive_legacy_herdr(self, window_id: str) -> bool:
+        """Keep a legacy record for rollback while its topic binding is removed."""
+        if not self.is_legacy_herdr(window_id):
+            return False
+        state = self.window_states[window_id]
+        if state.legacy_herdr_archived:
+            return False
+        state.legacy_herdr_archived = True
+        self._schedule_save()
+        return True
+
+    def rollback_legacy_herdr_archive(self, window_id: str) -> bool:
+        """Restore an archived legacy record; it remains blocked until rebind."""
+        state = self.window_states.get(window_id)
+        if state is None or not state.legacy_herdr or not state.legacy_herdr_archived:
+            return False
+        state.legacy_herdr_archived = False
         self._schedule_save()
         return True
 

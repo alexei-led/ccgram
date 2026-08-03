@@ -234,6 +234,30 @@ class TestStoreCRUD:
         assert state.provider_name == "codex"
 
 
+class TestLegacyHerdrMigration:
+    def test_marks_non_session_target_as_blocked_and_persists(
+        self, store: WindowStateStore
+    ) -> None:
+        assert store.mark_legacy_herdr("w2:t1") is True
+        state = store.window_states["w2:t1"]
+        assert state.legacy_herdr is True
+        assert state.to_dict()["legacy_herdr"] is True
+
+    def test_session_target_is_not_legacy(self, store: WindowStateStore) -> None:
+        assert store.mark_legacy_herdr("herdr-session-v1-" + "a" * 64) is False
+        assert store.window_states == {}
+
+    def test_archive_and_rollback_keep_actions_blocked(
+        self, store: WindowStateStore
+    ) -> None:
+        store.mark_legacy_herdr("w2:p3")
+        assert store.archive_legacy_herdr("w2:p3") is True
+        assert store.window_states["w2:p3"].legacy_herdr_archived is True
+        assert store.rollback_legacy_herdr_archive("w2:p3") is True
+        assert store.window_states["w2:p3"].legacy_herdr_archived is False
+        assert store.is_legacy_herdr("w2:p3") is True
+
+
 class TestPaneLifecycleNotify:
     def test_window_state_default_is_none(self) -> None:
         ws = WindowState()

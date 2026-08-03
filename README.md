@@ -14,7 +14,7 @@ This means:
 
 - **Desktop to phone, mid-conversation** — walk away and keep monitoring from Telegram
 - **Phone back to desktop, anytime** — attach to your terminal and you're back with full scrollback
-- **Multiple sessions in parallel** — each Telegram topic maps to a separate window, each running a different agent
+- **Multiple sessions in parallel** — each Telegram topic maps to a separate tmux window or guarded Herdr agent session
 
 ---
 
@@ -56,7 +56,7 @@ graph LR
   style machine fill:#f0faf0,stroke:#2ea44f,stroke-width:2px,color:#333
 ```
 
-Each Telegram topic maps to one multiplexer window. Type in Telegram → keystrokes to pane → agent output back to Telegram.
+Each Telegram topic maps to one tmux window. With Herdr, it maps instead to one guarded agent session: `agent.list` is the sole identity source and CCGram persists only an opaque `herdr-session-v1-…` target, never a tab or pane ID. Every action reads a fresh `agent.list` record and fails closed for missing, duplicate, malformed, sessionless, or legacy bindings. A session can still change after that guard and before Herdr dispatches, so delivery is not atomic and may be indeterminate after this post-guard race.
 
 ---
 

@@ -166,108 +166,16 @@ class TestResolveStaleIds:
         assert not changed
 
 
-class TestResolveStaleIdsBySession:
-    """Re-resolution for backends with non-stable ids (herdr), keyed on the
-    durable agent session id rather than display name (ids_stable=False)."""
-
-    def test_herdr_no_session_match_keeps_dead_window(self) -> None:
-        # The agent's session is not present among live tabs (hook hasn't
-        # re-fired yet) — keep the entry for /restore rather than dropping it.
-        live = [LiveWindow("w3:t1", "other")]
-        window_states = {"w2:t1": _ws_sid("ccgram", "S1")}
-        thread_bindings: dict = {100: {42: "w2:t1"}}
-        offsets: dict = {}
-        display_names = {"w2:t1": "ccgram ▸ claude"}
-
-        changed = resolve_stale_ids(
-            live,
-            window_states,
-            thread_bindings,
-            offsets,
-            display_names,
-            ids_stable=False,
-            live_session_ids={"w3:t1": "S-other"},
-        )
-
-        assert not changed
-        assert "w2:t1" in window_states
-        assert thread_bindings[100][42] == "w2:t1"
-
-    def test_herdr_live_id_unchanged(self) -> None:
-        # Tab id survived the restart (still live) — no remap, no churn.
-        live = [LiveWindow("w2:t1", "ccgram")]
-        window_states = {"w2:t1": _ws_sid("ccgram", "S1")}
-        thread_bindings: dict = {100: {42: "w2:t1"}}
-        offsets: dict = {}
-        display_names = {"w2:t1": "ccgram ▸ claude"}
-
-        changed = resolve_stale_ids(
-            live,
-            window_states,
-            thread_bindings,
-            offsets,
-            display_names,
-            ids_stable=False,
-            live_session_ids={"w2:t1": "S1"},
-        )
-
-        assert not changed
-        assert "w2:t1" in window_states
-
-    def test_herdr_no_live_session_ids_keeps_state(self) -> None:
-        # No session map available yet (empty map) — nothing to join on, keep
-        # all state. Display-name matching is never used on the herdr path.
-        live = [LiveWindow("w3:t1", "ccgram")]
-        window_states = {"w2:t1": _ws_sid("ccgram", "S1")}
-        thread_bindings: dict = {100: {42: "w2:t1"}}
-        offsets: dict = {}
-        display_names = {"w2:t1": "ccgram"}
-
-        changed = resolve_stale_ids(
-            live,
-            window_states,
-            thread_bindings,
-            offsets,
-            display_names,
-            ids_stable=False,
-            live_session_ids=None,
-        )
-
-        assert not changed
-        assert "w2:t1" in window_states
-        assert thread_bindings[100][42] == "w2:t1"
-
-    def test_herdr_skips_dead_session_map_entry(self) -> None:
-        # session_map still lists the old tab id (stale, not live) for the same
-        # session — must not re-map onto a dead id.
-        live = [LiveWindow("w3:t1", "ccgram")]
-        window_states = {"w2:t1": _ws_sid("ccgram", "S1")}
-        thread_bindings: dict = {}
-        offsets: dict = {}
-        display_names = {"w2:t1": "ccgram"}
-
-        changed = resolve_stale_ids(
-            live,
-            window_states,
-            thread_bindings,
-            offsets,
-            display_names,
-            ids_stable=False,
-            # Only a stale w2:t1 entry; w3:t1 has no session yet.
-            live_session_ids={"w2:t1": "S1"},
-        )
-
-        assert not changed
-        assert "w2:t1" in window_states
+class TestGuardedTargetRecovery:
+    """Non-stable backend targets are retained without display or locator recovery."""
 
     def test_opaque_target_missing_from_snapshot_is_retained(self) -> None:
-        # A missing opaque target may be a reconnect/event-loss gap. It must
-        # never be silently rebound to another target carrying the same session.
-        live = [LiveWindow("herdr-session-v1-new", "ccgram")]
-        window_states = {"herdr-session-v1-old": _ws_sid("ccgram", "T1")}
-        thread_bindings: dict = {100: {42: "herdr-session-v1-old"}}
-        offsets: dict = {100: {"herdr-session-v1-old": 5}}
-        display_names = {"herdr-session-v1-old": "myws ▸ claude"}
+        target = "herdr-session-v1-" + "a" * 64
+        live = [LiveWindow("herdr-session-v1-" + "b" * 64, "claude")]
+        window_states = {target: _ws_sid("ccgram", "T1")}
+        thread_bindings: dict = {100: {42: target}}
+        offsets: dict = {100: {target: 5}}
+        display_names = {target: "claude"}
 
         changed = resolve_stale_ids(
             live,
@@ -276,34 +184,23 @@ class TestResolveStaleIdsBySession:
             offsets,
             display_names,
             ids_stable=False,
-            live_session_ids={"herdr-session-v1-new": "T1"},
         )
 
-        assert not changed
-        assert "herdr-session-v1-old" in window_states
-        assert thread_bindings[100][42] == "herdr-session-v1-old"
-        assert offsets[100] == {"herdr-session-v1-old": 5}
-        assert display_names.get("herdr-session-v1-old") == "myws ▸ claude"
+        assert changed is False
+        assert target in window_states
+        assert thread_bindings[100][42] == target
+        assert offsets[100] == {target: 5}
 
-    def test_stable_path_ignores_session_ids(self) -> None:
-        # ids_stable=True must keep using display-name matching even when a
-        # live_session_ids map is supplied (tmux behavior unchanged).
+    def test_tmux_stable_path_keeps_display_recovery(self) -> None:
         live = [LiveWindow("@1", "proj")]
         window_states = {"@0": _ws("proj")}
         thread_bindings: dict = {}
         offsets: dict = {}
         display_names = {"@0": "proj"}
-
-        changed = resolve_stale_ids(
-            live,
-            window_states,
-            thread_bindings,
-            offsets,
-            display_names,
-            ids_stable=True,
-            live_session_ids={"@1": "whatever"},
+        assert (
+            resolve_stale_ids(
+                live, window_states, thread_bindings, offsets, display_names
+            )
+            is True
         )
-
-        assert changed
         assert "@1" in window_states
-        assert "@0" not in window_states

@@ -166,7 +166,6 @@ def resolve_stale_ids(
     window_display_names: dict,
     *,
     ids_stable: bool = True,
-    live_session_ids: dict[str, str] | None = None,
 ) -> bool:
     """Re-resolve persisted window IDs against live multiplexer windows.
 
@@ -185,9 +184,6 @@ def resolve_stale_ids(
       remapping. Guarded backend actions decide its current availability.
     """
     if not ids_stable:
-        # Retained as a keyword-only compatibility argument for callers that
-        # previously supplied a live session map to the removed remap path.
-        del live_session_ids
         return False
 
     live_by_name: dict[str, str] = {w.window_name: w.window_id for w in live_windows}

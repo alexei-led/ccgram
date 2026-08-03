@@ -131,6 +131,23 @@ class TestBuildReport:
         text, _keyboard = _format_report(audit)
         assert "No orphaned entries" in text
 
+    def test_legacy_herdr_report_explains_archive_and_explicit_rebind(self) -> None:
+        audit = AuditResult(
+            issues=[
+                AuditIssue(
+                    "legacy_herdr",
+                    "w2:t1 is blocked; archive or explicitly rebind to a listed session target",
+                    fixable=False,
+                )
+            ],
+            total_bindings=1,
+            live_binding_count=0,
+        )
+        text, keyboard = _format_report(audit)
+        assert "legacy Herdr binding" in text
+        assert "explicitly rebind" in text
+        assert keyboard is None
+
 
 class TestSyncDismiss:
     async def test_dismiss_deletes_message(self, _patch_deps) -> None:

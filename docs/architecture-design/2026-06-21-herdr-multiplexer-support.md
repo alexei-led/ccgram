@@ -1,5 +1,7 @@
 # Architecture design: herdr as an alternative multiplexer
 
+> **Historical notice:** This document predates guarded session targets. Current Herdr behavior uses `agent.list` as the sole identity source, persists opaque `herdr-session-v1-…` targets, and never migrates tab/pane bindings implicitly.
+
 Plain Markdown. Target architecture for adding [herdr](https://github.com/ogulcancelik/herdr) as a second terminal multiplexer alongside tmux, behind one contract seam. Design only; production source changes belong in a follow-up implementation plan. tmux stays the default; herdr is additive.
 
 ## Design Revision (2026-06-22)

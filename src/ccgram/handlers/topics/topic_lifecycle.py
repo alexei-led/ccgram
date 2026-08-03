@@ -22,6 +22,7 @@ from ...telegram_client import PTBTelegramClient, TelegramClient
 from ...thread_router import thread_router
 from ...multiplexer import multiplexer as tmux_manager
 from ...utils import log_throttled
+from ...window_state_ports import legacy_state
 from ...window_state_store import CCGRAM_CREATED_WINDOW_ORIGIN
 from ..cleanup import clear_topic_state
 from ..messaging_pipeline.message_sender import is_thread_gone
@@ -35,6 +36,22 @@ if TYPE_CHECKING:
     from ...multiplexer.base import WindowRef as TmuxWindow
 
 logger = structlog.get_logger()
+
+
+# ── Legacy Herdr migration ───────────────────────────────────────────────
+
+
+def rollback_legacy_herdr_binding(user_id: int, thread_id: int, window_id: str) -> bool:
+    """Restore an archived legacy binding without making it actionable.
+
+    This is intentionally a narrow rollback primitive for migration UI.  It
+    never selects a live agent; the user must explicitly rebind to a listed
+    opaque session target to resume actions.
+    """
+    if not legacy_state.rollback_legacy_herdr_archive(window_id):
+        return False
+    thread_router.bind_thread(user_id, thread_id, window_id)
+    return True
 
 
 # ── Autoclose timer management ────────────────────────────────────────────

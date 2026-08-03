@@ -4,12 +4,12 @@ Authoritative module inventory is `/.claude/rules/architecture.md`. This file co
 
 ## Request/Response Lifecycles
 
-Inbound user message (Telegram → tmux):
+Inbound user message (Telegram → multiplexer):
 
 1. PTB dispatcher routes through handlers wired in `handlers/registry.py`.
 2. `handlers/text/text_handler.py` validates context and resolves topic binding.
 3. `session.py` maps `(user_id, thread_id)` → `window_id`.
-4. `tmux_manager.py` sends keys to the mapped window/pane.
+4. The multiplexer proxy sends keys to the mapped target. For Herdr, `multiplexer/herdr.py` reads `agent.list` immediately before dispatch, requires one matching opaque `herdr-session-v1-…` target, and uses that record's locator only for that action.
 
 Shell provider (NL → command → shell):
 
@@ -72,7 +72,8 @@ Commands menu (`/commands`):
 
 ## Design Constraints to Preserve
 
-- 1 topic = 1 window mapping; internal identity keyed by tmux `window_id`.
+- Tmux preserves the 1 topic = 1 window mapping keyed by tmux `window_id`. Herdr uses `agent.list` as the sole identity source and persists only opaque `herdr-session-v1-…` targets; never use a tab, pane, terminal, display, directory, or focus value as identity.
+- Herdr guard failures (missing, duplicate, malformed, sessionless, or `legacy_herdr`) fail closed. A post-guard change before dispatch remains a documented possible-misdelivery race, not atomic delivery.
 - No parse-layer truncation; splitting only at the Telegram send layer.
 - Per-window provider behavior + capability-gated UI.
 - tmux operations centralized in `tmux_manager.py`; no raw tmux shell calls in handlers.
