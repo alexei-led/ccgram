@@ -7,12 +7,15 @@ neither, and nested-session rejection (the last exercised through
 
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
+
 import pytest
 
 from ccgram.multiplexer.self_identify import SelfIdentity, resolve_self_identity
 
 
-def _fail_query(_pane_id: str):
+def _fail_query(*_locator: str):
     raise AssertionError("tmux_query must not run without $TMUX_PANE")
 
 
@@ -28,12 +31,21 @@ class TestResolveSelfIdentity:
                     "tmux", "ccgram:@0", "@0", "project", pane_tty="/dev/ttys012"
                 ),
             ),
-            # herdr: herdr_query resolves pane→tab; key and window_id use tab id
+            # herdr: an exact workspace/pane lookup returns one opaque target.
             (
-                {"HERDR_PANE_ID": "w2:p1", "HERDR_SOCKET_PATH": "/tmp/herdr.sock"},
+                {
+                    "HERDR_WORKSPACE_ID": "w2",
+                    "HERDR_PANE_ID": "w2:p1",
+                    "HERDR_SOCKET_PATH": "/tmp/herdr.sock",
+                },
                 None,
-                lambda _pane: "w2:t1",
-                SelfIdentity("herdr", "herdr:w2:t1", "w2:t1", ""),
+                lambda _workspace, _pane: "herdr-session-v1-target",
+                SelfIdentity(
+                    "herdr",
+                    "herdr:herdr-session-v1-target",
+                    "herdr-session-v1-target",
+                    "",
+                ),
             ),
             # herdr: no herdr_query → probe unavailable → None (symmetric with tmux)
             (
@@ -44,9 +56,13 @@ class TestResolveSelfIdentity:
             ),
             # herdr: herdr_query returns None (probe failure) → None (skip session_map write)
             (
-                {"HERDR_PANE_ID": "w2:p1", "HERDR_SOCKET_PATH": "/tmp/herdr.sock"},
+                {
+                    "HERDR_WORKSPACE_ID": "w2",
+                    "HERDR_PANE_ID": "w2:p1",
+                    "HERDR_SOCKET_PATH": "/tmp/herdr.sock",
+                },
                 None,
-                lambda _pane: None,
+                lambda _workspace, _pane: None,
                 None,
             ),
             ({}, None, None, None),
@@ -76,13 +92,28 @@ class TestResolveSelfIdentity:
         )
         assert ident is None
 
-    def test_herdr_query_resolves_tab_id(self) -> None:
+    def test_herdr_query_resolves_opaque_session_target(self) -> None:
         ident = resolve_self_identity(
-            {"HERDR_PANE_ID": "w0:p0"},
+            {"HERDR_WORKSPACE_ID": "w0", "HERDR_PANE_ID": "w0:p0"},
             tmux_query=_fail_query,
-            herdr_query=lambda _pane: "w0:t1",
+            herdr_query=lambda _workspace, _pane: "herdr-session-v1-target",
         )
-        assert ident == SelfIdentity("herdr", "herdr:w0:t1", "w0:t1", "")
+        assert ident == SelfIdentity(
+            "herdr",
+            "herdr:herdr-session-v1-target",
+            "herdr-session-v1-target",
+            "",
+        )
+
+    def test_herdr_without_workspace_fails_closed(self) -> None:
+        assert (
+            resolve_self_identity(
+                {"HERDR_PANE_ID": "w0:p0"},
+                tmux_query=_fail_query,
+                herdr_query=lambda _workspace, _pane: "herdr-session-v1-target",
+            )
+            is None
+        )
 
     def test_tmux_wins_when_both_present(self) -> None:
         # A herdr pane nested inside a tmux pane reports the outer tmux identity.
@@ -94,6 +125,57 @@ class TestResolveSelfIdentity:
 
     def test_neither_env_does_not_probe_tmux(self) -> None:
         assert resolve_self_identity({}, tmux_query=_fail_query) is None
+
+
+class TestResolveHerdrTarget:
+    @staticmethod
+    def _record(*, workspace_id: str = "w2", pane_id: str = "w2:p1") -> dict:
+        return {
+            "workspace_id": workspace_id,
+            "pane_id": pane_id,
+            "terminal_id": "term-1",
+            "tab_id": "w2:t1",
+            "agent_session": {
+                "source": "claude",
+                "agent": "claude",
+                "kind": "session",
+                "value": "session-1",
+            },
+        }
+
+    def _resolve(self, monkeypatch, records: list[dict]) -> str | None:
+        import ccgram.hook as hook
+
+        monkeypatch.setattr(
+            hook.subprocess,
+            "run",
+            lambda *_args, **_kwargs: SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps({"result": {"agents": records}}),
+                stderr="",
+            ),
+        )
+        monkeypatch.setattr(
+            hook,
+            "get_multiplexer",
+            lambda _name: SimpleNamespace(
+                target_id_for_live_record=lambda _record: "herdr-session-v1-target"
+            ),
+        )
+        return hook._resolve_herdr_target_id("w2", "w2:p1")
+
+    def test_unique_workspace_pane_locator_returns_opaque_target(
+        self, monkeypatch
+    ) -> None:
+        assert self._resolve(monkeypatch, [self._record()]) == "herdr-session-v1-target"
+
+    def test_zero_workspace_pane_locator_matches_fail_closed(self, monkeypatch) -> None:
+        assert self._resolve(monkeypatch, [self._record(pane_id="w2:p2")]) is None
+
+    def test_duplicate_workspace_pane_locator_matches_fail_closed(
+        self, monkeypatch
+    ) -> None:
+        assert self._resolve(monkeypatch, [self._record(), self._record()]) is None
 
 
 class TestLocatePrimaryWindowThroughResolver:
@@ -135,10 +217,11 @@ class TestLocatePrimaryWindowThroughResolver:
 
     def test_herdr_pane_resolves_to_session_target(self, monkeypatch) -> None:
         monkeypatch.delenv("TMUX_PANE", raising=False)
+        monkeypatch.setenv("HERDR_WORKSPACE_ID", "w2")
         monkeypatch.setenv("HERDR_PANE_ID", "w2:p1")
         monkeypatch.setattr(
             "ccgram.hook._resolve_herdr_target_id",
-            lambda _pane: "herdr-session-v1-target",
+            lambda _workspace, _pane: "herdr-session-v1-target",
         )
         from ccgram.hook import _locate_primary_window
 
@@ -151,10 +234,11 @@ class TestLocatePrimaryWindowThroughResolver:
     def test_herdr_pane_probe_failure_returns_none(self, monkeypatch) -> None:
         # probe returns None → resolve_self_identity returns None → hook skips write.
         monkeypatch.delenv("TMUX_PANE", raising=False)
+        monkeypatch.setenv("HERDR_WORKSPACE_ID", "w2")
         monkeypatch.setenv("HERDR_PANE_ID", "w2:p1")
         monkeypatch.setattr(
             "ccgram.hook._resolve_herdr_target_id",
-            lambda _pane: None,
+            lambda _workspace, _pane: None,
         )
         from ccgram.hook import _locate_primary_window
 

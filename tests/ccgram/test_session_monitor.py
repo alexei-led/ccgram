@@ -226,7 +226,7 @@ class TestEmitUnboundWindowEvents:
         surfaced = {c.args[0].window_id for c in cb.call_args_list}
         assert surfaced == {"@1", "@2"}
 
-    async def test_herdr_surfaces_only_agent_panes(
+    async def test_herdr_surfaces_only_agent_sessions(
         self, monitor: SessionMonitor, wired, monkeypatch
     ) -> None:
         cb = AsyncMock(spec=lambda event: None)
@@ -236,21 +236,21 @@ class TestEmitUnboundWindowEvents:
             SimpleNamespace(capabilities=_HERDR_CAPS),
         )
 
-        # w2:p1 + w2:p2 are agent panes (a tab split); w3:p1 is a bare shell.
+        # Each sessionful agent target gets a topic; a bare shell does not.
         windows = [
-            _winref("w2:p1", "claude"),
-            _winref("w2:p2", "claude"),
-            _winref("w3:p1", ""),
+            _winref("herdr-session-v1-a", "claude"),
+            _winref("herdr-session-v1-b", "claude"),
+            _winref("herdr-session-v1-shell", ""),
         ]
         await monitor._emit_unbound_window_events(windows, known_window_ids=set())
 
         surfaced = {c.args[0].window_id for c in cb.call_args_list}
-        assert surfaced == {"w2:p1", "w2:p2"}
+        assert surfaced == {"herdr-session-v1-a", "herdr-session-v1-b"}
 
     async def test_skips_known_and_bound_windows(
         self, monitor: SessionMonitor, wired, monkeypatch
     ) -> None:
-        thread_router.bind_thread(100, 1, "w2:p2")
+        thread_router.bind_thread(100, 1, "herdr-session-v1-bound")
         cb = AsyncMock(spec=lambda event: None)
         monitor.set_new_window_callback(cb)
         monkeypatch.setattr(
@@ -259,14 +259,16 @@ class TestEmitUnboundWindowEvents:
         )
 
         windows = [
-            _winref("w2:p1", "claude"),  # already in session_map (known)
-            _winref("w2:p2", "claude"),  # already bound to a topic
-            _winref("w2:p3", "claude"),  # genuinely new → surfaces
+            _winref("herdr-session-v1-known", "claude"),  # in session_map
+            _winref("herdr-session-v1-bound", "claude"),  # bound to a topic
+            _winref("herdr-session-v1-new", "claude"),  # genuinely new
         ]
-        await monitor._emit_unbound_window_events(windows, known_window_ids={"w2:p1"})
+        await monitor._emit_unbound_window_events(
+            windows, known_window_ids={"herdr-session-v1-known"}
+        )
 
         surfaced = {c.args[0].window_id for c in cb.call_args_list}
-        assert surfaced == {"w2:p3"}
+        assert surfaced == {"herdr-session-v1-new"}
 
 
 class TestEmitKnownUnboundWindowEvents:

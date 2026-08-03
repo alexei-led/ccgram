@@ -260,15 +260,14 @@ class TestResolveStaleIdsBySession:
         assert not changed
         assert "w2:t1" in window_states
 
-    def test_herdr_tab_id_restart_remaps_state_binding_and_offset(self) -> None:
-        # After Task 1's tab-identity flip herdr ids are ``wN:tM`` (not ``wN:pM``).
-        # The remap logic treats ids as opaque strings, so the contract is identical —
-        # this test pins the tab-id namespace explicitly.
-        live = [LiveWindow("w3:t1", "ccgram")]
-        window_states = {"w2:t1": _ws_sid("ccgram", "T1")}
-        thread_bindings: dict = {100: {42: "w2:t1"}}
-        offsets: dict = {100: {"w2:t1": 5}}
-        display_names = {"w2:t1": "myws ▸ claude"}
+    def test_opaque_target_missing_from_snapshot_is_retained(self) -> None:
+        # A missing opaque target may be a reconnect/event-loss gap. It must
+        # never be silently rebound to another target carrying the same session.
+        live = [LiveWindow("herdr-session-v1-new", "ccgram")]
+        window_states = {"herdr-session-v1-old": _ws_sid("ccgram", "T1")}
+        thread_bindings: dict = {100: {42: "herdr-session-v1-old"}}
+        offsets: dict = {100: {"herdr-session-v1-old": 5}}
+        display_names = {"herdr-session-v1-old": "myws ▸ claude"}
 
         changed = resolve_stale_ids(
             live,
@@ -277,16 +276,14 @@ class TestResolveStaleIdsBySession:
             offsets,
             display_names,
             ids_stable=False,
-            live_session_ids={"w3:t1": "T1"},
+            live_session_ids={"herdr-session-v1-new": "T1"},
         )
 
-        assert changed
-        assert "w3:t1" in window_states
-        assert "w2:t1" not in window_states
-        assert thread_bindings[100][42] == "w3:t1"
-        assert offsets[100] == {"w3:t1": 5}
-        assert display_names.get("w3:t1") == "myws ▸ claude"
-        assert "w2:t1" not in display_names
+        assert not changed
+        assert "herdr-session-v1-old" in window_states
+        assert thread_bindings[100][42] == "herdr-session-v1-old"
+        assert offsets[100] == {"herdr-session-v1-old": 5}
+        assert display_names.get("herdr-session-v1-old") == "myws ▸ claude"
 
     def test_stable_path_ignores_session_ids(self) -> None:
         # ids_stable=True must keep using display-name matching even when a

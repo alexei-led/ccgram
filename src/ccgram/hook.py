@@ -14,7 +14,6 @@ Key functions: hook_main() (CLI entry), _install_hook().
 """
 
 import fcntl
-import hashlib
 import json
 import logging
 import os
@@ -32,6 +31,7 @@ from ccgram.hooks.adapters import (
     get_hook_adapter,
 )
 from ccgram.hooks.model import NormalizedHookEvent, ProviderName
+from ccgram.multiplexer import get_multiplexer
 from ccgram.multiplexer.self_identify import resolve_self_identity
 
 logger = structlog.get_logger()
@@ -646,11 +646,12 @@ def _hook_status(provider_name: str = "claude") -> int:  # noqa: PLR0911
     return 1
 
 
-def _resolve_herdr_target_id(pane_id: str) -> str | None:
-    """Resolve this exact Herdr pane to one guarded opaque session target.
+def _resolve_herdr_target_id(workspace_id: str, pane_id: str) -> str | None:
+    """Resolve one exact Herdr locator to a guarded opaque session target.
 
     A hook must not bind a tab or raw pane locator: a fresh ``agent list``
-    snapshot must contain exactly one complete session record for this pane.
+    snapshot must contain exactly one complete session record for this
+    ``(workspace_id, pane_id)`` pair.
     """
     try:
         result = subprocess.run(
@@ -665,25 +666,27 @@ def _resolve_herdr_target_id(pane_id: str) -> str | None:
         agents = json.loads(result.stdout).get("result", {}).get("agents", [])
     except (json.JSONDecodeError, AttributeError):
         return None
-    matches: list[str] = []
+    matches: list[dict[str, object]] = []
     for record in agents if isinstance(agents, list) else []:
-        if not isinstance(record, dict) or record.get("pane_id") != pane_id:
+        if not isinstance(record, dict):
             continue
-        session = record.get("agent_session")
-        if not isinstance(session, dict):
-            continue
-        fields = [session.get(key) for key in ("source", "agent", "kind", "value")]
-        if not all(isinstance(field, str) and field for field in fields):
-            return None
-        payload = json.dumps(
-            dict(zip(("source", "agent", "kind", "value"), fields, strict=True)),
-            ensure_ascii=False, separators=(",", ":"),
-        ).encode("utf-8")
-        matches.append(
-            "herdr-session-v1-"
-            + hashlib.sha256(b"ccgram-herdr-session-v1\0" + payload).hexdigest()
-        )
-    return matches[0] if len(matches) == 1 else None
+        if (
+            record.get("workspace_id") == workspace_id
+            and record.get("pane_id") == pane_id
+        ):
+            matches.append(record)
+    if len(matches) != 1:
+        return None
+
+    # Keep record parsing and canonical target construction in the adapter;
+    # this hook only establishes the unique live locator match.
+    target_for_record = getattr(
+        get_multiplexer("herdr"), "target_id_for_live_record", None
+    )
+    if not callable(target_for_record):
+        return None
+    target_id = target_for_record(matches[0])
+    return target_id if isinstance(target_id, str) else None
 
 
 def _resolve_window_id(pane_id: str) -> tuple[str, str, str, str] | None:
@@ -1128,8 +1131,8 @@ def _locate_primary_window(
 
     Identity resolution is backend-neutral via ``resolve_self_identity``: tmux
     panes resolve through ``_resolve_window_id`` (``display-message``), herdr
-    panes resolve pane→tab via ``_resolve_herdr_tab_id`` so the session_map key
-    becomes ``herdr:<tab_id>`` (matching ``list_windows``).
+    panes resolve their exact workspace/pane locator to a session target, so
+    the session_map key becomes ``herdr:<opaque-target-id>``.
     """
     identity = resolve_self_identity(
         os.environ,
@@ -1143,8 +1146,8 @@ def _locate_primary_window(
             )
         elif os.environ.get("HERDR_PANE_ID"):
             logger.warning(
-                "HERDR_PANE_ID=%s set but tab resolution failed "
-                "(herdr not installed, socket down, or pane gone); "
+                "HERDR_PANE_ID=%s set but guarded session resolution failed "
+                "(missing workspace, socket down, zero, or duplicate match); "
                 "hook event dropped",
                 os.environ.get("HERDR_PANE_ID"),
             )

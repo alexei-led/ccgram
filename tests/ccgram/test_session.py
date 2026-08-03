@@ -1104,8 +1104,7 @@ class _FakeMux:
 
 
 class TestResolveStaleIdsHerdrRestart:
-    """Session-level glue for non-stable-id backends: read the hook-written
-    session_map, join live pane id -> session id, re-resolve by session id."""
+    """Session-level recovery preserves opaque Herdr target bindings."""
 
     @pytest.fixture(autouse=True)
     def _session_map(self, tmp_path, monkeypatch):
@@ -1113,29 +1112,35 @@ class TestResolveStaleIdsHerdrRestart:
         monkeypatch.setattr("ccgram.session.config.session_map_file", self.map_file)
         monkeypatch.setattr("ccgram.session.config.tmux_session_name", "ccgram")
 
-    async def test_herdr_restart_reattaches_bound_topic(
+    async def test_herdr_missing_target_does_not_reattach_bound_topic(
         self, mgr: SessionManager, monkeypatch
     ) -> None:
-        # Persisted state from before the restart: pane w2:p1 ran session S1.
-        thread_router.bind_thread(100, 7, "w2:p1", window_name="ccgram")
-        mgr.window_states["w2:p1"] = WindowState(
+        target = "herdr-session-v1-old"
+        thread_router.bind_thread(100, 7, target, window_name="ccgram")
+        mgr.window_states[target] = WindowState(
             session_id="S1", cwd="/repo", provider_name="claude"
         )
-        # After a herdr server restart the agent is back as w3:p1; the hook
-        # re-wrote session_map with the new pane id and the same session id.
+        # A live target with the same session ID is not evidence that it is the
+        # same opaque target. Recovery must retain the unresolved binding.
         self.map_file.write_text(
-            json.dumps({"herdr:w3:p1": {"session_id": "S1", "cwd": "/repo"}})
+            json.dumps(
+                {
+                    "herdr:herdr-session-v1-new": {
+                        "session_id": "S1",
+                        "cwd": "/repo",
+                    }
+                }
+            )
         )
-        live = [SimpleNamespace(window_id="w3:p1", window_name="ccgram")]
+        live = [SimpleNamespace(window_id="herdr-session-v1-new", window_name="ccgram")]
         monkeypatch.setattr(
             "ccgram.session.tmux_manager",
             _FakeMux(ids_stable=False, windows=live),
         )
         await mgr.resolve_stale_ids()
 
-        assert "w3:p1" in mgr.window_states
-        assert "w2:p1" not in mgr.window_states
-        assert thread_router.get_window_for_thread(100, 7) == "w3:p1"
+        assert target in mgr.window_states
+        assert thread_router.get_window_for_thread(100, 7) == target
 
     async def test_tmux_path_is_noop_for_stable_ids(
         self, mgr: SessionManager, monkeypatch

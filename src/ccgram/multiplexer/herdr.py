@@ -546,6 +546,19 @@ class HerdrManager:
                 records.append(parsed)
         return records
 
+    def target_id_for_live_record(self, record: Mapping[str, object]) -> str | None:
+        """Return a guarded opaque target for one ``agent.list`` record.
+
+        Hook-side discovery uses this parser after it has established a unique
+        live locator match. Malformed, sessionless, or incomplete records do
+        not yield an identity.
+        """
+        try:
+            live = _parse_live_record(record)
+        except HerdrMalformedRecordError:
+            return None
+        return live.target_id if live is not None else None
+
     async def guard_session_target(self, target_id: str) -> HerdrLiveRecord:
         """Resolve one target against exactly one fresh live session record."""
         records = await self._agent_list_snapshot()
