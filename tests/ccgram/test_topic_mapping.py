@@ -3,8 +3,8 @@
 Covers:
 * ``is_agent_topic_window`` — the capability-gated discovery filter that decides
   whether a multiplexer window surfaces as its own Telegram topic.
-* per-pane inbound routing and session-id binding for herdr, where
-  ``window_id`` *is* the pane id ("topic = pane = agent").
+* per-session inbound routing and opaque target binding for herdr, where
+  ``window_id`` is an opaque durable session target ("topic = agent session").
 """
 
 from __future__ import annotations
@@ -77,15 +77,15 @@ class TestIsAgentTopicWindow:
         ],
     )
     def test_herdr_only_agent_panes(self, command: str, expected: bool) -> None:
-        assert is_agent_topic_window(_win("w2:p1", command), HERDR_CAPS) is expected
+        assert is_agent_topic_window(_win("herdr-session-v1-a", command), HERDR_CAPS) is expected
 
-    def test_herdr_tab_split_each_pane_is_a_topic(self) -> None:
-        """A tab split (agent team) spawns distinct pane ids → distinct topics."""
-        pane_a = _win("w2:p1", "claude")
-        pane_b = _win("w2:p2", "claude")
-        assert is_agent_topic_window(pane_a, HERDR_CAPS) is True
-        assert is_agent_topic_window(pane_b, HERDR_CAPS) is True
-        assert pane_a.window_id != pane_b.window_id
+    def test_herdr_sessions_have_distinct_topic_targets(self) -> None:
+        """Agent sessions, not their current panes, are independently bound."""
+        session_a = _win("herdr-session-v1-a", "claude")
+        session_b = _win("herdr-session-v1-b", "claude")
+        assert is_agent_topic_window(session_a, HERDR_CAPS) is True
+        assert is_agent_topic_window(session_b, HERDR_CAPS) is True
+        assert session_a.window_id != session_b.window_id
 
 
 class TestFormatAgentTopicPrefix:
@@ -146,46 +146,38 @@ def mgr(monkeypatch) -> SessionManager:
     return SessionManager()
 
 
-class TestHerdrPaneRouting:
-    """Each herdr agent pane routes to its own topic, keyed by pane==window_id."""
+class TestHerdrSessionRouting:
+    """Each Herdr agent session routes by opaque target, never a pane locator."""
 
-    def test_two_panes_route_to_distinct_topics(self, mgr: SessionManager) -> None:
-        # Two agent panes in one herdr session, bound to two topics.
-        thread_router.bind_thread(100, 11, "w2:p1")
-        thread_router.bind_thread(100, 12, "w2:p2")
-        window_store.window_states["w2:p1"] = WindowState(
-            session_id="sess-A", cwd="/proj"
-        )
-        window_store.window_states["w2:p2"] = WindowState(
-            session_id="sess-B", cwd="/proj"
-        )
+    def test_two_sessions_route_to_distinct_topics(self, mgr: SessionManager) -> None:
+        target_a = "herdr-session-v1-a"
+        target_b = "herdr-session-v1-b"
+        thread_router.bind_thread(100, 11, target_a)
+        thread_router.bind_thread(100, 12, target_b)
+        window_store.window_states[target_a] = WindowState(session_id="sess-A", cwd="/proj")
+        window_store.window_states[target_b] = WindowState(session_id="sess-B", cwd="/proj")
 
-        assert session_resolver.find_users_for_session("sess-A") == [(100, "w2:p1", 11)]
-        assert session_resolver.find_users_for_session("sess-B") == [(100, "w2:p2", 12)]
+        assert session_resolver.find_users_for_session("sess-A") == [(100, target_a, 11)]
+        assert session_resolver.find_users_for_session("sess-B") == [(100, target_b, 12)]
 
-    def test_binding_is_keyed_per_pane(self, mgr: SessionManager) -> None:
-        thread_router.bind_thread(100, 11, "w2:p1")
-        thread_router.bind_thread(100, 12, "w2:p2")
+    def test_binding_is_keyed_per_session_target(self, mgr: SessionManager) -> None:
+        target_a = "herdr-session-v1-a"
+        target_b = "herdr-session-v1-b"
+        thread_router.bind_thread(100, 11, target_a)
+        thread_router.bind_thread(100, 12, target_b)
 
-        # Forward + reverse lookups stay independent per pane.
-        assert thread_router.get_window_for_thread(100, 11) == "w2:p1"
-        assert thread_router.get_window_for_thread(100, 12) == "w2:p2"
-        assert thread_router.get_thread_for_window(100, "w2:p1") == 11
-        assert thread_router.get_thread_for_window(100, "w2:p2") == 12
+        assert thread_router.get_window_for_thread(100, 11) == target_a
+        assert thread_router.get_window_for_thread(100, 12) == target_b
+        assert thread_router.get_thread_for_window(100, target_a) == 11
+        assert thread_router.get_thread_for_window(100, target_b) == 12
 
-    def test_no_stream_crosstalk_between_panes(self, mgr: SessionManager) -> None:
-        """A message for one pane's session never resolves to the other topic."""
-        thread_router.bind_thread(100, 11, "w2:p1")
-        thread_router.bind_thread(100, 12, "w2:p2")
-        window_store.window_states["w2:p1"] = WindowState(
-            session_id="sess-A", cwd="/proj"
-        )
-        window_store.window_states["w2:p2"] = WindowState(
-            session_id="sess-B", cwd="/proj"
-        )
+    def test_no_stream_crosstalk_between_session_targets(self, mgr: SessionManager) -> None:
+        target_a = "herdr-session-v1-a"
+        target_b = "herdr-session-v1-b"
+        thread_router.bind_thread(100, 11, target_a)
+        thread_router.bind_thread(100, 12, target_b)
+        window_store.window_states[target_a] = WindowState(session_id="sess-A", cwd="/proj")
+        window_store.window_states[target_b] = WindowState(session_id="sess-B", cwd="/proj")
 
-        # sess-A only reaches thread 11; never thread 12.
-        threads_for_a = {
-            t for _, _, t in session_resolver.find_users_for_session("sess-A")
-        }
+        threads_for_a = {t for _, _, t in session_resolver.find_users_for_session("sess-A")}
         assert threads_for_a == {11}

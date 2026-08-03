@@ -33,6 +33,7 @@ CONTRACT_METHODS = (
     "rename_window",
     "list_panes",
     "create_window",
+    "create_topic_target",
     "create_worktree_window",
     "foreground",
     "agent_status",
