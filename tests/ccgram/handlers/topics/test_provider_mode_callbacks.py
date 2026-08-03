@@ -29,7 +29,9 @@ def _callback_context() -> tuple[AsyncMock, MagicMock, MagicMock]:
 async def test_normal_provider_callback_launches_normal_mode_without_picker() -> None:
     query, update, context = _callback_context()
     with (
-        patch("ccgram.handlers.topics.provider_mode_callbacks.provider_registry") as registry,
+        patch(
+            "ccgram.handlers.topics.provider_mode_callbacks.provider_registry"
+        ) as registry,
         patch("ccgram.providers.has_yolo_mode", return_value=False),
         patch(
             "ccgram.handlers.topics.provider_mode_callbacks.launch_window",
@@ -38,7 +40,9 @@ async def test_normal_provider_callback_launches_normal_mode_without_picker() ->
         patch("ccgram.handlers.topics.provider_mode_callbacks.clear_browse_state"),
     ):
         registry.is_valid.return_value = True
-        await _handle_provider_select(query, 99, f"{CB_PROV_SELECT}shell", update, context)
+        await _handle_provider_select(
+            query, 99, f"{CB_PROV_SELECT}shell", update, context
+        )
 
     launch.assert_awaited_once()
     call = launch.await_args
@@ -52,7 +56,9 @@ async def test_normal_provider_callback_launches_normal_mode_without_picker() ->
 async def test_yolo_mode_callback_launches_selected_provider_and_yolo_mode() -> None:
     query, update, context = _callback_context()
     with (
-        patch("ccgram.handlers.topics.provider_mode_callbacks.provider_registry") as registry,
+        patch(
+            "ccgram.handlers.topics.provider_mode_callbacks.provider_registry"
+        ) as registry,
         patch(
             "ccgram.handlers.topics.provider_mode_callbacks.launch_window",
             new_callable=AsyncMock,
@@ -60,7 +66,9 @@ async def test_yolo_mode_callback_launches_selected_provider_and_yolo_mode() -> 
         patch("ccgram.handlers.topics.provider_mode_callbacks.clear_browse_state"),
     ):
         registry.is_valid.return_value = True
-        await _handle_mode_select(query, 99, f"{CB_MODE_SELECT}claude:yolo", update, context)
+        await _handle_mode_select(
+            query, 99, f"{CB_MODE_SELECT}claude:yolo", update, context
+        )
 
     launch.assert_awaited_once()
     call = launch.await_args

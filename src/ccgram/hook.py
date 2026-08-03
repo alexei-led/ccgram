@@ -1065,7 +1065,7 @@ def _refresh_session_map_if_stale(
     ):
         return
     # Backend prefix token: split on the FIRST colon so herdr keys
-    # ("herdr:w2:t1") yield "herdr", not "herdr:w2" (the tab id has a colon).
+    # Split only the backend prefix; Herdr target IDs may contain colons.
     tmux_session_name = session_window_key.split(":", 1)[0]
     _update_session_map(
         session_window_key,
@@ -1227,7 +1227,7 @@ def _process_hook_stdin(
 
     if event == "SessionStart":
         # Backend prefix token (see _refresh_session_map_if_stale): split on the
-        # first colon so herdr keys ("herdr:w2:t1") yield "herdr".
+        # first colon so the full opaque Herdr target remains intact.
         tmux_session_name = session_window_key.split(":", 1)[0]
         transcript_path = _resolve_transcript_path(
             detected_provider,

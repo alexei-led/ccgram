@@ -69,7 +69,7 @@ def _parse_target(data: str, prefix: str) -> tuple[str, str] | None:
     """Parse ``<prefix><window_id>|<pane_id>`` callback data.
 
     Splits on ``CB_PANE_DELIMITER`` (``|``) so both tmux ids (``@12``,
-    ``%5``) and herdr ids (``w2:t1``, ``w2:p1``) round-trip without
+    ``%5``) and opaque Herdr session targets round-trip without
     colliding on the colons inside herdr ids.
     """
     rest = data[len(prefix) :]

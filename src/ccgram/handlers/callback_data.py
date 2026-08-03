@@ -16,7 +16,8 @@ Constants:
 """
 
 # Delimiter between window_id and pane_id in pane-targeted callback data.
-# Must not be colon (:) — herdr ids already contain colons (e.g. w2:t1, w2:p1).
+# Must not be colon (:) — backend targets may contain colons, and Herdr targets
+# are opaque session IDs rather than pane/tab locators.
 CB_PANE_DELIMITER = "|"
 
 # History pagination

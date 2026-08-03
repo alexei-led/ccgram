@@ -313,12 +313,23 @@ class TestLaunchWindowSuccess:
         with (
             patch("ccgram.handlers.topics.window_launch_service.tmux_manager") as mux,
             patch("ccgram.handlers.topics.window_launch_service.session_manager"),
-            patch("ccgram.handlers.topics.window_launch_service.thread_router") as router,
-            patch("ccgram.handlers.topics.window_launch_service.topic_orchestration") as orchestration,
+            patch(
+                "ccgram.handlers.topics.window_launch_service.thread_router"
+            ) as router,
+            patch(
+                "ccgram.handlers.topics.window_launch_service.topic_orchestration"
+            ) as orchestration,
             patch("ccgram.handlers.topics.window_launch_service.user_preferences"),
-            patch("ccgram.handlers.topics.window_launch_service.session_map_sync") as maps,
-            patch("ccgram.handlers.topics.window_launch_service.safe_edit", new_callable=AsyncMock),
-            patch("ccgram.handlers.topics.window_launch_service.provider_registry") as registry,
+            patch(
+                "ccgram.handlers.topics.window_launch_service.session_map_sync"
+            ) as maps,
+            patch(
+                "ccgram.handlers.topics.window_launch_service.safe_edit",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "ccgram.handlers.topics.window_launch_service.provider_registry"
+            ) as registry,
             patch("ccgram.providers.resolve_launch_command", return_value="claude"),
         ):
             mux.create_topic_target = AsyncMock(
@@ -345,18 +356,27 @@ class TestLaunchWindowSuccess:
         orchestration.clear_pending_creation.assert_not_called()
         router.unbind_thread.assert_not_called()
 
-    async def test_no_thread_success_releases_pending_creation_guard(self, tmp_path) -> None:
+    async def test_no_thread_success_releases_pending_creation_guard(
+        self, tmp_path
+    ) -> None:
         query = _make_query()
         context = _make_context()
         with (
             patch("ccgram.handlers.topics.window_launch_service.tmux_manager") as mux,
             patch("ccgram.handlers.topics.window_launch_service.session_manager"),
             patch("ccgram.handlers.topics.window_launch_service.thread_router"),
-            patch("ccgram.handlers.topics.window_launch_service.topic_orchestration") as orchestration,
+            patch(
+                "ccgram.handlers.topics.window_launch_service.topic_orchestration"
+            ) as orchestration,
             patch("ccgram.handlers.topics.window_launch_service.user_preferences"),
             patch("ccgram.handlers.topics.window_launch_service.session_map_sync"),
-            patch("ccgram.handlers.topics.window_launch_service.safe_edit", new_callable=AsyncMock),
-            patch("ccgram.handlers.topics.window_launch_service.provider_registry") as registry,
+            patch(
+                "ccgram.handlers.topics.window_launch_service.safe_edit",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "ccgram.handlers.topics.window_launch_service.provider_registry"
+            ) as registry,
             patch("ccgram.providers.resolve_launch_command", return_value="claude"),
         ):
             mux.create_topic_target = AsyncMock(

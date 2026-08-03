@@ -15,9 +15,10 @@ def test_history_keyboard_uses_lossless_token_for_herdr_target() -> None:
     callback_data = keyboard.inline_keyboard[0][-1].callback_data
     assert isinstance(callback_data, str)
     assert len(callback_data.encode("utf-8")) <= 64
-    assert resolve_callback_data(
-        callback_data, 1, lambda _uid, wid: wid == window_id
-    ) == f"{CB_HISTORY_NEXT}1:{window_id}:0:0"
+    assert (
+        resolve_callback_data(callback_data, 1, lambda _uid, wid: wid == window_id)
+        == f"{CB_HISTORY_NEXT}1:{window_id}:0:0"
+    )
 
 
 async def test_raw_history_callback_checks_ownership_before_window_lookup() -> None:
@@ -28,9 +29,7 @@ async def test_raw_history_callback_checks_ownership_before_window_lookup() -> N
             "ccgram.handlers.recovery.history_callbacks.user_owns_window",
             return_value=False,
         ) as owns,
-        patch(
-            "ccgram.handlers.recovery.history_callbacks.tmux_manager"
-        ) as mux,
+        patch("ccgram.handlers.recovery.history_callbacks.tmux_manager") as mux,
         patch(
             "ccgram.handlers.recovery.history_callbacks.send_history",
             new_callable=AsyncMock,

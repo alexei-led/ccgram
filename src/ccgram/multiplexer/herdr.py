@@ -255,12 +255,6 @@ def _parse_live_record(record: Mapping[str, object]) -> HerdrLiveRecord | None:
     )
 
 
-def _pane_index(pane_id: str) -> int:
-    """Parse the integer pane number from a herdr ``wN:pM`` id (``M``)."""
-    _, sep, num = pane_id.rpartition(":p")
-    return int(num) if sep and num.isdigit() else 0
-
-
 class HerdrManager:
     """Herdr backend satisfying the ``Multiplexer`` Protocol.
 
@@ -639,7 +633,9 @@ class HerdrManager:
         pgid = info.get("foreground_process_group_id")
         if not isinstance(pgid, int):
             return None
-        leader = next((proc for proc in processes if proc.get("pid") == pgid), processes[0])
+        leader = next(
+            (proc for proc in processes if proc.get("pid") == pgid), processes[0]
+        )
         pid = leader.get("pid")
         argv = leader.get("argv")
         cwd = leader.get("cwd")
@@ -771,26 +767,14 @@ class HerdrManager:
         return ok
 
     async def list_panes(self, window_id: str) -> list[PaneInfo]:
-        try:
-            record = await self.guard_session_target(window_id)
-        except HerdrError:
-            return []
-        pane = await self._pane_get(record.pane_id)
-        if pane is None:
-            await self._after_action_failure(window_id)
-            return []
-        dims = await self._dims_for_pane(record.pane_id) or PaneDims(0, 0)
-        return [
-            PaneInfo(
-                pane_id=record.target_id,
-                index=_pane_index(record.pane_id),
-                active=True,
-                command=record.composite.agent,
-                path="",
-                width=dims.width,
-                height=dims.height,
-            )
-        ]
+        """Return no pane handles until Herdr exposes durable sibling targets.
+
+        The neutral ``PaneInfo.pane_id`` is actionable through pane-level APIs.
+        Herdr raw pane locators are deliberately not returned across the adapter
+        boundary, so a synthetic or transient ID would be misleading.
+        """
+        del window_id
+        return []
 
     async def stamp_pane_title(self, window_id: str, provider_name: str) -> None:
         try:
@@ -989,7 +973,11 @@ class HerdrManager:
                 ["workspace", "create", "--cwd", str(path), "--no-focus"]
             )
             workspace = (created_workspace or {}).get("workspace")
-            workspace_id = workspace.get("workspace_id") if isinstance(workspace, Mapping) else None
+            workspace_id = (
+                workspace.get("workspace_id")
+                if isinstance(workspace, Mapping)
+                else None
+            )
             if not isinstance(workspace_id, str) or not workspace_id:
                 raise HerdrError("herdr workspace creation returned no workspace id")
             owned_workspace_id = workspace_id
@@ -1141,13 +1129,19 @@ class HerdrManager:
             subscriptions: list[Mapping[str, object]] = [
                 {"type": "tab.closed"},
                 *(
-                    {"type": "pane.agent_status_changed", "pane_id": pane}
+                    subscription
                     for pane in pane_to_window
+                    for subscription in (
+                        {"type": "pane.agent_status_changed", "pane_id": pane},
+                        {"type": "pane.exited", "pane_id": pane},
+                    )
                 ),
             ]
             refresh_subscriptions = False
             try:
-                async with contextlib.aclosing(self._open_stream(subscriptions)) as stream:
+                async with contextlib.aclosing(
+                    self._open_stream(subscriptions)
+                ) as stream:
                     while True:
                         try:
                             async with asyncio.timeout(_STREAM_REPRIME_INTERVAL):
@@ -1179,10 +1173,15 @@ class HerdrManager:
                         # the guarded mapping and reconnect before translating any
                         # event whenever a move is observed.
                         fresh_panes, fresh_tabs = await self._resolve_event_targets(ids)
-                        if fresh_panes != pane_to_window or fresh_tabs != tab_to_windows:
+                        if (
+                            fresh_panes != pane_to_window
+                            or fresh_tabs != tab_to_windows
+                        ):
                             refresh_subscriptions = True
                             break
-                        for event in translate_event(obj, pane_to_window, tab_to_windows):
+                        for event in translate_event(
+                            obj, pane_to_window, tab_to_windows
+                        ):
                             yield event
             except OSError as exc:
                 logger.debug("herdr event stream error: %s", exc)

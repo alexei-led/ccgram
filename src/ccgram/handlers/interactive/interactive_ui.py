@@ -167,7 +167,8 @@ def _build_interactive_keyboard(
     from ..callback_data import CB_PANE_DELIMITER
 
     vertical_only = ui_name == "RestoreCheckpoint"
-    # Target suffix: "@12" or "@12|%5" (tmux) / "w2:t1|w2:p1" (herdr) when pane-targeted
+    # Target suffix: a tmux ID or an opaque Herdr session target, with an
+    # optional pane handle separated by | when the backend supports it.
     target = f"{window_id}{CB_PANE_DELIMITER}{pane_id}" if pane_id else window_id
 
     def btn(label: str, prefix: str) -> InlineKeyboardButton:

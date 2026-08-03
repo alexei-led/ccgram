@@ -10,8 +10,8 @@ the unix socket. ``events.subscribe`` returns one ack line (``{"result": …}``)
 then keeps the connection open, pushing one event per line as
 ``{"data": {…}, "event": "<name>"}``. herdr is inconsistent about the ``event``
 form — ``pane.agent_status_changed`` (dot) vs ``tab_closed`` (underscore) — so
-event names are matched in both forms. Pane agent-status subscriptions require a
-``pane_id``; ``tab.closed`` is global.
+event names are matched in both forms. Pane agent-status and pane-exit
+subscriptions require a ``pane_id``; ``tab.closed`` is global.
 
 After the ack, ``open_socket_stream`` yields a one-shot ``SUBSCRIBED`` sentinel so
 the caller can reprime *after* the subscription is live (events that arrive
@@ -37,12 +37,13 @@ _SUBSCRIBED_KEY = "__subscribed__"
 SUBSCRIBED: dict = {_SUBSCRIBED_KEY: True}
 
 # herdr event names that map onto neutral MuxEvents (matched in both the dot and
-# underscore forms herdr uses). Window death is keyed on ``tab.closed`` only:
-# ``pane.exited`` fires for any single pane and would falsely kill a multi-pane
-# (agent-team) tab whose other panes are alive — the poll loop backstops the
-# rare case where a tab vanishes without a ``tab.closed`` push.
+# underscore forms herdr uses). Pane exits are target-specific; tab closures
+# fan out to every guarded target currently sharing that tab.
 _EVT_AGENT_STATUS = frozenset(
     {"pane.agent_status_changed", "pane_agent_status_changed"}
+)
+_EVT_PANE_EXITED = frozenset(
+    {"pane.exited", "pane_exited", "pane.closed", "pane_closed"}
 )
 _EVT_TAB_CLOSED = frozenset({"tab.closed", "tab_closed"})
 
@@ -137,6 +138,10 @@ def translate_event(
                 ),
             ),
         )
+    if event in _EVT_PANE_EXITED:
+        pane_id = _event_locator(data, "pane_id", "pane")
+        target_id = pane_to_window.get(pane_id)
+        return (MuxEvent(kind="window_died", window_id=target_id),) if target_id else ()
     if event in _EVT_TAB_CLOSED:
         tab_id = _event_locator(data, "tab_id", "tab")
         return tuple(

@@ -70,7 +70,7 @@ def match_interactive_prefix(data: str) -> tuple[str, str, str | None] | None:
     Callback data format:
       - ``"aq:enter:@12"``         → window @12, active pane
       - ``"aq:enter:@12|%5"``      → tmux: window @12, pane %5
-      - ``"aq:enter:w2:t1|w2:p1"`` → herdr: tab w2:t1, pane w2:p1
+      - callback target suffixes remain opaque and are resolved by the backend
     """
     # Lazy: avoid a module-level import that ruff flags as unused before the
     # function body is reached; CB_PANE_DELIMITER is a plain string constant.

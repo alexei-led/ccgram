@@ -44,7 +44,7 @@ class PaneInfo:
     Field names match the existing ``PaneInfo`` in ``tmux_manager.py``.
     """
 
-    pane_id: str  # e.g. "%3" for tmux, "w2:p1" for herdr
+    pane_id: str  # A backend-specific actionable pane handle; opaque for Herdr
     index: int
     active: bool
     command: str  # Foreground process name

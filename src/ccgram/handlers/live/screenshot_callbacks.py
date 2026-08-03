@@ -228,7 +228,7 @@ async def _handle_pane_screenshot(
 ) -> None:
     """Handle CB_PANE_SCREENSHOT: screenshot a specific pane."""
     rest = data[len(CB_PANE_SCREENSHOT) :]
-    # Format: <window_id>|<pane_id> — delimiter is | so herdr ids (w2:t1, w2:p1) round-trip
+    # Format: <window_id>|<pane_id>; the delimiter keeps backend target data opaque.
     delim_idx = rest.find(CB_PANE_DELIMITER)
     if delim_idx < 0:
         await query.answer("Invalid data")

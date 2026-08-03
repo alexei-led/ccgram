@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from ccgram.multiplexer.base import AgentStatus, ForegroundInfo, PaneDims, PaneInfo
+from ccgram.multiplexer.base import AgentStatus, ForegroundInfo, PaneDims
 from ccgram.multiplexer.herdr_events import translate_event
 from ccgram.multiplexer.herdr import (
     HERDR_PROTOCOL_VERSION,
@@ -318,9 +318,7 @@ async def test_status_panes_dims_foreground_and_title_are_guarded() -> None:
     assert await mux.agent_status(_target()) == AgentStatus(
         "working", "claude", "doing"
     )
-    assert await mux.list_panes(_target()) == [
-        PaneInfo(_target(), 4, True, "claude", "", 99, 42)
-    ]
+    assert await mux.list_panes(_target()) == []
     assert await mux.pane_dims(_target()) == PaneDims(99, 42)
     assert await mux.foreground(_target()) == ForegroundInfo(
         12, 12, ["claude"], "/project", ""
@@ -328,7 +326,7 @@ async def test_status_panes_dims_foreground_and_title_are_guarded() -> None:
     assert await mux.get_pane_title(_target()) == "ccgram:claude"
     assert [call for call in fake.calls if call == ["agent", "list"]] == [
         ["agent", "list"]
-    ] * 5
+    ] * 4
 
 
 async def test_herdr_split_is_unsupported_without_any_raw_pane_side_effect() -> None:
@@ -343,7 +341,11 @@ async def test_nested_dims_and_foreground_payloads_fail_closed() -> None:
     fake = (
         _live_fake(_agent(pane_id="w7:p4"))
         .on("pane", "layout", out=_result(layout={"panes": {"bad": "shape"}}))
-        .on("pane", "process-info", out=_result(process_info={"foreground_processes": {}}))
+        .on(
+            "pane",
+            "process-info",
+            out=_result(process_info={"foreground_processes": {}}),
+        )
     )
     mux = _manager(fake)
     assert await mux._dims_for_pane("w7:p4") is None
@@ -370,6 +372,18 @@ def test_translate_event_uses_refreshed_locator_after_a_target_move() -> None:
     translated = translate_event(event, {"w7:p9": target}, {})
     assert translated and translated[0].window_id == target
     assert translated[0].pane_id == "w7:p9"
+
+
+def test_translate_event_maps_target_pane_exit_without_killing_siblings() -> None:
+    first, second = _target("first"), _target("second")
+    translated = translate_event(
+        {"event": "pane.exited", "data": {"pane_id": "w7:p4"}},
+        {"w7:p4": first, "w7:p5": second},
+        {"w7:t3": (first, second)},
+    )
+    assert [(event.kind, event.window_id) for event in translated] == [
+        ("window_died", first)
+    ]
 
 
 async def test_watch_events_emits_each_guarded_target_for_shared_tab_close() -> None:
@@ -580,7 +594,9 @@ async def test_implicit_workspace_is_closed_for_tab_and_session_failures(
     assert fake.calls[-1] == ["workspace", "close", "owned"]
 
 
-async def test_implicit_workspace_is_closed_when_agent_launch_fails(tmp_path: Path) -> None:
+async def test_implicit_workspace_is_closed_when_agent_launch_fails(
+    tmp_path: Path,
+) -> None:
     fake = (
         FakeHerdr()
         .on("workspace", "create", out=_result(workspace={"workspace_id": "owned"}))
