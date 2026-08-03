@@ -226,44 +226,89 @@ class TestLaunchWindowSuccess:
         mock_edit.assert_awaited_once()
         assert "✅" in mock_edit.call_args[0][1]
 
-    async def test_session_map_timeout_aborts_and_unbinds_created_window(self, tmp_path) -> None:
+    async def test_session_map_timeout_closes_target_before_unbinding_late_hook(
+        self, tmp_path
+    ) -> None:
+        """A late hook cannot orphan the just-created target after timeout."""
         query = _make_query()
         context = _make_context({PENDING_THREAD_ID: 42})
+        cleanup_order: list[str] = []
 
         with (
-            patch("ccgram.handlers.topics.window_launch_service.tmux_manager") as mock_mux,
-            patch("ccgram.handlers.topics.window_launch_service.session_manager") as mock_sm,
-            patch("ccgram.handlers.topics.window_launch_service.thread_router") as mock_tr,
-            patch("ccgram.handlers.topics.window_launch_service.topic_orchestration") as mock_orch,
+            patch(
+                "ccgram.handlers.topics.window_launch_service.tmux_manager"
+            ) as mock_mux,
+            patch(
+                "ccgram.handlers.topics.window_launch_service.session_manager"
+            ) as mock_sm,
+            patch(
+                "ccgram.handlers.topics.window_launch_service.thread_router"
+            ) as mock_tr,
+            patch(
+                "ccgram.handlers.topics.window_launch_service.topic_orchestration"
+            ) as mock_orch,
             patch("ccgram.handlers.topics.window_launch_service.user_preferences"),
-            patch("ccgram.handlers.topics.window_launch_service.session_map_sync") as mock_sms,
-            patch("ccgram.handlers.topics.window_launch_service.safe_edit", new_callable=AsyncMock) as mock_edit,
-            patch("ccgram.handlers.topics.window_launch_service.provider_registry") as mock_reg,
+            patch(
+                "ccgram.handlers.topics.window_launch_service.session_map_sync"
+            ) as mock_sms,
+            patch(
+                "ccgram.handlers.topics.window_launch_service.safe_edit",
+                new_callable=AsyncMock,
+            ) as mock_edit,
+            patch(
+                "ccgram.handlers.topics.window_launch_service.provider_registry"
+            ) as mock_reg,
             patch("ccgram.providers.resolve_launch_command", return_value="claude"),
         ):
+
+            async def close_created_target(target_id: str) -> bool:
+                cleanup_order.append(f"close:{target_id}")
+                return True
+
             mock_mux.create_topic_target = AsyncMock(
                 return_value=TopicTargetResult("@5", "my-win", "@5")
             )
+            mock_mux.kill_window = AsyncMock(side_effect=close_created_target)
             mock_mux.stamp_pane_title = AsyncMock()
             mock_mux.capabilities.native_worktrees = False
             mock_mux.capabilities.native_agent_status = True
             mock_tr.resolve_chat_id.return_value = -100999
+            mock_tr.unbind_thread.side_effect = lambda *_: cleanup_order.append(
+                "unbind"
+            )
+            mock_orch.clear_pending_creation.side_effect = lambda *_: (
+                cleanup_order.append("clear-pending")
+            )
             mock_sm.set_window_provider = MagicMock()
             mock_sm.set_window_origin = MagicMock()
             mock_sm.set_window_cwd = MagicMock()
             mock_sm.set_window_approval_mode = MagicMock()
             mock_sms.wait_for_session_map_entry = AsyncMock(return_value=False)
-            caps = MagicMock(chat_first_command_path=False, has_yolo_confirmation=False, supports_hook=True)
+            caps = MagicMock(
+                chat_first_command_path=False,
+                has_yolo_confirmation=False,
+                supports_hook=True,
+            )
             mock_reg.get.return_value.capabilities = caps
 
             result = await launch_window(
-                query, context,
+                query,
+                context,
                 WindowLaunchRequest(100, 42, "claude", str(tmp_path), "normal", None),
             )
 
         assert result.success is False
+        mock_mux.kill_window.assert_awaited_once_with("@5")
         mock_tr.unbind_thread.assert_called_once_with(100, 42)
-        mock_orch.clear_pending_creation.assert_called_with("@5")
+        # The first clear releases the normal post-bind race guard. On timeout,
+        # the new target is closed before the topic binding is removed, so a
+        # late hook cannot adopt it into an orphan topic.
+        assert cleanup_order == [
+            "clear-pending",
+            "close:@5",
+            "clear-pending",
+            "unbind",
+        ]
         assert "❌" in mock_edit.call_args.args[1]
 
     async def test_create_window_failure_calls_abort(self, tmp_path) -> None:

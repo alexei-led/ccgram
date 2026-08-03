@@ -1,30 +1,38 @@
-# Architecture design: herdr as an alternative multiplexer
+# Historical architecture design: herdr as an alternative multiplexer
 
-> **Historical notice:** This document predates guarded session targets. Current Herdr behavior uses `agent.list` as the sole identity source, persists opaque `herdr-session-v1-…` targets, and never migrates tab/pane bindings implicitly.
+> **Historical record — not current design.** This 2026-06-21 proposal is
+> retained to explain the original multiplexer seam and its decisions. The
+> archived proposal below must not be used as implementation guidance.
 
-Plain Markdown. Target architecture for adding [herdr](https://github.com/ogulcancelik/herdr) as a second terminal multiplexer alongside tmux, behind one contract seam. Design only; production source changes belong in a follow-up implementation plan. tmux stays the default; herdr is additive.
+## Current implementation (supersedes this proposal)
 
-## Design Revision (2026-06-22)
+Herdr uses `agent.list` as its sole identity source. CCGram persists only an
+opaque `herdr-session-v1-…` target derived from a complete session composite.
+Before every action, the adapter takes a fresh `agent.list` snapshot and guards
+that target to exactly one live record; absent, malformed, sessionless, or
+ambiguous targets fail closed.
 
-The original scoping decision 1 ("Identity keying — thin: treat herdr's `pane_id` as the opaque `window_id`") and the Telegram topic mapping section ("topic = pane = agent") were **superseded** during implementation (plan `docs/plans/20260622-herdr-tab-topics.md`).
+- Tab, pane, terminal, workspace, display, directory, and focus values are
+  short-lived adapter locators. They are never a topic binding or a remapping
+  source. Legacy tab/pane bindings are action-blocked and retained only for
+  explicit archive/rollback.
+- `$HERDR_PANE_ID` is process-local hook input, not identity. The hook uses it
+  only to locate a live record and writes the resulting guarded target.
+- A Herdr restart never triggers tab/pane re-resolution. The persisted target
+  is guarded again against fresh `agent.list`.
+- Event notifications may prompt refresh work, but they are not an identity or
+  authority stream. Polling, reconciliation, and actions use `agent.list`.
+- `"<workspace> ▸ <tab>"` is display-only. One Telegram topic binds to one
+  guarded agent session target.
 
-**Actual implemented identity:** `window_id` is an opaque
-`herdr-session-v1-<sha256>` target derived only from a complete `agent.list`
-session composite. A fresh guard resolves that target to one live pane for one
-action. Raw `wN:tM` tab and `wN:pM` pane locators are never persisted as topic
-identity; legacy records are action-blocked and retained only for explicit
-archive/rollback.
+See `docs/guides.md` and `docs/architecture.md` for active documentation.
 
-**Topic label:** `"<workspace> ▸ <tab>"` is display-only and does not authorize
-an action.
+## Archived proposal (superseded)
 
-**Session-map key:** `herdr:<opaque-session-target>`.
-
-**Restart behavior:** a new Herdr server requires no tab/pane re-resolution;
-the opaque target is validated again against fresh `agent.list` and fails
-closed if its session is absent or ambiguous.
-
-The rest of the design (Multiplexer Protocol, capability flags, anti-corruption layer, polling-first, hook identity from `$HERDR_PANE_ID`, additive scope) remains as written.
+Everything from **Overview** through **Handoff** is preserved historical
+context from the original proposal. In particular, its direct pane identity,
+pane remapping, and deferred-event-stream statements describe rejected design
+options, not current behavior.
 
 ## Overview
 

@@ -320,9 +320,13 @@ async def launch_window(  # noqa: PLR0912, PLR0915, C901
     if provider.capabilities.supports_hook:
         map_entry_found = await session_map_sync.wait_for_session_map_entry(created_wid)
         if not map_entry_found:
-            # The hook-backed creation transaction is incomplete. Do not leave
-            # a pending race guard or a topic binding pointing at an
-            # unverified target; callers must start a new creation flow.
+            # Keep the topic binding intact until the just-created target is
+            # gone. A late hook otherwise could observe an unbound live target
+            # and create an orphan topic. ``kill_window`` is the neutral
+            # adapter operation: tmux kills its new window and Herdr freshly
+            # guards then closes only its target pane, never a sibling session
+            # in the same tab.
+            await tmux_manager.kill_window(created_wid)
             topic_orchestration.clear_pending_creation(created_wid)
             if pending_thread_id is not None:
                 thread_router.unbind_thread(user_id, pending_thread_id)
