@@ -430,6 +430,11 @@ class WindowStateStore:
         self._schedule_save()
         return True
 
+    def is_archived_legacy_herdr(self, window_id: str) -> bool:
+        """Return whether an archived legacy record must survive stale pruning."""
+        state = self.window_states.get(window_id)
+        return bool(state and state.legacy_herdr and state.legacy_herdr_archived)
+
     def rollback_legacy_herdr_archive(self, window_id: str) -> bool:
         """Restore an archived legacy record; it remains blocked until rebind."""
         state = self.window_states.get(window_id)
@@ -662,6 +667,7 @@ class WindowStateStore:
                 wid not in session_map_wids
                 and wid not in bound_window_ids
                 and wid not in live_window_ids
+                and not self.is_archived_legacy_herdr(wid)
             )
         ]
         if not stale:

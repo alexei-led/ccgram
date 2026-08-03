@@ -250,7 +250,7 @@ async def test_send_variants_guard_then_dispatch_to_live_pane() -> None:
 async def test_every_mutating_tab_action_uses_live_record_locator() -> None:
     fake = (
         _live_fake(_agent(pane_id="w7:p4", tab_id="w7:t3"))
-        .on("tab", "close", out=_result(type="ok"))
+        .on("pane", "close", out=_result(type="ok"))
         .on("tab", "rename", out=_result(type="ok"))
         .on("pane", "report-metadata", out=_result(type="ok"))
     )
@@ -260,7 +260,7 @@ async def test_every_mutating_tab_action_uses_live_record_locator() -> None:
     await mux.stamp_pane_title(_target(), "codex")
     assert fake.calls == [
         ["agent", "list"],
-        ["tab", "close", "w7:t3"],
+        ["pane", "close", "w7:p4"],
         ["agent", "list"],
         ["tab", "rename", "w7:t3", "renamed"],
         ["agent", "list"],
@@ -273,6 +273,19 @@ async def test_every_mutating_tab_action_uses_live_record_locator() -> None:
             "--title",
             "ccgram:codex",
         ],
+    ]
+
+
+async def test_kill_window_closes_only_target_session_pane_in_shared_tab() -> None:
+    first = _agent(pane_id="w7:p4", tab_id="w7:t3", value="session-a")
+    sibling = _agent(pane_id="w7:p5", tab_id="w7:t3", value="session-b")
+    fake = _live_fake(first, sibling).on("pane", "close", out=_result(type="ok"))
+
+    assert await _manager(fake).kill_window(_target("session-a"))
+
+    assert fake.calls == [
+        ["agent", "list"],
+        ["pane", "close", "w7:p4"],
     ]
 
 

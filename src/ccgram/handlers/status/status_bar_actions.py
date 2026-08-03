@@ -44,6 +44,7 @@ from ..callback_data import (
     CB_STATUS_RECALL,
 )
 from ..callback_helpers import get_thread_id, parse_target, user_owns_window
+from ..callback_tokens import resolve_callback_data
 from ..callback_registry import register
 from ..live.screenshot_callbacks import (
     KEY_LABELS,
@@ -383,4 +384,8 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     user = update.effective_user
     assert query is not None and query.data is not None and user is not None
-    await _handle_status_bar_action(query, user.id, query.data, update, context)
+    data = resolve_callback_data(query.data, user.id, user_owns_window)
+    if data is None:
+        await query.answer("This button has expired", show_alert=True)
+        return
+    await _handle_status_bar_action(query, user.id, data, update, context)

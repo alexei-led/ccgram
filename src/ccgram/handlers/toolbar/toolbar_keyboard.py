@@ -20,6 +20,7 @@ from ...toolbar_config import (
     load_toolbar_config,
 )
 from ..callback_data import CB_TOOLBAR
+from ..callback_tokens import compact_callback_data
 
 # ──────────────────────────────────────────────────────────────────────
 # Loaded config (lazy singleton)
@@ -76,7 +77,9 @@ def _make_button(
         label = f"{action.emoji} {override}" if style == "emoji_text" else override
     else:
         label = action.render(style)  # type: ignore[arg-type]
-    cb = f"{CB_TOOLBAR}{window_id}:{action.name}"[:64]
+    cb = compact_callback_data(
+        CB_TOOLBAR, f"{CB_TOOLBAR}{window_id}:{action.name}", window_id
+    )
     return InlineKeyboardButton(label, callback_data=cb)
 
 

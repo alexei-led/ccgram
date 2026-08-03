@@ -228,7 +228,7 @@ async def _accept_yolo_confirmation(window_id: str, *, timeout: float = 8.0) -> 
 # ── main entry point ──────────────────────────────────────────────────────────
 
 
-async def launch_window(  # noqa: PLR0915, C901
+async def launch_window(  # noqa: PLR0912, PLR0915, C901
     query: CallbackQuery,
     context: ContextTypes.DEFAULT_TYPE,
     request: WindowLaunchRequest,
@@ -318,7 +318,17 @@ async def launch_window(  # noqa: PLR0915, C901
         await _accept_yolo_confirmation(created_wid)
 
     if provider.capabilities.supports_hook:
-        await session_map_sync.wait_for_session_map_entry(created_wid)
+        map_entry_found = await session_map_sync.wait_for_session_map_entry(created_wid)
+        if not map_entry_found:
+            # The hook-backed creation transaction is incomplete. Do not leave
+            # a pending race guard or a topic binding pointing at an
+            # unverified target; callers must start a new creation flow.
+            topic_orchestration.clear_pending_creation(created_wid)
+            if pending_thread_id is not None:
+                thread_router.unbind_thread(user_id, pending_thread_id)
+            message = "Session did not register with ccgram in time"
+            await _abort_topic_creation(query, message, context)
+            return WindowLaunchResult(success=False, error_message=message)
 
     if pending_thread_id is None:
         await safe_edit(query, f"✅ {message}")

@@ -330,7 +330,7 @@ herdr advertises its own capabilities through the seam; the behavioral consequen
 | Foreground detection      | `ps -t <tty>`                   | `pane process-info` (no tty)                                               |
 | Scrollback capture        | unbounded                       | clamped to **1000 lines**; longer output is flagged as truncated           |
 | Agent status              | inferred from terminal scraping | native (herdr reports agent status directly)                               |
-| Window IDs across restart | stable                          | re-minted on a herdr **server** restart — ccgram re-resolves by session id |
+| Window IDs across restart | stable                          | guarded session target is revalidated from fresh `agent.list`; ccgram never re-resolves a tab/pane ID |
 | Topic labels              | window name                     | adaptive `"<workspace> ▸ <tab>"` (tab name is primary)                     |
 
 Creating sessions from the terminal on herdr is covered in [Creating Sessions from the Terminal](#creating-sessions-from-the-terminal).

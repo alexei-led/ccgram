@@ -23,6 +23,7 @@ from ...user_preferences import user_preferences
 from ...thread_router import thread_router
 from ...telegram_sender import split_message
 from ..callback_data import CB_HISTORY_NEXT, CB_HISTORY_PREV
+from ..callback_tokens import compact_callback_data
 from ..callback_helpers import get_thread_id as _get_thread_id
 from ..messaging_pipeline.message_sender import safe_edit, safe_reply, safe_send
 
@@ -65,7 +66,9 @@ def _build_history_keyboard(
         buttons.append(
             InlineKeyboardButton(
                 "◀ Older",
-                callback_data=cb_data[:64],
+                callback_data=compact_callback_data(
+                    CB_HISTORY_PREV, cb_data, window_id
+                ),
             )
         )
 
@@ -80,7 +83,9 @@ def _build_history_keyboard(
         buttons.append(
             InlineKeyboardButton(
                 "Newer ▶",
-                callback_data=cb_data[:64],
+                callback_data=compact_callback_data(
+                    CB_HISTORY_NEXT, cb_data, window_id
+                ),
             )
         )
 

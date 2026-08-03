@@ -247,15 +247,19 @@ class TestLegacyHerdrMigration:
         assert store.mark_legacy_herdr("herdr-session-v1-" + "a" * 64) is False
         assert store.window_states == {}
 
-    def test_archive_and_rollback_keep_actions_blocked(
+    def test_archive_prune_rollback_preserves_legacy_record(
         self, store: WindowStateStore
     ) -> None:
         store.mark_legacy_herdr("w2:p3")
         assert store.archive_legacy_herdr("w2:p3") is True
-        assert store.window_states["w2:p3"].legacy_herdr_archived is True
+
+        assert store.prune_stale_window_states(set(), set(), set()) is False
+        assert "w2:p3" in store.window_states
         assert store.rollback_legacy_herdr_archive("w2:p3") is True
-        assert store.window_states["w2:p3"].legacy_herdr_archived is False
         assert store.is_legacy_herdr("w2:p3") is True
+
+        assert store.remove_window("w2:p3") is True
+        assert "w2:p3" not in store.window_states
 
 
 class TestPaneLifecycleNotify:

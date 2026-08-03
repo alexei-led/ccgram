@@ -37,6 +37,7 @@ from .callback_data import (
     CB_STATUS_SCREENSHOT,
 )
 from .callback_helpers import user_owns_window
+from .callback_tokens import compact_callback_data, resolve_callback_data
 from .callback_registry import register
 from .cleanup import clear_topic_state
 from .messaging_pipeline.message_sender import safe_edit, safe_reply
@@ -86,15 +87,23 @@ async def _build_dashboard(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
             row: list[InlineKeyboardButton] = [
                 InlineKeyboardButton(
                     "\u238b Esc",
-                    callback_data=f"{CB_STATUS_ESC}{window_id}"[:64],
+                    callback_data=compact_callback_data(
+                        CB_STATUS_ESC, f"{CB_STATUS_ESC}{window_id}", window_id
+                    ),
                 ),
                 InlineKeyboardButton(
                     "\U0001f4f8",
-                    callback_data=f"{CB_STATUS_SCREENSHOT}{window_id}"[:64],
+                    callback_data=compact_callback_data(
+                        CB_STATUS_SCREENSHOT,
+                        f"{CB_STATUS_SCREENSHOT}{window_id}",
+                        window_id,
+                    ),
                 ),
                 InlineKeyboardButton(
                     f"\U0001f5d1 Kill {display_name}",
-                    callback_data=f"{CB_SESSIONS_KILL}{window_id}"[:64],
+                    callback_data=compact_callback_data(
+                        CB_SESSIONS_KILL, f"{CB_SESSIONS_KILL}{window_id}", window_id
+                    ),
                 ),
             ]
             action_rows.append(row)
@@ -134,7 +143,11 @@ async def handle_sessions_kill(
             [
                 InlineKeyboardButton(
                     f"\u26a0 Confirm kill {display}",
-                    callback_data=f"{CB_SESSIONS_KILL_CONFIRM}{window_id}"[:64],
+                    callback_data=compact_callback_data(
+                        CB_SESSIONS_KILL_CONFIRM,
+                        f"{CB_SESSIONS_KILL_CONFIRM}{window_id}",
+                        window_id,
+                    ),
                 ),
             ],
             [_REFRESH_BTN],
@@ -192,7 +205,10 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not user:
         return
 
-    data = query.data
+    data = resolve_callback_data(query.data, user.id, user_owns_window)
+    if data is None:
+        await query.answer("This button has expired", show_alert=True)
+        return
 
     if data == CB_SESSIONS_REFRESH:
         await handle_sessions_refresh(query, user.id)

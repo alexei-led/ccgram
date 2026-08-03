@@ -10,6 +10,7 @@ from ccgram.handlers.callback_data import (
     CB_STATUS_ESC,
     CB_STATUS_SCREENSHOT,
 )
+from ccgram.handlers.callback_tokens import resolve_callback_data
 from ccgram.handlers.sessions_dashboard import (
     _build_dashboard,
     handle_sessions_refresh,
@@ -116,6 +117,24 @@ class TestBuildDashboard:
         assert any("New" in label for label in labels)
         assert CB_SESSIONS_REFRESH in data
         assert CB_SESSIONS_NEW in data
+
+    async def test_herdr_target_callbacks_are_lossless_tokens(self, _patch_deps) -> None:
+        _mock_sm, mock_tr, mock_tm, _ = _patch_deps
+        window_id = "herdr-session-v1-" + "a" * 64
+        mock_tr.get_all_thread_windows.return_value = {42: window_id}
+        mock_tm.list_windows = AsyncMock(return_value=[MagicMock(window_id=window_id)])
+
+        _text, keyboard = await _build_dashboard(100)
+        callbacks = [
+            button.callback_data for row in keyboard.inline_keyboard for button in row
+            if isinstance(button.callback_data, str) and button.callback_data.startswith("sess:kill:")
+        ]
+        assert len(callbacks) == 1
+        callback_data = callbacks[0]
+        assert len(callback_data.encode("utf-8")) <= 64
+        assert resolve_callback_data(
+            callback_data, 100, lambda _uid, wid: wid == window_id
+        ) == f"sess:kill:{window_id}"
 
     async def test_alive_session_has_esc_button(self, _patch_deps) -> None:
         _mock_sm, mock_tr, mock_tm, _ = _patch_deps

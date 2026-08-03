@@ -24,6 +24,7 @@ from ...telegram_client import TelegramClient
 from ...thread_router import thread_router
 from ...window_state_ports.pane_state import PaneProjection, list_pane_projections
 
+from ..callback_tokens import compact_callback_data
 from ..callback_data import (
     CB_STATUS_ESC,
     CB_STATUS_GET_FILE,
@@ -85,7 +86,11 @@ def build_status_keyboard(
             hist_row.append(
                 InlineKeyboardButton(
                     f"\u2191 {label}",
-                    callback_data=f"{CB_STATUS_RECALL}{window_id}:{idx}"[:64],
+                    callback_data=compact_callback_data(
+                        CB_STATUS_RECALL,
+                        f"{CB_STATUS_RECALL}{window_id}:{idx}",
+                        window_id,
+                    ),
                 )
             )
         rows.append(hist_row)
@@ -94,19 +99,33 @@ def build_status_keyboard(
         [
             InlineKeyboardButton(
                 "\u238b Esc",
-                callback_data=f"{CB_STATUS_ESC}{window_id}"[:64],
+                callback_data=compact_callback_data(
+                    CB_STATUS_ESC, f"{CB_STATUS_ESC}{window_id}", window_id
+                ),
             ),
             InlineKeyboardButton(
                 "\U0001f4f8",
-                callback_data=f"{CB_STATUS_SCREENSHOT}{window_id}"[:64],
+                callback_data=compact_callback_data(
+                    CB_STATUS_SCREENSHOT,
+                    f"{CB_STATUS_SCREENSHOT}{window_id}",
+                    window_id,
+                ),
             ),
             InlineKeyboardButton(
                 "\U0001f4c4 Last",
-                callback_data=f"{CB_STATUS_LAST_REPLY}{window_id}"[:64],
+                callback_data=compact_callback_data(
+                    CB_STATUS_LAST_REPLY,
+                    f"{CB_STATUS_LAST_REPLY}{window_id}",
+                    window_id,
+                ),
             ),
             InlineKeyboardButton(
                 "\U0001f4e5 Get File",
-                callback_data=f"{CB_STATUS_GET_FILE}{window_id}"[:64],
+                callback_data=compact_callback_data(
+                    CB_STATUS_GET_FILE,
+                    f"{CB_STATUS_GET_FILE}{window_id}",
+                    window_id,
+                ),
             ),
         ]
     )

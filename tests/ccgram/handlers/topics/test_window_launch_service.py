@@ -226,6 +226,46 @@ class TestLaunchWindowSuccess:
         mock_edit.assert_awaited_once()
         assert "✅" in mock_edit.call_args[0][1]
 
+    async def test_session_map_timeout_aborts_and_unbinds_created_window(self, tmp_path) -> None:
+        query = _make_query()
+        context = _make_context({PENDING_THREAD_ID: 42})
+
+        with (
+            patch("ccgram.handlers.topics.window_launch_service.tmux_manager") as mock_mux,
+            patch("ccgram.handlers.topics.window_launch_service.session_manager") as mock_sm,
+            patch("ccgram.handlers.topics.window_launch_service.thread_router") as mock_tr,
+            patch("ccgram.handlers.topics.window_launch_service.topic_orchestration") as mock_orch,
+            patch("ccgram.handlers.topics.window_launch_service.user_preferences"),
+            patch("ccgram.handlers.topics.window_launch_service.session_map_sync") as mock_sms,
+            patch("ccgram.handlers.topics.window_launch_service.safe_edit", new_callable=AsyncMock) as mock_edit,
+            patch("ccgram.handlers.topics.window_launch_service.provider_registry") as mock_reg,
+            patch("ccgram.providers.resolve_launch_command", return_value="claude"),
+        ):
+            mock_mux.create_topic_target = AsyncMock(
+                return_value=TopicTargetResult("@5", "my-win", "@5")
+            )
+            mock_mux.stamp_pane_title = AsyncMock()
+            mock_mux.capabilities.native_worktrees = False
+            mock_mux.capabilities.native_agent_status = True
+            mock_tr.resolve_chat_id.return_value = -100999
+            mock_sm.set_window_provider = MagicMock()
+            mock_sm.set_window_origin = MagicMock()
+            mock_sm.set_window_cwd = MagicMock()
+            mock_sm.set_window_approval_mode = MagicMock()
+            mock_sms.wait_for_session_map_entry = AsyncMock(return_value=False)
+            caps = MagicMock(chat_first_command_path=False, has_yolo_confirmation=False, supports_hook=True)
+            mock_reg.get.return_value.capabilities = caps
+
+            result = await launch_window(
+                query, context,
+                WindowLaunchRequest(100, 42, "claude", str(tmp_path), "normal", None),
+            )
+
+        assert result.success is False
+        mock_tr.unbind_thread.assert_called_once_with(100, 42)
+        mock_orch.clear_pending_creation.assert_called_with("@5")
+        assert "❌" in mock_edit.call_args.args[1]
+
     async def test_create_window_failure_calls_abort(self, tmp_path) -> None:
         """When create_window returns success=False, abort is called, no bind."""
         user_data = {PENDING_THREAD_ID: 42}

@@ -51,6 +51,18 @@ def _info(session_id: str, transcript: Path, provider_name: str) -> dict[str, An
     }
 
 
+def test_session_map_stale_prune_preserves_archived_legacy_record(
+    store: WindowStateStore,
+) -> None:
+    store.mark_legacy_herdr("w2:p3")
+    assert store.archive_legacy_herdr("w2:p3")
+
+    assert _sync()._remove_stale_window_states(set(), set()) is False
+    assert "w2:p3" in store.window_states
+    assert store.rollback_legacy_herdr_archive("w2:p3")
+    assert store.remove_window("w2:p3")
+
+
 def test_transcript_path_wins_when_session_map_provider_is_stale(
     tmp_path: Path, store: WindowStateStore
 ) -> None:

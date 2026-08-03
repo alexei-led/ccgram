@@ -731,7 +731,10 @@ class HerdrManager:
             record = await self.guard_session_target(window_id)
         except HerdrError:
             return False
-        ok = await self._call_ok(["tab", "close", record.tab_id])
+        # A tab may host multiple independently guarded agent sessions. Closing
+        # the tab would terminate sibling sessions, so close only the pane
+        # freshly resolved for this target.
+        ok = await self._call_ok(["pane", "close", record.pane_id])
         if not ok:
             await self._after_action_failure(window_id)
         return ok

@@ -11,6 +11,7 @@ from ccgram.handlers.callback_data import (
     CB_STATUS_RECALL,
     CB_STATUS_SCREENSHOT,
 )
+from ccgram.handlers.callback_tokens import resolve_callback_data
 from ccgram.handlers.status.status_bubble import build_status_keyboard
 
 
@@ -44,7 +45,7 @@ class TestBuildStatusKeyboard:
         assert f"{CB_STATUS_LAST_REPLY}@42" in data
         assert f"{CB_STATUS_GET_FILE}@42" in data
 
-    def test_callback_data_truncated_to_64_bytes(self) -> None:
+    def test_long_window_id_uses_lossless_callback_tokens(self) -> None:
         long_id = "@" + "x" * 60
         kb = build_status_keyboard(long_id)
         prefixes = (
@@ -57,8 +58,9 @@ class TestBuildStatusKeyboard:
             for btn in row:
                 cb = btn.callback_data
                 assert isinstance(cb, str)
-                assert len(cb) == 64
+                assert len(cb.encode("utf-8")) <= 64
                 assert any(cb.startswith(p) for p in prefixes)
+                assert resolve_callback_data(cb, 1, lambda _uid, wid: wid == long_id)
 
     def test_no_history_single_row(self) -> None:
         kb = build_status_keyboard("@0")
@@ -86,14 +88,17 @@ class TestBuildStatusKeyboard:
         kb = build_status_keyboard("@0", history=[])
         assert len(kb.inline_keyboard) == 1
 
-    def test_history_callback_data_truncated_to_64_bytes(self) -> None:
+    def test_history_long_window_id_uses_lossless_callback_token(self) -> None:
         long_id = "@" + "x" * 60
         kb = build_status_keyboard(long_id, history=["cmd"])
         btn = kb.inline_keyboard[0][0]
         cb = btn.callback_data
         assert isinstance(cb, str)
-        assert len(cb) == 64  # type: ignore[arg-type]
-        assert cb.startswith(CB_STATUS_RECALL)  # type: ignore[union-attr]
+        assert len(cb.encode("utf-8")) <= 64
+        assert cb.startswith(CB_STATUS_RECALL)
+        assert resolve_callback_data(cb, 1, lambda _uid, wid: wid == long_id) == (
+            f"{CB_STATUS_RECALL}{long_id}:0"
+        )
 
     def test_last_reply_button_present(self) -> None:
         data = _all_callback_data("@0")

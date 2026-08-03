@@ -203,7 +203,12 @@ def parse_session_map(raw: dict[str, Any], prefix: str) -> dict[str, dict[str, s
         if not key.startswith(prefix):
             continue
         window_name = key[len(prefix) :]
-        if not isinstance(info, dict):
+        # A Herdr prefix alone is not authority: only an exact versioned
+        # guarded-session target is accepted. Raw tab/pane IDs are legacy
+        # migration records and must not reach monitor lifecycle processing.
+        if (
+            prefix == "herdr:" and not is_herdr_session_target(window_name)
+        ) or not isinstance(info, dict):
             continue
         try:
             # parse_session_map_entry is used as a validation gate: it raises
@@ -382,6 +387,7 @@ class SessionMapSync:
                 and w not in valid_wids
                 and w not in bound_wids
                 and window_store.get_session_id_for_window(w) not in old_format_sids
+                and not window_store.is_archived_legacy_herdr(w)
             )
         ]
         for wid in stale_wids:

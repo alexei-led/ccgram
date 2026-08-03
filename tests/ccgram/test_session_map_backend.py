@@ -9,6 +9,7 @@ skipped (no transcript monitoring / message delivery) or purged as old format.
 import pytest
 
 from ccgram.config import config
+from ccgram.session_monitor import SessionMonitor
 from ccgram.session_map import (
     is_backend_window_id,
     parse_session_map,
@@ -68,6 +69,20 @@ def test_parse_session_map_surfaces_herdr_entry(herdr_backend) -> None:
     parsed = parse_session_map(raw, session_map_prefix())
     assert target in parsed
     assert parsed[target]["session_id"] == "S1"
+
+
+def test_parse_session_map_herdr_rejects_raw_and_legacy_ids(herdr_backend) -> None:
+    raw = {
+        "herdr:w2:t1": _entry("raw-tab"),
+        "herdr:w2:p1": _entry("raw-pane"),
+        "herdr:herdr-session-v1-" + "A" * 64: _entry("bad-digest"),
+    }
+    assert parse_session_map(raw, session_map_prefix()) == {}
+
+
+async def test_session_monitor_rejects_raw_herdr_ids(herdr_backend) -> None:
+    raw = {"herdr:w2:t1": _entry("raw-tab")}
+    assert await SessionMonitor()._load_current_session_map(raw) == {}
 
 
 def test_parse_session_map_tmux_skips_other_backend(tmux_backend) -> None:

@@ -8,13 +8,21 @@ Plain Markdown. Target architecture for adding [herdr](https://github.com/ogulca
 
 The original scoping decision 1 ("Identity keying — thin: treat herdr's `pane_id` as the opaque `window_id`") and the Telegram topic mapping section ("topic = pane = agent") were **superseded** during implementation (plan `docs/plans/20260622-herdr-tab-topics.md`).
 
-**Actual implemented identity:** `window_id = tab_id` (`"wN:tM"`), not pane id. One ccgram topic = one herdr tab, mirroring the tmux-window analog. A split tab (agent team) is one topic with N panes — handled by ccgram's existing multi-pane awareness (`/panes`, `list_panes`), not N separate topics.
+**Actual implemented identity:** `window_id` is an opaque
+`herdr-session-v1-<sha256>` target derived only from a complete `agent.list`
+session composite. A fresh guard resolves that target to one live pane for one
+action. Raw `wN:tM` tab and `wN:pM` pane locators are never persisted as topic
+identity; legacy records are action-blocked and retained only for explicit
+archive/rollback.
 
-**Topic label:** `"<workspace> ▸ <tab>"` (tab name primary, not agent name). This fixes the `"ccgram ▸ claude"` collision when a workspace runs two sessions of the same agent.
+**Topic label:** `"<workspace> ▸ <tab>"` is display-only and does not authorize
+an action.
 
-**Session-map key:** `herdr:<tab_id>` (hook resolves pane→tab via injected probe before writing).
+**Session-map key:** `herdr:<opaque-session-target>`.
 
-**Restart re-resolution:** `_resolve_by_session_id` in `window_resolver.py` maps a stale `herdr:<tab_id>` key to the new tab id via the shared Claude session uuid — same anchor as original, different key shape.
+**Restart behavior:** a new Herdr server requires no tab/pane re-resolution;
+the opaque target is validated again against fresh `agent.list` and fails
+closed if its session is absent or ambiguous.
 
 The rest of the design (Multiplexer Protocol, capability flags, anti-corruption layer, polling-first, hook identity from `$HERDR_PANE_ID`, additive scope) remains as written.
 
