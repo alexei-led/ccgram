@@ -27,8 +27,15 @@ from ccgram.multiplexer.base import (
 from ccgram.multiplexer.herdr import (
     HERDR_PROTOCOL_VERSION,
     HERDR_SUPPORTED_PROTOCOLS,
+    HerdrAgentListError,
+    HerdrAmbiguousTargetError,
     HerdrError,
+    HerdrMalformedRecordError,
     HerdrManager,
+    HerdrSessionComposite,
+    HerdrUnresolvedTargetError,
+    canonical_session_bytes,
+    herdr_session_target_id,
 )
 import ccgram.multiplexer.herdr as herdr_module
 from ccgram.multiplexer.herdr_events import SUBSCRIBED, translate_event
@@ -1543,6 +1550,120 @@ async def test_ensure_session_raises_when_server_not_running() -> None:
     fake = FakeHerdr().on("status", out=_status_json(running=False))
     with pytest.raises(HerdrError, match="not running"):
         await _manager(fake).ensure_session()
+
+
+# ── Guarded session targets ───────────────────────────────────────────
+
+
+def _agent_list(*records: dict) -> str:
+    return json.dumps({"result": {"agents": list(records)}})
+
+
+SESSION_ONE = HerdrSessionComposite("herdr", "claude", "id", "session-1")
+SESSION_TWO = HerdrSessionComposite("herdr", "codex", "id", "session-2")
+
+
+@pytest.mark.parametrize(
+    ("composite", "canonical", "target_id"),
+    [
+        (
+            SESSION_ONE,
+            b'{"source":"herdr","agent":"claude","kind":"id","value":"session-1"}',
+            "herdr-session-v1-f62aac6904510d0c97340e117a14731840bb61dbad67315f32ec28b2a10eaf39",
+        ),
+        (
+            SESSION_TWO,
+            b'{"source":"herdr","agent":"codex","kind":"id","value":"session-2"}',
+            "herdr-session-v1-d5f5986d0cc748b1bb9b5d54e69bdb2e1d5bc70c33113b805c392af0da9e0fa6",
+        ),
+    ],
+)
+def test_session_target_digest_vectors(
+    composite: HerdrSessionComposite, canonical: bytes, target_id: str
+) -> None:
+    assert canonical_session_bytes(composite) == canonical
+    assert herdr_session_target_id(composite) == target_id
+    assert composite.value not in target_id
+
+
+async def test_guard_ignores_sessionless_record_and_layout_and_focus() -> None:
+    record = {
+        "agent_session": {
+            "source": "herdr",
+            "agent": "claude",
+            "kind": "id",
+            "value": "session-1",
+        },
+        "terminal_id": "term-1",
+        "pane_id": "w1:p1",
+        "tab_id": "w1:t1",
+        "workspace_id": "w1",
+        "focused": False,
+        "title": "must-not-be-used",
+        "name": "must-not-be-used",
+        "cwd": "/private/path",
+        "screen": {"layout": "must-not-be-used"},
+        "layout": {"area": {"width": 1, "height": 1}},
+    }
+    fake = FakeHerdr().on(
+        "agent", "list", out=_agent_list({"pane_id": "w1:p1", "focused": True}, record)
+    )
+    live = await _manager(fake).guard_session_target(herdr_session_target_id(SESSION_ONE))
+    assert live.pane_id == "w1:p1"
+    assert fake.sent("agent", "list") == ["agent", "list"]
+
+
+async def test_guard_reports_unresolved_and_ambiguous_targets() -> None:
+    record = {
+        "agent_session": {
+            "source": "herdr",
+            "agent": "claude",
+            "kind": "id",
+            "value": "session-1",
+        },
+        "terminal_id": "term-1",
+        "pane_id": "w1:p1",
+        "tab_id": "w1:t1",
+        "workspace_id": "w1",
+    }
+    manager = _manager(FakeHerdr().on("agent", "list", out=_agent_list(record)))
+    with pytest.raises(HerdrUnresolvedTargetError):
+        await manager.guard_session_target(herdr_session_target_id(SESSION_TWO))
+
+    duplicate = {**record, "pane_id": "w1:p2"}
+    manager = _manager(
+        FakeHerdr().on("agent", "list", out=_agent_list(record, duplicate))
+    )
+    with pytest.raises(HerdrAmbiguousTargetError):
+        await manager.guard_session_target(herdr_session_target_id(SESSION_ONE))
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        {"agent_session": "not-an-object"},
+        {"agent_session": {"source": "herdr", "agent": "claude"}},
+        {
+            "agent_session": {
+                "source": "herdr",
+                "agent": "claude",
+                "kind": "id",
+                "value": "session-1",
+            },
+            "terminal_id": "term-1",
+        },
+    ],
+)
+async def test_guard_rejects_malformed_records(record: dict) -> None:
+    manager = _manager(FakeHerdr().on("agent", "list", out=_agent_list(record)))
+    with pytest.raises(HerdrMalformedRecordError):
+        await manager.guard_session_target(herdr_session_target_id(SESSION_ONE))
+
+
+async def test_agent_list_failure_is_not_unresolved() -> None:
+    manager = _manager(FakeHerdr().on("agent", "list", rc=1, err="offline"))
+    with pytest.raises(HerdrAgentListError):
+        await manager.guard_session_target(herdr_session_target_id(SESSION_ONE))
 
 
 # ── Event stream: translate_event + watch_events ──────────────────────

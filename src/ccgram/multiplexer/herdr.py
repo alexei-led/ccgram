@@ -29,6 +29,7 @@ macOS), ``native_agent_status`` and ``supports_event_stream`` are True,
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -42,6 +43,7 @@ from collections.abc import (
     Mapping,
     Sequence,
 )
+from dataclasses import dataclass
 from pathlib import Path
 
 import structlog
@@ -67,9 +69,17 @@ from .topic_mapping import format_agent_topic_prefix
 __all__ = [
     "HERDR_PROTOCOL_VERSION",
     "HERDR_SUPPORTED_PROTOCOLS",
+    "HerdrAgentListError",
+    "HerdrAmbiguousTargetError",
     "HerdrError",
+    "HerdrLiveRecord",
+    "HerdrMalformedRecordError",
     "HerdrManager",
     "HerdrProtocolError",
+    "HerdrSessionComposite",
+    "HerdrUnresolvedTargetError",
+    "canonical_session_bytes",
+    "herdr_session_target_id",
 ]
 
 logger = structlog.get_logger()
@@ -128,6 +138,110 @@ class HerdrError(RuntimeError):
 
 class HerdrProtocolError(HerdrError):
     """Reserved for callers that require a strict herdr protocol policy."""
+
+
+class HerdrAgentListError(HerdrError):
+    """The fresh ``agent.list`` snapshot could not be read."""
+
+
+class HerdrMalformedRecordError(HerdrError):
+    """An ``agent.list`` record is not safe to use as a session target."""
+
+
+class HerdrUnresolvedTargetError(HerdrError):
+    """No current session record matches the requested target ID."""
+
+
+class HerdrAmbiguousTargetError(HerdrError):
+    """More than one current session record matches the requested target ID."""
+
+
+@dataclass(frozen=True)
+class HerdrSessionComposite:
+    """The complete Herdr identity independent of its current locator."""
+
+    source: str
+    agent: str
+    kind: str
+    value: str
+
+
+@dataclass(frozen=True)
+class HerdrLiveRecord:
+    """One sessionful agent and its short-lived current Herdr locator."""
+
+    target_id: str
+    composite: HerdrSessionComposite
+    terminal_id: str
+    pane_id: str
+    tab_id: str
+    workspace_id: str
+
+
+def _session_field(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _session_composite(record: Mapping[str, object]) -> HerdrSessionComposite | None:
+    """Parse one complete ``agent_session`` value, ignoring sessionless agents."""
+    session = record.get("agent_session")
+    if session is None:
+        return None
+    if not isinstance(session, Mapping):
+        raise HerdrMalformedRecordError("agent.list contains a malformed agent_session")
+    values = {
+        key: _session_field(session.get(key))
+        for key in ("source", "agent", "kind", "value")
+    }
+    if any(value is None for value in values.values()):
+        raise HerdrMalformedRecordError("agent.list contains an incomplete agent_session")
+    return HerdrSessionComposite(
+        source=values["source"] or "",
+        agent=values["agent"] or "",
+        kind=values["kind"] or "",
+        value=values["value"] or "",
+    )
+
+
+def canonical_session_bytes(composite: HerdrSessionComposite) -> bytes:
+    """Return canonical UTF-8 bytes for a complete session composite."""
+    values = {
+        "source": composite.source,
+        "agent": composite.agent,
+        "kind": composite.kind,
+        "value": composite.value,
+    }
+    if any(not isinstance(value, str) or not value for value in values.values()):
+        raise HerdrMalformedRecordError("session composite is incomplete")
+    payload = json.dumps(values, ensure_ascii=False, separators=(",", ":"))
+    return payload.encode("utf-8")
+
+
+def herdr_session_target_id(composite: HerdrSessionComposite) -> str:
+    """Return the opaque versioned ID for a complete session composite."""
+    prefix = b"ccgram-herdr-session-v1\0"
+    digest = hashlib.sha256(prefix + canonical_session_bytes(composite)).hexdigest()
+    return f"herdr-session-v1-{digest}"
+
+
+def _parse_live_record(record: Mapping[str, object]) -> HerdrLiveRecord | None:
+    composite = _session_composite(record)
+    if composite is None:
+        return None
+    locators = {
+        key: _session_field(record.get(key))
+        for key in ("terminal_id", "pane_id", "tab_id", "workspace_id")
+    }
+    if any(value is None for value in locators.values()):
+        raise HerdrMalformedRecordError("agent.list contains an incomplete live locator")
+    return HerdrLiveRecord(
+        target_id=herdr_session_target_id(composite),
+        composite=composite,
+        terminal_id=locators["terminal_id"] or "",
+        pane_id=locators["pane_id"] or "",
+        tab_id=locators["tab_id"] or "",
+        workspace_id=locators["workspace_id"] or "",
+    )
 
 
 def _pane_index(pane_id: str) -> int:
@@ -409,6 +523,41 @@ class HerdrManager:
                 return candidate, pane.get("cwd", "") or tab_cwd
         cwd = (focused or {}).get("cwd", "") or tab_cwd if focused else tab_cwd
         return "", cwd
+
+    async def _agent_list_snapshot(self) -> list[HerdrLiveRecord]:
+        """Read and parse one fresh ``agent.list`` snapshot.
+
+        Sessionless records are deliberately omitted. No focus, title, name,
+        directory, screen, or layout field participates in this snapshot.
+        """
+        result = await self._call_json(["agent", "list"])
+        if result is None:
+            raise HerdrAgentListError("herdr agent.list failed")
+        agents = result.get("agents")
+        if not isinstance(agents, list):
+            raise HerdrMalformedRecordError("agent.list returned no agents list")
+        records: list[HerdrLiveRecord] = []
+        for agent in agents:
+            if not isinstance(agent, Mapping):
+                raise HerdrMalformedRecordError("agent.list contains a malformed record")
+            parsed = _parse_live_record(agent)
+            if parsed is not None:
+                records.append(parsed)
+        return records
+
+    async def guard_session_target(self, target_id: str) -> HerdrLiveRecord:
+        """Resolve one target against exactly one fresh live session record."""
+        records = await self._agent_list_snapshot()
+        matches = [record for record in records if record.target_id == target_id]
+        if not matches:
+            raise HerdrUnresolvedTargetError(
+                f"herdr session target unresolved: {target_id}"
+            )
+        if len(matches) != 1:
+            raise HerdrAmbiguousTargetError(
+                f"herdr session target ambiguous: {target_id}"
+            )
+        return matches[0]
 
     async def list_windows(self) -> list[WindowRef]:
         """List windows, degrading an unavailable herdr server to an empty list."""
