@@ -24,6 +24,7 @@ from ...multiplexer import multiplexer as tmux_manager
 from ...utils import log_throttled
 from ...window_state_ports import legacy_state
 from ...window_state_store import CCGRAM_CREATED_WINDOW_ORIGIN
+from ..callback_tokens import revoke_window_tokens
 from ..cleanup import clear_topic_state
 from ..messaging_pipeline.message_sender import is_thread_gone
 from ..polling.polling_state import (
@@ -184,6 +185,7 @@ async def _kill_expired_unbound(now: float, timeout: float) -> None:
         from ...topic_state_registry import topic_state
 
         topic_state.clear_window(wid)
+        revoke_window_tokens(wid)
         qualified_id = f"{session_map_prefix()}{wid}"
         topic_state.clear_qualified(qualified_id)
         logger.info("auto_killed_unbound_window", window_id=wid)

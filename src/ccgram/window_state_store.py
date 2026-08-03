@@ -160,8 +160,13 @@ class WindowState:
     # explicit archive/rollback migration, but never authorizes an action.
     legacy_herdr: bool = False
     legacy_herdr_archived: bool = False
+    # The exact topic owner eligible to restore an archived legacy binding.
+    # Both values are persisted so a deliberate rollback remains safe after a
+    # bot restart.
+    legacy_herdr_archive_user_id: int | None = None
+    legacy_herdr_archive_thread_id: int | None = None
 
-    def to_dict(self) -> dict[str, Any]:  # noqa: C901
+    def to_dict(self) -> dict[str, Any]:  # noqa: C901, PLR0912
         d: dict[str, Any] = {
             "session_id": self.session_id,
             "cwd": self.cwd,
@@ -194,6 +199,10 @@ class WindowState:
             d["legacy_herdr"] = True
         if self.legacy_herdr_archived:
             d["legacy_herdr_archived"] = True
+        if self.legacy_herdr_archive_user_id is not None:
+            d["legacy_herdr_archive_user_id"] = self.legacy_herdr_archive_user_id
+        if self.legacy_herdr_archive_thread_id is not None:
+            d["legacy_herdr_archive_thread_id"] = self.legacy_herdr_archive_thread_id
         return d
 
     @classmethod
@@ -231,6 +240,8 @@ class WindowState:
             provider_manual_override=bool(data.get("provider_manual_override", False)),
             legacy_herdr=bool(data.get("legacy_herdr", False)),
             legacy_herdr_archived=bool(data.get("legacy_herdr_archived", False)),
+            legacy_herdr_archive_user_id=data.get("legacy_herdr_archive_user_id"),
+            legacy_herdr_archive_thread_id=data.get("legacy_herdr_archive_thread_id"),
         )
 
 
@@ -419,16 +430,34 @@ class WindowStateStore:
         state = self.window_states.get(window_id)
         return bool(state and state.legacy_herdr)
 
-    def archive_legacy_herdr(self, window_id: str) -> bool:
-        """Keep a legacy record for rollback while its topic binding is removed."""
+    def archive_legacy_herdr(
+        self, window_id: str, user_id: int, thread_id: int
+    ) -> bool:
+        """Keep a legacy record with its owner/topic for safe rollback."""
         if not self.is_legacy_herdr(window_id):
             return False
         state = self.window_states[window_id]
         if state.legacy_herdr_archived:
             return False
         state.legacy_herdr_archived = True
+        state.legacy_herdr_archive_user_id = user_id
+        state.legacy_herdr_archive_thread_id = thread_id
         self._schedule_save()
         return True
+
+    def get_archived_legacy_herdr_binding(
+        self, user_id: int, thread_id: int
+    ) -> str | None:
+        """Return this exact owner/topic's archived legacy binding, if any."""
+        for window_id, state in self.window_states.items():
+            if (
+                state.legacy_herdr
+                and state.legacy_herdr_archived
+                and state.legacy_herdr_archive_user_id == user_id
+                and state.legacy_herdr_archive_thread_id == thread_id
+            ):
+                return window_id
+        return None
 
     def is_archived_legacy_herdr(self, window_id: str) -> bool:
         """Return whether an archived legacy record must survive stale pruning."""
@@ -441,6 +470,8 @@ class WindowStateStore:
         if state is None or not state.legacy_herdr or not state.legacy_herdr_archived:
             return False
         state.legacy_herdr_archived = False
+        state.legacy_herdr_archive_user_id = None
+        state.legacy_herdr_archive_thread_id = None
         self._schedule_save()
         return True
 

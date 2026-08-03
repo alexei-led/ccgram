@@ -180,6 +180,9 @@ class TestCheckUnboundWindowTtl:
             ) as mock_router,
             patch("ccgram.handlers.topics.topic_lifecycle.window_query") as mock_wq,
             patch("ccgram.handlers.topics.topic_lifecycle.tmux_manager") as mock_tmux,
+            patch(
+                "ccgram.handlers.topics.topic_lifecycle.revoke_window_tokens"
+            ) as revoke,
         ):
             mock_config.autoclose_done_minutes = 1
             mock_router.iter_thread_bindings.return_value = []
@@ -187,6 +190,7 @@ class TestCheckUnboundWindowTtl:
             mock_tmux.kill_window = AsyncMock()
             await check_unbound_window_ttl([mock_window])
         mock_tmux.kill_window.assert_called_once_with("@0")
+        revoke.assert_called_once_with("@0")
 
 
 class TestHerdrKillPaths:

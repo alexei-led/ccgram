@@ -251,12 +251,23 @@ class TestLegacyHerdrMigration:
         self, store: WindowStateStore
     ) -> None:
         store.mark_legacy_herdr("w2:p3")
-        assert store.archive_legacy_herdr("w2:p3") is True
+        assert store.archive_legacy_herdr("w2:p3", 1, 42) is True
+        assert store.window_states["w2:p3"].to_dict() == {
+            "session_id": "",
+            "cwd": "",
+            "legacy_herdr": True,
+            "legacy_herdr_archived": True,
+            "legacy_herdr_archive_user_id": 1,
+            "legacy_herdr_archive_thread_id": 42,
+        }
+        assert store.get_archived_legacy_herdr_binding(1, 42) == "w2:p3"
+        assert store.get_archived_legacy_herdr_binding(2, 42) is None
 
         assert store.prune_stale_window_states(set(), set(), set()) is False
         assert "w2:p3" in store.window_states
         assert store.rollback_legacy_herdr_archive("w2:p3") is True
         assert store.is_legacy_herdr("w2:p3") is True
+        assert store.get_archived_legacy_herdr_binding(1, 42) is None
 
         assert store.remove_window("w2:p3") is True
         assert "w2:p3" not in store.window_states

@@ -26,6 +26,7 @@ from ..window_state_ports import legacy_state
 from ..topic_state_registry import topic_state
 from ..utils import handle_general_topic_message, is_general_topic, log_throttle_reset
 from .callback_helpers import get_thread_id
+from .callback_tokens import revoke_window_tokens
 from .interactive import clear_interactive_msg
 from .messaging_pipeline.message_queue import enqueue_status_update
 from .messaging_pipeline.message_sender import safe_reply
@@ -73,6 +74,9 @@ async def clear_topic_state(
         )
     else:
         clear_status_msg_info(user_id, thread_id)
+
+    if window_id:
+        revoke_window_tokens(window_id)
 
     # Registry dispatch — all module-specific per-topic/window/chat state.
     # Always pass window_id so window-scope callbacks (toolbar, screen buffer,
@@ -142,7 +146,7 @@ async def unbind_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     display = thread_router.get_display_name(window_id)
     is_legacy_herdr = legacy_state.is_legacy_herdr(window_id)
     if is_legacy_herdr:
-        legacy_state.archive_legacy_herdr(window_id)
+        legacy_state.archive_legacy_herdr(window_id, user.id, thread_id)
     client = PTBTelegramClient(context.bot)
     await enqueue_status_update(client, user.id, window_id, None, thread_id)
     await clear_topic_state(
@@ -158,11 +162,53 @@ async def unbind_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await safe_reply(
             update.message,
             f"📦 Archived legacy Herdr binding `{display}` without closing its session.\n"
-            "It remains blocked if restored; send a message to explicitly bind a listed session target.",
+            "It remains blocked if restored; use /rollback in this topic to restore "
+            "this exact binding, or send a message to explicitly bind a listed session target.",
         )
         return
     await safe_reply(
         update.message,
         f"✂ Unbound from window `{display}`. The session is still running.\n"
         "Send a message in this topic to rebind or create a new session.",
+    )
+
+
+async def rollback_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Restore this topic's archived legacy binding while keeping it blocked."""
+    user = update.effective_user
+    if not user or not config.is_user_allowed(user.id):
+        return
+    if not update.message:
+        return
+
+    thread_id = get_thread_id(update)
+    if thread_id is None:
+        await safe_reply(
+            update.message, "❌ Use this command inside the archived topic."
+        )
+        return
+    if thread_router.get_window_for_thread(user.id, thread_id) is not None:
+        await safe_reply(update.message, "❌ This topic is already bound to a session.")
+        return
+
+    window_id = legacy_state.get_archived_legacy_herdr_binding(user.id, thread_id)
+    if window_id is None:
+        await safe_reply(
+            update.message,
+            "❌ No archived legacy Herdr binding belongs to this topic.",
+        )
+        return
+
+    # Lazy: topic_lifecycle imports this module for clear_topic_state.
+    from .topics.topic_lifecycle import rollback_legacy_herdr_binding
+
+    if not rollback_legacy_herdr_binding(user.id, thread_id, window_id):
+        await safe_reply(
+            update.message, "❌ The archived binding is no longer available."
+        )
+        return
+    await safe_reply(
+        update.message,
+        "📦 Restored this legacy Herdr binding. It remains blocked; send a message "
+        "to explicitly bind a listed session target before taking actions.",
     )

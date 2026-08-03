@@ -55,7 +55,7 @@ def test_session_map_stale_prune_preserves_archived_legacy_record(
     store: WindowStateStore,
 ) -> None:
     store.mark_legacy_herdr("w2:p3")
-    assert store.archive_legacy_herdr("w2:p3")
+    assert store.archive_legacy_herdr("w2:p3", 1, 42)
 
     assert _sync()._remove_stale_window_states(set(), set()) is False
     assert "w2:p3" in store.window_states

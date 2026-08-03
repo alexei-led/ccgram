@@ -15,6 +15,7 @@ from dataclasses import dataclass
 
 _CALLBACK_LIMIT = 64
 _TOKEN_TTL_SECONDS = 3600.0
+_MAX_CALLBACK_TOKENS = 512
 _TOKEN_MARKER = "~"
 
 
@@ -33,10 +34,15 @@ def compact_callback_data(prefix: str, payload: str, window_id: str) -> str:
     if len(payload.encode("utf-8")) <= _CALLBACK_LIMIT:
         return payload
     _prune_expired()
+    while len(_tokens) >= _MAX_CALLBACK_TOKENS:
+        _tokens.pop(next(iter(_tokens)))
     while True:
         token = secrets.token_urlsafe(9)
         callback_data = f"{prefix}{_TOKEN_MARKER}{token}"
-        if token not in _tokens and len(callback_data.encode("utf-8")) <= _CALLBACK_LIMIT:
+        if (
+            token not in _tokens
+            and len(callback_data.encode("utf-8")) <= _CALLBACK_LIMIT
+        ):
             _tokens[token] = _CallbackToken(
                 payload=payload,
                 window_id=window_id,
@@ -68,6 +74,13 @@ def resolve_callback_data(
     if not owns_window(user_id, entry.window_id):
         return None
     return entry.payload
+
+
+def revoke_window_tokens(window_id: str) -> None:
+    """Invalidate callback tokens targeting a window during topic cleanup."""
+    for token, entry in list(_tokens.items()):
+        if entry.window_id == window_id:
+            del _tokens[token]
 
 
 def _prune_expired() -> None:

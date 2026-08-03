@@ -15,9 +15,14 @@ def is_legacy_herdr(window_id: str) -> bool:
     return window_store.is_legacy_herdr(window_id)
 
 
-def archive_legacy_herdr(window_id: str) -> bool:
-    """Retain the record for rollback while callers remove its topic binding."""
-    return window_store.archive_legacy_herdr(window_id)
+def archive_legacy_herdr(window_id: str, user_id: int, thread_id: int) -> bool:
+    """Retain a legacy record with its owner/topic for safe rollback."""
+    return window_store.archive_legacy_herdr(window_id, user_id, thread_id)
+
+
+def get_archived_legacy_herdr_binding(user_id: int, thread_id: int) -> str | None:
+    """Return this owner/topic's archived binding without selecting a live target."""
+    return window_store.get_archived_legacy_herdr_binding(user_id, thread_id)
 
 
 def rollback_legacy_herdr_archive(window_id: str) -> bool:

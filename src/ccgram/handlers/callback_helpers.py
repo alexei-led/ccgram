@@ -19,11 +19,12 @@ def user_owns_window(user_id: int, window_id: str) -> bool:
 def parse_target(target: str) -> tuple[str, str | None]:
     """Parse window_id and optional pane_id from callback target string.
 
-    Target format: ``@0`` (window only) or ``@0|%3`` (tmux window + pane)
-    or ``w2:t1|w2:p1`` (herdr tab + pane).
+    Target format: ``@0`` (window only) or ``@0|%3`` (tmux window + pane),
+    with guarded opaque Herdr session targets in the window position.
+    Raw Herdr tab/pane locators are not valid callback identities.
 
-    The delimiter is ``CB_PANE_DELIMITER`` (``|``), not a colon, so herdr
-    ids (which contain colons) round-trip without ambiguity.
+    The delimiter is ``CB_PANE_DELIMITER`` (``|``), not a colon, so opaque
+    target data and tmux pane IDs round-trip without ambiguity.
     """
     if CB_PANE_DELIMITER in target:
         idx = target.index(CB_PANE_DELIMITER)
