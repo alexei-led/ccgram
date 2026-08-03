@@ -40,6 +40,7 @@ from ..callback_data import (
     CB_ASK_TAB,
     CB_ASK_UP,
 )
+from ..callback_tokens import compact_callback_data
 from ..messaging_pipeline.message_sender import (
     NO_LINK_PREVIEW,
     is_thread_gone,
@@ -169,39 +170,37 @@ def _build_interactive_keyboard(
     # Target suffix: "@12" or "@12|%5" (tmux) / "w2:t1|w2:p1" (herdr) when pane-targeted
     target = f"{window_id}{CB_PANE_DELIMITER}{pane_id}" if pane_id else window_id
 
+    def btn(label: str, prefix: str) -> InlineKeyboardButton:
+        return InlineKeyboardButton(
+            label,
+            callback_data=compact_callback_data(prefix, f"{prefix}{target}", window_id),
+        )
+
     rows: list[list[InlineKeyboardButton]] = []
     # Row 1: directional keys
     rows.append(
         [
-            InlineKeyboardButton(
-                "␣ Space", callback_data=f"{CB_ASK_SPACE}{target}"[:64]
-            ),
-            InlineKeyboardButton("↑", callback_data=f"{CB_ASK_UP}{target}"[:64]),
-            InlineKeyboardButton("⇥ Tab", callback_data=f"{CB_ASK_TAB}{target}"[:64]),
+            btn("␣ Space", CB_ASK_SPACE),
+            btn("↑", CB_ASK_UP),
+            btn("⇥ Tab", CB_ASK_TAB),
         ]
     )
     if vertical_only:
-        rows.append(
-            [
-                InlineKeyboardButton("↓", callback_data=f"{CB_ASK_DOWN}{target}"[:64]),
-            ]
-        )
+        rows.append([btn("↓", CB_ASK_DOWN)])
     else:
         rows.append(
             [
-                InlineKeyboardButton("←", callback_data=f"{CB_ASK_LEFT}{target}"[:64]),
-                InlineKeyboardButton("↓", callback_data=f"{CB_ASK_DOWN}{target}"[:64]),
-                InlineKeyboardButton("→", callback_data=f"{CB_ASK_RIGHT}{target}"[:64]),
+                btn("←", CB_ASK_LEFT),
+                btn("↓", CB_ASK_DOWN),
+                btn("→", CB_ASK_RIGHT),
             ]
         )
     # Row 2: action keys
     rows.append(
         [
-            InlineKeyboardButton("⎋ Esc", callback_data=f"{CB_ASK_ESC}{target}"[:64]),
-            InlineKeyboardButton("🔄", callback_data=f"{CB_ASK_REFRESH}{target}"[:64]),
-            InlineKeyboardButton(
-                "⏎ Enter", callback_data=f"{CB_ASK_ENTER}{target}"[:64]
-            ),
+            btn("⎋ Esc", CB_ASK_ESC),
+            btn("🔄", CB_ASK_REFRESH),
+            btn("⏎ Enter", CB_ASK_ENTER),
         ]
     )
     return InlineKeyboardMarkup(rows)

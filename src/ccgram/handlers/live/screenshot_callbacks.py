@@ -45,7 +45,7 @@ from ..callback_data import (
     CB_STATUS_SCREENSHOT,
 )
 from ..callback_helpers import get_thread_id, parse_target, user_owns_window
-from ..callback_tokens import resolve_callback_data
+from ..callback_tokens import compact_callback_data, resolve_callback_data
 from ..callback_registry import register
 
 if TYPE_CHECKING:
@@ -93,7 +93,9 @@ def build_screenshot_keyboard(
     def btn(label: str, key_id: str) -> InlineKeyboardButton:
         return InlineKeyboardButton(
             label,
-            callback_data=f"{CB_KEYS_PREFIX}{key_id}:{target}"[:64],
+            callback_data=compact_callback_data(
+                CB_KEYS_PREFIX, f"{CB_KEYS_PREFIX}{key_id}:{target}", window_id
+            ),
         )
 
     return InlineKeyboardMarkup(
@@ -104,11 +106,17 @@ def build_screenshot_keyboard(
             [
                 InlineKeyboardButton(
                     "\U0001f4fa Live",
-                    callback_data=f"{CB_LIVE_START}{target}"[:64],
+                    callback_data=compact_callback_data(
+                        CB_LIVE_START, f"{CB_LIVE_START}{target}", window_id
+                    ),
                 ),
                 InlineKeyboardButton(
                     "\U0001f504 Refresh",
-                    callback_data=f"{CB_SCREENSHOT_REFRESH}{target}"[:64],
+                    callback_data=compact_callback_data(
+                        CB_SCREENSHOT_REFRESH,
+                        f"{CB_SCREENSHOT_REFRESH}{target}",
+                        window_id,
+                    ),
                 ),
             ],
         ]

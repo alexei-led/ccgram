@@ -44,6 +44,7 @@ from ..callback_data import (
     CB_PANE_UNSUBSCRIBE,
 )
 from ..callback_helpers import get_thread_id, user_owns_window
+from ..callback_tokens import compact_callback_data, resolve_callback_data
 from ..callback_registry import register
 from ..messaging_pipeline.message_sender import safe_reply
 from ..user_state import (
@@ -83,20 +84,26 @@ def build_pane_buttons(
 ) -> list[InlineKeyboardButton]:
     """Return the per-pane action row used in the ``/panes`` keyboard."""
     sub_label = "\U0001f515 Unsub" if subscribed else "\U0001f514 Sub"
-    sub_data = f"{CB_PANE_UNSUBSCRIBE if subscribed else CB_PANE_SUBSCRIBE}{window_id}{CB_PANE_DELIMITER}{pane_id}"
+    sub_prefix = CB_PANE_UNSUBSCRIBE if subscribed else CB_PANE_SUBSCRIBE
+    target = f"{window_id}{CB_PANE_DELIMITER}{pane_id}"
     return [
         InlineKeyboardButton(
             f"\U0001f4f7 {pane_id}",
-            callback_data=f"{CB_PANE_SCREENSHOT}{window_id}{CB_PANE_DELIMITER}{pane_id}"[
-                :64
-            ],
+            callback_data=compact_callback_data(
+                CB_PANE_SCREENSHOT, f"{CB_PANE_SCREENSHOT}{target}", window_id
+            ),
         ),
-        InlineKeyboardButton(sub_label, callback_data=sub_data[:64]),
+        InlineKeyboardButton(
+            sub_label,
+            callback_data=compact_callback_data(
+                sub_prefix, f"{sub_prefix}{target}", window_id
+            ),
+        ),
         InlineKeyboardButton(
             "✏️ Rename",
-            callback_data=f"{CB_PANE_RENAME}{window_id}{CB_PANE_DELIMITER}{pane_id}"[
-                :64
-            ],
+            callback_data=compact_callback_data(
+                CB_PANE_RENAME, f"{CB_PANE_RENAME}{target}", window_id
+            ),
         ),
     ]
 
@@ -109,7 +116,11 @@ def build_pane_lifecycle_button(
     state = "on" if enabled else "off"
     return InlineKeyboardButton(
         f"{icon} Lifecycle: {state}",
-        callback_data=f"{CB_PANE_LIFECYCLE_TOGGLE}{window_id}"[:64],
+        callback_data=compact_callback_data(
+            CB_PANE_LIFECYCLE_TOGGLE,
+            f"{CB_PANE_LIFECYCLE_TOGGLE}{window_id}",
+            window_id,
+        ),
     )
 
 
@@ -262,7 +273,10 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     user = update.effective_user
     assert query is not None and query.data is not None and user is not None
-    data = query.data
+    data = resolve_callback_data(query.data, user.id, user_owns_window)
+    if data is None:
+        await query.answer("This button has expired", show_alert=True)
+        return
     if data.startswith(CB_PANE_SUBSCRIBE):
         await _handle_subscribe(query, user.id, data)
     elif data.startswith(CB_PANE_UNSUBSCRIBE):

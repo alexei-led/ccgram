@@ -29,6 +29,7 @@ from ...telegram_client import TelegramClient
 from ...multiplexer import multiplexer as tmux_manager
 from ...topic_state_registry import topic_state
 from ..callback_data import CB_KEYS_PREFIX, CB_LIVE_STOP
+from ..callback_tokens import compact_callback_data
 from ..messaging_pipeline.message_sender import rate_limit_send
 
 logger = structlog.get_logger()
@@ -89,7 +90,9 @@ def build_live_keyboard(
     def btn(label: str, key_id: str) -> InlineKeyboardButton:
         return InlineKeyboardButton(
             label,
-            callback_data=f"{CB_KEYS_PREFIX}{key_id}:{target}"[:64],
+            callback_data=compact_callback_data(
+                CB_KEYS_PREFIX, f"{CB_KEYS_PREFIX}{key_id}:{target}", window_id
+            ),
         )
 
     return InlineKeyboardMarkup(
@@ -100,7 +103,9 @@ def build_live_keyboard(
             [
                 InlineKeyboardButton(
                     "\u23f9 Stop Live",
-                    callback_data=f"{CB_LIVE_STOP}{target}"[:64],
+                    callback_data=compact_callback_data(
+                        CB_LIVE_STOP, f"{CB_LIVE_STOP}{target}", window_id
+                    ),
                 )
             ],
         ]

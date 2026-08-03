@@ -144,4 +144,14 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     user = update.effective_user
     assert query is not None and query.data is not None and user is not None
-    await handle_interactive_callback(query, user.id, query.data, update, context)
+    # Lazy: callback_helpers and callback_tokens participate in registry cycles.
+    from ..callback_helpers import user_owns_window
+
+    # Lazy: resolve tokens only when an interactive callback is dispatched.
+    from ..callback_tokens import resolve_callback_data
+
+    data = resolve_callback_data(query.data, user.id, user_owns_window)
+    if data is None:
+        await query.answer("This button has expired", show_alert=True)
+        return
+    await handle_interactive_callback(query, user.id, data, update, context)

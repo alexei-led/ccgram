@@ -42,6 +42,7 @@ from ..callback_data import (
     CB_RECOVERY_BROWSE,
 )
 from ..callback_helpers import get_thread_id
+from ..callback_tokens import compact_callback_data
 from ..messaging_pipeline.message_sender import safe_edit
 from ..user_state import (
     PENDING_THREAD_ID,
@@ -86,7 +87,7 @@ def _build_resume_picker_keyboard(
             [
                 InlineKeyboardButton(
                     label,
-                    callback_data=f"{CB_RECOVERY_PICK}{idx}"[:64],
+                    callback_data=f"{CB_RECOVERY_PICK}{idx}",
                 )
             ]
         )
@@ -94,7 +95,9 @@ def _build_resume_picker_keyboard(
         [
             InlineKeyboardButton(
                 "⬅ Back",
-                callback_data=f"{CB_RECOVERY_BACK}{window_id}"[:64],
+                callback_data=compact_callback_data(
+                    CB_RECOVERY_BACK, f"{CB_RECOVERY_BACK}{window_id}", window_id
+                ),
             ),
             InlineKeyboardButton("✖ Cancel", callback_data=CB_RECOVERY_CANCEL),
         ]
@@ -115,13 +118,19 @@ def _build_empty_resume_keyboard(window_id: str) -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(
                     "\U0001f5c2 Browse other projects",
-                    callback_data=f"{CB_RECOVERY_BROWSE}{window_id}"[:64],
+                    callback_data=compact_callback_data(
+                        CB_RECOVERY_BROWSE,
+                        f"{CB_RECOVERY_BROWSE}{window_id}",
+                        window_id,
+                    ),
                 ),
             ],
             [
                 InlineKeyboardButton(
                     "\U0001f195 Start fresh",
-                    callback_data=f"{CB_RECOVERY_FRESH}{window_id}"[:64],
+                    callback_data=compact_callback_data(
+                        CB_RECOVERY_FRESH, f"{CB_RECOVERY_FRESH}{window_id}", window_id
+                    ),
                 ),
             ],
             [InlineKeyboardButton("✖ Cancel", callback_data=CB_RECOVERY_CANCEL)],

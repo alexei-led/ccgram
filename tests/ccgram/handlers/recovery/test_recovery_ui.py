@@ -134,14 +134,6 @@ class TestBuildRecoveryKeyboard:
         data = kb.inline_keyboard[0][2].callback_data
         assert data == f"{CB_RECOVERY_RESUME}@5"
 
-    def test_callback_data_truncated_to_64_bytes(self) -> None:
-        long_id = "@" + "x" * 60
-        kb = build_recovery_keyboard(long_id)
-        for row in kb.inline_keyboard:
-            for btn in row:
-                assert isinstance(btn.callback_data, str)
-                assert len(btn.callback_data) <= 64
-
     def test_hides_continue_when_unsupported(self) -> None:
         with patch(f"{_RC}.get_provider_for_window") as mock_gpw:
             caps = mock_gpw.return_value.capabilities

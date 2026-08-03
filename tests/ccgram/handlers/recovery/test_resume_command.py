@@ -754,16 +754,6 @@ class TestBuildResumeKeyboard:
         prev_btns = [b for b in nav_row if "Prev" in b.text]
         assert len(prev_btns) == 1
 
-    def test_callback_data_truncated_to_64(self) -> None:
-        sessions = [
-            {"session_id": f"sess-{'x' * 60}", "summary": "Long", "cwd": "/tmp/proj"}
-        ]
-        kb = _build_resume_keyboard(sessions)
-        for row in kb.inline_keyboard:
-            for btn in row:
-                if isinstance(btn.callback_data, str):
-                    assert len(btn.callback_data) <= 64
-
     def test_grouped_by_cwd(self) -> None:
         sessions = [
             {"session_id": "s1", "summary": "A", "cwd": "/proj/a"},

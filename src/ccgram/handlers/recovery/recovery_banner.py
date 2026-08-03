@@ -48,6 +48,7 @@ from ..callback_data import (
     CB_RECOVERY_RESUME,
 )
 from ..callback_helpers import get_thread_id
+from ..callback_tokens import compact_callback_data
 from ..messaging_pipeline.message_sender import safe_edit, safe_send
 from ..status.topic_emoji import format_topic_name_for_mode
 from ..user_state import (
@@ -196,21 +197,29 @@ def build_recovery_keyboard(window_id: str) -> InlineKeyboardMarkup:
     options: list[InlineKeyboardButton] = [
         InlineKeyboardButton(
             "\U0001f195 Fresh",
-            callback_data=f"{CB_RECOVERY_FRESH}{window_id}"[:64],
+            callback_data=compact_callback_data(
+                CB_RECOVERY_FRESH, f"{CB_RECOVERY_FRESH}{window_id}", window_id
+            ),
         ),
     ]
     if caps.supports_continue:
         options.append(
             InlineKeyboardButton(
                 "▶ Continue",
-                callback_data=f"{CB_RECOVERY_CONTINUE}{window_id}"[:64],
+                callback_data=compact_callback_data(
+                    CB_RECOVERY_CONTINUE,
+                    f"{CB_RECOVERY_CONTINUE}{window_id}",
+                    window_id,
+                ),
             )
         )
     if caps.supports_resume:
         options.append(
             InlineKeyboardButton(
                 "⏪ Resume",
-                callback_data=f"{CB_RECOVERY_RESUME}{window_id}"[:64],
+                callback_data=compact_callback_data(
+                    CB_RECOVERY_RESUME, f"{CB_RECOVERY_RESUME}{window_id}", window_id
+                ),
             )
         )
     return InlineKeyboardMarkup(

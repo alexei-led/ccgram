@@ -273,7 +273,7 @@ def _build_resume_keyboard(
             [
                 InlineKeyboardButton(
                     label,
-                    callback_data=f"{CB_RESUME_PICK}{global_idx}"[:64],
+                    callback_data=f"{CB_RESUME_PICK}{global_idx}",
                 )
             ]
         )
@@ -284,7 +284,7 @@ def _build_resume_keyboard(
         nav_buttons.append(
             InlineKeyboardButton(
                 "\u2b05 Prev",
-                callback_data=f"{CB_RESUME_PAGE}{page - 1}"[:64],
+                callback_data=f"{CB_RESUME_PAGE}{page - 1}",
             )
         )
     total_pages = (total + _SESSIONS_PER_PAGE - 1) // _SESSIONS_PER_PAGE
@@ -292,7 +292,7 @@ def _build_resume_keyboard(
         nav_buttons.append(
             InlineKeyboardButton(
                 "Next \u27a1",
-                callback_data=f"{CB_RESUME_PAGE}{page + 1}"[:64],
+                callback_data=f"{CB_RESUME_PAGE}{page + 1}",
             )
         )
     nav_buttons.append(

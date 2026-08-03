@@ -23,6 +23,7 @@ from telegram.error import TelegramError
 
 from ...telegram_client import TelegramClient
 from ..callback_registry import register
+from ..callback_tokens import compact_callback_data, resolve_callback_data
 from ..messaging_pipeline.message_sender import safe_send
 
 if TYPE_CHECKING:
@@ -136,10 +137,16 @@ async def _show_offer_keyboard(
         [
             [
                 InlineKeyboardButton(
-                    "⚙️ Set up", callback_data=f"{CB_SHELL_SETUP}{window_id}"
+                    "⚙️ Set up",
+                    callback_data=compact_callback_data(
+                        CB_SHELL_SETUP, f"{CB_SHELL_SETUP}{window_id}", window_id
+                    ),
                 ),
                 InlineKeyboardButton(
-                    "⏭ Skip", callback_data=f"{CB_SHELL_SKIP}{window_id}"
+                    "⏭ Skip",
+                    callback_data=compact_callback_data(
+                        CB_SHELL_SKIP, f"{CB_SHELL_SKIP}{window_id}", window_id
+                    ),
                 ),
             ]
         ]
@@ -167,12 +174,17 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not query or not query.data:
         return
 
-    data = query.data
+    user = query.from_user
+    if user is None:
+        return
+    data = resolve_callback_data(query.data, user.id, user_owns_window)
+    if data is None:
+        await query.answer("This button has expired", show_alert=True)
+        return
     is_setup = data.startswith(CB_SHELL_SETUP)
     window_id = data[len(CB_SHELL_SETUP) :] if is_setup else data[len(CB_SHELL_SKIP) :]
 
-    user = query.from_user
-    if user is None or not user_owns_window(user.id, window_id):
+    if not user_owns_window(user.id, window_id):
         await query.answer("Not your session", show_alert=True)
         return
 

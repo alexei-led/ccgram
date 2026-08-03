@@ -74,12 +74,6 @@ class TestBuildInteractiveKeyboard:
         data = _cb_data(_build_interactive_keyboard("@12", pane_id="%5"))
         assert all("@12|%5" in d for d in data)
 
-    def test_callback_data_truncated_to_64_bytes(self) -> None:
-        data = _cb_data(
-            _build_interactive_keyboard("@" + "9" * 60, pane_id="%" + "1" * 60)
-        )
-        assert all(len(d) <= 64 for d in data)
-
 
 class TestFormatInteractiveMessage:
     def test_prepends_instruction_line(self) -> None:

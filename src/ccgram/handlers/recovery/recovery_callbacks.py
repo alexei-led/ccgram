@@ -37,7 +37,9 @@ from ..callback_data import (
     CB_RECOVERY_PICK,
     CB_RECOVERY_RESUME,
 )
+from ..callback_helpers import user_owns_window
 from ..callback_registry import register
+from ..callback_tokens import resolve_callback_data
 from ..user_state import (
     PENDING_THREAD_ID,
     PENDING_THREAD_TEXT,
@@ -127,4 +129,8 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     user = update.effective_user
     assert query is not None and query.data is not None and user is not None
-    await handle_recovery_callback(query, user.id, query.data, update, context)
+    data = resolve_callback_data(query.data, user.id, user_owns_window)
+    if data is None:
+        await query.answer("This button has expired", show_alert=True)
+        return
+    await handle_recovery_callback(query, user.id, data, update, context)

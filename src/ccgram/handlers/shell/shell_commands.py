@@ -41,7 +41,8 @@ from ..callback_data import (
     CB_SHELL_EDIT,
     CB_SHELL_RUN,
 )
-from ..callback_helpers import get_thread_id
+from ..callback_helpers import get_thread_id, user_owns_window
+from ..callback_tokens import compact_callback_data, resolve_callback_data
 from ..callback_registry import register
 from ..messaging_pipeline.message_sender import (
     REACT_RUNNING,
@@ -408,11 +409,19 @@ def _build_approval_keyboard(
                 [
                     InlineKeyboardButton(
                         "⚠ Confirm Run",
-                        callback_data=f"{CB_SHELL_CONFIRM_DANGER}{window_id}",
+                        callback_data=compact_callback_data(
+                            CB_SHELL_CONFIRM_DANGER,
+                            f"{CB_SHELL_CONFIRM_DANGER}{window_id}",
+                            window_id,
+                        ),
                     ),
                     InlineKeyboardButton(
                         "✕ Cancel",
-                        callback_data=f"{CB_SHELL_CANCEL}{window_id}",
+                        callback_data=compact_callback_data(
+                            CB_SHELL_CANCEL,
+                            f"{CB_SHELL_CANCEL}{window_id}",
+                            window_id,
+                        ),
                     ),
                 ],
             ]
@@ -422,15 +431,21 @@ def _build_approval_keyboard(
             [
                 InlineKeyboardButton(
                     "▶ Run",
-                    callback_data=f"{CB_SHELL_RUN}{window_id}",
+                    callback_data=compact_callback_data(
+                        CB_SHELL_RUN, f"{CB_SHELL_RUN}{window_id}", window_id
+                    ),
                 ),
                 InlineKeyboardButton(
                     "✏ Edit",
-                    callback_data=f"{CB_SHELL_EDIT}{window_id}",
+                    callback_data=compact_callback_data(
+                        CB_SHELL_EDIT, f"{CB_SHELL_EDIT}{window_id}", window_id
+                    ),
                 ),
                 InlineKeyboardButton(
                     "✕ Cancel",
-                    callback_data=f"{CB_SHELL_CANCEL}{window_id}",
+                    callback_data=compact_callback_data(
+                        CB_SHELL_CANCEL, f"{CB_SHELL_CANCEL}{window_id}", window_id
+                    ),
                 ),
             ],
         ]
@@ -539,7 +554,11 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     user = update.effective_user
     assert query is not None and query.data is not None and user is not None
+    data = resolve_callback_data(query.data, user.id, user_owns_window)
+    if data is None:
+        await query.answer("This button has expired", show_alert=True)
+        return
     thread_id = get_thread_id(update)
     await handle_shell_callback(
-        query, user.id, query.data, PTBTelegramClient(context.bot), thread_id
+        query, user.id, data, PTBTelegramClient(context.bot), thread_id
     )
