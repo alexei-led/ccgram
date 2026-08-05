@@ -39,6 +39,14 @@ class TestLegacyHerdrMigration:
         )
         _ = manager
 
+    def test_stale_pruning_preserves_archived_legacy_herdr_state(
+        self, mgr: SessionManager
+    ) -> None:
+        window_store.mark_legacy_herdr("w2:t1")
+        assert window_store.archive_legacy_herdr("w2:t1", 1, 10)
+        assert mgr.prune_stale_window_states(set()) is False
+        assert "w2:t1" in window_store.window_states
+
 
 class TestThreadBindings:
     def test_bind_and_get(self, mgr: SessionManager) -> None:
