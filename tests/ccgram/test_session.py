@@ -21,6 +21,25 @@ def mgr(monkeypatch) -> SessionManager:
     return SessionManager()
 
 
+class TestLegacyHerdrMigration:
+    def test_load_marks_every_legacy_id_without_short_circuit(
+        self, monkeypatch
+    ) -> None:
+        state = {
+            "window_states": {"w2:t1": {}, "w2:p2": {}},
+            "thread_bindings": {"1": {"10": "w2:p3"}},
+        }
+        monkeypatch.setattr("ccgram.session.config.multiplexer_name", "herdr")
+        monkeypatch.setattr("ccgram.session.StatePersistence.load", lambda _self: state)
+        monkeypatch.setattr(SessionManager, "_save_state", lambda _self: None)
+        manager = SessionManager()
+        assert all(
+            window_store.is_legacy_herdr(window_id)
+            for window_id in ("w2:t1", "w2:p2", "w2:p3")
+        )
+        _ = manager
+
+
 class TestThreadBindings:
     def test_bind_and_get(self, mgr: SessionManager) -> None:
         thread_router.bind_thread(100, 1, "@1")
@@ -335,6 +354,26 @@ class TestPruneSessionMap:
         monkeypatch.setattr("ccgram.session.config.session_map_file", session_map_file)
 
         session_map_sync.prune_session_map(live_window_ids={"@1"})
+
+    def test_pruning_rereads_only_after_hook_lock_is_held(
+        self, mgr: SessionManager, tmp_path, monkeypatch
+    ) -> None:
+        session_map_file = tmp_path / "session_map.json"
+        session_map_file.write_text(json.dumps({"ccgram:@5": {"session_id": "sid-5"}}))
+        monkeypatch.setattr("ccgram.session.config.session_map_file", session_map_file)
+        monkeypatch.setattr("ccgram.session.config.tmux_session_name", "ccgram")
+
+        from ccgram import session_map
+
+        original_read = session_map._read_session_map_for_pruning
+
+        def locked_read():
+            assert session_map_file.with_suffix(".lock").exists()
+            return original_read()
+
+        monkeypatch.setattr(session_map, "_read_session_map_for_pruning", locked_read)
+        session_map_sync.prune_session_map(live_window_ids=set())
+        assert json.loads(session_map_file.read_text()) == {}
 
     def test_prunes_entry_without_window_state(
         self, mgr: SessionManager, tmp_path, monkeypatch

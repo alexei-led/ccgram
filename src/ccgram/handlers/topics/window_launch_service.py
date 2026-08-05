@@ -289,15 +289,32 @@ async def launch_window(  # noqa: PLR0912, PLR0915, C901
         user_id,
         pending_thread_id,
     )
-    await tmux_manager.stamp_pane_title(created_wid, provider_name)
+    try:
+        await tmux_manager.stamp_pane_title(created_wid, provider_name)
+    except BaseException:
+        # The target exists but launch wiring did not finish. Best-effort close
+        # it before propagating cancellation/errors; if close fails, retain the
+        # pending guard so the monitor cannot adopt it as an orphan.
+        if await tmux_manager.kill_window(created_wid):
+            topic_orchestration.clear_pending_creation(created_wid)
+            if pending_thread_id is not None:
+                thread_router.unbind_thread(user_id, pending_thread_id)
+        raise
 
     provider_caps = provider_registry.get(provider_name).capabilities
     if provider_caps.chat_first_command_path:
         # Lazy: shell ↔ topics cycle via window_callbacks adoption flow.
         from ..shell.shell_prompt_orchestrator import ensure_setup
 
-        await _wait_for_shell_ready(created_wid)
-        await ensure_setup(created_wid, "auto")
+        try:
+            await _wait_for_shell_ready(created_wid)
+            await ensure_setup(created_wid, "auto")
+        except BaseException:
+            if await tmux_manager.kill_window(created_wid):
+                topic_orchestration.clear_pending_creation(created_wid)
+                if pending_thread_id is not None:
+                    thread_router.unbind_thread(user_id, pending_thread_id)
+            raise
 
     if pending_thread_id is not None:
         thread_router.bind_thread(
@@ -309,28 +326,39 @@ async def launch_window(  # noqa: PLR0912, PLR0915, C901
             thread_router.set_group_chat_id(user_id, pending_thread_id, chat.id)
 
     provider = provider_registry.get(provider_name)
-    if approval_mode == "yolo" and provider.capabilities.has_yolo_confirmation:
-        await _accept_yolo_confirmation(created_wid)
+    try:
+        if approval_mode == "yolo" and provider.capabilities.has_yolo_confirmation:
+            await _accept_yolo_confirmation(created_wid)
 
-    if provider.capabilities.supports_hook:
-        map_entry_found = await session_map_sync.wait_for_session_map_entry(created_wid)
-        if not map_entry_found:
-            # Do not release the guard or binding unless the target is actually
-            # gone. A late hook could otherwise adopt a still-live target into
-            # an orphan topic. Herdr's neutral close only affects its guarded
-            # target pane, never a sibling session in the shared tab.
-            if await tmux_manager.kill_window(created_wid):
-                topic_orchestration.clear_pending_creation(created_wid)
-                if pending_thread_id is not None:
-                    thread_router.unbind_thread(user_id, pending_thread_id)
-                message = "Session did not register with ccgram in time"
-            else:
-                message = (
-                    "Session did not register with ccgram in time and cleanup "
-                    "failed; the topic remains quarantined for safe recovery"
-                )
-            await _abort_topic_creation(query, message, context)
-            return WindowLaunchResult(success=False, error_message=message)
+        map_entry_found = (
+            await session_map_sync.wait_for_session_map_entry(created_wid)
+            if provider.capabilities.supports_hook
+            else True
+        )
+    except BaseException:
+        if await tmux_manager.kill_window(created_wid):
+            topic_orchestration.clear_pending_creation(created_wid)
+            if pending_thread_id is not None:
+                thread_router.unbind_thread(user_id, pending_thread_id)
+        raise
+
+    if not map_entry_found:
+        # Do not release the guard or binding unless the target is actually
+        # gone. A late hook could otherwise adopt a still-live target into
+        # an orphan topic. Herdr's neutral close only affects its guarded
+        # target pane, never a sibling session in the shared tab.
+        if await tmux_manager.kill_window(created_wid):
+            topic_orchestration.clear_pending_creation(created_wid)
+            if pending_thread_id is not None:
+                thread_router.unbind_thread(user_id, pending_thread_id)
+            message = "Session did not register with ccgram in time"
+        else:
+            message = (
+                "Session did not register with ccgram in time and cleanup "
+                "failed; the topic remains quarantined for safe recovery"
+            )
+        await _abort_topic_creation(query, message, context)
+        return WindowLaunchResult(success=False, error_message=message)
 
     # The target either has a hook record or never needed one. This also clears
     # the no-thread path, which otherwise has no topic bind to release the guard.

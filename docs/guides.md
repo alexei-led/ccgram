@@ -307,7 +307,7 @@ ccgram talks to the terminal multiplexer through a backend-neutral seam. tmux is
 1. **Install herdr** and make sure the `herdr` binary is in `PATH`. Start its server so the control socket exists.
 2. **Select the backend:** set `CCGRAM_MULTIPLEXER=herdr` (env var or `.env`). The default is `tmux`.
 3. **Socket path (optional):** ccgram reads `$HERDR_SOCKET_PATH` to find the server. Leave it unset to use herdr's default socket; set it to target a specific server.
-4. **Install the ccgram hook as usual:** `ccgram hook --install`. The same Claude Code hook works on both backends — it resolves which window fired from `$HERDR_PANE_ID` (tmux uses `$TMUX_PANE`), so no herdr-specific hook step is required.
+4. **Install integrations and the ccgram hook:** for Pi, run `herdr integration install pi`, then start new Pi agents or restart existing ones so they load the integration and publish `agent_session`. Install the ccgram hook as usual with `ccgram hook --install`. The same Claude Code hook works on both backends — it resolves which window fired from `$HERDR_PANE_ID` (tmux uses `$TMUX_PANE`), so no herdr-specific hook step is required.
 5. **Verify:** `ccgram doctor`. When `CCGRAM_MULTIPLEXER=herdr`, doctor checks the `herdr` binary, socket reachability, the pinned protocol version, and that ccgram's and herdr's own Claude hooks coexist in `settings.json` (instead of the tmux checks).
 
 ```bash
@@ -318,7 +318,7 @@ CCGRAM_MULTIPLEXER=herdr
 
 ### Protocol version pinning
 
-ccgram accepts herdr socket protocols 14, 15, and 16 without warnings. On the first call it reads `herdr status`; an older, newer, missing, or otherwise unknown protocol emits a warning and ccgram continues in best-effort mode, so CLI-backed operations can still work after a herdr upgrade or downgrade. A stopped server, failed status command, or malformed status response still prevents startup. Run the live herdr contract suite before relying on an untested protocol.
+ccgram accepts herdr socket protocols 14, 15, 16, and 17 without warnings. On the first call it reads `herdr status`; an older, newer, missing, or otherwise unknown protocol emits a warning and ccgram continues in best-effort mode, so CLI-backed operations can still work after a herdr upgrade or downgrade. A stopped server, failed status command, or malformed status response still prevents startup. Run the live herdr contract suite before relying on an untested protocol.
 
 ### Differences from tmux
 

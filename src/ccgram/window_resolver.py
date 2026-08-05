@@ -89,6 +89,7 @@ def _resolve_window_states(
 def _resolve_thread_bindings(
     thread_bindings: dict,
     window_display_names: dict,
+    display_lookup: dict,
     live_by_name: dict[str, str],
     live_ids: set[str],
 ) -> bool:
@@ -100,10 +101,10 @@ def _resolve_thread_bindings(
             if is_window_id(val):
                 if val in live_ids:
                     new_bindings[tid] = val
-                elif new_id := live_by_name.get(window_display_names.get(val, val)):
+                elif new_id := live_by_name.get(display_lookup.get(val, val)):
                     logger.debug("Re-resolved thread binding %s -> %s", val, new_id)
                     new_bindings[tid] = new_id
-                    window_display_names[new_id] = window_display_names.get(val, val)
+                    window_display_names[new_id] = display_lookup.get(val, val)
                     changed = True
                 else:
                     # Keep dead window binding — /restore needs it
@@ -132,7 +133,7 @@ def _resolve_thread_bindings(
 
 def _resolve_offsets(
     user_window_offsets: dict,
-    window_display_names: dict,
+    display_lookup: dict,
     live_by_name: dict[str, str],
     live_ids: set[str],
 ) -> bool:
@@ -144,7 +145,7 @@ def _resolve_offsets(
             if is_window_id(key):
                 if key in live_ids:
                     new_offsets[key] = offset
-                elif new_id := live_by_name.get(window_display_names.get(key, key)):
+                elif new_id := live_by_name.get(display_lookup.get(key, key)):
                     new_offsets[new_id] = offset
                     changed = True
                 else:
@@ -189,14 +190,22 @@ def resolve_stale_ids(
 
     live_by_name: dict[str, str] = {w.window_name: w.window_id for w in live_windows}
     live_ids: set[str] = {w.window_id for w in live_windows}
+    # Resolve every persisted map against one pre-mutation name snapshot.
+    # _resolve_window_states rewrites display names first; using that mutated
+    # map for bindings/offsets used to leave them pointing at stale IDs.
+    display_lookup = dict(window_display_names)
 
     changed = _resolve_window_states(
         window_states, window_display_names, live_by_name, live_ids
     )
     changed |= _resolve_thread_bindings(
-        thread_bindings, window_display_names, live_by_name, live_ids
+        thread_bindings,
+        window_display_names,
+        display_lookup,
+        live_by_name,
+        live_ids,
     )
     changed |= _resolve_offsets(
-        user_window_offsets, window_display_names, live_by_name, live_ids
+        user_window_offsets, display_lookup, live_by_name, live_ids
     )
     return changed

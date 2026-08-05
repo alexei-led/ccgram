@@ -8,6 +8,7 @@ still owns its target when it is resolved.
 
 from __future__ import annotations
 
+import re
 import secrets
 import time
 from collections.abc import Callable
@@ -17,6 +18,9 @@ _CALLBACK_LIMIT = 64
 _TOKEN_TTL_SECONDS = 3600.0
 _MAX_CALLBACK_TOKENS = 512
 _TOKEN_MARKER = "~"
+# token_urlsafe(9) produces exactly 12 URL-safe base64 characters. Require the
+# complete envelope so normal callback payloads containing ``~`` pass through.
+_TOKEN_ENVELOPE_RE = re.compile(r"^.+~([A-Za-z0-9_-]{12})$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,10 +65,10 @@ def resolve_callback_data(
     Ordinary callbacks pass through unchanged. ``None`` means the token is
     expired, unknown, or belongs to a target the clicking user no longer owns.
     """
-    marker_index = data.find(_TOKEN_MARKER)
-    if marker_index < 0:
+    match = _TOKEN_ENVELOPE_RE.fullmatch(data)
+    if match is None:
         return data
-    token = data[marker_index + len(_TOKEN_MARKER) :]
+    token = match.group(1)
     entry = _tokens.get(token)
     if entry is None:
         return None

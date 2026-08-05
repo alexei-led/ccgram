@@ -56,10 +56,8 @@ class TestResolveStaleIds:
         assert thread_bindings[100][42] == "@0"
 
     def test_stale_id_remapped_via_display_name(self) -> None:
-        # @0 is gone; tmux restarted and the same window is now @1.
-        # window_states is remapped to @1. Thread binding lookup uses display_names
-        # which has already had "@0" removed by _resolve_window_states, so the thread
-        # binding stays as "@0" (dead window preserved for /restore).
+        # @0 is gone; tmux restarted and the same window is now @1. Every
+        # persisted map resolves through one pre-mutation display-name snapshot.
         live = [LiveWindow("@1", "proj")]
         window_states = {"@0": _ws("proj")}
         thread_bindings: dict = {100: {42: "@0"}}
@@ -75,9 +73,7 @@ class TestResolveStaleIds:
         assert "@0" not in window_states
         assert display_names.get("@1") == "proj"
         assert "@0" not in display_names
-        # Thread binding keeps stale @0 — _resolve_window_states removed it from
-        # display_names before thread resolution runs, so the dead binding is preserved.
-        assert thread_bindings[100][42] == "@0"
+        assert thread_bindings[100][42] == "@1"
 
     def test_dead_window_preserved_without_live_match(self) -> None:
         # Stale ID with no live window of that name — keep for /restore
@@ -142,11 +138,9 @@ class TestResolveStaleIds:
         assert changed
         assert 100 not in thread_bindings
 
-    def test_offsets_dropped_when_display_name_already_remapped(self) -> None:
-        # _resolve_window_states runs first and removes "@0" from display_names,
-        # replacing it with "@2". When _resolve_offsets runs, it can't find a live
-        # match for "@0" (display_names no longer has it) so the offset is dropped.
-        # This is intentional — read offsets are best-effort, not critical for recovery.
+    def test_offsets_follow_stale_id_remap(self) -> None:
+        # Read offsets use the same pre-mutation name mapping as window state
+        # and thread bindings, rather than being dropped after display rewrite.
         live = [LiveWindow("@2", "proj")]
         window_states = {"@0": _ws("proj")}
         thread_bindings: dict = {}
@@ -159,7 +153,7 @@ class TestResolveStaleIds:
 
         assert changed
         assert "@2" in window_states
-        assert offsets[100] == {}
+        assert offsets[100] == {"@2": 99}
 
     def test_returns_false_with_empty_state(self) -> None:
         changed = resolve_stale_ids([], {}, {}, {}, {})

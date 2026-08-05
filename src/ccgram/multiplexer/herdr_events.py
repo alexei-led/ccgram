@@ -75,13 +75,21 @@ async def open_socket_stream(
         writer.write((request + "\n").encode())
         await writer.drain()
 
-        # First line is the subscription ack ({"result": …}) or an error payload.
+        # Yield SUBSCRIBED only after a successful JSON-RPC acknowledgement.
+        # Empty, malformed, or error acks never establish a live subscription.
         ack = await reader.readline()
-        if ack:
-            with contextlib.suppress(ValueError):
-                payload = json.loads(ack)
-                if isinstance(payload, dict) and "error" in payload:
-                    logger.warning("herdr events.subscribe error: %s", payload["error"])
+        try:
+            payload = json.loads(ack) if ack else None
+        except ValueError:
+            logger.warning("herdr events.subscribe returned malformed acknowledgement")
+            return
+        if (
+            not isinstance(payload, dict)
+            or "error" in payload
+            or not isinstance(payload.get("result"), Mapping)
+        ):
+            logger.warning("herdr events.subscribe rejected subscription: %r", payload)
+            return
         yield SUBSCRIBED
 
         while True:

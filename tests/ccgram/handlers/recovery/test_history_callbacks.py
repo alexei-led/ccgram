@@ -21,6 +21,31 @@ def test_history_keyboard_uses_lossless_token_for_herdr_target() -> None:
     )
 
 
+async def test_colon_containing_legacy_history_id_stays_legacy() -> None:
+    query = AsyncMock()
+    legacy_id = "w2:t1:agent"
+    data = f"{CB_HISTORY_NEXT}1:{legacy_id}"
+    with (
+        patch(
+            "ccgram.handlers.recovery.history_callbacks.user_owns_window",
+            return_value=True,
+        ),
+        patch("ccgram.handlers.recovery.history_callbacks.tmux_manager") as mux,
+        patch(
+            "ccgram.handlers.recovery.history_callbacks.send_history",
+            new_callable=AsyncMock,
+        ) as send,
+    ):
+        mux.find_window_by_id = AsyncMock(return_value=object())
+        await handle_history_callback(query, 7, data, MagicMock(), MagicMock())
+
+    mux.find_window_by_id.assert_awaited_once_with(legacy_id)
+    call = send.await_args
+    assert call is not None
+    assert call.kwargs["start_byte"] == 0
+    assert call.kwargs["end_byte"] == 0
+
+
 async def test_raw_history_callback_checks_ownership_before_window_lookup() -> None:
     query = AsyncMock()
     data = f"{CB_HISTORY_NEXT}1:someone-elses-window:0:0"

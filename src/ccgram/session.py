@@ -184,10 +184,14 @@ class SessionManager:
                 for window_id in bindings.values()
                 if isinstance(window_id, str)
             )
-            migrated = any(
-                window_store.mark_legacy_herdr(window_id, schedule_save=False)
-                for window_id in legacy_ids
-            )
+            migrated = False
+            for window_id in legacy_ids:
+                # Do not use any(generator): it short-circuits after the first
+                # mutation and leaves later legacy IDs accidentally actionable.
+                migrated = (
+                    window_store.mark_legacy_herdr(window_id, schedule_save=False)
+                    or migrated
+                )
             if migrated:
                 logger.info("Marked legacy Herdr bindings for explicit rebind")
 
@@ -367,13 +371,24 @@ class SessionManager:
             raw = json.loads(config.session_map_file.read_text())
         except (json.JSONDecodeError, OSError):  # fmt: skip
             return set()
+        if not isinstance(raw, dict):
+            return set()
+        # Lazy: state-file schema stays isolated from the SessionManager.
+        from .hooks.state_files import StateFileValidationError, parse_session_map_entry
+
         prefix = session_map_prefix()
         result: set[str] = set()
-        for key in raw:
-            if key.startswith(prefix):
-                wid = key[len(prefix) :]
-                if self._is_window_id(wid):
-                    result.add(wid)
+        for key, info in raw.items():
+            if not isinstance(key, str) or not key.startswith(prefix):
+                continue
+            wid = key[len(prefix) :]
+            if not self._is_window_id(wid) or not isinstance(info, dict):
+                continue
+            try:
+                parse_session_map_entry(info)
+            except StateFileValidationError:
+                continue
+            result.add(wid)
         return result
 
     def audit_state(
@@ -541,6 +556,7 @@ class SessionManager:
                 wid not in session_map_wids
                 and wid not in bound_window_ids
                 and wid not in live_window_ids
+                and not window_store.is_archived_legacy_herdr(wid)
             )
         ]
         if not stale:

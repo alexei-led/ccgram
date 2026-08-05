@@ -226,6 +226,44 @@ class TestLaunchWindowSuccess:
         mock_edit.assert_awaited_once()
         assert "✅" in mock_edit.call_args[0][1]
 
+    async def test_post_create_stamp_error_closes_target_before_reraising(
+        self, tmp_path
+    ) -> None:
+        query = _make_query()
+        context = _make_context({PENDING_THREAD_ID: 42})
+        with (
+            patch("ccgram.handlers.topics.window_launch_service.tmux_manager") as mux,
+            patch("ccgram.handlers.topics.window_launch_service.session_manager"),
+            patch(
+                "ccgram.handlers.topics.window_launch_service.thread_router"
+            ) as router,
+            patch(
+                "ccgram.handlers.topics.window_launch_service.topic_orchestration"
+            ) as orchestration,
+            patch("ccgram.handlers.topics.window_launch_service.user_preferences"),
+            patch("ccgram.handlers.topics.window_launch_service.session_map_sync"),
+            patch("ccgram.handlers.topics.window_launch_service.provider_registry"),
+            patch("ccgram.providers.resolve_launch_command", return_value="claude"),
+        ):
+            mux.create_topic_target = AsyncMock(
+                return_value=TopicTargetResult("@5", "new", "@5")
+            )
+            mux.stamp_pane_title = AsyncMock(side_effect=RuntimeError("stamp failed"))
+            mux.kill_window = AsyncMock(return_value=True)
+            mux.capabilities.native_worktrees = False
+            mux.capabilities.native_agent_status = True
+            with pytest.raises(RuntimeError, match="stamp failed"):
+                await launch_window(
+                    query,
+                    context,
+                    WindowLaunchRequest(
+                        100, 42, "claude", str(tmp_path), "normal", None
+                    ),
+                )
+        mux.kill_window.assert_awaited_once_with("@5")
+        orchestration.clear_pending_creation.assert_called_once_with("@5")
+        router.unbind_thread.assert_called_once_with(100, 42)
+
     async def test_session_map_timeout_closes_target_before_unbinding_late_hook(
         self, tmp_path
     ) -> None:

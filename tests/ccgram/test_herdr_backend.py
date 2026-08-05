@@ -19,6 +19,7 @@ from ccgram.multiplexer.base import AgentStatus, ForegroundInfo, PaneDims
 from ccgram.multiplexer.herdr_events import translate_event
 from ccgram.multiplexer.herdr import (
     HERDR_PROTOCOL_VERSION,
+    HERDR_SUPPORTED_PROTOCOLS,
     HerdrAgentListError,
     HerdrAmbiguousTargetError,
     HerdrError,
@@ -405,6 +406,38 @@ async def test_watch_events_emits_each_guarded_target_for_shared_tab_close() -> 
         await watcher.aclose()
 
 
+async def test_watch_events_keeps_pre_refresh_mapping_for_terminal_event() -> None:
+    record = _agent(pane_id="w7:p4", tab_id="w7:t3")
+
+    class ClosingRunner(FakeHerdr):
+        def __init__(self) -> None:
+            super().__init__()
+            self.agent_reads = 0
+
+        async def __call__(self, args: Sequence[str]) -> tuple[int, str, str]:
+            if args == ["agent", "list"]:
+                self.agent_reads += 1
+                # Initial subscription and reprime guard see the target. A
+                # post-event refresh would no longer see the closed pane.
+                return 0, _agents(record) if self.agent_reads < 3 else _agents(), ""
+            if args[:2] == ["pane", "get"]:
+                return 0, _result(pane={}), ""
+            return await super().__call__(args)
+
+    async def stream(_subscriptions: Sequence[Mapping[str, object]]):
+        yield {"__subscribed__": True}
+        yield {"event": "pane.exited", "data": {"pane_id": "w7:p4"}}
+
+    mux = _manager(ClosingRunner())
+    mux._open_stream = stream
+    watcher = mux.watch_events([_target()])
+    try:
+        event = await anext(watcher)
+        assert (event.kind, event.window_id) == ("window_died", _target())
+    finally:
+        await watcher.aclose()
+
+
 async def test_raw_pane_helpers_cannot_bypass_target_guard() -> None:
     fake = _live_fake(_agent())
     mux = _manager(fake)
@@ -511,6 +544,44 @@ async def test_create_topic_target_uses_selected_workspace_and_returns_session_t
         ["pane", "run", "w9:p1", "claude --dangerously-skip-permissions"],
         ["agent", "list"],
     ]
+
+
+async def test_created_session_discovery_waits_for_delayed_pi_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pi can publish agent_session after several polling intervals (~2.7s live)."""
+    calls = 0
+
+    async def delayed_agents(_: float) -> None:
+        return None
+
+    class DelayedRunner(FakeHerdr):
+        async def __call__(self, args: Sequence[str]) -> tuple[int, str, str]:
+            nonlocal calls
+            if args == ["agent", "list"]:
+                calls += 1
+                return (
+                    0,
+                    _agents()
+                    if calls < 29
+                    else _agents(
+                        _agent(pane_id="w9:p1", tab_id="w9:t1", workspace_id="selected")
+                    ),
+                    "",
+                )
+            return await super().__call__(args)
+
+    monkeypatch.setattr(asyncio, "sleep", delayed_agents)
+    runner = (
+        DelayedRunner()
+        .on("workspace", "list", out=_workspace("selected", tmp_path))
+        .on("tab", "create", out=_created())
+    )
+    target = await _manager(runner).create_topic_target(
+        str(tmp_path), launch_command=None, workspace_id="selected"
+    )
+    assert target.target_id == _target()
+    assert calls == 29
 
 
 async def test_create_topic_target_without_selection_creates_workspace_at_cwd(
@@ -805,6 +876,23 @@ async def test_worktree_cancellation_closes_allocated_tab_and_reraises(
     assert runner.calls[-1] == ["tab", "close", "w10:t1"]
 
 
+async def test_agent_status_and_workspace_list_fail_closed_on_malformed_fields() -> (
+    None
+):
+    target = _target()
+    malformed_status = _live_fake(_agent()).on(
+        "pane", "get", out=_result(pane={"agent_status": ["working"]})
+    )
+    assert await _manager(malformed_status).agent_status(target) is None
+
+    malformed_workspaces = FakeHerdr().on(
+        "workspace",
+        "list",
+        out=_result(workspaces=[{"workspace_id": "w", "label": 1, "cwd": "/x"}]),
+    )
+    assert await _manager(malformed_workspaces).list_workspaces() == []
+
+
 async def test_reconciliation_filters_internal_workspace_and_tab_labels() -> None:
     visible = _agent(value="visible")
     internal_workspace = _agent(value="workspace-internal", workspace_id="internal")
@@ -864,6 +952,7 @@ async def test_subprocess_run_maps_timeout(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 async def test_ensure_session_accepts_protocol_and_rejects_unavailable_server() -> None:
+    assert frozenset({14, 15, 16, 17}) == HERDR_SUPPORTED_PROTOCOLS
     good = json.dumps(
         {
             "server": {

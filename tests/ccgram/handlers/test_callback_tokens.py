@@ -50,6 +50,11 @@ def test_expired_tokens_are_pruned_before_new_token(
     assert len(callback_tokens._tokens) == 1
 
 
+def test_ordinary_callback_data_containing_tilde_passes_through() -> None:
+    data = "st:ss:literal~data"
+    assert callback_tokens.resolve_callback_data(data, 1, lambda *_: False) == data
+
+
 def test_revoke_window_tokens_removes_only_that_window() -> None:
     revoked = callback_tokens.compact_callback_data("st:ss:", "x" * 65, "@revoked")
     retained = callback_tokens.compact_callback_data("st:ss:", "y" * 65, "@retained")

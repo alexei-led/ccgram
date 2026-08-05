@@ -2,6 +2,10 @@
 
 Generated from code state 2026-05-21.
 
+## Herdr compatibility
+
+The Herdr adapter accepts socket protocols 14–17 without warnings and continues best-effort for other versions. Pi requires `herdr integration install pi`; agents must be started or restarted after installation to load the integration and publish their `agent_session` identity.
+
 ## System Overview
 
 ccgram maps each Telegram Forum topic to one terminal-multiplexer target running one agent CLI (Claude Code, Codex, Gemini, Pi, or Shell). Tmux routing remains keyed by window ID (`@0`, `@12`). Herdr routing is keyed only by opaque `herdr-session-v1-…` targets derived from `agent.list`; tab, pane, terminal, workspace, display, and focus values are short-lived locators inside a fresh guarded action, never persisted identity. Missing, duplicate, malformed, sessionless, and legacy targets fail closed. A target can change after the guard and before Herdr dispatches, so the adapter records a possible post-guard race rather than claiming atomic delivery. Multiplexer access goes through the `multiplexer/` seam (`Multiplexer` Protocol); tmux is the default backend and herdr is selectable via `CCGRAM_MULTIPLEXER=herdr`.

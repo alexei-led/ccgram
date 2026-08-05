@@ -247,21 +247,26 @@ class SessionMonitor:
     async def _load_current_session_map(
         self, raw: dict | None = None
     ) -> dict[str, dict[str, str]]:
-        """Load current session_map and return window_key -> details mapping.
+        """Load a validated session_map mapping.
 
-        If ``raw`` is provided (already read by the caller), parse it directly
-        to avoid a redundant file read.  Otherwise read session_map.json.
+        Callers that reconcile or prune first read the raw map and explicitly
+        preserve a failed read. This compatibility helper keeps its historical
+        mapping return type for callers that only need a parsed snapshot.
         """
         if raw is None:
             raw = await read_session_map_raw()
-        if not raw:
+        if not isinstance(raw, dict):
             return {}
         prefix = session_map_prefix()
         return parse_session_map(raw, prefix)
 
     async def _cleanup_all_stale_sessions(self) -> None:
         """Clean up all tracked sessions not in current session_map (startup)."""
-        current_map = await self._load_current_session_map()
+        raw = await read_session_map_raw()
+        if raw is None:
+            logger.warning("Startup cleanup skipped: session_map is unreadable")
+            return
+        current_map = await self._load_current_session_map(raw)
         active_session_ids = {v["session_id"] for v in current_map.values()}
 
         stale_sessions = [
@@ -280,6 +285,11 @@ class SessionMonitor:
         self, raw: dict | None = None
     ) -> dict[str, dict[str, str]]:
         """Reconcile session_map; clean up replaced/removed sessions; fire new-window events."""
+        if raw is None:
+            raw = await read_session_map_raw()
+        if raw is None:
+            logger.warning("Session-map reconciliation skipped: map is unreadable")
+            return session_lifecycle.last_session_map
         current_map = await self._load_current_session_map(raw)
         result = session_lifecycle.reconcile(current_map, self._idle_tracker)
 
@@ -417,7 +427,8 @@ class SessionMonitor:
         from .session_map import session_map_sync
 
         await self._cleanup_all_stale_sessions()
-        initial_map = await self._load_current_session_map()
+        initial_raw = await read_session_map_raw()
+        initial_map = await self._load_current_session_map(initial_raw)
         session_lifecycle.initialize(initial_map)
 
         error_streak = 0

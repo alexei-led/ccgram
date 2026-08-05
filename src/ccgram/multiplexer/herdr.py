@@ -87,9 +87,9 @@ __all__ = [
 logger = structlog.get_logger()
 
 # Supported herdr socket protocols (``herdr status`` → ``server.protocol``).
-# 14–16 are accepted without warnings. Other versions are attempted with a
+# 14–17 are accepted without warnings. Other versions are attempted with a
 # warning so ccgram remains usable across herdr upgrades and downgrades.
-HERDR_SUPPORTED_PROTOCOLS = frozenset({14, 15, 16})
+HERDR_SUPPORTED_PROTOCOLS = frozenset({14, 15, 16, 17})
 HERDR_PROTOCOL_VERSION = max(HERDR_SUPPORTED_PROTOCOLS)
 
 # Static capability declaration for the herdr backend (design Task 7).
@@ -130,6 +130,11 @@ HerdrStreamOpener = Callable[
 _RC_TIMEOUT = 124
 _RC_NO_BINARY = 127
 _CALL_TIMEOUT_SECONDS = 8.0
+
+# New Pi sessions have been observed to publish their agent_session in ~2.7s.
+# Keep creation discovery bounded, while allowing slow hook/integration startup.
+_CREATED_SESSION_DISCOVERY_TIMEOUT_SECONDS = 5.0
+_CREATED_SESSION_POLL_INTERVAL_SECONDS = 0.1
 
 # Event-stream reconnect backoff (seconds): exponential, capped.
 _STREAM_BACKOFF_BASE = 1.0
@@ -814,12 +819,18 @@ class HerdrManager:
         if pane is None:
             await self._after_action_failure(window_id)
             return None
-        state = (pane.get("agent_status") or "").strip()
+        raw_state = pane.get("agent_status")
+        raw_custom_status = pane.get("custom_status")
+        if raw_state is not None and not isinstance(raw_state, str):
+            return None
+        if raw_custom_status is not None and not isinstance(raw_custom_status, str):
+            return None
+        state = (raw_state or "").strip()
         return (
             AgentStatus(
                 state=state,
                 agent=record.composite.agent,
-                custom_status=(pane.get("custom_status") or "").strip(),
+                custom_status=(raw_custom_status or "").strip(),
             )
             if state
             else None
@@ -865,17 +876,25 @@ class HerdrManager:
         to cwd-resolve).
         """
         result = await self._call_json(["workspace", "list"])
-        if not result:
+        workspaces = result.get("workspaces") if result else None
+        if not isinstance(workspaces, list):
             return []
-        return [
-            WorkspaceRef(
-                workspace_id=ws.get("workspace_id", ""),
-                label=ws.get("label", ""),
-                cwd=ws.get("cwd", ""),
-            )
-            for ws in result.get("workspaces", [])
-            if ws.get("workspace_id")
-        ]
+        refs: list[WorkspaceRef] = []
+        for workspace in workspaces:
+            if not isinstance(workspace, Mapping):
+                return []
+            workspace_id = workspace.get("workspace_id")
+            label = workspace.get("label")
+            cwd = workspace.get("cwd")
+            if not (
+                isinstance(workspace_id, str)
+                and workspace_id
+                and isinstance(label, str)
+                and isinstance(cwd, str)
+            ):
+                return []
+            refs.append(WorkspaceRef(workspace_id, label, cwd))
+        return refs
 
     async def create_window(
         self,
@@ -925,7 +944,9 @@ class HerdrManager:
         workspace_id: str | None,
     ) -> HerdrLiveRecord:
         """Wait for exactly one session reported for a newly-created pane."""
-        for _ in range(10):
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _CREATED_SESSION_DISCOVERY_TIMEOUT_SECONDS
+        while True:
             matches = [
                 record
                 for record in await self._agent_list_snapshot()
@@ -939,7 +960,9 @@ class HerdrManager:
                 raise HerdrAmbiguousTargetError(
                     "new Herdr pane reported duplicate sessions"
                 )
-            await asyncio.sleep(0.1)
+            if loop.time() >= deadline:
+                break
+            await asyncio.sleep(_CREATED_SESSION_POLL_INTERVAL_SECONDS)
         raise HerdrUnresolvedTargetError("new Herdr pane did not report a session")
 
     async def create_topic_target(  # noqa: C901
@@ -1026,7 +1049,7 @@ class HerdrManager:
                 await self._call_ok(["workspace", "close", owned_workspace_id])
             raise
 
-    async def create_worktree_window(
+    async def create_worktree_window(  # noqa: C901, PLR0911
         self,
         repo_path: str,
         worktree_path: str,
@@ -1069,10 +1092,13 @@ class HerdrManager:
 
         tab = result.get("tab") or {}
         root_pane = result.get("root_pane") or {}
+        workspace = result.get("workspace") or {}
+        if not all(isinstance(value, Mapping) for value in (tab, root_pane, workspace)):
+            return False, "herdr worktree returned malformed creation data", "", ""
         # tab_id from tab/root_pane; fall back to the new workspace's active tab.
         tab_id = tab.get("tab_id") or root_pane.get("tab_id", "")
         if not tab_id:
-            tab_id = (result.get("workspace") or {}).get("active_tab_id", "")
+            tab_id = workspace.get("active_tab_id", "")
         pane_id = root_pane.get("pane_id")
         if not isinstance(tab_id, str) or not tab_id:
             return False, "herdr worktree created without a tab id", "", ""
@@ -1082,8 +1108,14 @@ class HerdrManager:
             await self._call_ok(["tab", "close", tab_id])
             return False, "herdr worktree created without a root pane", "", ""
         label = tab.get("label", window_name or "")
-        created_workspace = (result.get("workspace") or {}).get("workspace_id")
-        workspace_id = created_workspace if isinstance(created_workspace, str) else None
+        if not isinstance(label, str):
+            await self._call_ok(["tab", "close", tab_id])
+            return False, "herdr worktree created without a valid tab label", "", ""
+        created_workspace = workspace.get("workspace_id")
+        if created_workspace is not None and not isinstance(created_workspace, str):
+            await self._call_ok(["tab", "close", tab_id])
+            return False, "herdr worktree created without a valid workspace id", "", ""
+        workspace_id = created_workspace
 
         try:
             if launch_command and not await self._call_ok(
@@ -1168,10 +1200,25 @@ class HerdrManager:
                                         status=status,
                                     )
                             continue
+                        # Terminal events identify the pane/tab that just vanished.
+                        # Resolve and emit them through the pre-refresh guard: a
+                        # fresh snapshot cannot contain the closed locator, so
+                        # refreshing first would silently drop the close event.
+                        guarded_terminal_events = tuple(
+                            event
+                            for event in translate_event(
+                                obj, pane_to_window, tab_to_windows
+                            )
+                            if event.kind == "window_died"
+                        )
+                        if guarded_terminal_events:
+                            for event in guarded_terminal_events:
+                                yield event
+                            continue
                         # Agent locators can move while a stream is open. Herdr does
                         # not support incremental subscription updates, so refresh
-                        # the guarded mapping and reconnect before translating any
-                        # event whenever a move is observed.
+                        # the guarded mapping and reconnect before translating status
+                        # events whenever a move is observed.
                         fresh_panes, fresh_tabs = await self._resolve_event_targets(ids)
                         if (
                             fresh_panes != pane_to_window

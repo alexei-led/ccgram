@@ -106,6 +106,16 @@ Open your Telegram group, create a topic, send a message — directory browser a
 
 **Prerequisites:** Python 3.14+, [tmux](https://github.com/tmux/tmux) or [herdr](https://github.com/ogulcancelik/herdr), and one agent CLI. CCGram does not modify agent SDKs.
 
+### Herdr setup
+
+CCGram supports Herdr socket protocols **14, 15, 16, and 17**. For Pi agents, install Herdr's integration before launching the agent:
+
+```bash
+herdr integration install pi
+```
+
+Start new agents, or restart already-running agents, after installing the integration so they publish their `agent_session` identity. Then set `CCGRAM_MULTIPLEXER=herdr` and run `ccgram hook --install` as usual.
+
 ## Platform Support
 
 CCGram supports Linux, macOS, and WSL2. Native Windows is not supported.

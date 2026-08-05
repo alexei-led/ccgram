@@ -173,7 +173,11 @@ def parse_session_map_entry(raw: dict[str, Any]) -> SessionMapEntry:
     version = raw.get("schema_version")
     if version is None:
         version = 1
-    elif not isinstance(version, int) or version > SESSION_MAP_SCHEMA_VERSION:
+    elif (
+        not isinstance(version, int)
+        or isinstance(version, bool)
+        or version > SESSION_MAP_SCHEMA_VERSION
+    ):
         raise StateFileValidationError(
             f"Unsupported session_map schema_version {version!r}; "
             f"expected <= {SESSION_MAP_SCHEMA_VERSION}"
@@ -184,6 +188,9 @@ def parse_session_map_entry(raw: dict[str, Any]) -> SessionMapEntry:
         raise StateFileValidationError(
             f"Session map entry missing required fields: {missing}"
         )
+    fields = ("session_id", "cwd", "window_name", "transcript_path", "provider_name")
+    if any(not isinstance(raw.get(field, ""), str) for field in fields):
+        raise StateFileValidationError("Session map entry fields must be strings")
 
     return SessionMapEntry(
         schema_version=version,

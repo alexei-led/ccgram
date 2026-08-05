@@ -664,7 +664,7 @@ def _resolve_herdr_target_id(workspace_id: str, pane_id: str) -> str | None:
         return None
     try:
         agents = json.loads(result.stdout).get("result", {}).get("agents", [])
-    except (json.JSONDecodeError, AttributeError):
+    except json.JSONDecodeError, AttributeError:
         return None
     matches: list[dict[str, object]] = []
     for record in agents if isinstance(agents, list) else []:

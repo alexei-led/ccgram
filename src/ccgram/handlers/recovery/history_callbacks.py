@@ -26,9 +26,6 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger()
 
-# Minimum parts in history callback data: page:window_id:start:end
-_HISTORY_CB_PARTS_MIN = 4
-
 
 async def handle_history_callback(
     query: CallbackQuery,
@@ -46,19 +43,20 @@ async def handle_history_callback(
     prefix_len = len(CB_HISTORY_PREV)  # same length for both
     rest = data[prefix_len:]
     try:
-        parts = rest.split(":")
-        if len(parts) < _HISTORY_CB_PARTS_MIN:
-            # Old format without byte range: page:window_id
-            offset_str, window_id = rest.split(":", 1)
-            start_byte, end_byte = 0, 0
-        else:
-            # New format: page:window_id:start:end (window_id may contain colons)
-            offset_str = parts[0]
-            start_byte = int(parts[-2])
-            end_byte = int(parts[-1])
-            window_id = ":".join(parts[1:-2])
+        offset_str, window_payload = rest.split(":", 1)
         offset = int(offset_str)
-    except (ValueError, IndexError):  # fmt: skip
+        # A colon-containing legacy ID is still legacy unless its *final two*
+        # fields are integer offsets. Do not infer the new format from field
+        # count alone.
+        try:
+            window_id, start_raw, end_raw = window_payload.rsplit(":", 2)
+            start_byte, end_byte = int(start_raw), int(end_raw)
+            if not window_id:
+                raise ValueError
+        except ValueError:
+            window_id = window_payload
+            start_byte, end_byte = 0, 0
+    except ValueError:  # fmt: skip
         await query.answer("Invalid data")
         return
 

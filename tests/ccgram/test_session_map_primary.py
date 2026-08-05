@@ -5,7 +5,7 @@ import os
 import time
 from pathlib import Path
 
-from ccgram.session_map import parse_session_map, session_map_sync
+from ccgram.session_map import parse_session_map, read_session_map_raw, session_map_sync
 from ccgram.window_state_store import WindowState, window_store
 
 
@@ -107,6 +107,15 @@ async def test_load_session_map_preserves_primary_window_state(
     state = window_store.window_states["@7"]
     assert state.session_id == "parent"
     assert state.transcript_path == str(parent)
+
+
+async def test_unreadable_session_map_is_not_reconciled_as_empty(
+    tmp_path: Path, monkeypatch
+) -> None:
+    session_map_file = tmp_path / "session_map.json"
+    session_map_file.write_text("[]")
+    monkeypatch.setattr("ccgram.session_map.config.session_map_file", session_map_file)
+    assert await read_session_map_raw() is None
 
 
 async def test_load_session_map_malformed_entry_does_not_delete_window_state(

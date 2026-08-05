@@ -196,6 +196,28 @@ class TestCheckUnboundWindowTtl:
 class TestHerdrKillPaths:
     """Kill paths route through the multiplexer proxy regardless of window-ID format."""
 
+    async def test_unbound_cleanup_does_not_clear_state_when_kill_fails(self):
+        ws = terminal_poll_state.get_state("@0")
+        ws.unbound_timer = time.monotonic() - 100
+        mock_window = MagicMock(window_id="@0", window_name="test")
+        with (
+            patch("ccgram.handlers.topics.topic_lifecycle.config") as mock_config,
+            patch(
+                "ccgram.handlers.topics.topic_lifecycle.thread_router"
+            ) as mock_router,
+            patch("ccgram.handlers.topics.topic_lifecycle.window_query") as mock_wq,
+            patch("ccgram.handlers.topics.topic_lifecycle.tmux_manager") as mock_tmux,
+            patch(
+                "ccgram.handlers.topics.topic_lifecycle.revoke_window_tokens"
+            ) as revoke,
+        ):
+            mock_config.autoclose_done_minutes = 1
+            mock_router.iter_thread_bindings.return_value = []
+            mock_wq.view_window.return_value = _window_view("ccgram_created")
+            mock_tmux.kill_window = AsyncMock(return_value=False)
+            await check_unbound_window_ttl([mock_window])
+        revoke.assert_not_called()
+
     async def test_guarded_herdr_unbound_target_killed_via_proxy(self):
         """An opaque guarded target is passed through the multiplexer proxy."""
         herdr_id = "herdr-session-v1-" + "a" * 64

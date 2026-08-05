@@ -177,7 +177,9 @@ async def _kill_expired_unbound(now: float, timeout: float) -> None:
     """Find and kill unbound windows past their TTL."""
     expired = terminal_poll_state.get_expired_unbound(now, timeout)
     for wid in expired:
-        await tmux_manager.kill_window(wid)
+        if not await tmux_manager.kill_window(wid):
+            logger.warning("auto_kill_unbound_window_failed", window_id=wid)
+            continue
 
         # Lazy: topic_state_registry is wired during bootstrap; importing
         # at top dragged registration side effects into the polling

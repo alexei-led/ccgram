@@ -72,6 +72,21 @@ class TestMonitorLoop:
         mock_sync.prune_session_map.assert_not_called()
 
 
+class TestSessionMapReadFailures:
+    async def test_unreadable_map_does_not_reconcile_as_empty(
+        self, monitor: SessionMonitor
+    ) -> None:
+        with (
+            patch(
+                "ccgram.session_monitor.read_session_map_raw",
+                AsyncMock(return_value=None),
+            ),
+            patch("ccgram.session_monitor.session_lifecycle") as lifecycle,
+        ):
+            await monitor._detect_and_cleanup_changes()
+        lifecycle.reconcile.assert_not_called()
+
+
 class TestPendingToolsCleanup:
     async def test_cleanup_stale_removes_pending_tools(
         self, monitor: SessionMonitor

@@ -72,7 +72,8 @@ async def read_session_map_raw() -> dict[str, Any] | None:
     try:
         async with aiofiles.open(config.session_map_file, "r") as f:
             content = await f.read()
-        return cast(dict[str, Any], json.loads(content))
+        parsed = json.loads(content)
+        return parsed if isinstance(parsed, dict) else None
     except json.JSONDecodeError, OSError:
         return None
 
@@ -200,9 +201,11 @@ def parse_session_map(raw: dict[str, Any], prefix: str) -> dict[str, dict[str, s
     reflects the raw session_map rather than a wiring crash. When wired,
     the result also incorporates the in-memory primary-session preference.
     """
+    if not isinstance(raw, dict):
+        return {}
     result: dict[str, dict[str, str]] = {}
     for key, info in raw.items():
-        if not key.startswith(prefix):
+        if not isinstance(key, str) or not key.startswith(prefix):
             continue
         window_name = key[len(prefix) :]
         # A Herdr prefix alone is not authority: only an exact versioned
@@ -300,6 +303,8 @@ class SessionMapSync:
         """
         if raw is None:
             raw = await read_session_map_raw()
+        if raw is None or not isinstance(raw, dict):
+            return
         if not raw:
             return
         session_map = raw
@@ -431,14 +436,17 @@ class SessionMapSync:
                     async with aiofiles.open(config.session_map_file, "r") as f:
                         content = await f.read()
                     session_map = json.loads(content)
-                    info = session_map.get(key, {})
-                    if info.get("session_id"):
+                    if not isinstance(session_map, dict):
+                        raise ValueError("session_map root is not an object")
+                    info = session_map.get(key)
+                    if isinstance(info, dict):
+                        parse_session_map_entry(info)
                         logger.debug(
                             "session_map entry found for window_id %s", window_id
                         )
-                        await self.load_session_map()
+                        await self.load_session_map(session_map)
                         return True
-            except (json.JSONDecodeError, OSError):  # fmt: skip
+            except StateFileValidationError, json.JSONDecodeError, OSError, ValueError:
                 pass
             await asyncio.sleep(interval)
         logger.warning(
@@ -459,22 +467,35 @@ class SessionMapSync:
         if config.multiplexer_name == "herdr":
             return
 
-        raw = _read_session_map_for_pruning()
-        if raw is None:
+        map_file = config.session_map_file
+        if not map_file.exists():
             return
-        dead_entries = _dead_session_map_entries(raw, live_window_ids)
-        if not dead_entries:
-            return
+        lock_path = map_file.with_suffix(".lock")
+        try:
+            with open(lock_path, "w") as lock_f:
+                fcntl.flock(lock_f, fcntl.LOCK_EX)
+                try:
+                    # Re-read only after the hook-compatible lock is held so a
+                    # concurrent hook write cannot be lost between prune/read/write.
+                    raw = _read_session_map_for_pruning()
+                    if raw is None:
+                        return
+                    dead_entries = _dead_session_map_entries(raw, live_window_ids)
+                    if not dead_entries:
+                        return
+                    # Lazy: same cycle + wiring contract as _prefer_existing_primary.
+                    from .window_state_store import window_store
 
-        # Lazy: same cycle + wiring contract as _prefer_existing_primary.
-        from .window_state_store import window_store
-
-        changed_state = _remove_dead_session_map_entries(
-            raw, dead_entries, window_store
-        )
-        atomic_write_json(config.session_map_file, raw)
-        if changed_state:
-            self._schedule_save()
+                    changed_state = _remove_dead_session_map_entries(
+                        raw, dead_entries, window_store
+                    )
+                    atomic_write_json(map_file, raw)
+                    if changed_state:
+                        self._schedule_save()
+                finally:
+                    fcntl.flock(lock_f, fcntl.LOCK_UN)
+        except OSError as exc:
+            logger.warning("Failed to lock session_map for pruning: %s", exc)
 
     def register_hookless_session(
         self,
