@@ -286,7 +286,7 @@ async def _topic_exists(
     try:
         msg = await client.send_message(
             chat_id,
-            "​",
+            ".",
             message_thread_id=thread_id,
             disable_notification=True,
         )

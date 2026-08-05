@@ -509,6 +509,13 @@ class TestHandleNewWindow:
             100, 120014, "@3", window_name="reflex-gh"
         )
         mock_tr.set_group_chat_id.assert_called_once_with(100, 120014, -100200)
+        bot.send_message.assert_awaited_once_with(
+            -100200,
+            ".",
+            message_thread_id=120014,
+            disable_notification=True,
+        )
+        bot.delete_message.assert_awaited_once_with(-100200, 555)
         bot.create_forum_topic.assert_not_called()
 
     async def test_dead_same_name_topic_is_unbound_then_new_topic_created(self) -> None:

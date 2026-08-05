@@ -51,6 +51,10 @@ from ..messaging_pipeline.message_sender import (
 )
 from ..recovery.recovery_banner import RecoveryBanner, render_banner
 from ..polling.polling_state import lifecycle_strategy
+from ..telegram_origin import (
+    forget_telegram_injection,
+    remember_telegram_injection,
+)
 from ...topic_state_registry import topic_state
 from ..user_state import (
     AWAITING_WORKTREE_BRANCH_NAME,
@@ -421,7 +425,13 @@ async def _forward_message(
 
     lifecycle_strategy.clear_probe_failures(window_id)
 
-    success, err_message = await send_to_window(window_id, text)
+    injection = remember_telegram_injection(user_id, window_id, thread_id, text)
+    success = False
+    try:
+        success, err_message = await send_to_window(window_id, text)
+    finally:
+        if not success:
+            forget_telegram_injection(user_id, window_id, thread_id, injection)
     if not success:
         await safe_reply(message, f"\u274c {err_message}")
         return

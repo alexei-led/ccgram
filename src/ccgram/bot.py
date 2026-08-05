@@ -14,8 +14,8 @@ Responsibilities kept here:
     by the message handler registry
 """
 
-import os
 import signal
+import time
 
 import structlog
 from telegram.error import BadRequest, Conflict, NetworkError
@@ -68,6 +68,48 @@ __all__ = [
 ]
 
 logger = structlog.get_logger()
+
+_CONFLICT_GRACE_PERIOD_S = 90.0
+
+
+class _PollingConflictState:
+    """Track consecutive getUpdates conflicts until a successful poll resets them."""
+
+    def __init__(self) -> None:
+        self._first_conflict_at: float | None = None
+        self.shutdown_requested = False
+
+    def reset(self) -> None:
+        self._first_conflict_at = None
+        self.shutdown_requested = False
+
+    def record_success(self) -> None:
+        self._first_conflict_at = None
+
+    def record_conflict(self, now: float) -> bool:
+        if self._first_conflict_at is None:
+            self._first_conflict_at = now
+            return False
+        if now - self._first_conflict_at < _CONFLICT_GRACE_PERIOD_S:
+            return False
+        self.shutdown_requested = True
+        return True
+
+
+_polling_conflict_state = _PollingConflictState()
+
+
+def _reset_polling_conflict_state() -> None:
+    _polling_conflict_state.reset()
+
+
+def polling_conflict_requires_restart() -> bool:
+    """Return whether sustained polling conflicts stopped the application."""
+    return _polling_conflict_state.shutdown_requested
+
+
+def _record_successful_poll() -> None:
+    _polling_conflict_state.record_success()
 
 
 def is_user_allowed(user_id: int | None) -> bool:
@@ -135,11 +177,19 @@ async def post_shutdown(_application: Application) -> None:
 async def _error_handler(_update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle bot-level errors from updater and handlers."""
     if isinstance(context.error, Conflict):
-        logger.critical(
-            "Another bot instance is polling with the same token. "
-            "Shutting down to avoid conflicts."
-        )
-        os.kill(os.getpid(), signal.SIGINT)
+        if _polling_conflict_state.record_conflict(time.monotonic()):
+            logger.critical(
+                "Telegram polling conflict persisted for %.0fs; stopping so the "
+                "service supervisor can restart ccgram. Check for another bot instance.",
+                _CONFLICT_GRACE_PERIOD_S,
+            )
+            context.application.stop_running()
+        else:
+            logger.warning(
+                "Telegram polling conflict; retrying for up to %.0fs before stopping. "
+                "This can follow a network reconnect.",
+                _CONFLICT_GRACE_PERIOD_S,
+            )
         return
     if isinstance(context.error, BadRequest) and "too old" in str(context.error):
         logger.debug("Callback query expired (query too old)")
@@ -154,6 +204,7 @@ async def _error_handler(_update: object, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 def create_bot() -> Application:
+    _reset_polling_conflict_state()
     # Suppress PTBUserWarning about JobQueue (we intentionally don't use it for core tasks)
     # Lazy: only used inside the deprecation guard
     import warnings
@@ -164,7 +215,12 @@ def create_bot() -> Application:
         .token(config.telegram_bot_token)
         .rate_limiter(AIORateLimiter(max_retries=5))
         .request(ResilientPollingHTTPXRequest())
-        .get_updates_request(ResilientPollingHTTPXRequest(connection_pool_size=1))
+        .get_updates_request(
+            ResilientPollingHTTPXRequest(
+                connection_pool_size=1,
+                on_success=_record_successful_poll,
+            )
+        )
         .post_init(post_init)
         .post_stop(post_stop)
         .post_shutdown(post_shutdown)

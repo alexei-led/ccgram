@@ -607,6 +607,11 @@ systemctl --user enable ccgram
 systemctl --user start ccgram
 ```
 
+ccgram retries brief Telegram polling conflicts for up to 90 seconds, which can
+occur after a network reconnect. Persistent conflicts stop with a non-zero exit
+so `Restart=on-failure` restarts the service. Check for another bot process that
+uses the same token if the conflict returns.
+
 On macOS, you can use a launchd plist or simply run in a detached tmux session:
 
 ```bash

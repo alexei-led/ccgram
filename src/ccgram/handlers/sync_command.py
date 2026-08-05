@@ -302,8 +302,8 @@ async def _adopt_orphaned_windows(
 async def _probe_dead_topics(client: TelegramClient) -> list[AuditIssue]:
     """Probe Telegram topics for all live bindings, return dead_topic issues.
 
-    Sends a silent zero-width-space message to each thread and deletes it
-    immediately. ``send_chat_action`` does NOT validate thread existence —
+    Sends a silent dot message to each thread and deletes it immediately.
+    ``send_chat_action`` does NOT validate thread existence —
     only ``send_message`` reliably throws "thread not found" for deleted topics.
     """
     bindings = [
@@ -324,7 +324,7 @@ async def _probe_dead_topics(client: TelegramClient) -> list[AuditIssue]:
             try:
                 msg = await client.send_message(
                     chat_id,
-                    "​",  # zero-width space — invisible
+                    ".",
                     message_thread_id=thread_id,
                     disable_notification=True,
                 )

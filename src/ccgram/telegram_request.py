@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+from collections.abc import Callable
 
 import httpx
 import structlog
@@ -29,8 +30,11 @@ class ResilientPollingHTTPXRequest(HTTPXRequest):
     sustained outages.
     """
 
-    def __init__(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+    def __init__(
+        self, *args, on_success: Callable[[], None] | None = None, **kwargs
+    ) -> None:  # type: ignore[no-untyped-def]
         super().__init__(*args, **kwargs)
+        self._on_success = on_success
         # 0.0 means "no warn yet" — first reset will warn.
         self._last_reset_warn_ts: float = 0.0
 
@@ -74,4 +78,6 @@ class ResilientPollingHTTPXRequest(HTTPXRequest):
         else:
             # Successful request — next reset gets to warn again.
             self._last_reset_warn_ts = 0.0
+            if self._on_success is not None:
+                self._on_success()
             return result

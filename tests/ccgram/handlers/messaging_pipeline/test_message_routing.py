@@ -1,8 +1,13 @@
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from ccgram.handlers.messaging_pipeline.message_routing import handle_new_message
+from ccgram.handlers.telegram_origin import (
+    clear_pending_telegram_injections,
+    remember_telegram_injection,
+)
 from ccgram.session_monitor import NewMessage
 
 
@@ -27,6 +32,13 @@ def _make_msg(
         role=role,
         is_complete=is_complete,
     )
+
+
+@pytest.fixture(autouse=True)
+def _clear_pending_telegram_injections() -> Iterator[None]:
+    clear_pending_telegram_injections()
+    yield
+    clear_pending_telegram_injections()
 
 
 @pytest.fixture
@@ -149,3 +161,30 @@ async def test_complete_message_enqueues_content(bot, mock_deps):
     assert kwargs["user_id"] == 100
     assert kwargs["window_id"] == "@5"
     assert kwargs["thread_id"] == 42
+
+
+async def test_matching_telegram_user_message_is_suppressed(bot, mock_deps):
+    remember_telegram_injection(100, "@5", 42, "hello")
+
+    await handle_new_message(_make_msg(text="hello", role="user"), bot)
+
+    mock_deps["eq"].assert_not_called()
+
+
+async def test_terminal_user_message_is_relayed(bot, mock_deps):
+    await handle_new_message(_make_msg(text="hello", role="user"), bot)
+
+    mock_deps["eq"].assert_called_once()
+
+
+async def test_telegram_echo_is_suppressed_only_for_its_origin_topic(bot, mock_deps):
+    mock_deps["sq"].find_users_for_session.return_value = [
+        (100, "@5", 42),
+        (200, "@5", 43),
+    ]
+    remember_telegram_injection(100, "@5", 42, "hello")
+
+    await handle_new_message(_make_msg(text="hello", role="user"), bot)
+
+    mock_deps["eq"].assert_awaited_once()
+    assert mock_deps["eq"].call_args.kwargs["user_id"] == 200

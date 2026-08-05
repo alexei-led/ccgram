@@ -49,6 +49,15 @@ class TestResilientPollingHTTPXRequest:
         assert old_client.is_closed
         assert not request._client.is_closed
 
+    async def test_calls_success_callback_after_successful_request(self) -> None:
+        on_success = MagicMock()
+        request = ResilientPollingHTTPXRequest(on_success=on_success)
+
+        with patch.object(HTTPXRequest, "do_request", AsyncMock(return_value=b"ok")):
+            assert await request.do_request("https://example.com", "POST") == b"ok"
+
+        on_success.assert_called_once()
+
 
 def _reset_log_calls(mock_logger, level: str) -> list:
     return [

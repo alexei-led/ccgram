@@ -306,7 +306,7 @@ def run_bot() -> None:
     dev = "+dev" if "+unknown" in __version__ or ".dev" in __version__ else ""
     logger.info("Starting ccgram %s%s", __version__, dev)
     # Lazy: main runs `ccgram` startup; defer imports until the relevant subcommand executes
-    from .bot import create_bot
+    from .bot import create_bot, polling_conflict_requires_restart
 
     # Create the loop here so signal handlers can be registered on it before
     # run_polling() blocks. PTB's __run reuses the loop set via set_event_loop.
@@ -323,6 +323,9 @@ def run_bot() -> None:
     if _restart_requested:
         logger.info("Restarting bot via os.execv(%s)", sys.argv)
         os.execv(sys.argv[0], sys.argv)
+
+    if polling_conflict_requires_restart():
+        raise SystemExit(1)
 
     _reraise_shutdown_signal()
 

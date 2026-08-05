@@ -543,7 +543,15 @@ class TestDeadTopicDetection:
         mock_bot.send_message.return_value = MagicMock(message_id=999)
 
         issues = await _probe_dead_topics(mock_bot)
+
         assert issues == []
+        mock_bot.send_message.assert_awaited_once_with(
+            -999,
+            ".",
+            message_thread_id=42,
+            disable_notification=True,
+        )
+        mock_bot.delete_message.assert_awaited_once_with(-999, 999)
 
     async def test_probe_skips_network_errors(self, _patch_deps) -> None:
         _, _, _, mock_tr, _, _ = _patch_deps
