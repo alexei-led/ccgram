@@ -1166,6 +1166,7 @@ class HerdrManager:
                     for subscription in (
                         {"type": "pane.agent_status_changed", "pane_id": pane},
                         {"type": "pane.exited", "pane_id": pane},
+                        {"type": "pane.closed", "pane_id": pane},
                     )
                 ),
             ]

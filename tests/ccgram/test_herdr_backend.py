@@ -390,8 +390,10 @@ def test_translate_event_maps_target_pane_exit_without_killing_siblings() -> Non
 async def test_watch_events_emits_each_guarded_target_for_shared_tab_close() -> None:
     first = _agent(pane_id="w7:p4", tab_id="w7:t3", value="first")
     second = _agent(pane_id="w7:p5", tab_id="w7:t3", value="second")
+    seen_subscriptions: list[Mapping[str, object]] = []
 
-    async def stream(_subscriptions: Sequence[Mapping[str, object]]):
+    async def stream(subscriptions: Sequence[Mapping[str, object]]):
+        seen_subscriptions.extend(subscriptions)
         yield {"__subscribed__": True}
         yield {"event": "tab_closed", "data": {"tab_id": "w7:t3"}}
 
@@ -402,6 +404,10 @@ async def test_watch_events_emits_each_guarded_target_for_shared_tab_close() -> 
     try:
         assert (await anext(watcher)).window_id == _target("first")
         assert (await anext(watcher)).window_id == _target("second")
+        assert {subscription["type"] for subscription in seen_subscriptions} >= {
+            "pane.exited",
+            "pane.closed",
+        }
     finally:
         await watcher.aclose()
 
