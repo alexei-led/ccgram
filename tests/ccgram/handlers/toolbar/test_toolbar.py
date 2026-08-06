@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -270,16 +270,67 @@ class TestDispatchText:
             patch(
                 "ccgram.handlers.toolbar.toolbar_callbacks.tmux_manager"
             ) as mock_tmux,
+            patch(
+                "ccgram.handlers.toolbar.toolbar_callbacks.get_thread_id",
+                return_value=42,
+            ),
+            patch(
+                "ccgram.handlers.toolbar.toolbar_callbacks.send_telegram_to_window",
+                new_callable=AsyncMock,
+                return_value=(True, "ok"),
+            ) as mock_send,
         ):
             mock_tmux.find_window_by_id = AsyncMock(
                 return_value=MagicMock(window_id="@5")
             )
-            mock_tmux.send_keys = AsyncMock()
             await handle_toolbar_callback(query, 100, "tb:@5:clear", update, context)
-        mock_tmux.send_keys.assert_awaited_once_with(
-            "@5", "/clear", enter=True, literal=True
-        )
+        mock_send.assert_awaited_once_with(100, "@5", 42, "/clear", ANY)
         query.answer.assert_awaited_once()
+
+    async def test_text_action_reports_send_failure(self) -> None:
+        action = ToolbarAction(
+            name="clear",
+            emoji="🧹",
+            text="Clear",
+            action_type="text",
+            payload="/clear",
+        )
+        cfg = ToolbarConfig(
+            layouts=dict(DEFAULT_LAYOUTS),
+            actions={**BUILTIN_ACTIONS, "clear": action},
+        )
+        query = _make_query("tb:@5:clear")
+        update = _make_update_with_user()
+        with (
+            patch(
+                "ccgram.handlers.toolbar.toolbar_callbacks.get_toolbar_config",
+                return_value=cfg,
+            ),
+            patch(
+                "ccgram.handlers.toolbar.toolbar_callbacks.user_owns_window",
+                return_value=True,
+            ),
+            patch(
+                "ccgram.handlers.toolbar.toolbar_callbacks.tmux_manager"
+            ) as mock_tmux,
+            patch(
+                "ccgram.handlers.toolbar.toolbar_callbacks.get_thread_id",
+                return_value=42,
+            ),
+            patch(
+                "ccgram.handlers.toolbar.toolbar_callbacks.send_telegram_to_window",
+                new_callable=AsyncMock,
+                return_value=(False, "window gone"),
+            ),
+        ):
+            mock_tmux.find_window_by_id = AsyncMock(
+                return_value=MagicMock(window_id="@5")
+            )
+            await handle_toolbar_callback(
+                query, 100, "tb:@5:clear", update, _make_context()
+            )
+
+        query.answer.assert_awaited_once_with("window gone", show_alert=True)
 
 
 # ──────────────────────────────────────────────────────────────────────

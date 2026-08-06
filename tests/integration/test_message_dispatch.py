@@ -7,7 +7,7 @@ external dependencies (Bot API, TmuxManager, SessionManager).
 
 import os
 from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from telegram import Chat, Message, MessageEntity, Update, User
@@ -195,7 +195,7 @@ async def test_new_command_forwarded(app) -> None:
             return_value=MagicMock(window_id="@0"),
         ),
         patch(
-            "ccgram.handlers.commands.forward.send_to_window",
+            "ccgram.handlers.commands.forward.send_telegram_to_window",
             new_callable=AsyncMock,
             return_value=(True, "Sent"),
         ) as mock_send,
@@ -208,7 +208,7 @@ async def test_new_command_forwarded(app) -> None:
     ):
         await app.process_update(update)
 
-    mock_send.assert_awaited_once_with("@0", "/new")
+    mock_send.assert_awaited_once_with(12345, "@0", 42, "/new", ANY)
 
 
 async def test_unknown_command_forwarded(app) -> None:
@@ -229,7 +229,7 @@ async def test_unknown_command_forwarded(app) -> None:
             return_value=MagicMock(window_id="@0"),
         ),
         patch(
-            "ccgram.handlers.commands.forward.send_to_window",
+            "ccgram.handlers.commands.forward.send_telegram_to_window",
             new_callable=AsyncMock,
             return_value=(True, "Sent"),
         ),

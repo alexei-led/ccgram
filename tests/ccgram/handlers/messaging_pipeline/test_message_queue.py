@@ -13,6 +13,7 @@ from ccgram.handlers.messaging_pipeline.message_queue import (
     _dispatch,
     _handle_content_task,
     _merge_content_tasks,
+    _process_content_task,
     get_or_create_queue,
     shutdown_workers,
 )
@@ -313,6 +314,34 @@ class TestDispatch:
         assert extra == 0
         mock_flush.assert_awaited_once_with(1, cl, bot)
         mock_clear.assert_awaited_once_with(bot, 1, cl)
+
+
+class TestChatScopedContentDelivery:
+    async def test_content_task_uses_explicit_chat_id(self) -> None:
+        client = FakeTelegramClient()
+        task = ContentTask(
+            window_id="@0",
+            parts=("hello",),
+            thread_id=42,
+            chat_id=-1002,
+        )
+
+        with (
+            patch(
+                "ccgram.handlers.messaging_pipeline.message_queue.convert_status_to_content",
+                new_callable=AsyncMock,
+            ) as mock_convert,
+            patch(
+                "ccgram.handlers.messaging_pipeline.message_queue.rate_limit_send_message",
+                new_callable=AsyncMock,
+                return_value=None,
+            ) as mock_send,
+        ):
+            await _process_content_task(client, 100, task)
+
+        mock_convert.assert_not_awaited()
+        mock_send.assert_awaited_once()
+        assert mock_send.await_args_list[0].args[:2] == (client, -1002)
 
 
 class TestNoBackEdgeImports:

@@ -23,6 +23,7 @@ class ContentTask:
     tool_use_id: str | None = None
     tool_name: str | None = None
     thread_id: int | None = None
+    chat_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

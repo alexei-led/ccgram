@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 import structlog
 from telegram.error import TelegramError
 
-from ...thread_router import thread_router
+from ...thread_router import chat_scope, thread_router
 from ...multiplexer import multiplexer as tmux_manager
 from ...multiplexer.reconciliation import list_windows_for_reconciliation
 from ...utils import log_throttled
@@ -26,8 +26,6 @@ _BACKOFF_MIN = 2.0
 _BACKOFF_MAX = 30.0
 
 _LoopError = (TelegramError, OSError, RuntimeError, ValueError)
-
-
 # ── Per-iteration tick helper ─────────────────────────────────────────────
 
 
@@ -42,14 +40,20 @@ async def _tick_bound_windows(
     Extracted so tests can drive a single iteration with an isolated
     ``PollingRuntime``. Production callers pass no runtime; default singletons.
     """
-    for user_id, thread_id, wid in list(thread_router.iter_thread_bindings()):
+    bindings = list(thread_router.iter_thread_bindings_with_chat()) or [
+        (uid, None, tid, wid) for uid, tid, wid in thread_router.iter_thread_bindings()
+    ]
+    for user_id, chat_id, thread_id, wid in bindings:
+        if chat_id is None:
+            chat_id = thread_router.resolve_chat_id(user_id, thread_id)
         structlog.contextvars.clear_contextvars()
         structlog.contextvars.bind_contextvars(window_id=wid)
         try:
-            w = window_lookup.get(wid)
-            await window_tick.tick_window(
-                bot, user_id, thread_id, wid, w, runtime=runtime
-            )
+            with chat_scope(chat_id):
+                w = window_lookup.get(wid)
+                await window_tick.tick_window(
+                    bot, user_id, thread_id, wid, w, runtime=runtime
+                )
         except (TelegramError, OSError) as e:
             log_throttled(
                 logger,

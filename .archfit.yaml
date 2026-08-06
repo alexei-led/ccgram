@@ -17,7 +17,7 @@
 #   mirror and advisory gate: keep `no-import-cycles` as warn because the repo
 #   intentionally uses lazy imports that runtime tests accept.
 # - The config below is intended for full scans and delta scans. Keep it aligned
-#   with the current package map before running `archfit analyze --full` or
+#   with the current package map before running `archfit analyze` or
 #   `archfit analyze --base <ref>`.
 #
 # Solo-developer / distance note (Balanced Coupling):

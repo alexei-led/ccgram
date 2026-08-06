@@ -23,6 +23,7 @@ from ..interactive import (
     set_interactive_mode,
 )
 from ..response_builder import build_response_parts
+from ..telegram_origin import consume_telegram_injection
 from .message_queue import enqueue_content_message, get_message_queue
 
 logger = structlog.get_logger()
@@ -50,11 +51,21 @@ async def handle_new_message(msg: NewMessage, client: TelegramClient) -> None:  
         logger.debug("No active users for session %s", msg.session_id)
         return
 
-    for user_id, window_id, thread_id in active_users:
+    for user_id, window_id, thread_id, chat_id in active_users:
         structlog.contextvars.clear_contextvars()
         structlog.contextvars.bind_contextvars(
             window_id=window_id, session_id=msg.session_id
         )
+
+        if (
+            msg.is_complete
+            and msg.role == "user"
+            and consume_telegram_injection(
+                user_id, window_id, thread_id, msg.text, chat_id
+            )
+        ):
+            logger.debug("Suppressed Telegram-originated user transcript message")
+            continue
 
         if msg.content_type == "thinking":
             stripped = (msg.text or "").strip()
@@ -103,6 +114,7 @@ async def handle_new_message(msg: NewMessage, client: TelegramClient) -> None:  
                 content_type=msg.content_type,  # type: ignore[arg-type]  # NewMessage.content_type is str, narrows at runtime
                 role=msg.role,  # type: ignore[arg-type]  # NewMessage.role is str, narrows at runtime
                 thread_id=thread_id,
+                chat_id=chat_id,
             )
 
             session = await session_query.resolve_session_for_window(window_id)

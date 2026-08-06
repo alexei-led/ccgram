@@ -5,9 +5,23 @@ import io
 import signal
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from telegram.error import BadRequest, Conflict, NetworkError, TelegramError
+from telegram.request import HTTPXRequest
 
-from ccgram.bot import _error_handler, _send_shutdown_notification
+from ccgram.bot import (
+    _error_handler,
+    _record_successful_poll,
+    _reset_polling_conflict_state,
+    _send_shutdown_notification,
+    polling_conflict_requires_restart,
+)
+from ccgram.telegram_request import ResilientPollingHTTPXRequest
+
+
+@pytest.fixture(autouse=True)
+def _reset_conflict_state() -> None:
+    _reset_polling_conflict_state()
 
 
 def _make_context(error: BaseException) -> MagicMock:
@@ -65,16 +79,64 @@ class TestErrorHandlerStaleCallback:
 
         mock_logger.error.assert_called_once()
 
-    async def test_conflict_triggers_shutdown(self) -> None:
+    async def test_conflict_retries_during_grace_period(self) -> None:
         ctx = _make_context(Conflict("409 Conflict"))
 
         with (
-            patch("ccgram.bot.logger"),
-            patch("ccgram.bot.os.kill") as mock_kill,
+            patch("ccgram.bot.logger") as mock_logger,
+            patch("ccgram.bot.time.monotonic", return_value=100.0),
         ):
             await _error_handler(None, ctx)
 
-        mock_kill.assert_called_once()
+        ctx.application.stop_running.assert_not_called()
+        assert polling_conflict_requires_restart() is False
+        mock_logger.warning.assert_called_once()
+
+    async def test_sustained_conflict_stops_for_supervisor_restart(self) -> None:
+        ctx = _make_context(Conflict("409 Conflict"))
+
+        with (
+            patch("ccgram.bot.logger") as mock_logger,
+            patch("ccgram.bot.time.monotonic", side_effect=[100.0, 190.0]),
+        ):
+            await _error_handler(None, ctx)
+            await _error_handler(None, ctx)
+
+        ctx.application.stop_running.assert_called_once()
+        assert polling_conflict_requires_restart() is True
+        mock_logger.critical.assert_called_once()
+
+    async def test_successful_poll_resets_conflict_grace_period(self) -> None:
+        ctx = _make_context(Conflict("409 Conflict"))
+
+        with patch("ccgram.bot.time.monotonic", side_effect=[100.0, 1_000.0]):
+            await _error_handler(None, ctx)
+            _record_successful_poll()
+            await _error_handler(None, ctx)
+
+        ctx.application.stop_running.assert_not_called()
+        assert polling_conflict_requires_restart() is False
+
+    async def test_raw_conflicts_accumulate_until_shutdown(self) -> None:
+        request = ResilientPollingHTTPXRequest(on_success=_record_successful_poll)
+        response = (
+            409,
+            b'{"ok": false, "error_code": 409, "description": "Conflict"}',
+        )
+        ctx = _make_context(Conflict("placeholder"))
+
+        with (
+            patch.object(HTTPXRequest, "do_request", AsyncMock(return_value=response)),
+            patch("ccgram.bot.time.monotonic", side_effect=[100.0, 190.0]),
+        ):
+            for _ in range(2):
+                with pytest.raises(Conflict) as raised:
+                    await request.post("https://example.com")
+                ctx.error = raised.value
+                await _error_handler(None, ctx)
+
+        ctx.application.stop_running.assert_called_once()
+        assert polling_conflict_requires_restart() is True
 
 
 class TestShutdownNotification:

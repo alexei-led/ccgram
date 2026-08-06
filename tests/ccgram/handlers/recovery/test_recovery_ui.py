@@ -517,7 +517,7 @@ class TestBotTextHandlerScopedMenu:
 
             await text_handler(update, ctx)
 
-            mock_tr.resolve_window_for_thread.assert_called_once_with(100, 42)
+            mock_tr.resolve_window_for_thread.assert_called_once_with(100, 42, -100999)
             mock_sync_menu.assert_called_once_with(update.message, 100, provider)
             mock_handle_text.assert_called_once_with(update, ctx)
         finally:
@@ -560,11 +560,11 @@ class TestRecoveryFreshCallback:
             "/tmp/project", agent_args="", launch_command="claude"
         )
         mock_tr.bind_thread.assert_called_once_with(
-            100, 42, "@5", window_name="project"
+            100, 42, "@5", window_name="project", chat_id=-100999
         )
         mock_tr.set_group_chat_id.assert_called_once_with(100, 42, -100999)
 
-    @patch(f"{_RC}.send_to_window", new_callable=AsyncMock)
+    @patch(f"{_RC}.send_telegram_to_window", new_callable=AsyncMock)
     @patch(f"{_RC}.thread_router")
     @patch(f"{_RC}.tmux_manager")
     @patch(f"{_RC}.window_query")
@@ -596,7 +596,7 @@ class TestRecoveryFreshCallback:
             mock_path.return_value.is_dir.return_value = True
             await handle_recovery_callback(query, 100, query.data, update, ctx)
 
-        mock_send_to_window.assert_called_once_with("@5", "hello")
+        mock_send_to_window.assert_called_once_with(100, "@5", 42, "hello", -100999)
         assert PENDING_THREAD_TEXT not in user_data
         assert PENDING_THREAD_ID not in user_data
         assert RECOVERY_WINDOW_ID not in user_data
@@ -700,11 +700,11 @@ class TestRecoveryContinueCallback:
             "/tmp/project", agent_args="--continue", launch_command="claude"
         )
         mock_tr.bind_thread.assert_called_once_with(
-            100, 42, "@5", window_name="project"
+            100, 42, "@5", window_name="project", chat_id=-100999
         )
 
     @patch(f"{_RC}.scan_sessions_for_cwd", return_value=[_SessionEntry("s1", "x")])
-    @patch(f"{_RC}.send_to_window", new_callable=AsyncMock)
+    @patch(f"{_RC}.send_telegram_to_window", new_callable=AsyncMock)
     @patch(f"{_RC}.thread_router")
     @patch(f"{_RC}.tmux_manager")
     @patch(f"{_RC}.window_query")
@@ -737,7 +737,9 @@ class TestRecoveryContinueCallback:
             mock_path.return_value.is_dir.return_value = True
             await handle_recovery_callback(query, 100, query.data, update, ctx)
 
-        mock_send_to_window.assert_called_once_with("@5", "my message")
+        mock_send_to_window.assert_called_once_with(
+            100, "@5", 42, "my message", -100999
+        )
         assert PENDING_THREAD_TEXT not in user_data
 
     @patch(f"{_RC}.tmux_manager")

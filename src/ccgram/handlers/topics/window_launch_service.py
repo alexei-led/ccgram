@@ -24,7 +24,7 @@ from ...session import session_manager
 from ...session_map import session_map_sync
 from ...thread_router import thread_router
 from ...multiplexer import multiplexer as tmux_manager
-from ...multiplexer.window_ops import send_to_window
+from ..telegram_origin import send_telegram_to_window
 from ...user_preferences import user_preferences
 from ...window_state_store import CCGRAM_CREATED_WINDOW_ORIGIN
 from ..messaging_pipeline.message_sender import safe_edit, safe_send
@@ -63,6 +63,7 @@ class WindowLaunchRequest:
     cwd: str
     mode: str
     pending_text: str | None
+    chat_id: int | None = None
     # Worktree metadata is NOT carried in this request. It flows through
     # context.user_data via PENDING_WORKTREE_PATH / PENDING_WORKTREE_BRANCH /
     # PENDING_WORKTREE_REPO keys, read directly by _persist_worktree_state and
@@ -301,6 +302,8 @@ async def launch_window(  # noqa: PLR0912, PLR0915, C901
                 thread_router.unbind_thread(user_id, pending_thread_id)
         raise
 
+    query_message = query.message
+    chat = query_message.chat if query_message else None
     provider_caps = provider_registry.get(provider_name).capabilities
     if provider_caps.chat_first_command_path:
         # Lazy: shell ↔ topics cycle via window_callbacks adoption flow.
@@ -318,10 +321,12 @@ async def launch_window(  # noqa: PLR0912, PLR0915, C901
 
     if pending_thread_id is not None:
         thread_router.bind_thread(
-            user_id, pending_thread_id, created_wid, window_name=created_wname
+            user_id,
+            pending_thread_id,
+            created_wid,
+            window_name=created_wname,
+            chat_id=chat.id if chat and chat.type in ("group", "supergroup") else None,
         )
-        query_message = query.message
-        chat = query_message.chat if query_message else None
         if chat and chat.type in ("group", "supergroup"):
             thread_router.set_group_chat_id(user_id, pending_thread_id, chat.id)
 
@@ -407,9 +412,16 @@ async def launch_window(  # noqa: PLR0912, PLR0915, C901
                 pending_thread_id,
                 created_wid,
                 pending_text,
+                chat_id=chat.id if chat else None,
             )
         else:
-            send_ok, send_msg = await send_to_window(created_wid, pending_text)
+            send_ok, send_msg = await send_telegram_to_window(
+                user_id,
+                created_wid,
+                pending_thread_id,
+                pending_text,
+                chat.id if chat else None,
+            )
             if not send_ok:
                 logger.warning(
                     "Failed to forward pending text to window %s (user %s): %s",

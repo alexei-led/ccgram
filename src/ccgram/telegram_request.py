@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+from collections.abc import Callable
 
 import httpx
 import structlog
@@ -29,10 +30,12 @@ class ResilientPollingHTTPXRequest(HTTPXRequest):
     sustained outages.
     """
 
-    def __init__(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+    def __init__(
+        self, *args, on_success: Callable[[], None] | None = None, **kwargs
+    ) -> None:  # type: ignore[no-untyped-def]
         super().__init__(*args, **kwargs)
-        # 0.0 means "no warn yet" — first reset will warn.
-        self._last_reset_warn_ts: float = 0.0
+        self._on_success = on_success
+        self._last_reset_warn_ts: float | None = None
 
     async def _reset_client(self, *, reason: str) -> None:
         old_client = self._client
@@ -50,14 +53,25 @@ class ResilientPollingHTTPXRequest(HTTPXRequest):
 
     def _should_warn_for_reset(self, now: float) -> bool:
         """Throttle: warn once per interval, then debug. Reset by success."""
-        if now - self._last_reset_warn_ts >= _RESET_WARN_INTERVAL_S:
+        if (
+            self._last_reset_warn_ts is None
+            or now - self._last_reset_warn_ts >= _RESET_WARN_INTERVAL_S
+        ):
             self._last_reset_warn_ts = now
             return True
         return False
 
+    async def post(self, *args, **kwargs):  # type: ignore[override]
+        result = await super().post(*args, **kwargs)
+        # BaseRequest.post validates the Bot API response before returning.
+        self._last_reset_warn_ts = None
+        if self._on_success is not None:
+            self._on_success()
+        return result
+
     async def do_request(self, *args, **kwargs):  # type: ignore[override]
         try:
-            result = await super().do_request(*args, **kwargs)
+            return await super().do_request(*args, **kwargs)
         except (TimedOut, NetworkError) as exc:
             await self._reset_client(reason=exc.__class__.__name__)
             log = (
@@ -71,7 +85,3 @@ class ResilientPollingHTTPXRequest(HTTPXRequest):
                 exc,
             )
             raise
-        else:
-            # Successful request — next reset gets to warn again.
-            self._last_reset_warn_ts = 0.0
-            return result

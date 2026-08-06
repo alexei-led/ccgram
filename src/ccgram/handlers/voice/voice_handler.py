@@ -125,7 +125,9 @@ async def handle_voice_message(
         return
 
     thread_id = get_thread_id(update)
-    window_id = thread_router.resolve_window_for_thread(user.id, thread_id)
+    window_id = thread_router.resolve_window_for_thread(
+        user.id, thread_id, message.chat.id
+    )
     if not window_id:
         await safe_reply(
             message,

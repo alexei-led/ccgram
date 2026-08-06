@@ -33,7 +33,10 @@ from ...telegram_client import PTBTelegramClient
 from ...window_state_store import window_store
 from ...thread_router import thread_router
 from ...multiplexer import multiplexer as tmux_manager
-from ...multiplexer.window_ops import send_followup_to_window, send_to_window
+from ..telegram_origin import (
+    send_telegram_followup_to_window,
+    send_telegram_to_window,
+)
 from ..callback_helpers import get_thread_id as _get_thread_id
 from ..command_history import record_command
 from ..messaging_pipeline.message_queue import enqueue_status_update
@@ -130,7 +133,9 @@ async def _handle_pi_followup_command(
         message_thread_id=thread_id,
         action=ChatAction.TYPING,
     )
-    success, error_msg = await send_followup_to_window(window_id, args)
+    success, error_msg = await send_telegram_followup_to_window(
+        user_id, window_id, thread_id, args, message.chat.id
+    )
     if not success:
         await safe_reply(message, f"❌ {error_msg}")
         return
@@ -254,7 +259,7 @@ async def forward_command_handler(
     # args is forwarded verbatim to the provider via tmux send-keys -l (literal mode).
     # Gated by config.is_user_allowed — authorised users can type anything into their own agent.
     args = parts[1] if len(parts) > 1 else ""
-    window_id = thread_router.resolve_window_for_thread(user.id, thread_id)
+    window_id = thread_router.resolve_window_for_thread(user.id, thread_id, chat.id)
     if not window_id:
         await safe_reply(update.message, "❌ No session bound to this topic.")
         return
@@ -300,7 +305,9 @@ async def forward_command_handler(
     ) = await _capture_forward_probe_context(window_id, provider, cc_slash, status_like)
 
     lifecycle_strategy.clear_probe_failures(window_id)
-    success, error_msg = await send_to_window(window_id, cc_slash)
+    success, error_msg = await send_telegram_to_window(
+        user.id, window_id, thread_id, cc_slash, update.message.chat.id
+    )
     if not success:
         await safe_reply(update.message, f"❌ {error_msg}")
         return

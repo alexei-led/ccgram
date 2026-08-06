@@ -16,7 +16,7 @@ from telegram.error import TelegramError
 from ...providers import get_provider_for_window
 from ...telegram_client import PTBTelegramClient
 from ...window_query import get_window_provider
-from ...multiplexer.window_ops import send_to_window
+from ..telegram_origin import send_telegram_to_window
 from ...thread_router import thread_router
 from ..callback_data import CB_VOICE
 from ..callback_helpers import get_thread_id
@@ -86,7 +86,7 @@ async def _handle_send(
         return
 
     thread_id = get_thread_id(update)
-    window_id = thread_router.resolve_window_for_thread(user_id, thread_id)
+    window_id = thread_router.resolve_window_for_thread(user_id, thread_id, msg.chat.id)
     if not window_id:
         pending_store[(msg.chat.id, message_id)] = pending_text
         await query.answer("⚠️ No session bound.", show_alert=True)
@@ -117,7 +117,9 @@ async def _handle_send(
         await _ack_delivered(client, msg, query, message_id)
         return
 
-    success, err = await send_to_window(window_id, pending_text)
+    success, err = await send_telegram_to_window(
+        user_id, window_id, thread_id, pending_text, msg.chat.id
+    )
 
     if success:
         await _ack_delivered(client, msg, query, message_id)

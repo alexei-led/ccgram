@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -543,7 +544,15 @@ class TestDeadTopicDetection:
         mock_bot.send_message.return_value = MagicMock(message_id=999)
 
         issues = await _probe_dead_topics(mock_bot)
+
         assert issues == []
+        mock_bot.send_message.assert_awaited_once_with(
+            -999,
+            ".",
+            message_thread_id=42,
+            disable_notification=True,
+        )
+        mock_bot.delete_message.assert_awaited_once_with(-999, 999)
 
     async def test_probe_skips_network_errors(self, _patch_deps) -> None:
         _, _, _, mock_tr, _, _ = _patch_deps
@@ -623,6 +632,7 @@ class TestDeadTopicRecreation:
         with patch(
             "ccgram.handlers.topics.topic_orchestration.handle_new_window",
             new_callable=AsyncMock,
+            return_value=True,
         ) as mock_handle:
             count = await _recreate_dead_topics(mock_bot, issues)
             assert count == 1
@@ -631,6 +641,70 @@ class TestDeadTopicRecreation:
             event = mock_handle.call_args[0][0]
             assert event.window_id == "w2:t2"
             assert event.window_name == "qmd-go"
+            assert mock_handle.call_args.kwargs == {
+                "target_user_id": 100,
+                "target_chat_id": mock_tr.resolve_chat_id.return_value,
+            }
+
+    async def test_recreate_restores_binding_when_creation_returns_false(
+        self, _patch_deps
+    ) -> None:
+        _, _, mock_wq, mock_tr, _, _ = _patch_deps
+        mock_wq.view_window.return_value = MagicMock(
+            session_id="s1", cwd="/tmp", window_name="proj"
+        )
+        mock_tr.get_window_for_thread.return_value = "@2"
+        mock_tr.resolve_chat_id.return_value = -999
+        issues = [
+            AuditIssue(
+                "dead_topic",
+                "user:100 thread:42 window:@2 (proj)",
+                fixable=True,
+            ),
+        ]
+
+        with patch(
+            "ccgram.handlers.topics.topic_orchestration.handle_new_window",
+            new_callable=AsyncMock,
+            return_value=False,
+        ):
+            count = await _recreate_dead_topics(AsyncMock(), issues)
+
+        assert count == 0
+        mock_tr.bind_thread.assert_called_once_with(
+            100, 42, "@2", window_name="proj", chat_id=-999
+        )
+        mock_tr.set_group_chat_id.assert_called_once_with(100, 42, -999)
+
+    async def test_recreate_restores_binding_when_cancelled(self, _patch_deps) -> None:
+        _, _, mock_wq, mock_tr, _, _ = _patch_deps
+        mock_wq.view_window.return_value = MagicMock(
+            session_id="s1", cwd="/tmp", window_name="proj"
+        )
+        mock_tr.get_window_for_thread.return_value = "@2"
+        mock_tr.resolve_chat_id.return_value = -999
+        issues = [
+            AuditIssue(
+                "dead_topic",
+                "user:100 thread:42 window:@2 (proj)",
+                fixable=True,
+            ),
+        ]
+
+        with (
+            patch(
+                "ccgram.handlers.topics.topic_orchestration.handle_new_window",
+                new_callable=AsyncMock,
+                side_effect=asyncio.CancelledError,
+            ),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await _recreate_dead_topics(AsyncMock(), issues)
+
+        mock_tr.bind_thread.assert_called_once_with(
+            100, 42, "@2", window_name="proj", chat_id=-999
+        )
+        mock_tr.set_group_chat_id.assert_called_once_with(100, 42, -999)
 
     async def test_recreate_skips_non_dead_topic_issues(self, _patch_deps) -> None:
         issues = [
@@ -652,6 +726,7 @@ class TestDeadTopicRecreation:
             session_id="s1", cwd="/tmp", window_name="proj"
         )
         mock_tr.get_window_for_thread.return_value = "@2"
+        mock_tr.resolve_chat_id.return_value = -999
 
         issues = [
             AuditIssue(
@@ -672,7 +747,7 @@ class TestDeadTopicRecreation:
             assert count == 0
             mock_tr.unbind_thread.assert_called_once_with(100, 42)
             mock_tr.bind_thread.assert_called_once_with(
-                100, 42, "@2", window_name="proj"
+                100, 42, "@2", window_name="proj", chat_id=-999
             )
 
 

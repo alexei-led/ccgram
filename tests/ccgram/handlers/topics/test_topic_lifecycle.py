@@ -288,7 +288,7 @@ class TestHerdrKillPaths:
             mock_tmux.kill_window = AsyncMock()
             await probe_topic_existence(bot)
         mock_tmux.kill_window.assert_called_once_with(herdr_id)
-        mock_router.unbind_thread.assert_called_once_with(1, 100)
+        mock_router.unbind_thread.assert_called_once_with(1, 100, chat_id=-100)
 
 
 class TestPruneStaleState:
@@ -325,7 +325,7 @@ class TestProbeTopicExistence:
             mock_wq.view_window.return_value = _window_view("manual_discovered")
             mock_tmux.kill_window = AsyncMock()
             await probe_topic_existence(bot)
-            mock_router.unbind_thread.assert_called_once_with(1, 100)
+            mock_router.unbind_thread.assert_called_once_with(1, 100, chat_id=42)
             mock_tmux.kill_window.assert_not_called()
 
     async def test_suspended_probe_skipped(self):

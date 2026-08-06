@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from telegram import CallbackQuery, Chat, Message, Update, User
@@ -217,15 +217,19 @@ class TestDispatchRoundTrip:
             patch(
                 "ccgram.handlers.toolbar.toolbar_callbacks.tmux_manager"
             ) as mock_tmux,
+            patch(
+                "ccgram.handlers.toolbar.toolbar_callbacks.send_telegram_to_window",
+                new_callable=AsyncMock,
+                return_value=(True, "ok"),
+            ) as mock_send,
             patch.object(CallbackQuery, "answer", new_callable=AsyncMock),
         ):
             mock_tmux.find_window_by_id = AsyncMock(
                 return_value=MagicMock(window_id=TEST_WINDOW_ID)
             )
-            mock_tmux.send_keys = AsyncMock()
             await app.process_update(update)
-        mock_tmux.send_keys.assert_awaited_once_with(
-            TEST_WINDOW_ID, "/clear", enter=True, literal=True
+        mock_send.assert_awaited_once_with(
+            TEST_USER_ID, TEST_WINDOW_ID, TEST_THREAD_ID, "/clear", ANY
         )
 
     async def test_builtin_ctrlc_dispatched(self, app: Application) -> None:
@@ -340,15 +344,19 @@ class TestCustomConfigDispatch:
             patch(
                 "ccgram.handlers.toolbar.toolbar_callbacks.tmux_manager"
             ) as mock_tmux,
+            patch(
+                "ccgram.handlers.toolbar.toolbar_callbacks.send_telegram_to_window",
+                new_callable=AsyncMock,
+                return_value=(True, "ok"),
+            ) as mock_send,
             patch.object(CallbackQuery, "answer", new_callable=AsyncMock),
         ):
             mock_tmux.find_window_by_id = AsyncMock(
                 return_value=MagicMock(window_id=TEST_WINDOW_ID)
             )
-            mock_tmux.send_keys = AsyncMock()
             await app.process_update(update)
-        mock_tmux.send_keys.assert_awaited_once_with(
-            TEST_WINDOW_ID, "/summary", enter=True, literal=True
+        mock_send.assert_awaited_once_with(
+            TEST_USER_ID, TEST_WINDOW_ID, TEST_THREAD_ID, "/summary", ANY
         )
 
     async def test_user_overrides_builtin_via_config(self, app: Application) -> None:

@@ -324,6 +324,11 @@ async def shutdown_runtime() -> None:
 
     await shutdown_workers()
 
+    # Lazy: tracker is only needed to discard ephemeral input correlations at shutdown.
+    from .handlers.telegram_origin import clear_pending_telegram_injections
+
+    clear_pending_telegram_injections()
+
     # Lazy: main → bot → bootstrap cycle (same as start path).
     from .main import stop_miniapp_if_enabled
 
@@ -350,6 +355,10 @@ def reset_for_testing() -> None:
 
     _callbacks_wired = False
     session_monitor = None
+    # Lazy: test reset must also discard ephemeral input correlations.
+    from .handlers.telegram_origin import clear_pending_telegram_injections
+
+    clear_pending_telegram_injections()
     _status_poll_task = None
     clear_active_monitor()
 

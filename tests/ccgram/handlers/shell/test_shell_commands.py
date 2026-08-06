@@ -1,5 +1,5 @@
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from telegram import Bot, CallbackQuery, InlineKeyboardMarkup, Message
@@ -114,7 +114,7 @@ class TestHandleShellMessage:
             mock_tm.capture_pane = AsyncMock(return_value=None)
             await handle_shell_message(bot, 1, 42, "@0", "!ls -la", message)
 
-            mock_send.assert_called_once_with("@0", "ls -la", raw=True)
+            mock_send.assert_called_once_with(1, "@0", 42, "ls -la", ANY, raw=True)
             mock_mark.assert_called_once()
             args = mock_mark.call_args.args
             assert args[:4] == ("@0", "ls -la", 1, 42)
@@ -136,7 +136,7 @@ class TestHandleShellMessage:
         ):
             await handle_shell_message(bot, 1, 42, "@0", "! ls", message)
 
-            mock_send.assert_called_once_with("@0", "ls", raw=True)
+            mock_send.assert_called_once_with(1, "@0", 42, "ls", ANY, raw=True)
 
     async def test_bare_bang_is_ignored(self) -> None:
         bot = AsyncMock(spec=Bot)
@@ -170,7 +170,9 @@ class TestHandleShellMessage:
         ):
             await handle_shell_message(bot, 1, 42, "@0", "find . -name foo", message)
 
-            mock_send.assert_called_once_with("@0", "find . -name foo", raw=True)
+            mock_send.assert_called_once_with(
+                1, "@0", 42, "find . -name foo", ANY, raw=True
+            )
 
     async def test_no_bang_with_llm_calls_completer(self) -> None:
         bot = AsyncMock(spec=Bot)
@@ -346,7 +348,7 @@ class TestHandleShellCallback:
             await handle_shell_callback(query, 1, f"{CB_SHELL_RUN}@0", bot, 42)
 
             query.answer.assert_called_once()
-            mock_send.assert_called_once_with("@0", "ls -la", raw=True)
+            mock_send.assert_called_once_with(1, "@0", 42, "ls -la", ANY, raw=True)
             mock_mark.assert_called_once_with("@0", "ls -la", 1, 42, 0)
             assert _shell_pending.get((-100, 42)) is None
 
@@ -504,7 +506,9 @@ class TestHandleShellCallback:
                 query, 1, f"{CB_SHELL_CONFIRM_DANGER}@0", bot, 42
             )
 
-            mock_send.assert_called_once_with("@0", "rm -rf /tmp/test", raw=True)
+            mock_send.assert_called_once_with(
+                1, "@0", 42, "rm -rf /tmp/test", ANY, raw=True
+            )
             assert _shell_pending.get((-100, 42)) is None
 
 

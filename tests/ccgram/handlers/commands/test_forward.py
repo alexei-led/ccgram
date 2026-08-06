@@ -84,12 +84,12 @@ class TestForwardCommandResolution:
             patch(f"{_FW}.window_store", self.mock_ws),
             patch(f"{_FW}.window_query", self.mock_wq),
             patch(
-                f"{_FW}.send_to_window",
+                f"{_FW}.send_telegram_to_window",
                 new_callable=AsyncMock,
                 return_value=(True, ""),
             ) as self.mock_send_to_window,
             patch(
-                f"{_FW}.send_followup_to_window",
+                f"{_FW}.send_telegram_followup_to_window",
                 new_callable=AsyncMock,
                 return_value=(True, ""),
             ) as self.mock_send_followup_to_window,
@@ -130,49 +130,65 @@ class TestForwardCommandResolution:
         update = _make_update(text="/clear")
         await forward_command_handler(update, _make_context())
 
-        self.mock_send_to_window.assert_called_once_with("@1", "/clear")
+        self.mock_send_to_window.assert_called_once_with(
+            100, "@1", 42, "/clear", -100999
+        )
 
     async def test_builtin_with_args(self) -> None:
         update = _make_update(text="/compact focus on auth")
         await forward_command_handler(update, _make_context())
 
-        self.mock_send_to_window.assert_called_once_with("@1", "/compact focus on auth")
+        self.mock_send_to_window.assert_called_once_with(
+            100, "@1", 42, "/compact focus on auth", -100999
+        )
 
     async def test_skill_name_resolved(self) -> None:
         update = _make_update(text="/committing_code")
         await forward_command_handler(update, _make_context())
 
-        self.mock_send_to_window.assert_called_once_with("@1", "/committing-code")
+        self.mock_send_to_window.assert_called_once_with(
+            100, "@1", 42, "/committing-code", -100999
+        )
 
     async def test_custom_command_resolved(self) -> None:
         update = _make_update(text="/spec_work")
         await forward_command_handler(update, _make_context())
 
-        self.mock_send_to_window.assert_called_once_with("@1", "/spec:work")
+        self.mock_send_to_window.assert_called_once_with(
+            100, "@1", 42, "/spec:work", -100999
+        )
 
     async def test_custom_command_with_args(self) -> None:
         update = _make_update(text="/spec_new task auth")
         await forward_command_handler(update, _make_context())
 
-        self.mock_send_to_window.assert_called_once_with("@1", "/spec:new task auth")
+        self.mock_send_to_window.assert_called_once_with(
+            100, "@1", 42, "/spec:new task auth", -100999
+        )
 
     async def test_leading_slash_mapping_not_double_prefixed(self) -> None:
         update = _make_update(text="/status")
         await forward_command_handler(update, _make_context())
 
-        self.mock_send_to_window.assert_called_once_with("@1", "/status")
+        self.mock_send_to_window.assert_called_once_with(
+            100, "@1", 42, "/status", -100999
+        )
 
     async def test_unknown_command_forwarded_as_is(self) -> None:
         update = _make_update(text="/unknown_thing")
         await forward_command_handler(update, _make_context())
 
-        self.mock_send_to_window.assert_called_once_with("@1", "/unknown_thing")
+        self.mock_send_to_window.assert_called_once_with(
+            100, "@1", 42, "/unknown_thing", -100999
+        )
 
     async def test_followup_on_non_pi_provider_forwarded_as_is(self) -> None:
         update = _make_update(text="/followup run tests")
         await forward_command_handler(update, _make_context())
 
-        self.mock_send_to_window.assert_called_once_with("@1", "/followup run tests")
+        self.mock_send_to_window.assert_called_once_with(
+            100, "@1", 42, "/followup run tests", -100999
+        )
         self.mock_send_followup_to_window.assert_not_called()
 
     async def test_pi_followup_queues_followup_message(self) -> None:
@@ -180,7 +196,9 @@ class TestForwardCommandResolution:
         update = _make_update(text="/followup run tests")
         await forward_command_handler(update, _make_context())
 
-        self.mock_send_followup_to_window.assert_called_once_with("@1", "run tests")
+        self.mock_send_followup_to_window.assert_called_once_with(
+            100, "@1", 42, "run tests", -100999
+        )
         self.mock_send_to_window.assert_not_called()
         reply_text = update.message.reply_text.call_args[0][0]
         assert reply_text == "⏭️ [project] Follow-up queued."
@@ -200,7 +218,7 @@ class TestForwardCommandResolution:
         update = _make_update(text="/new")
         await forward_command_handler(update, _make_context())
 
-        self.mock_send_to_window.assert_called_once_with("@1", "/new")
+        self.mock_send_to_window.assert_called_once_with(100, "@1", 42, "/new", -100999)
         self.mock_ws.clear_window_session.assert_called_once_with("@1")
 
     async def test_pi_clear_alias_forwards_to_new(self) -> None:
@@ -208,7 +226,7 @@ class TestForwardCommandResolution:
         update = _make_update(text="/clear")
         await forward_command_handler(update, _make_context())
 
-        self.mock_send_to_window.assert_called_once_with("@1", "/new")
+        self.mock_send_to_window.assert_called_once_with(100, "@1", 42, "/new", -100999)
         self.mock_ws.clear_window_session.assert_called_once_with("@1")
         reply_text = update.message.reply_text.call_args[0][0]
         assert "Sent: /new" in reply_text
@@ -223,7 +241,9 @@ class TestForwardCommandResolution:
         update = _make_update(text="/scoped_models")
         await forward_command_handler(update, _make_context())
 
-        self.mock_send_to_window.assert_called_once_with("@1", "/scoped-models")
+        self.mock_send_to_window.assert_called_once_with(
+            100, "@1", 42, "/scoped-models", -100999
+        )
         reply_text = update.message.reply_text.call_args[0][0]
         assert "drive the picker" in reply_text
 
@@ -231,7 +251,9 @@ class TestForwardCommandResolution:
         update = _make_update(text="/cost")
         await forward_command_handler(update, _make_context())
 
-        self.mock_send_to_window.assert_called_once_with("@1", "/cost")
+        self.mock_send_to_window.assert_called_once_with(
+            100, "@1", 42, "/cost", -100999
+        )
 
     async def test_tui_picker_hint_appended_for_known_picker_command(self) -> None:
         self.mock_provider.capabilities.tui_picker_commands = frozenset({"model"})
@@ -259,7 +281,9 @@ class TestForwardCommandResolution:
         reply_text = update.message.reply_text.call_args[0][0]
         assert "drive the picker" not in reply_text
         assert "/toolbar" not in reply_text
-        self.mock_send_to_window.assert_called_once_with("@1", "/model claude-opus-4-5")
+        self.mock_send_to_window.assert_called_once_with(
+            100, "@1", 42, "/model claude-opus-4-5", -100999
+        )
 
     async def test_picker_hint_with_botname_mention(self) -> None:
         self.mock_provider.capabilities.tui_picker_commands = frozenset({"model"})
@@ -273,13 +297,17 @@ class TestForwardCommandResolution:
         update = _make_update(text="/clear@mybot")
         await forward_command_handler(update, _make_context())
 
-        self.mock_send_to_window.assert_called_once_with("@1", "/clear")
+        self.mock_send_to_window.assert_called_once_with(
+            100, "@1", 42, "/clear", -100999
+        )
 
     async def test_botname_mention_stripped_with_args(self) -> None:
         update = _make_update(text="/compact@mybot some args")
         await forward_command_handler(update, _make_context())
 
-        self.mock_send_to_window.assert_called_once_with("@1", "/compact some args")
+        self.mock_send_to_window.assert_called_once_with(
+            100, "@1", 42, "/compact some args", -100999
+        )
 
     async def test_confirmation_message_shows_resolved_name(self) -> None:
         update = _make_update(text="/committing_code")
@@ -398,7 +426,9 @@ class TestForwardCommandResolution:
             update = _make_update(text="/status")
             await forward_command_handler(update, _make_context())
 
-        self.mock_send_to_window.assert_called_once_with("@1", "/status")
+        self.mock_send_to_window.assert_called_once_with(
+            100, "@1", 42, "/status", -100999
+        )
         self.mock_probe_ctx.assert_not_called()
         self.mock_probe_spawn.assert_not_called()
         codex_provider.build_status_snapshot.assert_called_once_with(
@@ -428,7 +458,9 @@ class TestForwardCommandResolution:
             update = _make_update(text="/status")
             await forward_command_handler(update, _make_context())
 
-        self.mock_send_to_window.assert_called_once_with("@1", "/status")
+        self.mock_send_to_window.assert_called_once_with(
+            100, "@1", 42, "/status", -100999
+        )
         self.mock_probe_ctx.assert_not_called()
         self.mock_probe_spawn.assert_not_called()
         claude_provider.build_status_snapshot.assert_not_called()
@@ -468,7 +500,9 @@ class TestForwardCommandResolution:
             update = _make_update(text="/status")
             await forward_command_handler(update, _make_context())
 
-        self.mock_send_to_window.assert_called_once_with("@1", "/status")
+        self.mock_send_to_window.assert_called_once_with(
+            100, "@1", 42, "/status", -100999
+        )
         codex_provider.build_status_snapshot.assert_not_called()
         assert update.message.reply_text.call_count == 1
 
@@ -480,7 +514,7 @@ class TestForwardCommandResolution:
             await forward_command_handler(update, _make_context())
 
         self.mock_send_to_window.assert_called_once_with(
-            "@1", "/remote-control project"
+            100, "@1", 42, "/remote-control project", -100999
         )
         mock_arm.assert_called_once()
         args = mock_arm.call_args.args
@@ -518,7 +552,7 @@ class TestForwardCommandResolution:
             await forward_command_handler(update, _make_context())
 
         self.mock_send_to_window.assert_called_once_with(
-            "@1", "/remote-control project"
+            100, "@1", 42, "/remote-control project", -100999
         )
         mock_arm.assert_called_once()
 
@@ -576,7 +610,7 @@ class TestForwardWithRealProvider:
             patch(f"{_FW}.window_store", self.mock_ws),
             patch(f"{_FW}.window_query", self.mock_wq),
             patch(
-                f"{_FW}.send_to_window",
+                f"{_FW}.send_telegram_to_window",
                 new_callable=AsyncMock,
                 return_value=(True, ""),
             ) as self.mock_send_to_window,

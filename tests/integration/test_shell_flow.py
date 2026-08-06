@@ -5,7 +5,7 @@ and relay back to Telegram. Uses mock bot + mock tmux with real
 shell_commands/shell_capture logic.
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from telegram import Bot, Message
@@ -76,7 +76,9 @@ class TestRawCommandFlow:
                 bot, TEST_USER_ID, TEST_THREAD_ID, TEST_WINDOW_ID, "!ls -la", message
             )
 
-            mock_send.assert_called_once_with(TEST_WINDOW_ID, "ls -la", raw=True)
+            mock_send.assert_called_once_with(
+                TEST_USER_ID, TEST_WINDOW_ID, TEST_THREAD_ID, "ls -la", ANY, raw=True
+            )
             mock_mark.assert_called_once()
             args = mock_mark.call_args.args
             assert args[:4] == (
@@ -250,7 +252,12 @@ class TestLlmCommandFlow:
             )
 
             mock_send.assert_called_once_with(
-                TEST_WINDOW_ID, "find . -name foo", raw=True
+                TEST_USER_ID,
+                TEST_WINDOW_ID,
+                TEST_THREAD_ID,
+                "find . -name foo",
+                TEST_CHAT_ID,
+                raw=True,
             )
             mock_mark.assert_called_once()
 

@@ -5,7 +5,7 @@ import tomllib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from telegram.error import NetworkError, TimedOut
+from telegram.error import Conflict, NetworkError, TimedOut
 from telegram.request import HTTPXRequest
 
 from ccgram.bot import create_bot
@@ -48,6 +48,32 @@ class TestResilientPollingHTTPXRequest:
         assert request._client is not old_client
         assert old_client.is_closed
         assert not request._client.is_closed
+
+    async def test_calls_success_callback_after_successful_api_response(self) -> None:
+        on_success = MagicMock()
+        request = ResilientPollingHTTPXRequest(on_success=on_success)
+        response = (200, b'{"ok": true, "result": []}')
+
+        with patch.object(HTTPXRequest, "do_request", AsyncMock(return_value=response)):
+            assert await request.post("https://example.com") == []
+
+        on_success.assert_called_once()
+
+    async def test_conflict_does_not_call_success_callback(self) -> None:
+        on_success = MagicMock()
+        request = ResilientPollingHTTPXRequest(on_success=on_success)
+        response = (
+            409,
+            b'{"ok": false, "error_code": 409, "description": "Conflict"}',
+        )
+
+        with (
+            patch.object(HTTPXRequest, "do_request", AsyncMock(return_value=response)),
+            pytest.raises(Conflict),
+        ):
+            await request.post("https://example.com")
+
+        on_success.assert_not_called()
 
 
 def _reset_log_calls(mock_logger, level: str) -> list:
@@ -93,20 +119,36 @@ class TestResetWarningRateLimit:
 
     async def test_success_resets_warn_eligibility(self) -> None:
         request = ResilientPollingHTTPXRequest()
-        sentinel = object()
-        mock = AsyncMock(side_effect=[TimedOut("t"), sentinel, TimedOut("t")])
+        response = (200, b'{"ok": true, "result": []}')
+        mock = AsyncMock(side_effect=[TimedOut("t"), response, TimedOut("t")])
 
         with (
             patch.object(HTTPXRequest, "do_request", mock),
             patch("ccgram.telegram_request.logger") as mock_logger,
         ):
             with pytest.raises(TimedOut):
-                await request.do_request("u", "POST")
-            await request.do_request("u", "POST")
+                await request.post("u")
+            await request.post("u")
             with pytest.raises(TimedOut):
-                await request.do_request("u", "POST")
+                await request.post("u")
 
         assert len(_reset_log_calls(mock_logger, "warning")) == 2
+
+    async def test_first_reset_warns_before_monotonic_interval(self) -> None:
+        request = ResilientPollingHTTPXRequest()
+        with (
+            patch.object(
+                HTTPXRequest,
+                "do_request",
+                AsyncMock(side_effect=TimedOut("t")),
+            ),
+            patch("ccgram.telegram_request.time.monotonic", return_value=1.0),
+            patch("ccgram.telegram_request.logger") as mock_logger,
+            pytest.raises(TimedOut),
+        ):
+            await request.do_request("https://example.com", "POST")
+
+        assert len(_reset_log_calls(mock_logger, "warning")) == 1
 
 
 class TestCreateBotPollingRequest:

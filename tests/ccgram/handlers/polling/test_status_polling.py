@@ -746,8 +746,8 @@ class TestProbeFailures:
             mock_tm.kill_window = AsyncMock()
             await probe_topic_existence(bot)
         mock_tm.kill_window.assert_not_called()
-        mock_cleanup.assert_called_once_with(1, 42, bot, window_id="@5")
-        mock_tr.unbind_thread.assert_called_once_with(1, 42)
+        mock_cleanup.assert_called_once_with(1, 42, bot, window_id="@5", chat_id=-100)
+        mock_tr.unbind_thread.assert_called_once_with(1, 42, chat_id=-100)
         assert (
             _window_poll_state.get("@5") is None
             or _window_poll_state["@5"].probe_failures == 0
@@ -2242,8 +2242,8 @@ class TestDeadWindowNotification:
             await probe_topic_existence(bot)
 
         mock_tm.kill_window.assert_not_called()
-        mock_cleanup.assert_called_once_with(1, 42, bot, window_id="@5")
-        mock_tr.unbind_thread.assert_called_once_with(1, 42)
+        mock_cleanup.assert_called_once_with(1, 42, bot, window_id="@5", chat_id=-100)
+        mock_tr.unbind_thread.assert_called_once_with(1, 42, chat_id=-100)
 
 
 class TestPaneAlertHelpers:

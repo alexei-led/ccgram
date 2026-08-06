@@ -171,10 +171,10 @@ class TestHerdrSessionRouting:
         )
 
         assert session_resolver.find_users_for_session("sess-A") == [
-            (100, target_a, 11)
+            (100, target_a, 11, None)
         ]
         assert session_resolver.find_users_for_session("sess-B") == [
-            (100, target_b, 12)
+            (100, target_b, 12, None)
         ]
 
     def test_binding_is_keyed_per_session_target(self, mgr: SessionManager) -> None:
@@ -203,6 +203,6 @@ class TestHerdrSessionRouting:
         )
 
         threads_for_a = {
-            t for _, _, t in session_resolver.find_users_for_session("sess-A")
+            t for _, _, t, _ in session_resolver.find_users_for_session("sess-A")
         }
         assert threads_for_a == {11}
