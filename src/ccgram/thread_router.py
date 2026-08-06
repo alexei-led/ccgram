@@ -65,12 +65,14 @@ class ThreadRouter:
         *,
         schedule_save: Callable[[], None],
         has_window_state: Callable[[str], bool],
+        default_group_id: int | None = None,
     ) -> None:
         self.thread_bindings: dict[int, dict[int, str]] = {}
         # Chat-scoped bindings preserve Telegram's chat-local thread identity.
         self.chat_thread_bindings: dict[tuple[int, int, int], str] = {}
         # "user_id:thread_id" -> chat_id for legacy/direct-message bindings.
         self.group_chat_ids: dict[str, int] = {}
+        self.default_group_id = default_group_id
         # window_id -> display name (window_name)
         self.window_display_names: dict[str, str] = {}
         # Reverse index: (user_id, window_id) -> thread_id for O(1) lookups
@@ -416,7 +418,8 @@ class ThreadRouter:
 
         In forum topics (thread_id is set), returns the stored group chat_id
         for that specific thread (user_id:thread_id).
-        Falls back to user_id for direct messages or if no group_id stored.
+        Falls back to the configured group for an unbound topic.
+        Falls back to user_id for direct messages.
         """
         active_chat_id = _active_chat_id.get()
         if (
@@ -437,6 +440,8 @@ class ThreadRouter:
             }
             if len(chats) == 1:
                 return next(iter(chats))
+            if self.default_group_id is not None:
+                return self.default_group_id
         return user_id
 
     def get_window_for_chat_thread(self, chat_id: int, thread_id: int) -> str | None:

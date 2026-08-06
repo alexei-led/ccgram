@@ -125,6 +125,7 @@ class SessionManager:
         self._thread_router = ThreadRouter(
             schedule_save=self._save_state,
             has_window_state=self._window_store.has_window,
+            default_group_id=config.group_id,
         )
         install_thread_router(self._thread_router)
         self._user_preferences = UserPreferences(schedule_save=self._save_state)

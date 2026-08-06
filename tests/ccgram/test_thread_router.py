@@ -119,6 +119,23 @@ class TestResolveChatId:
     def test_without_group_id_fallback(self, router: ThreadRouter) -> None:
         assert router.resolve_chat_id(100, 1) == 100
 
+    def test_with_default_group_id(self) -> None:
+        router = ThreadRouter(
+            schedule_save=lambda: None,
+            has_window_state=lambda _wid: False,
+            default_group_id=-999,
+        )
+        assert router.resolve_chat_id(100, 1) == -999
+
+    def test_stored_group_id_precedes_default_group_id(self) -> None:
+        router = ThreadRouter(
+            schedule_save=lambda: None,
+            has_window_state=lambda _wid: False,
+            default_group_id=-999,
+        )
+        router.set_group_chat_id(100, 1, -888)
+        assert router.resolve_chat_id(100, 1) == -888
+
     def test_none_thread_id_fallback(self, router: ThreadRouter) -> None:
         router.set_group_chat_id(100, 1, -999)
         assert router.resolve_chat_id(100) == 100
