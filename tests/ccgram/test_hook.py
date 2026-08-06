@@ -15,6 +15,7 @@ from ccgram.hook import (
     _install_hook,
     _is_nested_session,
     _provider_from_pane_tty,
+    _resolve_window_id,
     _session_map_session_for,
     _uninstall_hook,
     get_installed_events,
@@ -706,6 +707,28 @@ class TestSessionMapKeyForLinkedWindow:
         monkeypatch.setattr(config, "tmux_session_name", "ccgram")
         monkeypatch.setattr(subprocess, "run", self._run("@12\n@34\n"))
         assert _session_map_session_for("@34", "agentdeck_foo_1234") == "ccgram"
+
+    def test_resolve_window_id_uses_ccgram_session_for_linked_window(
+        self, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(config, "tmux_session_name", "ccgram")
+
+        def _fake_run(args, **_kwargs):
+            if args[1] == "display-message":
+                return subprocess.CompletedProcess(
+                    args, 0, "agentdeck\t@34\tcode\t/dev/ttys001\t2\n", ""
+                )
+            if args[1] == "list-windows":
+                return subprocess.CompletedProcess(args, 0, "@34\n", "")
+            pytest.fail(f"unexpected command: {args}")
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+        assert _resolve_window_id("%1") == (
+            "ccgram:@34",
+            "@34",
+            "code",
+            "/dev/ttys001",
+        )
 
     def test_unlinked_window_keeps_pane_session(self, monkeypatch) -> None:
         monkeypatch.setattr(config, "tmux_session_name", "ccgram")
