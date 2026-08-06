@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 import json
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -139,26 +140,77 @@ def scan_all_sessions() -> list[ResumeEntry]:
     Returns entries sorted by file mtime (most recent first),
     deduplicated by session_id.
     """
-    if not config.claude_projects_path.exists():
-        return []
-
     candidates: list[tuple[float, ResumeEntry]] = []
     seen_ids: set[str] = set()
 
-    for project_dir in config.claude_projects_path.iterdir():
-        if not project_dir.is_dir():
-            continue
+    if config.claude_projects_path.exists():
+        for project_dir in config.claude_projects_path.iterdir():
+            if not project_dir.is_dir():
+                continue
 
-        # Try legacy sessions-index.json first
-        index_file = project_dir / "sessions-index.json"
-        if index_file.exists():
-            _scan_index_file(index_file, seen_ids, candidates)
+            # Try legacy sessions-index.json first
+            index_file = project_dir / "sessions-index.json"
+            if index_file.exists():
+                _scan_index_file(index_file, seen_ids, candidates)
 
-        # Pick up bare JSONL files (no index required)
-        _scan_bare_jsonl(project_dir, seen_ids, candidates)
+            # Pick up bare JSONL files (no index required)
+            _scan_bare_jsonl(project_dir, seen_ids, candidates)
+
+    _scan_antigravity_sessions(seen_ids, candidates)
 
     candidates.sort(key=lambda c: c[0], reverse=True)
     return [entry for _, entry in candidates]
+
+
+def _scan_antigravity_sessions(
+    seen_ids: set[str],
+    candidates: list[tuple[float, ResumeEntry]],
+) -> None:
+    """Scan Antigravity brain directories for resumable sessions."""
+    # Lazy: only needed when scanning antigravity session directories
+    from ccgram.providers.antigravity import get_antigravity_brain_dirs
+
+    if (
+        "PYTEST_CURRENT_TEST" in os.environ
+        and "CCGRAM_ANTIGRAVITY_DATA_DIR" not in os.environ
+    ):
+        return
+
+    for brain_dir in get_antigravity_brain_dirs():
+        if not brain_dir.is_dir():
+            continue
+        try:
+            conv_dirs = list(brain_dir.iterdir())
+        except OSError:
+            continue
+
+        for conversation_dir in conv_dirs:
+            if not conversation_dir.is_dir():
+                continue
+            session_id = conversation_dir.name
+            if session_id in seen_ids:
+                continue
+
+            log_file = (
+                conversation_dir / ".system_generated" / "logs" / "transcript.jsonl"
+            )
+            if not log_file.is_file():
+                continue
+
+            try:
+                mtime = log_file.stat().st_mtime
+            except OSError:
+                mtime = 0.0
+
+            seen_ids.add(session_id)
+            entry = ResumeEntry(
+                session_id=session_id,
+                summary=session_id[:12],
+                cwd=str(conversation_dir),
+                mtime=mtime,
+                msg_count=0,
+            )
+            candidates.append((mtime, entry))
 
 
 def _scan_index_file(

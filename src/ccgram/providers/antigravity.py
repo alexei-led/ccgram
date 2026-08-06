@@ -208,65 +208,41 @@ def extract_antigravity_text(entry: dict[str, Any]) -> str:
     return text.strip()
 
 
+_CWD_EXTRACT_RE = re.compile(
+    r'file://(/[^"\s<>\\#\?]+)|'
+    r'"(?:Cwd|DirectoryPath|cwd|workspace|path|Directory)":\s*"\\?"(/[^"\\]+)\\?"?|'
+    r"\[(?:file://)?(/[^\]\s]+)\]",
+    re.IGNORECASE,
+)
+
+
 def _extract_line_cwd_matches(line: str) -> list[str]:
-    """Extract potential workspace CWD paths from a transcript line."""
-    matches = re.findall(
-        r'file://(/[^"\s<>]+)|"Cwd":\s*"\\?"([^"\\]+)\\?"?|"DirectoryPath":\s*"\\?"([^"\\]+)\\?"?',
-        line,
-    )
+    """Extract candidate workspace CWD paths from a transcript line."""
     results: list[str] = []
-    for group in matches:
-        raw_path = next((g for g in group if g), "")
+    for match in _CWD_EXTRACT_RE.finditer(line):
+        raw_path = next((g for g in match.groups() if g), "")
         if raw_path:
-            results.append(raw_path)
+            results.append(raw_path.rstrip("/\\"))
     return results
 
 
-def _check_string_boundary(line: str, target_str: str) -> bool:
-    """Check if target_str exists in line with a trailing path boundary."""
-    if not target_str:
-        return False
-    idx = line.find(target_str)
-    if idx == -1:
-        return False
-    end_idx = idx + len(target_str)
-    char_after = line[end_idx] if end_idx < len(line) else ""
-    return not char_after or char_after in (
-        '"',
-        "'",
-        "/",
-        "\\",
-        " ",
-        "\n",
-        "\r",
-        "\t",
-        ">",
-    )
-
-
 def _match_antigravity_cwd(log_file: Path, target_cwd: str) -> bool:
-    """Check if transcript lines strictly match target_cwd with exact path boundaries."""
+    """Check if transcript lines strictly match target_cwd with exact path equality."""
     if not target_cwd:
         return True
     try:
         target_path = Path(target_cwd).expanduser()
         resolved_target = target_path.resolve()
-        raw_target_str = str(target_path)
-        resolved_target_str = str(resolved_target)
 
         with open(log_file, encoding="utf-8") as f:
             for i, line in enumerate(f):
                 if i > _MAX_CWD_SCAN_LINES:
                     break
 
-                if _check_string_boundary(
-                    line, resolved_target_str
-                ) or _check_string_boundary(line, raw_target_str):
-                    return True
-
                 for raw_path in _extract_line_cwd_matches(line):
                     try:
-                        if Path(raw_path).expanduser().resolve() == resolved_target:
+                        cand_path = Path(raw_path).expanduser().resolve()
+                        if cand_path == resolved_target:
                             return True
                     except ValueError, OSError:
                         continue
@@ -476,6 +452,7 @@ class AntigravityProvider(JsonlProvider):
                             role="assistant",
                             content_type="tool_use",
                             tool_name=tool_name,
+                            tool_use_id=tool_id,
                             timestamp=timestamp or None,
                         )
                     )
@@ -505,6 +482,7 @@ class AntigravityProvider(JsonlProvider):
                             role="assistant",
                             content_type="tool_result",
                             tool_name=tool_name,
+                            tool_use_id=tool_id or None,
                             timestamp=timestamp or None,
                         )
                     )

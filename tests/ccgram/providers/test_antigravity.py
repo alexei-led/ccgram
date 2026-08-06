@@ -84,20 +84,96 @@ class TestAntigravityExecutableAndDataResolution:
         assert len(dirs) == 1
         assert dirs[0] == override_dir.resolve()
 
+    def test_executable_precedence_env_override(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(
+            "CCGRAM_ANTIGRAVITY_COMMAND", "/custom/bin/agy --effort high"
+        )
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/agy")
+        assert resolve_antigravity_executable() == "/custom/bin/agy --effort high"
+
+    def test_executable_precedence_path_lookup(self, monkeypatch):
+        monkeypatch.delenv("CCGRAM_ANTIGRAVITY_COMMAND", raising=False)
+        monkeypatch.setattr(
+            "shutil.which", lambda name: "agy" if name == "agy" else None
+        )
+        assert resolve_antigravity_executable() == "agy"
+
+    def test_executable_precedence_fallback_candidate(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("CCGRAM_ANTIGRAVITY_COMMAND", raising=False)
+        monkeypatch.setattr("shutil.which", lambda name: None)
+
+        bin_dir = tmp_path / ".gemini" / "antigravity-cli" / "bin"
+        bin_dir.mkdir(parents=True)
+        agy_bin = bin_dir / "agy"
+        agy_bin.write_text("#!/bin/sh\necho ok\n")
+        agy_bin.chmod(0o755)
+
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        resolved = resolve_antigravity_executable()
+        assert resolved == str(agy_bin.resolve())
+
+    def test_resolve_launch_command_uses_antigravity_resolver(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.delenv("CCGRAM_ANTIGRAVITY_COMMAND", raising=False)
+        monkeypatch.setattr("shutil.which", lambda name: None)
+
+        bin_dir = tmp_path / ".local" / "bin"
+        bin_dir.mkdir(parents=True)
+        agy_bin = bin_dir / "agy"
+        agy_bin.write_text("#!/bin/sh\necho ok\n")
+        agy_bin.chmod(0o755)
+
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        cmd = resolve_launch_command("antigravity", approval_mode="normal")
+        assert cmd == str(agy_bin.resolve())
+
     @pytest.mark.parametrize(
-        ("os_name", "home_subpath"),
+        ("os_name", "machine", "candidate_subpath"),
         [
-            ("linux", ".gemini/antigravity-cli/brain"),
-            ("darwin-arm64", ".gemini/antigravity-cli/brain"),
-            ("darwin-x86_64", ".antigravity/brain"),
+            ("linux", "x86_64", ".local/bin/agy"),
+            ("darwin", "arm64", ".gemini/antigravity-cli/bin/agy"),
+            ("darwin", "x86_64", ".antigravity/bin/agy"),
         ],
     )
-    def test_platform_data_dir_discovery(
-        self, tmp_path, monkeypatch, os_name, home_subpath
+    def test_platform_executable_layout_matrix(
+        self, tmp_path, monkeypatch, os_name, machine, candidate_subpath
+    ):
+        monkeypatch.delenv("CCGRAM_ANTIGRAVITY_COMMAND", raising=False)
+        monkeypatch.setattr("shutil.which", lambda name: None)
+        monkeypatch.setattr("sys.platform", os_name)
+        monkeypatch.setattr("platform.machine", lambda: machine)
+
+        cand_file = tmp_path / candidate_subpath
+        cand_file.parent.mkdir(parents=True, exist_ok=True)
+        cand_file.write_text("#!/bin/sh\necho ok\n")
+        cand_file.chmod(0o755)
+
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+
+        resolved = resolve_antigravity_executable()
+        assert resolved == str(cand_file.resolve())
+
+        launch_cmd = resolve_launch_command("antigravity", approval_mode="normal")
+        assert launch_cmd == str(cand_file.resolve())
+
+    @pytest.mark.parametrize(
+        ("os_name", "machine", "home_subpath"),
+        [
+            ("linux", "x86_64", ".config/antigravity/brain"),
+            ("darwin", "arm64", ".gemini/antigravity-cli/brain"),
+            ("darwin", "x86_64", ".antigravity/brain"),
+        ],
+    )
+    def test_platform_data_dir_discovery_matrix(
+        self, tmp_path, monkeypatch, os_name, machine, home_subpath
     ):
         monkeypatch.delenv("CCGRAM_ANTIGRAVITY_DATA_DIR", raising=False)
+        monkeypatch.setattr("sys.platform", os_name)
+        monkeypatch.setattr("platform.machine", lambda: machine)
+
         brain = tmp_path / home_subpath
-        brain.mkdir(parents=True)
+        brain.mkdir(parents=True, exist_ok=True)
         monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
 
         dirs = get_antigravity_brain_dirs()
@@ -150,6 +226,25 @@ class TestAntigravityCwdMatching:
         s1.mkdir(parents=True)
         (s1 / "transcript.jsonl").write_text(
             f'{{"content": "file://{app_other_dir.resolve()}"}}\n'
+        )
+
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        event = provider.discover_transcript(str(app_dir), "shared:@0")
+        assert event is None
+
+    def test_discover_transcript_descendant_isolation(self, tmp_path, monkeypatch):
+        provider = AntigravityProvider()
+        brain = tmp_path / ".gemini" / "antigravity-cli" / "brain"
+
+        app_dir = tmp_path / "app"
+        app_dir.mkdir()
+        subdir = app_dir / "subdir"
+        subdir.mkdir()
+
+        s1 = brain / "sess-subdir" / ".system_generated" / "logs"
+        s1.mkdir(parents=True)
+        (s1 / "transcript.jsonl").write_text(
+            f'{{"content": "file://{subdir.resolve()}"}}\n'
         )
 
         monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
@@ -265,9 +360,11 @@ class TestAntigravityToolCallParsing:
 
         assert messages[0].content_type == "tool_use"
         assert messages[0].tool_name == "run_command"
+        assert messages[0].tool_use_id == "call-1"
 
         assert messages[1].content_type == "tool_result"
         assert messages[1].tool_name == "run_command"
+        assert messages[1].tool_use_id == "call-1"
         assert messages[1].text == "command output result"
         assert "call-1" not in pending
 
@@ -311,6 +408,63 @@ class TestAntigravityToolCallParsing:
         assert isinstance(messages, list)
         assert isinstance(pending, dict)
 
+    def test_tool_batch_processor_matching_by_tool_use_id(self):
+        from ccgram.handlers.messaging_pipeline.message_task import ContentTask
+        from ccgram.handlers.messaging_pipeline.tool_batch import (
+            ToolBatch,
+            ToolBatchEntry,
+        )
+
+        provider = AntigravityProvider()
+        entries = [
+            {
+                "step_index": 0,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "tool_calls": [{"id": "tool-call-abc", "name": "run_command"}],
+            },
+            {
+                "step_index": 1,
+                "source": "MODEL",
+                "type": "RUN_COMMAND",
+                "tool_call_id": "tool-call-abc",
+                "content": "output text",
+            },
+        ]
+        messages, _ = provider.parse_transcript_entries(entries, {})
+
+        tool_use_msg = messages[0]
+        tool_res_msg = messages[1]
+
+        assert tool_use_msg.tool_use_id == "tool-call-abc"
+        assert tool_res_msg.tool_use_id == "tool-call-abc"
+
+        task = ContentTask(
+            window_id="@1",
+            content_type="tool_result",
+            tool_name=tool_res_msg.tool_name,
+            tool_use_id=tool_res_msg.tool_use_id,
+            parts=(tool_res_msg.text,),
+        )
+
+        batch = ToolBatch(
+            window_id="@1",
+            thread_id=123,
+            entries=[
+                ToolBatchEntry(
+                    tool_name="run_command",
+                    tool_use_id="tool-call-abc",
+                    tool_use_text="run_command()",
+                )
+            ],
+        )
+
+        matching_entry = next(
+            (e for e in batch.entries if e.tool_use_id == task.tool_use_id), None
+        )
+        assert matching_entry is not None
+        assert matching_entry.tool_name == "run_command"
+
 
 class TestAntigravityDetectionAndYolo:
     def test_process_detection(self):
@@ -331,3 +485,38 @@ class TestAntigravityDetectionAndYolo:
     def test_yolo_resolution(self):
         cmd = resolve_launch_command("antigravity", approval_mode="yolo")
         assert cmd == "agy --dangerously-skip-permissions"
+
+
+class TestAntigravityRecoveryIntegration:
+    def test_resume_picker_scans_antigravity_sessions(self, tmp_path, monkeypatch):
+        from ccgram.handlers.recovery.resume_picker import scan_sessions_for_cwd
+
+        brain_dir = tmp_path / "brain"
+        s1 = brain_dir / "sess-ag-1" / ".system_generated" / "logs"
+        s1.mkdir(parents=True)
+        (s1 / "transcript.jsonl").write_text(
+            f'{{"content": "file://{tmp_path.resolve()}"}}\n'
+        )
+
+        monkeypatch.setenv("CCGRAM_ANTIGRAVITY_DATA_DIR", str(brain_dir))
+        sessions = scan_sessions_for_cwd(str(tmp_path))
+        assert len(sessions) == 1
+        assert sessions[0].session_id == "sess-ag-1"
+
+    def test_resume_command_scans_antigravity_sessions(self, tmp_path, monkeypatch):
+        from unittest.mock import patch
+        from ccgram.handlers.recovery.resume_command import scan_all_sessions
+
+        brain_dir = tmp_path / "brain"
+        s1 = brain_dir / "sess-ag-2" / ".system_generated" / "logs"
+        s1.mkdir(parents=True)
+        (s1 / "transcript.jsonl").write_text(
+            f'{{"content": "file://{tmp_path.resolve()}"}}\n'
+        )
+
+        with patch("ccgram.handlers.recovery.resume_command.config") as mock_config:
+            mock_config.claude_projects_path = tmp_path / "projects"
+            monkeypatch.setenv("CCGRAM_ANTIGRAVITY_DATA_DIR", str(brain_dir))
+            sessions = scan_all_sessions()
+            assert len(sessions) == 1
+            assert sessions[0].session_id == "sess-ag-2"

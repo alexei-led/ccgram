@@ -18,6 +18,7 @@ Public surface:
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -146,9 +147,6 @@ def scan_sessions_for_cwd(cwd: str) -> list[_SessionEntry]:
 
     Returns up to _MAX_RESUME_SESSIONS entries, most-recent file first.
     """
-    if not config.claude_projects_path.exists():
-        return []
-
     try:
         resolved_cwd = str(Path(cwd).resolve())
     except OSError:
@@ -157,18 +155,80 @@ def scan_sessions_for_cwd(cwd: str) -> list[_SessionEntry]:
     candidates: list[tuple[float, _SessionEntry]] = []
     seen_ids: set[str] = set()
 
-    for project_dir in config.claude_projects_path.iterdir():
-        if not project_dir.is_dir():
-            continue
+    if config.claude_projects_path.exists():
+        for project_dir in config.claude_projects_path.iterdir():
+            if not project_dir.is_dir():
+                continue
 
-        index_file = project_dir / "sessions-index.json"
-        if index_file.exists():
-            _scan_index_for_cwd(index_file, resolved_cwd, seen_ids, candidates)
+            index_file = project_dir / "sessions-index.json"
+            if index_file.exists():
+                _scan_index_for_cwd(index_file, resolved_cwd, seen_ids, candidates)
 
-        _scan_bare_jsonl_for_cwd(project_dir, resolved_cwd, seen_ids, candidates)
+            _scan_bare_jsonl_for_cwd(project_dir, resolved_cwd, seen_ids, candidates)
+
+    _scan_antigravity_sessions_for_cwd(resolved_cwd, seen_ids, candidates)
 
     candidates.sort(key=lambda c: c[0], reverse=True)
     return [entry for _, entry in candidates[:_MAX_RESUME_SESSIONS]]
+
+
+def _parse_antigravity_conv_dir(
+    conversation_dir: Path,
+    resolved_cwd: str,
+) -> tuple[float, _SessionEntry] | None:
+    """Parse an Antigravity conversation directory into a _SessionEntry if matching."""
+    # Lazy: only needed when parsing antigravity session directories
+    from ccgram.providers.antigravity import _match_antigravity_cwd
+
+    if not conversation_dir.is_dir():
+        return None
+    log_file = conversation_dir / ".system_generated" / "logs" / "transcript.jsonl"
+    if not log_file.is_file() or not _match_antigravity_cwd(log_file, resolved_cwd):
+        return None
+
+    try:
+        mtime = log_file.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+
+    session_id = conversation_dir.name
+    return mtime, _SessionEntry(session_id, session_id[:12], mtime)
+
+
+def _scan_antigravity_sessions_for_cwd(
+    resolved_cwd: str,
+    seen_ids: set[str],
+    candidates: list[tuple[float, _SessionEntry]],
+) -> None:
+    """Scan Antigravity brain directories for sessions matching a cwd."""
+    # Lazy: only needed when scanning antigravity session directories
+    from ccgram.providers.antigravity import (
+        get_antigravity_brain_dirs,
+    )
+
+    if (
+        "PYTEST_CURRENT_TEST" in os.environ
+        and "CCGRAM_ANTIGRAVITY_DATA_DIR" not in os.environ
+    ):
+        return
+
+    for brain_dir in get_antigravity_brain_dirs():
+        if not brain_dir.is_dir():
+            continue
+        try:
+            conv_dirs = list(brain_dir.iterdir())
+        except OSError:
+            continue
+
+        for conversation_dir in conv_dirs:
+            session_id = conversation_dir.name
+            if session_id in seen_ids:
+                continue
+
+            parsed = _parse_antigravity_conv_dir(conversation_dir, resolved_cwd)
+            if parsed:
+                seen_ids.add(session_id)
+                candidates.append(parsed)
 
 
 def _scan_index_for_cwd(

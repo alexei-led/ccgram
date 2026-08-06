@@ -300,6 +300,12 @@ def resolve_launch_command(
             provider = "claude"
             command = registry.get("claude").capabilities.launch_command
 
+    if provider == "antigravity" and not override:
+        # Lazy: only needed for antigravity launch path; importing at top would pull provider code
+        from ccgram.providers.antigravity import resolve_antigravity_executable
+
+        command = resolve_antigravity_executable()
+
     # CCGRAM_GEMINI_COMMAND overrides stay fully user-controlled.
     # For ccgram-managed Gemini launches, force stable shell mode defaults.
     if provider == "gemini" and not override:
