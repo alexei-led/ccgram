@@ -130,7 +130,7 @@ class TestResolveLaunchCommand:
         assert resolve_launch_command("codex") == "my-codex --flag"
         assert resolve_launch_command("gemini") == "/opt/gemini/run"
 
-    def test_yolo_mode_appends_provider_specific_flags(self) -> None:
+    def test_yolo_mode_appends_provider_specific_flags(self, monkeypatch) -> None:
         from ccgram.providers import resolve_launch_command
 
         assert (
@@ -141,9 +141,15 @@ class TestResolveLaunchCommand:
             resolve_launch_command("codex", approval_mode="yolo")
             == "codex --dangerously-bypass-approvals-and-sandbox"
         )
+        # 1. Default gemini CLI should append --yolo
         gemini_cmd = resolve_launch_command("gemini", approval_mode="yolo")
         assert "GEMINI_CLI_SYSTEM_SETTINGS_PATH=" in gemini_cmd
         assert gemini_cmd.endswith(" gemini --yolo")
+
+        assert (
+            resolve_launch_command("antigravity", approval_mode="yolo")
+            == "agy --dangerously-skip-permissions"
+        )
 
     def test_gemini_hardening_writes_system_settings_file(
         self, tmp_path, monkeypatch
@@ -233,7 +239,7 @@ class TestEnsureRegistered:
 
     @pytest.mark.parametrize(
         "name",
-        ["claude", "codex", "gemini", "pi", "shell"],
+        ["antigravity", "claude", "codex", "gemini", "pi", "shell"],
     )
     def test_all_providers_registered(self, name: str) -> None:
         from ccgram.providers import _ensure_registered, registry

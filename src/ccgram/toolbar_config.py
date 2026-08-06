@@ -192,6 +192,15 @@ BUILTIN_ACTIONS: dict[str, ToolbarAction] = {
 # ──────────────────────────────────────────────────────────────────────
 
 DEFAULT_LAYOUTS: dict[str, ToolbarLayout] = {
+    "antigravity": ToolbarLayout(
+        style="emoji_text",
+        buttons=(
+            ("screen", "ctrlc", "live"),
+            ("mode", "yolo", "esc"),
+            ("up", "enter", "down"),
+            ("last", "getfile", "close"),
+        ),
+    ),
     "claude": ToolbarLayout(
         style="emoji_text",
         buttons=(
