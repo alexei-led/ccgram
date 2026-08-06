@@ -180,7 +180,11 @@ def detect_provider_from_transcript_path(transcript_path: str) -> str:
     normalized = transcript_path.strip().lower().replace("\\", "/")
     if not normalized:
         return ""
-    if "/.antigravity" in normalized or "/antigravity-cli/" in normalized:
+    if (
+        "/.antigravity" in normalized
+        or "/antigravity-cli/" in normalized
+        or "/antigravity/" in normalized
+    ):
         return "antigravity"
     if "/.codex/sessions/" in normalized:
         return "codex"

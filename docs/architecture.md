@@ -8,7 +8,7 @@ The Herdr adapter accepts socket protocols 14–17 without warnings and continue
 
 ## System Overview
 
-ccgram maps each Telegram Forum topic to one terminal-multiplexer target running one agent CLI (Claude Code, Codex, Gemini, Pi, or Shell). Tmux routing remains keyed by window ID (`@0`, `@12`). Herdr routing is keyed only by opaque `herdr-session-v1-…` targets derived from `agent.list`; tab, pane, terminal, workspace, display, and focus values are short-lived locators inside a fresh guarded action, never persisted identity. Missing, duplicate, malformed, sessionless, and legacy targets fail closed. A target can change after the guard and before Herdr dispatches, so the adapter records a possible post-guard race rather than claiming atomic delivery. Multiplexer access goes through the `multiplexer/` seam (`Multiplexer` Protocol); tmux is the default backend and herdr is selectable via `CCGRAM_MULTIPLEXER=herdr`.
+ccgram maps each Telegram Forum topic to one terminal-multiplexer target running one agent CLI (Claude Code, Codex, Gemini, Pi, Antigravity, or Shell). Tmux routing remains keyed by window ID (`@0`, `@12`). Herdr routing is keyed only by opaque `herdr-session-v1-…` targets derived from `agent.list`; tab, pane, terminal, workspace, display, and focus values are short-lived locators inside a fresh guarded action, never persisted identity. Missing, duplicate, malformed, sessionless, and legacy targets fail closed. A target can change after the guard and before Herdr dispatches, so the adapter records a possible post-guard race rather than claiming atomic delivery. Multiplexer access goes through the `multiplexer/` seam (`Multiplexer` Protocol); tmux is the default backend and herdr is selectable via `CCGRAM_MULTIPLEXER=herdr`.
 
 ```mermaid
 graph TB
@@ -19,7 +19,7 @@ graph TB
     TC["telegram_client.py<br>TelegramClient Protocol<br>+ PTBTelegramClient adapter"]
     Handlers["handlers/<br>14 feature subpackages"]
     TmuxMgr["multiplexer/ seam <br> Multiplexer Protocol <br> (tmux default, herdr)"]
-    Windows["multiplexer windows <br> (Claude, Codex, Gemini, Pi, Shell)"]
+    Windows["multiplexer windows <br> (Claude, Codex, Gemini, Pi, Antigravity, Shell)"]
     Hook["hook.py<br>Claude Code hooks"]
     Monitor["session_monitor.py<br>poll loop"]
     State["State files<br>~/.ccgram/"]
@@ -96,7 +96,7 @@ graph TD
     subgraph providers["Provider Abstraction"]
         Base["providers/base.py<br>AgentProvider protocol<br>ProviderCapabilities"]
         Claude["providers/claude.py"]
-        Jsonl["providers/_jsonl.py<br>(Codex + Gemini + Pi base)"]
+        Jsonl["providers/_jsonl.py<br>(Codex + Gemini + Pi + Antigravity base)"]
         Shell["providers/shell.py"]
     end
 
@@ -205,6 +205,7 @@ classDiagram
     class CodexProvider
     class GeminiProvider
     class PiProvider
+    class AntigravityProvider
     class ShellProvider
 
     AgentProvider <|.. ClaudeProvider
@@ -212,6 +213,7 @@ classDiagram
     JsonlProvider <|-- CodexProvider
     JsonlProvider <|-- GeminiProvider
     JsonlProvider <|-- PiProvider
+    JsonlProvider <|-- AntigravityProvider
     JsonlProvider <|-- ShellProvider
 ```
 

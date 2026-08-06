@@ -10,18 +10,19 @@ CCGram supports multiple agent CLI backends. Each Telegram topic can use a diffe
 | Codex CLI   | `codex`     | Yes         | Yes    | Yes      | JSONL      | Hook Stop + pyte VT100 interactive UI + transcript activity heuristic |
 | Gemini CLI  | `gemini`    | Yes         | Yes    | Yes      | JSONL      | Hook AfterAgent + pane title + interactive UI + `/status` snapshot    |
 | Pi          | `pi`        | Yes         | Yes    | Yes      | JSONL (v3) | Hook-runner Stop + transcript activity heuristic                      |
+| Antigravity | `agy`       | No          | Yes    | Yes      | JSONL      | Transcript activity heuristic + `/status` snapshot                    |
 | Shell       | `bash`      | No          | No     | No       | None       | Shell prompt idle detection                                           |
 
 ## Choosing a Provider
 
-**From Telegram**: When you create a new topic and select a directory, then — if the directory is an eligible git repo — choose whether to use the current branch or create a new worktree on a new branch (non-git directories skip this step), a provider picker appears with Claude (default), Codex, Gemini, Pi, and Shell options. After provider selection, CCGram asks for session mode:
+**From Telegram**: When you create a new topic and select a directory, then — if the directory is an eligible git repo — choose whether to use the current branch or create a new worktree on a new branch (non-git directories skip this step), a provider picker appears with Claude (default), Codex, Gemini, Pi, Antigravity, and Shell options. After provider selection, CCGram asks for session mode:
 
 - `✅ Standard` (normal approvals)
 - `🚀 YOLO` (provider-specific permissive mode)
 
 **From the terminal**: If you create a window manually and start an agent CLI, CCGram auto-detects the provider from the running process name. When the pane command is a JS runtime wrapper (node, bun), it inspects the pane's foreground process to reliably identify the actual CLI. How the foreground process is read is owned by the multiplexer backend — tmux uses `ps -t <tty>`, herdr reads `pane process-info` (no tty needed) — so detection works the same on both. The shell provider uses the same seam to classify a bare shell pane. As a last resort, Gemini pane-title symbols (`✦`, `✋`, `◇`) are checked.
 
-**Default provider**: Set `CCGRAM_PROVIDER=codex` (or `gemini`, `pi`, `shell`) to change the default. Claude is the default if unset.
+**Default provider**: Set `CCGRAM_PROVIDER=codex` (or `gemini`, `pi`, `antigravity`, `shell`) to change the default. Claude is the default if unset.
 
 ## Session Mode (Standard vs YOLO)
 
@@ -32,6 +33,7 @@ CCGram stores mode per window and reuses it for recover/continue/resume flows.
   - Claude: `--dangerously-skip-permissions`
   - Codex: `--dangerously-bypass-approvals-and-sandbox`
   - Gemini: `--yolo`
+  - Antigravity: `--dangerously-skip-permissions`
 
 YOLO sessions are indicated in Telegram topic titles with a `🚀` badge and in `/sessions` with a `[YOLO]` tag. When Remote Control is active, a `📡` badge also appears in the topic title.
 
@@ -44,9 +46,10 @@ CCGRAM_CLAUDE_COMMAND=ce --current
 CCGRAM_CODEX_COMMAND=my-codex-wrapper
 CCGRAM_GEMINI_COMMAND=/opt/gemini/run
 CCGRAM_PI_COMMAND=pi --model sonnet
+CCGRAM_ANTIGRAVITY_COMMAND=agy --effort high
 ```
 
-`<NAME>` is uppercase: `CLAUDE`, `CODEX`, `GEMINI`, `PI`. Defaults to the provider's built-in command (`claude`, `codex`, `gemini`, `pi`) when unset. New providers automatically support `CCGRAM_<NAME>_COMMAND` without code changes.
+`<NAME>` is uppercase: `CLAUDE`, `CODEX`, `GEMINI`, `PI`, `ANTIGRAVITY`. Defaults to the provider's built-in command (`claude`, `codex`, `gemini`, `pi`, `agy`) when unset. New providers automatically support `CCGRAM_<NAME>_COMMAND` without code changes.
 
 You can use this for a global "today" setup (all new sessions), for example:
 
@@ -54,6 +57,7 @@ You can use this for a global "today" setup (all new sessions), for example:
 CCGRAM_CLAUDE_COMMAND=claude --dangerously-skip-permissions
 CCGRAM_CODEX_COMMAND=codex --dangerously-bypass-approvals-and-sandbox
 CCGRAM_GEMINI_COMMAND=gemini --yolo
+CCGRAM_ANTIGRAVITY_COMMAND=agy --dangerously-skip-permissions
 ```
 
 ## Provider-Specific Commands
@@ -64,6 +68,7 @@ Each provider exposes its own slash commands to the Telegram menu. Examples:
 - **Codex**: `/model`, `/mode`, `/status`, `/diff`, `/compact`, `/mcp`...
 - **Gemini**: `/chat`, `/clear`, `/compress`, `/model`, `/memory`, `/vim`...
 - **Pi**: `/new`, `/compact`, `/followup`, `/scoped_models`, `/export`, `/name`, `/reload`, `/session`, `/share`, `/changelog`... (plus discovered skills/prompts/extensions)
+- **Antigravity**: `/agents`, `/chat`, `/clear`, `/docs`, `/help`, `/mcp`, `/model`, `/plan`, `/skills`, `/theme`, `/tools`...
 
 ---
 
@@ -278,3 +283,43 @@ Voice messages in shell topics flow through Whisper transcription → LLM comman
 - Idle at prompt: "🐚 Shell ready" (or "✓ Ready" with standard status)
 - `/history` is not available (no transcript)
 - Resume and Continue are not supported (shell sessions are ephemeral)
+
+## Google Antigravity CLI (agy)
+
+Google Antigravity CLI is a command-line AI coding agent surface with directory-scoped sessions, JSONL transcript logs (`transcript.jsonl`), and built-in slash commands.
+
+### Supported Platforms & Executable Resolution
+
+CCGram supports Antigravity CLI across macOS (Apple Silicon arm64 & Intel x86_64) and Linux via a deterministic resolution order:
+
+1. **Environment Override**: `CCGRAM_ANTIGRAVITY_COMMAND` (e.g. `CCGRAM_ANTIGRAVITY_COMMAND="agy --effort high"`)
+2. **PATH Lookup**: Executables named `agy` or `antigravity` resolved via system `PATH`
+3. **Platform Candidates**:
+   - `~/.local/bin/agy`
+   - `~/.gemini/antigravity-cli/bin/agy`
+   - `~/.antigravity/bin/agy`
+   - `/usr/local/bin/agy`
+   - `/opt/homebrew/bin/agy`
+   - `/usr/bin/agy`
+
+### Transcript & Data Directory Resolution
+
+Transcript brain directories are discovered in order:
+
+1. `CCGRAM_ANTIGRAVITY_DATA_DIR` environment override
+2. `~/.gemini/antigravity-cli/brain`
+3. `~/.antigravity/brain`
+4. `~/.config/antigravity/brain`
+5. `~/.local/share/antigravity/brain`
+
+CCGram uses exact path-boundary matching against normalized workspace paths (`Path.expanduser().resolve()`) to ensure transcript logs strictly match the topic's target working directory (`cwd`).
+
+### Resume and Continue
+
+- **Resume**: Uses `agy --conversation <session_id>` (plus `--dangerously-skip-permissions` in YOLO mode).
+- **Continue**: Uses `agy --continue` (plus `--dangerously-skip-permissions` in YOLO mode).
+
+### Troubleshooting Guidance
+
+- **Binary Not Found**: Ensure `agy` is in your `$PATH` or set `CCGRAM_ANTIGRAVITY_COMMAND=/path/to/agy`.
+- **Session Discovery Failure**: Check that transcripts are created under `~/.gemini/antigravity-cli/brain/` or set `CCGRAM_ANTIGRAVITY_DATA_DIR=/path/to/brain`.

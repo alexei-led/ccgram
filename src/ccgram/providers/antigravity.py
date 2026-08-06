@@ -1,7 +1,7 @@
 """Google Antigravity CLI (agy) provider behind AgentProvider protocol.
 
 Antigravity CLI is an AI coding agent surface with directory-scoped sessions,
-JSONL transcript logs, and custom step index / timestamp fields.
+JSONL transcript logs, custom step index / timestamp fields, and tool calls.
 
 Transcript format:
   - Location: ``~/.gemini/antigravity-cli/brain/<conversation-id>/.system_generated/logs/transcript.jsonl``
@@ -9,9 +9,12 @@ Transcript format:
   - Assistant responses: ``{"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", ...}``
 """
 
+from __future__ import annotations
+
 import os
 from pathlib import Path
 import re
+import shutil
 import time
 from typing import Any
 
@@ -20,11 +23,13 @@ from ccgram.providers.base import (
     AgentMessage,
     MessageRole,
     ProviderCapabilities,
+    RESUME_ID_RE,
     SessionStartEvent,
 )
 from ccgram.tool_format import format_tool_line
 
 _TRANSCRIPT_MAX_AGE_SECS = 120.0
+_MAX_CWD_SCAN_LINES = 30
 
 # Antigravity CLI known slash commands
 _ANTIGRAVITY_BUILTINS: dict[str, str] = {
@@ -82,6 +87,72 @@ _METADATA_BLOCKS_RE = re.compile(
 _TAG_WRAPPERS_RE = re.compile(r"</?USER_REQUEST>", re.IGNORECASE)
 
 
+def _get_platform_executable_candidates() -> tuple[Path, ...]:
+    home = Path.home()
+    return (
+        home / ".local" / "bin" / "agy",
+        home / ".gemini" / "antigravity-cli" / "bin" / "agy",
+        home / ".antigravity" / "bin" / "agy",
+        Path("/usr/local/bin/agy"),
+        Path("/opt/homebrew/bin/agy"),
+        Path("/usr/bin/agy"),
+        home / ".local" / "bin" / "antigravity",
+        home / ".gemini" / "antigravity-cli" / "bin" / "antigravity",
+        home / ".antigravity" / "bin" / "antigravity",
+        Path("/usr/local/bin/antigravity"),
+        Path("/opt/homebrew/bin/antigravity"),
+        Path("/usr/bin/antigravity"),
+    )
+
+
+def resolve_antigravity_executable() -> str:
+    """Resolve Antigravity CLI executable using deterministic precedence."""
+    override = os.environ.get("CCGRAM_ANTIGRAVITY_COMMAND", "").strip()
+    if override:
+        return override
+
+    for name in ("agy", "antigravity"):
+        which_path = shutil.which(name)
+        if which_path:
+            return name
+
+    for candidate in _get_platform_executable_candidates():
+        try:
+            expanded = candidate.expanduser().resolve()
+            if expanded.is_file() and os.access(expanded, os.X_OK):
+                return str(expanded)
+        except OSError:
+            continue
+
+    return "agy"
+
+
+def get_antigravity_brain_dirs() -> list[Path]:
+    """Return ordered list of existing Antigravity brain directories."""
+    data_dir_override = os.environ.get("CCGRAM_ANTIGRAVITY_DATA_DIR", "").strip()
+    if data_dir_override:
+        path = Path(data_dir_override).expanduser().resolve()
+        return [path] if path.is_dir() else []
+
+    home = Path.home()
+    candidates = (
+        home / ".gemini" / "antigravity-cli" / "brain",
+        home / ".antigravity" / "brain",
+        home / ".config" / "antigravity" / "brain",
+        home / ".local" / "share" / "antigravity" / "brain",
+    )
+
+    dirs: list[Path] = []
+    for candidate in candidates:
+        try:
+            expanded = candidate.expanduser().resolve()
+            if expanded.is_dir() and expanded not in dirs:
+                dirs.append(expanded)
+        except OSError:
+            continue
+    return dirs
+
+
 def clean_antigravity_content(text: str) -> str:
     """Clean XML metadata wrappers and tags from Antigravity user input."""
     if not text:
@@ -137,21 +208,68 @@ def extract_antigravity_text(entry: dict[str, Any]) -> str:
     return text.strip()
 
 
-_MAX_CWD_SCAN_LINES = 25
+def _extract_line_cwd_matches(line: str) -> list[str]:
+    """Extract potential workspace CWD paths from a transcript line."""
+    matches = re.findall(
+        r'file://(/[^"\s<>]+)|"Cwd":\s*"\\?"([^"\\]+)\\?"?|"DirectoryPath":\s*"\\?"([^"\\]+)\\?"?',
+        line,
+    )
+    results: list[str] = []
+    for group in matches:
+        raw_path = next((g for g in group if g), "")
+        if raw_path:
+            results.append(raw_path)
+    return results
+
+
+def _check_string_boundary(line: str, target_str: str) -> bool:
+    """Check if target_str exists in line with a trailing path boundary."""
+    if not target_str:
+        return False
+    idx = line.find(target_str)
+    if idx == -1:
+        return False
+    end_idx = idx + len(target_str)
+    char_after = line[end_idx] if end_idx < len(line) else ""
+    return not char_after or char_after in (
+        '"',
+        "'",
+        "/",
+        "\\",
+        " ",
+        "\n",
+        "\r",
+        "\t",
+        ">",
+    )
 
 
 def _match_antigravity_cwd(log_file: Path, target_cwd: str) -> bool:
-    """Check if transcript lines reference target_cwd."""
+    """Check if transcript lines strictly match target_cwd with exact path boundaries."""
     if not target_cwd:
         return True
     try:
-        resolved_target = str(Path(target_cwd).resolve())
+        target_path = Path(target_cwd).expanduser()
+        resolved_target = target_path.resolve()
+        raw_target_str = str(target_path)
+        resolved_target_str = str(resolved_target)
+
         with open(log_file, encoding="utf-8") as f:
             for i, line in enumerate(f):
                 if i > _MAX_CWD_SCAN_LINES:
                     break
-                if resolved_target in line or target_cwd in line:
+
+                if _check_string_boundary(
+                    line, resolved_target_str
+                ) or _check_string_boundary(line, raw_target_str):
                     return True
+
+                for raw_path in _extract_line_cwd_matches(line):
+                    try:
+                        if Path(raw_path).expanduser().resolve() == resolved_target:
+                            return True
+                    except ValueError, OSError:
+                        continue
     except OSError:
         pass
     return False
@@ -162,6 +280,8 @@ def _collect_brain_candidates(
 ) -> list[tuple[float, Path, str]]:
     """Collect valid transcript candidates from the brain directory."""
     candidates: list[tuple[float, Path, str]] = []
+    if not brain_dir.is_dir():
+        return candidates
     for conversation_dir in brain_dir.iterdir():
         if not conversation_dir.is_dir():
             continue
@@ -187,14 +307,14 @@ class AntigravityProvider(JsonlProvider):
         launch_command="agy",
         supports_hook=False,
         supports_resume=True,
-        supports_continue=False,
+        supports_continue=True,
         supports_structured_transcript=True,
         supports_incremental_read=True,
         uses_pane_title=False,
         uses_pyte_status_parsing=False,
         builtin_commands=tuple(sorted(_ANTIGRAVITY_BUILTINS.keys())),
-        supports_user_command_discovery=True,
-        has_yolo_confirmation=True,
+        supports_user_command_discovery=False,
+        has_yolo_confirmation=False,
         tui_picker_commands=frozenset(
             {
                 "agents",
@@ -213,6 +333,44 @@ class AntigravityProvider(JsonlProvider):
     )
     _BUILTINS = _ANTIGRAVITY_BUILTINS
 
+    def make_launch_args(
+        self,
+        resume_id: str | None = None,
+        use_continue: bool = False,
+    ) -> str:
+        """Build CLI launch arguments for Antigravity."""
+        args: list[str] = []
+        if resume_id:
+            if not RESUME_ID_RE.match(resume_id):
+                raise ValueError(f"Invalid resume_id: {resume_id!r}")
+            args.append(f"--conversation {resume_id}")
+        elif use_continue:
+            args.append("--continue")
+
+        return " ".join(args)
+
+    def get_resume_command(
+        self,
+        session_id: str,
+        approval_mode: str = "normal",
+    ) -> str:
+        """Build exact command for resuming an Antigravity session."""
+        if not RESUME_ID_RE.match(session_id):
+            raise ValueError(f"Invalid session_id: {session_id!r}")
+        executable = resolve_antigravity_executable()
+        cmd = f"{executable} --conversation {session_id}"
+        if approval_mode == "yolo":
+            cmd += " --dangerously-skip-permissions"
+        return cmd
+
+    def get_continue_command(self, approval_mode: str = "normal") -> str:
+        """Build exact command for continuing recent Antigravity session."""
+        executable = resolve_antigravity_executable()
+        cmd = f"{executable} --continue"
+        if approval_mode == "yolo":
+            cmd += " --dangerously-skip-permissions"
+        return cmd
+
     def discover_transcript(
         self,
         cwd: str,
@@ -221,12 +379,17 @@ class AntigravityProvider(JsonlProvider):
         max_age: float | None = None,
     ) -> SessionStartEvent | None:
         """Discover latest Antigravity CLI transcript on disk matching window."""
-        brain_dir = Path.home() / ".gemini" / "antigravity-cli" / "brain"
-        if not brain_dir.is_dir():
+        brain_dirs = get_antigravity_brain_dirs()
+        if not brain_dirs:
             return None
 
         age_limit = _TRANSCRIPT_MAX_AGE_SECS if max_age is None else max_age
-        candidates = _collect_brain_candidates(brain_dir, age_limit, time.time())
+        now = time.time()
+
+        candidates: list[tuple[float, Path, str]] = []
+        for brain_dir in brain_dirs:
+            candidates.extend(_collect_brain_candidates(brain_dir, age_limit, now))
+
         if not candidates:
             return None
 
@@ -237,8 +400,9 @@ class AntigravityProvider(JsonlProvider):
                 if _match_antigravity_cwd(cand[1], cwd):
                     selected = cand
                     break
-
-        if selected is None:
+            if selected is None:
+                return None
+        else:
             selected = candidates[0]
 
         _, latest_file, session_id = selected
@@ -267,9 +431,7 @@ class AntigravityProvider(JsonlProvider):
     ) -> str | None:
         """Build status snapshot for Antigravity sessions."""
         size = (
-            os.path.getsize(transcript_path)
-            if os.path.exists(transcript_path)
-            else 0
+            os.path.getsize(transcript_path) if os.path.exists(transcript_path) else 0
         )
         return (
             f"🌀 [{display_name}] Antigravity session active.\n"
@@ -284,24 +446,29 @@ class AntigravityProvider(JsonlProvider):
         pending_tools: dict[str, Any],
         cwd: str | None = None,  # noqa: ARG002
     ) -> tuple[list[AgentMessage], dict[str, Any]]:
-        """Parse Antigravity JSONL entries into AgentMessages."""
+        """Parse Antigravity JSONL entries into AgentMessages with tool tracking."""
         messages: list[AgentMessage] = []
         pending = dict(pending_tools)
 
         for entry in entries:
             role = resolve_antigravity_role(entry)
-            if not role:
-                continue
-
+            entry_type = str(entry.get("type", "")).upper()
             timestamp = str(entry.get("created_at") or entry.get("timestamp") or "")
 
-            # Tool call handling
+            # Tool calls
             tool_calls = entry.get("tool_calls")
             if isinstance(tool_calls, list) and role == "assistant":
                 for tc in tool_calls:
                     if not isinstance(tc, dict):
                         continue
+                    tool_id = str(
+                        tc.get("id")
+                        or tc.get("tool_call_id")
+                        or tc.get("name")
+                        or "unknown"
+                    )
                     tool_name = str(tc.get("name") or "unknown")
+                    pending[tool_id] = tool_name
                     tool_text = format_tool_line(tool_name, "")
                     messages.append(
                         AgentMessage(
@@ -313,8 +480,38 @@ class AntigravityProvider(JsonlProvider):
                         )
                     )
 
+            # Tool execution output/results
+            if entry_type in (
+                "RUN_COMMAND",
+                "TOOL_RESULT",
+                "EXECUTE_RESULT",
+                "RESULT",
+            ):
+                tool_id = str(
+                    entry.get("tool_call_id")
+                    or entry.get("id")
+                    or entry.get("tool_name")
+                    or ""
+                )
+                tool_name = pending.pop(tool_id, None) if tool_id else None
+                if not tool_name:
+                    tool_name = str(entry.get("tool_name") or "tool")
+                content = entry.get("content", "")
+                res_text = str(content) if content else ""
+                if res_text:
+                    messages.append(
+                        AgentMessage(
+                            text=res_text,
+                            role="assistant",
+                            content_type="tool_result",
+                            tool_name=tool_name,
+                            timestamp=timestamp or None,
+                        )
+                    )
+                continue
+
             text = extract_antigravity_text(entry)
-            if text:
+            if text and role:
                 messages.append(
                     AgentMessage(
                         text=text,
