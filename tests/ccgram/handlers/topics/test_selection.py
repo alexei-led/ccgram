@@ -1,5 +1,5 @@
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from telegram import InlineKeyboardMarkup
@@ -404,7 +404,7 @@ class TestHandleModeSelect:
         "ccgram.handlers.topics.window_launch_service.safe_edit", new_callable=AsyncMock
     )
     @patch(
-        "ccgram.handlers.topics.window_launch_service.send_to_window",
+        "ccgram.handlers.topics.window_launch_service.send_telegram_to_window",
         new_callable=AsyncMock,
     )
     @patch("ccgram.handlers.topics.window_launch_service.session_manager")
@@ -453,7 +453,7 @@ class TestHandleModeSelect:
             query, 100, f"{CB_MODE_SELECT}claude:normal", update, context
         )
 
-        mock_send_to_window.assert_called_once_with("@1", "hello world")
+        mock_send_to_window.assert_called_once_with(100, "@1", 42, "hello world", ANY)
         assert PENDING_THREAD_TEXT not in user_data
 
 

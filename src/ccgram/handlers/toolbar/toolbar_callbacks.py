@@ -5,7 +5,7 @@ looked up in the loaded ``ToolbarConfig.actions`` and dispatched by
 ``action_type``:
 
   - ``key``    → ``tmux_manager.send_keys(payload, enter=False, literal=...)``
-  - ``text``   → ``tmux_manager.send_keys(payload, enter=True, literal=True)``
+  - ``text``   → origin-aware terminal injection with Enter
   - ``builtin`` → dispatched via ``_BUILTIN_DISPATCH`` to a specialized handler
 
 Keyboard construction lives in ``toolbar_keyboard``.
@@ -30,6 +30,7 @@ from ...multiplexer import multiplexer as tmux_manager
 from ...toolbar_config import ToolbarAction
 from ..callback_data import CB_TOOLBAR
 from ..callback_helpers import get_thread_id, user_owns_window
+from ..telegram_origin import send_telegram_to_window
 from ..callback_tokens import resolve_callback_data
 from ..callback_registry import register
 from .toolbar_keyboard import get_toolbar_config, refresh_button_label
@@ -64,14 +65,27 @@ async def _dispatch_key(
 
 
 async def _dispatch_text(
-    action: ToolbarAction, query: CallbackQuery, window_id: str
+    action: ToolbarAction,
+    query: CallbackQuery,
+    user_id: int,
+    window_id: str,
+    thread_id: int | None,
 ) -> None:
     """Send literal text + Enter for a ``text`` action."""
     w = await tmux_manager.find_window_by_id(window_id)
     if w is None:
         await query.answer("Window not found", show_alert=True)
         return
-    await tmux_manager.send_keys(w.window_id, action.payload, enter=True, literal=True)
+    success, error = await send_telegram_to_window(
+        user_id,
+        w.window_id,
+        thread_id,
+        action.payload,
+        query.message.chat.id if query.message else None,
+    )
+    if not success:
+        await query.answer(error or "Failed to send action", show_alert=True)
+        return
     if action.read_state:
         short_label = await refresh_button_label(action, query, window_id)
         await query.answer(f"{action.emoji} {short_label}")
@@ -297,7 +311,7 @@ async def handle_toolbar_callback(
     if action.action_type == "key":
         await _dispatch_key(action, query, window_id)
     elif action.action_type == "text":
-        await _dispatch_text(action, query, window_id)
+        await _dispatch_text(action, query, user_id, window_id, get_thread_id(update))
     elif action.action_type == "builtin":
         handler = _BUILTIN_DISPATCH.get(action.payload)
         if handler is None:

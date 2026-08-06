@@ -173,6 +173,62 @@ class TestNewWindowSyncWithBindings:
         }
         assert called_chats == {group_a, group_b}
 
+    async def test_same_user_does_not_create_orphan_topics_in_multiple_groups(
+        self, monitor: SessionMonitor, sm: SessionManager
+    ) -> None:
+        user_id = 100
+        new_window = "@9"
+        thread_router.thread_bindings = {user_id: {1: "@1", 2: "@2"}}
+        thread_router.group_chat_ids = {
+            f"{user_id}:1": -100100,
+            f"{user_id}:2": -100200,
+        }
+        topic_counter = iter([50, 60])
+        bot = AsyncMock()
+        bot.create_forum_topic = AsyncMock(
+            side_effect=lambda **kw: _make_topic(next(topic_counter))
+        )
+
+        async def on_new_window(event: NewWindowEvent) -> None:
+            with (
+                patch("ccgram.handlers.topics.topic_orchestration.session_manager", sm),
+                patch(
+                    "ccgram.handlers.topics.topic_orchestration.config"
+                ) as mock_config,
+            ):
+                mock_config.group_id = None
+                mock_config.allowed_users = {user_id}
+                await _handle_new_window(event, bot)
+
+        monitor.set_new_window_callback(on_new_window)
+        monitor._last_session_map = {}
+        with patch.object(
+            monitor,
+            "_load_current_session_map",
+            new_callable=AsyncMock,
+            return_value={
+                new_window: {
+                    "session_id": "s1",
+                    "cwd": "/proj",
+                    "window_name": "proj",
+                }
+            },
+        ):
+            await monitor._detect_and_cleanup_changes()
+
+        assert bot.create_forum_topic.call_count == 2
+        for chat_id in (-100100, -100200):
+            matches = [
+                window_id
+                for (bound_chat, _thread_id), window_id in (
+                    (key[1:], value)
+                    for key, value in thread_router.chat_thread_bindings.items()
+                    if key[0] == user_id
+                )
+                if bound_chat == chat_id
+            ]
+            assert matches == [new_window]
+
 
 class TestNewWindowSyncColdStart:
     """Cold-start: no existing bindings, CCGRAM_GROUP_ID drives topic creation."""

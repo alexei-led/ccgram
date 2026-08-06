@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -528,7 +528,7 @@ class TestLaunchWindowSuccess:
             ) as mock_reg,
             patch("ccgram.providers.resolve_launch_command", return_value="claude"),
             patch(
-                "ccgram.handlers.topics.window_launch_service.send_to_window",
+                "ccgram.handlers.topics.window_launch_service.send_telegram_to_window",
                 new_callable=AsyncMock,
                 return_value=(True, "ok"),
             ) as mock_send,
@@ -566,6 +566,6 @@ class TestLaunchWindowSuccess:
                 ),
             )
 
-        mock_send.assert_awaited_once_with("@5", "hello agent")
+        mock_send.assert_awaited_once_with(100, "@5", 42, "hello agent", ANY)
         # Keys consumed after forwarding
         assert PENDING_THREAD_TEXT not in user_data

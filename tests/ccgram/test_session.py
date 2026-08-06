@@ -163,7 +163,7 @@ class TestFindUsersForSession:
         thread_router.bind_thread(100, 1, "@1")
         mgr.window_states["@1"] = self._ws("sid-1")
         result = session_resolver.find_users_for_session("sid-1")
-        assert result == [(100, "@1", 1)]
+        assert result == [(100, "@1", 1, None)]
 
     def test_no_match_returns_empty(self, mgr: SessionManager) -> None:
         thread_router.bind_thread(100, 1, "@1")

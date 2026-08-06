@@ -32,7 +32,9 @@ async def resolve_session_for_window(window_id: str) -> "ClaudeSession | None":
     return await session_resolver.resolve_session_for_window(window_id)
 
 
-def find_users_for_session(session_id: str) -> list[tuple[int, str, int]]:
+def find_users_for_session(
+    session_id: str,
+) -> list[tuple[int, str, int, int | None]]:
     """Return list of (user_id, window_id, thread_id) for all users bound to a session."""
     # Lazy: session_resolver constructed per-call so tests can stub it
     from .session_resolver import session_resolver

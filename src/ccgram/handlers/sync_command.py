@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 import asyncio
-import contextlib
 import re
 
 import structlog
@@ -39,6 +38,7 @@ from .callback_registry import register
 from .cleanup import clear_topic_state
 from .messaging_pipeline.message_sender import is_thread_gone, safe_edit, safe_reply
 from .status.topic_emoji import sync_topic_name
+from .topics.topic_probe import probe_topic_exists
 
 if TYPE_CHECKING:
     from telegram.ext import ContextTypes
@@ -295,7 +295,7 @@ async def _adopt_orphaned_windows(
         )
         try:
             await _handle_new_window(event, client)
-        except TelegramError:
+        except TelegramError, OSError:
             logger.exception("Failed to adopt orphaned window %s", window_id)
 
 
@@ -321,26 +321,14 @@ async def _probe_dead_topics(client: TelegramClient) -> list[AuditIssue]:
         user_id: int, thread_id: int, window_id: str, chat_id: int
     ) -> AuditIssue | None:
         async with sem:
-            try:
-                msg = await client.send_message(
-                    chat_id,
-                    ".",
-                    message_thread_id=thread_id,
-                    disable_notification=True,
+            exists = await probe_topic_exists(client, chat_id, thread_id)
+            if exists is False:
+                display = thread_router.get_display_name(window_id)
+                return AuditIssue(
+                    category="dead_topic",
+                    detail=f"user:{user_id} thread:{thread_id} window:{window_id} ({display})",
+                    fixable=True,
                 )
-                # Topic exists — clean up probe message
-                with contextlib.suppress(TelegramError):
-                    await client.delete_message(chat_id, msg.message_id)
-            except BadRequest as exc:
-                if is_thread_gone(exc):
-                    display = thread_router.get_display_name(window_id)
-                    return AuditIssue(
-                        category="dead_topic",
-                        detail=f"user:{user_id} thread:{thread_id} window:{window_id} ({display})",
-                        fixable=True,
-                    )
-            except TelegramError:
-                pass  # network error, skip — not a dead topic
         return None
 
     results = await asyncio.gather(
@@ -395,32 +383,33 @@ async def _recreate_dead_topics(
             cwd=view.cwd if view else "",
         )
 
-        # Preserve group_chat_id before unbinding — unbind_thread deletes it,
-        # but _handle_new_window needs it to know which chat to create the topic in.
+        # Preserve group_chat_id before unbinding; the targeted repair passes it
+        # directly so another user's binding cannot short-circuit recreation.
         chat_id = thread_router.resolve_chat_id(user_id, thread_id)
 
-        # Unbind THEN recreate — must unbind first so _handle_new_window
-        # doesn't skip the window as "already bound".  On failure, restore.
         thread_router.unbind_thread(user_id, thread_id)
 
-        # Inject a temporary in-memory-only group_chat_id so _handle_new_window
-        # can discover the chat.  Direct dict mutation avoids _save_state() —
-        # if the process crashes, the placeholder won't persist to state.json.
-        _placeholder_key = f"{user_id}:0"
-        if chat_id != user_id:
-            thread_router.group_chat_ids[_placeholder_key] = chat_id
-
+        created = False
         try:
-            await _handle_new_window(event, client)
-            recreated += 1
+            created = await _handle_new_window(
+                event,
+                client,
+                target_user_id=user_id,
+                target_chat_id=chat_id,
+            )
+            if created:
+                recreated += 1
+            else:
+                logger.warning("Could not recreate topic for window %s", window_id)
         except TelegramError, OSError:
             logger.exception("Failed to recreate topic for window %s", window_id)
-            # Restore binding so the window isn't orphaned
-            thread_router.bind_thread(user_id, thread_id, window_id, window_name=name)
-            if chat_id != user_id:
-                thread_router.set_group_chat_id(user_id, thread_id, chat_id)
         finally:
-            thread_router.group_chat_ids.pop(_placeholder_key, None)
+            if not created:
+                thread_router.bind_thread(
+                    user_id, thread_id, window_id, window_name=name, chat_id=chat_id
+                )
+                if chat_id != user_id:
+                    thread_router.set_group_chat_id(user_id, thread_id, chat_id)
     return recreated
 
 

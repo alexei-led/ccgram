@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from telegram.error import BadRequest, Conflict, NetworkError, TelegramError
+from telegram.request import HTTPXRequest
 
 from ccgram.bot import (
     _error_handler,
@@ -15,6 +16,7 @@ from ccgram.bot import (
     _send_shutdown_notification,
     polling_conflict_requires_restart,
 )
+from ccgram.telegram_request import ResilientPollingHTTPXRequest
 
 
 @pytest.fixture(autouse=True)
@@ -114,6 +116,27 @@ class TestErrorHandlerStaleCallback:
 
         ctx.application.stop_running.assert_not_called()
         assert polling_conflict_requires_restart() is False
+
+    async def test_raw_conflicts_accumulate_until_shutdown(self) -> None:
+        request = ResilientPollingHTTPXRequest(on_success=_record_successful_poll)
+        response = (
+            409,
+            b'{"ok": false, "error_code": 409, "description": "Conflict"}',
+        )
+        ctx = _make_context(Conflict("placeholder"))
+
+        with (
+            patch.object(HTTPXRequest, "do_request", AsyncMock(return_value=response)),
+            patch("ccgram.bot.time.monotonic", side_effect=[100.0, 190.0]),
+        ):
+            for _ in range(2):
+                with pytest.raises(Conflict) as raised:
+                    await request.post("https://example.com")
+                ctx.error = raised.value
+                await _error_handler(None, ctx)
+
+        ctx.application.stop_running.assert_called_once()
+        assert polling_conflict_requires_restart() is True
 
 
 class TestShutdownNotification:

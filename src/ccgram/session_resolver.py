@@ -206,12 +206,17 @@ class SessionResolver:
     def find_users_for_session(
         self,
         session_id: str,
-    ) -> list[tuple[int, str, int]]:
+    ) -> list[tuple[int, str, int, int | None]]:
         """Find all users whose thread-bound window maps to the given session_id."""
-        result: list[tuple[int, str, int]] = []
-        for user_id, thread_id, window_id in thread_router.iter_thread_bindings():
+        result: list[tuple[int, str, int, int | None]] = []
+        for (
+            user_id,
+            chat_id,
+            thread_id,
+            window_id,
+        ) in thread_router.iter_thread_bindings_with_chat():
             if identity_state.get_session_id(window_id) == session_id:
-                result.append((user_id, window_id, thread_id))
+                result.append((user_id, window_id, thread_id, chat_id))
         return result
 
     async def get_recent_messages(

@@ -87,7 +87,18 @@ async def _close_expired_topic(
     client: TelegramClient, user_id: int, thread_id: int, state: str
 ) -> None:
     """Attempt to close/delete an expired topic and clean up state."""
-    window_id = thread_router.get_window_for_thread(user_id, thread_id)
+    # Pick chat_id from bindings if exactly one candidate exists.
+    candidates = [
+        (chat_id, wid)
+        for uid, chat_id, tid, wid in thread_router.iter_thread_bindings_with_chat()
+        if uid == user_id and tid == thread_id
+    ]
+    scoped_chat_id = candidates[0][0] if len(candidates) == 1 else None
+    window_id = (
+        thread_router.get_window_for_thread(user_id, thread_id, scoped_chat_id)
+        if scoped_chat_id is not None
+        else thread_router.get_window_for_thread(user_id, thread_id)
+    )
     if state == "dead" and window_id is not None:
         live_window = await tmux_manager.find_window_by_id(window_id)
         if live_window is not None:
@@ -100,7 +111,7 @@ async def _close_expired_topic(
             )
             return
 
-    chat_id = thread_router.resolve_chat_id(user_id, thread_id)
+    chat_id = scoped_chat_id or thread_router.resolve_chat_id(user_id, thread_id)
     removed = False
     try:
         await client.delete_forum_topic(chat_id=chat_id, message_thread_id=thread_id)
@@ -126,13 +137,10 @@ async def _close_expired_topic(
         logger.info(
             "auto_removed_topic", chat_id=chat_id, thread_id=thread_id, user_id=user_id
         )
-        await clear_topic_state(
-            user_id,
-            thread_id,
-            client=client,
-            window_id=window_id,
-            window_dead=True,
-        )
+        cleanup_kwargs: dict = {"window_id": window_id, "window_dead": True}
+        if scoped_chat_id is not None:
+            cleanup_kwargs["chat_id"] = scoped_chat_id
+        await clear_topic_state(user_id, thread_id, client=client, **cleanup_kwargs)
         thread_router.unbind_thread(user_id, thread_id)
 
 
@@ -223,12 +231,20 @@ _probe_pin_disabled: set[str] = set()
 
 async def probe_topic_existence(client: TelegramClient) -> None:
     """Probe all bound topics via Telegram API; detect deleted topics."""
-    for user_id, thread_id, wid in list(thread_router.iter_thread_bindings()):
+    bindings = list(thread_router.iter_thread_bindings_with_chat())
+    if not bindings:
+        bindings = [
+            (user_id, None, thread_id, wid)
+            for user_id, thread_id, wid in thread_router.iter_thread_bindings()
+        ]
+    for user_id, chat_id, thread_id, wid in bindings:
+        if chat_id is None:
+            chat_id = thread_router.resolve_chat_id(user_id, thread_id)
         if wid in _probe_pin_disabled or lifecycle_strategy.should_skip_probe(wid):
             continue
         try:
             await client.unpin_all_forum_topic_messages(
-                chat_id=thread_router.resolve_chat_id(user_id, thread_id),
+                chat_id=chat_id,
                 message_thread_id=thread_id,
             )
             terminal_poll_state.reset_probe_failures(wid)
@@ -244,8 +260,10 @@ async def probe_topic_existence(client: TelegramClient) -> None:
                     await tmux_manager.kill_window(w.window_id)
                     killed = True
                 terminal_poll_state.reset_probe_failures(wid)
-                await clear_topic_state(user_id, thread_id, client, window_id=wid)
-                thread_router.unbind_thread(user_id, thread_id)
+                await clear_topic_state(
+                    user_id, thread_id, client, window_id=wid, chat_id=chat_id
+                )
+                thread_router.unbind_thread(user_id, thread_id, chat_id=chat_id)
                 action = "killed" if killed else "unbound"
                 logger.info(
                     "Topic deleted: %s window_id '%s' and unbound thread %d for user %d",
@@ -295,18 +313,29 @@ async def topic_closed_handler(
     if thread_id is None:
         return
 
-    window_id = thread_router.get_window_for_thread(user.id, thread_id)
+    raw_chat_id = update.effective_chat.id if update.effective_chat else None
+    chat_id = raw_chat_id if isinstance(raw_chat_id, int) else None
+    window_id = (
+        thread_router.get_window_for_thread(user.id, thread_id, chat_id)
+        if isinstance(chat_id, int)
+        else thread_router.get_window_for_thread(user.id, thread_id)
+    )
     if window_id:
         display = thread_router.get_display_name(window_id)
+        cleanup_kwargs = {"window_id": window_id, "window_dead": False}
+        if chat_id is not None:
+            cleanup_kwargs["chat_id"] = chat_id
         await clear_topic_state(
             user.id,
             thread_id,
             PTBTelegramClient(context.bot),
             context.user_data,
-            window_id=window_id,
-            window_dead=False,
+            **cleanup_kwargs,
         )
-        thread_router.unbind_thread(user.id, thread_id)
+        if isinstance(chat_id, int):
+            thread_router.unbind_thread(user.id, thread_id, chat_id=chat_id)
+        else:
+            thread_router.unbind_thread(user.id, thread_id)
         logger.info(
             "Topic closed: window %s unbound (kept alive for rebinding, user=%d, thread=%d)",
             display,

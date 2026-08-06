@@ -199,7 +199,9 @@ async def sync_scoped_menu_for_text_context(update: Update, user_id: int) -> Non
     thread_id = _get_thread_id(update)
     if thread_id is None:
         return
-    window_id = thread_router.resolve_window_for_thread(user_id, thread_id)
+    window_id = thread_router.resolve_window_for_thread(
+        user_id, thread_id, message.chat.id
+    )
     if not window_id:
         return
     provider = get_provider_for_window(

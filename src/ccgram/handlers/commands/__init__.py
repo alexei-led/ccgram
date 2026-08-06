@@ -63,7 +63,9 @@ async def commands_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) 
         return
 
     thread_id = _get_thread_id(update)
-    window_id = thread_router.resolve_window_for_thread(user.id, thread_id)
+    window_id = thread_router.resolve_window_for_thread(
+        user.id, thread_id, update.message.chat.id
+    )
     if not window_id:
         await safe_reply(update.message, "❌ No session bound to this topic.")
         return
@@ -112,7 +114,9 @@ async def toolbar_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -
             await safe_reply(update.message, "❌ Use this command inside a topic.")
         return
 
-    window_id = thread_router.get_window_for_thread(user.id, thread_id)
+    window_id = thread_router.get_window_for_thread(
+        user.id, thread_id, update.message.chat.id
+    )
     if not window_id:
         await safe_reply(update.message, "❌ This topic is not bound to any session.")
         return

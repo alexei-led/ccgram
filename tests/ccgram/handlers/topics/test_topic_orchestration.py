@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -10,6 +11,7 @@ from ccgram.handlers.topics.topic_orchestration import (
     collect_target_chats,
     _is_window_already_bound,
     _topic_create_retry_until,
+    _window_topic_locks,
     adopt_unbound_windows,
     handle_new_window,
 )
@@ -19,8 +21,10 @@ from ccgram.session_monitor import NewWindowEvent
 @pytest.fixture(autouse=True)
 def _clear_retry_state():
     _topic_create_retry_until.clear()
+    _window_topic_locks.clear()
     yield
     _topic_create_retry_until.clear()
+    _window_topic_locks.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -137,6 +141,61 @@ class TestCollectTargetChats:
 
 
 class TestHandleNewWindow:
+    async def test_serializes_concurrent_creation_for_same_window(self) -> None:
+        active = 0
+        max_active = 0
+
+        async def locked_handler(
+            _event: NewWindowEvent, _client: AsyncMock, **_kwargs: object
+        ) -> bool:
+            nonlocal active, max_active
+            active += 1
+            max_active = max(max_active, active)
+            await asyncio.sleep(0)
+            active -= 1
+            return True
+
+        event = _make_event()
+        with patch(
+            "ccgram.handlers.topics.topic_orchestration._handle_new_window_locked",
+            side_effect=locked_handler,
+        ):
+            assert await asyncio.gather(
+                handle_new_window(event, AsyncMock()),
+                handle_new_window(event, AsyncMock()),
+            ) == [True, True]
+
+        assert max_active == 1
+        assert _window_topic_locks == {}
+
+    async def test_targeted_creation_ignores_another_users_binding(self) -> None:
+        event = _make_event(window_id="@2", window_name="proj")
+        bot = AsyncMock()
+        bot.create_forum_topic.return_value = _make_topic(thread_id=77)
+
+        with (
+            patch("ccgram.handlers.topics.topic_orchestration.session_manager"),
+            patch(
+                "ccgram.handlers.topics.topic_orchestration.thread_router"
+            ) as mock_tr,
+            patch("ccgram.handlers.topics.topic_orchestration.config") as mock_config,
+        ):
+            mock_tr.has_window.return_value = True
+            mock_tr.iter_thread_bindings.return_value = iter([(200, 2, "@2")])
+            mock_config.allowed_users = {100, 200}
+            created = await handle_new_window(
+                event,
+                bot,
+                target_user_id=100,
+                target_chat_id=-100100,
+            )
+
+        assert created is True
+        mock_tr.bind_thread.assert_called_once_with(
+            100, 77, "@2", window_name="proj", chat_id=-100100
+        )
+        mock_tr.set_group_chat_id.assert_called_once_with(100, 77, -100100)
+
     async def test_skips_already_bound(self):
         event = NewWindowEvent(
             window_id="@0", session_id="s1", window_name="test", cwd="/tmp"
@@ -276,7 +335,7 @@ class TestHandleNewWindow:
             await handle_new_window(event, bot)
 
         mock_tr.bind_thread.assert_called_once_with(
-            12345, 42, "@10", window_name="my-project"
+            12345, 42, "@10", window_name="my-project", chat_id=-100500
         )
         mock_tr.set_group_chat_id.assert_called_once_with(12345, 42, -100500)
 
@@ -331,7 +390,7 @@ class TestHandleNewWindow:
             await handle_new_window(event, bot)
 
         mock_tr.bind_thread.assert_called_once_with(
-            100, 77, "@10", window_name="my-project"
+            100, 77, "@10", window_name="my-project", chat_id=-100200
         )
         mock_tr.set_group_chat_id.assert_called_once_with(100, 77, -100200)
 
@@ -398,12 +457,7 @@ class TestHandleNewWindow:
             ),
         ):
             mock_tr.has_window.return_value = False
-            mock_tr.iter_thread_bindings.side_effect = [
-                iter([]),
-                iter([]),
-                iter([]),
-                iter([]),
-            ]
+            mock_tr.iter_thread_bindings.side_effect = [iter([]) for _ in range(6)]
             mock_config.group_id = -100500
             mock_config.allowed_users = {12345}
 
@@ -437,13 +491,7 @@ class TestHandleNewWindow:
             ),
         ):
             mock_tr.has_window.return_value = False
-            mock_tr.iter_thread_bindings.side_effect = [
-                iter([]),
-                iter([]),
-                iter([]),
-                iter([]),
-                iter([]),
-            ]
+            mock_tr.iter_thread_bindings.side_effect = [iter([]) for _ in range(6)]
             mock_tr.resolve_chat_id.return_value = 12345
             mock_config.group_id = -100500
             mock_config.allowed_users = {12345}
@@ -453,7 +501,7 @@ class TestHandleNewWindow:
 
         assert bot.create_forum_topic.call_count == 2
         mock_tr.bind_thread.assert_called_once_with(
-            12345, 42, "@10", window_name="my-project"
+            12345, 42, "@10", window_name="my-project", chat_id=-100500
         )
 
     async def test_uses_group_chat_ids_when_no_bindings(self) -> None:
@@ -506,7 +554,7 @@ class TestHandleNewWindow:
             await handle_new_window(event, bot)
 
         mock_tr.bind_thread.assert_called_once_with(
-            100, 120014, "@3", window_name="reflex-gh"
+            100, 120014, "@3", window_name="reflex-gh", chat_id=-100200
         )
         mock_tr.set_group_chat_id.assert_called_once_with(100, 120014, -100200)
         bot.send_message.assert_awaited_once_with(

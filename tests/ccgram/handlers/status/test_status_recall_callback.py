@@ -1,6 +1,6 @@
 """Tests for status recall callback handling."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 from ccgram.handlers.callback_data import CB_STATUS_RECALL
 from ccgram.handlers.status.status_bar_actions import _handle_status_bar_action  # noqa: F401
@@ -34,7 +34,7 @@ async def test_status_recall_sends_selected_history_command() -> None:
             return_value=["/status", "/clear"],
         ),
         patch(
-            "ccgram.handlers.status.status_bar_actions.send_to_window",
+            "ccgram.handlers.status.status_bar_actions.send_telegram_to_window",
             new_callable=AsyncMock,
             return_value=(True, ""),
         ) as mock_send,
@@ -44,7 +44,7 @@ async def test_status_recall_sends_selected_history_command() -> None:
             query, 100, f"{CB_STATUS_RECALL}@0:1", update, context
         )
 
-    mock_send.assert_awaited_once_with("@0", "/clear")
+    mock_send.assert_awaited_once_with(100, "@0", 42, "/clear", ANY)
     mock_record.assert_called_once_with(100, 42, "/clear")
     query.answer.assert_awaited_once_with("\u21a9 Sent")
 
@@ -67,7 +67,7 @@ async def test_status_recall_rejects_stale_topic_binding() -> None:
             return_value="@9",
         ),
         patch(
-            "ccgram.handlers.status.status_bar_actions.send_to_window",
+            "ccgram.handlers.status.status_bar_actions.send_telegram_to_window",
             new_callable=AsyncMock,
         ) as mock_send,
     ):
@@ -98,7 +98,7 @@ async def test_status_recall_handles_missing_history_entry() -> None:
         ),
         patch("ccgram.handlers.command_history.get_history", return_value=["/status"]),
         patch(
-            "ccgram.handlers.status.status_bar_actions.send_to_window",
+            "ccgram.handlers.status.status_bar_actions.send_telegram_to_window",
             new_callable=AsyncMock,
         ) as mock_send,
     ):

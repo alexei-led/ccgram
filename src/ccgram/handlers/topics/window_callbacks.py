@@ -21,7 +21,7 @@ from ...telegram_client import PTBTelegramClient, TelegramClient
 from ...session import session_manager
 from ...thread_router import thread_router
 from ...multiplexer import multiplexer as tmux_manager
-from ...multiplexer.window_ops import send_to_window
+from ..telegram_origin import send_telegram_to_window
 from ..callback_data import CB_WIN_BIND, CB_WIN_CANCEL, CB_WIN_NEW
 from ..callback_helpers import get_thread_id
 from .directory_browser import (
@@ -136,6 +136,7 @@ async def _forward_pending_text(
     provider_name: str,
     *,
     is_existing_window: bool = False,
+    chat_id: int | None = None,
 ) -> None:
     """Forward pending text to a newly bound window, routing shell via LLM.
 
@@ -153,12 +154,16 @@ async def _forward_pending_text(
         # Lazy: shell ↔ topics cycle.
         from ..shell.shell_commands import handle_shell_message
 
-        await handle_shell_message(client, user_id, thread_id, window_id, text)
+        await handle_shell_message(
+            client, user_id, thread_id, window_id, text, chat_id=chat_id
+        )
     else:
         # For non-shell providers or existing shell windows, send raw text.
         # Existing shell windows skip handle_shell_message to avoid
         # _ensure_prompt_marker racing with the offer keyboard just shown.
-        send_ok, send_msg = await send_to_window(window_id, text)
+        send_ok, send_msg = await send_telegram_to_window(
+            user_id, window_id, thread_id, text, chat_id
+        )
         if not send_ok:
             logger.warning(
                 "Failed to forward pending text to window %s (user %s): %s",
@@ -215,7 +220,17 @@ async def _handle_bind(
 
     display = w.window_name
     clear_window_picker_state(context.user_data)
-    thread_router.bind_thread(user_id, thread_id, selected_wid, window_name=display)
+    thread_router.bind_thread(
+        user_id,
+        thread_id,
+        selected_wid,
+        window_name=display,
+        chat_id=(
+            update.callback_query.message.chat.id
+            if update.callback_query and update.callback_query.message
+            else None
+        ),
+    )
     _store_group_chat_id(user_id, thread_id, update, query)
 
     client: TelegramClient = PTBTelegramClient(context.bot)
@@ -258,6 +273,11 @@ async def _handle_bind(
             pending_text,
             detected,
             is_existing_window=True,
+            chat_id=(
+                update.callback_query.message.chat.id
+                if update.callback_query and update.callback_query.message
+                else None
+            ),
         )
     await query.answer("Bound")
 

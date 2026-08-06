@@ -83,7 +83,7 @@ def mock_deps():
             "ccgram.handlers.messaging_pipeline.message_routing.user_preferences"
         ) as up,
     ):
-        sq.find_users_for_session.return_value = [(100, "@5", 42)]
+        sq.find_users_for_session.return_value = [(100, "@5", 42, -100)]
         sq.resolve_session_for_window = AsyncMock(return_value=None)
         gmq.return_value = None
         yield {
@@ -161,10 +161,11 @@ async def test_complete_message_enqueues_content(bot, mock_deps):
     assert kwargs["user_id"] == 100
     assert kwargs["window_id"] == "@5"
     assert kwargs["thread_id"] == 42
+    assert kwargs["chat_id"] == -100
 
 
 async def test_matching_telegram_user_message_is_suppressed(bot, mock_deps):
-    remember_telegram_injection(100, "@5", 42, "hello")
+    remember_telegram_injection(100, "@5", 42, "hello", -100)
 
     await handle_new_message(_make_msg(text="hello", role="user"), bot)
 
@@ -179,10 +180,10 @@ async def test_terminal_user_message_is_relayed(bot, mock_deps):
 
 async def test_telegram_echo_is_suppressed_only_for_its_origin_topic(bot, mock_deps):
     mock_deps["sq"].find_users_for_session.return_value = [
-        (100, "@5", 42),
-        (200, "@5", 43),
+        (100, "@5", 42, -100),
+        (200, "@5", 43, -200),
     ]
-    remember_telegram_injection(100, "@5", 42, "hello")
+    remember_telegram_injection(100, "@5", 42, "hello", -100)
 
     await handle_new_message(_make_msg(text="hello", role="user"), bot)
 

@@ -64,7 +64,12 @@ def _resolve_window(update: Update) -> tuple[int, int, str] | None:
     thread_id = get_thread_id(update)
     if thread_id is None:
         return None
-    window_id = thread_router.get_window_for_thread(user.id, thread_id)
+    chat_id = update.effective_chat.id if update.effective_chat else None
+    window_id = (
+        thread_router.get_window_for_thread(user.id, thread_id, chat_id)
+        if isinstance(chat_id, int)
+        else thread_router.get_window_for_thread(user.id, thread_id)
+    )
     if not window_id:
         return None
     return user.id, thread_id, window_id

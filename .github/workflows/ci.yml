@@ -59,7 +59,7 @@ jobs:
           go-version: stable
       - name: Install archfit + analyzers
         run: |
-          go install github.com/alexei-led/archfit/cmd/archfit@v0.12.1
+          go install github.com/alexei-led/archfit/cmd/archfit@v1.6.0
           npm install -g @sourcegraph/scip-python jscpd @ast-grep/cli
           uv tool install lizard
       - name: Architecture drift gate (archfit)

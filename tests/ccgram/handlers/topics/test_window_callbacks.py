@@ -61,7 +61,11 @@ class TestBindWindowCallback:
             await handle_window_callback(query, 100, f"{CB_WIN_BIND}0", update, context)
 
             mock_tr.bind_thread.assert_called_once_with(
-                100, 42, "@5", window_name="my-project"
+                100,
+                42,
+                "@5",
+                window_name="my-project",
+                chat_id=-100999,
             )
             mock_tr.set_group_chat_id.assert_called_once_with(100, 42, -100999)
             mock_edit.assert_called_once()
@@ -142,7 +146,7 @@ class TestBindWindowCallback:
             patch("ccgram.handlers.topics.window_callbacks.safe_edit"),
             patch("ccgram.handlers.topics.window_callbacks.format_topic_name_for_mode"),
             patch(
-                "ccgram.handlers.topics.window_callbacks.send_to_window",
+                "ccgram.handlers.topics.window_callbacks.send_telegram_to_window",
                 new_callable=AsyncMock,
                 return_value=(True, "ok"),
             ) as mock_send,
@@ -151,7 +155,7 @@ class TestBindWindowCallback:
             mock_sm.get_approval_mode.return_value = "normal"
             await handle_window_callback(query, 100, f"{CB_WIN_BIND}0", update, context)
 
-            mock_send.assert_called_once_with("@5", "hello agent")
+            mock_send.assert_called_once_with(100, "@5", 42, "hello agent", -100999)
             assert PENDING_THREAD_TEXT not in context.user_data
 
 
@@ -403,7 +407,10 @@ class TestBindProviderDetection:
         forward_args = mock_forward.call_args.args
         assert forward_args[1:] == (100, 42, "@5", "ls -la", "shell")
         assert forward_args[0].bot is context.bot
-        assert mock_forward.call_args.kwargs == {"is_existing_window": True}
+        assert mock_forward.call_args.kwargs == {
+            "is_existing_window": True,
+            "chat_id": -100999,
+        }
 
 
 class TestForwardPendingText:
@@ -418,7 +425,7 @@ class TestForwardPendingText:
                 new_callable=AsyncMock,
             ) as mock_shell,
             patch(
-                "ccgram.handlers.topics.window_callbacks.send_to_window",
+                "ccgram.handlers.topics.window_callbacks.send_telegram_to_window",
                 new_callable=AsyncMock,
                 return_value=(True, ""),
             ) as mock_send,
@@ -428,7 +435,7 @@ class TestForwardPendingText:
             )
 
         mock_shell.assert_not_awaited()
-        mock_send.assert_called_once_with("@5", "list files")
+        mock_send.assert_called_once_with(1, "@5", 42, "list files", None)
 
     async def test_new_shell_window_routes_through_handler(self) -> None:
         from ccgram.handlers.topics.window_callbacks import _forward_pending_text

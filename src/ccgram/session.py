@@ -315,8 +315,7 @@ class SessionManager:
         """
         # Collect window_ids that are "in use" (bound or have window_states)
         in_use = set(self.window_states.keys())
-        for bindings in thread_router.thread_bindings.values():
-            in_use.update(bindings.values())
+        in_use.update(thread_router.all_bound_window_ids())
 
         # Prune window_display_names for dead windows not in use and not live
         stale_display = [
@@ -326,10 +325,10 @@ class SessionManager:
         ]
 
         # Collect all bound thread keys "user_id:thread_id"
-        bound_keys: set[str] = set()
-        for user_id, bindings in thread_router.thread_bindings.items():
-            for thread_id in bindings:
-                bound_keys.add(f"{user_id}:{thread_id}")
+        bound_keys: set[str] = {
+            f"{user_id}:{thread_id}"
+            for user_id, thread_id, _ in thread_router.iter_thread_bindings()
+        }
 
         # Prune group_chat_ids for unbound threads (unless skipped)
         stale_chat = (
@@ -411,12 +410,11 @@ class SessionManager:
         bound_window_ids: set[str] = set()
         total_bindings = 0
         live_binding_count = 0
-        for _uid, bindings in thread_router.thread_bindings.items():
-            for _tid, wid in bindings.items():
-                total_bindings += 1
-                bound_window_ids.add(wid)
-                if wid in live_window_ids:
-                    live_binding_count += 1
+        for _uid, _tid, wid in thread_router.iter_thread_bindings():
+            total_bindings += 1
+            bound_window_ids.add(wid)
+            if wid in live_window_ids:
+                live_binding_count += 1
 
         session_map_wids = self._get_session_map_window_ids()
 
@@ -425,8 +423,7 @@ class SessionManager:
         # instead of classifying the old tab/pane locator as a ghost.
         legacy_bindings = {
             wid
-            for bindings in thread_router.thread_bindings.values()
-            for wid in bindings.values()
+            for _uid, _tid, wid in thread_router.iter_thread_bindings()
             if window_store.is_legacy_herdr(wid)
         }
         for wid in sorted(legacy_bindings):
@@ -439,17 +436,16 @@ class SessionManager:
             )
 
         # 2. Ghost bindings (thread → dead window) — fixable (close topic)
-        for uid, bindings in thread_router.thread_bindings.items():
-            for tid, wid in bindings.items():
-                if wid not in live_window_ids and wid not in legacy_bindings:
-                    display = thread_router.get_display_name(wid)
-                    issues.append(
-                        AuditIssue(
-                            category="ghost_binding",
-                            detail=f"user:{uid} thread:{tid} window:{wid} ({display})",
-                            fixable=True,
-                        )
+        for uid, tid, wid in thread_router.iter_thread_bindings():
+            if wid not in live_window_ids and wid not in legacy_bindings:
+                display = thread_router.get_display_name(wid)
+                issues.append(
+                    AuditIssue(
+                        category="ghost_binding",
+                        detail=f"user:{uid} thread:{tid} window:{wid} ({display})",
+                        fixable=True,
                     )
+                )
 
         # 3. Orphaned display names
         in_use = set(self.window_states.keys()) | bound_window_ids
@@ -465,10 +461,10 @@ class SessionManager:
                 )
 
         # 3. Orphaned group_chat_ids
-        bound_keys: set[str] = set()
-        for user_id, bindings in thread_router.thread_bindings.items():
-            for thread_id in bindings:
-                bound_keys.add(f"{user_id}:{thread_id}")
+        bound_keys: set[str] = {
+            f"{user_id}:{thread_id}"
+            for user_id, thread_id, _ in thread_router.iter_thread_bindings()
+        }
         for key in thread_router.group_chat_ids:
             if key not in bound_keys:
                 issues.append(
@@ -545,9 +541,7 @@ class SessionManager:
         Returns True if any changes were made.
         """
         session_map_wids = self._get_session_map_window_ids()
-        bound_window_ids: set[str] = set()
-        for bindings in thread_router.thread_bindings.values():
-            bound_window_ids.update(bindings.values())
+        bound_window_ids = thread_router.all_bound_window_ids()
 
         stale = [
             wid

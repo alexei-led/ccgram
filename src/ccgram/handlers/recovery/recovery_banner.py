@@ -37,7 +37,7 @@ from ...session_map import session_map_sync
 from ...telegram_client import PTBTelegramClient
 from ...thread_router import thread_router
 from ...multiplexer import multiplexer as tmux_manager
-from ...multiplexer.window_ops import send_to_window
+from ..telegram_origin import send_telegram_to_window
 from ...window_state_store import CCGRAM_CREATED_WINDOW_ORIGIN
 from ..callback_data import (
     CB_RECOVERY_BACK,
@@ -282,10 +282,14 @@ async def _create_and_bind_window(
     session_manager.set_window_provider(created_wid, provider.capabilities.name)
     session_manager.set_window_approval_mode(created_wid, approval_mode)
 
-    thread_router.bind_thread(
-        user_id, thread_id, created_wid, window_name=created_wname
-    )
     chat = query.message.chat if query.message else None
+    thread_router.bind_thread(
+        user_id,
+        thread_id,
+        created_wid,
+        window_name=created_wname,
+        chat_id=chat.id if chat and chat.type in ("group", "supergroup") else None,
+    )
     if chat and chat.type in ("group", "supergroup"):
         thread_router.set_group_chat_id(user_id, thread_id, chat.id)
 
@@ -306,7 +310,9 @@ async def _create_and_bind_window(
     )
     _clear_recovery_state(context.user_data)
     if pending_text:
-        send_ok, send_msg = await send_to_window(created_wid, pending_text)
+        send_ok, send_msg = await send_telegram_to_window(
+            user_id, created_wid, thread_id, pending_text, chat.id if chat else None
+        )
         if not send_ok:
             logger.warning(
                 "Failed to forward pending text to window %s (user %s): %s",

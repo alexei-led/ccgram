@@ -51,10 +51,7 @@ from ..messaging_pipeline.message_sender import (
 )
 from ..recovery.recovery_banner import RecoveryBanner, render_banner
 from ..polling.polling_state import lifecycle_strategy
-from ..telegram_origin import (
-    forget_telegram_injection,
-    remember_telegram_injection,
-)
+from ..telegram_origin import send_telegram_to_window
 from ...topic_state_registry import topic_state
 from ..user_state import (
     AWAITING_WORKTREE_BRANCH_NAME,
@@ -70,7 +67,6 @@ from ... import window_query
 from ...thread_router import thread_router
 from ...providers import get_provider_for_window
 from ...multiplexer import multiplexer as tmux_manager
-from ...multiplexer.window_ops import send_to_window
 from ...utils import handle_general_topic_message, is_general_topic, task_done_callback
 
 if TYPE_CHECKING:
@@ -269,7 +265,7 @@ async def _handle_unbound_topic(
 
     Returns True if the topic is unbound (handled), False if already bound.
     """
-    window_id = thread_router.get_window_for_thread(user_id, thread_id)
+    window_id = thread_router.get_window_for_thread(user_id, thread_id, message.chat.id)
     if window_id is not None:
         return False
 
@@ -425,13 +421,9 @@ async def _forward_message(
 
     lifecycle_strategy.clear_probe_failures(window_id)
 
-    injection = remember_telegram_injection(user_id, window_id, thread_id, text)
-    success = False
-    try:
-        success, err_message = await send_to_window(window_id, text)
-    finally:
-        if not success:
-            forget_telegram_injection(user_id, window_id, thread_id, injection)
+    success, err_message = await send_telegram_to_window(
+        user_id, window_id, thread_id, text, message.chat.id
+    )
     if not success:
         await safe_reply(message, f"\u274c {err_message}")
         return
@@ -532,7 +524,7 @@ async def handle_text_message(
         return
 
     # Bound topic — check if window is still alive
-    window_id = thread_router.get_window_for_thread(user.id, thread_id)
+    window_id = thread_router.get_window_for_thread(user.id, thread_id, message.chat.id)
     assert window_id is not None  # _handle_unbound_topic returned False
 
     if await _handle_dead_window(

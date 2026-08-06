@@ -357,7 +357,7 @@ class TestHandleVoiceMessage:
 
 
 class TestHandleVoiceCallback:
-    @patch(f"{_VC}.send_to_window", new_callable=AsyncMock)
+    @patch(f"{_VC}.send_telegram_to_window", new_callable=AsyncMock)
     @patch(f"{_VC}.thread_router")
     @patch(f"{_VC}.get_thread_id")
     async def test_send_success(
@@ -382,7 +382,9 @@ class TestHandleVoiceCallback:
 
         await voice_callbacks.handle_voice_callback(update, context)
 
-        mock_send_to_window.assert_called_once_with("@0", "hello")
+        mock_send_to_window.assert_called_once_with(
+            100, "@0", 42, "hello", update.callback_query.message.chat.id
+        )
         update.callback_query.message.delete.assert_called_once()
         # Toast replaced with persistent reactions: 👀 on receive, 🔥 on delivery.
         update.callback_query.answer.assert_called_once_with()
@@ -395,7 +397,7 @@ class TestHandleVoiceCallback:
         assert "🔥" in emojis
         assert (999, 42) not in context.user_data.get(VOICE_PENDING, {})
 
-    @patch(f"{_VC}.send_to_window", new_callable=AsyncMock)
+    @patch(f"{_VC}.send_telegram_to_window", new_callable=AsyncMock)
     @patch(f"{_VC}.thread_router")
     @patch(f"{_VC}.get_thread_id")
     async def test_send_success_delete_fails(
@@ -539,7 +541,7 @@ class TestHandleVoiceCallback:
             pytest.param("window not found", id="window_not_found"),
         ],
     )
-    @patch(f"{_VC}.send_to_window", new_callable=AsyncMock)
+    @patch(f"{_VC}.send_telegram_to_window", new_callable=AsyncMock)
     @patch(f"{_VC}.thread_router")
     @patch(f"{_VC}.get_thread_id")
     async def test_send_failure_preserves_pending(
@@ -586,7 +588,7 @@ class TestHandleVoiceCallback:
         update.callback_query.answer.assert_called_once_with("Invalid callback data")
 
     @patch(f"{_VC}.ack_reaction", new_callable=AsyncMock)
-    @patch(f"{_VC}.send_to_window", new_callable=AsyncMock)
+    @patch(f"{_VC}.send_telegram_to_window", new_callable=AsyncMock)
     @patch(f"{_VC}.get_provider_for_window")
     @patch(f"{_VC}.thread_router")
     @patch(f"{_VC}.get_thread_id")
@@ -632,7 +634,7 @@ class TestHandleVoiceCallback:
         update.callback_query.answer.assert_called_once_with()
         mock_ack.assert_called_once()
 
-    @patch(f"{_VC}.send_to_window", new_callable=AsyncMock)
+    @patch(f"{_VC}.send_telegram_to_window", new_callable=AsyncMock)
     @patch(f"{_VC}.get_provider_for_window")
     @patch(f"{_VC}.thread_router")
     @patch(f"{_VC}.get_thread_id")

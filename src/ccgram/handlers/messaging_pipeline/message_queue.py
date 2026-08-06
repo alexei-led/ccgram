@@ -174,6 +174,10 @@ def _can_merge_tasks(base: ContentTask, candidate: MessageTask) -> bool:
         return False
     if base.window_id != candidate.window_id:
         return False
+    # Never merge across topics or chats: identical thread IDs can exist in
+    # different chats, and merged text is delivered to a single destination.
+    if base.thread_id != candidate.thread_id or base.chat_id != candidate.chat_id:
+        return False
     if base.content_type in ("tool_use", "tool_result"):
         return False
     return candidate.content_type not in ("tool_use", "tool_result")
@@ -232,6 +236,7 @@ async def _merge_content_tasks(
             content_type=first.content_type,
             role=first.role,
             thread_id=first.thread_id,
+            chat_id=first.chat_id,
         ),
         merge_count,
     )
@@ -416,7 +421,7 @@ async def _process_content_task(
 ) -> None:
     """Process a content message task."""
     tkey = thread_key(task.thread_id)
-    chat_id = thread_router.resolve_chat_id(user_id, task.thread_id)
+    chat_id = task.chat_id or thread_router.resolve_chat_id(user_id, task.thread_id)
 
     if task.content_type == "tool_result" and task.tool_use_id:
         _tkey = (task.tool_use_id, user_id, tkey)
@@ -439,7 +444,7 @@ async def _process_content_task(
     for part in task.parts:
         sent = None
 
-        if first_part:
+        if first_part and task.chat_id is None:
             first_part = False
             converted_msg_id = await convert_status_to_content(
                 client,
@@ -451,6 +456,8 @@ async def _process_content_task(
             if converted_msg_id is not None:
                 last_msg_id = converted_msg_id
                 continue
+        else:
+            first_part = False
 
         sent = await rate_limit_send_message(
             client, chat_id, part, **send_kwargs(task.thread_id)
@@ -482,6 +489,7 @@ async def enqueue_content_message(
     content_type: ContentType = "text",
     role: MessageRole = "assistant",
     thread_id: int | None = None,
+    chat_id: int | None = None,
 ) -> None:
     """Enqueue a content message task."""
     if _is_ghost_window_task_at_enqueue(window_id):
@@ -496,6 +504,7 @@ async def enqueue_content_message(
         content_type=content_type,
         role=role,
         thread_id=thread_id,
+        chat_id=chat_id,
     )
     queue.put_nowait(task)
 

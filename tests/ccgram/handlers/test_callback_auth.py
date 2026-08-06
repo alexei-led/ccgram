@@ -22,6 +22,15 @@ class TestUserOwnsWindow:
             mock_sm.get_all_thread_windows.return_value = {}
             assert not user_owns_window(100, "@0")
 
+    def test_chat_scoped_binding_authorizes_only_its_chat(self) -> None:
+        with patch("ccgram.handlers.callback_helpers.thread_router") as mock_router:
+            mock_router.iter_thread_bindings_with_chat.return_value = [
+                (100, -1001, 42, "@0")
+            ]
+
+            assert user_owns_window(100, "@0", -1001)
+            assert not user_owns_window(100, "@0", -1002)
+
     def test_different_user_does_not_own(self) -> None:
         with patch("ccgram.handlers.callback_helpers.thread_router") as mock_sm:
             mock_sm.get_all_thread_windows.side_effect = lambda uid: (

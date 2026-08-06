@@ -40,6 +40,7 @@ async def clear_topic_state(
     client: TelegramClient | None = None,
     user_data: dict[str, Any] | None = None,
     window_id: str | None = None,
+    chat_id: int | None = None,
     *,
     window_dead: bool = True,
 ) -> None:
@@ -57,7 +58,7 @@ async def clear_topic_state(
             when the window is truly dead, to preserve skip/offer state for
             live sessions.
     """
-    chat_id = thread_router.resolve_chat_id(user_id, thread_id)
+    chat_id = chat_id or thread_router.resolve_chat_id(user_id, thread_id)
 
     qualified_id: str | None = None
     if window_id and window_dead:
@@ -138,7 +139,12 @@ async def unbind_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await safe_reply(update.message, "❌ Use this command inside a topic.")
         return
 
-    window_id = thread_router.get_window_for_thread(user.id, thread_id)
+    chat_id = update.effective_chat.id if update.effective_chat else None
+    window_id = (
+        thread_router.get_window_for_thread(user.id, thread_id, chat_id)
+        if isinstance(chat_id, int)
+        else thread_router.get_window_for_thread(user.id, thread_id)
+    )
     if not window_id:
         await safe_reply(update.message, "❌ This topic is not bound to any session.")
         return
@@ -149,15 +155,15 @@ async def unbind_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         legacy_state.archive_legacy_herdr(window_id, user.id, thread_id)
     client = PTBTelegramClient(context.bot)
     await enqueue_status_update(client, user.id, window_id, None, thread_id)
+    clear_kwargs: dict = {"window_id": window_id, "window_dead": False}
+    if isinstance(chat_id, int):
+        clear_kwargs["chat_id"] = chat_id
     await clear_topic_state(
-        user.id,
-        thread_id,
-        client,
-        context.user_data,
-        window_id=window_id,
-        window_dead=False,
+        user.id, thread_id, client, context.user_data, **clear_kwargs
     )
-    thread_router.unbind_thread(user.id, thread_id)
+    thread_router.unbind_thread(
+        user.id, thread_id, chat_id=chat_id if isinstance(chat_id, int) else None
+    )
     if is_legacy_herdr:
         await safe_reply(
             update.message,
@@ -187,7 +193,14 @@ async def rollback_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) 
             update.message, "❌ Use this command inside the archived topic."
         )
         return
-    if thread_router.get_window_for_thread(user.id, thread_id) is not None:
+    if (
+        thread_router.get_window_for_thread(
+            user.id,
+            thread_id,
+            update.effective_chat.id if update.effective_chat else None,
+        )
+        is not None
+    ):
         await safe_reply(update.message, "❌ This topic is already bound to a session.")
         return
 

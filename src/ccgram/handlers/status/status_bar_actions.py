@@ -34,7 +34,7 @@ from ... import window_query
 from ...telegram_client import PTBTelegramClient
 from ...thread_router import thread_router
 from ...multiplexer import multiplexer as tmux_manager
-from ...multiplexer.window_ops import send_to_window
+from ..telegram_origin import send_telegram_to_window
 from ...topic_state_registry import topic_state
 from ..callback_data import (
     CB_KEYS_PREFIX,
@@ -122,7 +122,12 @@ async def _handle_status_recall(
     if thread_id is None:
         await query.answer("Use in a topic", show_alert=True)
         return
-    if thread_router.resolve_window_for_thread(user_id, thread_id) != window_id:
+    if (
+        thread_router.resolve_window_for_thread(
+            user_id, thread_id, query.message.chat.id if query.message else None
+        )
+        != window_id
+    ):
         await query.answer("Stale status button", show_alert=True)
         return
 
@@ -159,7 +164,13 @@ async def _handle_status_recall(
         await query.answer("\u21a9 Recalled")
         return
 
-    ok, err = await send_to_window(window_id, command)
+    ok, err = await send_telegram_to_window(
+        user_id,
+        window_id,
+        thread_id,
+        command,
+        query.message.chat.id if query.message else None,
+    )
     if not ok:
         await query.answer(err or "Failed to send command", show_alert=True)
         return
@@ -171,7 +182,8 @@ async def _handle_status_recall(
 async def _handle_status_esc(query: CallbackQuery, user_id: int, data: str) -> None:
     """Handle CB_STATUS_ESC: send Escape key from status message."""
     window_id = data[len(CB_STATUS_ESC) :]
-    if not user_owns_window(user_id, window_id):
+    callback_chat_id = query.message.chat.id if query.message else None
+    if not user_owns_window(user_id, window_id, callback_chat_id):
         await query.answer("Not your session", show_alert=True)
         return
     w = await tmux_manager.find_window_by_id(window_id)
@@ -195,7 +207,8 @@ async def _handle_keys(
     target = rest[colon_idx + 1 :]
     window_id, pane_id = parse_target(target)
 
-    if not user_owns_window(user_id, window_id):
+    callback_chat_id = query.message.chat.id if query.message else None
+    if not user_owns_window(user_id, window_id, callback_chat_id):
         await query.answer("Not your session", show_alert=True)
         return
 

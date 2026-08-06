@@ -11,8 +11,13 @@ from ..thread_router import thread_router
 from .callback_data import CB_PANE_DELIMITER
 
 
-def user_owns_window(user_id: int, window_id: str) -> bool:
-    """Check if a user has any thread binding to the given window."""
+def user_owns_window(user_id: int, window_id: str, chat_id: int | None = None) -> bool:
+    """Check ownership in the callback's chat when available."""
+    if chat_id is not None:
+        return any(
+            uid == user_id and bound_chat == chat_id and wid == window_id
+            for uid, bound_chat, _tid, wid in thread_router.iter_thread_bindings_with_chat()
+        )
     return window_id in thread_router.get_all_thread_windows(user_id).values()
 
 

@@ -23,7 +23,7 @@ from telegram.error import TelegramError
 from ..config import config
 from ..telegram_client import PTBTelegramClient
 from ..window_query import view_window
-from ..multiplexer.window_ops import send_to_window
+from .telegram_origin import send_telegram_to_window
 from ..thread_router import thread_router
 from .callback_helpers import get_thread_id
 from .messaging_pipeline.message_sender import ack_reaction, safe_reply
@@ -106,13 +106,13 @@ def _generate_photo_filename(file_unique_id: str) -> str:
 
 
 def _resolve_upload_dir(
-    user_id: int, thread_id: int | None
+    user_id: int, thread_id: int | None, chat_id: int | None = None
 ) -> tuple[str | None, Path | None, str | None]:
     """Resolve window_id and upload directory for a thread.
 
     Returns (window_id, upload_path, error_message).
     """
-    window_id = thread_router.resolve_window_for_thread(user_id, thread_id)
+    window_id = thread_router.resolve_window_for_thread(user_id, thread_id, chat_id)
     if not window_id:
         return None, None, "No session bound to this topic."
 
@@ -192,7 +192,9 @@ async def _upload_and_notify(
     success_emoji: str,
 ) -> None:
     """Shared upload flow: resolve dir, download, notify Claude, reply to user."""
-    window_id, upload_path, error = _resolve_upload_dir(user_id, thread_id)
+    window_id, upload_path, error = _resolve_upload_dir(
+        user_id, thread_id, message.chat.id
+    )
     if error or not window_id or not upload_path:
         await safe_reply(message, f"\u274c {error}")
         return
@@ -211,7 +213,9 @@ async def _upload_and_notify(
     if caption:
         claude_msg += f"\n\nUser note: {_sanitize_caption(caption)}"
 
-    success, err = await send_to_window(window_id, claude_msg)
+    success, err = await send_telegram_to_window(
+        user_id, window_id, message.message_thread_id, claude_msg, message.chat.id
+    )
     if success:
         await ack_reaction(
             PTBTelegramClient(message.get_bot()), message.chat.id, message.message_id

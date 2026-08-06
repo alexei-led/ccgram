@@ -129,7 +129,8 @@ async def _handle_live_start(
     """Handle CB_LIVE_START: start auto-refreshing live view."""
     target = data[len(CB_LIVE_START) :]
     window_id, pane_id = parse_target(target)
-    if not user_owns_window(user_id, window_id):
+    callback_chat_id = query.message.chat.id if query.message else None
+    if not user_owns_window(user_id, window_id, callback_chat_id):
         await query.answer("Not your session", show_alert=True)
         return
     thread_id = get_thread_id(update)
@@ -205,7 +206,8 @@ async def _handle_live_stop(
     """Handle CB_LIVE_STOP: stop live view and revert to screenshot keyboard."""
     target = data[len(CB_LIVE_STOP) :]
     window_id, pane_id = parse_target(target)
-    if not user_owns_window(user_id, window_id):
+    callback_chat_id = query.message.chat.id if query.message else None
+    if not user_owns_window(user_id, window_id, callback_chat_id):
         await query.answer("Not your session", show_alert=True)
         return
     thread_id = get_thread_id(update)
@@ -236,7 +238,8 @@ async def _handle_pane_screenshot(
     window_id = rest[:delim_idx]
     pane_id = rest[delim_idx + 1 :]
 
-    if not user_owns_window(user_id, window_id):
+    callback_chat_id = query.message.chat.id if query.message else None
+    if not user_owns_window(user_id, window_id, callback_chat_id):
         await query.answer("Not your session", show_alert=True)
         return
 
@@ -305,7 +308,8 @@ async def _handle_refresh(query: CallbackQuery, user_id: int, data: str) -> None
     """Handle CB_SCREENSHOT_REFRESH: refresh an existing screenshot."""
     target = data[len(CB_SCREENSHOT_REFRESH) :]
     window_id, pane_id = parse_target(target)
-    if not user_owns_window(user_id, window_id):
+    callback_chat_id = query.message.chat.id if query.message else None
+    if not user_owns_window(user_id, window_id, callback_chat_id):
         await query.answer("Not your session", show_alert=True)
         return
     w = await tmux_manager.find_window_by_id(window_id)
@@ -343,7 +347,8 @@ async def _handle_status_screenshot(
 ) -> None:
     """Handle CB_STATUS_SCREENSHOT: take screenshot from status message."""
     window_id = data[len(CB_STATUS_SCREENSHOT) :]
-    if not user_owns_window(user_id, window_id):
+    callback_chat_id = query.message.chat.id if query.message else None
+    if not user_owns_window(user_id, window_id, callback_chat_id):
         await query.answer("Not your session", show_alert=True)
         return
     w = await tmux_manager.find_window_by_id(window_id)

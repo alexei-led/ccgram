@@ -1,5 +1,5 @@
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -455,7 +455,11 @@ class TestShellProviderRouting:
 
 
 class TestForwardMessage:
-    @patch(f"{_TH}.send_to_window", new_callable=AsyncMock, return_value=(True, "ok"))
+    @patch(
+        f"{_TH}.send_telegram_to_window",
+        new_callable=AsyncMock,
+        return_value=(True, "ok"),
+    )
     @patch(f"{_TH}.window_query")
     async def test_sends_to_window(
         self, mock_sm: MagicMock, mock_send: AsyncMock
@@ -463,26 +467,14 @@ class TestForwardMessage:
         bot = AsyncMock()
         message = AsyncMock()
 
-        with (
-            patch(f"{_TH}.get_interactive_window", return_value=None),
-            patch(f"{_TH}.remember_telegram_injection") as mock_remember,
-        ):
-
-            async def send_after_reservation(
-                window_id: str, text: str
-            ) -> tuple[bool, str]:
-                assert mock_remember.called
-                return True, "ok"
-
-            mock_send.side_effect = send_after_reservation
+        with patch(f"{_TH}.get_interactive_window", return_value=None):
             await _forward_message("@0", 100, 42, "hello", bot, message)
 
-        mock_send.assert_called_once_with("@0", "hello")
-        mock_remember.assert_called_once_with(100, "@0", 42, "hello")
+        mock_send.assert_called_once_with(100, "@0", 42, "hello", ANY)
 
     @patch(f"{_TH}.safe_reply", new_callable=AsyncMock)
     @patch(
-        f"{_TH}.send_to_window",
+        f"{_TH}.send_telegram_to_window",
         new_callable=AsyncMock,
         return_value=(False, "Window not found"),
     )
@@ -493,42 +485,18 @@ class TestForwardMessage:
         bot = AsyncMock()
         message = AsyncMock()
 
-        injection = object()
-        with (
-            patch(
-                f"{_TH}.remember_telegram_injection", return_value=injection
-            ) as mock_remember,
-            patch(f"{_TH}.forget_telegram_injection") as mock_forget,
-        ):
-            await _forward_message("@0", 100, 42, "hello", bot, message)
+        await _forward_message("@0", 100, 42, "hello", bot, message)
 
         mock_reply.assert_called_once()
-        mock_remember.assert_called_once_with(100, "@0", 42, "hello")
-        mock_forget.assert_called_once_with(100, "@0", 42, injection)
         assert "Window not found" in mock_reply.call_args.args[1]
-
-    @patch(f"{_TH}.send_to_window", new_callable=AsyncMock)
-    @patch(f"{_TH}.window_query")
-    async def test_send_exception_forgets_reservation(
-        self, _mock_sm: MagicMock, mock_send: AsyncMock
-    ) -> None:
-        bot = AsyncMock()
-        message = AsyncMock()
-        injection = object()
-        mock_send.side_effect = RuntimeError("send failed")
-
-        with (
-            patch(f"{_TH}.remember_telegram_injection", return_value=injection),
-            patch(f"{_TH}.forget_telegram_injection") as mock_forget,
-            pytest.raises(RuntimeError, match="send failed"),
-        ):
-            await _forward_message("@0", 100, 42, "hello", bot, message)
-
-        mock_forget.assert_called_once_with(100, "@0", 42, injection)
 
     @patch(f"{_TH}.get_interactive_window", return_value=None)
     @patch(f"{_TH}._capture_bash_output")
-    @patch(f"{_TH}.send_to_window", new_callable=AsyncMock, return_value=(True, "ok"))
+    @patch(
+        f"{_TH}.send_telegram_to_window",
+        new_callable=AsyncMock,
+        return_value=(True, "ok"),
+    )
     @patch(f"{_TH}.window_query")
     async def test_bash_capture_for_bang_command(
         self,
@@ -552,7 +520,11 @@ class TestForwardMessage:
             await task
 
     @patch(f"{_TH}.get_interactive_window", return_value=None)
-    @patch(f"{_TH}.send_to_window", new_callable=AsyncMock, return_value=(True, "ok"))
+    @patch(
+        f"{_TH}.send_telegram_to_window",
+        new_callable=AsyncMock,
+        return_value=(True, "ok"),
+    )
     @patch(f"{_TH}.window_query")
     async def test_cancels_existing_bash_capture(
         self, mock_sm: MagicMock, _mock_send: AsyncMock, _mock_interactive: MagicMock
@@ -573,7 +545,11 @@ class TestForwardMessage:
 
     @patch(f"{_TH}.handle_interactive_ui", new_callable=AsyncMock)
     @patch(f"{_TH}.get_interactive_window", return_value="@0")
-    @patch(f"{_TH}.send_to_window", new_callable=AsyncMock, return_value=(True, "ok"))
+    @patch(
+        f"{_TH}.send_telegram_to_window",
+        new_callable=AsyncMock,
+        return_value=(True, "ok"),
+    )
     @patch(f"{_TH}.window_query")
     async def test_refreshes_interactive_ui(
         self,
@@ -591,7 +567,11 @@ class TestForwardMessage:
         assert mock_handle_ui.call_args.args[0] is bot
         assert mock_handle_ui.call_args.args[1:] == (100, "@0", 42)
 
-    @patch(f"{_TH}.send_to_window", new_callable=AsyncMock, return_value=(True, "ok"))
+    @patch(
+        f"{_TH}.send_telegram_to_window",
+        new_callable=AsyncMock,
+        return_value=(True, "ok"),
+    )
     @patch(f"{_TH}.window_query")
     async def test_sends_typing_chat_action(
         self, _mock_sm: MagicMock, _mock_send: AsyncMock

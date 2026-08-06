@@ -54,9 +54,9 @@ arch-guard:
 	  tests/ccgram/test_herdr_identity_audit.py \
 	  tests/ccgram/test_herdr_legacy_model_audit.py
 
-# archfit: full report-only architecture analysis.
+# archfit: report-only architecture analysis.
 archfit:
-	@archfit analyze --config .archfit.yaml --full
+	@archfit analyze --config .archfit.yaml
 
 # arch-check: archfit whole-graph drift gate (forbidden-dep + cycle + coupling).
 # ~45s (scip indexing). Blocks only on gate findings (exit 1); warnings (exit 2:
@@ -64,19 +64,19 @@ archfit:
 # pre-push hook (scoped to src changes) and suitable for CI.
 arch-check:
 	@command -v archfit >/dev/null 2>&1 || { echo "archfit not installed — skipping (see github.com/alexei-led/archfit)"; exit 0; }
-	@archfit --gate --config .archfit.yaml --full; ec=$$?; \
+	@archfit check --config .archfit.yaml; ec=$$?; \
 	if [ $$ec -eq 0 ] || [ $$ec -eq 2 ]; then exit 0; fi; \
 	echo "make: archfit drift gate FAILED (exit $$ec)"; exit $$ec
 
 # arch-score: banded architecture scorecard (coupling / cohesion / fitness).
 # Report-only — use to track architecture health and improvement over time.
 arch-score:
-	@archfit analyze --config .archfit.yaml --full --format scorecard
+	@archfit analyze --config .archfit.yaml --markdown
 
 # arch-review: off-gate LLM narrative appended to the standard analysis output.
 # Needs AI config in .archfit.yaml and provider credentials in the environment.
 arch-review:
-	@archfit analyze --config .archfit.yaml --full --llm
+	@archfit analyze --config .archfit.yaml --ai-summary
 
 install:
 	uv sync
