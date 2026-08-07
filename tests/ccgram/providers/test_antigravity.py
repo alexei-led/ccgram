@@ -130,20 +130,16 @@ class TestAntigravityExecutableAndDataResolution:
         assert cmd == str(agy_bin.resolve())
 
     @pytest.mark.parametrize(
-        ("os_name", "machine", "candidate_subpath"),
+        "candidate_subpath",
         [
-            ("linux", "x86_64", ".local/bin/agy"),
-            ("darwin", "arm64", ".gemini/antigravity-cli/bin/agy"),
-            ("darwin", "x86_64", ".antigravity/bin/agy"),
+            ".local/bin/agy",
+            ".gemini/antigravity-cli/bin/agy",
+            ".antigravity/bin/agy",
         ],
     )
-    def test_platform_executable_layout_matrix(
-        self, tmp_path, monkeypatch, os_name, machine, candidate_subpath
-    ):
+    def test_known_executable_layouts(self, tmp_path, monkeypatch, candidate_subpath):
         monkeypatch.delenv("CCGRAM_ANTIGRAVITY_COMMAND", raising=False)
         monkeypatch.setattr("shutil.which", lambda name: None)
-        monkeypatch.setattr("sys.platform", os_name)
-        monkeypatch.setattr("platform.machine", lambda: machine)
 
         cand_file = tmp_path / candidate_subpath
         cand_file.parent.mkdir(parents=True, exist_ok=True)
@@ -159,19 +155,15 @@ class TestAntigravityExecutableAndDataResolution:
         assert launch_cmd == str(cand_file.resolve())
 
     @pytest.mark.parametrize(
-        ("os_name", "machine", "home_subpath"),
+        "home_subpath",
         [
-            ("linux", "x86_64", ".config/antigravity/brain"),
-            ("darwin", "arm64", ".gemini/antigravity-cli/brain"),
-            ("darwin", "x86_64", ".antigravity/brain"),
+            ".config/antigravity/brain",
+            ".gemini/antigravity-cli/brain",
+            ".antigravity/brain",
         ],
     )
-    def test_platform_data_dir_discovery_matrix(
-        self, tmp_path, monkeypatch, os_name, machine, home_subpath
-    ):
+    def test_known_data_dir_layouts(self, tmp_path, monkeypatch, home_subpath):
         monkeypatch.delenv("CCGRAM_ANTIGRAVITY_DATA_DIR", raising=False)
-        monkeypatch.setattr("sys.platform", os_name)
-        monkeypatch.setattr("platform.machine", lambda: machine)
 
         brain = tmp_path / home_subpath
         brain.mkdir(parents=True, exist_ok=True)
@@ -410,6 +402,7 @@ class TestAntigravityToolCallParsing:
             {"invalid": True},
             {"type": "PLANNER_RESPONSE", "tool_calls": "not-a-list"},
             {"type": "RUN_COMMAND", "content": None},
+            {"type": "USER_INPUT", "content": [{"text": 1}, {"text": None}]},
         ]
         messages, pending = provider.parse_transcript_entries(entries, {})
         assert isinstance(messages, list)
@@ -488,6 +481,18 @@ class TestAntigravityDetectionAndYolo:
         assert detect_provider_from_transcript_path(path1) == "antigravity"
         assert detect_provider_from_transcript_path(path2) == "antigravity"
         assert detect_provider_from_transcript_path(path3) == "antigravity"
+        assert (
+            detect_provider_from_transcript_path(
+                "/tmp/.antigravity-backup/brain/123/transcript.jsonl"
+            )
+            == ""
+        )
+        assert (
+            detect_provider_from_transcript_path(
+                "/tmp/antigravity-cli-old/brain/123/transcript.jsonl"
+            )
+            == ""
+        )
 
     def test_yolo_resolution(self):
         cmd = resolve_launch_command("antigravity", approval_mode="yolo")

@@ -199,10 +199,11 @@ def extract_antigravity_text(entry: dict[str, Any]) -> str:
         fragments: list[str] = []
         for block in content:
             if isinstance(block, dict):
-                btext = block.get("text", "")
-                fragments.append(
-                    clean_antigravity_content(btext) if role == "user" else btext
-                )
+                btext = block.get("text")
+                if isinstance(btext, str):
+                    fragments.append(
+                        clean_antigravity_content(btext) if role == "user" else btext
+                    )
             elif isinstance(block, str):
                 fragments.append(
                     clean_antigravity_content(block) if role == "user" else block
