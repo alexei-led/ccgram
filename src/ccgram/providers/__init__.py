@@ -182,8 +182,14 @@ def detect_provider_from_transcript_path(transcript_path: str) -> str:
     normalized = transcript_path.strip().lower().replace("\\", "/")
     if not normalized:
         return ""
-    if {".antigravity", "antigravity-cli", "antigravity"}.intersection(
-        normalized.split("/")
+    if any(
+        marker in normalized
+        for marker in (
+            "/.gemini/antigravity-cli/brain/",
+            "/.antigravity/brain/",
+            "/.config/antigravity/brain/",
+            "/.local/share/antigravity/brain/",
+        )
     ):
         return "antigravity"
     if "/.codex/sessions/" in normalized:

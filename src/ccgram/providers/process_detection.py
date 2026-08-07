@@ -55,7 +55,7 @@ _PROVIDER_BASENAMES: tuple[tuple[frozenset[str], str], ...] = (
 # Path substrings that identify a provider when basename alone is ambiguous
 # (e.g. ``cli.js`` launched by bun).
 _PROVIDER_PATH_MARKERS: tuple[tuple[tuple[str, ...], str], ...] = (
-    (("antigravity-cli", "antigravity"), "antigravity"),
+    (("antigravity-cli",), "antigravity"),
     (("claude-code", "cc-team"), "claude"),
     (("@openai/codex", "/codex/", "/codex-"), "codex"),
     (("gemini-cli",), "gemini"),

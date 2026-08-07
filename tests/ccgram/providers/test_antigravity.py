@@ -8,6 +8,7 @@ from ccgram.providers import (
     detect_provider_from_transcript_path,
     resolve_launch_command,
 )
+from ccgram.providers.process_detection import classify_provider_from_args
 from ccgram.providers.antigravity import (
     AntigravityProvider,
     clean_antigravity_content,
@@ -189,6 +190,18 @@ class TestAntigravityCwdMatching:
         event = provider.discover_transcript(str(proj_dir), "shared:@0")
         assert event is not None
         assert event.session_id == "test-session-id"
+
+    def test_discover_transcript_requires_cwd(self, tmp_path, monkeypatch):
+        provider = AntigravityProvider()
+        brain = tmp_path / ".gemini" / "antigravity-cli" / "brain"
+        session_dir = brain / "test-session-id" / ".system_generated" / "logs"
+        session_dir.mkdir(parents=True)
+        (session_dir / "transcript.jsonl").write_text(
+            f'{{"cwd": "file://{tmp_path.resolve()}"}}\n'
+        )
+
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        assert provider.discover_transcript("", "shared:@0") is None
 
     def test_content_file_uri_is_not_workspace_identity(self, tmp_path, monkeypatch):
         provider = AntigravityProvider()
@@ -471,6 +484,11 @@ class TestAntigravityDetectionAndYolo:
         assert detect_provider_from_command("agy") == "antigravity"
         assert detect_provider_from_command("/usr/local/bin/agy") == "antigravity"
         assert detect_provider_from_command("antigravity") == "antigravity"
+        assert (
+            classify_provider_from_args("node /opt/antigravity-cli/bin/cli.js")
+            == "antigravity"
+        )
+        assert classify_provider_from_args("node /work/antigravity/cli.js") == ""
 
     def test_transcript_path_detection(self):
         path1 = "/Users/user/.gemini/antigravity-cli/brain/123/.system_generated/logs/transcript.jsonl"
@@ -490,6 +508,12 @@ class TestAntigravityDetectionAndYolo:
         assert (
             detect_provider_from_transcript_path(
                 "/tmp/antigravity-cli-old/brain/123/transcript.jsonl"
+            )
+            == ""
+        )
+        assert (
+            detect_provider_from_transcript_path(
+                "/tmp/antigravity/brain/123/transcript.jsonl"
             )
             == ""
         )

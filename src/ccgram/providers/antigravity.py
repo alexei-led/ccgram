@@ -426,6 +426,9 @@ class AntigravityProvider(JsonlProvider):
         max_age: float | None = None,
     ) -> SessionStartEvent | None:
         """Discover latest Antigravity CLI transcript on disk matching window."""
+        if not cwd:
+            return None
+
         brain_dirs = get_antigravity_brain_dirs()
         if not brain_dirs:
             return None
@@ -442,15 +445,12 @@ class AntigravityProvider(JsonlProvider):
 
         candidates.sort(reverse=True)
         selected: tuple[float, Path, str] | None = None
-        if cwd:
-            for cand in candidates:
-                if _match_antigravity_cwd(cand[1], cwd):
-                    selected = cand
-                    break
-            if selected is None:
-                return None
-        else:
-            selected = candidates[0]
+        for cand in candidates:
+            if _match_antigravity_cwd(cand[1], cwd):
+                selected = cand
+                break
+        if selected is None:
+            return None
 
         _, latest_file, session_id = selected
 
