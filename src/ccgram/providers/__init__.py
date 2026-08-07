@@ -8,6 +8,7 @@ require Config (doctor, status).
 """
 
 import re
+import shlex
 
 import structlog
 import os
@@ -17,6 +18,7 @@ from ccgram.providers.base import (
     AgentProvider,
     DiscoveredCommand,
     ProviderCapabilities,
+    ResumableSession,
     SessionStartEvent,
     StatusUpdate,
 )
@@ -29,6 +31,7 @@ logger = structlog.get_logger()
 _APPROVAL_MODE_NORMAL = "normal"
 _APPROVAL_MODE_YOLO = "yolo"
 _YOLO_FLAGS: dict[str, str] = {
+    "antigravity": "--dangerously-skip-permissions",
     "claude": "--dangerously-skip-permissions",
     "codex": "--dangerously-bypass-approvals-and-sandbox",
     "gemini": "--yolo",
@@ -53,6 +56,9 @@ def _ensure_registered() -> None:
     if _registered:
         return
     # Lazy: provider classes register against the registry at import; defer until the registry factory runs
+    from ccgram.providers.antigravity import AntigravityProvider
+
+    # Lazy: provider classes register against the registry at import; defer until the registry factory runs
     from ccgram.providers.claude import ClaudeProvider
 
     # Lazy: provider classes register against the registry at import; defer until the registry factory runs
@@ -67,6 +73,7 @@ def _ensure_registered() -> None:
     # Lazy: provider classes register against the registry at import; defer until the registry factory runs
     from ccgram.providers.shell import ShellProvider
 
+    registry.register("antigravity", AntigravityProvider)
     registry.register("claude", ClaudeProvider)
     registry.register("codex", CodexProvider)
     registry.register("gemini", GeminiProvider)
@@ -140,8 +147,12 @@ def detect_provider_from_command(pane_current_command: str) -> str:
     # Match basename only (first token) to avoid false positives
     # from paths like /home/claude/bin/vim
     basename = os.path.basename(cmd.split()[0])
-    for name in ("claude", "codex", "gemini", "pi"):
-        if basename == name or basename.startswith(name + "-"):
+    for name in ("antigravity", "claude", "codex", "gemini", "pi"):
+        if (
+            basename == name
+            or (name == "antigravity" and basename == "agy")
+            or basename.startswith(name + "-")
+        ):
             return name
 
     # Lazy: providers.shell pulls in shell_infra (prompt-marker machinery
@@ -171,6 +182,16 @@ def detect_provider_from_transcript_path(transcript_path: str) -> str:
     normalized = transcript_path.strip().lower().replace("\\", "/")
     if not normalized:
         return ""
+    if any(
+        marker in normalized
+        for marker in (
+            "/.gemini/antigravity-cli/brain/",
+            "/.antigravity/brain/",
+            "/.config/antigravity/brain/",
+            "/.local/share/antigravity/brain/",
+        )
+    ):
+        return "antigravity"
     if "/.codex/sessions/" in normalized:
         return "codex"
     if _CLAUDE_PROJECTS_RE.search(normalized):
@@ -285,6 +306,12 @@ def resolve_launch_command(
             provider = "claude"
             command = registry.get("claude").capabilities.launch_command
 
+    if provider == "antigravity" and not override:
+        # Lazy: only needed for antigravity launch path; importing at top would pull provider code
+        from ccgram.providers.antigravity import resolve_antigravity_executable
+
+        command = shlex.quote(resolve_antigravity_executable())
+
     # CCGRAM_GEMINI_COMMAND overrides stay fully user-controlled.
     # For ccgram-managed Gemini launches, force stable shell mode defaults.
     if provider == "gemini" and not override:
@@ -329,6 +356,7 @@ __all__ = [
     "DiscoveredCommand",
     "ProviderCapabilities",
     "ProviderRegistry",
+    "ResumableSession",
     "SessionStartEvent",
     "StatusUpdate",
     "UnknownProviderError",

@@ -47,6 +47,7 @@ _BUTTONS_PER_ROW = 3
 
 # Stable order — also defines what shows in the picker.
 _PROVIDERS: tuple[tuple[str, str], ...] = (
+    ("antigravity", "Antigravity"),
     ("claude", "Claude"),
     ("codex", "Codex"),
     ("gemini", "Gemini"),

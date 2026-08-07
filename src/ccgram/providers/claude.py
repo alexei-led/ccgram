@@ -8,11 +8,13 @@ that translates between the provider protocol and existing module APIs.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any, cast
 
 import structlog
 
 from ccgram.cc_commands import CC_BUILTINS
+from ccgram.providers._resume import discover_claude_sessions
 from ccgram.providers.base import UUID_RE
 from ccgram.providers.base import (
     AgentMessage,
@@ -20,6 +22,7 @@ from ccgram.providers.base import (
     DiscoveredCommand,
     MessageRole,
     ProviderCapabilities,
+    ResumableSession,
     SessionStartEvent,
     StatusUpdate,
 )
@@ -84,6 +87,14 @@ def _mode_short_label(mode_line: str) -> str | None:
     return None
 
 
+def _claude_projects_path() -> Path:
+    """Resolve Claude's project store only when session discovery is requested."""
+    # Lazy: Config requires runtime environment; session discovery is opt-in.
+    from ccgram.config import config
+
+    return config.claude_projects_path
+
+
 class ClaudeProvider:
     """AgentProvider implementation for Claude Code CLI."""
 
@@ -93,6 +104,7 @@ class ClaudeProvider:
         supports_hook=True,
         hook_install_managed_by_ccgram=True,
         supports_resume=True,
+        supports_resume_picker=True,
         supports_continue=True,
         supports_structured_transcript=True,
         builtin_commands=tuple(CC_BUILTINS.keys()),
@@ -138,6 +150,19 @@ class ClaudeProvider:
         if use_continue:
             return "--continue"
         return ""
+
+    def discover_resumable_sessions(
+        self,
+        *,
+        cwd: str | None = None,
+        limit: int | None = None,
+    ) -> list[ResumableSession]:
+        """Discover Claude sessions from the configured projects directory."""
+        return discover_claude_sessions(
+            _claude_projects_path(),
+            cwd=cwd,
+            limit=limit,
+        )
 
     def read_transcript_file(
         self, file_path: str, last_offset: int

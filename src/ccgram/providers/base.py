@@ -42,6 +42,18 @@ class SessionStartEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class ResumableSession:
+    """A provider-owned session that can be resumed in its workspace."""
+
+    session_id: str
+    summary: str
+    cwd: str
+    provider_name: str
+    mtime: float = 0.0
+    msg_count: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class AgentMessage:
     """A single parsed message from the agent's transcript."""
 
@@ -112,6 +124,7 @@ class ProviderCapabilities:
     supports_hook: bool = False
     hook_install_managed_by_ccgram: bool = False
     supports_resume: bool = False
+    supports_resume_picker: bool = False
     supports_continue: bool = False
     supports_structured_transcript: bool = False
     supports_incremental_read: bool = True  # False → whole-file JSON (e.g. Gemini)
@@ -170,6 +183,15 @@ class AgentProvider(Protocol):
         Returns a string like ``--resume abc123`` or ``--continue``.
         Empty string for a fresh session.
         """
+        ...
+
+    def discover_resumable_sessions(
+        self,
+        *,
+        cwd: str | None = None,
+        limit: int | None = None,
+    ) -> list[ResumableSession]:
+        """List sessions owned by this provider, optionally for one workspace."""
         ...
 
     def parse_transcript_line(self, line: str) -> dict[str, Any] | None:

@@ -27,6 +27,7 @@ from ccgram.providers.base import (
     MessageRole,
     ProviderCapabilities,
     RESUME_ID_RE,
+    ResumableSession,
     SessionStartEvent,
     StatusUpdate,
 )
@@ -174,6 +175,14 @@ class JsonlProvider:
                 raise ValueError(f"Invalid resume_id: {resume_id!r}")
             return f"--resume {resume_id}"
         return ""
+
+    def discover_resumable_sessions(
+        self,
+        *,
+        cwd: str | None = None,  # noqa: ARG002 — protocol signature
+        limit: int | None = None,  # noqa: ARG002 — protocol signature
+    ) -> list[ResumableSession]:
+        return []
 
     def read_transcript_file(
         self, file_path: str, last_offset: int

@@ -179,7 +179,7 @@ def _recovery_help_text(window_id: str) -> str:
     parts = ["Start fresh"]
     if caps.supports_continue:
         parts.append("Continue last session")
-    if caps.supports_resume:
+    if caps.supports_resume and caps.supports_resume_picker:
         parts.append("Resume from list")
     return " · ".join(parts)
 
@@ -213,7 +213,7 @@ def build_recovery_keyboard(window_id: str) -> InlineKeyboardMarkup:
                 ),
             )
         )
-    if caps.supports_resume:
+    if caps.supports_resume and caps.supports_resume_picker:
         options.append(
             InlineKeyboardButton(
                 "⏪ Resume",
@@ -428,13 +428,17 @@ async def _handle_continue(
         await query.answer("Project gone")
         return
 
-    if not await asyncio.to_thread(scan_sessions_for_cwd, cwd):
+    provider_name = window_query.get_window_provider(old_wid)
+    provider = get_provider_for_window(old_wid, provider_name=provider_name)
+    if provider.capabilities.supports_resume_picker and not await asyncio.to_thread(
+        scan_sessions_for_cwd,
+        cwd,
+        provider.capabilities.name,
+    ):
         await _send_empty_state(query, old_wid, cwd)
         return
 
-    launch_args = get_provider_for_window(
-        old_wid, provider_name=window_query.get_window_provider(old_wid)
-    ).make_launch_args(use_continue=True)
+    launch_args = provider.make_launch_args(use_continue=True)
     await _create_and_bind_window(
         query,
         user_id,
@@ -468,14 +472,24 @@ async def _handle_resume(
         await query.answer("Project gone")
         return
 
-    sessions = await asyncio.to_thread(scan_sessions_for_cwd, cwd)
+    provider_name = window_query.get_window_provider(old_wid)
+    sessions = await asyncio.to_thread(
+        scan_sessions_for_cwd,
+        cwd,
+        provider_name,
+    )
     if not sessions:
         await _send_empty_state(query, old_wid, cwd)
         return
 
     if context.user_data is not None:
         context.user_data[RECOVERY_SESSIONS] = [
-            {"session_id": s.session_id, "summary": s.summary, "mtime": s.mtime}
+            {
+                "session_id": s.session_id,
+                "summary": s.summary,
+                "mtime": s.mtime,
+                "provider_name": s.provider_name,
+            }
             for s in sessions
         ]
 
@@ -535,7 +549,8 @@ async def _handle_browse(
         await query.answer("Stale recovery (topic mismatch)", show_alert=True)
         return
 
-    sessions = await asyncio.to_thread(scan_all_sessions)
+    provider_name = window_query.get_window_provider(old_wid)
+    sessions = await asyncio.to_thread(scan_all_sessions, provider_name)
     if not sessions:
         await safe_edit(query, "⚠ No past sessions found in any project.")
         _clear_recovery_state(context.user_data)
@@ -552,6 +567,7 @@ async def _handle_browse(
                 "cwd": s.cwd,
                 "mtime": s.mtime,
                 "msg_count": s.msg_count,
+                "provider_name": s.provider_name,
             }
             for s in sessions
         ]

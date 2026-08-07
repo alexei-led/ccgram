@@ -45,6 +45,7 @@ _WRAPPER_TOKENS = frozenset(
 
 # Basename → provider name.  Checked via exact match and prefix (``claude-*``).
 _PROVIDER_BASENAMES: tuple[tuple[frozenset[str], str], ...] = (
+    (frozenset({"antigravity", "agy"}), "antigravity"),
     (frozenset({"claude", "ce", "cc-mirror", "zai"}), "claude"),
     (frozenset({"codex"}), "codex"),
     (frozenset({"gemini"}), "gemini"),
@@ -54,6 +55,7 @@ _PROVIDER_BASENAMES: tuple[tuple[frozenset[str], str], ...] = (
 # Path substrings that identify a provider when basename alone is ambiguous
 # (e.g. ``cli.js`` launched by bun).
 _PROVIDER_PATH_MARKERS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("antigravity-cli",), "antigravity"),
     (("claude-code", "cc-team"), "claude"),
     (("@openai/codex", "/codex/", "/codex-"), "codex"),
     (("gemini-cli",), "gemini"),
