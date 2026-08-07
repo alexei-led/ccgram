@@ -1134,8 +1134,9 @@ class TestScanSessionsForCwd:
         }
         (proj_dir / "sessions-index.json").write_text(json.dumps(index))
 
-        with patch(f"{_RP}.config") as mock_config:
-            mock_config.claude_projects_path = projects_path
+        with patch(
+            "ccgram.providers.claude._claude_projects_path", return_value=projects_path
+        ):
             result = scan_sessions_for_cwd(str(work_dir))
 
         assert len(result) == 1
@@ -1167,15 +1168,18 @@ class TestScanSessionsForCwd:
         }
         (proj_dir / "sessions-index.json").write_text(json.dumps(index))
 
-        with patch(f"{_RP}.config") as mock_config:
-            mock_config.claude_projects_path = projects_path
+        with patch(
+            "ccgram.providers.claude._claude_projects_path", return_value=projects_path
+        ):
             result = scan_sessions_for_cwd(str(work_dir))
 
         assert result == []
 
     def test_returns_empty_when_projects_path_missing(self, tmp_path) -> None:
-        with patch(f"{_RP}.config") as mock_config:
-            mock_config.claude_projects_path = tmp_path / "nonexistent"
+        with patch(
+            "ccgram.providers.claude._claude_projects_path",
+            return_value=tmp_path / "nonexistent",
+        ):
             result = scan_sessions_for_cwd("/some/path")
 
         assert result == []
@@ -1217,8 +1221,9 @@ class TestScanSessionsForCwd:
         }
         (proj_dir / "sessions-index.json").write_text(json.dumps(index))
 
-        with patch(f"{_RP}.config") as mock_config:
-            mock_config.claude_projects_path = projects_path
+        with patch(
+            "ccgram.providers.claude._claude_projects_path", return_value=projects_path
+        ):
             result = scan_sessions_for_cwd(str(work_dir))
 
         assert len(result) == 2
@@ -1246,8 +1251,9 @@ class TestScanSessionsForCwd:
         }
         (proj_dir / "sessions-index.json").write_text(json.dumps(index))
 
-        with patch(f"{_RP}.config") as mock_config:
-            mock_config.claude_projects_path = projects_path
+        with patch(
+            "ccgram.providers.claude._claude_projects_path", return_value=projects_path
+        ):
             result = scan_sessions_for_cwd(str(work_dir))
 
         assert result == []
@@ -1276,8 +1282,9 @@ class TestScanSessionsForCwd:
         }
         (proj_dir / "sessions-index.json").write_text(json.dumps(index))
 
-        with patch(f"{_RP}.config") as mock_config:
-            mock_config.claude_projects_path = projects_path
+        with patch(
+            "ccgram.providers.claude._claude_projects_path", return_value=projects_path
+        ):
             result = scan_sessions_for_cwd(str(work_dir))
 
         assert len(result) == 1
@@ -1297,8 +1304,9 @@ class TestScanSessionsForCwd:
             f'{{"type":"user","cwd":"{resolved}","message":{{"content":[{{"type":"text","text":"Fix bug"}}]}}}}\n'
         )
 
-        with patch(f"{_RP}.config") as mock_config:
-            mock_config.claude_projects_path = projects_path
+        with patch(
+            "ccgram.providers.claude._claude_projects_path", return_value=projects_path
+        ):
             result = scan_sessions_for_cwd(str(work_dir))
 
         assert len(result) == 1
@@ -1320,8 +1328,9 @@ class TestScanSessionsForCwd:
             f'{{"type":"user","cwd":"{other_dir.resolve()}","message":{{"content":"hi"}}}}\n'
         )
 
-        with patch(f"{_RP}.config") as mock_config:
-            mock_config.claude_projects_path = projects_path
+        with patch(
+            "ccgram.providers.claude._claude_projects_path", return_value=projects_path
+        ):
             result = scan_sessions_for_cwd(str(work_dir))
 
         assert result == []
@@ -1353,8 +1362,9 @@ class TestScanSessionsForCwd:
         }
         (proj_dir / "sessions-index.json").write_text(json.dumps(index))
 
-        with patch(f"{_RP}.config") as mock_config:
-            mock_config.claude_projects_path = projects_path
+        with patch(
+            "ccgram.providers.claude._claude_projects_path", return_value=projects_path
+        ):
             result = scan_sessions_for_cwd(str(work_dir))
 
         assert len(result) == 1
@@ -1385,8 +1395,9 @@ class TestScanSessionsForCwd:
         }
         (proj_dir / "sessions-index.json").write_text(json.dumps(index))
 
-        with patch(f"{_RP}.config") as mock_config:
-            mock_config.claude_projects_path = projects_path
+        with patch(
+            "ccgram.providers.claude._claude_projects_path", return_value=projects_path
+        ):
             result = scan_sessions_for_cwd(str(work_dir))
 
         assert len(result) == 1
@@ -1418,8 +1429,9 @@ class TestScanSessionsForCwd:
         }
         (proj_dir / "sessions-index.json").write_text(json.dumps(index))
 
-        with patch(f"{_RP}.config") as mock_config:
-            mock_config.claude_projects_path = projects_path
+        with patch(
+            "ccgram.providers.claude._claude_projects_path", return_value=projects_path
+        ):
             result = scan_sessions_for_cwd(str(work_dir))
 
         assert len(result) == 1

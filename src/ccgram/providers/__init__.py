@@ -8,6 +8,7 @@ require Config (doctor, status).
 """
 
 import re
+import shlex
 
 import structlog
 import os
@@ -17,6 +18,7 @@ from ccgram.providers.base import (
     AgentProvider,
     DiscoveredCommand,
     ProviderCapabilities,
+    ResumableSession,
     SessionStartEvent,
     StatusUpdate,
 )
@@ -304,7 +306,7 @@ def resolve_launch_command(
         # Lazy: only needed for antigravity launch path; importing at top would pull provider code
         from ccgram.providers.antigravity import resolve_antigravity_executable
 
-        command = resolve_antigravity_executable()
+        command = shlex.quote(resolve_antigravity_executable())
 
     # CCGRAM_GEMINI_COMMAND overrides stay fully user-controlled.
     # For ccgram-managed Gemini launches, force stable shell mode defaults.
@@ -350,6 +352,7 @@ __all__ = [
     "DiscoveredCommand",
     "ProviderCapabilities",
     "ProviderRegistry",
+    "ResumableSession",
     "SessionStartEvent",
     "StatusUpdate",
     "UnknownProviderError",

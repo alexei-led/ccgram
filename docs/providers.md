@@ -13,6 +13,8 @@ CCGram supports multiple agent CLI backends. Each Telegram topic can use a diffe
 | Antigravity | `agy`       | No          | Yes    | Yes      | JSONL      | Transcript activity heuristic + `/status` snapshot                    |
 | Shell       | `bash`      | No          | No     | No       | None       | Shell prompt idle detection                                           |
 
+`Resume` in this table means the CLI accepts a known session ID. CCGram's Telegram Resume picker can enumerate sessions for Claude and Antigravity. Codex, Gemini, and Pi currently expose Fresh and Continue recovery actions only.
+
 ## Choosing a Provider
 
 **From Telegram**: When you create a new topic and select a directory, then — if the directory is an eligible git repo — choose whether to use the current branch or create a new worktree on a new branch (non-git directories skip this step), a provider picker appears with Claude (default), Codex, Gemini, Pi, Antigravity, and Shell options. After provider selection, CCGram asks for session mode:
@@ -312,7 +314,7 @@ Transcript brain directories are discovered in order:
 4. `~/.config/antigravity/brain`
 5. `~/.local/share/antigravity/brain`
 
-CCGram uses exact path-boundary matching against normalized workspace paths (`Path.expanduser().resolve()`) to ensure transcript logs strictly match the topic's target working directory (`cwd`).
+CCGram parses structured workspace fields and local `file://` URIs, decodes percent escapes, and compares normalized paths (`Path.expanduser().resolve()`) for exact equality. Sibling and descendant paths never match the topic's target working directory (`cwd`).
 
 ### Resume and Continue
 

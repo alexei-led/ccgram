@@ -71,6 +71,13 @@ class TestAgentProviderCapabilities:
         with pytest.raises(FrozenInstanceError):
             caps.name = "hacked"  # type: ignore[misc]
 
+    def test_resume_picker_requires_resume_support(
+        self, provider: AgentProvider
+    ) -> None:
+        caps = provider.capabilities
+        assert not caps.supports_resume_picker or caps.supports_resume
+        assert callable(provider.discover_resumable_sessions)
+
     def test_only_claude_uses_pyte_status_parsing(
         self, provider: AgentProvider
     ) -> None:

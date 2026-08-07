@@ -430,7 +430,7 @@ When an agent session exits or crashes, the bot detects the dead window and offe
 - **Continue** — Resume the last conversation (all providers support this)
 - **Resume** — Browse and select a past session to resume from
 
-The buttons shown adapt to each provider's capabilities. Claude, Codex, Gemini, and Pi support Fresh, Continue, and Resume. Shell supports Fresh only (shell sessions are ephemeral).
+The buttons shown adapt to each provider's capabilities. Claude and Antigravity support Fresh, Continue, and the CCGram Resume picker. Codex, Gemini, and Pi support Fresh and Continue; their CLIs can resume known session IDs, but CCGram does not yet enumerate those providers' sessions. Shell supports Fresh only because shell sessions are ephemeral.
 
 ## Manual Provider Override (`/agent`)
 

@@ -16,8 +16,6 @@ Key functions:
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-import json
-import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,6 +31,7 @@ from telegram.error import TelegramError
 
 from ...config import config
 from ...providers import get_provider, get_provider_for_window, resolve_launch_command
+from ...providers._resume import index_message_count
 from ... import window_query
 from ...session import session_manager
 from ...session_map import session_map_sync
@@ -40,7 +39,6 @@ from ...telegram_client import PTBTelegramClient
 from ...thread_router import thread_router
 from ...multiplexer import multiplexer as tmux_manager
 from ...window_state_store import CCGRAM_CREATED_WINDOW_ORIGIN
-from ...utils import read_session_metadata_from_jsonl
 from ..callback_data import CB_RESUME_CANCEL, CB_RESUME_PAGE, CB_RESUME_PICK
 from ..callback_helpers import get_thread_id
 from ..callback_registry import register
@@ -55,8 +53,6 @@ logger = structlog.get_logger()
 
 _SESSIONS_PER_PAGE = 6
 
-_IndexParseError = (json.JSONDecodeError, OSError)
-
 
 @dataclass
 class ResumeEntry:
@@ -67,9 +63,15 @@ class ResumeEntry:
     cwd: str
     mtime: float = 0.0
     msg_count: int | None = None
+    provider_name: str = "claude"
 
 
 _SECONDS_PER_DAY = 86400
+
+
+def _index_msg_count(entry: dict) -> int | None:
+    """Keep the legacy helper name for picker/tests."""
+    return index_message_count(entry)
 
 
 def _relative_time(mtime: float, *, now: float | None = None) -> str:
@@ -88,20 +90,6 @@ def _relative_time(mtime: float, *, now: float | None = None) -> str:
         return "yesterday"
     days = int(diff // _SECONDS_PER_DAY)
     return f"{days}d ago"
-
-
-def _index_msg_count(entry: dict) -> int | None:
-    """Pull a message-count hint from a sessions-index entry, if present.
-
-    Several Claude Code index versions emit a count under different keys; we
-    accept any of them. Returns None when no usable hint exists, so callers
-    can omit the count from the rendered label.
-    """
-    for key in ("messageCount", "msgCount", "msg_count", "messages"):
-        value = entry.get(key)
-        if isinstance(value, int) and value > 0:
-            return value
-    return None
 
 
 def format_session_entry(
@@ -131,155 +119,21 @@ def format_session_entry(
     return base
 
 
-def scan_all_sessions() -> list[ResumeEntry]:
-    """Scan project directories for resumable sessions.
-
-    Supports both legacy sessions-index.json and bare JSONL files
-    (Claude Code >= Feb 2026 no longer writes index files).
-
-    Returns entries sorted by file mtime (most recent first),
-    deduplicated by session_id.
-    """
-    candidates: list[tuple[float, ResumeEntry]] = []
-    seen_ids: set[str] = set()
-
-    if config.claude_projects_path.exists():
-        for project_dir in config.claude_projects_path.iterdir():
-            if not project_dir.is_dir():
-                continue
-
-            # Try legacy sessions-index.json first
-            index_file = project_dir / "sessions-index.json"
-            if index_file.exists():
-                _scan_index_file(index_file, seen_ids, candidates)
-
-            # Pick up bare JSONL files (no index required)
-            _scan_bare_jsonl(project_dir, seen_ids, candidates)
-
-    _scan_antigravity_sessions(seen_ids, candidates)
-
-    candidates.sort(key=lambda c: c[0], reverse=True)
-    return [entry for _, entry in candidates]
-
-
-def _scan_antigravity_sessions(
-    seen_ids: set[str],
-    candidates: list[tuple[float, ResumeEntry]],
-) -> None:
-    """Scan Antigravity brain directories for resumable sessions."""
-    # Lazy: only needed when scanning antigravity session directories
-    from ccgram.providers.antigravity import get_antigravity_brain_dirs
-
-    if (
-        "PYTEST_CURRENT_TEST" in os.environ
-        and "CCGRAM_ANTIGRAVITY_DATA_DIR" not in os.environ
-    ):
-        return
-
-    for brain_dir in get_antigravity_brain_dirs():
-        if not brain_dir.is_dir():
-            continue
-        try:
-            conv_dirs = list(brain_dir.iterdir())
-        except OSError:
-            continue
-
-        for conversation_dir in conv_dirs:
-            if not conversation_dir.is_dir():
-                continue
-            session_id = conversation_dir.name
-            if session_id in seen_ids:
-                continue
-
-            log_file = (
-                conversation_dir / ".system_generated" / "logs" / "transcript.jsonl"
-            )
-            if not log_file.is_file():
-                continue
-
-            try:
-                mtime = log_file.stat().st_mtime
-            except OSError:
-                mtime = 0.0
-
-            seen_ids.add(session_id)
-            entry = ResumeEntry(
-                session_id=session_id,
-                summary=session_id[:12],
-                cwd=str(conversation_dir),
-                mtime=mtime,
-                msg_count=0,
-            )
-            candidates.append((mtime, entry))
-
-
-def _scan_index_file(
-    index_file: Path,
-    seen_ids: set[str],
-    candidates: list[tuple[float, ResumeEntry]],
-) -> None:
-    """Scan a sessions-index.json for resumable sessions."""
-    try:
-        index_data = json.loads(index_file.read_text(encoding="utf-8"))
-    except _IndexParseError:
-        return
-
-    original_path = index_data.get("originalPath", "")
-    for entry in index_data.get("entries", []):
-        session_id = entry.get("sessionId", "")
-        full_path = entry.get("fullPath", "")
-        if not session_id or not full_path or session_id in seen_ids:
-            continue
-
-        file_path = Path(full_path)
-        if not file_path.exists():
-            continue
-
-        try:
-            mtime = file_path.stat().st_mtime
-        except OSError:
-            mtime = 0.0
-
-        cwd = entry.get("projectPath", original_path)
-        summary = (
-            entry.get("summary", "") or entry.get("firstPrompt", "") or session_id[:12]
+def scan_all_sessions(provider_name: str | None = "claude") -> list[ResumeEntry]:
+    """List resumable sessions owned by one provider."""
+    provider = get_provider_for_window("", provider_name=provider_name)
+    discovered = provider.discover_resumable_sessions()
+    return [
+        ResumeEntry(
+            session_id=session.session_id,
+            summary=session.summary,
+            cwd=session.cwd,
+            mtime=session.mtime,
+            msg_count=session.msg_count,
+            provider_name=session.provider_name,
         )
-        msg_count = _index_msg_count(entry)
-        seen_ids.add(session_id)
-        candidates.append(
-            (mtime, ResumeEntry(session_id, summary, cwd, mtime, msg_count))
-        )
-
-
-def _scan_bare_jsonl(
-    project_dir: Path,
-    seen_ids: set[str],
-    candidates: list[tuple[float, ResumeEntry]],
-) -> None:
-    """Scan bare JSONL files not covered by a sessions-index."""
-    try:
-        jsonl_iter = project_dir.glob("*.jsonl")
-    except OSError:
-        return
-
-    for jsonl_file in jsonl_iter:
-        session_id = jsonl_file.stem
-        if session_id in seen_ids:
-            continue
-
-        cwd, summary = read_session_metadata_from_jsonl(jsonl_file)
-        if not cwd:
-            continue
-
-        try:
-            mtime = jsonl_file.stat().st_mtime
-        except OSError:
-            mtime = 0.0
-
-        seen_ids.add(session_id)
-        candidates.append(
-            (mtime, ResumeEntry(session_id, summary or session_id[:12], cwd, mtime))
-        )
+        for session in discovered
+    ]
 
 
 def _build_resume_keyboard(
@@ -382,14 +236,17 @@ async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if window_id
         else get_provider()
     )
-    if not provider.capabilities.supports_resume:
+    if not (
+        provider.capabilities.supports_resume
+        and provider.capabilities.supports_resume_picker
+    ):
         await safe_reply(
             update.message,
-            "\u274c Resume is not supported by the current provider.",
+            "\u274c Resume browsing is not supported by the current provider.",
         )
         return
 
-    sessions = scan_all_sessions()
+    sessions = scan_all_sessions(provider.capabilities.name)
     if not sessions:
         await safe_reply(update.message, "\u274c No past sessions found.")
         return
@@ -401,6 +258,7 @@ async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             "cwd": s.cwd,
             "mtime": s.mtime,
             "msg_count": s.msg_count,
+            "provider_name": s.provider_name,
         }
         for s in sessions
     ]
@@ -436,32 +294,36 @@ async def _create_resume_window(
     thread_id: int,
     session_id: str,
     cwd: str,
+    *,
+    provider_name: str = "",
 ) -> tuple[bool, str, str, str]:
-    """Unbind old window, create a new one with resume args.
+    """Unbind the old window and resume with the selected session's provider.
 
     Returns (success, message, window_name, window_id).
     """
     old_window_id = thread_router.get_window_for_thread(user_id, thread_id)
+    old_view = window_query.view_window(old_window_id) if old_window_id else None
+    approval_mode = old_view.approval_mode if old_view else "normal"
+    provider = (
+        get_provider_for_window(
+            old_window_id or "", provider_name=provider_name or None
+        )
+        if old_window_id or provider_name
+        else get_provider()
+    )
+
+    # Validate the provider-specific session ID before changing thread state.
+    launch_args = provider.make_launch_args(resume_id=session_id)
+    launch_command = resolve_launch_command(
+        provider.capabilities.name, approval_mode=approval_mode
+    )
+
     if old_window_id:
         thread_router.unbind_thread(user_id, thread_id)
         # Lazy: polling_state cycle — same path as recovery_callbacks.
         from ..polling.polling_state import lifecycle_strategy
 
         lifecycle_strategy.clear_dead_notification(user_id, thread_id)
-
-    if old_window_id:
-        old_view = window_query.view_window(old_window_id)
-        provider = get_provider_for_window(
-            old_window_id, provider_name=old_view.provider_name if old_view else None
-        )
-        approval_mode = old_view.approval_mode if old_view else "normal"
-    else:
-        provider = get_provider()
-        approval_mode = "normal"
-    launch_args = provider.make_launch_args(resume_id=session_id)
-    launch_command = resolve_launch_command(
-        provider.capabilities.name, approval_mode=approval_mode
-    )
     success, message, created_wname, created_wid = await tmux_manager.create_window(
         cwd, agent_args=launch_args, launch_command=launch_command
     )
@@ -503,6 +365,14 @@ async def _handle_pick(
     picked = stored[idx]
     session_id = picked["session_id"]
     cwd = picked.get("cwd", "")
+    provider_name = picked.get("provider_name", "")
+    if not isinstance(provider_name, str):
+        provider_name = ""
+    if not provider_name:
+        old_window_id = thread_router.get_window_for_thread(user_id, thread_id)
+        provider_name = (
+            window_query.get_window_provider(old_window_id) if old_window_id else ""
+        ) or ""
 
     if not cwd or not Path(cwd).is_dir():
         await safe_edit(query, "\u274c Project directory no longer exists.")
@@ -511,7 +381,11 @@ async def _handle_pick(
         return
 
     success, message, created_wname, created_wid = await _create_resume_window(
-        user_id, thread_id, session_id, cwd
+        user_id,
+        thread_id,
+        session_id,
+        cwd,
+        provider_name=provider_name,
     )
     if not success:
         await safe_edit(query, f"\u274c {message}")

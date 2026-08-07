@@ -1,3 +1,4 @@
+import json
 import os
 import time
 import pytest
@@ -190,12 +191,43 @@ class TestAntigravityCwdMatching:
         transcript_file = session_dir / "transcript.jsonl"
         proj_dir = tmp_path / "my_project"
         proj_dir.mkdir()
-        transcript_file.write_text(f'{{"content": "file://{proj_dir.resolve()}"}}\n')
+        transcript_file.write_text(f'{{"cwd": "file://{proj_dir.resolve()}"}}\n')
 
         monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
         event = provider.discover_transcript(str(proj_dir), "shared:@0")
         assert event is not None
         assert event.session_id == "test-session-id"
+
+    def test_content_file_uri_is_not_workspace_identity(self, tmp_path, monkeypatch):
+        provider = AntigravityProvider()
+        brain = tmp_path / ".gemini" / "antigravity-cli" / "brain"
+        session_dir = brain / "content-only" / ".system_generated" / "logs"
+        session_dir.mkdir(parents=True)
+        target_dir = tmp_path / "target_proj"
+        target_dir.mkdir()
+        (session_dir / "transcript.jsonl").write_text(
+            json.dumps({"type": "USER_INPUT", "content": f"file://{target_dir}"}) + "\n"
+        )
+
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        assert provider.discover_transcript(str(target_dir), "shared:@0") is None
+
+    def test_nested_content_workspace_is_not_identity(self, tmp_path, monkeypatch):
+        provider = AntigravityProvider()
+        brain = tmp_path / ".gemini" / "antigravity-cli" / "brain"
+        session_dir = brain / "nested-content" / ".system_generated" / "logs"
+        session_dir.mkdir(parents=True)
+        target_dir = tmp_path / "target_proj"
+        target_dir.mkdir()
+        (session_dir / "transcript.jsonl").write_text(
+            json.dumps(
+                {"type": "MODEL", "content": {"directory": f"file://{target_dir}"}}
+            )
+            + "\n"
+        )
+
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        assert provider.discover_transcript(str(target_dir), "shared:@0") is None
 
     def test_discover_transcript_no_match_returns_none(self, tmp_path, monkeypatch):
         provider = AntigravityProvider()
@@ -203,7 +235,7 @@ class TestAntigravityCwdMatching:
         session_dir = brain / "other-session" / ".system_generated" / "logs"
         session_dir.mkdir(parents=True)
         (session_dir / "transcript.jsonl").write_text(
-            f'{{"content": "file://{tmp_path}/other_proj"}}\n'
+            f'{{"cwd": "file://{tmp_path}/other_proj"}}\n'
         )
 
         target_dir = tmp_path / "target_proj"
@@ -225,7 +257,7 @@ class TestAntigravityCwdMatching:
         s1 = brain / "sess-app-other" / ".system_generated" / "logs"
         s1.mkdir(parents=True)
         (s1 / "transcript.jsonl").write_text(
-            f'{{"content": "file://{app_other_dir.resolve()}"}}\n'
+            f'{{"cwd": "file://{app_other_dir.resolve()}"}}\n'
         )
 
         monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
@@ -244,7 +276,7 @@ class TestAntigravityCwdMatching:
         s1 = brain / "sess-subdir" / ".system_generated" / "logs"
         s1.mkdir(parents=True)
         (s1 / "transcript.jsonl").write_text(
-            f'{{"content": "file://{subdir.resolve()}"}}\n'
+            f'{{"cwd": "file://{subdir.resolve()}"}}\n'
         )
 
         monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
@@ -263,12 +295,12 @@ class TestAntigravityCwdMatching:
         s1 = brain / "sess-old" / ".system_generated" / "logs"
         s1.mkdir(parents=True)
         f1 = s1 / "transcript.jsonl"
-        f1.write_text(f'{{"content": "file://{proj.resolve()}"}}\n')
+        f1.write_text(f'{{"cwd": "file://{proj.resolve()}"}}\n')
 
         s2 = brain / "sess-new" / ".system_generated" / "logs"
         s2.mkdir(parents=True)
         f2 = s2 / "transcript.jsonl"
-        f2.write_text(f'{{"content": "file://{proj.resolve()}"}}\n')
+        f2.write_text(f'{{"cwd": "file://{proj.resolve()}"}}\n')
 
         os.utime(f1, (now - 20, now - 20))
         os.utime(f2, (now - 5, now - 5))
@@ -284,7 +316,7 @@ class TestAntigravityCwdMatching:
         session_dir = brain / "test-session-id" / ".system_generated" / "logs"
         session_dir.mkdir(parents=True)
         (session_dir / "transcript.jsonl").write_text(
-            f'{{"content": "file://{tmp_path.resolve()}"}}\n'
+            f'{{"cwd": "file://{tmp_path.resolve()}"}}\n'
         )
 
         monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
@@ -294,45 +326,20 @@ class TestAntigravityCwdMatching:
 
 
 class TestAntigravityResumeAndContinue:
-    def test_resume_command_normal(self, monkeypatch):
-        monkeypatch.delenv("CCGRAM_ANTIGRAVITY_COMMAND", raising=False)
-        monkeypatch.setattr("shutil.which", lambda name: "agy")
+    def test_resume_launch_args(self):
         provider = AntigravityProvider()
-        cmd = provider.get_resume_command(
-            "12345678-1234-1234-1234-1234567890ab", approval_mode="normal"
+        args = provider.make_launch_args(
+            resume_id="12345678-1234-1234-1234-1234567890ab"
         )
-        assert cmd == "agy --conversation 12345678-1234-1234-1234-1234567890ab"
+        assert args == "--conversation 12345678-1234-1234-1234-1234567890ab"
 
-    def test_resume_command_yolo(self, monkeypatch):
-        monkeypatch.delenv("CCGRAM_ANTIGRAVITY_COMMAND", raising=False)
-        monkeypatch.setattr("shutil.which", lambda name: "agy")
-        provider = AntigravityProvider()
-        cmd = provider.get_resume_command(
-            "12345678-1234-1234-1234-1234567890ab", approval_mode="yolo"
-        )
-        assert (
-            cmd
-            == "agy --conversation 12345678-1234-1234-1234-1234567890ab --dangerously-skip-permissions"
-        )
-
-    def test_continue_command_normal(self, monkeypatch):
-        monkeypatch.delenv("CCGRAM_ANTIGRAVITY_COMMAND", raising=False)
-        monkeypatch.setattr("shutil.which", lambda name: "agy")
-        provider = AntigravityProvider()
-        cmd = provider.get_continue_command(approval_mode="normal")
-        assert cmd == "agy --continue"
-
-    def test_continue_command_yolo(self, monkeypatch):
-        monkeypatch.delenv("CCGRAM_ANTIGRAVITY_COMMAND", raising=False)
-        monkeypatch.setattr("shutil.which", lambda name: "agy")
-        provider = AntigravityProvider()
-        cmd = provider.get_continue_command(approval_mode="yolo")
-        assert cmd == "agy --continue --dangerously-skip-permissions"
+    def test_continue_launch_args(self):
+        assert AntigravityProvider().make_launch_args(use_continue=True) == "--continue"
 
     def test_invalid_resume_id(self):
         provider = AntigravityProvider()
-        with pytest.raises(ValueError, match="Invalid session_id"):
-            provider.get_resume_command("invalid/id; rm -rf /")
+        with pytest.raises(ValueError, match="Invalid resume_id"):
+            provider.make_launch_args(resume_id="invalid/id; rm -rf /")
 
 
 class TestAntigravityToolCallParsing:
@@ -495,28 +502,25 @@ class TestAntigravityRecoveryIntegration:
         s1 = brain_dir / "sess-ag-1" / ".system_generated" / "logs"
         s1.mkdir(parents=True)
         (s1 / "transcript.jsonl").write_text(
-            f'{{"content": "file://{tmp_path.resolve()}"}}\n'
+            f'{{"cwd": "file://{tmp_path.resolve()}"}}\n'
         )
 
         monkeypatch.setenv("CCGRAM_ANTIGRAVITY_DATA_DIR", str(brain_dir))
-        sessions = scan_sessions_for_cwd(str(tmp_path))
+        sessions = scan_sessions_for_cwd(str(tmp_path), provider_name="antigravity")
         assert len(sessions) == 1
         assert sessions[0].session_id == "sess-ag-1"
 
     def test_resume_command_scans_antigravity_sessions(self, tmp_path, monkeypatch):
-        from unittest.mock import patch
         from ccgram.handlers.recovery.resume_command import scan_all_sessions
 
         brain_dir = tmp_path / "brain"
         s1 = brain_dir / "sess-ag-2" / ".system_generated" / "logs"
         s1.mkdir(parents=True)
         (s1 / "transcript.jsonl").write_text(
-            f'{{"content": "file://{tmp_path.resolve()}"}}\n'
+            f'{{"cwd": "file://{tmp_path.resolve()}"}}\n'
         )
 
-        with patch("ccgram.handlers.recovery.resume_command.config") as mock_config:
-            mock_config.claude_projects_path = tmp_path / "projects"
-            monkeypatch.setenv("CCGRAM_ANTIGRAVITY_DATA_DIR", str(brain_dir))
-            sessions = scan_all_sessions()
-            assert len(sessions) == 1
-            assert sessions[0].session_id == "sess-ag-2"
+        monkeypatch.setenv("CCGRAM_ANTIGRAVITY_DATA_DIR", str(brain_dir))
+        sessions = scan_all_sessions("antigravity")
+        assert len(sessions) == 1
+        assert sessions[0].session_id == "sess-ag-2"

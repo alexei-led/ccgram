@@ -11,12 +11,14 @@ Transcript format:
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import re
 import shutil
 import time
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 from ccgram.providers._jsonl import JsonlProvider
 from ccgram.providers.base import (
@@ -24,6 +26,7 @@ from ccgram.providers.base import (
     MessageRole,
     ProviderCapabilities,
     RESUME_ID_RE,
+    ResumableSession,
     SessionStartEvent,
 )
 from ccgram.tool_format import format_tool_line
@@ -131,7 +134,10 @@ def get_antigravity_brain_dirs() -> list[Path]:
     """Return ordered list of existing Antigravity brain directories."""
     data_dir_override = os.environ.get("CCGRAM_ANTIGRAVITY_DATA_DIR", "").strip()
     if data_dir_override:
-        path = Path(data_dir_override).expanduser().resolve()
+        try:
+            path = Path(data_dir_override).expanduser().resolve()
+        except OSError, ValueError:
+            return []
         return [path] if path.is_dir() else []
 
     home = Path.home()
@@ -208,47 +214,84 @@ def extract_antigravity_text(entry: dict[str, Any]) -> str:
     return text.strip()
 
 
-_CWD_EXTRACT_RE = re.compile(
-    r'file://(/[^"\s<>\\#\?]+)|'
-    r'"(?:Cwd|DirectoryPath|cwd|workspace|path|Directory)":\s*"\\?"(/[^"\\]+)\\?"?|'
-    r"\[(?:file://)?(/[^\]\s]+)\]",
-    re.IGNORECASE,
-)
+_WORKSPACE_KEYS = frozenset({"cwd", "directorypath", "workspace", "directory"})
+
+
+def _decode_workspace_path(value: str) -> str | None:
+    """Decode one absolute workspace path or local ``file://`` URI."""
+    candidate = value.strip().strip("[]")
+    if candidate.startswith("file://"):
+        parsed = urlparse(candidate)
+        if parsed.scheme != "file" or parsed.netloc not in ("", "localhost"):
+            return None
+        candidate = unquote(parsed.path)
+    if not candidate.startswith("/"):
+        return None
+    return candidate.rstrip("/\\") or "/"
 
 
 def _extract_line_cwd_matches(line: str) -> list[str]:
-    """Extract candidate workspace CWD paths from a transcript line."""
+    """Extract high-confidence workspace paths from one JSONL entry."""
+    try:
+        payload = json.loads(line)
+    except json.JSONDecodeError:
+        return []
+
+    if not isinstance(payload, dict):
+        return []
+
     results: list[str] = []
-    for match in _CWD_EXTRACT_RE.finditer(line):
-        raw_path = next((g for g in match.groups() if g), "")
-        if raw_path:
-            results.append(raw_path.rstrip("/\\"))
+    for key, value in payload.items():
+        if str(key).lower() not in _WORKSPACE_KEYS or not isinstance(value, str):
+            continue
+        decoded = _decode_workspace_path(value)
+        if decoded and decoded not in results:
+            results.append(decoded)
     return results
 
 
+def _resolve_workspace_path(raw_path: str) -> str | None:
+    try:
+        return str(Path(raw_path).expanduser().resolve())
+    except OSError, ValueError:
+        return None
+
+
+def _read_antigravity_workspace_cwd(
+    log_file: Path,
+    *,
+    target_cwd: str | None = None,
+) -> str | None:
+    """Read an exact workspace CWD from the transcript prefix."""
+    resolved_target = _resolve_workspace_path(target_cwd) if target_cwd else None
+    if target_cwd and resolved_target is None:
+        return None
+
+    try:
+        with log_file.open(encoding="utf-8") as transcript:
+            for index, line in enumerate(transcript):
+                if index >= _MAX_CWD_SCAN_LINES:
+                    break
+                for raw_path in _extract_line_cwd_matches(line):
+                    resolved_candidate = _resolve_workspace_path(raw_path)
+                    if resolved_candidate is None:
+                        continue
+                    if resolved_target is not None:
+                        if resolved_candidate == resolved_target:
+                            return resolved_candidate
+                        continue
+                    if Path(resolved_candidate).is_dir():
+                        return resolved_candidate
+    except OSError:
+        return None
+    return None
+
+
 def _match_antigravity_cwd(log_file: Path, target_cwd: str) -> bool:
-    """Check if transcript lines strictly match target_cwd with exact path equality."""
+    """Return whether the transcript declares exactly ``target_cwd``."""
     if not target_cwd:
         return True
-    try:
-        target_path = Path(target_cwd).expanduser()
-        resolved_target = target_path.resolve()
-
-        with open(log_file, encoding="utf-8") as f:
-            for i, line in enumerate(f):
-                if i > _MAX_CWD_SCAN_LINES:
-                    break
-
-                for raw_path in _extract_line_cwd_matches(line):
-                    try:
-                        cand_path = Path(raw_path).expanduser().resolve()
-                        if cand_path == resolved_target:
-                            return True
-                    except ValueError, OSError:
-                        continue
-    except OSError:
-        pass
-    return False
+    return _read_antigravity_workspace_cwd(log_file, target_cwd=target_cwd) is not None
 
 
 def _collect_brain_candidates(
@@ -258,7 +301,11 @@ def _collect_brain_candidates(
     candidates: list[tuple[float, Path, str]] = []
     if not brain_dir.is_dir():
         return candidates
-    for conversation_dir in brain_dir.iterdir():
+    try:
+        conversation_dirs = list(brain_dir.iterdir())
+    except OSError:
+        return candidates
+    for conversation_dir in conversation_dirs:
         if not conversation_dir.is_dir():
             continue
         session_id = conversation_dir.name
@@ -283,9 +330,11 @@ class AntigravityProvider(JsonlProvider):
         launch_command="agy",
         supports_hook=False,
         supports_resume=True,
+        supports_resume_picker=True,
         supports_continue=True,
         supports_structured_transcript=True,
         supports_incremental_read=True,
+        supports_status_snapshot=True,
         uses_pane_title=False,
         uses_pyte_status_parsing=False,
         builtin_commands=tuple(sorted(_ANTIGRAVITY_BUILTINS.keys())),
@@ -325,27 +374,48 @@ class AntigravityProvider(JsonlProvider):
 
         return " ".join(args)
 
-    def get_resume_command(
+    def discover_resumable_sessions(
         self,
-        session_id: str,
-        approval_mode: str = "normal",
-    ) -> str:
-        """Build exact command for resuming an Antigravity session."""
-        if not RESUME_ID_RE.match(session_id):
-            raise ValueError(f"Invalid session_id: {session_id!r}")
-        executable = resolve_antigravity_executable()
-        cmd = f"{executable} --conversation {session_id}"
-        if approval_mode == "yolo":
-            cmd += " --dangerously-skip-permissions"
-        return cmd
+        *,
+        cwd: str | None = None,
+        limit: int | None = None,
+    ) -> list[ResumableSession]:
+        """Discover conversations with a verified project workspace."""
+        resolved_cwd = _resolve_workspace_path(cwd) if cwd else None
+        if cwd and resolved_cwd is None:
+            return []
 
-    def get_continue_command(self, approval_mode: str = "normal") -> str:
-        """Build exact command for continuing recent Antigravity session."""
-        executable = resolve_antigravity_executable()
-        cmd = f"{executable} --continue"
-        if approval_mode == "yolo":
-            cmd += " --dangerously-skip-permissions"
-        return cmd
+        candidates: list[tuple[float, ResumableSession]] = []
+        seen_ids: set[str] = set()
+        for brain_dir in get_antigravity_brain_dirs():
+            for mtime, log_file, session_id in _collect_brain_candidates(
+                brain_dir, 0, time.time()
+            ):
+                if session_id in seen_ids:
+                    continue
+                workspace_cwd = _read_antigravity_workspace_cwd(
+                    log_file,
+                    target_cwd=resolved_cwd,
+                )
+                if workspace_cwd is None:
+                    continue
+                seen_ids.add(session_id)
+                candidates.append(
+                    (
+                        mtime,
+                        ResumableSession(
+                            session_id=session_id,
+                            summary=session_id[:12],
+                            cwd=workspace_cwd,
+                            provider_name="antigravity",
+                            mtime=mtime,
+                        ),
+                    )
+                )
+
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        sessions = [session for _, session in candidates]
+        return sessions[:limit] if limit is not None else sessions
 
     def discover_transcript(
         self,
