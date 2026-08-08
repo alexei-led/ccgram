@@ -332,6 +332,7 @@ class Multiplexer(Protocol):
         workspace_id: str | None,
         window_name: str | None = None,
         agent_args: str = "",
+        initial_input: str | None = None,
     ) -> TopicTargetResult:
         """Create a topic target, pinned to an opaque selected workspace.
 

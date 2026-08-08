@@ -316,6 +316,16 @@ Transcript brain directories are discovered in order:
 
 CCGram parses structured workspace fields and local `file://` URIs, decodes percent escapes, and compares normalized paths (`Path.expanduser().resolve()`) for exact equality. Sibling and descendant paths never match the topic's target working directory (`cwd`).
 
+### Herdr integration
+
+With `CCGRAM_MULTIPLEXER=herdr`, install Herdr's native Antigravity integration before launching `agy`:
+
+```bash
+herdr integration install antigravity-cli
+```
+
+Herdr reports the real conversation ID after the first prompt creates it. CCGram binds the topic only after that report; if no report arrives, it closes the new tab rather than storing a transient pane ID. Restart already-running `agy` sessions after installing the integration.
+
 ### Resume and Continue
 
 - **Resume**: Uses `agy --conversation <session_id>` (plus `--dangerously-skip-permissions` in YOLO mode).

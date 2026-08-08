@@ -191,6 +191,82 @@ class TestAntigravityCwdMatching:
         assert event is not None
         assert event.session_id == "test-session-id"
 
+    def test_discovers_real_cli_layout_from_last_conversations(
+        self, tmp_path, monkeypatch
+    ):
+        provider = AntigravityProvider()
+        data_root = tmp_path / ".gemini" / "antigravity-cli"
+        brain = data_root / "brain"
+        session_id = "a4186fac-9bf9-40d2-b655-02bdd21cf0dd"
+        session_dir = brain / session_id / ".system_generated" / "logs"
+        session_dir.mkdir(parents=True)
+        (session_dir / "transcript.jsonl").write_text(
+            json.dumps(
+                {
+                    "type": "USER_INPUT",
+                    "source": "USER_EXPLICIT",
+                    "content": "hello",
+                }
+            )
+            + "\n"
+        )
+        project = tmp_path / "project"
+        project.mkdir()
+        cache = data_root / "cache" / "last_conversations.json"
+        cache.parent.mkdir()
+        cache.write_text(json.dumps({str(project): session_id}))
+
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        event = provider.discover_transcript(str(project), "shared:@0")
+
+        assert event is not None
+        assert event.session_id == session_id
+        assert event.cwd == str(project.resolve())
+
+    def test_last_conversations_requires_exact_workspace(self, tmp_path, monkeypatch):
+        provider = AntigravityProvider()
+        data_root = tmp_path / ".gemini" / "antigravity-cli"
+        session_id = "a4186fac-9bf9-40d2-b655-02bdd21cf0dd"
+        session_dir = data_root / "brain" / session_id / ".system_generated" / "logs"
+        session_dir.mkdir(parents=True)
+        (session_dir / "transcript.jsonl").write_text('{"type":"USER_INPUT"}\n')
+        project = tmp_path / "app"
+        project.mkdir()
+        sibling = tmp_path / "app-other"
+        sibling.mkdir()
+        cache = data_root / "cache" / "last_conversations.json"
+        cache.parent.mkdir()
+        cache.write_text(json.dumps({str(sibling): session_id}))
+
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        assert provider.discover_transcript(str(project), "shared:@0") is None
+
+    def test_ambiguous_canonical_workspace_mapping_fails_closed(
+        self, tmp_path, monkeypatch
+    ):
+        provider = AntigravityProvider()
+        data_root = tmp_path / ".gemini" / "antigravity-cli"
+        project = tmp_path / "project"
+        project.mkdir()
+        alias = tmp_path / "project-alias"
+        alias.symlink_to(project, target_is_directory=True)
+        session_ids = (
+            "a4186fac-9bf9-40d2-b655-02bdd21cf0dd",
+            "b4186fac-9bf9-40d2-b655-02bdd21cf0dd",
+        )
+        for session_id in session_ids:
+            log_dir = data_root / "brain" / session_id / ".system_generated" / "logs"
+            log_dir.mkdir(parents=True)
+            (log_dir / "transcript.jsonl").write_text('{"type":"USER_INPUT"}\n')
+        cache = data_root / "cache" / "last_conversations.json"
+        cache.parent.mkdir()
+        cache.write_text(
+            json.dumps({str(project): session_ids[0], str(alias): session_ids[1]})
+        )
+
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        assert provider.discover_transcript(str(project), "shared:@0") is None
+
     def test_discover_transcript_requires_cwd(self, tmp_path, monkeypatch):
         provider = AntigravityProvider()
         brain = tmp_path / ".gemini" / "antigravity-cli" / "brain"

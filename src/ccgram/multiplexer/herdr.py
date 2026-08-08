@@ -87,9 +87,9 @@ __all__ = [
 logger = structlog.get_logger()
 
 # Supported herdr socket protocols (``herdr status`` → ``server.protocol``).
-# 14–17 are accepted without warnings. Other versions are attempted with a
-# warning so ccgram remains usable across herdr upgrades and downgrades.
-HERDR_SUPPORTED_PROTOCOLS = frozenset({14, 15, 16, 17})
+# 14–17 and 19 are supported. Other versions are attempted with a warning so
+# ccgram remains usable across herdr upgrades and downgrades.
+HERDR_SUPPORTED_PROTOCOLS = frozenset({14, 15, 16, 17, 19})
 HERDR_PROTOCOL_VERSION = max(HERDR_SUPPORTED_PROTOCOLS)
 
 # Static capability declaration for the herdr backend (design Task 7).
@@ -142,6 +142,32 @@ _STREAM_BACKOFF_MAX = 30.0
 # A live stream has no locator-change notification. Re-prime periodically so a
 # target that moved to another pane receives a fresh per-pane subscription.
 _STREAM_REPRIME_INTERVAL = 5.0
+
+
+def _workspace_cwd_from_panes(
+    workspace: Mapping[str, object], panes: Sequence[Mapping[str, object]]
+) -> str | None:
+    """Return the active tab's sole pane CWD from a protocol-19 snapshot."""
+    workspace_id = workspace.get("workspace_id")
+    if not isinstance(workspace_id, str):
+        return None
+    active_tab_id = workspace.get("active_tab_id")
+    candidates = [
+        pane
+        for pane in panes
+        if pane.get("workspace_id") == workspace_id
+        and (
+            pane.get("tab_id") == active_tab_id
+            if isinstance(active_tab_id, str)
+            else bool(pane.get("focused"))
+        )
+    ]
+    if len(candidates) != 1:
+        return None
+    candidate_cwd = candidates[0].get("foreground_cwd")
+    if not isinstance(candidate_cwd, str):
+        candidate_cwd = candidates[0].get("cwd")
+    return candidate_cwd if isinstance(candidate_cwd, str) else None
 
 
 class HerdrError(RuntimeError):
@@ -431,7 +457,11 @@ class HerdrManager:
         is_supported_protocol = (
             is_supported_protocol and proto in HERDR_SUPPORTED_PROTOCOLS
         )
-        if not is_supported_protocol or cli_server_compatible is False:
+        if cli_server_compatible is False:
+            raise HerdrProtocolError(
+                "Herdr client and server protocols are incompatible; restart Herdr"
+            )
+        if not is_supported_protocol:
             logger.warning(
                 "herdr protocol is unverified; continuing",
                 server_protocol=proto,
@@ -879,6 +909,7 @@ class HerdrManager:
         workspaces = result.get("workspaces") if result else None
         if not isinstance(workspaces, list):
             return []
+        panes: list[Mapping[str, object]] | None = None
         refs: list[WorkspaceRef] = []
         for workspace in workspaces:
             if not isinstance(workspace, Mapping):
@@ -890,9 +921,20 @@ class HerdrManager:
                 isinstance(workspace_id, str)
                 and workspace_id
                 and isinstance(label, str)
-                and isinstance(cwd, str)
             ):
                 return []
+            if not isinstance(cwd, str):
+                if panes is None:
+                    pane_result = await self._call_json(["pane", "list"])
+                    raw_panes = pane_result.get("panes") if pane_result else None
+                    if not isinstance(raw_panes, list) or not all(
+                        isinstance(pane, Mapping) for pane in raw_panes
+                    ):
+                        return []
+                    panes = raw_panes
+                cwd = _workspace_cwd_from_panes(workspace, panes)
+                if cwd is None:
+                    return []
             refs.append(WorkspaceRef(workspace_id, label, cwd))
         return refs
 
@@ -936,6 +978,23 @@ class HerdrManager:
             target.target_id,
         )
 
+    async def _await_agent_on_pane(self, pane_id: str) -> None:
+        """Wait until Herdr identifies the newly launched agent pane."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _CREATED_SESSION_DISCOVERY_TIMEOUT_SECONDS
+        while True:
+            result = await self._call_json(["agent", "list"])
+            agents = result.get("agents") if result else None
+            if isinstance(agents, list) and any(
+                isinstance(agent, Mapping) and agent.get("pane_id") == pane_id
+                for agent in agents
+            ):
+                return
+            if loop.time() >= deadline:
+                break
+            await asyncio.sleep(_CREATED_SESSION_POLL_INTERVAL_SECONDS)
+        raise HerdrUnresolvedTargetError("new Herdr pane did not identify an agent")
+
     async def _await_created_session_target(
         self,
         *,
@@ -973,6 +1032,7 @@ class HerdrManager:
         workspace_id: str | None,
         window_name: str | None = None,
         agent_args: str = "",
+        initial_input: str | None = None,
     ) -> TopicTargetResult:
         """Create an agent tab and return its guarded session target.
 
@@ -1033,6 +1093,10 @@ class HerdrManager:
                 command = f"{launch_command} {agent_args}".strip()
                 if not await self._call_ok(["pane", "run", pane_id, command]):
                     raise HerdrError("Failed to start agent in Herdr tab")
+            if initial_input is not None:
+                await self._await_agent_on_pane(pane_id)
+                if not await self._call_ok(["pane", "run", pane_id, initial_input]):
+                    raise HerdrError("Failed to send initial agent message")
             record = await self._await_created_session_target(
                 tab_id=tab_id, pane_id=pane_id, workspace_id=workspace_id
             )

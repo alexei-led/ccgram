@@ -133,9 +133,11 @@ async def _create_topic_window(
     selected_path: str,
     launch_command: str | None,
     chosen_workspace_id: str | None,
+    provider_name: str,
+    initial_input: str | None,
     context: ContextTypes.DEFAULT_TYPE,
-) -> tuple[bool, str, str, str]:
-    """Create the topic's window, returning ``(success, message, name, id)``.
+) -> tuple[bool, str, str, str, bool]:
+    """Create the topic's window, returning ``(success, message, name, id, sent)``.
 
     Native worktree delegation (herdr): when the flow carries a pending worktree
     intent, one ``worktree create`` makes the checkout + grouped workspace + the
@@ -150,35 +152,48 @@ async def _create_topic_window(
         # The native worktree API cannot pin a preselected workspace.  Creating
         # into an implicit workspace would violate the user's selection.
         if chosen_workspace_id:
-            return False, "Selected workspace cannot create a native worktree", "", ""
-        return await tmux_manager.create_worktree_window(
+            return (
+                False,
+                "Selected workspace cannot create a native worktree",
+                "",
+                "",
+                False,
+            )
+        success, message, name, window_id = await tmux_manager.create_worktree_window(
             wt_repo,
             wt_path,
             wt_branch,
             window_name=Path(wt_path).name,
             launch_command=launch_command,
         )
+        return success, message, name, window_id, False
     # Tmux preserves its long-standing creation behavior. Herdr's native
     # agent-status capability selects the guarded-session creation transaction.
     if tmux_manager.capabilities.native_agent_status is not True:
-        return await tmux_manager.create_window(
+        success, message, name, window_id = await tmux_manager.create_window(
             selected_path,
             launch_command=launch_command,
             workspace_id=chosen_workspace_id,
         )
+        return success, message, name, window_id, False
     try:
+        send_initial_input = (
+            provider_name == "antigravity" and initial_input is not None
+        )
         target = await tmux_manager.create_topic_target(
             selected_path,
             launch_command=launch_command,
             workspace_id=chosen_workspace_id,
+            initial_input=initial_input if send_initial_input else None,
         )
     except RuntimeError as exc:
-        return False, str(exc), "", ""
+        return False, str(exc), "", "", False
     return (
         True,
         f"Created topic target '{target.label}'",
         target.label,
         target.target_id,
+        send_initial_input,
     )
 
 
@@ -260,8 +275,19 @@ async def launch_window(  # noqa: PLR0912, PLR0915, C901
         context.user_data.get(PENDING_WORKSPACE_ID) if context.user_data else None
     ) or None
 
-    success, message, created_wname, created_wid = await _create_topic_window(
-        selected_path, launch_command, chosen_workspace_id, context
+    (
+        success,
+        message,
+        created_wname,
+        created_wid,
+        initial_input_sent,
+    ) = await _create_topic_window(
+        selected_path,
+        launch_command,
+        chosen_workspace_id,
+        provider_name,
+        request.pending_text,
+        context,
     )
     if not success:
         await _abort_topic_creation(query, message, context)
@@ -386,7 +412,7 @@ async def launch_window(  # noqa: PLR0912, PLR0915, C901
         f"✅ {message}\n\nBound to this topic. Send messages here.",
     )
 
-    pending_text = request.pending_text
+    pending_text = None if initial_input_sent else request.pending_text
     if pending_text:
         logger.debug(
             "Forwarding pending text to window %s (len=%d)",

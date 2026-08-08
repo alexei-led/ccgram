@@ -25,6 +25,7 @@ from ccgram.multiplexer.herdr import (
     HerdrError,
     HerdrMalformedRecordError,
     HerdrManager,
+    HerdrProtocolError,
     HerdrSessionComposite,
     HerdrUnresolvedTargetError,
     canonical_session_bytes,
@@ -552,6 +553,32 @@ async def test_create_topic_target_uses_selected_workspace_and_returns_session_t
     ]
 
 
+async def test_create_topic_target_sends_initial_input_before_waiting_for_session(
+    tmp_path: Path,
+) -> None:
+    fake = (
+        FakeHerdr()
+        .on("workspace", "list", out=_workspace("selected", tmp_path))
+        .on("tab", "create", out=_created())
+        .on("pane", "run", out=_result(type="ok"))
+        .on(
+            "agent",
+            "list",
+            out=_agents(
+                _agent(pane_id="w9:p1", tab_id="w9:t1", workspace_id="selected")
+            ),
+        )
+    )
+    target = await _manager(fake).create_topic_target(
+        str(tmp_path),
+        launch_command="agy",
+        workspace_id="selected",
+        initial_input="hello",
+    )
+    assert target.target_id == _target()
+    assert ["pane", "run", "w9:p1", "hello"] in fake.calls
+
+
 async def test_created_session_discovery_waits_for_delayed_pi_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -958,7 +985,7 @@ async def test_subprocess_run_maps_timeout(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 async def test_ensure_session_accepts_protocol_and_rejects_unavailable_server() -> None:
-    assert frozenset({14, 15, 16, 17}) == HERDR_SUPPORTED_PROTOCOLS
+    assert frozenset({14, 15, 16, 17, 19}) == HERDR_SUPPORTED_PROTOCOLS
     good = json.dumps(
         {
             "server": {
@@ -969,5 +996,10 @@ async def test_ensure_session_accepts_protocol_and_rejects_unavailable_server() 
         }
     )
     await _manager(FakeHerdr().on("status", out=good)).ensure_session()
+    incompatible = json.dumps(
+        {"server": {"running": True, "protocol": 17, "compatible": False}}
+    )
+    with pytest.raises(HerdrProtocolError, match="restart Herdr"):
+        await _manager(FakeHerdr().on("status", out=incompatible)).ensure_session()
     with pytest.raises(HerdrError):
         await _manager(FakeHerdr().on("status", out="not json")).ensure_session()

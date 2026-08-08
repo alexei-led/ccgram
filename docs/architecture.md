@@ -4,7 +4,7 @@ Generated from code state 2026-05-21.
 
 ## Herdr compatibility
 
-The Herdr adapter accepts socket protocols 14–17 without warnings and continues best-effort for other versions. Pi requires `herdr integration install pi`; agents must be started or restarted after installation to load the integration and publish their `agent_session` identity.
+The Herdr adapter accepts socket protocols 14–17 and 19 without warnings and continues best-effort for other versions. Pi requires `herdr integration install pi`; Antigravity requires `herdr integration install antigravity-cli`. Agents must be started or restarted after installation to load the integration and publish their `agent_session` identity. Antigravity reports its identity after the first prompt creates a conversation.
 
 ## System Overview
 
