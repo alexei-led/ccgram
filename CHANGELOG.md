@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.5.0] - 2026-08-08
+
+### Added
+
+- Add support for Google Antigravity CLI (`agy`) sessions.
+- Add Antigravity session binding for Herdr protocol 19.
+- Add Antigravity resume support from the Telegram session picker.
+
+### Fixed
+
+- Prevent a topic-creation race when a new Herdr target starts.
+- Read a workspace path from a Herdr pane when the workspace record has no path.
+
 ## [4.3.12] - 2026-08-02
 
 ### Fixed
