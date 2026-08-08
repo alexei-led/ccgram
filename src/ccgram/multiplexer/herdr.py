@@ -989,23 +989,6 @@ class HerdrManager:
             target.target_id,
         )
 
-    async def _await_agent_on_pane(self, pane_id: str) -> None:
-        """Wait until Herdr identifies the newly launched agent pane."""
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + _CREATED_SESSION_DISCOVERY_TIMEOUT_SECONDS
-        while True:
-            result = await self._call_json(["agent", "list"])
-            agents = result.get("agents") if result else None
-            if isinstance(agents, list) and any(
-                isinstance(agent, Mapping) and agent.get("pane_id") == pane_id
-                for agent in agents
-            ):
-                return
-            if loop.time() >= deadline:
-                break
-            await asyncio.sleep(_CREATED_SESSION_POLL_INTERVAL_SECONDS)
-        raise HerdrUnresolvedTargetError("new Herdr pane did not identify an agent")
-
     async def _await_created_session_target(
         self,
         *,

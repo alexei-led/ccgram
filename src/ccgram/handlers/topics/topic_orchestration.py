@@ -12,7 +12,8 @@ Core responsibilities:
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
+from collections.abc import Iterator
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 import time
 from pathlib import Path
@@ -144,16 +145,15 @@ _pending_creation_transactions: set[object] = set()
 _PENDING_CREATION_TTL_S = 30.0
 
 
-def begin_pending_creation_transaction() -> object:
+@contextmanager
+def pending_creation_transaction() -> Iterator[None]:
     """Block auto-adoption until a new target has a durable ID."""
     token = object()
     _pending_creation_transactions.add(token)
-    return token
-
-
-def end_pending_creation_transaction(token: object) -> None:
-    """Release a creation transaction (idempotent)."""
-    _pending_creation_transactions.discard(token)
+    try:
+        yield
+    finally:
+        _pending_creation_transactions.discard(token)
 
 
 def register_pending_creation(window_id: str) -> None:

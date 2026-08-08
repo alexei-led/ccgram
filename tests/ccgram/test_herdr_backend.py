@@ -577,6 +577,40 @@ def test_workspace_cwd_prefers_stable_pane_cwd_and_accepts_matching_split_panes(
     assert _workspace_cwd_from_panes(workspace, panes) is None
 
 
+async def test_list_workspaces_resolves_cwdless_workspaces_from_panes_once() -> None:
+    fake = (
+        FakeHerdr()
+        .on(
+            "workspace",
+            "list",
+            out=_result(
+                workspaces=[
+                    {"workspace_id": "w1", "label": "one", "active_tab_id": "w1:t1"},
+                    {"workspace_id": "w2", "label": "two", "active_tab_id": "w2:t1"},
+                ]
+            ),
+        )
+        .on(
+            "pane",
+            "list",
+            out=_result(
+                panes=[
+                    {"workspace_id": "w1", "tab_id": "w1:t1", "cwd": "/one"},
+                    {"workspace_id": "w2", "tab_id": "w2:t1", "cwd": "/two"},
+                ]
+            ),
+        )
+    )
+
+    workspaces = await _manager(fake).list_workspaces()
+
+    assert [(item.workspace_id, item.label, item.cwd) for item in workspaces] == [
+        ("w1", "one", "/one"),
+        ("w2", "two", "/two"),
+    ]
+    assert fake.calls == [["workspace", "list"], ["pane", "list"]]
+
+
 async def test_create_topic_target_does_not_send_initial_input(
     tmp_path: Path,
 ) -> None:

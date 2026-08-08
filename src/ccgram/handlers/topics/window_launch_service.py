@@ -4,9 +4,8 @@ Extracts the launch sequence from directory_callbacks._create_window_and_bind
 into a self-contained service module.  Callers build a ``WindowLaunchRequest``
 and call ``launch_window``; the result is a ``WindowLaunchResult``.
 
-CRITICAL ordering invariant (MC-2967):
-  create_window() → register_pending_creation(window_id)
-  must have NO await between them.  See the inline comment for full context.
+Creation is protected by a transaction guard until the durable target is
+registered. This keeps the SessionMonitor from adopting it before binding.
 """
 
 from __future__ import annotations
@@ -266,8 +265,7 @@ async def launch_window(  # noqa: PLR0912, PLR0915, C901
         context.user_data.get(PENDING_WORKSPACE_ID) if context.user_data else None
     ) or None
 
-    creation_transaction = topic_orchestration.begin_pending_creation_transaction()
-    try:
+    with topic_orchestration.pending_creation_transaction():
         (
             success,
             message,
@@ -281,8 +279,6 @@ async def launch_window(  # noqa: PLR0912, PLR0915, C901
         )
         if success:
             topic_orchestration.register_pending_creation(created_wid)
-    finally:
-        topic_orchestration.end_pending_creation_transaction(creation_transaction)
 
     if not success:
         await _abort_topic_creation(query, message, context)

@@ -221,6 +221,7 @@ class TestLaunchWindowSuccess:
 
         mock_mux.create_topic_target.assert_awaited_once()
         mock_tr.bind_thread.assert_called_once()
+        mock_orch.pending_creation_transaction.assert_called_once_with()
         mock_orch.register_pending_creation.assert_called_once_with("@5")
         mock_orch.clear_pending_creation.assert_called_once_with("@5")
         mock_edit.assert_awaited_once()

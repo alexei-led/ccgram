@@ -18,9 +18,8 @@ from ccgram.handlers.topics.topic_orchestration import (  # noqa: E501
     _is_pending_user_creation,
     _pending_creation_transactions,
     _pending_user_creations,
-    begin_pending_creation_transaction,
     clear_pending_creation,
-    end_pending_creation_transaction,
+    pending_creation_transaction,
     handle_new_window,
     register_pending_creation,
 )
@@ -79,9 +78,14 @@ def test_clear_pending_creation_is_idempotent():
 
 
 def test_creation_transaction_defers_unbound_window_adoption():
-    token = begin_pending_creation_transaction()
-    assert _is_pending_user_creation("unrelated-window")
-    end_pending_creation_transaction(token)
+    with pending_creation_transaction():
+        assert _is_pending_user_creation("unrelated-window")
+    assert not _is_pending_user_creation("unrelated-window")
+
+
+def test_creation_transaction_releases_on_exception():
+    with pytest.raises(RuntimeError, match="launch failed"), pending_creation_transaction():
+        raise RuntimeError("launch failed")
     assert not _is_pending_user_creation("unrelated-window")
 
 
