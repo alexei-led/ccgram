@@ -28,6 +28,7 @@ from ccgram.multiplexer.herdr import (
     HerdrProtocolError,
     HerdrSessionComposite,
     HerdrUnresolvedTargetError,
+    _workspace_cwd_from_panes,
     canonical_session_bytes,
     herdr_session_target_id,
 )
@@ -553,7 +554,30 @@ async def test_create_topic_target_uses_selected_workspace_and_returns_session_t
     ]
 
 
-async def test_create_topic_target_sends_initial_input_before_waiting_for_session(
+def test_workspace_cwd_prefers_stable_pane_cwd_and_accepts_matching_split_panes() -> (
+    None
+):
+    workspace = {"workspace_id": "w2", "active_tab_id": "w2:t1"}
+    panes = [
+        {
+            "workspace_id": "w2",
+            "tab_id": "w2:t1",
+            "cwd": "/repo",
+            "foreground_cwd": "/repo/.venv/bin",
+        },
+        {
+            "workspace_id": "w2",
+            "tab_id": "w2:t1",
+            "cwd": "/repo",
+            "foreground_cwd": "/repo/.venv/bin",
+        },
+    ]
+    assert _workspace_cwd_from_panes(workspace, panes) == "/repo"
+    panes[1].pop("cwd")
+    assert _workspace_cwd_from_panes(workspace, panes) is None
+
+
+async def test_create_topic_target_does_not_send_initial_input(
     tmp_path: Path,
 ) -> None:
     fake = (
@@ -573,10 +597,9 @@ async def test_create_topic_target_sends_initial_input_before_waiting_for_sessio
         str(tmp_path),
         launch_command="agy",
         workspace_id="selected",
-        initial_input="hello",
     )
     assert target.target_id == _target()
-    assert ["pane", "run", "w9:p1", "hello"] in fake.calls
+    assert ["pane", "run", "w9:p1", "hello"] not in fake.calls
 
 
 async def test_created_session_discovery_waits_for_delayed_pi_report(

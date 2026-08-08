@@ -147,7 +147,7 @@ _STREAM_REPRIME_INTERVAL = 5.0
 def _workspace_cwd_from_panes(
     workspace: Mapping[str, object], panes: Sequence[Mapping[str, object]]
 ) -> str | None:
-    """Return the active tab's sole pane CWD from a protocol-19 snapshot."""
+    """Return the active tab's shared stable CWD from a protocol-19 snapshot."""
     workspace_id = workspace.get("workspace_id")
     if not isinstance(workspace_id, str):
         return None
@@ -162,12 +162,23 @@ def _workspace_cwd_from_panes(
             else bool(pane.get("focused"))
         )
     ]
-    if len(candidates) != 1:
-        return None
-    candidate_cwd = candidates[0].get("foreground_cwd")
-    if not isinstance(candidate_cwd, str):
-        candidate_cwd = candidates[0].get("cwd")
-    return candidate_cwd if isinstance(candidate_cwd, str) else None
+
+    def shared_cwd(field: str) -> str | None:
+        cwd: str | None = None
+        for pane in candidates:
+            value = pane.get(field)
+            if not isinstance(value, str) or not value:
+                return None
+            if cwd is None:
+                cwd = value
+            elif cwd != value:
+                return None
+        return cwd
+
+    has_stable_cwd = any(
+        isinstance(pane.get("cwd"), str) and pane.get("cwd") for pane in candidates
+    )
+    return shared_cwd("cwd") if has_stable_cwd else shared_cwd("foreground_cwd")
 
 
 class HerdrError(RuntimeError):
@@ -1032,7 +1043,6 @@ class HerdrManager:
         workspace_id: str | None,
         window_name: str | None = None,
         agent_args: str = "",
-        initial_input: str | None = None,
     ) -> TopicTargetResult:
         """Create an agent tab and return its guarded session target.
 
@@ -1093,10 +1103,6 @@ class HerdrManager:
                 command = f"{launch_command} {agent_args}".strip()
                 if not await self._call_ok(["pane", "run", pane_id, command]):
                     raise HerdrError("Failed to start agent in Herdr tab")
-            if initial_input is not None:
-                await self._await_agent_on_pane(pane_id)
-                if not await self._call_ok(["pane", "run", pane_id, initial_input]):
-                    raise HerdrError("Failed to send initial agent message")
             record = await self._await_created_session_target(
                 tab_id=tab_id, pane_id=pane_id, workspace_id=workspace_id
             )
