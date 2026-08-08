@@ -84,7 +84,10 @@ def test_creation_transaction_defers_unbound_window_adoption():
 
 
 def test_creation_transaction_releases_on_exception():
-    with pytest.raises(RuntimeError, match="launch failed"), pending_creation_transaction():
+    with (
+        pytest.raises(RuntimeError, match="launch failed"),
+        pending_creation_transaction(),
+    ):
         raise RuntimeError("launch failed")
     assert not _is_pending_user_creation("unrelated-window")
 
