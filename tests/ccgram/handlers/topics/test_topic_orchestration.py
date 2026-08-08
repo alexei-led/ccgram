@@ -208,6 +208,44 @@ class TestHandleNewWindow:
             await handle_new_window(event, bot)
         bot.create_forum_topic.assert_not_called()
 
+    async def test_rebinds_terminal_fallback_topic_when_session_target_appears(
+        self, _mock_tmux: MagicMock
+    ) -> None:
+        fallback_target = "herdr-session-v1-terminal-fallback"
+        session_target = "herdr-session-v1-stable-session"
+        event = _make_event(window_id=session_target, window_name="project")
+        client = AsyncMock()
+
+        with (
+            patch("ccgram.handlers.topics.topic_orchestration.thread_router") as router,
+            patch(
+                "ccgram.handlers.topics.topic_orchestration._auto_detect_provider",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "ccgram.handlers.topics.topic_orchestration.probe_topic_exists",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+        ):
+            router.has_window.return_value = False
+            router.iter_thread_bindings.return_value = [(7, 70, fallback_target)]
+            router.get_display_name.return_value = "project"
+            router.resolve_chat_id.return_value = -1007
+            _mock_tmux.find_window_by_id.return_value = None
+
+            rebound = await handle_new_window(event, client)
+
+        assert rebound is True
+        router.bind_thread.assert_called_once_with(
+            7,
+            70,
+            session_target,
+            window_name="project",
+            chat_id=-1007,
+        )
+        client.create_forum_topic.assert_not_called()
+
     async def test_creates_topic(self):
         event = NewWindowEvent(
             window_id="@5", session_id="s2", window_name="myproject", cwd="/tmp"

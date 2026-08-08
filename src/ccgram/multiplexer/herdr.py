@@ -7,10 +7,12 @@ Unix-socket JSON-RPC CLI. Every herdr JSON shape (``pane_info`` / ``pane_list``
 only the neutral value types from ``multiplexer.base`` (design "Module map":
 herdr.py is adapter, anti-corruption).
 
-Identity mapping: Herdr ``agent.list`` is the sole identity source.  One
-complete agent-session composite becomes an opaque durable target; tab, pane,
-workspace, and terminal identifiers are short-lived locators used only after
-a fresh guard authorizes one action.
+Identity mapping: Herdr ``agent.list`` is the sole identity source. A complete
+agent-session composite becomes an opaque durable target. Detected agents that
+do not publish ``agent_session`` fall back to an opaque target derived from
+their current terminal ID, so they can receive a Telegram topic across pane and
+tab re-layout; that fallback is reconciled after a Herdr restart. Raw locators
+are used only after a fresh guard authorizes one action.
 
 The backend shells out to the ``herdr`` CLI (which the design explicitly allows
 as an alternative to talking the socket directly); the socket path is passed
@@ -207,7 +209,7 @@ class HerdrAmbiguousTargetError(HerdrError):
 
 @dataclass(frozen=True)
 class HerdrSessionComposite:
-    """The complete Herdr identity independent of its current locator."""
+    """The complete input for an opaque Herdr target identity."""
 
     source: str
     agent: str
@@ -217,7 +219,7 @@ class HerdrSessionComposite:
 
 @dataclass(frozen=True)
 class HerdrLiveRecord:
-    """One sessionful agent and its short-lived current Herdr locator."""
+    """One detected agent and its short-lived current Herdr locator."""
 
     target_id: str
     composite: HerdrSessionComposite
@@ -232,7 +234,7 @@ def _session_field(value: object) -> str | None:
 
 
 def _session_composite(record: Mapping[str, object]) -> HerdrSessionComposite | None:
-    """Parse one complete ``agent_session`` value, ignoring sessionless agents."""
+    """Parse one complete ``agent_session`` value, if Herdr published one."""
     session = record.get("agent_session")
     if session is None:
         return None
@@ -277,12 +279,20 @@ def herdr_session_target_id(composite: HerdrSessionComposite) -> str:
 
 def _parse_live_record(record: Mapping[str, object]) -> HerdrLiveRecord | None:
     composite = _session_composite(record)
-    if composite is None:
-        return None
     locators = {
         key: _session_field(record.get(key))
         for key in ("terminal_id", "pane_id", "tab_id", "workspace_id")
     }
+    if composite is None:
+        agent = _session_field(record.get("agent"))
+        if agent is None:
+            return None
+        composite = HerdrSessionComposite(
+            source="herdr",
+            agent=agent,
+            kind="terminal",
+            value=locators["terminal_id"] or "",
+        )
     if any(value is None for value in locators.values()):
         raise HerdrMalformedRecordError(
             "agent.list contains an incomplete live locator"
@@ -483,8 +493,9 @@ class HerdrManager:
     async def _agent_list_snapshot(self) -> list[HerdrLiveRecord]:
         """Read and parse one fresh ``agent.list`` snapshot.
 
-        Sessionless records are deliberately omitted. No focus, title, name,
-        directory, screen, or layout field participates in this snapshot.
+        Sessionless detected agents fall back to an opaque terminal-derived target.
+        No focus, title, name, directory, screen, or layout field participates
+        in this snapshot.
         """
         result = await self._call_json(["agent", "list"])
         if result is None:
@@ -507,8 +518,8 @@ class HerdrManager:
         """Return a guarded opaque target for one ``agent.list`` record.
 
         Hook-side discovery uses this parser after it has established a unique
-        live locator match. Malformed, sessionless, or incomplete records do
-        not yield an identity.
+        live locator match. Malformed, non-agent, or incomplete records do not
+        yield an identity.
         """
         try:
             live = _parse_live_record(record)
@@ -580,7 +591,7 @@ class HerdrManager:
         return labels
 
     async def list_windows(self) -> list[WindowRef]:
-        """List reconcilable sessionful agents keyed by opaque session targets."""
+        """List reconcilable detected agents keyed by opaque session targets."""
         return await self.list_windows_for_reconciliation() or []
 
     async def list_windows_for_reconciliation(self) -> list[WindowRef] | None:

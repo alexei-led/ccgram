@@ -93,6 +93,12 @@ def _target(value: str = "session-a", agent: str = "claude") -> str:
     return herdr_session_target_id(HerdrSessionComposite("herdr", agent, "id", value))
 
 
+def _sessionless_target(terminal_id: str, agent: str = "claude") -> str:
+    return herdr_session_target_id(
+        HerdrSessionComposite("herdr", agent, "terminal", terminal_id)
+    )
+
+
 def _live_fake(*records: Mapping[str, object]) -> FakeHerdr:
     workspaces = {
         str(record.get("workspace_id", "w2")): {
@@ -140,19 +146,62 @@ def test_session_target_digest_is_deterministic_and_private() -> None:
     assert canonical_session_bytes(composite).startswith(b'{"source":"herdr"')
 
 
-async def test_list_windows_exposes_only_session_targets() -> None:
+async def test_list_windows_exposes_all_detected_agent_targets() -> None:
     live = _agent(pane_id="w2:p1", tab_id="w2:t9", value="one")
     sessionless = {
+        "terminal_id": "term-b",
         "pane_id": "w2:p2",
         "tab_id": "w2:t9",
         "workspace_id": "w2",
         "agent": "claude",
     }
-    windows = await _manager(_live_fake(live, sessionless)).list_windows()
+    bare_shell = {
+        "terminal_id": "term-c",
+        "pane_id": "w2:p3",
+        "tab_id": "w2:t9",
+        "workspace_id": "w2",
+    }
+    windows = await _manager(_live_fake(live, sessionless, bare_shell)).list_windows()
     assert [
         (win.window_id, win.window_name, win.pane_current_command) for win in windows
-    ] == [(_target("one"), "workspace ▸ tab", "claude")]
+    ] == [
+        (_target("one"), "workspace ▸ tab", "claude"),
+        (_sessionless_target("term-b"), "workspace ▸ tab", "claude"),
+    ]
     assert all("w2:" not in win.window_id for win in windows)
+
+
+async def test_sessionless_agent_target_resolves_through_fresh_snapshot() -> None:
+    sessionless = {
+        "terminal_id": "term-b",
+        "pane_id": "w2:p2",
+        "tab_id": "w2:t9",
+        "workspace_id": "w2",
+        "agent": "claude",
+    }
+    found = await _manager(_live_fake(sessionless)).find_window_by_id(
+        _sessionless_target("term-b")
+    )
+    assert found is not None
+    assert found.window_id == _sessionless_target("term-b")
+    assert found.window_name == "workspace ▸ tab"
+
+
+async def test_sessionless_agent_target_survives_pane_compaction() -> None:
+    before = {
+        "terminal_id": "term-b",
+        "pane_id": "w2:p8",
+        "tab_id": "w2:t9",
+        "workspace_id": "w2",
+        "agent": "claude",
+    }
+    after = {**before, "pane_id": "w1:p2", "tab_id": "w1:t3", "workspace_id": "w1"}
+
+    before_window = (await _manager(_live_fake(before)).list_windows())[0]
+    after_window = (await _manager(_live_fake(after)).list_windows())[0]
+
+    assert before_window.window_id == _sessionless_target("term-b")
+    assert after_window.window_id == before_window.window_id
 
 
 async def test_find_window_requires_a_fresh_matching_session_target() -> None:

@@ -4,11 +4,11 @@ Consumes the multiplexer seam; it is **not** part of the ``Multiplexer``
 contract (which stops at opaque ``window_id``). It defines how a backend's
 windows/tabs project onto ccgram's flat ``group → topic`` structure.
 
-The design maps each reported Herdr agent session to one Telegram topic. Herdr
-``WindowRef.window_id`` is its opaque durable session target, not a tab, pane,
-or other locator. The discovery filter admits only those sessionful agent
-records; a bare shell record does not become a topic. tmux behavior remains
-unchanged.
+The design maps each reported Herdr agent to one Telegram topic. Herdr
+``WindowRef.window_id`` is an opaque target, never a raw tab, pane, or other
+locator. A published agent session has a durable target; a sessionless detected
+agent falls back to a terminal-derived target and is reconciled after restart. A
+bare shell record does not become a topic. tmux behavior remains unchanged.
 
 Lives in ``multiplexer/`` (not ``handlers/``) so both the core session monitor
 and the topic handlers can import it without crossing the F1 boundary, and
@@ -55,9 +55,9 @@ def is_agent_topic_window(window: WindowRef, caps: MultiplexerCapabilities) -> b
 
     * Backends without native agent status (tmux): every window is eligible,
       so the historical auto-topic behavior is unchanged.
-    * Backends with native agent status (herdr): only sessionful agent records
-      qualify. The adapter exposes those with a versioned opaque target and an
-      agent label; a tab/pane locator or bare shell record is rejected.
+    * Backends with native agent status (herdr): every detected agent record
+      qualifies. The adapter exposes each with a versioned opaque target and an
+      agent label; a raw tab/pane locator or bare shell record is rejected.
     """
     if not caps.native_agent_status:
         return True
