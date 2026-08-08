@@ -221,6 +221,7 @@ class TestLaunchWindowSuccess:
 
         mock_mux.create_topic_target.assert_awaited_once()
         mock_tr.bind_thread.assert_called_once()
+        mock_orch.pending_creation_transaction.assert_called_once_with()
         mock_orch.register_pending_creation.assert_called_once_with("@5")
         mock_orch.clear_pending_creation.assert_called_once_with("@5")
         mock_edit.assert_awaited_once()
@@ -495,8 +496,10 @@ class TestLaunchWindowSuccess:
         mock_edit.assert_awaited_once()
         assert "❌" in mock_edit.call_args[0][1]
 
-    async def test_pending_text_forwarded_via_send_to_window(self, tmp_path) -> None:
-        """PENDING_THREAD_TEXT is forwarded to the new window after bind."""
+    async def test_antigravity_pending_text_is_forwarded_after_binding(
+        self, tmp_path
+    ) -> None:
+        """Antigravity's first prompt uses the bound-window send path."""
         user_data = {
             PENDING_THREAD_ID: 42,
             PENDING_THREAD_TEXT: "hello agent",
@@ -526,7 +529,7 @@ class TestLaunchWindowSuccess:
             patch(
                 "ccgram.handlers.topics.window_launch_service.provider_registry"
             ) as mock_reg,
-            patch("ccgram.providers.resolve_launch_command", return_value="claude"),
+            patch("ccgram.providers.resolve_launch_command", return_value="agy"),
             patch(
                 "ccgram.handlers.topics.window_launch_service.send_telegram_to_window",
                 new_callable=AsyncMock,
@@ -559,13 +562,16 @@ class TestLaunchWindowSuccess:
                 WindowLaunchRequest(
                     user_id=100,
                     thread_id=42,
-                    provider_name="claude",
+                    provider_name="antigravity",
                     cwd=str(tmp_path),
                     mode="normal",
                     pending_text="hello agent",
                 ),
             )
 
+        mock_mux.create_topic_target.assert_awaited_once_with(
+            str(tmp_path), launch_command="agy", workspace_id=None
+        )
         mock_send.assert_awaited_once_with(100, "@5", 42, "hello agent", ANY)
         # Keys consumed after forwarding
         assert PENDING_THREAD_TEXT not in user_data

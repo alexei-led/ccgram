@@ -40,6 +40,37 @@ class TestAntigravityWorkspaceDiscovery:
             ("conversation-1", str(workspace.resolve()))
         ]
 
+    def test_discovers_real_cli_layout_from_last_conversations(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        brain = tmp_path / "brain"
+        session_id = "a4186fac-9bf9-40d2-b655-02bdd21cf0dd"
+        log_dir = brain / session_id / ".system_generated" / "logs"
+        log_dir.mkdir(parents=True)
+        (log_dir / "transcript.jsonl").write_text(
+            json.dumps(
+                {
+                    "type": "USER_INPUT",
+                    "source": "USER_EXPLICIT",
+                    "content": "hello",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        cache = tmp_path / "cache" / "last_conversations.json"
+        cache.parent.mkdir()
+        cache.write_text(json.dumps({str(workspace): session_id}), encoding="utf-8")
+        monkeypatch.setenv("CCGRAM_ANTIGRAVITY_DATA_DIR", str(brain))
+
+        sessions = AntigravityProvider().discover_resumable_sessions(cwd=str(workspace))
+
+        assert [(session.session_id, session.cwd) for session in sessions] == [
+            (session_id, str(workspace.resolve()))
+        ]
+
     def test_discovery_ignores_pytest_environment_marker(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

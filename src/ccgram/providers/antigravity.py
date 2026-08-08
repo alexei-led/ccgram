@@ -258,6 +258,39 @@ def _resolve_workspace_path(raw_path: str) -> str | None:
         return None
 
 
+def _read_last_conversations(brain_dir: Path) -> dict[str, str]:
+    """Return unambiguous exact workspace-to-conversation mappings."""
+    cache_file = brain_dir.parent / "cache" / "last_conversations.json"
+    try:
+        payload = json.loads(cache_file.read_text(encoding="utf-8"))
+    except OSError, json.JSONDecodeError, ValueError:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+
+    conversations: dict[str, str] = {}
+    ambiguous_workspaces: set[str] = set()
+    for raw_cwd, raw_session_id in payload.items():
+        if not isinstance(raw_cwd, str) or not isinstance(raw_session_id, str):
+            continue
+        if RESUME_ID_RE.fullmatch(raw_session_id) is None:
+            continue
+        resolved_cwd = _resolve_workspace_path(raw_cwd)
+        if resolved_cwd is None or resolved_cwd in ambiguous_workspaces:
+            continue
+        previous = conversations.get(resolved_cwd)
+        if previous is not None and previous != raw_session_id:
+            conversations.pop(resolved_cwd, None)
+            ambiguous_workspaces.add(resolved_cwd)
+            continue
+        conversations[resolved_cwd] = raw_session_id
+    return conversations
+
+
+def _conversation_transcript(brain_dir: Path, session_id: str) -> Path:
+    return brain_dir / session_id / ".system_generated" / "logs" / "transcript.jsonl"
+
+
 def _read_antigravity_workspace_cwd(
     log_file: Path,
     *,
@@ -321,6 +354,62 @@ def _collect_brain_candidates(
         except OSError:
             continue
     return candidates
+
+
+def _cached_resumable_sessions(
+    brain_dir: Path,
+    resolved_cwd: str | None,
+    seen_ids: set[str],
+) -> list[tuple[float, ResumableSession]]:
+    sessions: list[tuple[float, ResumableSession]] = []
+    for workspace_cwd, session_id in _read_last_conversations(brain_dir).items():
+        if resolved_cwd is not None and workspace_cwd != resolved_cwd:
+            continue
+        if resolved_cwd is None and not Path(workspace_cwd).is_dir():
+            continue
+        log_file = _conversation_transcript(brain_dir, session_id)
+        try:
+            mtime = log_file.stat().st_mtime
+        except OSError:
+            continue
+        if session_id in seen_ids:
+            continue
+        seen_ids.add(session_id)
+        sessions.append(
+            (
+                mtime,
+                ResumableSession(
+                    session_id=session_id,
+                    summary=session_id[:12],
+                    cwd=workspace_cwd,
+                    provider_name="antigravity",
+                    mtime=mtime,
+                ),
+            )
+        )
+    return sessions
+
+
+def _mapped_transcript_candidate(
+    brain_dirs: list[Path],
+    resolved_cwd: str,
+    age_limit: float,
+    now: float,
+) -> tuple[bool, tuple[float, Path, str] | None]:
+    candidates: list[tuple[float, Path, str]] = []
+    for brain_dir in brain_dirs:
+        session_id = _read_last_conversations(brain_dir).get(resolved_cwd)
+        if session_id is None:
+            continue
+        log_file = _conversation_transcript(brain_dir, session_id)
+        try:
+            mtime = log_file.stat().st_mtime
+        except OSError:
+            continue
+        if age_limit > 0 and now - mtime > age_limit:
+            continue
+        candidates.append((mtime, log_file, session_id))
+    return len(candidates) > 1, candidates[0] if len(candidates) == 1 else None
 
 
 class AntigravityProvider(JsonlProvider):
@@ -389,6 +478,9 @@ class AntigravityProvider(JsonlProvider):
         candidates: list[tuple[float, ResumableSession]] = []
         seen_ids: set[str] = set()
         for brain_dir in get_antigravity_brain_dirs():
+            candidates.extend(
+                _cached_resumable_sessions(brain_dir, resolved_cwd, seen_ids)
+            )
             for mtime, log_file, session_id in _collect_brain_candidates(
                 brain_dir, 0, time.time()
             ):
@@ -426,7 +518,8 @@ class AntigravityProvider(JsonlProvider):
         max_age: float | None = None,
     ) -> SessionStartEvent | None:
         """Discover latest Antigravity CLI transcript on disk matching window."""
-        if not cwd:
+        resolved_cwd = _resolve_workspace_path(cwd) if cwd else None
+        if resolved_cwd is None:
             return None
 
         brain_dirs = get_antigravity_brain_dirs()
@@ -436,27 +529,32 @@ class AntigravityProvider(JsonlProvider):
         age_limit = _TRANSCRIPT_MAX_AGE_SECS if max_age is None else max_age
         now = time.time()
 
-        candidates: list[tuple[float, Path, str]] = []
-        for brain_dir in brain_dirs:
-            candidates.extend(_collect_brain_candidates(brain_dir, age_limit, now))
-
-        if not candidates:
+        ambiguous_mapping, selected = _mapped_transcript_candidate(
+            brain_dirs, resolved_cwd, age_limit, now
+        )
+        if ambiguous_mapping:
             return None
-
-        candidates.sort(reverse=True)
-        selected: tuple[float, Path, str] | None = None
-        for cand in candidates:
-            if _match_antigravity_cwd(cand[1], cwd):
-                selected = cand
-                break
         if selected is None:
-            return None
+            candidates: list[tuple[float, Path, str]] = []
+            for brain_dir in brain_dirs:
+                candidates.extend(_collect_brain_candidates(brain_dir, age_limit, now))
+            candidates.sort(reverse=True)
+            selected = next(
+                (
+                    candidate
+                    for candidate in candidates
+                    if _match_antigravity_cwd(candidate[1], resolved_cwd)
+                ),
+                None,
+            )
+            if selected is None:
+                return None
 
         _, latest_file, session_id = selected
 
         return SessionStartEvent(
             session_id=session_id,
-            cwd=str(Path(cwd).resolve()),
+            cwd=resolved_cwd,
             transcript_path=str(latest_file),
             window_key=window_key,
         )

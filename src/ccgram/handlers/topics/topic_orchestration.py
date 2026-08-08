@@ -12,7 +12,8 @@ Core responsibilities:
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
+from collections.abc import Iterator
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 import time
 from pathlib import Path
@@ -140,7 +141,19 @@ def _is_window_already_bound(window_id: str) -> bool:
 # 30s TTL is the safety net in case directory_callbacks crashes before
 # clearing the entry — handle_new_window will eventually reclaim the window.
 _pending_user_creations: dict[str, float] = {}
+_pending_creation_transactions: set[object] = set()
 _PENDING_CREATION_TTL_S = 30.0
+
+
+@contextmanager
+def pending_creation_transaction() -> Iterator[None]:
+    """Block auto-adoption until a new target has a durable ID."""
+    token = object()
+    _pending_creation_transactions.add(token)
+    try:
+        yield
+    finally:
+        _pending_creation_transactions.discard(token)
 
 
 def register_pending_creation(window_id: str) -> None:
@@ -166,6 +179,8 @@ def _is_pending_user_creation(window_id: str) -> bool:
     Expired entries are evicted lazily on read so a crashed directory flow
     can't permanently shadow a window from auto-topic-creation.
     """
+    if _pending_creation_transactions:
+        return True
     expires_at = _pending_user_creations.get(window_id)
     if expires_at is None:
         return False

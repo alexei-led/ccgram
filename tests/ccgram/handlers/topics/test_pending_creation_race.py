@@ -16,8 +16,10 @@ import pytest
 
 from ccgram.handlers.topics.topic_orchestration import (  # noqa: E501
     _is_pending_user_creation,
+    _pending_creation_transactions,
     _pending_user_creations,
     clear_pending_creation,
+    pending_creation_transaction,
     handle_new_window,
     register_pending_creation,
 )
@@ -28,8 +30,10 @@ from ccgram.session_monitor import NewWindowEvent
 @pytest.fixture(autouse=True)
 def _clear_pending_state():
     _pending_user_creations.clear()
+    _pending_creation_transactions.clear()
     yield
     _pending_user_creations.clear()
+    _pending_creation_transactions.clear()
 
 
 def _make_event(window_id: str = "@42") -> NewWindowEvent:
@@ -71,6 +75,21 @@ def test_pending_creation_expires_after_ttl(monkeypatch):
 
 def test_clear_pending_creation_is_idempotent():
     clear_pending_creation("@nonexistent")  # should not raise
+
+
+def test_creation_transaction_defers_unbound_window_adoption():
+    with pending_creation_transaction():
+        assert _is_pending_user_creation("unrelated-window")
+    assert not _is_pending_user_creation("unrelated-window")
+
+
+def test_creation_transaction_releases_on_exception():
+    with (
+        pytest.raises(RuntimeError, match="launch failed"),
+        pending_creation_transaction(),
+    ):
+        raise RuntimeError("launch failed")
+    assert not _is_pending_user_creation("unrelated-window")
 
 
 def test_register_pending_creation_ignores_blank_window_id():

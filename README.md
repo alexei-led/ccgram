@@ -108,11 +108,14 @@ Open your Telegram group, create a topic, send a message — directory browser a
 
 ### Herdr setup
 
-CCGram supports Herdr socket protocols **14, 15, 16, and 17**. For Pi agents, install Herdr's integration before launching the agent:
+CCGram supports Herdr socket protocols **14–17 and 19**. Install Herdr's integration before launching an agent that needs a native session identity:
 
 ```bash
 herdr integration install pi
+herdr integration install antigravity-cli
 ```
+
+Restart an already-running agent after installation. Antigravity receives a native Herdr session identity after its first prompt creates a conversation.
 
 Start new agents, or restart already-running agents, after installing the integration so they publish their `agent_session` identity. Then set `CCGRAM_MULTIPLEXER=herdr` and run `ccgram hook --install` as usual.
 

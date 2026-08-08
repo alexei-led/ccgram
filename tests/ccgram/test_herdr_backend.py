@@ -25,8 +25,10 @@ from ccgram.multiplexer.herdr import (
     HerdrError,
     HerdrMalformedRecordError,
     HerdrManager,
+    HerdrProtocolError,
     HerdrSessionComposite,
     HerdrUnresolvedTargetError,
+    _workspace_cwd_from_panes,
     canonical_session_bytes,
     herdr_session_target_id,
 )
@@ -552,6 +554,88 @@ async def test_create_topic_target_uses_selected_workspace_and_returns_session_t
     ]
 
 
+def test_workspace_cwd_prefers_stable_pane_cwd_and_accepts_matching_split_panes() -> (
+    None
+):
+    workspace = {"workspace_id": "w2", "active_tab_id": "w2:t1"}
+    panes = [
+        {
+            "workspace_id": "w2",
+            "tab_id": "w2:t1",
+            "cwd": "/repo",
+            "foreground_cwd": "/repo/.venv/bin",
+        },
+        {
+            "workspace_id": "w2",
+            "tab_id": "w2:t1",
+            "cwd": "/repo",
+            "foreground_cwd": "/repo/.venv/bin",
+        },
+    ]
+    assert _workspace_cwd_from_panes(workspace, panes) == "/repo"
+    panes[1].pop("cwd")
+    assert _workspace_cwd_from_panes(workspace, panes) is None
+
+
+async def test_list_workspaces_resolves_cwdless_workspaces_from_panes_once() -> None:
+    fake = (
+        FakeHerdr()
+        .on(
+            "workspace",
+            "list",
+            out=_result(
+                workspaces=[
+                    {"workspace_id": "w1", "label": "one", "active_tab_id": "w1:t1"},
+                    {"workspace_id": "w2", "label": "two", "active_tab_id": "w2:t1"},
+                ]
+            ),
+        )
+        .on(
+            "pane",
+            "list",
+            out=_result(
+                panes=[
+                    {"workspace_id": "w1", "tab_id": "w1:t1", "cwd": "/one"},
+                    {"workspace_id": "w2", "tab_id": "w2:t1", "cwd": "/two"},
+                ]
+            ),
+        )
+    )
+
+    workspaces = await _manager(fake).list_workspaces()
+
+    assert [(item.workspace_id, item.label, item.cwd) for item in workspaces] == [
+        ("w1", "one", "/one"),
+        ("w2", "two", "/two"),
+    ]
+    assert fake.calls == [["workspace", "list"], ["pane", "list"]]
+
+
+async def test_create_topic_target_does_not_send_initial_input(
+    tmp_path: Path,
+) -> None:
+    fake = (
+        FakeHerdr()
+        .on("workspace", "list", out=_workspace("selected", tmp_path))
+        .on("tab", "create", out=_created())
+        .on("pane", "run", out=_result(type="ok"))
+        .on(
+            "agent",
+            "list",
+            out=_agents(
+                _agent(pane_id="w9:p1", tab_id="w9:t1", workspace_id="selected")
+            ),
+        )
+    )
+    target = await _manager(fake).create_topic_target(
+        str(tmp_path),
+        launch_command="agy",
+        workspace_id="selected",
+    )
+    assert target.target_id == _target()
+    assert ["pane", "run", "w9:p1", "hello"] not in fake.calls
+
+
 async def test_created_session_discovery_waits_for_delayed_pi_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -958,7 +1042,7 @@ async def test_subprocess_run_maps_timeout(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 async def test_ensure_session_accepts_protocol_and_rejects_unavailable_server() -> None:
-    assert frozenset({14, 15, 16, 17}) == HERDR_SUPPORTED_PROTOCOLS
+    assert frozenset({14, 15, 16, 17, 19}) == HERDR_SUPPORTED_PROTOCOLS
     good = json.dumps(
         {
             "server": {
@@ -969,5 +1053,10 @@ async def test_ensure_session_accepts_protocol_and_rejects_unavailable_server() 
         }
     )
     await _manager(FakeHerdr().on("status", out=good)).ensure_session()
+    incompatible = json.dumps(
+        {"server": {"running": True, "protocol": 17, "compatible": False}}
+    )
+    with pytest.raises(HerdrProtocolError, match="restart Herdr"):
+        await _manager(FakeHerdr().on("status", out=incompatible)).ensure_session()
     with pytest.raises(HerdrError):
         await _manager(FakeHerdr().on("status", out="not json")).ensure_session()

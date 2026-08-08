@@ -87,9 +87,9 @@ __all__ = [
 logger = structlog.get_logger()
 
 # Supported herdr socket protocols (``herdr status`` → ``server.protocol``).
-# 14–17 are accepted without warnings. Other versions are attempted with a
-# warning so ccgram remains usable across herdr upgrades and downgrades.
-HERDR_SUPPORTED_PROTOCOLS = frozenset({14, 15, 16, 17})
+# 14–17 and 19 are supported. Other versions are attempted with a warning so
+# ccgram remains usable across herdr upgrades and downgrades.
+HERDR_SUPPORTED_PROTOCOLS = frozenset({14, 15, 16, 17, 19})
 HERDR_PROTOCOL_VERSION = max(HERDR_SUPPORTED_PROTOCOLS)
 
 # Static capability declaration for the herdr backend (design Task 7).
@@ -142,6 +142,43 @@ _STREAM_BACKOFF_MAX = 30.0
 # A live stream has no locator-change notification. Re-prime periodically so a
 # target that moved to another pane receives a fresh per-pane subscription.
 _STREAM_REPRIME_INTERVAL = 5.0
+
+
+def _workspace_cwd_from_panes(
+    workspace: Mapping[str, object], panes: Sequence[Mapping[str, object]]
+) -> str | None:
+    """Return the active tab's shared stable CWD from a protocol-19 snapshot."""
+    workspace_id = workspace.get("workspace_id")
+    if not isinstance(workspace_id, str):
+        return None
+    active_tab_id = workspace.get("active_tab_id")
+    candidates = [
+        pane
+        for pane in panes
+        if pane.get("workspace_id") == workspace_id
+        and (
+            pane.get("tab_id") == active_tab_id
+            if isinstance(active_tab_id, str)
+            else bool(pane.get("focused"))
+        )
+    ]
+
+    def shared_cwd(field: str) -> str | None:
+        cwd: str | None = None
+        for pane in candidates:
+            value = pane.get(field)
+            if not isinstance(value, str) or not value:
+                return None
+            if cwd is None:
+                cwd = value
+            elif cwd != value:
+                return None
+        return cwd
+
+    has_stable_cwd = any(
+        isinstance(pane.get("cwd"), str) and pane.get("cwd") for pane in candidates
+    )
+    return shared_cwd("cwd") if has_stable_cwd else shared_cwd("foreground_cwd")
 
 
 class HerdrError(RuntimeError):
@@ -431,7 +468,11 @@ class HerdrManager:
         is_supported_protocol = (
             is_supported_protocol and proto in HERDR_SUPPORTED_PROTOCOLS
         )
-        if not is_supported_protocol or cli_server_compatible is False:
+        if cli_server_compatible is False:
+            raise HerdrProtocolError(
+                "Herdr client and server protocols are incompatible; restart Herdr"
+            )
+        if not is_supported_protocol:
             logger.warning(
                 "herdr protocol is unverified; continuing",
                 server_protocol=proto,
@@ -879,6 +920,7 @@ class HerdrManager:
         workspaces = result.get("workspaces") if result else None
         if not isinstance(workspaces, list):
             return []
+        panes: list[Mapping[str, object]] | None = None
         refs: list[WorkspaceRef] = []
         for workspace in workspaces:
             if not isinstance(workspace, Mapping):
@@ -890,9 +932,20 @@ class HerdrManager:
                 isinstance(workspace_id, str)
                 and workspace_id
                 and isinstance(label, str)
-                and isinstance(cwd, str)
             ):
                 return []
+            if not isinstance(cwd, str):
+                if panes is None:
+                    pane_result = await self._call_json(["pane", "list"])
+                    raw_panes = pane_result.get("panes") if pane_result else None
+                    if not isinstance(raw_panes, list) or not all(
+                        isinstance(pane, Mapping) for pane in raw_panes
+                    ):
+                        return []
+                    panes = raw_panes
+                cwd = _workspace_cwd_from_panes(workspace, panes)
+                if cwd is None:
+                    return []
             refs.append(WorkspaceRef(workspace_id, label, cwd))
         return refs
 
