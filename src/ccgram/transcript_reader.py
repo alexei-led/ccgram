@@ -199,10 +199,19 @@ class TranscriptReader:
             if current_mtime <= last_mtime:
                 return
 
+        # Bytes already on disk when this process started are history, not
+        # activity. The byte offset is persisted but the mtime cache is not,
+        # so the first poll after a restart catches up from wherever the last
+        # run stopped — stamping that as activity *now* makes every session
+        # that wrote anything before the restart read as busy, with an active
+        # topic and a typing indicator, until the idle window expires.
+        # The entries themselves still flow on; only the clock is left alone.
+        is_catch_up = session_id not in self._file_mtimes
+
         new_entries = await self._read_new_lines(tracked, file_path, window_id)
         self._file_mtimes[session_id] = current_mtime
 
-        if new_entries:
+        if new_entries and not is_catch_up:
             self._idle_tracker.record_activity(session_id)
 
         if provider.capabilities.supports_task_tracking and window_id:

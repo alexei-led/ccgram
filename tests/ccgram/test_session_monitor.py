@@ -969,9 +969,19 @@ class TestActivityTracking:
         monitor.state.update_session(tracked)
 
         new_messages: list = []
+        # First read of a session already in state is the post-restart
+        # catch-up: it replays bytes written before this process existed, so
+        # it deliberately leaves the activity clock alone.
         await monitor._process_session_file(
             "sess-act", session_file, new_messages, window_id="@1"
         )
+        assert monitor.get_last_activity("sess-act") is None
+
+        session_file.write_text(line + line)
+        await monitor._process_session_file(
+            "sess-act", session_file, new_messages, window_id="@1"
+        )
+
         last = monitor.get_last_activity("sess-act")
         assert last is not None
         assert last > 0
