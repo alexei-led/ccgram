@@ -239,10 +239,38 @@ async def start_session_monitor(application: Application) -> SessionMonitor:
     return monitor
 
 
+def _settle_preexisting_windows() -> None:
+    """Tell the poll state that already-bound windows are not starting up.
+
+    Poll state is in-memory, so after a restart every inherited window looks
+    like one ccgram just launched: it spends the startup grace painted active
+    with a typing indicator before it can settle, however long its agent has
+    been idle. They were running before this process was.
+    """
+    # Lazy: polling state is the status loop's own singleton; importing it in
+    # bootstrap's cold path would pull the polling package in ahead of use.
+    from .handlers.polling.polling_state import terminal_poll_state
+
+    # Lazy: thread_router proxy, wired by the SessionManager constructor.
+    from .thread_router import thread_router
+
+    # Lazy: topic_emoji pulls the handler graph; only needed at this one step.
+    from .handlers.status.topic_emoji import mark_awaiting_first_paint
+
+    for user_id, thread_id, window_id in thread_router.iter_thread_bindings():
+        if not window_id:
+            continue
+        terminal_poll_state.mark_preexisting(window_id)
+        chat_id = thread_router.resolve_chat_id(user_id, thread_id)
+        if chat_id:
+            mark_awaiting_first_paint(chat_id, thread_id)
+
+
 def start_status_polling(application: Application) -> asyncio.Task[None]:
     """Spawn the status-polling background task."""
     global _status_poll_task
 
+    _settle_preexisting_windows()
     _status_poll_task = asyncio.create_task(status_poll_loop(application.bot))
     _status_poll_task.add_done_callback(task_done_callback)
     logger.info("Status polling task started")

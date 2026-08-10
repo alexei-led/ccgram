@@ -86,6 +86,39 @@ class TestWireRuntimeCallbacks:
         assert bootstrap._callbacks_wired is True
 
 
+class TestSettlePreexistingWindows:
+    """Poll state is in-memory. Without this, every window inherited from the
+    previous run spends the startup grace painted active with a typing
+    indicator, however long its agent has been idle."""
+
+    def test_marks_bound_windows_settled_and_seeds_their_topics(self):
+        from ccgram.handlers.polling.polling_state import terminal_poll_state
+        from ccgram.handlers.status import topic_emoji
+
+        topic_emoji.reset_all_state()
+        with patch("ccgram.thread_router.thread_router") as mock_router:
+            mock_router.iter_thread_bindings.return_value = [(7, 42, "@3")]
+            mock_router.resolve_chat_id.return_value = -100
+
+            bootstrap._settle_preexisting_windows()
+
+        try:
+            assert terminal_poll_state.check_seen_status("@3")
+            assert (-100, 42) in topic_emoji._awaiting_first_paint
+        finally:
+            terminal_poll_state.clear_seen_status("@3")
+            topic_emoji.reset_all_state()
+
+    def test_skips_a_binding_with_no_window(self):
+        with patch("ccgram.thread_router.thread_router") as mock_router:
+            mock_router.iter_thread_bindings.return_value = [(7, 42, "")]
+            mock_router.resolve_chat_id.return_value = -100
+
+            bootstrap._settle_preexisting_windows()
+
+        mock_router.resolve_chat_id.assert_not_called()
+
+
 class TestBootstrapApplication:
     async def test_runs_full_sequence_in_order(self):
         app = _make_app()

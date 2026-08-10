@@ -18,6 +18,7 @@ from ccgram.handlers.status.topic_emoji import (
     EMOJI_YOLO,
     clear_topic_emoji_state,
     format_topic_name_for_mode,
+    mark_awaiting_first_paint,
     reset_all_state,
     sync_topic_name,
     strip_emoji_prefix,
@@ -111,6 +112,47 @@ _STATE_EMOJI = [
     ("done", EMOJI_DONE),
     ("dead", EMOJI_DEAD),
 ]
+
+
+class TestInheritedTopicsRepaintImmediately:
+    """A restarted ccgram inherits topics whose emoji was painted by the
+    process that just died. Debouncing that first sighting leaves every topic
+    showing a stale colour — the debounce exists to damp flicker between
+    observed states, and there is no earlier observed state to flicker from."""
+
+    async def test_seeded_topic_paints_without_waiting(self) -> None:
+        bot = AsyncMock()
+        mark_awaiting_first_paint(-100, 42)
+
+        with patch(_PATCH_MONOTONIC, return_value=0.0):
+            await update_topic_emoji(bot, -100, 42, "idle", "myproject")
+
+        bot.edit_forum_topic.assert_called_once_with(
+            chat_id=-100,
+            message_thread_id=42,
+            name=f"{EMOJI_IDLE} myproject",
+        )
+
+    async def test_only_the_first_sighting_skips_the_debounce(self) -> None:
+        bot = AsyncMock()
+        mark_awaiting_first_paint(-100, 42)
+        with patch(_PATCH_MONOTONIC, return_value=0.0):
+            await update_topic_emoji(bot, -100, 42, "idle", "myproject")
+        bot.edit_forum_topic.reset_mock()
+
+        with patch(_PATCH_MONOTONIC, return_value=0.0):
+            await update_topic_emoji(bot, -100, 42, "active", "myproject")
+
+        bot.edit_forum_topic.assert_not_called()
+
+    async def test_an_unseeded_topic_still_debounces(self) -> None:
+        bot = AsyncMock()
+        mark_awaiting_first_paint(-100, 42)
+
+        with patch(_PATCH_MONOTONIC, return_value=0.0):
+            await update_topic_emoji(bot, -100, 99, "idle", "other")
+
+        bot.edit_forum_topic.assert_not_called()
 
 
 class TestUpdateTopicEmoji:

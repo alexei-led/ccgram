@@ -393,6 +393,19 @@ class TerminalPollState:
         ws.has_seen_status = True
         ws.startup_time = None
 
+    def mark_preexisting(self, window_id: str) -> None:
+        """Record that this window was already running before polling began.
+
+        The startup grace exists so a window ccgram is *launching* reads as
+        active while its agent boots. A window inherited from a previous run
+        is not launching — ccgram simply has no in-memory state for it yet.
+        Without this, every bound window spends the grace painted active with
+        a typing indicator after each restart, however long it has been idle.
+        Genuinely busy windows are unaffected: their status or transcript
+        activity puts them back into ``active`` on the very next tick.
+        """
+        self.mark_seen_status(window_id)
+
 
 # ── InteractiveUIStrategy ───────────────────────────────────────────────
 
