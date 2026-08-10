@@ -19,6 +19,7 @@ from ccgram.handlers.polling.window_tick import (
     _scan_window_panes,
     decide_tick,
 )
+from ccgram.handlers.polling.polling_runtime import PollingRuntime
 from ccgram.handlers.polling.polling_state import (
     interactive_strategy,
     lifecycle_strategy,
@@ -652,6 +653,56 @@ class TestTransitionToIdle:
         mock_enqueue.assert_called_once()
         assert mock_enqueue.call_args[0][3] == IDLE_STATUS_TEXT
         assert mock_enqueue.call_args[1]["thread_id"] == 42
+
+
+class TestSettledWindowsStaySettled:
+    """A quiet window must not fall back into the startup grace.
+
+    ``starting`` paints the topic active and sends a typing indicator, so a
+    window that keeps re-entering it looks busy forever: green topic, typing
+    indicator that never clears, and a 30s sawtooth back through idle.
+    """
+
+    async def _run(self, transition: str, *, supports_hook: bool) -> str | None:
+        from ccgram.handlers.polling.window_tick import (
+            _apply_done_transition,
+            _transition_to_idle,
+        )
+
+        runtime = PollingRuntime.create()
+        bot = AsyncMock(spec=Bot)
+        with (
+            patch("ccgram.handlers.polling.window_tick.apply.update_topic_emoji"),
+            patch("ccgram.handlers.polling.window_tick.apply.enqueue_status_update"),
+            patch(
+                "ccgram.handlers.polling.window_tick.apply.thread_router"
+            ) as mock_router,
+        ):
+            mock_router.resolve_chat_id.return_value = -100
+            mock_router.get_display_name.return_value = "project"
+            if transition == "idle":
+                await _transition_to_idle(
+                    bot, 1, "@0", 42, -100, "project", runtime=runtime
+                )
+            else:
+                await _apply_done_transition(bot, 1, "@0", 42, runtime=runtime)
+
+        return decide_tick(
+            _make_ctx(
+                has_seen_status=runtime.poll_state.check_seen_status("@0"),
+                startup_time=runtime.poll_state.peek_state("@0").startup_time,
+                supports_hook=supports_hook,
+            )
+        ).transition
+
+    async def test_idle_window_stays_idle_on_the_next_tick(self) -> None:
+        assert await self._run("idle", supports_hook=True) == "idle"
+
+    async def test_done_window_does_not_restart_its_grace(self) -> None:
+        assert await self._run("done", supports_hook=True) == "idle"
+
+    async def test_hookless_done_window_also_settles(self) -> None:
+        assert await self._run("done", supports_hook=False) == "idle"
 
 
 class TestShellPromptClearsStatus:
