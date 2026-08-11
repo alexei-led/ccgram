@@ -11,20 +11,21 @@ CCGram supports multiple agent CLI backends. Each Telegram topic can use a diffe
 | Gemini CLI  | `gemini`    | Yes         | Yes    | Yes      | JSONL      | Hook AfterAgent + pane title + interactive UI + `/status` snapshot    |
 | Pi          | `pi`        | Yes         | Yes    | Yes      | JSONL (v3) | Hook-runner Stop + transcript activity heuristic                      |
 | Antigravity | `agy`       | No          | Yes    | Yes      | JSONL      | Transcript activity heuristic + `/status` snapshot                    |
+| OpenCode    | `opencode`  | No          | Yes    | Yes      | SQLite → JSONL mirror | herdr native agent status + permission-prompt heuristic            |
 | Shell       | `bash`      | No          | No     | No       | None       | Shell prompt idle detection                                           |
 
-`Resume` in this table means the CLI accepts a known session ID. CCGram's Telegram Resume picker can enumerate sessions for Claude and Antigravity. Codex, Gemini, and Pi currently expose Fresh and Continue recovery actions only.
+`Resume` in this table means the CLI accepts a known session ID. CCGram's Telegram Resume picker can enumerate sessions for Claude, Antigravity, and OpenCode. Codex, Gemini, and Pi currently expose Fresh and Continue recovery actions only.
 
 ## Choosing a Provider
 
-**From Telegram**: When you create a new topic and select a directory, then — if the directory is an eligible git repo — choose whether to use the current branch or create a new worktree on a new branch (non-git directories skip this step), a provider picker appears with Claude (default), Codex, Gemini, Pi, Antigravity, and Shell options. After provider selection, CCGram asks for session mode:
+**From Telegram**: When you create a new topic and select a directory, then — if the directory is an eligible git repo — choose whether to use the current branch or create a new worktree on a new branch (non-git directories skip this step), a provider picker appears with Claude (default), Codex, Gemini, Pi, Antigravity, OpenCode, and Shell options. After provider selection, CCGram asks for session mode:
 
 - `✅ Standard` (normal approvals)
 - `🚀 YOLO` (provider-specific permissive mode)
 
 **From the terminal**: If you create a window manually and start an agent CLI, CCGram auto-detects the provider from the running process name. When the pane command is a JS runtime wrapper (node, bun), it inspects the pane's foreground process to reliably identify the actual CLI. How the foreground process is read is owned by the multiplexer backend — tmux uses `ps -t <tty>`, herdr reads `pane process-info` (no tty needed) — so detection works the same on both. The shell provider uses the same seam to classify a bare shell pane. As a last resort, Gemini pane-title symbols (`✦`, `✋`, `◇`) are checked.
 
-**Default provider**: Set `CCGRAM_PROVIDER=codex` (or `gemini`, `pi`, `antigravity`, `shell`) to change the default. Claude is the default if unset.
+**Default provider**: Set `CCGRAM_PROVIDER=codex` (or `gemini`, `pi`, `antigravity`, `opencode`, `shell`) to change the default. Claude is the default if unset.
 
 ## Session Mode (Standard vs YOLO)
 
@@ -335,3 +336,36 @@ Herdr reports the real conversation ID after the first prompt creates it. CCGram
 
 - **Binary Not Found**: Ensure `agy` is in your `$PATH` or set `CCGRAM_ANTIGRAVITY_COMMAND=/path/to/agy`.
 - **Session Discovery Failure**: Check that transcripts are created under `~/.gemini/antigravity-cli/brain/` or set `CCGRAM_ANTIGRAVITY_DATA_DIR=/path/to/brain`.
+
+## OpenCode CLI (`opencode`)
+
+OpenCode is a terminal AI coding agent (opencode.ai) that persists sessions in a **SQLite database** (`~/.local/share/opencode/opencode.db` on Linux, `~/Library/Application Support/opencode/opencode.db` on macOS). CCGram reads its event-sourced `event` table by per-session `seq` cursor and mirrors normalized entries into a JSONL file under `~/.ccgram/opencode/`, so the standard transcript machinery (byte offsets, mtime caching, `/history`) works unchanged. The database is opened read-only — CCGram never writes to it.
+
+### Data & Mirror Resolution
+
+- **Database**: `CCGRAM_OPENCODE_DB` environment override, then platform defaults.
+- **Mirror root**: `CCGRAM_OPENCODE_DATA_DIR` environment override, else `~/.ccgram/opencode/`.
+
+### Herdr integration
+
+Herdr natively exposes OpenCode sessions (`agent_session`); install the Herdr OpenCode integration so a tab's session identity is published:
+
+```bash
+herdr integration install opencode
+```
+
+Status detection uses Herdr's native agent status (`working` / `blocked`) as the primary signal. A conservative heuristic also surfaces OpenCode TUI permission banners (`! permission requested: ...`) as an interactive `PermissionPrompt` in the topic.
+
+### Launch, Resume, Continue, YOLO
+
+- **Resume**: `opencode --session <session_id>`; the resume picker enumerates sessions from the database (`opencode session list --format json` equivalent).
+- **Continue**: `opencode --continue`.
+- **Fork**: `--fork` can be combined via `CCGRAM_OPENCODE_COMMAND` if you want a branched session.
+- **YOLO**: `--auto` (auto-approve permissions that are not explicitly denied).
+
+### Known Limitations (v1)
+
+- No hooks (OpenCode has no config-file hook mechanism; hooks live in its plugin system) — polling is used instead.
+- Assistant text appears in Telegram when a part settles, not as a live stream (parts are written in place while streaming).
+- The SQLite schema is internal to OpenCode and evolves between releases; support is validated against OpenCode 1.18.x and reads fail closed on schema drift.
+- `reasoning` parts are not shown in the transcript to keep topics quiet.

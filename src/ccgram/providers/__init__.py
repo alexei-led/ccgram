@@ -35,6 +35,7 @@ _YOLO_FLAGS: dict[str, str] = {
     "claude": "--dangerously-skip-permissions",
     "codex": "--dangerously-bypass-approvals-and-sandbox",
     "gemini": "--yolo",
+    "opencode": "--auto",
 }
 
 
@@ -73,11 +74,15 @@ def _ensure_registered() -> None:
     # Lazy: provider classes register against the registry at import; defer until the registry factory runs
     from ccgram.providers.shell import ShellProvider
 
+    # Lazy: provider classes register against the registry at import; defer until the registry factory runs
+    from ccgram.providers.opencode import OpenCodeProvider
+
     registry.register("antigravity", AntigravityProvider)
     registry.register("claude", ClaudeProvider)
     registry.register("codex", CodexProvider)
     registry.register("gemini", GeminiProvider)
     registry.register("pi", PiProvider)
+    registry.register("opencode", OpenCodeProvider)
     registry.register("shell", ShellProvider)
     _registered = True
 
@@ -147,7 +152,7 @@ def detect_provider_from_command(pane_current_command: str) -> str:
     # Match basename only (first token) to avoid false positives
     # from paths like /home/claude/bin/vim
     basename = os.path.basename(cmd.split()[0])
-    for name in ("antigravity", "claude", "codex", "gemini", "pi"):
+    for name in ("antigravity", "claude", "codex", "gemini", "opencode", "pi"):
         if (
             basename == name
             or (name == "antigravity" and basename == "agy")
@@ -170,6 +175,17 @@ def detect_provider_from_command(pane_current_command: str) -> str:
 _CLAUDE_PROJECTS_RE = re.compile(r"/\.claude[a-z0-9._-]*/projects/")
 
 
+_PATH_MARKERS: tuple[tuple[str, str], ...] = (
+    ("/.gemini/antigravity-cli/brain/", "antigravity"),
+    ("/.antigravity/brain/", "antigravity"),
+    ("/.config/antigravity/brain/", "antigravity"),
+    ("/.local/share/antigravity/brain/", "antigravity"),
+    ("/.ccgram/opencode/", "opencode"),
+    ("/.codex/sessions/", "codex"),
+    ("/.pi/agent/sessions/", "pi"),
+)
+
+
 def detect_provider_from_transcript_path(transcript_path: str) -> str:
     """Infer provider name from a persisted transcript path when possible.
 
@@ -182,24 +198,13 @@ def detect_provider_from_transcript_path(transcript_path: str) -> str:
     normalized = transcript_path.strip().lower().replace("\\", "/")
     if not normalized:
         return ""
-    if any(
-        marker in normalized
-        for marker in (
-            "/.gemini/antigravity-cli/brain/",
-            "/.antigravity/brain/",
-            "/.config/antigravity/brain/",
-            "/.local/share/antigravity/brain/",
-        )
-    ):
-        return "antigravity"
-    if "/.codex/sessions/" in normalized:
-        return "codex"
+    for marker, provider in _PATH_MARKERS:
+        if marker in normalized:
+            return provider
     if _CLAUDE_PROJECTS_RE.search(normalized):
         return "claude"
     if "/.gemini/" in normalized and "/chats/" in normalized:
         return "gemini"
-    if "/.pi/agent/sessions/" in normalized:
-        return "pi"
     return ""
 
 

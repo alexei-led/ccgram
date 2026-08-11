@@ -16,6 +16,7 @@ from ccgram.providers._jsonl import JsonlProvider
 from ccgram.providers.claude import ClaudeProvider
 from ccgram.providers.codex import CodexProvider
 from ccgram.providers.gemini import GeminiProvider
+from ccgram.providers.opencode import OpenCodeProvider
 from ccgram.providers.pi import PiProvider
 from ccgram.providers.shell import ShellProvider
 
@@ -51,6 +52,7 @@ PROVIDER_FIXTURES: list[type] = [
     ClaudeProvider,
     CodexProvider,
     GeminiProvider,
+    OpenCodeProvider,
     PiProvider,
     ShellProvider,
 ]
@@ -145,6 +147,12 @@ def _make_assistant_entry(
         return {"type": "gemini", "content": text}
     if name == "antigravity":
         return {"type": "PLANNER_RESPONSE", "source": "MODEL", "content": text}
+    if name == "opencode":
+        return {
+            "type": "opencode_part",
+            "role": "assistant",
+            "part": {"type": "text", "text": text},
+        }
     return {
         "type": "assistant",
         "message": {"content": [{"type": "text", "text": text}]},
@@ -174,6 +182,17 @@ def _make_tool_use_entry(provider: AgentProvider) -> dict[str, Any]:
             "type": "PLANNER_RESPONSE",
             "source": "MODEL",
             "tool_calls": [{"id": "t1", "name": "Read"}],
+        }
+    if name == "opencode":
+        return {
+            "type": "opencode_part",
+            "role": "assistant",
+            "part": {
+                "type": "tool",
+                "callID": "t1",
+                "tool": "bash",
+                "state": {"status": "running", "input": {"command": "ls"}},
+            },
         }
     if name == "pi":
         return {
@@ -216,6 +235,21 @@ def _make_tool_result_entry(provider: AgentProvider) -> dict[str, Any]:
             "source": "MODEL",
             "tool_call_id": "t1",
             "content": "ok",
+        }
+    if name == "opencode":
+        return {
+            "type": "opencode_part",
+            "role": "assistant",
+            "part": {
+                "type": "tool",
+                "callID": "t1",
+                "tool": "bash",
+                "state": {
+                    "status": "completed",
+                    "input": {"command": "ls"},
+                    "output": "ok",
+                },
+            },
         }
     if name == "pi":
         return {
@@ -326,6 +360,12 @@ class TestIsUserTranscriptEntry:
             entry = {"type": "input_item", "payload": {"role": "user"}}
         elif name == "gemini":
             entry = {"type": "user"}
+        elif name == "opencode":
+            entry = {
+                "type": "opencode_part",
+                "role": "user",
+                "part": {"type": "text", "text": "hi"},
+            }
         else:
             entry = {"type": "user"}
         assert provider.is_user_transcript_entry(entry) is True
@@ -336,6 +376,12 @@ class TestIsUserTranscriptEntry:
             entry = {"type": "response_item", "payload": {"role": "assistant"}}
         elif name == "gemini":
             entry = {"type": "gemini"}
+        elif name == "opencode":
+            entry = {
+                "type": "opencode_part",
+                "role": "assistant",
+                "part": {"type": "text", "text": "hi"},
+            }
         else:
             entry = {"type": "assistant"}
         assert provider.is_user_transcript_entry(entry) is False
@@ -375,6 +421,12 @@ class TestParseHistoryEntry:
                 "source": "USER_EXPLICIT",
                 "content": "my question",
             }
+        elif name == "opencode":
+            entry = {
+                "type": "opencode_part",
+                "role": "user",
+                "part": {"type": "text", "text": "my question"},
+            }
         else:
             entry = {
                 "type": "user",
@@ -397,6 +449,12 @@ class TestParseHistoryEntry:
             entry = {"type": "gemini", "content": ""}
         elif name == "antigravity":
             entry = {"type": "PLANNER_RESPONSE", "source": "MODEL", "content": ""}
+        elif name == "opencode":
+            entry = {
+                "type": "opencode_part",
+                "role": "assistant",
+                "part": {"type": "text", "text": ""},
+            }
         else:
             entry = {"type": "assistant", "message": {"content": []}}
         assert provider.parse_history_entry(entry) is None
@@ -501,7 +559,7 @@ class TestStatusSnapshot:
 
     def test_supports_status_snapshot_flag(self, provider: AgentProvider) -> None:
         caps = provider.capabilities
-        if caps.name in ("antigravity", "codex", "gemini"):
+        if caps.name in ("antigravity", "codex", "gemini", "opencode"):
             assert caps.supports_status_snapshot is True
         else:
             assert caps.supports_status_snapshot is False

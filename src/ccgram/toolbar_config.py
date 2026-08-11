@@ -237,6 +237,15 @@ DEFAULT_LAYOUTS: dict[str, ToolbarLayout] = {
             ("last", "getfile", "close"),
         ),
     ),
+    "opencode": ToolbarLayout(
+        style="emoji_text",
+        buttons=(
+            ("screen", "ctrlc", "live"),
+            ("esc", "tab", "enter"),
+            ("up", "down", "last"),
+            ("getfile", "close"),
+        ),
+    ),
     "shell": ToolbarLayout(
         style="emoji_text",
         buttons=(

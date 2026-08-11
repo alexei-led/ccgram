@@ -49,6 +49,7 @@ _PROVIDER_BASENAMES: tuple[tuple[frozenset[str], str], ...] = (
     (frozenset({"claude", "ce", "cc-mirror", "zai"}), "claude"),
     (frozenset({"codex"}), "codex"),
     (frozenset({"gemini"}), "gemini"),
+    (frozenset({"opencode"}), "opencode"),
     (frozenset({"pi"}), "pi"),
 )
 
