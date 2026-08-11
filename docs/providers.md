@@ -369,3 +369,4 @@ Status detection uses Herdr's native agent status (`working` / `blocked`) as the
 - Assistant text appears in Telegram when a part settles, not as a live stream (parts are written in place while streaming).
 - The SQLite schema is internal to OpenCode and evolves between releases; support is validated against OpenCode 1.18.x and reads fail closed on schema drift.
 - `reasoning` parts are not shown in the transcript to keep topics quiet.
+- Two OpenCode tabs in the **same** working directory share the latest session in the database, so only one topic relays its transcript (run tabs in separate directories for parallel topics).

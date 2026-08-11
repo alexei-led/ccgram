@@ -171,6 +171,23 @@ async def test_list_windows_exposes_all_detected_agent_targets() -> None:
     assert all("w2:" not in win.window_id for win in windows)
 
 
+async def test_list_windows_carries_agent_cwd_for_transcript_discovery() -> None:
+    live = _agent(cwd="/tmp/proj-a", foreground_cwd="/tmp/proj-a")
+    sessionless = {
+        "terminal_id": "term-b",
+        "pane_id": "w2:p2",
+        "tab_id": "w2:t9",
+        "workspace_id": "w2",
+        "agent": "claude",
+        "cwd": "/tmp/proj-b",
+    }
+    bare = _agent(cwd="")
+    windows = await _manager(_live_fake(live, sessionless, bare)).list_windows()
+    cwds = [win.cwd for win in windows]
+    assert "/tmp/proj-a" in cwds
+    assert "/tmp/proj-b" in cwds
+
+
 async def test_sessionless_agent_target_resolves_through_fresh_snapshot() -> None:
     sessionless = {
         "terminal_id": "term-b",
