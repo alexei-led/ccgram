@@ -99,6 +99,34 @@ def _sessionless_target(terminal_id: str, agent: str = "claude") -> str:
     )
 
 
+class _SnapshotSequence:
+    """Serve one canned Herdr runner per snapshot, advanced by the test.
+
+    The lineage seam is the only per-manager state that spans snapshots, so a
+    test of it needs one manager reading two different ``agent list`` replies.
+    """
+
+    def __init__(self, *fakes: FakeHerdr) -> None:
+        self._fakes = list(fakes)
+        self._index = 0
+
+    def advance(self) -> None:
+        self._index += 1
+
+    async def __call__(self, args: Sequence[str]) -> tuple[int, str, str]:
+        return await self._fakes[min(self._index, len(self._fakes) - 1)](args)
+
+
+def _sessionless(terminal_id: str = "term-a") -> dict[str, object]:
+    return {
+        "terminal_id": terminal_id,
+        "pane_id": "w2:p1",
+        "tab_id": "w2:t1",
+        "workspace_id": "w2",
+        "agent": "claude",
+    }
+
+
 def _live_fake(*records: Mapping[str, object]) -> FakeHerdr:
     workspaces = {
         str(record.get("workspace_id", "w2")): {
@@ -209,6 +237,87 @@ async def test_superseded_target_still_resolves_to_the_live_session() -> None:
 
     assert found is not None
     assert found.window_id == _target("session-a")
+
+async def test_session_target_aliases_the_terminals_previous_session() -> None:
+    """One terminal, two sessions: the agent re-keyed its session in place.
+
+    Claude Code's ``/clear`` mints a fresh session id without touching the
+    pane, so Herdr publishes a brand-new target with nothing in the record
+    tying it to the old one. Unless the adapter declares the superseded target
+    an alias, the bound topic is orphaned and the new target looks like a
+    window nobody has discovered — which is what spawned a duplicate topic per
+    ``/clear``.
+    """
+    runner = _SnapshotSequence(
+        _live_fake(_agent(value="session-a")),
+        _live_fake(_agent(value="session-b")),
+    )
+    manager = HerdrManager(socket_path="/tmp/herdr.sock", runner=runner)
+
+    before = (await manager.list_windows())[0]
+    runner.advance()
+    after = (await manager.list_windows())[0]
+
+    assert before.window_id == _target("session-a")
+    assert after.window_id == _target("session-b")
+    assert _target("session-a") in after.alias_window_ids
+    # The pre-session terminal fallback is still published alongside it.
+    assert _sessionless_target("term-a") in after.alias_window_ids
+    # The first session had no predecessor to supersede.
+    assert before.alias_window_ids == (_sessionless_target("term-a"),)
+
+
+async def test_the_superseded_target_is_republished_until_the_core_folds_it() -> None:
+    """Every caller shares the snapshot path, so the alias cannot be one-shot.
+
+    A ``find_window_by_id`` between the re-key and the monitor's reconcile pass
+    would consume the only report of the supersession, and the topic bound to
+    the old target would stay orphaned exactly as if there were no lineage.
+    """
+    runner = _SnapshotSequence(
+        _live_fake(_agent(value="session-a")),
+        _live_fake(_agent(value="session-b")),
+    )
+    manager = HerdrManager(socket_path="/tmp/herdr.sock", runner=runner)
+
+    await manager.list_windows()
+    runner.advance()
+    # An unrelated guarded lookup reads the first post-re-key snapshot.
+    assert await manager.find_window_by_id(_target("session-b")) is not None
+
+    after = (await manager.list_windows())[0]
+    assert _target("session-a") in after.alias_window_ids
+
+
+async def test_session_lineage_is_per_terminal_and_survives_a_sessionless_gap() -> None:
+    """Herdr drops ``agent_session`` while the agent restarts its session.
+
+    That gap yields the terminal-derived fallback, whose target is already the
+    published alias of whatever session arrives next. Letting it overwrite the
+    lineage would break the chain exactly when it is needed, and a second
+    terminal must never inherit the first one's history.
+    """
+    runner = _SnapshotSequence(
+        _live_fake(_agent(value="session-a")),
+        _live_fake(_sessionless()),
+        _live_fake(
+            _agent(value="session-b"),
+            _agent(pane_id="w3:p1", value="other", terminal_id="term-b"),
+        ),
+    )
+    manager = HerdrManager(socket_path="/tmp/herdr.sock", runner=runner)
+
+    await manager.list_windows()
+    runner.advance()
+    await manager.list_windows()
+    runner.advance()
+    windows = {window.window_id: window for window in await manager.list_windows()}
+
+    assert _target("session-a") in windows[_target("session-b")].alias_window_ids
+    # A different agent on the same snapshot inherits nothing.
+    assert windows[_target("other")].alias_window_ids == (
+        _sessionless_target("term-b"),
+    )
 
 
 async def test_sessionless_agent_target_resolves_through_fresh_snapshot() -> None:

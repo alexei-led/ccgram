@@ -391,6 +391,43 @@ class TestMigrateWindowAliases:
         )
         assert window_states["canonical"].session_id == "sid-1"
 
+    def test_a_topic_already_bound_to_the_canonical_id_is_unbound(self) -> None:
+        """One window is one topic; a fold must not leave two answering for it.
+
+        If the canonical id was discovered as an unbound window before ccgram
+        learned it supersedes the alias, a second topic is already bound to it.
+        The alias's topic carries the user's history, so it wins.
+        """
+        chat_bindings = {(7, -100, 41): "alias", (7, -100, 553): "canonical"}
+        thread_bindings = {7: {41: "alias", 553: "canonical"}}
+
+        migrate_window_aliases(
+            {"alias": "canonical"},
+            {"canonical": _ws_full(session_id="sid-1")},
+            thread_bindings,
+            chat_bindings,
+            {},
+            {},
+        )
+
+        assert chat_bindings == {(7, -100, 41): "canonical"}
+        assert thread_bindings == {7: {41: "canonical"}}
+
+    def test_the_same_window_bound_in_another_chat_is_not_a_duplicate(self) -> None:
+        """``bind_thread`` scopes its own eviction per (user, chat); so does this."""
+        chat_bindings = {(7, -100, 41): "alias", (7, -200, 9): "canonical"}
+
+        migrate_window_aliases(
+            {"alias": "canonical"},
+            {"canonical": _ws_full(session_id="sid-1")},
+            {},
+            chat_bindings,
+            {},
+            {},
+        )
+
+        assert chat_bindings == {(7, -100, 41): "canonical", (7, -200, 9): "canonical"}
+
 
 class TestResolveWindowAlias:
     """A flow holding an id minted before supersession — the topic-creation
