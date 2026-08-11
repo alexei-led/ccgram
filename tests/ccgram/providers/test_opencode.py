@@ -437,6 +437,95 @@ class TestTranscriptReading:
         entries, offset = provider.read_transcript_file(str(mirror), 7)
         assert entries == [] and offset == 7
 
+    def _seed_big_session(self, db: Path, parts: int) -> None:
+        conn = sqlite3.connect(db)
+        conn.execute(
+            "INSERT INTO session (id, title, directory, model, cost, time_archived, time_updated) "
+            "VALUES ('ses_big', 'big', '/tmp/repo', NULL, 0, NULL, 1)"
+        )
+        conn.execute(
+            "INSERT INTO message (id, session_id, data) VALUES ('msg_1', 'ses_big', ?)",
+            (json.dumps({"role": "user"}),),
+        )
+        _insert_event(
+            conn,
+            "ses_big",
+            1,
+            "message.updated.1",
+            _message_event("ses_big", "msg_1", "user"),
+        )
+        for i in range(parts):
+            _insert_event(
+                conn,
+                "ses_big",
+                i + 2,
+                "message.part.updated.1",
+                _part_event(
+                    "ses_big",
+                    {
+                        "id": f"prt_{i}",
+                        "sessionID": "ses_big",
+                        "messageID": "msg_1",
+                        "type": "text",
+                        "text": f"part {i}",
+                    },
+                ),
+            )
+        conn.commit()
+        conn.close()
+
+    def test_discovery_read_is_not_capped(self, provider_env: tuple) -> None:
+        # The relay-burst cap must not apply to discovery (offset 0): the cursor
+        # has to advance to the end of the event log, otherwise the history tail
+        # would be re-emitted as new messages.
+        provider, db, mirror_root = provider_env
+        self._seed_big_session(db, parts=1100)
+        mirror = mirror_root / "ses_big.jsonl"
+        mirror.parent.mkdir(parents=True, exist_ok=True)
+        mirror.write_text(
+            json.dumps(
+                {"type": "session_meta", "session_id": "ses_big", "cwd": "/tmp/repo"}
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        entries, offset = provider.read_transcript_file(str(mirror), 0)
+        assert offset == 1101  # advanced to the end, not capped at 1000
+        assert len(entries) == 1100
+
+    def test_incremental_read_is_capped(self, provider_env: tuple) -> None:
+        provider, db, mirror_root = provider_env
+        self._seed_big_session(db, parts=500)
+        mirror = mirror_root / "ses_big.jsonl"
+        mirror.parent.mkdir(parents=True, exist_ok=True)
+        mirror.write_text("", encoding="utf-8")
+        # discovery first (cursor to end), then a burst of new parts
+        entries, offset = provider.read_transcript_file(str(mirror), 0)
+        assert offset == 501
+        conn = sqlite3.connect(db)
+        for i in range(1200):
+            _insert_event(
+                conn,
+                "ses_big",
+                i + 502,
+                "message.part.updated.1",
+                _part_event(
+                    "ses_big",
+                    {
+                        "id": f"prt_new_{i}",
+                        "sessionID": "ses_big",
+                        "messageID": "msg_1",
+                        "type": "text",
+                        "text": f"new {i}",
+                    },
+                ),
+            )
+        conn.commit()
+        conn.close()
+        entries2, offset2 = provider.read_transcript_file(str(mirror), offset)
+        assert len(entries2) <= 1000  # incremental reads are capped
+        assert offset2 > offset
+
 
 class TestEntryHelpers:
     def test_is_user_entry(self) -> None:

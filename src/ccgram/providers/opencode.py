@@ -230,6 +230,11 @@ def _sync_opencode_events(
     entries: list[dict[str, Any]] = []
     role_cache: dict[str, str] = {}
     last_seq = since_seq
+    # The relay-burst cap applies only to incremental reads. On discovery
+    # (since_seq == 0) the caller must advance the cursor to the true end of
+    # the event log — otherwise the tail of the history would be re-emitted
+    # as "new" messages over the next polls.
+    max_entries = None if since_seq == 0 else _MAX_ENTRIES_PER_READ
     try:
         cursor = since_seq
         while True:
@@ -247,9 +252,9 @@ def _sync_opencode_events(
                 elif etype == "message.part.updated.1":
                     _handle_part_event(conn, raw, session_id, role_cache, entries)
                 # session.* / message.removed.* events carry no message content.
-                if len(entries) >= _MAX_ENTRIES_PER_READ:
+                if _hit_entry_cap(max_entries, entries):
                     break
-            if len(entries) >= _MAX_ENTRIES_PER_READ or len(rows) < _EVENT_BATCH_SIZE:
+            if _hit_entry_cap(max_entries, entries) or len(rows) < _EVENT_BATCH_SIZE:
                 break
             cursor = last_seq
     except (sqlite3.Error, OSError) as exc:
@@ -258,6 +263,10 @@ def _sync_opencode_events(
     finally:
         conn.close()
     return entries, last_seq
+
+
+def _hit_entry_cap(max_entries: int | None, entries: list[dict[str, Any]]) -> bool:
+    return max_entries is not None and len(entries) >= max_entries
 
 
 def _scan_mirror_part_ids(mirror: Path) -> dict[str, int]:
