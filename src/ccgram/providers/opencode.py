@@ -543,17 +543,17 @@ class OpenCodeProvider(JsonlProvider):
         """Sync new OpenCode events into the mirror and return them.
 
         *last_offset* is the per-session event ``seq`` cursor (not a byte
-        offset); the mirror file is appended to and its mtime bumped so the
-        whole-file poll path keeps running.
+        offset); the mirror file is appended to and its mtime is bumped on
+        EVERY read attempt — even when nothing is new — so the whole-file poll
+        gate (current_mtime > last_mtime) stays open and later events are
+        picked up. Without the unconditional bump the gate closes after the
+        first empty poll and the session is never read again.
         """
         mirror = Path(file_path)
         session_id = mirror.stem
         entries, last_seq = _sync_opencode_events(
             session_id, last_offset, resolve_opencode_db_path()
         )
-        if last_seq <= last_offset and not entries:
-            # DB unreachable or no change — keep poll gate closed.
-            return [], last_offset
         self._append_entries(mirror, session_id, entries)
         self._bump_mtime(mirror)
         return entries, last_seq

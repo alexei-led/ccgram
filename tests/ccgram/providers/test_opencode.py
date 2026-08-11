@@ -394,6 +394,14 @@ class TestTranscriptReading:
         messages2, _ = provider.parse_transcript_entries(entries2, {})
         assert messages2 == []
 
+        # regression: even an empty read must advance mirror mtime, otherwise
+        # TranscriptReader's whole-file gate (current_mtime > last_mtime)
+        # closes forever and later events are never polled
+        mtime_before = mirror.stat().st_mtime
+        entries_noop, _ = provider.read_transcript_file(str(mirror), offset2)
+        assert entries_noop == []
+        assert mirror.stat().st_mtime > mtime_before
+
         # new event after cursor
         _insert_event(
             conn,
