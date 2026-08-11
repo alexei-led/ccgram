@@ -90,6 +90,12 @@ _MAX_CACHED_SESSIONS = 512
 
 _EVENT_BATCH_SIZE = 500
 
+# Cap on normalized entries returned per read. After downtime a session can
+# have thousands of pending parts; relaying them all in one poll floods
+# Telegram and stalls the monitor's sequential delivery loop. Capping
+# staggers catch-up over several polls instead.
+_MAX_ENTRIES_PER_READ = 1000
+
 # mtime bump: strictly forward so the whole-file poll gate (current_mtime >
 # last_mtime) always advances, even on coarse-mtime filesystems.
 _MTIME_BUMP_SECONDS = 1.0
@@ -241,7 +247,9 @@ def _sync_opencode_events(
                 elif etype == "message.part.updated.1":
                     _handle_part_event(conn, raw, session_id, role_cache, entries)
                 # session.* / message.removed.* events carry no message content.
-            if len(rows) < _EVENT_BATCH_SIZE:
+                if len(entries) >= _MAX_ENTRIES_PER_READ:
+                    break
+            if len(entries) >= _MAX_ENTRIES_PER_READ or len(rows) < _EVENT_BATCH_SIZE:
                 break
             cursor = last_seq
     except (sqlite3.Error, OSError) as exc:
