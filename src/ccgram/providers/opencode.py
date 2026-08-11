@@ -296,9 +296,9 @@ def _scan_mirror_part_ids(mirror: Path) -> dict[str, int]:
 
 def _part_is_settled(part: dict[str, Any]) -> bool:
     ptype = part.get("type")
-    if ptype == "text":
+    if ptype in ("text", "reasoning"):
         ptime = part.get("time")
-        # Streaming assistant text has time.start but no time.end yet.
+        # Streaming text/reasoning has time.start but no time.end yet.
         return not (isinstance(ptime, dict) and "end" not in ptime)
     if ptype == "tool":
         state = part.get("state")
@@ -651,7 +651,18 @@ class OpenCodeProvider(JsonlProvider):
                 timestamp=_part_timestamp(part),
             )
         if ptype == "reasoning":
-            return None  # hidden in v1 to keep transcripts quiet
+            text = str(part.get("text") or "").strip()
+            if not text:
+                return None
+            # ccgram relays content_type == "thinking" (min length 20,
+            # truncated to 500 chars, hideable via CCGRAM_HIDE_THINKING).
+            return AgentMessage(
+                text=text,
+                role="assistant",
+                content_type="thinking",
+                is_complete=True,
+                timestamp=_part_timestamp(part),
+            )
         if ptype == "tool":
             return self._tool_message(part, pending)
         return None  # step-start / step-finish / unknown

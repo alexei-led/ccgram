@@ -360,8 +360,11 @@ class TestTranscriptReading:
         texts = [(m.role, m.content_type, m.text) for m in messages]
         assert ("user", "text", "explain this") in texts
         assert ("assistant", "text", "sure thing") in texts
-        # reasoning and step parts are skipped
-        assert not any(t == "hmm" for _r, _t, t in texts)
+        # reasoning parts are relayed as thinking; step parts are skipped
+        thinking = [m for m in messages if m.content_type == "thinking"]
+        assert any(m.text == "hmm" for m in thinking)
+        assert all(m.role == "assistant" for m in thinking)
+        assert not any(m.content_type == "text" and m.text == "hmm" for m in messages)
         # tool use emitted on running, result on completed
         tool_msgs = [(m.content_type, m.tool_name, m.tool_use_id) for m in messages]
         assert ("tool_use", "bash", "call_1") in tool_msgs
