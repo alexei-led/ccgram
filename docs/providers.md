@@ -339,7 +339,7 @@ Herdr reports the real conversation ID after the first prompt creates it. CCGram
 
 ## OpenCode CLI (`opencode`)
 
-OpenCode is a terminal AI coding agent (opencode.ai) that persists sessions in a **SQLite database** (`~/.local/share/opencode/opencode.db` on Linux, `~/Library/Application Support/opencode/opencode.db` on macOS). CCGram reads its event-sourced `event` table by per-session `seq` cursor and mirrors normalized entries into a JSONL file under `~/.ccgram/opencode/`, so the standard transcript machinery (byte offsets, mtime caching, `/history`) works unchanged. The database is opened read-only — CCGram never writes to it.
+OpenCode is a terminal AI coding agent (opencode.ai) that persists sessions in a **SQLite database** (`~/.local/share/opencode/opencode.db` on every platform — opencode resolves it via `xdg-basedir`, honoring `XDG_DATA_HOME`). CCGram reads its event-sourced `event` table by per-session `seq` cursor and mirrors normalized entries into a JSONL file under `~/.ccgram/opencode/`, so the standard transcript machinery (byte offsets, mtime caching, `/history`) works unchanged. The database is opened read-only — CCGram never writes to it.
 
 ### Data & Mirror Resolution
 

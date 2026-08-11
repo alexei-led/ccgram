@@ -665,6 +665,27 @@ class TestPathResolution:
         monkeypatch.setenv("CCGRAM_OPENCODE_DB", str(db))
         assert resolve_opencode_db_path() == db
 
+    def test_xdg_data_home_honored(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # opencode resolves the data dir via xdg-basedir: $XDG_DATA_HOME wins.
+        data_home = tmp_path / "xdg-data"
+        data_home.mkdir()
+        monkeypatch.setenv("XDG_DATA_HOME", str(data_home))
+        assert resolve_opencode_db_path() == data_home / "opencode" / "opencode.db"
+
+    def test_default_path_is_xdg_basedir_fallback(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # xdg-basedir 5.x does not special-case macOS: the default data dir is
+        # ~/.local/share on every platform.
+        monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+        monkeypatch.delenv("CCGRAM_OPENCODE_DB", raising=False)
+        monkeypatch.setattr("pathlib.Path.home", lambda: Path("/home/me"))
+        assert resolve_opencode_db_path() == Path(
+            "/home/me/.local/share/opencode/opencode.db"
+        )
+
     def test_mirror_override(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

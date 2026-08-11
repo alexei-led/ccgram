@@ -2,7 +2,7 @@
 
 OpenCode (``opencode``) is a terminal AI coding agent that persists sessions
 in a SQLite database (``~/.local/share/opencode/opencode.db`` on Linux,
-``~/Library/Application Support/opencode/opencode.db`` on macOS).  Unlike the
+on every platform — opencode resolves it via ``xdg-basedir``).  Unlike the
 JSONL-based providers (Claude, Codex, Gemini, Pi) its "transcript" is an
 event-sourced table::
 
@@ -105,27 +105,21 @@ _ARCHIVED_FILTER = "(time_archived IS NULL OR time_archived IN (0, ''))"
 
 
 def resolve_opencode_db_path() -> Path:
-    """Resolve the OpenCode SQLite database path with deterministic precedence.
+    """Resolve the OpenCode SQLite database path.
 
-    1. ``CCGRAM_OPENCODE_DB`` environment override
-    2. Platform default candidates (first existing one wins)
-    3. Linux default as final fallback
+    Mirrors opencode's own resolution (packages/core/src/global.ts uses the
+    ``xdg-basedir`` package): ``$XDG_DATA_HOME`` when set, otherwise
+    ``~/.local/share/opencode/opencode.db`` on every platform (xdg-basedir 5.x
+    does not special-case macOS, so there is no Library/Application Support
+    path). ``CCGRAM_OPENCODE_DB`` overrides everything.
     """
     override = os.environ.get("CCGRAM_OPENCODE_DB", "").strip()
     if override:
         return Path(override).expanduser()
-    home = Path.home()
-    candidates = (
-        home / ".local" / "share" / "opencode" / "opencode.db",
-        home / "Library" / "Application Support" / "opencode" / "opencode.db",
-    )
-    for candidate in candidates:
-        try:
-            if candidate.is_file():
-                return candidate
-        except OSError:
-            continue
-    return candidates[0]
+    data_home = os.environ.get("XDG_DATA_HOME", "").strip()
+    if data_home:
+        return Path(data_home) / "opencode" / "opencode.db"
+    return Path.home() / ".local" / "share" / "opencode" / "opencode.db"
 
 
 def resolve_opencode_mirror_root() -> Path:
