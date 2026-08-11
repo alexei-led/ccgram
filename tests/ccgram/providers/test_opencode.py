@@ -583,11 +583,42 @@ class TestEntryHelpers:
 class TestStatus:
     def test_permission_prompt_detected(self) -> None:
         provider = OpenCodeProvider()
-        status = provider.parse_terminal_status(
-            "some output\n! permission requested: bash (ls)\nplease approve or deny"
+        # Realistic OpenCode TUI permission banner inside a full screen dump.
+        screen = "\n".join(
+            [
+                "↑↓ select · Enter confirm · Esc cancel · type to enter text",
+                '✱ Glob "**/*.ts" in ~/dev/pets/clipcave-latest',
+                "┃  △ Permission required",
+                "┃    ← Access external directory ~/dev/pets",
+                "┃  Patterns",
+                "┃  - /home/al/dev/pets/*",
+                "┃   Allow once   Allow always   Reject     ⇆ select  enter confirm",
+                "▣  Vv-Controller · VV Codex GPT-5.6 Sol XHigh",
+                "~/dev/clipcave:main",
+                "• OpenCode 1.18.16",
+            ]
         )
+        status = provider.parse_terminal_status(screen)
         assert status is not None
         assert isinstance(status, StatusUpdate)
+        assert status.is_interactive is True
+        assert status.ui_type == "PermissionPrompt"
+        assert "Permission required" in status.raw_text
+        assert "Access external directory" in status.raw_text
+        assert "Allow once" in status.raw_text
+        # only the banner region is extracted — no unrelated screen chrome
+        assert "Vv-Controller" not in status.raw_text
+        assert "OpenCode 1.18.16" not in status.raw_text
+        assert "clipcave-latest" not in status.raw_text
+        # border characters are stripped
+        assert "┃" not in status.raw_text
+
+    def test_permission_prompt_in_run_mode_logs(self) -> None:
+        provider = OpenCodeProvider()
+        status = provider.parse_terminal_status(
+            "some output\n! permission requested: bash (ls)\nplease approve or deny",
+        )
+        assert status is not None
         assert status.is_interactive is True
         assert status.ui_type == "PermissionPrompt"
 

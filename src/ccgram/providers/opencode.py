@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -405,6 +406,35 @@ def _session_snapshot_row(
     return str(row[0] or ""), str(row[1] or ""), float(row[2] or 0.0)
 
 
+_PERMISSION_MARKER_RE = re.compile(r"permission (required|requested)", re.IGNORECASE)
+_ALLOW_OPTIONS_RE = re.compile(r"allow once", re.IGNORECASE)
+_BORDER_RE = re.compile(r"[\u2503\u2502\u2551]")  # box-drawing borders
+
+
+def _extract_permission_prompt(pane_text: str) -> str | None:
+    """Extract the OpenCode TUI permission banner region, cleaned of borders."""
+    if not pane_text:
+        return None
+    lines = pane_text.splitlines()
+    start = next(
+        (i for i, line in enumerate(lines) if _PERMISSION_MARKER_RE.search(line)),
+        None,
+    )
+    if start is None:
+        return None
+    end = len(lines)
+    for j in range(start, len(lines)):
+        if _ALLOW_OPTIONS_RE.search(lines[j]):
+            end = j + 1
+            break
+    cleaned = [
+        line
+        for line in (_BORDER_RE.sub("", ln).strip() for ln in lines[start:end])
+        if line
+    ]
+    return "\n".join(cleaned) if cleaned else None
+
+
 class OpenCodeProvider(JsonlProvider):
     """Provider for OpenCode CLI (``opencode``) with SQLite-backed transcripts."""
 
@@ -737,26 +767,22 @@ class OpenCodeProvider(JsonlProvider):
         *,
         pane_title: str = "",  # noqa: ARG002
     ) -> StatusUpdate | None:
-        """Conservatively detect OpenCode TUI permission prompts.
+        """Detect the OpenCode TUI permission banner and extract it cleanly.
 
-        Full TUI chrome parsing is not attempted in v1; herdr's native agent
-        status covers working/blocked, so only the permission banner that
-        requires a keypress is surfaced here.
+        herdr's native agent status covers working/blocked; the only TUI
+        interaction that needs a keypress is the permission banner, which is
+        extracted (border characters stripped) and surfaced as an interactive
+        PermissionPrompt so ccgram shows the navigation keyboard.
         """
-        if not pane_text:
+        banner = _extract_permission_prompt(pane_text)
+        if not banner:
             return None
-        lower = pane_text.lower()
-        if "permission" in lower and (
-            "requested" in lower or "required" in lower or "approve" in lower
-        ):
-            lines = [ln.strip() for ln in pane_text.splitlines() if ln.strip()]
-            return StatusUpdate(
-                raw_text="\n".join(lines[-15:]),
-                display_label="PermissionPrompt",
-                is_interactive=True,
-                ui_type="PermissionPrompt",
-            )
-        return None
+        return StatusUpdate(
+            raw_text=banner,
+            display_label="PermissionPrompt",
+            is_interactive=True,
+            ui_type="PermissionPrompt",
+        )
 
     def build_status_snapshot(
         self,
