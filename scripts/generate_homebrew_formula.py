@@ -31,6 +31,10 @@ class Ccgram < Formula
   homepage "https://github.com/alexei-led/ccgram"
   url "{sdist_url}"
   sha256 "{sha256}"
+  # Stated rather than left to be inferred from the sdist filename. A PyPI URL
+  # is content-addressed, so without this the version is only readable by
+  # decoding the tail of a hashed path, and a stale formula is hard to spot.
+  version "{version}"
   license "MIT"
 
   depends_on "python@3.14"
@@ -158,6 +162,7 @@ def main() -> None:
         FORMULA_TEMPLATE.format(
             sdist_url=sdist_url,
             sha256=sha256,
+            version=version,
             resources=resource_blocks(deps),
         )
     )
