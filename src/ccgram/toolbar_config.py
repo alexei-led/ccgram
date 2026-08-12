@@ -237,6 +237,15 @@ DEFAULT_LAYOUTS: dict[str, ToolbarLayout] = {
             ("last", "getfile", "close"),
         ),
     ),
+    "maki": ToolbarLayout(
+        style="emoji_text",
+        buttons=(
+            ("screen", "ctrlc", "live"),
+            ("esc", "tab", "model"),
+            ("up", "enter", "down"),
+            ("last", "getfile", "close"),
+        ),
+    ),
     "shell": ToolbarLayout(
         style="emoji_text",
         buttons=(

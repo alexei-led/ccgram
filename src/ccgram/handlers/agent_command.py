@@ -52,6 +52,7 @@ _PROVIDERS: tuple[tuple[str, str], ...] = (
     ("codex", "Codex"),
     ("gemini", "Gemini"),
     ("pi", "Pi"),
+    ("maki", "Maki"),
     ("shell", "Shell"),
 )
 _VALID_NAMES = frozenset(name for name, _ in _PROVIDERS) | {"auto"}

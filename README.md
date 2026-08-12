@@ -63,7 +63,7 @@ Each Telegram topic maps to one tmux window. With Herdr, it maps instead to one 
 ## What You Can Do
 
 - **Bind agents to topics** — one agent per Telegram topic; create via directory browser
-- **Auto-detect providers** — Supports Claude Code, Codex, Gemini, Pi, and Shell simultaneously
+- **Auto-detect providers** — Supports Claude Code, Codex, Gemini, Pi, Maki, and Shell simultaneously
 - **Monitor live** — Terminal screenshots on demand or auto-refresh every 5 seconds
 - **Send commands** — Slash commands, voice messages (transcribed via Whisper), or raw shell input
 - **Run multiple agents in parallel** — each topic independent; run different agents at once

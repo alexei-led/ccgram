@@ -107,6 +107,7 @@ class TestDetectProviderFromCommand:
             pytest.param("codex", "codex", id="bare-codex"),
             pytest.param("gemini", "gemini", id="bare-gemini"),
             pytest.param("pi", "pi", id="bare-pi"),
+            pytest.param("maki", "maki", id="bare-maki"),
             pytest.param("/usr/local/bin/claude", "claude", id="full-path-claude"),
             pytest.param("/opt/bin/codex --resume", "codex", id="codex-with-args"),
             pytest.param("gemini-cli", "gemini", id="gemini-cli-variant"),
@@ -169,6 +170,7 @@ class TestDetectProviderFromRuntime:
             detect_provider_from_runtime("bun", pane_title="ccgram:gemini") == "gemini"
         )
         assert detect_provider_from_runtime("bun", pane_title="ccgram:shell") == "shell"
+        assert detect_provider_from_runtime("bun", pane_title="ccgram:maki") == "maki"
 
     def test_ignores_invalid_ccgram_stamp(self) -> None:
         assert detect_provider_from_runtime("bun", pane_title="ccgram:unknown") == ""

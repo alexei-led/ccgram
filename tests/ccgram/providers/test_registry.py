@@ -94,6 +94,7 @@ class TestResolveLaunchCommand:
 
         assert resolve_launch_command("claude") == "claude"
         assert resolve_launch_command("codex") == "codex"
+        assert resolve_launch_command("maki") == "maki"
         gemini_cmd = resolve_launch_command("gemini")
         assert "GEMINI_CLI_SYSTEM_SETTINGS_PATH=" in gemini_cmd
         assert gemini_cmd.endswith(" gemini")
@@ -150,6 +151,7 @@ class TestResolveLaunchCommand:
             resolve_launch_command("antigravity", approval_mode="yolo")
             == "agy --dangerously-skip-permissions"
         )
+        assert resolve_launch_command("maki", approval_mode="yolo") == "maki --yolo"
 
     def test_gemini_hardening_writes_system_settings_file(
         self, tmp_path, monkeypatch
