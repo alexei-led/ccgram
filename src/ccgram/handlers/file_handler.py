@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 import structlog
 import re
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -40,7 +41,7 @@ _MAX_FILENAME_LEN = 200
 # Max file size in bytes (50 MB — Telegram Bot API limit for getFile)
 _MAX_FILE_SIZE = 50 * 1024 * 1024
 
-_SAFE_FILENAME_RE = re.compile(r"[^a-zA-Z0-9._-]")
+_FILENAME_PUNCT = frozenset("._-")
 
 # Control characters to strip from captions (keep \n and \t)
 _CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
@@ -48,10 +49,30 @@ _CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _MAX_CAPTION_LEN = 500
 
 
+def _keep_filename_char(char: str) -> bool:
+    """Whether a character may appear in a saved filename.
+
+    Letters and digits of any script, the marks that attach to them, and `._-`.
+    A rule written as ASCII letters replaces every character of a name in
+    another script, so a Cyrillic or Japanese name arrives as a row of
+    underscores and two different names collide. Marks are kept alongside
+    letters because Thai and Devanagari write their vowels as marks, and
+    dropping those cuts holes in the middle of a word.
+    """
+    return (
+        char in _FILENAME_PUNCT
+        or char.isalnum()
+        or unicodedata.category(char).startswith("M")
+    )
+
+
 def _sanitize_filename(name: str) -> str:
-    """Sanitize a filename: allow a-zA-Z0-9._-, reject path traversal."""
+    """Sanitize a filename: keep letters, digits, marks and ._-, reject path traversal."""
     name = Path(name).name
-    name = _SAFE_FILENAME_RE.sub("_", name)
+    # macOS reports decomposed names. Composing first keeps a mark attached to
+    # its letter rather than leaving it to be handled on its own.
+    name = unicodedata.normalize("NFC", name)
+    name = "".join(char if _keep_filename_char(char) else "_" for char in name)
     if not name.strip("."):
         name = "unnamed"
     # Truncate
