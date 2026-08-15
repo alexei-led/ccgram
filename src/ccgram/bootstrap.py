@@ -32,7 +32,9 @@ from .handlers.hook_events import dispatch_hook_event
 from .handlers.messaging_pipeline.message_queue import shutdown_workers
 from .handlers.messaging_pipeline.message_routing import handle_new_message
 from .handlers.polling.polling_coordinator import status_poll_loop
+from .handlers.polling.polling_state import terminal_poll_state
 from .handlers.shell import register_approval_callback, show_command_approval
+from .handlers.status.topic_emoji import mark_awaiting_first_paint
 from .handlers.topics.topic_orchestration import (
     adopt_unbound_windows as _adopt_unbound_windows,
 )
@@ -43,6 +45,7 @@ from .multiplexer import get_multiplexer, install_multiplexer, multiplexer
 from .providers import get_provider
 from .session import session_manager
 from .telegram_client import PTBTelegramClient
+from .thread_router import thread_router
 from .session_monitor import (
     NewMessage,
     NewWindowEvent,
@@ -239,10 +242,31 @@ async def start_session_monitor(application: Application) -> SessionMonitor:
     return monitor
 
 
+def _settle_preexisting_windows() -> None:
+    """Seed already-bound windows for an immediate, settled first poll."""
+    for (
+        user_id,
+        chat_id,
+        thread_id,
+        window_id,
+    ) in thread_router.iter_thread_bindings_with_chat():
+        if not window_id:
+            continue
+        terminal_poll_state.mark_seen_status(window_id)
+        resolved_chat_id = (
+            chat_id
+            if chat_id is not None
+            else thread_router.resolve_chat_id(user_id, thread_id)
+        )
+        if resolved_chat_id:
+            mark_awaiting_first_paint(resolved_chat_id, thread_id)
+
+
 def start_status_polling(application: Application) -> asyncio.Task[None]:
     """Spawn the status-polling background task."""
     global _status_poll_task
 
+    _settle_preexisting_windows()
     _status_poll_task = asyncio.create_task(status_poll_loop(application.bot))
     _status_poll_task.add_done_callback(task_done_callback)
     logger.info("Status polling task started")

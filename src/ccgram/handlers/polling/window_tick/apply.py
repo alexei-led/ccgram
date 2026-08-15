@@ -115,7 +115,12 @@ async def _transition_to_idle(
 ) -> None:
     ps = runtime.poll_state if runtime is not None else terminal_poll_state
     lc = runtime.lifecycle if runtime is not None else lifecycle_strategy
-    ps.cancel_startup_timer(window_id)
+    # Settle the window, don't just stop its clock: clearing the startup
+    # timestamp alone leaves it indistinguishable from one that never started,
+    # so the very next tick decides "starting" again — green topic, typing
+    # indicator, another 30s grace, idle, repeat. A window that reached idle
+    # has finished starting.
+    ps.mark_seen_status(window_id)
     client = PTBTelegramClient(bot)
     await update_topic_emoji(client, chat_id, thread_id, "idle", display)
     lc.clear_autoclose_timer(user_id, thread_id)
@@ -445,14 +450,17 @@ async def _apply_done_transition(
     lc = runtime.lifecycle if runtime is not None else lifecycle_strategy
     chat_id = thread_router.resolve_chat_id(user_id, thread_id)
     display = thread_router.get_display_name(window_id)
-    ps.cancel_startup_timer(window_id)
+    # Same reason as the idle transition: a window that reached done has
+    # finished starting, whoever reports its completion. Leaving the flag
+    # unset for hook-backed providers put exactly those windows — the ones
+    # whose Stop hook makes done reliable — back into the startup grace on
+    # the next tick, so a finished agent kept re-painting its topic green.
+    ps.mark_seen_status(window_id)
     client = PTBTelegramClient(bot)
     await update_topic_emoji(client, chat_id, thread_id, "done", display)
     lc.start_autoclose_timer(user_id, thread_id, "done", time.monotonic())
     lc.clear_typing_state(user_id, thread_id)
     await enqueue_status_update(client, user_id, window_id, None, thread_id=thread_id)
-    if not _get_provider(window_id).capabilities.supports_hook:
-        ps.mark_seen_status(window_id)
 
 
 async def _apply_starting_transition(

@@ -18,6 +18,7 @@ from ccgram.handlers.status.topic_emoji import (
     EMOJI_YOLO,
     clear_topic_emoji_state,
     format_topic_name_for_mode,
+    mark_awaiting_first_paint,
     reset_all_state,
     sync_topic_name,
     strip_emoji_prefix,
@@ -103,6 +104,42 @@ async def _debounced_update(
         await update_topic_emoji(bot, chat_id, thread_id, state, display_name)
         mock_monotonic.return_value = _debounce_for(state) + 0.1
         await update_topic_emoji(bot, chat_id, thread_id, state, display_name)
+
+
+class TestInheritedTopicsRepaintImmediately:
+    async def test_seeded_topic_paints_without_waiting(self) -> None:
+        bot = AsyncMock()
+        mark_awaiting_first_paint(-100, 42)
+
+        with patch(_PATCH_MONOTONIC, return_value=0.0):
+            await update_topic_emoji(bot, -100, 42, "idle", "myproject")
+
+        bot.edit_forum_topic.assert_called_once_with(
+            chat_id=-100,
+            message_thread_id=42,
+            name=f"{EMOJI_IDLE} myproject",
+        )
+
+    async def test_only_the_first_sighting_skips_the_debounce(self) -> None:
+        bot = AsyncMock()
+        mark_awaiting_first_paint(-100, 42)
+        with patch(_PATCH_MONOTONIC, return_value=0.0):
+            await update_topic_emoji(bot, -100, 42, "idle", "myproject")
+        bot.edit_forum_topic.reset_mock()
+
+        with patch(_PATCH_MONOTONIC, return_value=0.0):
+            await update_topic_emoji(bot, -100, 42, "active", "myproject")
+
+        bot.edit_forum_topic.assert_not_called()
+
+    async def test_unseeded_topic_still_debounces(self) -> None:
+        bot = AsyncMock()
+        mark_awaiting_first_paint(-100, 42)
+
+        with patch(_PATCH_MONOTONIC, return_value=0.0):
+            await update_topic_emoji(bot, -100, 99, "idle", "other")
+
+        bot.edit_forum_topic.assert_not_called()
 
 
 _STATE_EMOJI = [

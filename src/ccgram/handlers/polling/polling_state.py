@@ -359,12 +359,6 @@ class TerminalPollState:
         for ws in self._states.values():
             ws.unbound_timer = None
 
-    def cancel_startup_timer(self, window_id: str) -> None:
-        """Clear startup grace period without touching has_seen_status."""
-        ws = self._states.get(window_id)
-        if ws:
-            ws.startup_time = None
-
     def begin_startup_timer(self, window_id: str, now: float) -> None:
         """Record the moment a window's startup grace period begins."""
         self.get_state(window_id).startup_time = now
