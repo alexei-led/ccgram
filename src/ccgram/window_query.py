@@ -17,6 +17,7 @@ from .window_state_ports import identity_state as _identity_state
 from .window_state_ports import legacy_state as _legacy_state
 from .window_state_ports import lifecycle_state as _lifecycle_state
 from .window_state_ports import tool_state as _tool_state
+from .window_resolver import resolve_window_alias as _resolve_window_alias
 from .window_state_store import window_store
 from .window_view import WindowView
 
@@ -106,3 +107,15 @@ def window_count() -> int:
 def iter_window_ids() -> list[str]:
     """All tracked window IDs."""
     return list(window_store.window_states.keys())
+
+
+def resolve_window_alias(window_id: str) -> str:
+    """Return the id this window answers to now, following supersessions.
+
+    Backends whose window identity is derived from facts that arrive over
+    time (Herdr publishes an agent session after the pane already exists)
+    supersede the id a caller was handed. Reconciliation repoints the stores,
+    but a flow holding the older id must ask for the current one. Resolves
+    to ``window_id`` itself when nothing was superseded.
+    """
+    return _resolve_window_alias(window_id)

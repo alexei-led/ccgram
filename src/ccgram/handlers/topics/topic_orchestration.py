@@ -173,14 +173,8 @@ def clear_pending_creation(window_id: str) -> None:
     _pending_user_creations.pop(window_id, None)
 
 
-def _is_pending_user_creation(window_id: str) -> bool:
-    """Return True iff a directory flow is mid-creation for this window.
-
-    Expired entries are evicted lazily on read so a crashed directory flow
-    can't permanently shadow a window from auto-topic-creation.
-    """
-    if _pending_creation_transactions:
-        return True
+def _is_registered_pending_creation(window_id: str) -> bool:
+    """Return whether a concrete window target is owned by a creation flow."""
     expires_at = _pending_user_creations.get(window_id)
     if expires_at is None:
         return False
@@ -188,6 +182,22 @@ def _is_pending_user_creation(window_id: str) -> bool:
         _pending_user_creations.pop(window_id, None)
         return False
     return True
+
+
+def _is_pending_user_creation(window_id: str) -> bool:
+    """Return True iff auto-adoption must wait for a directory flow.
+
+    A transaction covers the short interval before a backend returns a target
+    ID. Once the ID exists, the per-window marker owns it until binding ends.
+    """
+    return bool(_pending_creation_transactions) or _is_registered_pending_creation(
+        window_id
+    )
+
+
+def is_pending_creation(window_id: str) -> bool:
+    """Return whether this exact window is protected from stale-state cleanup."""
+    return _is_registered_pending_creation(window_id)
 
 
 async def _auto_detect_provider(window_id: str) -> None:

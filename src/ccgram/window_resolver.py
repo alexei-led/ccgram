@@ -5,6 +5,9 @@ handler modules (no intra-package imports — safe from circular dependencies):
   - is_window_id(): validate tmux window ID format (@0, @12).
   - resolve_stale_ids(): full startup recovery — remaps persisted window IDs
     against live tmux windows, handles old-format migration, prunes dead entries.
+  - migrate_window_aliases(): per-cycle reconciliation — folds state persisted
+    under a superseded window id (``WindowRef.alias_window_ids``) onto the id
+    that identifies the same window now.
 """
 
 from dataclasses import dataclass
@@ -40,6 +43,227 @@ def session_map_prefix_for(mux_name: str, session_name: str) -> str:
     if mux_name == "tmux":
         return f"{session_name}:"
     return f"{mux_name}:"
+
+
+@dataclass(frozen=True)
+class AliasMigration:
+    """One superseded window identity folded onto its current one."""
+
+    alias_id: str
+    canonical_id: str
+
+
+_MIGRATED_TEXT_FIELDS = (
+    "session_id",
+    "cwd",
+    "transcript_path",
+    "provider_name",
+    "window_name",
+)
+
+# Persisted and transient scalar fields whose defaults are meaningful. During
+# the brief alias/canonical collision the canonical row is commonly built from
+# hook data with defaults, while the alias row carries user and lifecycle state.
+_MIGRATED_DEFAULT_FIELDS = (
+    "approval_mode",
+    "batch_mode",
+    "tool_call_visibility",
+    "origin",
+    "pane_lifecycle_notify",
+    "rc_probe_state",
+    "rc_armed_at",
+    "worktree_path",
+    "worktree_branch",
+    "provider_manual_override",
+    "legacy_herdr",
+    "legacy_herdr_archived",
+    "legacy_herdr_archive_user_id",
+    "legacy_herdr_archive_thread_id",
+)
+
+# Superseded id -> the id that identifies the same window now. Written by
+# ``migrate_window_aliases`` as it folds state over, read by anything still
+# holding an id minted before the supersession — the topic-creation flow is
+# the one that matters: it creates a window, then waits for the hook to
+# register it, and on a backend whose identity firms up over time the hook
+# writes under an id creation never saw.
+#
+# In-memory and bounded: a redirect only has to outlive the flows holding the
+# old id (seconds), and every durable store has already been repointed.
+_MAX_ALIAS_REDIRECTS = 256
+_alias_redirects: dict[str, str] = {}
+
+
+def resolve_window_alias(window_id: str) -> str:
+    """Return the id ``window_id`` answers to now, following supersessions.
+
+    Identity can be superseded more than once, so this walks the chain. A
+    window whose identity was never superseded resolves to itself, which
+    makes it safe to call unconditionally on any backend.
+    """
+    seen: set[str] = set()
+    current = window_id
+    while current in _alias_redirects and current not in seen:
+        seen.add(current)
+        current = _alias_redirects[current]
+    return current
+
+
+def _record_alias_redirect(alias_id: str, canonical_id: str) -> None:
+    """Remember that ``alias_id`` now resolves to ``canonical_id``."""
+    _alias_redirects[alias_id] = canonical_id
+    while len(_alias_redirects) > _MAX_ALIAS_REDIRECTS:
+        del _alias_redirects[next(iter(_alias_redirects))]
+
+
+def reset_alias_redirects() -> None:
+    """Drop every recorded redirect — only for tests."""
+    _alias_redirects.clear()
+
+
+_NO_DEFAULT = object()
+
+
+def _adopt_non_default_fields(current: object, stale: object) -> None:
+    """Fill canonical defaults from the superseded state without losing choices."""
+    for name in _MIGRATED_DEFAULT_FIELDS:
+        # Dataclass scalar defaults remain class attributes. Test stand-ins or
+        # future state types without that contract are left unchanged.
+        default = getattr(type(current), name, _NO_DEFAULT)
+        if default is _NO_DEFAULT:
+            continue
+        stale_value = getattr(stale, name, default)
+        if getattr(current, name, default) == default and stale_value != default:
+            setattr(current, name, stale_value)
+
+
+def _merge_panes(current: object, stale: object) -> None:
+    """Merge per-pane state, preferring the canonical row on key collisions."""
+    stale_panes = getattr(stale, "panes", None)
+    if not isinstance(stale_panes, dict) or not stale_panes:
+        return
+    current_panes = getattr(current, "panes", None)
+    if isinstance(current_panes, dict):
+        setattr(current, "panes", {**stale_panes, **current_panes})
+
+
+def _migrate_window_state(
+    window_states: dict, alias_id: str, canonical_id: str
+) -> None:
+    """Fold the alias's complete window state onto the canonical id, in place."""
+    stale = window_states.pop(alias_id, None)
+    if stale is None:
+        return
+    current = window_states.get(canonical_id)
+    if current is None:
+        window_states[canonical_id] = stale
+        return
+    # Both rows represent the same live window. Keep values already resolved on
+    # the canonical row, but fill every gap/default from the alias so identity
+    # convergence cannot discard worktree, mode, lifecycle, or pane state.
+    for field in _MIGRATED_TEXT_FIELDS:
+        if not getattr(current, field, "") and getattr(stale, field, ""):
+            setattr(current, field, getattr(stale, field))
+    _adopt_non_default_fields(current, stale)
+    _merge_panes(current, stale)
+
+
+def _alias_is_referenced(
+    alias_id: str,
+    window_states: dict,
+    thread_bindings: dict,
+    chat_thread_bindings: dict,
+    user_window_offsets: dict,
+    window_display_names: dict,
+) -> bool:
+    return (
+        alias_id in window_states
+        or alias_id in window_display_names
+        or alias_id in chat_thread_bindings.values()
+        or any(alias_id in bindings.values() for bindings in thread_bindings.values())
+        or any(alias_id in offsets for offsets in user_window_offsets.values())
+    )
+
+
+def _repoint_alias_references(
+    alias_id: str,
+    canonical_id: str,
+    thread_bindings: dict,
+    chat_thread_bindings: dict,
+    user_window_offsets: dict,
+    window_display_names: dict,
+) -> None:
+    """Point every binding, offset, and display name at the canonical id."""
+    for bindings in thread_bindings.values():
+        for thread_id, window_id in list(bindings.items()):
+            if window_id == alias_id:
+                bindings[thread_id] = canonical_id
+    for key, window_id in list(chat_thread_bindings.items()):
+        if window_id == alias_id:
+            chat_thread_bindings[key] = canonical_id
+    for offsets in user_window_offsets.values():
+        offset = offsets.pop(alias_id, None)
+        if offset is not None:
+            offsets.setdefault(canonical_id, offset)
+    display_name = window_display_names.pop(alias_id, "")
+    if display_name and not window_display_names.get(canonical_id):
+        window_display_names[canonical_id] = display_name
+
+
+def migrate_window_aliases(
+    aliases: dict[str, str],
+    window_states: dict,
+    thread_bindings: dict,
+    chat_thread_bindings: dict,
+    user_window_offsets: dict,
+    window_display_names: dict,
+) -> list[AliasMigration]:
+    """Fold state persisted under superseded window ids onto the current ones.
+
+    ``aliases`` maps a superseded id to the live id that now identifies the
+    same window (``WindowRef.alias_window_ids`` inverted). A backend emits
+    those when its identity is derived from facts that arrive over time: the
+    SessionStart hook can resolve a window to a provisional identity moments
+    before the durable one exists, so ``session_map.json`` and ``window_states``
+    land under one id while the topic later binds the other. Inbound routing
+    matches on the *bound* window's session id, so without this migration the
+    two never meet and agent replies are dropped while status polling — which
+    resolves the live window directly — keeps working.
+
+    Mutates every dict in place. Returns the migrations performed so the caller
+    can mirror them into ``session_map.json`` (whose hook-written entry would
+    otherwise recreate the alias state on the next sync).
+    """
+    migrations: list[AliasMigration] = []
+    for alias_id, canonical_id in aliases.items():
+        if alias_id == canonical_id or not alias_id or not canonical_id:
+            continue
+        # Record the redirect before the reference check: the identity is
+        # superseded whether or not any state moved, and a flow still holding
+        # the old id needs the answer either way.
+        _record_alias_redirect(alias_id, canonical_id)
+        if not _alias_is_referenced(
+            alias_id,
+            window_states,
+            thread_bindings,
+            chat_thread_bindings,
+            user_window_offsets,
+            window_display_names,
+        ):
+            continue
+
+        _migrate_window_state(window_states, alias_id, canonical_id)
+        _repoint_alias_references(
+            alias_id,
+            canonical_id,
+            thread_bindings,
+            chat_thread_bindings,
+            user_window_offsets,
+            window_display_names,
+        )
+        migrations.append(AliasMigration(alias_id=alias_id, canonical_id=canonical_id))
+        logger.info("Reconciled superseded window id %s -> %s", alias_id, canonical_id)
+    return migrations
 
 
 def _resolve_window_states(

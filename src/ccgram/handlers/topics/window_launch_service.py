@@ -25,6 +25,7 @@ from ...thread_router import thread_router
 from ...multiplexer import multiplexer as tmux_manager
 from ..telegram_origin import send_telegram_to_window
 from ...user_preferences import user_preferences
+from ... import window_query
 from ...window_state_store import CCGRAM_CREATED_WINDOW_ORIGIN
 from ..messaging_pipeline.message_sender import safe_edit, safe_send
 from ..status.topic_emoji import format_topic_name_for_mode
@@ -232,6 +233,28 @@ async def _accept_yolo_confirmation(window_id: str, *, timeout: float = 8.0) -> 
     return False
 
 
+def _follow_supersession(window_id: str) -> str:
+    """Re-point creation at the id its window answers to now.
+
+    Reconciliation runs on the monitor cycle, so a backend that firms up
+    window identity late (Herdr, once the agent session is published) can
+    rename the target while creation is still waiting on the hook. Every
+    step after the wait — releasing the guard, cleaning up a failure,
+    reporting the window — has to act on the current id; acting on the one
+    creation minted killed nothing and quarantined a healthy topic.
+
+    Carries the creation guard across to the new id so the monitor cannot
+    adopt it into a second topic in the window before the flow finishes.
+    """
+    current = window_query.resolve_window_alias(window_id)
+    if current == window_id:
+        return window_id
+    topic_orchestration.register_pending_creation(current)
+    topic_orchestration.clear_pending_creation(window_id)
+    logger.info("Creation target superseded: %s -> %s", window_id, current)
+    return current
+
+
 # ── main entry point ──────────────────────────────────────────────────────────
 
 
@@ -346,16 +369,21 @@ async def launch_window(  # noqa: PLR0912, PLR0915, C901
             await _accept_yolo_confirmation(created_wid)
 
         map_entry_found = (
-            await session_map_sync.wait_for_session_map_entry(created_wid)
+            await session_map_sync.wait_for_session_map_entry(
+                created_wid, resolve_window_id=window_query.resolve_window_alias
+            )
             if provider.capabilities.supports_hook
             else True
         )
     except BaseException:
+        created_wid = _follow_supersession(created_wid)
         if await tmux_manager.kill_window(created_wid):
             topic_orchestration.clear_pending_creation(created_wid)
             if pending_thread_id is not None:
                 thread_router.unbind_thread(user_id, pending_thread_id)
         raise
+
+    created_wid = _follow_supersession(created_wid)
 
     if not map_entry_found:
         # Do not release the guard or binding unless the target is actually
