@@ -281,11 +281,14 @@ class TranscriptReader:
 
         last_mtime = self._file_mtimes.get(session_id, 0.0)
         if provider.capabilities.supports_incremental_read:
-            if current_mtime <= last_mtime and current_size <= tracked.last_byte_offset:
+            if (
+                not generation_changed
+                and current_mtime <= last_mtime
+                and current_size <= tracked.last_byte_offset
+            ):
                 return
-        else:
-            if current_mtime <= last_mtime:
-                return
+        elif not generation_changed and current_mtime <= last_mtime:
+            return
 
         startup_boundary = (
             None
