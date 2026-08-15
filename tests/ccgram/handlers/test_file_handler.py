@@ -103,6 +103,11 @@ class TestSanitizeFilename:
         assert len(result) <= 200
         assert result.endswith(".pdf")
 
+    def test_truncates_multibyte_name_by_encoded_size(self) -> None:
+        result = _sanitize_filename("界" * 200 + ".pdf")
+        assert len(result.encode()) <= 200
+        assert result.endswith(".pdf")
+
 
 class TestUniqueDest:
     def test_returns_original_if_not_exists(self, tmp_path: Path) -> None:

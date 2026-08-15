@@ -36,7 +36,7 @@ logger = structlog.get_logger()
 
 _UPLOAD_DIR = ".ccgram-uploads"
 
-_MAX_FILENAME_LEN = 200
+_MAX_FILENAME_BYTES = 200
 
 # Max file size in bytes (50 MB — Telegram Bot API limit for getFile)
 _MAX_FILE_SIZE = 50 * 1024 * 1024
@@ -66,6 +66,11 @@ def _keep_filename_char(char: str) -> bool:
     )
 
 
+def _truncate_utf8(text: str, max_bytes: int) -> str:
+    """Truncate text to a UTF-8 byte limit without splitting a character."""
+    return text.encode()[:max_bytes].decode(errors="ignore")
+
+
 def _sanitize_filename(name: str) -> str:
     """Sanitize a filename: keep letters, digits, marks and ._-, reject path traversal."""
     name = Path(name).name
@@ -75,14 +80,12 @@ def _sanitize_filename(name: str) -> str:
     name = "".join(char if _keep_filename_char(char) else "_" for char in name)
     if not name.strip("."):
         name = "unnamed"
-    # Truncate
-    if len(name) > _MAX_FILENAME_LEN:
+    if len(name.encode()) > _MAX_FILENAME_BYTES:
         suffix = Path(name).suffix
-        # Bound suffix length to avoid negative stem slice
-        if len(suffix) >= _MAX_FILENAME_LEN:
-            suffix = suffix[:10]
-        stem = Path(name).stem[: _MAX_FILENAME_LEN - len(suffix)]
-        name = stem + suffix
+        if len(suffix.encode()) >= _MAX_FILENAME_BYTES:
+            suffix = _truncate_utf8(suffix, 10)
+        stem_bytes = _MAX_FILENAME_BYTES - len(suffix.encode())
+        name = _truncate_utf8(Path(name).stem, stem_bytes) + suffix
     return name or "unnamed"
 
 
