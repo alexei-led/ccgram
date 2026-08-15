@@ -239,10 +239,36 @@ async def start_session_monitor(application: Application) -> SessionMonitor:
     return monitor
 
 
+def _settle_preexisting_windows() -> None:
+    """Seed already-bound windows for an immediate, settled first poll."""
+    # Lazy: these status and routing singletons are wired before polling starts.
+    from .handlers.polling.polling_state import terminal_poll_state
+    from .handlers.status.topic_emoji import mark_awaiting_first_paint
+    from .thread_router import thread_router
+
+    for (
+        user_id,
+        chat_id,
+        thread_id,
+        window_id,
+    ) in thread_router.iter_thread_bindings_with_chat():
+        if not window_id:
+            continue
+        terminal_poll_state.mark_seen_status(window_id)
+        resolved_chat_id = (
+            chat_id
+            if chat_id is not None
+            else thread_router.resolve_chat_id(user_id, thread_id)
+        )
+        if resolved_chat_id:
+            mark_awaiting_first_paint(resolved_chat_id, thread_id)
+
+
 def start_status_polling(application: Application) -> asyncio.Task[None]:
     """Spawn the status-polling background task."""
     global _status_poll_task
 
+    _settle_preexisting_windows()
     _status_poll_task = asyncio.create_task(status_poll_loop(application.bot))
     _status_poll_task.add_done_callback(task_done_callback)
     logger.info("Status polling task started")

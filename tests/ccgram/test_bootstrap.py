@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -84,6 +84,42 @@ class TestWireRuntimeCallbacks:
         bootstrap.wire_runtime_callbacks()
 
         assert bootstrap._callbacks_wired is True
+
+
+class TestSettlePreexistingWindows:
+    def test_preserves_chat_identity_for_same_numbered_threads(self) -> None:
+        from ccgram.handlers.polling.polling_state import terminal_poll_state
+
+        bindings = [
+            (7, -1001, 42, "@3"),
+            (7, -1002, 42, "@4"),
+            (7, None, 43, "@5"),
+        ]
+        with (
+            patch("ccgram.thread_router.thread_router") as mock_router,
+            patch(
+                "ccgram.handlers.status.topic_emoji.mark_awaiting_first_paint"
+            ) as mark_first,
+        ):
+            mock_router.iter_thread_bindings_with_chat.return_value = bindings
+            mock_router.resolve_chat_id.return_value = -1003
+
+            bootstrap._settle_preexisting_windows()
+
+        try:
+            assert all(
+                terminal_poll_state.check_seen_status(window_id)
+                for *_, window_id in bindings
+            )
+            assert mark_first.call_args_list == [
+                call(-1001, 42),
+                call(-1002, 42),
+                call(-1003, 43),
+            ]
+            mock_router.resolve_chat_id.assert_called_once_with(7, 43)
+        finally:
+            for *_, window_id in bindings:
+                terminal_poll_state.clear_seen_status(window_id)
 
 
 class TestBootstrapApplication:

@@ -93,6 +93,10 @@ _topic_states: dict[tuple[int, int], tuple[str, str, bool]] = {}
 # Pending transitions: (chat_id, thread_id) -> (desired_state, first_seen_monotonic)
 _pending_transitions: dict[tuple[int, int], tuple[str, float]] = {}
 
+# Topics inherited at process startup. Their first observed state replaces the
+# stale state left by the previous process without waiting for debounce.
+_awaiting_first_paint: set[tuple[int, int]] = set()
+
 # Topic display names: (chat_id, thread_id) -> clean name (without emoji prefix).
 # Updated when the incoming display name changes (write-through cache) so that
 # tmux window renames and Telegram topic renames propagate correctly.
@@ -132,6 +136,11 @@ def _should_apply_update(
     if _topic_states.get(key) == state_token:
         _pending_transitions.pop(key, None)
         return name_changed
+
+    if key in _awaiting_first_paint:
+        _awaiting_first_paint.discard(key)
+        _pending_transitions.pop(key, None)
+        return True
 
     pending = _pending_transitions.get(key)
     if pending is None or pending[0] != state:
@@ -366,6 +375,12 @@ def clear_topic_emoji_state(chat_id: int, thread_id: int) -> None:
     _topic_states.pop(key, None)
     _pending_transitions.pop(key, None)
     _topic_names.pop(key, None)
+    _awaiting_first_paint.discard(key)
+
+
+def mark_awaiting_first_paint(chat_id: int, thread_id: int) -> None:
+    """Let an inherited topic apply its next observed state without debounce."""
+    _awaiting_first_paint.add((chat_id, thread_id))
 
 
 _MAX_DISABLED_CHATS = 1000
@@ -383,5 +398,6 @@ def reset_all_state() -> None:
     """Reset all tracking state (for testing)."""
     _topic_states.clear()
     _pending_transitions.clear()
+    _awaiting_first_paint.clear()
     _disabled_chats.clear()
     _topic_names.clear()

@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import aiofiles
 import structlog
@@ -36,6 +36,12 @@ if TYPE_CHECKING:
 logger = structlog.get_logger()
 
 _PathResolveError = (OSError, ValueError)
+
+
+class _StartupBoundary(NamedTuple):
+    size: int
+    device: int
+    inode: int
 
 
 def _resolve_provider_for_file(window_id: str, file_path: Path) -> Any:
@@ -93,12 +99,71 @@ class TranscriptReader:
         self._idle_tracker = idle_tracker
         self._pending_tools: dict[str, dict[str, Any]] = {}
         self._file_mtimes: dict[str, float] = {}
+        self._file_generations = self._snapshot_file_generations()
+        self._startup_file_boundaries = self._snapshot_startup_boundaries()
+
+    def _snapshot_file_generations(self) -> dict[str, tuple[int, int]]:
+        generations: dict[str, tuple[int, int]] = {}
+        for session_id, tracked in self._state.tracked_sessions.items():
+            try:
+                st = Path(tracked.file_path).stat()
+            except OSError:
+                continue
+            generations[session_id] = (st.st_dev, st.st_ino)
+        return generations
+
+    def _snapshot_startup_boundaries(self) -> dict[str, _StartupBoundary]:
+        """Capture each tracked transcript generation and its pre-start EOF."""
+        boundaries: dict[str, _StartupBoundary] = {}
+        for session_id, tracked in self._state.tracked_sessions.items():
+            try:
+                st = Path(tracked.file_path).stat()
+            except OSError:
+                continue
+            boundaries[session_id] = _StartupBoundary(
+                size=st.st_size,
+                device=st.st_dev,
+                inode=st.st_ino,
+            )
+        return boundaries
+
+    def _prepare_startup_boundary(
+        self, session_id: str, tracked: TrackedSession, st: Any
+    ) -> _StartupBoundary | None:
+        """Reset post-start replacements and return the activity boundary."""
+        boundary = self._startup_file_boundaries.get(session_id)
+        if boundary is None:
+            return None
+        generation_changed = (st.st_dev, st.st_ino) != (
+            boundary.device,
+            boundary.inode,
+        )
+        if generation_changed or st.st_size < boundary.size:
+            tracked.last_byte_offset = 0
+            boundary = _StartupBoundary(
+                size=0,
+                device=st.st_dev,
+                inode=st.st_ino,
+            )
+            self._startup_file_boundaries[session_id] = boundary
+        return boundary
+
+    async def _read_session_entries(
+        self, tracked: TrackedSession, file_path: Path, window_id: str
+    ) -> list[dict] | None:
+        """Read once, preserving startup state when the file is unavailable."""
+        try:
+            return await self._read_new_lines(tracked, file_path, window_id)
+        except OSError:
+            return None
 
     def clear_session(self, session_id: str) -> None:
         """Remove all per-session state for a cleaned-up session."""
         self._state.remove_session(session_id)
         self._file_mtimes.pop(session_id, None)
         self._pending_tools.pop(session_id, None)
+        self._file_generations.pop(session_id, None)
+        self._startup_file_boundaries.pop(session_id, None)
         log_throttle_reset(f"partial-jsonl:{session_id}")
 
     def _adopt_tracking_for_file(
@@ -129,9 +194,17 @@ class TranscriptReader:
             self._state.update_session(tracked)
             if old_session_id in self._file_mtimes:
                 self._file_mtimes[session_id] = self._file_mtimes.pop(old_session_id)
+            if old_session_id in self._file_generations:
+                self._file_generations[session_id] = self._file_generations.pop(
+                    old_session_id
+                )
             if old_session_id in self._pending_tools:
                 self._pending_tools[session_id] = self._pending_tools.pop(
                     old_session_id
+                )
+            if old_session_id in self._startup_file_boundaries:
+                self._startup_file_boundaries[session_id] = (
+                    self._startup_file_boundaries.pop(old_session_id)
                 )
             log_throttle_reset(f"partial-jsonl:{old_session_id}")
             logger.debug(
@@ -165,6 +238,9 @@ class TranscriptReader:
             except OSError:
                 file_size = 0
                 current_mtime = 0.0
+                generation = None
+            else:
+                generation = (st.st_dev, st.st_ino)
 
             if provider.capabilities.supports_incremental_read:
                 initial_offset = file_size
@@ -180,6 +256,8 @@ class TranscriptReader:
             )
             self._state.update_session(tracked)
             self._file_mtimes[session_id] = current_mtime
+            if generation is not None:
+                self._file_generations[session_id] = generation
             if provider.capabilities.supports_task_tracking and window_id:
                 await provider.seed_task_state(window_id, session_id, str(file_path))
             logger.debug("Started tracking session: %s", session_id)
@@ -191,6 +269,16 @@ class TranscriptReader:
         except OSError:
             return
 
+        generation = (st.st_dev, st.st_ino)
+        previous_generation = self._file_generations.get(session_id)
+        generation_changed = (
+            previous_generation is not None and previous_generation != generation
+        )
+        if generation_changed:
+            tracked.last_byte_offset = 0
+            self._startup_file_boundaries.pop(session_id, None)
+        self._file_generations[session_id] = generation
+
         last_mtime = self._file_mtimes.get(session_id, 0.0)
         if provider.capabilities.supports_incremental_read:
             if current_mtime <= last_mtime and current_size <= tracked.last_byte_offset:
@@ -199,50 +287,79 @@ class TranscriptReader:
             if current_mtime <= last_mtime:
                 return
 
-        new_entries = await self._read_new_lines(tracked, file_path, window_id)
+        startup_boundary = (
+            None
+            if generation_changed or not provider.capabilities.supports_incremental_read
+            else self._prepare_startup_boundary(session_id, tracked, st)
+        )
+        new_entries = await self._read_session_entries(tracked, file_path, window_id)
+        if new_entries is None:
+            return
         self._file_mtimes[session_id] = current_mtime
 
-        if new_entries:
+        # Deliver pre-start unread history, but count activity only when a
+        # complete entry advances beyond the startup file-size boundary.
+        has_live_entries = startup_boundary is None or (
+            tracked.last_byte_offset > startup_boundary.size
+        )
+        if startup_boundary is not None and (
+            tracked.last_byte_offset >= startup_boundary.size
+        ):
+            self._startup_file_boundaries.pop(session_id, None)
+        if new_entries and has_live_entries:
             self._idle_tracker.record_activity(session_id)
+        self._append_provider_messages(
+            session_id,
+            new_entries,
+            provider,
+            current_map,
+            window_id,
+            new_messages,
+        )
+        self._state.update_session(tracked)
 
+    def _append_provider_messages(
+        self,
+        session_id: str,
+        new_entries: list[dict],
+        provider: Any,
+        current_map: dict[str, dict[str, Any]] | None,
+        window_id: str,
+        new_messages: list[NewMessage],
+    ) -> None:
         if provider.capabilities.supports_task_tracking and window_id:
             provider.apply_task_entries(window_id, session_id, new_entries)
-
-        carry = self._pending_tools.get(session_id, {})
-        session_cwd: str | None = None
-        if current_map:
-            for wkey, details in current_map.items():
-                if details.get("session_id") == session_id:
-                    session_cwd = details.get("cwd")
-                    break
-
+        session_cwd = next(
+            (
+                details.get("cwd")
+                for details in (current_map or {}).values()
+                if details.get("session_id") == session_id
+            ),
+            None,
+        )
         agent_messages, remaining = provider.parse_transcript_entries(
             new_entries,
-            pending_tools=carry,
+            pending_tools=self._pending_tools.get(session_id, {}),
             cwd=session_cwd,
         )
         if remaining:
             self._pending_tools[session_id] = remaining
         else:
             self._pending_tools.pop(session_id, None)
-
-        for entry in agent_messages:
-            if not entry.text:
-                continue
-            new_messages.append(
-                NewMessage(
-                    session_id=session_id,
-                    text=entry.text,
-                    is_complete=entry.is_complete,
-                    content_type=entry.content_type,
-                    phase=entry.phase,
-                    tool_use_id=entry.tool_use_id,
-                    role=entry.role,
-                    tool_name=entry.tool_name,
-                )
+        new_messages.extend(
+            NewMessage(
+                session_id=session_id,
+                text=entry.text,
+                is_complete=entry.is_complete,
+                content_type=entry.content_type,
+                phase=entry.phase,
+                tool_use_id=entry.tool_use_id,
+                role=entry.role,
+                tool_name=entry.tool_name,
             )
-
-        self._state.update_session(tracked)
+            for entry in agent_messages
+            if entry.text
+        )
 
     async def _read_new_lines(
         self, session: TrackedSession, file_path: Path, window_id: str = ""
@@ -307,6 +424,7 @@ class TranscriptReader:
 
         except OSError:
             logger.exception("Error reading session file %s", file_path)
+            raise
         return new_entries
 
     async def _read_whole_file(
@@ -326,7 +444,7 @@ class TranscriptReader:
             return new_entries
         except OSError:
             logger.exception("Error reading transcript file %s", file_path)
-            return []
+            raise
 
     async def _get_active_cwds(self) -> set[str]:
         """Get normalized cwds of all active tmux windows."""
