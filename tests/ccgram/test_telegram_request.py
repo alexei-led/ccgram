@@ -1,5 +1,6 @@
 """Tests for resilient Telegram polling requests."""
 
+import asyncio
 from pathlib import Path
 import tomllib
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -49,6 +50,74 @@ class TestResilientPollingHTTPXRequest:
         assert old_client.is_closed
         assert not request._client.is_closed
 
+    async def test_concurrent_failures_reset_shared_client_once(self) -> None:
+        request = ResilientPollingHTTPXRequest()
+        old_client = request._client
+        both_entered = asyncio.Event()
+        release = asyncio.Event()
+        entered = 0
+
+        async def fail_together(*_args, **_kwargs) -> None:
+            nonlocal entered
+            entered += 1
+            if entered == 2:
+                both_entered.set()
+            await release.wait()
+            raise TimedOut("shared client failed")
+
+        with (
+            patch.object(
+                HTTPXRequest,
+                "do_request",
+                AsyncMock(side_effect=fail_together),
+            ),
+            patch.object(
+                request, "_build_client", wraps=request._build_client
+            ) as mock_build,
+        ):
+            calls = [
+                asyncio.create_task(request.do_request("https://example.com", "POST"))
+                for _ in range(2)
+            ]
+            await asyncio.wait_for(both_entered.wait(), timeout=1)
+            release.set()
+            results = await asyncio.gather(*calls, return_exceptions=True)
+
+        assert all(isinstance(result, TimedOut) for result in results)
+        assert mock_build.call_count == 1
+        assert request._client is not old_client
+        assert old_client.is_closed
+        assert not request._client.is_closed
+
+    async def test_cancelled_reset_finishes_closing_stale_client(self) -> None:
+        request = ResilientPollingHTTPXRequest()
+        old_client = request._client
+        close_started = asyncio.Event()
+        release_close = asyncio.Event()
+        close_finished = asyncio.Event()
+
+        async def slow_close() -> None:
+            close_started.set()
+            await release_close.wait()
+            close_finished.set()
+
+        with patch.object(old_client, "aclose", AsyncMock(side_effect=slow_close)):
+            reset = asyncio.create_task(
+                request._reset_client(failed_client=old_client, reason="TimedOut")
+            )
+            await asyncio.wait_for(close_started.wait(), timeout=1)
+            reset.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await reset
+
+            assert request._client_close_tasks
+            release_close.set()
+            await asyncio.wait_for(close_finished.wait(), timeout=1)
+            await asyncio.sleep(0)
+
+        assert not request._client_close_tasks
+        assert request._client is not old_client
+
     async def test_calls_success_callback_after_successful_api_response(self) -> None:
         on_success = MagicMock()
         request = ResilientPollingHTTPXRequest(on_success=on_success)
@@ -80,7 +149,7 @@ def _reset_log_calls(mock_logger, level: str) -> list:
     return [
         c
         for c in getattr(mock_logger, level).call_args_list
-        if c.args and "Reset Telegram polling" in c.args[0]
+        if c.args and "Reset Telegram HTTP client" in c.args[0]
     ]
 
 
@@ -164,6 +233,10 @@ class TestCreateBotPollingRequest:
         assert isinstance(app.bot._request[1], ResilientPollingHTTPXRequest)
         assert app.bot._request[0]._client._transport._pool._max_connections == 1
         assert app.bot._request[1]._client._transport._pool._max_connections == 256
+        assert app.bot._request[0].read_timeout == 10
+        assert app.bot._request[1].read_timeout == 10
+        assert app.bot._request[0].request_name == "getUpdates"
+        assert app.bot._request[1].request_name == "Bot API"
 
 
 class TestProjectDependencies:

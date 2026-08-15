@@ -17,13 +17,12 @@ _RESET_WARN_INTERVAL_S: float = 30.0
 
 
 class ResilientPollingHTTPXRequest(HTTPXRequest):
-    """Reset the polling HTTP client after transient transport failures.
+    """Reset a Telegram HTTP client after transient transport failures.
 
-    PTB uses a dedicated request object for ``getUpdates`` with a single
-    connection. If that connection gets stuck in a bad proxy/tunnel state,
-    subsequent polls can queue behind it forever. Rebuilding the client after a
-    timeout/network failure gives the polling loop a fresh pool on the next
-    retry.
+    PTB uses one instance for ``getUpdates`` and another shared instance for
+    normal Bot API traffic. Rebuilding a stuck client gives the next request a
+    fresh pool. Concurrent failures from the same stale client must perform one
+    reset only; otherwise a late failure can close the replacement client.
 
     The first reset after a successful request logs at warning; subsequent
     resets within `_RESET_WARN_INTERVAL_S` log at debug to avoid floods during
@@ -31,25 +30,48 @@ class ResilientPollingHTTPXRequest(HTTPXRequest):
     """
 
     def __init__(
-        self, *args, on_success: Callable[[], None] | None = None, **kwargs
+        self,
+        *args,
+        on_success: Callable[[], None] | None = None,
+        request_name: str = "Telegram",
+        **kwargs,
     ) -> None:  # type: ignore[no-untyped-def]
         super().__init__(*args, **kwargs)
         self._on_success = on_success
+        self.request_name = request_name
         self._last_reset_warn_ts: float | None = None
+        self._reset_lock = asyncio.Lock()
+        self._client_close_tasks: set[asyncio.Task[None]] = set()
 
-    async def _reset_client(self, *, reason: str) -> None:
-        old_client = self._client
-        self._client = self._build_client()
+    async def _reset_client(
+        self, *, failed_client: httpx.AsyncClient, reason: str
+    ) -> bool:
+        async with self._reset_lock:
+            if self._client is not failed_client:
+                return False
+            self._client = self._build_client()
 
+        close_task = asyncio.create_task(failed_client.aclose())
+        self._client_close_tasks.add(close_task)
+
+        def discard_close_task(task: asyncio.Task[None]) -> None:
+            self._client_close_tasks.discard(task)
+            if not task.cancelled():
+                task.exception()
+
+        close_task.add_done_callback(discard_close_task)
         try:
             async with asyncio.timeout(1.0):
-                await old_client.aclose()
+                await asyncio.shield(close_task)
+        except asyncio.CancelledError:
+            raise
         except (TimeoutError, RuntimeError, OSError, httpx.HTTPError) as exc:
             logger.debug(
-                "Ignoring error while closing stale polling client after %s: %s",
+                "Ignoring error while closing stale Telegram client after %s: %s",
                 reason,
                 exc,
             )
+        return True
 
     def _should_warn_for_reset(self, now: float) -> bool:
         """Throttle: warn once per interval, then debug. Reset by success."""
@@ -70,18 +92,22 @@ class ResilientPollingHTTPXRequest(HTTPXRequest):
         return result
 
     async def do_request(self, *args, **kwargs):  # type: ignore[override]
+        failed_client = self._client
         try:
             return await super().do_request(*args, **kwargs)
         except (TimedOut, NetworkError) as exc:
-            await self._reset_client(reason=exc.__class__.__name__)
-            log = (
-                logger.warning
-                if self._should_warn_for_reset(time.monotonic())
-                else logger.debug
-            )
-            log(
-                "Reset Telegram polling HTTP client after %s: %s",
-                exc.__class__.__name__,
-                exc,
-            )
+            if await self._reset_client(
+                failed_client=failed_client, reason=exc.__class__.__name__
+            ):
+                log = (
+                    logger.warning
+                    if self._should_warn_for_reset(time.monotonic())
+                    else logger.debug
+                )
+                log(
+                    "Reset Telegram HTTP client (%s) after %s: %s",
+                    self.request_name,
+                    exc.__class__.__name__,
+                    exc,
+                )
             raise

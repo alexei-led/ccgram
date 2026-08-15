@@ -10,6 +10,7 @@ from ccgram.handlers.sync_command import (
     _format_report,
     _probe_dead_topics,
     _recreate_dead_topics,
+    _sync_live_topic_names,
     _dispatch,
     handle_sync_dismiss,
     handle_sync_fix,
@@ -177,6 +178,86 @@ class TestSyncDismiss:
             mock_edit.assert_called_once_with(query, "Dismissed", reply_markup=None)
 
 
+class TestSyncLiveTopicNames:
+    async def test_limits_concurrent_telegram_calls_to_five(self, _patch_deps) -> None:
+        _, _, _, mock_tr, _, _ = _patch_deps
+        bindings = [(100, thread_id, f"window-{thread_id}") for thread_id in range(8)]
+        mock_tr.iter_thread_bindings.return_value = bindings
+        mock_tr.resolve_chat_id.return_value = -999
+        mock_tr.get_display_name.side_effect = lambda window_id: window_id
+
+        active = 0
+        peak = 0
+        started = 0
+        first_batch_started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def hold_call(*_args) -> None:
+            nonlocal active, peak, started
+            active += 1
+            peak = max(peak, active)
+            started += 1
+            if started == 5:
+                first_batch_started.set()
+            await release.wait()
+            active -= 1
+
+        with patch(
+            "ccgram.handlers.sync_command.sync_topic_name",
+            new=AsyncMock(side_effect=hold_call),
+        ) as mock_sync:
+            task = asyncio.create_task(
+                _sync_live_topic_names(
+                    MagicMock(), {window_id for _, _, window_id in bindings}
+                )
+            )
+            await asyncio.wait_for(first_batch_started.wait(), timeout=1)
+            assert peak == 5
+            assert not task.done()
+            release.set()
+            await asyncio.wait_for(task, timeout=1)
+
+        assert mock_sync.await_count == len(bindings)
+
+    async def test_waits_for_other_topic_syncs_after_unexpected_error(
+        self, _patch_deps
+    ) -> None:
+        _, _, _, mock_tr, _, _ = _patch_deps
+        bindings = [(100, 1, "window-1"), (100, 2, "window-2")]
+        mock_tr.iter_thread_bindings.return_value = bindings
+        mock_tr.resolve_chat_id.return_value = -999
+        mock_tr.get_display_name.side_effect = lambda window_id: window_id
+
+        blocked_started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def fail_or_block(_client, _chat_id, thread_id, _name) -> None:
+            if thread_id == 1:
+                raise RuntimeError("unexpected")
+            blocked_started.set()
+            await release.wait()
+
+        with (
+            patch(
+                "ccgram.handlers.sync_command.sync_topic_name",
+                new=AsyncMock(side_effect=fail_or_block),
+            ),
+            patch("ccgram.handlers.sync_command.logger") as mock_logger,
+        ):
+            task = asyncio.create_task(
+                _sync_live_topic_names(
+                    MagicMock(), {window_id for _, _, window_id in bindings}
+                )
+            )
+            await asyncio.wait_for(blocked_started.wait(), timeout=1)
+            await asyncio.sleep(0)
+            assert not task.done()
+            release.set()
+            await asyncio.wait_for(task, timeout=1)
+
+        mock_logger.error.assert_called_once()
+
+
 class TestSyncCommand:
     async def test_unauthorized_user_rejected(self, _patch_deps) -> None:
         _, _, _, _, _, mock_cfg = _patch_deps
@@ -229,6 +310,8 @@ class TestSyncCommand:
         update = MagicMock()
         update.effective_user = MagicMock(id=100)
         update.message = AsyncMock()
+        update.message.chat.id = -999
+        update.message.message_thread_id = None
 
         with (
             patch(
@@ -239,6 +322,7 @@ class TestSyncCommand:
                 "ccgram.handlers.sync_command.safe_edit",
                 new_callable=AsyncMock,
             ) as mock_edit,
+            patch("ccgram.handlers.sync_command.logger") as mock_logger,
         ):
             await sync_command(update, MagicMock())
             mock_reply.assert_awaited_once_with(update.message, "🔍 State audit…")
@@ -246,9 +330,60 @@ class TestSyncCommand:
             mock_edit.assert_awaited_once()
             assert "2 topics bound" in mock_edit.call_args.args[1]
 
-    async def test_reconciles_live_topic_names_before_reporting(
+        assert mock_logger.info.call_args_list[0].args == (
+            "State audit command started",
+        )
+        assert mock_logger.info.call_args_list[0].kwargs == {
+            "chat_id": -999,
+            "thread_id": None,
+        }
+        assert mock_logger.info.call_args_list[-1].args == (
+            "State audit command completed",
+        )
+
+    async def test_topic_probe_timeout_still_returns_audit_report(
         self, _patch_deps
     ) -> None:
+        mock_sm, _, _, _, _, _ = _patch_deps
+        mock_sm.audit_state.return_value = AuditResult(
+            issues=[], total_bindings=2, live_binding_count=2
+        )
+
+        update = MagicMock()
+        update.effective_user = MagicMock(id=100)
+        update.message = AsyncMock()
+        update.message.chat.id = -999
+        update.message.message_thread_id = None
+        update.get_bot.return_value = AsyncMock()
+        status_message = MagicMock()
+
+        async def never_finishes(_client) -> list[AuditIssue]:
+            await asyncio.Event().wait()
+            return []
+
+        with (
+            patch(
+                "ccgram.handlers.sync_command.safe_reply",
+                new_callable=AsyncMock,
+                return_value=status_message,
+            ),
+            patch(
+                "ccgram.handlers.sync_command.safe_edit",
+                new_callable=AsyncMock,
+            ) as mock_edit,
+            patch(
+                "ccgram.handlers.sync_command._probe_dead_topics",
+                new_callable=AsyncMock,
+                side_effect=never_finishes,
+            ),
+            patch("ccgram.handlers.sync_command._TELEGRAM_PROBE_TIMEOUT_S", 0.01),
+        ):
+            await sync_command(update, MagicMock())
+
+        mock_edit.assert_awaited_once()
+        assert "Telegram topic check incomplete" in mock_edit.call_args.args[1]
+
+    async def test_audit_does_not_mutate_live_topic_names(self, _patch_deps) -> None:
         mock_sm, _, _, mock_tr, mock_tm, _ = _patch_deps
         mock_sm.audit_state.return_value = AuditResult(
             issues=[], total_bindings=1, live_binding_count=1
@@ -275,13 +410,8 @@ class TestSyncCommand:
             ) as mock_sync_topic_name,
         ):
             await sync_command(update, MagicMock())
-            mock_sync_topic_name.assert_called_once()
-            args = mock_sync_topic_name.call_args.args
-            assert args[1:] == (-999, 42, "ccgram-codex")
-            from ccgram.telegram_client import PTBTelegramClient
 
-            assert isinstance(args[0], PTBTelegramClient)
-            assert args[0].bot is bot
+        mock_sync_topic_name.assert_not_awaited()
 
 
 class TestSyncFix:
@@ -315,12 +445,20 @@ class TestSyncFix:
 
         query = MagicMock()
 
-        with patch("ccgram.handlers.sync_command.safe_edit") as mock_edit:
+        with (
+            patch("ccgram.handlers.sync_command.safe_edit") as mock_edit,
+            patch(
+                "ccgram.handlers.sync_command._sync_live_topic_names",
+                new_callable=AsyncMock,
+            ) as mock_sync_topic_names,
+        ):
             await handle_sync_fix(query)
             mock_sm.sync_display_names.assert_called_once_with([])
             mock_sm.prune_stale_state.assert_called_once_with(set())
             mock_sms.prune_session_map.assert_called_once_with(set())
             mock_sm.prune_stale_window_states.assert_called_once_with(set())
+            mock_sync_topic_names.assert_awaited_once()
+            assert mock_sync_topic_names.call_args.args[1] == set()
             assert mock_sm.audit_state.call_count == 2
             assert mock_edit.call_count == 2
             assert "🔧 Fixing…" in mock_edit.call_args_list[0].args[1]

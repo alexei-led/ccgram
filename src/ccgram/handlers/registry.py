@@ -12,6 +12,8 @@ requires.
 from dataclasses import dataclass
 from typing import TypeAlias
 
+import structlog
+from telegram import Update
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -50,6 +52,24 @@ from .upgrade import upgrade_command
 from .voice import handle_voice_message
 
 HandlerFn: TypeAlias = HandlerCallback
+
+logger = structlog.get_logger()
+
+
+async def _log_command_update(update: Update, _context: object) -> None:
+    """Log command ingress without arguments so live delivery is observable."""
+    message = update.effective_message
+    if message is None:
+        return
+    text = message.text or ""
+    command = text.split(maxsplit=1)[0] if text else ""
+    logger.info(
+        "Telegram command received",
+        command=command,
+        chat_id=message.chat.id,
+        thread_id=message.message_thread_id,
+        update_id=update.update_id,
+    )
 
 
 @dataclass(frozen=True)
@@ -99,6 +119,10 @@ def register_all(
         application.add_handler(
             CommandHandler(spec.name, spec.handler, filters=group_filter)
         )
+
+    application.add_handler(
+        MessageHandler(filters.COMMAND & group_filter, _log_command_update), group=-1
+    )
 
     _load_callback_handlers()
     application.add_handler(CallbackQueryHandler(_dispatch_callback))

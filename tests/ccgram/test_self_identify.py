@@ -143,7 +143,12 @@ class TestResolveHerdrTarget:
             },
         }
 
-    def _resolve(self, monkeypatch, records: list[dict]) -> str | None:
+    def _resolve(
+        self,
+        monkeypatch,
+        records: list[dict],
+        provider_name: str | None = None,
+    ) -> str | None:
         import ccgram.hook as hook
 
         monkeypatch.setattr(
@@ -162,7 +167,11 @@ class TestResolveHerdrTarget:
                 target_id_for_live_record=lambda _record: "herdr-session-v1-target"
             ),
         )
-        return hook._resolve_herdr_target_id("w2", "w2:p1")
+        return hook._resolve_herdr_target_id(
+            "w2",
+            "w2:p1",
+            provider_name,  # type: ignore[arg-type]
+        )
 
     def test_unique_workspace_pane_locator_returns_opaque_target(
         self, monkeypatch
@@ -176,6 +185,15 @@ class TestResolveHerdrTarget:
         self, monkeypatch
     ) -> None:
         assert self._resolve(monkeypatch, [self._record(), self._record()]) is None
+
+    def test_nested_provider_in_live_pane_fails_closed(self, monkeypatch) -> None:
+        assert self._resolve(monkeypatch, [self._record()], provider_name="pi") is None
+
+    def test_live_provider_hook_resolves(self, monkeypatch) -> None:
+        assert (
+            self._resolve(monkeypatch, [self._record()], provider_name="claude")
+            == "herdr-session-v1-target"
+        )
 
 
 class TestLocatePrimaryWindowThroughResolver:
@@ -221,7 +239,7 @@ class TestLocatePrimaryWindowThroughResolver:
         monkeypatch.setenv("HERDR_PANE_ID", "w2:p1")
         monkeypatch.setattr(
             "ccgram.hook._resolve_herdr_target_id",
-            lambda _workspace, _pane: "herdr-session-v1-target",
+            lambda _workspace, _pane, _provider: "herdr-session-v1-target",
         )
         from ccgram.hook import _locate_primary_window
 
@@ -238,7 +256,7 @@ class TestLocatePrimaryWindowThroughResolver:
         monkeypatch.setenv("HERDR_PANE_ID", "w2:p1")
         monkeypatch.setattr(
             "ccgram.hook._resolve_herdr_target_id",
-            lambda _workspace, _pane: None,
+            lambda _workspace, _pane, _provider: None,
         )
         from ccgram.hook import _locate_primary_window
 

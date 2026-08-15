@@ -9,7 +9,12 @@ from telegram.ext import (
     filters,
 )
 
-from ccgram.handlers.registry import COMMAND_NAMES, CommandSpec, register_all
+from ccgram.handlers.registry import (
+    COMMAND_NAMES,
+    CommandSpec,
+    _log_command_update,
+    register_all,
+)
 
 
 def _stub_handler():
@@ -54,9 +59,30 @@ def test_register_all_registers_all_handler_kinds():
     assert by_kind.get(CommandHandler) == len(COMMAND_NAMES)
     assert by_kind.get(CallbackQueryHandler) == 1
     assert by_kind.get(InlineQueryHandler) == 1
-    # 8 MessageHandlers: FORUM_TOPIC_CLOSED, FORUM_TOPIC_EDITED, COMMAND fallback,
-    # TEXT, PHOTO, Document.ALL, VOICE, catch-all unsupported = 8
-    assert by_kind.get(MessageHandler) == 8
+    # 9 MessageHandlers: command trace, FORUM_TOPIC_CLOSED, FORUM_TOPIC_EDITED,
+    # COMMAND fallback, TEXT, PHOTO, Document.ALL, VOICE, catch-all unsupported.
+    assert by_kind.get(MessageHandler) == 9
+
+
+async def test_command_trace_logs_general_topic_without_arguments():
+    update = MagicMock()
+    update.effective_message.text = "/sync secret-argument"
+    update.effective_message.chat.id = -100123
+    update.effective_message.message_thread_id = None
+    update.update_id = 42
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        mock_logger = MagicMock()
+        monkeypatch.setattr("ccgram.handlers.registry.logger", mock_logger)
+        await _log_command_update(update, MagicMock())
+
+    mock_logger.info.assert_called_once_with(
+        "Telegram command received",
+        command="/sync",
+        chat_id=-100123,
+        thread_id=None,
+        update_id=42,
+    )
 
 
 def test_register_all_command_handlers_precede_message_command_fallback():

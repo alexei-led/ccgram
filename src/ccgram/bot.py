@@ -158,7 +158,6 @@ async def _send_shutdown_notification(application: Application) -> None:
         await application.bot.send_message(
             chat_id=config.group_id,
             text=text,
-            message_thread_id=1,  # General topic
         )
     except (TelegramError, RuntimeError) as exc:
         logger.debug("Shutdown notification skipped: %s", exc)
@@ -214,10 +213,17 @@ def create_bot() -> Application:
         Application.builder()
         .token(config.telegram_bot_token)
         .rate_limiter(AIORateLimiter(max_retries=5))
-        .request(ResilientPollingHTTPXRequest())
+        .request(
+            ResilientPollingHTTPXRequest(
+                read_timeout=10,
+                request_name="Bot API",
+            )
+        )
         .get_updates_request(
             ResilientPollingHTTPXRequest(
                 connection_pool_size=1,
+                read_timeout=10,
+                request_name="getUpdates",
                 on_success=_record_successful_poll,
             )
         )

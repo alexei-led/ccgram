@@ -87,7 +87,7 @@ async def app():
             yield application
 
 
-async def test_sync_dispatches_live_topic_name_reconciliation(app) -> None:
+async def test_sync_audit_does_not_mutate_live_topic_names(app) -> None:
     update = _make_command_update("/sync", bot=app.bot)
 
     with (
@@ -130,13 +130,8 @@ async def test_sync_dispatches_live_topic_name_reconciliation(app) -> None:
         patch("ccgram.handlers.sync_command.safe_reply", new_callable=AsyncMock),
     ):
         await app.process_update(update)
-        mock_sync_topic_name.assert_awaited_once()
-        args = mock_sync_topic_name.call_args.args
-        from ccgram.telegram_client import PTBTelegramClient
 
-        assert isinstance(args[0], PTBTelegramClient)
-        assert args[0].bot is app.bot
-        assert args[1:] == (TEST_CHAT_ID, TEST_THREAD_ID, "ccgram-codex")
+    mock_sync_topic_name.assert_not_awaited()
 
 
 async def test_topic_edited_dispatches_rename_to_tmux(app) -> None:

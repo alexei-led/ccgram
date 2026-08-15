@@ -154,7 +154,7 @@ class TestShutdownNotification:
         app.bot.send_message.assert_called_once()
         call_kwargs = app.bot.send_message.call_args.kwargs
         assert call_kwargs["chat_id"] == -100123
-        assert call_kwargs["message_thread_id"] == 1
+        assert "message_thread_id" not in call_kwargs
         assert "SIGINT" in call_kwargs["text"]
 
     async def test_skipped_without_group_id(self) -> None:

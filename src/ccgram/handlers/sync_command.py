@@ -45,12 +45,15 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger()
 
+_TELEGRAM_API_CONCURRENCY = 5
+_TELEGRAM_PROBE_TIMEOUT_S = 12.0
 _GHOST_RE = re.compile(r"user:(\d+)\s+thread:(\d+)\s+window:([^\s(]+)")
 _WINDOW_RE = re.compile(r"([^\s(]+)")
 
 _CATEGORY_LABELS: dict[str, str] = {
     "ghost_binding": "ghost binding (dead window)",
     "dead_topic": "dead topic (window alive, topic deleted)",
+    "topic_probe_incomplete": "Telegram topic check incomplete",
     "orphaned_display_name": "orphaned display name",
     "orphaned_group_chat_id": "orphaned group chat ID",
     "stale_window_state": "stale window state",
@@ -95,18 +98,34 @@ async def _sync_live_topic_names(
         all_windows = await tmux_manager.list_windows()
         live_ids = {w.window_id for w in all_windows}
 
+    bindings: list[tuple[int, int, str]] = []
     for user_id, thread_id, window_id in thread_router.iter_thread_bindings():
         if window_id not in live_ids:
             continue
         chat_id = thread_router.resolve_chat_id(user_id, thread_id)
         if chat_id == user_id:
             continue
-        await sync_topic_name(
-            client,
-            chat_id,
-            thread_id,
-            thread_router.get_display_name(window_id),
-        )
+        bindings.append((chat_id, thread_id, window_id))
+
+    sem = asyncio.Semaphore(_TELEGRAM_API_CONCURRENCY)
+
+    async def _sync_one(chat_id: int, thread_id: int, window_id: str) -> None:
+        async with sem:
+            await sync_topic_name(
+                client,
+                chat_id,
+                thread_id,
+                thread_router.get_display_name(window_id),
+            )
+
+    results = await asyncio.gather(
+        *(_sync_one(*binding) for binding in bindings), return_exceptions=True
+    )
+    for result in results:
+        if isinstance(result, asyncio.CancelledError):
+            raise result
+        if isinstance(result, BaseException):
+            logger.error("Unexpected error syncing topic name", exc_info=result)
 
 
 def _format_report(
@@ -315,7 +334,7 @@ async def _probe_dead_topics(client: TelegramClient) -> list[AuditIssue]:
     if not bindings:
         return []
 
-    sem = asyncio.Semaphore(5)  # limit concurrent Telegram API calls
+    sem = asyncio.Semaphore(_TELEGRAM_API_CONCURRENCY)
 
     async def _probe_one(
         user_id: int, thread_id: int, window_id: str, chat_id: int
@@ -423,18 +442,50 @@ async def sync_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> N
         await safe_reply(update.message, "You are not authorized to use this bot.")
         return
 
+    logger.info(
+        "State audit command started",
+        chat_id=update.message.chat.id,
+        thread_id=update.message.message_thread_id,
+    )
     status_msg = await safe_reply(update.message, "🔍 State audit…")
     client = PTBTelegramClient(update.get_bot())
-    await _sync_live_topic_names(client)
     audit = await _run_audit()
-    # Probe Telegram topics for live bindings (async, needs client)
-    dead_issues = await _probe_dead_topics(client)
-    audit.issues.extend(dead_issues)
+    logger.info(
+        "Local state audit completed",
+        issue_count=len(audit.issues),
+    )
+    # Probe Telegram topics for live bindings (async, needs client).
+    # Topic-name reconciliation is a mutation and belongs to the Fix action.
+    try:
+        async with asyncio.timeout(_TELEGRAM_PROBE_TIMEOUT_S):
+            dead_issues = await _probe_dead_topics(client)
+    except TimeoutError:
+        audit.issues.append(
+            AuditIssue(
+                category="topic_probe_incomplete",
+                detail="Telegram topic existence check timed out",
+                fixable=False,
+            )
+        )
+        logger.warning(
+            "Telegram topic probe timed out",
+            timeout_s=_TELEGRAM_PROBE_TIMEOUT_S,
+        )
+    else:
+        audit.issues.extend(dead_issues)
+        logger.info(
+            "Telegram topic probe completed",
+            dead_topic_count=len(dead_issues),
+        )
     text, keyboard = _format_report(audit)
     if status_msg is not None:
         await safe_edit(status_msg, text, reply_markup=keyboard)
     else:
         await safe_reply(update.message, text, reply_markup=keyboard)
+    logger.info(
+        "State audit command completed",
+        issue_count=len(audit.issues),
+    )
 
 
 async def handle_sync_fix(query: CallbackQuery) -> None:
