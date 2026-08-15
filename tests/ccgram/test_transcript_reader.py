@@ -1,5 +1,7 @@
 """Tests for transcript reader offset handling."""
 
+import os
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from ccgram.idle_tracker import IdleTracker
@@ -146,6 +148,44 @@ async def test_atomic_replacement_after_start_is_read_from_zero(tmp_path) -> Non
     await reader._process_session_file("sess", session_file, messages, window_id="@1")
 
     assert [msg.text for msg in messages] == ["fresh"]
+
+
+async def test_whole_file_replacement_bypasses_unchanged_mtime(tmp_path) -> None:
+    session_file = tmp_path / "transcript.json"
+    session_file.write_text("old")
+    old_stat = session_file.stat()
+    state = MonitorState(state_file=tmp_path / "monitor_state.json")
+    state.update_session(
+        TrackedSession(
+            session_id="sess", file_path=str(session_file), last_byte_offset=0
+        )
+    )
+    reader = TranscriptReader(state, IdleTracker())
+    provider = SimpleNamespace(
+        capabilities=SimpleNamespace(
+            supports_incremental_read=False,
+            supports_task_tracking=False,
+        )
+    )
+
+    with (
+        patch(
+            "ccgram.transcript_reader._resolve_provider_for_file", return_value=provider
+        ),
+        patch.object(
+            reader, "_read_session_entries", new=AsyncMock(return_value=[])
+        ) as read,
+        patch.object(reader, "_append_provider_messages"),
+    ):
+        await reader._process_session_file("sess", session_file, [], window_id="@1")
+        replacement = tmp_path / "replacement.json"
+        replacement.write_text("new")
+        replacement.replace(session_file)
+        os.utime(session_file, ns=(old_stat.st_atime_ns, old_stat.st_mtime_ns))
+
+        await reader._process_session_file("sess", session_file, [], window_id="@1")
+
+    assert read.await_count == 2
 
 
 async def test_failed_startup_read_preserves_catch_up_boundary(tmp_path) -> None:
