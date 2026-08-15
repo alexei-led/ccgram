@@ -35,6 +35,15 @@ class WindowRef:
     pane_tty: str = ""
     pane_width: int = 0
     pane_height: int = 0
+    alias_window_ids: tuple[str, ...] = ()
+    """Superseded identities this same window may already be persisted under.
+
+    A backend whose identity is derived from data that arrives over time can
+    hand out one id early and a different one later for the same window; state
+    written under the earlier id has to be migrated onto the current one or the
+    two never converge. Backends with a single stable identity leave this empty
+    (tmux always does). Consumed by ``SessionManager.reconcile_window_aliases``.
+    """
 
 
 @dataclass

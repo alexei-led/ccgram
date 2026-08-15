@@ -43,6 +43,40 @@ logger = structlog.get_logger()
 
 _DEFAULT_PRIMARY_SESSION_GRACE_SEC = 60.0
 
+# "A creation flow currently owns this window" — wired at startup to the
+# topic-creation flow's pending set, which lives with the flow that owns it
+# (a core → handlers import would invert the dependency).
+_in_flight_window_predicate: Callable[[str], bool] | None = None
+
+
+def register_in_flight_window_predicate(predicate: Callable[[str], bool]) -> None:
+    """Wire the in-flight-creation check (called once at startup).
+
+    Raises RuntimeError if called more than once — wiring happens exactly
+    once at startup; double registration is a programming error.
+    """
+    global _in_flight_window_predicate
+    if _in_flight_window_predicate is not None:
+        raise RuntimeError("register_in_flight_window_predicate already registered")
+    _in_flight_window_predicate = predicate
+
+
+def _reset_in_flight_window_predicate_for_testing() -> None:
+    """Restore the unwired default — only for tests."""
+    global _in_flight_window_predicate
+    _in_flight_window_predicate = None
+
+
+def _creation_in_flight(window_id: str) -> bool:
+    """Whether a creation flow currently owns this window id.
+
+    Unwired (``doctor``, ``status``, unit tests) means nothing is being
+    created, so nothing is protected.
+    """
+    if _in_flight_window_predicate is None:
+        return False
+    return _in_flight_window_predicate(window_id)
+
 
 def _primary_session_grace_sec() -> float:
     raw = os.getenv("CCGRAM_NESTED_SESSION_GRACE_SEC")
@@ -395,6 +429,13 @@ class SessionMapSync:
                 and w not in bound_wids
                 and window_store.get_session_id_for_window(w) not in old_format_sids
                 and not window_store.is_archived_legacy_herdr(w)
+                # A window being created is neither in the session map (its
+                # hook has not fired) nor bound (the flow binds afterwards),
+                # so it looks exactly like a stale one. Dropping it discards
+                # the cwd, provider, approval mode and origin the flow just
+                # wrote — the window then comes back re-derived and, having
+                # lost its ccgram origin, outside ccgram's lifecycle.
+                and not _creation_in_flight(w)
             )
         ]
         for wid in stale_wids:
@@ -416,9 +457,22 @@ class SessionMapSync:
         atomic_write_json(config.session_map_file, session_map)
 
     async def wait_for_session_map_entry(
-        self, window_id: str, timeout: float = 5.0, interval: float = 0.5
+        self,
+        window_id: str,
+        timeout: float = 5.0,
+        interval: float = 0.5,
+        *,
+        resolve_window_id: Callable[[str], str] | None = None,
     ) -> bool:
         """Poll session_map.json until an entry for window_id appears.
+
+        ``resolve_window_id`` is re-applied on every poll. A backend whose
+        window identity firms up over time (Herdr mints the durable one once
+        the agent session is published) can supersede the id the caller was
+        handed *while this wait runs*, and the hook then writes its entry
+        under the new one. Re-resolving each pass means the wait watches the
+        key the window actually answers to instead of timing out on an id
+        nothing will ever write again. Callers on stable-id backends omit it.
 
         Returns True if the entry was found within timeout, False otherwise.
         """
@@ -427,10 +481,13 @@ class SessionMapSync:
             window_id,
             timeout,
         )
-        key = f"{session_map_prefix()}{window_id}"
+        current_id = window_id
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         while loop.time() < deadline:
+            if resolve_window_id is not None:
+                current_id = resolve_window_id(window_id)
+            key = f"{session_map_prefix()}{current_id}"
             try:
                 if config.session_map_file.exists():
                     async with aiofiles.open(config.session_map_file, "r") as f:
@@ -442,7 +499,7 @@ class SessionMapSync:
                     if isinstance(info, dict):
                         parse_session_map_entry(info)
                         logger.debug(
-                            "session_map entry found for window_id %s", window_id
+                            "session_map entry found for window_id %s", current_id
                         )
                         await self.load_session_map(session_map)
                         return True
@@ -450,7 +507,7 @@ class SessionMapSync:
                 pass
             await asyncio.sleep(interval)
         logger.warning(
-            "Timed out waiting for session_map entry: window_id=%s", window_id
+            "Timed out waiting for session_map entry: window_id=%s", current_id
         )
         return False
 
@@ -496,6 +553,47 @@ class SessionMapSync:
                     fcntl.flock(lock_f, fcntl.LOCK_UN)
         except OSError as exc:
             logger.warning("Failed to lock session_map for pruning: %s", exc)
+
+    def rename_session_map_entry(self, alias_window_id: str, window_id: str) -> bool:
+        """Re-key a hook-written entry from a superseded window id onto the live one.
+
+        Pairs with ``window_resolver.migrate_window_aliases``: that moves the
+        in-memory state, this moves the file the hook wrote it to. Without the
+        file side, ``load_session_map`` recreates the alias window state on the
+        next cycle and the reconciliation never sticks.
+
+        Returns True when the file changed. When both keys exist the live entry
+        wins and the alias is simply dropped — the hook has already written a
+        fresher entry under the current identity.
+        """
+        map_file = config.session_map_file
+        if alias_window_id == window_id or not map_file.exists():
+            return False
+        prefix = session_map_prefix()
+        alias_key, live_key = f"{prefix}{alias_window_id}", f"{prefix}{window_id}"
+        lock_path = map_file.with_suffix(".lock")
+        try:
+            with open(lock_path, "w") as lock_f:
+                fcntl.flock(lock_f, fcntl.LOCK_EX)
+                try:
+                    # Re-read under the hook-compatible lock so a concurrent
+                    # hook write cannot be lost between read and write.
+                    raw = _read_session_map_for_pruning()
+                    if raw is None or alias_key not in raw:
+                        return False
+                    entry = raw.pop(alias_key)
+                    if live_key not in raw:
+                        raw[live_key] = entry
+                    atomic_write_json(map_file, raw)
+                    logger.info(
+                        "Re-keyed session_map entry %s -> %s", alias_key, live_key
+                    )
+                    return True
+                finally:
+                    fcntl.flock(lock_f, fcntl.LOCK_UN)
+        except OSError as exc:
+            logger.warning("Failed to lock session_map for re-keying: %s", exc)
+            return False
 
     def register_hookless_session(
         self,

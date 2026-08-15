@@ -19,6 +19,7 @@ from ccgram.handlers.topics.directory_callbacks import (
     _handle_provider_select,
 )
 from ccgram.handlers.user_state import PENDING_THREAD_ID, PENDING_THREAD_TEXT
+from ccgram.window_query import resolve_window_alias
 
 
 class TestBuildProviderPicker:
@@ -363,7 +364,9 @@ class TestHandleModeSelect:
         )
 
         mock_accept_yolo.assert_awaited_once_with("@5")
-        mock_sms.wait_for_session_map_entry.assert_awaited_once_with("@5")
+        mock_sms.wait_for_session_map_entry.assert_awaited_once_with(
+            "@5", resolve_window_id=resolve_window_alias
+        )
 
     @patch("ccgram.handlers.topics.provider_mode_callbacks.provider_registry")
     async def test_rejects_unknown_mode(self, mock_registry: MagicMock) -> None:

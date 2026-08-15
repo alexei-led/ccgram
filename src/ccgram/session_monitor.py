@@ -446,6 +446,15 @@ class SessionMonitor:
                         "Multiplexer listing unavailable; skipping window reconciliation"
                     )
                 else:
+                    # Before anything keys off these ids: fold state written
+                    # under a superseded identity onto the live one, so a topic
+                    # and the session_map entry for the same window cannot sit
+                    # on two different ids (herdr hook vs. post-session target).
+                    # Lazy: importing session_manager at module scope forms a
+                    # hard cycle on bootstrap (same reason as below).
+                    from .session import session_manager as _sm
+
+                    _sm.reconcile_window_aliases(all_windows)
                     live_window_ids = {w.window_id for w in all_windows}
                     session_map_sync.prune_session_map(live_window_ids)
                     known_window_ids = set(current_map.keys())

@@ -85,6 +85,27 @@ class TestWireRuntimeCallbacks:
 
         assert bootstrap._callbacks_wired is True
 
+    def test_wires_and_resets_exact_pending_creation_ownership(self):
+        from ccgram.handlers.topics.topic_orchestration import (
+            clear_pending_creation,
+            register_pending_creation,
+        )
+        import ccgram.session_map as session_map_module
+
+        bootstrap.wire_runtime_callbacks()
+        register_pending_creation("@owned")
+        try:
+            predicate = session_map_module._in_flight_window_predicate
+            assert predicate is not None
+            assert predicate("@owned")
+            assert not predicate("@unrelated")
+
+            bootstrap.reset_for_testing()
+
+            assert session_map_module._in_flight_window_predicate is None
+        finally:
+            clear_pending_creation("@owned")
+
 
 class TestSettlePreexistingWindows:
     def test_preserves_chat_identity_for_same_numbered_threads(self) -> None:

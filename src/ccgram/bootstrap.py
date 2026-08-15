@@ -41,6 +41,10 @@ from .handlers.topics.topic_orchestration import (
 from .handlers.topics.topic_orchestration import (
     handle_new_window as _handle_new_window,
 )
+from .handlers.topics.topic_orchestration import (
+    is_pending_creation as _is_pending_creation,
+)
+from .session_map import register_in_flight_window_predicate
 from .multiplexer import get_multiplexer, install_multiplexer, multiplexer
 from .providers import get_provider
 from .session import session_manager
@@ -197,6 +201,7 @@ def wire_runtime_callbacks() -> None:
         return
 
     register_approval_callback(show_command_approval)
+    register_in_flight_window_predicate(_is_pending_creation)
     _callbacks_wired = True
 
 
@@ -376,6 +381,17 @@ def reset_for_testing() -> None:
     from .handlers.shell import shell_capture
 
     shell_capture._reset_approval_callback_for_testing()
+
+    # Lazy: same test-only reset hook, kept out of the production import path.
+    from .session_map import _reset_in_flight_window_predicate_for_testing
+
+    _reset_in_flight_window_predicate_for_testing()
+
+    # Lazy: window-id supersessions are per-run state; a redirect recorded by
+    # one test must not answer a lookup in the next.
+    from .window_resolver import reset_alias_redirects
+
+    reset_alias_redirects()
 
     _callbacks_wired = False
     session_monitor = None

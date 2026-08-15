@@ -171,6 +171,46 @@ async def test_list_windows_exposes_all_detected_agent_targets() -> None:
     assert all("w2:" not in win.window_id for win in windows)
 
 
+async def test_session_target_aliases_the_hook_time_sessionless_target() -> None:
+    """The same pane, before and after Herdr publishes its agent session.
+
+    The ccgram SessionStart hook resolves the pane while it is still
+    sessionless, so session_map.json and window_states are written under the
+    terminal-derived target; every later snapshot yields the session-derived
+    one, which is what a topic binds to. The adapter has to declare the first
+    as an alias of the second, or the core cannot fold the two together and
+    inbound routing never matches.
+    """
+    at_hook_time = {
+        "terminal_id": "term-a",
+        "pane_id": "w2:p1",
+        "tab_id": "w2:t1",
+        "workspace_id": "w2",
+        "agent": "claude",
+    }
+    once_published = _agent(value="session-a")
+
+    hook_window = (await _manager(_live_fake(at_hook_time)).list_windows())[0]
+    live_window = (await _manager(_live_fake(once_published)).list_windows())[0]
+
+    assert hook_window.window_id == _sessionless_target("term-a")
+    assert live_window.window_id == _target("session-a")
+    assert hook_window.window_id != live_window.window_id
+    assert live_window.alias_window_ids == (hook_window.window_id,)
+    # A pane that never publishes a session is already its own identity.
+    assert hook_window.alias_window_ids == ()
+
+
+async def test_superseded_target_still_resolves_to_the_live_session() -> None:
+    live = _agent(value="session-a")
+    found = await _manager(_live_fake(live)).find_window_by_id(
+        _sessionless_target("term-a")
+    )
+
+    assert found is not None
+    assert found.window_id == _target("session-a")
+
+
 async def test_sessionless_agent_target_resolves_through_fresh_snapshot() -> None:
     sessionless = {
         "terminal_id": "term-b",
@@ -1109,3 +1149,82 @@ async def test_ensure_session_accepts_protocol_and_rejects_unavailable_server() 
         await _manager(FakeHerdr().on("status", out=incompatible)).ensure_session()
     with pytest.raises(HerdrError):
         await _manager(FakeHerdr().on("status", out="not json")).ensure_session()
+
+
+async def test_creation_binds_terminal_target_while_agent_waits_at_a_prompt(
+    tmp_path: Path,
+) -> None:
+    """An agent stopped at a pre-session prompt must not be rolled away.
+
+    Claude's "do you trust the files in this folder?" prompt blocks before the
+    session exists, so ``agent.list`` stays empty past the discovery deadline.
+    The pane is alive, so creation binds its terminal-derived target instead of
+    closing the tab out from under the waiting agent.
+    """
+    fake = (
+        FakeHerdr()
+        .on("workspace", "list", out=_workspace("selected", tmp_path))
+        .on("tab", "create", out=_created())
+        .on("pane", "run", out=_result(type="ok"))
+        .on("agent", "list", out=_agents())
+        .on(
+            "pane",
+            "list",
+            out=_result(
+                panes=[
+                    {
+                        "terminal_id": "term-new",
+                        "pane_id": "w9:p1",
+                        "tab_id": "w9:t1",
+                        "workspace_id": "selected",
+                    }
+                ]
+            ),
+        )
+    )
+    manager = _manager(fake)
+
+    target = await manager.create_topic_target(
+        str(tmp_path), launch_command="claude", workspace_id="selected"
+    )
+
+    assert target.target_id == _sessionless_target("term-new")
+    assert ["tab", "close", "w9:t1"] not in fake.calls
+    # The target answers actions while the prompt is still up.
+    record = await manager.guard_session_target(target.target_id)
+    assert record.pane_id == "w9:p1"
+
+
+async def test_provisional_target_is_dropped_once_its_pane_is_gone(
+    tmp_path: Path,
+) -> None:
+    fake = (
+        FakeHerdr()
+        .on("workspace", "list", out=_workspace("selected", tmp_path))
+        .on("tab", "create", out=_created())
+        .on("pane", "run", out=_result(type="ok"))
+        .on("agent", "list", out=_agents())
+        .on(
+            "pane",
+            "list",
+            out=_result(
+                panes=[
+                    {
+                        "terminal_id": "term-new",
+                        "pane_id": "w9:p1",
+                        "tab_id": "w9:t1",
+                        "workspace_id": "selected",
+                    }
+                ]
+            ),
+        )
+    )
+    manager = _manager(fake)
+    target = await manager.create_topic_target(
+        str(tmp_path), launch_command="claude", workspace_id="selected"
+    )
+
+    fake.on("pane", "list", out=_result(panes=[]))
+
+    with pytest.raises(HerdrUnresolvedTargetError):
+        await manager.guard_session_target(target.target_id)

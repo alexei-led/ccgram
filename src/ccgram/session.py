@@ -18,6 +18,7 @@ Thread routing: delegated to ThreadRouter (see thread_router.py) — no pass-thr
 
 import json
 import structlog
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -224,6 +225,45 @@ class SessionManager:
             )
         if migrated:
             self._save_state()
+
+    def reconcile_window_aliases(self, windows: Sequence[Any]) -> None:
+        """Fold state persisted under superseded window ids onto the live ones.
+
+        Runs every monitor cycle, not just at startup: the identities a backend
+        supersedes are minted whenever an agent session starts, which is long
+        after bootstrap. Backends with one stable identity publish no aliases,
+        so this is a no-op for them (tmux never populates ``alias_window_ids``).
+        """
+        # Lazy: same cycle as resolve_stale_ids — window_resolver imports
+        # session-state types, so hoisting forms a session → window_resolver →
+        # session.WindowState cycle.
+        from .window_resolver import migrate_window_aliases
+
+        aliases = {
+            alias_id: window.window_id
+            for window in windows
+            for alias_id in getattr(window, "alias_window_ids", ())
+        }
+        if not aliases:
+            return
+
+        migrations = migrate_window_aliases(
+            aliases,
+            self.window_states,
+            thread_router.thread_bindings,
+            thread_router.chat_thread_bindings,
+            user_preferences.user_window_offsets,
+            thread_router.window_display_names,
+        )
+        if not migrations:
+            return
+
+        for migration in migrations:
+            session_map_sync.rename_session_map_entry(
+                migration.alias_id, migration.canonical_id
+            )
+        thread_router._rebuild_reverse_index()
+        self._save_state()
 
     async def resolve_stale_ids(self) -> None:
         """Re-resolve persisted window IDs against live tmux windows.
