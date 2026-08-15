@@ -2,15 +2,32 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from types import SimpleNamespace
 
 import pytest
 
+from ccgram.window_state_store import (
+    CCGRAM_CREATED_WINDOW_ORIGIN,
+    PaneInfo,
+    WindowState,
+)
 from ccgram.window_resolver import (
     LiveWindow,
     is_window_id,
+    migrate_window_aliases,
+    reset_alias_redirects,
     resolve_stale_ids,
+    resolve_window_alias,
 )
+
+
+@pytest.fixture(autouse=True)
+def _clean_alias_redirects() -> Iterator[None]:
+    """Redirects are module state; one test must not answer the next."""
+    reset_alias_redirects()
+    yield
+    reset_alias_redirects()
 
 
 class TestIsWindowId:
@@ -198,3 +215,212 @@ class TestGuardedTargetRecovery:
             is True
         )
         assert "@1" in window_states
+
+
+def _ws_full(
+    name: str = "",
+    session_id: str = "",
+    cwd: str = "",
+    transcript_path: str = "",
+    provider_name: str = "",
+) -> SimpleNamespace:
+    """WindowState stand-in carrying every field the alias migration folds."""
+    return SimpleNamespace(
+        window_name=name,
+        session_id=session_id,
+        cwd=cwd,
+        transcript_path=transcript_path,
+        provider_name=provider_name,
+    )
+
+
+class TestMigrateWindowAliases:
+    """The hook writes state under a provisional id; the topic binds the durable
+    one. Unless the two are folded together, inbound routing — which matches on
+    the *bound* window's session id — never matches and replies are dropped."""
+
+    def test_folds_hook_state_onto_the_id_the_topic_bound(self) -> None:
+        window_states = {
+            "alias": _ws_full(
+                session_id="sid-1", cwd="/repo", transcript_path="/t.jsonl"
+            )
+        }
+        chat_bindings = {(7, -100, 41): "canonical"}
+
+        migrations = migrate_window_aliases(
+            {"alias": "canonical"},
+            window_states,
+            {},
+            chat_bindings,
+            {},
+            {"alias": "proj ▸ 1"},
+        )
+
+        assert [(m.alias_id, m.canonical_id) for m in migrations] == [
+            ("alias", "canonical")
+        ]
+        assert "alias" not in window_states
+        # The bound window now carries the session id, which is the whole point.
+        assert window_states["canonical"].session_id == "sid-1"
+        assert window_states["canonical"].transcript_path == "/t.jsonl"
+        assert chat_bindings[(7, -100, 41)] == "canonical"
+
+    def test_repoints_a_topic_bound_to_the_superseded_id(self) -> None:
+        window_states = {"canonical": _ws_full(session_id="sid-1")}
+        thread_bindings = {7: {41: "alias"}}
+        offsets = {7: {"alias": 12}}
+        display_names = {"alias": "proj ▸ 1"}
+
+        migrate_window_aliases(
+            {"alias": "canonical"},
+            window_states,
+            thread_bindings,
+            {},
+            offsets,
+            display_names,
+        )
+
+        assert thread_bindings[7][41] == "canonical"
+        assert offsets[7] == {"canonical": 12}
+        assert display_names == {"canonical": "proj ▸ 1"}
+
+    def test_never_overwrites_what_the_live_id_already_resolved(self) -> None:
+        window_states = {
+            "alias": _ws_full(session_id="stale", cwd="/old", provider_name="claude"),
+            "canonical": _ws_full(session_id="fresh"),
+        }
+
+        migrate_window_aliases({"alias": "canonical"}, window_states, {}, {}, {}, {})
+
+        assert "alias" not in window_states
+        assert window_states["canonical"].session_id == "fresh"
+        # Gaps are still filled from the superseded entry.
+        assert window_states["canonical"].cwd == "/old"
+        assert window_states["canonical"].provider_name == "claude"
+
+    def test_carries_creation_choices_onto_a_hook_built_state(self) -> None:
+        # Real WindowState here: the carry-over reads each field's default off
+        # the state class, which a SimpleNamespace stand-in cannot express.
+        # The hook-built entry holds defaults for everything the creation flow
+        # chose; letting them win drops the YOLO badge and puts a
+        # ccgram-created window outside ccgram's lifecycle.
+        alias = WindowState(
+            session_id="sid-1",
+            approval_mode="yolo",
+            origin=CCGRAM_CREATED_WINDOW_ORIGIN,
+        )
+        window_states = {"alias": alias, "canonical": WindowState(session_id="fresh")}
+
+        migrate_window_aliases({"alias": "canonical"}, window_states, {}, {}, {}, {})
+
+        assert window_states["canonical"].approval_mode == "yolo"
+        assert window_states["canonical"].origin == CCGRAM_CREATED_WINDOW_ORIGIN
+
+    def test_never_overrides_a_choice_the_live_id_already_holds(self) -> None:
+        canonical = WindowState(session_id="fresh", approval_mode="yolo")
+
+        migrate_window_aliases(
+            {"alias": "canonical"},
+            {"alias": WindowState(session_id="sid-1"), "canonical": canonical},
+            {},
+            {},
+            {},
+            {},
+        )
+
+        assert canonical.approval_mode == "yolo"
+
+    def test_preserves_all_non_default_state_during_a_collision(self) -> None:
+        alias = WindowState(
+            session_id="stale",
+            batch_mode="batched",
+            tool_call_visibility="hidden",
+            panes={"%1": PaneInfo("%1", name="left")},
+            pane_lifecycle_notify=False,
+            rc_probe_state="armed",
+            rc_armed_at=12.5,
+            worktree_path="/repo/.worktrees/feature",
+            worktree_branch="feature",
+            provider_manual_override=True,
+            legacy_herdr=True,
+            legacy_herdr_archived=True,
+            legacy_herdr_archive_user_id=7,
+            legacy_herdr_archive_thread_id=42,
+        )
+        canonical = WindowState(
+            session_id="fresh",
+            panes={"%2": PaneInfo("%2", name="right")},
+        )
+
+        migrate_window_aliases(
+            {"alias": "canonical"},
+            {"alias": alias, "canonical": canonical},
+            {},
+            {},
+            {},
+            {},
+        )
+
+        assert canonical.session_id == "fresh"
+        assert canonical.batch_mode == "batched"
+        assert canonical.tool_call_visibility == "hidden"
+        assert set(canonical.panes) == {"%1", "%2"}
+        assert canonical.pane_lifecycle_notify is False
+        assert canonical.rc_probe_state == "armed"
+        assert canonical.rc_armed_at == 12.5
+        assert canonical.worktree_path == "/repo/.worktrees/feature"
+        assert canonical.worktree_branch == "feature"
+        assert canonical.provider_manual_override is True
+        assert canonical.legacy_herdr is True
+        assert canonical.legacy_herdr_archived is True
+        assert canonical.legacy_herdr_archive_user_id == 7
+        assert canonical.legacy_herdr_archive_thread_id == 42
+
+    def test_unreferenced_or_self_aliases_are_not_migrations(self) -> None:
+        window_states = {"canonical": _ws_full(session_id="sid-1")}
+        assert (
+            migrate_window_aliases(
+                {"unknown": "canonical", "canonical": "canonical"},
+                window_states,
+                {},
+                {},
+                {},
+                {},
+            )
+            == []
+        )
+        assert window_states["canonical"].session_id == "sid-1"
+
+
+class TestResolveWindowAlias:
+    """A flow holding an id minted before supersession — the topic-creation
+    wait is the one that matters — must be able to ask what that window is
+    called now, or it waits out its timeout on a key nothing will write."""
+
+    def test_an_id_that_was_never_superseded_resolves_to_itself(self) -> None:
+        assert resolve_window_alias("canonical") == "canonical"
+
+    def test_resolves_a_superseded_id_to_the_current_one(self) -> None:
+        migrate_window_aliases(
+            {"alias": "canonical"},
+            {"alias": _ws_full(session_id="sid-1")},
+            {},
+            {},
+            {},
+            {},
+        )
+
+        assert resolve_window_alias("alias") == "canonical"
+
+    def test_follows_a_chain_of_supersessions(self) -> None:
+        states = {"first": _ws_full(session_id="sid-1")}
+        migrate_window_aliases({"first": "second"}, states, {}, {}, {}, {})
+        migrate_window_aliases({"second": "third"}, states, {}, {}, {}, {})
+
+        assert resolve_window_alias("first") == "third"
+
+    def test_records_a_supersession_no_state_referenced_yet(self) -> None:
+        # The window whose state was already swept, or bound after the rename:
+        # nothing to migrate, but the identity moved and callers still need it.
+        assert migrate_window_aliases({"alias": "canonical"}, {}, {}, {}, {}, {}) == []
+        assert resolve_window_alias("alias") == "canonical"
