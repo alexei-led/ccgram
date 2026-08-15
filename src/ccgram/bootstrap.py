@@ -32,7 +32,9 @@ from .handlers.hook_events import dispatch_hook_event
 from .handlers.messaging_pipeline.message_queue import shutdown_workers
 from .handlers.messaging_pipeline.message_routing import handle_new_message
 from .handlers.polling.polling_coordinator import status_poll_loop
+from .handlers.polling.polling_state import terminal_poll_state
 from .handlers.shell import register_approval_callback, show_command_approval
+from .handlers.status.topic_emoji import mark_awaiting_first_paint
 from .handlers.topics.topic_orchestration import (
     adopt_unbound_windows as _adopt_unbound_windows,
 )
@@ -43,6 +45,7 @@ from .multiplexer import get_multiplexer, install_multiplexer, multiplexer
 from .providers import get_provider
 from .session import session_manager
 from .telegram_client import PTBTelegramClient
+from .thread_router import thread_router
 from .session_monitor import (
     NewMessage,
     NewWindowEvent,
@@ -241,11 +244,6 @@ async def start_session_monitor(application: Application) -> SessionMonitor:
 
 def _settle_preexisting_windows() -> None:
     """Seed already-bound windows for an immediate, settled first poll."""
-    # Lazy: these status and routing singletons are wired before polling starts.
-    from .handlers.polling.polling_state import terminal_poll_state
-    from .handlers.status.topic_emoji import mark_awaiting_first_paint
-    from .thread_router import thread_router
-
     for (
         user_id,
         chat_id,

@@ -96,10 +96,8 @@ class TestSettlePreexistingWindows:
             (7, None, 43, "@5"),
         ]
         with (
-            patch("ccgram.thread_router.thread_router") as mock_router,
-            patch(
-                "ccgram.handlers.status.topic_emoji.mark_awaiting_first_paint"
-            ) as mark_first,
+            patch("ccgram.bootstrap.thread_router") as mock_router,
+            patch("ccgram.bootstrap.mark_awaiting_first_paint") as mark_first,
         ):
             mock_router.iter_thread_bindings_with_chat.return_value = bindings
             mock_router.resolve_chat_id.return_value = -1003
