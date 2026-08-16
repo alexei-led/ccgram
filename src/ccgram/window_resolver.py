@@ -88,9 +88,9 @@ _MIGRATED_DEFAULT_FIELDS = (
 # register it, and on a backend whose identity firms up over time the hook
 # writes under an id creation never saw.
 #
-# In-memory and bounded: a redirect only has to outlive the flows holding the
-# old id (seconds), and every durable store has already been repointed.
-_MAX_ALIAS_REDIRECTS = 256
+# In-memory. Stale redirects are bounded, but aliases in the current live
+# snapshot are never evicted: a creation flow may still hold any one of them.
+_MAX_STALE_ALIAS_REDIRECTS = 256
 _alias_redirects: dict[str, str] = {}
 
 
@@ -112,8 +112,21 @@ def resolve_window_alias(window_id: str) -> str:
 def _record_alias_redirect(alias_id: str, canonical_id: str) -> None:
     """Remember that ``alias_id`` now resolves to ``canonical_id``."""
     _alias_redirects[alias_id] = canonical_id
-    while len(_alias_redirects) > _MAX_ALIAS_REDIRECTS:
-        del _alias_redirects[next(iter(_alias_redirects))]
+
+
+def _prune_stale_alias_redirects(active_aliases: set[str]) -> None:
+    """Bound stale redirects without evicting any current alias or its chain."""
+    protected: set[str] = set()
+    for alias_id in active_aliases:
+        current = alias_id
+        seen: set[str] = set()
+        while current in _alias_redirects and current not in seen:
+            seen.add(current)
+            protected.add(current)
+            current = _alias_redirects[current]
+    stale = [key for key in _alias_redirects if key not in protected]
+    for key in stale[:-_MAX_STALE_ALIAS_REDIRECTS]:
+        _alias_redirects.pop(key, None)
 
 
 def reset_alias_redirects() -> None:
@@ -235,6 +248,11 @@ def migrate_window_aliases(
     otherwise recreate the alias state on the next sync).
     """
     migrations: list[AliasMigration] = []
+    active_aliases = {
+        alias_id
+        for alias_id, canonical_id in aliases.items()
+        if alias_id and canonical_id and alias_id != canonical_id
+    }
     for alias_id, canonical_id in aliases.items():
         if alias_id == canonical_id or not alias_id or not canonical_id:
             continue
@@ -263,6 +281,7 @@ def migrate_window_aliases(
         )
         migrations.append(AliasMigration(alias_id=alias_id, canonical_id=canonical_id))
         logger.info("Reconciled superseded window id %s -> %s", alias_id, canonical_id)
+    _prune_stale_alias_redirects(active_aliases)
     return migrations
 
 

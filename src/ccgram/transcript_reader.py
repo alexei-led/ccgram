@@ -14,6 +14,7 @@ Key class: TranscriptReader.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -42,6 +43,38 @@ class _StartupBoundary(NamedTuple):
     size: int
     device: int
     inode: int
+
+
+class _StableRead(NamedTuple):
+    entries: list[dict]
+    stat: Any
+    reset_generation: bool
+
+
+_MARKER_BYTES = 128
+
+
+def _prefix_digest(file_path: Path, size: int) -> bytes:
+    digest = hashlib.sha256()
+    with file_path.open("rb") as transcript:
+        remaining = size
+        while remaining:
+            chunk = transcript.read(min(64 * 1024, remaining))
+            if not chunk:
+                break
+            digest.update(chunk)
+            remaining -= len(chunk)
+    return digest.digest()
+
+
+def _tail_marker(file_path: Path, offset: int) -> bytes:
+    """Read a small marker immediately before a consumed byte offset."""
+    if offset <= 0:
+        return b""
+    start = max(0, offset - _MARKER_BYTES)
+    with file_path.open("rb") as transcript:
+        transcript.seek(start)
+        return transcript.read(offset - start)
 
 
 def _resolve_provider_for_file(window_id: str, file_path: Path) -> Any:
@@ -99,8 +132,43 @@ class TranscriptReader:
         self._idle_tracker = idle_tracker
         self._pending_tools: dict[str, dict[str, Any]] = {}
         self._file_mtimes: dict[str, float] = {}
+        self._file_ctimes: dict[str, int] = self._snapshot_file_ctimes()
+        self._file_sizes = self._snapshot_file_sizes()
+        self._file_prefixes = self._snapshot_file_prefixes()
         self._file_generations = self._snapshot_file_generations()
+        self._file_markers = self._snapshot_file_markers()
         self._startup_file_boundaries = self._snapshot_startup_boundaries()
+
+    def _snapshot_file_ctimes(self) -> dict[str, int]:
+        ctimes: dict[str, int] = {}
+        for session_id, tracked in self._state.tracked_sessions.items():
+            try:
+                ctimes[session_id] = Path(tracked.file_path).stat().st_ctime_ns
+            except OSError:
+                continue
+        return ctimes
+
+    def _snapshot_file_sizes(self) -> dict[str, int]:
+        sizes: dict[str, int] = {}
+        for session_id, tracked in self._state.tracked_sessions.items():
+            try:
+                sizes[session_id] = Path(tracked.file_path).stat().st_size
+            except OSError:
+                continue
+        return sizes
+
+    def _snapshot_file_prefixes(self) -> dict[str, tuple[int, bytes]]:
+        prefixes: dict[str, tuple[int, bytes]] = {}
+        for session_id, tracked in self._state.tracked_sessions.items():
+            try:
+                size = Path(tracked.file_path).stat().st_size
+                prefixes[session_id] = (
+                    size,
+                    _prefix_digest(Path(tracked.file_path), size),
+                )
+            except OSError:
+                continue
+        return prefixes
 
     def _snapshot_file_generations(self) -> dict[str, tuple[int, int]]:
         generations: dict[str, tuple[int, int]] = {}
@@ -111,6 +179,16 @@ class TranscriptReader:
                 continue
             generations[session_id] = (st.st_dev, st.st_ino)
         return generations
+
+    def _snapshot_file_markers(self) -> dict[str, tuple[int, bytes]]:
+        markers: dict[str, tuple[int, bytes]] = {}
+        for session_id, tracked in self._state.tracked_sessions.items():
+            try:
+                marker = _tail_marker(Path(tracked.file_path), tracked.last_byte_offset)
+            except OSError:
+                continue
+            markers[session_id] = (tracked.last_byte_offset, marker)
+        return markers
 
     def _snapshot_startup_boundaries(self) -> dict[str, _StartupBoundary]:
         """Capture each tracked transcript generation and its pre-start EOF."""
@@ -148,14 +226,133 @@ class TranscriptReader:
             self._startup_file_boundaries[session_id] = boundary
         return boundary
 
-    async def _read_session_entries(
-        self, tracked: TrackedSession, file_path: Path, window_id: str
-    ) -> list[dict] | None:
-        """Read once, preserving startup state when the file is unavailable."""
+    async def _marker_changed(
+        self, session_id: str, tracked: TrackedSession, file_path: Path
+    ) -> bool:
+        saved = self._file_markers.get(session_id)
+        if saved is None or saved[0] != tracked.last_byte_offset:
+            return False
         try:
-            return await self._read_new_lines(tracked, file_path, window_id)
+            current = await asyncio.to_thread(
+                _tail_marker, file_path, tracked.last_byte_offset
+            )
         except OSError:
-            return None
+            return False
+        return current != saved[1]
+
+    async def _prepare_observed_generation(
+        self,
+        session_id: str,
+        tracked: TrackedSession,
+        file_path: Path,
+        st: Any,
+        *,
+        check_marker: bool,
+    ) -> bool:
+        generation = (st.st_dev, st.st_ino)
+        previous = self._file_generations.get(session_id)
+        previous_ctime = self._file_ctimes.get(session_id)
+        changed = previous is not None and previous != generation
+        previous_size = self._file_sizes.get(session_id)
+        previous_prefix = self._file_prefixes.get(session_id)
+        prefix_changed = False
+        if previous_prefix is not None:
+            try:
+                prefix_changed = (
+                    await asyncio.to_thread(
+                        _prefix_digest, file_path, previous_prefix[0]
+                    )
+                    != previous_prefix[1]
+                )
+            except OSError:
+                prefix_changed = False
+        changed = (
+            changed
+            or prefix_changed
+            or (
+                previous_ctime is not None
+                and previous_ctime != st.st_ctime_ns
+                and previous_size is not None
+                and st.st_size <= previous_size
+            )
+        )
+        changed = changed or st.st_size < tracked.last_byte_offset
+        if not changed and check_marker:
+            changed = await self._marker_changed(session_id, tracked, file_path)
+        if changed:
+            tracked.last_byte_offset = 0
+            self._startup_file_boundaries.pop(session_id, None)
+        return changed
+
+    async def _read_session_entries(
+        self,
+        session_id: str,
+        tracked: TrackedSession,
+        file_path: Path,
+        window_id: str,
+        *,
+        check_marker: bool,
+    ) -> _StableRead | None:
+        """Read a stable file generation, retrying once after a write race."""
+        reset_generation = False
+        for _attempt in range(2):
+            try:
+                before = file_path.stat()
+                start_offset = tracked.last_byte_offset
+                entries = await self._read_new_lines(tracked, file_path, window_id)
+                after = file_path.stat()
+            except OSError:
+                return None
+            same_generation = (before.st_dev, before.st_ino) == (
+                after.st_dev,
+                after.st_ino,
+            )
+            rewritten_in_place = before.st_ctime_ns != after.st_ctime_ns
+            marker_changed = False
+            saved = self._file_markers.get(session_id) if check_marker else None
+            if saved is not None and saved[0] == start_offset:
+                try:
+                    marker = await asyncio.to_thread(
+                        _tail_marker, file_path, start_offset
+                    )
+                except OSError:
+                    return None
+                marker_changed = marker != saved[1]
+            if same_generation and not rewritten_in_place and not marker_changed:
+                return _StableRead(entries, after, reset_generation)
+            tracked.last_byte_offset = 0
+            self._startup_file_boundaries.pop(session_id, None)
+            reset_generation = True
+        return None
+
+    async def _commit_stable_read(
+        self,
+        session_id: str,
+        tracked: TrackedSession,
+        file_path: Path,
+        stable_read: _StableRead,
+    ) -> bool:
+        """Commit caches only after a stable read and marker capture."""
+        stable_stat = stable_read.stat
+        try:
+            marker = await asyncio.to_thread(
+                _tail_marker, file_path, tracked.last_byte_offset
+            )
+        except OSError:
+            return False
+        self._file_mtimes[session_id] = stable_stat.st_mtime
+        self._file_generations[session_id] = (
+            stable_stat.st_dev,
+            stable_stat.st_ino,
+        )
+        self._file_ctimes[session_id] = stable_stat.st_ctime_ns
+        self._file_sizes[session_id] = stable_stat.st_size
+        self._file_prefixes[session_id] = (
+            stable_stat.st_size,
+            await asyncio.to_thread(_prefix_digest, file_path, stable_stat.st_size),
+        )
+        self._file_markers[session_id] = (tracked.last_byte_offset, marker)
+        return True
 
     def clear_session(self, session_id: str) -> None:
         """Remove all per-session state for a cleaned-up session."""
@@ -163,6 +360,10 @@ class TranscriptReader:
         self._file_mtimes.pop(session_id, None)
         self._pending_tools.pop(session_id, None)
         self._file_generations.pop(session_id, None)
+        self._file_ctimes.pop(session_id, None)
+        self._file_sizes.pop(session_id, None)
+        self._file_prefixes.pop(session_id, None)
+        self._file_markers.pop(session_id, None)
         self._startup_file_boundaries.pop(session_id, None)
         log_throttle_reset(f"partial-jsonl:{session_id}")
 
@@ -198,10 +399,20 @@ class TranscriptReader:
                 self._file_generations[session_id] = self._file_generations.pop(
                     old_session_id
                 )
+            if old_session_id in self._file_ctimes:
+                self._file_ctimes[session_id] = self._file_ctimes.pop(old_session_id)
+            if old_session_id in self._file_sizes:
+                self._file_sizes[session_id] = self._file_sizes.pop(old_session_id)
+            if old_session_id in self._file_prefixes:
+                self._file_prefixes[session_id] = self._file_prefixes.pop(
+                    old_session_id
+                )
             if old_session_id in self._pending_tools:
                 self._pending_tools[session_id] = self._pending_tools.pop(
                     old_session_id
                 )
+            if old_session_id in self._file_markers:
+                self._file_markers[session_id] = self._file_markers.pop(old_session_id)
             if old_session_id in self._startup_file_boundaries:
                 self._startup_file_boundaries[session_id] = (
                     self._startup_file_boundaries.pop(old_session_id)
@@ -238,6 +449,7 @@ class TranscriptReader:
             except OSError:
                 file_size = 0
                 current_mtime = 0.0
+                st = None
                 generation = None
             else:
                 generation = (st.st_dev, st.st_ino)
@@ -256,8 +468,25 @@ class TranscriptReader:
             )
             self._state.update_session(tracked)
             self._file_mtimes[session_id] = current_mtime
-            if generation is not None:
+            if generation is not None and st is not None:
                 self._file_generations[session_id] = generation
+                self._file_ctimes[session_id] = st.st_ctime_ns
+                self._file_sizes[session_id] = st.st_size
+                self._file_prefixes[session_id] = (
+                    st.st_size,
+                    await asyncio.to_thread(_prefix_digest, file_path, st.st_size),
+                )
+            try:
+                marker = await asyncio.to_thread(
+                    _tail_marker, file_path, tracked.last_byte_offset
+                )
+            except OSError:
+                pass
+            else:
+                self._file_markers[session_id] = (
+                    tracked.last_byte_offset,
+                    marker,
+                )
             if provider.capabilities.supports_task_tracking and window_id:
                 await provider.seed_task_state(window_id, session_id, str(file_path))
             logger.debug("Started tracking session: %s", session_id)
@@ -269,16 +498,13 @@ class TranscriptReader:
         except OSError:
             return
 
-        generation = (st.st_dev, st.st_ino)
-        previous_generation = self._file_generations.get(session_id)
-        generation_changed = (
-            previous_generation is not None and previous_generation != generation
+        generation_changed = await self._prepare_observed_generation(
+            session_id,
+            tracked,
+            file_path,
+            st,
+            check_marker=provider.capabilities.supports_incremental_read,
         )
-        if generation_changed:
-            tracked.last_byte_offset = 0
-            self._startup_file_boundaries.pop(session_id, None)
-        self._file_generations[session_id] = generation
-
         last_mtime = self._file_mtimes.get(session_id, 0.0)
         if provider.capabilities.supports_incremental_read:
             if (
@@ -295,10 +521,22 @@ class TranscriptReader:
             if generation_changed or not provider.capabilities.supports_incremental_read
             else self._prepare_startup_boundary(session_id, tracked, st)
         )
-        new_entries = await self._read_session_entries(tracked, file_path, window_id)
-        if new_entries is None:
+        stable_read = await self._read_session_entries(
+            session_id,
+            tracked,
+            file_path,
+            window_id,
+            check_marker=provider.capabilities.supports_incremental_read,
+        )
+        if stable_read is None:
             return
-        self._file_mtimes[session_id] = current_mtime
+        new_entries, _, reset_during_read = stable_read
+        if not await self._commit_stable_read(
+            session_id, tracked, file_path, stable_read
+        ):
+            return
+        if reset_during_read:
+            startup_boundary = None
 
         # Deliver pre-start unread history, but count activity only when a
         # complete entry advances beyond the startup file-size boundary.
