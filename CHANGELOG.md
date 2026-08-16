@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.6.0] - 2026-08-16
+
+### Added
+
+- Stream Codex assistant replies to Telegram while the agent generates them ([#155](https://github.com/alexei-led/ccgram/issues/155)).
+- Show a temporary Telegram draft before the complete reply is saved.
+
+### Fixed
+
+- Keep message queue order when a streamed reply ends.
+- Retry draft updates after Telegram rate limits.
+- Retry failed final tool-batch sends.
+- Expire stalled assistant drafts and clean up their state.
+
+### Contributors
+
+- Thanks to @osovv for the feature request in [#155](https://github.com/alexei-led/ccgram/issues/155).
+
 ## [4.5.3] - 2026-08-16
 
 ### Fixed
@@ -12,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Avoid transcript races when files are rewritten during reads.
 - Preserve canonical Herdr IDs through recovery and resume flows.
 - Retain active Herdr aliases during resolver pruning.
+
+### Contributors
+
+- Thanks to @paskal for preserving non-Latin upload filenames.
 
 ## [4.5.2] - 2026-08-15
 
@@ -40,6 +62,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Prevent a topic-creation race when a new Herdr target starts.
 - Read a workspace path from a Herdr pane when the workspace record has no path.
+
+### Contributors
+
+- Thanks to @ChakshuGrover for the Google Antigravity provider.
 
 ## [4.3.12] - 2026-08-02
 

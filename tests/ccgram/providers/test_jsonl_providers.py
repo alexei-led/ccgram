@@ -175,6 +175,28 @@ class TestCodexTranscriptParsing:
         assert messages[0].text == "working on it"
         assert messages[0].role == "assistant"
         assert messages[0].content_type == "text"
+        assert messages[0].is_complete is False
+
+    def test_agent_message_stream_is_completed_by_task_complete(self) -> None:
+        codex = CodexProvider()
+        entries = [
+            {
+                "type": "event_msg",
+                "payload": {"type": "agent_message", "message": "working"},
+            },
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "task_complete",
+                    "last_agent_message": "working and done",
+                },
+            },
+        ]
+
+        messages, _ = codex.parse_transcript_entries(entries, {})
+
+        assert [message.text for message in messages] == ["working", "working and done"]
+        assert [message.is_complete for message in messages] == [False, True]
 
     def test_dedupes_identical_event_and_response_messages(self) -> None:
         codex = CodexProvider()

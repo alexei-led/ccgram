@@ -3,6 +3,7 @@ import inspect
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from telegram.error import TelegramError
 
 from ccgram.handlers.messaging_pipeline.message_task import ContentTask
 from ccgram.handlers.messaging_pipeline.tool_batch import (
@@ -240,6 +241,95 @@ class TestDraftStreamIntegration:
         await flush_batch(bot, user_id=1, thread_id_or_0=10)
         bot.send_message.assert_not_called()
         bot.edit_message_text.assert_not_called()
+
+
+class TestNativeDraftIntegration:
+    async def test_streaming_draft_is_kept_without_message_id(
+        self, monkeypatch
+    ) -> None:
+        from ccgram.telegram_draft import reset_draft_state
+
+        reset_draft_state()
+        monkeypatch.setattr(
+            "ccgram.handlers.status.status_bubble.clear_status_message",
+            AsyncMock(return_value=None),
+        )
+        monkeypatch.setattr(
+            "ccgram.handlers.messaging_pipeline.tool_batch._rate_limit_chat",
+            AsyncMock(return_value=None),
+        )
+        monkeypatch.setattr(
+            "ccgram.handlers.messaging_pipeline.tool_batch.get_batch_mode",
+            lambda _wid: "batched",
+        )
+        monkeypatch.setattr(
+            "ccgram.handlers.messaging_pipeline.tool_batch.is_ephemeral_tools",
+            lambda _wid: False,
+        )
+        monkeypatch.setattr(
+            "ccgram.handlers.messaging_pipeline.tool_batch.thread_router",
+            MagicMock(resolve_chat_id=MagicMock(return_value=42)),
+        )
+
+        bot = AsyncMock()
+        bot.send_message_draft = AsyncMock(return_value=True)
+        sent = MagicMock(message_id=77)
+        bot.send_message.return_value = sent
+        batch = ToolBatch(window_id="@0", thread_id=10)
+        batch.entries.append(
+            ToolBatchEntry(tool_use_id="t1", tool_use_text="Read foo.py")
+        )
+        _active_batches[(1, 10)] = batch
+
+        await _send_or_edit_batch(bot, 1, batch, 42, 10, 10)
+        assert batch.draft is not None
+        assert batch.draft.mode == "streaming"
+        assert batch.telegram_msg_id is None
+        assert batch.last_sent_text == "Read foo.py"
+
+        await _send_or_edit_batch(bot, 1, batch, 42, 10, 10)
+        bot.send_message_draft.assert_awaited_once()
+
+        await flush_batch(bot, 1, 10)
+        bot.send_message.assert_awaited_once_with(
+            chat_id=42, text="Read foo.py", message_thread_id=10
+        )
+
+    async def test_failed_final_send_keeps_batch_for_retry(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "ccgram.handlers.messaging_pipeline.tool_batch._rate_limit_chat",
+            AsyncMock(return_value=None),
+        )
+        monkeypatch.setattr(
+            "ccgram.handlers.messaging_pipeline.tool_batch.thread_router",
+            MagicMock(resolve_chat_id=MagicMock(return_value=42)),
+        )
+        monkeypatch.setattr(
+            "ccgram.handlers.messaging_pipeline.tool_batch.get_batch_mode",
+            lambda _wid: "batched",
+        )
+        monkeypatch.setattr(
+            "ccgram.handlers.messaging_pipeline.tool_batch.is_ephemeral_tools",
+            lambda _wid: False,
+        )
+        bot = AsyncMock()
+        bot.send_message_draft = AsyncMock(return_value=True)
+        bot.send_message.side_effect = [
+            TelegramError("temporary"),
+            MagicMock(message_id=9),
+        ]
+        batch = ToolBatch(window_id="@0", thread_id=10)
+        batch.entries.append(
+            ToolBatchEntry(tool_use_id="t1", tool_use_text="Read foo.py")
+        )
+        _active_batches[(1, 10)] = batch
+
+        await _send_or_edit_batch(bot, 1, batch, 42, 10, 10)
+        await flush_batch(bot, 1, 10)
+        assert _active_batches[(1, 10)] is batch
+
+        await flush_batch(bot, 1, 10)
+        assert (1, 10) not in _active_batches
 
 
 class TestDedupConsecutiveEntries:
