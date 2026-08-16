@@ -6,13 +6,15 @@ management.
 """
 
 import asyncio
+import contextlib
 from pathlib import Path
 
 import structlog
 
 from ... import session_query
 from ...session_monitor import NewMessage
-from ...telegram_client import TelegramClient
+from ...telegram_client import TelegramClient, unwrap_bot
+from ...telegram_draft import DRAFT_UNSET, DraftStream
 from ...user_preferences import user_preferences
 from ..interactive import (
     INTERACTIVE_TOOL_NAMES,
@@ -29,6 +31,98 @@ from .message_queue import enqueue_content_message, get_message_queue
 logger = structlog.get_logger()
 
 _MIN_THINKING_LENGTH = 20
+
+# One draft per session/topic. Provider updates are cumulative snapshots, not deltas.
+_DRAFT_TTL_SECONDS = 25.0
+_active_drafts: dict[tuple[int, str, int | None, int], DraftStream] = {}
+_draft_expiry_tasks: dict[tuple[int, str, int | None, int], asyncio.Task[None]] = {}
+
+
+async def _update_window_offset(user_id: int, window_id: str) -> None:
+    """Advance transcript offset after a complete message is handled."""
+    session = await session_query.resolve_session_for_window(window_id)
+    if not session or not session.file_path:
+        return
+    try:
+        file_size = Path(session.file_path).stat().st_size
+        user_preferences.update_user_window_offset(user_id, window_id, file_size)
+    except OSError:
+        return
+
+
+def _arm_draft_expiry(
+    key: tuple[int, str, int | None, int], draft: DraftStream
+) -> None:
+    """Drop stalled native drafts before Telegram expires their preview."""
+    previous = _draft_expiry_tasks.pop(key, None)
+    if previous is not None:
+        previous.cancel()
+    _draft_expiry_tasks[key] = asyncio.create_task(
+        _expire_draft(key, draft),
+        name=f"assistant-draft-expiry:{key[0]}:{key[3]}",
+    )
+
+
+async def _expire_draft(
+    key: tuple[int, str, int | None, int], draft: DraftStream
+) -> None:
+    try:
+        await asyncio.sleep(_DRAFT_TTL_SECONDS)
+        if _active_drafts.get(key) is draft:
+            _active_drafts.pop(key, None)
+            await draft.abort()
+    except asyncio.CancelledError:
+        raise
+    finally:
+        current = _draft_expiry_tasks.get(key)
+        if current is asyncio.current_task():
+            _draft_expiry_tasks.pop(key, None)
+
+
+async def _cancel_draft_expiry(key: tuple[int, str, int | None, int]) -> None:
+    task = _draft_expiry_tasks.pop(key, None)
+    if task is None or task is asyncio.current_task():
+        return
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+async def _handle_assistant_stream(
+    msg: NewMessage,
+    client: TelegramClient,
+    user_id: int,
+    thread_id: int | None,
+    chat_id: int | None,
+) -> bool:
+    """Deliver an assistant text snapshot to its draft, if applicable."""
+    if msg.role != "assistant" or msg.content_type != "text" or chat_id is None:
+        return False
+
+    key = (user_id, msg.session_id, thread_id, chat_id)
+    draft = _active_drafts.get(key)
+
+    if msg.is_complete:
+        if draft is not None:
+            _active_drafts.pop(key, None)
+            await _cancel_draft_expiry(key)
+            await draft.abort()
+        return False
+
+    if draft is None:
+        draft = DraftStream(
+            unwrap_bot(client),
+            chat_id,
+            message_thread_id=thread_id,
+        )
+        await draft.start(msg.text)
+        if draft.mode == DRAFT_UNSET:
+            return True
+        _active_drafts[key] = draft
+    else:
+        await draft.replace(msg.text)
+    _arm_draft_expiry(key, draft)
+    return True
 
 
 async def handle_new_message(msg: NewMessage, client: TelegramClient) -> None:  # noqa: C901, PLR0912
@@ -80,21 +174,22 @@ async def handle_new_message(msg: NewMessage, client: TelegramClient) -> None:  
             await asyncio.sleep(0.3)
             handled = await handle_interactive_ui(client, user_id, window_id, thread_id)
             if handled:
-                session = await session_query.resolve_session_for_window(window_id)
-                if session and session.file_path:
-                    try:
-                        file_size = Path(session.file_path).stat().st_size
-                        user_preferences.update_user_window_offset(
-                            user_id, window_id, file_size
-                        )
-                    except OSError:
-                        pass
+                await _update_window_offset(user_id, window_id)
                 continue
             else:
                 clear_interactive_mode(user_id, thread_id)
 
         if get_interactive_msg_id(user_id, thread_id):
             await clear_interactive_msg(user_id, client, thread_id)
+
+        if await _handle_assistant_stream(
+            msg,
+            client,
+            user_id,
+            thread_id,
+            chat_id,
+        ):
+            continue
 
         parts = build_response_parts(
             msg.text,
@@ -117,12 +212,4 @@ async def handle_new_message(msg: NewMessage, client: TelegramClient) -> None:  
                 chat_id=chat_id,
             )
 
-            session = await session_query.resolve_session_for_window(window_id)
-            if session and session.file_path:
-                try:
-                    file_size = Path(session.file_path).stat().st_size
-                    user_preferences.update_user_window_offset(
-                        user_id, window_id, file_size
-                    )
-                except OSError:
-                    pass
+            await _update_window_offset(user_id, window_id)

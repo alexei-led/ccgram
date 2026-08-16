@@ -1,8 +1,10 @@
+import asyncio
 from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from ccgram.handlers.messaging_pipeline import message_routing
 from ccgram.handlers.messaging_pipeline.message_routing import handle_new_message
 from ccgram.handlers.telegram_origin import (
     clear_pending_telegram_injections,
@@ -37,8 +39,16 @@ def _make_msg(
 @pytest.fixture(autouse=True)
 def _clear_pending_telegram_injections() -> Iterator[None]:
     clear_pending_telegram_injections()
+    for task in message_routing._draft_expiry_tasks.values():
+        task.cancel()
+    message_routing._draft_expiry_tasks.clear()
+    message_routing._active_drafts.clear()
     yield
     clear_pending_telegram_injections()
+    for task in message_routing._draft_expiry_tasks.values():
+        task.cancel()
+    message_routing._draft_expiry_tasks.clear()
+    message_routing._active_drafts.clear()
 
 
 @pytest.fixture
@@ -162,6 +172,70 @@ async def test_complete_message_enqueues_content(bot, mock_deps):
     assert kwargs["window_id"] == "@5"
     assert kwargs["thread_id"] == 42
     assert kwargs["chat_id"] == -100
+
+
+async def test_incomplete_assistant_text_updates_and_finalizes_draft(bot, mock_deps):
+    draft = MagicMock(mode="streaming")
+    draft.start = AsyncMock(return_value=None)
+    draft.replace = AsyncMock()
+    draft.abort = AsyncMock()
+    with patch(
+        "ccgram.handlers.messaging_pipeline.message_routing.DraftStream",
+        return_value=draft,
+    ) as draft_class:
+        await handle_new_message(_make_msg(text="first", is_complete=False), bot)
+        await handle_new_message(_make_msg(text="second", is_complete=False), bot)
+        await handle_new_message(_make_msg(text="final", is_complete=True), bot)
+
+    draft_class.assert_called_once_with(
+        bot,
+        -100,
+        message_thread_id=42,
+    )
+    draft.start.assert_awaited_once_with("first")
+    draft.replace.assert_awaited_once_with("second")
+    draft.abort.assert_awaited_once()
+    mock_deps["eq"].assert_called_once()
+
+
+@pytest.mark.parametrize("mode", ["streaming", "legacy"])
+async def test_stalled_draft_is_expired(bot, mock_deps, monkeypatch, mode):
+    monkeypatch.setattr(message_routing, "_DRAFT_TTL_SECONDS", 0.01)
+    draft = MagicMock(mode=mode)
+    draft.start = AsyncMock(return_value=None)
+    draft.abort = AsyncMock()
+    with patch(
+        "ccgram.handlers.messaging_pipeline.message_routing.DraftStream",
+        return_value=draft,
+    ):
+        await handle_new_message(_make_msg(text="partial", is_complete=False), bot)
+        await asyncio.sleep(0.02)
+
+    assert message_routing._active_drafts == {}
+    draft.abort.assert_awaited_once()
+
+
+async def test_long_final_message_falls_back_to_paginated_delivery(bot, mock_deps):
+    draft = MagicMock(mode="streaming")
+    draft.start = AsyncMock(return_value=None)
+    draft.abort = AsyncMock()
+    with patch(
+        "ccgram.handlers.messaging_pipeline.message_routing.DraftStream",
+        return_value=draft,
+    ):
+        await handle_new_message(_make_msg(text="partial", is_complete=False), bot)
+        await handle_new_message(_make_msg(text="x" * 4097, is_complete=True), bot)
+
+    draft.abort.assert_awaited_once()
+    mock_deps["eq"].assert_awaited_once()
+    mock_deps["brp"].assert_called_with("x" * 4097, True, "text", "assistant")
+
+
+async def test_incomplete_user_message_is_not_streamed(bot, mock_deps):
+    await handle_new_message(
+        _make_msg(text="partial", role="user", is_complete=False), bot
+    )
+    mock_deps["eq"].assert_not_called()
 
 
 async def test_matching_telegram_user_message_is_suppressed(bot, mock_deps):

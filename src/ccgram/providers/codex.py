@@ -450,7 +450,14 @@ def _parse_event_message(
         if not isinstance(text, str) or not text:
             return [], pending
         return (
-            [AgentMessage(text=text, role="assistant", content_type="text")],
+            [
+                AgentMessage(
+                    text=text,
+                    role="assistant",
+                    content_type="text",
+                    is_complete=False,
+                )
+            ],
             pending,
         )
     if payload_type == "task_complete":

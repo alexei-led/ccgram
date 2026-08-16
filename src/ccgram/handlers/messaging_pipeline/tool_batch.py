@@ -15,13 +15,14 @@ Key components:
 
 from __future__ import annotations
 
+import asyncio
 import re
 from dataclasses import dataclass, field
 
 import structlog
 
 from ...telegram_client import TelegramClient, unwrap_bot
-from ...telegram_draft import DraftStream
+from ...telegram_draft import DRAFT_STREAMING, DRAFT_UNSET, DraftStream
 from ...thread_router import thread_router
 from ...topic_state_registry import topic_state
 from ...window_state_ports.tool_state import get_batch_mode, is_ephemeral_tools
@@ -338,7 +339,9 @@ async def _send_or_edit_batch(
     # screen. A re-edit with the same text would trigger Telegram's "Message
     # is not modified" error, and the legacy fallback path used to strip
     # entities to "succeed", destroying the formatting.
-    if batch.telegram_msg_id is not None and batch.last_sent_text == batch_text:
+    if batch.last_sent_text == batch_text and (
+        batch.telegram_msg_id is not None or batch.draft is not None
+    ):
         return
 
     if is_ephemeral_tools(batch.window_id):
@@ -371,7 +374,7 @@ async def _send_or_edit_batch(
             message_thread_id=raw_thread_id,
         )
         msg_id = await batch.draft.start(batch_text)
-        if msg_id is not None:
+        if msg_id is not None or batch.draft.mode == DRAFT_STREAMING:
             batch.telegram_msg_id = msg_id
             batch.last_sent_text = batch_text
         else:
@@ -547,7 +550,7 @@ async def flush_if_active(
         await flush_batch(client, user_id, thread_id_or_0)
 
 
-async def flush_batch(
+async def flush_batch(  # noqa: C901, PLR0911
     client: TelegramClient, user_id: int, thread_id_or_0: int
 ) -> None:
     """Finalize the active batch: do a final edit and clear state.
@@ -558,8 +561,11 @@ async def flush_batch(
     from telegram.error import TelegramError
 
     bkey = (user_id, thread_id_or_0)
-    batch = _active_batches.pop(bkey, None)
-    if not batch or not batch.entries:
+    batch = _active_batches.get(bkey)
+    if not batch:
+        return
+    if not batch.entries:
+        _active_batches.pop(bkey, None)
         return
 
     thread_id: int | None = thread_id_or_0 if thread_id_or_0 != 0 else None
@@ -573,6 +579,7 @@ async def flush_batch(
                 )
             except TelegramError as exc:
                 logger.warning("flush_batch ephemeral delete failed: %s", exc)
+        _active_batches.pop(bkey, None)
         return
 
     # Lazy: claude_task_state imports session readers; deferring keeps
@@ -585,9 +592,17 @@ async def flush_batch(
 
     if batch.draft is not None and not batch.draft.closed:
         try:
+            if batch.draft.mode == DRAFT_UNSET:
+                await _rate_limit_chat(chat_id)
+                await batch.draft.start(batch_text)
+                if batch.draft.mode == DRAFT_UNSET:
+                    logger.warning("flush_batch could not open a Telegram draft")
+                    return
             await batch.draft.finalize(batch_text)
         except TelegramError as exc:
             logger.warning("flush_batch finalize failed: %s", exc)
+            return
+        _active_batches.pop(bkey, None)
         return
 
     if batch.telegram_msg_id is not None:
@@ -601,16 +616,23 @@ async def flush_batch(
             )
         except TelegramError as exc:
             logger.warning("flush_batch edit failed: %s", exc)
+        _active_batches.pop(bkey, None)
         return
 
     # No prior message at all — open a fresh draft and finalize immediately.
     await _rate_limit_chat(chat_id)
     draft = DraftStream(unwrap_bot(client), chat_id, message_thread_id=thread_id)
+    batch.draft = draft
     try:
         await draft.start(batch_text)
+        if draft.mode == DRAFT_UNSET:
+            logger.warning("flush_batch could not open a Telegram draft")
+            return
         await draft.finalize()
-    except TelegramError as exc:
+    except (RuntimeError, TelegramError) as exc:
         logger.warning("flush_batch start+finalize failed: %s", exc)
+        return
+    _active_batches.pop(bkey, None)
 
 
 def has_active_batch(user_id: int, thread_id_or_0: int) -> bool:
@@ -632,12 +654,27 @@ def has_ephemeral_active_batch(user_id: int, thread_id_or_0: int) -> bool:
     return batch is not None and is_ephemeral_tools(batch.window_id)
 
 
+def _schedule_batch_abort(batch: ToolBatch) -> None:
+    if batch.draft is None or batch.draft.closed:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    loop.create_task(batch.draft.abort())
+
+
 @topic_state.register("topic")
 def clear_batch_for_topic(user_id: int, thread_id: int | None = None) -> None:
     """Clear active batch for a specific topic (called on topic cleanup)."""
-    _active_batches.pop((user_id, thread_key(thread_id)), None)
+    batch = _active_batches.pop((user_id, thread_key(thread_id)), None)
+    if batch:
+        _schedule_batch_abort(batch)
 
 
 def clear_all_batches() -> None:
     """Clear all active batches (called on shutdown)."""
+    batches = list(_active_batches.values())
     _active_batches.clear()
+    for batch in batches:
+        _schedule_batch_abort(batch)
