@@ -424,3 +424,22 @@ class TestResolveWindowAlias:
         # nothing to migrate, but the identity moved and callers still need it.
         assert migrate_window_aliases({"alias": "canonical"}, {}, {}, {}, {}, {}) == []
         assert resolve_window_alias("alias") == "canonical"
+
+    def test_keeps_every_alias_from_a_large_live_snapshot(self) -> None:
+        aliases = {f"alias-{index}": f"canonical-{index}" for index in range(300)}
+
+        migrate_window_aliases(aliases, {}, {}, {}, {}, {})
+
+        assert all(
+            resolve_window_alias(alias) == canonical
+            for alias, canonical in aliases.items()
+        )
+
+    def test_stale_aliases_remain_bounded(self) -> None:
+        for index in range(300):
+            migrate_window_aliases(
+                {f"alias-{index}": f"canonical-{index}"}, {}, {}, {}, {}, {}
+            )
+
+        assert resolve_window_alias("alias-0") == "alias-0"
+        assert resolve_window_alias("alias-299") == "canonical-299"

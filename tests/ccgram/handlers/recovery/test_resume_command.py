@@ -925,7 +925,14 @@ class TestResumePickCallback:
         ctx = _make_context(user_data)
         query = update.callback_query
 
-        with patch(f"{_RC}.Path") as mock_path:
+        with (
+            patch(f"{_RC}.Path") as mock_path,
+            patch(
+                f"{_RC}.window_query.resolve_window_alias", return_value="@canonical"
+            ) as resolve_alias,
+            patch(f"{_RC}.session_map_sync") as mock_sync,
+        ):
+            mock_sync.wait_for_session_map_entry = AsyncMock()
             mock_path.return_value.is_dir.return_value = True
             await handle_resume_command_callback(query, 100, query.data, update, ctx)
 
@@ -934,8 +941,13 @@ class TestResumePickCallback:
             agent_args="--resume a1b2c3d4-0000-0000-0000-000000000001",
             launch_command="claude",
         )
+        mock_sync.wait_for_session_map_entry.assert_awaited_once_with(
+            "@5",
+            timeout=5.0,
+            resolve_window_id=resolve_alias,
+        )
         mock_tr.bind_thread.assert_called_once_with(
-            100, 42, "@5", window_name="project"
+            100, 42, "@canonical", window_name="project"
         )
 
     @patch(f"{_RC}.tmux_manager")

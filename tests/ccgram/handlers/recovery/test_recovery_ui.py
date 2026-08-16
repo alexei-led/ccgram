@@ -551,7 +551,12 @@ class TestRecoveryFreshCallback:
         ctx = _make_context(user_data)
         query = update.callback_query
 
-        with patch(f"{_RC}.Path") as mock_path:
+        mock_sm.resolve_window_alias.return_value = "@canonical"
+        with (
+            patch(f"{_RC}.Path") as mock_path,
+            patch(f"{_RC}.session_map_sync") as mock_sync,
+        ):
+            mock_sync.wait_for_session_map_entry = AsyncMock()
             mock_path.return_value.is_dir.return_value = True
             await handle_recovery_callback(query, 100, query.data, update, ctx)
 
@@ -559,8 +564,13 @@ class TestRecoveryFreshCallback:
         mock_tm.create_window.assert_called_once_with(
             "/tmp/project", agent_args="", launch_command="claude"
         )
+        mock_sync.wait_for_session_map_entry.assert_awaited_once_with(
+            "@5",
+            timeout=5.0,
+            resolve_window_id=mock_sm.resolve_window_alias,
+        )
         mock_tr.bind_thread.assert_called_once_with(
-            100, 42, "@5", window_name="project", chat_id=-100999
+            100, 42, "@canonical", window_name="project", chat_id=-100999
         )
         mock_tr.set_group_chat_id.assert_called_once_with(100, 42, -100999)
 
@@ -580,6 +590,7 @@ class TestRecoveryFreshCallback:
         mock_send_to_window: AsyncMock,
     ) -> None:
         mock_sm.view_window.return_value = MagicMock(cwd="/tmp/project")
+        mock_sm.resolve_window_alias.side_effect = lambda window_id: window_id
         mock_tm.create_window = AsyncMock(
             return_value=(True, "Window created", "project", "@5")
         )
@@ -680,6 +691,7 @@ class TestRecoveryContinueCallback:
         mock_sm.view_window.return_value = MagicMock(
             cwd="/tmp/project", provider_name=""
         )
+        mock_sm.resolve_window_alias.side_effect = lambda window_id: window_id
         mock_tm.create_window = AsyncMock(
             return_value=(True, "Window created", "project", "@5")
         )
@@ -721,6 +733,7 @@ class TestRecoveryContinueCallback:
         _mock_scan: MagicMock,
     ) -> None:
         mock_sm.view_window.return_value = MagicMock(cwd="/tmp/project")
+        mock_sm.resolve_window_alias.side_effect = lambda window_id: window_id
         mock_tm.create_window = AsyncMock(
             return_value=(True, "Window created", "project", "@5")
         )

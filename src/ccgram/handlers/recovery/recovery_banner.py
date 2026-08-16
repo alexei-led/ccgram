@@ -276,7 +276,12 @@ async def _create_and_bind_window(
         return False
 
     if provider.capabilities.supports_hook:
-        await session_map_sync.wait_for_session_map_entry(created_wid)
+        await session_map_sync.wait_for_session_map_entry(
+            created_wid,
+            timeout=5.0,
+            resolve_window_id=window_query.resolve_window_alias,
+        )
+    created_wid = window_query.resolve_window_alias(created_wid)
 
     session_manager.set_window_origin(created_wid, CCGRAM_CREATED_WINDOW_ORIGIN)
     session_manager.set_window_provider(created_wid, provider.capabilities.name)
