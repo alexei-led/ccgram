@@ -449,6 +449,7 @@ class TranscriptReader:
             except OSError:
                 file_size = 0
                 current_mtime = 0.0
+                st = None
                 generation = None
             else:
                 generation = (st.st_dev, st.st_ino)
@@ -467,7 +468,7 @@ class TranscriptReader:
             )
             self._state.update_session(tracked)
             self._file_mtimes[session_id] = current_mtime
-            if generation is not None:
+            if generation is not None and st is not None:
                 self._file_generations[session_id] = generation
                 self._file_ctimes[session_id] = st.st_ctime_ns
                 self._file_sizes[session_id] = st.st_size
@@ -497,13 +498,12 @@ class TranscriptReader:
         except OSError:
             return
 
-        incremental = provider.capabilities.supports_incremental_read
         generation_changed = await self._prepare_observed_generation(
             session_id,
             tracked,
             file_path,
             st,
-            check_marker=incremental,
+            check_marker=provider.capabilities.supports_incremental_read,
         )
         last_mtime = self._file_mtimes.get(session_id, 0.0)
         if provider.capabilities.supports_incremental_read:
@@ -526,11 +526,11 @@ class TranscriptReader:
             tracked,
             file_path,
             window_id,
-            check_marker=incremental,
+            check_marker=provider.capabilities.supports_incremental_read,
         )
         if stable_read is None:
             return
-        new_entries, _stable_stat, reset_during_read = stable_read
+        new_entries, _, reset_during_read = stable_read
         if not await self._commit_stable_read(
             session_id, tracked, file_path, stable_read
         ):
