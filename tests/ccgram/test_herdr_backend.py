@@ -238,6 +238,7 @@ async def test_superseded_target_still_resolves_to_the_live_session() -> None:
     assert found is not None
     assert found.window_id == _target("session-a")
 
+
 async def test_session_target_aliases_the_terminals_previous_session() -> None:
     """One terminal, two sessions: the agent re-keyed its session in place.
 
@@ -1337,3 +1338,53 @@ async def test_provisional_target_is_dropped_once_its_pane_is_gone(
 
     with pytest.raises(HerdrUnresolvedTargetError):
         await manager.guard_session_target(target.target_id)
+
+
+async def test_two_sessions_on_one_terminal_are_siblings_not_a_re_key() -> None:
+    """A terminal carrying two live sessions has superseded nothing.
+
+    Herdr's shared-tab shape puts sibling agents in one tab, and a snapshot can
+    report both against the same terminal. Reading the second as the successor
+    of the first would publish the live sibling's target as an alias, so a
+    guarded action on it would resolve to two records and fail as ambiguous —
+    which is how ``kill_window`` on a shared tab stopped working.
+    """
+    first = _agent(pane_id="w7:p4", tab_id="w7:t3", value="session-a")
+    sibling = _agent(pane_id="w7:p5", tab_id="w7:t3", value="session-b")
+    manager = _manager(_live_fake(first, sibling))
+
+    windows = {w.window_id: w for w in await manager.list_windows()}
+
+    assert set(windows) == {_target("session-a"), _target("session-b")}
+    for window in windows.values():
+        assert _target("session-a") not in window.alias_window_ids
+        assert _target("session-b") not in window.alias_window_ids
+    assert await manager.find_window_by_id(_target("session-a")) is not None
+
+
+async def test_a_still_live_target_is_never_published_as_superseded() -> None:
+    """The lineage stops publishing an alias the moment Herdr reports it again.
+
+    An agent that re-keys and then reappears under its old session — a resume
+    onto the previous id — is not one identity superseding another; both are
+    live, and an alias would make the old target ambiguous.
+    """
+    runner = _SnapshotSequence(
+        _live_fake(_agent(value="session-a")),
+        _live_fake(_agent(value="session-b")),
+        _live_fake(
+            _agent(value="session-b"),
+            _agent(pane_id="w2:p2", tab_id="w2:t2", value="session-a"),
+        ),
+    )
+    manager = HerdrManager(socket_path="/tmp/herdr.sock", runner=runner)
+
+    await manager.list_windows()
+    runner.advance()
+    after_rekey = {w.window_id: w for w in await manager.list_windows()}
+    assert _target("session-a") in after_rekey[_target("session-b")].alias_window_ids
+
+    runner.advance()
+    windows = {w.window_id: w for w in await manager.list_windows()}
+    assert _target("session-a") not in windows[_target("session-b")].alias_window_ids
+    assert await manager.find_window_by_id(_target("session-a")) is not None

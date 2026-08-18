@@ -595,15 +595,35 @@ class HerdrManager:
         would break the chain across the gap where Herdr has detected the
         agent but not yet its new session.
 
+        A terminal is continuity only while it carries one session at a time.
+        Two guarded sessions reporting the same terminal in one snapshot are
+        siblings, not a re-key: declaring one the successor of the other would
+        make the older target resolve to two records at once and every guarded
+        action on it fail as ambiguous. Such a terminal is left out of the
+        lineage entirely, and a superseded target still present in the snapshot
+        is never published as an alias — a target Herdr is still reporting has
+        not been superseded by anything.
+
         In-memory only, like ``_provisional_targets``: a ccgram restart across
         the re-key loses the link, leaving the old topic on the dead target —
         the behaviour before this seam existed, never a worse one.
         """
         self._prune_session_lineage(records)
+        live_targets = {record.target_id for record in records}
+        sessions_per_terminal: dict[str, int] = {}
+        for record in records:
+            if record.terminal_id and record.composite.kind != "terminal":
+                sessions_per_terminal[record.terminal_id] = (
+                    sessions_per_terminal.get(record.terminal_id, 0) + 1
+                )
         updated: list[HerdrLiveRecord] = []
         for record in records:
             terminal_id = record.terminal_id
-            if not terminal_id or record.composite.kind == "terminal":
+            if (
+                not terminal_id
+                or record.composite.kind == "terminal"
+                or sessions_per_terminal.get(terminal_id, 0) > 1
+            ):
                 updated.append(record)
                 continue
             aliases = self._track_session_lineage(terminal_id, record.target_id)
@@ -612,6 +632,7 @@ class HerdrManager:
                 for target_id in aliases
                 if target_id != record.target_id
                 and target_id not in record.alias_target_ids
+                and target_id not in live_targets
             )
             if not extra:
                 updated.append(record)
