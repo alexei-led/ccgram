@@ -318,6 +318,15 @@ class SessionMonitor:
                 if provider_name:
                     _sm.set_window_provider(window_id, provider_name)
 
+                if thread_router.has_window(window_id):
+                    # A key that is new to the map is not a window that is new
+                    # to ccgram. Identity folding runs first (``_monitor_loop``),
+                    # so a re-keyed or late-published identity already carries
+                    # the topic it was bound under; announcing it here would
+                    # ask for a second topic for the same agent. Both other
+                    # discovery paths skip bound windows for the same reason.
+                    continue
+
                 if self._new_window_callback:
                     event = NewWindowEvent(
                         window_id=window_id,
@@ -438,23 +447,34 @@ class SessionMonitor:
                 raw_session_map = await read_session_map_raw()
                 await session_map_sync.load_session_map(raw_session_map)
 
-                current_map = await self._detect_and_cleanup_changes(raw_session_map)
-
                 all_windows = await list_windows_for_reconciliation(tmux_manager)
                 if all_windows is None:
                     logger.warning(
                         "Multiplexer listing unavailable; skipping window reconciliation"
                     )
                 else:
-                    # Before anything keys off these ids: fold state written
-                    # under a superseded identity onto the live one, so a topic
-                    # and the session_map entry for the same window cannot sit
-                    # on two different ids (herdr hook vs. post-session target).
+                    # Before anything keys off these ids — the session-map
+                    # delta below included: fold state written under a
+                    # superseded identity onto the live one, so a topic and the
+                    # session_map entry for the same window cannot sit on two
+                    # different ids (herdr hook vs. post-session target). The
+                    # delta cannot make that call on its own. Where identity is
+                    # derived from the agent session, re-keying it in place
+                    # (/clear, --resume) or publishing it late (a pane bound to
+                    # its terminal-derived target while the agent starts up)
+                    # retires one key and adds another, which reads as a window
+                    # nobody has bound and gets adopted into a second topic for
+                    # the one agent. The live listing is what knows better, so
+                    # it is consulted first.
                     # Lazy: importing session_manager at module scope forms a
                     # hard cycle on bootstrap (same reason as below).
                     from .session import session_manager as _sm
 
                     _sm.reconcile_window_aliases(all_windows)
+
+                current_map = await self._detect_and_cleanup_changes(raw_session_map)
+
+                if all_windows is not None:
                     live_window_ids = {w.window_id for w in all_windows}
                     session_map_sync.prune_session_map(live_window_ids)
                     known_window_ids = set(current_map.keys())

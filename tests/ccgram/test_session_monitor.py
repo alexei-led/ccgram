@@ -71,6 +71,85 @@ class TestMonitorLoop:
 
         mock_sync.prune_session_map.assert_not_called()
 
+    async def test_rekeyed_window_folds_before_its_map_delta_is_read(
+        self, monitor: SessionMonitor, monkeypatch
+    ) -> None:
+        """A window that re-keys its identity is not adopted into a second topic.
+
+        On a backend whose window id derives from the agent session (herdr),
+        ``/clear`` mints a brand-new id for a window that already has a topic.
+        The live listing says the new id supersedes the bound one; the session
+        map only says a key vanished and another appeared. Reading the map
+        delta before folding the alias turns one agent into two topics.
+        """
+        thread_router.reset()
+        window_store.window_states.clear()
+        monkeypatch.setattr(SessionManager, "_load_state", lambda self: None)
+        monkeypatch.setattr(SessionManager, "_save_state", lambda self: None)
+        SessionManager()
+        monkeypatch.setattr(
+            "ccgram.session_monitor.tmux_manager",
+            SimpleNamespace(capabilities=_HERDR_CAPS),
+        )
+
+        old_id, new_id = HERDR_TARGETS["a"], HERDR_TARGETS["b"]
+        thread_router.bind_thread(100, 42, old_id)
+
+        details = {"session_id": "S-new", "cwd": "/proj", "window_name": ""}
+        live = WindowRef(
+            window_id=new_id,
+            window_name="proj ▸ 1",
+            cwd="/proj",
+            pane_current_command="claude",
+            alias_window_ids=(old_id,),
+        )
+
+        cb = AsyncMock(spec=lambda event: None)
+        monitor.set_new_window_callback(cb)
+
+        async def _stop_after_cycle(_delay: float) -> None:
+            monitor._running = False
+
+        with (
+            patch.object(monitor, "_cleanup_all_stale_sessions", AsyncMock()),
+            patch.object(monitor, "_read_hook_events", AsyncMock()),
+            patch.object(monitor, "check_for_updates", AsyncMock(return_value=[])),
+            patch.object(
+                monitor,
+                "_load_current_session_map",
+                AsyncMock(
+                    side_effect=[
+                        {
+                            old_id: {
+                                "session_id": "S-old",
+                                "cwd": "/proj",
+                                "window_name": "",
+                            }
+                        },
+                        {new_id: details},
+                    ]
+                ),
+            ),
+            patch(
+                "ccgram.session_monitor.read_session_map_raw",
+                AsyncMock(return_value={}),
+            ),
+            patch("ccgram.session_map.session_map_sync") as mock_sync,
+            patch("ccgram.session.session_map_sync"),
+            patch(
+                "ccgram.session_monitor.list_windows_for_reconciliation",
+                AsyncMock(return_value=[live]),
+            ),
+            patch("ccgram.session_monitor.asyncio.sleep", _stop_after_cycle),
+        ):
+            mock_sync.load_session_map = AsyncMock()
+            monitor._running = True
+            await monitor._monitor_loop()
+
+        assert thread_router.thread_bindings[100][42] == new_id
+        surfaced = [c.args[0].window_id for c in cb.call_args_list]
+        assert surfaced == []
+
 
 class TestSessionMapReadFailures:
     async def test_unreadable_map_does_not_reconcile_as_empty(
