@@ -15,6 +15,12 @@ logger = structlog.get_logger()
 # Without this, every failed poll (~5s apart) emits a warning, flooding logs.
 _RESET_WARN_INTERVAL_S: float = 30.0
 
+# Consecutive resets with no successful request in between mean the link is
+# really down, not that one connection was dropped. A lone drop is routine on
+# a laptop link (WiFi roam, NAT rebind, VPN rekey) and PTB recovers on the next
+# request, so it is logged at info; only a sustained run warrants a warning.
+_WARN_AFTER_CONSECUTIVE_RESETS: int = 3
+
 
 class ResilientPollingHTTPXRequest(HTTPXRequest):
     """Reset a Telegram HTTP client after transient transport failures.
@@ -24,9 +30,10 @@ class ResilientPollingHTTPXRequest(HTTPXRequest):
     fresh pool. Concurrent failures from the same stale client must perform one
     reset only; otherwise a late failure can close the replacement client.
 
-    The first reset after a successful request logs at warning; subsequent
-    resets within `_RESET_WARN_INTERVAL_S` log at debug to avoid floods during
-    sustained outages.
+    An isolated reset (one the next request recovers from) logs at info.
+    Once `_WARN_AFTER_CONSECUTIVE_RESETS` resets happen with no successful
+    request in between, the link is really down and resets log at warning,
+    throttled to one per `_RESET_WARN_INTERVAL_S` to avoid flooding.
     """
 
     def __init__(
@@ -40,6 +47,7 @@ class ResilientPollingHTTPXRequest(HTTPXRequest):
         self._on_success = on_success
         self.request_name = request_name
         self._last_reset_warn_ts: float | None = None
+        self._consecutive_resets = 0
         self._reset_lock = asyncio.Lock()
         self._client_close_tasks: set[asyncio.Task[None]] = set()
 
@@ -74,7 +82,9 @@ class ResilientPollingHTTPXRequest(HTTPXRequest):
         return True
 
     def _should_warn_for_reset(self, now: float) -> bool:
-        """Throttle: warn once per interval, then debug. Reset by success."""
+        """Warn only for a sustained outage, at most once per interval."""
+        if self._consecutive_resets < _WARN_AFTER_CONSECUTIVE_RESETS:
+            return False
         if (
             self._last_reset_warn_ts is None
             or now - self._last_reset_warn_ts >= _RESET_WARN_INTERVAL_S
@@ -87,6 +97,7 @@ class ResilientPollingHTTPXRequest(HTTPXRequest):
         result = await super().post(*args, **kwargs)
         # BaseRequest.post validates the Bot API response before returning.
         self._last_reset_warn_ts = None
+        self._consecutive_resets = 0
         if self._on_success is not None:
             self._on_success()
         return result
@@ -99,10 +110,11 @@ class ResilientPollingHTTPXRequest(HTTPXRequest):
             if await self._reset_client(
                 failed_client=failed_client, reason=exc.__class__.__name__
             ):
+                self._consecutive_resets += 1
                 log = (
                     logger.warning
                     if self._should_warn_for_reset(time.monotonic())
-                    else logger.debug
+                    else logger.info
                 )
                 log(
                     "Reset Telegram HTTP client (%s) after %s: %s",

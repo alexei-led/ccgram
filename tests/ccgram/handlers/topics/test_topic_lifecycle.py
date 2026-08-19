@@ -3,15 +3,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from telegram import Bot
-from telegram.error import BadRequest
+from telegram.error import BadRequest, RetryAfter
 
 from ccgram.window_view import WindowView
 
 from ccgram.handlers.topics.topic_lifecycle import (
+    PROBE_MAX_PER_CYCLE,
     check_autoclose_timers,
     check_unbound_window_ttl,
     probe_topic_existence,
     prune_stale_state,
+    reset_probe_schedule,
     rollback_legacy_herdr_binding,
 )
 from ccgram.handlers.polling.polling_state import (
@@ -22,10 +24,12 @@ from ccgram.handlers.polling.polling_state import (
 
 @pytest.fixture(autouse=True)
 def _clean_strategy_state():
+    reset_probe_schedule()
     terminal_poll_state._states.clear()
     lifecycle_strategy._states.clear()
     lifecycle_strategy._dead_notified.clear()
     yield
+    reset_probe_schedule()
     terminal_poll_state._states.clear()
     lifecycle_strategy._states.clear()
     lifecycle_strategy._dead_notified.clear()
@@ -327,6 +331,92 @@ class TestProbeTopicExistence:
             await probe_topic_existence(bot)
             mock_router.unbind_thread.assert_called_once_with(1, 100, chat_id=42)
             mock_tmux.kill_window.assert_not_called()
+
+    async def test_flood_control_backs_off_without_suspending(self):
+        """RetryAfter is chat-wide: it must not disable deleted-topic detection."""
+        from ccgram.handlers.topics import topic_lifecycle as tl
+
+        bot = AsyncMock(spec=Bot)
+        bot.unpin_all_forum_topic_messages = AsyncMock(side_effect=RetryAfter(3))
+        with (
+            patch.object(tl, "thread_router") as mock_router,
+            patch.object(tl, "lifecycle_strategy") as mock_strategy,
+        ):
+            mock_router.iter_thread_bindings.return_value = [(1, 100, "@0")]
+            mock_router.resolve_chat_id.return_value = 42
+            mock_strategy.should_skip_probe.return_value = False
+
+            await probe_topic_existence(bot)
+            mock_strategy.record_probe_failure.assert_not_called()
+
+            # Whole pass is paused while the chat is flood-limited.
+            bot.unpin_all_forum_topic_messages.reset_mock()
+            await probe_topic_existence(bot)
+            bot.unpin_all_forum_topic_messages.assert_not_called()
+
+    async def test_flood_control_stops_the_rest_of_the_pass(self):
+        bot = AsyncMock(spec=Bot)
+        bot.unpin_all_forum_topic_messages = AsyncMock(side_effect=RetryAfter(3))
+        with patch(
+            "ccgram.handlers.topics.topic_lifecycle.thread_router"
+        ) as mock_router:
+            mock_router.iter_thread_bindings.return_value = [
+                (1, 100 + i, f"@{i}") for i in range(PROBE_MAX_PER_CYCLE + 2)
+            ]
+            mock_router.resolve_chat_id.return_value = 42
+            await probe_topic_existence(bot)
+
+        assert bot.unpin_all_forum_topic_messages.call_count == 1
+
+    async def test_probe_budget_rotates_across_cycles(self):
+        """Bounded admin calls per cycle, least-recently-probed topic first."""
+        bot = AsyncMock(spec=Bot)
+        bot.unpin_all_forum_topic_messages = AsyncMock()
+        topics = [(1, 100 + i, f"@{i}") for i in range(3 * PROBE_MAX_PER_CYCLE)]
+        with patch(
+            "ccgram.handlers.topics.topic_lifecycle.thread_router"
+        ) as mock_router:
+            mock_router.iter_thread_bindings.return_value = topics
+            mock_router.resolve_chat_id.return_value = 42
+
+            probed = []
+            for _ in range(3):
+                bot.unpin_all_forum_topic_messages.reset_mock()
+                await probe_topic_existence(bot)
+                assert (
+                    bot.unpin_all_forum_topic_messages.call_count == PROBE_MAX_PER_CYCLE
+                )
+                probed += [
+                    c.kwargs["message_thread_id"]
+                    for c in bot.unpin_all_forum_topic_messages.call_args_list
+                ]
+
+        # Every topic probed exactly once — no repeats while others are due.
+        assert sorted(probed) == [t[1] for t in topics]
+
+    async def test_unprobeable_windows_do_not_hold_cycle_slots(self):
+        from ccgram.handlers.topics import topic_lifecycle as tl
+
+        bot = AsyncMock(spec=Bot)
+        bot.unpin_all_forum_topic_messages = AsyncMock()
+        blocked = [f"@blocked{i}" for i in range(PROBE_MAX_PER_CYCLE)]
+        tl._probe_pin_disabled.update(blocked)
+        try:
+            with patch.object(tl, "thread_router") as mock_router:
+                mock_router.iter_thread_bindings.return_value = [
+                    *[(1, 200 + i, wid) for i, wid in enumerate(blocked)],
+                    (1, 300, "@live"),
+                ]
+                mock_router.resolve_chat_id.return_value = 42
+                await probe_topic_existence(bot)
+        finally:
+            tl._probe_pin_disabled.difference_update(blocked)
+
+        bot.unpin_all_forum_topic_messages.assert_called_once()
+        assert (
+            bot.unpin_all_forum_topic_messages.call_args.kwargs["message_thread_id"]
+            == 300
+        )
 
     async def test_suspended_probe_skipped(self):
         bot = AsyncMock(spec=Bot)

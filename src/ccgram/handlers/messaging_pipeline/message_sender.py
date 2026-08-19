@@ -53,6 +53,7 @@ __all__ = [
     "rate_limit_send",
     "rate_limit_send_message",
     "react",
+    "retry_after_seconds",
     "safe_edit",
     "safe_reply",
     "safe_send",
@@ -78,10 +79,10 @@ class _MessageGoneError(Exception):
     """Raised when the target message no longer exists (deleted topic)."""
 
 
-def _retry_after_seconds(exc: RetryAfter) -> int:
+def retry_after_seconds(exc: RetryAfter) -> float:
     """Extract retry delay from RetryAfter, handling both int and timedelta."""
     ra = exc.retry_after
-    return ra if isinstance(ra, int) else int(ra.total_seconds())
+    return float(ra) if isinstance(ra, int) else ra.total_seconds()
 
 
 # Rate limiting: last send time per chat to avoid Telegram flood control
@@ -158,7 +159,7 @@ async def _with_entity_fallback(
         try:
             return await send_fn(plain_text, **send_kwargs)
         except RetryAfter as e:
-            await asyncio.sleep(_retry_after_seconds(e) + 1)
+            await asyncio.sleep(retry_after_seconds(e) + 1)
             try:
                 return await send_fn(plain_text, **send_kwargs)
             except TelegramError as e2:

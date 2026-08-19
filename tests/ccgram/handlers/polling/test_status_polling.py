@@ -12,6 +12,7 @@ from ccgram.handlers.topics.topic_lifecycle import (
     check_autoclose_timers,
     probe_topic_existence,
     prune_stale_state,
+    reset_probe_schedule,
 )
 from ccgram.handlers.polling.window_tick import (
     _handle_dead_window_notification,
@@ -73,10 +74,12 @@ def _get_autoclose(user_id: int, thread_id: int) -> tuple[str, float] | None:
 
 @pytest.fixture(autouse=True)
 def _reset():
+    reset_probe_schedule()
     _window_poll_state.clear()
     _topic_poll_state.clear()
     _dead_notified.clear()
     yield
+    reset_probe_schedule()
     _window_poll_state.clear()
     _topic_poll_state.clear()
     _dead_notified.clear()
@@ -766,6 +769,8 @@ class TestProbeFailures:
             mock_tr.iter_thread_bindings.return_value = [(1, 42, "@5")]
             mock_tr.resolve_chat_id.return_value = -100
             for _ in range(MAX_PROBE_FAILURES + 1):
+                # Stands in for PROBE_INTERVAL elapsing between poll cycles.
+                reset_probe_schedule()
                 await probe_topic_existence(bot)
         assert bot.unpin_all_forum_topic_messages.call_count == MAX_PROBE_FAILURES
         assert _window_poll_state["@5"].probe_failures == MAX_PROBE_FAILURES
