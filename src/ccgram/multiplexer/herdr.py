@@ -572,41 +572,19 @@ class HerdrManager:
     ) -> list[HerdrLiveRecord]:
         """Publish a terminal's superseded session targets as aliases.
 
-        Herdr identity is the agent *session* composite, so an agent that
-        re-keys its session in place — Claude Code's ``/clear`` mints a fresh
-        session id, and ``--resume`` does the same — hands out a brand-new
-        target for the same terminal. Nothing in the record itself ties the two
-        together: the topic bound to the superseded target would be orphaned,
-        and the new target discovered as a window nobody has bound, spawning a
-        duplicate topic for one agent. The terminal is the continuity, so the
-        superseded target is published as an alias — exactly the input
-        ``migrate_window_aliases`` folds forward, the same way the pre-session
-        terminal fallback is folded.
+        Identity is the agent *session* composite, so re-keying a session in
+        place (``/clear``, ``--resume``) mints a brand-new target for the same
+        terminal: the bound topic is orphaned and the new target reads as a
+        window nobody has bound, which is the duplicate topic per ``/clear``.
+        The terminal is the continuity, and the superseded target is exactly
+        the input ``migrate_window_aliases`` folds forward.
 
-        The alias is *retained* rather than reported once. Every caller shares
-        this snapshot path, so a ``guard_session_target`` that happens to run
-        between the re-key and the monitor's reconcile pass would otherwise
-        consume the one report and the fold would never happen. Re-publishing
-        is free: folding an alias the core has already folded is a no-op.
-
-        Sessionless records are skipped: their target *is* the terminal
-        fallback, which ``_parse_live_record`` already publishes as the alias
-        of whatever session arrives next, and treating it as a supersession
-        would break the chain across the gap where Herdr has detected the
-        agent but not yet its new session.
-
-        A terminal is continuity only while it carries one session at a time.
-        Two guarded sessions reporting the same terminal in one snapshot are
-        siblings, not a re-key: declaring one the successor of the other would
-        make the older target resolve to two records at once and every guarded
-        action on it fail as ambiguous. Such a terminal is left out of the
-        lineage entirely, and a superseded target still present in the snapshot
-        is never published as an alias — a target Herdr is still reporting has
-        not been superseded by anything.
-
-        In-memory only, like ``_provisional_targets``: a ccgram restart across
-        the re-key loses the link, leaving the old topic on the dead target —
-        the behaviour before this seam existed, never a worse one.
+        Three shapes are deliberately not a supersession: a sessionless
+        record, whose target is the terminal fallback ``_parse_live_record``
+        already publishes as the next session's alias; two sessions on one
+        terminal in one snapshot, which are siblings, not sequential; and a
+        superseded target Herdr still reports, which a resume brought back to
+        life and nothing has replaced.
         """
         self._prune_session_lineage(records)
         live_targets = {record.target_id for record in records}
