@@ -323,3 +323,83 @@ async def test_failed_startup_read_preserves_catch_up_boundary(tmp_path) -> None
 
     assert [msg.text for msg in messages] == ["b"]
     assert idle.get_last_activity("sess") is None
+
+
+async def test_metadata_only_ctime_bump_does_not_replay_transcript(tmp_path) -> None:
+    """A ctime bump that leaves consumed bytes intact is not a replacement."""
+    history = "".join(
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"h%d"}]}}\n'
+        % index
+        for index in range(5)
+    )
+    session_file = tmp_path / "transcript.jsonl"
+    session_file.write_text(history, newline="\n")
+
+    state = MonitorState(state_file=tmp_path / "monitor_state.json")
+    state.update_session(
+        TrackedSession(
+            session_id="sess",
+            file_path=str(session_file),
+            last_byte_offset=session_file.stat().st_size,
+        )
+    )
+    reader = TranscriptReader(state, IdleTracker())
+    os.chmod(session_file, 0o600)
+
+    messages = []
+    await reader._process_session_file("sess", session_file, messages, window_id="@1")
+
+    assert messages == []
+    tracked = state.get_session("sess")
+    assert tracked is not None
+    assert tracked.last_byte_offset == session_file.stat().st_size
+
+
+async def test_append_during_read_does_not_replay_transcript(tmp_path) -> None:
+    """A concurrent append mid-read must deliver the new entry, not the file."""
+    history = "".join(
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"h%d"}]}}\n'
+        % index
+        for index in range(5)
+    )
+    fresh = (
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"fresh"}]}}\n'
+    )
+    session_file = tmp_path / "transcript.jsonl"
+    session_file.write_text(history, newline="\n")
+
+    state = MonitorState(state_file=tmp_path / "monitor_state.json")
+    state.update_session(
+        TrackedSession(
+            session_id="sess",
+            file_path=str(session_file),
+            last_byte_offset=session_file.stat().st_size,
+        )
+    )
+    reader = TranscriptReader(state, IdleTracker())
+    original_read = reader._read_new_lines
+    appended = False
+
+    async def append_then_read(*args, **kwargs):
+        nonlocal appended
+        if not appended:
+            with session_file.open("a") as transcript:
+                transcript.write(fresh)
+            appended = True
+        return await original_read(*args, **kwargs)
+
+    messages = []
+    with (
+        patch.object(reader, "_read_new_lines", side_effect=append_then_read),
+        patch.object(
+            reader, "_consumed_prefix_intact", new=AsyncMock(return_value=False)
+        ) as digest,
+    ):
+        await reader._process_session_file(
+            "sess", session_file, messages, window_id="@1"
+        )
+
+    assert [msg.text for msg in messages] == ["fresh"]
+    # The cached tail marker settles it; re-digesting the whole file would cost
+    # a full read of the transcript on every concurrent append.
+    digest.assert_not_awaited()
