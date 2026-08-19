@@ -51,6 +51,11 @@ class _StableRead(NamedTuple):
     reset_generation: bool
 
 
+class _GenerationCheck(NamedTuple):
+    changed: bool
+    consumed_intact: bool
+
+
 _MARKER_BYTES = 128
 
 
@@ -206,7 +211,12 @@ class TranscriptReader:
         return boundaries
 
     def _prepare_startup_boundary(
-        self, session_id: str, tracked: TrackedSession, st: Any
+        self,
+        session_id: str,
+        tracked: TrackedSession,
+        st: Any,
+        *,
+        consumed_intact: bool,
     ) -> _StartupBoundary | None:
         """Reset post-start replacements and return the activity boundary."""
         boundary = self._startup_file_boundaries.get(session_id)
@@ -216,7 +226,7 @@ class TranscriptReader:
             boundary.device,
             boundary.inode,
         )
-        if generation_changed or st.st_size < boundary.size:
+        if (generation_changed or st.st_size < boundary.size) and not consumed_intact:
             tracked.last_byte_offset = 0
             boundary = _StartupBoundary(
                 size=0,
@@ -225,6 +235,34 @@ class TranscriptReader:
             )
             self._startup_file_boundaries[session_id] = boundary
         return boundary
+
+    def _prefix_covers_consumed(self, session_id: str, consumed: int, st: Any) -> bool:
+        """True when the cached prefix digest spans every byte already delivered."""
+        saved = self._file_prefixes.get(session_id)
+        return (
+            consumed > 0
+            and saved is not None
+            and saved[0] >= consumed
+            and st.st_size >= consumed
+        )
+
+    async def _consumed_prefix_intact(
+        self, session_id: str, consumed: int, file_path: Path, st: Any
+    ) -> bool:
+        """True when every byte already delivered is still byte-identical on disk.
+
+        A replacement signal that fires while this holds is a false positive:
+        nothing we sent was replaced, so rewinding would replay the whole
+        transcript instead of the new content.
+        """
+        if not self._prefix_covers_consumed(session_id, consumed, st):
+            return False
+        size, digest = self._file_prefixes[session_id]
+        try:
+            current = await asyncio.to_thread(_prefix_digest, file_path, size)
+        except OSError:
+            return False
+        return current == digest
 
     async def _marker_changed(
         self, session_id: str, tracked: TrackedSession, file_path: Path
@@ -248,7 +286,7 @@ class TranscriptReader:
         st: Any,
         *,
         check_marker: bool,
-    ) -> bool:
+    ) -> _GenerationCheck:
         generation = (st.st_dev, st.st_ino)
         previous = self._file_generations.get(session_id)
         previous_ctime = self._file_ctimes.get(session_id)
@@ -256,6 +294,7 @@ class TranscriptReader:
         previous_size = self._file_sizes.get(session_id)
         previous_prefix = self._file_prefixes.get(session_id)
         prefix_changed = False
+        prefix_verified = False
         if previous_prefix is not None:
             try:
                 prefix_changed = (
@@ -266,6 +305,8 @@ class TranscriptReader:
                 )
             except OSError:
                 prefix_changed = False
+            else:
+                prefix_verified = True
         changed = (
             changed
             or prefix_changed
@@ -279,10 +320,25 @@ class TranscriptReader:
         changed = changed or st.st_size < tracked.last_byte_offset
         if not changed and check_marker:
             changed = await self._marker_changed(session_id, tracked, file_path)
+        consumed_intact = False
         if changed:
-            tracked.last_byte_offset = 0
-            self._startup_file_boundaries.pop(session_id, None)
-        return changed
+            consumed_intact = (
+                check_marker
+                and prefix_verified
+                and not prefix_changed
+                and self._prefix_covers_consumed(
+                    session_id, tracked.last_byte_offset, st
+                )
+            )
+            if consumed_intact:
+                logger.debug(
+                    "Ignoring transcript replacement signal, delivered bytes intact: %s",
+                    session_id,
+                )
+            else:
+                tracked.last_byte_offset = 0
+                self._startup_file_boundaries.pop(session_id, None)
+        return _GenerationCheck(changed and not consumed_intact, consumed_intact)
 
     async def _read_session_entries(
         self,
@@ -319,6 +375,13 @@ class TranscriptReader:
                     return None
                 marker_changed = marker != saved[1]
             if same_generation and not rewritten_in_place and not marker_changed:
+                return _StableRead(entries, after, reset_generation)
+            consumed_survived = check_marker and await self._consumed_prefix_intact(
+                session_id, start_offset, file_path, after
+            )
+            if consumed_survived:
+                # Concurrent append or metadata churn, not a replacement: the
+                # bytes already delivered survived, so keep this read.
                 return _StableRead(entries, after, reset_generation)
             tracked.last_byte_offset = 0
             self._startup_file_boundaries.pop(session_id, None)
@@ -498,7 +561,7 @@ class TranscriptReader:
         except OSError:
             return
 
-        generation_changed = await self._prepare_observed_generation(
+        generation_changed, consumed_intact = await self._prepare_observed_generation(
             session_id,
             tracked,
             file_path,
@@ -519,7 +582,12 @@ class TranscriptReader:
         startup_boundary = (
             None
             if generation_changed or not provider.capabilities.supports_incremental_read
-            else self._prepare_startup_boundary(session_id, tracked, st)
+            else self._prepare_startup_boundary(
+                session_id,
+                tracked,
+                st,
+                consumed_intact=consumed_intact,
+            )
         )
         stable_read = await self._read_session_entries(
             session_id,
