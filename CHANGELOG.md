@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.6.1] - 2026-08-19
+
+### Fixed
+
+- Budget topic-existence probing so it no longer trips Telegram flood control, which paused all outbound Bot API traffic while it retried ([#171](https://github.com/alexei-led/ccgram/pull/171)).
+- Stop flood control from suspending deleted-topic detection for a topic that is still alive.
+- Probe topics normally when the machine has been up for less than the probe interval.
+- Log an isolated Telegram HTTP client reset at info; warn only when resets repeat without a successful request in between.
+
 ## [4.6.0] - 2026-08-16
 
 ### Added
