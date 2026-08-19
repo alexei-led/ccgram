@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 from telegram import Update
-from telegram.error import BadRequest, TelegramError
+from telegram.error import BadRequest, RetryAfter, TelegramError
 from ... import window_query
 from ...config import config
 from ...session import session_manager
@@ -26,7 +26,7 @@ from ...window_state_ports import legacy_state
 from ...window_state_store import CCGRAM_CREATED_WINDOW_ORIGIN
 from ..callback_tokens import revoke_window_tokens
 from ..cleanup import clear_topic_state
-from ..messaging_pipeline.message_sender import is_thread_gone
+from ..messaging_pipeline.message_sender import is_thread_gone, retry_after_seconds
 from ..polling.polling_state import (
     lifecycle_strategy,
     terminal_poll_state,
@@ -228,20 +228,106 @@ async def prune_stale_state(live_windows: "list[TmuxWindow]") -> None:
 # handlers/status/topic_emoji.py.
 _probe_pin_disabled: set[str] = set()
 
+# unpin_all_forum_topic_messages is a chat-admin call: Telegram flood-limits it
+# per chat, and every bound topic lives in the same chat. Probing all of them
+# once per poll cycle spent that budget on liveness checks, so the ones that
+# lost the race got RetryAfter — and each retry inside AIORateLimiter pauses
+# *every* Bot API request for the retry window. Probe at most
+# PROBE_MAX_PER_CYCLE topics per cycle, least-recently-probed first, and no
+# topic more than once per PROBE_INTERVAL. Deleted topics are still caught
+# reactively by is_thread_gone on the next real send.
+PROBE_INTERVAL = 300.0
+PROBE_MAX_PER_CYCLE = 2
+
+# Last probe time per (user_id, thread_id); pruned to live bindings each pass.
+# Never probed sorts first and is always due — a plain 0.0 would not be, since
+# time.monotonic() is seconds since boot and starts below PROBE_INTERVAL.
+_NEVER_PROBED = float("-inf")
+_probe_last_ts: dict[tuple[int, int], float] = {}
+# Set on RetryAfter: flood control is chat-wide, so pause the whole probe pass.
+_probe_backoff_until: float = 0.0
+
+
+def reset_probe_schedule() -> None:
+    """Clear probe scheduling state (restart/testing)."""
+    global _probe_backoff_until
+    _probe_last_ts.clear()
+    _probe_backoff_until = 0.0
+
+
+def _due_probe_targets(
+    bindings: list[tuple[int, int | None, int, str]], now: float
+) -> list[tuple[int, int | None, int, str]]:
+    """Pick the least-recently-probed topics that are due this cycle.
+
+    Windows that can never be probed (no pin rights, suspended after repeated
+    failures) are dropped first: leaving them in would let them hold the
+    per-cycle slots and starve the topics that can be probed.
+    """
+    for key in _probe_last_ts.keys() - {(u, t) for u, _, t, _ in bindings}:
+        del _probe_last_ts[key]
+
+    def last_probe(binding: tuple[int, int | None, int, str]) -> float:
+        user_id, _, thread_id, _wid = binding
+        return _probe_last_ts.get((user_id, thread_id), _NEVER_PROBED)
+
+    due = [
+        b
+        for b in bindings
+        if b[3] not in _probe_pin_disabled
+        and not lifecycle_strategy.should_skip_probe(b[3])
+        and now - last_probe(b) >= PROBE_INTERVAL
+    ]
+    due.sort(key=last_probe)
+    return due[:PROBE_MAX_PER_CYCLE]
+
+
+async def _unbind_deleted_topic(
+    client: TelegramClient,
+    user_id: int,
+    chat_id: int | None,
+    thread_id: int,
+    wid: str,
+) -> None:
+    """Tear down a window whose Telegram topic no longer exists."""
+    w = await tmux_manager.find_window_by_id(wid)
+    view = window_query.view_window(wid)
+    killed = False
+    if w and view and view.origin == CCGRAM_CREATED_WINDOW_ORIGIN:
+        await tmux_manager.kill_window(w.window_id)
+        killed = True
+    terminal_poll_state.reset_probe_failures(wid)
+    await clear_topic_state(user_id, thread_id, client, window_id=wid, chat_id=chat_id)
+    thread_router.unbind_thread(user_id, thread_id, chat_id=chat_id)
+    logger.info(
+        "Topic deleted: %s window_id '%s' and unbound thread %d for user %d",
+        "killed" if killed else "unbound",
+        wid,
+        thread_id,
+        user_id,
+    )
+
 
 async def probe_topic_existence(client: TelegramClient) -> None:
-    """Probe all bound topics via Telegram API; detect deleted topics."""
-    bindings = list(thread_router.iter_thread_bindings_with_chat())
+    """Probe a slice of bound topics via Telegram API; detect deleted topics."""
+    global _probe_backoff_until
+
+    now = time.monotonic()
+    if now < _probe_backoff_until:
+        return
+
+    bindings: list[tuple[int, int | None, int, str]] = list(
+        thread_router.iter_thread_bindings_with_chat()
+    )
     if not bindings:
         bindings = [
             (user_id, None, thread_id, wid)
             for user_id, thread_id, wid in thread_router.iter_thread_bindings()
         ]
-    for user_id, chat_id, thread_id, wid in bindings:
+    for user_id, chat_id, thread_id, wid in _due_probe_targets(bindings, now):
         if chat_id is None:
             chat_id = thread_router.resolve_chat_id(user_id, thread_id)
-        if wid in _probe_pin_disabled or lifecycle_strategy.should_skip_probe(wid):
-            continue
+        _probe_last_ts[(user_id, thread_id)] = time.monotonic()
         try:
             await client.unpin_all_forum_topic_messages(
                 chat_id=chat_id,
@@ -253,31 +339,25 @@ async def probe_topic_existence(client: TelegramClient) -> None:
                 "Topic_id_invalid" in e.message
                 or "thread not found" in e.message.lower()
             ):
-                w = await tmux_manager.find_window_by_id(wid)
-                view = window_query.view_window(wid)
-                killed = False
-                if w and view and view.origin == CCGRAM_CREATED_WINDOW_ORIGIN:
-                    await tmux_manager.kill_window(w.window_id)
-                    killed = True
-                terminal_poll_state.reset_probe_failures(wid)
-                await clear_topic_state(
-                    user_id, thread_id, client, window_id=wid, chat_id=chat_id
-                )
-                thread_router.unbind_thread(user_id, thread_id, chat_id=chat_id)
-                action = "killed" if killed else "unbound"
-                logger.info(
-                    "Topic deleted: %s window_id '%s' and unbound thread %d for user %d",
-                    action,
-                    wid,
-                    thread_id,
-                    user_id,
-                )
+                await _unbind_deleted_topic(client, user_id, chat_id, thread_id, wid)
             elif isinstance(e, BadRequest) and "not enough rights" in e.message.lower():
                 _probe_pin_disabled.add(wid)
                 logger.info(
                     "Topic probe disabled for window_id '%s': bot lacks pin rights",
                     wid,
                 )
+            elif isinstance(e, RetryAfter):
+                # Flood control is chat-wide and says nothing about topic
+                # existence: counting it would suspend deleted-topic detection
+                # for a live topic. Give the chat its budget back instead.
+                _probe_backoff_until = time.monotonic() + retry_after_seconds(e)
+                log_throttled(
+                    logger,
+                    "topic-probe-flood",
+                    "Topic probe hit flood control; backing off %.0fs",
+                    retry_after_seconds(e),
+                )
+                return
             else:
                 lifecycle_strategy.record_probe_failure(wid)
                 if not lifecycle_strategy.should_skip_probe(wid):

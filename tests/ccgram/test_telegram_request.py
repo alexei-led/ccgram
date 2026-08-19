@@ -154,7 +154,12 @@ def _reset_log_calls(mock_logger, level: str) -> list:
 
 
 class TestResetWarningRateLimit:
-    async def test_first_reset_warns(self) -> None:
+    async def _fail(self, request) -> None:
+        with pytest.raises(TimedOut):
+            await request.do_request("https://example.com", "POST")
+
+    async def test_isolated_reset_logs_info_not_warning(self) -> None:
+        """A single dropped connection is routine; PTB recovers on the next try."""
         request = ResilientPollingHTTPXRequest()
         with (
             patch.object(
@@ -163,13 +168,13 @@ class TestResetWarningRateLimit:
                 AsyncMock(side_effect=TimedOut("t")),
             ),
             patch("ccgram.telegram_request.logger") as mock_logger,
-            pytest.raises(TimedOut),
         ):
-            await request.do_request("https://example.com", "POST")
-        assert len(_reset_log_calls(mock_logger, "warning")) == 1
-        assert _reset_log_calls(mock_logger, "debug") == []
+            await self._fail(request)
 
-    async def test_repeated_resets_within_interval_demoted_to_debug(self) -> None:
+        assert _reset_log_calls(mock_logger, "warning") == []
+        assert len(_reset_log_calls(mock_logger, "info")) == 1
+
+    async def test_sustained_outage_warns_once_per_interval(self) -> None:
         request = ResilientPollingHTTPXRequest()
         with (
             patch.object(
@@ -180,30 +185,36 @@ class TestResetWarningRateLimit:
             patch("ccgram.telegram_request.logger") as mock_logger,
         ):
             for _ in range(5):
-                with pytest.raises(TimedOut):
-                    await request.do_request("https://example.com", "POST")
+                await self._fail(request)
 
+        # Resets 1-2 are info; reset 3 crosses the threshold and warns; the
+        # rest fall back to info until the warn interval elapses.
         assert len(_reset_log_calls(mock_logger, "warning")) == 1
-        assert len(_reset_log_calls(mock_logger, "debug")) == 4
+        assert len(_reset_log_calls(mock_logger, "info")) == 4
 
-    async def test_success_resets_warn_eligibility(self) -> None:
+    async def test_success_resets_consecutive_counter(self) -> None:
         request = ResilientPollingHTTPXRequest()
         response = (200, b'{"ok": true, "result": []}')
-        mock = AsyncMock(side_effect=[TimedOut("t"), response, TimedOut("t")])
+        mock = AsyncMock(
+            side_effect=[TimedOut("t"), TimedOut("t"), response, TimedOut("t")]
+        )
 
         with (
             patch.object(HTTPXRequest, "do_request", mock),
             patch("ccgram.telegram_request.logger") as mock_logger,
         ):
-            with pytest.raises(TimedOut):
-                await request.post("u")
+            for _ in range(2):
+                with pytest.raises(TimedOut):
+                    await request.post("u")
             await request.post("u")
             with pytest.raises(TimedOut):
                 await request.post("u")
 
-        assert len(_reset_log_calls(mock_logger, "warning")) == 2
+        # The success cleared the streak, so the third failure is isolated.
+        assert _reset_log_calls(mock_logger, "warning") == []
 
-    async def test_first_reset_warns_before_monotonic_interval(self) -> None:
+    async def test_sustained_outage_warns_before_monotonic_interval(self) -> None:
+        """The first warning must not wait out the interval from process start."""
         request = ResilientPollingHTTPXRequest()
         with (
             patch.object(
@@ -213,9 +224,9 @@ class TestResetWarningRateLimit:
             ),
             patch("ccgram.telegram_request.time.monotonic", return_value=1.0),
             patch("ccgram.telegram_request.logger") as mock_logger,
-            pytest.raises(TimedOut),
         ):
-            await request.do_request("https://example.com", "POST")
+            for _ in range(3):
+                await self._fail(request)
 
         assert len(_reset_log_calls(mock_logger, "warning")) == 1
 
