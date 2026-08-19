@@ -45,7 +45,7 @@ from collections.abc import (
     Mapping,
     Sequence,
 )
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import structlog
@@ -105,6 +105,16 @@ _HERDR_CAPABILITIES = MultiplexerCapabilities(
     supports_event_stream=True,
     native_worktrees=True,
 )
+
+# Upper bound on remembered terminal → session-target lineage entries (see
+# ``_with_session_lineage``). One entry per terminal that has ever run an agent
+# this process lifetime; pruned against the live snapshot once exceeded.
+_SESSION_LINEAGE_MAX = 512
+
+# How many superseded targets one terminal retains. A topic is folded onto the
+# live target on the first monitor cycle after a re-key, so one is enough in
+# practice; the rest cover a reconcile that could not run in between.
+_SESSION_LINEAGE_DEPTH = 4
 
 # Filter for self-hosted / internal workspaces and tabs (e.g. ``__main__``).
 # Entries matching this pattern are skipped in ``list_windows`` so ccgram
@@ -223,6 +233,14 @@ class HerdrSessionComposite:
     agent: str
     kind: str
     value: str
+
+
+@dataclass(frozen=True)
+class _TerminalLineage:
+    """One terminal's current session target and the ones it has superseded."""
+
+    current: str
+    superseded: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -375,6 +393,10 @@ class HerdrManager:
         # Targets minted for a pane Herdr has not classified yet (see
         # _provisional_record). Dropped as soon as agent.list reports them.
         self._provisional_targets: dict[str, HerdrLiveRecord] = {}
+        # terminal_id → the session targets seen there, so an agent that
+        # re-keys its session in place keeps publishing the superseded target
+        # as an alias (see _with_session_lineage).
+        self._session_lineage: dict[str, _TerminalLineage] = {}
 
     def _default_stream(
         self, subscriptions: Sequence[Mapping[str, object]]
@@ -541,8 +563,95 @@ class HerdrManager:
             parsed = _parse_live_record(agent)
             if parsed is not None:
                 records.append(parsed)
+        records = self._with_session_lineage(records)
         self._forget_provisional(records)
         return records
+
+    def _with_session_lineage(
+        self, records: Sequence[HerdrLiveRecord]
+    ) -> list[HerdrLiveRecord]:
+        """Publish a terminal's superseded session targets as aliases.
+
+        Identity is the agent *session* composite, so re-keying a session in
+        place (``/clear``, ``--resume``) mints a brand-new target for the same
+        terminal: the bound topic is orphaned and the new target reads as a
+        window nobody has bound, which is the duplicate topic per ``/clear``.
+        The terminal is the continuity, and the superseded target is exactly
+        the input ``migrate_window_aliases`` folds forward.
+
+        Three shapes are deliberately not a supersession: a sessionless
+        record, whose target is the terminal fallback ``_parse_live_record``
+        already publishes as the next session's alias; two sessions on one
+        terminal in one snapshot, which are siblings, not sequential; and a
+        superseded target Herdr still reports, which a resume brought back to
+        life and nothing has replaced.
+        """
+        self._prune_session_lineage(records)
+        live_targets = {record.target_id for record in records}
+        sessions_per_terminal: dict[str, int] = {}
+        for record in records:
+            if record.terminal_id and record.composite.kind != "terminal":
+                sessions_per_terminal[record.terminal_id] = (
+                    sessions_per_terminal.get(record.terminal_id, 0) + 1
+                )
+        updated: list[HerdrLiveRecord] = []
+        for record in records:
+            terminal_id = record.terminal_id
+            if (
+                not terminal_id
+                or record.composite.kind == "terminal"
+                or sessions_per_terminal.get(terminal_id, 0) > 1
+            ):
+                updated.append(record)
+                continue
+            aliases = self._track_session_lineage(terminal_id, record.target_id)
+            extra = tuple(
+                target_id
+                for target_id in aliases
+                if target_id != record.target_id
+                and target_id not in record.alias_target_ids
+                and target_id not in live_targets
+            )
+            if not extra:
+                updated.append(record)
+                continue
+            updated.append(
+                replace(record, alias_target_ids=(*record.alias_target_ids, *extra))
+            )
+        return updated
+
+    def _track_session_lineage(
+        self, terminal_id: str, target_id: str
+    ) -> tuple[str, ...]:
+        """Record the terminal's current target; return the ones it superseded."""
+        lineage = self._session_lineage.get(terminal_id)
+        if lineage is None:
+            self._session_lineage[terminal_id] = _TerminalLineage(current=target_id)
+            return ()
+        if lineage.current == target_id:
+            return lineage.superseded
+        logger.info(
+            "herdr agent re-keyed its session in place; publishing alias",
+            terminal_id=terminal_id,
+            superseded_target=lineage.current,
+            target=target_id,
+        )
+        superseded = (lineage.current, *lineage.superseded)[:_SESSION_LINEAGE_DEPTH]
+        self._session_lineage[terminal_id] = _TerminalLineage(
+            current=target_id, superseded=superseded
+        )
+        return superseded
+
+    def _prune_session_lineage(self, records: Sequence[HerdrLiveRecord]) -> None:
+        """Bound lineage memory by dropping terminals no longer in the snapshot."""
+        if len(self._session_lineage) <= _SESSION_LINEAGE_MAX:
+            return
+        live_terminals = {record.terminal_id for record in records}
+        self._session_lineage = {
+            terminal_id: lineage
+            for terminal_id, lineage in self._session_lineage.items()
+            if terminal_id in live_terminals
+        }
 
     def target_id_for_live_record(self, record: Mapping[str, object]) -> str | None:
         """Return a guarded opaque target for one ``agent.list`` record.

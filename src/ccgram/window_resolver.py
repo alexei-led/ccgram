@@ -198,6 +198,54 @@ def _alias_is_referenced(
     )
 
 
+def _binding_scope(key: object) -> object:
+    """Return the uniqueness scope of a binding key.
+
+    Chat-scoped keys are ``(user_id, chat_id, thread_id)``; the per-user
+    ``thread_bindings`` sub-dicts are already one scope.
+    """
+    return key[:2] if isinstance(key, tuple) else None
+
+
+def _duplicate_bindings(
+    bindings: dict,
+    canonical_id: str,
+    kept_keys: set,
+) -> list:
+    """Return bindings on ``canonical_id`` that duplicate a kept alias binding.
+
+    Scoped exactly as ``ThreadRouter.bind_thread`` scopes its own eviction, so
+    the same window legitimately bound in another chat is not a duplicate.
+    """
+    kept_scopes = {_binding_scope(key) for key in kept_keys}
+    duplicates = [
+        key
+        for key, window_id in bindings.items()
+        if window_id == canonical_id
+        and key not in kept_keys
+        and _binding_scope(key) in kept_scopes
+    ]
+    if duplicates:
+        logger.info(
+            "Unbinding %d duplicate topic(s) for window %s: "
+            "the superseded id already owns a topic",
+            len(duplicates),
+            canonical_id,
+        )
+    return duplicates
+
+
+def _repoint_bindings(bindings: dict, alias_id: str, canonical_id: str) -> None:
+    """Move one binding map's alias entries onto the canonical id."""
+    alias_keys = {key for key, window_id in bindings.items() if window_id == alias_id}
+    if not alias_keys:
+        return
+    for key in _duplicate_bindings(bindings, canonical_id, alias_keys):
+        del bindings[key]
+    for key in alias_keys:
+        bindings[key] = canonical_id
+
+
 def _repoint_alias_references(
     alias_id: str,
     canonical_id: str,
@@ -206,14 +254,18 @@ def _repoint_alias_references(
     user_window_offsets: dict,
     window_display_names: dict,
 ) -> None:
-    """Point every binding, offset, and display name at the canonical id."""
+    """Point every binding, offset, and display name at the canonical id.
+
+    One window is one topic (``ThreadRouter.bind_thread`` enforces that on the
+    bind path). A repoint can violate it: if the canonical id was discovered as
+    an unbound window before ccgram learned it supersedes the alias, a second
+    topic is already bound to it. The alias's topic is the one that carries the
+    user's history, so it wins and the duplicate is unbound — leaving both is
+    what makes two topics answer for one agent.
+    """
     for bindings in thread_bindings.values():
-        for thread_id, window_id in list(bindings.items()):
-            if window_id == alias_id:
-                bindings[thread_id] = canonical_id
-    for key, window_id in list(chat_thread_bindings.items()):
-        if window_id == alias_id:
-            chat_thread_bindings[key] = canonical_id
+        _repoint_bindings(bindings, alias_id, canonical_id)
+    _repoint_bindings(chat_thread_bindings, alias_id, canonical_id)
     for offsets in user_window_offsets.values():
         offset = offsets.pop(alias_id, None)
         if offset is not None:
