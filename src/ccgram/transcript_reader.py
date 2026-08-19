@@ -376,18 +376,8 @@ class TranscriptReader:
                 marker_changed = marker != saved[1]
             if same_generation and not rewritten_in_place and not marker_changed:
                 return _StableRead(entries, after, reset_generation)
-            consumed_survived = (
-                same_generation
-                and not marker_changed
-                and saved is not None
-                and saved[0] == start_offset
-                and start_offset > 0
-                and after.st_size >= start_offset
-            ) or (
-                check_marker
-                and await self._consumed_prefix_intact(
-                    session_id, start_offset, file_path, after
-                )
+            consumed_survived = check_marker and await self._consumed_prefix_intact(
+                session_id, start_offset, file_path, after
             )
             if consumed_survived:
                 # Concurrent append or metadata churn, not a replacement: the

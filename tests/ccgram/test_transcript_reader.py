@@ -389,17 +389,59 @@ async def test_append_during_read_does_not_replay_transcript(tmp_path) -> None:
         return await original_read(*args, **kwargs)
 
     messages = []
-    with (
-        patch.object(reader, "_read_new_lines", side_effect=append_then_read),
-        patch.object(
-            reader, "_consumed_prefix_intact", new=AsyncMock(return_value=False)
-        ) as digest,
-    ):
+    with patch.object(reader, "_read_new_lines", side_effect=append_then_read):
         await reader._process_session_file(
             "sess", session_file, messages, window_id="@1"
         )
 
     assert [msg.text for msg in messages] == ["fresh"]
-    # The cached tail marker settles it; re-digesting the whole file would cost
-    # a full read of the transcript on every concurrent append.
-    digest.assert_not_awaited()
+
+
+async def test_rewrite_before_tail_marker_is_detected_during_read(tmp_path) -> None:
+    """A rewrite outside the tail marker must not be skipped as an append."""
+    history = "".join(
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"h%d"}]}}\n'
+        % index
+        for index in range(5)
+    )
+    session_file = tmp_path / "transcript.jsonl"
+    session_file.write_text(history, newline="\n")
+
+    state = MonitorState(state_file=tmp_path / "monitor_state.json")
+    state.update_session(
+        TrackedSession(
+            session_id="sess",
+            file_path=str(session_file),
+            last_byte_offset=session_file.stat().st_size,
+        )
+    )
+    reader = TranscriptReader(state, IdleTracker())
+    await reader._process_session_file("sess", session_file, [], window_id="@1")
+    reader._file_mtimes["sess"] = 0.0
+
+    original_read = reader._read_new_lines
+    rewritten = False
+
+    async def rewrite_then_read(*args, **kwargs):
+        nonlocal rewritten
+        if not rewritten:
+            session_file.write_text(
+                session_file.read_text().replace('"h0"', '"changed"', 1),
+                newline="\n",
+            )
+            rewritten = True
+        return await original_read(*args, **kwargs)
+
+    messages = []
+    with patch.object(reader, "_read_new_lines", side_effect=rewrite_then_read):
+        await reader._process_session_file(
+            "sess", session_file, messages, window_id="@1"
+        )
+
+    assert [msg.text for msg in messages] == [
+        "changed",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+    ]
