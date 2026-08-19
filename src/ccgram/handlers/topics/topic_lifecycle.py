@@ -240,6 +240,9 @@ PROBE_INTERVAL = 300.0
 PROBE_MAX_PER_CYCLE = 2
 
 # Last probe time per (user_id, thread_id); pruned to live bindings each pass.
+# Never probed sorts first and is always due — a plain 0.0 would not be, since
+# time.monotonic() is seconds since boot and starts below PROBE_INTERVAL.
+_NEVER_PROBED = float("-inf")
 _probe_last_ts: dict[tuple[int, int], float] = {}
 # Set on RetryAfter: flood control is chat-wide, so pause the whole probe pass.
 _probe_backoff_until: float = 0.0
@@ -266,7 +269,7 @@ def _due_probe_targets(
 
     def last_probe(binding: tuple[int, int | None, int, str]) -> float:
         user_id, _, thread_id, _wid = binding
-        return _probe_last_ts.get((user_id, thread_id), 0.0)
+        return _probe_last_ts.get((user_id, thread_id), _NEVER_PROBED)
 
     due = [
         b

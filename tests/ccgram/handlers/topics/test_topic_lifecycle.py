@@ -368,6 +368,25 @@ class TestProbeTopicExistence:
 
         assert bot.unpin_all_forum_topic_messages.call_count == 1
 
+    async def test_probes_run_shortly_after_boot(self):
+        """time.monotonic() starts near zero: never-probed must still be due."""
+        bot = AsyncMock(spec=Bot)
+        bot.unpin_all_forum_topic_messages = AsyncMock()
+        with (
+            patch(
+                "ccgram.handlers.topics.topic_lifecycle.thread_router"
+            ) as mock_router,
+            patch(
+                "ccgram.handlers.topics.topic_lifecycle.time.monotonic",
+                return_value=5.0,
+            ),
+        ):
+            mock_router.iter_thread_bindings.return_value = [(1, 100, "@0")]
+            mock_router.resolve_chat_id.return_value = 42
+            await probe_topic_existence(bot)
+
+        bot.unpin_all_forum_topic_messages.assert_called_once()
+
     async def test_probe_budget_rotates_across_cycles(self):
         """Bounded admin calls per cycle, least-recently-probed topic first."""
         bot = AsyncMock(spec=Bot)
