@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.6.3] - 2026-08-20
+
+### Fixed
+
+- Limit proactive topic checks to one request per Telegram chat per polling cycle, keep flood-control backoff chat-scoped, and retry failed checks without delaying unrelated chats.
+- Extend the `getUpdates` read timeout beyond Telegram's long-poll window to avoid needless HTTP client resets.
+
 ## [4.6.2] - 2026-08-19
 
 ### Fixed
