@@ -89,9 +89,9 @@ __all__ = [
 logger = structlog.get_logger()
 
 # Supported herdr socket protocols (``herdr status`` → ``server.protocol``).
-# 14–17 and 19 are supported. Other versions are attempted with a warning so
-# ccgram remains usable across herdr upgrades and downgrades.
-HERDR_SUPPORTED_PROTOCOLS = frozenset({14, 15, 16, 17, 19})
+# 14–17 and 19–20 are supported. Other versions are attempted with a warning so
+# ccgram remains usable across Herdr upgrades and downgrades.
+HERDR_SUPPORTED_PROTOCOLS = frozenset({14, 15, 16, 17, 19, 20})
 HERDR_PROTOCOL_VERSION = max(HERDR_SUPPORTED_PROTOCOLS)
 
 # Static capability declaration for the herdr backend (design Task 7).
@@ -500,11 +500,13 @@ class HerdrManager:
     # ── Multiplexer Protocol surface ───────────────────────────────────
 
     async def ensure_session(self) -> None:
-        """Verify the herdr server is reachable; warn for unverified protocols.
+        """Verify Herdr is reachable; warn but do not gate on compatibility.
 
         ``HERDR_SUPPORTED_PROTOCOLS`` are accepted without a warning. Other
-        protocol versions are best-effort: ccgram logs a warning and
-        continues so CLI-backed operations can still work after a herdr change.
+        protocol versions and a false CLI compatibility flag are best-effort:
+        ccgram logs a warning and continues so CLI-backed operations can try
+        the current command surface after a Herdr change. Individual commands
+        still report their own transport or schema failures.
 
         Raises:
             HerdrError: socket unreachable, malformed status, or stopped server.
@@ -529,11 +531,7 @@ class HerdrManager:
         is_supported_protocol = (
             is_supported_protocol and proto in HERDR_SUPPORTED_PROTOCOLS
         )
-        if cli_server_compatible is False:
-            raise HerdrProtocolError(
-                "Herdr client and server protocols are incompatible; restart Herdr"
-            )
-        if not is_supported_protocol:
+        if not is_supported_protocol or cli_server_compatible is False:
             logger.warning(
                 "herdr protocol is unverified; continuing",
                 server_protocol=proto,

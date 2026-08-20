@@ -166,9 +166,9 @@ def wire_multiplexer() -> None:
 async def ensure_multiplexer_session() -> None:
     """Ensure the active backend's session/server is reachable before polling.
 
-    tmux creates/finds the session; herdr verifies the socket is alive and the
-    pinned protocol version matches (raising on mismatch). Runs once at startup
-    via the seam so a misconfigured backend fails loudly here rather than later
+    tmux creates/finds the session; herdr verifies the socket is alive and
+    warns on protocol uncertainty without gating startup. Runs once at startup
+    via the seam so an unreachable backend fails loudly here rather than later
     as silent ``None`` returns in the polling loop.
 
     An unreachable backend is fatal but not a bug: log one actionable line and

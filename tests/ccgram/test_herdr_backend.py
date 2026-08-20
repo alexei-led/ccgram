@@ -25,7 +25,6 @@ from ccgram.multiplexer.herdr import (
     HerdrError,
     HerdrMalformedRecordError,
     HerdrManager,
-    HerdrProtocolError,
     HerdrSessionComposite,
     HerdrUnresolvedTargetError,
     _workspace_cwd_from_panes,
@@ -1240,23 +1239,31 @@ async def test_subprocess_run_maps_timeout(monkeypatch: pytest.MonkeyPatch) -> N
     )
 
 
-async def test_ensure_session_accepts_protocol_and_rejects_unavailable_server() -> None:
-    assert frozenset({14, 15, 16, 17, 19}) == HERDR_SUPPORTED_PROTOCOLS
-    good = json.dumps(
+@pytest.mark.parametrize(
+    ("protocol", "compatible"),
+    [(19, False), (HERDR_PROTOCOL_VERSION, True), (21, True)],
+)
+async def test_ensure_session_is_optimistic_across_protocol_changes(
+    protocol: int, compatible: bool
+) -> None:
+    assert frozenset({14, 15, 16, 17, 19, 20}) == HERDR_SUPPORTED_PROTOCOLS
+    status = json.dumps(
         {
             "server": {
                 "running": True,
-                "protocol": HERDR_PROTOCOL_VERSION,
-                "compatible": True,
+                "protocol": protocol,
+                "compatible": compatible,
             }
         }
     )
-    await _manager(FakeHerdr().on("status", out=good)).ensure_session()
-    incompatible = json.dumps(
-        {"server": {"running": True, "protocol": 17, "compatible": False}}
-    )
-    with pytest.raises(HerdrProtocolError, match="restart Herdr"):
-        await _manager(FakeHerdr().on("status", out=incompatible)).ensure_session()
+    fake = FakeHerdr().on("status", out=status)
+
+    await _manager(fake).ensure_session()
+
+    assert fake.calls == [["status", "--json"]]
+
+
+async def test_ensure_session_still_rejects_unavailable_server() -> None:
     with pytest.raises(HerdrError):
         await _manager(FakeHerdr().on("status", out="not json")).ensure_session()
 

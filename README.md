@@ -108,7 +108,7 @@ Open your Telegram group, create a topic, send a message — directory browser a
 
 ### Herdr setup
 
-CCGram supports Herdr socket protocols **14–17 and 19**. Install Herdr's integration before launching an agent that needs a native session identity:
+CCGram supports Herdr socket protocols **14–17 and 19–20**. Unknown protocol versions are attempted with a warning for forward compatibility; individual command failures still surface if the protocol is not usable. Install Herdr's integration before launching an agent that needs a native session identity:
 
 ```bash
 herdr integration install pi
