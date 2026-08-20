@@ -337,10 +337,13 @@ class TestProbeTopicExistence:
         from ccgram.handlers.topics import topic_lifecycle as tl
 
         bot = AsyncMock(spec=Bot)
-        bot.unpin_all_forum_topic_messages = AsyncMock(side_effect=RetryAfter(3))
+        bot.unpin_all_forum_topic_messages = AsyncMock(
+            side_effect=[RetryAfter(3), None]
+        )
         with (
             patch.object(tl, "thread_router") as mock_router,
             patch.object(tl, "lifecycle_strategy") as mock_strategy,
+            patch.object(tl.time, "monotonic", return_value=100.0),
         ):
             mock_router.iter_thread_bindings.return_value = [(1, 100, "@0")]
             mock_router.resolve_chat_id.return_value = 42
@@ -354,19 +357,70 @@ class TestProbeTopicExistence:
             await probe_topic_existence(bot)
             bot.unpin_all_forum_topic_messages.assert_not_called()
 
-    async def test_flood_control_stops_the_rest_of_the_pass(self):
+            # Once the chat backoff expires, retry the failed topic instead of
+            # waiting for the normal five-minute probe interval.
+            tl._probe_backoff_until[42] = 0.0
+            await probe_topic_existence(bot)
+            bot.unpin_all_forum_topic_messages.assert_called_once()
+
+    async def test_flood_control_is_scoped_to_the_affected_chat(self):
+        from ccgram.handlers.topics import topic_lifecycle as tl
+
         bot = AsyncMock(spec=Bot)
-        bot.unpin_all_forum_topic_messages = AsyncMock(side_effect=RetryAfter(3))
+        bot.unpin_all_forum_topic_messages = AsyncMock(
+            side_effect=[RetryAfter(3), None, None]
+        )
+        bindings = [
+            (1, 42, 100, "@0"),
+            (1, 43, 100, "@1"),
+        ]
+        with (
+            patch.object(tl, "thread_router") as mock_router,
+            patch.object(tl.time, "monotonic", return_value=100.0),
+        ):
+            mock_router.iter_thread_bindings_with_chat.return_value = bindings
+            await probe_topic_existence(bot)
+
+            assert bot.unpin_all_forum_topic_messages.call_count == 2
+            assert (
+                bot.unpin_all_forum_topic_messages.call_args_list[0].kwargs["chat_id"]
+                == 42
+            )
+            assert (
+                bot.unpin_all_forum_topic_messages.call_args_list[1].kwargs["chat_id"]
+                == 43
+            )
+
+            bot.unpin_all_forum_topic_messages.reset_mock()
+            await probe_topic_existence(bot)
+            bot.unpin_all_forum_topic_messages.assert_not_called()
+
+            # Thread IDs are chat-local. Once chat 42's backoff expires, retry
+            # its failed topic even though chat 43 probed thread 100.
+            tl._probe_backoff_until[42] = 0.0
+            await probe_topic_existence(bot)
+            bot.unpin_all_forum_topic_messages.assert_called_once()
+            assert bot.unpin_all_forum_topic_messages.call_args.kwargs["chat_id"] == 42
+
+    async def test_probe_budget_allows_only_one_topic_per_chat(self):
+        bot = AsyncMock(spec=Bot)
+        bot.unpin_all_forum_topic_messages = AsyncMock()
+        bindings = [
+            (1, 42, 100, "@0"),
+            (1, 42, 101, "@1"),
+            (1, 43, 102, "@2"),
+        ]
         with patch(
             "ccgram.handlers.topics.topic_lifecycle.thread_router"
         ) as mock_router:
-            mock_router.iter_thread_bindings.return_value = [
-                (1, 100 + i, f"@{i}") for i in range(PROBE_MAX_PER_CYCLE + 2)
-            ]
-            mock_router.resolve_chat_id.return_value = 42
+            mock_router.iter_thread_bindings_with_chat.return_value = bindings
             await probe_topic_existence(bot)
 
-        assert bot.unpin_all_forum_topic_messages.call_count == 1
+        assert bot.unpin_all_forum_topic_messages.call_count == 2
+        assert {
+            call.kwargs["chat_id"]
+            for call in bot.unpin_all_forum_topic_messages.call_args_list
+        } == {42, 43}
 
     async def test_probes_run_shortly_after_boot(self):
         """time.monotonic() starts near zero: never-probed must still be due."""
@@ -391,12 +445,13 @@ class TestProbeTopicExistence:
         """Bounded admin calls per cycle, least-recently-probed topic first."""
         bot = AsyncMock(spec=Bot)
         bot.unpin_all_forum_topic_messages = AsyncMock()
-        topics = [(1, 100 + i, f"@{i}") for i in range(3 * PROBE_MAX_PER_CYCLE)]
+        topics = [
+            (1, 1000 + i, 100 + i, f"@{i}") for i in range(3 * PROBE_MAX_PER_CYCLE)
+        ]
         with patch(
             "ccgram.handlers.topics.topic_lifecycle.thread_router"
         ) as mock_router:
-            mock_router.iter_thread_bindings.return_value = topics
-            mock_router.resolve_chat_id.return_value = 42
+            mock_router.iter_thread_bindings_with_chat.return_value = topics
 
             probed = []
             for _ in range(3):
@@ -411,7 +466,7 @@ class TestProbeTopicExistence:
                 ]
 
         # Every topic probed exactly once — no repeats while others are due.
-        assert sorted(probed) == [t[1] for t in topics]
+        assert sorted(probed) == [t[2] for t in topics]
 
     async def test_unprobeable_windows_do_not_hold_cycle_slots(self):
         from ccgram.handlers.topics import topic_lifecycle as tl

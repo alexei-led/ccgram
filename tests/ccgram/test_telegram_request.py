@@ -244,7 +244,7 @@ class TestCreateBotPollingRequest:
         assert isinstance(app.bot._request[1], ResilientPollingHTTPXRequest)
         assert app.bot._request[0]._client._transport._pool._max_connections == 1
         assert app.bot._request[1]._client._transport._pool._max_connections == 256
-        assert app.bot._request[0].read_timeout == 10
+        assert app.bot._request[0].read_timeout == 20
         assert app.bot._request[1].read_timeout == 10
         assert app.bot._request[0].request_name == "getUpdates"
         assert app.bot._request[1].request_name == "Bot API"

@@ -70,6 +70,7 @@ __all__ = [
 logger = structlog.get_logger()
 
 _CONFLICT_GRACE_PERIOD_S = 90.0
+_GET_UPDATES_READ_TIMEOUT_S = 20.0
 
 
 class _PollingConflictState:
@@ -222,7 +223,7 @@ def create_bot() -> Application:
         .get_updates_request(
             ResilientPollingHTTPXRequest(
                 connection_pool_size=1,
-                read_timeout=10,
+                read_timeout=_GET_UPDATES_READ_TIMEOUT_S,
                 request_name="getUpdates",
                 on_success=_record_successful_poll,
             )

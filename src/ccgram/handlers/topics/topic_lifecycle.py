@@ -233,26 +233,26 @@ _probe_pin_disabled: set[str] = set()
 # once per poll cycle spent that budget on liveness checks, so the ones that
 # lost the race got RetryAfter — and each retry inside AIORateLimiter pauses
 # *every* Bot API request for the retry window. Probe at most
-# PROBE_MAX_PER_CYCLE topics per cycle, least-recently-probed first, and no
-# topic more than once per PROBE_INTERVAL. Deleted topics are still caught
-# reactively by is_thread_gone on the next real send.
+# PROBE_MAX_PER_CYCLE topics per cycle, with no more than one topic per chat,
+# least-recently-probed first, and no topic more than once per PROBE_INTERVAL.
+# Deleted topics are still caught reactively by is_thread_gone on the next real
+# send.
 PROBE_INTERVAL = 300.0
 PROBE_MAX_PER_CYCLE = 2
 
-# Last probe time per (user_id, thread_id); pruned to live bindings each pass.
-# Never probed sorts first and is always due — a plain 0.0 would not be, since
-# time.monotonic() is seconds since boot and starts below PROBE_INTERVAL.
+# Last probe time per (user_id, chat_id, thread_id); pruned to live bindings each
+# pass. Never probed sorts first and is always due — a plain 0.0 would not be,
+# since time.monotonic() is seconds since boot and starts below PROBE_INTERVAL.
 _NEVER_PROBED = float("-inf")
-_probe_last_ts: dict[tuple[int, int], float] = {}
-# Set on RetryAfter: flood control is chat-wide, so pause the whole probe pass.
-_probe_backoff_until: float = 0.0
+_probe_last_ts: dict[tuple[int, int, int], float] = {}
+# Set on RetryAfter: flood control is chat-wide, so pause probes for that chat.
+_probe_backoff_until: dict[int, float] = {}
 
 
 def reset_probe_schedule() -> None:
     """Clear probe scheduling state (restart/testing)."""
-    global _probe_backoff_until
     _probe_last_ts.clear()
-    _probe_backoff_until = 0.0
+    _probe_backoff_until.clear()
 
 
 def _due_probe_targets(
@@ -264,12 +264,29 @@ def _due_probe_targets(
     failures) are dropped first: leaving them in would let them hold the
     per-cycle slots and starve the topics that can be probed.
     """
-    for key in _probe_last_ts.keys() - {(u, t) for u, _, t, _ in bindings}:
+
+    def binding_chat_id(binding: tuple[int, int | None, int, str]) -> int:
+        user_id, chat_id, thread_id, _wid = binding
+        return (
+            chat_id
+            if chat_id is not None
+            else thread_router.resolve_chat_id(user_id, thread_id)
+        )
+
+    def probe_key(binding: tuple[int, int | None, int, str]) -> tuple[int, int, int]:
+        user_id, _, thread_id, _wid = binding
+        return user_id, binding_chat_id(binding), thread_id
+
+    active_probe_keys = {probe_key(binding) for binding in bindings}
+    for key in _probe_last_ts.keys() - active_probe_keys:
         del _probe_last_ts[key]
 
     def last_probe(binding: tuple[int, int | None, int, str]) -> float:
-        user_id, _, thread_id, _wid = binding
-        return _probe_last_ts.get((user_id, thread_id), _NEVER_PROBED)
+        return _probe_last_ts.get(probe_key(binding), _NEVER_PROBED)
+
+    active_chat_ids = {binding_chat_id(binding) for binding in bindings}
+    for chat_id in _probe_backoff_until.keys() - active_chat_ids:
+        del _probe_backoff_until[chat_id]
 
     due = [
         b
@@ -277,9 +294,21 @@ def _due_probe_targets(
         if b[3] not in _probe_pin_disabled
         and not lifecycle_strategy.should_skip_probe(b[3])
         and now - last_probe(b) >= PROBE_INTERVAL
+        and now >= _probe_backoff_until.get(binding_chat_id(b), 0.0)
     ]
     due.sort(key=last_probe)
-    return due[:PROBE_MAX_PER_CYCLE]
+
+    selected: list[tuple[int, int | None, int, str]] = []
+    selected_chat_ids: set[int] = set()
+    for binding in due:
+        chat_id = binding_chat_id(binding)
+        if chat_id in selected_chat_ids:
+            continue
+        selected.append(binding)
+        selected_chat_ids.add(chat_id)
+        if len(selected) >= PROBE_MAX_PER_CYCLE:
+            break
+    return selected
 
 
 async def _unbind_deleted_topic(
@@ -310,11 +339,7 @@ async def _unbind_deleted_topic(
 
 async def probe_topic_existence(client: TelegramClient) -> None:
     """Probe a slice of bound topics via Telegram API; detect deleted topics."""
-    global _probe_backoff_until
-
     now = time.monotonic()
-    if now < _probe_backoff_until:
-        return
 
     bindings: list[tuple[int, int | None, int, str]] = list(
         thread_router.iter_thread_bindings_with_chat()
@@ -327,7 +352,8 @@ async def probe_topic_existence(client: TelegramClient) -> None:
     for user_id, chat_id, thread_id, wid in _due_probe_targets(bindings, now):
         if chat_id is None:
             chat_id = thread_router.resolve_chat_id(user_id, thread_id)
-        _probe_last_ts[(user_id, thread_id)] = time.monotonic()
+        probe_key = (user_id, chat_id, thread_id)
+        _probe_last_ts[probe_key] = time.monotonic()
         try:
             await client.unpin_all_forum_topic_messages(
                 chat_id=chat_id,
@@ -349,15 +375,18 @@ async def probe_topic_existence(client: TelegramClient) -> None:
             elif isinstance(e, RetryAfter):
                 # Flood control is chat-wide and says nothing about topic
                 # existence: counting it would suspend deleted-topic detection
-                # for a live topic. Give the chat its budget back instead.
-                _probe_backoff_until = time.monotonic() + retry_after_seconds(e)
+                # for a live topic. Give this chat its budget back instead.
+                _probe_last_ts.pop(probe_key, None)
+                delay = retry_after_seconds(e)
+                _probe_backoff_until[chat_id] = time.monotonic() + delay
                 log_throttled(
                     logger,
-                    "topic-probe-flood",
-                    "Topic probe hit flood control; backing off %.0fs",
-                    retry_after_seconds(e),
+                    f"topic-probe-flood:{chat_id}",
+                    "Topic probe hit flood control for chat %s; backing off %.0fs",
+                    chat_id,
+                    delay,
                 )
-                return
+                continue
             else:
                 lifecycle_strategy.record_probe_failure(wid)
                 if not lifecycle_strategy.should_skip_probe(wid):
