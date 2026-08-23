@@ -91,6 +91,30 @@ async def _transcribe_audio(
         return None
 
 
+async def _send_transcribed_text(
+    user_id: int,
+    thread_id: int | None,
+    window_id: str,
+    text: str,
+    message: Message,
+) -> tuple[bool, str | None]:
+    """Forward auto-sent transcription through the confirmation send path."""
+    # Lazy: voice_callbacks imports the provider-aware voice send path.
+    from .voice_callbacks import send_transcribed_text
+
+    # Lazy: keep the handler import path free of the Telegram client cycle.
+    from ...telegram_client import PTBTelegramClient
+
+    return await send_transcribed_text(
+        PTBTelegramClient(message.get_bot()),
+        user_id,
+        thread_id,
+        window_id,
+        text,
+        message.chat.id,
+    )
+
+
 async def _send_confirm_message(
     message: Message, text: str, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
@@ -109,6 +133,29 @@ async def _send_confirm_message(
     if context.user_data is not None:
         key = (confirm_msg.chat.id, message.message_id)
         context.user_data.setdefault(VOICE_PENDING, {})[key] = text
+
+
+async def _deliver_transcription(
+    message: Message,
+    text: str,
+    user_id: int,
+    thread_id: int | None,
+    window_id: str,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """Present a transcription and optionally forward it without confirmation."""
+    if config.voice_autosend is not True:
+        await _send_confirm_message(message, text, context)
+        return
+
+    transcription_message = await safe_reply(message, f"🎤 Transcribed:\n\n{text}")
+    if transcription_message is None:
+        return
+    success, error = await _send_transcribed_text(
+        user_id, thread_id, window_id, text, message
+    )
+    if not success:
+        await safe_reply(message, f"❌ {error or 'Failed to send'}")
 
 
 async def handle_voice_message(
@@ -168,4 +215,11 @@ async def handle_voice_message(
         await safe_reply(message, "⚠️ Could not transcribe audio (empty result).")
         return
 
-    await _send_confirm_message(message, result.text, context)
+    await _deliver_transcription(
+        message,
+        result.text,
+        user.id,
+        thread_id,
+        window_id,
+        context,
+    )

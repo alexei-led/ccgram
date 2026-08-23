@@ -165,6 +165,18 @@ class Config:
             "true",
             "yes",
         )
+        # Voice confirmation is safer by default; enable only for trusted,
+        # low-friction dictation workflows.
+        self.voice_autosend: bool = os.getenv(
+            "CCGRAM_VOICE_AUTOSEND", "false"
+        ).lower() in ("1", "true", "yes")
+        # Hide only the transient status presentation; replies and controls
+        # remain available through their normal paths.
+        self.hide_status: bool = os.getenv("CCGRAM_HIDE_STATUS", "false").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
 
         # Global default batch mode: ephemeral tools (single rolling message deleted
         # on completion). Off by default. Per-window batch_mode takes precedence when

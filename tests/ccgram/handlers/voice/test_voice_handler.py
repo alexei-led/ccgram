@@ -204,6 +204,71 @@ class TestHandleVoiceMessage:
             b"fake audio bytes", "voice.ogg"
         )
 
+    async def test_autosend_posts_transcription_without_keyboard(self) -> None:
+        from ccgram.handlers.voice import voice_handler
+
+        update = _make_update()
+        context = MagicMock(user_data={})
+        reply_message = MagicMock(chat=MagicMock(id=999))
+        transcriber = MagicMock(
+            transcribe=AsyncMock(
+                return_value=TranscriptionResult(text="do the thing", language="en")
+            )
+        )
+        with (
+            patch(f"{_VH}.config") as mock_config,
+            patch(f"{_VH}.thread_router") as mock_router,
+            patch(f"{_VH}.get_transcriber", return_value=transcriber),
+            patch(
+                f"{_VH}._download_voice", new_callable=AsyncMock, return_value=b"audio"
+            ),
+            patch(
+                f"{_VH}.safe_reply", new_callable=AsyncMock, return_value=reply_message
+            ) as mock_reply,
+            patch(f"{_VH}._send_transcribed_text", new_callable=AsyncMock) as mock_send,
+        ):
+            mock_config.is_user_allowed.return_value = True
+            mock_config.voice_autosend = True
+            mock_router.resolve_window_for_thread.return_value = "@0"
+            mock_send.return_value = (True, "")
+
+            await voice_handler.handle_voice_message(update, context)
+
+        mock_reply.assert_awaited_once_with(
+            update.message, "🎤 Transcribed:\n\ndo the thing"
+        )
+        mock_send.assert_awaited_once_with(
+            100, 42, "@0", "do the thing", update.message
+        )
+        assert context.user_data == {}
+
+    async def test_autosend_stops_if_transcription_cannot_be_posted(self) -> None:
+        from ccgram.handlers.voice import voice_handler
+
+        update = _make_update()
+        transcriber = MagicMock(
+            transcribe=AsyncMock(
+                return_value=TranscriptionResult(text="do the thing", language="en")
+            )
+        )
+        with (
+            patch(f"{_VH}.config") as mock_config,
+            patch(f"{_VH}.thread_router") as mock_router,
+            patch(f"{_VH}.get_transcriber", return_value=transcriber),
+            patch(
+                f"{_VH}._download_voice", new_callable=AsyncMock, return_value=b"audio"
+            ),
+            patch(f"{_VH}.safe_reply", new_callable=AsyncMock, return_value=None),
+            patch(f"{_VH}._send_transcribed_text", new_callable=AsyncMock) as mock_send,
+        ):
+            mock_config.is_user_allowed.return_value = True
+            mock_config.voice_autosend = True
+            mock_router.resolve_window_for_thread.return_value = "@0"
+
+            await voice_handler.handle_voice_message(update, MagicMock(user_data={}))
+
+        mock_send.assert_not_awaited()
+
     @patch(f"{_VH}._download_voice", new_callable=AsyncMock)
     @patch(f"{_VH}.thread_router")
     @patch(f"{_VH}.config")

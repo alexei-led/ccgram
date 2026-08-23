@@ -45,6 +45,18 @@ def _make_bot(send_id: int = 99) -> AsyncMock:
 
 
 class TestSendStatusText:
+    @patch("ccgram.handlers.status.status_bubble.config", create=True)
+    @patch("ccgram.handlers.status.status_bubble.thread_router")
+    async def test_hidden_status_does_not_send_or_track(self, mock_router, mock_config):
+        mock_config.hide_status = True
+        bot = _make_bot()
+
+        await send_status_text(bot, USER_ID, THREAD_ID, WINDOW_ID, "running...")
+
+        mock_router.resolve_chat_id.assert_not_called()
+        bot.send_message.assert_not_awaited()
+        assert (USER_ID, THREAD_ID) not in _status_msg_info
+
     @patch("ccgram.handlers.status.status_bubble.thread_router")
     async def test_sends_new_message(self, mock_router):
         mock_router.resolve_chat_id.return_value = CHAT_ID

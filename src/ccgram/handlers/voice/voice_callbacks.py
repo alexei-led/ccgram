@@ -68,6 +68,32 @@ async def handle_voice_callback(
         await query.answer("Invalid callback data")
 
 
+async def send_transcribed_text(
+    client: PTBTelegramClient,
+    user_id: int,
+    thread_id: int | None,
+    window_id: str,
+    text: str,
+    chat_id: int,
+) -> tuple[bool, str | None]:
+    """Send transcribed text through the same provider-aware path as confirmation."""
+    provider = get_provider_for_window(
+        window_id, provider_name=get_window_provider(window_id)
+    )
+    if provider.capabilities.chat_first_command_path and thread_id is not None:
+        # Lazy: shell.shell_commands ↔ voice via approval callback wiring.
+        from ..shell.shell_commands import handle_shell_message
+
+        try:
+            await handle_shell_message(client, user_id, thread_id, window_id, text)
+        except (OSError, TelegramError) as exc:
+            logger.warning("Shell message handling failed: %s", exc)
+            return False, "Failed to send"
+        return True, None
+
+    return await send_telegram_to_window(user_id, window_id, thread_id, text, chat_id)
+
+
 async def _handle_send(
     msg: Message,
     query: CallbackQuery,
@@ -97,28 +123,8 @@ async def _handle_send(
     # 👀 ack: persistent "I see you" indicator on the original voice message.
     await react(client, msg.chat.id, message_id, REACT_SEEN)
 
-    # Shell provider: route through LLM for NL→command generation
-    provider = get_provider_for_window(
-        window_id, provider_name=get_window_provider(window_id)
-    )
-    if provider.capabilities.chat_first_command_path and thread_id is not None:
-        # Lazy: shell.shell_commands ↔ voice via approval callback wiring.
-        from ..shell.shell_commands import handle_shell_message
-
-        try:
-            await handle_shell_message(
-                client, user_id, thread_id, window_id, pending_text
-            )
-        except (OSError, TelegramError) as exc:
-            logger.warning("Shell message handling failed: %s", exc)
-            pending_store[(msg.chat.id, message_id)] = pending_text
-            await query.answer("❌ Failed to send", show_alert=True)
-            return
-        await _ack_delivered(client, msg, query, message_id)
-        return
-
-    success, err = await send_telegram_to_window(
-        user_id, window_id, thread_id, pending_text, msg.chat.id
+    success, err = await send_transcribed_text(
+        client, user_id, thread_id, window_id, pending_text, msg.chat.id
     )
 
     if success:

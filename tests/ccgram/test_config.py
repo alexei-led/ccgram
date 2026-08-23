@@ -132,6 +132,37 @@ class TestHideToolCalls:
 
 
 @pytest.mark.usefixtures("_base_env")
+class TestVoiceAndStatusNoiseConfig:
+    def test_voice_autosend_default_false(self, monkeypatch):
+        monkeypatch.delenv("CCGRAM_VOICE_AUTOSEND", raising=False)
+        assert Config().voice_autosend is False
+
+    @pytest.mark.parametrize("value", ["1", "true", "yes", "True", "YES"])
+    def test_voice_autosend_enabled(self, monkeypatch, value):
+        monkeypatch.setenv("CCGRAM_VOICE_AUTOSEND", value)
+        assert Config().voice_autosend is True
+
+    @pytest.mark.parametrize("value", ["", "0", "false", "no", "off"])
+    def test_voice_autosend_disabled(self, monkeypatch, value):
+        monkeypatch.setenv("CCGRAM_VOICE_AUTOSEND", value)
+        assert Config().voice_autosend is False
+
+    def test_hide_status_default_false(self, monkeypatch):
+        monkeypatch.delenv("CCGRAM_HIDE_STATUS", raising=False)
+        assert Config().hide_status is False
+
+    @pytest.mark.parametrize("value", ["1", "true", "yes", "True", "YES"])
+    def test_hide_status_enabled(self, monkeypatch, value):
+        monkeypatch.setenv("CCGRAM_HIDE_STATUS", value)
+        assert Config().hide_status is True
+
+    @pytest.mark.parametrize("value", ["", "0", "false", "no", "off"])
+    def test_hide_status_disabled(self, monkeypatch, value):
+        monkeypatch.setenv("CCGRAM_HIDE_STATUS", value)
+        assert Config().hide_status is False
+
+
+@pytest.mark.usefixtures("_base_env")
 class TestHideThinking:
     def test_hide_thinking_default_false(self, monkeypatch):
         monkeypatch.delenv("CCGRAM_HIDE_THINKING", raising=False)

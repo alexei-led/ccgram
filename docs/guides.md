@@ -192,6 +192,8 @@ All settings accept both CLI flags and environment variables. CLI flags take pre
 | `CCGRAM_STATUS_MODE` / `--status-mode`               | `system`                       | Topic emoji color scheme: `system` (green=working) or `user` (green=ready)                           |
 | `CCGRAM_HIDE_TOOL_CALLS` / `--hide-tool-calls`       | `false`                        | Set `true` to globally hide `tool_use`/`tool_result` messages (per-window override via `/toolcalls`) |
 | `CCGRAM_HIDE_THINKING` / `--hide-thinking`           | `false`                        | Set `true` to globally hide thinking messages                                                        |
+| `CCGRAM_HIDE_STATUS`                                 | `false`                        | Set `true` to suppress transient status bubbles; replies and controls remain available              |
+| `CCGRAM_VOICE_AUTOSEND`                              | `false`                        | Set `true` to send voice transcriptions without confirmation; transcription is still shown           |
 | `CCGRAM_PROMPT_MODE` / `--prompt-mode`               | `wrap`                         | Shell prompt marker: `wrap` (append `⌘N⌘`) or `replace` (legacy `{prefix}:N❯`)                       |
 | `CCGRAM_PROMPT_MARKER`                               | `ccgram`                       | Marker prefix used only by `replace` mode                                                            |
 | `CCGRAM_PANE_LIFECYCLE_NOTIFY`                       | `false`                        | Default for per-window pane create/close notifications (toggle via `/panes`)                         |
@@ -218,6 +220,12 @@ Topic emojis change color to reflect agent status. The mapping between color and
 | `user`             | agent is idle / ready for input | agent is working | "does anything need my attention?" |
 
 Set globally via `CCGRAM_STATUS_MODE=user` or `--status-mode user`. Invalid values fall back to `system`.
+
+## Status Bubble Visibility
+
+Status bubbles show transient progress, elapsed time, task state, and toolbar controls.
+Set `CCGRAM_HIDE_STATUS=true` to suppress those bubbles. This does not hide agent
+replies, approval prompts, recovery notices, or the `/toolbar` command.
 
 ## Tool-Call Visibility
 
@@ -268,8 +276,12 @@ CCGRAM_WHISPER_LANGUAGE=en                     # omit for auto-detect
 
 1. Send a voice message in a topic bound to an agent
 2. Bot downloads the audio (max 25 MB) and sends it to the Whisper API
-3. Transcription appears with **✓ Send to agent** and **✗ Discard** buttons
+3. By default, the transcription appears with **✓ Send to agent** and **✗ Discard** buttons
 4. Tap **Send** to forward the text to the agent, or **Discard** to cancel
+
+Set `CCGRAM_VOICE_AUTOSEND=true` to skip the confirmation. The bot still posts the
+transcription for review, then sends it through the same provider-aware path. This is
+less safe for accidental or inaccurate dictation, so confirmation remains the default.
 
 In shell topics, voice transcriptions are automatically routed through the LLM for command generation (if `CCGRAM_LLM_PROVIDER` is set). In agent topics, the transcribed text is sent directly to the agent.
 
