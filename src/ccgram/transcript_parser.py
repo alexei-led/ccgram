@@ -151,7 +151,8 @@ class TranscriptParser:
         r"<local-command-stdout>(.*?)</local-command-stdout>", re.DOTALL
     )
     _RE_SYSTEM_TAGS = re.compile(
-        r"<(bash-input|bash-stdout|bash-stderr|local-command-caveat|system-reminder)"
+        r"<(bash-input|bash-stdout|bash-stderr|local-command-caveat|system-reminder|"
+        r"teammate-message|agent-message|cross-session-message|task-notification)"
     )
 
     @staticmethod

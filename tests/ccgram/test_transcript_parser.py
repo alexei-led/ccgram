@@ -535,20 +535,41 @@ class TestParseEntries:
         assert tool_entries[0].content_type == "tool_use"
         assert tool_entries[1].content_type == "tool_use"
 
-    def test_system_tag_filtered(self, make_jsonl_entry, make_text_block):
+    @pytest.mark.parametrize(
+        "tag",
+        [
+            "system-reminder",
+            "teammate-message",
+            "agent-message",
+            "cross-session-message",
+            "task-notification",
+        ],
+    )
+    def test_internal_tag_filtered(self, make_jsonl_entry, make_text_block, tag):
         entries = [
             make_jsonl_entry(
                 "user",
-                [
-                    make_text_block(
-                        "<system-reminder>secret instructions</system-reminder>"
-                    )
-                ],
+                [make_text_block(f"<prefix>\n<{tag}>internal content</{tag}>")],
             ),
         ]
-        result, pending = TranscriptParser.parse_entries(entries)
-        user_entries = [e for e in result if e.role == "user"]
-        assert len(user_entries) == 0
+        result, _ = TranscriptParser.parse_entries(entries)
+
+        assert [entry for entry in result if entry.role == "user"] == []
+
+    def test_regular_user_text_with_message_word_is_kept(
+        self, make_jsonl_entry, make_text_block
+    ):
+        entries = [
+            make_jsonl_entry(
+                "user", [make_text_block("Please send the agent-message to the team")]
+            )
+        ]
+
+        result, _ = TranscriptParser.parse_entries(entries)
+
+        assert [entry.text for entry in result if entry.role == "user"] == [
+            "Please send the agent-message to the team"
+        ]
 
     # ── Characterization tests: edge cases and cross-entry state ─────────────
 
