@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.6.5] - 2026-08-23
+
+### Added
+
+- Add opt-in voice auto-send and transient status-bubble visibility controls ([#175](https://github.com/alexei-led/ccgram/issues/175)).
+
+### Fixed
+
+- Prevent agent-origin windows from falling back to unsafe shell input after an agent exits ([#174](https://github.com/alexei-led/ccgram/issues/174)).
+- Filter internal multi-agent messages from Telegram transcript relays ([#173](https://github.com/alexei-led/ccgram/issues/173)).
+
 ## [4.6.4] - 2026-08-20
 
 ### Fixed
