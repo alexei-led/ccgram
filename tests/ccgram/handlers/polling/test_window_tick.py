@@ -96,6 +96,70 @@ class TestTickWindowDeadWindow:
             await tick_window(bot, 1, 100, "@0", None)
             mock_dead.assert_not_called()
 
+    async def test_agent_exit_kills_managed_window_and_enters_recovery(self):
+        bot = AsyncMock(spec=Bot)
+        window = _make_window()
+        with (
+            patch.object(
+                window_tick,
+                "discover_and_register_transcript",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch.object(
+                window_tick.lifecycle_state,
+                "get_origin",
+                return_value="ccgram_created",
+            ),
+            patch.object(
+                window_tick,
+                "tmux_manager",
+                MagicMock(kill_window=AsyncMock()),
+            ) as mock_tmux,
+            patch.object(
+                window_tick, "_handle_dead_window_notification", new_callable=AsyncMock
+            ) as mock_dead,
+            patch.object(
+                window_tick, "_update_status", new_callable=AsyncMock
+            ) as mock_status,
+        ):
+            await tick_window(bot, 1, 100, "@0", window)
+
+        mock_tmux.kill_window.assert_awaited_once_with("@0")
+        mock_dead.assert_awaited_once_with(
+            bot, 1, 100, "@0", runtime=window_tick.get_default_runtime()
+        )
+        mock_status.assert_not_awaited()
+
+    async def test_agent_exit_keeps_manually_discovered_window(self):
+        bot = AsyncMock(spec=Bot)
+        window = _make_window()
+        with (
+            patch.object(
+                window_tick,
+                "discover_and_register_transcript",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch.object(
+                window_tick.lifecycle_state,
+                "get_origin",
+                return_value="manual_discovered",
+            ),
+            patch.object(
+                window_tick,
+                "tmux_manager",
+                MagicMock(kill_window=AsyncMock()),
+            ) as mock_tmux,
+            patch.object(
+                window_tick, "_handle_dead_window_notification", new_callable=AsyncMock
+            ) as mock_dead,
+        ):
+            await tick_window(bot, 1, 100, "@0", window)
+
+        mock_tmux.kill_window.assert_not_awaited()
+        mock_dead.assert_awaited_once()
+
 
 class TestTickWindowPendingQueue:
     async def test_pending_queue_skips_status_update(self):

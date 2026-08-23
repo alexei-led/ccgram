@@ -60,6 +60,12 @@ def get_provider_name(window_id: str) -> str | None:
     return state.provider_name if state else None
 
 
+def get_initial_provider_name(window_id: str) -> str:
+    """First non-empty provider assigned to a window, or empty if unknown."""
+    state = window_store.window_states.get(window_id)
+    return state.initial_provider_name if state else ""
+
+
 def get_session_id(window_id: str) -> str | None:
     """Non-empty session id for a window, or None."""
     state = window_store.window_states.get(window_id)
@@ -134,6 +140,7 @@ __all__ = [
     "get_approval_mode",
     "get_cwd",
     "get_identity",
+    "get_initial_provider_name",
     "get_provider_name",
     "get_session_id",
     "get_transcript_path",

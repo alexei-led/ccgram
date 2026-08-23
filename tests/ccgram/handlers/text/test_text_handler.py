@@ -248,6 +248,35 @@ class TestHandleDeadWindow:
         assert result is False
         assert lifecycle_strategy.get_state(100, 42).autoclose is None
 
+    async def test_live_shell_after_agent_exit_shows_recovery(self) -> None:
+        window = MagicMock(pane_current_command="bash")
+        view = MagicMock(cwd="/tmp/project", provider_name="claude")
+        message = AsyncMock()
+        message.chat.id = -100
+        with (
+            patch(f"{_TH}.tmux_manager") as mock_tm,
+            patch(f"{_TH}.window_query") as mock_query,
+            patch(f"{_TH}.thread_router") as mock_router,
+            patch(
+                f"{_TH}.agent_origin_returned_to_shell",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(f"{_TH}.render_banner", return_value=("recovery", MagicMock())),
+            patch(f"{_TH}.safe_reply", new_callable=AsyncMock) as mock_reply,
+            patch(f"{_TH}.Path") as mock_path,
+        ):
+            mock_tm.find_window_by_id = AsyncMock(return_value=window)
+            mock_query.get_window_provider.return_value = "claude"
+            mock_query.view_window.return_value = view
+            mock_router.get_display_name.return_value = "project"
+            mock_path.return_value.is_dir.return_value = True
+
+            result = await _handle_dead_window("@0", 100, 42, "hello", {}, message)
+
+        assert result is True
+        mock_reply.assert_awaited_once()
+
     @patch(f"{_TH}.safe_reply", new_callable=AsyncMock)
     @patch(f"{_TH}.render_banner")
     @patch(f"{_TH}.tmux_manager")

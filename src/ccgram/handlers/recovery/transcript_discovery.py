@@ -55,6 +55,16 @@ def _session_id_already_bound(session_id: str, window_id: str) -> bool:
     return False
 
 
+def _is_agent_origin(
+    window_id: str, identity: identity_state.IdentityProjection
+) -> bool:
+    """Return whether a shell transition means the bound agent exited."""
+    initial_provider = (
+        identity_state.get_initial_provider_name(window_id) or identity.provider_name
+    )
+    return identity.provider_name not in ("", "shell") and initial_provider != "shell"
+
+
 async def _detect_and_apply_provider(
     window_id: str,
     identity: identity_state.IdentityProjection,
@@ -63,10 +73,10 @@ async def _detect_and_apply_provider(
     client: TelegramClient | None = None,
     chat_id: int = 0,
     thread_id: int = 0,
-) -> None:
-    """Detect provider from pane process and apply transitions."""
+) -> bool:
+    """Apply provider transitions; report when an agent-origin pane became a shell."""
     if identity_state.is_provider_manually_overridden(window_id):
-        return
+        return False
     detected = await detect_provider_from_pane(
         w.pane_current_command, window_id=window_id
     )
@@ -78,6 +88,14 @@ async def _detect_and_apply_provider(
             w.pane_current_command,
             pane_title=pane_title,
         )
+
+    if detected == "shell" and _is_agent_origin(window_id, identity):
+        logger.info(
+            "Agent exited to shell; keeping provider for recovery",
+            window_id=window_id,
+            provider=identity.provider_name,
+        )
+        return True
 
     if detected and detected != identity.provider_name:
         old_provider = identity.provider_name
@@ -118,6 +136,7 @@ async def _detect_and_apply_provider(
         inferred = detect_provider_from_transcript_path(str(identity.transcript_path))
         if inferred and inferred != identity.provider_name:
             session_manager.set_window_provider(window_id, inferred, cwd=w.cwd or None)
+    return False
 
 
 def _resolve_providers_to_try(
@@ -263,6 +282,37 @@ async def _switch_to_shell(
     )
 
 
+async def _complete_transcript_discovery(
+    window_id: str,
+    identity: identity_state.IdentityProjection,
+    window: "TmuxWindow | None",
+    providers_to_try: list[tuple[str, "AgentProvider"]] | None,
+    *,
+    client: TelegramClient | None,
+    chat_id: int,
+    thread_id: int,
+) -> bool:
+    """Complete transcript discovery or signal an agent-origin shell fallback."""
+    if providers_to_try is None:
+        if _is_agent_origin(window_id, identity):
+            return True
+        await _switch_to_shell(
+            window_id, client=client, chat_id=chat_id, thread_id=thread_id
+        )
+        return False
+    if not providers_to_try:
+        return False
+
+    # Lazy: importing polling package modules above the function creates a cycle.
+    from ..polling.polling_types import is_shell_prompt
+
+    pane_alive = window is not None and not is_shell_prompt(window.pane_current_command)
+    await _find_and_register_transcript(
+        window_id, identity, providers_to_try, pane_alive
+    )
+    return False
+
+
 async def discover_and_register_transcript(
     window_id: str,
     *,
@@ -270,21 +320,19 @@ async def discover_and_register_transcript(
     client: TelegramClient | None = None,
     user_id: int = 0,
     thread_id: int = 0,
-) -> None:
-    """Discover and register transcript for hookless providers (Codex, Gemini).
+) -> bool:
+    """Discover transcript state and report when an agent-origin process exited.
 
-    Also handles provider auto-detection from pane process name
-    and shell ↔ agent transitions with prompt marker setup.
+    Shell-origin windows may transition shell ↔ agent. Agent-origin windows
+    retain their provider when the process returns to a shell so callers can
+    route the topic into recovery instead of shell command handling.
     """
-    # Lazy: same polling/__init__ cycle as _resolve_providers_to_try.
-    from ..polling.polling_types import is_shell_prompt
-
     # Lazy: thread_router proxy resolved when transcript discovery is invoked
     from ...thread_router import thread_router
 
     identity = identity_state.get_identity(window_id)
     if identity is None:
-        return
+        return False
 
     chat_id = thread_router.resolve_chat_id(user_id, thread_id) if user_id else 0
 
@@ -293,13 +341,15 @@ async def discover_and_register_transcript(
     pgid_before = get_cached_foreground_pgid(window_id)
     original_identity = identity
     process_restarted = False
-    if w and w.pane_current_command:
-        await _detect_and_apply_provider(
+    if w:
+        agent_exited = await _detect_and_apply_provider(
             window_id, identity, w, client=client, chat_id=chat_id, thread_id=thread_id
         )
+        if agent_exited:
+            return True
         refreshed = identity_state.get_identity(window_id)
         if refreshed is None:
-            return
+            return False
         identity = refreshed
         pgid_after = get_cached_foreground_pgid(window_id)
         process_restarted = _foreground_process_restarted(
@@ -310,29 +360,26 @@ async def discover_and_register_transcript(
         )
 
     if _hook_already_resolved(window_id, identity) and not process_restarted:
-        return
+        return False
 
     if not identity.cwd:
         if not w or not w.cwd:
-            return
+            return False
         session_manager.set_window_provider(
             window_id, identity.provider_name or "", cwd=w.cwd
         )
         refreshed = identity_state.get_identity(window_id)
         if refreshed is None:
-            return
+            return False
         identity = refreshed
 
     providers_to_try = _resolve_providers_to_try(window_id, identity, w)
-    if providers_to_try is None:
-        await _switch_to_shell(
-            window_id, client=client, chat_id=chat_id, thread_id=thread_id
-        )
-        return
-    if not providers_to_try:
-        return
-
-    pane_alive = w is not None and not is_shell_prompt(w.pane_current_command)
-    await _find_and_register_transcript(
-        window_id, identity, providers_to_try, pane_alive
+    return await _complete_transcript_discovery(
+        window_id,
+        identity,
+        w,
+        providers_to_try,
+        client=client,
+        chat_id=chat_id,
+        thread_id=thread_id,
     )

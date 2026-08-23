@@ -18,7 +18,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from ....multiplexer import multiplexer as tmux_manager
 from ....telegram_client import PTBTelegramClient
+from ....window_state_ports import lifecycle_state
+from ....window_state_store import CCGRAM_CREATED_WINDOW_ORIGIN
 from ...messaging_pipeline.message_queue import get_message_queue
 from ...recovery.transcript_discovery import discover_and_register_transcript
 from ..polling_runtime import PollingRuntime, get_default_runtime
@@ -80,13 +83,20 @@ async def tick_window(
         )
         return
 
-    await discover_and_register_transcript(
+    agent_exited = await discover_and_register_transcript(
         window_id,
         _window=window,
         client=PTBTelegramClient(bot),
         user_id=user_id,
         thread_id=thread_id,
     )
+    if agent_exited is True:
+        await _handle_dead_window_notification(
+            bot, user_id, thread_id, window_id, runtime=rt
+        )
+        if lifecycle_state.get_origin(window_id) == CCGRAM_CREATED_WINDOW_ORIGIN:
+            await tmux_manager.kill_window(window_id)
+        return
 
     queue = get_message_queue(user_id)
     if queue and not queue.empty():

@@ -1,10 +1,11 @@
 import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from ccgram.handlers.telegram_origin import (
     _PENDING_INJECTION_TTL_S,
+    agent_origin_returned_to_shell,
     clear_pending_telegram_injections,
     consume_telegram_injection,
     forget_telegram_injection,
@@ -80,6 +81,79 @@ def test_matches_provider_trimmed_user_text() -> None:
     remember_telegram_injection(1, "@1", 42, "  hello  \n")
 
     assert consume_telegram_injection(1, "@1", 42, "hello") is True
+
+
+@pytest.mark.asyncio
+async def test_agent_origin_shell_transition_is_detected() -> None:
+    window = MagicMock(pane_current_command="bash")
+    with (
+        patch("ccgram.window_query.get_window_provider", return_value="claude"),
+        patch(
+            "ccgram.window_state_ports.identity_state.get_initial_provider_name",
+            return_value="claude",
+        ),
+        patch(
+            "ccgram.providers.detect_provider_from_pane",
+            new_callable=AsyncMock,
+            return_value="shell",
+        ) as mock_detect,
+    ):
+        assert await agent_origin_returned_to_shell("@1", window) is True
+
+    mock_detect.assert_awaited_once_with("bash", window_id="@1")
+
+
+@pytest.mark.asyncio
+async def test_shell_origin_agent_transition_remains_allowed() -> None:
+    window = MagicMock(pane_current_command="bash")
+    with (
+        patch("ccgram.window_query.get_window_provider", return_value="claude"),
+        patch(
+            "ccgram.window_state_ports.identity_state.get_initial_provider_name",
+            return_value="shell",
+        ),
+        patch(
+            "ccgram.providers.detect_provider_from_pane", new_callable=AsyncMock
+        ) as mock_detect,
+    ):
+        assert await agent_origin_returned_to_shell("@1", window) is False
+
+    mock_detect.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_legacy_shell_without_origin_fails_closed() -> None:
+    with (
+        patch("ccgram.window_query.get_window_provider", return_value="shell"),
+        patch(
+            "ccgram.window_state_ports.identity_state.get_initial_provider_name",
+            return_value="",
+        ),
+    ):
+        assert await agent_origin_returned_to_shell("@1") is True
+
+
+@pytest.mark.asyncio
+async def test_origin_aware_send_blocks_agent_exit() -> None:
+    with (
+        patch(
+            "ccgram.handlers.telegram_origin.agent_origin_returned_to_shell",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch(
+            "ccgram.handlers.telegram_origin.send_to_window", new_callable=AsyncMock
+        ) as mock_send,
+    ):
+        result = await send_telegram_to_window(1, "@1", 42, "hello")
+
+    assert result == (
+        False,
+        "Agent exited or shell access is not confirmed; recover the session or run "
+        "/agent shell before sending input.",
+    )
+    mock_send.assert_not_awaited()
+    assert consume_telegram_injection(1, "@1", 42, "hello") is False
 
 
 @pytest.mark.asyncio

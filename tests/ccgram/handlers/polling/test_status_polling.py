@@ -834,7 +834,10 @@ class TestPruneStaleStatePolling:
 
 
 class TestProviderSwitchPromptSetup:
-    async def test_switch_to_shell_offers_prompt_setup(self) -> None:
+    @pytest.mark.parametrize("pane_command", ["fish", ""])
+    async def test_agent_origin_returning_to_shell_requests_recovery(
+        self, pane_command: str
+    ) -> None:
         from ccgram.handlers.recovery.transcript_discovery import (
             discover_and_register_transcript,
         )
@@ -843,8 +846,8 @@ class TestProviderSwitchPromptSetup:
         with (
             patch(
                 "ccgram.handlers.recovery.transcript_discovery.session_manager"
-            ) as mock_sm,  # noqa: F841
-            patch("ccgram.window_state_ports.identity_state.window_store") as mock_ws,  # noqa: F841
+            ) as mock_sm,
+            patch("ccgram.window_state_ports.identity_state.window_store") as mock_ws,
             patch(
                 "ccgram.handlers.recovery.transcript_discovery.tmux_manager"
             ) as mock_tmux,
@@ -863,19 +866,20 @@ class TestProviderSwitchPromptSetup:
                     session_id="",
                     cwd="/proj",
                     provider_name="claude",
+                    initial_provider_name="claude",
                     transcript_path="",
                 )
             }
             mock_tmux.find_window_by_id = AsyncMock(
-                return_value=MagicMock(pane_current_command="fish", cwd="/proj")
+                return_value=MagicMock(pane_current_command=pane_command, cwd="/proj")
             )
-            await discover_and_register_transcript(
+            exited = await discover_and_register_transcript(
                 "@7", client=bot, user_id=1, thread_id=42
             )
 
-        mock_sm.set_window_provider.assert_called_once_with("@7", "shell", cwd="/proj")
-        mock_ensure.assert_awaited_once()
-        assert mock_ensure.call_args[0] == ("@7", "provider_switch")
+        assert exited is True
+        mock_sm.set_window_provider.assert_not_called()
+        mock_ensure.assert_not_awaited()
 
     async def test_switch_to_claude_does_not_offer_prompt_setup(self) -> None:
         from ccgram.handlers.recovery.transcript_discovery import (
@@ -1030,7 +1034,10 @@ class TestProviderSwitchChain:
         from ccgram.window_state_store import WindowState
 
         state = WindowState(
-            cwd="/proj", provider_name="claude", transcript_path="/tx/claude.jsonl"
+            cwd="/proj",
+            provider_name="claude",
+            initial_provider_name="shell",
+            transcript_path="/tx/claude.jsonl",
         )
 
         def _set_provider(window_id: str, name: str, cwd: str | None = None) -> None:

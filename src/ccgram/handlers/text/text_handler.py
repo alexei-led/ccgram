@@ -51,7 +51,10 @@ from ..messaging_pipeline.message_sender import (
 )
 from ..recovery.recovery_banner import RecoveryBanner, render_banner
 from ..polling.polling_state import lifecycle_strategy
-from ..telegram_origin import send_telegram_to_window
+from ..telegram_origin import (
+    agent_origin_returned_to_shell,
+    send_telegram_to_window,
+)
 from ...topic_state_registry import topic_state
 from ..user_state import (
     AWAITING_WORKTREE_BRANCH_NAME,
@@ -341,7 +344,10 @@ async def _handle_dead_window(
         return True
 
     w = await tmux_manager.find_window_by_id(window_id)
-    if w:
+    logically_dead = lifecycle_strategy.is_dead_notified(
+        user_id, thread_id, window_id
+    ) or (w is not None and await agent_origin_returned_to_shell(window_id, w))
+    if w and not logically_dead:
         lifecycle_strategy.clear_autoclose_timer(user_id, thread_id)
         return False
 

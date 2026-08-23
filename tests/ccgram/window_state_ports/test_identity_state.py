@@ -11,6 +11,7 @@ from ccgram.window_state_ports.identity_state import (
     get_approval_mode,
     get_cwd,
     get_identity,
+    get_initial_provider_name,
     get_provider_name,
     get_session_id,
     get_transcript_path,
@@ -67,8 +68,10 @@ class TestReads:
             window_name="ccgram",
             transcript_path="/tmp/t.jsonl",
             provider_name="claude",
+            initial_provider_name="shell",
         )
         assert get_provider_name("@1") == "claude"
+        assert get_initial_provider_name("@1") == "shell"
         assert get_session_id("@1") == "sid"
         assert get_cwd("@1") == "/proj"
         assert get_transcript_path("@1") == "/tmp/t.jsonl"
@@ -76,6 +79,7 @@ class TestReads:
 
     def test_field_reads_default_on_missing(self, store: WindowStateStore) -> None:
         assert get_provider_name("@missing") is None
+        assert get_initial_provider_name("@missing") == ""
         assert get_session_id("@missing") is None
         assert get_cwd("@missing") == ""
         assert get_transcript_path("@missing") == ""

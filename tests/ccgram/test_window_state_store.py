@@ -541,6 +541,34 @@ class TestSetWindowProvider:
         store.set_window_provider("@1", "codex", new_provider_supports_hook=True)
         assert store.window_states["@1"].provider_name == "codex"
 
+    def test_first_provider_becomes_stable_origin(
+        self, store: WindowStateStore
+    ) -> None:
+        store.set_window_provider("@1", "shell", new_provider_supports_hook=False)
+        store.set_window_provider("@1", "claude", new_provider_supports_hook=True)
+        store.set_window_provider("@1", "shell", new_provider_supports_hook=False)
+
+        state = store.window_states["@1"]
+        assert state.provider_name == "shell"
+        assert state.initial_provider_name == "shell"
+
+    def test_existing_provider_initializes_origin_before_switch(
+        self, store: WindowStateStore
+    ) -> None:
+        state = store.get_window_state("@1")
+        state.provider_name = "claude"
+
+        store.set_window_provider("@1", "shell", new_provider_supports_hook=False)
+
+        assert state.initial_provider_name == "claude"
+
+    def test_initial_provider_round_trip(self) -> None:
+        state = WindowState(provider_name="claude", initial_provider_name="shell")
+
+        loaded = WindowState.from_dict(state.to_dict())
+
+        assert loaded.initial_provider_name == "shell"
+
     def test_sets_cwd_when_provided(self, store: WindowStateStore) -> None:
         store.set_window_provider(
             "@1", "claude", cwd="/tmp/proj", new_provider_supports_hook=True
