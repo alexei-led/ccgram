@@ -327,6 +327,43 @@ class TestPruneSessionMap:
         assert "@2" not in mgr.window_states
         assert "@3" not in mgr.window_states
 
+    def test_bound_window_keeps_its_state_for_the_recovery_banner(
+        self, mgr: SessionManager, tmp_path, monkeypatch
+    ) -> None:
+        """A dead window still bound to a topic keeps cwd/provider (#176).
+
+        The recovery banner is posted *because* the window died, and its
+        Fresh/Continue/Resume buttons read the directory back out of the
+        window state. Dropping that state the moment the session-map entry is
+        pruned turns every button into "Directory no longer exists" while the
+        directory is sitting there. The entry itself is still dead and goes;
+        only the state a live topic still points at survives, and the stale
+        sweep reclaims it once the topic unbinds.
+        """
+        session_map_file = tmp_path / "session_map.json"
+        session_map_file.write_text(
+            json.dumps(
+                {
+                    "ccgram:@1": {"session_id": "sid-1", "cwd": "/bound"},
+                    "ccgram:@2": {"session_id": "sid-2", "cwd": "/unbound"},
+                }
+            )
+        )
+        monkeypatch.setattr("ccgram.session.config.session_map_file", session_map_file)
+        monkeypatch.setattr("ccgram.session.config.tmux_session_name", "ccgram")
+
+        mgr.window_states["@1"] = WindowState(session_id="sid-1", cwd="/bound")
+        mgr.window_states["@2"] = WindowState(session_id="sid-2", cwd="/unbound")
+        thread_router.bind_thread(100, 7, "@1")
+
+        session_map_sync.prune_session_map(live_window_ids=set())
+
+        # Both entries are dead, so both leave the session map.
+        assert json.loads(session_map_file.read_text()) == {}
+        # Only the bound window keeps the cwd the banner needs.
+        assert mgr.window_states["@1"].cwd == "/bound"
+        assert "@2" not in mgr.window_states
+
     def test_noop_when_all_alive(
         self, mgr: SessionManager, tmp_path, monkeypatch
     ) -> None:
