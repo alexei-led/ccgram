@@ -313,6 +313,39 @@ async def _complete_transcript_discovery(
     return False
 
 
+async def _bootstrap_identity(
+    window_id: str, w: "TmuxWindow | None"
+) -> identity_state.IdentityProjection | None:
+    """Create window state for a live window ccgram has no state for yet.
+
+    Binding a window normally writes its state, so this is a recovery path:
+    a window whose state was swept while the stale-state guard was dead, or
+    one bound by a build that predates that fix, is otherwise stuck — without
+    state there is no identity, and without an identity discovery returns
+    before it can create one. Seeding the provider (and cwd when the backend
+    exposes it) lets such a window heal on the next tick.
+    """
+    if w is None:
+        return None
+    # Lazy: providers package bootstrap is heavy; only pay for it when a live
+    # window turns out to have no state at all.
+    from ...providers import detect_provider_from_pane
+
+    detected = await detect_provider_from_pane(
+        w.pane_current_command or "", window_id=window_id
+    )
+    if not detected:
+        return None
+    session_manager.set_window_provider(window_id, detected, cwd=w.cwd or None)
+    logger.info(
+        "Bootstrapped window state for untracked live window",
+        window_id=window_id,
+        provider=detected,
+        cwd=w.cwd or "",
+    )
+    return identity_state.get_identity(window_id)
+
+
 async def discover_and_register_transcript(
     window_id: str,
     *,
@@ -330,13 +363,15 @@ async def discover_and_register_transcript(
     # Lazy: thread_router proxy resolved when transcript discovery is invoked
     from ...thread_router import thread_router
 
+    w = _window or await tmux_manager.find_window_by_id(window_id)
+
     identity = identity_state.get_identity(window_id)
+    if identity is None:
+        identity = await _bootstrap_identity(window_id, w)
     if identity is None:
         return False
 
     chat_id = thread_router.resolve_chat_id(user_id, thread_id) if user_id else 0
-
-    w = _window or await tmux_manager.find_window_by_id(window_id)
 
     pgid_before = get_cached_foreground_pgid(window_id)
     original_identity = identity
