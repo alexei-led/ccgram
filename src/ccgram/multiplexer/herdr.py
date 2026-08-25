@@ -253,6 +253,7 @@ class HerdrLiveRecord:
     pane_id: str
     tab_id: str
     workspace_id: str
+    cwd: str = ""
     alias_target_ids: tuple[str, ...] = ()
 
 
@@ -340,6 +341,10 @@ def _parse_live_record(record: Mapping[str, object]) -> HerdrLiveRecord | None:
             value=locators["terminal_id"] or "",
         )
     )
+    # ``cwd`` is the agent's own working directory; ``foreground_cwd`` follows
+    # whatever the agent currently shells into (a worktree, a plugin cache) and
+    # would send hookless transcript discovery to the wrong session directory.
+    cwd = _session_field(record.get("cwd")) or ""
     return HerdrLiveRecord(
         target_id=target_id,
         composite=composite,
@@ -347,6 +352,7 @@ def _parse_live_record(record: Mapping[str, object]) -> HerdrLiveRecord | None:
         pane_id=locators["pane_id"] or "",
         tab_id=locators["tab_id"] or "",
         workspace_id=locators["workspace_id"] or "",
+        cwd=cwd,
         alias_target_ids=() if alias_id == target_id else (alias_id,),
     )
 
@@ -695,7 +701,7 @@ class HerdrManager:
         return WindowRef(
             window_id=record.target_id,
             window_name=label,
-            cwd="",
+            cwd=record.cwd,
             pane_current_command=record.composite.agent,
             alias_window_ids=record.alias_target_ids,
         )
@@ -841,6 +847,13 @@ class HerdrManager:
         pid = leader.get("pid")
         argv = leader.get("argv")
         cwd = leader.get("cwd")
+        if argv is None:
+            # An agent that rewrites its process title (Pi runs on node and
+            # renames itself to "pi") is published with argv0 but no argv.
+            # argv0 carries the identity callers classify on; ``name`` is the
+            # runtime ("node") and would misclassify the pane.
+            argv0 = leader.get("argv0")
+            argv = [argv0] if isinstance(argv0, str) and argv0 else None
         if (
             not isinstance(pid, int)
             or not isinstance(argv, Sequence)

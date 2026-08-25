@@ -1395,3 +1395,89 @@ async def test_a_still_live_target_is_never_published_as_superseded() -> None:
     windows = {w.window_id: w for w in await manager.list_windows()}
     assert _target("session-a") not in windows[_target("session-b")].alias_window_ids
     assert await manager.find_window_by_id(_target("session-a")) is not None
+
+
+# ── Fix 1: _foreground_for_pane argv0 fallback ─────────────────────────────
+
+
+async def test_foreground_falls_back_to_argv0_when_leader_has_no_argv() -> None:
+    """Pi rewrites its process title; herdr publishes argv0 but no argv.
+
+    The leader (pid == foreground_process_group_id) carries argv0="pi" and
+    name="node". A non-leader carries argv so we confirm the leader's argv0
+    wins over both the non-leader's argv AND the leader's name field.
+    """
+    process = {
+        "process_info": {
+            "foreground_process_group_id": 12,
+            "foreground_processes": [
+                # Non-leader has argv — must not be selected.
+                {"pid": 7, "argv": ["node", "/app/index.js"], "cwd": "/other"},
+                # Leader: no argv, argv0="pi", misleading name="node".
+                {"pid": 12, "argv0": "pi", "name": "node", "cwd": "/project"},
+            ],
+        }
+    }
+    fake = _live_fake(_agent(pane_id="w7:p4")).on(
+        "pane", "process-info", out=_result(**process)
+    )
+    result = await _manager(fake).foreground(_target())
+    # Must be ["pi"] from argv0, never ["node"] from name.
+    assert result == ForegroundInfo(12, 12, ["pi"], "/project", "")
+
+
+async def test_foreground_returns_none_when_leader_has_neither_argv_nor_argv0() -> None:
+    process = {
+        "process_info": {
+            "foreground_process_group_id": 12,
+            "foreground_processes": [
+                {"pid": 12, "name": "node", "cwd": "/project"},
+            ],
+        }
+    }
+    fake = _live_fake(_agent(pane_id="w7:p4")).on(
+        "pane", "process-info", out=_result(**process)
+    )
+    # Call _foreground_for_pane directly to avoid the second agent-list refresh
+    # that foreground() issues when the result is None.
+    assert await _manager(fake)._foreground_for_pane("w7:p4") is None
+
+
+async def test_foreground_uses_argv_verbatim_when_present() -> None:
+    process = {
+        "process_info": {
+            "foreground_process_group_id": 12,
+            "foreground_processes": [
+                {
+                    "pid": 12,
+                    "argv": ["node", "/app/pi/dist/index.js"],
+                    "cwd": "/project",
+                }
+            ],
+        }
+    }
+    fake = _live_fake(_agent(pane_id="w7:p4")).on(
+        "pane", "process-info", out=_result(**process)
+    )
+    result = await _manager(fake).foreground(_target())
+    assert result == ForegroundInfo(
+        12, 12, ["node", "/app/pi/dist/index.js"], "/project", ""
+    )
+
+
+# ── Fix 2: list_windows WindowRef.cwd uses agent cwd not foreground_cwd ────
+
+
+async def test_list_windows_uses_agent_cwd_not_foreground_cwd() -> None:
+    """Pi's agent cwd is the project root; foreground_cwd follows shell chdir."""
+    agent = _agent(cwd="/project", foreground_cwd="/project/worktrees/review")
+    windows = await _manager(_live_fake(agent)).list_windows()
+    assert len(windows) == 1
+    assert windows[0].cwd == "/project"
+
+
+async def test_list_windows_cwd_empty_when_agent_record_has_no_cwd_key() -> None:
+    agent = _agent()  # _agent() never sets cwd
+    windows = await _manager(_live_fake(agent)).list_windows()
+    assert len(windows) == 1
+    assert windows[0].cwd == ""
