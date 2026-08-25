@@ -165,7 +165,12 @@ async def _send_shutdown_notification(application: Application) -> None:
 
 
 async def post_stop(application: Application) -> None:
-    """Send shutdown notification while HTTP transport is still alive."""
+    """Stop producers and drain pending deliveries while HTTP is alive.
+
+    PTB runs post_stop before Application.shutdown (HTTPXRequest teardown),
+    so this is the only place where queued Telegram sends can still succeed.
+    """
+    await bootstrap.stop_delivery_runtime()
     await _send_shutdown_notification(application)
 
 

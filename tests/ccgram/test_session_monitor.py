@@ -656,7 +656,10 @@ class TestPerWindowProviderResolution:
 
 
 class TestReadNewLines:
-    async def test_truncation_resets_offset(self, tmp_path) -> None:
+    async def test_shrunken_file_resumes_from_eof_no_replay(self, tmp_path) -> None:
+        """Shrunken/replaced transcripts must not be replayed (2026-08-17
+        flood incident: replaying history flooded Telegram and starved
+        every other topic)."""
         session_file = tmp_path / "test.jsonl"
         session_file.write_text(
             '{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}\n'
@@ -672,8 +675,8 @@ class TestReadNewLines:
             last_byte_offset=99999,
         )
         entries = await monitor._read_new_lines(tracked, session_file)
-        assert tracked.last_byte_offset < 99999
-        assert len(entries) >= 1
+        assert tracked.parsed_offset == session_file.stat().st_size
+        assert entries == []
 
     async def test_incremental_read_from_offset(self, tmp_path) -> None:
         session_file = tmp_path / "test.jsonl"
@@ -709,7 +712,7 @@ class TestReadNewLines:
         )
         entries = await monitor._read_new_lines(tracked, session_file)
         assert len(entries) == 1
-        assert tracked.last_byte_offset == len(good_line.encode())
+        assert tracked.parsed_offset == len(good_line.encode())
 
 
 class TestCorruptedOffset:
@@ -781,6 +784,7 @@ class TestCheckForUpdates:
         assert msgs == []
         tracked = monitor.state.get_session("sess-new")
         assert tracked is not None
+        # New sessions seed the delivered watermark directly at EOF.
         assert tracked.last_byte_offset == session_file.stat().st_size
 
     async def test_new_session_initializes_to_eof_direct(self, tmp_path) -> None:
@@ -805,6 +809,7 @@ class TestCheckForUpdates:
         assert msgs == []
         tracked = monitor.state.get_session("sess-direct")
         assert tracked is not None
+        # New sessions seed the delivered watermark directly at EOF.
         assert tracked.last_byte_offset == session_file.stat().st_size
 
     async def test_unchanged_mtime_skips_read(self, tmp_path) -> None:

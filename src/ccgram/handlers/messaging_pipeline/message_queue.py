@@ -7,6 +7,7 @@ tool-use batching lives in ``tool_batch``.
 """
 
 import asyncio
+import time
 import contextlib
 from io import BytesIO
 from typing import assert_never
@@ -60,6 +61,22 @@ MERGE_MAX_LENGTH = 3800  # Leave room within Telegram's 4096 char message limit
 _message_queues: dict[int, asyncio.Queue[MessageTask]] = {}
 _queue_workers: dict[int, asyncio.Task[None]] = {}
 _queue_locks: dict[int, asyncio.Lock] = {}  # Protect drain/refill operations
+
+# In-flight sends: incremented around each task a worker is actively
+# processing. "Queue empty" alone does not mean delivered.
+_inflight_count = 0
+
+
+def queues_idle() -> bool:
+    """True when no queue has pending items and no worker is mid-send.
+
+    Used by the session monitor to decide when parsed transcript entries
+    count as delivered (committed watermark, issue #179).
+    """
+    if not _message_queues:
+        return True
+    return all(q.empty() for q in _message_queues.values()) and _inflight_count == 0
+
 
 # Map (tool_use_id, user_id, thread_key) -> telegram message_id
 # for editing tool_use messages with results
@@ -368,6 +385,7 @@ async def _dispatch(
 
 
 async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
+    global _inflight_count
     """Process message tasks for a user sequentially."""
     queue = _message_queues[user_id]
     lock = _queue_locks[user_id]
@@ -376,6 +394,7 @@ async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
     while True:
         try:
             task = await queue.get()
+            _inflight_count += 1
             try:
                 while True:
                     try:
@@ -405,6 +424,7 @@ async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
                     getattr(task, "thread_id", None),
                 )
             finally:
+                _inflight_count -= 1
                 queue.task_done()
         except asyncio.CancelledError:
             logger.debug("Message queue worker cancelled for user %s", user_id)
@@ -548,8 +568,26 @@ def clear_tool_msg_ids_for_topic(user_id: int, thread_id: int | None = None) -> 
         _tool_msg_ids.pop(key, None)
 
 
-async def shutdown_workers() -> None:
-    """Stop all queue workers (called during client shutdown)."""
+async def shutdown_workers(drain_timeout: float = 10.0) -> None:
+    """Stop all queue workers (called during client shutdown).
+
+    The monitor parses transcript entries before the queue delivers them
+    to Telegram; on this PR's delivered-watermark model anything the drain
+    cannot finish is replayed on the next start. Draining while the HTTP
+    transport is still alive (post_stop) bounds how much gets replayed.
+    Callers must already have stopped the monitor so no new work arrives
+    during the drain.
+    """
+    deadline = time.monotonic() + drain_timeout
+    while time.monotonic() < deadline and not queues_idle():
+        await asyncio.sleep(0.2)
+    if not queues_idle():
+        pending = sum(q.qsize() for q in _message_queues.values())
+        logger.warning("Shutdown drain timeout: dropping %d queued task(s)", pending)
+    # Grace beat when something was in flight: a worker may be mid-send on
+    # the task it just dequeued.
+    if _inflight_count:
+        await asyncio.sleep(0.3)
     for _, worker in list(_queue_workers.items()):
         worker.cancel()
         with contextlib.suppress(asyncio.CancelledError):

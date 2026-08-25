@@ -144,6 +144,22 @@ class SessionMonitor:
         if session_id:
             self._idle_tracker.record_activity(session_id)
 
+    def _commit_watermark_if_idle(self) -> None:
+        """Issue #179 at-least-once: fold parsed offsets into the delivered
+        watermark, but only when every queue is empty, no worker is
+        mid-send, and no tool_use is still waiting for its result (the
+        parser holds those back; their lines are already parsed). Called
+        from the monitor loop AFTER the cycle's messages are dispatched, so
+        a crash before this point replays the cycle instead of losing it.
+        """
+        # Lazy: monitor → handlers.message_queue → status bubble →
+        # monitor-adjacent singletons; importing at top forms a cycle.
+        from .handlers.messaging_pipeline.message_queue import queues_idle
+
+        if queues_idle() and not self._transcript_reader._pending_tools:
+            self.state.commit_parsed_offsets()
+            self.state.save_if_dirty()
+
     async def check_for_updates(self, current_map: dict) -> list[NewMessage]:
         """Check all sessions for new assistant messages.
 
@@ -503,6 +519,8 @@ class SessionMonitor:
                                 "Message callback error for session=%s",
                                 msg.session_id,
                             )
+
+                self._commit_watermark_if_idle()
 
             except _LoopError:
                 logger.exception("Monitor loop error")

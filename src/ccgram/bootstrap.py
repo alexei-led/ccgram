@@ -325,8 +325,14 @@ async def bootstrap_application(application: Application) -> None:
     await start_miniapp_if_enabled()
 
 
-async def shutdown_runtime() -> None:
-    """Run the post_shutdown teardown sequence."""
+async def stop_delivery_runtime() -> None:
+    """Phase 1 (post_stop): stop producers and drain pending deliveries.
+
+    Runs while PTB's HTTP transport is still alive (post_stop precedes
+    Application.shutdown, which tears down HTTPXRequest), so the queue drain
+    can actually deliver parsed-but-unsent messages (TASK-5/6). Must run
+    before any consumer that could enqueue new work is gone.
+    """
     global _status_poll_task, session_monitor
 
     if _status_poll_task is not None:
@@ -358,6 +364,9 @@ async def shutdown_runtime() -> None:
 
     clear_pending_telegram_injections()
 
+
+async def shutdown_runtime() -> None:
+    """Phase 2 (post_shutdown): teardown that needs no HTTP transport."""
     # Lazy: main → bot → bootstrap cycle (same as start path).
     from .main import stop_miniapp_if_enabled
 

@@ -20,15 +20,26 @@ logger = structlog.get_logger()
 
 @dataclass
 class TrackedSession:
-    """State for a tracked Claude Code session."""
+    """State for a tracked Claude Code session.
+
+    ``last_byte_offset`` is the *delivered* watermark (persisted): entries
+    before it were handed to the message queue when the queue was fully
+    drained, so a restart resumes from there and never re-sends them.
+    ``parsed_offset`` is the in-memory parse position: entries between the
+    watermark and it are parsed and queued but not yet confirmed delivered
+    (TASK-5 at-least-once delivery).
+    """
 
     session_id: str
     file_path: str  # Path to .jsonl file
-    last_byte_offset: int = 0  # Byte offset for incremental reading
+    last_byte_offset: int = 0  # Delivered watermark (persisted)
+    parsed_offset: int = -1  # In-memory parse position (-1 = follow watermark)
 
     def to_dict(self) -> dict[str, Any]:
-        """Convert to dict for JSON serialization."""
-        return asdict(self)
+        """Convert to dict for JSON serialization (delivered watermark only)."""
+        d = asdict(self)
+        d.pop("parsed_offset", None)
+        return d
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TrackedSession":
@@ -103,6 +114,27 @@ class MonitorState:
         if session_id in self.tracked_sessions:
             del self.tracked_sessions[session_id]
             self._dirty = True
+
+    def commit_parsed_offsets(self) -> bool:
+        """Fold in-memory parse positions into the delivered watermark.
+
+        Called by the monitor when the message queues are idle: everything
+        parsed up to parsed_offset has been sent. Returns True when any
+        watermark advanced (state is marked dirty for the next save).
+        """
+        advanced = False
+        for session in self.tracked_sessions.values():
+            if (
+                session.parsed_offset >= 0
+                and session.parsed_offset != session.last_byte_offset
+            ):
+                # Also LOWER: a replaced/shrunken transcript clamps the parse
+                # position to EOF (no replay, 9c3297b); persisting the clamp
+                # keeps the watermark from going stale-high.
+                session.last_byte_offset = session.parsed_offset
+                advanced = True
+                self._dirty = True
+        return advanced
 
     def save_if_dirty(self) -> None:
         """Save state only if it has been modified."""

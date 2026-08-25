@@ -701,3 +701,53 @@ class TestTruncateCaption:
 
         text = "a" * 1024
         assert _truncate_caption(text) == text
+
+
+class TestShutdownDrain:
+    """Issue #179: graceful shutdown must drain queued tasks before cancelling."""
+
+    async def test_drain_delivers_pending_task_before_cancel(self) -> None:
+        from ccgram.handlers.messaging_pipeline.message_queue import (
+            get_or_create_queue,
+            shutdown_workers,
+        )
+        from ccgram.handlers.messaging_pipeline.message_task import ContentTask
+
+        await shutdown_workers()  # clean state
+        delivered: list[str] = []
+
+        async def fake_handle(*args, **kwargs):
+            delivered.append("delivered")
+
+        with patch(
+            "ccgram.handlers.messaging_pipeline.message_queue._handle_content_task",
+            new=AsyncMock(side_effect=fake_handle),
+        ):
+            bot = AsyncMock()
+            queue = get_or_create_queue(bot, 99)
+            queue.put_nowait(
+                ContentTask(window_id="@0", parts=("last words",), content_type="text")
+            )
+            await shutdown_workers(drain_timeout=2.0)
+
+        assert delivered == ["delivered"]
+
+    async def test_drain_timeout_does_not_hang(self) -> None:
+        from ccgram.handlers.messaging_pipeline.message_queue import (
+            get_or_create_queue,
+            shutdown_workers,
+        )
+        from ccgram.handlers.messaging_pipeline.message_task import ContentTask
+
+        async def never() -> None:
+            await asyncio.sleep(10)
+
+        await shutdown_workers()  # clean state
+        bot = AsyncMock()
+        queue = get_or_create_queue(bot, 98)
+        queue.put_nowait(ContentTask(window_id="@0", parts=("x",), content_type="text"))
+        with patch(
+            "ccgram.handlers.messaging_pipeline.message_queue._handle_content_task",
+            new=AsyncMock(side_effect=lambda *a, **k: never()),
+        ):
+            await asyncio.wait_for(shutdown_workers(drain_timeout=0.3), timeout=5.0)

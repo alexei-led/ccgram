@@ -227,7 +227,7 @@ class TranscriptReader:
             boundary.inode,
         )
         if (generation_changed or st.st_size < boundary.size) and not consumed_intact:
-            tracked.last_byte_offset = 0
+            tracked.parsed_offset = st.st_size
             boundary = _StartupBoundary(
                 size=0,
                 device=st.st_dev,
@@ -267,13 +267,12 @@ class TranscriptReader:
     async def _marker_changed(
         self, session_id: str, tracked: TrackedSession, file_path: Path
     ) -> bool:
+        pos = self._parse_pos(tracked)
         saved = self._file_markers.get(session_id)
-        if saved is None or saved[0] != tracked.last_byte_offset:
+        if saved is None or saved[0] != pos:
             return False
         try:
-            current = await asyncio.to_thread(
-                _tail_marker, file_path, tracked.last_byte_offset
-            )
+            current = await asyncio.to_thread(_tail_marker, file_path, pos)
         except OSError:
             return False
         return current != saved[1]
@@ -317,7 +316,8 @@ class TranscriptReader:
                 and st.st_size <= previous_size
             )
         )
-        changed = changed or st.st_size < tracked.last_byte_offset
+        pos = self._parse_pos(tracked)
+        changed = changed or st.st_size < pos
         if not changed and check_marker:
             changed = await self._marker_changed(session_id, tracked, file_path)
         consumed_intact = False
@@ -326,9 +326,7 @@ class TranscriptReader:
                 check_marker
                 and prefix_verified
                 and not prefix_changed
-                and self._prefix_covers_consumed(
-                    session_id, tracked.last_byte_offset, st
-                )
+                and self._prefix_covers_consumed(session_id, pos, st)
             )
             if consumed_intact:
                 logger.debug(
@@ -336,7 +334,11 @@ class TranscriptReader:
                     session_id,
                 )
             else:
-                tracked.last_byte_offset = 0
+                # Replaced transcript: jump the parse position to EOF so the
+                # existing bytes are treated as already-notified history
+                # (incident 2026-08-17: never replay), and let the persisted
+                # watermark follow via commit_parsed_offsets().
+                tracked.parsed_offset = st.st_size
                 self._startup_file_boundaries.pop(session_id, None)
         return _GenerationCheck(changed and not consumed_intact, consumed_intact)
 
@@ -354,7 +356,7 @@ class TranscriptReader:
         for _attempt in range(2):
             try:
                 before = file_path.stat()
-                start_offset = tracked.last_byte_offset
+                start_offset = self._parse_pos(tracked)
                 entries = await self._read_new_lines(tracked, file_path, window_id)
                 after = file_path.stat()
             except OSError:
@@ -383,7 +385,7 @@ class TranscriptReader:
                 # Concurrent append or metadata churn, not a replacement: the
                 # bytes already delivered survived, so keep this read.
                 return _StableRead(entries, after, reset_generation)
-            tracked.last_byte_offset = 0
+            tracked.parsed_offset = after.st_size
             self._startup_file_boundaries.pop(session_id, None)
             reset_generation = True
         return None
@@ -399,7 +401,7 @@ class TranscriptReader:
         stable_stat = stable_read.stat
         try:
             marker = await asyncio.to_thread(
-                _tail_marker, file_path, tracked.last_byte_offset
+                _tail_marker, file_path, self._parse_pos(tracked)
             )
         except OSError:
             return False
@@ -414,7 +416,7 @@ class TranscriptReader:
             stable_stat.st_size,
             await asyncio.to_thread(_prefix_digest, file_path, stable_stat.st_size),
         )
-        self._file_markers[session_id] = (tracked.last_byte_offset, marker)
+        self._file_markers[session_id] = (self._parse_pos(tracked), marker)
         return True
 
     def clear_session(self, session_id: str) -> None:
@@ -489,6 +491,15 @@ class TranscriptReader:
             )
             return tracked
         return None
+
+    @staticmethod
+    def _parse_pos(session: TrackedSession) -> int:
+        """Current parse position (parsed_offset once set, watermark before)."""
+        return (
+            session.parsed_offset
+            if session.parsed_offset >= 0
+            else session.last_byte_offset
+        )
 
     async def _process_session_file(
         self,
@@ -573,7 +584,7 @@ class TranscriptReader:
             if (
                 not generation_changed
                 and current_mtime <= last_mtime
-                and current_size <= tracked.last_byte_offset
+                and current_size <= self._parse_pos(tracked)
             ):
                 return
         elif not generation_changed and current_mtime <= last_mtime:
@@ -609,10 +620,10 @@ class TranscriptReader:
         # Deliver pre-start unread history, but count activity only when a
         # complete entry advances beyond the startup file-size boundary.
         has_live_entries = startup_boundary is None or (
-            tracked.last_byte_offset > startup_boundary.size
+            self._parse_pos(tracked) > startup_boundary.size
         )
         if startup_boundary is not None and (
-            tracked.last_byte_offset >= startup_boundary.size
+            self._parse_pos(tracked) >= startup_boundary.size
         ):
             self._startup_file_boundaries.pop(session_id, None)
         if new_entries and has_live_entries:
@@ -671,10 +682,19 @@ class TranscriptReader:
         )
 
     async def _read_new_lines(
-        self, session: TrackedSession, file_path: Path, window_id: str = ""
+        self,
+        session: TrackedSession,
+        file_path: Path,
+        window_id: str = "",
+        provider: Any = None,
     ) -> list[dict]:
-        """Read new lines from a session file using byte offset."""
-        provider = _resolve_provider_for_file(window_id, file_path)
+        """Read new lines from a session file using byte offset.
+
+        ``provider`` may be passed by callers that already resolved it
+        (avoids a second resolution per file per poll cycle).
+        """
+        if provider is None:
+            provider = _resolve_provider_for_file(window_id, file_path)
 
         if not provider.capabilities.supports_incremental_read:
             return await self._read_whole_file(session, file_path, provider)
@@ -685,34 +705,43 @@ class TranscriptReader:
                 await f.seek(0, 2)
                 file_size = await f.tell()
 
-                if session.last_byte_offset > file_size:
+                pos = self._parse_pos(session)
+                if pos > file_size:
+                    # A shrunken file is almost always a REPLACED session
+                    # transcript (session refresh/rotation), not a genuine
+                    # truncation. Resuming from 0 would replay the entire
+                    # history as fresh notifications, flooding Telegram and
+                    # starving every other topic (incident 2026-08-17).
+                    # Resume from EOF instead: treat existing bytes as
+                    # already-notified history.
                     logger.info(
-                        "File truncated for session %s "
-                        "(offset %d > size %d). Resetting.",
+                        "File shrunk/replaced for session %s "
+                        "(offset %d > size %d): resuming from EOF, "
+                        "no replay.",
                         session.session_id,
-                        session.last_byte_offset,
+                        pos,
                         file_size,
                     )
-                    session.last_byte_offset = 0
+                    pos = file_size
 
-                await f.seek(session.last_byte_offset)
+                await f.seek(pos)
 
-                if session.last_byte_offset > 0:
+                if pos > 0:
                     first_byte = await f.read(1)
                     if first_byte and first_byte != "{":
                         logger.warning(
                             "Corrupted offset for session %s (byte %d is %r, not '{'). "
                             "Advancing to next line.",
                             session.session_id,
-                            session.last_byte_offset,
+                            pos,
                             first_byte,
                         )
                         await f.readline()
-                        session.last_byte_offset = await f.tell()
+                        pos = await f.tell()
                     else:
-                        await f.seek(session.last_byte_offset)
+                        await f.seek(pos)
 
-                safe_offset = session.last_byte_offset
+                safe_offset = pos
                 async for line in f:
                     data = provider.parse_transcript_line(line)
                     if data:
@@ -729,7 +758,10 @@ class TranscriptReader:
                     else:
                         safe_offset = await f.tell()
 
-                session.last_byte_offset = safe_offset
+                # Parsed position advances in memory only; the persisted
+                # last_byte_offset (delivered watermark) is committed by the
+                # monitor once the queues have drained (TASK-5).
+                session.parsed_offset = safe_offset
 
         except OSError:
             logger.exception("Error reading session file %s", file_path)
@@ -747,9 +779,9 @@ class TranscriptReader:
             new_entries, new_offset = await asyncio.to_thread(
                 provider.read_transcript_file,
                 str(file_path),
-                session.last_byte_offset,
+                self._parse_pos(session),
             )
-            session.last_byte_offset = new_offset
+            session.parsed_offset = new_offset
             return new_entries
         except OSError:
             logger.exception("Error reading transcript file %s", file_path)
