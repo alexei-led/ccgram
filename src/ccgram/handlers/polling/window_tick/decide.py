@@ -52,17 +52,24 @@ def decide_tick(ctx: TickContext) -> TickDecision:
     if ctx.is_shell_prompt:
         if ctx.supports_hook:
             return TickDecision(transition="done")
-        return TickDecision(transition="idle")
+        # Hookless provider back at its prompt: genuine end of turn, the
+        # Ready bubble is wanted here.
+        return TickDecision(transition="idle", send_status=True)
 
     if ctx.has_seen_status:
-        return TickDecision(transition="idle")
+        return TickDecision(transition="idle", send_status=True)
 
     startup_expired = (
         ctx.startup_time is not None
         and (time.monotonic() - ctx.startup_time) >= STARTUP_TIMEOUT
     )
     if startup_expired:
-        return TickDecision(transition="idle")
+        # A window that never showed a status line in this run (agent not
+        # running, dormant tab) must not announce "Ready": one fresh bubble
+        # per topic on every restart is pure noise. Same "idle" transition
+        # with send_status=False drives the idle side effects (settle,
+        # typing cleared, emoji restored) minus the bubble.
+        return TickDecision(transition="idle", send_status=False)
 
     return TickDecision(transition="starting")
 

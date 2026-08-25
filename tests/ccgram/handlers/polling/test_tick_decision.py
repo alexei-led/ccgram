@@ -70,7 +70,7 @@ def test_shell_prompt_no_hook_transitions_idle():
     ctx = _ctx(is_shell_prompt=True, supports_hook=False)
     decision = decide_tick(ctx)
     assert decision.transition == "idle"
-    assert decision.send_status is False
+    assert decision.send_status is True
 
 
 def test_shell_prompt_with_hook_transitions_done():
@@ -83,7 +83,7 @@ def test_has_seen_status_transitions_idle():
     ctx = _ctx(has_seen_status=True)
     decision = decide_tick(ctx)
     assert decision.transition == "idle"
-    assert decision.send_status is False
+    assert decision.send_status is True
 
 
 def test_no_startup_time_transitions_starting():
@@ -125,3 +125,12 @@ def test_tick_decision_defaults_are_no_op():
     assert d.status_text is None
     assert d.transition is None
     assert d.show_recovery is False
+
+
+def test_startup_expired_never_active_stays_quiet():
+    """Issue #180: never-active windows must not announce Ready on every
+    restart; side effects still apply via send_status=False."""
+    ctx = _ctx(startup_time=time.monotonic() - 60.0, has_seen_status=False)
+    decision = decide_tick(ctx)
+    assert decision.transition == "idle"
+    assert decision.send_status is False
