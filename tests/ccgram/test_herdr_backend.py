@@ -441,7 +441,12 @@ async def test_send_variants_guard_then_dispatch_to_live_pane() -> None:
     assert await mux.send(_target(), "C-c Up", literal=False)
     assert fake.calls == [
         ["agent", "list"],
-        ["pane", "run", "w7:p4", "hello"],
+        # Submit split: literal text goes out via send-text, then Enter
+        # arrives as a separate send-keys write (an atomic "pane run" glues
+        # a synthetic Enter to bracketed-pasted text, which agent TUIs
+        # intermittently swallow).
+        ["pane", "send-text", "w7:p4", "hello"],
+        ["pane", "send-keys", "w7:p4", "enter"],
         ["agent", "list"],
         ["pane", "send-text", "w7:p4", "partial"],
         ["agent", "list"],
@@ -654,11 +659,14 @@ async def test_raw_pane_helpers_cannot_bypass_target_guard() -> None:
 
 
 async def test_action_error_refreshes_guard_without_retargeting() -> None:
-    fake = _live_fake(_agent(pane_id="w2:p1")).on("pane", "run", rc=1, err="closed")
+    fake = _live_fake(_agent(pane_id="w2:p1")).on(
+        "pane", "send-text", rc=1, err="closed"
+    )
     assert not await _manager(fake).send(_target(), "hello")
     assert fake.calls == [
         ["agent", "list"],
-        ["pane", "run", "w2:p1", "hello"],
+        # Submit split: the text write failed, so no Enter is dispatched.
+        ["pane", "send-text", "w2:p1", "hello"],
         ["agent", "list"],
     ]
 
@@ -686,7 +694,8 @@ async def test_post_guard_dispatch_race_never_retargets_another_pane() -> None:
     assert not await HerdrManager(runner=runner).send(_target(), "hello")
     assert runner.calls == [
         ["agent", "list"],
-        ["pane", "run", "w2:p1", "hello"],
+        # Submit split: the text write failed, so no Enter is dispatched.
+        ["pane", "send-text", "w2:p1", "hello"],
         ["agent", "list"],
     ]
     assert not any(
@@ -1395,3 +1404,36 @@ async def test_a_still_live_target_is_never_published_as_superseded() -> None:
     windows = {w.window_id: w for w in await manager.list_windows()}
     assert _target("session-a") not in windows[_target("session-b")].alias_window_ids
     assert await manager.find_window_by_id(_target("session-a")) is not None
+
+
+async def test_submit_split_survives_text_failure_and_delays_enter() -> None:
+    """TASK-1: text and Enter are two writes; a failed text write means no
+    Enter, and the Enter follows only after the submit delay."""
+    import ccgram.multiplexer.herdr as herdr_mod
+
+    fake = _live_fake(_agent(pane_id="w7:p4")).on(
+        "pane", "send-text", rc=1, err="closed"
+    )
+    mux = _manager(fake)
+    assert not await mux.send(_target(), "hello")
+    assert ["pane", "send-text", "w7:p4", "hello"] in fake.calls
+    assert not any(c[:2] == ["pane", "send-keys"] for c in fake.calls)
+    assert not any(c[:2] == ["pane", "run"] for c in fake.calls)
+
+    delays: list[float] = []
+    real_sleep = herdr_mod.asyncio.sleep
+
+    async def fake_sleep(d: float) -> None:
+        delays.append(d)
+        await real_sleep(0)
+
+    ok_fake = (
+        _live_fake(_agent(pane_id="w7:p4"))
+        .on("pane", "send-text", out=_result(type="ok"))
+        .on("pane", "send-keys", out=_result(type="ok"))
+    )
+    with __import__("unittest.mock", fromlist=["patch"]).patch.object(
+        herdr_mod.asyncio, "sleep", fake_sleep
+    ):
+        assert await _manager(ok_fake).send(_target(), "hello")
+    assert delays == [herdr_mod.AGENT_SUBMIT_DELAY_SECONDS]

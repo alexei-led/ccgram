@@ -141,6 +141,10 @@ HerdrStreamOpener = Callable[
 # Synthetic return codes from the default runner for non-exec failures.
 _RC_TIMEOUT = 124
 _RC_NO_BINARY = 127
+# Delay between sending prompt text and the Enter key (see _send_to): must
+# match herdr's own agent-prompt submit delay so agent TUIs register the Enter.
+AGENT_SUBMIT_DELAY_SECONDS = 0.3
+
 _CALL_TIMEOUT_SECONDS = 8.0
 
 # New Pi sessions have been observed to publish their agent_session in ~2.7s.
@@ -941,9 +945,19 @@ class HerdrManager:
             return bool(keys) and await self._call_ok(
                 ["pane", "send-keys", pane_id, *keys]
             )
-        return await self._call_ok(
-            ["pane", "run" if enter else "send-text", pane_id, text]
-        )
+        if enter:
+            # Split text and Enter into two writes with a short delay between
+            # them. A single atomic "pane run" wraps the text in bracketed
+            # paste (agents enable it) and glues a synthetic Enter to it,
+            # which agent TUIs (Claude Code) intermittently swallow: the text
+            # lands in the input line but is never submitted. herdr's own
+            # agent-prompt path uses the same split with a 300 ms delay
+            # (AGENT_PROMPT_SUBMIT_DELAY).
+            if not await self._call_ok(["pane", "send-text", pane_id, text]):
+                return False
+            await asyncio.sleep(AGENT_SUBMIT_DELAY_SECONDS)
+            return await self._call_ok(["pane", "send-keys", pane_id, "enter"])
+        return await self._call_ok(["pane", "send-text", pane_id, text])
 
     async def kill_window(self, window_id: str) -> bool:
         try:
