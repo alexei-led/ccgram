@@ -414,12 +414,12 @@ class SessionMapSync:
         # Lazy: window_state_store / thread_router proxies wired by SessionManager constructor
         from .window_state_store import window_store
 
-        bound_wids = {
-            wid
-            for user_bindings in thread_router.thread_bindings.values()
-            for wid in user_bindings.values()
-            if wid
-        }
+        # Must cover chat-scoped bindings too: ``set_group_chat_id`` moves a
+        # binding out of ``thread_bindings`` into ``chat_thread_bindings``, so
+        # in a forum deployment the legacy dict is empty and reading it alone
+        # leaves this guard dead — sweeping the state of every bound window
+        # whose provider has no hook to keep it in the session map.
+        bound_wids = {wid for wid in thread_router.all_bound_window_ids() if wid}
         stale_wids = [
             w
             for w in window_store.iter_window_ids()

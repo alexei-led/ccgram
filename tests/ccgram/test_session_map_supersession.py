@@ -24,6 +24,7 @@ from ccgram.session_map import (
     _reset_in_flight_window_predicate_for_testing,
     register_in_flight_window_predicate,
 )
+from ccgram.thread_router import thread_router
 from ccgram.window_state_store import WindowState, window_store
 
 
@@ -137,5 +138,101 @@ class TestStaleSweepSparesInFlightCreations:
                 )
         finally:
             window_store.window_states.pop("@9", None)
+
+        assert removed
+
+
+class TestStaleSweepRespectsChatScopedBindings:
+    """_remove_stale_window_states must use all_bound_window_ids(), not just
+    thread_bindings.  set_group_chat_id() moves a binding from thread_bindings
+    into chat_thread_bindings; the old code only iterated thread_bindings and
+    so treated every chat-scoped window as unbound, deleting its state every
+    poll cycle (the bug that erased Pi/Codex/Gemini window states in production).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _restore_thread_router(self) -> Iterator[None]:
+        """Snapshot and restore all ThreadRouter dicts to prevent test leakage."""
+        saved_bindings = {k: dict(v) for k, v in thread_router.thread_bindings.items()}
+        saved_chat = dict(thread_router.chat_thread_bindings)
+        saved_chat_w2t = dict(thread_router._chat_window_to_thread)
+        saved_w2t = dict(thread_router._window_to_thread)
+        saved_group = dict(thread_router.group_chat_ids)
+        yield
+        thread_router.thread_bindings.clear()
+        thread_router.thread_bindings.update(
+            {k: dict(v) for k, v in saved_bindings.items()}
+        )
+        thread_router.chat_thread_bindings.clear()
+        thread_router.chat_thread_bindings.update(saved_chat)
+        thread_router._chat_window_to_thread.clear()
+        thread_router._chat_window_to_thread.update(saved_chat_w2t)
+        thread_router._window_to_thread.clear()
+        thread_router._window_to_thread.update(saved_w2t)
+        thread_router.group_chat_ids.clear()
+        thread_router.group_chat_ids.update(saved_group)
+
+    def test_chat_scoped_binding_survives_sweep(self, sync: SessionMapSync) -> None:
+        """A window promoted to chat scope by set_group_chat_id must not be swept.
+
+        The old code only read thread_bindings, which set_group_chat_id empties.
+        Demonstrate the blindness in the test: after promotion thread_bindings is
+        empty while all_bound_window_ids() still sees the window.
+        """
+        register_in_flight_window_predicate(lambda _wid: False)
+        window_store.window_states["@42"] = WindowState(cwd="/project")
+
+        # First bind via thread_bindings, then promote to chat scope.
+        thread_router.thread_bindings[1] = {100: "@42"}
+        thread_router.set_group_chat_id(1, 100, 999)
+
+        # Demonstrate the old-code blindness: thread_bindings is now empty.
+        old_code_bound = {
+            wid
+            for user_bindings in thread_router.thread_bindings.values()
+            for wid in user_bindings.values()
+            if wid
+        }
+        assert old_code_bound == set()  # old code would miss this window
+        assert thread_router.all_bound_window_ids() == {"@42"}  # fix sees it
+
+        try:
+            removed = sync._remove_stale_window_states(
+                valid_wids=set(), old_format_sids=set()
+            )
+        finally:
+            window_store.window_states.pop("@42", None)
+
+        assert not removed  # window must survive
+
+    def test_legacy_thread_binding_still_survives_sweep(
+        self, sync: SessionMapSync
+    ) -> None:
+        """thread_bindings (legacy path) must still protect a bound window."""
+        register_in_flight_window_predicate(lambda _wid: False)
+        window_store.window_states["@43"] = WindowState(cwd="/project")
+        thread_router.thread_bindings[2] = {200: "@43"}
+
+        try:
+            removed = sync._remove_stale_window_states(
+                valid_wids=set(), old_format_sids=set()
+            )
+        finally:
+            window_store.window_states.pop("@43", None)
+            thread_router.thread_bindings.pop(2, None)
+
+        assert not removed
+
+    def test_genuinely_unbound_window_still_removed(self, sync: SessionMapSync) -> None:
+        """The fix must not make the guard too broad; unbound windows are swept."""
+        register_in_flight_window_predicate(lambda _wid: False)
+        window_store.window_states["@44"] = WindowState(cwd="/project")
+
+        try:
+            removed = sync._remove_stale_window_states(
+                valid_wids=set(), old_format_sids=set()
+            )
+        finally:
+            window_store.window_states.pop("@44", None)
 
         assert removed
