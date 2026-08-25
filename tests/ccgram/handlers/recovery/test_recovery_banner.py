@@ -5,6 +5,7 @@ import pytest
 from telegram import InlineKeyboardMarkup
 
 from ccgram.handlers.callback_data import (
+    CB_RECOVERY_BROWSE,
     CB_RECOVERY_CANCEL,
     CB_RECOVERY_CONTINUE,
     CB_RECOVERY_FRESH,
@@ -16,7 +17,17 @@ from ccgram.handlers.recovery.recovery_banner import (
     render_banner,
 )
 
+from ccgram.handlers.user_state import RECOVERY_WINDOW_ID
+
 _RC = "ccgram.handlers.recovery.recovery_banner"
+
+
+def _ctx() -> Any:
+    from unittest.mock import MagicMock
+
+    ctx = MagicMock()
+    ctx.user_data = {}
+    return ctx
 
 
 @pytest.fixture()
@@ -166,3 +177,72 @@ class TestRenderBannerCallbackBudget:
             for btn in row:
                 assert isinstance(btn.callback_data, str)
                 assert len(btn.callback_data) <= 64
+
+
+class TestRecoveryCwdOrReport:
+    """The two failures behind "Directory no longer exists" (#176).
+
+    A missing window state means the folder is unknown; a missing folder
+    means the folder is gone. They used to share one message that asserted
+    the second while the first was true, leaving the banner a dead end.
+    """
+
+    @pytest.fixture()
+    def _query(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        query = MagicMock()
+        query.answer = AsyncMock()
+        return query
+
+    async def test_returns_cwd_when_state_and_directory_are_present(
+        self, _query, tmp_path
+    ) -> None:
+        from ccgram.handlers.recovery.recovery_banner import _recovery_cwd_or_report
+
+        with patch(f"{_RC}._cwd_for_window", return_value=str(tmp_path)):
+            result = await _recovery_cwd_or_report(_query, "@5", _ctx())
+
+        assert result == str(tmp_path)
+
+    async def test_missing_state_offers_browse_and_keeps_the_flow_alive(
+        self, _query
+    ) -> None:
+        from ccgram.handlers.recovery.recovery_banner import _recovery_cwd_or_report
+
+        ctx = _ctx()
+        ctx.user_data[RECOVERY_WINDOW_ID] = "@5"
+        with (
+            patch(f"{_RC}._cwd_for_window", return_value=""),
+            patch(f"{_RC}.safe_edit") as mock_edit,
+        ):
+            result = await _recovery_cwd_or_report(_query, "@5", ctx)
+
+        assert result is None
+        text = mock_edit.call_args[0][1]
+        assert "Directory no longer exists" not in text
+        assert "session state is gone" in text
+        kb = mock_edit.call_args.kwargs["reply_markup"]
+        assert isinstance(kb, InlineKeyboardMarkup)
+        browse = kb.inline_keyboard[0][0].callback_data
+        assert isinstance(browse, str) and browse.startswith(CB_RECOVERY_BROWSE)
+        # Browse re-validates against this state, so it must survive.
+        assert ctx.user_data[RECOVERY_WINDOW_ID] == "@5"
+
+    async def test_missing_directory_keeps_the_filesystem_message(
+        self, _query, tmp_path
+    ) -> None:
+        from ccgram.handlers.recovery.recovery_banner import _recovery_cwd_or_report
+
+        ctx = _ctx()
+        ctx.user_data[RECOVERY_WINDOW_ID] = "@5"
+        gone = str(tmp_path / "gone")
+        with (
+            patch(f"{_RC}._cwd_for_window", return_value=gone),
+            patch(f"{_RC}.safe_edit") as mock_edit,
+        ):
+            result = await _recovery_cwd_or_report(_query, "@5", ctx)
+
+        assert result is None
+        assert "Directory no longer exists" in mock_edit.call_args[0][1]
+        assert RECOVERY_WINDOW_ID not in ctx.user_data

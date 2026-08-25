@@ -341,6 +341,51 @@ def _cwd_for_window(window_id: str) -> str:
     return view.cwd if view else ""
 
 
+async def _recovery_cwd_or_report(
+    query: CallbackQuery,
+    window_id: str,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> str | None:
+    """Return the recovery cwd, or report which of two failures happened.
+
+    Fresh/Continue/Resume all need the directory, and both ways of not having
+    it used to share one message that claimed the directory was gone (#176).
+    A missing window state means the directory is *unknown*, which is a
+    different problem with a different way out: Browse still works without
+    state, so offer it rather than ending the flow on a false statement about
+    the filesystem.
+    """
+    cwd = _cwd_for_window(window_id)
+    if not cwd:
+        await safe_edit(
+            query,
+            "⚠ This topic's session state is gone, so its folder is unknown.",
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "\U0001f5c2 Browse other projects",
+                            callback_data=compact_callback_data(
+                                CB_RECOVERY_BROWSE,
+                                f"{CB_RECOVERY_BROWSE}{window_id}",
+                                window_id,
+                            ),
+                        )
+                    ]
+                ]
+            ),
+        )
+        # Deliberately not cleared: Browse re-validates against this state.
+        await query.answer("State gone")
+        return None
+    if not Path(cwd).is_dir():
+        await safe_edit(query, "\u274c Directory no longer exists.")
+        _clear_recovery_state(context.user_data)
+        await query.answer("Project gone")
+        return None
+    return cwd
+
+
 async def _handle_back(
     query: CallbackQuery,
     data: str,
@@ -388,11 +433,8 @@ async def _handle_fresh(
         return
 
     thread_id, _ = validated
-    cwd = _cwd_for_window(old_wid)
-    if not cwd or not Path(cwd).is_dir():
-        await safe_edit(query, "❌ Directory no longer exists.")
-        _clear_recovery_state(context.user_data)
-        await query.answer("Project gone")
+    cwd = await _recovery_cwd_or_report(query, old_wid, context)
+    if cwd is None:
         return
 
     await _create_and_bind_window(
@@ -426,11 +468,8 @@ async def _handle_continue(
         return
 
     thread_id, _ = validated
-    cwd = _cwd_for_window(old_wid)
-    if not cwd or not Path(cwd).is_dir():
-        await safe_edit(query, "❌ Directory no longer exists.")
-        _clear_recovery_state(context.user_data)
-        await query.answer("Project gone")
+    cwd = await _recovery_cwd_or_report(query, old_wid, context)
+    if cwd is None:
         return
 
     provider_name = window_query.get_window_provider(old_wid)
@@ -470,11 +509,8 @@ async def _handle_resume(
         await query.answer("Stale recovery (topic mismatch)", show_alert=True)
         return
 
-    cwd = _cwd_for_window(old_wid)
-    if not cwd or not Path(cwd).is_dir():
-        await safe_edit(query, "❌ Directory no longer exists.")
-        _clear_recovery_state(context.user_data)
-        await query.answer("Project gone")
+    cwd = await _recovery_cwd_or_report(query, old_wid, context)
+    if cwd is None:
         return
 
     provider_name = window_query.get_window_provider(old_wid)

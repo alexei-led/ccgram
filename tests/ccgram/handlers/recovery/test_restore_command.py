@@ -96,7 +96,10 @@ class TestRestoreCommand:
             await restore_command(update, _make_context())
             assert "still running" in mock_reply.call_args[0][1]
 
-    async def test_dead_window_no_cwd(self, _patch_deps) -> None:
+    async def test_dead_window_no_cwd_reports_missing_state_not_missing_dir(
+        self, _patch_deps
+    ) -> None:
+        """No window state means unknown folder, not a deleted one (#176)."""
         mock_tr, _, _, mock_wq, _ = _patch_deps
         mock_tr.resolve_window_for_thread.return_value = "@5"
         mock_wq.view_window.return_value = MagicMock(cwd="")
@@ -104,7 +107,10 @@ class TestRestoreCommand:
 
         with patch("ccgram.handlers.recovery.restore_command.safe_reply") as mock_reply:
             await restore_command(update, _make_context())
-            assert "Directory no longer exists" in mock_reply.call_args[0][1]
+            text = mock_reply.call_args[0][1]
+            assert "Directory no longer exists" not in text
+            assert "session state is gone" in text
+            assert "/resume" in text
 
     async def test_dead_window_nonexistent_cwd(self, _patch_deps) -> None:
         mock_tr, _, _, mock_wq, _ = _patch_deps
