@@ -151,59 +151,19 @@ class TestDashboardButtonRow:
         with patch("ccgram.handlers.status.status_bar_actions.config") as cfg:
             cfg.miniapp_base_url = ""
             cfg.telegram_bot_token = "bot:abc"
-            kb = build_status_keyboard("@0", user_id=42)
+            kb = build_status_keyboard("@0")
         for row in kb.inline_keyboard:
             for btn in row:
                 assert btn.web_app is None
 
-    def test_dashboard_appended_when_enabled(self) -> None:
-        with (
-            patch("ccgram.handlers.status.status_bar_actions.config") as cfg,
-            patch(
-                "ccgram.handlers.status.status_bar_actions.sign_token",
-                return_value="abc.def",
-            ),
-        ):
+    def test_no_dashboard_row_even_when_enabled(self) -> None:
+        """Group status bubbles never carry the Dashboard button: Telegram
+        rejects web_app buttons in group chats (Button_type_invalid). The
+        Mini App entry point is /dashboard, which DMs the native button."""
+        with patch("ccgram.handlers.status.status_bar_actions.config") as cfg:
             cfg.miniapp_base_url = "https://example.com"
             cfg.telegram_bot_token = "bot:abc"
-            kb = build_status_keyboard("@7", user_id=42)
-        last_row = kb.inline_keyboard[-1]
-        assert len(last_row) == 1
-        btn = last_row[0]
-        assert btn.text == "\U0001fa9f Dashboard"
-        assert btn.web_app is not None
-        assert btn.web_app.url == "https://example.com/app/abc.def"
-
-    def test_dashboard_url_signed_with_window_and_user(self) -> None:
-        captured: list[tuple[str, int]] = []
-
-        def fake_sign(*, bot_token: str, window_id: str, user_id: int) -> str:
-            captured.append((window_id, user_id))
-            assert bot_token == "bot:abc"
-            return "tok"
-
-        with (
-            patch("ccgram.handlers.status.status_bar_actions.config") as cfg,
-            patch(
-                "ccgram.handlers.status.status_bar_actions.sign_token",
-                side_effect=fake_sign,
-            ),
-        ):
-            cfg.miniapp_base_url = "https://example.com/"
-            cfg.telegram_bot_token = "bot:abc"
-            build_status_keyboard("@9", user_id=99)
-        assert captured == [("@9", 99)]
-
-    def test_history_row_does_not_replace_dashboard(self) -> None:
-        with (
-            patch("ccgram.handlers.status.status_bar_actions.config") as cfg,
-            patch(
-                "ccgram.handlers.status.status_bar_actions.sign_token",
-                return_value="tok",
-            ),
-        ):
-            cfg.miniapp_base_url = "https://example.com"
-            cfg.telegram_bot_token = "bot:abc"
-            kb = build_status_keyboard("@0", history=["a", "b"], user_id=42)
-        assert len(kb.inline_keyboard) == 3
-        assert kb.inline_keyboard[-1][0].web_app is not None
+            kb = build_status_keyboard("@7")
+        for row in kb.inline_keyboard:
+            for btn in row:
+                assert btn.web_app is None

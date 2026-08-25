@@ -34,8 +34,8 @@ from ... import window_query
 from ...telegram_client import PTBTelegramClient
 from ...thread_router import thread_router
 from ...multiplexer import multiplexer as tmux_manager
-from ..telegram_origin import send_telegram_to_window
 from ...topic_state_registry import topic_state
+from ..telegram_origin import send_telegram_to_window
 from ..callback_data import (
     CB_KEYS_PREFIX,
     CB_STATUS_ESC,
@@ -68,6 +68,10 @@ def build_dashboard_button(window_id: str, user_id: int) -> InlineKeyboardButton
     embeds it in the URL so the Mini App can verify the request without an
     extra round-trip. Returns ``None`` (button hidden) when
     ``CCGRAM_MINIAPP_BASE_URL`` is unset.
+
+    Private chats only: Telegram rejects ``web_app`` buttons in group chats
+    with ``Button_type_invalid``. The status bubble in forum topics must not
+    embed this button; surface it via the ``/dashboard`` DM instead.
     """
     base_url = config.miniapp_base_url
     if not base_url:

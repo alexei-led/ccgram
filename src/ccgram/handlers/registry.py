@@ -27,7 +27,10 @@ from telegram.ext._utils.types import HandlerCallback
 from .callback_registry import dispatch as _dispatch_callback
 from .callback_registry import load_handlers as _load_callback_handlers
 from .agent_command import agent_command
+from ..config import config
 from .cleanup import rollback_command, unbind_command
+from .dashboard_command import dashboard_command
+from .private_chat import private_start_command
 from .command_history import recall_command
 from .commands import (
     commands_command,
@@ -98,6 +101,7 @@ def register_all(
         CommandSpec("resume", resume_command),
         CommandSpec("unbind", unbind_command),
         CommandSpec("rollback", rollback_command),
+        CommandSpec("dashboard", dashboard_command),
         CommandSpec("upgrade", upgrade_command),
         CommandSpec("recall", recall_command),
         CommandSpec("screenshot", screenshot_command),
@@ -123,6 +127,18 @@ def register_all(
     application.add_handler(
         MessageHandler(filters.COMMAND & group_filter, _log_command_update), group=-1
     )
+
+    # Private-chat greeting: registered only when a group filter is active,
+    # because then every other handler ignores private chats entirely and a
+    # user opening the bot's private chat (required by the /dashboard DM flow)
+    # would get silence. Without CCGRAM_GROUP_ID the group-filtered handlers
+    # already see private chats, so no extra registration is needed.
+    if config.group_id:
+        application.add_handler(
+            CommandHandler(
+                "start", private_start_command, filters=filters.ChatType.PRIVATE
+            )
+        )
 
     _load_callback_handlers()
     application.add_handler(CallbackQueryHandler(_dispatch_callback))
@@ -178,6 +194,7 @@ COMMAND_NAMES: tuple[str, ...] = (
     "resume",
     "unbind",
     "rollback",
+    "dashboard",
     "upgrade",
     "recall",
     "screenshot",

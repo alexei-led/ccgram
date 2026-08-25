@@ -76,6 +76,7 @@ _BOT_COMMANDS: list[tuple[str, str]] = [
     ("start", "Show ccgram welcome message"),
     ("commands", "List commands for this topic provider"),
     ("history", "Message history for this topic"),
+    ("dashboard", "Mini App dashboard button via private chat"),
     ("sessions", "Sessions dashboard"),
     ("resume", "Browse and resume past sessions"),
     ("screenshot", "Capture terminal screenshot"),

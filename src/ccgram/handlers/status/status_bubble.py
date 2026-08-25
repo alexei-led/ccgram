@@ -60,23 +60,20 @@ _status_msg_info: dict[tuple[int, int], tuple[int, str, str, int]] = {}
 def build_status_keyboard(
     window_id: str,
     history: list[str] | None = None,
-    *,
-    user_id: int | None = None,
 ) -> InlineKeyboardMarkup:
     """Build inline keyboard for status messages.
 
     Layout:
       Row 1 (optional): up to 2 history-recall buttons
       Row 2: [⎋ Esc] [📸 Screenshot] [📄 Last] [📥 Get File]
-      Row 3 (optional): [🪟 Dashboard] when Mini App is enabled and user_id is set
+
+    No Dashboard row: Telegram rejects web_app buttons in group chats; the
+    Mini App entry point is the /dashboard command (DM with native button).
     """
     # Lazy: command_history → messaging_pipeline → status → status_bubble
     # forms a cycle when imported at module top. Keep lazy.
     # Lazy: command_history ↔ status cycle
     from ..command_history import truncate_for_display
-
-    # Lazy: status_bubble ↔ status_bar_actions sibling cycle
-    from .status_bar_actions import build_dashboard_button
 
     rows: list[list[InlineKeyboardButton]] = []
 
@@ -130,10 +127,9 @@ def build_status_keyboard(
             ),
         ]
     )
-    if user_id is not None:
-        dashboard = build_dashboard_button(window_id, user_id)
-        if dashboard is not None:
-            rows.append([dashboard])
+    # No Dashboard button here: forum topics are group chats and Telegram
+    # rejects web_app buttons in groups (Button_type_invalid). The Mini App
+    # entry point is the /dashboard command, which DMs the native button.
     return InlineKeyboardMarkup(rows)
 
 
@@ -314,11 +310,7 @@ async def send_status_text(
     chat_id = thread_router.resolve_chat_id(user_id, thread_id)
 
     history = _get_idle_history(user_id, thread_id_or_0, text)
-    keyboard = build_status_keyboard(
-        window_id,
-        history=history,
-        user_id=user_id,
-    )
+    keyboard = build_status_keyboard(window_id, history=history)
 
     existing = _status_msg_info.get(skey)
     if existing:

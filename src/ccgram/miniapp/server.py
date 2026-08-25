@@ -76,7 +76,24 @@ async def _handle_app(request: web.Request) -> web.Response:
         payload = verify_token(token, bot_token=bot_token)
     except InvalidTokenError as exc:
         logger.debug("rejected miniapp token: %s", exc)
-        return web.Response(status=403, text="invalid or expired token")
+        # Friendly page instead of a bare 403: the common case is a stale
+        # button (tokens expire after 1h) and the fix is to re-run /dashboard.
+        return web.Response(
+            status=403,
+            text=(
+                "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+                "<meta name='viewport' content='width=device-width,"
+                " initial-scale=1'><title>ccgram</title>"
+                "<style>body{font-family:sans-serif;background:#1e1e1e;"
+                "color:#eee;display:flex;align-items:center;"
+                "justify-content:center;height:100vh;margin:0}"
+                "p{max-width:24em;text-align:center;line-height:1.5}"
+                "</style></head><body><p>&#129693; This dashboard link has "
+                "expired.<br>Send <b>/dashboard</b> in the topic to get a "
+                "fresh button.</p></body></html>"
+            ),
+            content_type="text/html",
+        )
 
     # Escape every interpolated value: today the payload fields are
     # constrained shapes (``@\d+``, ints), but the meta tag is the only
