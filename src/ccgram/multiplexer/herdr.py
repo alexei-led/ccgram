@@ -852,8 +852,24 @@ class HerdrManager:
             # renames itself to "pi") is published with argv0 but no argv.
             # argv0 carries the identity callers classify on; ``name`` is the
             # runtime ("node") and would misclassify the pane.
+            #
+            # Only synthesize when argv0 really is a rename. A plain shell
+            # publishes argv0 == name, and a one-element argv is exactly what
+            # `shell_infra._is_interactive_shell` reads as "idle at a prompt,
+            # safe to interrupt" — so faking one for `bash ./deploy.sh` whose
+            # args happened to be unreadable would earn a running script a C-c.
+            # Falling through to None keeps that detection fail-safe.
             argv0 = leader.get("argv0")
-            argv = [argv0] if isinstance(argv0, str) and argv0 else None
+            name = leader.get("name")
+            renamed = (
+                isinstance(argv0, str)
+                and bool(argv0)
+                and (
+                    not isinstance(name, str)
+                    or argv0.rsplit("/", 1)[-1].lstrip("-") != name
+                )
+            )
+            argv = [argv0] if renamed else None
         if (
             not isinstance(pid, int)
             or not isinstance(argv, Sequence)

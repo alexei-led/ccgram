@@ -40,13 +40,11 @@ from ..callback_data import (
 )
 from ..callback_helpers import get_thread_id
 from ..callback_tokens import compact_callback_data
-from ..messaging_pipeline.message_sender import safe_edit
 from ..user_state import (
     PENDING_THREAD_ID,
     RECOVERY_SESSIONS,
     RECOVERY_WINDOW_ID,
 )
-from .recovery_callbacks import _clear_recovery_state
 
 if TYPE_CHECKING:
     from telegram.ext import ContextTypes
@@ -216,16 +214,17 @@ async def _handle_resume_pick(
         await query.answer("Recovery menu expired", show_alert=True)
         return
 
-    view = window_query.view_window(old_wid)
-    if view is None or not view.cwd or not Path(view.cwd).is_dir():
-        await safe_edit(query, "❌ Directory no longer exists.")
-        _clear_recovery_state(context.user_data)
-        await query.answer("Project gone")
+    # Lazy: resume_picker ↔ recovery_banner cycle
+    from .recovery_banner import _recovery_cwd_or_report
+
+    cwd = await _recovery_cwd_or_report(query, old_wid, context)
+    if cwd is None:
         return
-    cwd = view.cwd
+    view = window_query.view_window(old_wid)
+    window_provider = view.provider_name if view else ""
     if not provider_name:
-        provider_name = view.provider_name
-    if view.provider_name and provider_name != view.provider_name:
+        provider_name = window_provider
+    if window_provider and provider_name != window_provider:
         await query.answer("Session provider mismatch", show_alert=True)
         return
 
