@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from telegram.error import TelegramError
 
 from ccgram.handlers.messaging_pipeline.message_queue import (
     MERGE_MAX_LENGTH,
@@ -595,6 +596,44 @@ class TestMessageQueueWorker:
                 await asyncio.wait_for(mq._message_queues[user_id].join(), timeout=1)
 
             assert all(receipt.commit_ready for receipt in receipts)
+        finally:
+            worker.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await worker
+            mq._message_queues.pop(user_id, None)
+            mq._queue_locks.pop(user_id, None)
+
+    async def test_failed_merged_content_settles_every_receipt(self, bot):
+        from ccgram.handlers.messaging_pipeline import message_queue as mq
+
+        user_id = 87998
+        mq._message_queues[user_id] = asyncio.Queue()
+        mq._queue_locks[user_id] = asyncio.Lock()
+        receipts = [mq.DeliveryReceipt(), mq.DeliveryReceipt()]
+        for text, receipt in zip(("first", "second"), receipts, strict=True):
+            receipt.track()
+            receipt.close()
+            mq._message_queues[user_id].put_nowait(
+                ContentTask(
+                    window_id="@0",
+                    parts=(text,),
+                    role="assistant",
+                    delivery_receipts=(receipt,),
+                )
+            )
+
+        worker = asyncio.create_task(mq._message_queue_worker(bot, user_id))
+        try:
+            with patch.object(
+                mq,
+                "_process_content_task",
+                new_callable=AsyncMock,
+                side_effect=TelegramError("send failed"),
+            ):
+                await asyncio.wait_for(mq._message_queues[user_id].join(), timeout=1)
+
+            assert all(receipt.failed for receipt in receipts)
+            assert all(not receipt.commit_ready for receipt in receipts)
         finally:
             worker.cancel()
             with contextlib.suppress(asyncio.CancelledError):

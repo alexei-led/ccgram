@@ -8,6 +8,7 @@ tool-use batching lives in ``tool_batch``.
 
 import asyncio
 import contextlib
+from dataclasses import dataclass
 from io import BytesIO
 from typing import assert_never
 
@@ -95,18 +96,20 @@ class DispatchResult(int):
     """
 
     outcome: DeliveryOutcome
-    merged_receipts: tuple[DeliveryReceipt, ...]
 
-    def __new__(
-        cls,
-        extra_task_done: int,
-        outcome: DeliveryOutcome,
-        merged_receipts: tuple[DeliveryReceipt, ...] = (),
-    ):
+    def __new__(cls, extra_task_done: int, outcome: DeliveryOutcome):
         value = int.__new__(cls, extra_task_done)
         value.outcome = outcome
-        value.merged_receipts = merged_receipts
         return value
+
+
+@dataclass
+class DispatchState:
+    """Accounting populated before a merged dispatch reaches an await."""
+
+    extra_task_done: int = 0
+    merged_receipts: tuple[DeliveryReceipt, ...] = ()
+    retry_task: ContentTask | None = None
 
 
 def queues_idle() -> bool:
@@ -346,8 +349,11 @@ async def _handle_content_task(
     task: ContentTask,
     queue: asyncio.Queue[MessageTask],
     lock: asyncio.Lock,
+    dispatch_state: DispatchState | None = None,
 ) -> DispatchResult:
     """Route a content task through batching or normal processing."""
+    if dispatch_state is None:
+        dispatch_state = DispatchState()
     if task.content_type == "thinking" and config.hide_thinking:
         return DispatchResult(0, DeliveryOutcome.INTENTIONALLY_DROPPED)
     if task.content_type in ("tool_use", "tool_result") and is_tool_calls_hidden(
@@ -378,13 +384,12 @@ async def _handle_content_task(
     merged_task, merge_count = await _merge_content_tasks(queue, task, lock)
     if merge_count > 0:
         logger.debug("Merged %d tasks for user %s", merge_count, user_id)
-    outcome = await _process_content_task(client, user_id, merged_task)
     original_receipts = len(task.delivery_receipts)
-    return DispatchResult(
-        merge_count,
-        outcome,
-        merged_receipts=merged_task.delivery_receipts[original_receipts:],
-    )
+    dispatch_state.extra_task_done = merge_count
+    dispatch_state.merged_receipts = merged_task.delivery_receipts[original_receipts:]
+    dispatch_state.retry_task = merged_task
+    outcome = await _process_content_task(client, user_id, merged_task)
+    return DispatchResult(merge_count, outcome)
 
 
 def _is_ghost_window_task_at_enqueue(window_id: str) -> bool:
@@ -410,11 +415,14 @@ async def _dispatch(
     task: MessageTask,
     queue: asyncio.Queue[MessageTask],
     lock: asyncio.Lock,
+    dispatch_state: DispatchState | None = None,
 ) -> DispatchResult:
     """Dispatch a task and report its explicit delivery outcome."""
     match task:
         case ContentTask() as ct:
-            return await _handle_content_task(client, user_id, ct, queue, lock)
+            return await _handle_content_task(
+                client, user_id, ct, queue, lock, dispatch_state
+            )
         case StatusUpdateTask() as st:
             # Suppress status polls while an ephemeral tool batch owns the
             # bubble — the batch itself is the activity indicator. Flushing
@@ -443,6 +451,21 @@ async def _dispatch(
             assert_never(unreachable)
 
 
+def _retry_task_for_state(state: DispatchState, task: MessageTask) -> MessageTask:
+    return state.retry_task or task
+
+
+def _delivery_receipts_for_settlement(
+    task: MessageTask,
+    merged_receipts: tuple[DeliveryReceipt, ...],
+) -> list[DeliveryReceipt]:
+    receipts = task.delivery_receipts if isinstance(task, ContentTask) else ()
+    unique: dict[int, DeliveryReceipt] = {}
+    for receipt in (*receipts, *merged_receipts):
+        unique[id(receipt)] = receipt
+    return list(unique.values())
+
+
 async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
     global _inflight_count
     """Process message tasks for a user sequentially."""
@@ -458,14 +481,20 @@ async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
             merged_receipts: tuple[DeliveryReceipt, ...] = ()
             try:
                 while True:
+                    dispatch_state = DispatchState()
                     try:
-                        result = await _dispatch(client, user_id, task, queue, lock)
-                        for _ in range(result):
-                            queue.task_done()
+                        result = await _dispatch(
+                            client,
+                            user_id,
+                            task,
+                            queue,
+                            lock,
+                            dispatch_state,
+                        )
                         outcome = getattr(result, "outcome", DeliveryOutcome.DELIVERED)
-                        merged_receipts = getattr(result, "merged_receipts", ())
                         break
                     except RetryAfter as e:
+                        task = _retry_task_for_state(dispatch_state, task)
                         retry_secs = min(
                             60,
                             (
@@ -480,6 +509,10 @@ async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
                             retry_secs,
                         )
                         await asyncio.sleep(retry_secs)
+                    finally:
+                        for _ in range(dispatch_state.extra_task_done):
+                            queue.task_done()
+                        merged_receipts = dispatch_state.merged_receipts
             except asyncio.CancelledError:
                 # A bounded shutdown may cancel an in-flight send. Do not
                 # acknowledge bytes whose task was interrupted; restart replays.
@@ -493,11 +526,7 @@ async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
                     getattr(task, "thread_id", None),
                 )
             finally:
-                receipts = (
-                    task.delivery_receipts if isinstance(task, ContentTask) else ()
-                )
-                for receipt in (*receipts, *merged_receipts):
-                    assert isinstance(receipt, DeliveryReceipt)
+                for receipt in _delivery_receipts_for_settlement(task, merged_receipts):
                     receipt.settle(outcome)
                 _inflight_count -= 1
                 queue.task_done()

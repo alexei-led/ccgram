@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+from ccgram.delivery_contract import DeliveryOutcome, DeliveryReceipt
 from ccgram.handlers.messaging_pipeline import message_queue as mq
 from ccgram.monitor_state import MonitorState, TrackedSession
 
@@ -120,10 +121,6 @@ def test_to_dict_excludes_parsed_offset():
 
 async def test_failed_delivery_receipt_withholds_watermark_until_restart(tmp_path):
     """A terminal send failure must replay the parsed range after recovery."""
-    from ccgram.handlers.messaging_pipeline.message_queue import (
-        DeliveryOutcome,
-        DeliveryReceipt,
-    )
     from ccgram.session_monitor import SessionMonitor
 
     monitor = SessionMonitor(projects_path=tmp_path, state_file=tmp_path / "ms.json")
@@ -131,7 +128,7 @@ async def test_failed_delivery_receipt_withholds_watermark_until_restart(tmp_pat
         session_id="s1", file_path="/x", last_byte_offset=10, parsed_offset=50
     )
     monitor.state.update_session(tracked)
-    receipt = DeliveryReceipt()
+    receipt = DeliveryReceipt(checkpoint=50)
     receipt.track()
     receipt.close()
     receipt.settle(DeliveryOutcome.FAILED)
@@ -142,12 +139,31 @@ async def test_failed_delivery_receipt_withholds_watermark_until_restart(tmp_pat
 
     # A process restart discards in-memory parse state; the persisted offset
     # remains 10. A successful replay receipt may then commit the range.
-    replay = DeliveryReceipt()
+    replay = DeliveryReceipt(checkpoint=50)
     replay.track()
     replay.close()
     replay.settle(DeliveryOutcome.DELIVERED)
     monitor._delivery_receipts["s1"] = [replay]
     monitor._commit_watermark_if_idle()
+    assert tracked.last_byte_offset == 50
+
+
+def test_ready_receipt_commits_only_its_checkpoint(tmp_path):
+    from ccgram.session_monitor import SessionMonitor
+
+    monitor = SessionMonitor(projects_path=tmp_path, state_file=tmp_path / "ms.json")
+    tracked = TrackedSession(
+        session_id="s1", file_path="/x", last_byte_offset=10, parsed_offset=80
+    )
+    monitor.state.update_session(tracked)
+    receipt = DeliveryReceipt(checkpoint=50)
+    receipt.track()
+    receipt.close()
+    receipt.settle(DeliveryOutcome.DELIVERED)
+    monitor._delivery_receipts["s1"] = [receipt]
+
+    monitor._commit_watermark_if_idle()
+
     assert tracked.last_byte_offset == 50
 
 

@@ -172,17 +172,27 @@ class SessionMonitor:
         to persist. Failed receipts stay until restart, causing bounded replay
         from the previous persisted watermark rather than loss.
         """
-        committable = {
-            session_id
-            for session_id, receipts in self._delivery_receipts.items()
-            if session_id not in self._transcript_reader._pending_tools
-            and delivery_receipts_ready(receipts)
-        }
+        delivered_offsets: dict[str, int] = {}
+        for session_id, receipts in self._delivery_receipts.items():
+            if (
+                session_id in self._transcript_reader._pending_tools
+                or not delivery_receipts_ready(receipts)
+                or any(receipt.checkpoint is None for receipt in receipts)
+            ):
+                continue
+            delivered_offsets[session_id] = max(
+                receipt.checkpoint
+                for receipt in receipts
+                if receipt.checkpoint is not None
+            )
+        committable = set(delivered_offsets)
         # Receipt-free offsets are not proven delivered. Keeping them in memory
         # is cheap and avoids every parse/cancellation race: a later delivered
         # message commits the accumulated range, while a restart harmlessly
         # reparses filtered entries from the previous durable watermark.
-        if self.state.commit_parsed_offsets(committable):
+        if self.state.commit_parsed_offsets(
+            committable, delivered_offsets=delivered_offsets
+        ):
             self.state.save_if_dirty()
         for session_id in committable:
             self._delivery_receipts.pop(session_id, None)
@@ -477,7 +487,9 @@ class SessionMonitor:
         if self._message_callback is None:
             return pending
         for msg in messages:
-            receipt = new_delivery_receipt()
+            session = self.state.get_session(msg.session_id)
+            checkpoint = session.parsed_offset if session is not None else None
+            receipt = new_delivery_receipt(checkpoint=checkpoint)
             self._delivery_receipts.setdefault(msg.session_id, []).append(receipt)
             pending.append((msg, receipt))
         return pending
@@ -489,7 +501,9 @@ class SessionMonitor:
         if self._message_callback is None:
             return
         if receipt is None:
-            receipt = new_delivery_receipt()
+            session = self.state.get_session(msg.session_id)
+            checkpoint = session.parsed_offset if session is not None else None
+            receipt = new_delivery_receipt(checkpoint=checkpoint)
             self._delivery_receipts.setdefault(msg.session_id, []).append(receipt)
         token = activate_delivery_receipt(receipt)
         try:

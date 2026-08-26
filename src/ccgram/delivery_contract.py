@@ -25,6 +25,7 @@ class DeliveryOutcome(Enum):
 class DeliveryReceipt:
     """Acknowledgement for all outbound tasks created from one transcript item."""
 
+    checkpoint: int | None = None
     _pending: int = 0
     _closed: bool = False
     failed: bool = False
@@ -58,9 +59,9 @@ _active_receipt: ContextVar[DeliveryReceipt | None] = ContextVar(
 )
 
 
-def new_delivery_receipt() -> DeliveryReceipt:
+def new_delivery_receipt(*, checkpoint: int | None = None) -> DeliveryReceipt:
     """Create an acknowledgement token for one producer delivery cycle."""
-    return DeliveryReceipt()
+    return DeliveryReceipt(checkpoint=checkpoint)
 
 
 def activate_delivery_receipt(

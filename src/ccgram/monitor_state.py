@@ -115,26 +115,33 @@ class MonitorState:
             del self.tracked_sessions[session_id]
             self._dirty = True
 
-    def commit_parsed_offsets(self, session_ids: set[str] | None = None) -> bool:
-        """Fold acknowledged in-memory parse positions into the watermark.
+    def commit_parsed_offsets(
+        self,
+        session_ids: set[str] | None = None,
+        *,
+        delivered_offsets: dict[str, int] | None = None,
+    ) -> bool:
+        """Fold acknowledged parse positions into the durable watermark.
 
-        ``session_ids`` is selected by the delivery boundary once every
-        transcript-derived task for that session has acknowledged delivery or
-        an explicit intentional drop. ``None`` retains the compatibility path
-        for callers that have no per-session delivery work.
+        The delivery boundary may provide immutable receipt checkpoints so an
+        older acknowledgement cannot commit a newer receipt-free parse range.
+        ``None`` retains the compatibility path for callers without delivery
+        receipts.
         """
         advanced = False
         for session in self.tracked_sessions.values():
             if session_ids is not None and session.session_id not in session_ids:
                 continue
-            if (
-                session.parsed_offset >= 0
-                and session.parsed_offset != session.last_byte_offset
-            ):
+            target_offset = (
+                delivered_offsets[session.session_id]
+                if delivered_offsets is not None
+                else session.parsed_offset
+            )
+            if target_offset >= 0 and target_offset != session.last_byte_offset:
                 # Also LOWER: a replaced/shrunken transcript clamps the parse
                 # position to EOF (no replay, 9c3297b); persisting the clamp
                 # keeps the watermark from going stale-high.
-                session.last_byte_offset = session.parsed_offset
+                session.last_byte_offset = target_offset
                 advanced = True
                 self._dirty = True
         return advanced
