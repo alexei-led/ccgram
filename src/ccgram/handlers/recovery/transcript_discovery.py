@@ -350,6 +350,14 @@ async def _bootstrap_identity(
         # population this heals. A shell has no transcript to discover, so
         # skipping loses nothing.
         return None
+
+    if await session_map_sync.session_map_entry_may_exist(window_id):
+        # Re-checked after the probe. The guard above ran before an await, and
+        # SessionStart writes the entry from a separate process, so it can land
+        # while the probe is in flight — and the write below would delete the
+        # entry it had just made. Nothing suspends between here and the write.
+        return None
+
     session_manager.set_window_provider(window_id, detected, cwd=w.cwd or None)
     logger.info(
         "Bootstrapped window state for untracked live window",

@@ -34,6 +34,7 @@ from ...config import config
 from ...providers import (
     get_provider,
     get_provider_for_window,
+    is_known_provider,
     picker_capable_providers,
     providers_to_scan,
     resolve_launch_command,
@@ -240,6 +241,46 @@ def _build_resume_keyboard(
     return InlineKeyboardMarkup(rows)
 
 
+def _resume_scan_provider(window_id: str | None) -> tuple[str | None, str]:
+    """Resolve which providers /resume should scan, or the refusal to send.
+
+    Three cases that look alike and are not:
+      - no bound window: nothing to get wrong, and the config default is what a
+        new window here would launch, so its capability gate is the one to
+        honour;
+      - bound window with a provider: narrow to it, gate on it;
+      - bound window whose provider cannot be resolved: widen to every
+        picker-capable provider rather than resolving to the default, which
+        would list one agent's sessions under another agent's topic, and refuse
+        only if nothing offers a picker at all.
+    """
+    unsupported = "\u274c Resume browsing is not supported by the current provider."
+    if not window_id:
+        provider = get_provider()
+        if not _offers_picker(provider):
+            return None, unsupported
+        return provider.capabilities.name, ""
+
+    # is_known_provider, not truthiness: providers_to_scan widens for a name
+    # this build does not register, so gating on truthiness here would refuse
+    # on the default's capabilities for a request the scan would have widened.
+    known = window_query.get_window_provider(window_id)
+    if not is_known_provider(known):
+        if not picker_capable_providers():
+            return None, "\u274c Resume browsing is not supported by any provider."
+        return None, ""
+
+    provider = get_provider_for_window(window_id, provider_name=known)
+    if not _offers_picker(provider):
+        return None, unsupported
+    return known, ""
+
+
+def _offers_picker(provider: AgentProvider) -> bool:
+    caps = provider.capabilities
+    return caps.supports_resume and caps.supports_resume_picker
+
+
 async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /resume — show all resumable sessions grouped by project."""
     if not update.message:
@@ -259,33 +300,12 @@ async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     window_id = thread_router.get_window_for_thread(user.id, thread_id)
     # An unknown provider is not the same as the default one: resolving it here
-    # would offer a Codex topic Claude's sessions. Scan every picker-capable
-    # provider instead and let the picked entry decide what to relaunch.
-    # Only a real provider name may narrow the scan; scan_all_sessions treats
-    # any falsy value as "unknown" and merges every picker-capable provider.
-    known_provider = window_query.get_window_provider(window_id) if window_id else None
-    if not known_provider:
-        if not picker_capable_providers():
-            await safe_reply(
-                update.message,
-                "\u274c Resume browsing is not supported by any provider.",
-            )
-            return
-    else:
-        provider = get_provider_for_window(
-            window_id or "", provider_name=known_provider
-        )
-        if not (
-            provider.capabilities.supports_resume
-            and provider.capabilities.supports_resume_picker
-        ):
-            await safe_reply(
-                update.message,
-                "\u274c Resume browsing is not supported by the current provider.",
-            )
-            return
+    scan_provider, refusal = _resume_scan_provider(window_id)
+    if refusal:
+        await safe_reply(update.message, refusal)
+        return
 
-    sessions = await asyncio.to_thread(scan_all_sessions, known_provider)
+    sessions = await asyncio.to_thread(scan_all_sessions, scan_provider)
     if not sessions:
         await safe_reply(update.message, "\u274c No past sessions found.")
         return

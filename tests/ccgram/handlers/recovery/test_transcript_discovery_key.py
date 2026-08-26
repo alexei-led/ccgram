@@ -148,6 +148,41 @@ class TestBootstrapIdentity:
         mock_sm.set_window_provider.assert_not_called()
         detect.assert_not_called()
 
+    async def test_entry_written_during_the_probe_still_blocks_the_seed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """SessionStart can land while the provider probe is in flight.
+
+        The guard runs before an await; the hook writes from another process.
+        Without a re-check the seed proceeds and clears the entry the hook has
+        just made, and hook.py will not recreate one outside SessionStart.
+        """
+        seen: list[bool] = []
+
+        async def _entry_appears(_window_id: str) -> bool:
+            # Absent on the first check, present by the time the probe returns.
+            seen.append(True)
+            return len(seen) > 1
+
+        monkeypatch.setattr(
+            "ccgram.handlers.recovery.transcript_discovery.session_map_sync"
+            ".session_map_entry_may_exist",
+            _entry_appears,
+        )
+        monkeypatch.setattr(
+            "ccgram.handlers.recovery.transcript_discovery.detect_provider_from_pane",
+            AsyncMock(return_value="claude"),
+        )
+        mock_sm = MagicMock()
+        monkeypatch.setattr(
+            "ccgram.handlers.recovery.transcript_discovery.session_manager", mock_sm
+        )
+
+        result = await _bootstrap_identity("@9", _window_ref(cwd="/project"))
+
+        assert result is None
+        mock_sm.set_window_provider.assert_not_called()
+
     async def test_shell_detection_writes_no_state(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
