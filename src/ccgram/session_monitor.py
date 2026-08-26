@@ -26,6 +26,13 @@ from typing import Any
 from telegram.error import TelegramError
 
 from .config import config
+from .delivery_contract import (
+    DeliveryReceipt,
+    activate_delivery_receipt,
+    deactivate_delivery_receipt,
+    delivery_receipts_ready,
+    new_delivery_receipt,
+)
 from .event_reader import read_new_events
 from .idle_tracker import IdleTracker
 from .monitor_state import MonitorState
@@ -100,9 +107,9 @@ class SessionMonitor:
 
         self._idle_tracker = IdleTracker()
         self._transcript_reader = TranscriptReader(self.state, self._idle_tracker)
-        # Receipts are opaque delivery-boundary acknowledgements, grouped by
-        # transcript session so one failed send only freezes its own watermark.
-        self._delivery_receipts: dict[str, list[Any]] = {}
+        # Receipts are grouped by transcript session so one failed send only
+        # freezes its own watermark.
+        self._delivery_receipts: dict[str, list[DeliveryReceipt]] = {}
 
     # Delegation properties for backward-compatible test access
     @property
@@ -165,10 +172,6 @@ class SessionMonitor:
         to persist. Failed receipts stay until restart, causing bounded replay
         from the previous persisted watermark rather than loss.
         """
-        # Lazy: monitor → handlers.message_queue → status bubble →
-        # monitor-adjacent singletons; importing at top forms a cycle.
-        from .handlers.messaging_pipeline.message_queue import delivery_receipts_ready
-
         committable = {
             session_id
             for session_id, receipts in self._delivery_receipts.items()
@@ -474,14 +477,6 @@ class SessionMonitor:
         """Run one transcript callback under a delivery-boundary receipt."""
         if self._message_callback is None:
             return
-        # Lazy: importing the delivery boundary here avoids a
-        # session-monitor/message-routing import cycle.
-        from .handlers.messaging_pipeline.message_queue import (
-            activate_delivery_receipt,
-            deactivate_delivery_receipt,
-            new_delivery_receipt,
-        )
-
         receipt = new_delivery_receipt()
         token = activate_delivery_receipt(receipt)
         try:

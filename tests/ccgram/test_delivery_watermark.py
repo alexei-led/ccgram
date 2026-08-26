@@ -1,12 +1,26 @@
-"""TASK-5 at-least-once: delivered watermark commits only when queues idle."""
+"""At-least-once delivery: only acknowledged transcript work is persisted."""
 
 from __future__ import annotations
 
+import ast
 import json
+from pathlib import Path
 from unittest.mock import patch
 
 from ccgram.handlers.messaging_pipeline import message_queue as mq
 from ccgram.monitor_state import MonitorState, TrackedSession
+
+
+def test_session_monitor_depends_only_on_neutral_delivery_contract() -> None:
+    tree = ast.parse(Path("src/ccgram/session_monitor.py").read_text())
+    imports = {
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+    }
+
+    assert not any("handlers.messaging_pipeline" in module for module in imports)
+    assert "delivery_contract" in imports
 
 
 def _entry(text: str) -> str:

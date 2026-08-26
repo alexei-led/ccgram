@@ -399,9 +399,10 @@ async def _send_or_edit_batch(
         batch.draft = None
         return False
 
-    await batch.draft.replace(batch_text)
-    batch.last_sent_text = batch_text
-    return True
+    delivered = await batch.draft.replace_confirmed(batch_text)
+    if delivered:
+        batch.last_sent_text = batch_text
+    return delivered
 
 
 async def _rate_limit_chat(chat_id: int) -> None:

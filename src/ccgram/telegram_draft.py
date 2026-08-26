@@ -211,6 +211,47 @@ class DraftStream:
             self._reply_markup = reply_markup
         await self._push_update()
 
+    async def replace_confirmed(
+        self,
+        text: str,
+        *,
+        reply_markup: InlineKeyboardMarkup | None | Any = _KEEP_MARKUP,
+    ) -> bool:
+        """Replace text only after Telegram confirms the snapshot.
+
+        Normal streaming updates may be deferred for rate limiting. Delivery
+        receipts cannot settle on that weaker contract, so queued transcript
+        work uses this method and waits for the rate-limit slot itself.
+        """
+        self._ensure_open()
+        self._buffer = text
+        if reply_markup is not _KEEP_MARKUP:
+            self._reply_markup = reply_markup
+        await self._cancel_pending_flush()
+
+        if self._mode == DRAFT_LEGACY:
+            await self._push_legacy(raise_on_error=True)
+            return True
+        if _DRAFT_UNAVAILABLE or is_peer_draft_unsupported(
+            self._chat_id, self._thread_id
+        ):
+            return False
+
+        while True:
+            async with self._update_lock:
+                now = time.monotonic()
+                remaining = max(
+                    _MIN_DRAFT_INTERVAL - (now - self._last_draft_at),
+                    self._retry_not_before - now,
+                )
+                if remaining <= 0:
+                    await self._send_draft()
+                    self._last_draft_at = time.monotonic()
+                    self._retry_not_before = 0.0
+                    self._stream_failures = 0
+                    return True
+            await asyncio.sleep(remaining)
+
     async def finalize(
         self,
         final_text: str | None = None,

@@ -219,6 +219,28 @@ class TestDraftStreamIntegration:
         bot.send_message.assert_awaited_once()
         bot.edit_message_text.assert_awaited_once()
 
+    async def test_failed_legacy_edit_is_not_acknowledged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "ccgram.handlers.status.status_bubble.clear_status_message",
+            AsyncMock(return_value=None),
+        )
+        bot = self._make_bot(send_id=77)
+        batch = ToolBatch(window_id="@0", thread_id=10)
+        batch.entries.append(
+            ToolBatchEntry(tool_use_id="t1", tool_use_text="Read foo.py")
+        )
+        assert await _send_or_edit_batch(bot, 1, batch, 42, 10, 10) is True
+        previous_text = batch.last_sent_text
+        batch.entries.append(ToolBatchEntry(tool_use_id="t2", tool_use_text="Bash ls"))
+        bot.edit_message_text.side_effect = TelegramError("edit failed")
+
+        with pytest.raises(TelegramError, match="edit failed"):
+            await _send_or_edit_batch(bot, 1, batch, 42, 10, 10)
+
+        assert batch.last_sent_text == previous_text
+
     async def test_flush_batch_finalizes_active_draft(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

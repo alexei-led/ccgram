@@ -29,9 +29,9 @@ Voice message (voice → transcription → agent):
 
 Outbound agent output (provider transcript/event → Telegram):
 
-1. `session_monitor.py` polls tracked sources incrementally.
+1. `session_monitor.py` polls tracked sources incrementally and creates dependency-light delivery receipts from `delivery_contract.py`.
 2. Provider parser (`providers/*.py` + `transcript_parser.py` / `terminal_parser.py`) emits normalized updates.
-3. `handlers/messaging_pipeline/message_queue.py` enforces ordering, merge rules, rate limits. Worker takes a `TelegramClient`.
+3. `handlers/messaging_pipeline/message_queue.py` enforces ordering, merge rules, rate limits and settles the shared receipt contract. Worker takes a `TelegramClient`.
 4. `handlers/messaging_pipeline/message_sender.py` delivers via the Protocol.
 
 Screenshots (`/screenshot`, 📷 status-bar button):
@@ -75,7 +75,7 @@ Commands menu (`/commands`):
 - Tmux preserves the 1 topic = 1 window mapping keyed by tmux `window_id`. Herdr uses `agent.list` as the sole identity source and persists only opaque `herdr-session-v1-…` targets; never use a tab, pane, terminal, display, directory, or focus value as identity.
 - Herdr guard failures (missing, duplicate, malformed, sessionless, or `legacy_herdr`) fail closed. A post-guard change before dispatch remains a documented possible-misdelivery race, not atomic delivery.
 - Monitor-cycle ordering is identity reconciliation → hook-event dispatch → session-map/transcript work. Alias migration must precede consumption of an event whose canonical Herdr target replaced a bound target; the event offset advances only after that dispatch path runs.
-- Transcript offsets are delivered watermarks, not queue-idleness snapshots. The message queue owns per-transcript receipt outcomes; the monitor persists only receipts settled as delivered or intentionally dropped, leaving failed receipt ranges replayable after restart.
+- Transcript offsets are delivered watermarks, not queue-idleness snapshots. `delivery_contract.py` owns the dependency-light receipt/outcome model; the message queue settles it and the monitor persists only receipts settled as delivered or intentionally dropped, leaving failed receipt ranges replayable after restart. Core monitor code must not import handler implementations.
 - No parse-layer truncation; splitting only at the Telegram send layer.
 - Per-window provider behavior + capability-gated UI.
 - tmux operations centralized in `tmux_manager.py`; no raw tmux shell calls in handlers.

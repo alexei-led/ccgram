@@ -8,9 +8,6 @@ tool-use batching lives in ``tool_batch``.
 
 import asyncio
 import contextlib
-from contextvars import ContextVar, Token
-from dataclasses import dataclass
-from enum import Enum
 from io import BytesIO
 from typing import assert_never
 
@@ -18,6 +15,15 @@ import structlog
 from telegram.error import RetryAfter, TelegramError
 
 from ...config import config
+from ...delivery_contract import (
+    DeliveryOutcome,
+    DeliveryReceipt,
+    activate_delivery_receipt,
+    deactivate_delivery_receipt,
+    delivery_receipts_ready,
+    get_active_delivery_receipt,
+    new_delivery_receipt,
+)
 from ...telegram_client import TelegramClient
 from ...thread_router import thread_router
 from ...topic_state_registry import topic_state
@@ -58,6 +64,17 @@ from .tool_batch import (
 
 logger = structlog.get_logger()
 
+# Compatibility exports for internal callers; core code imports the neutral
+# contract directly and does not depend on this handler implementation.
+__all__ = [
+    "DeliveryOutcome",
+    "DeliveryReceipt",
+    "activate_delivery_receipt",
+    "deactivate_delivery_receipt",
+    "delivery_receipts_ready",
+    "new_delivery_receipt",
+]
+
 MERGE_MAX_LENGTH = 3800  # Leave room within Telegram's 4096 char message limit
 
 # Per-user message queues and worker tasks
@@ -68,78 +85,6 @@ _queue_locks: dict[int, asyncio.Lock] = {}  # Protect drain/refill operations
 # In-flight sends: incremented around each task a worker is actively
 # processing. "Queue empty" alone does not mean delivered.
 _inflight_count = 0
-
-
-class DeliveryOutcome(Enum):
-    """Terminal result of one queued task at the delivery boundary."""
-
-    DELIVERED = "delivered"
-    INTENTIONALLY_DROPPED = "intentionally_dropped"
-    FAILED = "failed"
-
-
-@dataclass
-class DeliveryReceipt:
-    """Acknowledgement for all outbound tasks created from one transcript item.
-
-    The queue owns the receipt's pending/failure accounting. Producers only
-    activate a receipt while translating a transcript item into queue work;
-    they never infer success from queue emptiness.
-    """
-
-    _pending: int = 0
-    _closed: bool = False
-    failed: bool = False
-
-    def track(self) -> None:
-        if self._closed:
-            raise RuntimeError("cannot add work to a closed delivery receipt")
-        self._pending += 1
-
-    def settle(self, outcome: DeliveryOutcome) -> None:
-        if self._pending <= 0:
-            raise RuntimeError("delivery receipt settled without queued work")
-        self._pending -= 1
-        if outcome is DeliveryOutcome.FAILED:
-            self.failed = True
-
-    def fail(self) -> None:
-        """Record a producer-side failure that prevented safe enqueueing."""
-        self.failed = True
-
-    def close(self) -> None:
-        self._closed = True
-
-    @property
-    def commit_ready(self) -> bool:
-        return self._closed and self._pending == 0 and not self.failed
-
-
-_delivery_receipt: ContextVar[DeliveryReceipt | None] = ContextVar(
-    "delivery_receipt", default=None
-)
-
-
-def new_delivery_receipt() -> DeliveryReceipt:
-    """Create an acknowledgement token for one producer delivery cycle."""
-    return DeliveryReceipt()
-
-
-def activate_delivery_receipt(
-    receipt: DeliveryReceipt,
-) -> Token[DeliveryReceipt | None]:
-    """Associate content enqueued by this task with *receipt*."""
-    return _delivery_receipt.set(receipt)
-
-
-def deactivate_delivery_receipt(token: Token[DeliveryReceipt | None]) -> None:
-    """End a producer delivery cycle without leaking its context to later work."""
-    _delivery_receipt.reset(token)
-
-
-def delivery_receipts_ready(receipts: list[DeliveryReceipt]) -> bool:
-    """Whether every receipt is explicitly acknowledged or intentionally dropped."""
-    return all(receipt.commit_ready for receipt in receipts)
 
 
 class DispatchResult(int):
@@ -636,7 +581,7 @@ async def enqueue_content_message(
         return
     queue = get_or_create_queue(client, user_id)
 
-    receipt = _delivery_receipt.get()
+    receipt = get_active_delivery_receipt()
     if receipt is not None:
         receipt.track()
     task = ContentTask(
