@@ -474,14 +474,17 @@ async def _handle_continue(
 
     provider_name = window_query.get_window_provider(old_wid)
     provider = get_provider_for_window(old_wid, provider_name=provider_name)
-    # Probe with the raw three-valued name, not provider.capabilities.name:
-    # the latter has already collapsed "unknown" into the config default, and
-    # answering "no sessions in this folder" from one provider's view of a
-    # topic whose provider we do not know is how Resume used to go wrong.
+    # Probe with the resolved name, not the raw three-valued one. Resume may
+    # widen an unknown provider to every picker-capable one because each entry
+    # carries its own provider to the relaunch; Continue cannot, because it
+    # launches exactly this ``provider``. Probing wider would find another
+    # agent's sessions, skip the empty state, and run `<default> --continue`
+    # into a folder it has nothing to continue — the silent failure the empty
+    # state exists to prevent.
     if provider.capabilities.supports_resume_picker and not await asyncio.to_thread(
         scan_sessions_for_cwd,
         cwd,
-        provider_name,
+        provider.capabilities.name,
     ):
         await _send_empty_state(query, old_wid, cwd)
         return

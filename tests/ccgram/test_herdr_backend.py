@@ -1426,22 +1426,35 @@ async def test_foreground_falls_back_to_argv0_when_leader_has_no_argv() -> None:
     assert result == ForegroundInfo(12, 12, ["pi"], "/project", "")
 
 
-async def test_foreground_does_not_synthesize_argv_for_an_unrenamed_shell() -> None:
+@pytest.mark.parametrize(
+    "leader",
+    [
+        pytest.param(
+            {"pid": 12, "argv0": "/bin/bash", "name": "bash", "cwd": "/project"},
+            id="name-matches-argv0",
+        ),
+        pytest.param(
+            {"pid": 12, "argv0": "/bin/bash", "cwd": "/project"},
+            id="no-name-published",
+        ),
+    ],
+)
+async def test_foreground_does_not_synthesize_argv_for_an_unrenamed_shell(
+    leader,
+) -> None:
     """A shell whose args are unreadable must not look like an idle prompt.
 
     ``shell_infra._is_interactive_shell`` reads a known-shell basename plus
     ``len(argv) == 1`` as "sitting at a prompt, safe to interrupt", and
     ``setup_shell_prompt`` sends C-c on that. Synthesizing ["bash"] for a pane
     running ``bash ./deploy.sh`` would interrupt the script, so the fallback is
-    limited to a genuine self-rename (argv0 != name) and this falls through to
-    the fail-safe None.
+    limited to an observed self-rename. A missing ``name`` is not evidence of
+    one — both shapes here fall through to the fail-safe None.
     """
     process = {
         "process_info": {
             "foreground_process_group_id": 12,
-            "foreground_processes": [
-                {"pid": 12, "argv0": "/bin/bash", "name": "bash", "cwd": "/project"},
-            ],
+            "foreground_processes": [leader],
         }
     }
     fake = _live_fake(_agent(pane_id="w7:p4")).on(

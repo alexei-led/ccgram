@@ -861,13 +861,14 @@ class HerdrManager:
             # Falling through to None keeps that detection fail-safe.
             argv0 = leader.get("argv0")
             name = leader.get("name")
+            # A rename has to be *observed*: both fields present and different.
+            # Treating an absent ``name`` as evidence of one would synthesize
+            # argv for the very record shape this guard exists to reject.
             renamed = (
                 isinstance(argv0, str)
                 and bool(argv0)
-                and (
-                    not isinstance(name, str)
-                    or argv0.rsplit("/", 1)[-1].lstrip("-") != name
-                )
+                and isinstance(name, str)
+                and argv0.rsplit("/", 1)[-1].lstrip("-") != name
             )
             argv = [argv0] if renamed else None
         if (

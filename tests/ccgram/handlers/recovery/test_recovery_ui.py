@@ -680,6 +680,50 @@ class TestRecoveryContinueCallback:
     @patch(f"{_RC}.tmux_manager")
     @patch(f"{_RC}.window_query")
     @patch(f"{_RC}.safe_edit", new_callable=AsyncMock)
+    async def test_continue_probes_the_provider_it_will_actually_launch(
+        self,
+        _mock_safe_edit: AsyncMock,
+        mock_sm: MagicMock,
+        mock_tm: MagicMock,
+        mock_tr: MagicMock,
+        mock_scan: MagicMock,
+    ) -> None:
+        """Continue must not widen an unknown provider the way Resume does.
+
+        Resume can merge every picker-capable provider because each entry
+        carries its own provider to the relaunch. Continue launches exactly
+        one, so probing wider would find another agent's sessions, skip the
+        empty state, and run `<default> --continue` against a folder it has
+        nothing to continue.
+        """
+        mock_sm.view_window.return_value = MagicMock(
+            cwd="/tmp/project", provider_name=""
+        )
+        mock_sm.get_window_provider.return_value = ""
+        mock_sm.resolve_window_alias.side_effect = lambda window_id: window_id
+        mock_tm.create_window = AsyncMock(
+            return_value=(True, "Window created", "project", "@5")
+        )
+        mock_sm.wait_for_session_map_entry = AsyncMock()
+        mock_sm.send_to_window = AsyncMock(return_value=(True, "ok"))
+        mock_tr.resolve_chat_id.return_value = -100999
+
+        update = _make_callback_update(data=f"{CB_RECOVERY_CONTINUE}@0")
+        ctx = _make_context(_recovery_user_data())
+        query = update.callback_query
+
+        with patch(f"{_RC}.Path") as mock_path:
+            mock_path.return_value.is_dir.return_value = True
+            await handle_recovery_callback(query, 100, query.data, update, ctx)
+
+        # A concrete provider name, never the raw "" that means "unknown".
+        assert mock_scan.call_args.args[1]
+
+    @patch(f"{_RC}.scan_sessions_for_cwd", return_value=[_SessionEntry("s1", "x")])
+    @patch(f"{_RC}.thread_router")
+    @patch(f"{_RC}.tmux_manager")
+    @patch(f"{_RC}.window_query")
+    @patch(f"{_RC}.safe_edit", new_callable=AsyncMock)
     async def test_continue_creates_window_with_continue_flag(
         self,
         _mock_safe_edit: AsyncMock,
