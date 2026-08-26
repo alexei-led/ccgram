@@ -148,6 +148,14 @@ _CALL_TIMEOUT_SECONDS = 8.0
 _CREATED_SESSION_DISCOVERY_TIMEOUT_SECONDS = 5.0
 _CREATED_SESSION_POLL_INTERVAL_SECONDS = 0.1
 
+# Agent TUIs (Claude Code, Codex, Pi) read a submit key that arrives in the
+# same input batch as the prompt text as a literal newline, so the prompt is
+# typed but never sent. ``pane run`` delivers exactly that batch, so a literal
+# submit is split into ``send-text`` + a separate ``Enter``, with this gap for
+# the TUI to consume the text first. Mirrors the tmux backend's 0.5s delay in
+# ``_send_literal_then_enter``.
+_SEND_ENTER_DELAY_SECONDS = 0.5
+
 # Event-stream reconnect backoff (seconds): exponential, capped.
 _STREAM_BACKOFF_BASE = 1.0
 _STREAM_BACKOFF_MAX = 30.0
@@ -971,9 +979,13 @@ class HerdrManager:
             return bool(keys) and await self._call_ok(
                 ["pane", "send-keys", pane_id, *keys]
             )
-        return await self._call_ok(
-            ["pane", "run" if enter else "send-text", pane_id, text]
-        )
+        if not await self._call_ok(["pane", "send-text", pane_id, text]):
+            return False
+        if not enter:
+            return True
+        # Never collapse back into ``pane run``: the batched Enter is the bug.
+        await asyncio.sleep(_SEND_ENTER_DELAY_SECONDS)
+        return await self._call_ok(["pane", "send-keys", pane_id, "Enter"])
 
     async def kill_window(self, window_id: str) -> bool:
         try:

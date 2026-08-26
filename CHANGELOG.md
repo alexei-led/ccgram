@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.6.7] - 2026-08-26
+
+### Fixed
+
+- Send prompt text and Enter as separate Herdr calls so agent TUIs process the text before receiving Enter. Bundling both into one `pane run` call caused prompts to sit unsent in the input line ([#177](https://github.com/alexei-led/ccgram/issues/177)).
+- Hide the 🪟 Dashboard button from status-bubble keyboards in group chats and forum topics. Telegram rejects `web_app` buttons outside private chats, so every status-bubble edit in a supergroup raised a `TelegramError` and the bubble stopped updating ([#178](https://github.com/alexei-led/ccgram/issues/178)).
+- Close expired topics instead of deleting them. Autoclose now calls `close_forum_topic`; deleting a topic is irreversible and destroyed topic history when the 4.6 upgrade orphaned bindings and the autoclose timer fired ([#187](https://github.com/alexei-led/ccgram/issues/187)).
+
 ## [4.6.6] - 2026-08-26
 
 ### Fixed

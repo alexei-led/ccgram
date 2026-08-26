@@ -60,11 +60,12 @@ class TestCheckAutocloseTimers:
     async def test_no_topics_is_noop(self):
         bot = AsyncMock(spec=Bot)
         await check_autoclose_timers(bot)
+        bot.close_forum_topic.assert_not_called()
         bot.delete_forum_topic.assert_not_called()
 
-    async def test_expired_done_topic_gets_closed(self):
+    async def test_expired_done_topic_is_closed_not_deleted(self):
+        """Autoclose closes the topic; it never deletes (irreversible data loss)."""
         bot = AsyncMock(spec=Bot)
-        bot.delete_forum_topic = AsyncMock()
         user_id, thread_id = 1, 100
         lifecycle_strategy.start_autoclose_timer(
             user_id, thread_id, "done", time.monotonic() - 99999
@@ -83,7 +84,8 @@ class TestCheckAutocloseTimers:
             mock_router.resolve_chat_id.return_value = 42
             mock_router.get_window_for_thread.return_value = "@0"
             await check_autoclose_timers(bot)
-        bot.delete_forum_topic.assert_called_once()
+        bot.close_forum_topic.assert_called_once()
+        bot.delete_forum_topic.assert_not_called()
 
     async def test_not_yet_expired_topic_stays(self):
         bot = AsyncMock(spec=Bot)
@@ -94,6 +96,7 @@ class TestCheckAutocloseTimers:
         with patch("ccgram.handlers.topics.topic_lifecycle.config") as mock_config:
             mock_config.autoclose_done_minutes = 60
             await check_autoclose_timers(bot)
+        bot.close_forum_topic.assert_not_called()
         bot.delete_forum_topic.assert_not_called()
 
     async def test_expired_dead_topic_stays_when_window_is_live(self):
