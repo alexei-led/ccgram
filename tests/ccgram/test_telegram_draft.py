@@ -86,6 +86,15 @@ class TestDraftStreamHappyPath:
         assert stream.message_id == 42
         assert stream.closed is True
 
+    async def test_confirmed_replace_propagates_stream_failure(self) -> None:
+        bot = _make_bot()
+        stream = DraftStream(bot, chat_id=100)
+        await stream.start("draft")
+        bot.send_message_draft.side_effect = TelegramError("update failed")
+
+        with pytest.raises(TelegramError, match="update failed"):
+            await stream.replace_confirmed("updated")
+
     async def test_finalize_uses_final_text_without_extra_draft_call(self) -> None:
         bot = _make_bot()
         stream = DraftStream(bot, chat_id=100)

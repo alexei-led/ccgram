@@ -23,6 +23,8 @@ def _make_ctx(
     has_seen_status: bool = False,
     is_recently_active: bool = False,
     startup_time: float | None = None,
+    startup_quietly_settled: bool = False,
+    idle_status_announced: bool = False,
     is_dead_window: bool = False,
     supports_hook: bool = True,
 ) -> TickContext:
@@ -33,6 +35,8 @@ def _make_ctx(
         has_seen_status=has_seen_status,
         is_recently_active=is_recently_active,
         startup_time=startup_time,
+        startup_quietly_settled=startup_quietly_settled,
+        idle_status_announced=idle_status_announced,
         is_dead_window=is_dead_window,
         supports_hook=supports_hook,
     )
@@ -52,7 +56,7 @@ class TestDecideTickActiveStatus:
         assert decision.send_status is False
         assert decision.status_text is None
 
-    def test_empty_status_text_is_not_treated_as_a_status(self):
+    def test_empty_status_after_seen_status_yields_quiet_idle(self):
         decision = decide_tick(_make_ctx(resolved_status_text="", has_seen_status=True))
         assert decision.send_status is False
         assert decision.transition == "idle"
@@ -63,19 +67,59 @@ class TestDecideTickShellPrompt:
         decision = decide_tick(_make_ctx(is_shell_prompt=True, supports_hook=True))
         assert decision.transition == "done"
 
-    def test_no_hook_provider_yields_idle(self):
+    def test_dormant_no_hook_provider_yields_quiet_idle(self):
         decision = decide_tick(_make_ctx(is_shell_prompt=True, supports_hook=False))
         assert decision.transition == "idle"
-        # A shell window at a prompt must not re-request a status send every
-        # tick — at 1s polling that is a status-bubble edit flood.
         assert decision.send_status is False
+
+    def test_no_hook_provider_announces_completed_active_turn_once(self):
+        first = decide_tick(
+            _make_ctx(
+                is_shell_prompt=True,
+                supports_hook=False,
+                has_seen_status=True,
+            )
+        )
+        later = decide_tick(
+            _make_ctx(
+                is_shell_prompt=True,
+                supports_hook=False,
+                has_seen_status=True,
+                idle_status_announced=True,
+            )
+        )
+
+        assert first.send_status is True
+        assert later.send_status is False
 
 
 class TestDecideTickIdleAndStarting:
-    def test_seen_status_with_no_signal_yields_idle(self):
+    def test_seen_status_with_no_signal_yields_quiet_idle(self):
         decision = decide_tick(_make_ctx(has_seen_status=True))
         assert decision.transition == "idle"
         assert decision.send_status is False
+
+    @pytest.mark.parametrize(
+        "context",
+        [
+            pytest.param({"has_seen_status": True}, id="seen-status"),
+            pytest.param(
+                {
+                    "is_shell_prompt": True,
+                    "supports_hook": False,
+                    "has_seen_status": True,
+                    "idle_status_announced": True,
+                },
+                id="hookless-shell-already-announced",
+            ),
+        ],
+    )
+    def test_steady_idle_never_requests_repeated_ready_updates(self, context):
+        """Polling the same idle level twice must not enqueue Ready twice."""
+        decisions = [decide_tick(_make_ctx(**context)) for _ in range(2)]
+
+        assert [decision.transition for decision in decisions] == ["idle", "idle"]
+        assert all(not decision.send_status for decision in decisions)
 
     def test_no_signal_no_startup_yields_starting(self):
         assert decide_tick(_make_ctx(startup_time=None)).transition == "starting"
@@ -84,9 +128,16 @@ class TestDecideTickIdleAndStarting:
         ctx = _make_ctx(startup_time=time.monotonic())
         assert decide_tick(ctx).transition == "starting"
 
-    def test_startup_expired_yields_idle(self):
+    def test_startup_expired_yields_quiet_idle(self):
         ctx = _make_ctx(startup_time=time.monotonic() - STARTUP_TIMEOUT - 1.0)
-        assert decide_tick(ctx).transition == "idle"
+        decision = decide_tick(ctx)
+        assert decision.transition == "idle"
+        assert decision.send_status is False
+
+    def test_quietly_settled_startup_stays_quiet(self):
+        decision = decide_tick(_make_ctx(startup_quietly_settled=True))
+        assert decision.transition == "idle"
+        assert decision.send_status is False
 
 
 class TestDecideTickPrecedence:

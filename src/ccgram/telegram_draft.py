@@ -135,12 +135,14 @@ class DraftStream:
         message_thread_id: int | None = None,
         reply_to_message_id: int | None = None,
         reply_markup: InlineKeyboardMarkup | None = None,
+        force_legacy: bool = False,
     ) -> None:
         self._bot = bot
         self._chat_id = chat_id
         self._thread_id = message_thread_id
         self._reply_to = reply_to_message_id
         self._reply_markup = reply_markup
+        self._force_legacy = force_legacy
         self._draft_id = secrets.randbelow(2_147_483_646) + 1
         self._message_id: int | None = None
         self._buffer = ""
@@ -181,8 +183,10 @@ class DraftStream:
         self._buffer = initial_text
 
         try:
-            if _DRAFT_UNAVAILABLE or is_peer_draft_unsupported(
-                self._chat_id, self._thread_id
+            if (
+                self._force_legacy
+                or _DRAFT_UNAVAILABLE
+                or is_peer_draft_unsupported(self._chat_id, self._thread_id)
             ):
                 await self._start_legacy()
             else:
@@ -210,6 +214,47 @@ class DraftStream:
         if reply_markup is not _KEEP_MARKUP:
             self._reply_markup = reply_markup
         await self._push_update()
+
+    async def replace_confirmed(
+        self,
+        text: str,
+        *,
+        reply_markup: InlineKeyboardMarkup | None | Any = _KEEP_MARKUP,
+    ) -> bool:
+        """Replace text only after Telegram confirms the snapshot.
+
+        Normal streaming updates may be deferred for rate limiting. Delivery
+        receipts cannot settle on that weaker contract, so queued transcript
+        work uses this method and waits for the rate-limit slot itself.
+        """
+        self._ensure_open()
+        self._buffer = text
+        if reply_markup is not _KEEP_MARKUP:
+            self._reply_markup = reply_markup
+        await self._cancel_pending_flush()
+
+        if self._mode == DRAFT_LEGACY:
+            await self._push_legacy(raise_on_error=True)
+            return True
+        if _DRAFT_UNAVAILABLE or is_peer_draft_unsupported(
+            self._chat_id, self._thread_id
+        ):
+            return False
+
+        while True:
+            async with self._update_lock:
+                now = time.monotonic()
+                remaining = max(
+                    _MIN_DRAFT_INTERVAL - (now - self._last_draft_at),
+                    self._retry_not_before - now,
+                )
+                if remaining <= 0:
+                    await self._send_draft()
+                    self._last_draft_at = time.monotonic()
+                    self._retry_not_before = 0.0
+                    self._stream_failures = 0
+                    return True
+            await asyncio.sleep(remaining)
 
     async def finalize(
         self,

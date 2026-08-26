@@ -14,6 +14,7 @@ from ccgram.handlers.messaging_pipeline.tool_batch import (
     _handle_tool_result,
     flush_batch,
     process_tool_event,
+    ToolEventOutcome,
 )
 from ccgram.telegram_client import FakeTelegramClient
 
@@ -286,13 +287,52 @@ class TestEphemeralDeliveryNoDraft:
             "ccgram.handlers.messaging_pipeline.message_sender.safe_send",
             side_effect=fake_safe_send,
         ):
-            await process_tool_event(client, 1, _make_tool_use())
+            result = await process_tool_event(client, 1, _make_tool_use())
 
         batch = _active_batches.get((1, 10))
+        assert result.outcome is ToolEventOutcome.DELIVERED
         assert batch is not None
         assert batch.draft is None
         assert batch.telegram_msg_id == 55
         assert client.call_count("send_message") == 0
+
+    async def test_initial_send_failure_is_not_acknowledged(
+        self, ephemeral_env
+    ) -> None:
+        client = FakeTelegramClient()
+
+        with patch(
+            "ccgram.handlers.messaging_pipeline.message_sender.safe_send",
+            new_callable=AsyncMock,
+            return_value=None,
+        ):
+            result = await process_tool_event(client, 1, _make_tool_use())
+
+        assert result.outcome is ToolEventOutcome.FAILED
+        assert _active_batches[(1, 10)].telegram_msg_id is None
+
+    async def test_edit_failure_is_not_acknowledged(self, ephemeral_env) -> None:
+        client = FakeTelegramClient()
+        sent_msg = MagicMock(message_id=55)
+
+        with (
+            patch(
+                "ccgram.handlers.messaging_pipeline.message_sender.safe_send",
+                new_callable=AsyncMock,
+                return_value=sent_msg,
+            ),
+            patch(
+                "ccgram.handlers.messaging_pipeline.message_sender.edit_with_fallback",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+        ):
+            await process_tool_event(client, 1, _make_tool_use(tool_use_id="tu1"))
+            result = await process_tool_event(
+                client, 1, _make_tool_use(tool_use_id="tu2", text="Edit b.py")
+            )
+
+        assert result.outcome is ToolEventOutcome.FAILED
 
     async def test_no_draft_api_used(
         self, ephemeral_env, monkeypatch: pytest.MonkeyPatch

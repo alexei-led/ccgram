@@ -43,6 +43,22 @@ async def test_dispatch_window_died_clears_cache_and_notifies_bound_users() -> N
     notify.assert_awaited_once_with("BOT", 7, 42, "w2:t1")
 
 
+async def test_stop_and_wait_awaits_event_producer() -> None:
+    started = asyncio.Event()
+
+    async def fake_supervisor() -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    monitor = EventStreamMonitor(MagicMock(), set)
+    monitor._running = True
+    monitor._task = asyncio.create_task(fake_supervisor())
+    await started.wait()
+    await monitor.stop_and_wait()
+
+    assert monitor._task is None
+
+
 async def test_supervisor_backs_off_after_normal_stream_eof(monkeypatch) -> None:
     starts = 0
 

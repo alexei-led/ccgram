@@ -17,6 +17,7 @@ Re-exported from transcript_reader for backward-compatible imports.
 """
 
 import asyncio
+import contextlib
 import structlog
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -25,6 +26,13 @@ from typing import Any
 from telegram.error import TelegramError
 
 from .config import config
+from .delivery_contract import (
+    DeliveryReceipt,
+    activate_delivery_receipt,
+    deactivate_delivery_receipt,
+    delivery_receipts_ready,
+    new_delivery_receipt,
+)
 from .event_reader import read_new_events
 from .idle_tracker import IdleTracker
 from .monitor_state import MonitorState
@@ -99,6 +107,9 @@ class SessionMonitor:
 
         self._idle_tracker = IdleTracker()
         self._transcript_reader = TranscriptReader(self.state, self._idle_tracker)
+        # Receipts are grouped by transcript session so one failed send only
+        # freezes its own watermark.
+        self._delivery_receipts: dict[str, list[DeliveryReceipt]] = {}
 
     # Delegation properties for backward-compatible test access
     @property
@@ -143,6 +154,48 @@ class SessionMonitor:
         session_id = session_lifecycle.resolve_session_id(window_id)
         if session_id:
             self._idle_tracker.record_activity(session_id)
+
+    def commit_delivered_watermarks(self) -> None:
+        """Persist receipts acknowledged by the delivery boundary.
+
+        Called after a normal monitor cycle and after the bounded shutdown
+        drain. It intentionally has no queue implementation knowledge.
+        """
+        self._commit_watermark_if_idle()
+
+    def _commit_watermark_if_idle(self) -> None:
+        """Commit only sessions acknowledged by the delivery boundary.
+
+        Queue emptiness is deliberately not an acknowledgement: a terminal
+        Telegram failure also empties its queue. The queue owns receipt state;
+        this coordinator only asks which completed transcript cycles are safe
+        to persist. Failed receipts stay until restart, causing bounded replay
+        from the previous persisted watermark rather than loss.
+        """
+        delivered_offsets: dict[str, int] = {}
+        for session_id, receipts in self._delivery_receipts.items():
+            if (
+                session_id in self._transcript_reader._pending_tools
+                or not delivery_receipts_ready(receipts)
+                or any(receipt.checkpoint is None for receipt in receipts)
+            ):
+                continue
+            delivered_offsets[session_id] = max(
+                receipt.checkpoint
+                for receipt in receipts
+                if receipt.checkpoint is not None
+            )
+        committable = set(delivered_offsets)
+        # Receipt-free offsets are not proven delivered. Keeping them in memory
+        # is cheap and avoids every parse/cancellation race: a later delivered
+        # message commits the accumulated range, while a restart harmlessly
+        # reparses filtered entries from the previous durable watermark.
+        if self.state.commit_parsed_offsets(
+            committable, delivered_offsets=delivered_offsets
+        ):
+            self.state.save_if_dirty()
+        for session_id in committable:
+            self._delivery_receipts.pop(session_id, None)
 
     async def check_for_updates(self, current_map: dict) -> list[NewMessage]:
         """Check all sessions for new assistant messages.
@@ -426,6 +479,45 @@ class SessionMonitor:
                     window_id,
                 )
 
+    def _register_delivery_receipts(
+        self, messages: list[NewMessage]
+    ) -> list[tuple[NewMessage, DeliveryReceipt]]:
+        """Register a non-ready receipt for every parsed message synchronously."""
+        pending: list[tuple[NewMessage, DeliveryReceipt]] = []
+        if self._message_callback is None:
+            return pending
+        for msg in messages:
+            session = self.state.get_session(msg.session_id)
+            checkpoint = session.parsed_offset if session is not None else None
+            receipt = new_delivery_receipt(checkpoint=checkpoint)
+            self._delivery_receipts.setdefault(msg.session_id, []).append(receipt)
+            pending.append((msg, receipt))
+        return pending
+
+    async def _dispatch_message_with_receipt(
+        self, msg: NewMessage, receipt: DeliveryReceipt | None = None
+    ) -> None:
+        """Run one transcript callback under a delivery-boundary receipt."""
+        if self._message_callback is None:
+            return
+        if receipt is None:
+            session = self.state.get_session(msg.session_id)
+            checkpoint = session.parsed_offset if session is not None else None
+            receipt = new_delivery_receipt(checkpoint=checkpoint)
+            self._delivery_receipts.setdefault(msg.session_id, []).append(receipt)
+        token = activate_delivery_receipt(receipt)
+        try:
+            await self._message_callback(msg)
+        except asyncio.CancelledError:
+            receipt.fail()
+            raise
+        except _CallbackError:
+            receipt.fail()
+            logger.exception("Message callback error for session=%s", msg.session_id)
+        finally:
+            deactivate_delivery_receipt(token)
+            receipt.close()
+
     async def _monitor_loop(self) -> None:
         """Background poll loop."""
         logger.info("Session monitor started, polling every %ss", self.poll_interval)
@@ -445,7 +537,7 @@ class SessionMonitor:
             try:
                 raw_session_map = await read_session_map_raw()
 
-                # A fresh listing owns identity convergence.  It must precede
+                # A fresh listing owns identity convergence. It must precede
                 # session-map loading because loading rejects raw legacy keys;
                 # after a successful fold, re-read the hook file under its
                 # normal parser so the canonical key is what lifecycle sees.
@@ -475,9 +567,9 @@ class SessionMonitor:
                     _sm.reconcile_window_aliases(all_windows)
                     raw_session_map = await read_session_map_raw()
 
-                # Dispatch only after identity convergence: hook routing is
-                # exact-bound, so consuming a canonical event before moving a
-                # legacy topic binding would permanently drop that event.
+                # Dispatch only after identity convergence and the session-map
+                # re-read: hook routing is exact-bound, so consuming a canonical
+                # event before moving a legacy topic binding would drop it.
                 await self._read_hook_events()
 
                 await session_map_sync.load_session_map(raw_session_map)
@@ -495,8 +587,12 @@ class SessionMonitor:
                     )
 
                 new_messages = await self.check_for_updates(current_map)
+                # Register every parsed message before the next await. A
+                # shutdown cancellation between parse and dispatch must leave
+                # a non-ready receipt so its offset remains replayable.
+                pending_dispatches = self._register_delivery_receipts(new_messages)
 
-                for msg in new_messages:
+                for msg, receipt in pending_dispatches:
                     structlog.contextvars.clear_contextvars()
                     structlog.contextvars.bind_contextvars(session_id=msg.session_id)
                     status = "complete" if msg.is_complete else "streaming"
@@ -504,14 +600,9 @@ class SessionMonitor:
                         "..." if len(msg.text) > _MSG_PREVIEW_LENGTH else ""
                     )
                     logger.debug("[%s] session=%s: %s", status, msg.session_id, preview)
-                    if self._message_callback:
-                        try:
-                            await self._message_callback(msg)
-                        except _CallbackError:
-                            logger.exception(
-                                "Message callback error for session=%s",
-                                msg.session_id,
-                            )
+                    await self._dispatch_message_with_receipt(msg, receipt)
+
+                self.commit_delivered_watermarks()
 
             except _LoopError:
                 logger.exception("Monitor loop error")
@@ -540,14 +631,24 @@ class SessionMonitor:
         self._task.add_done_callback(task_done_callback)
 
     def stop(self) -> None:
+        """Request producer cancellation; use ``stop_and_wait`` before drain."""
         self._running = False
         if self._task:
             self._task.cancel()
-            self._task = None
         self.state.save()
         # Distinct from the loop's "Session monitor stopped" (logged when the
         # poll loop actually exits) — this marks the stop request + state save.
         logger.info("Session monitor stop requested; state saved")
+
+    async def stop_and_wait(self) -> None:
+        """Cancel the monitor producer and wait until it cannot enqueue again."""
+        self.stop()
+        task = self._task
+        if task is not None:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            if self._task is task:
+                self._task = None
 
 
 _active_monitor: SessionMonitor | None = None

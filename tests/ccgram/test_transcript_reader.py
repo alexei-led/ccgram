@@ -43,7 +43,7 @@ async def test_same_transcript_reuses_offset_after_session_map_refresh(
     assert [msg.text for msg in messages] == ["new"]
     tracked = state.get_session("sess-after-rename")
     assert tracked is not None
-    assert tracked.last_byte_offset == session_file.stat().st_size
+    assert tracked.parsed_offset == session_file.stat().st_size
 
 
 async def test_catch_up_read_after_restart_is_not_activity(tmp_path) -> None:
@@ -97,7 +97,7 @@ async def test_first_poll_counts_only_bytes_written_after_startup(tmp_path) -> N
     assert idle.get_last_activity("sess") is not None
 
 
-async def test_post_start_truncation_begins_a_live_file_generation(tmp_path) -> None:
+async def test_post_start_truncation_clamps_to_eof_without_replay(tmp_path) -> None:
     old = '{"type":"assistant","message":{"content":[{"type":"text","text":"old"}]}}\n'
     history = old * 10
     fresh = (
@@ -121,11 +121,10 @@ async def test_post_start_truncation_begins_a_live_file_generation(tmp_path) -> 
     messages = []
     await reader._process_session_file("sess", session_file, messages, window_id="@1")
 
-    assert [msg.text for msg in messages] == ["new"]
-    assert idle.get_last_activity("sess") is not None
+    assert messages == []
 
 
-async def test_atomic_replacement_after_start_is_read_from_zero(tmp_path) -> None:
+async def test_atomic_replacement_after_start_clamps_to_eof(tmp_path) -> None:
     old = '{"type":"assistant","message":{"content":[{"type":"text","text":"old"}]}}\n'
     fresh = (
         '{"type":"assistant","message":{"content":[{"type":"text","text":"fresh"}]}}\n'
@@ -144,13 +143,16 @@ async def test_atomic_replacement_after_start_is_read_from_zero(tmp_path) -> Non
     replacement = tmp_path / "replacement.jsonl"
     replacement.write_text(fresh, newline="\n")
     replacement.replace(session_file)
+
     messages = []
     await reader._process_session_file("sess", session_file, messages, window_id="@1")
 
-    assert [msg.text for msg in messages] == ["fresh"]
+    assert messages == []
 
 
-async def test_same_inode_rewrite_with_preserved_mtime_resets_offset(tmp_path) -> None:
+async def test_same_inode_rewrite_with_preserved_mtime_does_not_replay(
+    tmp_path,
+) -> None:
     old = '{"type":"assistant","message":{"content":[{"type":"text","text":"old"}]}}\n'
     new = old.replace("old", "new")
     session_file = tmp_path / "transcript.jsonl"
@@ -170,13 +172,14 @@ async def test_same_inode_rewrite_with_preserved_mtime_resets_offset(tmp_path) -
         session_file,
         ns=(initial_stat.st_atime_ns, initial_stat.st_mtime_ns),
     )
+
     messages = []
     await reader._process_session_file("sess", session_file, messages, window_id="@1")
 
-    assert [message.text for message in messages] == ["new"]
+    assert messages == []
 
 
-async def test_replacement_between_stat_and_open_retries_from_zero(tmp_path) -> None:
+async def test_replacement_between_stat_and_open_clamps_to_eof(tmp_path) -> None:
     old = '{"type":"assistant","message":{"content":[{"type":"text","text":"old"}]}}\n'
     new = old.replace("old", "new")
     session_file = tmp_path / "transcript.jsonl"
@@ -203,12 +206,9 @@ async def test_replacement_between_stat_and_open_retries_from_zero(tmp_path) -> 
         return await original_read(*args, **kwargs)
 
     messages = []
-    with patch.object(reader, "_read_new_lines", side_effect=replace_then_read):
-        await reader._process_session_file(
-            "sess", session_file, messages, window_id="@1"
-        )
+    await reader._process_session_file("sess", session_file, messages, window_id="@1")
 
-    assert [message.text for message in messages] == ["new"]
+    assert messages == []
 
 
 async def test_whole_file_rewrite_bypasses_unchanged_mtime(tmp_path) -> None:
@@ -352,7 +352,7 @@ async def test_metadata_only_ctime_bump_does_not_replay_transcript(tmp_path) -> 
     assert messages == []
     tracked = state.get_session("sess")
     assert tracked is not None
-    assert tracked.last_byte_offset == session_file.stat().st_size
+    assert tracked.parsed_offset == session_file.stat().st_size
 
 
 async def test_append_during_read_does_not_replay_transcript(tmp_path) -> None:
@@ -397,7 +397,7 @@ async def test_append_during_read_does_not_replay_transcript(tmp_path) -> None:
     assert [msg.text for msg in messages] == ["fresh"]
 
 
-async def test_rewrite_before_tail_marker_is_detected_during_read(tmp_path) -> None:
+async def test_rewrite_before_tail_marker_does_not_replay(tmp_path) -> None:
     """A rewrite outside the tail marker must not be skipped as an append."""
     history = "".join(
         '{"type":"assistant","message":{"content":[{"type":"text","text":"h%d"}]}}\n'
@@ -433,15 +433,44 @@ async def test_rewrite_before_tail_marker_is_detected_during_read(tmp_path) -> N
         return await original_read(*args, **kwargs)
 
     messages = []
-    with patch.object(reader, "_read_new_lines", side_effect=rewrite_then_read):
-        await reader._process_session_file(
-            "sess", session_file, messages, window_id="@1"
-        )
+    await reader._process_session_file("sess", session_file, messages, window_id="@1")
 
-    assert [msg.text for msg in messages] == [
-        "changed",
-        "h1",
-        "h2",
-        "h3",
-        "h4",
-    ]
+    assert messages == []
+
+
+async def test_replaced_smaller_transcript_resumes_from_eof_no_replay(
+    tmp_path,
+) -> None:
+    """A replaced (smaller) transcript must not be replayed as notifications.
+
+    Regression for the 2026-08-17 flood: an adopted offset larger than the
+    new file's size used to reset the offset to 0 and re-emit the whole
+    history, flooding Telegram and starving every other topic.
+    """
+    big = '{"type":"assistant","message":{"content":[{"type":"text","text":"old"}]}}\n'
+    small = (
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"fresh"}]}}\n'
+    )
+    session_file = tmp_path / "transcript.jsonl"
+    session_file.write_text(small, newline="\n")
+
+    state = MonitorState(state_file=tmp_path / "monitor_state.json")
+    # offset from the PREVIOUS (larger) transcript, carried over by adoption
+    state.update_session(
+        TrackedSession(
+            session_id="sess-replaced",
+            file_path=str(session_file),
+            last_byte_offset=len(big.encode()) * 100,
+        )
+    )
+    reader = TranscriptReader(state, IdleTracker())
+
+    messages = []
+    await reader._process_session_file(
+        "sess-replaced", session_file, messages, window_id="@1"
+    )
+
+    assert messages == []  # nothing replayed from the replaced file
+    tracked = state.get_session("sess-replaced")
+    assert tracked is not None
+    assert tracked.parsed_offset == session_file.stat().st_size

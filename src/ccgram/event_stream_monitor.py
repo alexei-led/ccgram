@@ -58,11 +58,21 @@ class EventStreamMonitor:
         self._task = asyncio.create_task(self._supervise())
 
     def stop(self) -> None:
+        """Request consumer cancellation; use ``stop_and_wait`` before drain."""
         self._running = False
         if self._task is not None:
             self._task.cancel()
-            self._task = None
         agent_status_cache.reset()
+
+    async def stop_and_wait(self) -> None:
+        """Cancel and await the event producer so it cannot enqueue after drain."""
+        self.stop()
+        task = self._task
+        if task is not None:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            if self._task is task:
+                self._task = None
 
     async def _supervise(self) -> None:
         """Run the stream over the current set; restart when the set changes."""

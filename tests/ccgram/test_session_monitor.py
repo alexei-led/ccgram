@@ -1,5 +1,6 @@
 """Tests for SessionMonitor."""
 
+import asyncio
 import json
 import os
 from types import SimpleNamespace
@@ -12,8 +13,9 @@ from ccgram.multiplexer.base import MultiplexerCapabilities, WindowRef
 from ccgram.providers.claude import ClaudeProvider
 from ccgram.providers.codex import CodexProvider
 from ccgram.session import SessionManager
-from ccgram.session_monitor import NewWindowEvent, SessionMonitor
+from ccgram.session_monitor import NewMessage, NewWindowEvent, SessionMonitor
 from ccgram.thread_router import thread_router
+from ccgram.telegram_client import FakeTelegramClient
 from ccgram.window_state_store import window_store
 
 
@@ -40,6 +42,25 @@ def monitor(tmp_path) -> SessionMonitor:
 
 
 class TestMonitorLoop:
+    async def test_stop_and_wait_awaits_producer_before_return(
+        self, monitor: SessionMonitor
+    ) -> None:
+        started = asyncio.Event()
+
+        async def producer() -> None:
+            try:
+                started.set()
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                raise
+
+        monitor._running = True
+        monitor._task = asyncio.create_task(producer())
+        await started.wait()
+        await monitor.stop_and_wait()
+
+        assert monitor._task is None
+
     async def test_unavailable_listing_skips_pruning(
         self, monitor: SessionMonitor
     ) -> None:
@@ -157,6 +178,152 @@ class TestMonitorLoop:
         read_hook_events.assert_awaited_once()
         surfaced = [c.args[0].window_id for c in cb.call_args_list]
         assert surfaced == []
+
+    async def test_rekey_precedes_hook_dispatch_and_delivered_watermark_commit(
+        self, monitor: SessionMonitor, monkeypatch, tmp_path
+    ) -> None:
+        """A re-keyed hook routes to its migrated topic before receipt commit."""
+        from ccgram.handlers.messaging_pipeline import message_queue as mq
+
+        thread_router.reset()
+        window_store.window_states.clear()
+        monkeypatch.setattr(SessionManager, "_load_state", lambda self: None)
+        monkeypatch.setattr(SessionManager, "_save_state", lambda self: None)
+        SessionManager()
+        monkeypatch.setattr(
+            "ccgram.session_monitor.tmux_manager",
+            SimpleNamespace(capabilities=_HERDR_CAPS),
+        )
+
+        old_id, new_id = HERDR_TARGETS["a"], HERDR_TARGETS["b"]
+        session_id = "S-new"
+        thread_router.bind_thread(100, 42, old_id)
+        live = WindowRef(
+            window_id=new_id,
+            window_name="proj ▸ 1",
+            cwd="/proj",
+            pane_current_command="claude",
+            alias_window_ids=(old_id,),
+        )
+        current_map = {
+            new_id: {"session_id": session_id, "cwd": "/proj", "window_name": ""}
+        }
+        events_file = tmp_path / "events.jsonl"
+        events_file.write_text(
+            json.dumps(
+                {
+                    "ts": 1.0,
+                    "event": "Stop",
+                    "window_key": f"herdr:{new_id}",
+                    "session_id": session_id,
+                    "data": {},
+                }
+            )
+            + "\n"
+        )
+        monkeypatch.setattr("ccgram.session_monitor.config.events_file", events_file)
+
+        dispatched = []
+
+        async def hook_callback(event) -> None:
+            assert thread_router.thread_bindings[100][42] == new_id
+            dispatched.append(event)
+
+        queued: asyncio.Queue = asyncio.Queue()
+        delivered_tasks = []
+
+        async def message_callback(msg: NewMessage) -> None:
+            await mq.enqueue_content_message(
+                FakeTelegramClient(), 100, new_id, [msg.text], thread_id=42
+            )
+            task = queued.get_nowait()
+            delivered_tasks.append(task)
+            for receipt in task.delivery_receipts:
+                receipt.settle(mq.DeliveryOutcome.DELIVERED)
+            queued.task_done()
+
+        async def check_for_updates(_current_map: dict) -> list[NewMessage]:
+            monitor.state.update_session(
+                TrackedSession(
+                    session_id=session_id,
+                    file_path="/transcript.jsonl",
+                    last_byte_offset=10,
+                    parsed_offset=20,
+                )
+            )
+            return [NewMessage(session_id, "delivered", True)]
+
+        async def _stop_after_cycle(_delay: float) -> None:
+            monitor._running = False
+
+        monitor.set_hook_event_callback(hook_callback)
+        monitor.set_message_callback(message_callback)
+        monkeypatch.setattr(mq, "get_or_create_queue", lambda *_args: queued)
+        with (
+            patch.object(monitor, "_cleanup_all_stale_sessions", AsyncMock()),
+            patch.object(
+                monitor, "_load_current_session_map", AsyncMock(return_value={})
+            ),
+            patch.object(
+                monitor,
+                "_detect_and_cleanup_changes",
+                AsyncMock(return_value=current_map),
+            ),
+            patch.object(monitor, "check_for_updates", side_effect=check_for_updates),
+            patch(
+                "ccgram.session_monitor.read_session_map_raw",
+                AsyncMock(return_value={}),
+            ),
+            patch("ccgram.session_map.session_map_sync") as mock_sync,
+            patch("ccgram.session.session_map_sync"),
+            patch(
+                "ccgram.session_monitor.list_windows_for_reconciliation",
+                AsyncMock(return_value=[live]),
+            ),
+            patch("ccgram.session_monitor.asyncio.sleep", _stop_after_cycle),
+        ):
+            mock_sync.load_session_map = AsyncMock()
+            monitor._running = True
+            await monitor._monitor_loop()
+
+        assert [event.window_key for event in dispatched] == [f"herdr:{new_id}"]
+        assert len(delivered_tasks) == 1
+        assert delivered_tasks[0].delivery_receipts[0].commit_ready is True
+        assert monitor.state.tracked_sessions[session_id].last_byte_offset == 20
+
+
+async def test_cancelled_dispatch_retains_failed_receipt(
+    monitor: SessionMonitor,
+) -> None:
+    started = asyncio.Event()
+    blocked = asyncio.Event()
+
+    async def callback(_msg: NewMessage) -> None:
+        started.set()
+        await blocked.wait()
+
+    monitor.set_message_callback(callback)
+    pending = monitor._register_delivery_receipts(
+        [
+            NewMessage("s1", "first", True),
+            NewMessage("s1", "second", True),
+        ]
+    )
+    first_msg, first_receipt = pending[0]
+    task = asyncio.create_task(
+        monitor._dispatch_message_with_receipt(first_msg, first_receipt)
+    )
+    await started.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    receipts = monitor._delivery_receipts["s1"]
+    assert len(receipts) == 2
+    assert receipts[0].failed is True
+    assert receipts[0].commit_ready is False
+    assert receipts[1].commit_ready is False
 
 
 class TestSessionMapReadFailures:
@@ -664,7 +831,10 @@ class TestPerWindowProviderResolution:
 
 
 class TestReadNewLines:
-    async def test_truncation_resets_offset(self, tmp_path) -> None:
+    async def test_shrunken_file_resumes_from_eof_no_replay(self, tmp_path) -> None:
+        """Shrunken/replaced transcripts must not be replayed (2026-08-17
+        flood incident: replaying history flooded Telegram and starved
+        every other topic)."""
         session_file = tmp_path / "test.jsonl"
         session_file.write_text(
             '{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}\n'
@@ -680,8 +850,8 @@ class TestReadNewLines:
             last_byte_offset=99999,
         )
         entries = await monitor._read_new_lines(tracked, session_file)
-        assert tracked.last_byte_offset < 99999
-        assert len(entries) >= 1
+        assert tracked.parsed_offset == session_file.stat().st_size
+        assert entries == []
 
     async def test_incremental_read_from_offset(self, tmp_path) -> None:
         session_file = tmp_path / "test.jsonl"
@@ -717,7 +887,7 @@ class TestReadNewLines:
         )
         entries = await monitor._read_new_lines(tracked, session_file)
         assert len(entries) == 1
-        assert tracked.last_byte_offset == len(good_line.encode())
+        assert tracked.parsed_offset == len(good_line.encode())
 
 
 class TestCorruptedOffset:
@@ -789,6 +959,7 @@ class TestCheckForUpdates:
         assert msgs == []
         tracked = monitor.state.get_session("sess-new")
         assert tracked is not None
+        # New sessions seed the delivered watermark directly at EOF.
         assert tracked.last_byte_offset == session_file.stat().st_size
 
     async def test_new_session_initializes_to_eof_direct(self, tmp_path) -> None:
@@ -813,6 +984,7 @@ class TestCheckForUpdates:
         assert msgs == []
         tracked = monitor.state.get_session("sess-direct")
         assert tracked is not None
+        # New sessions seed the delivered watermark directly at EOF.
         assert tracked.last_byte_offset == session_file.stat().st_size
 
     async def test_unchanged_mtime_skips_read(self, tmp_path) -> None:

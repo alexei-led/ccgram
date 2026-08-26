@@ -5,8 +5,10 @@ Three frozen dataclasses replace the monolithic ``MessageTask`` that lived in
 keeping the dependency graph acyclic.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, TypeAlias
+
+from ccgram.delivery_contract import DeliveryReceipt
 
 ContentType: TypeAlias = Literal["text", "thinking", "tool_use", "tool_result"]
 MessageRole: TypeAlias = Literal["assistant", "user"]
@@ -24,6 +26,11 @@ class ContentTask:
     tool_name: str | None = None
     thread_id: int | None = None
     chat_id: int | None = None
+    # Transcript producers set receipts for watermark cycles; routing carries
+    # them unchanged until the queue worker settles delivery.
+    delivery_receipts: tuple[DeliveryReceipt, ...] = field(
+        compare=False, hash=False, default=()
+    )
 
 
 @dataclass(frozen=True, slots=True)

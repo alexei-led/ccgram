@@ -326,11 +326,13 @@ class TerminalPollState:
             ws.probe_failures = 0
 
     def clear_seen_status(self, window_id: str) -> None:
-        """Clear startup status tracking for a single window."""
+        """Clear all startup-settlement tracking for a single window."""
         ws = self._states.get(window_id)
         if ws:
             ws.has_seen_status = False
             ws.startup_time = None
+            ws.startup_quietly_settled = False
+            ws.idle_status_announced = False
 
     def set_unbound_timer(self, window_id: str, ts: float) -> None:
         """Set unbound timer for a window (creates state if needed)."""
@@ -349,10 +351,12 @@ class TerminalPollState:
             ws.probe_failures = 0
 
     def reset_all_seen_status(self) -> None:
-        """Reset startup status tracking for all windows."""
+        """Reset all startup-settlement tracking for every window."""
         for ws in self._states.values():
             ws.has_seen_status = False
             ws.startup_time = None
+            ws.startup_quietly_settled = False
+            ws.idle_status_announced = False
 
     def reset_all_unbound_timers(self) -> None:
         """Reset unbound timers for all windows."""
@@ -387,11 +391,23 @@ class TerminalPollState:
             return False
         return (time.monotonic() - ws.startup_time) >= STARTUP_TIMEOUT
 
+    def mark_startup_quietly_settled(self, window_id: str) -> None:
+        """Settle a never-active startup without claiming a status was shown."""
+        ws = self.get_state(window_id)
+        ws.startup_time = None
+        ws.startup_quietly_settled = True
+
+    def mark_idle_status_announced(self, window_id: str) -> None:
+        """Remember that the current active cycle already emitted Ready."""
+        self.get_state(window_id).idle_status_announced = True
+
     def mark_seen_status(self, window_id: str) -> None:
-        """Mark a window as having seen its first status update."""
+        """Mark fresh activity and allow its next idle edge to emit Ready."""
         ws = self.get_state(window_id)
         ws.has_seen_status = True
         ws.startup_time = None
+        ws.startup_quietly_settled = False
+        ws.idle_status_announced = False
 
 
 # ── InteractiveUIStrategy ───────────────────────────────────────────────
