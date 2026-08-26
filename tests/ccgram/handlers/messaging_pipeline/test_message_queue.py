@@ -270,14 +270,17 @@ class TestDispatch:
     async def test_content_task_batch_eligible(
         self, mock_eligible, mock_tool_event, mock_process, bot, queue, lock
     ):
+        from ccgram.handlers.messaging_pipeline.tool_batch import ToolEventResult
+
         ct = _content_task("tool", content_type="tool_use")
-        mock_tool_event.return_value = None
+        mock_tool_event.return_value = ToolEventResult()
         with patch(
             "ccgram.handlers.messaging_pipeline.message_queue.is_tool_calls_hidden",
             return_value=False,
         ):
-            extra = await _dispatch(bot, 1, ct, queue, lock)
-        assert extra == 0
+            result = await _dispatch(bot, 1, ct, queue, lock)
+        assert result == 0
+        assert result.outcome.value == "delivered"
         mock_tool_event.assert_awaited_once_with(bot, 1, ct)
         mock_process.assert_not_awaited()
 
@@ -305,6 +308,37 @@ class TestDispatch:
         ):
             await _dispatch(bot, 1, ct, queue, lock)
         mock_process.assert_awaited_once_with(bot, 1, followup)
+
+    @patch(
+        "ccgram.handlers.messaging_pipeline.message_queue._process_content_task",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "ccgram.handlers.messaging_pipeline.message_queue.process_tool_event",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "ccgram.handlers.messaging_pipeline.message_queue.is_batch_eligible",
+        return_value=True,
+    )
+    async def test_content_task_batch_failure_is_not_delivered(
+        self, mock_eligible, mock_tool_event, mock_process, bot, queue, lock
+    ):
+        from ccgram.handlers.messaging_pipeline.tool_batch import (
+            ToolEventOutcome,
+            ToolEventResult,
+        )
+
+        ct = _content_task("tool", content_type="tool_use")
+        mock_tool_event.return_value = ToolEventResult(outcome=ToolEventOutcome.FAILED)
+        with patch(
+            "ccgram.handlers.messaging_pipeline.message_queue.is_tool_calls_hidden",
+            return_value=False,
+        ):
+            result = await _dispatch(bot, 1, ct, queue, lock)
+
+        assert result.outcome.value == "failed"
+        mock_process.assert_not_awaited()
 
     @patch(
         "ccgram.handlers.messaging_pipeline.message_queue.process_status_update",

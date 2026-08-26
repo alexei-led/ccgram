@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import re
 from dataclasses import dataclass, field
+from enum import Enum
 
 import structlog
 
@@ -55,6 +56,22 @@ class ToolBatch:
     total_length: int = 0
     draft: DraftStream | None = None
     last_sent_text: str | None = None
+
+
+class ToolEventOutcome(Enum):
+    """Terminal delivery outcome reported by the batching boundary."""
+
+    DELIVERED = "delivered"
+    INTENTIONALLY_DROPPED = "intentionally_dropped"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True, slots=True)
+class ToolEventResult:
+    """Batch routing result with an explicit delivery acknowledgement."""
+
+    followup: ContentTask | None = None
+    outcome: ToolEventOutcome = ToolEventOutcome.DELIVERED
 
 
 # Active tool batches: (user_id, thread_id_or_0) -> ToolBatch
@@ -321,8 +338,8 @@ async def _send_or_edit_batch(
     chat_id: int,
     raw_thread_id: int | None,
     thread_id_or_0: int,
-) -> None:
-    """Send a new batch message or replace the existing draft text."""
+) -> bool:
+    """Send or edit a batch and report whether Telegram accepted its content."""
     # Lazy: status_bubble is registered as a callback target via the
     # registry; importing it at top forms tool_batch ↔ status_bubble
     # through the messaging_pipeline subpackage's __init__ chain.
@@ -342,7 +359,7 @@ async def _send_or_edit_batch(
     if batch.last_sent_text == batch_text and (
         batch.telegram_msg_id is not None or batch.draft is not None
     ):
-        return
+        return True
 
     if is_ephemeral_tools(batch.window_id):
         # Lazy: message_sender ↔ tool_batch cycle through messaging_pipeline/__init__
@@ -354,16 +371,17 @@ async def _send_or_edit_batch(
             msg = await safe_send(
                 client, chat_id, batch_text, message_thread_id=raw_thread_id
             )
-            if msg is not None:
-                batch.telegram_msg_id = msg.message_id
-                batch.last_sent_text = batch_text
-        else:
-            success = await edit_with_fallback(
-                client, chat_id, batch.telegram_msg_id, batch_text
-            )
-            if success:
-                batch.last_sent_text = batch_text
-        return
+            if msg is None:
+                return False
+            batch.telegram_msg_id = msg.message_id
+            batch.last_sent_text = batch_text
+            return True
+        success = await edit_with_fallback(
+            client, chat_id, batch.telegram_msg_id, batch_text
+        )
+        if success:
+            batch.last_sent_text = batch_text
+        return success
 
     if batch.draft is None:
         await clear_status_message(client, user_id, thread_id_or_0)
@@ -377,11 +395,13 @@ async def _send_or_edit_batch(
         if msg_id is not None or batch.draft.mode == DRAFT_STREAMING:
             batch.telegram_msg_id = msg_id
             batch.last_sent_text = batch_text
-        else:
-            batch.draft = None
-    else:
-        await batch.draft.replace(batch_text)
-        batch.last_sent_text = batch_text
+            return True
+        batch.draft = None
+        return False
+
+    await batch.draft.replace(batch_text)
+    batch.last_sent_text = batch_text
+    return True
 
 
 async def _rate_limit_chat(chat_id: int) -> None:
@@ -469,11 +489,12 @@ async def process_tool_event(
     client: TelegramClient,
     user_id: int,
     task: ContentTask,
-) -> ContentTask | None:
-    """Add a tool_use or tool_result to the active batch, send/edit the batch message.
+) -> ToolEventResult:
+    """Route a tool event and explicitly acknowledge its Telegram delivery.
 
-    Returns None if absorbed into the batch; returns a ContentTask if the queue
-    worker should deliver it as regular content (overflow, unmatched result, etc).
+    ``followup`` is set when the queue must deliver the event as regular content.
+    Otherwise ``outcome`` states whether batching delivered, intentionally dropped,
+    or failed to deliver the event.
     """
     window_id = task.window_id
     thread_id_or_0 = thread_key(task.thread_id)
@@ -486,23 +507,30 @@ async def process_tool_event(
             client, user_id, task, batch, thread_id_or_0
         )
         if batch is None:
-            return followup
+            outcome = (
+                ToolEventOutcome.INTENTIONALLY_DROPPED
+                if followup is None
+                else ToolEventOutcome.DELIVERED
+            )
+            return ToolEventResult(followup=followup, outcome=outcome)
     elif task.content_type == "tool_use":
         result = await _handle_tool_use_event(
             client, user_id, task, batch, window_id, thread_id_or_0, bkey
         )
         if isinstance(result, ContentTask):
-            return result
+            return ToolEventResult(followup=result)
         if result is None:
-            return None
+            return ToolEventResult(outcome=ToolEventOutcome.FAILED)
         batch = result
     else:
-        return task
+        return ToolEventResult(followup=task)
 
-    await _send_or_edit_batch(
+    delivered = await _send_or_edit_batch(
         client, user_id, batch, chat_id, task.thread_id, thread_id_or_0
     )
-    return None
+    return ToolEventResult(
+        outcome=(ToolEventOutcome.DELIVERED if delivered else ToolEventOutcome.FAILED)
+    )
 
 
 async def _handle_tool_use_event(

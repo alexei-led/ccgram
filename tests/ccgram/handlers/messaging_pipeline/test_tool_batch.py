@@ -17,6 +17,8 @@ from ccgram.handlers.messaging_pipeline.tool_batch import (
     flush_batch,
     has_active_batch,
     has_ephemeral_active_batch,
+    process_tool_event,
+    ToolEventOutcome,
 )
 from ccgram.telegram_draft import mark_draft_unavailable, reset_draft_state
 
@@ -144,6 +146,27 @@ class TestDraftStreamIntegration:
         bot.send_message.assert_awaited_once()
         assert batch.draft is not None
         assert batch.telegram_msg_id == 77
+
+    async def test_failed_initial_draft_is_not_acknowledged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "ccgram.handlers.status.status_bubble.clear_status_message",
+            AsyncMock(return_value=None),
+        )
+        bot = self._make_bot()
+        bot.send_message.side_effect = TelegramError("temporary")
+        task = ContentTask(
+            window_id="@0",
+            parts=("Read foo.py",),
+            content_type="tool_use",
+            tool_use_id="t1",
+            thread_id=10,
+        )
+
+        result = await process_tool_event(bot, user_id=1, task=task)
+
+        assert result.outcome is ToolEventOutcome.FAILED
 
     async def test_noop_re_render_does_not_re_edit(
         self, monkeypatch: pytest.MonkeyPatch

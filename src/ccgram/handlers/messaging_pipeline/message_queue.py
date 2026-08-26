@@ -53,6 +53,7 @@ from .tool_batch import (
     has_ephemeral_active_batch,
     is_batch_eligible,
     process_tool_event,
+    ToolEventResult,
 )
 
 logger = structlog.get_logger()
@@ -403,12 +404,21 @@ async def _handle_content_task(
         return DispatchResult(0, DeliveryOutcome.INTENTIONALLY_DROPPED)
 
     if is_batch_eligible(task):
-        followup = await process_tool_event(client, user_id, task)
-        if followup is not None:
-            outcome = await _process_content_task(client, user_id, followup)
+        batch_result = await process_tool_event(client, user_id, task)
+        if isinstance(batch_result, ToolEventResult):
+            if batch_result.followup is not None:
+                outcome = await _process_content_task(
+                    client, user_id, batch_result.followup
+                )
+                return DispatchResult(0, outcome)
+            outcome = DeliveryOutcome(batch_result.outcome.value)
             return DispatchResult(0, outcome)
-        # Tool batching owns the visible message lifecycle; no transcript
-        # content was silently discarded by this queue path.
+
+        # Compatibility for callers that still return the former followup-only
+        # contract. Production batching always returns ToolEventResult above.
+        if batch_result is not None:
+            outcome = await _process_content_task(client, user_id, batch_result)
+            return DispatchResult(0, outcome)
         return DispatchResult(0, DeliveryOutcome.DELIVERED)
 
     await flush_if_active(client, user_id, task)
