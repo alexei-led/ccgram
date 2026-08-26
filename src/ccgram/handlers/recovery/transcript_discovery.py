@@ -327,15 +327,37 @@ async def _bootstrap_identity(
     """
     if w is None:
         return None
-    # Lazy: providers package bootstrap is heavy; only pay for it when a live
-    # window turns out to have no state at all.
-    from ...providers import detect_provider_from_pane
+    if await session_map_sync.session_map_entry_may_exist(window_id):
+        # The hook already tracks this window, so ccgram is not missing its
+        # record — only the in-memory state, which the monitor rebuilds from
+        # that entry within one sync. Seeding here would race it and, worse,
+        # destroy it: on a state-less window set_window_provider counts as a
+        # provider switch and clears the entry, and hook.py refuses to recreate
+        # one from any non-SessionStart event ("SessionStart owns initial
+        # creation"). The live session would go untracked until the agent is
+        # restarted, with its messages no longer reaching the topic.
+        return None
 
     detected = await detect_provider_from_pane(
         w.pane_current_command or "", window_id=window_id
     )
-    if not detected:
+    if not detected or detected == "shell":
+        # On a state-less window ``set_window_provider`` seeds
+        # ``initial_provider_name`` from the value being written, so bootstrapping
+        # a shell would stamp the window shell-origin permanently and
+        # ``_is_agent_origin`` would never fire the recovery banner again — for a
+        # dead topic whose agent already exited to a shell, which is exactly the
+        # population this heals. A shell has no transcript to discover, so
+        # skipping loses nothing.
         return None
+
+    if await session_map_sync.session_map_entry_may_exist(window_id):
+        # Re-checked after the probe. The guard above ran before an await, and
+        # SessionStart writes the entry from a separate process, so it can land
+        # while the probe is in flight — and the write below would delete the
+        # entry it had just made. Nothing suspends between here and the write.
+        return None
+
     session_manager.set_window_provider(window_id, detected, cwd=w.cwd or None)
     logger.info(
         "Bootstrapped window state for untracked live window",

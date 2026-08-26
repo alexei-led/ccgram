@@ -414,7 +414,6 @@ def recovery_env():
         patch(f"{_RC}.send_telegram_to_window", new_callable=AsyncMock) as forward,
         patch(f"{_RC}.Path") as path,
         patch(f"{_RP}.window_query") as picker_wq,
-        patch(f"{_RP}.safe_edit", new_callable=AsyncMock) as picker_edit,
         patch(f"{_RP}.Path") as picker_path,
     ):
         view = MagicMock(cwd="/tmp/project", provider_name="")
@@ -439,7 +438,6 @@ def recovery_env():
             forward=forward,
             path=path,
             picker_wq=picker_wq,
-            picker_edit=picker_edit,
             picker_path=picker_path,
         )
 
@@ -501,6 +499,23 @@ class TestRecoveryFreshCallback:
 
 
 class TestRecoveryContinueCallback:
+    @patch(f"{_RC}.scan_sessions_for_cwd", return_value=[_SessionEntry("s1", "x")])
+    async def test_continue_probes_the_provider_it_will_actually_launch(
+        self, mock_scan: MagicMock, recovery_env
+    ) -> None:
+        """Continue launches exactly one provider, so it must probe that one.
+
+        Resume may widen an unknown provider because each entry carries its own
+        to the relaunch; probing wider here would find another agent's
+        sessions, skip the empty state, and run `<default> --continue` against
+        a folder it has nothing to continue.
+        """
+        recovery_env.wq.get_window_provider.return_value = ""
+
+        await _tap(f"{CB_RECOVERY_CONTINUE}@0", _make_context(_recovery_user_data()))
+
+        assert mock_scan.call_args.args[1]
+
     @patch(f"{_RC}.scan_sessions_for_cwd", return_value=[_SessionEntry("s1", "x")])
     async def test_continue_creates_window_with_continue_flag(
         self, _mock_scan: MagicMock, recovery_env
@@ -675,16 +690,40 @@ class TestRecoveryResumePickCallback:
     @pytest.mark.parametrize(
         "view", [None, MagicMock(cwd="")], ids=["no-window-state", "no-cwd"]
     )
-    async def test_pick_reports_a_gone_project(self, recovery_env, view) -> None:
+    async def test_pick_reports_missing_state_not_a_missing_folder(
+        self, recovery_env, view
+    ) -> None:
+        """Without window state the folder is unknown, not deleted (#176)."""
+        recovery_env.wq.view_window.return_value = view
         recovery_env.picker_wq.view_window.return_value = view
         user_data = _recovery_user_data()
         user_data[RECOVERY_SESSIONS] = [{"session_id": "x", "summary": "x"}]
 
         query = await _tap(f"{CB_RECOVERY_PICK}0", _make_context(user_data))
 
-        assert "no longer exists" in recovery_env.picker_edit.call_args.args[1].lower()
-        assert _toast(query) == "Project gone"
-        assert user_data == {}
+        text = recovery_env.edit.call_args.args[1]
+        assert "no longer exists" not in text.lower()
+        assert "session state is gone" in text
+        assert _toast(query) == "State gone"
+
+    async def test_pick_launches_the_entrys_own_provider(self, recovery_env) -> None:
+        """A window with no provider widens the picker; the pick must decide.
+
+        Inheriting from the old window resolves the same falsy value to the
+        config default, so a picked codex session would launch claude with
+        codex-format resume arguments.
+        """
+        user_data = _recovery_user_data()
+        user_data[RECOVERY_SESSIONS] = [
+            {"session_id": "x", "summary": "Codex work", "provider_name": "codex"}
+        ]
+
+        await _tap(f"{CB_RECOVERY_PICK}0", _make_context(user_data))
+
+        launch_command = recovery_env.tmux.create_window.call_args.kwargs[
+            "launch_command"
+        ]
+        assert "codex" in launch_command, launch_command
 
     async def test_pick_rejects_a_session_from_another_provider(
         self, recovery_env

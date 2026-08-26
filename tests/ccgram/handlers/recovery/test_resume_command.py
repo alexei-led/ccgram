@@ -1,9 +1,10 @@
 import json
+
+import pytest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
-import pytest
 from telegram.error import TelegramError
 
 from ccgram.handlers.callback_data import (
@@ -324,8 +325,56 @@ class TestScanAllSessions:
         assert len(result) == 1
         assert result[0].summary == "From index"
 
+    # ── Label rendering ───────────────────────────────────────────────────────
 
-# ── Label rendering ───────────────────────────────────────────────────────
+    @pytest.mark.parametrize("unknown", [None, ""])
+    def test_unknown_provider_merges_every_picker_capable_provider(
+        self, unknown
+    ) -> None:
+        """Both falsy shapes mean "provider unknown", not "use the default one".
+
+        A topic whose window state is gone has no provider to resolve, and
+        answering it with only the config default listed one agent's sessions
+        under another agent's topic.
+        """
+        from types import SimpleNamespace
+
+        def _session(sid, mtime, provider):
+            return SimpleNamespace(
+                session_id=sid,
+                summary=f"work in {sid}",
+                cwd="/proj",
+                mtime=mtime,
+                msg_count=3,
+                provider_name=provider,
+            )
+
+        alpha = SimpleNamespace(
+            discover_resumable_sessions=lambda: [_session("a-1", 100.0, "alpha")]
+        )
+        beta = SimpleNamespace(
+            discover_resumable_sessions=lambda: [_session("b-1", 200.0, "beta")]
+        )
+
+        with patch(
+            "ccgram.providers.picker_capable_providers",
+            return_value=[alpha, beta],
+        ):
+            result = scan_all_sessions(unknown)
+
+        assert [e.session_id for e in result] == ["b-1", "a-1"]  # newest first
+        assert {e.provider_name for e in result} == {"alpha", "beta"}
+
+    def test_named_provider_does_not_merge_others(self) -> None:
+        with (
+            patch("ccgram.providers.picker_capable_providers") as mock_all,
+            patch("ccgram.providers.get_provider_for_window") as mock_get,
+        ):
+            mock_get.return_value.discover_resumable_sessions.return_value = []
+            scan_all_sessions("claude")
+
+        mock_all.assert_not_called()
+        mock_get.assert_called_once_with("", provider_name="claude")
 
 
 class TestRelativeTime:
@@ -598,6 +647,38 @@ class TestBuildResumeKeyboard:
 
 
 class TestResumeCommand:
+    @patch("ccgram.providers.picker_capable_providers", return_value=[MagicMock()])
+    @patch(f"{_RC}.scan_all_sessions")
+    @patch(f"{_RC}.window_query")
+    @patch(f"{_RC}.thread_router")
+    @patch(f"{_RC}.safe_reply", new_callable=AsyncMock)
+    @patch(f"{_RC}.get_thread_id", return_value=42)
+    @patch(f"{_RC}.config")
+    async def test_blank_provider_scans_every_provider_not_the_default(
+        self,
+        mock_config: MagicMock,
+        _mock_thread_id: MagicMock,
+        _mock_safe_reply: AsyncMock,
+        mock_tr: MagicMock,
+        mock_wq: MagicMock,
+        mock_scan: MagicMock,
+        _mock_pickers: MagicMock,
+    ) -> None:
+        """A state row that never recorded a provider is unknown, not default.
+
+        Narrowing to the config default here lists one agent's sessions under
+        another agent's topic — the symptom the merged scan exists to remove.
+        """
+        mock_config.is_user_allowed.return_value = True
+        mock_tr.get_window_for_thread.return_value = "@5"
+        mock_wq.get_window_provider.return_value = ""
+        mock_scan.return_value = []
+
+        await resume_command(_make_update(), _make_context({}))
+
+        mock_scan.assert_called_once()
+        assert not mock_scan.call_args.args[0]  # falsy == unknown == merged scan
+
     @patch(f"{_RC}.scan_all_sessions")
     @patch(f"{_RC}.safe_reply", new_callable=AsyncMock)
     @patch(f"{_RC}.get_thread_id", return_value=42)

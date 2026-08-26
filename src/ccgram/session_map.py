@@ -697,6 +697,32 @@ class SessionMapSync:
         except OSError:
             logger.exception("Failed to write session_map for hookless session")
 
+    async def session_map_entry_may_exist(self, window_id: str) -> bool:
+        """Return whether the hook may have an entry for ``window_id``.
+
+        Deliberately answers True when the file cannot be read: callers use
+        this to decide whether it is safe to write state that would clear a
+        live entry, and an unreadable map is "unknown", not "absent". Guessing
+        absent there destroys a running session's tracking; guessing present
+        only defers a heal to the next tick.
+        """
+        raw = await read_session_map_raw()
+        if raw is None:
+            return True
+        info = raw.get(f"{session_map_prefix()}{window_id}")
+        if info is None:
+            return False
+        try:
+            # The premise is that the monitor will rebuild state from this
+            # entry, which only holds for entries load_session_map accepts. One
+            # it rejects (no session_id, or a schema_version from a newer build
+            # after a downgrade) never becomes state, so treating the bare key
+            # as proof of tracking would wedge the window unhealed forever.
+            parse_session_map_entry(info)
+        except StateFileValidationError:
+            return False
+        return True
+
     def clear_session_map_entry(self, window_id: str) -> None:
         """Remove a window's entry from session_map.json if present."""
         if not config.session_map_file.exists():

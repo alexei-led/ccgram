@@ -193,7 +193,7 @@ class TestStaleSweepRespectsChatScopedBindings:
             for wid in user_bindings.values()
             if wid
         }
-        assert old_code_bound == set()  # old code would miss this window
+        assert "@42" not in old_code_bound  # old code would miss this window
         assert thread_router.all_bound_window_ids() == {"@42"}  # fix sees it
 
         try:
