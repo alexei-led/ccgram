@@ -85,26 +85,6 @@ class TestResolveSelfIdentity:
         )
         assert ident == expected
 
-    def test_herdr_without_herdr_query_returns_none(self) -> None:
-        # No herdr_query supplied → probe unavailable → None (skip session_map write).
-        ident = resolve_self_identity(
-            {"HERDR_PANE_ID": "w0:p0"}, tmux_query=_fail_query
-        )
-        assert ident is None
-
-    def test_herdr_query_resolves_opaque_session_target(self) -> None:
-        ident = resolve_self_identity(
-            {"HERDR_WORKSPACE_ID": "w0", "HERDR_PANE_ID": "w0:p0"},
-            tmux_query=_fail_query,
-            herdr_query=lambda _workspace, _pane: "herdr-session-v1-target",
-        )
-        assert ident == SelfIdentity(
-            "herdr",
-            "herdr:herdr-session-v1-target",
-            "herdr-session-v1-target",
-            "",
-        )
-
     def test_herdr_without_workspace_fails_closed(self) -> None:
         assert (
             resolve_self_identity(

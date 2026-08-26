@@ -167,6 +167,64 @@ async def wait_for_pane(
     )
 
 
+async def wait_for_agent_reply(
+    calls,
+    *,
+    thread_id=TEST_THREAD_ID,
+    min_length=5,
+    timeout=120.0,
+):
+    """Wait for a topic message that is the agent talking, not our own chrome.
+
+    The bind confirmation ("Bound …") and the pickers ("Select …") are ours;
+    anything else of real length in the topic came from the agent.
+    """
+    return await wait_for_send(
+        calls,
+        predicate=lambda d: (
+            d.get("message_thread_id") == thread_id
+            and len(d.get("text", "")) > min_length
+            and "Bound" not in d.get("text", "")
+            and "Select" not in d.get("text", "")
+        ),
+        timeout=timeout,
+    )
+
+
+async def wait_for_recovery_prompt(calls, *, timeout=10.0):
+    """Wait for the dead-window banner and return its message_id."""
+    await wait_for_send(
+        calls,
+        predicate=lambda d: "ended" in d.get("text", ""),
+        timeout=timeout,
+    )
+    msg_id = find_message_id_for(
+        calls,
+        predicate=lambda d: "ended" in d.get("text", ""),
+    )
+    assert msg_id is not None, "Recovery banner has no message_id"
+    return msg_id
+
+
+async def wait_for_rebind(
+    *,
+    user_id=TEST_USER_ID,
+    thread_id=TEST_THREAD_ID,
+    timeout=15.0,
+    poll_interval=0.5,
+):
+    """Poll the thread router until the topic is bound again; return the window."""
+    from ccgram.thread_router import thread_router
+
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
+        window_id = thread_router.get_window_for_thread(user_id, thread_id)
+        if window_id is not None:
+            return window_id
+        await asyncio.sleep(poll_interval)
+    raise TimeoutError(f"Topic {thread_id} not rebound within {timeout}s")
+
+
 def find_message_id_for(calls, *, method="sendMessage", predicate=None):
     """Find the message_id from the interceptor's response for a matching call.
 

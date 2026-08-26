@@ -1,6 +1,7 @@
 """Tests for PaneStatusStrategy: classification, transitions, dead-pane reconciliation,
 state upserts, and the async scan_window orchestration."""
 
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -51,6 +52,10 @@ def _interactive_status(text: str = "Allow?") -> StatusUpdate:
     )
 
 
+def _bot() -> AsyncMock:
+    return AsyncMock(spec=Bot)
+
+
 def _idle_provider(window_name: str = "claude") -> MagicMock:
     provider = MagicMock()
     provider.capabilities.name = window_name
@@ -63,6 +68,25 @@ def _interactive_provider(prompt: str = "Allow?") -> MagicMock:
     provider.capabilities.name = "claude"
     provider.parse_terminal_status.return_value = _interactive_status(prompt)
     return provider
+
+
+@contextmanager
+def _panes(
+    *panes: TmuxPaneInfo,
+    provider: MagicMock | None = None,
+    capture: str | None = "output",
+):
+    """Patch the multiplexer to expose ``panes`` and the per-pane provider."""
+    with (
+        patch("ccgram.multiplexer.multiplexer") as mock_mux,
+        patch(
+            "ccgram.providers.get_provider_for_window",
+            return_value=provider if provider is not None else _idle_provider(),
+        ),
+    ):
+        mock_mux.list_panes = AsyncMock(return_value=list(panes))
+        mock_mux.capture_pane_by_id = AsyncMock(return_value=capture)
+        yield mock_mux
 
 
 @pytest.fixture
@@ -82,27 +106,25 @@ def _reset_window_store():
 
 
 class TestClassifyPane:
-    def test_blocked_when_status_is_interactive(self) -> None:
-        assert (
-            PaneStatusStrategy.classify_pane(False, _interactive_status()) == "blocked"
-        )
-
-    def test_blocked_wins_over_active(self) -> None:
-        assert (
-            PaneStatusStrategy.classify_pane(True, _interactive_status()) == "blocked"
-        )
-
-    def test_active_when_active_and_no_status(self) -> None:
-        assert PaneStatusStrategy.classify_pane(True, None) == "active"
-
-    def test_idle_when_inactive_and_no_status(self) -> None:
-        assert PaneStatusStrategy.classify_pane(False, None) == "idle"
-
-    def test_idle_when_inactive_and_non_interactive_status(self) -> None:
-        non_interactive = StatusUpdate(
-            raw_text="working...", display_label="working", is_interactive=False
-        )
-        assert PaneStatusStrategy.classify_pane(False, non_interactive) == "idle"
+    @pytest.mark.parametrize(
+        ("is_active", "status", "expected"),
+        [
+            pytest.param(False, _interactive_status(), "blocked", id="interactive"),
+            pytest.param(
+                True, _interactive_status(), "blocked", id="interactive-beats-active"
+            ),
+            pytest.param(True, None, "active", id="active-no-status"),
+            pytest.param(False, None, "idle", id="inactive-no-status"),
+            pytest.param(
+                False,
+                StatusUpdate(raw_text="working...", display_label="working"),
+                "idle",
+                id="inactive-busy-status",
+            ),
+        ],
+    )
+    def test_classification(self, is_active, status, expected) -> None:
+        assert PaneStatusStrategy.classify_pane(is_active, status) == expected
 
 
 class TestRecordPaneState:
@@ -161,31 +183,22 @@ class TestScanWindowSinglePane:
         # Mark the window scanned so first-scan suppression doesn't drop
         # the "created" transition this test is verifying.
         strategy._scanned_windows.add("@0")
-        bot = AsyncMock(spec=Bot)
         on_blocked = AsyncMock()
-        with patch("ccgram.multiplexer.multiplexer") as mock_tm:
-            mock_tm.list_panes = AsyncMock(return_value=[_pane("%1", active=True)])
+        with _panes(_pane("%1", active=True)):
             transitions = await strategy.scan_window(
-                bot, 1, "@0", 42, on_blocked=on_blocked
+                _bot(), 1, "@0", 42, on_blocked=on_blocked
             )
         on_blocked.assert_not_called()
-        pane = window_store.get_pane("@0", "%1")
-        assert pane is not None
-        assert pane.state == "active"
+        assert _require_pane("@0", "%1").state == "active"
         assert any(t.pane_id == "%1" and t.new_state == "active" for t in transitions)
 
     async def test_first_scan_suppresses_created_transition(
         self, strategy: PaneStatusStrategy
     ) -> None:
-        # First scan must not announce an existing pane as freshly born;
-        # this prevents bot restart from spamming "pane created" for
-        # single-pane windows that were already alive.
-        bot = AsyncMock(spec=Bot)
-        on_blocked = AsyncMock()
-        with patch("ccgram.multiplexer.multiplexer") as mock_tm:
-            mock_tm.list_panes = AsyncMock(return_value=[_pane("%1", active=True)])
+        """A bot restart must not announce already-live panes as freshly created."""
+        with _panes(_pane("%1", active=True)):
             transitions = await strategy.scan_window(
-                bot, 1, "@0", 42, on_blocked=on_blocked
+                _bot(), 1, "@0", 42, on_blocked=AsyncMock()
             )
         # The pane state still gets recorded for future transition tracking,
         # but no transition is surfaced for the "created" event.
@@ -198,12 +211,9 @@ class TestScanWindowSinglePane:
         self, strategy: PaneStatusStrategy
     ) -> None:
         strategy.record_pane_state("@0", "%1", "active", provider="claude")
-        bot = AsyncMock(spec=Bot)
-        on_blocked = AsyncMock()
-        with patch("ccgram.multiplexer.multiplexer") as mock_tm:
-            mock_tm.list_panes = AsyncMock(return_value=[_pane("%1", active=True)])
+        with _panes(_pane("%1", active=True)):
             transitions = await strategy.scan_window(
-                bot, 1, "@0", 42, on_blocked=on_blocked
+                _bot(), 1, "@0", 42, on_blocked=AsyncMock()
             )
         assert all(t.pane_id != "%1" for t in transitions)
 
@@ -212,23 +222,11 @@ class TestScanWindowMultiPane:
     async def test_active_pane_recorded_and_skips_capture(
         self, strategy: PaneStatusStrategy
     ) -> None:
-        bot = AsyncMock(spec=Bot)
-        on_blocked = AsyncMock()
-        provider = _idle_provider()
-        with (
-            patch("ccgram.multiplexer.multiplexer") as mock_tm,
-            patch("ccgram.providers.get_provider_for_window", return_value=provider),
-        ):
-            mock_tm.list_panes = AsyncMock(
-                return_value=[
-                    _pane("%1", active=True),
-                    _pane("%2", active=False, index=1),
-                ]
-            )
-            mock_tm.capture_pane_by_id = AsyncMock(return_value="text")
-            await strategy.scan_window(bot, 1, "@0", 42, on_blocked=on_blocked)
-        # Active pane is never captured
-        mock_tm.capture_pane_by_id.assert_called_once_with("%2", window_id="@0")
+        with _panes(
+            _pane("%1", active=True), _pane("%2", active=False, index=1)
+        ) as mux:
+            await strategy.scan_window(_bot(), 1, "@0", 42, on_blocked=AsyncMock())
+        mux.capture_pane_by_id.assert_called_once_with("%2", window_id="@0")
         assert _require_pane("@0", "%1").state == "active"
         assert _require_pane("@0", "%2").state == "idle"
 
@@ -238,20 +236,14 @@ class TestScanWindowMultiPane:
         # Mark window already scanned so first-scan suppression doesn't
         # drop the "blocked" transition this test verifies.
         strategy._scanned_windows.add("@0")
-        bot = AsyncMock(spec=Bot)
+        bot = _bot()
         on_blocked = AsyncMock()
-        provider = _interactive_provider("Allow?")
-        with (
-            patch("ccgram.multiplexer.multiplexer") as mock_tm,
-            patch("ccgram.providers.get_provider_for_window", return_value=provider),
+        with _panes(
+            _pane("%1", active=True),
+            _pane("%2", active=False, index=1),
+            provider=_interactive_provider("Allow?"),
+            capture="Allow?\nEsc\n",
         ):
-            mock_tm.list_panes = AsyncMock(
-                return_value=[
-                    _pane("%1", active=True),
-                    _pane("%2", active=False, index=1),
-                ]
-            )
-            mock_tm.capture_pane_by_id = AsyncMock(return_value="Allow?\nEsc\n")
             transitions = await strategy.scan_window(
                 bot, 1, "@0", 42, on_blocked=on_blocked
             )
@@ -262,64 +254,52 @@ class TestScanWindowMultiPane:
     async def test_blocked_alert_dedup_within_two_scans(
         self, strategy: PaneStatusStrategy
     ) -> None:
-        bot = AsyncMock(spec=Bot)
         on_blocked = AsyncMock()
-        provider = _interactive_provider("Allow?")
-        with (
-            patch("ccgram.multiplexer.multiplexer") as mock_tm,
-            patch("ccgram.providers.get_provider_for_window", return_value=provider),
+        with _panes(
+            _pane("%1", active=True),
+            _pane("%2", active=False, index=1),
+            provider=_interactive_provider("Allow?"),
+            capture="Allow?\nEsc\n",
         ):
-            mock_tm.list_panes = AsyncMock(
-                return_value=[
-                    _pane("%1", active=True),
-                    _pane("%2", active=False, index=1),
-                ]
-            )
-            mock_tm.capture_pane_by_id = AsyncMock(return_value="Allow?\nEsc\n")
-            await strategy.scan_window(bot, 1, "@0", 42, on_blocked=on_blocked)
-            await strategy.scan_window(bot, 1, "@0", 42, on_blocked=on_blocked)
+            await strategy.scan_window(_bot(), 1, "@0", 42, on_blocked=on_blocked)
+            await strategy.scan_window(_bot(), 1, "@0", 42, on_blocked=on_blocked)
         on_blocked.assert_called_once()
 
     async def test_blocked_alert_resurfaces_when_prompt_changes(
         self, strategy: PaneStatusStrategy
     ) -> None:
-        bot = AsyncMock(spec=Bot)
         on_blocked = AsyncMock()
-        first = _interactive_provider("Allow read?")
-        second = _interactive_provider("Allow write?")
-        providers = iter([first, second])
+        providers = iter(
+            [
+                _interactive_provider("Allow read?"),
+                _interactive_provider("Allow write?"),
+            ]
+        )
         with (
-            patch("ccgram.multiplexer.multiplexer") as mock_tm,
+            patch("ccgram.multiplexer.multiplexer") as mock_mux,
             patch(
                 "ccgram.providers.get_provider_for_window",
                 side_effect=lambda *_a, **_k: next(providers),
             ),
         ):
-            mock_tm.list_panes = AsyncMock(
+            mock_mux.list_panes = AsyncMock(
                 return_value=[
                     _pane("%1", active=True),
                     _pane("%2", active=False, index=1),
                 ]
             )
-            mock_tm.capture_pane_by_id = AsyncMock(return_value="prompt\nEsc\n")
-            await strategy.scan_window(bot, 1, "@0", 42, on_blocked=on_blocked)
-            await strategy.scan_window(bot, 1, "@0", 42, on_blocked=on_blocked)
+            mock_mux.capture_pane_by_id = AsyncMock(return_value="prompt\nEsc\n")
+            await strategy.scan_window(_bot(), 1, "@0", 42, on_blocked=on_blocked)
+            await strategy.scan_window(_bot(), 1, "@0", 42, on_blocked=on_blocked)
         assert on_blocked.call_count == 2
 
     async def test_dead_pane_removed_from_state(
         self, strategy: PaneStatusStrategy
     ) -> None:
         strategy.record_pane_state("@0", "%2", "active", provider="claude")
-        bot = AsyncMock(spec=Bot)
-        on_blocked = AsyncMock()
-        provider = _idle_provider()
-        with (
-            patch("ccgram.multiplexer.multiplexer") as mock_tm,
-            patch("ccgram.providers.get_provider_for_window", return_value=provider),
-        ):
-            mock_tm.list_panes = AsyncMock(return_value=[_pane("%1", active=True)])
+        with _panes(_pane("%1", active=True)):
             transitions = await strategy.scan_window(
-                bot, 1, "@0", 42, on_blocked=on_blocked
+                _bot(), 1, "@0", 42, on_blocked=AsyncMock()
             )
         assert window_store.get_pane("@0", "%2") is None
         assert any(t.pane_id == "%2" and t.new_state == "dead" for t in transitions)
@@ -328,49 +308,24 @@ class TestScanWindowMultiPane:
         self, strategy: PaneStatusStrategy
     ) -> None:
         strategy.record_pane_state("@0", "%2", "active", provider="claude")
-        bot = AsyncMock(spec=Bot)
-        on_blocked = AsyncMock()
-        provider = _idle_provider()
-        with (
-            patch("ccgram.multiplexer.multiplexer") as mock_tm,
-            patch("ccgram.providers.get_provider_for_window", return_value=provider),
-        ):
-            mock_tm.list_panes = AsyncMock(
-                return_value=[
-                    _pane("%1", active=True),
-                    _pane("%2", active=False, index=1),
-                ]
-            )
-            mock_tm.capture_pane_by_id = AsyncMock(return_value="text")
+        with _panes(_pane("%1", active=True), _pane("%2", active=False, index=1)):
             transitions = await strategy.scan_window(
-                bot, 1, "@0", 42, on_blocked=on_blocked
+                _bot(), 1, "@0", 42, on_blocked=AsyncMock()
             )
-        assert PaneTransition(pane_id="%2", prev_state="active", new_state="idle") in (
-            transitions
+        assert (
+            PaneTransition(pane_id="%2", prev_state="active", new_state="idle")
+            in transitions
         )
 
     async def test_per_pane_provider_detection(
         self, strategy: PaneStatusStrategy
     ) -> None:
-        bot = AsyncMock(spec=Bot)
-        on_blocked = AsyncMock()
-        window_provider = _idle_provider("claude")
-        with (
-            patch("ccgram.multiplexer.multiplexer") as mock_tm,
-            patch(
-                "ccgram.providers.get_provider_for_window",
-                return_value=window_provider,
-            ),
+        with _panes(
+            _pane("%1", active=True, command="claude"),
+            _pane("%2", active=False, index=1, command="codex"),
+            _pane("%3", active=False, index=2, command="bash"),
         ):
-            mock_tm.list_panes = AsyncMock(
-                return_value=[
-                    _pane("%1", active=True, command="claude"),
-                    _pane("%2", active=False, index=1, command="codex"),
-                    _pane("%3", active=False, index=2, command="bash"),
-                ]
-            )
-            mock_tm.capture_pane_by_id = AsyncMock(return_value="output")
-            await strategy.scan_window(bot, 1, "@0", 42, on_blocked=on_blocked)
+            await strategy.scan_window(_bot(), 1, "@0", 42, on_blocked=AsyncMock())
         assert _require_pane("@0", "%1").provider == "claude"
         assert _require_pane("@0", "%2").provider == "codex"
         assert _require_pane("@0", "%3").provider == "shell"
@@ -378,21 +333,13 @@ class TestScanWindowMultiPane:
     async def test_capture_failure_falls_back_to_idle(
         self, strategy: PaneStatusStrategy
     ) -> None:
-        bot = AsyncMock(spec=Bot)
         on_blocked = AsyncMock()
-        provider = _idle_provider()
-        with (
-            patch("ccgram.multiplexer.multiplexer") as mock_tm,
-            patch("ccgram.providers.get_provider_for_window", return_value=provider),
+        with _panes(
+            _pane("%1", active=True),
+            _pane("%2", active=False, index=1),
+            capture=None,
         ):
-            mock_tm.list_panes = AsyncMock(
-                return_value=[
-                    _pane("%1", active=True),
-                    _pane("%2", active=False, index=1),
-                ]
-            )
-            mock_tm.capture_pane_by_id = AsyncMock(return_value=None)
-            await strategy.scan_window(bot, 1, "@0", 42, on_blocked=on_blocked)
+            await strategy.scan_window(_bot(), 1, "@0", 42, on_blocked=on_blocked)
         assert _require_pane("@0", "%2").state == "idle"
         on_blocked.assert_not_called()
 
@@ -401,13 +348,10 @@ class TestScanWindowFastPath:
     async def test_single_pane_cached_skips_subprocess(
         self, strategy: PaneStatusStrategy
     ) -> None:
-        bot = AsyncMock(spec=Bot)
-        on_blocked = AsyncMock()
-        with patch("ccgram.multiplexer.multiplexer") as mock_tm:
-            mock_tm.list_panes = AsyncMock(return_value=[_pane("%1", active=True)])
-            await strategy.scan_window(bot, 1, "@0", 42, on_blocked=on_blocked)
+        with _panes(_pane("%1", active=True)) as mux:
+            await strategy.scan_window(_bot(), 1, "@0", 42, on_blocked=AsyncMock())
             transitions = await strategy.scan_window(
-                bot, 1, "@0", 42, on_blocked=on_blocked
+                _bot(), 1, "@0", 42, on_blocked=AsyncMock()
             )
-        mock_tm.list_panes.assert_called_once()
+        mux.list_panes.assert_called_once()
         assert transitions == []

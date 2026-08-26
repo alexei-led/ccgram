@@ -16,19 +16,11 @@ from ccgram.handlers.polling.polling_state import (
 from ccgram.handlers.polling.polling_types import (
     MAX_PROBE_FAILURES,
     RC_DEBOUNCE_SECONDS,
+    STARTUP_TIMEOUT,
+    TYPING_INTERVAL,
     TopicPollState,
     WindowPollState,
-    is_shell_prompt,
 )
-from ccgram.topic_state_registry import topic_state
-
-
-@pytest.fixture(autouse=True)
-def _reset_topic_state_registry():
-    snapshot = {scope: list(bucket) for scope, bucket in topic_state._cleanups.items()}
-    yield
-    for scope, bucket in topic_state._cleanups.items():
-        bucket[:] = snapshot[scope]
 
 
 class TestStripHookRunnerNoise:
@@ -92,11 +84,24 @@ class TestTerminalScreenBuffer:
         assert ws.rc_active
         assert ws.rc_off_since is None
 
+    def test_update_rc_state_stays_off_when_never_active(self):
+        ws = WindowPollState()
+        self.strategy.update_rc_state(ws, False)
+        assert not ws.rc_active
+        assert ws.rc_off_since is None
+
     def test_update_rc_state_debounce_start(self):
         ws = WindowPollState(rc_active=True)
         self.strategy.update_rc_state(ws, False)
         assert ws.rc_active
         assert ws.rc_off_since is not None
+
+    def test_update_rc_state_holds_badge_within_debounce(self):
+        off_since = time.monotonic() - RC_DEBOUNCE_SECONDS / 2
+        ws = WindowPollState(rc_active=True, rc_off_since=off_since)
+        self.strategy.update_rc_state(ws, False)
+        assert ws.rc_active
+        assert ws.rc_off_since == off_since
 
     def test_update_rc_state_debounce_completes(self):
         ws = WindowPollState(rc_active=True)
@@ -176,20 +181,20 @@ class TestTerminalScreenBuffer:
                 self.strategy.parse_with_pyte("@0", "text", 0, 0)
                 mock_buf.assert_called_with("@0", 200, 50)
 
-    def test_is_single_pane_cached_true(self):
-        ws = self.poll_state.get_state("@0")
-        ws.pane_count_cache = (1, time.monotonic() + 10.0)
-        assert self.strategy.is_single_pane_cached("@0")
-
-    def test_is_single_pane_cached_false_multi(self):
-        ws = self.poll_state.get_state("@0")
-        ws.pane_count_cache = (3, time.monotonic() + 10.0)
-        assert not self.strategy.is_single_pane_cached("@0")
-
-    def test_is_single_pane_cached_false_expired(self):
-        ws = self.poll_state.get_state("@0")
-        ws.pane_count_cache = (1, time.monotonic() - 1.0)
-        assert not self.strategy.is_single_pane_cached("@0")
+    @pytest.mark.parametrize(
+        ("count", "ttl_offset", "expected"),
+        [
+            pytest.param(1, 10.0, True, id="fresh-single-pane"),
+            pytest.param(3, 10.0, False, id="fresh-multi-pane"),
+            pytest.param(1, -1.0, False, id="expired-single-pane"),
+        ],
+    )
+    def test_is_single_pane_cached(self, count, ttl_offset, expected):
+        self.poll_state.get_state("@0").pane_count_cache = (
+            count,
+            time.monotonic() + ttl_offset,
+        )
+        assert self.strategy.is_single_pane_cached("@0") is expected
 
     def test_is_single_pane_cached_false_no_cache(self):
         assert not self.strategy.is_single_pane_cached("@0")
@@ -222,17 +227,11 @@ class TestTerminalPollState:
         self.strategy.clear_state("@0")
         assert "@0" not in self.strategy._states
 
-    def test_clear_state_nonexistent_is_noop(self):
-        self.strategy.clear_state("@999")
-
     def test_reset_probe_failures(self):
         ws = self.strategy.get_state("@0")
         ws.probe_failures = 5
         self.strategy.reset_probe_failures("@0")
         assert ws.probe_failures == 0
-
-    def test_reset_probe_failures_nonexistent_is_noop(self):
-        self.strategy.reset_probe_failures("@999")
 
     def test_clear_seen_status(self):
         ws = self.strategy.get_state("@0")
@@ -241,9 +240,6 @@ class TestTerminalPollState:
         self.strategy.clear_seen_status("@0")
         assert not ws.has_seen_status
         assert ws.startup_time is None
-
-    def test_clear_seen_status_nonexistent_is_noop(self):
-        self.strategy.clear_seen_status("@999")
 
     def test_set_unbound_timer(self):
         self.strategy.set_unbound_timer("@0", 42.0)
@@ -255,9 +251,6 @@ class TestTerminalPollState:
         ws.unbound_timer = 42.0
         self.strategy.clear_unbound_timer("@0")
         assert ws.unbound_timer is None
-
-    def test_clear_unbound_timer_nonexistent_is_noop(self):
-        self.strategy.clear_unbound_timer("@999")
 
     def test_reset_all_probe_failures(self):
         self.strategy.get_state("@0").probe_failures = 3
@@ -308,8 +301,6 @@ class TestTerminalPollState:
         assert not self.strategy.is_recently_active("@0", None)
 
     def test_is_startup_expired_true(self):
-        from ccgram.handlers.polling.polling_types import STARTUP_TIMEOUT
-
         ws = self.strategy.get_state("@0")
         ws.startup_time = time.monotonic() - STARTUP_TIMEOUT - 1.0
         assert self.strategy.is_startup_expired("@0")
@@ -321,6 +312,19 @@ class TestTerminalPollState:
 
     def test_is_startup_expired_false_no_startup(self):
         assert not self.strategy.is_startup_expired("@0")
+
+    @pytest.mark.parametrize(
+        "clear",
+        [
+            "clear_state",
+            "reset_probe_failures",
+            "clear_seen_status",
+            "clear_unbound_timer",
+        ],
+    )
+    def test_clearing_an_unknown_window_does_not_materialise_state(self, clear):
+        getattr(self.strategy, clear)("@999")
+        assert "@999" not in self.strategy._states
 
 
 class TestInteractiveUIStrategy:
@@ -445,8 +449,6 @@ class TestTopicLifecycleStrategy:
         assert self.strategy.is_typing_throttled(1, 42)
 
     def test_is_typing_throttled_false_past_interval(self):
-        from ccgram.handlers.polling.polling_types import TYPING_INTERVAL
-
         ts = self.strategy.get_state(1, 42)
         ts.last_typing_sent = time.monotonic() - TYPING_INTERVAL - 1.0
         assert not self.strategy.is_typing_throttled(1, 42)
@@ -463,17 +465,3 @@ class TestTopicLifecycleStrategy:
         ws = self.poll_state.get_state("@0")
         ws.probe_failures = MAX_PROBE_FAILURES - 1
         assert not self.strategy.should_skip_probe("@0")
-
-
-class TestIsShellPrompt:
-    @pytest.mark.parametrize("cmd", ["bash", "zsh", "fish", "sh", "dash"])
-    def test_shell_commands_detected(self, cmd):
-        assert is_shell_prompt(cmd)
-
-    @pytest.mark.parametrize("cmd", ["/usr/bin/bash", "/bin/zsh"])
-    def test_full_path_shell_detected(self, cmd):
-        assert is_shell_prompt(cmd)
-
-    @pytest.mark.parametrize("cmd", ["claude", "codex", "python", "node"])
-    def test_non_shell_not_detected(self, cmd):
-        assert not is_shell_prompt(cmd)

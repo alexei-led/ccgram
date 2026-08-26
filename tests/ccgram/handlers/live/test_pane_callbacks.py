@@ -10,6 +10,7 @@ Covers:
   - subscription cleared automatically when pane dies (reconcile drops PaneInfo)
 """
 
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -299,36 +300,47 @@ def strategy() -> PaneStatusStrategy:
     )
 
 
+@contextmanager
+def _panes_capturing(*outputs: str, panes: list[TmuxPaneInfo] | None = None):
+    """Patch the multiplexer to expose ``panes`` returning ``outputs`` in order."""
+    provider = MagicMock()
+    provider.parse_terminal_status.return_value = None
+    live = panes or [_pane("%1", active=True, index=0), _pane("%2")]
+    stream = iter(outputs)
+    with (
+        patch("ccgram.multiplexer.multiplexer") as mock_mux,
+        patch("ccgram.providers.get_provider_for_window", return_value=provider),
+    ):
+        mock_mux.list_panes = AsyncMock(return_value=live)
+        mock_mux.capture_pane_by_id = AsyncMock(
+            side_effect=lambda *_a, **_k: next(stream)
+        )
+        yield mock_mux
+
+
+async def _scan(strategy: PaneStatusStrategy, on_pane_output: AsyncMock) -> None:
+    await strategy.scan_window(
+        AsyncMock(spec=Bot),
+        1,
+        "@0",
+        42,
+        on_blocked=AsyncMock(),
+        on_pane_output=on_pane_output,
+    )
+
+
 class TestSubscribedOutputForwarding:
     async def test_callback_invoked_for_subscribed_pane(
         self, strategy: PaneStatusStrategy
     ) -> None:
         window_store.upsert_pane("@0", "%2", state="idle", subscribed=True)
-        bot = AsyncMock(spec=Bot)
-        on_blocked = AsyncMock()
         on_pane_output = AsyncMock()
-        provider = MagicMock()
-        provider.parse_terminal_status.return_value = None
-        with (
-            patch("ccgram.multiplexer.multiplexer") as mock_tm,
-            patch("ccgram.providers.get_provider_for_window", return_value=provider),
-        ):
-            mock_tm.list_panes = AsyncMock(
-                return_value=[_pane("%1", active=True, index=0), _pane("%2")]
-            )
-            mock_tm.capture_pane_by_id = AsyncMock(return_value="hello world\n")
-            await strategy.scan_window(
-                bot,
-                1,
-                "@0",
-                42,
-                on_blocked=on_blocked,
-                on_pane_output=on_pane_output,
-            )
+
+        with _panes_capturing("hello world\n"):
+            await _scan(strategy, on_pane_output)
+
         on_pane_output.assert_awaited_once()
-        await_args = on_pane_output.await_args
-        assert await_args is not None
-        args = await_args.args
+        args = on_pane_output.await_args_list[-1].args
         assert args[2] == "@0"
         assert args[4] == "%2"
         assert "hello world" in args[5]
@@ -337,60 +349,23 @@ class TestSubscribedOutputForwarding:
         self, strategy: PaneStatusStrategy
     ) -> None:
         window_store.upsert_pane("@0", "%2", state="idle", subscribed=False)
-        bot = AsyncMock(spec=Bot)
         on_pane_output = AsyncMock()
-        provider = MagicMock()
-        provider.parse_terminal_status.return_value = None
-        with (
-            patch("ccgram.multiplexer.multiplexer") as mock_tm,
-            patch("ccgram.providers.get_provider_for_window", return_value=provider),
-        ):
-            mock_tm.list_panes = AsyncMock(
-                return_value=[_pane("%1", active=True, index=0), _pane("%2")]
-            )
-            mock_tm.capture_pane_by_id = AsyncMock(return_value="hello\n")
-            await strategy.scan_window(
-                bot,
-                1,
-                "@0",
-                42,
-                on_blocked=AsyncMock(),
-                on_pane_output=on_pane_output,
-            )
+
+        with _panes_capturing("hello\n"):
+            await _scan(strategy, on_pane_output)
+
         on_pane_output.assert_not_called()
 
     async def test_dedupes_when_content_unchanged(
         self, strategy: PaneStatusStrategy
     ) -> None:
         window_store.upsert_pane("@0", "%2", state="idle", subscribed=True)
-        bot = AsyncMock(spec=Bot)
         on_pane_output = AsyncMock()
-        provider = MagicMock()
-        provider.parse_terminal_status.return_value = None
-        with (
-            patch("ccgram.multiplexer.multiplexer") as mock_tm,
-            patch("ccgram.providers.get_provider_for_window", return_value=provider),
-        ):
-            mock_tm.list_panes = AsyncMock(
-                return_value=[_pane("%1", active=True, index=0), _pane("%2")]
-            )
-            mock_tm.capture_pane_by_id = AsyncMock(return_value="same\n")
-            await strategy.scan_window(
-                bot,
-                1,
-                "@0",
-                42,
-                on_blocked=AsyncMock(),
-                on_pane_output=on_pane_output,
-            )
-            await strategy.scan_window(
-                bot,
-                1,
-                "@0",
-                42,
-                on_blocked=AsyncMock(),
-                on_pane_output=on_pane_output,
-            )
+
+        with _panes_capturing("same\n", "same\n"):
+            await _scan(strategy, on_pane_output)
+            await _scan(strategy, on_pane_output)
+
         assert on_pane_output.await_count == 1
 
     async def test_resends_when_content_changes(
@@ -398,111 +373,43 @@ class TestSubscribedOutputForwarding:
         strategy: PaneStatusStrategy,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        # Disable per-pane forward rate limit so back-to-back scans both
-        # forward when content changes. The rate limit is exercised
-        # separately in `test_rate_limits_back_to_back_forwards`.
+        # Disable the per-pane forward rate limit so back-to-back scans both
+        # forward when content changes; the limit itself is exercised by
+        # `test_rate_limits_back_to_back_forwards`.
         monkeypatch.setattr(PaneStatusStrategy, "PANE_FORWARD_MIN_INTERVAL", 0.0)
         window_store.upsert_pane("@0", "%2", state="idle", subscribed=True)
-        bot = AsyncMock(spec=Bot)
         on_pane_output = AsyncMock()
-        provider = MagicMock()
-        provider.parse_terminal_status.return_value = None
-        outputs = iter(["first\n", "second\n"])
-        with (
-            patch("ccgram.multiplexer.multiplexer") as mock_tm,
-            patch("ccgram.providers.get_provider_for_window", return_value=provider),
-        ):
-            mock_tm.list_panes = AsyncMock(
-                return_value=[_pane("%1", active=True, index=0), _pane("%2")]
-            )
-            mock_tm.capture_pane_by_id = AsyncMock(
-                side_effect=lambda *_a, **_k: next(outputs)
-            )
-            await strategy.scan_window(
-                bot,
-                1,
-                "@0",
-                42,
-                on_blocked=AsyncMock(),
-                on_pane_output=on_pane_output,
-            )
-            await strategy.scan_window(
-                bot,
-                1,
-                "@0",
-                42,
-                on_blocked=AsyncMock(),
-                on_pane_output=on_pane_output,
-            )
+
+        with _panes_capturing("first\n", "second\n"):
+            await _scan(strategy, on_pane_output)
+            await _scan(strategy, on_pane_output)
+
         assert on_pane_output.await_count == 2
 
     async def test_rate_limits_back_to_back_forwards(
         self, strategy: PaneStatusStrategy
     ) -> None:
-        # With the default 5s minimum interval, the second scan within
-        # the same monotonic window must NOT forward even when content
-        # genuinely changed — protects Telegram from busy-pane floods.
+        # With the default 5s minimum interval the second scan must NOT forward
+        # even though content changed — protects Telegram from busy-pane floods.
         window_store.upsert_pane("@0", "%2", state="idle", subscribed=True)
-        bot = AsyncMock(spec=Bot)
         on_pane_output = AsyncMock()
-        provider = MagicMock()
-        provider.parse_terminal_status.return_value = None
-        outputs = iter(["first\n", "second\n"])
-        with (
-            patch("ccgram.multiplexer.multiplexer") as mock_tm,
-            patch("ccgram.providers.get_provider_for_window", return_value=provider),
-        ):
-            mock_tm.list_panes = AsyncMock(
-                return_value=[_pane("%1", active=True, index=0), _pane("%2")]
-            )
-            mock_tm.capture_pane_by_id = AsyncMock(
-                side_effect=lambda *_a, **_k: next(outputs)
-            )
-            await strategy.scan_window(
-                bot,
-                1,
-                "@0",
-                42,
-                on_blocked=AsyncMock(),
-                on_pane_output=on_pane_output,
-            )
-            await strategy.scan_window(
-                bot,
-                1,
-                "@0",
-                42,
-                on_blocked=AsyncMock(),
-                on_pane_output=on_pane_output,
-            )
+
+        with _panes_capturing("first\n", "second\n"):
+            await _scan(strategy, on_pane_output)
+            await _scan(strategy, on_pane_output)
+
         assert on_pane_output.await_count == 1
 
     async def test_dead_pane_drops_subscription(
         self, strategy: PaneStatusStrategy
     ) -> None:
-        # Subscribed pane that disappears in the next scan
         window_store.upsert_pane("@0", "%2", state="idle", subscribed=True)
-        bot = AsyncMock(spec=Bot)
-        on_pane_output = AsyncMock()
-        provider = MagicMock()
-        provider.parse_terminal_status.return_value = None
-        with (
-            patch("ccgram.multiplexer.multiplexer") as mock_tm,
-            patch("ccgram.providers.get_provider_for_window", return_value=provider),
-        ):
-            mock_tm.list_panes = AsyncMock(
-                return_value=[_pane("%1", active=True, index=0)]
-            )
-            await strategy.scan_window(
-                bot,
-                1,
-                "@0",
-                42,
-                on_blocked=AsyncMock(),
-                on_pane_output=on_pane_output,
-            )
-        # PaneInfo for %2 — and its subscribed flag — is gone
+
+        with _panes_capturing(panes=[_pane("%1", active=True, index=0)]):
+            await _scan(strategy, AsyncMock())
+
+        # PaneInfo for %2 — and its subscribed flag — is gone, hash cache evicted.
         assert window_store.get_pane("@0", "%2") is None
-        # Hash cache also evicted
         assert "%2" not in strategy._pane_content_hash
 
 

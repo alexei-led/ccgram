@@ -5,6 +5,7 @@ import pytest
 from ccgram.handlers.polling.polling_types import (
     STARTUP_TIMEOUT,
     TickContext,
+    TickDecision,
 )
 from ccgram.handlers.polling.window_tick.decide import (
     build_status_line,
@@ -37,79 +38,108 @@ def _make_ctx(
     )
 
 
-class TestDecideTickDeadWindow:
-    def test_dead_window_yields_recovery(self):
-        ctx = _make_ctx(is_dead_window=True)
-        decision = decide_tick(ctx)
-        assert decision.show_recovery is True
-        assert decision.transition is None
-
-    def test_dead_window_overrides_other_signals(self):
-        ctx = _make_ctx(
-            is_dead_window=True,
-            resolved_status_text="Working",
-            is_recently_active=True,
-            is_shell_prompt=True,
-        )
-        decision = decide_tick(ctx)
-        assert decision.show_recovery is True
-
-
 class TestDecideTickActiveStatus:
     def test_resolved_status_yields_active_with_text(self):
-        ctx = _make_ctx(resolved_status_text="Working...")
-        decision = decide_tick(ctx)
+        decision = decide_tick(_make_ctx(resolved_status_text="Working..."))
         assert decision.transition == "active"
         assert decision.send_status is True
         assert decision.status_text == "Working..."
+        assert decision.show_recovery is False
 
     def test_recently_active_alone_yields_active_no_status(self):
-        ctx = _make_ctx(is_recently_active=True)
-        decision = decide_tick(ctx)
+        decision = decide_tick(_make_ctx(is_recently_active=True))
         assert decision.transition == "active"
         assert decision.send_status is False
         assert decision.status_text is None
 
-    def test_resolved_status_takes_precedence_over_shell_prompt(self):
-        ctx = _make_ctx(resolved_status_text="Working", is_shell_prompt=True)
-        decision = decide_tick(ctx)
-        assert decision.transition == "active"
-        assert decision.send_status is True
+    def test_empty_status_text_is_not_treated_as_a_status(self):
+        decision = decide_tick(_make_ctx(resolved_status_text="", has_seen_status=True))
+        assert decision.send_status is False
+        assert decision.transition == "idle"
 
 
 class TestDecideTickShellPrompt:
     def test_hook_provider_yields_done(self):
-        ctx = _make_ctx(is_shell_prompt=True, supports_hook=True)
-        decision = decide_tick(ctx)
+        decision = decide_tick(_make_ctx(is_shell_prompt=True, supports_hook=True))
         assert decision.transition == "done"
 
     def test_no_hook_provider_yields_idle(self):
-        ctx = _make_ctx(is_shell_prompt=True, supports_hook=False)
-        decision = decide_tick(ctx)
+        decision = decide_tick(_make_ctx(is_shell_prompt=True, supports_hook=False))
         assert decision.transition == "idle"
+        # A shell window at a prompt must not re-request a status send every
+        # tick — at 1s polling that is a status-bubble edit flood.
+        assert decision.send_status is False
 
 
 class TestDecideTickIdleAndStarting:
     def test_seen_status_with_no_signal_yields_idle(self):
-        ctx = _make_ctx(has_seen_status=True)
-        decision = decide_tick(ctx)
+        decision = decide_tick(_make_ctx(has_seen_status=True))
         assert decision.transition == "idle"
+        assert decision.send_status is False
 
     def test_no_signal_no_startup_yields_starting(self):
-        ctx = _make_ctx(startup_time=None)
-        decision = decide_tick(ctx)
-        assert decision.transition == "starting"
+        assert decide_tick(_make_ctx(startup_time=None)).transition == "starting"
 
     def test_startup_within_grace_period_yields_starting(self):
         ctx = _make_ctx(startup_time=time.monotonic())
-        decision = decide_tick(ctx)
-        assert decision.transition == "starting"
+        assert decide_tick(ctx).transition == "starting"
 
     def test_startup_expired_yields_idle(self):
-        old_start = time.monotonic() - STARTUP_TIMEOUT - 1.0
-        ctx = _make_ctx(startup_time=old_start)
-        decision = decide_tick(ctx)
-        assert decision.transition == "idle"
+        ctx = _make_ctx(startup_time=time.monotonic() - STARTUP_TIMEOUT - 1.0)
+        assert decide_tick(ctx).transition == "idle"
+
+
+class TestDecideTickPrecedence:
+    """The kernel is a strict ladder: dead > status > active > shell > seen."""
+
+    def test_dead_window_yields_recovery(self):
+        decision = decide_tick(_make_ctx(is_dead_window=True))
+        assert decision.show_recovery is True
+        assert decision.transition is None
+        assert decision.send_status is False
+
+    def test_dead_window_overrides_every_other_signal(self):
+        decision = decide_tick(
+            _make_ctx(
+                is_dead_window=True,
+                resolved_status_text="Working",
+                is_recently_active=True,
+                is_shell_prompt=True,
+                has_seen_status=True,
+            )
+        )
+        assert decision.show_recovery is True
+        assert decision.transition is None
+
+    @pytest.mark.parametrize(
+        "loser",
+        [
+            pytest.param({"is_recently_active": True}, id="recently-active"),
+            pytest.param({"is_shell_prompt": True}, id="shell-prompt"),
+            pytest.param({"has_seen_status": True}, id="seen-status"),
+        ],
+    )
+    def test_resolved_status_beats_every_lower_signal(self, loser):
+        decision = decide_tick(_make_ctx(resolved_status_text="Working", **loser))
+        assert decision.transition == "active"
+        assert decision.send_status is True
+
+    def test_recently_active_beats_shell_prompt(self):
+        ctx = _make_ctx(is_recently_active=True, is_shell_prompt=True)
+        assert decide_tick(ctx).transition == "active"
+
+    def test_shell_prompt_beats_seen_status(self):
+        ctx = _make_ctx(is_shell_prompt=True, has_seen_status=True, supports_hook=True)
+        assert decide_tick(ctx).transition == "done"
+
+
+class TestTickDecisionDefaults:
+    def test_default_decision_is_a_no_op(self):
+        decision = TickDecision()
+        assert decision.send_status is False
+        assert decision.status_text is None
+        assert decision.transition is None
+        assert decision.show_recovery is False
 
 
 class TestBuildStatusLine:
@@ -127,8 +157,7 @@ class TestBuildStatusLine:
         assert build_status_line(status) == "line1\nline2"
 
     def test_single_line_gets_emoji_prefix(self):
-        status = StatusUpdate(raw_text="Working", display_label="")
-        result = build_status_line(status)
+        result = build_status_line(StatusUpdate(raw_text="Working", display_label=""))
         assert result is not None
         assert result.endswith(" Working")
         assert result != "Working"
@@ -142,24 +171,20 @@ class TestIsShellPrompt:
             ("zsh", True),
             ("fish", True),
             ("sh", True),
+            ("dash", True),
+            ("ksh", True),
+            ("tcsh", True),
+            ("csh", True),
             ("/bin/bash", True),
             ("/usr/local/bin/zsh", True),
+            ("  bash  ", True),
             ("claude", False),
             ("codex", False),
             ("python3", False),
+            ("node", False),
+            ("npx", False),
+            ("bashful", False),
             ("", False),
-        ],
-        ids=[
-            "bash",
-            "zsh",
-            "fish",
-            "sh",
-            "absolute_bash",
-            "absolute_zsh",
-            "claude",
-            "codex",
-            "python3",
-            "empty",
         ],
     )
     def test_classification(self, command, expected):

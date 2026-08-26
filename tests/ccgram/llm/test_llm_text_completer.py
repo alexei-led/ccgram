@@ -87,57 +87,20 @@ class TestAnthropicComplete:
 
 
 class TestGetTextCompleter:
-    def _mock_config(self, monkeypatch, **attrs):
-        mock_cfg = MagicMock()
-        for key, value in attrs.items():
-            setattr(mock_cfg, key, value)
-        monkeypatch.setattr("ccgram.config.config", mock_cfg)
-
-    def test_no_provider_returns_none(self, monkeypatch):
-        self._mock_config(monkeypatch, llm_provider="")
-
-        from ccgram.llm import get_text_completer
-
-        assert get_text_completer() is None
-
-    def test_openai_returns_completer_with_complete(self, monkeypatch):
-        self._mock_config(
-            monkeypatch,
+    def test_delegates_to_the_shared_completer_factory(self, monkeypatch):
+        """get_text_completer is a typed alias of the get_completer factory —
+        provider/API-key resolution is covered by test_llm_completer.py."""
+        mock_cfg = MagicMock(
             llm_provider="openai",
             llm_api_key="sk-test",
             llm_base_url="",
             llm_model="",
             llm_temperature=0.1,
         )
+        monkeypatch.setattr("ccgram.config.config", mock_cfg)
 
         from ccgram.llm import get_text_completer
 
-        result = get_text_completer()
-        assert result is not None
-        assert hasattr(result, "complete")
-        assert isinstance(result, OpenAICompatCompleter)
-
-    def test_anthropic_returns_completer_with_complete(self, monkeypatch):
-        self._mock_config(
-            monkeypatch,
-            llm_provider="anthropic",
-            llm_api_key="sk-ant-test",
-            llm_base_url="",
-            llm_model="",
-            llm_temperature=0.1,
-        )
-
-        from ccgram.llm import get_text_completer
-
-        result = get_text_completer()
-        assert result is not None
-        assert hasattr(result, "complete")
-        assert isinstance(result, AnthropicCompleter)
-
-    def test_unknown_provider_raises(self, monkeypatch):
-        self._mock_config(monkeypatch, llm_provider="nonexistent")
-
-        from ccgram.llm import get_text_completer
-
-        with pytest.raises(ValueError, match="Unknown LLM provider"):
-            get_text_completer()
+        completer = get_text_completer()
+        assert isinstance(completer, OpenAICompatCompleter)
+        assert callable(completer.complete)

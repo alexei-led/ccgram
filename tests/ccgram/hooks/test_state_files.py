@@ -14,154 +14,101 @@ from ccgram.hooks.state_files import (
     serialize_session_map_entry,
 )
 
+_VALID_EVENT = {
+    "schema_version": 1,
+    "ts": 1234567890.0,
+    "event": "SessionStart",
+    "window_key": "ccgram:@0",
+    "session_id": "abc-123",
+    "data": {"key": "val"},
+}
 
-# ---------------------------------------------------------------------------
-# parse_event_record
-# ---------------------------------------------------------------------------
+_VALID_SESSION_MAP = {
+    "schema_version": 1,
+    "session_id": "sess-1",
+    "cwd": "/repo",
+    "window_name": "repo",
+    "transcript_path": "/path/to.jsonl",
+    "provider_name": "claude",
+}
+
+
+def _event(**overrides: object) -> dict:
+    return _VALID_EVENT | overrides
+
+
+def _entry(**overrides: object) -> dict:
+    return _VALID_SESSION_MAP | overrides
 
 
 class TestParseEventRecord:
     def test_valid_v1(self) -> None:
-        raw = {
-            "schema_version": 1,
-            "ts": 1234567890.0,
-            "event": "SessionStart",
-            "window_key": "ccgram:@0",
-            "session_id": "abc-123",
-            "data": {"key": "val"},
-        }
-        rec = parse_event_record(raw)
-        assert isinstance(rec, EventLogRecord)
-        assert rec.schema_version == 1
-        assert rec.event == "SessionStart"
-        assert rec.window_key == "ccgram:@0"
-        assert rec.session_id == "abc-123"
-        assert rec.data == {"key": "val"}
-        assert rec.ts == 1234567890.0
+        rec = parse_event_record(_VALID_EVENT)
+        assert rec == EventLogRecord(
+            schema_version=1,
+            ts=1234567890.0,
+            event="SessionStart",
+            window_key="ccgram:@0",
+            session_id="abc-123",
+            data={"key": "val"},
+        )
 
     def test_legacy_versionless_accepted_as_v1(self) -> None:
-        """Records with no schema_version field parse as v1 (legacy compat)."""
-        raw = {
-            "ts": 1.0,
-            "event": "Stop",
-            "window_key": "ccgram:@5",
-            "session_id": "def-456",
-            "data": {},
-        }
-        rec = parse_event_record(raw)
-        assert rec.schema_version == 1
-        assert rec.event == "Stop"
+        """Records written before versioning must still parse byte-identically."""
+        raw = _event()
+        del raw["schema_version"]
+        assert parse_event_record(raw).schema_version == 1
 
     def test_extra_fields_ignored(self) -> None:
-        raw = {
-            "ts": 2.0,
-            "event": "Notification",
-            "window_key": "ccgram:@1",
-            "session_id": "ghi-789",
-            "data": {},
-            "future_field": "ignored",
-        }
-        rec = parse_event_record(raw)
-        assert rec.event == "Notification"
+        rec = parse_event_record(_event(future_field="ignored"))
+        assert rec.event == "SessionStart"
 
-    def test_missing_event_field_raises(self) -> None:
-        raw = {
-            "ts": 1.0,
-            "window_key": "ccgram:@0",
-            "session_id": "abc-123",
-            "data": {},
-        }
+    @pytest.mark.parametrize("field", ["event", "window_key", "session_id"])
+    def test_missing_required_field_raises(self, field: str) -> None:
+        raw = _event()
+        del raw[field]
         with pytest.raises(StateFileValidationError, match="missing required fields"):
             parse_event_record(raw)
 
-    def test_missing_window_key_raises(self) -> None:
-        raw = {
-            "ts": 1.0,
-            "event": "Stop",
-            "session_id": "abc-123",
-            "data": {},
-        }
+    @pytest.mark.parametrize("field", ["event", "window_key", "session_id"])
+    def test_empty_required_field_raises(self, field: str) -> None:
         with pytest.raises(StateFileValidationError, match="missing required fields"):
-            parse_event_record(raw)
+            parse_event_record(_event(**{field: ""}))
 
-    def test_missing_session_id_raises(self) -> None:
-        raw = {
-            "ts": 1.0,
-            "event": "Stop",
-            "window_key": "ccgram:@0",
-            "data": {},
-        }
-        with pytest.raises(StateFileValidationError, match="missing required fields"):
-            parse_event_record(raw)
-
-    def test_unknown_future_version_raises(self) -> None:
-        raw = {
-            "schema_version": EVENTS_SCHEMA_VERSION + 1,
-            "ts": 1.0,
-            "event": "Stop",
-            "window_key": "ccgram:@0",
-            "session_id": "abc-123",
-            "data": {},
-        }
+    @pytest.mark.parametrize(
+        "version",
+        [
+            pytest.param(EVENTS_SCHEMA_VERSION + 1, id="future_int"),
+            pytest.param("1", id="string"),
+            pytest.param(1.0, id="float"),
+        ],
+    )
+    def test_unsupported_version_raises(self, version: object) -> None:
         with pytest.raises(
             StateFileValidationError, match="Unsupported events schema_version"
         ):
-            parse_event_record(raw)
+            parse_event_record(_event(schema_version=version))
 
-    def test_non_integer_version_raises(self) -> None:
-        raw = {
-            "schema_version": "1",
-            "ts": 1.0,
-            "event": "Stop",
-            "window_key": "ccgram:@0",
-            "session_id": "abc-123",
-            "data": {},
-        }
-        with pytest.raises(
-            StateFileValidationError, match="Unsupported events schema_version"
-        ):
-            parse_event_record(raw)
-
-    def test_non_dict_list_raises(self) -> None:
+    @pytest.mark.parametrize(
+        "raw", [pytest.param([], id="list"), pytest.param(5, id="scalar")]
+    )
+    def test_non_dict_raises(self, raw: object) -> None:
         with pytest.raises(StateFileValidationError, match="JSON object"):
-            parse_event_record([])  # type: ignore[arg-type]
+            parse_event_record(raw)  # type: ignore[arg-type]
 
-    def test_non_dict_scalar_raises(self) -> None:
-        with pytest.raises(StateFileValidationError, match="JSON object"):
-            parse_event_record(5)  # type: ignore[arg-type]
-
-    def test_missing_ts_defaults_to_zero(self) -> None:
-        raw = {
-            "event": "Stop",
-            "window_key": "ccgram:@0",
-            "session_id": "abc-123",
-            "data": {},
-        }
+    def test_optional_fields_get_defaults(self) -> None:
+        raw = _event()
+        del raw["ts"]
+        del raw["data"]
         rec = parse_event_record(raw)
         assert rec.ts == 0.0
-
-    def test_missing_data_defaults_to_empty_dict(self) -> None:
-        raw = {
-            "event": "Stop",
-            "window_key": "ccgram:@0",
-            "session_id": "abc-123",
-        }
-        rec = parse_event_record(raw)
         assert rec.data == {}
 
 
-# ---------------------------------------------------------------------------
-# serialize_event_record
-# ---------------------------------------------------------------------------
-
-
 class TestSerializeEventRecord:
-    def test_includes_schema_version(self) -> None:
-        d = serialize_event_record("Stop", "abc-123", "ccgram:@0", {})
-        assert d["schema_version"] == EVENTS_SCHEMA_VERSION
-
     def test_all_fields_present(self) -> None:
         d = serialize_event_record("Stop", "abc-123", "ccgram:@0", {"k": "v"})
+        assert d["schema_version"] == EVENTS_SCHEMA_VERSION
         assert d["event"] == "Stop"
         assert d["session_id"] == "abc-123"
         assert d["window_key"] == "ccgram:@0"
@@ -174,137 +121,108 @@ class TestSerializeEventRecord:
 
     def test_round_trip(self) -> None:
         d = serialize_event_record("SessionStart", "s1", "ccgram:@3", {"x": 1}, ts=1.5)
-        rec = parse_event_record(d)
-        assert rec.event == "SessionStart"
-        assert rec.session_id == "s1"
-        assert rec.window_key == "ccgram:@3"
-        assert rec.data == {"x": 1}
-        assert rec.ts == 1.5
-        assert rec.schema_version == 1
-
-
-# ---------------------------------------------------------------------------
-# parse_session_map_entry
-# ---------------------------------------------------------------------------
+        assert parse_event_record(d) == EventLogRecord(
+            schema_version=1,
+            ts=1.5,
+            event="SessionStart",
+            window_key="ccgram:@3",
+            session_id="s1",
+            data={"x": 1},
+        )
 
 
 class TestParseSessionMapEntry:
     def test_valid_v1(self) -> None:
-        raw = {
-            "schema_version": 1,
-            "session_id": "sess-1",
-            "cwd": "/repo",
-            "window_name": "repo",
-            "transcript_path": "/path/to.jsonl",
-            "provider_name": "claude",
-        }
-        entry = parse_session_map_entry(raw)
-        assert isinstance(entry, SessionMapEntry)
-        assert entry.schema_version == 1
-        assert entry.session_id == "sess-1"
-        assert entry.cwd == "/repo"
-        assert entry.provider_name == "claude"
+        assert parse_session_map_entry(_VALID_SESSION_MAP) == SessionMapEntry(
+            schema_version=1,
+            session_id="sess-1",
+            cwd="/repo",
+            window_name="repo",
+            transcript_path="/path/to.jsonl",
+            provider_name="claude",
+        )
 
     def test_legacy_versionless_accepted_as_v1(self) -> None:
-        raw = {
-            "session_id": "sess-2",
-            "cwd": "/repo2",
-            "window_name": "repo2",
-            "transcript_path": "",
-            "provider_name": "codex",
-        }
-        entry = parse_session_map_entry(raw)
-        assert entry.schema_version == 1
-        assert entry.session_id == "sess-2"
+        raw = _entry()
+        del raw["schema_version"]
+        assert parse_session_map_entry(raw).schema_version == 1
 
     def test_extra_fields_ignored(self) -> None:
-        raw = {
-            "session_id": "sess-3",
-            "cwd": "/x",
-            "window_name": "x",
-            "transcript_path": "",
-            "provider_name": "claude",
-            "future_field": "ignored",
-        }
-        entry = parse_session_map_entry(raw)
-        assert entry.session_id == "sess-3"
+        entry = parse_session_map_entry(_entry(future_field="ignored"))
+        assert entry.session_id == "sess-1"
 
-    def test_missing_session_id_raises(self) -> None:
-        raw = {
-            "cwd": "/repo",
-            "window_name": "repo",
-            "transcript_path": "",
-            "provider_name": "claude",
-        }
+    @pytest.mark.parametrize(
+        "session_id",
+        [pytest.param(None, id="missing"), pytest.param("", id="empty")],
+    )
+    def test_session_id_is_required(self, session_id: str | None) -> None:
+        raw = _entry()
+        if session_id is None:
+            del raw["session_id"]
+        else:
+            raw["session_id"] = session_id
         with pytest.raises(StateFileValidationError, match="missing required fields"):
             parse_session_map_entry(raw)
 
-    def test_empty_session_id_raises(self) -> None:
-        raw = {
-            "session_id": "",
-            "cwd": "/repo",
-            "window_name": "repo",
-            "transcript_path": "",
-            "provider_name": "claude",
-        }
-        with pytest.raises(StateFileValidationError, match="missing required fields"):
-            parse_session_map_entry(raw)
-
-    def test_unknown_future_version_raises(self) -> None:
-        raw = {
-            "schema_version": SESSION_MAP_SCHEMA_VERSION + 1,
-            "session_id": "sess-4",
-            "cwd": "/repo",
-            "window_name": "repo",
-            "transcript_path": "",
-            "provider_name": "claude",
-        }
+    @pytest.mark.parametrize(
+        "version",
+        [
+            pytest.param(SESSION_MAP_SCHEMA_VERSION + 1, id="future_int"),
+            pytest.param("1", id="string"),
+            pytest.param(True, id="bool_is_not_an_int_version"),
+        ],
+    )
+    def test_unsupported_version_raises(self, version: object) -> None:
         with pytest.raises(
             StateFileValidationError, match="Unsupported session_map schema_version"
         ):
-            parse_session_map_entry(raw)
+            parse_session_map_entry(_entry(schema_version=version))
 
-    def test_non_dict_list_raises(self) -> None:
+    @pytest.mark.parametrize(
+        "raw", [pytest.param([], id="list"), pytest.param("oops", id="scalar")]
+    )
+    def test_non_dict_raises(self, raw: object) -> None:
         with pytest.raises(StateFileValidationError, match="JSON object"):
-            parse_session_map_entry([])  # type: ignore[arg-type]
+            parse_session_map_entry(raw)  # type: ignore[arg-type]
 
-    def test_non_dict_scalar_raises(self) -> None:
-        with pytest.raises(StateFileValidationError, match="JSON object"):
-            parse_session_map_entry("oops")  # type: ignore[arg-type]
+    @pytest.mark.parametrize(
+        "field",
+        ["session_id", "cwd", "window_name", "transcript_path", "provider_name"],
+    )
+    def test_non_string_field_raises(self, field: str) -> None:
+        """A corrupt hook write must not put a non-str into WindowState."""
+        with pytest.raises(StateFileValidationError, match="must be strings"):
+            parse_session_map_entry(_entry(**{field: ["not", "a", "string"]}))
 
     def test_optional_fields_default_to_empty_string(self) -> None:
-        raw = {"session_id": "sess-5"}
-        entry = parse_session_map_entry(raw)
-        assert entry.cwd == ""
-        assert entry.window_name == ""
-        assert entry.transcript_path == ""
-        assert entry.provider_name == ""
-
-
-# ---------------------------------------------------------------------------
-# serialize_session_map_entry
-# ---------------------------------------------------------------------------
+        entry = parse_session_map_entry({"session_id": "sess-5"})
+        assert (
+            entry.cwd,
+            entry.window_name,
+            entry.transcript_path,
+            entry.provider_name,
+        ) == ("", "", "", "")
 
 
 class TestSerializeSessionMapEntry:
-    def test_includes_schema_version(self) -> None:
-        d = serialize_session_map_entry("s1", "/repo", "repo", "/t.jsonl", "claude")
-        assert d["schema_version"] == SESSION_MAP_SCHEMA_VERSION
-
     def test_all_fields_present(self) -> None:
         d = serialize_session_map_entry("s1", "/repo", "myrepo", "/t.jsonl", "codex")
-        assert d["session_id"] == "s1"
-        assert d["cwd"] == "/repo"
-        assert d["window_name"] == "myrepo"
-        assert d["transcript_path"] == "/t.jsonl"
-        assert d["provider_name"] == "codex"
+        assert d == {
+            "schema_version": SESSION_MAP_SCHEMA_VERSION,
+            "session_id": "s1",
+            "cwd": "/repo",
+            "window_name": "myrepo",
+            "transcript_path": "/t.jsonl",
+            "provider_name": "codex",
+        }
 
     def test_round_trip(self) -> None:
         d = serialize_session_map_entry("s2", "/x", "x", "/x.jsonl", "gemini")
-        entry = parse_session_map_entry(d)
-        assert entry.session_id == "s2"
-        assert entry.cwd == "/x"
-        assert entry.window_name == "x"
-        assert entry.transcript_path == "/x.jsonl"
-        assert entry.provider_name == "gemini"
-        assert entry.schema_version == 1
+        assert parse_session_map_entry(d) == SessionMapEntry(
+            schema_version=1,
+            session_id="s2",
+            cwd="/x",
+            window_name="x",
+            transcript_path="/x.jsonl",
+            provider_name="gemini",
+        )

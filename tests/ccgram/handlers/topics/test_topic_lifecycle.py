@@ -1,4 +1,5 @@
 import time
+from dataclasses import dataclass
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -117,9 +118,12 @@ class TestCheckAutocloseTimers:
         assert lifecycle_strategy.get_state(user_id, thread_id).autoclose is None
 
 
-def _window_view(origin: str) -> WindowView:
+HERDR_TARGET = "herdr-session-v1-" + "a" * 64
+
+
+def _window_view(origin: str, window_id: str = "@0") -> WindowView:
     return WindowView(
-        window_id="@0",
+        window_id=window_id,
         cwd="/tmp",
         provider_name="claude",
         approval_mode="normal",
@@ -132,6 +136,43 @@ def _window_view(origin: str) -> WindowView:
     )
 
 
+@dataclass
+class _TtlSweep:
+    mux: MagicMock
+    revoke: MagicMock
+    unbound_timer: float | None
+
+
+async def _sweep_expired_unbound_window(
+    window_id: str = "@0",
+    *,
+    origin: str = "ccgram_created",
+    kill_ok: bool = True,
+    bindings: list[tuple[int, int, str]] | None = None,
+) -> _TtlSweep:
+    """Age *window_id* past the unbound TTL, run one sweep, report what happened."""
+    state = terminal_poll_state.get_state(window_id)
+    state.unbound_timer = time.monotonic() - 100
+    window = MagicMock(window_id=window_id, window_name="test")
+    with (
+        patch("ccgram.handlers.topics.topic_lifecycle.config") as mock_config,
+        patch("ccgram.handlers.topics.topic_lifecycle.thread_router") as mock_router,
+        patch("ccgram.handlers.topics.topic_lifecycle.window_query") as mock_wq,
+        patch("ccgram.handlers.topics.topic_lifecycle.tmux_manager") as mock_tmux,
+        patch("ccgram.handlers.topics.topic_lifecycle.revoke_window_tokens") as revoke,
+    ):
+        mock_config.autoclose_done_minutes = 1
+        mock_router.iter_thread_bindings.return_value = bindings or []
+        mock_wq.view_window.return_value = _window_view(origin, window_id)
+        mock_tmux.kill_window = AsyncMock(return_value=kill_ok)
+        await check_unbound_window_ttl([window])
+    return _TtlSweep(
+        mux=mock_tmux,
+        revoke=revoke,
+        unbound_timer=terminal_poll_state.get_state(window_id).unbound_timer,
+    )
+
+
 class TestCheckUnboundWindowTtl:
     async def test_no_timeout_is_noop(self):
         with patch("ccgram.handlers.topics.topic_lifecycle.config") as mock_config:
@@ -139,160 +180,31 @@ class TestCheckUnboundWindowTtl:
             await check_unbound_window_ttl([])
 
     async def test_bound_window_timer_cleared(self):
-        ws = terminal_poll_state.get_state("@0")
-        ws.unbound_timer = time.monotonic() - 100
-        mock_window = MagicMock(window_id="@0", window_name="test")
-        with (
-            patch("ccgram.handlers.topics.topic_lifecycle.config") as mock_config,
-            patch(
-                "ccgram.handlers.topics.topic_lifecycle.thread_router"
-            ) as mock_router,
-        ):
-            mock_config.autoclose_done_minutes = 1
-            mock_router.iter_thread_bindings.return_value = [(1, 100, "@0")]
-            await check_unbound_window_ttl([mock_window])
-        assert ws.unbound_timer is None
+        sweep = await _sweep_expired_unbound_window(bindings=[(1, 100, "@0")])
+        assert sweep.unbound_timer is None
+        sweep.mux.kill_window.assert_not_called()
 
-    async def test_manual_unbound_window_is_not_killed(self):
-        ws = terminal_poll_state.get_state("@0")
-        ws.unbound_timer = time.monotonic() - 100
-        mock_window = MagicMock(window_id="@0", window_name="test")
-        with (
-            patch("ccgram.handlers.topics.topic_lifecycle.config") as mock_config,
-            patch(
-                "ccgram.handlers.topics.topic_lifecycle.thread_router"
-            ) as mock_router,
-            patch("ccgram.handlers.topics.topic_lifecycle.window_query") as mock_wq,
-            patch("ccgram.handlers.topics.topic_lifecycle.tmux_manager") as mock_tmux,
-        ):
-            mock_config.autoclose_done_minutes = 1
-            mock_router.iter_thread_bindings.return_value = []
-            mock_wq.view_window.return_value = _window_view("manual_discovered")
-            mock_tmux.kill_window = AsyncMock()
-            await check_unbound_window_ttl([mock_window])
-        assert ws.unbound_timer is None
-        mock_tmux.kill_window.assert_not_called()
+    async def test_manually_discovered_window_is_not_killed(self):
+        sweep = await _sweep_expired_unbound_window(origin="manual_discovered")
+        assert sweep.unbound_timer is None
+        sweep.mux.kill_window.assert_not_called()
 
-    async def test_ccgram_created_unbound_window_is_killed_after_ttl(self):
-        ws = terminal_poll_state.get_state("@0")
-        ws.unbound_timer = time.monotonic() - 100
-        mock_window = MagicMock(window_id="@0", window_name="test")
-        with (
-            patch("ccgram.handlers.topics.topic_lifecycle.config") as mock_config,
-            patch(
-                "ccgram.handlers.topics.topic_lifecycle.thread_router"
-            ) as mock_router,
-            patch("ccgram.handlers.topics.topic_lifecycle.window_query") as mock_wq,
-            patch("ccgram.handlers.topics.topic_lifecycle.tmux_manager") as mock_tmux,
-            patch(
-                "ccgram.handlers.topics.topic_lifecycle.revoke_window_tokens"
-            ) as revoke,
-        ):
-            mock_config.autoclose_done_minutes = 1
-            mock_router.iter_thread_bindings.return_value = []
-            mock_wq.view_window.return_value = _window_view("ccgram_created")
-            mock_tmux.kill_window = AsyncMock()
-            await check_unbound_window_ttl([mock_window])
-        mock_tmux.kill_window.assert_called_once_with("@0")
-        revoke.assert_called_once_with("@0")
+    @pytest.mark.parametrize(
+        "window_id",
+        ["@0", HERDR_TARGET],
+        ids=["tmux_window", "guarded_herdr_target"],
+    )
+    async def test_ccgram_created_window_is_killed_through_the_proxy(
+        self, window_id: str
+    ):
+        sweep = await _sweep_expired_unbound_window(window_id)
+        sweep.mux.kill_window.assert_called_once_with(window_id)
+        sweep.revoke.assert_called_once_with(window_id)
 
-
-class TestHerdrKillPaths:
-    """Kill paths route through the multiplexer proxy regardless of window-ID format."""
-
-    async def test_unbound_cleanup_does_not_clear_state_when_kill_fails(self):
-        ws = terminal_poll_state.get_state("@0")
-        ws.unbound_timer = time.monotonic() - 100
-        mock_window = MagicMock(window_id="@0", window_name="test")
-        with (
-            patch("ccgram.handlers.topics.topic_lifecycle.config") as mock_config,
-            patch(
-                "ccgram.handlers.topics.topic_lifecycle.thread_router"
-            ) as mock_router,
-            patch("ccgram.handlers.topics.topic_lifecycle.window_query") as mock_wq,
-            patch("ccgram.handlers.topics.topic_lifecycle.tmux_manager") as mock_tmux,
-            patch(
-                "ccgram.handlers.topics.topic_lifecycle.revoke_window_tokens"
-            ) as revoke,
-        ):
-            mock_config.autoclose_done_minutes = 1
-            mock_router.iter_thread_bindings.return_value = []
-            mock_wq.view_window.return_value = _window_view("ccgram_created")
-            mock_tmux.kill_window = AsyncMock(return_value=False)
-            await check_unbound_window_ttl([mock_window])
-        revoke.assert_not_called()
-
-    async def test_guarded_herdr_unbound_target_killed_via_proxy(self):
-        """An opaque guarded target is passed through the multiplexer proxy."""
-        herdr_id = "herdr-session-v1-" + "a" * 64
-        ws = terminal_poll_state.get_state(herdr_id)
-        ws.unbound_timer = time.monotonic() - 100
-        mock_window = MagicMock(window_id=herdr_id, window_name="workspace ▸ agent")
-        with (
-            patch("ccgram.handlers.topics.topic_lifecycle.config") as mock_config,
-            patch(
-                "ccgram.handlers.topics.topic_lifecycle.thread_router"
-            ) as mock_router,
-            patch("ccgram.handlers.topics.topic_lifecycle.window_query") as mock_wq,
-            patch("ccgram.handlers.topics.topic_lifecycle.tmux_manager") as mock_tmux,
-        ):
-            mock_config.autoclose_done_minutes = 1
-            mock_router.iter_thread_bindings.return_value = []
-            mock_wq.view_window.return_value = WindowView(
-                window_id=herdr_id,
-                cwd="/workspace",
-                provider_name="claude",
-                approval_mode="normal",
-                batch_mode="batched",
-                tool_call_visibility="default",
-                transcript_path=None,
-                window_name="workspace ▸ agent",
-                session_id="s1",
-                origin="ccgram_created",
-            )
-            mock_tmux.kill_window = AsyncMock()
-            await check_unbound_window_ttl([mock_window])
-        mock_tmux.kill_window.assert_called_once_with(herdr_id)
-
-    async def test_guarded_herdr_deleted_topic_kills_target_via_proxy(self):
-        """Topic deletion reaches the proxy with its opaque guarded target."""
-        bot = AsyncMock(spec=Bot)
-        bot.unpin_all_forum_topic_messages = AsyncMock(
-            side_effect=BadRequest("Topic_id_invalid")
-        )
-        herdr_id = "herdr-session-v1-" + "b" * 64
-        with (
-            patch(
-                "ccgram.handlers.topics.topic_lifecycle.thread_router"
-            ) as mock_router,
-            patch("ccgram.handlers.topics.topic_lifecycle.tmux_manager") as mock_tmux,
-            patch("ccgram.handlers.topics.topic_lifecycle.window_query") as mock_wq,
-            patch(
-                "ccgram.handlers.topics.topic_lifecycle.clear_topic_state",
-                new_callable=AsyncMock,
-            ),
-        ):
-            mock_router.iter_thread_bindings.return_value = [(1, 100, herdr_id)]
-            mock_router.resolve_chat_id.return_value = -100
-            mock_tmux.find_window_by_id = AsyncMock(
-                return_value=MagicMock(window_id=herdr_id)
-            )
-            mock_wq.view_window.return_value = WindowView(
-                window_id=herdr_id,
-                cwd="/workspace",
-                provider_name="claude",
-                approval_mode="normal",
-                batch_mode="batched",
-                tool_call_visibility="default",
-                transcript_path=None,
-                window_name="workspace ▸ agent",
-                session_id="s1",
-                origin="ccgram_created",
-            )
-            mock_tmux.kill_window = AsyncMock()
-            await probe_topic_existence(bot)
-        mock_tmux.kill_window.assert_called_once_with(herdr_id)
-        mock_router.unbind_thread.assert_called_once_with(1, 100, chat_id=-100)
+    async def test_failed_kill_keeps_tokens_alive(self):
+        """Tokens stay valid while the window might still be running."""
+        sweep = await _sweep_expired_unbound_window(kill_ok=False)
+        sweep.revoke.assert_not_called()
 
 
 class TestPruneStaleState:
@@ -305,7 +217,18 @@ class TestPruneStaleState:
 
 
 class TestProbeTopicExistence:
-    async def test_deleted_topic_unbinds(self):
+    @pytest.mark.parametrize(
+        ("window_id", "origin", "expect_kill"),
+        [
+            ("@0", "manual_discovered", False),
+            ("@0", "ccgram_created", True),
+            (HERDR_TARGET, "ccgram_created", True),
+        ],
+        ids=["manual_window_survives", "ccgram_window_killed", "herdr_target_killed"],
+    )
+    async def test_deleted_topic_unbinds_and_kills_only_what_ccgram_created(
+        self, window_id: str, origin: str, expect_kill: bool
+    ):
         bot = AsyncMock(spec=Bot)
         bot.unpin_all_forum_topic_messages = AsyncMock(
             side_effect=BadRequest("Topic_id_invalid")
@@ -321,15 +244,19 @@ class TestProbeTopicExistence:
                 new_callable=AsyncMock,
             ),
         ):
-            mock_router.iter_thread_bindings.return_value = [(1, 100, "@0")]
+            mock_router.iter_thread_bindings.return_value = [(1, 100, window_id)]
             mock_router.resolve_chat_id.return_value = 42
             mock_tmux.find_window_by_id = AsyncMock(
-                return_value=MagicMock(window_id="@0")
+                return_value=MagicMock(window_id=window_id)
             )
-            mock_wq.view_window.return_value = _window_view("manual_discovered")
+            mock_wq.view_window.return_value = _window_view(origin, window_id)
             mock_tmux.kill_window = AsyncMock()
             await probe_topic_existence(bot)
-            mock_router.unbind_thread.assert_called_once_with(1, 100, chat_id=42)
+
+        mock_router.unbind_thread.assert_called_once_with(1, 100, chat_id=42)
+        if expect_kill:
+            mock_tmux.kill_window.assert_called_once_with(window_id)
+        else:
             mock_tmux.kill_window.assert_not_called()
 
     async def test_flood_control_backs_off_without_suspending(self):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
@@ -139,6 +140,8 @@ class TestParseCallbackData:
 # Dispatch — common test helpers
 # ──────────────────────────────────────────────────────────────────────
 
+_CB = "ccgram.handlers.toolbar.toolbar_callbacks"
+
 
 def _make_query(data: str) -> AsyncMock:
     query = AsyncMock()
@@ -163,6 +166,32 @@ def _make_context() -> MagicMock:
     return ctx
 
 
+@contextmanager
+def _owned_window(*, window_id: str | None = "@5"):
+    """Patch ownership + the multiplexer; yield the tmux mock.
+
+    ``window_id=None`` makes ``find_window_by_id`` report a dead window.
+    """
+    with (
+        patch(f"{_CB}.user_owns_window", return_value=True),
+        patch(f"{_CB}.tmux_manager") as mock_tmux,
+    ):
+        mock_tmux.find_window_by_id = AsyncMock(
+            return_value=MagicMock(window_id=window_id) if window_id else None
+        )
+        mock_tmux.send_keys = AsyncMock()
+        yield mock_tmux
+
+
+async def _dispatch(data: str, *, context: MagicMock | None = None) -> AsyncMock:
+    """Run the toolbar callback for ``data`` and return the query mock."""
+    query = _make_query(data)
+    await handle_toolbar_callback(
+        query, 100, data, _make_update_with_user(), context or _make_context()
+    )
+    return query
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Dispatch — key actions
 # ──────────────────────────────────────────────────────────────────────
@@ -170,70 +199,37 @@ def _make_context() -> MagicMock:
 
 class TestDispatchKey:
     async def test_key_action_sends_tmux_key(self) -> None:
-        query = _make_query("tb:@5:esc")
-        update = _make_update_with_user()
-        context = _make_context()
-        with (
-            patch(
-                "ccgram.handlers.toolbar.toolbar_callbacks.user_owns_window",
-                return_value=True,
-            ),
-            patch(
-                "ccgram.handlers.toolbar.toolbar_callbacks.tmux_manager"
-            ) as mock_tmux,
-        ):
-            mock_tmux.find_window_by_id = AsyncMock(
-                return_value=MagicMock(window_id="@5")
-            )
-            mock_tmux.send_keys = AsyncMock()
-            await handle_toolbar_callback(query, 100, "tb:@5:esc", update, context)
+        with _owned_window() as mock_tmux:
+            query = await _dispatch("tb:@5:esc")
         mock_tmux.send_keys.assert_awaited_once_with(
             "@5", "Escape", enter=False, literal=False
         )
         query.answer.assert_awaited_once()
 
     async def test_mode_action_uses_literal_true(self) -> None:
-        query = _make_query("tb:@5:mode")
-        update = _make_update_with_user()
-        context = _make_context()
         with (
+            _owned_window() as mock_tmux,
             patch(
-                "ccgram.handlers.toolbar.toolbar_callbacks.user_owns_window",
-                return_value=True,
-            ),
-            patch(
-                "ccgram.handlers.toolbar.toolbar_callbacks.tmux_manager"
-            ) as mock_tmux,
-            patch(
-                "ccgram.handlers.toolbar.toolbar_callbacks.refresh_button_label",
+                f"{_CB}.refresh_button_label",
                 new=AsyncMock(return_value="Edit"),
             ),
         ):
-            mock_tmux.find_window_by_id = AsyncMock(
-                return_value=MagicMock(window_id="@5")
-            )
-            mock_tmux.send_keys = AsyncMock()
-            await handle_toolbar_callback(query, 100, "tb:@5:mode", update, context)
+            query = await _dispatch("tb:@5:mode")
         mock_tmux.send_keys.assert_awaited_once_with(
             "@5", "\x1b[Z", enter=False, literal=True
         )
         query.answer.assert_awaited_once_with("\U0001f500 Edit")
 
+    async def test_ctrlc_action_sends_interrupt(self) -> None:
+        with _owned_window() as mock_tmux:
+            await _dispatch("tb:@5:ctrlc")
+        mock_tmux.send_keys.assert_awaited_once_with(
+            "@5", "C-c", enter=False, literal=False
+        )
+
     async def test_window_not_found_alerts(self) -> None:
-        query = _make_query("tb:@5:esc")
-        update = _make_update_with_user()
-        context = _make_context()
-        with (
-            patch(
-                "ccgram.handlers.toolbar.toolbar_callbacks.user_owns_window",
-                return_value=True,
-            ),
-            patch(
-                "ccgram.handlers.toolbar.toolbar_callbacks.tmux_manager"
-            ) as mock_tmux,
-        ):
-            mock_tmux.find_window_by_id = AsyncMock(return_value=None)
-            await handle_toolbar_callback(query, 100, "tb:@5:esc", update, context)
+        with _owned_window(window_id=None):
+            query = await _dispatch("tb:@5:esc")
         query.answer.assert_awaited_once_with("Window not found", show_alert=True)
 
 
@@ -243,93 +239,53 @@ class TestDispatchKey:
 
 
 class TestDispatchText:
-    async def test_text_action_sends_with_enter_literal(self) -> None:
-        clear_action = ToolbarAction(
-            name="clear",
-            emoji="\U0001f9f9",
-            text="Clear",
-            action_type="text",
-            payload="/clear",
-        )
-        custom_cfg = ToolbarConfig(
+    @pytest.fixture
+    def clear_action_config(self) -> ToolbarConfig:
+        return ToolbarConfig(
             layouts=dict(DEFAULT_LAYOUTS),
-            actions={**BUILTIN_ACTIONS, "clear": clear_action},
+            actions={
+                **BUILTIN_ACTIONS,
+                "clear": ToolbarAction(
+                    name="clear",
+                    emoji="\U0001f9f9",
+                    text="Clear",
+                    action_type="text",
+                    payload="/clear",
+                ),
+            },
         )
-        query = _make_query("tb:@5:clear")
-        update = _make_update_with_user()
-        context = _make_context()
+
+    async def test_text_action_sends_with_enter_literal(
+        self, clear_action_config: ToolbarConfig
+    ) -> None:
         with (
+            _owned_window(),
+            patch(f"{_CB}.get_toolbar_config", return_value=clear_action_config),
+            patch(f"{_CB}.get_thread_id", return_value=42),
             patch(
-                "ccgram.handlers.toolbar.toolbar_callbacks.get_toolbar_config",
-                return_value=custom_cfg,
-            ),
-            patch(
-                "ccgram.handlers.toolbar.toolbar_callbacks.user_owns_window",
-                return_value=True,
-            ),
-            patch(
-                "ccgram.handlers.toolbar.toolbar_callbacks.tmux_manager"
-            ) as mock_tmux,
-            patch(
-                "ccgram.handlers.toolbar.toolbar_callbacks.get_thread_id",
-                return_value=42,
-            ),
-            patch(
-                "ccgram.handlers.toolbar.toolbar_callbacks.send_telegram_to_window",
+                f"{_CB}.send_telegram_to_window",
                 new_callable=AsyncMock,
                 return_value=(True, "ok"),
             ) as mock_send,
         ):
-            mock_tmux.find_window_by_id = AsyncMock(
-                return_value=MagicMock(window_id="@5")
-            )
-            await handle_toolbar_callback(query, 100, "tb:@5:clear", update, context)
+            query = await _dispatch("tb:@5:clear")
         mock_send.assert_awaited_once_with(100, "@5", 42, "/clear", ANY)
         query.answer.assert_awaited_once()
 
-    async def test_text_action_reports_send_failure(self) -> None:
-        action = ToolbarAction(
-            name="clear",
-            emoji="🧹",
-            text="Clear",
-            action_type="text",
-            payload="/clear",
-        )
-        cfg = ToolbarConfig(
-            layouts=dict(DEFAULT_LAYOUTS),
-            actions={**BUILTIN_ACTIONS, "clear": action},
-        )
-        query = _make_query("tb:@5:clear")
-        update = _make_update_with_user()
+    async def test_text_action_reports_send_failure(
+        self, clear_action_config: ToolbarConfig
+    ) -> None:
         with (
+            _owned_window(),
+            patch(f"{_CB}.get_toolbar_config", return_value=clear_action_config),
+            patch(f"{_CB}.get_thread_id", return_value=42),
             patch(
-                "ccgram.handlers.toolbar.toolbar_callbacks.get_toolbar_config",
-                return_value=cfg,
-            ),
-            patch(
-                "ccgram.handlers.toolbar.toolbar_callbacks.user_owns_window",
-                return_value=True,
-            ),
-            patch(
-                "ccgram.handlers.toolbar.toolbar_callbacks.tmux_manager"
-            ) as mock_tmux,
-            patch(
-                "ccgram.handlers.toolbar.toolbar_callbacks.get_thread_id",
-                return_value=42,
-            ),
-            patch(
-                "ccgram.handlers.toolbar.toolbar_callbacks.send_telegram_to_window",
+                f"{_CB}.send_telegram_to_window",
                 new_callable=AsyncMock,
                 return_value=(False, "window gone"),
             ),
         ):
-            mock_tmux.find_window_by_id = AsyncMock(
-                return_value=MagicMock(window_id="@5")
-            )
-            await handle_toolbar_callback(
-                query, 100, "tb:@5:clear", update, _make_context()
-            )
-
+            query = await _dispatch("tb:@5:clear")
         query.answer.assert_awaited_once_with("window gone", show_alert=True)
 
 
@@ -338,57 +294,20 @@ class TestDispatchText:
 # ──────────────────────────────────────────────────────────────────────
 
 
-class TestDispatchBuiltinCtrlc:
-    async def test_sends_ctrl_c(self) -> None:
-        query = _make_query("tb:@5:ctrlc")
-        update = _make_update_with_user()
-        context = _make_context()
-        with (
-            patch(
-                "ccgram.handlers.toolbar.toolbar_callbacks.user_owns_window",
-                return_value=True,
-            ),
-            patch(
-                "ccgram.handlers.toolbar.toolbar_callbacks.tmux_manager"
-            ) as mock_tmux,
-        ):
-            mock_tmux.find_window_by_id = AsyncMock(
-                return_value=MagicMock(window_id="@5")
-            )
-            mock_tmux.send_keys = AsyncMock()
-            await handle_toolbar_callback(query, 100, "tb:@5:ctrlc", update, context)
-        mock_tmux.send_keys.assert_awaited_once_with(
-            "@5", "C-c", enter=False, literal=False
-        )
-
-
 class TestDispatchBuiltinDismiss:
     async def test_deletes_message(self) -> None:
-        query = _make_query("tb:@5:close")
-        update = _make_update_with_user()
-        context = _make_context()
-        with patch(
-            "ccgram.handlers.toolbar.toolbar_callbacks.user_owns_window",
-            return_value=True,
-        ):
-            await handle_toolbar_callback(query, 100, "tb:@5:close", update, context)
+        with patch(f"{_CB}.user_owns_window", return_value=True):
+            query = await _dispatch("tb:@5:close")
         query.delete_message.assert_awaited_once()
 
 
 class TestDispatchBuiltinGetfile:
     async def test_no_cwd_alerts(self) -> None:
-        query = _make_query("tb:@5:getfile")
-        update = _make_update_with_user()
-        context = _make_context()
         with (
-            patch(
-                "ccgram.handlers.toolbar.toolbar_callbacks.user_owns_window",
-                return_value=True,
-            ),
-            patch("ccgram.handlers.toolbar.toolbar_callbacks.view_window") as mock_view,
+            patch(f"{_CB}.user_owns_window", return_value=True),
+            patch(f"{_CB}.view_window", return_value=None),
         ):
-            mock_view.return_value = None
-            await handle_toolbar_callback(query, 100, "tb:@5:getfile", update, context)
+            query = await _dispatch("tb:@5:getfile")
         query.answer.assert_awaited_once_with(
             "Working directory not available", show_alert=True
         )
@@ -396,33 +315,16 @@ class TestDispatchBuiltinGetfile:
 
 class TestDispatchBuiltinLast:
     async def test_calls_send_last_reply(self) -> None:
-        query = _make_query("tb:@5:last")
-        update = _make_update_with_user()
-        context = _make_context()
         mock_send_last = AsyncMock()
         with (
-            patch(
-                "ccgram.handlers.toolbar.toolbar_callbacks.user_owns_window",
-                return_value=True,
-            ),
-            patch(
-                "ccgram.handlers.toolbar.toolbar_callbacks.thread_router"
-            ) as mock_router,
-            patch(
-                "ccgram.handlers.toolbar.toolbar_callbacks.get_thread_id",
-                return_value=42,
-            ),
-            patch(
-                "ccgram.telegram_client.PTBTelegramClient",
-                return_value=MagicMock(),
-            ),
-            patch(
-                "ccgram.handlers.last_reply.send_last_reply",
-                mock_send_last,
-            ),
+            patch(f"{_CB}.user_owns_window", return_value=True),
+            patch(f"{_CB}.thread_router") as mock_router,
+            patch(f"{_CB}.get_thread_id", return_value=42),
+            patch("ccgram.telegram_client.PTBTelegramClient", return_value=MagicMock()),
+            patch("ccgram.handlers.last_reply.send_last_reply", mock_send_last),
         ):
             mock_router.resolve_chat_id.return_value = -100
-            await handle_toolbar_callback(query, 100, "tb:@5:last", update, context)
+            query = await _dispatch("tb:@5:last")
         mock_send_last.assert_awaited_once()
         args = mock_send_last.call_args.args
         assert args[1] == -100
@@ -436,33 +338,20 @@ class TestDispatchBuiltinLast:
         update.effective_user = None
         update.effective_chat = MagicMock(id=-100, type="supergroup")
         update.effective_message = MagicMock(message_thread_id=42)
-        context = _make_context()
-        with patch(
-            "ccgram.handlers.toolbar.toolbar_callbacks.user_owns_window",
-            return_value=True,
-        ):
-            await handle_toolbar_callback(query, 100, "tb:@5:last", update, context)
+        with patch(f"{_CB}.user_owns_window", return_value=True):
+            await handle_toolbar_callback(
+                query, 100, "tb:@5:last", update, _make_context()
+            )
         query.answer.assert_awaited_once_with("No user context", show_alert=True)
 
     async def test_no_topic_alerts(self) -> None:
-        query = _make_query("tb:@5:last")
-        update = _make_update_with_user()
-        context = _make_context()
         with (
-            patch(
-                "ccgram.handlers.toolbar.toolbar_callbacks.user_owns_window",
-                return_value=True,
-            ),
-            patch(
-                "ccgram.handlers.toolbar.toolbar_callbacks.get_thread_id",
-                return_value=None,
-            ),
-            patch(
-                "ccgram.handlers.toolbar.toolbar_callbacks.thread_router"
-            ) as mock_router,
+            patch(f"{_CB}.user_owns_window", return_value=True),
+            patch(f"{_CB}.get_thread_id", return_value=None),
+            patch(f"{_CB}.thread_router") as mock_router,
         ):
             mock_router.resolve_chat_id.return_value = None
-            await handle_toolbar_callback(query, 100, "tb:@5:last", update, context)
+            query = await _dispatch("tb:@5:last")
         query.answer.assert_awaited_once_with("Use in a topic", show_alert=True)
 
 
@@ -473,34 +362,17 @@ class TestDispatchBuiltinLast:
 
 class TestDispatchErrorPaths:
     async def test_bad_callback_data_format(self) -> None:
-        query = _make_query("notb:foo")
-        update = _make_update_with_user()
-        context = _make_context()
-        await handle_toolbar_callback(query, 100, "notb:foo", update, context)
+        query = await _dispatch("notb:foo")
         query.answer.assert_awaited_once_with("Bad toolbar callback", show_alert=True)
 
     async def test_ownership_rejection(self) -> None:
-        query = _make_query("tb:@5:esc")
-        update = _make_update_with_user()
-        context = _make_context()
-        with patch(
-            "ccgram.handlers.toolbar.toolbar_callbacks.user_owns_window",
-            return_value=False,
-        ):
-            await handle_toolbar_callback(query, 100, "tb:@5:esc", update, context)
+        with patch(f"{_CB}.user_owns_window", return_value=False):
+            query = await _dispatch("tb:@5:esc")
         query.answer.assert_awaited_once_with("Not your session", show_alert=True)
 
     async def test_unknown_action_alerts(self) -> None:
-        query = _make_query("tb:@5:doesnotexist")
-        update = _make_update_with_user()
-        context = _make_context()
-        with patch(
-            "ccgram.handlers.toolbar.toolbar_callbacks.user_owns_window",
-            return_value=True,
-        ):
-            await handle_toolbar_callback(
-                query, 100, "tb:@5:doesnotexist", update, context
-            )
+        with patch(f"{_CB}.user_owns_window", return_value=True):
+            query = await _dispatch("tb:@5:doesnotexist")
         call_args = query.answer.call_args
         assert call_args is not None
         assert "doesnotexist" in call_args.args[0]

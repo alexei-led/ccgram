@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
@@ -11,7 +12,12 @@ from ccgram.handlers.recovery.recovery_banner import (
     build_recovery_keyboard,
 )
 from ccgram.handlers.recovery.recovery_callbacks import handle_recovery_callback
-from ccgram.handlers.recovery.resume_picker import _SessionEntry, scan_sessions_for_cwd
+from ccgram.handlers.recovery.resume_command import ResumeEntry
+from ccgram.handlers.recovery.resume_picker import (
+    _SessionEntry,
+    _build_empty_resume_keyboard,
+    scan_sessions_for_cwd,
+)
 from ccgram.handlers.callback_data import (
     CB_RECOVERY_BACK,
     CB_RECOVERY_BROWSE,
@@ -25,6 +31,7 @@ from ccgram.handlers.user_state import (
     PENDING_THREAD_ID,
     PENDING_THREAD_TEXT,
     RECOVERY_SESSIONS,
+    RESUME_SESSIONS,
     RECOVERY_WINDOW_ID,
 )
 
@@ -35,6 +42,9 @@ from ccgram.handlers.user_state import (
 # minimises diff against pre-split tests.
 _RC = "ccgram.handlers.recovery.recovery_banner"
 _RP = "ccgram.handlers.recovery.resume_picker"
+_TH = "ccgram.handlers.text.text_handler"
+
+_STALE_TOAST = "Stale recovery (topic mismatch)"
 
 
 @pytest.fixture(autouse=True)
@@ -107,336 +117,204 @@ def _recovery_user_data(
     }
 
 
+async def _tap(data: str, ctx: MagicMock, *, thread_id: int = 42) -> AsyncMock:
+    """Dispatch one recovery button tap and return its CallbackQuery."""
+    update = _make_callback_update(data=data, thread_id=thread_id)
+    query = update.callback_query
+    await handle_recovery_callback(query, 100, query.data, update, ctx)
+    return query
+
+
+def _toast(query: AsyncMock) -> str:
+    call = query.answer.call_args
+    assert call is not None
+    return str(call.args[0]) if call.args else str(call.kwargs.get("text", ""))
+
+
+def _capabilities(
+    mock_gpw: MagicMock, *, cont: bool, resume: bool, picker: bool = True
+) -> None:
+    caps = mock_gpw.return_value.capabilities
+    caps.supports_continue = cont
+    caps.supports_resume = resume
+    caps.supports_resume_picker = picker
+
+
+def _callback_datas(keyboard) -> list[str]:
+    return [
+        b.callback_data
+        for row in keyboard.inline_keyboard
+        for b in row
+        if isinstance(b.callback_data, str)
+    ]
+
+
+# ── Recovery keyboard + help text ─────────────────────────────────────────
+
+
 class TestBuildRecoveryKeyboard:
-    def test_has_three_action_buttons(self) -> None:
-        kb = build_recovery_keyboard("@0")
-        action_row = kb.inline_keyboard[0]
-        assert len(action_row) == 3
-
-    def test_has_cancel_button(self) -> None:
-        kb = build_recovery_keyboard("@0")
-        cancel_row = kb.inline_keyboard[1]
-        assert len(cancel_row) == 1
-        assert cancel_row[0].callback_data == CB_RECOVERY_CANCEL
-
-    def test_fresh_callback_data(self) -> None:
+    def test_action_row_then_cancel_row(self) -> None:
         kb = build_recovery_keyboard("@5")
-        data = kb.inline_keyboard[0][0].callback_data
-        assert data == f"{CB_RECOVERY_FRESH}@5"
 
-    def test_continue_callback_data(self) -> None:
-        kb = build_recovery_keyboard("@5")
-        data = kb.inline_keyboard[0][1].callback_data
-        assert data == f"{CB_RECOVERY_CONTINUE}@5"
-
-    def test_resume_callback_data(self) -> None:
-        kb = build_recovery_keyboard("@5")
-        data = kb.inline_keyboard[0][2].callback_data
-        assert data == f"{CB_RECOVERY_RESUME}@5"
-
-    def test_hides_continue_when_unsupported(self) -> None:
-        with patch(f"{_RC}.get_provider_for_window") as mock_gpw:
-            caps = mock_gpw.return_value.capabilities
-            caps.supports_continue = False
-            caps.supports_resume = True
-            kb = build_recovery_keyboard("@0")
-
-        action_row = kb.inline_keyboard[0]
-        datas: list[str] = [
-            b.callback_data
-            for b in action_row
-            if isinstance(b.callback_data, str)  # type: ignore[misc]
+        assert [b.callback_data for b in kb.inline_keyboard[0]] == [
+            f"{CB_RECOVERY_FRESH}@5",
+            f"{CB_RECOVERY_CONTINUE}@5",
+            f"{CB_RECOVERY_RESUME}@5",
         ]
-        assert any(d.startswith(CB_RECOVERY_FRESH) for d in datas)
-        assert not any(d.startswith(CB_RECOVERY_CONTINUE) for d in datas)
-        assert any(d.startswith(CB_RECOVERY_RESUME) for d in datas)
+        assert [b.callback_data for b in kb.inline_keyboard[1]] == [CB_RECOVERY_CANCEL]
 
-    def test_hides_resume_when_unsupported(self) -> None:
+    @pytest.mark.parametrize(
+        ("cont", "resume", "picker", "expected_prefixes"),
+        [
+            (
+                True,
+                True,
+                True,
+                [CB_RECOVERY_FRESH, CB_RECOVERY_CONTINUE, CB_RECOVERY_RESUME],
+            ),
+            (False, True, True, [CB_RECOVERY_FRESH, CB_RECOVERY_RESUME]),
+            (True, False, True, [CB_RECOVERY_FRESH, CB_RECOVERY_CONTINUE]),
+            (True, True, False, [CB_RECOVERY_FRESH, CB_RECOVERY_CONTINUE]),
+            (False, False, True, [CB_RECOVERY_FRESH]),
+        ],
+        ids=["full", "no-continue", "no-resume", "no-picker", "fresh-only"],
+    )
+    def test_actions_follow_provider_capabilities(
+        self, cont: bool, resume: bool, picker: bool, expected_prefixes: list[str]
+    ) -> None:
         with patch(f"{_RC}.get_provider_for_window") as mock_gpw:
-            caps = mock_gpw.return_value.capabilities
-            caps.supports_continue = True
-            caps.supports_resume = False
+            _capabilities(mock_gpw, cont=cont, resume=resume, picker=picker)
             kb = build_recovery_keyboard("@0")
 
-        action_row = kb.inline_keyboard[0]
-        datas: list[str] = [
-            b.callback_data
-            for b in action_row
-            if isinstance(b.callback_data, str)  # type: ignore[misc]
-        ]
-        assert any(d.startswith(CB_RECOVERY_FRESH) for d in datas)
-        assert any(d.startswith(CB_RECOVERY_CONTINUE) for d in datas)
-        assert not any(d.startswith(CB_RECOVERY_RESUME) for d in datas)
-
-    def test_fresh_only_when_no_continue_or_resume(self) -> None:
-        with patch(f"{_RC}.get_provider_for_window") as mock_gpw:
-            caps = mock_gpw.return_value.capabilities
-            caps.supports_continue = False
-            caps.supports_resume = False
-            kb = build_recovery_keyboard("@0")
-
-        action_row = kb.inline_keyboard[0]
-        assert len(action_row) == 1
-        cb = action_row[0].callback_data
-        assert isinstance(cb, str)
-        assert cb.startswith(CB_RECOVERY_FRESH)  # type: ignore[union-attr]
+        datas = [str(b.callback_data) for b in kb.inline_keyboard[0]]
+        assert [d[: len(p)] for d, p in zip(datas, expected_prefixes)] == (
+            expected_prefixes
+        )
+        assert len(datas) == len(expected_prefixes)
 
     def test_uses_per_window_provider(self) -> None:
         with patch(f"{_RC}.get_provider_for_window") as mock_gpw:
-            caps = mock_gpw.return_value.capabilities
-            caps.supports_continue = True
-            caps.supports_resume = True
+            _capabilities(mock_gpw, cont=True, resume=True)
             build_recovery_keyboard("@7")
 
         mock_gpw.assert_called_once_with("@7", provider_name=None)
 
 
 class TestRecoveryHelpText:
-    def test_full_capabilities_lists_all_actions(self) -> None:
+    @pytest.mark.parametrize(
+        ("cont", "resume", "picker", "expected"),
+        [
+            (
+                True,
+                True,
+                True,
+                "Start fresh · Continue last session · Resume from list",
+            ),
+            (False, True, True, "Start fresh · Resume from list"),
+            (True, False, True, "Start fresh · Continue last session"),
+            (True, True, False, "Start fresh · Continue last session"),
+            (False, False, True, "Start fresh"),
+        ],
+        ids=["full", "no-continue", "no-resume", "no-picker", "fresh-only"],
+    )
+    def test_help_text_follows_provider_capabilities(
+        self, cont: bool, resume: bool, picker: bool, expected: str
+    ) -> None:
         with patch(f"{_RC}.get_provider_for_window") as mock_gpw:
-            caps = mock_gpw.return_value.capabilities
-            caps.supports_continue = True
-            caps.supports_resume = True
-            text = _recovery_help_text("@0")
-
-        assert "Start fresh" in text
-        assert "Continue last session" in text
-        assert "Resume from list" in text
-        assert " · " in text
-
-    def test_omits_continue_when_unsupported(self) -> None:
-        with patch(f"{_RC}.get_provider_for_window") as mock_gpw:
-            caps = mock_gpw.return_value.capabilities
-            caps.supports_continue = False
-            caps.supports_resume = True
-            text = _recovery_help_text("@0")
-
-        assert "Continue" not in text
-        assert "Resume from list" in text
-        assert "Start fresh" in text
-
-    def test_omits_resume_when_unsupported(self) -> None:
-        with patch(f"{_RC}.get_provider_for_window") as mock_gpw:
-            caps = mock_gpw.return_value.capabilities
-            caps.supports_continue = True
-            caps.supports_resume = False
-            text = _recovery_help_text("@0")
-
-        assert "Resume" not in text
-        assert "Continue last session" in text
-        assert "Start fresh" in text
-
-    def test_only_fresh_when_provider_minimal(self) -> None:
-        with patch(f"{_RC}.get_provider_for_window") as mock_gpw:
-            caps = mock_gpw.return_value.capabilities
-            caps.supports_continue = False
-            caps.supports_resume = False
-            text = _recovery_help_text("@0")
-
-        assert text == "Start fresh"
+            _capabilities(mock_gpw, cont=cont, resume=resume, picker=picker)
+            assert _recovery_help_text("@0") == expected
 
     def test_uses_per_window_provider(self) -> None:
         with patch(f"{_RC}.get_provider_for_window") as mock_gpw:
-            caps = mock_gpw.return_value.capabilities
-            caps.supports_continue = True
-            caps.supports_resume = True
+            _capabilities(mock_gpw, cont=True, resume=True)
             _recovery_help_text("@9")
 
         mock_gpw.assert_called_once_with("@9", provider_name=None)
 
 
+# ── Text handler entry into recovery ──────────────────────────────────────
+
+
 @pytest.fixture(autouse=True)
 def _allow_user():
-    with patch(
-        "ccgram.handlers.text.text_handler.config.is_user_allowed", return_value=True
-    ):
+    with patch(f"{_TH}.config.is_user_allowed", return_value=True):
         yield
 
 
 @pytest.fixture()
 def _no_group():
-    with patch("ccgram.handlers.text.text_handler.config") as mock_config:
+    with patch(f"{_TH}.config") as mock_config:
         mock_config.group_id = None
         mock_config.is_user_allowed = MagicMock(return_value=True)
         yield mock_config
 
 
-_TH = "ccgram.handlers.text.text_handler"
+@pytest.fixture()
+def dead_window(_no_group):
+    """A bound topic whose window is gone, with the text handler's deps mocked."""
+    with (
+        patch(f"{_TH}.thread_router") as router,
+        patch(f"{_TH}.tmux_manager") as tmux,
+        patch(f"{_TH}.window_query") as wq,
+        patch(f"{_TH}.safe_reply", new_callable=AsyncMock) as reply,
+        patch(f"{_TH}.build_directory_browser") as browser,
+        patch(f"{_TH}.Path") as path,
+    ):
+        router.get_window_for_thread.return_value = "@0"
+        router.get_display_name.return_value = "project"
+        tmux.find_window_by_id = AsyncMock(return_value=None)
+        wq.view_window.return_value = MagicMock(cwd="/tmp/project")
+        browser.return_value = ("Browse:", MagicMock(), [])
+        path.return_value.is_dir.return_value = True
+        path.cwd.return_value = path.return_value
+        path.cwd.return_value.__str__ = MagicMock(return_value="/cwd")
+        yield SimpleNamespace(
+            router=router, tmux=tmux, wq=wq, reply=reply, browser=browser, path=path
+        )
 
 
 class TestTextHandlerDeadWindow:
-    @patch(f"{_TH}.thread_router")
-    @patch(f"{_TH}.tmux_manager")
-    @patch(f"{_TH}.window_query")
-    @patch(f"{_TH}.safe_reply", new_callable=AsyncMock)
-    async def test_dead_window_shows_recovery_ui(
-        self,
-        mock_safe_reply: AsyncMock,
-        mock_sm: MagicMock,
-        mock_tm: MagicMock,
-        mock_tr: MagicMock,
-        _no_group: MagicMock,
-    ) -> None:
-        mock_tr.get_window_for_thread.return_value = "@0"
-        mock_tm.find_window_by_id = AsyncMock(return_value=None)
-        ws = MagicMock()
-        ws.cwd = "/tmp/project"
-        mock_sm.view_window.return_value = ws
-        mock_tr.get_display_name.return_value = "project"
+    async def test_dead_window_shows_recovery_ui(self, dead_window) -> None:
+        await text_handler(_make_update(), _make_context())
 
-        update = _make_update()
-        ctx = _make_context()
-
-        with patch(f"{_TH}.Path") as mock_path:
-            mock_path.return_value.is_dir.return_value = True
-            mock_path.cwd.return_value = mock_path.return_value
-            await text_handler(update, ctx)
-
-        mock_safe_reply.assert_called_once()
-        call_kwargs = mock_safe_reply.call_args
-        msg_text = (
-            call_kwargs.args[1]
-            if len(call_kwargs.args) > 1
-            else call_kwargs.kwargs.get("text", "")
-        )
+        dead_window.reply.assert_called_once()
+        msg_text = dead_window.reply.call_args.args[1]
         assert "ended" in msg_text
         assert "recover" in msg_text.lower()
 
-    @patch(f"{_TH}.thread_router")
-    @patch(f"{_TH}.tmux_manager")
-    @patch(f"{_TH}.window_query")
-    @patch(f"{_TH}.safe_reply", new_callable=AsyncMock)
-    async def test_dead_window_stores_pending_message(
-        self,
-        mock_safe_reply: AsyncMock,
-        mock_sm: MagicMock,
-        mock_tm: MagicMock,
-        mock_tr: MagicMock,
-        _no_group: MagicMock,
-    ) -> None:
-        mock_tr.get_window_for_thread.return_value = "@0"
-        mock_tm.find_window_by_id = AsyncMock(return_value=None)
-        ws = MagicMock()
-        ws.cwd = "/tmp/project"
-        mock_sm.view_window.return_value = ws
-        mock_tr.get_display_name.return_value = "project"
-
-        update = _make_update(text="my pending message")
+    async def test_dead_window_stores_pending_message(self, dead_window) -> None:
         user_data: dict = {}
-        ctx = _make_context(user_data)
 
-        with patch(f"{_TH}.Path") as mock_path:
-            mock_path.return_value.is_dir.return_value = True
-            mock_path.cwd.return_value = mock_path.return_value
-            await text_handler(update, ctx)
+        await text_handler(
+            _make_update(text="my pending message"), _make_context(user_data)
+        )
 
         assert user_data[PENDING_THREAD_TEXT] == "my pending message"
         assert user_data[PENDING_THREAD_ID] == 42
         assert user_data[RECOVERY_WINDOW_ID] == "@0"
 
-    @patch(f"{_TH}.thread_router")
-    @patch(f"{_TH}.tmux_manager")
-    @patch(f"{_TH}.window_query")
-    @patch(f"{_TH}.safe_reply", new_callable=AsyncMock)
-    @patch(f"{_TH}.build_directory_browser")
-    async def test_dead_window_no_cwd_falls_back_to_browser(
-        self,
-        mock_browser: MagicMock,
-        mock_safe_reply: AsyncMock,
-        mock_sm: MagicMock,
-        mock_tm: MagicMock,
-        mock_tr: MagicMock,
-        _no_group: MagicMock,
+    async def test_dead_window_keeps_the_binding(self, dead_window) -> None:
+        await text_handler(_make_update(), _make_context())
+
+        dead_window.router.unbind_thread.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "cwd", ["", "/nonexistent/path"], ids=["no-cwd", "cwd-gone"]
+    )
+    async def test_unusable_cwd_unbinds_and_falls_back_to_browser(
+        self, dead_window, cwd: str
     ) -> None:
-        mock_tr.get_window_for_thread.return_value = "@0"
-        mock_tm.find_window_by_id = AsyncMock(return_value=None)
-        ws = MagicMock()
-        ws.cwd = ""
-        mock_sm.view_window.return_value = ws
-        mock_tr.get_display_name.return_value = "project"
-        mock_browser.return_value = ("Browse:", MagicMock(), [])
+        dead_window.wq.view_window.return_value = MagicMock(cwd=cwd)
+        dead_window.path.return_value.is_dir.return_value = False
 
-        update = _make_update()
-        ctx = _make_context()
+        await text_handler(_make_update(), _make_context())
 
-        with patch(f"{_TH}.Path") as mock_path:
-            mock_path.return_value.is_dir.return_value = False
-            mock_path.cwd.return_value = mock_path.return_value
-            str_mock = MagicMock(return_value="/cwd")
-            mock_path.cwd.return_value.__str__ = str_mock
-            await text_handler(update, ctx)
-
-        mock_tr.unbind_thread.assert_called_once()
-        mock_browser.assert_called_once()
-
-    @patch(f"{_TH}.thread_router")
-    @patch(f"{_TH}.tmux_manager")
-    @patch(f"{_TH}.window_query")
-    @patch(f"{_TH}.safe_reply", new_callable=AsyncMock)
-    @patch(f"{_TH}.build_directory_browser")
-    async def test_dead_window_invalid_cwd_falls_back_to_browser(
-        self,
-        mock_browser: MagicMock,
-        mock_safe_reply: AsyncMock,
-        mock_sm: MagicMock,
-        mock_tm: MagicMock,
-        mock_tr: MagicMock,
-        _no_group: MagicMock,
-    ) -> None:
-        mock_tr.get_window_for_thread.return_value = "@0"
-        mock_tm.find_window_by_id = AsyncMock(return_value=None)
-        ws = MagicMock()
-        ws.cwd = "/nonexistent/path"
-        mock_sm.view_window.return_value = ws
-        mock_tr.get_display_name.return_value = "project"
-        mock_browser.return_value = ("Browse:", MagicMock(), [])
-
-        update = _make_update()
-        ctx = _make_context()
-
-        with patch(f"{_TH}.Path") as mock_path:
-            mock_path.return_value.is_dir.return_value = False
-            mock_path.cwd.return_value = mock_path.return_value
-            str_mock = MagicMock(return_value="/cwd")
-            mock_path.cwd.return_value.__str__ = str_mock
-            await text_handler(update, ctx)
-
-        mock_tr.unbind_thread.assert_called_once()
-
-    @patch(f"{_TH}.thread_router")
-    @patch(f"{_TH}.tmux_manager")
-    @patch(f"{_TH}.window_query")
-    @patch(f"{_TH}.safe_reply", new_callable=AsyncMock)
-    async def test_dead_window_does_not_unbind(
-        self,
-        mock_safe_reply: AsyncMock,
-        mock_sm: MagicMock,
-        mock_tm: MagicMock,
-        mock_tr: MagicMock,
-        _no_group: MagicMock,
-    ) -> None:
-        mock_tr.get_window_for_thread.return_value = "@0"
-        mock_tm.find_window_by_id = AsyncMock(return_value=None)
-        ws = MagicMock()
-        ws.cwd = "/tmp/project"
-        mock_sm.view_window.return_value = ws
-        mock_tr.get_display_name.return_value = "project"
-
-        update = _make_update()
-        ctx = _make_context()
-
-        with patch(f"{_TH}.Path") as mock_path:
-            mock_path.return_value.is_dir.return_value = True
-            mock_path.cwd.return_value = mock_path.return_value
-            await text_handler(update, ctx)
-
-        mock_tr.unbind_thread.assert_not_called()
+        dead_window.router.unbind_thread.assert_called_once()
+        dead_window.browser.assert_called_once()
 
 
 class TestBotTextHandlerScopedMenu:
-    @patch(
-        "ccgram.handlers.text.text_handler.handle_text_message", new_callable=AsyncMock
-    )
+    @patch(f"{_TH}.handle_text_message", new_callable=AsyncMock)
     @patch(
         "ccgram.handlers.commands.menu_sync.sync_scoped_provider_menu",
         new_callable=AsyncMock,
@@ -463,9 +341,7 @@ class TestBotTextHandlerScopedMenu:
         mock_sync_menu.assert_called_once_with(update.message, 100, provider)
         mock_handle_text.assert_called_once_with(update, ctx)
 
-    @patch(
-        "ccgram.handlers.text.text_handler.handle_text_message", new_callable=AsyncMock
-    )
+    @patch(f"{_TH}.handle_text_message", new_callable=AsyncMock)
     @patch(
         "ccgram.handlers.commands.menu_sync.sync_scoped_provider_menu",
         new_callable=AsyncMock,
@@ -488,9 +364,7 @@ class TestBotTextHandlerScopedMenu:
         mock_sync_menu.assert_not_called()
         mock_handle_text.assert_called_once_with(update, ctx)
 
-    @patch(
-        "ccgram.handlers.text.text_handler.handle_text_message", new_callable=AsyncMock
-    )
+    @patch(f"{_TH}.handle_text_message", new_callable=AsyncMock)
     @patch(
         "ccgram.handlers.commands.menu_sync.sync_scoped_provider_menu",
         new_callable=AsyncMock,
@@ -524,1147 +398,564 @@ class TestBotTextHandlerScopedMenu:
             cmd_orch_mod._scoped_provider_menu.clear()
 
 
-class TestRecoveryFreshCallback:
-    @patch(f"{_RC}.thread_router")
-    @patch(f"{_RC}.tmux_manager")
-    @patch(f"{_RC}.window_query")
-    @patch(f"{_RC}.safe_edit", new_callable=AsyncMock)
-    async def test_fresh_creates_window_and_rebinds(
-        self,
-        _mock_safe_edit: AsyncMock,
-        mock_sm: MagicMock,
-        mock_tm: MagicMock,
-        mock_tr: MagicMock,
-    ) -> None:
-        mock_sm.view_window.return_value = MagicMock(
-            cwd="/tmp/project", provider_name=""
-        )
-        mock_tm.create_window = AsyncMock(
+# ── Recovery button handlers ──────────────────────────────────────────────
+
+
+@pytest.fixture()
+def recovery_env():
+    """Module singletons patched for the recovery-banner button handlers."""
+    with (
+        patch(f"{_RC}.thread_router") as router,
+        patch(f"{_RC}.tmux_manager") as tmux,
+        patch(f"{_RC}.window_query") as wq,
+        patch(f"{_RC}.session_map_sync") as sync,
+        patch(f"{_RC}.safe_edit", new_callable=AsyncMock) as edit,
+        patch(f"{_RC}.safe_send", new_callable=AsyncMock) as send,
+        patch(f"{_RC}.send_telegram_to_window", new_callable=AsyncMock) as forward,
+        patch(f"{_RC}.Path") as path,
+        patch(f"{_RP}.window_query") as picker_wq,
+        patch(f"{_RP}.Path") as picker_path,
+    ):
+        view = MagicMock(cwd="/tmp/project", provider_name="")
+        wq.view_window.return_value = view
+        wq.resolve_window_alias.side_effect = lambda window_id: window_id
+        picker_wq.view_window.return_value = view
+        tmux.create_window = AsyncMock(
             return_value=(True, "Window created", "project", "@5")
         )
-        mock_sm.wait_for_session_map_entry = AsyncMock()
-        mock_sm.send_to_window = AsyncMock(return_value=(True, "ok"))
-        mock_tr.resolve_chat_id.return_value = -100999
+        sync.wait_for_session_map_entry = AsyncMock()
+        forward.return_value = (True, "ok")
+        router.resolve_chat_id.return_value = -100999
+        path.return_value.is_dir.return_value = True
+        picker_path.return_value.is_dir.return_value = True
+        yield SimpleNamespace(
+            router=router,
+            tmux=tmux,
+            wq=wq,
+            sync=sync,
+            edit=edit,
+            send=send,
+            forward=forward,
+            path=path,
+            picker_wq=picker_wq,
+            picker_path=picker_path,
+        )
 
-        update = _make_callback_update(data=f"{CB_RECOVERY_FRESH}@0")
-        user_data = _recovery_user_data()
-        ctx = _make_context(user_data)
-        query = update.callback_query
 
-        mock_sm.resolve_window_alias.return_value = "@canonical"
-        with (
-            patch(f"{_RC}.Path") as mock_path,
-            patch(f"{_RC}.session_map_sync") as mock_sync,
-        ):
-            mock_sync.wait_for_session_map_entry = AsyncMock()
-            mock_path.return_value.is_dir.return_value = True
-            await handle_recovery_callback(query, 100, query.data, update, ctx)
+class TestRecoveryFreshCallback:
+    async def test_fresh_creates_window_and_rebinds(self, recovery_env) -> None:
+        recovery_env.wq.resolve_window_alias.side_effect = None
+        recovery_env.wq.resolve_window_alias.return_value = "@canonical"
 
-        mock_tr.unbind_thread.assert_called_once_with(100, 42)
-        mock_tm.create_window.assert_called_once_with(
+        await _tap(f"{CB_RECOVERY_FRESH}@0", _make_context(_recovery_user_data()))
+
+        recovery_env.router.unbind_thread.assert_called_once_with(100, 42)
+        recovery_env.tmux.create_window.assert_called_once_with(
             "/tmp/project", agent_args="", launch_command="claude"
         )
-        mock_sync.wait_for_session_map_entry.assert_awaited_once_with(
-            "@5",
-            timeout=5.0,
-            resolve_window_id=mock_sm.resolve_window_alias,
+        recovery_env.sync.wait_for_session_map_entry.assert_awaited_once_with(
+            "@5", timeout=5.0, resolve_window_id=recovery_env.wq.resolve_window_alias
         )
-        mock_tr.bind_thread.assert_called_once_with(
+        recovery_env.router.bind_thread.assert_called_once_with(
             100, 42, "@canonical", window_name="project", chat_id=-100999
         )
-        mock_tr.set_group_chat_id.assert_called_once_with(100, 42, -100999)
+        recovery_env.router.set_group_chat_id.assert_called_once_with(100, 42, -100999)
 
-    @patch(f"{_RC}.send_telegram_to_window", new_callable=AsyncMock)
-    @patch(f"{_RC}.thread_router")
-    @patch(f"{_RC}.tmux_manager")
-    @patch(f"{_RC}.window_query")
-    @patch(f"{_RC}.safe_edit", new_callable=AsyncMock)
-    @patch(f"{_RC}.safe_send", new_callable=AsyncMock)
-    async def test_fresh_forwards_pending_message(
-        self,
-        _mock_safe_send: AsyncMock,
-        _mock_safe_edit: AsyncMock,
-        mock_sm: MagicMock,
-        mock_tm: MagicMock,
-        mock_tr: MagicMock,
-        mock_send_to_window: AsyncMock,
+    async def test_fresh_forwards_pending_message_and_clears_state(
+        self, recovery_env
     ) -> None:
-        mock_sm.view_window.return_value = MagicMock(cwd="/tmp/project")
-        mock_sm.resolve_window_alias.side_effect = lambda window_id: window_id
-        mock_tm.create_window = AsyncMock(
-            return_value=(True, "Window created", "project", "@5")
-        )
-        mock_sm.wait_for_session_map_entry = AsyncMock()
-        mock_send_to_window.return_value = (True, "ok")
-        mock_tr.resolve_chat_id.return_value = -100999
-
-        update = _make_callback_update(data=f"{CB_RECOVERY_FRESH}@0")
         user_data = _recovery_user_data()
-        ctx = _make_context(user_data)
-        query = update.callback_query
 
-        with patch(f"{_RC}.Path") as mock_path:
-            mock_path.return_value.is_dir.return_value = True
-            await handle_recovery_callback(query, 100, query.data, update, ctx)
+        await _tap(f"{CB_RECOVERY_FRESH}@0", _make_context(user_data))
 
-        mock_send_to_window.assert_called_once_with(100, "@5", 42, "hello", -100999)
+        recovery_env.forward.assert_called_once_with(100, "@5", 42, "hello", -100999)
         assert PENDING_THREAD_TEXT not in user_data
         assert PENDING_THREAD_ID not in user_data
         assert RECOVERY_WINDOW_ID not in user_data
 
-    @patch(f"{_RC}.thread_router")
-    @patch(f"{_RC}.tmux_manager")
-    @patch(f"{_RC}.window_query")
-    @patch(f"{_RC}.safe_edit", new_callable=AsyncMock)
-    async def test_fresh_fails_when_cwd_gone(
-        self,
-        mock_safe_edit: AsyncMock,
-        mock_sm: MagicMock,
-        _mock_tm: MagicMock,
-        mock_tr: MagicMock,
-    ) -> None:
-        mock_sm.view_window.return_value = MagicMock(cwd="/gone")
-        mock_tr.resolve_chat_id.return_value = -100999
+    async def test_fresh_reports_a_failed_pending_forward(self, recovery_env) -> None:
+        recovery_env.forward.return_value = (False, "pane gone")
 
-        update = _make_callback_update(data=f"{CB_RECOVERY_FRESH}@0")
+        query = await _tap(
+            f"{CB_RECOVERY_FRESH}@0", _make_context(_recovery_user_data())
+        )
+
+        recovery_env.send.assert_awaited_once()
+        assert "Failed to send pending message" in recovery_env.send.call_args.args[2]
+        assert _toast(query) == "Created"
+
+    async def test_fresh_reports_window_creation_failure(self, recovery_env) -> None:
+        recovery_env.tmux.create_window = AsyncMock(
+            return_value=(False, "no free pane", None, None)
+        )
         user_data = _recovery_user_data()
-        ctx = _make_context(user_data)
-        query = update.callback_query
 
-        with patch(f"{_RC}.Path") as mock_path:
-            mock_path.return_value.is_dir.return_value = False
-            await handle_recovery_callback(query, 100, query.data, update, ctx)
+        query = await _tap(f"{CB_RECOVERY_FRESH}@0", _make_context(user_data))
 
-        mock_safe_edit.assert_called_once()
-        assert "no longer exists" in mock_safe_edit.call_args.args[1].lower()
-
-    async def test_fresh_topic_mismatch_rejected(self) -> None:
-        update = _make_callback_update(data=f"{CB_RECOVERY_FRESH}@0", thread_id=99)
-        user_data = {PENDING_THREAD_ID: 42, RECOVERY_WINDOW_ID: "@0"}
-        ctx = _make_context(user_data)
-        query = update.callback_query
-
-        await handle_recovery_callback(query, 100, query.data, update, ctx)
-
-        query.answer.assert_called_once()
-        assert "mismatch" in query.answer.call_args.args[0].lower()
-
-    async def test_fresh_no_pending_state_rejected(self) -> None:
-        update = _make_callback_update(data=f"{CB_RECOVERY_FRESH}@0")
-        ctx = _make_context({})
-        query = update.callback_query
-
-        await handle_recovery_callback(query, 100, query.data, update, ctx)
-
-        query.answer.assert_called_once()
-        assert "mismatch" in query.answer.call_args.args[0].lower()
-
-    async def test_fresh_window_id_mismatch_rejected(self) -> None:
-        update = _make_callback_update(data=f"{CB_RECOVERY_FRESH}@999")
-        user_data = {
-            PENDING_THREAD_ID: 42,
-            RECOVERY_WINDOW_ID: "@0",
-        }
-        ctx = _make_context(user_data)
-        query = update.callback_query
-
-        await handle_recovery_callback(query, 100, query.data, update, ctx)
-
-        query.answer.assert_called_once()
-        assert "mismatch" in query.answer.call_args.args[0].lower()
+        assert "no free pane" in recovery_env.edit.call_args.args[1]
+        assert _toast(query) == "Failed"
+        assert user_data == {}
+        recovery_env.router.bind_thread.assert_not_called()
 
 
 class TestRecoveryContinueCallback:
     @patch(f"{_RC}.scan_sessions_for_cwd", return_value=[_SessionEntry("s1", "x")])
-    @patch(f"{_RC}.thread_router")
-    @patch(f"{_RC}.tmux_manager")
-    @patch(f"{_RC}.window_query")
-    @patch(f"{_RC}.safe_edit", new_callable=AsyncMock)
     async def test_continue_probes_the_provider_it_will_actually_launch(
-        self,
-        _mock_safe_edit: AsyncMock,
-        mock_sm: MagicMock,
-        mock_tm: MagicMock,
-        mock_tr: MagicMock,
-        mock_scan: MagicMock,
+        self, mock_scan: MagicMock, recovery_env
     ) -> None:
-        """Continue must not widen an unknown provider the way Resume does.
+        """Continue launches exactly one provider, so it must probe that one.
 
-        Resume can merge every picker-capable provider because each entry
-        carries its own provider to the relaunch. Continue launches exactly
-        one, so probing wider would find another agent's sessions, skip the
-        empty state, and run `<default> --continue` against a folder it has
-        nothing to continue.
+        Resume may widen an unknown provider because each entry carries its own
+        to the relaunch; probing wider here would find another agent's
+        sessions, skip the empty state, and run `<default> --continue` against
+        a folder it has nothing to continue.
         """
-        mock_sm.view_window.return_value = MagicMock(
-            cwd="/tmp/project", provider_name=""
-        )
-        mock_sm.get_window_provider.return_value = ""
-        mock_sm.resolve_window_alias.side_effect = lambda window_id: window_id
-        mock_tm.create_window = AsyncMock(
-            return_value=(True, "Window created", "project", "@5")
-        )
-        mock_sm.wait_for_session_map_entry = AsyncMock()
-        mock_sm.send_to_window = AsyncMock(return_value=(True, "ok"))
-        mock_tr.resolve_chat_id.return_value = -100999
+        recovery_env.wq.get_window_provider.return_value = ""
 
-        update = _make_callback_update(data=f"{CB_RECOVERY_CONTINUE}@0")
-        ctx = _make_context(_recovery_user_data())
-        query = update.callback_query
+        await _tap(f"{CB_RECOVERY_CONTINUE}@0", _make_context(_recovery_user_data()))
 
-        with patch(f"{_RC}.Path") as mock_path:
-            mock_path.return_value.is_dir.return_value = True
-            await handle_recovery_callback(query, 100, query.data, update, ctx)
-
-        # A concrete provider name, never the raw "" that means "unknown".
         assert mock_scan.call_args.args[1]
 
     @patch(f"{_RC}.scan_sessions_for_cwd", return_value=[_SessionEntry("s1", "x")])
-    @patch(f"{_RC}.thread_router")
-    @patch(f"{_RC}.tmux_manager")
-    @patch(f"{_RC}.window_query")
-    @patch(f"{_RC}.safe_edit", new_callable=AsyncMock)
     async def test_continue_creates_window_with_continue_flag(
-        self,
-        _mock_safe_edit: AsyncMock,
-        mock_sm: MagicMock,
-        mock_tm: MagicMock,
-        mock_tr: MagicMock,
-        _mock_scan: MagicMock,
+        self, _mock_scan: MagicMock, recovery_env
     ) -> None:
-        mock_sm.view_window.return_value = MagicMock(
-            cwd="/tmp/project", provider_name=""
-        )
-        mock_sm.resolve_window_alias.side_effect = lambda window_id: window_id
-        mock_tm.create_window = AsyncMock(
-            return_value=(True, "Window created", "project", "@5")
-        )
-        mock_sm.wait_for_session_map_entry = AsyncMock()
-        mock_sm.send_to_window = AsyncMock(return_value=(True, "ok"))
-        mock_tr.resolve_chat_id.return_value = -100999
+        await _tap(f"{CB_RECOVERY_CONTINUE}@0", _make_context(_recovery_user_data()))
 
-        update = _make_callback_update(data=f"{CB_RECOVERY_CONTINUE}@0")
-        user_data = _recovery_user_data()
-        ctx = _make_context(user_data)
-        query = update.callback_query
-
-        with patch(f"{_RC}.Path") as mock_path:
-            mock_path.return_value.is_dir.return_value = True
-            await handle_recovery_callback(query, 100, query.data, update, ctx)
-
-        mock_tm.create_window.assert_called_once_with(
+        recovery_env.tmux.create_window.assert_called_once_with(
             "/tmp/project", agent_args="--continue", launch_command="claude"
         )
-        mock_tr.bind_thread.assert_called_once_with(
+        recovery_env.router.bind_thread.assert_called_once_with(
             100, 42, "@5", window_name="project", chat_id=-100999
         )
 
     @patch(f"{_RC}.scan_sessions_for_cwd", return_value=[_SessionEntry("s1", "x")])
-    @patch(f"{_RC}.send_telegram_to_window", new_callable=AsyncMock)
-    @patch(f"{_RC}.thread_router")
-    @patch(f"{_RC}.tmux_manager")
-    @patch(f"{_RC}.window_query")
-    @patch(f"{_RC}.safe_edit", new_callable=AsyncMock)
-    @patch(f"{_RC}.safe_send", new_callable=AsyncMock)
     async def test_continue_forwards_pending_message(
-        self,
-        _mock_safe_send: AsyncMock,
-        _mock_safe_edit: AsyncMock,
-        mock_sm: MagicMock,
-        mock_tm: MagicMock,
-        mock_tr: MagicMock,
-        mock_send_to_window: AsyncMock,
-        _mock_scan: MagicMock,
+        self, _mock_scan: MagicMock, recovery_env
     ) -> None:
-        mock_sm.view_window.return_value = MagicMock(cwd="/tmp/project")
-        mock_sm.resolve_window_alias.side_effect = lambda window_id: window_id
-        mock_tm.create_window = AsyncMock(
-            return_value=(True, "Window created", "project", "@5")
-        )
-        mock_sm.wait_for_session_map_entry = AsyncMock()
-        mock_send_to_window.return_value = (True, "ok")
-        mock_tr.resolve_chat_id.return_value = -100999
-
-        update = _make_callback_update(data=f"{CB_RECOVERY_CONTINUE}@0")
         user_data = _recovery_user_data(text="my message")
-        ctx = _make_context(user_data)
-        query = update.callback_query
 
-        with patch(f"{_RC}.Path") as mock_path:
-            mock_path.return_value.is_dir.return_value = True
-            await handle_recovery_callback(query, 100, query.data, update, ctx)
+        await _tap(f"{CB_RECOVERY_CONTINUE}@0", _make_context(user_data))
 
-        mock_send_to_window.assert_called_once_with(
+        recovery_env.forward.assert_called_once_with(
             100, "@5", 42, "my message", -100999
         )
         assert PENDING_THREAD_TEXT not in user_data
 
-    @patch(f"{_RC}.tmux_manager")
-    @patch(f"{_RC}.window_query")
-    @patch(f"{_RC}.safe_edit", new_callable=AsyncMock)
-    async def test_continue_fails_when_cwd_gone(
-        self,
-        mock_safe_edit: AsyncMock,
-        mock_sm: MagicMock,
-        _mock_tm: MagicMock,
-    ) -> None:
-        mock_sm.view_window.return_value = MagicMock(cwd="/gone")
-
-        update = _make_callback_update(data=f"{CB_RECOVERY_CONTINUE}@0")
-        user_data = _recovery_user_data()
-        ctx = _make_context(user_data)
-        query = update.callback_query
-
-        with patch(f"{_RC}.Path") as mock_path:
-            mock_path.return_value.is_dir.return_value = False
-            await handle_recovery_callback(query, 100, query.data, update, ctx)
-
-        mock_safe_edit.assert_called_once()
-        assert "no longer exists" in mock_safe_edit.call_args.args[1].lower()
-
-    async def test_continue_topic_mismatch_rejected(self) -> None:
-        update = _make_callback_update(data=f"{CB_RECOVERY_CONTINUE}@0", thread_id=99)
-        user_data = {PENDING_THREAD_ID: 42, RECOVERY_WINDOW_ID: "@0"}
-        ctx = _make_context(user_data)
-        query = update.callback_query
-
-        await handle_recovery_callback(query, 100, query.data, update, ctx)
-
-        query.answer.assert_called_once()
-        assert "mismatch" in query.answer.call_args.args[0].lower()
-
 
 class TestRecoveryResumeCallback:
     @patch(f"{_RC}.scan_sessions_for_cwd")
-    @patch(f"{_RC}.window_query")
-    @patch(f"{_RC}.safe_edit", new_callable=AsyncMock)
     async def test_resume_shows_session_picker(
-        self,
-        mock_safe_edit: AsyncMock,
-        mock_sm: MagicMock,
-        mock_scan: MagicMock,
+        self, mock_scan: MagicMock, recovery_env
     ) -> None:
-        mock_sm.view_window.return_value = MagicMock(cwd="/tmp/project")
         mock_scan.return_value = [
             _SessionEntry("sess-1", "Fix login bug"),
             _SessionEntry("sess-2", "Add tests"),
         ]
-
-        update = _make_callback_update(data=f"{CB_RECOVERY_RESUME}@0")
         user_data = _recovery_user_data()
-        ctx = _make_context(user_data)
-        query = update.callback_query
 
-        with patch(f"{_RC}.Path") as mock_path:
-            mock_path.return_value.is_dir.return_value = True
-            await handle_recovery_callback(query, 100, query.data, update, ctx)
+        await _tap(f"{CB_RECOVERY_RESUME}@0", _make_context(user_data))
 
-        mock_safe_edit.assert_called_once()
-        assert "Select a session" in mock_safe_edit.call_args.args[1]
-        assert RECOVERY_SESSIONS in user_data
-        assert len(user_data[RECOVERY_SESSIONS]) == 2
-        assert user_data[RECOVERY_SESSIONS][0]["session_id"] == "sess-1"
+        recovery_env.edit.assert_called_once()
+        assert "Select a session" in recovery_env.edit.call_args.args[1]
+        assert [s["session_id"] for s in user_data[RECOVERY_SESSIONS]] == [
+            "sess-1",
+            "sess-2",
+        ]
 
     @patch(f"{_RC}.scan_sessions_for_cwd")
-    @patch(f"{_RC}.window_query")
-    @patch(f"{_RC}.safe_edit", new_callable=AsyncMock)
-    async def test_resume_no_sessions_shows_empty_state(
-        self,
-        mock_safe_edit: AsyncMock,
-        mock_sm: MagicMock,
-        mock_scan: MagicMock,
+    async def test_picker_stores_mtime_for_pick_callback(
+        self, mock_scan: MagicMock, recovery_env
     ) -> None:
-        mock_sm.view_window.return_value = MagicMock(cwd="/tmp/project")
-        mock_scan.return_value = []
-
-        update = _make_callback_update(data=f"{CB_RECOVERY_RESUME}@0")
+        mock_scan.return_value = [_SessionEntry("sess-1", "X", 12345.0)]
         user_data = _recovery_user_data()
-        ctx = _make_context(user_data)
-        query = update.callback_query
 
-        with patch(f"{_RC}.Path") as mock_path:
-            mock_path.return_value.is_dir.return_value = True
-            await handle_recovery_callback(query, 100, query.data, update, ctx)
+        await _tap(f"{CB_RECOVERY_RESUME}@0", _make_context(user_data))
 
-        mock_safe_edit.assert_called_once()
-        body = mock_safe_edit.call_args.args[1]
-        assert "No sessions" in body
-        kb = mock_safe_edit.call_args.kwargs["reply_markup"]
-        button_texts = [b.text for row in kb.inline_keyboard for b in row]
-        assert any("Browse" in t for t in button_texts)
-        assert any("fresh" in t.lower() for t in button_texts)
+        assert user_data[RECOVERY_SESSIONS][0]["mtime"] == 12345.0
 
-    async def test_resume_topic_mismatch_rejected(self) -> None:
-        update = _make_callback_update(data=f"{CB_RECOVERY_RESUME}@0", thread_id=99)
-        user_data = {PENDING_THREAD_ID: 42, RECOVERY_WINDOW_ID: "@0"}
-        ctx = _make_context(user_data)
-        query = update.callback_query
+    @pytest.mark.parametrize(
+        ("mtime", "expected_prefix"),
+        [(None, "today · "), (0.0, "never · ")],
+        ids=["recent", "unknown-mtime"],
+    )
+    @patch(f"{_RC}.scan_sessions_for_cwd")
+    async def test_picker_labels_use_the_shared_formatter(
+        self,
+        mock_scan: MagicMock,
+        recovery_env,
+        mtime: float | None,
+        expected_prefix: str,
+    ) -> None:
+        import time
 
-        await handle_recovery_callback(query, 100, query.data, update, ctx)
+        mock_scan.return_value = [
+            _SessionEntry(
+                "a1b2c3-0000-1111-2222-3333deadbeef",
+                "Fix login bug",
+                time.time() - 10 if mtime is None else mtime,
+            )
+        ]
 
-        query.answer.assert_called_once()
-        assert "mismatch" in query.answer.call_args.args[0].lower()
+        await _tap(f"{CB_RECOVERY_RESUME}@0", _make_context(_recovery_user_data()))
+
+        keyboard = recovery_env.edit.call_args.kwargs["reply_markup"]
+        label = keyboard.inline_keyboard[0][0].text
+        assert label.startswith(expected_prefix)
+        assert "Fix login bug" in label
+        assert label.endswith(" · beef")
 
 
 class TestRecoveryResumePickCallback:
-    @patch(f"{_RP}.window_query")
-    @patch(f"{_RC}.thread_router")
-    @patch(f"{_RC}.tmux_manager")
-    @patch(f"{_RC}.window_query")
-    @patch(f"{_RC}.safe_edit", new_callable=AsyncMock)
-    async def test_pick_launches_the_entrys_own_provider(
-        self,
-        _mock_safe_edit: AsyncMock,
-        mock_sm: MagicMock,
-        mock_tm: MagicMock,
-        mock_tr: MagicMock,
-        mock_picker_wq: MagicMock,
+    @pytest.mark.parametrize(
+        ("index", "expected_id"),
+        [
+            (0, "a1b2c3d4-0000-0000-0000-000000000001"),
+            (1, "a1b2c3d4-0000-0000-0000-000000000002"),
+        ],
+        ids=["first", "second"],
+    )
+    async def test_pick_creates_window_with_resume_flag(
+        self, recovery_env, index: int, expected_id: str
     ) -> None:
+        user_data = _recovery_user_data()
+        user_data[RECOVERY_SESSIONS] = [
+            {
+                "session_id": "a1b2c3d4-0000-0000-0000-000000000001",
+                "summary": "Fix login bug",
+            },
+            {
+                "session_id": "a1b2c3d4-0000-0000-0000-000000000002",
+                "summary": "Add tests",
+            },
+        ]
+
+        await _tap(f"{CB_RECOVERY_PICK}{index}", _make_context(user_data))
+
+        recovery_env.tmux.create_window.assert_called_once_with(
+            "/tmp/project",
+            agent_args=f"--resume {expected_id}",
+            launch_command="claude",
+        )
+        recovery_env.router.bind_thread.assert_called_once()
+
+    @pytest.mark.parametrize(
+        ("data", "sessions", "expected_toast"),
+        [
+            (
+                f"{CB_RECOVERY_PICK}99",
+                [{"session_id": "x", "summary": "x"}],
+                "Session no longer in list",
+            ),
+            (f"{CB_RECOVERY_PICK}0", None, "Session no longer in list"),
+            (
+                f"{CB_RECOVERY_PICK}notanumber",
+                [{"session_id": "x", "summary": "x"}],
+                "Couldn't read selection",
+            ),
+        ],
+        ids=["index-past-end", "no-sessions-stored", "non-numeric-index"],
+    )
+    async def test_pick_guards(
+        self, data: str, sessions: list | None, expected_toast: str
+    ) -> None:
+        user_data = _recovery_user_data()
+        if sessions is not None:
+            user_data[RECOVERY_SESSIONS] = sessions
+
+        query = await _tap(data, _make_context(user_data))
+
+        query.answer.assert_called_once()
+        assert _toast(query) == expected_toast
+
+    async def test_pick_outside_a_topic_rejected(self) -> None:
+        user_data = _recovery_user_data()
+        user_data[RECOVERY_SESSIONS] = [{"session_id": "x", "summary": "x"}]
+
+        with patch(f"{_RP}.get_thread_id", return_value=None):
+            query = await _tap(f"{CB_RECOVERY_PICK}0", _make_context(user_data))
+
+        assert _toast(query) == "Use in a topic"
+
+    async def test_pick_without_a_remembered_window_rejected(self) -> None:
+        user_data = {
+            PENDING_THREAD_ID: 42,
+            RECOVERY_SESSIONS: [{"session_id": "x", "summary": "x"}],
+        }
+
+        query = await _tap(f"{CB_RECOVERY_PICK}0", _make_context(user_data))
+
+        assert _toast(query) == "Recovery menu expired"
+
+    @pytest.mark.parametrize(
+        "view", [None, MagicMock(cwd="")], ids=["no-window-state", "no-cwd"]
+    )
+    async def test_pick_reports_missing_state_not_a_missing_folder(
+        self, recovery_env, view
+    ) -> None:
+        """Without window state the folder is unknown, not deleted (#176)."""
+        recovery_env.wq.view_window.return_value = view
+        recovery_env.picker_wq.view_window.return_value = view
+        user_data = _recovery_user_data()
+        user_data[RECOVERY_SESSIONS] = [{"session_id": "x", "summary": "x"}]
+
+        query = await _tap(f"{CB_RECOVERY_PICK}0", _make_context(user_data))
+
+        text = recovery_env.edit.call_args.args[1]
+        assert "no longer exists" not in text.lower()
+        assert "session state is gone" in text
+        assert _toast(query) == "State gone"
+
+    async def test_pick_launches_the_entrys_own_provider(self, recovery_env) -> None:
         """A window with no provider widens the picker; the pick must decide.
 
-        Inheriting the provider from the old window here resolves the same
-        falsy value to the config default, so a picked codex session would
-        launch claude with codex-format resume arguments.
+        Inheriting from the old window resolves the same falsy value to the
+        config default, so a picked codex session would launch claude with
+        codex-format resume arguments.
         """
-        view = MagicMock(cwd="/tmp/project", provider_name="")
-        mock_sm.view_window.return_value = view
-        mock_picker_wq.view_window.return_value = view
-        mock_tm.create_window = AsyncMock(
-            return_value=(True, "Window created", "project", "@5")
-        )
-        mock_sm.wait_for_session_map_entry = AsyncMock()
-        mock_sm.send_to_window = AsyncMock(return_value=(True, "ok"))
-        mock_tr.resolve_chat_id.return_value = -100999
-
-        update = _make_callback_update(data=f"{CB_RECOVERY_PICK}0")
         user_data = _recovery_user_data()
         user_data[RECOVERY_SESSIONS] = [
-            {
-                "session_id": "a1b2c3d4-0000-0000-0000-000000000001",
-                "summary": "Codex work",
-                "provider_name": "codex",
-            },
+            {"session_id": "x", "summary": "Codex work", "provider_name": "codex"}
         ]
-        ctx = _make_context(user_data)
-        query = update.callback_query
 
-        with (
-            patch(f"{_RP}.Path") as picker_path,
-            patch(f"{_RC}.Path") as banner_path,
-        ):
-            picker_path.return_value.is_dir.return_value = True
-            banner_path.return_value.is_dir.return_value = True
-            await handle_recovery_callback(query, 100, query.data, update, ctx)
+        await _tap(f"{CB_RECOVERY_PICK}0", _make_context(user_data))
 
-        launch_command = mock_tm.create_window.call_args.kwargs["launch_command"]
+        launch_command = recovery_env.tmux.create_window.call_args.kwargs[
+            "launch_command"
+        ]
         assert "codex" in launch_command, launch_command
 
-    @patch(f"{_RP}.window_query")
-    @patch(f"{_RC}.thread_router")
-    @patch(f"{_RC}.tmux_manager")
-    @patch(f"{_RC}.window_query")
-    @patch(f"{_RC}.safe_edit", new_callable=AsyncMock)
-    async def test_pick_creates_window_with_resume_flag(
-        self,
-        _mock_safe_edit: AsyncMock,
-        mock_sm: MagicMock,
-        mock_tm: MagicMock,
-        mock_tr: MagicMock,
-        mock_picker_wq: MagicMock,
+    async def test_pick_rejects_a_session_from_another_provider(
+        self, recovery_env
     ) -> None:
-        view = MagicMock(cwd="/tmp/project", provider_name="")
-        mock_sm.view_window.return_value = view
-        mock_picker_wq.view_window.return_value = view
-        mock_tm.create_window = AsyncMock(
-            return_value=(True, "Window created", "project", "@5")
+        recovery_env.picker_wq.view_window.return_value = MagicMock(
+            cwd="/tmp/project", provider_name="claude"
         )
-        mock_sm.wait_for_session_map_entry = AsyncMock()
-        mock_sm.send_to_window = AsyncMock(return_value=(True, "ok"))
-        mock_tr.resolve_chat_id.return_value = -100999
-
-        update = _make_callback_update(data=f"{CB_RECOVERY_PICK}0")
         user_data = _recovery_user_data()
         user_data[RECOVERY_SESSIONS] = [
-            {
-                "session_id": "a1b2c3d4-0000-0000-0000-000000000001",
-                "summary": "Fix login bug",
-            },
-            {
-                "session_id": "a1b2c3d4-0000-0000-0000-000000000002",
-                "summary": "Add tests",
-            },
+            {"session_id": "x", "summary": "x", "provider_name": "codex"}
         ]
-        ctx = _make_context(user_data)
-        query = update.callback_query
 
-        with (
-            patch(f"{_RC}.Path") as mock_path,
-            patch(f"{_RP}.Path") as mock_p_path,
-        ):
-            mock_path.return_value.is_dir.return_value = True
-            mock_p_path.return_value.is_dir.return_value = True
-            await handle_recovery_callback(query, 100, query.data, update, ctx)
+        query = await _tap(f"{CB_RECOVERY_PICK}0", _make_context(user_data))
 
-        mock_tm.create_window.assert_called_once_with(
-            "/tmp/project",
-            agent_args="--resume a1b2c3d4-0000-0000-0000-000000000001",
-            launch_command="claude",
-        )
-        mock_tr.bind_thread.assert_called_once()
-
-    @patch(f"{_RP}.window_query")
-    @patch(f"{_RC}.thread_router")
-    @patch(f"{_RC}.tmux_manager")
-    @patch(f"{_RC}.window_query")
-    @patch(f"{_RC}.safe_edit", new_callable=AsyncMock)
-    async def test_pick_second_session(
-        self,
-        _mock_safe_edit: AsyncMock,
-        mock_sm: MagicMock,
-        mock_tm: MagicMock,
-        mock_tr: MagicMock,
-        mock_picker_wq: MagicMock,
-    ) -> None:
-        view = MagicMock(cwd="/tmp/project", provider_name="")
-        mock_sm.view_window.return_value = view
-        mock_picker_wq.view_window.return_value = view
-        mock_tm.create_window = AsyncMock(
-            return_value=(True, "Window created", "project", "@5")
-        )
-        mock_sm.wait_for_session_map_entry = AsyncMock()
-        mock_sm.send_to_window = AsyncMock(return_value=(True, "ok"))
-        mock_tr.resolve_chat_id.return_value = -100999
-
-        update = _make_callback_update(data=f"{CB_RECOVERY_PICK}1")
-        user_data = _recovery_user_data()
-        user_data[RECOVERY_SESSIONS] = [
-            {
-                "session_id": "a1b2c3d4-0000-0000-0000-000000000001",
-                "summary": "Fix login bug",
-            },
-            {
-                "session_id": "a1b2c3d4-0000-0000-0000-000000000002",
-                "summary": "Add tests",
-            },
-        ]
-        ctx = _make_context(user_data)
-        query = update.callback_query
-
-        with (
-            patch(f"{_RC}.Path") as mock_path,
-            patch(f"{_RP}.Path") as mock_p_path,
-        ):
-            mock_path.return_value.is_dir.return_value = True
-            mock_p_path.return_value.is_dir.return_value = True
-            await handle_recovery_callback(query, 100, query.data, update, ctx)
-
-        mock_tm.create_window.assert_called_once_with(
-            "/tmp/project",
-            agent_args="--resume a1b2c3d4-0000-0000-0000-000000000002",
-            launch_command="claude",
-        )
-
-    async def test_pick_invalid_index_rejected(self) -> None:
-        update = _make_callback_update(data=f"{CB_RECOVERY_PICK}99")
-        user_data = _recovery_user_data()
-        user_data[RECOVERY_SESSIONS] = [
-            {"session_id": "a1b2c3d4-0000-0000-0000-000000000001", "summary": "test"},
-        ]
-        ctx = _make_context(user_data)
-        query = update.callback_query
-
-        await handle_recovery_callback(query, 100, query.data, update, ctx)
-
-        query.answer.assert_called_once()
-        assert "no longer" in query.answer.call_args.args[0].lower()
-
-    async def test_pick_no_sessions_stored_rejected(self) -> None:
-        update = _make_callback_update(data=f"{CB_RECOVERY_PICK}0")
-        user_data = _recovery_user_data()
-        ctx = _make_context(user_data)
-        query = update.callback_query
-
-        await handle_recovery_callback(query, 100, query.data, update, ctx)
-
-        query.answer.assert_called_once()
-        assert "no longer" in query.answer.call_args.args[0].lower()
-
-    async def test_pick_topic_mismatch_rejected(self) -> None:
-        update = _make_callback_update(data=f"{CB_RECOVERY_PICK}0", thread_id=99)
-        user_data = _recovery_user_data()
-        user_data[RECOVERY_SESSIONS] = [
-            {"session_id": "a1b2c3d4-0000-0000-0000-000000000001", "summary": "test"},
-        ]
-        ctx = _make_context(user_data)
-        query = update.callback_query
-
-        await handle_recovery_callback(query, 100, query.data, update, ctx)
-
-        query.answer.assert_called_once()
-        assert "mismatch" in query.answer.call_args.args[0].lower()
+        assert _toast(query) == "Session provider mismatch"
+        recovery_env.tmux.create_window.assert_not_called()
 
 
 class TestRecoveryBackCallback:
-    @patch(f"{_RC}.window_query")
-    @patch(f"{_RC}.safe_edit", new_callable=AsyncMock)
-    async def test_back_shows_recovery_menu(
-        self,
-        mock_safe_edit: AsyncMock,
-        mock_sm: MagicMock,
-    ) -> None:
-        mock_sm.view_window.return_value = MagicMock(cwd="/tmp/project")
-        update = _make_callback_update(data=f"{CB_RECOVERY_BACK}@0")
-        user_data = _recovery_user_data()
-        ctx = _make_context(user_data)
-        query = update.callback_query
+    async def test_back_shows_recovery_menu_with_help_text(self, recovery_env) -> None:
+        with patch(f"{_RC}.get_provider_for_window") as mock_gpw:
+            _capabilities(mock_gpw, cont=True, resume=True)
+            query = await _tap(
+                f"{CB_RECOVERY_BACK}@0", _make_context(_recovery_user_data())
+            )
 
-        await handle_recovery_callback(query, 100, query.data, update, ctx)
-
-        mock_safe_edit.assert_called_once()
-        assert "Choose how to continue" in mock_safe_edit.call_args.args[1]
+        recovery_env.edit.assert_called_once()
+        body = recovery_env.edit.call_args.args[1]
+        assert "Choose how to continue" in body
+        assert "Start fresh · Continue last session · Resume from list" in body
         query.answer.assert_called_once()
-
-    @patch(f"{_RC}.get_provider_for_window")
-    @patch(f"{_RC}.window_query")
-    @patch(f"{_RC}.safe_edit", new_callable=AsyncMock)
-    async def test_back_includes_help_text(
-        self,
-        mock_safe_edit: AsyncMock,
-        mock_sm: MagicMock,
-        mock_gpw: MagicMock,
-    ) -> None:
-        mock_sm.view_window.return_value = MagicMock(cwd="/tmp/project")
-        caps = mock_gpw.return_value.capabilities
-        caps.supports_continue = True
-        caps.supports_resume = True
-
-        update = _make_callback_update(data=f"{CB_RECOVERY_BACK}@0")
-        user_data = _recovery_user_data()
-        ctx = _make_context(user_data)
-        query = update.callback_query
-
-        await handle_recovery_callback(query, 100, query.data, update, ctx)
-
-        body = mock_safe_edit.call_args.args[1]
-        assert "Start fresh" in body
-        assert "Continue last session" in body
-        assert "Resume from list" in body
-
-    async def test_back_topic_mismatch_rejected(self) -> None:
-        update = _make_callback_update(data=f"{CB_RECOVERY_BACK}@0", thread_id=99)
-        user_data = {PENDING_THREAD_ID: 42, RECOVERY_WINDOW_ID: "@0"}
-        ctx = _make_context(user_data)
-        query = update.callback_query
-
-        await handle_recovery_callback(query, 100, query.data, update, ctx)
-
-        query.answer.assert_called_once()
-        assert "mismatch" in query.answer.call_args.args[0].lower()
-
-    async def test_back_no_pending_state_rejected(self) -> None:
-        update = _make_callback_update(data=f"{CB_RECOVERY_BACK}@0")
-        ctx = _make_context({})
-        query = update.callback_query
-
-        await handle_recovery_callback(query, 100, query.data, update, ctx)
-
-        query.answer.assert_called_once()
-        assert "mismatch" in query.answer.call_args.args[0].lower()
-
-    async def test_back_window_id_mismatch_rejected(self) -> None:
-        update = _make_callback_update(data=f"{CB_RECOVERY_BACK}@999")
-        user_data = {PENDING_THREAD_ID: 42, RECOVERY_WINDOW_ID: "@0"}
-        ctx = _make_context(user_data)
-        query = update.callback_query
-
-        await handle_recovery_callback(query, 100, query.data, update, ctx)
-
-        query.answer.assert_called_once()
-        assert "mismatch" in query.answer.call_args.args[0].lower()
 
 
 class TestRecoveryCancelCallback:
-    @patch(f"{_RC}.safe_edit", new_callable=AsyncMock)
-    async def test_cancel_clears_state(
-        self,
-        mock_safe_edit: AsyncMock,
-    ) -> None:
-        update = _make_callback_update(data=CB_RECOVERY_CANCEL)
-        user_data = _recovery_user_data()
-        ctx = _make_context(user_data)
-        query = update.callback_query
-
-        await handle_recovery_callback(query, 100, query.data, update, ctx)
-
-        assert PENDING_THREAD_TEXT not in user_data
-        assert PENDING_THREAD_ID not in user_data
-        assert RECOVERY_WINDOW_ID not in user_data
-        mock_safe_edit.assert_called_once()
-
-    @patch(f"{_RC}.safe_edit", new_callable=AsyncMock)
-    async def test_cancel_also_clears_recovery_sessions(
-        self,
-        mock_safe_edit: AsyncMock,
-    ) -> None:
-        update = _make_callback_update(data=CB_RECOVERY_CANCEL)
+    async def test_cancel_clears_all_recovery_state(self, recovery_env) -> None:
         user_data = _recovery_user_data()
         user_data[RECOVERY_SESSIONS] = [{"session_id": "x", "summary": "y"}]
-        ctx = _make_context(user_data)
+
+        await _tap(CB_RECOVERY_CANCEL, _make_context(user_data))
+
+        assert user_data == {}
+        recovery_env.edit.assert_called_once()
+
+
+class TestRecoveryCallbackDispatch:
+    async def test_unknown_recovery_data_is_acknowledged(self) -> None:
+        query = await _tap("rec:zzz", _make_context({}))
+
+        query.answer.assert_awaited_once_with()
+
+    async def test_expired_token_reports_and_stops(self) -> None:
+        from ccgram.handlers.recovery.recovery_callbacks import _dispatch
+
+        update = _make_callback_update(data=f"{CB_RECOVERY_FRESH}token")
+        update.message = None
         query = update.callback_query
 
-        await handle_recovery_callback(query, 100, query.data, update, ctx)
-
-        assert RECOVERY_SESSIONS not in user_data
-
-
-class TestScanSessionsForCwd:
-    def test_returns_sessions_matching_cwd(self, tmp_path) -> None:
-        projects_path = tmp_path / "projects"
-        work_dir = tmp_path / "myproj"
-        work_dir.mkdir()
-        resolved = str(work_dir.resolve())
-
-        proj_dir = projects_path / "-tmp-myproj"
-        proj_dir.mkdir(parents=True)
-
-        session_file = proj_dir / "sess-1.jsonl"
-        session_file.write_text('{"type":"summary"}\n')
-
-        index = {
-            "originalPath": resolved,
-            "entries": [
-                {
-                    "sessionId": "sess-1",
-                    "fullPath": str(session_file),
-                    "projectPath": resolved,
-                    "summary": "Fix the bug",
-                }
-            ],
-        }
-        (proj_dir / "sessions-index.json").write_text(json.dumps(index))
-
-        with patch(
-            "ccgram.providers.claude._claude_projects_path", return_value=projects_path
+        with (
+            patch(
+                "ccgram.handlers.recovery.recovery_callbacks.resolve_callback_data",
+                return_value=None,
+            ),
+            patch(
+                "ccgram.handlers.recovery.recovery_callbacks.handle_recovery_callback",
+                new_callable=AsyncMock,
+            ) as handler,
         ):
-            result = scan_sessions_for_cwd(str(work_dir))
+            await _dispatch(update, _make_context({}))
 
-        assert len(result) == 1
-        assert result[0].session_id == "sess-1"
-        assert result[0].summary == "Fix the bug"
-
-    def test_returns_empty_for_no_match(self, tmp_path) -> None:
-        projects_path = tmp_path / "projects"
-        work_dir = tmp_path / "myproj"
-        work_dir.mkdir()
-        other_dir = tmp_path / "other"
-        other_dir.mkdir()
-
-        proj_dir = projects_path / "-tmp-other"
-        proj_dir.mkdir(parents=True)
-
-        session_file = proj_dir / "sess-1.jsonl"
-        session_file.write_text('{"type":"summary"}\n')
-
-        index = {
-            "originalPath": str(other_dir.resolve()),
-            "entries": [
-                {
-                    "sessionId": "sess-1",
-                    "fullPath": str(session_file),
-                    "projectPath": str(other_dir.resolve()),
-                }
-            ],
-        }
-        (proj_dir / "sessions-index.json").write_text(json.dumps(index))
-
-        with patch(
-            "ccgram.providers.claude._claude_projects_path", return_value=projects_path
-        ):
-            result = scan_sessions_for_cwd(str(work_dir))
-
-        assert result == []
-
-    def test_returns_empty_when_projects_path_missing(self, tmp_path) -> None:
-        with patch(
-            "ccgram.providers.claude._claude_projects_path",
-            return_value=tmp_path / "nonexistent",
-        ):
-            result = scan_sessions_for_cwd("/some/path")
-
-        assert result == []
-
-    def test_sorted_by_mtime_descending(self, tmp_path) -> None:
-        projects_path = tmp_path / "projects"
-        work_dir = tmp_path / "myproj"
-        work_dir.mkdir()
-        resolved = str(work_dir.resolve())
-
-        proj_dir = projects_path / "-tmp-myproj"
-        proj_dir.mkdir(parents=True)
-
-        import time
-
-        old_file = proj_dir / "sess-old.jsonl"
-        old_file.write_text('{"type":"summary"}\n')
-        time.sleep(0.05)
-
-        new_file = proj_dir / "sess-new.jsonl"
-        new_file.write_text('{"type":"summary"}\n')
-
-        index = {
-            "originalPath": resolved,
-            "entries": [
-                {
-                    "sessionId": "sess-old",
-                    "fullPath": str(old_file),
-                    "projectPath": resolved,
-                    "summary": "Old session",
-                },
-                {
-                    "sessionId": "sess-new",
-                    "fullPath": str(new_file),
-                    "projectPath": resolved,
-                    "summary": "New session",
-                },
-            ],
-        }
-        (proj_dir / "sessions-index.json").write_text(json.dumps(index))
-
-        with patch(
-            "ccgram.providers.claude._claude_projects_path", return_value=projects_path
-        ):
-            result = scan_sessions_for_cwd(str(work_dir))
-
-        assert len(result) == 2
-        assert result[0].session_id == "sess-new"
-        assert result[1].session_id == "sess-old"
-
-    def test_skips_missing_session_files(self, tmp_path) -> None:
-        projects_path = tmp_path / "projects"
-        work_dir = tmp_path / "myproj"
-        work_dir.mkdir()
-        resolved = str(work_dir.resolve())
-
-        proj_dir = projects_path / "-tmp-myproj"
-        proj_dir.mkdir(parents=True)
-
-        index = {
-            "originalPath": resolved,
-            "entries": [
-                {
-                    "sessionId": "sess-gone",
-                    "fullPath": str(proj_dir / "nonexistent.jsonl"),
-                    "projectPath": resolved,
-                }
-            ],
-        }
-        (proj_dir / "sessions-index.json").write_text(json.dumps(index))
-
-        with patch(
-            "ccgram.providers.claude._claude_projects_path", return_value=projects_path
-        ):
-            result = scan_sessions_for_cwd(str(work_dir))
-
-        assert result == []
-
-    def test_uses_session_id_as_summary_fallback(self, tmp_path) -> None:
-        projects_path = tmp_path / "projects"
-        work_dir = tmp_path / "myproj"
-        work_dir.mkdir()
-        resolved = str(work_dir.resolve())
-
-        proj_dir = projects_path / "-tmp-myproj"
-        proj_dir.mkdir(parents=True)
-
-        session_file = proj_dir / "sess-abc123.jsonl"
-        session_file.write_text('{"type":"summary"}\n')
-
-        index = {
-            "originalPath": resolved,
-            "entries": [
-                {
-                    "sessionId": "a1b2c3d4-0000-0000-0000-abc123000000",
-                    "fullPath": str(session_file),
-                    "projectPath": resolved,
-                }
-            ],
-        }
-        (proj_dir / "sessions-index.json").write_text(json.dumps(index))
-
-        with patch(
-            "ccgram.providers.claude._claude_projects_path", return_value=projects_path
-        ):
-            result = scan_sessions_for_cwd(str(work_dir))
-
-        assert len(result) == 1
-        assert result[0].summary == "a1b2c3d4-000"
-
-    def test_bare_jsonl_without_index(self, tmp_path) -> None:
-        projects_path = tmp_path / "projects"
-        work_dir = tmp_path / "myproj"
-        work_dir.mkdir()
-        resolved = str(work_dir.resolve())
-
-        proj_dir = projects_path / "-tmp-myproj"
-        proj_dir.mkdir(parents=True)
-
-        jsonl = proj_dir / "abc-123.jsonl"
-        jsonl.write_text(
-            f'{{"type":"user","cwd":"{resolved}","message":{{"content":[{{"type":"text","text":"Fix bug"}}]}}}}\n'
+        handler.assert_not_awaited()
+        query.answer.assert_awaited_once_with(
+            "This button has expired", show_alert=True
         )
 
-        with patch(
-            "ccgram.providers.claude._claude_projects_path", return_value=projects_path
-        ):
-            result = scan_sessions_for_cwd(str(work_dir))
 
-        assert len(result) == 1
-        assert result[0].session_id == "abc-123"
-        assert result[0].summary == "Fix bug"
+class TestRecoveryStaleGuards:
+    """Every recovery button refuses a tap that no longer matches its state."""
 
-    def test_bare_jsonl_filters_by_cwd(self, tmp_path) -> None:
-        projects_path = tmp_path / "projects"
-        work_dir = tmp_path / "myproj"
-        work_dir.mkdir()
-        other_dir = tmp_path / "other"
-        other_dir.mkdir()
+    _BUTTONS = [
+        f"{CB_RECOVERY_FRESH}@0",
+        f"{CB_RECOVERY_CONTINUE}@0",
+        f"{CB_RECOVERY_RESUME}@0",
+        f"{CB_RECOVERY_BACK}@0",
+        f"{CB_RECOVERY_BROWSE}@0",
+        f"{CB_RECOVERY_PICK}0",
+        CB_RECOVERY_CANCEL,
+    ]
 
-        proj_dir = projects_path / "-tmp-other"
-        proj_dir.mkdir(parents=True)
+    @pytest.mark.parametrize("data", _BUTTONS)
+    async def test_tap_from_another_topic_rejected(self, data: str) -> None:
+        user_data = _recovery_user_data()
+        user_data[RECOVERY_SESSIONS] = [{"session_id": "x", "summary": "x"}]
 
-        jsonl = proj_dir / "abc-123.jsonl"
-        jsonl.write_text(
-            f'{{"type":"user","cwd":"{other_dir.resolve()}","message":{{"content":"hi"}}}}\n'
-        )
+        query = await _tap(data, _make_context(user_data), thread_id=99)
 
-        with patch(
-            "ccgram.providers.claude._claude_projects_path", return_value=projects_path
-        ):
-            result = scan_sessions_for_cwd(str(work_dir))
+        query.answer.assert_called_once()
+        assert _toast(query) == _STALE_TOAST
 
-        assert result == []
-
-    def test_bare_jsonl_deduplicates_with_index(self, tmp_path) -> None:
-        projects_path = tmp_path / "projects"
-        work_dir = tmp_path / "myproj"
-        work_dir.mkdir()
-        resolved = str(work_dir.resolve())
-
-        proj_dir = projects_path / "-tmp-myproj"
-        proj_dir.mkdir(parents=True)
-
-        session_file = proj_dir / "sess-1.jsonl"
-        session_file.write_text(
-            f'{{"type":"user","cwd":"{resolved}","message":{{"content":"hi"}}}}\n'
-        )
-
-        index = {
-            "originalPath": resolved,
-            "entries": [
-                {
-                    "sessionId": "sess-1",
-                    "fullPath": str(session_file),
-                    "projectPath": resolved,
-                    "summary": "From index",
-                }
-            ],
-        }
-        (proj_dir / "sessions-index.json").write_text(json.dumps(index))
-
-        with patch(
-            "ccgram.providers.claude._claude_projects_path", return_value=projects_path
-        ):
-            result = scan_sessions_for_cwd(str(work_dir))
-
-        assert len(result) == 1
-        assert result[0].summary == "From index"
-
-    def test_uses_first_prompt_as_summary_fallback(self, tmp_path) -> None:
-        projects_path = tmp_path / "projects"
-        work_dir = tmp_path / "myproj"
-        work_dir.mkdir()
-        resolved = str(work_dir.resolve())
-
-        proj_dir = projects_path / "-tmp-myproj"
-        proj_dir.mkdir(parents=True)
-
-        session_file = proj_dir / "sess-fp.jsonl"
-        session_file.write_text('{"type":"summary"}\n')
-
-        index = {
-            "originalPath": resolved,
-            "entries": [
-                {
-                    "sessionId": "sess-fp",
-                    "fullPath": str(session_file),
-                    "projectPath": resolved,
-                    "firstPrompt": "Implement auth",
-                }
-            ],
-        }
-        (proj_dir / "sessions-index.json").write_text(json.dumps(index))
-
-        with patch(
-            "ccgram.providers.claude._claude_projects_path", return_value=projects_path
-        ):
-            result = scan_sessions_for_cwd(str(work_dir))
-
-        assert len(result) == 1
-        assert result[0].summary == "Implement auth"
-
-    def test_session_entries_carry_mtime(self, tmp_path) -> None:
-        projects_path = tmp_path / "projects"
-        work_dir = tmp_path / "myproj"
-        work_dir.mkdir()
-        resolved = str(work_dir.resolve())
-
-        proj_dir = projects_path / "-tmp-myproj"
-        proj_dir.mkdir(parents=True)
-
-        session_file = proj_dir / "sess-1.jsonl"
-        session_file.write_text('{"type":"summary"}\n')
-        expected_mtime = session_file.stat().st_mtime
-
-        index = {
-            "originalPath": resolved,
-            "entries": [
-                {
-                    "sessionId": "sess-1",
-                    "fullPath": str(session_file),
-                    "projectPath": resolved,
-                    "summary": "Fix bug",
-                }
-            ],
-        }
-        (proj_dir / "sessions-index.json").write_text(json.dumps(index))
-
-        with patch(
-            "ccgram.providers.claude._claude_projects_path", return_value=projects_path
-        ):
-            result = scan_sessions_for_cwd(str(work_dir))
-
-        assert len(result) == 1
-        assert result[0].mtime == expected_mtime
-
-
-class TestRecoveryResumePickerLabels:
-    @patch(f"{_RC}.scan_sessions_for_cwd")
-    @patch(f"{_RC}.window_query")
-    @patch(f"{_RC}.safe_edit", new_callable=AsyncMock)
-    async def test_picker_labels_use_formatter(
-        self,
-        _mock_safe_edit: AsyncMock,
-        mock_sm: MagicMock,
-        mock_scan: MagicMock,
+    @pytest.mark.parametrize(
+        "data",
+        [
+            f"{CB_RECOVERY_FRESH}@0",
+            f"{CB_RECOVERY_CONTINUE}@0",
+            f"{CB_RECOVERY_RESUME}@0",
+            f"{CB_RECOVERY_BACK}@0",
+            f"{CB_RECOVERY_BROWSE}@0",
+        ],
+    )
+    @patch(f"{_RC}.thread_router")
+    async def test_tap_without_pending_state_or_binding_rejected(
+        self, mock_router: MagicMock, data: str
     ) -> None:
-        import time as _time
+        mock_router.get_window_for_thread.return_value = None
 
-        mock_sm.view_window.return_value = MagicMock(cwd="/tmp/project")
-        recent = _time.time() - 10
-        mock_scan.return_value = [
-            _SessionEntry("a1b2c3-0000-1111-2222-3333deadbeef", "Fix login bug", recent)
+        query = await _tap(data, _make_context({}))
+
+        query.answer.assert_called_once()
+        assert _toast(query) == _STALE_TOAST
+
+    @pytest.mark.parametrize(
+        "data",
+        [
+            f"{CB_RECOVERY_FRESH}@999",
+            f"{CB_RECOVERY_CONTINUE}@999",
+            f"{CB_RECOVERY_RESUME}@999",
+            f"{CB_RECOVERY_BACK}@999",
+            f"{CB_RECOVERY_BROWSE}@999",
+        ],
+    )
+    async def test_tap_for_a_different_window_rejected(self, data: str) -> None:
+        user_data = {PENDING_THREAD_ID: 42, RECOVERY_WINDOW_ID: "@0"}
+
+        query = await _tap(data, _make_context(user_data))
+
+        query.answer.assert_called_once()
+        assert _toast(query) == _STALE_TOAST
+
+    @pytest.mark.parametrize(
+        "data",
+        [f"{CB_RECOVERY_FRESH}@0", f"{CB_RECOVERY_CONTINUE}@0"],
+        ids=["fresh", "continue"],
+    )
+    async def test_launch_fails_when_cwd_is_gone(self, recovery_env, data: str) -> None:
+        recovery_env.path.return_value.is_dir.return_value = False
+        recovery_env.wq.view_window.return_value = MagicMock(cwd="/gone")
+
+        query = await _tap(data, _make_context(_recovery_user_data()))
+
+        recovery_env.edit.assert_called_once()
+        assert "no longer exists" in recovery_env.edit.call_args.args[1].lower()
+        assert _toast(query) == "Project gone"
+
+
+# ── Empty state + cross-project browse ────────────────────────────────────
+
+
+class TestRecoveryEmptyStateAndBrowseFallback:
+    @pytest.mark.parametrize(
+        "data",
+        [f"{CB_RECOVERY_RESUME}@0", f"{CB_RECOVERY_CONTINUE}@0"],
+        ids=["resume", "continue"],
+    )
+    @patch(f"{_RC}.scan_sessions_for_cwd", return_value=[])
+    async def test_no_sessions_offers_browse_and_fresh(
+        self, _mock_scan: MagicMock, recovery_env, data: str
+    ) -> None:
+        await _tap(data, _make_context(_recovery_user_data()))
+
+        recovery_env.edit.assert_called_once()
+        assert "No sessions" in recovery_env.edit.call_args.args[1]
+        keyboard = recovery_env.edit.call_args.kwargs["reply_markup"]
+        datas = _callback_datas(keyboard)
+        assert any(d.startswith(CB_RECOVERY_BROWSE) for d in datas)
+        assert any(d.startswith(CB_RECOVERY_FRESH) for d in datas)
+        assert CB_RECOVERY_CANCEL in datas
+
+    @patch("ccgram.handlers.recovery.resume_command.scan_all_sessions")
+    async def test_browse_loads_cross_project_picker(
+        self, mock_scan_all: MagicMock, recovery_env
+    ) -> None:
+        mock_scan_all.return_value = [
+            ResumeEntry("sess-x", "From other project", "/other", 12345.0),
         ]
+        user_data = _recovery_user_data(text="pending text")
 
-        update = _make_callback_update(data=f"{CB_RECOVERY_RESUME}@0")
-        user_data = _recovery_user_data()
-        ctx = _make_context(user_data)
-        query = update.callback_query
+        await _tap(f"{CB_RECOVERY_BROWSE}@0", _make_context(user_data))
 
-        with patch(f"{_RC}.Path") as mock_path:
-            mock_path.return_value.is_dir.return_value = True
-            await handle_recovery_callback(query, 100, query.data, update, ctx)
+        assert user_data[RESUME_SESSIONS][0]["session_id"] == "sess-x"
+        assert PENDING_THREAD_TEXT not in user_data
+        assert "Select a session" in recovery_env.edit.call_args.args[1]
 
-        kb = _mock_safe_edit.call_args.kwargs["reply_markup"]
-        button_text = kb.inline_keyboard[0][0].text
-        assert "today" in button_text
-        assert "Fix login bug" in button_text
-        assert button_text.endswith(" · beef")
-
-    @patch(f"{_RC}.scan_sessions_for_cwd")
-    @patch(f"{_RC}.window_query")
-    @patch(f"{_RC}.safe_edit", new_callable=AsyncMock)
-    async def test_picker_labels_fall_back_to_never(
-        self,
-        _mock_safe_edit: AsyncMock,
-        mock_sm: MagicMock,
-        mock_scan: MagicMock,
+    @patch("ccgram.handlers.recovery.resume_command.scan_all_sessions", return_value=[])
+    async def test_browse_with_no_sessions_anywhere(
+        self, _mock_scan_all: MagicMock, recovery_env
     ) -> None:
-        mock_sm.view_window.return_value = MagicMock(cwd="/tmp/project")
-        mock_scan.return_value = [
-            _SessionEntry("a1b2c3-0000-1111-2222-3333deadbe99", "Old", 0.0)
-        ]
-
-        update = _make_callback_update(data=f"{CB_RECOVERY_RESUME}@0")
         user_data = _recovery_user_data()
-        ctx = _make_context(user_data)
-        query = update.callback_query
 
-        with patch(f"{_RC}.Path") as mock_path:
-            mock_path.return_value.is_dir.return_value = True
-            await handle_recovery_callback(query, 100, query.data, update, ctx)
+        query = await _tap(f"{CB_RECOVERY_BROWSE}@0", _make_context(user_data))
 
-        kb = _mock_safe_edit.call_args.kwargs["reply_markup"]
-        button_text = kb.inline_keyboard[0][0].text
-        assert button_text.startswith("never · ")
+        recovery_env.edit.assert_called_once()
+        assert "No past sessions" in recovery_env.edit.call_args.args[1]
+        assert _toast(query) == "Nothing to resume"
+        assert user_data == {}
 
-    @patch(f"{_RC}.scan_sessions_for_cwd")
-    @patch(f"{_RC}.window_query")
-    @patch(f"{_RC}.safe_edit", new_callable=AsyncMock)
-    async def test_picker_stores_mtime_for_pick_callback(
-        self,
-        _mock_safe_edit: AsyncMock,
-        mock_sm: MagicMock,
-        mock_scan: MagicMock,
-    ) -> None:
-        mock_sm.view_window.return_value = MagicMock(cwd="/tmp/project")
-        mock_scan.return_value = [_SessionEntry("sess-1", "X", 12345.0)]
 
-        update = _make_callback_update(data=f"{CB_RECOVERY_RESUME}@0")
-        user_data = _recovery_user_data()
-        ctx = _make_context(user_data)
-        query = update.callback_query
+class TestEmptyStateKeyboardBuilder:
+    def test_empty_keyboard_has_browse_fresh_and_cancel(self) -> None:
+        datas = _callback_datas(_build_empty_resume_keyboard("@0"))
 
-        with patch(f"{_RC}.Path") as mock_path:
-            mock_path.return_value.is_dir.return_value = True
-            await handle_recovery_callback(query, 100, query.data, update, ctx)
+        assert any(d.startswith(CB_RECOVERY_BROWSE) for d in datas)
+        assert any(d.startswith(CB_RECOVERY_FRESH) for d in datas)
+        assert CB_RECOVERY_CANCEL in datas
 
-        stored = user_data[RECOVERY_SESSIONS]
-        assert stored[0]["mtime"] == 12345.0
+    def test_empty_keyboard_callback_data_within_64_bytes(self) -> None:
+        kb = _build_empty_resume_keyboard("@" + "x" * 60)
+
+        for data in _callback_datas(kb):
+            assert len(data.encode("utf-8")) <= 64
+
+
+# ── Per-window provider wiring ────────────────────────────────────────────
 
 
 class TestRecoveryPerWindowProvider:
     @patch(f"{_RC}.scan_sessions_for_cwd", return_value=[_SessionEntry("s1", "x")])
     @patch(f"{_RC}.get_provider_for_window")
-    @patch(f"{_RC}.thread_router")
-    @patch(f"{_RC}.tmux_manager")
-    @patch(f"{_RC}.window_query")
-    @patch(f"{_RC}.safe_edit", new_callable=AsyncMock)
     async def test_continue_uses_per_window_provider(
-        self,
-        _mock_safe_edit: AsyncMock,
-        mock_sm: MagicMock,
-        mock_tm: MagicMock,
-        mock_tr: MagicMock,
-        mock_gpw: MagicMock,
-        _mock_scan: MagicMock,
+        self, mock_gpw: MagicMock, _mock_scan: MagicMock, recovery_env
     ) -> None:
-        mock_sm.view_window.return_value = MagicMock(cwd="/tmp/project")
-        mock_tm.create_window = AsyncMock(
-            return_value=(True, "Window created", "project", "@5")
-        )
-        mock_sm.wait_for_session_map_entry = AsyncMock()
-        mock_sm.send_to_window = AsyncMock(return_value=(True, "ok"))
-        mock_tr.resolve_chat_id.return_value = -100999
         mock_gpw.return_value.make_launch_args.return_value = "--continue"
 
-        update = _make_callback_update(data=f"{CB_RECOVERY_CONTINUE}@0")
-        user_data = _recovery_user_data()
-        ctx = _make_context(user_data)
-        query = update.callback_query
-
-        with patch(f"{_RC}.Path") as mock_path:
-            mock_path.return_value.is_dir.return_value = True
-            await handle_recovery_callback(query, 100, query.data, update, ctx)
+        await _tap(f"{CB_RECOVERY_CONTINUE}@0", _make_context(_recovery_user_data()))
 
         mock_gpw.assert_called_with("@0", provider_name=ANY)
         mock_gpw.return_value.make_launch_args.assert_called_once_with(
@@ -1672,48 +963,16 @@ class TestRecoveryPerWindowProvider:
         )
 
     @patch(f"{_RP}.get_provider_for_window")
-    @patch(f"{_RP}.window_query")
-    @patch(f"{_RC}.get_provider_for_window")
-    @patch(f"{_RC}.thread_router")
-    @patch(f"{_RC}.tmux_manager")
-    @patch(f"{_RC}.window_query")
-    @patch(f"{_RC}.safe_edit", new_callable=AsyncMock)
     async def test_resume_pick_uses_per_window_provider(
-        self,
-        _mock_safe_edit: AsyncMock,
-        mock_sm: MagicMock,
-        mock_tm: MagicMock,
-        mock_tr: MagicMock,
-        mock_gpw: MagicMock,
-        mock_picker_wq: MagicMock,
-        mock_picker_gpw: MagicMock,
+        self, mock_picker_gpw: MagicMock, recovery_env
     ) -> None:
-        view = MagicMock(cwd="/tmp/project", provider_name="")
-        mock_sm.view_window.return_value = view
-        mock_picker_wq.view_window.return_value = view
-        mock_tm.create_window = AsyncMock(
-            return_value=(True, "Window created", "project", "@5")
-        )
-        mock_sm.wait_for_session_map_entry = AsyncMock()
-        mock_sm.send_to_window = AsyncMock(return_value=(True, "ok"))
-        mock_tr.resolve_chat_id.return_value = -100999
         mock_picker_gpw.return_value.make_launch_args.return_value = "--resume sess-1"
-
-        update = _make_callback_update(data=f"{CB_RECOVERY_PICK}0")
         user_data = _recovery_user_data()
         user_data[RECOVERY_SESSIONS] = [
             {"session_id": "sess-1", "summary": "Fix login bug"},
         ]
-        ctx = _make_context(user_data)
-        query = update.callback_query
 
-        with (
-            patch(f"{_RC}.Path") as mock_path,
-            patch(f"{_RP}.Path") as mock_p_path,
-        ):
-            mock_path.return_value.is_dir.return_value = True
-            mock_p_path.return_value.is_dir.return_value = True
-            await handle_recovery_callback(query, 100, query.data, update, ctx)
+        await _tap(f"{CB_RECOVERY_PICK}0", _make_context(user_data))
 
         mock_picker_gpw.assert_called_with("@0", provider_name=ANY)
         mock_picker_gpw.return_value.make_launch_args.assert_called_once_with(
@@ -1721,188 +980,153 @@ class TestRecoveryPerWindowProvider:
         )
 
 
-class TestRecoveryEmptyStateAndBrowseFallback:
-    @patch(f"{_RC}.scan_sessions_for_cwd", return_value=[])
-    @patch(f"{_RC}.window_query")
-    @patch(f"{_RC}.safe_edit", new_callable=AsyncMock)
-    async def test_continue_with_no_sessions_shows_empty_state(
-        self,
-        mock_safe_edit: AsyncMock,
-        mock_sm: MagicMock,
-        _mock_scan: MagicMock,
-    ) -> None:
-        mock_sm.view_window.return_value = MagicMock(cwd="/tmp/project")
-
-        update = _make_callback_update(data=f"{CB_RECOVERY_CONTINUE}@0")
-        user_data = _recovery_user_data()
-        ctx = _make_context(user_data)
-        query = update.callback_query
-
-        with patch(f"{_RC}.Path") as mock_path:
-            mock_path.return_value.is_dir.return_value = True
-            await handle_recovery_callback(query, 100, query.data, update, ctx)
-
-        mock_safe_edit.assert_called_once()
-        body = mock_safe_edit.call_args.args[1]
-        assert "No sessions" in body
-        kb = mock_safe_edit.call_args.kwargs["reply_markup"]
-        button_texts = [b.text for row in kb.inline_keyboard for b in row]
-        assert any("Browse" in t for t in button_texts)
-        assert any("fresh" in t.lower() for t in button_texts)
-
-    @patch(f"{_RC}.scan_sessions_for_cwd", return_value=[])
-    @patch(f"{_RC}.window_query")
-    @patch(f"{_RC}.safe_edit", new_callable=AsyncMock)
-    async def test_empty_state_buttons_target_fresh_and_browse(
-        self,
-        mock_safe_edit: AsyncMock,
-        mock_sm: MagicMock,
-        _mock_scan: MagicMock,
-    ) -> None:
-        mock_sm.view_window.return_value = MagicMock(cwd="/tmp/project")
-
-        update = _make_callback_update(data=f"{CB_RECOVERY_RESUME}@0")
-        user_data = _recovery_user_data()
-        ctx = _make_context(user_data)
-        query = update.callback_query
-
-        with patch(f"{_RC}.Path") as mock_path:
-            mock_path.return_value.is_dir.return_value = True
-            await handle_recovery_callback(query, 100, query.data, update, ctx)
-
-        kb = mock_safe_edit.call_args.kwargs["reply_markup"]
-        datas = [
-            b.callback_data
-            for row in kb.inline_keyboard
-            for b in row
-            if isinstance(b.callback_data, str)
-        ]
-        assert any(d.startswith(CB_RECOVERY_BROWSE) for d in datas)
-        assert any(d.startswith(CB_RECOVERY_FRESH) for d in datas)
-        assert CB_RECOVERY_CANCEL in datas
-
-    @patch("ccgram.handlers.recovery.resume_command.scan_all_sessions")
-    @patch(f"{_RC}.window_query")
-    @patch(f"{_RC}.safe_edit", new_callable=AsyncMock)
-    async def test_browse_loads_cross_project_picker(
-        self,
-        mock_safe_edit: AsyncMock,
-        mock_sm: MagicMock,
-        mock_scan_all: MagicMock,
-    ) -> None:
-        from ccgram.handlers.recovery.resume_command import ResumeEntry
-
-        mock_sm.view_window.return_value = MagicMock(cwd="/tmp/project")
-        mock_scan_all.return_value = [
-            ResumeEntry("sess-x", "From other project", "/other", 12345.0),
-        ]
-
-        update = _make_callback_update(data=f"{CB_RECOVERY_BROWSE}@0")
-        user_data = _recovery_user_data(text="pending text")
-        ctx = _make_context(user_data)
-        query = update.callback_query
-
-        await handle_recovery_callback(query, 100, query.data, update, ctx)
-
-        from ccgram.handlers.user_state import RESUME_SESSIONS as _RS
-
-        assert _RS in user_data
-        assert user_data[_RS][0]["session_id"] == "sess-x"
-        assert PENDING_THREAD_TEXT not in user_data
-        body = mock_safe_edit.call_args.args[1]
-        assert "Select a session" in body
-
-    @patch("ccgram.handlers.recovery.resume_command.scan_all_sessions", return_value=[])
-    @patch(f"{_RC}.safe_edit", new_callable=AsyncMock)
-    async def test_browse_with_no_sessions_anywhere(
-        self,
-        mock_safe_edit: AsyncMock,
-        _mock_scan_all: MagicMock,
-    ) -> None:
-        update = _make_callback_update(data=f"{CB_RECOVERY_BROWSE}@0")
-        user_data = _recovery_user_data()
-        ctx = _make_context(user_data)
-        query = update.callback_query
-
-        await handle_recovery_callback(query, 100, query.data, update, ctx)
-
-        mock_safe_edit.assert_called_once()
-        body = mock_safe_edit.call_args.args[1]
-        assert "No past sessions" in body
-
-    async def test_browse_topic_mismatch_rejected(self) -> None:
-        update = _make_callback_update(data=f"{CB_RECOVERY_BROWSE}@0", thread_id=99)
-        user_data = {PENDING_THREAD_ID: 42, RECOVERY_WINDOW_ID: "@0"}
-        ctx = _make_context(user_data)
-        query = update.callback_query
-
-        await handle_recovery_callback(query, 100, query.data, update, ctx)
-
-        query.answer.assert_called_once()
-        assert "mismatch" in query.answer.call_args.args[0].lower()
+# ── Per-cwd session discovery ─────────────────────────────────────────────
+#
+# The provider-level scan (index parsing, summary fallbacks, mtime ordering,
+# dedup) is covered by test_resume_command.py::TestScanAllSessions. These
+# tests only pin the cwd filter that ``scan_sessions_for_cwd`` adds on top.
 
 
-class TestEmptyStateKeyboardBuilder:
-    def test_empty_keyboard_has_browse_fresh_and_cancel(self) -> None:
-        from ccgram.handlers.recovery.resume_picker import (
-            _build_empty_resume_keyboard,
+@pytest.fixture()
+def projects_root(tmp_path: Path):
+    root = tmp_path / "projects"
+    with patch("ccgram.providers.claude._claude_projects_path", return_value=root):
+        yield root
+
+
+def _index_for(proj_dir: Path, cwd: str, *entries: dict) -> None:
+    (proj_dir / "sessions-index.json").write_text(
+        json.dumps({"originalPath": cwd, "entries": list(entries)})
+    )
+
+
+class TestScanSessionsForCwd:
+    def test_returns_sessions_matching_cwd(self, projects_root, tmp_path) -> None:
+        work_dir = tmp_path / "myproj"
+        work_dir.mkdir()
+        proj_dir = projects_root / "-tmp-myproj"
+        proj_dir.mkdir(parents=True)
+        session_file = proj_dir / "sess-1.jsonl"
+        session_file.write_text('{"type":"summary"}\n')
+        _index_for(
+            proj_dir,
+            str(work_dir.resolve()),
+            {
+                "sessionId": "sess-1",
+                "fullPath": str(session_file),
+                "projectPath": str(work_dir.resolve()),
+                "summary": "Fix the bug",
+            },
         )
 
-        kb = _build_empty_resume_keyboard("@0")
-        datas = [
-            b.callback_data
-            for row in kb.inline_keyboard
-            for b in row
-            if isinstance(b.callback_data, str)
-        ]
-        assert any(d.startswith(CB_RECOVERY_BROWSE) for d in datas)
-        assert any(d.startswith(CB_RECOVERY_FRESH) for d in datas)
-        assert CB_RECOVERY_CANCEL in datas
+        result = scan_sessions_for_cwd(str(work_dir))
 
-    def test_empty_keyboard_callback_data_within_64_bytes(self) -> None:
-        from ccgram.handlers.recovery.resume_picker import (
-            _build_empty_resume_keyboard,
+        assert len(result) == 1
+        assert result[0].session_id == "sess-1"
+        assert result[0].summary == "Fix the bug"
+
+    def test_indexed_session_for_another_cwd_is_filtered_out(
+        self, projects_root, tmp_path
+    ) -> None:
+        work_dir = tmp_path / "myproj"
+        work_dir.mkdir()
+        other_dir = tmp_path / "other"
+        other_dir.mkdir()
+        proj_dir = projects_root / "-tmp-other"
+        proj_dir.mkdir(parents=True)
+        session_file = proj_dir / "sess-1.jsonl"
+        session_file.write_text('{"type":"summary"}\n')
+        _index_for(
+            proj_dir,
+            str(other_dir.resolve()),
+            {
+                "sessionId": "sess-1",
+                "fullPath": str(session_file),
+                "projectPath": str(other_dir.resolve()),
+            },
         )
 
-        long_id = "@" + "x" * 60
-        kb = _build_empty_resume_keyboard(long_id)
-        for row in kb.inline_keyboard:
-            for btn in row:
-                assert isinstance(btn.callback_data, str)
-                assert len(btn.callback_data) <= 64
+        assert scan_sessions_for_cwd(str(work_dir)) == []
 
+    def test_bare_jsonl_matching_cwd_is_returned(self, projects_root, tmp_path) -> None:
+        work_dir = tmp_path / "myproj"
+        work_dir.mkdir()
+        proj_dir = projects_root / "-tmp-myproj"
+        proj_dir.mkdir(parents=True)
+        (proj_dir / "abc-123.jsonl").write_text(
+            json.dumps(
+                {
+                    "type": "user",
+                    "cwd": str(work_dir.resolve()),
+                    "message": {"content": [{"type": "text", "text": "Fix bug"}]},
+                }
+            )
+            + "\n"
+        )
 
-class TestUpdatedToastWordings:
-    @patch(f"{_RC}.window_query")
-    @patch(f"{_RC}.safe_edit", new_callable=AsyncMock)
-    async def test_pick_says_no_longer_in_list(
-        self,
-        _mock_safe_edit: AsyncMock,
-        _mock_sm: MagicMock,
+        result = scan_sessions_for_cwd(str(work_dir))
+
+        assert len(result) == 1
+        assert result[0].session_id == "abc-123"
+        assert result[0].summary == "Fix bug"
+
+    def test_bare_jsonl_for_another_cwd_is_filtered_out(
+        self, projects_root, tmp_path
     ) -> None:
-        update = _make_callback_update(data=f"{CB_RECOVERY_PICK}99")
-        user_data = _recovery_user_data()
-        user_data[RECOVERY_SESSIONS] = [
-            {"session_id": "x", "summary": "x"},
+        work_dir = tmp_path / "myproj"
+        work_dir.mkdir()
+        other_dir = tmp_path / "other"
+        other_dir.mkdir()
+        proj_dir = projects_root / "-tmp-other"
+        proj_dir.mkdir(parents=True)
+        (proj_dir / "abc-123.jsonl").write_text(
+            json.dumps(
+                {
+                    "type": "user",
+                    "cwd": str(other_dir.resolve()),
+                    "message": {"content": "hi"},
+                }
+            )
+            + "\n"
+        )
+
+        assert scan_sessions_for_cwd(str(work_dir)) == []
+
+    def test_caps_the_picker_at_six_newest_sessions(
+        self, projects_root, tmp_path
+    ) -> None:
+        import os
+
+        work_dir = tmp_path / "myproj"
+        work_dir.mkdir()
+        proj_dir = projects_root / "-tmp-myproj"
+        proj_dir.mkdir(parents=True)
+        resolved = str(work_dir.resolve())
+        entries = []
+        for i in range(7):
+            session_file = proj_dir / f"sess-{i}.jsonl"
+            session_file.write_text('{"type":"summary"}\n')
+            os.utime(session_file, (1_700_000_000 + i, 1_700_000_000 + i))
+            entries.append(
+                {
+                    "sessionId": f"sess-{i}",
+                    "fullPath": str(session_file),
+                    "projectPath": resolved,
+                    "summary": f"Session {i}",
+                }
+            )
+        _index_for(proj_dir, resolved, *entries)
+
+        result = scan_sessions_for_cwd(str(work_dir))
+
+        assert [entry.session_id for entry in result] == [
+            f"sess-{i}" for i in range(6, 0, -1)
         ]
-        ctx = _make_context(user_data)
-        query = update.callback_query
 
-        await handle_recovery_callback(query, 100, query.data, update, ctx)
+    def test_unresolvable_cwd_returns_empty_without_scanning(
+        self, projects_root
+    ) -> None:
+        with patch(f"{_RP}.get_provider_for_window") as mock_gpw:
+            assert scan_sessions_for_cwd("/bad\x00path") == []
 
-        text = query.answer.call_args.args[0]
-        assert "no longer" in text.lower()
-
-    async def test_pick_invalid_value_says_couldnt_read(self) -> None:
-        update = _make_callback_update(data=f"{CB_RECOVERY_PICK}notanumber")
-        user_data = _recovery_user_data()
-        user_data[RECOVERY_SESSIONS] = [
-            {"session_id": "x", "summary": "x"},
-        ]
-        ctx = _make_context(user_data)
-        query = update.callback_query
-
-        await handle_recovery_callback(query, 100, query.data, update, ctx)
-
-        text = query.answer.call_args.args[0]
-        assert "couldn" in text.lower()
+        mock_gpw.assert_not_called()

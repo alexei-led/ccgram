@@ -26,61 +26,44 @@ def lint_module():
 
 
 def _write(tmp_path: Path, name: str, source: str) -> Path:
-    path = tmp_path / name
+    path = tmp_path / f"{name}.py"
     path.write_text(textwrap.dedent(source), encoding="utf-8")
     return path
 
 
-def test_documented_lazy_import_passes(lint_module, tmp_path: Path) -> None:
-    path = _write(
-        tmp_path,
-        "documented.py",
-        """
+# Sources the lint must accept: the import is excused by a `# Lazy:` marker,
+# by an `if TYPE_CHECKING:` block, by a reset-for-testing function, or by
+# being a module-level (eager) import.
+CLEAN_SOURCES = {
+    "documented_lazy_import": """
         def fn():
             # Lazy: avoid cycle with handlers.foo
             from .foo import bar
             return bar
-        """,
-    )
-    assert lint_module.find_violations(path) == []
-
-
-def test_undocumented_lazy_import_fails(lint_module, tmp_path: Path) -> None:
-    path = _write(
-        tmp_path,
-        "undocumented.py",
-        """
+    """,
+    "documented_plain_import": """
         def fn():
-            from .foo import bar
-            return bar
-        """,
-    )
-    violations = lint_module.find_violations(path)
-    assert len(violations) == 1
-    assert "from .foo import bar" in violations[0][1]
-
-
-def test_type_checking_block_passes(lint_module, tmp_path: Path) -> None:
-    path = _write(
-        tmp_path,
-        "type_checking.py",
-        """
+            # Lazy: avoid cycle
+            import foo
+            return foo
+    """,
+    "type_checking_block": """
         from typing import TYPE_CHECKING
 
         def fn():
             if TYPE_CHECKING:
                 from .foo import bar
             return None
-        """,
-    )
-    assert lint_module.find_violations(path) == []
+    """,
+    "type_checking_attribute_form": """
+        import typing
 
-
-def test_reset_for_testing_function_passes(lint_module, tmp_path: Path) -> None:
-    path = _write(
-        tmp_path,
-        "reset_helper.py",
-        """
+        def fn():
+            if typing.TYPE_CHECKING:
+                from .foo import bar
+            return None
+    """,
+    "reset_for_testing_functions": """
         def _reset_state_for_testing():
             from .foo import bar
             return bar
@@ -88,118 +71,21 @@ def test_reset_for_testing_function_passes(lint_module, tmp_path: Path) -> None:
         def reset_for_testing():
             from .baz import qux
             return qux
-        """,
-    )
-    assert lint_module.find_violations(path) == []
-
-
-def test_module_level_import_ignored(lint_module, tmp_path: Path) -> None:
-    path = _write(
-        tmp_path,
-        "module_level.py",
-        """
+    """,
+    "module_level_import": """
         from .foo import bar
 
         def fn():
             return bar
-        """,
-    )
-    assert lint_module.find_violations(path) == []
-
-
-def test_method_inside_class_lazy_import_fails(lint_module, tmp_path: Path) -> None:
-    path = _write(
-        tmp_path,
-        "method.py",
-        """
-        class Widget:
-            def fn(self):
-                from .foo import bar
-                return bar
-        """,
-    )
-    violations = lint_module.find_violations(path)
-    assert len(violations) == 1
-
-
-def test_documented_import_in_method_passes(lint_module, tmp_path: Path) -> None:
-    path = _write(
-        tmp_path,
-        "documented_method.py",
-        """
+    """,
+    "documented_import_in_method": """
         class Widget:
             def fn(self):
                 # Lazy: cycle with handlers.foo
                 from .foo import bar
                 return bar
-        """,
-    )
-    assert lint_module.find_violations(path) == []
-
-
-def test_async_function_undocumented_fails(lint_module, tmp_path: Path) -> None:
-    path = _write(
-        tmp_path,
-        "async_fn.py",
-        """
-        async def fn():
-            from .foo import bar
-            return bar
-        """,
-    )
-    assert len(lint_module.find_violations(path)) == 1
-
-
-def test_main_returns_zero_when_clean(lint_module, tmp_path: Path) -> None:
-    _write(
-        tmp_path,
-        "clean.py",
-        """
-        def fn():
-            # Lazy: ok
-            from .foo import bar
-            return bar
-        """,
-    )
-    rc = lint_module.main(["lint_lazy_imports.py", str(tmp_path)])
-    assert rc == 0
-
-
-def test_main_returns_one_when_violations(lint_module, tmp_path: Path) -> None:
-    _write(
-        tmp_path,
-        "dirty.py",
-        """
-        def fn():
-            from .foo import bar
-            return bar
-        """,
-    )
-    rc = lint_module.main(["lint_lazy_imports.py", str(tmp_path)])
-    assert rc == 1
-
-
-def test_undocumented_import_in_try_body_fails(lint_module, tmp_path: Path) -> None:
-    path = _write(
-        tmp_path,
-        "try_body.py",
-        """
-        def fn():
-            try:
-                from .foo import bar
-                return bar
-            except ImportError:
-                return None
-        """,
-    )
-    assert len(lint_module.find_violations(path)) == 1
-
-
-def test_documented_import_in_try_body_passes(lint_module, tmp_path: Path) -> None:
-    path = _write(
-        tmp_path,
-        "try_body_ok.py",
-        """
+    """,
+    "documented_import_in_try_body": """
         def fn():
             try:
                 # Lazy: optional dep
@@ -207,221 +93,31 @@ def test_documented_import_in_try_body_passes(lint_module, tmp_path: Path) -> No
                 return bar
             except ImportError:
                 return None
-        """,
-    )
-    assert lint_module.find_violations(path) == []
-
-
-def test_undocumented_import_in_except_body_fails(lint_module, tmp_path: Path) -> None:
-    path = _write(
-        tmp_path,
-        "except_body.py",
-        """
-        def fn():
-            try:
-                pass
-            except ValueError:
-                from .foo import bar
-                return bar
-        """,
-    )
-    assert len(lint_module.find_violations(path)) == 1
-
-
-def test_undocumented_import_in_finally_body_fails(lint_module, tmp_path: Path) -> None:
-    path = _write(
-        tmp_path,
-        "finally_body.py",
-        """
-        def fn():
-            try:
-                pass
-            finally:
-                from .foo import bar
-        """,
-    )
-    assert len(lint_module.find_violations(path)) == 1
-
-
-def test_undocumented_import_in_if_body_fails(lint_module, tmp_path: Path) -> None:
-    path = _write(
-        tmp_path,
-        "if_body.py",
-        """
-        def fn(flag):
-            if flag:
-                from .foo import bar
-                return bar
-            return None
-        """,
-    )
-    assert len(lint_module.find_violations(path)) == 1
-
-
-def test_undocumented_import_in_with_body_fails(lint_module, tmp_path: Path) -> None:
-    path = _write(
-        tmp_path,
-        "with_body.py",
-        """
-        def fn(handle):
-            with handle:
-                from .foo import bar
-                return bar
-        """,
-    )
-    assert len(lint_module.find_violations(path)) == 1
-
-
-def test_undocumented_import_in_for_body_fails(lint_module, tmp_path: Path) -> None:
-    path = _write(
-        tmp_path,
-        "for_body.py",
-        """
-        def fn(items):
-            for item in items:
-                from .foo import bar
-                return bar
-        """,
-    )
-    assert len(lint_module.find_violations(path)) == 1
-
-
-def test_undocumented_import_in_while_body_fails(lint_module, tmp_path: Path) -> None:
-    path = _write(
-        tmp_path,
-        "while_body.py",
-        """
-        def fn(cond):
-            while cond:
-                from .foo import bar
-                return bar
-        """,
-    )
-    assert len(lint_module.find_violations(path)) == 1
-
-
-def test_undocumented_import_in_nested_try_fails(lint_module, tmp_path: Path) -> None:
-    path = _write(
-        tmp_path,
-        "nested.py",
-        """
-        def fn(x):
-            if x:
-                try:
-                    from .foo import bar
-                    return bar
-                except OSError:
-                    pass
-        """,
-    )
-    assert len(lint_module.find_violations(path)) == 1
-
-
-def test_multiline_lazy_comment_block_passes(lint_module, tmp_path: Path) -> None:
-    path = _write(
-        tmp_path,
-        "multi_comment.py",
-        """
+    """,
+    "multiline_lazy_comment_block": """
         def fn():
             # Lazy: this annotation wraps over multiple lines because the
             # cycle reason needs more than one line of explanation to be
             # comprehensible to future readers.
             from .foo import bar
             return bar
-        """,
-    )
-    assert lint_module.find_violations(path) == []
-
-
-def test_lazy_above_blank_line_then_import_passes(lint_module, tmp_path: Path) -> None:
-    path = _write(
-        tmp_path,
-        "blank_separator.py",
-        """
+    """,
+    "lazy_above_blank_line_then_import": """
         def fn():
             # Lazy: still applies despite blank separator below.
 
             from .foo import bar
             return bar
-        """,
-    )
-    assert lint_module.find_violations(path) == []
-
-
-def test_non_comment_line_breaks_lazy_walk(lint_module, tmp_path: Path) -> None:
-    path = _write(
-        tmp_path,
-        "broken_walk.py",
-        """
-        def fn():
-            # Lazy: this annotation is for the FIRST import below.
-            from .foo import bar
-
-            from .baz import qux
-            return bar, qux
-        """,
-    )
-    violations = lint_module.find_violations(path)
-    assert len(violations) == 1
-    assert "from .baz import qux" in violations[0][1]
-
-
-def test_nested_function_import_is_caught(lint_module, tmp_path: Path) -> None:
-    path = _write(
-        tmp_path,
-        "nested_fn.py",
-        """
-        def outer():
-            def inner():
-                from .foo import bar
-                return bar
-            return inner
-        """,
-    )
-    violations = lint_module.find_violations(path)
-    assert len(violations) == 1
-    assert "from .foo import bar" in violations[0][1]
-
-
-def test_nested_function_lazy_import_passes(lint_module, tmp_path: Path) -> None:
-    path = _write(
-        tmp_path,
-        "nested_fn_lazy.py",
-        """
+    """,
+    "nested_function_lazy_import": """
         def outer():
             def inner():
                 # Lazy: documented inside nested function
                 from .foo import bar
                 return bar
             return inner
-        """,
-    )
-    assert lint_module.find_violations(path) == []
-
-
-def test_try_star_import_is_caught(lint_module, tmp_path: Path) -> None:
-    path = _write(
-        tmp_path,
-        "try_star.py",
-        """
-        def fn():
-            try:
-                x = 1
-            except* ValueError:
-                from .foo import bar
-                return bar
-        """,
-    )
-    violations = lint_module.find_violations(path)
-    assert len(violations) == 1
-    assert "from .foo import bar" in violations[0][1]
-
-
-def test_try_star_lazy_import_passes(lint_module, tmp_path: Path) -> None:
-    path = _write(
-        tmp_path,
-        "try_star_lazy.py",
-        """
+    """,
+    "try_star_lazy_import": """
         def fn():
             try:
                 x = 1
@@ -429,167 +125,16 @@ def test_try_star_lazy_import_passes(lint_module, tmp_path: Path) -> None:
                 # Lazy: documented inside except* handler
                 from .foo import bar
                 return bar
-        """,
-    )
-    assert lint_module.find_violations(path) == []
-
-
-def test_method_inside_function_class_is_caught(lint_module, tmp_path: Path) -> None:
-    path = _write(
-        tmp_path,
-        "fn_class_method.py",
-        """
-        def outer():
-            class Inner:
-                def method(self):
-                    from .foo import bar
-                    return bar
-            return Inner
-        """,
-    )
-    violations = lint_module.find_violations(path)
-    assert len(violations) == 1
-    assert "from .foo import bar" in violations[0][1]
-
-
-def test_method_inside_nested_class_is_caught(lint_module, tmp_path: Path) -> None:
-    path = _write(
-        tmp_path,
-        "nested_class_method.py",
-        """
-        class Outer:
-            class Inner:
-                def method(self):
-                    from .foo import bar
-                    return bar
-        """,
-    )
-    violations = lint_module.find_violations(path)
-    assert len(violations) == 1
-    assert "from .foo import bar" in violations[0][1]
-
-
-def test_method_inside_doubly_nested_function_class_is_caught(
-    lint_module, tmp_path: Path
-) -> None:
-    path = _write(
-        tmp_path,
-        "doubly_nested.py",
-        """
-        def outer():
-            class Inner:
-                class InnerInner:
-                    def method(self):
-                        from .foo import bar
-                        return bar
-            return Inner
-        """,
-    )
-    violations = lint_module.find_violations(path)
-    assert len(violations) == 1
-    assert "from .foo import bar" in violations[0][1]
-
-
-def test_nested_class_lazy_import_passes(lint_module, tmp_path: Path) -> None:
-    path = _write(
-        tmp_path,
-        "nested_class_lazy.py",
-        """
+    """,
+    "nested_class_lazy_import": """
         class Outer:
             class Inner:
                 def method(self):
                     # Lazy: documented inside nested class
                     from .foo import bar
                     return bar
-        """,
-    )
-    assert lint_module.find_violations(path) == []
-
-
-def test_undocumented_import_in_match_case_fails(lint_module, tmp_path: Path) -> None:
-    path = _write(
-        tmp_path,
-        "match_case.py",
-        """
-        def fn(x):
-            match x:
-                case 1:
-                    from .foo import bar
-                    return bar
-                case _:
-                    return None
-        """,
-    )
-    violations = lint_module.find_violations(path)
-    assert len(violations) == 1
-    assert "from .foo import bar" in violations[0][1]
-
-
-def test_top_level_type_checking_else_branch_caught(
-    lint_module, tmp_path: Path
-) -> None:
-    path = _write(
-        tmp_path,
-        "tc_else.py",
-        """
-        from typing import TYPE_CHECKING
-
-        if TYPE_CHECKING:
-            pass
-        else:
-            def fn():
-                from .foo import bar
-                return bar
-        """,
-    )
-    violations = lint_module.find_violations(path)
-    assert len(violations) == 1
-    assert "from .foo import bar" in violations[0][1]
-
-
-def test_class_body_control_flow_caught(lint_module, tmp_path: Path) -> None:
-    path = _write(
-        tmp_path,
-        "class_if.py",
-        """
-        FLAG = True
-
-        class Outer:
-            if FLAG:
-                def method(self):
-                    from .foo import bar
-                    return bar
-        """,
-    )
-    violations = lint_module.find_violations(path)
-    assert len(violations) == 1
-    assert "from .foo import bar" in violations[0][1]
-
-
-def test_class_body_try_block_caught(lint_module, tmp_path: Path) -> None:
-    path = _write(
-        tmp_path,
-        "class_try.py",
-        """
-        class Outer:
-            try:
-                pass
-            except Exception:
-                def method(self):
-                    from .foo import bar
-                    return bar
-        """,
-    )
-    violations = lint_module.find_violations(path)
-    assert len(violations) == 1
-    assert "from .foo import bar" in violations[0][1]
-
-
-def test_documented_import_in_match_case_passes(lint_module, tmp_path: Path) -> None:
-    path = _write(
-        tmp_path,
-        "match_case_lazy.py",
-        """
+    """,
+    "documented_import_in_match_case": """
         def fn(x):
             match x:
                 case 1:
@@ -598,6 +143,328 @@ def test_documented_import_in_match_case_passes(lint_module, tmp_path: Path) -> 
                     return bar
                 case _:
                     return None
-        """,
+    """,
+}
+
+
+# Sources the lint must reject. Every one hides exactly one undocumented
+# in-function import of `.foo`, reached through a different nesting shape.
+VIOLATING_SOURCES = {
+    "undocumented_lazy_import": """
+        def fn():
+            from .foo import bar
+            return bar
+    """,
+    "method_inside_class": """
+        class Widget:
+            def fn(self):
+                from .foo import bar
+                return bar
+    """,
+    "async_function": """
+        async def fn():
+            from .foo import bar
+            return bar
+    """,
+    "try_body": """
+        def fn():
+            try:
+                from .foo import bar
+                return bar
+            except ImportError:
+                return None
+    """,
+    "except_body": """
+        def fn():
+            try:
+                pass
+            except ValueError:
+                from .foo import bar
+                return bar
+    """,
+    "finally_body": """
+        def fn():
+            try:
+                pass
+            finally:
+                from .foo import bar
+    """,
+    "try_else_body": """
+        def fn():
+            try:
+                pass
+            except ValueError:
+                pass
+            else:
+                from .foo import bar
+                return bar
+    """,
+    "if_body": """
+        def fn(flag):
+            if flag:
+                from .foo import bar
+                return bar
+            return None
+    """,
+    "else_body": """
+        def fn(flag):
+            if flag:
+                return None
+            else:
+                from .foo import bar
+                return bar
+    """,
+    "with_body": """
+        def fn(handle):
+            with handle:
+                from .foo import bar
+                return bar
+    """,
+    "async_with_body": """
+        async def fn(handle):
+            async with handle:
+                from .foo import bar
+                return bar
+    """,
+    "for_body": """
+        def fn(items):
+            for item in items:
+                from .foo import bar
+                return bar
+    """,
+    "for_else_body": """
+        def fn(items):
+            for item in items:
+                pass
+            else:
+                from .foo import bar
+                return bar
+    """,
+    "async_for_body": """
+        async def fn(items):
+            async for item in items:
+                from .foo import bar
+                return bar
+    """,
+    "while_body": """
+        def fn(cond):
+            while cond:
+                from .foo import bar
+                return bar
+    """,
+    "while_else_body": """
+        def fn(cond):
+            while cond:
+                pass
+            else:
+                from .foo import bar
+                return bar
+    """,
+    "nested_try": """
+        def fn(x):
+            if x:
+                try:
+                    from .foo import bar
+                    return bar
+                except OSError:
+                    pass
+    """,
+    "nested_function": """
+        def outer():
+            def inner():
+                from .foo import bar
+                return bar
+            return inner
+    """,
+    "try_star_handler": """
+        def fn():
+            try:
+                x = 1
+            except* ValueError:
+                from .foo import bar
+                return bar
+    """,
+    "method_inside_function_class": """
+        def outer():
+            class Inner:
+                def method(self):
+                    from .foo import bar
+                    return bar
+            return Inner
+    """,
+    "method_inside_nested_class": """
+        class Outer:
+            class Inner:
+                def method(self):
+                    from .foo import bar
+                    return bar
+    """,
+    "method_inside_doubly_nested_function_class": """
+        def outer():
+            class Inner:
+                class InnerInner:
+                    def method(self):
+                        from .foo import bar
+                        return bar
+            return Inner
+    """,
+    "match_case": """
+        def fn(x):
+            match x:
+                case 1:
+                    from .foo import bar
+                    return bar
+                case _:
+                    return None
+    """,
+    "top_level_type_checking_else_branch": """
+        from typing import TYPE_CHECKING
+
+        if TYPE_CHECKING:
+            pass
+        else:
+            def fn():
+                from .foo import bar
+                return bar
+    """,
+    "class_body_control_flow": """
+        FLAG = True
+
+        class Outer:
+            if FLAG:
+                def method(self):
+                    from .foo import bar
+                    return bar
+    """,
+    "class_body_try_block": """
+        class Outer:
+            try:
+                pass
+            except Exception:
+                def method(self):
+                    from .foo import bar
+                    return bar
+    """,
+    "class_body_inside_function": """
+        def outer():
+            class Inner:
+                from .foo import bar
+            return Inner
+    """,
+}
+
+
+class TestAcceptedSources:
+    @pytest.mark.parametrize("name", sorted(CLEAN_SOURCES))
+    def test_reports_no_violations(
+        self, lint_module, tmp_path: Path, name: str
+    ) -> None:
+        path = _write(tmp_path, name, CLEAN_SOURCES[name])
+        assert lint_module.find_violations(path) == []
+
+
+class TestRejectedSources:
+    @pytest.mark.parametrize("name", sorted(VIOLATING_SOURCES))
+    def test_catches_the_undocumented_import(
+        self, lint_module, tmp_path: Path, name: str
+    ) -> None:
+        path = _write(tmp_path, name, VIOLATING_SOURCES[name])
+        violations = lint_module.find_violations(path)
+        assert len(violations) == 1
+        assert "from .foo import bar" in violations[0][1]
+
+    def test_plain_import_statement_is_caught(
+        self, lint_module, tmp_path: Path
+    ) -> None:
+        path = _write(
+            tmp_path,
+            "plain_import",
+            """
+            def fn():
+                import foo
+                return foo
+            """,
+        )
+        violations = lint_module.find_violations(path)
+        assert len(violations) == 1
+        assert "import foo" in violations[0][1]
+
+    def test_reports_every_undocumented_import_in_a_file(
+        self, lint_module, tmp_path: Path
+    ) -> None:
+        path = _write(
+            tmp_path,
+            "multiple",
+            """
+            def one():
+                from .foo import bar
+                return bar
+
+            def two():
+                from .baz import qux
+                return qux
+            """,
+        )
+        violations = lint_module.find_violations(path)
+        assert len(violations) == 2
+        assert [v[1] for v in violations] == [
+            "from .foo import bar",
+            "from .baz import qux",
+        ]
+
+    def test_lazy_marker_covers_only_the_import_directly_below(
+        self, lint_module, tmp_path: Path
+    ) -> None:
+        path = _write(
+            tmp_path,
+            "broken_walk",
+            """
+            def fn():
+                # Lazy: this annotation is for the FIRST import below.
+                from .foo import bar
+
+                from .baz import qux
+                return bar, qux
+            """,
+        )
+        violations = lint_module.find_violations(path)
+        assert len(violations) == 1
+        assert "from .baz import qux" in violations[0][1]
+
+    @pytest.mark.parametrize(
+        "fn_name", ["reset_thing", "reset_for_testing_helper", "for_testing_reset"]
     )
-    assert lint_module.find_violations(path) == []
+    def test_reset_exemption_does_not_leak_to_similar_names(
+        self, lint_module, tmp_path: Path, fn_name: str
+    ) -> None:
+        path = _write(
+            tmp_path,
+            f"near_miss_{fn_name}",
+            f"""
+            def {fn_name}():
+                from .foo import bar
+                return bar
+            """,
+        )
+        assert len(lint_module.find_violations(path)) == 1
+
+
+class TestCli:
+    def test_returns_zero_when_clean(self, lint_module, tmp_path: Path) -> None:
+        _write(tmp_path, "clean", CLEAN_SOURCES["documented_lazy_import"])
+        assert lint_module.main(["lint_lazy_imports.py", str(tmp_path)]) == 0
+
+    def test_returns_one_when_violations(self, lint_module, tmp_path: Path) -> None:
+        _write(tmp_path, "dirty", VIOLATING_SOURCES["undocumented_lazy_import"])
+        assert lint_module.main(["lint_lazy_imports.py", str(tmp_path)]) == 1
+
+    def test_reports_the_offending_path_and_line(
+        self, lint_module, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _write(tmp_path, "dirty", VIOLATING_SOURCES["undocumented_lazy_import"])
+        lint_module.main(["lint_lazy_imports.py", str(tmp_path)])
+        out = capsys.readouterr().out
+        assert (
+            "dirty.py:3: undocumented in-function import: from .foo import bar" in out
+        )
+        assert "1 undocumented in-function import(s)." in out

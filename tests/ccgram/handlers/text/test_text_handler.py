@@ -1,13 +1,19 @@
 import asyncio
+from collections.abc import Iterator
+from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
 from ccgram.handlers.text.text_handler import (
+    PENDING_DELIVERY_NOTICE,
+    _bash_capture_tasks,
+    _capture_bash_output,
     _check_ui_guards,
     _forward_message,
     _handle_dead_window,
     _handle_unbound_topic,
+    handle_text_message,
 )
 from ccgram.handlers.polling.polling_state import lifecycle_strategy
 from ccgram.handlers.topics.directory_browser import (
@@ -80,149 +86,67 @@ class TestCheckUiGuards:
 
 
 class TestHandleUnboundTopic:
-    @patch(f"{_TH}.thread_router")
-    @patch(f"{_TH}.tmux_manager")
-    async def test_bound_topic_returns_false(
-        self, _mock_tm: MagicMock, mock_tr: MagicMock
-    ) -> None:
-        mock_tr.get_window_for_thread.return_value = "@0"
-        message = AsyncMock()
+    @pytest.fixture
+    def unbound_env(self) -> Iterator[SimpleNamespace]:
+        with (
+            patch(f"{_TH}.thread_router") as router,
+            patch(f"{_TH}.tmux_manager") as mux,
+            patch(f"{_TH}.build_window_picker") as picker,
+            patch(f"{_TH}.build_directory_browser") as browser,
+            patch(f"{_TH}.safe_reply", new_callable=AsyncMock) as reply,
+        ):
+            router.get_window_for_thread.return_value = None
+            router.iter_thread_bindings.return_value = []
+            mux.list_windows = AsyncMock(return_value=[])
+            picker.return_value = ("Pick:", MagicMock(), ["@5"])
+            browser.return_value = ("Browse:", MagicMock(), [])
+            yield SimpleNamespace(
+                router=router, mux=mux, picker=picker, browser=browser, reply=reply
+            )
 
-        result = await _handle_unbound_topic(100, 42, "hello", {}, message)
+    async def test_bound_topic_returns_false(
+        self, unbound_env: SimpleNamespace
+    ) -> None:
+        unbound_env.router.get_window_for_thread.return_value = "@0"
+
+        result = await _handle_unbound_topic(100, 42, "hello", {}, AsyncMock())
 
         assert result is False
+        unbound_env.picker.assert_not_called()
+        unbound_env.browser.assert_not_called()
 
-    @patch(f"{_TH}.safe_reply", new_callable=AsyncMock)
-    @patch(f"{_TH}.build_window_picker")
-    @patch(f"{_TH}.tmux_manager")
-    @patch(f"{_TH}.thread_router")
-    async def test_shows_window_picker(
-        self,
-        mock_tr: MagicMock,
-        mock_tm: MagicMock,
-        mock_picker: MagicMock,
-        mock_reply: AsyncMock,
+    async def test_adoptable_windows_show_the_picker(
+        self, unbound_env: SimpleNamespace
     ) -> None:
-        mock_tr.get_window_for_thread.return_value = None
-        mock_tr.iter_thread_bindings.return_value = []
-        w = MagicMock(window_id="@5", window_name="proj", cwd="/tmp")
-        mock_tm.list_windows = AsyncMock(return_value=[w])
-        mock_picker.return_value = ("Pick:", MagicMock(), ["@5"])
-
+        unbound_env.mux.list_windows = AsyncMock(
+            return_value=[MagicMock(window_id="@5", window_name="proj", cwd="/tmp")]
+        )
         user_data: dict = {}
-        message = MagicMock()
 
-        result = await _handle_unbound_topic(100, 42, "hello", user_data, message)
+        result = await _handle_unbound_topic(100, 42, "my text", user_data, AsyncMock())
 
         assert result is True
-        mock_picker.assert_called_once()
-        assert mock_reply.call_count == 2
+        unbound_env.picker.assert_called_once()
         assert user_data[STATE_KEY] == STATE_SELECTING_WINDOW
-        assert user_data[PENDING_THREAD_TEXT] == "hello"
-
-    @patch(f"{_TH}.safe_reply", new_callable=AsyncMock)
-    @patch(f"{_TH}.build_directory_browser")
-    @patch(f"{_TH}.tmux_manager")
-    @patch(f"{_TH}.thread_router")
-    async def test_shows_directory_browser(
-        self,
-        mock_tr: MagicMock,
-        mock_tm: MagicMock,
-        mock_browser: MagicMock,
-        mock_reply: AsyncMock,
-    ) -> None:
-        mock_tr.get_window_for_thread.return_value = None
-        mock_tr.iter_thread_bindings.return_value = []
-        mock_tm.list_windows = AsyncMock(return_value=[])
-        mock_browser.return_value = ("Browse:", MagicMock(), [])
-
-        user_data: dict = {}
-        message = AsyncMock()
-
-        result = await _handle_unbound_topic(100, 42, "hello", user_data, message)
-
-        assert result is True
-        mock_browser.assert_called_once()
-        assert user_data[STATE_KEY] == STATE_BROWSING_DIRECTORY
-        assert mock_reply.call_count == 2
-
-    @patch(f"{_TH}.safe_reply", new_callable=AsyncMock)
-    @patch(f"{_TH}.build_window_picker")
-    @patch(f"{_TH}.tmux_manager")
-    @patch(f"{_TH}.thread_router")
-    async def test_stores_pending_state(
-        self,
-        mock_tr: MagicMock,
-        mock_tm: MagicMock,
-        mock_picker: MagicMock,
-        _mock_reply: AsyncMock,
-    ) -> None:
-        mock_tr.get_window_for_thread.return_value = None
-        mock_tr.iter_thread_bindings.return_value = []
-        w = MagicMock(window_id="@5", window_name="proj", cwd="/tmp")
-        mock_tm.list_windows = AsyncMock(return_value=[w])
-        mock_picker.return_value = ("Pick:", MagicMock(), ["@5"])
-
-        user_data: dict = {}
-        message = AsyncMock()
-
-        await _handle_unbound_topic(100, 42, "my text", user_data, message)
-
         assert user_data[PENDING_THREAD_ID] == 42
         assert user_data[PENDING_THREAD_TEXT] == "my text"
+        assert unbound_env.reply.call_count == 2
+        assert unbound_env.reply.call_args_list[1].args[1] == PENDING_DELIVERY_NOTICE
 
-    @patch(f"{_TH}.safe_reply", new_callable=AsyncMock)
-    @patch(f"{_TH}.build_window_picker")
-    @patch(f"{_TH}.tmux_manager")
-    @patch(f"{_TH}.thread_router")
-    async def test_window_picker_sends_pending_disclosure(
-        self,
-        mock_tr: MagicMock,
-        mock_tm: MagicMock,
-        mock_picker: MagicMock,
-        mock_reply: AsyncMock,
+    async def test_no_adoptable_windows_shows_the_directory_browser(
+        self, unbound_env: SimpleNamespace
     ) -> None:
-        mock_tr.get_window_for_thread.return_value = None
-        mock_tr.iter_thread_bindings.return_value = []
-        w = MagicMock(window_id="@5", window_name="proj", cwd="/tmp")
-        mock_tm.list_windows = AsyncMock(return_value=[w])
-        mock_picker.return_value = ("Pick:", MagicMock(), ["@5"])
-
         user_data: dict = {}
-        message = AsyncMock()
 
-        await _handle_unbound_topic(100, 42, "hello", user_data, message)
+        result = await _handle_unbound_topic(100, 42, "my text", user_data, AsyncMock())
 
-        from ccgram.handlers.text.text_handler import PENDING_DELIVERY_NOTICE
-
-        assert mock_reply.call_count == 2
-        assert mock_reply.call_args_list[1].args[1] == PENDING_DELIVERY_NOTICE
-
-    @patch(f"{_TH}.safe_reply", new_callable=AsyncMock)
-    @patch(f"{_TH}.build_directory_browser")
-    @patch(f"{_TH}.tmux_manager")
-    @patch(f"{_TH}.thread_router")
-    async def test_directory_browser_sends_pending_disclosure(
-        self,
-        mock_tr: MagicMock,
-        mock_tm: MagicMock,
-        mock_browser: MagicMock,
-        mock_reply: AsyncMock,
-    ) -> None:
-        mock_tr.get_window_for_thread.return_value = None
-        mock_tr.iter_thread_bindings.return_value = []
-        mock_tm.list_windows = AsyncMock(return_value=[])
-        mock_browser.return_value = ("Browse:", MagicMock(), [])
-
-        user_data: dict = {}
-        message = AsyncMock()
-
-        await _handle_unbound_topic(100, 42, "hello", user_data, message)
-
-        from ccgram.handlers.text.text_handler import PENDING_DELIVERY_NOTICE
-
-        assert mock_reply.call_count == 2
-        assert mock_reply.call_args_list[1].args[1] == PENDING_DELIVERY_NOTICE
+        assert result is True
+        unbound_env.browser.assert_called_once()
+        assert user_data[STATE_KEY] == STATE_BROWSING_DIRECTORY
+        assert user_data[PENDING_THREAD_ID] == 42
+        assert user_data[PENDING_THREAD_TEXT] == "my text"
+        assert unbound_env.reply.call_count == 2
+        assert unbound_env.reply.call_args_list[1].args[1] == PENDING_DELIVERY_NOTICE
 
 
 class TestHandleDeadWindow:
@@ -392,95 +316,76 @@ class TestHandleDeadWindow:
         mock_browser.assert_called_once()
 
 
+def _text_update(text: str, *, user_id: int = 100, thread_id: int = 42) -> MagicMock:
+    update = MagicMock()
+    update.effective_user = MagicMock()
+    update.effective_user.id = user_id
+    message = AsyncMock()
+    message.message_thread_id = thread_id
+    message.text = text
+    message.chat_id = -100
+    message.chat.type = "supergroup"
+    update.message = message
+    return update
+
+
+def _text_context() -> MagicMock:
+    ctx = MagicMock()
+    ctx.bot = AsyncMock()
+    ctx.user_data = {}
+    return ctx
+
+
 class TestShellProviderRouting:
-    @patch(f"{_TH}.get_provider_for_window")
-    @patch(f"{_TH}._handle_dead_window", new_callable=AsyncMock, return_value=False)
-    @patch(f"{_TH}.thread_router")
-    async def test_shell_provider_routes_to_handle_shell_message(
-        self,
-        mock_tr: MagicMock,
-        _mock_dead: AsyncMock,
-        mock_get_provider: MagicMock,
-    ) -> None:
-        mock_tr.get_window_for_thread.return_value = "@0"
-
-        provider = MagicMock()
-        provider.capabilities.name = "shell"
-        provider.capabilities.chat_first_command_path = True
-        mock_get_provider.return_value = provider
-
-        with patch(
-            "ccgram.handlers.shell.shell_commands.handle_shell_message",
-            new_callable=AsyncMock,
-        ) as mock_shell:
-            from ccgram.handlers.text.text_handler import handle_text_message
-
-            update = MagicMock()
-            update.effective_user.id = 100
-            context = MagicMock()
-            context.bot = AsyncMock()
-            context.user_data = {}
-            message = AsyncMock()
-            message.message_thread_id = 42
-            message.text = "list files"
-            message.chat_id = -100
-            message.chat.type = "supergroup"
-            update.message = message
-            update.effective_user = MagicMock()
-            update.effective_user.id = 100
-
-            await handle_text_message(update, context)
-
-            mock_shell.assert_called_once()
-            call_args = mock_shell.call_args
-            assert call_args[0][2] == 42
-            assert call_args[0][3] == "@0"
-            assert call_args[0][4] == "list files"
-
-    @patch(f"{_TH}.get_provider_for_window")
-    @patch(f"{_TH}._handle_dead_window", new_callable=AsyncMock, return_value=False)
-    @patch(f"{_TH}.window_query")
-    @patch(f"{_TH}.thread_router")
-    async def test_non_shell_provider_does_not_route_to_shell(
-        self,
-        mock_tr: MagicMock,
-        mock_sm: MagicMock,
-        _mock_dead: AsyncMock,
-        mock_get_provider: MagicMock,
-    ) -> None:
-        mock_tr.get_window_for_thread.return_value = "@0"
-        mock_sm.send_to_window = AsyncMock(return_value=(True, ""))
-
-        provider = MagicMock()
-        provider.capabilities.name = "claude"
-        provider.capabilities.chat_first_command_path = False
-        mock_get_provider.return_value = provider
-
+    @pytest.fixture
+    def routing_env(self) -> Iterator[SimpleNamespace]:
         with (
+            patch(f"{_TH}.thread_router") as router,
+            patch(f"{_TH}.window_query"),
+            patch(f"{_TH}.get_provider_for_window") as get_provider,
+            patch(
+                f"{_TH}._handle_dead_window",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(f"{_TH}.get_interactive_window", return_value=None),
             patch(
                 "ccgram.handlers.shell.shell_commands.handle_shell_message",
                 new_callable=AsyncMock,
-            ) as mock_shell,
-            patch(f"{_TH}.get_interactive_window", return_value=None),
+            ) as handle_shell,
         ):
-            from ccgram.handlers.text.text_handler import handle_text_message
+            router.get_window_for_thread.return_value = "@0"
+            yield SimpleNamespace(
+                router=router, get_provider=get_provider, handle_shell=handle_shell
+            )
 
-            update = MagicMock()
-            context = MagicMock()
-            context.bot = AsyncMock()
-            context.user_data = {}
-            message = AsyncMock()
-            message.message_thread_id = 42
-            message.text = "hello"
-            message.chat_id = -100
-            message.chat.type = "supergroup"
-            update.message = message
-            update.effective_user = MagicMock()
-            update.effective_user.id = 100
+    @staticmethod
+    def _provider(name: str, *, chat_first: bool) -> MagicMock:
+        provider = MagicMock()
+        provider.capabilities.name = name
+        provider.capabilities.chat_first_command_path = chat_first
+        return provider
 
-            await handle_text_message(update, context)
+    async def test_shell_provider_routes_to_handle_shell_message(
+        self, routing_env: SimpleNamespace
+    ) -> None:
+        routing_env.get_provider.return_value = self._provider("shell", chat_first=True)
 
-            mock_shell.assert_not_called()
+        await handle_text_message(_text_update("list files"), _text_context())
+
+        routing_env.handle_shell.assert_called_once()
+        assert routing_env.handle_shell.call_args[0][2:5] == (42, "@0", "list files")
+
+    async def test_non_shell_provider_does_not_route_to_shell(
+        self, routing_env: SimpleNamespace
+    ) -> None:
+        routing_env.get_provider.return_value = self._provider(
+            "claude", chat_first=False
+        )
+
+        await handle_text_message(_text_update("hello"), _text_context())
+
+        routing_env.handle_shell.assert_not_called()
 
 
 class TestForwardMessage:
@@ -539,8 +444,6 @@ class TestForwardMessage:
 
         await _forward_message("@0", 100, 42, "!ls -la", bot, message)
 
-        from ccgram.handlers.text.text_handler import _bash_capture_tasks
-
         key = (100, 42)
         assert key in _bash_capture_tasks
         task = _bash_capture_tasks.pop(key)
@@ -560,8 +463,6 @@ class TestForwardMessage:
     ) -> None:
         bot = AsyncMock()
         message = AsyncMock()
-
-        from ccgram.handlers.text.text_handler import _bash_capture_tasks
 
         dummy_task = AsyncMock(spec=asyncio.Task)
         dummy_task.done.return_value = False
@@ -619,19 +520,12 @@ class TestForwardMessage:
 
 class TestBashCaptureCleanup:
     @pytest.fixture(autouse=True)
-    def _clear_bash_tasks(self):
-        from ccgram.handlers.text.text_handler import _bash_capture_tasks
-
+    def _clear_bash_tasks(self) -> Iterator[None]:
         _bash_capture_tasks.clear()
         yield
         _bash_capture_tasks.clear()
 
     async def test_cleanup_on_early_return(self, monkeypatch) -> None:
-        from ccgram.handlers.text.text_handler import (
-            _bash_capture_tasks,
-            _capture_bash_output,
-        )
-
         key = (999, 888)
 
         monkeypatch.setattr(f"{_TH}.asyncio.sleep", AsyncMock())
@@ -651,11 +545,6 @@ class TestBashCaptureCleanup:
         assert key not in _bash_capture_tasks
 
     async def test_cleanup_on_cancel(self) -> None:
-        from ccgram.handlers.text.text_handler import (
-            _bash_capture_tasks,
-            _capture_bash_output,
-        )
-
         key = (777, 666)
 
         with (
@@ -676,11 +565,6 @@ class TestBashCaptureCleanup:
         assert key not in _bash_capture_tasks
 
     async def test_identity_check_preserves_replacement_task(self) -> None:
-        from ccgram.handlers.text.text_handler import (
-            _bash_capture_tasks,
-            _capture_bash_output,
-        )
-
         key = (555, 444)
         sentinel = AsyncMock(spec=asyncio.Task)
 

@@ -13,22 +13,14 @@ from ccgram.state_persistence import StatePersistence
 
 class TestScheduleSaveNoLoop:
     def test_saves_immediately_without_event_loop(self, tmp_path: Path) -> None:
+        """No loop to debounce against — the write lands on the call itself."""
         path = tmp_path / "state.json"
         sp = StatePersistence(path, lambda: {"key": "value"})
+
         sp.schedule_save()
-        assert path.exists()
+
         assert json.loads(path.read_text()) == {"key": "value"}
-
-    def test_dirty_cleared_after_immediate_save(self, tmp_path: Path) -> None:
-        path = tmp_path / "state.json"
-        sp = StatePersistence(path, lambda: {})
-        sp.schedule_save()
         assert not sp._dirty
-
-    def test_timer_is_none_after_immediate_save(self, tmp_path: Path) -> None:
-        path = tmp_path / "state.json"
-        sp = StatePersistence(path, lambda: {})
-        sp.schedule_save()
         assert sp._save_timer is None
 
 

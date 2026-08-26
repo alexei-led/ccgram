@@ -1,4 +1,7 @@
+from collections.abc import Callable, Iterator
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
+
+import pytest
 
 from telegram import Bot
 
@@ -18,6 +21,28 @@ from ccgram.handlers.hook_events import (
 )
 
 
+_TR_ITER = "ccgram.handlers.hook_events.thread_router.iter_thread_bindings"
+_DEFAULT_BINDING = (100, 42, "@0")
+
+
+@pytest.fixture(autouse=True)
+def bindings(monkeypatch: pytest.MonkeyPatch) -> Callable[..., None]:
+    """Bind one topic to window @0 by default; call to rebind or unbind."""
+
+    def _set(*rows: tuple[int, int, str]) -> None:
+        monkeypatch.setattr(_TR_ITER, lambda: iter(rows))
+
+    _set(_DEFAULT_BINDING)
+    return _set
+
+
+@pytest.fixture(autouse=True)
+def _clean_subagents() -> Iterator[None]:
+    _active_subagents.clear()
+    yield
+    _active_subagents.clear()
+
+
 def _make_event(
     event_type: str = "Stop",
     window_key: str = "ccgram:@0",
@@ -35,54 +60,36 @@ def _make_event(
 
 
 class TestResolveUsersForWindowKey:
-    def test_extracts_window_id(self, monkeypatch) -> None:
-        bindings = [
-            (111, 42, "@0"),
-            (222, 99, "@5"),
-        ]
-        monkeypatch.setattr(
-            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
-            lambda: iter(bindings),
-        )
-        result = _resolve_users_for_window_key("ccgram:@0")
-        assert result == [(111, 42, "@0")]
+    def test_matches_only_bindings_for_that_window(self, bindings) -> None:
+        bindings((111, 42, "@0"), (222, 99, "@5"))
 
-    def test_extracts_herdr_window_id_with_colon(self, monkeypatch) -> None:
-        # herdr keys are "herdr:<pane_id>" where the pane id itself contains a
-        # colon (w2:p1). Splitting on the FIRST colon must recover "w2:p1", not
-        # "p1" — the latter (rsplit) never matches the bound window id.
-        bindings = [(111, 42, "w2:p1")]
-        monkeypatch.setattr(
-            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
-            lambda: iter(bindings),
-        )
-        result = _resolve_users_for_window_key("herdr:w2:p1")
-        assert result == [(111, 42, "w2:p1")]
+        assert _resolve_users_for_window_key("ccgram:@0") == [(111, 42, "@0")]
 
-    def test_no_match(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
-            lambda: iter([]),
-        )
-        result = _resolve_users_for_window_key("ccgram:@99")
-        assert result == []
+    def test_herdr_window_id_keeps_its_own_colon(self, bindings) -> None:
+        """herdr keys are ``herdr:<pane_id>`` and the pane id itself contains a
+        colon (w2:p1). Splitting on the FIRST colon must recover "w2:p1"; an
+        rsplit would yield "p1", which never matches a bound window id."""
+        bindings((111, 42, "w2:p1"))
 
-    def test_invalid_key_format(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
-            lambda: iter([]),
-        )
-        result = _resolve_users_for_window_key("nocolon")
-        assert result == []
+        assert _resolve_users_for_window_key("herdr:w2:p1") == [(111, 42, "w2:p1")]
+
+    @pytest.mark.parametrize(
+        "window_key",
+        [
+            pytest.param("ccgram:@99", id="unbound-window"),
+            pytest.param("nocolon", id="malformed-key"),
+        ],
+    )
+    def test_returns_no_users(self, bindings, window_key: str) -> None:
+        bindings()
+
+        assert _resolve_users_for_window_key(window_key) == []
 
 
 class TestSubagentTracking:
-    def setup_method(self) -> None:
-        _active_subagents.clear()
-
-    def test_count_via_names(self) -> None:
-        _active_subagents["@0"] = {"a1": "agent-1"}
-        assert len(get_subagent_names("@0")) == 1
+    def test_get_names_returns_tracked_labels(self) -> None:
+        _active_subagents["@0"] = {"a1": "write-tests", "a2": "refactor"}
+        assert sorted(get_subagent_names("@0")) == ["refactor", "write-tests"]
 
     def test_clear_removes_all(self) -> None:
         _active_subagents["@0"] = {"a1": "agent-1", "a2": "agent-2"}
@@ -92,43 +99,26 @@ class TestSubagentTracking:
     def test_names_missing_window(self) -> None:
         assert get_subagent_names("@999") == []
 
-    def test_get_names_returns_values(self) -> None:
-        _active_subagents["@0"] = {"a1": "write-tests", "a2": "refactor"}
-        names = get_subagent_names("@0")
-        assert sorted(names) == ["refactor", "write-tests"]
-
-    def test_get_names_empty_after_clear(self) -> None:
-        _active_subagents["@0"] = {"a1": "agent-1"}
-        clear_subagents("@0")
-        assert get_subagent_names("@0") == []
-
 
 class TestBuildSubagentLabel:
-    def test_empty_list(self) -> None:
-        assert build_subagent_label([]) is None
-
-    def test_single_name(self) -> None:
-        assert build_subagent_label(["write-tests"]) == "\U0001f916 write-tests"
-
-    def test_multiple_names(self) -> None:
-        result = build_subagent_label(["write-tests", "refactor"])
-        assert result is not None
-        assert "\U0001f916" in result
-        assert "2 subagents" in result
-        assert "write-tests" in result
-        assert "refactor" in result
-
-    def test_three_names(self) -> None:
-        result = build_subagent_label(["a", "b", "c"])
-        assert result is not None
-        assert "3 subagents" in result
-
-    def test_truncates_at_three(self) -> None:
-        result = build_subagent_label(["a", "b", "c", "d"])
-        assert result is not None
-        assert "4 subagents" in result
-        assert "a, b, c" in result
-        assert "d" not in result
+    @pytest.mark.parametrize(
+        ("names", "expected"),
+        [
+            pytest.param([], None, id="empty"),
+            pytest.param(["write-tests"], "🤖 write-tests", id="single-name-verbatim"),
+            pytest.param(
+                ["write-tests", "refactor"],
+                "🤖 2 subagents: write-tests, refactor",
+                id="two-names",
+            ),
+            pytest.param(["a", "b", "c"], "🤖 3 subagents: a, b, c", id="three-names"),
+            pytest.param(
+                ["a", "b", "c", "d"], "🤖 4 subagents: a, b, c", id="truncates-at-three"
+            ),
+        ],
+    )
+    def test_label(self, names: list[str], expected: str | None) -> None:
+        assert build_subagent_label(names) == expected
 
 
 class TestDispatchHookEvent:
@@ -142,13 +132,7 @@ class TestDispatchHookEvent:
 
 
 class TestHandleStop:
-    async def test_updates_status_without_touching_topic_emoji(
-        self, monkeypatch
-    ) -> None:
-        monkeypatch.setattr(
-            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
-            lambda: iter([(100, 42, "@0")]),
-        )
+    async def test_updates_status_without_touching_topic_emoji(self, bindings) -> None:
         bot = AsyncMock(spec=Bot)
         with (
             patch("ccgram.handlers.hook_events.update_topic_emoji") as mock_emoji,
@@ -163,11 +147,8 @@ class TestHandleStop:
             assert status_text is not None
             assert IDLE_STATUS_TEXT in status_text
 
-    async def test_stop_no_users_skips(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
-            lambda: iter([]),
-        )
+    async def test_stop_no_users_skips(self, bindings) -> None:
+        bindings()
         bot = AsyncMock(spec=Bot)
         with patch("ccgram.handlers.hook_events.enqueue_status_update") as mock_enqueue:
             event = _make_event(event_type="Stop")
@@ -176,11 +157,7 @@ class TestHandleStop:
 
 
 class TestEnhanceWithLlmSummary:
-    async def test_enhances_ready_with_summary(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
-            lambda: iter([(100, 42, "@0")]),
-        )
+    async def test_enhances_ready_with_summary(self, bindings) -> None:
         mock_state = MagicMock()
         mock_state.transcript_path = "/tmp/transcript.jsonl"
         bot = AsyncMock(spec=Bot)
@@ -208,11 +185,7 @@ class TestEnhanceWithLlmSummary:
             assert "Done" in status_text
             assert "Fixed auth bug" in status_text
 
-    async def test_no_enhancement_when_no_llm(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
-            lambda: iter([(100, 42, "@0")]),
-        )
+    async def test_no_enhancement_when_no_llm(self, bindings) -> None:
         mock_state = MagicMock()
         mock_state.transcript_path = "/tmp/transcript.jsonl"
         bot = AsyncMock(spec=Bot)
@@ -240,11 +213,7 @@ class TestEnhanceWithLlmSummary:
 
             assert mock_enqueue.call_count == 1
 
-    async def test_enhancement_error_is_silent(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
-            lambda: iter([(100, 42, "@0")]),
-        )
+    async def test_enhancement_error_is_silent(self, bindings) -> None:
         mock_state = MagicMock()
         mock_state.transcript_path = "/tmp/transcript.jsonl"
         bot = AsyncMock(spec=Bot)
@@ -272,11 +241,7 @@ class TestEnhanceWithLlmSummary:
 
 
 class TestHandleNotification:
-    async def test_renders_interactive_ui(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
-            lambda: iter([(100, 42, "@0")]),
-        )
+    async def test_renders_interactive_ui(self, bindings) -> None:
         bot = AsyncMock(spec=Bot)
         with (
             patch(
@@ -303,11 +268,7 @@ class TestHandleNotification:
             assert mock_handle.call_args.args[0] is bot
             assert mock_handle.call_args.args[1:] == (100, "@0", 42)
 
-    async def test_skips_when_already_interactive(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
-            lambda: iter([(100, 42, "@0")]),
-        )
+    async def test_skips_when_already_interactive(self, bindings) -> None:
         bot = AsyncMock(spec=Bot)
         with (
             patch(
@@ -322,11 +283,7 @@ class TestHandleNotification:
             await dispatch_hook_event(event, bot)
             mock_handle.assert_not_called()
 
-    async def test_clears_mode_when_handle_fails(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
-            lambda: iter([(100, 42, "@0")]),
-        )
+    async def test_clears_mode_when_handle_fails(self, bindings) -> None:
         bot = AsyncMock(spec=Bot)
         with (
             patch(
@@ -347,13 +304,7 @@ class TestHandleNotification:
             await dispatch_hook_event(event, bot)
             mock_clear.assert_called_once_with(100, 42)
 
-    async def test_sets_wait_header_from_notification_message(
-        self, monkeypatch
-    ) -> None:
-        monkeypatch.setattr(
-            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
-            lambda: iter([(100, 42, "@0")]),
-        )
+    async def test_sets_wait_header_from_notification_message(self, bindings) -> None:
         bot = AsyncMock(spec=Bot)
         with (
             patch(
@@ -383,137 +334,89 @@ class TestHandleNotification:
 
 
 class TestHandleSubagentStart:
-    def setup_method(self) -> None:
-        _active_subagents.clear()
+    @pytest.mark.parametrize(
+        ("data", "expected_name"),
+        [
+            pytest.param(
+                {"subagent_id": "sub-1", "name": "researcher"},
+                "researcher",
+                id="explicit-name",
+            ),
+            pytest.param(
+                {"subagent_id": "sub-1", "description": "explore code"},
+                "explore code",
+                id="falls-back-to-description",
+            ),
+            pytest.param(
+                {"subagent_id": "sub-1", "name": "   ", "description": "real"},
+                "real",
+                id="blank-name-falls-back-to-description",
+            ),
+            pytest.param(
+                {"subagent_id": "abcdef123456789"},
+                "abcdef123456",
+                id="falls-back-to-truncated-id",
+            ),
+            pytest.param(
+                {"subagent_id": "", "name": "", "description": ""},
+                "subagent",
+                id="nothing-usable-falls-back-to-literal",
+            ),
+        ],
+    )
+    async def test_tracked_name_resolution(
+        self, bindings, data: dict, expected_name: str
+    ) -> None:
+        with patch("ccgram.handlers.hook_events.enqueue_status_update"):
+            await dispatch_hook_event(
+                _make_event(event_type="SubagentStart", data=data),
+                AsyncMock(spec=Bot),
+            )
 
-    async def test_tracks_new_subagent(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
-            lambda: iter([(100, 42, "@0")]),
-        )
-        bot = AsyncMock(spec=Bot)
-        event = _make_event(
-            event_type="SubagentStart",
-            data={"subagent_id": "sub-1", "name": "researcher"},
-        )
-        await dispatch_hook_event(event, bot)
-        assert len(get_subagent_names("@0")) == 1
-        assert get_subagent_names("@0") == ["researcher"]
+        assert get_subagent_names("@0") == [expected_name]
 
-    async def test_tracks_multiple_subagents(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
-            lambda: iter([(100, 42, "@0")]),
-        )
+    async def test_tracks_multiple_subagents(self, bindings) -> None:
         bot = AsyncMock(spec=Bot)
         for sub_id in ("sub-1", "sub-2"):
             event = _make_event(
                 event_type="SubagentStart", data={"subagent_id": sub_id}
             )
             await dispatch_hook_event(event, bot)
+
         assert len(get_subagent_names("@0")) == 2
 
-    async def test_name_fallback_to_description(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
-            lambda: iter([(100, 42, "@0")]),
-        )
-        bot = AsyncMock(spec=Bot)
-        event = _make_event(
-            event_type="SubagentStart",
-            data={"subagent_id": "sub-1", "description": "explore code"},
-        )
-        await dispatch_hook_event(event, bot)
-        assert get_subagent_names("@0") == ["explore code"]
-
-    async def test_name_fallback_to_truncated_id(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
-            lambda: iter([(100, 42, "@0")]),
-        )
-        bot = AsyncMock(spec=Bot)
-        event = _make_event(
-            event_type="SubagentStart",
-            data={"subagent_id": "abcdef123456789"},
-        )
-        await dispatch_hook_event(event, bot)
-        assert get_subagent_names("@0") == ["abcdef123456"]
-
-    async def test_whitespace_name_falls_back(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
-            lambda: iter([(100, 42, "@0")]),
-        )
-        bot = AsyncMock(spec=Bot)
-        with patch("ccgram.handlers.hook_events.enqueue_status_update"):
-            event = _make_event(
-                event_type="SubagentStart",
-                data={"subagent_id": "sub-1", "name": "   ", "description": "real"},
-            )
-            await dispatch_hook_event(event, bot)
-            assert get_subagent_names("@0") == ["real"]
-
-    async def test_empty_everything_uses_fallback(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
-            lambda: iter([(100, 42, "@0")]),
-        )
-        bot = AsyncMock(spec=Bot)
-        with patch("ccgram.handlers.hook_events.enqueue_status_update"):
-            event = _make_event(
-                event_type="SubagentStart",
-                data={"subagent_id": "", "name": "", "description": ""},
-            )
-            await dispatch_hook_event(event, bot)
-            assert get_subagent_names("@0") == ["subagent"]
-
-    async def test_no_users_does_not_track(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
-            lambda: iter([]),
-        )
-        bot = AsyncMock(spec=Bot)
-        event = _make_event(
-            event_type="SubagentStart",
-            data={"subagent_id": "sub-1", "name": "test"},
-        )
-        await dispatch_hook_event(event, bot)
-        assert _active_subagents == {}
-
-    async def test_tracks_with_multiple_user_bindings(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
-            lambda: iter([(100, 42, "@0"), (200, 99, "@0")]),
-        )
-        bot = AsyncMock(spec=Bot)
+    async def test_tracked_once_across_multiple_user_bindings(self, bindings) -> None:
+        bindings((100, 42, "@0"), (200, 99, "@0"))
         event = _make_event(
             event_type="SubagentStart",
             data={"subagent_id": "sub-1", "name": "researcher"},
         )
-        await dispatch_hook_event(event, bot)
+
+        await dispatch_hook_event(event, AsyncMock(spec=Bot))
+
         assert get_subagent_names("@0") == ["researcher"]
+
+    async def test_unbound_window_does_not_track(self, bindings) -> None:
+        bindings()
+        event = _make_event(
+            event_type="SubagentStart",
+            data={"subagent_id": "sub-1", "name": "test"},
+        )
+
+        await dispatch_hook_event(event, AsyncMock(spec=Bot))
+
+        assert _active_subagents == {}
 
 
 class TestHandleSubagentStop:
-    def setup_method(self) -> None:
-        _active_subagents.clear()
-
-    async def test_removes_subagent(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
-            lambda: iter([(100, 42, "@0")]),
-        )
+    async def test_removes_subagent(self, bindings) -> None:
         _active_subagents["@0"] = {"sub-1": "agent-1", "sub-2": "agent-2"}
         bot = AsyncMock(spec=Bot)
         event = _make_event(event_type="SubagentStop", data={"subagent_id": "sub-1"})
         await dispatch_hook_event(event, bot)
         assert len(get_subagent_names("@0")) == 1
 
-    async def test_removes_last_subagent_cleans_dict(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
-            lambda: iter([(100, 42, "@0")]),
-        )
+    async def test_removes_last_subagent_cleans_dict(self, bindings) -> None:
         _active_subagents["@0"] = {"sub-1": "agent-1"}
         bot = AsyncMock(spec=Bot)
         event = _make_event(event_type="SubagentStop", data={"subagent_id": "sub-1"})
@@ -521,11 +424,7 @@ class TestHandleSubagentStop:
         assert get_subagent_names("@0") == []
         assert "@0" not in _active_subagents
 
-    async def test_unknown_id_is_noop(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
-            lambda: iter([(100, 42, "@0")]),
-        )
+    async def test_unknown_id_is_noop(self, bindings) -> None:
         bot = AsyncMock(spec=Bot)
         event = _make_event(
             event_type="SubagentStop", data={"subagent_id": "never-seen"}
@@ -535,11 +434,7 @@ class TestHandleSubagentStop:
 
 
 class TestHandleTeammateIdle:
-    async def test_sends_idle_notification(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
-            lambda: iter([(100, 42, "@0")]),
-        )
+    async def test_sends_idle_notification(self, bindings) -> None:
         bot = AsyncMock(spec=Bot)
         with patch("ccgram.handlers.hook_events.enqueue_status_update") as mock_enqueue:
             event = _make_event(
@@ -555,11 +450,7 @@ class TestHandleTeammateIdle:
                 thread_id=42,
             )
 
-    async def test_unknown_teammate_name(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
-            lambda: iter([(100, 42, "@0")]),
-        )
+    async def test_unknown_teammate_name(self, bindings) -> None:
         bot = AsyncMock(spec=Bot)
         with patch("ccgram.handlers.hook_events.enqueue_status_update") as mock_enqueue:
             event = _make_event(event_type="TeammateIdle", data={})
@@ -568,11 +459,7 @@ class TestHandleTeammateIdle:
 
 
 class TestHandleTaskCompleted:
-    async def test_sends_completion_notification(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
-            lambda: iter([(100, 42, "@0")]),
-        )
+    async def test_sends_completion_notification(self, bindings) -> None:
         bot = AsyncMock(spec=Bot)
         with patch("ccgram.handlers.hook_events.enqueue_status_update") as mock_enqueue:
             event = _make_event(
@@ -584,11 +471,7 @@ class TestHandleTaskCompleted:
             assert "\u2705 Task completed: write tests" in text
             assert "(by 'coder')" in text
 
-    async def test_no_teammate_name(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
-            lambda: iter([(100, 42, "@0")]),
-        )
+    async def test_no_teammate_name(self, bindings) -> None:
         bot = AsyncMock(spec=Bot)
         with patch("ccgram.handlers.hook_events.enqueue_status_update") as mock_enqueue:
             event = _make_event(
@@ -600,11 +483,7 @@ class TestHandleTaskCompleted:
             assert "\u2705 Task completed: deploy" in text
             assert "(by " not in text
 
-    async def test_tracked_task_refreshes_task_status(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
-            lambda: iter([(100, 42, "@0")]),
-        )
+    async def test_tracked_task_refreshes_task_status(self, bindings) -> None:
         claude_task_state.apply_entries(
             "@0",
             "session-1",
@@ -660,11 +539,7 @@ class TestHandleTaskCompleted:
 
 
 class TestHandleStopFailure:
-    async def test_sends_error_alert(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
-            lambda: iter([(100, 42, "@0")]),
-        )
+    async def test_sends_error_alert(self, bindings) -> None:
         bot = AsyncMock(spec=Bot)
         with (
             patch(
@@ -684,11 +559,8 @@ class TestHandleStopFailure:
             assert "rate_limit" in text
             assert "429" in text
 
-    async def test_no_users_skips(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
-            lambda: iter([]),
-        )
+    async def test_no_users_skips(self, bindings) -> None:
+        bindings()
         bot = AsyncMock(spec=Bot)
         with patch(
             "ccgram.handlers.messaging_pipeline.message_sender.rate_limit_send_message"
@@ -699,14 +571,7 @@ class TestHandleStopFailure:
 
 
 class TestHandleSessionEnd:
-    def setup_method(self) -> None:
-        _active_subagents.clear()
-
-    async def test_transitions_to_done(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
-            lambda: iter([(100, 42, "@0")]),
-        )
+    async def test_transitions_to_done(self, bindings) -> None:
         bot = AsyncMock(spec=Bot)
         with (
             patch(
@@ -734,11 +599,7 @@ class TestHandleSessionEnd:
             mock_enqueue.assert_called_once_with(ANY, 100, "@0", None, thread_id=42)
             mock_clear_session.assert_called_once_with("@0")
 
-    async def test_clears_claude_task_state(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
-            lambda: iter([(100, 42, "@0")]),
-        )
+    async def test_clears_claude_task_state(self, bindings) -> None:
         claude_task_state.apply_entries(
             "@0",
             "session-1",
@@ -787,11 +648,7 @@ class TestHandleSessionEnd:
 
         assert claude_task_state.get_snapshot("@0") is None
 
-    async def test_clears_subagents_on_session_end(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
-            lambda: iter([(100, 42, "@0")]),
-        )
+    async def test_clears_subagents_on_session_end(self, bindings) -> None:
         _active_subagents["@0"] = {"sub-1": "researcher"}
         bot = AsyncMock(spec=Bot)
         with (
@@ -816,11 +673,8 @@ class TestHandleSessionEnd:
             await dispatch_hook_event(event, bot)
             assert get_subagent_names("@0") == []
 
-    async def test_no_users_skips(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
-            lambda: iter([]),
-        )
+    async def test_no_users_skips(self, bindings) -> None:
+        bindings()
         bot = AsyncMock(spec=Bot)
         with patch("ccgram.handlers.hook_events.enqueue_status_update") as mock_enqueue:
             event = _make_event(event_type="SessionEnd", data={"reason": "logout"})

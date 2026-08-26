@@ -44,112 +44,145 @@ def _patch_deps():
         yield mock_sm, mock_sms, mock_wq, mock_tr, mock_tm, mock_cfg
 
 
-class TestBuildReport:
+def _audit(*issues: AuditIssue, total: int = 3, live: int = 3) -> AuditResult:
+    return AuditResult(
+        issues=list(issues), total_bindings=total, live_binding_count=live
+    )
+
+
+class TestFormatReport:
     @pytest.mark.parametrize(
         ("audit", "expected_text"),
         [
+            pytest.param(_audit(), "3 topics bound, all windows alive", id="all-alive"),
+            pytest.param(_audit(), "No orphaned entries", id="all-clear"),
             pytest.param(
-                AuditResult(issues=[], total_bindings=3, live_binding_count=3),
-                "3 topics bound, all windows alive",
-                id="all-alive",
-            ),
-            pytest.param(
-                AuditResult(issues=[], total_bindings=0, live_binding_count=0),
-                "No topic bindings",
-                id="no-bindings",
+                _audit(total=0, live=0), "No topic bindings", id="no-bindings"
             ),
         ],
     )
-    def test_no_keyboard_cases(self, audit: AuditResult, expected_text: str) -> None:
+    def test_clean_report_has_no_keyboard(
+        self, audit: AuditResult, expected_text: str
+    ) -> None:
         text, keyboard = _format_report(audit)
         assert expected_text in text
         assert keyboard is None
 
-    def test_ghost_binding_is_fixable(self) -> None:
-        audit = AuditResult(
-            issues=[
-                AuditIssue(
-                    "ghost_binding",
-                    "user:100 thread:42 window:@7 (dead)",
-                    fixable=True,
-                )
-            ],
-            total_bindings=3,
-            live_binding_count=2,
-        )
+    @pytest.mark.parametrize(
+        ("audit", "expected_text"),
+        [
+            pytest.param(
+                _audit(
+                    AuditIssue(
+                        "ghost_binding",
+                        "user:100 thread:42 window:@7 (dead)",
+                        fixable=True,
+                    ),
+                    live=2,
+                ),
+                ["ghost binding"],
+                id="ghost-binding",
+            ),
+            pytest.param(
+                _audit(AuditIssue("orphaned_display_name", "@7 (old)", fixable=True)),
+                ["1 orphaned display name"],
+                id="orphaned-display-name",
+            ),
+            pytest.param(
+                _audit(
+                    AuditIssue("orphaned_window", "@5 (stray)", fixable=True),
+                    total=1,
+                    live=1,
+                ),
+                ["unbound window"],
+                id="orphaned-window",
+            ),
+            pytest.param(
+                _audit(
+                    AuditIssue(
+                        "dead_topic",
+                        "user:100 thread:42 window:@2 (qmd-go)",
+                        fixable=True,
+                    )
+                ),
+                ["1 dead topic", "deleted in Telegram"],
+                id="dead-topic",
+            ),
+        ],
+    )
+    def test_fixable_issue_offers_fix_and_dismiss(
+        self, audit: AuditResult, expected_text: list[str]
+    ) -> None:
         text, keyboard = _format_report(audit)
-        assert "ghost binding" in text
+
+        for fragment in expected_text:
+            assert fragment in text
         assert keyboard is not None
         assert "Fix 1 issue" in keyboard.inline_keyboard[0][0].text
+        buttons = [btn.callback_data for row in keyboard.inline_keyboard for btn in row]
+        assert CB_SYNC_FIX in buttons
+        assert CB_SYNC_DISMISS in buttons
 
-    def test_fixable_issues_show_fix_button(self) -> None:
-        audit = AuditResult(
-            issues=[
-                AuditIssue("orphaned_display_name", "@7 (old)", fixable=True),
-            ],
-            total_bindings=3,
-            live_binding_count=3,
-        )
-        text, keyboard = _format_report(audit)
-        assert "1 orphaned display name" in text
-        assert keyboard is not None
-        data = [btn.callback_data for row in keyboard.inline_keyboard for btn in row]
-        assert CB_SYNC_FIX in data
-        assert CB_SYNC_DISMISS in data
-        assert "Fix 1 issue" in keyboard.inline_keyboard[0][0].text
-
-    def test_fixed_mode_header(self) -> None:
-        audit = AuditResult(issues=[], total_bindings=3, live_binding_count=3)
-        text, _keyboard = _format_report(audit, fixed_count=2)
-        assert "\u2705 Fixed 2 issues" in text
-
-    def test_multiple_fixable_issues(self) -> None:
-        audit = AuditResult(
-            issues=[
+    def test_fix_button_counts_every_issue(self) -> None:
+        _text, keyboard = _format_report(
+            _audit(
                 AuditIssue("orphaned_display_name", "@7 (old)", fixable=True),
                 AuditIssue("stale_offset", "user 100, window @9", fixable=True),
                 AuditIssue(
                     "display_name_drift", "@1: stored='a' tmux='b'", fixable=True
                 ),
-            ],
-            total_bindings=3,
-            live_binding_count=3,
+            )
         )
-        _text, keyboard = _format_report(audit)
+
         assert keyboard is not None
         assert "Fix 3 issues" in keyboard.inline_keyboard[0][0].text
 
-    def test_report_shows_stale_topic_hint(self) -> None:
-        audit = AuditResult(issues=[], total_bindings=0, live_binding_count=0)
-        text, _keyboard = _format_report(audit, fixed_count=1, closed_topic_count=2)
-        assert "Removed 2 stale topics" in text
-
-    def test_report_shows_singular_stale_topic_hint(self) -> None:
-        audit = AuditResult(issues=[], total_bindings=0, live_binding_count=0)
-        text, _keyboard = _format_report(audit, fixed_count=1, closed_topic_count=1)
-        assert "Removed 1 stale topic" in text
-
-    def test_clean_state_shows_all_clear(self) -> None:
-        audit = AuditResult(issues=[], total_bindings=3, live_binding_count=3)
-        text, _keyboard = _format_report(audit)
-        assert "No orphaned entries" in text
-
-    def test_legacy_herdr_report_explains_archive_and_explicit_rebind(self) -> None:
-        audit = AuditResult(
-            issues=[
+    def test_legacy_herdr_binding_is_reported_but_not_fixable(self) -> None:
+        text, keyboard = _format_report(
+            _audit(
                 AuditIssue(
                     "legacy_herdr",
                     "w2:t1 is blocked; archive or explicitly rebind to a listed session target",
                     fixable=False,
-                )
-            ],
-            total_bindings=1,
-            live_binding_count=0,
+                ),
+                total=1,
+                live=0,
+            )
         )
-        text, keyboard = _format_report(audit)
+
         assert "legacy Herdr binding" in text
         assert "explicitly rebind" in text
         assert keyboard is None
+
+    @pytest.mark.parametrize(
+        ("kwargs", "expected_text"),
+        [
+            pytest.param({"fixed_count": 2}, "✅ Fixed 2 issues", id="fixed-header"),
+            pytest.param(
+                {"fixed_count": 1, "closed_topic_count": 1},
+                "Removed 1 stale topic",
+                id="closed-singular",
+            ),
+            pytest.param(
+                {"fixed_count": 1, "closed_topic_count": 2},
+                "Removed 2 stale topics",
+                id="closed-plural",
+            ),
+            pytest.param(
+                {"fixed_count": 1, "recreated_topic_count": 1},
+                "Recreated 1 topic",
+                id="recreated-singular",
+            ),
+            pytest.param(
+                {"fixed_count": 2, "recreated_topic_count": 2},
+                "Recreated 2 topics",
+                id="recreated-plural",
+            ),
+        ],
+    )
+    def test_fixed_mode_summary(self, kwargs: dict, expected_text: str) -> None:
+        text, _keyboard = _format_report(_audit(total=0, live=0), **kwargs)
+        assert expected_text in text
 
 
 class TestSyncDismiss:
@@ -644,18 +677,6 @@ class TestSyncFix:
             assert event.window_id == "w2:t5"
             assert event.window_name == "stray-proj"
 
-    def test_orphaned_window_label(self) -> None:
-        audit = AuditResult(
-            issues=[
-                AuditIssue("orphaned_window", "@5 (stray)", fixable=True),
-            ],
-            total_bindings=1,
-            live_binding_count=1,
-        )
-        text, keyboard = _format_report(audit)
-        assert "unbound window" in text
-        assert keyboard is not None
-
 
 class TestDeadTopicDetection:
     async def test_probe_detects_dead_topic(self, _patch_deps) -> None:
@@ -887,50 +908,6 @@ class TestDeadTopicRecreation:
             mock_tr.bind_thread.assert_called_once_with(
                 100, 42, "@2", window_name="proj", chat_id=-999
             )
-
-
-class TestBuildReportDeadTopic:
-    def test_dead_topic_is_fixable(self) -> None:
-        audit = AuditResult(
-            issues=[
-                AuditIssue(
-                    "dead_topic",
-                    "user:100 thread:42 window:@2 (qmd-go)",
-                    fixable=True,
-                ),
-            ],
-            total_bindings=3,
-            live_binding_count=3,
-        )
-        _text, keyboard = _format_report(audit)
-        assert keyboard is not None
-        assert "Fix 1 issue" in keyboard.inline_keyboard[0][0].text
-
-    def test_recreated_topic_count_in_report(self) -> None:
-        audit = AuditResult(issues=[], total_bindings=2, live_binding_count=2)
-        text, _ = _format_report(audit, fixed_count=1, recreated_topic_count=1)
-        assert "Recreated 1 topic" in text
-
-    def test_recreated_topics_plural(self) -> None:
-        audit = AuditResult(issues=[], total_bindings=2, live_binding_count=2)
-        text, _ = _format_report(audit, fixed_count=2, recreated_topic_count=2)
-        assert "Recreated 2 topics" in text
-
-    def test_dead_topic_shown_as_dedicated_line(self) -> None:
-        audit = AuditResult(
-            issues=[
-                AuditIssue(
-                    "dead_topic",
-                    "user:100 thread:42 window:@2 (qmd-go)",
-                    fixable=True,
-                ),
-            ],
-            total_bindings=3,
-            live_binding_count=3,
-        )
-        text, _ = _format_report(audit)
-        assert "1 dead topic" in text
-        assert "deleted in Telegram" in text
 
 
 class TestSyncFixDeadTopic:

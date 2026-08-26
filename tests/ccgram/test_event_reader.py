@@ -56,52 +56,58 @@ async def test_reads_only_new_events_after_offset(tmp_path: Path) -> None:
     assert offset > offset_after_first
 
 
-async def test_skips_empty_lines(tmp_path: Path) -> None:
-    path = tmp_path / "events.jsonl"
-    path.write_text("\n\n")
-    _write_event(path, "Stop", "ccgram:@0", "sess-1")
-    path.open("a").write("\n")
-
-    events, offset = await read_new_events(path, 0)
-    assert len(events) == 1
-    assert events[0].event_type == "Stop"
-
-
-async def test_skips_malformed_lines(tmp_path: Path) -> None:
-    path = tmp_path / "events.jsonl"
-    path.write_text("not-json\n")
-    _write_event(path, "Stop", "ccgram:@0", "sess-1")
-
-    events, offset = await read_new_events(path, 0)
-    assert len(events) == 1
-    assert events[0].event_type == "Stop"
-
-
-async def test_resets_offset_on_truncation(tmp_path: Path) -> None:
-    path = tmp_path / "events.jsonl"
-    _write_event(path, "Stop", "ccgram:@0", "sess-1")
-    file_size = path.stat().st_size
-
-    stale_offset = file_size + 9999
-    events, offset = await read_new_events(path, stale_offset)
-    assert offset <= file_size
-
-
-async def test_skips_non_dict_json_line_and_advances_offset(tmp_path: Path) -> None:
-    """A valid JSON line that is not a dict (e.g. []) must be skipped,
-    the byte offset must advance past it, and subsequent valid events
-    must still be read (regression for MAJOR-3 poll-wedge bug).
+@pytest.mark.parametrize(
+    "unusable_line",
+    [
+        pytest.param("", id="blank-line"),
+        pytest.param("not-json", id="invalid-json"),
+        pytest.param("[]", id="json-array"),
+        pytest.param(
+            '{"event": "Stop", "window_key": "ccgram:@0"}', id="no-session-id"
+        ),
+        pytest.param(
+            json.dumps(
+                {
+                    "schema_version": 9999,
+                    "event": "Stop",
+                    "window_key": "ccgram:@0",
+                    "session_id": "sess-1",
+                }
+            ),
+            id="future-schema-version",
+        ),
+    ],
+)
+async def test_unusable_line_is_skipped_and_the_offset_advances_past_it(
+    tmp_path: Path, unusable_line: str
+) -> None:
+    """A line the reader cannot use must never wedge the poll loop: it is
+    dropped and the offset moves past it so the next event is still read.
     """
     path = tmp_path / "events.jsonl"
-    path.write_text("[]\n")  # valid JSON, not a dict
+    path.write_text(unusable_line + "\n")
     offset_after_bad = path.stat().st_size
     _write_event(path, "Stop", "ccgram:@0", "sess-1")
 
     events, offset = await read_new_events(path, 0)
-    assert len(events) == 1
-    assert events[0].event_type == "Stop"
-    # Offset must advance past the bad line — not stall at 0
+
+    assert [event.event_type for event in events] == ["Stop"]
     assert offset > offset_after_bad
+
+
+async def test_offset_past_eof_rereads_the_file_from_the_start(
+    tmp_path: Path,
+) -> None:
+    """A rotated/truncated events.jsonl leaves the persisted offset beyond EOF;
+    the reader must reset instead of silently returning nothing forever."""
+    path = tmp_path / "events.jsonl"
+    _write_event(path, "Stop", "ccgram:@0", "sess-1")
+    file_size = path.stat().st_size
+
+    events, offset = await read_new_events(path, file_size + 9999)
+
+    assert [event.event_type for event in events] == ["Stop"]
+    assert offset == file_size
 
 
 async def test_returns_hook_event_dataclass(tmp_path: Path) -> None:

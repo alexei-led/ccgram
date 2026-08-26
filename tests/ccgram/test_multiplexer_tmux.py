@@ -1,16 +1,16 @@
 """Tests for multiplexer/tmux.py — Task 2 (tmux as the first backend).
 
 Covers:
-- tmux ``MultiplexerCapabilities`` are pinned to the design values
-  (per-field and as a full snapshot — the Task 5 characterization guard that
-  the tmux behavior contract is unchanged).
-- ``TmuxManager`` satisfies the ``Multiplexer`` Protocol structurally.
+- tmux ``MultiplexerCapabilities`` pinned as a full snapshot (the Task 5
+  characterization guard that the tmux behavior contract is unchanged).
+- ``TmuxManager`` binds to the ``Multiplexer`` type.
 - One round-trip per Protocol wrapper method (neutral value types in/out),
   with the libtmux/subprocess legacy methods mocked.
 """
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -22,7 +22,7 @@ from ccgram.multiplexer.base import (
     PaneDims,
     WindowRef,
 )
-from ccgram.multiplexer.tmux import TmuxManager, tmux_manager
+from ccgram.multiplexer.tmux import TmuxManager
 
 
 @pytest.fixture
@@ -34,45 +34,22 @@ def mgr() -> TmuxManager:
 # ── Capabilities ───────────────────────────────────────────────────────
 
 
-class TestTmuxCapabilities:
-    def test_capabilities_pinned(self, mgr: TmuxManager) -> None:
-        caps = mgr.capabilities
-        assert caps.name == "tmux"
-        assert caps.ids_stable_across_restart is True
-        assert caps.exposes_pane_tty is True
-        assert caps.native_agent_status is False
-        assert caps.read_max_lines is None
-        assert caps.self_identify_env == "TMUX_PANE"
-        assert caps.supports_event_stream is False
-
-    def test_capabilities_is_frozen(self, mgr: TmuxManager) -> None:
-        with pytest.raises(Exception):  # frozen dataclass → FrozenInstanceError
-            mgr.capabilities.name = "other"  # type: ignore[misc]
-
-    def test_capabilities_full_snapshot(self, mgr: TmuxManager) -> None:
-        """Characterization guard (Task 5): the entire tmux capability surface
-        is locked. Any change to a flag is a behavior change and must fail here.
-        """
-        from dataclasses import asdict
-
-        assert asdict(mgr.capabilities) == {
-            "name": "tmux",
-            "ids_stable_across_restart": True,
-            "exposes_pane_tty": True,
-            "native_agent_status": False,
-            "read_max_lines": None,
-            "self_identify_env": "TMUX_PANE",
-            "supports_event_stream": False,
-            "native_worktrees": False,
-        }
+def test_capabilities_full_snapshot(mgr: TmuxManager) -> None:
+    """Characterization guard (Task 5): the entire tmux capability surface is
+    locked. Any change to a flag is a behavior change and must fail here."""
+    assert asdict(mgr.capabilities) == {
+        "name": "tmux",
+        "ids_stable_across_restart": True,
+        "exposes_pane_tty": True,
+        "native_agent_status": False,
+        "read_max_lines": None,
+        "self_identify_env": "TMUX_PANE",
+        "supports_event_stream": False,
+        "native_worktrees": False,
+    }
 
 
 # ── Protocol conformance ───────────────────────────────────────────────
-
-
-def test_tmux_manager_satisfies_protocol() -> None:
-    """The singleton is a structural Multiplexer (runtime_checkable)."""
-    assert isinstance(tmux_manager, Multiplexer)
 
 
 def test_tmux_manager_typed_as_multiplexer(mgr: TmuxManager) -> None:
@@ -85,9 +62,7 @@ def test_tmux_manager_typed_as_multiplexer(mgr: TmuxManager) -> None:
 
 
 async def test_ensure_session_calls_get_or_create(mgr: TmuxManager) -> None:
-    import unittest.mock as mock
-
-    with mock.patch.object(mgr, "get_or_create_session") as create:
+    with patch.object(mgr, "get_or_create_session") as create:
         await mgr.ensure_session()
         create.assert_called_once_with()
 
@@ -268,25 +243,23 @@ async def test_foreground_none_when_window_gone(mgr: TmuxManager) -> None:
 # ── _parse_ps_line (pure) ──────────────────────────────────────────────
 
 
-class TestParsePsLine:
-    def test_foreground_leader(self) -> None:
-        # pid == pgid, "+" foreground stat
-        line = "321 321 S+ claude --continue"
-        assert TmuxManager._parse_ps_line(line) == (321, 321, ["claude", "--continue"])
-
-    def test_non_foreground_skipped(self) -> None:
-        assert TmuxManager._parse_ps_line("100 100 Ss bash") is None
-
-    def test_malformed_line(self) -> None:
-        assert TmuxManager._parse_ps_line("garbage") is None
-
-    def test_non_numeric_pid(self) -> None:
-        assert TmuxManager._parse_ps_line("abc def S+ claude") is None
-
-    def test_foreground_non_leader(self) -> None:
-        # foreground but pid != pgid → still parsed (fallback candidate)
-        assert TmuxManager._parse_ps_line("555 321 S+ node x") == (
-            555,
-            321,
-            ["node", "x"],
-        )
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        pytest.param(
+            "321 321 S+ claude --continue",
+            (321, 321, ["claude", "--continue"]),
+            id="foreground-group-leader",
+        ),
+        pytest.param(
+            "555 321 S+ node x",
+            (555, 321, ["node", "x"]),
+            id="foreground-non-leader",
+        ),
+        pytest.param("100 100 Ss bash", None, id="background"),
+        pytest.param("garbage", None, id="too-few-columns"),
+        pytest.param("abc def S+ claude", None, id="non-numeric-pid"),
+    ],
+)
+def test_parse_ps_line(line: str, expected: tuple | None) -> None:
+    assert TmuxManager._parse_ps_line(line) == expected

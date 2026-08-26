@@ -1,14 +1,27 @@
 """Tests for window picker callback handlers."""
 
+from __future__ import annotations
+
+import contextlib
+from collections.abc import Iterator
+from dataclasses import dataclass
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from telegram import Bot, CallbackQuery, Update
 from telegram.ext import ContextTypes
 
 from ccgram.handlers.callback_data import CB_WIN_BIND, CB_WIN_CANCEL, CB_WIN_NEW
 from ccgram.handlers.topics.directory_browser import UNBOUND_WINDOWS_KEY
+from ccgram.handlers.topics.new_command import new_command
 from ccgram.handlers.user_state import PENDING_THREAD_ID, PENDING_THREAD_TEXT
-from ccgram.handlers.topics.window_callbacks import handle_window_callback
+from ccgram.handlers.topics.window_callbacks import (
+    _forward_pending_text,
+    handle_window_callback,
+)
+
+_MODULE = "ccgram.handlers.topics.window_callbacks."
+_FIND_WINDOW = "ccgram.multiplexer.tmux.tmux_manager.find_window_by_id"
 
 
 def _make_query_update_context(
@@ -34,89 +47,116 @@ def _make_query_update_context(
     return query, update, context
 
 
+def _unbound_window(name: str, pane_current_command: str | None = None) -> MagicMock:
+    window = MagicMock()
+    window.window_name = name
+    if pane_current_command is not None:
+        window.pane_current_command = pane_current_command
+    return window
+
+
+async def _reset_flow_with_new_command(context: MagicMock) -> None:
+    """Run /new, which drops the picker state every stale-guard test needs gone."""
+    update = MagicMock()
+    update.effective_user = MagicMock(id=100)
+    update.message = AsyncMock()
+    with patch(
+        "ccgram.handlers.topics.new_command.config.is_user_allowed", return_value=True
+    ):
+        await new_command(update, context)
+
+
+@dataclass
+class _BindMocks:
+    session: MagicMock
+    router: MagicMock
+    find_window: AsyncMock
+    edit: MagicMock
+
+
+@contextlib.contextmanager
+def _bind_env(window: MagicMock | None = None) -> Iterator[_BindMocks]:
+    """Patch the collaborators a CB_WIN_BIND tap reaches, ready for a live window."""
+    with (
+        patch(f"{_MODULE}session_manager") as session,
+        patch(f"{_MODULE}thread_router") as router,
+        patch(_FIND_WINDOW, new_callable=AsyncMock, return_value=window) as find_window,
+        patch(f"{_MODULE}safe_edit") as edit,
+        patch(f"{_MODULE}format_topic_name_for_mode"),
+    ):
+        router.resolve_chat_id.return_value = -100
+        session.get_approval_mode.return_value = "normal"
+        yield _BindMocks(
+            session=session, router=router, find_window=find_window, edit=edit
+        )
+
+
 class TestBindWindowCallback:
     async def test_bind_existing_window(self) -> None:
-        user_data = {
-            UNBOUND_WINDOWS_KEY: ["@5"],
-            PENDING_THREAD_ID: 42,
-        }
-        query, update, context = _make_query_update_context(user_data=user_data)
+        query, update, context = _make_query_update_context(
+            user_data={UNBOUND_WINDOWS_KEY: ["@5"], PENDING_THREAD_ID: 42}
+        )
 
-        mock_window = MagicMock()
-        mock_window.window_name = "my-project"
-
-        with (
-            patch("ccgram.handlers.topics.window_callbacks.session_manager") as mock_sm,
-            patch("ccgram.handlers.topics.window_callbacks.thread_router") as mock_tr,
-            patch(
-                "ccgram.multiplexer.tmux.tmux_manager.find_window_by_id",
-                new_callable=AsyncMock,
-                return_value=mock_window,
-            ),
-            patch("ccgram.handlers.topics.window_callbacks.safe_edit") as mock_edit,
-            patch("ccgram.handlers.topics.window_callbacks.format_topic_name_for_mode"),
-        ):
-            mock_tr.resolve_chat_id.return_value = -100
-            mock_sm.get_approval_mode.return_value = "normal"
+        with _bind_env(_unbound_window("my-project")) as m:
             await handle_window_callback(query, 100, f"{CB_WIN_BIND}0", update, context)
 
-            mock_tr.bind_thread.assert_called_once_with(
-                100,
-                42,
-                "@5",
-                window_name="my-project",
-                chat_id=-100999,
-            )
-            mock_tr.set_group_chat_id.assert_called_once_with(100, 42, -100999)
-            mock_edit.assert_called_once()
-            assert "my-project" in mock_edit.call_args[0][1]
-
-    async def test_bind_invalid_index(self) -> None:
-        user_data = {UNBOUND_WINDOWS_KEY: ["@5"], PENDING_THREAD_ID: 42}
-        query, update, context = _make_query_update_context(user_data=user_data)
-
-        await handle_window_callback(query, 100, f"{CB_WIN_BIND}abc", update, context)
-        query.answer.assert_called_once_with("Invalid data")
-
-    async def test_bind_out_of_range_index(self) -> None:
-        user_data = {UNBOUND_WINDOWS_KEY: ["@5"], PENDING_THREAD_ID: 42}
-        query, update, context = _make_query_update_context(user_data=user_data)
-
-        await handle_window_callback(query, 100, f"{CB_WIN_BIND}5", update, context)
-        query.answer.assert_called_once_with(
-            "Window list changed, please retry", show_alert=True
+        m.router.bind_thread.assert_called_once_with(
+            100, 42, "@5", window_name="my-project", chat_id=-100999
         )
+        m.router.set_group_chat_id.assert_called_once_with(100, 42, -100999)
+        m.edit.assert_called_once()
+        assert "my-project" in m.edit.call_args[0][1]
 
-    async def test_bind_stale_topic_mismatch(self) -> None:
-        user_data = {UNBOUND_WINDOWS_KEY: ["@5"], PENDING_THREAD_ID: 99}
+    async def test_bind_forwards_pending_text(self) -> None:
         query, update, context = _make_query_update_context(
-            thread_id=42, user_data=user_data
+            user_data={
+                UNBOUND_WINDOWS_KEY: ["@5"],
+                PENDING_THREAD_ID: 42,
+                PENDING_THREAD_TEXT: "hello agent",
+            }
         )
 
-        await handle_window_callback(query, 100, f"{CB_WIN_BIND}0", update, context)
-        query.answer.assert_called_once_with(
-            "Stale picker (topic mismatch)", show_alert=True
+        with (
+            _bind_env(_unbound_window("proj")),
+            patch(
+                f"{_MODULE}send_telegram_to_window",
+                new_callable=AsyncMock,
+                return_value=(True, "ok"),
+            ) as mock_send,
+        ):
+            await handle_window_callback(query, 100, f"{CB_WIN_BIND}0", update, context)
+
+        mock_send.assert_called_once_with(100, "@5", 42, "hello agent", -100999)
+        assert PENDING_THREAD_TEXT not in context.user_data
+
+    @pytest.mark.parametrize(
+        ("suffix", "answer_args", "answer_kwargs"),
+        [
+            ("abc", ("Invalid data",), {}),
+            ("5", ("Window list changed, please retry",), {"show_alert": True}),
+        ],
+        ids=["not_a_number", "out_of_range"],
+    )
+    async def test_bind_rejects_unusable_index(
+        self, suffix: str, answer_args: tuple[str, ...], answer_kwargs: dict
+    ) -> None:
+        query, update, context = _make_query_update_context(
+            user_data={UNBOUND_WINDOWS_KEY: ["@5"], PENDING_THREAD_ID: 42}
         )
+
+        await handle_window_callback(
+            query, 100, f"{CB_WIN_BIND}{suffix}", update, context
+        )
+
+        query.answer.assert_called_once_with(*answer_args, **answer_kwargs)
 
     async def test_bind_rejected_after_new_command_reset(self) -> None:
-        from ccgram.handlers.topics.new_command import new_command
+        query, update, context = _make_query_update_context(
+            user_data={UNBOUND_WINDOWS_KEY: ["@5"], PENDING_THREAD_ID: 42}
+        )
+        await _reset_flow_with_new_command(context)
 
-        user_data = {UNBOUND_WINDOWS_KEY: ["@5"], PENDING_THREAD_ID: 42}
-        query, update, context = _make_query_update_context(user_data=user_data)
-
-        nc_update = MagicMock()
-        nc_update.effective_user = MagicMock(id=100)
-        nc_update.message = AsyncMock()
-        with patch(
-            "ccgram.handlers.topics.new_command.config.is_user_allowed",
-            return_value=True,
-        ):
-            await new_command(nc_update, context)
-
-        with patch(
-            "ccgram.multiplexer.tmux.tmux_manager.find_window_by_id",
-            new_callable=AsyncMock,
-        ) as mock_find:
+        with patch(_FIND_WINDOW, new_callable=AsyncMock) as mock_find:
             await handle_window_callback(query, 100, f"{CB_WIN_BIND}0", update, context)
 
         mock_find.assert_not_called()
@@ -124,92 +164,35 @@ class TestBindWindowCallback:
             "Window list changed, please retry", show_alert=True
         )
 
-    async def test_bind_forwards_pending_text(self) -> None:
-        user_data = {
-            UNBOUND_WINDOWS_KEY: ["@5"],
-            PENDING_THREAD_ID: 42,
-            PENDING_THREAD_TEXT: "hello agent",
-        }
-        query, update, context = _make_query_update_context(user_data=user_data)
-
-        mock_window = MagicMock()
-        mock_window.window_name = "proj"
-
-        with (
-            patch("ccgram.handlers.topics.window_callbacks.session_manager") as mock_sm,
-            patch("ccgram.handlers.topics.window_callbacks.thread_router") as mock_tr,
-            patch(
-                "ccgram.multiplexer.tmux.tmux_manager.find_window_by_id",
-                new_callable=AsyncMock,
-                return_value=mock_window,
-            ),
-            patch("ccgram.handlers.topics.window_callbacks.safe_edit"),
-            patch("ccgram.handlers.topics.window_callbacks.format_topic_name_for_mode"),
-            patch(
-                "ccgram.handlers.topics.window_callbacks.send_telegram_to_window",
-                new_callable=AsyncMock,
-                return_value=(True, "ok"),
-            ) as mock_send,
-        ):
-            mock_tr.resolve_chat_id.return_value = -100
-            mock_sm.get_approval_mode.return_value = "normal"
-            await handle_window_callback(query, 100, f"{CB_WIN_BIND}0", update, context)
-
-            mock_send.assert_called_once_with(100, "@5", 42, "hello agent", -100999)
-            assert PENDING_THREAD_TEXT not in context.user_data
-
 
 class TestNewWindowCallback:
     async def test_transitions_to_directory_browser(self) -> None:
-        user_data = {PENDING_THREAD_ID: 42}
-        query, update, context = _make_query_update_context(user_data=user_data)
+        query, update, context = _make_query_update_context(
+            user_data={PENDING_THREAD_ID: 42}
+        )
 
         with (
             patch(
-                "ccgram.handlers.topics.window_callbacks.build_directory_browser",
+                f"{_MODULE}build_directory_browser",
                 return_value=("Browse:", MagicMock(), ["/a", "/b"]),
             ),
-            patch("ccgram.handlers.topics.window_callbacks.safe_edit") as mock_edit,
-            patch("ccgram.handlers.topics.window_callbacks.clear_window_picker_state"),
+            patch(f"{_MODULE}safe_edit") as mock_edit,
+            patch(f"{_MODULE}clear_window_picker_state"),
         ):
             await handle_window_callback(query, 100, CB_WIN_NEW, update, context)
 
-            mock_edit.assert_called_once()
-            query.answer.assert_called_once_with()
-
-    async def test_new_stale_topic_mismatch(self) -> None:
-        user_data = {PENDING_THREAD_ID: 99}
-        query, update, context = _make_query_update_context(
-            thread_id=42, user_data=user_data
-        )
-
-        await handle_window_callback(query, 100, CB_WIN_NEW, update, context)
-        query.answer.assert_called_once_with(
-            "Stale picker (topic mismatch)", show_alert=True
-        )
+        mock_edit.assert_called_once()
+        query.answer.assert_called_once_with()
 
     async def test_new_rejected_after_new_command_reset(self) -> None:
-        from ccgram.handlers.topics.new_command import new_command
-        from ccgram.handlers.topics.directory_browser import (
-            BROWSE_PATH_KEY,
-            STATE_KEY,
+        from ccgram.handlers.topics.directory_browser import BROWSE_PATH_KEY, STATE_KEY
+
+        query, update, context = _make_query_update_context(
+            user_data={PENDING_THREAD_ID: 42}
         )
+        await _reset_flow_with_new_command(context)
 
-        user_data = {PENDING_THREAD_ID: 42}
-        query, update, context = _make_query_update_context(user_data=user_data)
-
-        nc_update = MagicMock()
-        nc_update.effective_user = MagicMock(id=100)
-        nc_update.message = AsyncMock()
-        with patch(
-            "ccgram.handlers.topics.new_command.config.is_user_allowed",
-            return_value=True,
-        ):
-            await new_command(nc_update, context)
-
-        with patch(
-            "ccgram.handlers.topics.window_callbacks.build_directory_browser"
-        ) as mock_build:
+        with patch(f"{_MODULE}build_directory_browser") as mock_build:
             await handle_window_callback(query, 100, CB_WIN_NEW, update, context)
 
         mock_build.assert_not_called()
@@ -222,169 +205,92 @@ class TestNewWindowCallback:
 
 class TestCancelCallback:
     async def test_cancel_clears_state(self) -> None:
-        user_data = {
-            PENDING_THREAD_ID: 42,
-            PENDING_THREAD_TEXT: "some text",
-        }
-        query, update, context = _make_query_update_context(user_data=user_data)
+        query, update, context = _make_query_update_context(
+            user_data={PENDING_THREAD_ID: 42, PENDING_THREAD_TEXT: "some text"}
+        )
 
         with (
-            patch("ccgram.handlers.topics.window_callbacks.safe_edit") as mock_edit,
-            patch("ccgram.handlers.topics.window_callbacks.clear_window_picker_state"),
+            patch(f"{_MODULE}safe_edit") as mock_edit,
+            patch(f"{_MODULE}clear_window_picker_state"),
         ):
             await handle_window_callback(query, 100, CB_WIN_CANCEL, update, context)
 
-            mock_edit.assert_called_once_with(query, "Cancelled")
-            query.answer.assert_called_once_with("Cancelled")
-            assert PENDING_THREAD_ID not in context.user_data
-            assert PENDING_THREAD_TEXT not in context.user_data
+        mock_edit.assert_called_once_with(query, "Cancelled")
+        query.answer.assert_called_once_with("Cancelled")
+        assert PENDING_THREAD_ID not in context.user_data
+        assert PENDING_THREAD_TEXT not in context.user_data
 
-    async def test_cancel_stale_topic_mismatch(self) -> None:
-        user_data = {PENDING_THREAD_ID: 99}
+
+class TestCrossTopicGuard:
+    @pytest.mark.parametrize(
+        "data",
+        [f"{CB_WIN_BIND}0", CB_WIN_NEW, CB_WIN_CANCEL],
+        ids=["bind", "new", "cancel"],
+    )
+    async def test_tap_from_another_topic_is_rejected(self, data: str) -> None:
         query, update, context = _make_query_update_context(
-            thread_id=42, user_data=user_data
+            thread_id=42,
+            user_data={UNBOUND_WINDOWS_KEY: ["@5"], PENDING_THREAD_ID: 99},
         )
 
-        await handle_window_callback(query, 100, CB_WIN_CANCEL, update, context)
+        await handle_window_callback(query, 100, data, update, context)
+
         query.answer.assert_called_once_with(
             "Stale picker (topic mismatch)", show_alert=True
         )
 
 
 class TestBindProviderDetection:
-    async def test_bind_shell_window_offers_prompt_setup(self) -> None:
-        user_data = {UNBOUND_WINDOWS_KEY: ["@5"], PENDING_THREAD_ID: 42}
-        query, update, context = _make_query_update_context(user_data=user_data)
-
-        mock_window = MagicMock()
-        mock_window.window_name = "my-shell"
-        mock_window.pane_current_command = "fish"
-        mock_window.pane_tty = "/dev/ttys003"
+    @pytest.mark.parametrize(
+        ("pane_command", "detected", "expects_prompt_setup"),
+        [
+            ("fish", "shell", True),
+            ("", "shell", True),
+            ("claude", "claude", False),
+        ],
+        ids=["shell_window", "bare_herdr_shell", "claude_window"],
+    )
+    async def test_detected_provider_drives_shell_prompt_setup(
+        self, pane_command: str, detected: str, expects_prompt_setup: bool
+    ) -> None:
+        """herdr leaves pane_current_command empty; detection must still run."""
+        query, update, context = _make_query_update_context(
+            user_data={UNBOUND_WINDOWS_KEY: ["@5"], PENDING_THREAD_ID: 42}
+        )
 
         with (
-            patch("ccgram.handlers.topics.window_callbacks.session_manager") as mock_sm,
-            patch("ccgram.handlers.topics.window_callbacks.thread_router") as mock_tr,
-            patch(
-                "ccgram.multiplexer.tmux.tmux_manager.find_window_by_id",
-                new_callable=AsyncMock,
-                return_value=mock_window,
-            ),
-            patch("ccgram.handlers.topics.window_callbacks.safe_edit"),
-            patch("ccgram.handlers.topics.window_callbacks.format_topic_name_for_mode"),
+            _bind_env(_unbound_window("bound-window", pane_command)) as m,
             patch(
                 "ccgram.providers.detect_provider_from_pane",
                 new_callable=AsyncMock,
-                return_value="shell",
-            ),
-            patch(
-                "ccgram.handlers.shell.shell_prompt_orchestrator.ensure_setup",
-                new_callable=AsyncMock,
-            ) as mock_ensure,
-        ):
-            mock_tr.resolve_chat_id.return_value = -100
-            mock_sm.get_approval_mode.return_value = "normal"
-            await handle_window_callback(query, 100, f"{CB_WIN_BIND}0", update, context)
-
-        mock_sm.set_window_provider.assert_called_once_with("@5", "shell")
-        mock_ensure.assert_awaited_once()
-        call_args = mock_ensure.call_args
-        assert call_args[0] == ("@5", "external_bind")
-
-    async def test_bind_bare_herdr_shell_still_detects_via_foreground(self) -> None:
-        # herdr leaves pane_current_command empty for a bare shell pane; the
-        # bind path must still run detection (which consults the foreground
-        # process via window_id) instead of skipping it.
-        user_data = {UNBOUND_WINDOWS_KEY: ["@5"], PENDING_THREAD_ID: 42}
-        query, update, context = _make_query_update_context(user_data=user_data)
-
-        mock_window = MagicMock()
-        mock_window.window_name = "bare-shell"
-        mock_window.pane_current_command = ""
-
-        with (
-            patch("ccgram.handlers.topics.window_callbacks.session_manager") as mock_sm,
-            patch("ccgram.handlers.topics.window_callbacks.thread_router") as mock_tr,
-            patch(
-                "ccgram.multiplexer.tmux.tmux_manager.find_window_by_id",
-                new_callable=AsyncMock,
-                return_value=mock_window,
-            ),
-            patch("ccgram.handlers.topics.window_callbacks.safe_edit"),
-            patch("ccgram.handlers.topics.window_callbacks.format_topic_name_for_mode"),
-            patch(
-                "ccgram.providers.detect_provider_from_pane",
-                new_callable=AsyncMock,
-                return_value="shell",
+                return_value=detected,
             ) as mock_detect,
             patch(
                 "ccgram.handlers.shell.shell_prompt_orchestrator.ensure_setup",
                 new_callable=AsyncMock,
             ) as mock_ensure,
         ):
-            mock_tr.resolve_chat_id.return_value = -100
-            mock_sm.get_approval_mode.return_value = "normal"
             await handle_window_callback(query, 100, f"{CB_WIN_BIND}0", update, context)
 
-        mock_detect.assert_awaited_once_with("", window_id="@5")
-        mock_sm.set_window_provider.assert_called_once_with("@5", "shell")
-        mock_ensure.assert_awaited_once()
-
-    async def test_bind_claude_window_does_not_offer_prompt_setup(self) -> None:
-        user_data = {UNBOUND_WINDOWS_KEY: ["@5"], PENDING_THREAD_ID: 42}
-        query, update, context = _make_query_update_context(user_data=user_data)
-
-        mock_window = MagicMock()
-        mock_window.window_name = "my-project"
-        mock_window.pane_current_command = "claude"
-
-        with (
-            patch("ccgram.handlers.topics.window_callbacks.session_manager") as mock_sm,
-            patch("ccgram.handlers.topics.window_callbacks.thread_router") as mock_tr,
-            patch(
-                "ccgram.multiplexer.tmux.tmux_manager.find_window_by_id",
-                new_callable=AsyncMock,
-                return_value=mock_window,
-            ),
-            patch("ccgram.handlers.topics.window_callbacks.safe_edit"),
-            patch("ccgram.handlers.topics.window_callbacks.format_topic_name_for_mode"),
-            patch(
-                "ccgram.providers.detect_provider_from_pane",
-                new_callable=AsyncMock,
-                return_value="claude",
-            ),
-            patch(
-                "ccgram.handlers.shell.shell_prompt_orchestrator.ensure_setup",
-                new_callable=AsyncMock,
-            ) as mock_ensure,
-        ):
-            mock_tr.resolve_chat_id.return_value = -100
-            mock_sm.get_approval_mode.return_value = "normal"
-            await handle_window_callback(query, 100, f"{CB_WIN_BIND}0", update, context)
-
-        mock_ensure.assert_not_awaited()
+        mock_detect.assert_awaited_once_with(pane_command, window_id="@5")
+        m.session.set_window_provider.assert_called_once_with("@5", detected)
+        if expects_prompt_setup:
+            mock_ensure.assert_awaited_once()
+            assert mock_ensure.call_args[0] == ("@5", "external_bind")
+        else:
+            mock_ensure.assert_not_awaited()
 
     async def test_bind_shell_pending_text_routes_through_shell_handler(self) -> None:
-        user_data = {
-            UNBOUND_WINDOWS_KEY: ["@5"],
-            PENDING_THREAD_ID: 42,
-            PENDING_THREAD_TEXT: "ls -la",
-        }
-        query, update, context = _make_query_update_context(user_data=user_data)
-
-        mock_window = MagicMock()
-        mock_window.window_name = "my-shell"
-        mock_window.pane_current_command = "bash"
+        query, update, context = _make_query_update_context(
+            user_data={
+                UNBOUND_WINDOWS_KEY: ["@5"],
+                PENDING_THREAD_ID: 42,
+                PENDING_THREAD_TEXT: "ls -la",
+            }
+        )
 
         with (
-            patch("ccgram.handlers.topics.window_callbacks.session_manager") as mock_sm,
-            patch("ccgram.handlers.topics.window_callbacks.thread_router") as mock_tr,
-            patch(
-                "ccgram.multiplexer.tmux.tmux_manager.find_window_by_id",
-                new_callable=AsyncMock,
-                return_value=mock_window,
-            ),
-            patch("ccgram.handlers.topics.window_callbacks.safe_edit"),
-            patch("ccgram.handlers.topics.window_callbacks.format_topic_name_for_mode"),
+            _bind_env(_unbound_window("my-shell", "bash")),
             patch(
                 "ccgram.providers.detect_provider_from_pane",
                 new_callable=AsyncMock,
@@ -395,12 +301,9 @@ class TestBindProviderDetection:
                 new_callable=AsyncMock,
             ),
             patch(
-                "ccgram.handlers.topics.window_callbacks._forward_pending_text",
-                new_callable=AsyncMock,
+                f"{_MODULE}_forward_pending_text", new_callable=AsyncMock
             ) as mock_forward,
         ):
-            mock_tr.resolve_chat_id.return_value = -100
-            mock_sm.get_approval_mode.return_value = "normal"
             await handle_window_callback(query, 100, f"{CB_WIN_BIND}0", update, context)
 
         mock_forward.assert_awaited_once()
@@ -415,17 +318,15 @@ class TestBindProviderDetection:
 
 class TestForwardPendingText:
     async def test_existing_shell_window_sends_raw(self) -> None:
-        from ccgram.handlers.topics.window_callbacks import _forward_pending_text
-
         bot = AsyncMock(spec=Bot)
         with (
-            patch("ccgram.handlers.topics.window_callbacks.session_manager"),
+            patch(f"{_MODULE}session_manager"),
             patch(
                 "ccgram.handlers.shell.shell_commands.handle_shell_message",
                 new_callable=AsyncMock,
             ) as mock_shell,
             patch(
-                "ccgram.handlers.topics.window_callbacks.send_telegram_to_window",
+                f"{_MODULE}send_telegram_to_window",
                 new_callable=AsyncMock,
                 return_value=(True, ""),
             ) as mock_send,
@@ -438,8 +339,6 @@ class TestForwardPendingText:
         mock_send.assert_called_once_with(1, "@5", 42, "list files", None)
 
     async def test_new_shell_window_routes_through_handler(self) -> None:
-        from ccgram.handlers.topics.window_callbacks import _forward_pending_text
-
         bot = AsyncMock(spec=Bot)
         with patch(
             "ccgram.handlers.shell.shell_commands.handle_shell_message",

@@ -35,8 +35,22 @@ def _identity(
 class TestFindAndRegisterTranscriptWindowKey:
     """window_key passed to provider.discover_transcript matches the active backend prefix."""
 
-    async def _run(self, window_id: str) -> str | None:
-        """Call _find_and_register_transcript and return the window_key seen by discover_transcript."""
+    @pytest.mark.parametrize(
+        ("backend", "window_id", "expected_key"),
+        [
+            ("tmux", "@7", "ccgram:@7"),
+            ("herdr", "w2:p1", "herdr:w2:p1"),
+        ],
+    )
+    async def test_window_key_uses_the_active_backend_prefix(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        backend: str,
+        window_id: str,
+        expected_key: str,
+    ) -> None:
+        monkeypatch.setattr(config, "multiplexer_name", backend)
+        monkeypatch.setattr(config, "tmux_session_name", "ccgram")
         captured: list[str] = []
         provider = MagicMock()
 
@@ -57,18 +71,7 @@ class TestFindAndRegisterTranscriptWindowKey:
                 pane_alive=True,
             )
 
-        return captured[0] if captured else None
-
-    async def test_tmux_backend_key(self, monkeypatch) -> None:
-        monkeypatch.setattr(config, "multiplexer_name", "tmux")
-        monkeypatch.setattr(config, "tmux_session_name", "ccgram")
-        key = await self._run("@7")
-        assert key == "ccgram:@7"
-
-    async def test_herdr_backend_key(self, monkeypatch) -> None:
-        monkeypatch.setattr(config, "multiplexer_name", "herdr")
-        key = await self._run("w2:p1")
-        assert key == "herdr:w2:p1"
+        assert captured == [expected_key]
 
 
 # ── Fix 3: _bootstrap_identity seeds window state for hookless providers ───

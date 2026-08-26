@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -51,6 +52,28 @@ def _isolate_state(monkeypatch, clear_map_mock):
     window_store.window_states.clear()
 
 
+@pytest.fixture
+def reply() -> Iterator[AsyncMock]:
+    """Capture ``safe_reply(message, text, reply_markup=...)`` calls."""
+    with patch(
+        "ccgram.handlers.agent_command.safe_reply", new_callable=AsyncMock
+    ) as mock:
+        yield mock
+
+
+@pytest.fixture
+def edit() -> Iterator[AsyncMock]:
+    """Capture ``safe_edit(query, text, reply_markup=...)`` calls."""
+    with patch(
+        "ccgram.handlers.agent_command.safe_edit", new_callable=AsyncMock
+    ) as mock:
+        yield mock
+
+
+def _sent_text(mock: AsyncMock) -> str:
+    return mock.call_args.args[1]
+
+
 def _make_update(text: str = "/agent"):
     update = MagicMock()
     user = MagicMock()
@@ -87,19 +110,11 @@ def _make_query(data: str):
     return update
 
 
-async def test_bare_command_shows_picker():
-    captured: dict[str, object] = {}
+async def test_bare_command_shows_picker(reply):
+    await ac.agent_command(_make_update(), MagicMock())
 
-    async def fake_safe_reply(_msg, text, reply_markup=None):
-        captured["text"] = text
-        captured["markup"] = reply_markup
-
-    with patch("ccgram.handlers.agent_command.safe_reply", side_effect=fake_safe_reply):
-        await ac.agent_command(_make_update(), MagicMock())
-
-    assert "claude" in str(captured["text"]).lower()
-    markup = captured["markup"]
-    keyboard = getattr(markup, "inline_keyboard")  # noqa: B009
+    assert "claude" in _sent_text(reply).lower()
+    keyboard = reply.call_args.kwargs["reply_markup"].inline_keyboard
     callbacks = [b.callback_data for row in keyboard for b in row]
     assert any(c.startswith(CB_AGENT_SET) for c in callbacks)
     assert any(c == f"{CB_AGENT_SET}@7:shell" for c in callbacks)
@@ -108,7 +123,7 @@ async def test_bare_command_shows_picker():
 
 
 async def test_arg_shell_switches_clears_state_and_marks_override(
-    monkeypatch, clear_map_mock
+    monkeypatch, clear_map_mock, reply
 ):
     ensure_setup_mock = AsyncMock()
     monkeypatch.setattr(
@@ -124,13 +139,7 @@ async def test_arg_shell_switches_clears_state_and_marks_override(
         MagicMock(),
     )
 
-    sent: dict[str, str] = {}
-
-    async def fake_safe_reply(_msg, text, reply_markup=None):
-        sent["text"] = text
-
-    with patch("ccgram.handlers.agent_command.safe_reply", side_effect=fake_safe_reply):
-        await ac.agent_command(_make_update("/agent shell"), MagicMock())
+    await ac.agent_command(_make_update("/agent shell"), MagicMock())
 
     state = window_store.window_states["@7"]
     assert state.provider_name == "shell"
@@ -143,24 +152,18 @@ async def test_arg_shell_switches_clears_state_and_marks_override(
     assert kwargs["chat_id"] == -100
     assert kwargs["thread_id"] == 99
     assert kwargs["client"] is not None
-    assert "shell" in sent["text"]
+    assert "shell" in _sent_text(reply)
 
 
-async def test_arg_unknown_is_rejected():
-    sent: dict[str, str] = {}
+async def test_arg_unknown_is_rejected(reply):
+    await ac.agent_command(_make_update("/agent garbage"), MagicMock())
 
-    async def fake_safe_reply(_msg, text, reply_markup=None):
-        sent["text"] = text
-
-    with patch("ccgram.handlers.agent_command.safe_reply", side_effect=fake_safe_reply):
-        await ac.agent_command(_make_update("/agent garbage"), MagicMock())
-
-    assert "Unknown agent" in sent["text"]
+    assert "Unknown agent" in _sent_text(reply)
     # State unchanged
     assert window_store.window_states["@7"].provider_name == "claude"
 
 
-async def test_auto_clears_override_and_redetects(monkeypatch):
+async def test_auto_clears_override_and_redetects(monkeypatch, reply):
     # Pre-mark as manual override so we can verify it gets cleared.
     identity_state.set_provider_manual_override("@7", value=True)
 
@@ -176,21 +179,15 @@ async def test_auto_clears_override_and_redetects(monkeypatch):
         AsyncMock(return_value="codex"),
     )
 
-    sent: dict[str, str] = {}
-
-    async def fake_safe_reply(_msg, text, reply_markup=None):
-        sent["text"] = text
-
-    with patch("ccgram.handlers.agent_command.safe_reply", side_effect=fake_safe_reply):
-        await ac.agent_command(_make_update("/agent auto"), MagicMock())
+    await ac.agent_command(_make_update("/agent auto"), MagicMock())
 
     state = window_store.window_states["@7"]
     assert state.provider_name == "codex"
     assert state.provider_manual_override is False
-    assert "codex" in sent["text"]
+    assert "codex" in _sent_text(reply)
 
 
-async def test_auto_falls_back_to_shell_and_triggers_ensure_setup(monkeypatch):
+async def test_auto_falls_back_to_shell_and_triggers_ensure_setup(monkeypatch, reply):
     """When /agent auto resolves to shell, ensure_setup must run so the
     'Set up / Skip' offer keyboard can render — same UX as an explicit
     /agent shell. Regression for: auto→shell silently skipped the offer."""
@@ -219,16 +216,10 @@ async def test_auto_falls_back_to_shell_and_triggers_ensure_setup(monkeypatch):
         MagicMock(),
     )
 
-    sent: dict[str, str] = {}
-
-    async def fake_safe_reply(_msg, text, reply_markup=None):
-        sent["text"] = text
-
-    with patch("ccgram.handlers.agent_command.safe_reply", side_effect=fake_safe_reply):
-        await ac.agent_command(_make_update("/agent auto"), MagicMock())
+    await ac.agent_command(_make_update("/agent auto"), MagicMock())
 
     assert window_store.window_states["@7"].provider_name == "shell"
-    assert "shell" in sent["text"]
+    assert "shell" in _sent_text(reply)
     assert ensure_setup_mock.await_count == 1
     args, kwargs = ensure_setup_mock.call_args
     assert args == ("@7", "provider_switch")
@@ -236,61 +227,31 @@ async def test_auto_falls_back_to_shell_and_triggers_ensure_setup(monkeypatch):
     assert kwargs["thread_id"] == 99
 
 
-async def test_callback_cancel_keeps_state(monkeypatch):
+async def test_callback_cancel_keeps_state(monkeypatch, edit):
     monkeypatch.setattr(
         "ccgram.handlers.agent_command.user_owns_window", lambda u, w: True
-    )
-    edited: dict[str, str] = {}
-
-    async def fake_safe_edit(_query, text, reply_markup=None):
-        edited["text"] = text
-
-    with patch("ccgram.handlers.agent_command.safe_edit", side_effect=fake_safe_edit):
-        update = _make_query(f"{CB_AGENT_CANCEL}@7")
-        await ac._dispatch(update, MagicMock())
-
-    assert window_store.window_states["@7"].provider_name == "claude"
-    assert "Cancelled" in edited["text"]
-
-
-async def test_callback_cancel_rejects_foreign_user(monkeypatch):
-    monkeypatch.setattr(
-        "ccgram.handlers.agent_command.user_owns_window", lambda u, w: False
     )
     update = _make_query(f"{CB_AGENT_CANCEL}@7")
     await ac._dispatch(update, MagicMock())
-    update.callback_query.answer.assert_awaited_once_with("Not your window")
+
     assert window_store.window_states["@7"].provider_name == "claude"
+    assert "Cancelled" in _sent_text(edit)
 
 
-async def test_callback_set_provider_clears_transcript(monkeypatch, clear_map_mock):
+async def test_callback_set_provider_clears_transcript(
+    monkeypatch, clear_map_mock, edit
+):
     monkeypatch.setattr(
         "ccgram.handlers.agent_command.user_owns_window", lambda u, w: True
     )
-    edited: dict[str, str] = {}
-
-    async def fake_safe_edit(_query, text, reply_markup=None):
-        edited["text"] = text
-
-    with patch("ccgram.handlers.agent_command.safe_edit", side_effect=fake_safe_edit):
-        update = _make_query(f"{CB_AGENT_SET}@7:gemini")
-        await ac._dispatch(update, MagicMock())
+    update = _make_query(f"{CB_AGENT_SET}@7:gemini")
+    await ac._dispatch(update, MagicMock())
 
     state = window_store.window_states["@7"]
     assert state.provider_name == "gemini"
     assert state.transcript_path == ""
     assert state.provider_manual_override is True
     clear_map_mock.assert_called_once_with("@7")
-
-
-async def test_callback_rejects_foreign_user(monkeypatch):
-    monkeypatch.setattr(
-        "ccgram.handlers.agent_command.user_owns_window", lambda u, w: False
-    )
-    update = _make_query(f"{CB_AGENT_SET}@7:shell")
-    await ac._dispatch(update, MagicMock())
-    update.callback_query.answer.assert_awaited_once_with("Not your window")
-    assert window_store.window_states["@7"].provider_name == "claude"
 
 
 async def test_manual_override_blocks_auto_detect(monkeypatch):
@@ -327,31 +288,21 @@ async def test_manual_override_blocks_auto_detect(monkeypatch):
     assert window_store.window_states["@7"].provider_name == "claude"
 
 
-async def test_command_outside_bound_topic_replies_hint(monkeypatch):
+async def test_command_outside_bound_topic_replies_hint(monkeypatch, reply):
     monkeypatch.setattr(ac.thread_router, "get_window_for_thread", lambda u, t: "")
-    sent: dict[str, str] = {}
+    await ac.agent_command(_make_update("/agent shell"), MagicMock())
 
-    async def fake_safe_reply(_msg, text, reply_markup=None):
-        sent["text"] = text
-
-    with patch("ccgram.handlers.agent_command.safe_reply", side_effect=fake_safe_reply):
-        await ac.agent_command(_make_update("/agent shell"), MagicMock())
-
-    assert "bound topic" in sent["text"]
+    assert "bound topic" in _sent_text(reply)
     # No state change — state still has the prior provider.
     assert window_store.window_states["@7"].provider_name == "claude"
 
 
-async def test_same_provider_skips_session_map_clear(monkeypatch, clear_map_mock):
+async def test_same_provider_skips_session_map_clear(
+    monkeypatch, clear_map_mock, reply
+):
     """/agent claude on a window that is already claude must not drop the live
     session_map entry — only re-affirm the manual-override flag."""
-    sent: dict[str, str] = {}
-
-    async def fake_safe_reply(_msg, text, reply_markup=None):
-        sent["text"] = text
-
-    with patch("ccgram.handlers.agent_command.safe_reply", side_effect=fake_safe_reply):
-        await ac.agent_command(_make_update("/agent claude"), MagicMock())
+    await ac.agent_command(_make_update("/agent claude"), MagicMock())
 
     state = window_store.window_states["@7"]
     assert state.provider_name == "claude"
@@ -362,7 +313,7 @@ async def test_same_provider_skips_session_map_clear(monkeypatch, clear_map_mock
 
 
 async def test_auto_resolving_to_same_provider_clears_override(
-    monkeypatch, clear_map_mock
+    monkeypatch, clear_map_mock, reply
 ):
     """/agent auto on a window whose foreground matches the stored provider
     must preserve the session_map entry (no actual transition) and still
@@ -380,13 +331,7 @@ async def test_auto_resolving_to_same_provider_clears_override(
         "ccgram.providers.detect_provider_from_pane",
         AsyncMock(return_value="claude"),
     )
-    sent: dict[str, str] = {}
-
-    async def fake_safe_reply(_msg, text, reply_markup=None):
-        sent["text"] = text
-
-    with patch("ccgram.handlers.agent_command.safe_reply", side_effect=fake_safe_reply):
-        await ac.agent_command(_make_update("/agent auto"), MagicMock())
+    await ac.agent_command(_make_update("/agent auto"), MagicMock())
 
     state = window_store.window_states["@7"]
     assert state.provider_name == "claude"
@@ -396,51 +341,48 @@ async def test_auto_resolving_to_same_provider_clears_override(
     clear_map_mock.assert_not_called()
 
 
-async def test_callback_malformed_payload_answers_with_error(monkeypatch):
-    monkeypatch.setattr(
-        "ccgram.handlers.agent_command.user_owns_window", lambda u, w: True
-    )
-    # CB_AGENT_SET payload missing the ':' separator → "Bad callback" answer.
-    update = _make_query(f"{CB_AGENT_SET}garbled")
-    await ac._dispatch(update, MagicMock())
-    update.callback_query.answer.assert_awaited_once_with("Bad callback")
-    assert window_store.window_states["@7"].provider_name == "claude"
-
-
-async def test_disallowed_user_is_rejected():
-    sent: dict[str, str] = {}
-
-    async def fake_safe_reply(_msg, text, reply_markup=None):
-        sent["text"] = text
-
-    with (
-        patch("ccgram.config.Config.is_user_allowed", return_value=False),
-        patch("ccgram.handlers.agent_command.safe_reply", side_effect=fake_safe_reply),
-    ):
+async def test_disallowed_user_is_rejected(reply):
+    with patch("ccgram.config.Config.is_user_allowed", return_value=False):
         await ac.agent_command(_make_update("/agent claude"), MagicMock())
 
-    assert "bound topic" in sent["text"]
+    assert "bound topic" in _sent_text(reply)
     assert window_store.window_states["@7"].provider_name == "claude"
 
 
-async def test_picker_text_shows_manual_override_badge():
+async def test_picker_text_shows_manual_override_badge(reply):
     identity_state.set_provider_manual_override("@7", value=True)
-    captured: dict[str, object] = {}
 
-    async def fake_safe_reply(_msg, text, reply_markup=None):
-        captured["text"] = text
+    await ac.agent_command(_make_update(), MagicMock())
 
-    with patch("ccgram.handlers.agent_command.safe_reply", side_effect=fake_safe_reply):
-        await ac.agent_command(_make_update(), MagicMock())
-
-    assert "(manual override)" in str(captured["text"])
+    assert "(manual override)" in _sent_text(reply)
 
 
-async def test_callback_unknown_provider_answers_error(monkeypatch):
+@pytest.mark.parametrize(
+    ("data", "owns_window", "expected_answer"),
+    [
+        pytest.param(
+            f"{CB_AGENT_CANCEL}@7", False, "Not your window", id="cancel-foreign-user"
+        ),
+        pytest.param(
+            f"{CB_AGENT_SET}@7:shell", False, "Not your window", id="set-foreign-user"
+        ),
+        pytest.param(
+            f"{CB_AGENT_SET}garbled", True, "Bad callback", id="missing-separator"
+        ),
+        pytest.param(
+            f"{CB_AGENT_SET}@7:bogus", True, "Unknown provider", id="unknown-provider"
+        ),
+    ],
+)
+async def test_rejected_callbacks_leave_provider_untouched(
+    monkeypatch, data: str, owns_window: bool, expected_answer: str
+):
     monkeypatch.setattr(
-        "ccgram.handlers.agent_command.user_owns_window", lambda u, w: True
+        "ccgram.handlers.agent_command.user_owns_window", lambda u, w: owns_window
     )
-    update = _make_query(f"{CB_AGENT_SET}@7:bogus")
+
+    update = _make_query(data)
     await ac._dispatch(update, MagicMock())
-    update.callback_query.answer.assert_awaited_once_with("Unknown provider")
+
+    update.callback_query.answer.assert_awaited_once_with(expected_answer)
     assert window_store.window_states["@7"].provider_name == "claude"

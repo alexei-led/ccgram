@@ -9,26 +9,10 @@ Two invariants:
 
 from __future__ import annotations
 
-import pytest
-
 from ccgram.handlers.polling.polling_runtime import PollingRuntime, get_default_runtime
-from ccgram.topic_state_registry import topic_state
-
-
-@pytest.fixture(autouse=True)
-def _reset_topic_state_registry():
-    """Snapshot/restore topic_state._cleanups so create() registrations don't leak."""
-    snapshot = {scope: list(bucket) for scope, bucket in topic_state._cleanups.items()}
-    yield
-    for scope, bucket in topic_state._cleanups.items():
-        bucket[:] = snapshot[scope]
 
 
 class TestPollingRuntimeIsolation:
-    def test_create_returns_polling_runtime(self):
-        rt = PollingRuntime.create()
-        assert isinstance(rt, PollingRuntime)
-
     def test_create_instances_are_distinct_from_default(self):
         rt = PollingRuntime.create()
         default = get_default_runtime()

@@ -14,6 +14,7 @@ from ccgram.handlers.callback_data import (
     CB_WT_USE_CURRENT,
 )
 from ccgram.handlers.topics.directory_browser import BROWSE_PATH_KEY
+from ccgram.handlers.topics.new_command import new_command
 from ccgram.handlers.topics.directory_callbacks import (
     _handle_confirm,
     _handle_star,
@@ -79,6 +80,18 @@ def _make_update(thread_id: int = 42) -> MagicMock:
     return update
 
 
+async def _reset_flow_with_new_command(context: MagicMock) -> None:
+    """Run /new, which drops the browser flow state every stale-guard test needs gone."""
+    update = MagicMock()
+    update.effective_user = MagicMock(id=100)
+    update.message = AsyncMock()
+    with patch(
+        "ccgram.handlers.topics.new_command.config.is_user_allowed",
+        return_value=True,
+    ):
+        await new_command(update, context)
+
+
 class TestConfirmWorktreeGating:
     @patch(
         "ccgram.handlers.topics.directory_callbacks.safe_edit", new_callable=AsyncMock
@@ -124,20 +137,11 @@ class TestConfirmWorktreeGating:
     async def test_confirm_after_new_command_reset_fails_closed(
         self, mock_tr: MagicMock, mock_edit: AsyncMock, git_repo: Path
     ) -> None:
-        from ccgram.handlers.topics.new_command import new_command
-
         mock_tr.get_window_for_thread.return_value = None
         user_data = {BROWSE_PATH_KEY: str(git_repo), PENDING_THREAD_ID: 42}
         context = _make_context(user_data)
 
-        nc_update = MagicMock()
-        nc_update.effective_user = MagicMock(id=100)
-        nc_update.message = AsyncMock()
-        with patch(
-            "ccgram.handlers.topics.new_command.config.is_user_allowed",
-            return_value=True,
-        ):
-            await new_command(nc_update, context)
+        await _reset_flow_with_new_command(context)
 
         query = _make_query()
         await _handle_confirm(query, 100, _make_update(42), context)
@@ -213,8 +217,6 @@ class TestHandleWtUseCurrent:
     async def test_stale_button_after_new_command_reset_fails_closed(
         self, mock_edit: AsyncMock
     ) -> None:
-        from ccgram.handlers.topics.new_command import new_command
-
         user_data = {
             BROWSE_PATH_KEY: "/tmp/proj",
             PENDING_WORKTREE_REPO: "/tmp/proj",
@@ -222,14 +224,7 @@ class TestHandleWtUseCurrent:
         }
         context = _make_context(user_data)
 
-        nc_update = MagicMock()
-        nc_update.effective_user = MagicMock(id=100)
-        nc_update.message = AsyncMock()
-        with patch(
-            "ccgram.handlers.topics.new_command.config.is_user_allowed",
-            return_value=True,
-        ):
-            await new_command(nc_update, context)
+        await _reset_flow_with_new_command(context)
 
         query = _make_query()
         await _handle_worktree_callback(
@@ -385,8 +380,6 @@ class TestHandleWtEditName:
     async def test_stale_edit_name_after_new_command_reset_fails_closed(
         self, mock_edit: AsyncMock
     ) -> None:
-        from ccgram.handlers.topics.new_command import new_command
-
         user_data = {
             BROWSE_PATH_KEY: "/tmp/proj",
             PENDING_WORKTREE_REPO: "/tmp/proj",
@@ -394,14 +387,7 @@ class TestHandleWtEditName:
         }
         context = _make_context(user_data)
 
-        nc_update = MagicMock()
-        nc_update.effective_user = MagicMock(id=100)
-        nc_update.message = AsyncMock()
-        with patch(
-            "ccgram.handlers.topics.new_command.config.is_user_allowed",
-            return_value=True,
-        ):
-            await new_command(nc_update, context)
+        await _reset_flow_with_new_command(context)
 
         query = _make_query()
         await _handle_worktree_callback(
@@ -425,77 +411,50 @@ class TestWorktreeDispatchStaleGuard:
         query.answer.assert_awaited_once()
         assert query.answer.await_args.kwargs.get("show_alert") is True
 
-    @patch(
-        "ccgram.handlers.topics.directory_callbacks._handle_wt_use_current",
-        new_callable=AsyncMock,
+    @pytest.mark.parametrize(
+        ("data", "handler"),
+        [
+            (CB_WT_USE_CURRENT, "_handle_wt_use_current"),
+            (CB_WT_NEW, "_handle_wt_new"),
+            (CB_WT_CONFIRM, "_handle_wt_confirm"),
+            (CB_WT_EDIT_NAME, "_handle_wt_edit_name"),
+        ],
     )
-    @patch(
-        "ccgram.handlers.topics.directory_callbacks._handle_wt_new",
-        new_callable=AsyncMock,
-    )
-    @patch(
-        "ccgram.handlers.topics.directory_callbacks._handle_wt_confirm",
-        new_callable=AsyncMock,
-    )
-    @patch(
-        "ccgram.handlers.topics.directory_callbacks._handle_wt_edit_name",
-        new_callable=AsyncMock,
-    )
-    async def test_routes_each_callback(
-        self,
-        mock_edit_name: AsyncMock,
-        mock_confirm: AsyncMock,
-        mock_new: AsyncMock,
-        mock_use_current: AsyncMock,
-    ) -> None:
+    async def test_routes_each_callback(self, data: str, handler: str) -> None:
         context = _make_context({PENDING_THREAD_ID: 42})
-        update = _make_update(42)
-        for data, mock in (
-            (CB_WT_USE_CURRENT, mock_use_current),
-            (CB_WT_NEW, mock_new),
-            (CB_WT_CONFIRM, mock_confirm),
-            (CB_WT_EDIT_NAME, mock_edit_name),
-        ):
-            await _handle_worktree_callback(_make_query(), data, update, context)
-            mock.assert_awaited_once()
+        with patch(
+            f"ccgram.handlers.topics.directory_callbacks.{handler}",
+            new_callable=AsyncMock,
+        ) as mock_handler:
+            await _handle_worktree_callback(
+                _make_query(), data, _make_update(42), context
+            )
+        mock_handler.assert_awaited_once()
 
-    @patch(
-        "ccgram.handlers.topics.directory_callbacks._handle_wt_use_current",
-        new_callable=AsyncMock,
-    )
-    @patch(
-        "ccgram.handlers.topics.directory_callbacks._handle_wt_new",
-        new_callable=AsyncMock,
-    )
-    @patch(
-        "ccgram.handlers.topics.directory_callbacks._handle_wt_confirm",
-        new_callable=AsyncMock,
-    )
-    @patch(
-        "ccgram.handlers.topics.directory_callbacks._handle_wt_edit_name",
-        new_callable=AsyncMock,
+    @pytest.mark.parametrize(
+        ("data", "handler"),
+        [
+            (CB_WT_USE_CURRENT, "_handle_wt_use_current"),
+            (CB_WT_NEW, "_handle_wt_new"),
+            (CB_WT_CONFIRM, "_handle_wt_confirm"),
+            (CB_WT_EDIT_NAME, "_handle_wt_edit_name"),
+        ],
     )
     async def test_no_pending_thread_fails_closed(
-        self,
-        mock_edit_name: AsyncMock,
-        mock_confirm: AsyncMock,
-        mock_new: AsyncMock,
-        mock_use_current: AsyncMock,
+        self, data: str, handler: str
     ) -> None:
-        update = _make_update(42)
-        for data, mock in (
-            (CB_WT_USE_CURRENT, mock_use_current),
-            (CB_WT_NEW, mock_new),
-            (CB_WT_CONFIRM, mock_confirm),
-            (CB_WT_EDIT_NAME, mock_edit_name),
-        ):
-            context = _make_context({PENDING_WORKTREE_REPO: "/stale/repo"})
-            query = _make_query()
-            await _handle_worktree_callback(query, data, update, context)
-            query.answer.assert_awaited_once_with(
-                "Stale browser (flow reset)", show_alert=True
-            )
-            mock.assert_not_awaited()
+        context = _make_context({PENDING_WORKTREE_REPO: "/stale/repo"})
+        query = _make_query()
+        with patch(
+            f"ccgram.handlers.topics.directory_callbacks.{handler}",
+            new_callable=AsyncMock,
+        ) as mock_handler:
+            await _handle_worktree_callback(query, data, _make_update(42), context)
+
+        query.answer.assert_awaited_once_with(
+            "Stale browser (flow reset)", show_alert=True
+        )
+        mock_handler.assert_not_awaited()
 
 
 class TestNavigationStaleGuard:
@@ -505,18 +464,9 @@ class TestNavigationStaleGuard:
     async def test_stale_up_after_new_command_reset_fails_closed(
         self, mock_edit: AsyncMock
     ) -> None:
-        from ccgram.handlers.topics.new_command import new_command
-
         user_data = {BROWSE_PATH_KEY: "/some/old/path", PENDING_THREAD_ID: 42}
         context = _make_context(user_data)
-        nc_update = MagicMock()
-        nc_update.effective_user = MagicMock(id=100)
-        nc_update.message = AsyncMock()
-        with patch(
-            "ccgram.handlers.topics.new_command.config.is_user_allowed",
-            return_value=True,
-        ):
-            await new_command(nc_update, context)
+        await _reset_flow_with_new_command(context)
 
         query = _make_query()
         await _handle_up(query, 100, _make_update(42), context)
@@ -534,18 +484,9 @@ class TestNavigationStaleGuard:
     async def test_stale_star_after_new_command_reset_does_not_toggle(
         self, mock_prefs: MagicMock, mock_edit: AsyncMock
     ) -> None:
-        from ccgram.handlers.topics.new_command import new_command
-
         user_data = {BROWSE_PATH_KEY: "/some/old/path", PENDING_THREAD_ID: 42}
         context = _make_context(user_data)
-        nc_update = MagicMock()
-        nc_update.effective_user = MagicMock(id=100)
-        nc_update.message = AsyncMock()
-        with patch(
-            "ccgram.handlers.topics.new_command.config.is_user_allowed",
-            return_value=True,
-        ):
-            await new_command(nc_update, context)
+        await _reset_flow_with_new_command(context)
 
         query = _make_query()
         await _handle_star(query, 100, f"{CB_DIR_STAR}0", _make_update(42), context)
