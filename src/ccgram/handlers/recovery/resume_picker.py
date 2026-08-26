@@ -247,4 +247,5 @@ async def _handle_resume_pick(
         agent_args=launch_args,
         success_label=f"Resuming session: {picked['summary'][:40]}",
         old_window_id=old_wid,
+        provider_name=provider_name,
     )

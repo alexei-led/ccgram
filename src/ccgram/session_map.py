@@ -709,7 +709,19 @@ class SessionMapSync:
         raw = await read_session_map_raw()
         if raw is None:
             return True
-        return f"{session_map_prefix()}{window_id}" in raw
+        info = raw.get(f"{session_map_prefix()}{window_id}")
+        if info is None:
+            return False
+        try:
+            # The premise is that the monitor will rebuild state from this
+            # entry, which only holds for entries load_session_map accepts. One
+            # it rejects (no session_id, or a schema_version from a newer build
+            # after a downgrade) never becomes state, so treating the bare key
+            # as proof of tracking would wedge the window unhealed forever.
+            parse_session_map_entry(info)
+        except StateFileValidationError:
+            return False
+        return True
 
     def clear_session_map_entry(self, window_id: str) -> None:
         """Remove a window's entry from session_map.json if present."""

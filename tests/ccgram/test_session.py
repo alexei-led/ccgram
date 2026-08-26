@@ -460,6 +460,23 @@ class TestSessionMapEntryMayExist:
 
         assert await session_map_sync.session_map_entry_may_exist("@1") is False
 
+    async def test_false_when_the_entry_is_one_the_loader_will_reject(
+        self, mgr, tmp_path, monkeypatch
+    ):
+        """A key the monitor cannot turn into state is not tracking.
+
+        Treating it as tracking leaves the window unhealed on every tick, with
+        nothing else able to create its state either.
+        """
+        f = tmp_path / "session_map.json"
+        f.write_text(
+            json.dumps({"ccgram:@1": {"schema_version": 99, "session_id": "s"}})
+        )
+        monkeypatch.setattr("ccgram.session_map.config.session_map_file", f)
+        monkeypatch.setattr("ccgram.session_map.config.tmux_session_name", "ccgram")
+
+        assert await session_map_sync.session_map_entry_may_exist("@1") is False
+
     async def test_true_when_the_map_cannot_be_read(self, mgr, tmp_path, monkeypatch):
         """Unknown is not absent.
 

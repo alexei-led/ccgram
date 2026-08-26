@@ -912,6 +912,58 @@ class TestRecoveryResumePickCallback:
     @patch(f"{_RC}.tmux_manager")
     @patch(f"{_RC}.window_query")
     @patch(f"{_RC}.safe_edit", new_callable=AsyncMock)
+    async def test_pick_launches_the_entrys_own_provider(
+        self,
+        _mock_safe_edit: AsyncMock,
+        mock_sm: MagicMock,
+        mock_tm: MagicMock,
+        mock_tr: MagicMock,
+        mock_picker_wq: MagicMock,
+    ) -> None:
+        """A window with no provider widens the picker; the pick must decide.
+
+        Inheriting the provider from the old window here resolves the same
+        falsy value to the config default, so a picked codex session would
+        launch claude with codex-format resume arguments.
+        """
+        view = MagicMock(cwd="/tmp/project", provider_name="")
+        mock_sm.view_window.return_value = view
+        mock_picker_wq.view_window.return_value = view
+        mock_tm.create_window = AsyncMock(
+            return_value=(True, "Window created", "project", "@5")
+        )
+        mock_sm.wait_for_session_map_entry = AsyncMock()
+        mock_sm.send_to_window = AsyncMock(return_value=(True, "ok"))
+        mock_tr.resolve_chat_id.return_value = -100999
+
+        update = _make_callback_update(data=f"{CB_RECOVERY_PICK}0")
+        user_data = _recovery_user_data()
+        user_data[RECOVERY_SESSIONS] = [
+            {
+                "session_id": "a1b2c3d4-0000-0000-0000-000000000001",
+                "summary": "Codex work",
+                "provider_name": "codex",
+            },
+        ]
+        ctx = _make_context(user_data)
+        query = update.callback_query
+
+        with (
+            patch(f"{_RP}.Path") as picker_path,
+            patch(f"{_RC}.Path") as banner_path,
+        ):
+            picker_path.return_value.is_dir.return_value = True
+            banner_path.return_value.is_dir.return_value = True
+            await handle_recovery_callback(query, 100, query.data, update, ctx)
+
+        launch_command = mock_tm.create_window.call_args.kwargs["launch_command"]
+        assert "codex" in launch_command, launch_command
+
+    @patch(f"{_RP}.window_query")
+    @patch(f"{_RC}.thread_router")
+    @patch(f"{_RC}.tmux_manager")
+    @patch(f"{_RC}.window_query")
+    @patch(f"{_RC}.safe_edit", new_callable=AsyncMock)
     async def test_pick_creates_window_with_resume_flag(
         self,
         _mock_safe_edit: AsyncMock,
