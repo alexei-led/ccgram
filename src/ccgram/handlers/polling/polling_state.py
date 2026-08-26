@@ -332,6 +332,7 @@ class TerminalPollState:
             ws.has_seen_status = False
             ws.startup_time = None
             ws.startup_quietly_settled = False
+            ws.idle_status_announced = False
 
     def set_unbound_timer(self, window_id: str, ts: float) -> None:
         """Set unbound timer for a window (creates state if needed)."""
@@ -355,6 +356,7 @@ class TerminalPollState:
             ws.has_seen_status = False
             ws.startup_time = None
             ws.startup_quietly_settled = False
+            ws.idle_status_announced = False
 
     def reset_all_unbound_timers(self) -> None:
         """Reset unbound timers for all windows."""
@@ -395,12 +397,17 @@ class TerminalPollState:
         ws.startup_time = None
         ws.startup_quietly_settled = True
 
+    def mark_idle_status_announced(self, window_id: str) -> None:
+        """Remember that the current active cycle already emitted Ready."""
+        self.get_state(window_id).idle_status_announced = True
+
     def mark_seen_status(self, window_id: str) -> None:
-        """Mark a genuine status path; it supersedes quiet startup settlement."""
+        """Mark fresh activity and allow its next idle edge to emit Ready."""
         ws = self.get_state(window_id)
         ws.has_seen_status = True
         ws.startup_time = None
         ws.startup_quietly_settled = False
+        ws.idle_status_announced = False
 
 
 # ── InteractiveUIStrategy ───────────────────────────────────────────────

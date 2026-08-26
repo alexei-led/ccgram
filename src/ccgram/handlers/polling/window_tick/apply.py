@@ -130,6 +130,7 @@ async def _transition_to_idle(
     # cannot use has_seen_status: that flag means a genuine status was shown.
     if send_status:
         ps.mark_seen_status(window_id)
+        ps.mark_idle_status_announced(window_id)
     else:
         ps.mark_startup_quietly_settled(window_id)
     client = PTBTelegramClient(bot)

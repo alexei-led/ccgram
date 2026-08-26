@@ -211,6 +211,7 @@ def _make_ctx(
     is_recently_active: bool = False,
     startup_time: float | None = None,
     startup_quietly_settled: bool = False,
+    idle_status_announced: bool = False,
     is_dead_window: bool = False,
     supports_hook: bool = True,
 ) -> TickContext:
@@ -222,6 +223,7 @@ def _make_ctx(
         is_recently_active=is_recently_active,
         startup_time=startup_time,
         startup_quietly_settled=startup_quietly_settled,
+        idle_status_announced=idle_status_announced,
         is_dead_window=is_dead_window,
         supports_hook=supports_hook,
     )
@@ -600,6 +602,45 @@ class TestQuietStartupSettlement:
         state = runtime.poll_state.get_state("@0")
         assert state.has_seen_status is True
         assert state.startup_quietly_settled is False
+
+    async def test_hookless_shell_announces_ready_once_after_activity(self) -> None:
+        from ccgram.handlers.polling.window_tick import _apply_tick_decision
+
+        runtime = PollingRuntime.create()
+        runtime.poll_state.mark_seen_status("@0")
+        bot = AsyncMock(spec=Bot)
+        first = decide_tick(
+            _make_ctx(
+                is_shell_prompt=True,
+                supports_hook=False,
+                has_seen_status=True,
+            )
+        )
+
+        with (
+            patch("ccgram.handlers.polling.window_tick.apply.update_topic_emoji"),
+            patch(
+                "ccgram.handlers.polling.window_tick.apply.enqueue_status_update",
+                new_callable=AsyncMock,
+            ) as mock_enqueue,
+            patch("ccgram.handlers.polling.window_tick.apply.thread_router") as router,
+        ):
+            router.resolve_chat_id.return_value = -100
+            router.get_display_name.return_value = "project"
+            await _apply_tick_decision(bot, 1, "@0", 42, first, runtime=runtime)
+
+        state = runtime.poll_state.get_state("@0")
+        mock_enqueue.assert_awaited_once()
+        assert state.idle_status_announced is True
+        second = decide_tick(
+            _make_ctx(
+                is_shell_prompt=True,
+                supports_hook=False,
+                has_seen_status=state.has_seen_status,
+                idle_status_announced=state.idle_status_announced,
+            )
+        )
+        assert second.send_status is False
 
 
 class TestSettledWindowsStaySettled:

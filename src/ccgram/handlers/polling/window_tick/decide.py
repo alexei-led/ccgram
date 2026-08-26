@@ -52,10 +52,13 @@ def decide_tick(ctx: TickContext) -> TickDecision:
     if ctx.is_shell_prompt:
         if ctx.supports_hook:
             return TickDecision(transition="done")
-        # A hookless provider stays at its shell prompt after completing a
-        # turn. This level state is polled repeatedly, so it must not enqueue
-        # a Ready update on every tick.
-        return TickDecision(transition="idle")
+        # Hookless providers have no completion hook: the active-to-shell edge
+        # is their real end-of-turn signal. Announce it once, but keep dormant
+        # startup shells and later level polls quiet.
+        return TickDecision(
+            transition="idle",
+            send_status=ctx.has_seen_status and not ctx.idle_status_announced,
+        )
 
     if ctx.has_seen_status or ctx.startup_quietly_settled:
         # Both are steady idle states. ``has_seen_status`` records prior

@@ -24,6 +24,7 @@ def _make_ctx(
     is_recently_active: bool = False,
     startup_time: float | None = None,
     startup_quietly_settled: bool = False,
+    idle_status_announced: bool = False,
     is_dead_window: bool = False,
     supports_hook: bool = True,
 ) -> TickContext:
@@ -35,6 +36,7 @@ def _make_ctx(
         is_recently_active=is_recently_active,
         startup_time=startup_time,
         startup_quietly_settled=startup_quietly_settled,
+        idle_status_announced=idle_status_announced,
         is_dead_window=is_dead_window,
         supports_hook=supports_hook,
     )
@@ -65,10 +67,30 @@ class TestDecideTickShellPrompt:
         decision = decide_tick(_make_ctx(is_shell_prompt=True, supports_hook=True))
         assert decision.transition == "done"
 
-    def test_no_hook_provider_yields_quiet_idle(self):
+    def test_dormant_no_hook_provider_yields_quiet_idle(self):
         decision = decide_tick(_make_ctx(is_shell_prompt=True, supports_hook=False))
         assert decision.transition == "idle"
         assert decision.send_status is False
+
+    def test_no_hook_provider_announces_completed_active_turn_once(self):
+        first = decide_tick(
+            _make_ctx(
+                is_shell_prompt=True,
+                supports_hook=False,
+                has_seen_status=True,
+            )
+        )
+        later = decide_tick(
+            _make_ctx(
+                is_shell_prompt=True,
+                supports_hook=False,
+                has_seen_status=True,
+                idle_status_announced=True,
+            )
+        )
+
+        assert first.send_status is True
+        assert later.send_status is False
 
 
 class TestDecideTickIdleAndStarting:
@@ -82,8 +104,13 @@ class TestDecideTickIdleAndStarting:
         [
             pytest.param({"has_seen_status": True}, id="seen-status"),
             pytest.param(
-                {"is_shell_prompt": True, "supports_hook": False},
-                id="hookless-shell",
+                {
+                    "is_shell_prompt": True,
+                    "supports_hook": False,
+                    "has_seen_status": True,
+                    "idle_status_announced": True,
+                },
+                id="hookless-shell-already-announced",
             ),
         ],
     )
