@@ -114,28 +114,17 @@ async def _close_expired_topic(
     chat_id = scoped_chat_id or thread_router.resolve_chat_id(user_id, thread_id)
     removed = False
     try:
-        await client.delete_forum_topic(chat_id=chat_id, message_thread_id=thread_id)
+        await client.close_forum_topic(chat_id=chat_id, message_thread_id=thread_id)
         removed = True
     except TelegramError as e:
         if is_thread_gone(e):
             removed = True
         else:
-            try:
-                await client.close_forum_topic(
-                    chat_id=chat_id, message_thread_id=thread_id
-                )
-                removed = True
-            except TelegramError as close_err:
-                if is_thread_gone(close_err):
-                    removed = True
-                else:
-                    logger.debug(
-                        "autoclose_failed", thread_id=thread_id, error=str(close_err)
-                    )
+            logger.debug("autoclose_failed", thread_id=thread_id, error=str(e))
     if removed:
         lifecycle_strategy.clear_autoclose_timer(user_id, thread_id)
         logger.info(
-            "auto_removed_topic", chat_id=chat_id, thread_id=thread_id, user_id=user_id
+            "auto_closed_topic", chat_id=chat_id, thread_id=thread_id, user_id=user_id
         )
         cleanup_kwargs: dict = {"window_id": window_id, "window_dead": True}
         if scoped_chat_id is not None:

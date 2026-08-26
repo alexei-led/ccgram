@@ -4,87 +4,206 @@ import pytest
 from telegram import Bot
 
 from ccgram.handlers.shell.shell_capture import (
+    _SCROLLBACK_LINES,
+    _ShellMonitorState,
+    _TRUNCATION_NOTICE,
+    _capture_with_scrollback,
+    _command_from_echo,
     _extract_command_output,
+    _extract_passive_output,
+    _find_command_echo,
+    _find_in_progress,
+    _has_markers_in_tail,
+    _maybe_suggest_fix,
+    _passive_scrollback_lines,
+    _react_exit,
+    _relay_output,
+    _shell_monitor_state,
+    _truncated_tail_output,
+    _update_error_message,
+    check_passive_shell_output,
+    clear_shell_monitor_state,
+    mark_telegram_command,
+    reset_shell_monitor_state,
     strip_terminal_glyphs,
 )
+from ccgram.config import config
+from ccgram.handlers.reactions import REACT_DONE, REACT_FAIL
+from ccgram.handlers.shell import shell_capture
+from ccgram.handlers.shell.shell_commands import show_command_approval
+from ccgram.llm.base import CommandResult
 from ccgram.multiplexer.base import CaptureResult
 
 _MOD = "ccgram.handlers.shell.shell_capture"
 
 
 class TestStripTerminalGlyphs:
-    def test_strips_nerd_font_glyphs(self) -> None:
-        assert strip_terminal_glyphs("\ue0b0 hello") == " hello"
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            pytest.param("\ue0b0 hello", " hello", id="nerd-font-glyph"),
+            pytest.param("\U000f0001 icon", " icon", id="pua-supplement"),
+            pytest.param("hello world", "hello world", id="plain-text-preserved"),
+            pytest.param("", "", id="empty"),
+        ],
+    )
+    def test_glyph_stripping(self, text: str, expected: str) -> None:
+        assert strip_terminal_glyphs(text) == expected
 
-    def test_strips_pua_supplement(self) -> None:
-        assert strip_terminal_glyphs("\U000f0001 icon") == " icon"
 
-    def test_preserves_normal_text(self) -> None:
-        assert strip_terminal_glyphs("hello world") == "hello world"
+@pytest.fixture(params=["replace", "wrap"])
+def prompt(request: pytest.FixtureRequest):
+    """Render a pane template in both prompt modes.
 
-    def test_empty_string(self) -> None:
-        assert strip_terminal_glyphs("") == ""
+    Templates use ``{p0}`` / ``{p127}`` for the shell's exit-code-carrying
+    prompt marker; the two modes render it differently but the extraction
+    grammar must behave identically.
+    """
+    mode = request.param
+    original = config.prompt_mode
+    config.prompt_mode = mode
+
+    def _render(template: str) -> str:
+        if mode == "replace":
+            return template.format(p0="ccgram:0❯", p127="ccgram:127❯")
+        return template.format(p0="~/code main ❯ ⌘0⌘", p127="~/code main ❯ ⌘127⌘")
+
+    yield _render
+    config.prompt_mode = original
 
 
 class TestExtractCommandOutput:
     @pytest.mark.parametrize(
-        ("pane", "expected_text", "expected_code"),
+        ("template", "expected_text", "expected_code"),
         [
-            (
-                "ccgram:0❯ ls\nfile1.txt\nfile2.txt\nccgram:0❯",
+            pytest.param(
+                "{p0} ls\nfile1.txt\nfile2.txt\n{p0}",
                 "file1.txt\nfile2.txt",
                 0,
+                id="success",
             ),
-            (
-                "ccgram:0❯ bad-cmd\nerror: not found\nccgram:127❯",
+            pytest.param(
+                "{p0} bad-cmd\nerror: not found\n{p127}",
                 "error: not found",
                 127,
+                id="failure-127",
             ),
-            ("ccgram:0❯ true\nccgram:0❯", "", 0),
-            ("ccgram:0❯", "", 0),
+            pytest.param("{p0} true\n{p0}", "", 0, id="no-output"),
+            pytest.param("{p0}", "", 0, id="idle-prompt"),
+            pytest.param(
+                "{p0} find . -name '*.py'\n./src/main.py\n./tests/test_main.py\n{p0}",
+                "./src/main.py\n./tests/test_main.py",
+                0,
+                id="multiline-output",
+            ),
         ],
-        ids=["success", "failure-127", "no-output", "bare-prompt"],
     )
-    def test_marker_extraction(
-        self, pane: str, expected_text: str, expected_code: int
+    def test_completed_command(
+        self, prompt, template: str, expected_text: str, expected_code: int
     ) -> None:
-        result = _extract_command_output(pane)
+        result = _extract_command_output(prompt(template))
         assert result.text == expected_text
         assert result.exit_code == expected_code
 
-    def test_no_markers_returns_empty(self) -> None:
-        current = "$ ls\nfile1.txt"
-        result = _extract_command_output(current)
+    @pytest.mark.parametrize(
+        "template",
+        [
+            pytest.param("{p0} long-cmd\npartial 1\npartial 2", id="still-running"),
+            pytest.param("$ ls\nfile1.txt", id="no-markers"),
+            pytest.param("", id="empty-pane"),
+        ],
+    )
+    def test_no_result_without_end_marker(self, prompt, template: str) -> None:
+        result = _extract_command_output(prompt(template))
         assert result.text == ""
         assert result.exit_code is None
 
-    def test_empty_current(self) -> None:
-        result = _extract_command_output("")
+
+class TestFindCommandEcho:
+    def test_finds_echo_above_bare_prompt(self, prompt) -> None:
+        lines = prompt("{p0} ls\nfile1.txt\n{p0}").splitlines()
+        assert _find_command_echo(lines) == (lines[0], 0)
+
+    def test_finds_last_of_several_commands(self, prompt) -> None:
+        lines = prompt("{p0} ls\nfile1.txt\n{p0} pwd\n/home\n{p0}").splitlines()
+        assert _find_command_echo(lines) == (lines[2], 2)
+
+    @pytest.mark.parametrize(
+        "template",
+        [
+            pytest.param("{p0}", id="idle"),
+            pytest.param("$ ls\nfile.txt", id="no-markers"),
+        ],
+    )
+    def test_returns_none(self, prompt, template: str) -> None:
+        assert _find_command_echo(prompt(template).splitlines()) is None
+
+
+class TestFindInProgress:
+    def test_finds_running_command_with_output(self, prompt) -> None:
+        lines = prompt("{p0} tail -f log\nline1\nline2").splitlines()
+        result = _find_in_progress(lines)
+        assert result is not None
+        assert result.command_echo == lines[0]
+        assert result.echo_index == 0
+        assert result.text == "line1\nline2"
+        assert result.exit_code is None
+
+    def test_finds_running_command_before_any_output(self, prompt) -> None:
+        result = _find_in_progress(prompt("{p0} slow-cmd").splitlines())
+        assert result is not None
         assert result.text == ""
-        assert result.exit_code is None
 
-    def test_multiline_output_with_markers(self) -> None:
-        current = (
-            "ccgram:0❯ find . -name '*.py'\n"
-            "./src/main.py\n"
-            "./src/utils.py\n"
-            "./tests/test_main.py\n"
-            "ccgram:0❯"
-        )
-        result = _extract_command_output(current)
-        assert result.exit_code == 0
-        assert "./src/main.py" in result.text
-        assert "./tests/test_main.py" in result.text
+    def test_returns_none_for_bare_prompt(self, prompt) -> None:
+        assert _find_in_progress(prompt("{p0}").splitlines()) is None
 
-    def test_command_still_running_no_end_marker(self) -> None:
-        current = "ccgram:0❯ long-cmd\npartial output line 1\npartial output line 2"
-        result = _extract_command_output(current)
-        assert result.exit_code is None
+
+class TestExtractPassiveOutput:
+    @pytest.mark.parametrize(
+        ("template", "expected_text", "expected_code"),
+        [
+            pytest.param(
+                "{p0} ls\nfile1.txt\nfile2.txt\n{p0}",
+                "file1.txt\nfile2.txt",
+                0,
+                id="success",
+            ),
+            pytest.param(
+                "{p0} bad-cmd\nerror: not found\n{p127}",
+                "error: not found",
+                127,
+                id="failure-127",
+            ),
+            pytest.param("{p0} true\n{p0}", "", 0, id="no-output"),
+            pytest.param(
+                "{p0} tail -f log\nline1\nline2", "line1\nline2", None, id="in-progress"
+            ),
+        ],
+    )
+    def test_extracts_command_and_output(
+        self, prompt, template: str, expected_text: str, expected_code: int | None
+    ) -> None:
+        pane = prompt(template)
+        result = _extract_passive_output(pane)
+        assert result is not None
+        assert result.command_echo == pane.splitlines()[0]
+        assert result.text == expected_text
+        assert result.exit_code == expected_code
+
+    @pytest.mark.parametrize(
+        "template",
+        [
+            pytest.param("{p0}", id="idle"),
+            pytest.param("$ ls\nfile.txt", id="no-markers"),
+            pytest.param("", id="empty-pane"),
+        ],
+    )
+    def test_returns_none(self, prompt, template: str) -> None:
+        assert _extract_passive_output(prompt(template)) is None
 
 
 class TestUpdateErrorMessage:
     async def test_formats_with_code_fence(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _update_error_message
 
         bot = AsyncMock(spec=Bot)
         with patch(f"{_MOD}.edit_with_fallback", new_callable=AsyncMock) as mock_edit:
@@ -96,7 +215,6 @@ class TestUpdateErrorMessage:
         assert "some error output" in formatted
 
     async def test_escapes_backticks_in_output(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _update_error_message
 
         bot = AsyncMock(spec=Bot)
         with patch(f"{_MOD}.edit_with_fallback", new_callable=AsyncMock) as mock_edit:
@@ -109,7 +227,6 @@ class TestUpdateErrorMessage:
 
 class TestRelayOutputBackticks:
     async def test_triple_backticks_escaped_in_relay(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _relay_output
 
         bot = AsyncMock(spec=Bot)
 
@@ -129,7 +246,6 @@ class TestRelayOutputBackticks:
         assert "` ` `" in inner
 
     async def test_relay_skips_whitespace_only_output(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _relay_output
 
         bot = AsyncMock(spec=Bot)
 
@@ -141,134 +257,8 @@ class TestRelayOutputBackticks:
         mock_send.assert_not_called()
 
 
-class TestFindCommandEcho:
-    def test_finds_echo_above_bare_prompt(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _find_command_echo
-
-        lines = ["ccgram:0❯ ls", "file1.txt", "ccgram:0❯"]
-        assert _find_command_echo(lines) == ("ccgram:0❯ ls", 0)
-
-    def test_returns_none_for_idle(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _find_command_echo
-
-        lines = ["ccgram:0❯"]
-        assert _find_command_echo(lines) is None
-
-    def test_returns_none_for_no_markers(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _find_command_echo
-
-        lines = ["$ ls", "file.txt"]
-        assert _find_command_echo(lines) is None
-
-    def test_finds_last_command(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _find_command_echo
-
-        lines = [
-            "ccgram:0❯ ls",
-            "file1.txt",
-            "ccgram:0❯ pwd",
-            "/home",
-            "ccgram:0❯",
-        ]
-        assert _find_command_echo(lines) == ("ccgram:0❯ pwd", 2)
-
-
-class TestFindInProgress:
-    def test_finds_running_command(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _find_in_progress
-
-        lines = ["ccgram:0❯ tail -f log", "line1", "line2"]
-        result = _find_in_progress(lines)
-        assert result is not None
-        assert result.command_echo == "ccgram:0❯ tail -f log"
-        assert result.echo_index == 0
-        assert result.text == "line1\nline2"
-        assert result.exit_code is None
-
-    def test_returns_none_for_bare_prompt(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _find_in_progress
-
-        lines = ["ccgram:0❯"]
-        assert _find_in_progress(lines) is None
-
-    def test_empty_output_in_progress(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _find_in_progress
-
-        lines = ["ccgram:0❯ slow-cmd"]
-        result = _find_in_progress(lines)
-        assert result is not None
-        assert result.text == ""
-
-
-class TestExtractPassiveOutput:
-    @pytest.mark.parametrize(
-        ("pane", "echo", "expected_text", "expected_code"),
-        [
-            (
-                "ccgram:0❯ ls\nfile1.txt\nfile2.txt\nccgram:0❯",
-                "ccgram:0❯ ls",
-                "file1.txt\nfile2.txt",
-                0,
-            ),
-            (
-                "ccgram:0❯ bad-cmd\nerror: not found\nccgram:127❯",
-                "ccgram:0❯ bad-cmd",
-                "error: not found",
-                127,
-            ),
-            (
-                "ccgram:0❯ true\nccgram:0❯",
-                "ccgram:0❯ true",
-                "",
-                0,
-            ),
-        ],
-        ids=["success", "failure-127", "no-output"],
-    )
-    def test_completed_commands(
-        self,
-        pane: str,
-        echo: str,
-        expected_text: str,
-        expected_code: int,
-    ) -> None:
-        from ccgram.handlers.shell.shell_capture import _extract_passive_output
-
-        result = _extract_passive_output(pane)
-        assert result is not None
-        assert result.command_echo == echo
-        assert result.text == expected_text
-        assert result.exit_code == expected_code
-
-    def test_idle_returns_none(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _extract_passive_output
-
-        assert _extract_passive_output("ccgram:0❯") is None
-
-    def test_no_markers_returns_none(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _extract_passive_output
-
-        assert _extract_passive_output("$ ls\nfile.txt") is None
-
-    def test_empty_returns_none(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _extract_passive_output
-
-        assert _extract_passive_output("") is None
-
-    def test_in_progress_command(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _extract_passive_output
-
-        pane = "ccgram:0❯ tail -f log\nline1\nline2"
-        result = _extract_passive_output(pane)
-        assert result is not None
-        assert result.command_echo == "ccgram:0❯ tail -f log"
-        assert result.text == "line1\nline2"
-        assert result.exit_code is None
-
-
 @pytest.fixture()
 def _clean_monitor_state():
-    from ccgram.handlers.shell.shell_capture import reset_shell_monitor_state
 
     reset_shell_monitor_state()
     yield
@@ -279,10 +269,6 @@ def _clean_monitor_state():
 class TestCheckPassiveShellOutput:
     @pytest.mark.asyncio()
     async def test_skips_when_no_markers(self) -> None:
-        from ccgram.handlers.shell.shell_capture import (
-            _shell_monitor_state,
-            check_passive_shell_output,
-        )
 
         bot = AsyncMock(spec=Bot)
         with patch(f"{_MOD}.rate_limit_send_message", new_callable=AsyncMock) as m:
@@ -295,10 +281,6 @@ class TestCheckPassiveShellOutput:
 
     @pytest.mark.asyncio()
     async def test_relays_completed_command(self) -> None:
-        from ccgram.handlers.shell.shell_capture import (
-            _shell_monitor_state,
-            check_passive_shell_output,
-        )
 
         bot = AsyncMock(spec=Bot)
         mock_sent = MagicMock()
@@ -328,7 +310,6 @@ class TestCheckPassiveShellOutput:
 
     @pytest.mark.asyncio()
     async def test_skips_unchanged_content(self) -> None:
-        from ccgram.handlers.shell.shell_capture import check_passive_shell_output
 
         bot = AsyncMock(spec=Bot)
         mock_sent = MagicMock()
@@ -369,10 +350,6 @@ class TestCheckPassiveShellOutput:
 
     @pytest.mark.asyncio()
     async def test_error_indicator_for_nonzero_exit(self) -> None:
-        from ccgram.handlers.shell.shell_capture import (
-            _shell_monitor_state,
-            check_passive_shell_output,
-        )
 
         bot = AsyncMock(spec=Bot)
         mock_sent = MagicMock()
@@ -402,10 +379,6 @@ class TestCheckPassiveShellOutput:
 
     @pytest.mark.asyncio()
     async def test_new_command_resets_state(self) -> None:
-        from ccgram.handlers.shell.shell_capture import (
-            _shell_monitor_state,
-            check_passive_shell_output,
-        )
 
         bot = AsyncMock(spec=Bot)
         mock_sent = MagicMock()
@@ -456,10 +429,6 @@ class TestCheckPassiveShellOutput:
 
     @pytest.mark.asyncio()
     async def test_long_output_with_scrollback(self) -> None:
-        from ccgram.handlers.shell.shell_capture import (
-            _shell_monitor_state,
-            check_passive_shell_output,
-        )
 
         bot = AsyncMock(spec=Bot)
         mock_sent = MagicMock()
@@ -497,10 +466,6 @@ class TestScrollbackTruncation:
 
     @pytest.mark.asyncio()
     async def test_truncated_capture_prepends_notice(self) -> None:
-        from ccgram.handlers.shell.shell_capture import (
-            _TRUNCATION_NOTICE,
-            check_passive_shell_output,
-        )
 
         bot = AsyncMock(spec=Bot)
         mock_sent = MagicMock()
@@ -529,10 +494,6 @@ class TestScrollbackTruncation:
 
     @pytest.mark.asyncio()
     async def test_untruncated_capture_has_no_notice(self) -> None:
-        from ccgram.handlers.shell.shell_capture import (
-            _TRUNCATION_NOTICE,
-            check_passive_shell_output,
-        )
 
         bot = AsyncMock(spec=Bot)
         mock_sent = MagicMock()
@@ -561,7 +522,6 @@ class TestScrollbackTruncation:
 
 
 @pytest.mark.usefixtures("_clean_monitor_state")
-@pytest.mark.usefixtures("_clean_monitor_state")
 class TestPassiveTruncatedTail:
     """A command longer than the backend's readable history scrolls its echo
     out of even a full-cap capture. On capped backends (herdr) the captured
@@ -576,24 +536,18 @@ class TestPassiveTruncatedTail:
         return mux
 
     def test_passive_scrollback_lines_uses_cap(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _passive_scrollback_lines
 
         mux = self._mux(CaptureResult(text="", truncated=False), 1000)
         with patch(f"{_MOD}.tmux_manager", mux):
             assert _passive_scrollback_lines() == 1000
 
     def test_passive_scrollback_lines_default_when_uncapped(self) -> None:
-        from ccgram.handlers.shell.shell_capture import (
-            _SCROLLBACK_LINES,
-            _passive_scrollback_lines,
-        )
 
         mux = self._mux(CaptureResult(text="", truncated=False), None)
         with patch(f"{_MOD}.tmux_manager", mux):
             assert _passive_scrollback_lines() == _SCROLLBACK_LINES
 
     def test_truncated_tail_recovers_output_without_echo(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _truncated_tail_output
 
         result = _truncated_tail_output("999\n1000\nccgram:0❯")
         assert result is not None
@@ -602,22 +556,15 @@ class TestPassiveTruncatedTail:
         assert result.command_echo == ""
 
     def test_truncated_tail_none_when_idle(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _truncated_tail_output
 
         assert _truncated_tail_output("ccgram:0❯") is None
 
     def test_truncated_tail_none_without_completed_prompt(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _truncated_tail_output
 
         assert _truncated_tail_output("still running\nmore output") is None
 
     @pytest.mark.asyncio()
     async def test_capped_backend_relays_truncated_tail(self) -> None:
-        from ccgram.handlers.shell.shell_capture import (
-            _TRUNCATION_NOTICE,
-            check_passive_shell_output,
-            mark_telegram_command,
-        )
 
         bot = AsyncMock(spec=Bot)
         mock_sent = MagicMock()
@@ -652,7 +599,6 @@ class TestPassiveTruncatedTail:
         old scrollback above the new ``ccgram:0❯`` prompt. With no command run
         in this prompt session (fresh monitor state), the echoless-tail recovery
         must treat it as idle and relay nothing — not dump stale scrollback."""
-        from ccgram.handlers.shell.shell_capture import check_passive_shell_output
 
         bot = AsyncMock(spec=Bot)
         # Old output preserved by clear=False, then the freshly set-up prompt.
@@ -672,7 +618,6 @@ class TestPassiveTruncatedTail:
 
     @pytest.mark.asyncio()
     async def test_uncapped_backend_drops_echoless_capture(self) -> None:
-        from ccgram.handlers.shell.shell_capture import check_passive_shell_output
 
         bot = AsyncMock(spec=Bot)
         pane = "997\n998\n999\n1000\nccgram:0❯"
@@ -695,10 +640,6 @@ class TestPassiveTruncatedTail:
         """A long command relayed while its echo was visible must keep editing
         the same message once the echo scrolls out and only an echoless tail is
         left — not spawn a second message."""
-        from ccgram.handlers.shell.shell_capture import (
-            _shell_monitor_state,
-            check_passive_shell_output,
-        )
 
         bot = AsyncMock(spec=Bot)
         mock_sent = MagicMock()
@@ -741,10 +682,6 @@ class TestPassiveTruncatedTail:
         """Two Telegram commands that each complete within a single poll with
         their echo already scrolled out must each get their own message — the
         second must not overwrite the first."""
-        from ccgram.handlers.shell.shell_capture import (
-            check_passive_shell_output,
-            mark_telegram_command,
-        )
 
         bot = AsyncMock(spec=Bot)
         sent_a = MagicMock(message_id=801)
@@ -784,27 +721,16 @@ class TestPassiveTruncatedTail:
 
 class TestClearShellMonitorState:
     def test_clear_removes_state(self) -> None:
-        from ccgram.handlers.shell.shell_capture import (
-            _ShellMonitorState,
-            _shell_monitor_state,
-            clear_shell_monitor_state,
-        )
 
         _shell_monitor_state["@5"] = _ShellMonitorState(last_command_echo="test")
         clear_shell_monitor_state("@5")
         assert "@5" not in _shell_monitor_state
 
     def test_clear_nonexistent_is_noop(self) -> None:
-        from ccgram.handlers.shell.shell_capture import clear_shell_monitor_state
 
         clear_shell_monitor_state("@99")
 
     def test_reset_clears_all(self) -> None:
-        from ccgram.handlers.shell.shell_capture import (
-            _ShellMonitorState,
-            _shell_monitor_state,
-            reset_shell_monitor_state,
-        )
 
         _shell_monitor_state["@1"] = _ShellMonitorState()
         _shell_monitor_state["@2"] = _ShellMonitorState()
@@ -816,10 +742,6 @@ class TestClearShellMonitorState:
 class TestPassiveEdgeCases:
     @pytest.mark.asyncio()
     async def test_same_command_rerun_creates_new_message(self) -> None:
-        from ccgram.handlers.shell.shell_capture import (
-            _shell_monitor_state,
-            check_passive_shell_output,
-        )
 
         bot = AsyncMock(spec=Bot)
         mock_sent1 = MagicMock()
@@ -867,11 +789,6 @@ class TestPassiveEdgeCases:
 
     @pytest.mark.asyncio()
     async def test_scroll_out_preserves_in_progress(self) -> None:
-        from ccgram.handlers.shell.shell_capture import (
-            _ShellMonitorState,
-            _shell_monitor_state,
-            check_passive_shell_output,
-        )
 
         bot = AsyncMock(spec=Bot)
 
@@ -893,58 +810,41 @@ class TestPassiveEdgeCases:
 
 
 class TestCommandFromEcho:
-    def test_extracts_command_text(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _command_from_echo
+    @pytest.mark.parametrize(
+        ("template", "expected"),
+        [
+            pytest.param("{p0} ls -al", "ls -al", id="command"),
+            pytest.param(
+                "{p0} echo hi   ", "echo hi", id="trailing-whitespace-stripped"
+            ),
+            pytest.param("{p127} bad-cmd", "bad-cmd", id="after-failed-command"),
+        ],
+    )
+    def test_extracts_command_text(self, prompt, template: str, expected: str) -> None:
+        assert _command_from_echo(prompt(template)) == expected
 
-        assert _command_from_echo("ccgram:0❯ ls -al") == "ls -al"
-
-    def test_strips_whitespace(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _command_from_echo
-
-        assert _command_from_echo("ccgram:0❯ echo hi   ") == "echo hi"
-
-    def test_error_exit_code(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _command_from_echo
-
-        assert _command_from_echo("ccgram:127❯ bad-cmd") == "bad-cmd"
-
-    def test_non_matching_returns_input(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _command_from_echo
-
-        assert _command_from_echo("$ ls") == "$ ls"
+    def test_non_matching_line_returned_verbatim(self, prompt) -> None:
+        assert _command_from_echo(prompt("$ ls")) == "$ ls"
 
 
 class TestHasMarkersInTail:
-    def test_marker_at_end(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _has_markers_in_tail
-
-        text = "file1.txt\nfile2.txt\nccgram:0❯"
-        assert _has_markers_in_tail(text) is True
-
-    def test_no_markers(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _has_markers_in_tail
-
-        text = "file1.txt\nfile2.txt\n$ "
-        assert _has_markers_in_tail(text) is False
-
-    def test_marker_with_leading_whitespace(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _has_markers_in_tail
-
-        text = "line1\n                    ccgram:0❯"
-        assert _has_markers_in_tail(text) is True
-
-    def test_marker_with_command(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _has_markers_in_tail
-
-        text = "output\nccgram:0❯ ls -al"
-        assert _has_markers_in_tail(text) is True
+    @pytest.mark.parametrize(
+        ("template", "expected"),
+        [
+            pytest.param("file1.txt\nfile2.txt\n{p0}", True, id="bare-marker-at-end"),
+            pytest.param("output\n{p0} ls -al", True, id="marker-with-command"),
+            pytest.param("line1\n                    {p0}", True, id="marker-indented"),
+            pytest.param("file1.txt\nfile2.txt\n$ ", False, id="foreign-prompt"),
+        ],
+    )
+    def test_detection(self, prompt, template: str, expected: bool) -> None:
+        assert _has_markers_in_tail(prompt(template)) is expected
 
 
 @pytest.mark.usefixtures("_clean_monitor_state")
 class TestPassiveRelayFormatting:
     @pytest.mark.asyncio()
     async def test_output_includes_command_header(self) -> None:
-        from ccgram.handlers.shell.shell_capture import check_passive_shell_output
 
         bot = AsyncMock(spec=Bot)
         mock_sent = MagicMock()
@@ -974,7 +874,6 @@ class TestPassiveRelayFormatting:
 
     @pytest.mark.asyncio()
     async def test_multiline_output_formatted(self) -> None:
-        from ccgram.handlers.shell.shell_capture import check_passive_shell_output
 
         bot = AsyncMock(spec=Bot)
         mock_sent = MagicMock()
@@ -1003,10 +902,6 @@ class TestPassiveRelayFormatting:
 
     @pytest.mark.asyncio()
     async def test_error_command_shows_exit_indicator(self) -> None:
-        from ccgram.handlers.shell.shell_capture import (
-            _shell_monitor_state,
-            check_passive_shell_output,
-        )
 
         bot = AsyncMock(spec=Bot)
         mock_sent = MagicMock()
@@ -1037,12 +932,6 @@ class TestPassiveRelayFormatting:
 
     @pytest.mark.asyncio()
     async def test_telegram_command_reacts_done_on_success(self) -> None:
-        from ccgram.handlers.shell.shell_capture import (
-            _shell_monitor_state,
-            check_passive_shell_output,
-            mark_telegram_command,
-            reset_shell_monitor_state,
-        )
 
         reset_shell_monitor_state()
         mark_telegram_command("@0", "ls", 1, 42, message_id=600)
@@ -1070,8 +959,6 @@ class TestPassiveRelayFormatting:
             mock_sm.resolve_chat_id.return_value = -100
             await check_passive_shell_output(bot, 1, 42, "@0", pane)
 
-        from ccgram.handlers.reactions import REACT_DONE
-
         assert mock_react.call_args.args[3] == REACT_DONE
         assert mock_react.call_args.args[2] == 600
         # Once consumed on success, message_id is cleared so re-runs of the
@@ -1081,11 +968,6 @@ class TestPassiveRelayFormatting:
 
     @pytest.mark.asyncio()
     async def test_telegram_command_reacts_fail_on_nonzero_exit(self) -> None:
-        from ccgram.handlers.shell.shell_capture import (
-            check_passive_shell_output,
-            mark_telegram_command,
-            reset_shell_monitor_state,
-        )
 
         reset_shell_monitor_state()
         mark_telegram_command("@0", "fail", 1, 42, message_id=601)
@@ -1116,19 +998,12 @@ class TestPassiveRelayFormatting:
             mock_sm.resolve_chat_id.return_value = -100
             await check_passive_shell_output(bot, 1, 42, "@0", pane)
 
-        from ccgram.handlers.reactions import REACT_FAIL
-
         assert mock_react.call_args.args[3] == REACT_FAIL
         assert mock_react.call_args.args[2] == 601
         reset_shell_monitor_state()
 
     @pytest.mark.asyncio()
     async def test_no_message_id_skips_reaction(self) -> None:
-        from ccgram.handlers.shell.shell_capture import (
-            check_passive_shell_output,
-            mark_telegram_command,
-            reset_shell_monitor_state,
-        )
 
         reset_shell_monitor_state()
         # No message_id passed — typical for legacy callers.
@@ -1164,7 +1039,6 @@ class TestPassiveRelayFormatting:
 class TestCaptureWithScrollback:
     @pytest.mark.asyncio()
     async def test_returns_text_on_success(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _capture_with_scrollback
 
         with patch(
             "asyncio.create_subprocess_exec", new_callable=AsyncMock
@@ -1178,7 +1052,6 @@ class TestCaptureWithScrollback:
 
     @pytest.mark.asyncio()
     async def test_returns_none_on_empty(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _capture_with_scrollback
 
         with patch(
             "asyncio.create_subprocess_exec", new_callable=AsyncMock
@@ -1192,7 +1065,6 @@ class TestCaptureWithScrollback:
 
     @pytest.mark.asyncio()
     async def test_uses_correct_tmux_flags(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _capture_with_scrollback
 
         with patch(
             "asyncio.create_subprocess_exec", new_callable=AsyncMock
@@ -1214,7 +1086,6 @@ class TestCaptureWithScrollback:
     async def test_delegates_clamp_and_surfaces_truncation(self) -> None:
         # The line cap lives in the backend: shell passes its requested depth
         # straight through and surfaces the backend's truncated flag.
-        from ccgram.handlers.shell.shell_capture import _capture_with_scrollback
 
         clamped = CaptureResult(text="tail only", truncated=True)
         fake_mux = MagicMock()
@@ -1228,11 +1099,6 @@ class TestCaptureWithScrollback:
 
 class TestMarkTelegramCommand:
     def test_marks_command_in_state(self) -> None:
-        from ccgram.handlers.shell.shell_capture import (
-            _shell_monitor_state,
-            mark_telegram_command,
-            reset_shell_monitor_state,
-        )
 
         reset_shell_monitor_state()
         mark_telegram_command("@0", "ls -la", 1, 42, 7777)
@@ -1244,11 +1110,6 @@ class TestMarkTelegramCommand:
         reset_shell_monitor_state()
 
     def test_default_message_id_is_zero(self) -> None:
-        from ccgram.handlers.shell.shell_capture import (
-            _shell_monitor_state,
-            mark_telegram_command,
-            reset_shell_monitor_state,
-        )
 
         reset_shell_monitor_state()
         mark_telegram_command("@0", "ls", 1, 42)
@@ -1256,11 +1117,6 @@ class TestMarkTelegramCommand:
         reset_shell_monitor_state()
 
     def test_overwrites_previous(self) -> None:
-        from ccgram.handlers.shell.shell_capture import (
-            _shell_monitor_state,
-            mark_telegram_command,
-            reset_shell_monitor_state,
-        )
 
         reset_shell_monitor_state()
         mark_telegram_command("@0", "ls", 1, 42, 100)
@@ -1275,29 +1131,24 @@ class TestMarkTelegramCommand:
 
 class TestExitReaction:
     async def test_react_exit_zero_uses_done(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _react_exit
 
         bot = AsyncMock(spec=Bot)
         with patch(f"{_MOD}.react", new_callable=AsyncMock) as mock_react:
             await _react_exit(bot, -100, 42, 0)
         mock_react.assert_awaited_once()
-        from ccgram.handlers.reactions import REACT_DONE
 
         assert mock_react.call_args.args[3] == REACT_DONE
 
     async def test_react_exit_nonzero_uses_fail(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _react_exit
 
         bot = AsyncMock(spec=Bot)
         with patch(f"{_MOD}.react", new_callable=AsyncMock) as mock_react:
             await _react_exit(bot, -100, 42, 1)
         mock_react.assert_awaited_once()
-        from ccgram.handlers.reactions import REACT_FAIL
 
         assert mock_react.call_args.args[3] == REACT_FAIL
 
     async def test_react_exit_zero_message_id_skips(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _react_exit
 
         bot = AsyncMock(spec=Bot)
         with patch(f"{_MOD}.react", new_callable=AsyncMock) as mock_react:
@@ -1307,7 +1158,6 @@ class TestExitReaction:
 
 class TestRelayOutputTruncation:
     async def test_long_output_gets_truncated_with_ellipsis(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _relay_output
 
         bot = AsyncMock(spec=Bot)
         mock_sent = MagicMock()
@@ -1327,7 +1177,6 @@ class TestRelayOutputTruncation:
         assert len(sent_text) < 5000
 
     async def test_short_output_not_truncated(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _relay_output
 
         bot = AsyncMock(spec=Bot)
         mock_sent = MagicMock()
@@ -1348,12 +1197,9 @@ class TestRelayOutputTruncation:
 @pytest.mark.usefixtures("_clean_monitor_state")
 class TestMaybeSuggestFix:
     async def test_calls_llm_and_shows_approval_on_error(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _maybe_suggest_fix
-        from ccgram.handlers.shell.shell_commands import show_command_approval
 
         bot = AsyncMock(spec=Bot)
         mock_completer = AsyncMock()
-        from ccgram.llm.base import CommandResult
 
         mock_completer.generate_command = AsyncMock(
             return_value=CommandResult(
@@ -1396,7 +1242,6 @@ class TestMaybeSuggestFix:
         assert "ls -la" in sent_text
 
     async def test_skips_when_no_llm(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _maybe_suggest_fix
 
         bot = AsyncMock(spec=Bot)
 
@@ -1426,11 +1271,9 @@ class TestMaybeSuggestFix:
         mock_send.assert_not_called()
 
     async def test_skips_when_fix_equals_original(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _maybe_suggest_fix
 
         bot = AsyncMock(spec=Bot)
         mock_completer = AsyncMock()
-        from ccgram.llm.base import CommandResult
 
         mock_completer.generate_command = AsyncMock(
             return_value=CommandResult(
@@ -1469,7 +1312,6 @@ class TestMaybeSuggestFix:
         mock_send.assert_not_called()
 
     async def test_skips_when_llm_errors(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _maybe_suggest_fix
 
         bot = AsyncMock(spec=Bot)
         mock_completer = AsyncMock()
@@ -1508,133 +1350,8 @@ class TestMaybeSuggestFix:
         mock_send.assert_not_called()
 
 
-@pytest.mark.usefixtures("_wrap_mode")
-class TestWrapModeExtraction:
-    def test_extract_completed_command(self) -> None:
-        pane = "~/code main ❯ ⌘0⌘ ls\nfile1.txt\nfile2.txt\n~/code main ❯ ⌘0⌘"
-        result = _extract_command_output(pane)
-        assert result.text == "file1.txt\nfile2.txt"
-        assert result.exit_code == 0
-
-    def test_extract_failed_command(self) -> None:
-        pane = "~/code main ❯ ⌘0⌘ bad-cmd\nerror: not found\n~/code main ❯ ⌘127⌘"
-        result = _extract_command_output(pane)
-        assert result.text == "error: not found"
-        assert result.exit_code == 127
-
-    def test_idle_returns_exit_code_only(self) -> None:
-        pane = "~/code main ❯ ⌘0⌘"
-        result = _extract_command_output(pane)
-        assert result.exit_code == 0
-        assert result.text == ""
-
-    def test_no_markers_returns_empty(self) -> None:
-        pane = "~/code main ❯ ls"
-        result = _extract_command_output(pane)
-        assert result.exit_code is None
-        assert result.text == ""
-
-    def test_still_running_no_bare_prompt(self) -> None:
-        pane = "~/code main ❯ ⌘0⌘ long-cmd\npartial output"
-        result = _extract_command_output(pane)
-        assert result.exit_code is None
-
-
-@pytest.mark.usefixtures("_wrap_mode")
-class TestWrapModeFindCommandEcho:
-    def test_finds_echo_above_bare_prompt(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _find_command_echo
-
-        lines = [
-            "~/code main ❯ ⌘0⌘ ls",
-            "file1.txt",
-            "~/code main ❯ ⌘0⌘",
-        ]
-        assert _find_command_echo(lines) == ("~/code main ❯ ⌘0⌘ ls", 0)
-
-    def test_returns_none_for_idle(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _find_command_echo
-
-        lines = ["~/code main ❯ ⌘0⌘"]
-        assert _find_command_echo(lines) is None
-
-
-@pytest.mark.usefixtures("_wrap_mode")
-class TestWrapModeFindInProgress:
-    def test_finds_running_command(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _find_in_progress
-
-        lines = ["~/code main ❯ ⌘0⌘ tail -f log", "line1", "line2"]
-        result = _find_in_progress(lines)
-        assert result is not None
-        assert result.echo_index == 0
-        assert result.text == "line1\nline2"
-        assert result.exit_code is None
-
-    def test_returns_none_for_bare_prompt(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _find_in_progress
-
-        lines = ["~/code main ❯ ⌘0⌘"]
-        assert _find_in_progress(lines) is None
-
-
-@pytest.mark.usefixtures("_wrap_mode")
-class TestWrapModePassiveOutput:
-    def test_completed_command(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _extract_passive_output
-
-        pane = "~/code main ❯ ⌘0⌘ ls\nfile1.txt\n~/code main ❯ ⌘0⌘"
-        result = _extract_passive_output(pane)
-        assert result is not None
-        assert result.text == "file1.txt"
-        assert result.exit_code == 0
-
-    def test_idle_returns_none(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _extract_passive_output
-
-        assert _extract_passive_output("~/code main ❯ ⌘0⌘") is None
-
-    def test_in_progress_command(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _extract_passive_output
-
-        pane = "~/code main ❯ ⌘0⌘ tail -f log\nline1\nline2"
-        result = _extract_passive_output(pane)
-        assert result is not None
-        assert result.text == "line1\nline2"
-        assert result.exit_code is None
-
-
-@pytest.mark.usefixtures("_wrap_mode")
-class TestWrapModeCommandFromEcho:
-    def test_extracts_command_text(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _command_from_echo
-
-        assert _command_from_echo("~/code main ❯ ⌘0⌘ ls -al") == "ls -al"
-
-    def test_non_matching_returns_input(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _command_from_echo
-
-        assert _command_from_echo("$ ls") == "$ ls"
-
-
-@pytest.mark.usefixtures("_wrap_mode")
-class TestWrapModeHasMarkersInTail:
-    def test_marker_at_end(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _has_markers_in_tail
-
-        text = "file1.txt\nfile2.txt\n~/code main ❯ ⌘0⌘"
-        assert _has_markers_in_tail(text) is True
-
-    def test_no_markers(self) -> None:
-        from ccgram.handlers.shell.shell_capture import _has_markers_in_tail
-
-        text = "file1.txt\nfile2.txt\n~/code main ❯ "
-        assert _has_markers_in_tail(text) is False
-
-
 class TestRegisterApprovalCallback:
     def test_double_registration_raises(self) -> None:
-        from ccgram.handlers.shell import shell_capture
 
         shell_capture._reset_approval_callback_for_testing()
         shell_capture.register_approval_callback(AsyncMock())
@@ -1642,7 +1359,6 @@ class TestRegisterApprovalCallback:
             shell_capture.register_approval_callback(AsyncMock())
 
     async def test_default_raises_when_not_wired(self) -> None:
-        from ccgram.handlers.shell import shell_capture
 
         shell_capture._reset_approval_callback_for_testing()
         with pytest.raises(RuntimeError, match="not wired"):

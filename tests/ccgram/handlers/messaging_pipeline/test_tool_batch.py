@@ -15,10 +15,8 @@ from ccgram.handlers.messaging_pipeline.tool_batch import (
     _format_mixed_batch_lines,
     _send_or_edit_batch,
     flush_batch,
-    flush_if_active,
     has_active_batch,
     has_ephemeral_active_batch,
-    process_tool_event,
 )
 from ccgram.telegram_draft import mark_draft_unavailable, reset_draft_state
 
@@ -64,21 +62,6 @@ class TestHasEphemeralActiveBatch:
         _active_batches[(1, 10)] = ToolBatch(window_id="@0", thread_id=10)
         assert has_active_batch(1, 10) is True
         assert has_ephemeral_active_batch(1, 10) is False
-
-
-class TestProcessToolEventSignature:
-    def test_accepts_content_task_and_returns_optional(self) -> None:
-        sig = inspect.signature(process_tool_event)
-        params = list(sig.parameters.values())
-        assert params[2].name == "task"
-        assert params[2].annotation == "ContentTask"
-        assert sig.return_annotation == "ContentTask | None"
-
-    def test_flush_if_active_exists_and_accepts_content_task(self) -> None:
-        sig = inspect.signature(flush_if_active)
-        params = list(sig.parameters.values())
-        assert params[2].name == "task"
-        assert params[2].annotation == "ContentTask"
 
 
 class TestNoImportFromMessageQueue:

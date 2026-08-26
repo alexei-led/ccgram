@@ -13,7 +13,6 @@ import time
 import pytest
 
 from ccgram.claude_task_state import get_claude_task_snapshot
-from ccgram.session_monitor import SessionMonitor
 from ccgram.window_state_store import WindowState, window_store
 
 pytestmark = pytest.mark.integration
@@ -117,22 +116,14 @@ def session_map_with_transcript(state_dir):
     return _setup
 
 
-def _make_monitor(state_dir):
-    return SessionMonitor(
-        projects_path=state_dir / "projects",
-        poll_interval=0.1,
-        state_file=state_dir / "monitor_state.json",
-    )
-
-
 async def test_new_session_initializes_offset(
-    state_dir, session_map_with_transcript
+    state_dir, session_map_with_transcript, make_monitor
 ) -> None:
     transcript = state_dir / "transcript.jsonl"
     _write_jsonl(transcript, [_make_assistant_entry("old message")])
     session_map = session_map_with_transcript(transcript)
 
-    monitor = _make_monitor(state_dir)
+    monitor = make_monitor()
     initial = await monitor.check_for_updates({"@0": session_map["ccgram:@0"]})
     assert len(initial) == 0
 
@@ -142,13 +133,13 @@ async def test_new_session_initializes_offset(
 
 
 async def test_new_session_seeds_claude_task_snapshot(
-    state_dir, session_map_with_transcript
+    state_dir, session_map_with_transcript, make_monitor
 ) -> None:
     transcript = state_dir / "transcript.jsonl"
     _write_jsonl(transcript, _make_task_create_entry("1", "Review architecture"))
     session_map = session_map_with_transcript(transcript)
 
-    monitor = _make_monitor(state_dir)
+    monitor = make_monitor()
     current = {"@0": session_map["ccgram:@0"]}
     assert await monitor.check_for_updates(current) == []
 
@@ -159,13 +150,13 @@ async def test_new_session_seeds_claude_task_snapshot(
 
 
 async def test_incremental_read_picks_up_new_messages(
-    state_dir, session_map_with_transcript
+    state_dir, session_map_with_transcript, make_monitor
 ) -> None:
     transcript = state_dir / "transcript.jsonl"
     _write_jsonl(transcript, [_make_assistant_entry("old")])
     session_map = session_map_with_transcript(transcript)
 
-    monitor = _make_monitor(state_dir)
+    monitor = make_monitor()
     current = {"@0": session_map["ccgram:@0"]}
     assert await monitor.check_for_updates(current) == []
 
@@ -178,7 +169,7 @@ async def test_incremental_read_picks_up_new_messages(
 
 
 async def test_file_truncation_resets_offset(
-    state_dir, session_map_with_transcript
+    state_dir, session_map_with_transcript, make_monitor
 ) -> None:
     transcript = state_dir / "transcript.jsonl"
     _write_jsonl(
@@ -187,7 +178,7 @@ async def test_file_truncation_resets_offset(
     )
     session_map = session_map_with_transcript(transcript)
 
-    monitor = _make_monitor(state_dir)
+    monitor = make_monitor()
     current = {"@0": session_map["ccgram:@0"]}
     assert await monitor.check_for_updates(current) == []
 
@@ -199,7 +190,9 @@ async def test_file_truncation_resets_offset(
     assert new_messages[0].text == "after truncation"
 
 
-async def test_nested_session_start_does_not_steal_forwarding(state_dir) -> None:
+async def test_nested_session_start_does_not_steal_forwarding(
+    state_dir, make_monitor
+) -> None:
     parent_id = TEST_SESSION_ID
     child_id = "11111111-2222-3333-4444-555555555555"
     parent_transcript = state_dir / "parent.jsonl"
@@ -229,7 +222,7 @@ async def test_nested_session_start_does_not_steal_forwarding(state_dir) -> None
         )
     )
 
-    monitor = _make_monitor(state_dir)
+    monitor = make_monitor()
     current = await monitor._load_current_session_map()
     assert current["@0"]["session_id"] == parent_id
     assert await monitor.check_for_updates(current) == []
@@ -246,12 +239,14 @@ async def test_nested_session_start_does_not_steal_forwarding(state_dir) -> None
     assert monitor.state.get_session(child_id) is None
 
 
-async def test_session_change_cleanup(state_dir, session_map_with_transcript) -> None:
+async def test_session_change_cleanup(
+    state_dir, session_map_with_transcript, make_monitor
+) -> None:
     transcript = state_dir / "transcript.jsonl"
     _write_jsonl(transcript, _make_task_create_entry("1", "Old task"))
     session_map_with_transcript(transcript)
 
-    monitor = _make_monitor(state_dir)
+    monitor = make_monitor()
     old_map = {
         "@0": {
             "session_id": TEST_SESSION_ID,

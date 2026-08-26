@@ -126,70 +126,52 @@ class TestForwardCommandResolution:
         ):
             yield
 
-    async def test_builtin_forwarded_as_is(self) -> None:
-        update = _make_update(text="/clear")
-        await forward_command_handler(update, _make_context())
+    @pytest.mark.parametrize(
+        ("typed", "forwarded"),
+        [
+            pytest.param("/clear", "/clear", id="builtin"),
+            pytest.param(
+                "/compact focus on auth",
+                "/compact focus on auth",
+                id="builtin-with-args",
+            ),
+            pytest.param("/committing_code", "/committing-code", id="skill-name"),
+            pytest.param("/spec_work", "/spec:work", id="custom-command"),
+            pytest.param(
+                "/spec_new task auth", "/spec:new task auth", id="custom-with-args"
+            ),
+            pytest.param("/status", "/status", id="mapping-already-slash-prefixed"),
+            pytest.param("/unknown_thing", "/unknown_thing", id="unknown-command"),
+            pytest.param("/cost", "/cost", id="cross-provider-command"),
+            pytest.param("/clear@mybot", "/clear", id="botname-mention"),
+            pytest.param(
+                "/compact@mybot some args",
+                "/compact some args",
+                id="botname-mention-with-args",
+            ),
+            pytest.param(
+                "/followup run tests",
+                "/followup run tests",
+                id="followup-on-non-pi-provider",
+            ),
+        ],
+    )
+    async def test_command_resolution(self, typed: str, forwarded: str) -> None:
+        await forward_command_handler(_make_update(text=typed), _make_context())
 
         self.mock_send_to_window.assert_called_once_with(
-            100, "@1", 42, "/clear", -100999
+            100, "@1", 42, forwarded, -100999
         )
+        self.mock_send_followup_to_window.assert_not_called()
 
-    async def test_builtin_with_args(self) -> None:
-        update = _make_update(text="/compact focus on auth")
-        await forward_command_handler(update, _make_context())
-
-        self.mock_send_to_window.assert_called_once_with(
-            100, "@1", 42, "/compact focus on auth", -100999
-        )
-
-    async def test_skill_name_resolved(self) -> None:
+    async def test_confirmation_message_shows_resolved_name(self) -> None:
         update = _make_update(text="/committing_code")
         await forward_command_handler(update, _make_context())
 
-        self.mock_send_to_window.assert_called_once_with(
-            100, "@1", 42, "/committing-code", -100999
+        assert (
+            update.message.reply_text.call_args[0][0]
+            == "⚡ [project] Sent: /committing-code"
         )
-
-    async def test_custom_command_resolved(self) -> None:
-        update = _make_update(text="/spec_work")
-        await forward_command_handler(update, _make_context())
-
-        self.mock_send_to_window.assert_called_once_with(
-            100, "@1", 42, "/spec:work", -100999
-        )
-
-    async def test_custom_command_with_args(self) -> None:
-        update = _make_update(text="/spec_new task auth")
-        await forward_command_handler(update, _make_context())
-
-        self.mock_send_to_window.assert_called_once_with(
-            100, "@1", 42, "/spec:new task auth", -100999
-        )
-
-    async def test_leading_slash_mapping_not_double_prefixed(self) -> None:
-        update = _make_update(text="/status")
-        await forward_command_handler(update, _make_context())
-
-        self.mock_send_to_window.assert_called_once_with(
-            100, "@1", 42, "/status", -100999
-        )
-
-    async def test_unknown_command_forwarded_as_is(self) -> None:
-        update = _make_update(text="/unknown_thing")
-        await forward_command_handler(update, _make_context())
-
-        self.mock_send_to_window.assert_called_once_with(
-            100, "@1", 42, "/unknown_thing", -100999
-        )
-
-    async def test_followup_on_non_pi_provider_forwarded_as_is(self) -> None:
-        update = _make_update(text="/followup run tests")
-        await forward_command_handler(update, _make_context())
-
-        self.mock_send_to_window.assert_called_once_with(
-            100, "@1", 42, "/followup run tests", -100999
-        )
-        self.mock_send_followup_to_window.assert_not_called()
 
     async def test_pi_followup_queues_followup_message(self) -> None:
         self.mock_provider.capabilities.name = "pi"
@@ -247,74 +229,25 @@ class TestForwardCommandResolution:
         reply_text = update.message.reply_text.call_args[0][0]
         assert "drive the picker" in reply_text
 
-    async def test_cross_provider_command_forwarded_to_provider(self) -> None:
-        update = _make_update(text="/cost")
-        await forward_command_handler(update, _make_context())
-
-        self.mock_send_to_window.assert_called_once_with(
-            100, "@1", 42, "/cost", -100999
-        )
-
-    async def test_tui_picker_hint_appended_for_known_picker_command(self) -> None:
+    @pytest.mark.parametrize(
+        ("typed", "hint_expected"),
+        [
+            pytest.param("/model", True, id="picker-command"),
+            pytest.param("/model@mybot", True, id="picker-command-with-botname"),
+            pytest.param("/clear", False, id="non-picker-command"),
+            pytest.param(
+                "/model claude-opus-4-5", False, id="picker-command-with-args"
+            ),
+        ],
+    )
+    async def test_tui_picker_hint(self, typed: str, hint_expected: bool) -> None:
         self.mock_provider.capabilities.tui_picker_commands = frozenset({"model"})
-        update = _make_update(text="/model")
+        update = _make_update(text=typed)
         await forward_command_handler(update, _make_context())
 
         reply_text = update.message.reply_text.call_args[0][0]
-        assert "Sent: /model" in reply_text
-        assert "drive the picker" in reply_text
-        assert "/toolbar" in reply_text
-
-    async def test_no_picker_hint_for_non_picker_command(self) -> None:
-        self.mock_provider.capabilities.tui_picker_commands = frozenset({"model"})
-        update = _make_update(text="/clear")
-        await forward_command_handler(update, _make_context())
-
-        reply_text = update.message.reply_text.call_args[0][0]
-        assert reply_text == "⚡ [project] Sent: /clear"
-
-    async def test_no_picker_hint_when_picker_command_has_args(self) -> None:
-        self.mock_provider.capabilities.tui_picker_commands = frozenset({"model"})
-        update = _make_update(text="/model claude-opus-4-5")
-        await forward_command_handler(update, _make_context())
-
-        reply_text = update.message.reply_text.call_args[0][0]
-        assert "drive the picker" not in reply_text
-        assert "/toolbar" not in reply_text
-        self.mock_send_to_window.assert_called_once_with(
-            100, "@1", 42, "/model claude-opus-4-5", -100999
-        )
-
-    async def test_picker_hint_with_botname_mention(self) -> None:
-        self.mock_provider.capabilities.tui_picker_commands = frozenset({"model"})
-        update = _make_update(text="/model@mybot")
-        await forward_command_handler(update, _make_context())
-
-        reply_text = update.message.reply_text.call_args[0][0]
-        assert "drive the picker" in reply_text
-
-    async def test_botname_mention_stripped(self) -> None:
-        update = _make_update(text="/clear@mybot")
-        await forward_command_handler(update, _make_context())
-
-        self.mock_send_to_window.assert_called_once_with(
-            100, "@1", 42, "/clear", -100999
-        )
-
-    async def test_botname_mention_stripped_with_args(self) -> None:
-        update = _make_update(text="/compact@mybot some args")
-        await forward_command_handler(update, _make_context())
-
-        self.mock_send_to_window.assert_called_once_with(
-            100, "@1", 42, "/compact some args", -100999
-        )
-
-    async def test_confirmation_message_shows_resolved_name(self) -> None:
-        update = _make_update(text="/committing_code")
-        await forward_command_handler(update, _make_context())
-
-        reply_text = update.message.reply_text.call_args[0][0]
-        assert "committing" in reply_text and "code" in reply_text
+        assert ("drive the picker" in reply_text) is hint_expected
+        assert ("/toolbar" in reply_text) is hint_expected
 
     async def test_clear_clears_session(self) -> None:
         update = _make_update(text="/clear")
@@ -506,55 +439,34 @@ class TestForwardCommandResolution:
         codex_provider.build_status_snapshot.assert_not_called()
         assert update.message.reply_text.call_count == 1
 
-    async def test_arms_rc_probe_for_claude_remote_control(self) -> None:
+    @pytest.mark.parametrize(
+        ("typed", "provider_name", "armed"),
+        [
+            pytest.param("/remote-control", "claude", True, id="claude-remote-control"),
+            pytest.param("/rc", "claude", True, id="claude-rc-alias"),
+            pytest.param("/remote-control", "codex", True, id="codex-remote-control"),
+            pytest.param("/clear", "claude", False, id="unrelated-command"),
+        ],
+    )
+    async def test_rc_probe_arming(
+        self, typed: str, provider_name: str, armed: bool
+    ) -> None:
+        """Both /remote-control and its /rc alias arm the probe, on any provider."""
         from ccgram.telegram_client import PTBTelegramClient
 
+        self.mock_provider.capabilities.name = provider_name
         with patch("ccgram.handlers.status.rc_probe.arm_rc_probe") as mock_arm:
-            update = _make_update(text="/remote-control")
-            await forward_command_handler(update, _make_context())
+            await forward_command_handler(_make_update(text=typed), _make_context())
 
+        if not armed:
+            mock_arm.assert_not_called()
+            return
+        mock_arm.assert_called_once()
+        assert mock_arm.call_args.args[0] == "@1"
+        assert isinstance(mock_arm.call_args.args[1], PTBTelegramClient)
         self.mock_send_to_window.assert_called_once_with(
-            100, "@1", 42, "/remote-control project", -100999
+            100, "@1", 42, f"{typed} project", -100999
         )
-        mock_arm.assert_called_once()
-        args = mock_arm.call_args.args
-        assert args[0] == "@1"
-        assert isinstance(args[1], PTBTelegramClient)
-
-    async def test_arms_rc_probe_for_rc_alias(self) -> None:
-        with patch("ccgram.handlers.status.rc_probe.arm_rc_probe") as mock_arm:
-            update = _make_update(text="/rc")
-            await forward_command_handler(update, _make_context())
-
-        mock_arm.assert_called_once()
-
-    async def test_no_rc_probe_for_non_rc_command(self) -> None:
-        with patch("ccgram.handlers.status.rc_probe.arm_rc_probe") as mock_arm:
-            update = _make_update(text="/clear")
-            await forward_command_handler(update, _make_context())
-
-        mock_arm.assert_not_called()
-
-    async def test_codex_remote_control_forwarded_arm_delegates_to_probe(self) -> None:
-        codex_provider = SimpleNamespace(
-            capabilities=SimpleNamespace(
-                name="codex",
-                supports_incremental_read=True,
-                supports_status_snapshot=False,
-                tui_picker_commands=frozenset(),
-            )
-        )
-        with (
-            patch(f"{_FW}.get_provider_for_window", return_value=codex_provider),
-            patch("ccgram.handlers.status.rc_probe.arm_rc_probe") as mock_arm,
-        ):
-            update = _make_update(text="/remote-control")
-            await forward_command_handler(update, _make_context())
-
-        self.mock_send_to_window.assert_called_once_with(
-            100, "@1", 42, "/remote-control project", -100999
-        )
-        mock_arm.assert_called_once()
 
 
 def _real_provider(name: str):

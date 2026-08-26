@@ -196,26 +196,25 @@ class TestStatusPollLoopRespectsConfigInterval:
         assert sleep_delays == [2.5]
 
 
-class TestBackoffOnTelegramError:
-    async def test_backoff_doubles_on_error(self):
+class TestBackoffOnListingError:
+    """A failing window listing must back off, not spin at the poll interval."""
+
+    async def _sleeps_until(
+        self, stop_after: int, listing_side_effect: Any, **loop_kwargs: Any
+    ) -> list[float]:
         bot = AsyncMock(spec=Bot)
         combined, ctx = _patch_loop_deps(bindings=[], windows=[])
-        sleep_delays: list[float] = []
-        call_count = 0
+        delays: list[float] = []
 
         async def _capture_sleep(delay: float) -> None:
-            nonlocal call_count
-            sleep_delays.append(delay)
-            call_count += 1
-            if call_count >= 3:
+            delays.append(delay)
+            if len(delays) >= stop_after:
                 raise asyncio.CancelledError
 
         with combined():
-            ctx.mocks["reconciliation_listing"].side_effect = [
-                TelegramError("err"),
-                TelegramError("err"),
-                TelegramError("err"),
-            ]
+            ctx.mocks["reconciliation_listing"].side_effect = listing_side_effect
+            for key, value in loop_kwargs.items():
+                setattr(ctx.mocks["config"], key, value)
             with (
                 patch(
                     "ccgram.handlers.polling.polling_coordinator.asyncio.sleep",
@@ -224,14 +223,26 @@ class TestBackoffOnTelegramError:
                 contextlib.suppress(asyncio.CancelledError),
             ):
                 await status_poll_loop(bot)
+        return delays
 
-        assert sleep_delays[0] == _BACKOFF_MIN
-        assert sleep_delays[1] == _BACKOFF_MIN * 2
+    async def test_consecutive_errors_double_the_delay(self):
+        delays = await self._sleeps_until(3, TelegramError("boom"))
+        assert delays == [_BACKOFF_MIN, _BACKOFF_MIN * 2, _BACKOFF_MIN * 4]
 
-    def test_backoff_bounded_by_max(self):
-        for streak in range(20):
-            delay = min(_BACKOFF_MAX, _BACKOFF_MIN * (2**streak))
-            assert delay <= _BACKOFF_MAX
+    async def test_backoff_saturates_at_max(self):
+        delays = await self._sleeps_until(12, TelegramError("boom"))
+        assert delays[-1] == _BACKOFF_MAX
+        assert max(delays) == _BACKOFF_MAX
+
+    async def test_unexpected_exception_backs_off_instead_of_killing_the_loop(self):
+        delays = await self._sleeps_until(2, KeyError("not a _LoopError"))
+        assert delays == [_BACKOFF_MIN, _BACKOFF_MIN * 2]
+
+    async def test_streak_resets_after_a_successful_listing(self):
+        delays = await self._sleeps_until(
+            2, [TelegramError("boom"), []], status_poll_interval=0.5
+        )
+        assert delays == [_BACKOFF_MIN, 0.5]
 
 
 class TestPerBindingError:
@@ -266,12 +277,6 @@ class TestPerBindingError:
                 await status_poll_loop(bot)
 
         assert call_order == ["@0", "@1", "@2"]
-
-
-class TestBackoffConstants:
-    def test_backoff_bounds(self):
-        assert _BACKOFF_MIN == 2.0
-        assert _BACKOFF_MAX == 30.0
 
 
 class TestImportsAreMinimal:
@@ -329,6 +334,7 @@ class TestDoesNotImportPerWindowModules:
             "transcript_discovery",
             "recovery_callbacks",
             "claude_task_state",
+            "providers.base",
             "session_monitor",
             "polling_state",
             "cleanup",
@@ -349,92 +355,6 @@ class TestModuleLineCountUnderCeiling:
         )
 
 
-class TestBackoffBehavior:
-    async def test_loop_error_triggers_backoff_sleep(self):
-        bot = MagicMock(spec_set=["_do_post"])
-        combined, ctx = _patch_loop_deps(bindings=[], windows=[])
-        sleep_calls: list[float] = []
-
-        async def _capture_sleep(delay: float) -> None:
-            sleep_calls.append(delay)
-            raise asyncio.CancelledError
-
-        with combined():
-            ctx.mocks["reconciliation_listing"].side_effect = TelegramError(
-                "loop-error"
-            )
-            with (
-                patch(
-                    "ccgram.handlers.polling.polling_coordinator.asyncio.sleep",
-                    side_effect=_capture_sleep,
-                ),
-                contextlib.suppress(asyncio.CancelledError),
-            ):
-                await status_poll_loop(bot)
-
-        assert sleep_calls == [_BACKOFF_MIN * (2**0)]
-
-    async def test_consecutive_errors_increase_backoff(self):
-        bot = MagicMock(spec_set=["_do_post"])
-        combined, ctx = _patch_loop_deps(bindings=[], windows=[])
-        sleep_calls: list[float] = []
-        call_count = 0
-
-        async def _capture_sleep(delay: float) -> None:
-            nonlocal call_count
-            sleep_calls.append(delay)
-            call_count += 1
-            if call_count >= 2:
-                raise asyncio.CancelledError
-
-        with combined():
-            ctx.mocks["reconciliation_listing"].side_effect = TelegramError(
-                "loop-error"
-            )
-            with (
-                patch(
-                    "ccgram.handlers.polling.polling_coordinator.asyncio.sleep",
-                    side_effect=_capture_sleep,
-                ),
-                contextlib.suppress(asyncio.CancelledError),
-            ):
-                await status_poll_loop(bot)
-
-        assert sleep_calls[0] == _BACKOFF_MIN
-        assert sleep_calls[1] == _BACKOFF_MIN * 2
-
-    async def test_error_streak_resets_after_success(self):
-        bot = MagicMock(spec_set=["_do_post"])
-        combined, ctx = _patch_loop_deps(bindings=[], windows=[])
-        sleep_calls: list[float] = []
-        call_count = 0
-
-        async def _capture_sleep(delay: float) -> None:
-            nonlocal call_count
-            sleep_calls.append(delay)
-            call_count += 1
-            if call_count >= 2:
-                raise asyncio.CancelledError
-
-        with combined():
-            ctx.mocks["reconciliation_listing"].side_effect = [
-                TelegramError("boom"),
-                [],
-            ]
-            ctx.mocks["config"].status_poll_interval = 0.5
-            with (
-                patch(
-                    "ccgram.handlers.polling.polling_coordinator.asyncio.sleep",
-                    side_effect=_capture_sleep,
-                ),
-                contextlib.suppress(asyncio.CancelledError),
-            ):
-                await status_poll_loop(bot)
-
-        assert sleep_calls[0] == _BACKOFF_MIN
-        assert sleep_calls[1] == 0.5
-
-
 class TestTickBoundWindowsIsolatedRuntime:
     """Verify _tick_bound_windows threads runtime into tick_window.
 
@@ -445,50 +365,36 @@ class TestTickBoundWindowsIsolatedRuntime:
     """
 
     async def test_isolated_runtime_used_not_default(self):
+        from typing import cast
+
         from ccgram.handlers.polling.polling_runtime import (
             PollingRuntime,
             get_default_runtime,
         )
-        from ccgram.topic_state_registry import topic_state
+        from ccgram.multiplexer.base import WindowRef as TmuxWindow
 
-        # Snapshot/restore topic_state so PollingRuntime.create() registrations
-        # don't leak into other tests.
-        snapshot = {
-            scope: list(bucket) for scope, bucket in topic_state._cleanups.items()
-        }
-        try:
-            isolated = PollingRuntime.create()
-            default = get_default_runtime()
+        isolated = PollingRuntime.create()
+        default = get_default_runtime()
 
-            user_id, thread_id, wid = 42, 999, "@iso-coord"
-            isolated.lifecycle.mark_dead_notified(user_id, thread_id, wid)
+        user_id, thread_id, wid = 42, 999, "@iso-coord"
+        isolated.lifecycle.mark_dead_notified(user_id, thread_id, wid)
 
-            from typing import cast
+        bot = AsyncMock(spec=Bot)
+        window_lookup = cast(dict[str, TmuxWindow], {wid: _make_window(wid)})
 
-            from ccgram.multiplexer.base import WindowRef as TmuxWindow
+        with (
+            patch(
+                "ccgram.handlers.polling.polling_coordinator.thread_router"
+            ) as mock_router,
+            patch(
+                "ccgram.handlers.polling.window_tick.discover_and_register_transcript",
+                new_callable=AsyncMock,
+            ) as mock_discover,
+        ):
+            mock_router.iter_thread_bindings.return_value = [(user_id, thread_id, wid)]
+            await _tick_bound_windows(bot, window_lookup, runtime=isolated)
 
-            bot = AsyncMock(spec=Bot)
-            w = _make_window(wid)
-            window_lookup = cast(dict[str, TmuxWindow], {wid: w})
-
-            with (
-                patch(
-                    "ccgram.handlers.polling.polling_coordinator.thread_router"
-                ) as mock_router,
-                patch(
-                    "ccgram.handlers.polling.window_tick.discover_and_register_transcript",
-                    new_callable=AsyncMock,
-                ) as mock_discover,
-            ):
-                mock_router.iter_thread_bindings.return_value = [
-                    (user_id, thread_id, wid)
-                ]
-                await _tick_bound_windows(bot, window_lookup, runtime=isolated)
-
-            # tick_window early-returns on dead-notified; discover never reached.
-            mock_discover.assert_not_called()
-            # Default runtime was not consulted — its lifecycle is clean.
-            assert not default.lifecycle.is_dead_notified(user_id, thread_id, wid)
-        finally:
-            for scope, bucket in topic_state._cleanups.items():
-                bucket[:] = snapshot[scope]
+        # tick_window early-returns on dead-notified; discover never reached.
+        mock_discover.assert_not_called()
+        # Default runtime was not consulted — its lifecycle is clean.
+        assert not default.lifecycle.is_dead_notified(user_id, thread_id, wid)

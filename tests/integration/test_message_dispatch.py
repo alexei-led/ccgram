@@ -1,265 +1,159 @@
 """Integration tests for PTB Application handler dispatch.
 
 Tests that handlers are correctly registered and PTB routes updates
-to the right handler functions. Uses real PTB Application with mocked
-external dependencies (Bot API, TmuxManager, SessionManager).
+to the right handler functions. Uses a real PTB Application (``dispatch_app``)
+with mocked external dependencies (Bot API, TmuxManager, SessionManager).
 """
 
-import os
-from datetime import datetime
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
-from telegram import Chat, Message, MessageEntity, Update, User
-from telegram.ext import Application
+from telegram import Chat
 
 pytestmark = pytest.mark.integration
 
 TEST_USER_ID = 12345
-TEST_CHAT_ID = -100999
 TEST_THREAD_ID = 42
 
 
-def _make_update(
-    text=None,
-    *,
-    bot=None,
-    thread_id=TEST_THREAD_ID,
-    update_id=1,
-    user_id=TEST_USER_ID,
-    chat_type="supergroup",
-):
-    user = User(id=user_id, first_name="Test", is_bot=False)
-    chat = Chat(id=TEST_CHAT_ID, type=chat_type)
-    entities = None
-    if text and text.startswith("/"):
-        cmd_end = text.index(" ") if " " in text else len(text)
-        entities = [
-            MessageEntity(type=MessageEntity.BOT_COMMAND, offset=0, length=cmd_end)
-        ]
-    message = Message(
-        message_id=update_id,
-        date=datetime.now(),
-        chat=chat,
-        from_user=user,
-        text=text,
-        entities=entities,
-        message_thread_id=thread_id,
+class TestTextRouting:
+    @pytest.mark.parametrize(
+        "text",
+        ["hello world", "!ls -la"],
+        ids=["plain", "bang-prefix"],
     )
-    update = Update(update_id=update_id, message=message)
-    if bot:
-        update.set_bot(bot)
-        message.set_bot(bot)
-        for entity in entities or []:
-            entity.set_bot(bot)
-    return update
+    async def test_text_reaches_text_handler_verbatim(
+        self, dispatch_app, make_text_update, text: str
+    ) -> None:
+        update = make_text_update(text, bot=dispatch_app.bot)
 
+        with (
+            patch(
+                "ccgram.handlers.text.text_handler.handle_text_message",
+                new_callable=AsyncMock,
+            ) as mock_handler,
+            patch(
+                "ccgram.handlers.text.text_handler.config.is_user_allowed",
+                return_value=True,
+            ),
+        ):
+            await dispatch_app.process_update(update)
 
-@pytest.fixture
-async def app():
-    """Real PTB Application with ccgram handlers registered."""
-    token = os.environ["TELEGRAM_BOT_TOKEN"]
-    application = Application.builder().token(token).build()
-
-    from ccgram.bot import (
-        history_command,
-        new_command,
-        text_handler,
-    )
-    from ccgram.handlers.callback_registry import (
-        dispatch as callback_handler,
-        load_handlers,
-    )
-    from ccgram.handlers.commands import forward_command_handler
-    from ccgram.handlers.sessions_dashboard import sessions_command
-    from ccgram.handlers.topics.topic_lifecycle import topic_closed_handler
-
-    load_handlers()
-    from telegram.ext import (
-        CallbackQueryHandler,
-        CommandHandler,
-        MessageHandler,
-        filters,
-    )
-
-    application.add_handler(CommandHandler("start", new_command))
-    application.add_handler(CommandHandler("history", history_command))
-    application.add_handler(CommandHandler("sessions", sessions_command))
-    application.add_handler(CallbackQueryHandler(callback_handler))
-    application.add_handler(
-        MessageHandler(filters.StatusUpdate.FORUM_TOPIC_CLOSED, topic_closed_handler)
-    )
-    application.add_handler(MessageHandler(filters.COMMAND, forward_command_handler))
-    application.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler)
-    )
-
-    mock_post = AsyncMock(
-        return_value={
-            "id": 1,
-            "first_name": "Bot",
-            "is_bot": True,
-            "username": "testbot",
-        }
-    )
-    with patch.object(type(application.bot), "_do_post", mock_post):
-        async with application:
-            yield application
-
-
-async def test_text_routed_to_text_handler(app) -> None:
-    update = _make_update("hello world", bot=app.bot)
-
-    with (
-        patch(
-            "ccgram.handlers.text.text_handler.handle_text_message",
-            new_callable=AsyncMock,
-        ) as mock_handler,
-        patch(
-            "ccgram.handlers.text.text_handler.config.is_user_allowed",
-            return_value=True,
-        ),
-    ):
-        await app.process_update(update)
         mock_handler.assert_awaited_once()
+        forwarded = mock_handler.call_args[0][0].message
+        assert forwarded.text == text
+        assert forwarded.message_thread_id == TEST_THREAD_ID
 
+    async def test_unauthorized_user_rejected(
+        self, dispatch_app, make_text_update
+    ) -> None:
+        update = make_text_update("hello", bot=dispatch_app.bot, user_id=99999)
 
-async def test_unauthorized_user_rejected(app) -> None:
-    update = _make_update("hello", bot=app.bot, user_id=99999)
+        with (
+            patch(
+                "ccgram.handlers.text.text_handler.handle_text_message",
+                new_callable=AsyncMock,
+            ) as mock_handler,
+            patch(
+                "ccgram.handlers.text.text_handler.config.is_user_allowed",
+                return_value=False,
+            ),
+            patch(
+                "ccgram.handlers.text.text_handler.safe_reply", new_callable=AsyncMock
+            ),
+        ):
+            await dispatch_app.process_update(update)
 
-    with (
-        patch(
-            "ccgram.handlers.text.text_handler.handle_text_message",
-            new_callable=AsyncMock,
-        ) as mock_handler,
-        patch(
-            "ccgram.handlers.text.text_handler.config.is_user_allowed",
-            return_value=False,
-        ),
-        patch("ccgram.handlers.text.text_handler.safe_reply", new_callable=AsyncMock),
-    ):
-        await app.process_update(update)
         mock_handler.assert_not_awaited()
 
 
-async def test_start_command_dispatched(app) -> None:
-    update = _make_update("/start", bot=app.bot)
+class TestCommandRouting:
+    async def test_start_command_dispatched(
+        self, dispatch_app, make_text_update
+    ) -> None:
+        update = make_text_update("/start", bot=dispatch_app.bot)
 
-    with (
-        patch(
-            "ccgram.handlers.topics.new_command.safe_reply", new_callable=AsyncMock
-        ) as mock_reply,
-        patch(
-            "ccgram.handlers.topics.new_command.config.is_user_allowed",
-            return_value=True,
-        ),
-    ):
-        await app.process_update(update)
+        with (
+            patch(
+                "ccgram.handlers.topics.new_command.safe_reply", new_callable=AsyncMock
+            ) as mock_reply,
+            patch(
+                "ccgram.handlers.topics.new_command.config.is_user_allowed",
+                return_value=True,
+            ),
+        ):
+            await dispatch_app.process_update(update)
+
         mock_reply.assert_awaited_once()
 
+    async def test_registered_command_wins_over_text_handler(
+        self, dispatch_app, make_text_update
+    ) -> None:
+        """/history goes to its CommandHandler, never to the TEXT fallback."""
+        update = make_text_update("/history", bot=dispatch_app.bot)
 
-async def test_history_command_dispatched(app) -> None:
-    update = _make_update("/history", bot=app.bot)
+        with (
+            patch(
+                "ccgram.handlers.recovery.history.config.is_user_allowed",
+                return_value=True,
+            ),
+            patch(
+                "ccgram.handlers.text.text_handler.handle_text_message",
+                new_callable=AsyncMock,
+            ) as mock_text,
+            patch(
+                "ccgram.handlers.recovery.history.thread_router.resolve_window_for_thread",
+                return_value=None,
+            ),
+            patch(
+                "ccgram.handlers.recovery.history.safe_reply", new_callable=AsyncMock
+            ) as mock_reply,
+        ):
+            await dispatch_app.process_update(update)
 
-    with (
-        patch(
-            "ccgram.handlers.recovery.history.config.is_user_allowed", return_value=True
-        ),
-        patch(
-            "ccgram.handlers.recovery.history.thread_router.resolve_window_for_thread",
-            return_value=None,
-        ),
-        patch(
-            "ccgram.handlers.recovery.history.safe_reply", new_callable=AsyncMock
-        ) as mock_reply,
-    ):
-        await app.process_update(update)
         mock_reply.assert_awaited_once()
-
-
-async def test_new_command_forwarded(app) -> None:
-    update = _make_update("/new", bot=app.bot)
-
-    with (
-        patch(
-            "ccgram.handlers.commands.forward.config.is_user_allowed",
-            return_value=True,
-        ),
-        patch(
-            "ccgram.handlers.commands.forward.thread_router.resolve_window_for_thread",
-            return_value="@0",
-        ),
-        patch(
-            "ccgram.multiplexer.tmux.tmux_manager.find_window_by_id",
-            new_callable=AsyncMock,
-            return_value=MagicMock(window_id="@0"),
-        ),
-        patch(
-            "ccgram.handlers.commands.forward.send_telegram_to_window",
-            new_callable=AsyncMock,
-            return_value=(True, "Sent"),
-        ) as mock_send,
-        patch(
-            "ccgram.handlers.commands.forward.thread_router.get_display_name",
-            return_value="test-win",
-        ),
-        patch("ccgram.handlers.commands.forward.safe_reply", new_callable=AsyncMock),
-        patch.object(Chat, "send_action", new_callable=AsyncMock),
-    ):
-        await app.process_update(update)
-
-    mock_send.assert_awaited_once_with(12345, "@0", 42, "/new", ANY)
-
-
-async def test_unknown_command_forwarded(app) -> None:
-    update = _make_update("/sometool", bot=app.bot)
-
-    with (
-        patch(
-            "ccgram.handlers.commands.forward.config.is_user_allowed",
-            return_value=True,
-        ),
-        patch(
-            "ccgram.handlers.commands.forward.thread_router.resolve_window_for_thread",
-            return_value="@0",
-        ),
-        patch(
-            "ccgram.multiplexer.tmux.tmux_manager.find_window_by_id",
-            new_callable=AsyncMock,
-            return_value=MagicMock(window_id="@0"),
-        ),
-        patch(
-            "ccgram.handlers.commands.forward.send_telegram_to_window",
-            new_callable=AsyncMock,
-            return_value=(True, "Sent"),
-        ),
-        patch(
-            "ccgram.handlers.commands.forward.thread_router.get_display_name",
-            return_value="test-win",
-        ),
-        patch("ccgram.handlers.commands.forward.safe_reply", new_callable=AsyncMock),
-        patch.object(Chat, "send_action", new_callable=AsyncMock),
-    ):
-        await app.process_update(update)
-
-
-async def test_command_priority_over_text(app) -> None:
-    """Commands like /history should be handled by CommandHandler, not text_handler."""
-    update = _make_update("/history", bot=app.bot)
-
-    with (
-        patch(
-            "ccgram.handlers.recovery.history.config.is_user_allowed", return_value=True
-        ),
-        patch(
-            "ccgram.handlers.text.text_handler.handle_text_message",
-            new_callable=AsyncMock,
-        ) as mock_text,
-        patch(
-            "ccgram.handlers.recovery.history.thread_router.resolve_window_for_thread",
-            return_value=None,
-        ),
-        patch("ccgram.handlers.recovery.history.safe_reply", new_callable=AsyncMock),
-    ):
-        await app.process_update(update)
         mock_text.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "command",
+        ["/new", "/sometool"],
+        ids=["provider-command", "unknown-command"],
+    )
+    async def test_unregistered_command_forwarded_to_window(
+        self, dispatch_app, make_text_update, command: str
+    ) -> None:
+        update = make_text_update(command, bot=dispatch_app.bot)
+
+        with (
+            patch(
+                "ccgram.handlers.commands.forward.config.is_user_allowed",
+                return_value=True,
+            ),
+            patch(
+                "ccgram.handlers.commands.forward.thread_router.resolve_window_for_thread",
+                return_value="@0",
+            ),
+            patch(
+                "ccgram.multiplexer.tmux.tmux_manager.find_window_by_id",
+                new_callable=AsyncMock,
+                return_value=MagicMock(window_id="@0"),
+            ),
+            patch(
+                "ccgram.handlers.commands.forward.send_telegram_to_window",
+                new_callable=AsyncMock,
+                return_value=(True, "Sent"),
+            ) as mock_send,
+            patch(
+                "ccgram.handlers.commands.forward.thread_router.get_display_name",
+                return_value="test-win",
+            ),
+            patch(
+                "ccgram.handlers.commands.forward.safe_reply", new_callable=AsyncMock
+            ),
+            patch.object(Chat, "send_action", new_callable=AsyncMock),
+        ):
+            await dispatch_app.process_update(update)
+
+        mock_send.assert_awaited_once_with(
+            TEST_USER_ID, "@0", TEST_THREAD_ID, command, ANY
+        )

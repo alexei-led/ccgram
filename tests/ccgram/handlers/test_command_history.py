@@ -2,17 +2,22 @@
 
 import pytest
 
+from collections.abc import Iterator
+
 from ccgram.handlers.command_history import (
     HISTORY_MAX,
     _history,
     clear_history,
     get_history,
     record_command,
+    truncate_for_display,
 )
 
 
 @pytest.fixture(autouse=True)
-def _clean_history() -> None:
+def _clean_history() -> Iterator[None]:
+    _history.clear()
+    yield
     _history.clear()
 
 
@@ -81,24 +86,15 @@ class TestClearHistory:
 
 
 class TestTruncateForDisplay:
-    def test_short_text_unchanged(self) -> None:
-        from ccgram.handlers.command_history import truncate_for_display
-
-        assert truncate_for_display("hello", 20) == "hello"
-
-    def test_exact_length_unchanged(self) -> None:
-        from ccgram.handlers.command_history import truncate_for_display
-
-        assert truncate_for_display("a" * 20, 20) == "a" * 20
-
-    def test_long_text_truncated_with_ellipsis(self) -> None:
-        from ccgram.handlers.command_history import truncate_for_display
-
-        result = truncate_for_display("a" * 30, 20)
-        assert len(result) == 20
-        assert result == "a" * 19 + "\u2026"
-
-    def test_inline_query_max_is_256(self) -> None:
-        from ccgram.handlers.command_history import INLINE_QUERY_MAX
-
-        assert INLINE_QUERY_MAX == 256
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            pytest.param("hello", "hello", id="shorter-than-limit"),
+            pytest.param("a" * 20, "a" * 20, id="exactly-at-limit"),
+            pytest.param("a" * 30, "a" * 19 + "\u2026", id="over-limit-gets-ellipsis"),
+        ],
+    )
+    def test_truncation(self, text: str, expected: str) -> None:
+        result = truncate_for_display(text, 20)
+        assert result == expected
+        assert len(result) <= 20

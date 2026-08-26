@@ -45,30 +45,44 @@ def test_prefix_herdr_uses_backend_name(herdr_backend) -> None:
     assert session_map_prefix() == "herdr:"
 
 
-def test_is_backend_window_id_tmux(tmux_backend) -> None:
-    assert is_backend_window_id("@12")
-    # herdr-shaped + legacy window-name keys are old format on tmux → purged.
-    assert not is_backend_window_id("w2:p1")
-    assert not is_backend_window_id("my-project")
+_HERDR_TARGET = "herdr-session-v1-" + "a" * 64
 
 
-def test_is_backend_window_id_herdr(herdr_backend) -> None:
-    target = "herdr-session-v1-" + "a" * 64
-    assert is_backend_window_id(target)
-    assert not is_backend_window_id("herdr-session-v1-target")
-    assert not is_backend_window_id("herdr-session-v1-" + "A" * 64)
-    assert not is_backend_window_id("herdr-session-v1-" + "a" * 63)
-    assert not is_backend_window_id("w2:p1")
-    assert not is_backend_window_id("")
+@pytest.mark.parametrize(
+    ("window_id", "accepted"),
+    [
+        pytest.param("@12", True, id="tmux-window-id"),
+        # herdr-shaped and legacy window-name keys are old format on tmux → purged.
+        pytest.param("w2:p1", False, id="herdr-locator"),
+        pytest.param("my-project", False, id="legacy-window-name"),
+        pytest.param("", False, id="empty"),
+    ],
+)
+def test_is_backend_window_id_tmux(tmux_backend, window_id, accepted) -> None:
+    assert is_backend_window_id(window_id) is accepted
+
+
+@pytest.mark.parametrize(
+    ("window_id", "accepted"),
+    [
+        pytest.param(_HERDR_TARGET, True, id="session-target"),
+        pytest.param("herdr-session-v1-target", False, id="not-a-digest"),
+        pytest.param("herdr-session-v1-" + "A" * 64, False, id="uppercase-digest"),
+        pytest.param("herdr-session-v1-" + "a" * 63, False, id="short-digest"),
+        pytest.param("w2:p1", False, id="raw-pane-locator"),
+        pytest.param("", False, id="empty"),
+    ],
+)
+def test_is_backend_window_id_herdr(herdr_backend, window_id, accepted) -> None:
+    assert is_backend_window_id(window_id) is accepted
 
 
 def test_parse_session_map_surfaces_herdr_entry(herdr_backend) -> None:
     """The monitor's read path must see hook-written Herdr keys."""
-    target = "herdr-session-v1-" + "a" * 64
-    raw = {f"herdr:{target}": _entry("S1")}
+    raw = {f"herdr:{_HERDR_TARGET}": _entry("S1")}
     parsed = parse_session_map(raw, session_map_prefix())
-    assert target in parsed
-    assert parsed[target]["session_id"] == "S1"
+    assert _HERDR_TARGET in parsed
+    assert parsed[_HERDR_TARGET]["session_id"] == "S1"
 
 
 def test_parse_session_map_herdr_rejects_raw_and_legacy_ids(herdr_backend) -> None:
@@ -87,5 +101,5 @@ async def test_session_monitor_rejects_raw_herdr_ids(herdr_backend) -> None:
 
 def test_parse_session_map_tmux_skips_other_backend(tmux_backend) -> None:
     """A tmux run ignores stale Herdr-prefixed entries (no cross-backend leak)."""
-    raw = {"herdr:herdr-session-v1-" + "a" * 64: _entry("S1")}
+    raw = {f"herdr:{_HERDR_TARGET}": _entry("S1")}
     assert parse_session_map(raw, session_map_prefix()) == {}

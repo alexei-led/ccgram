@@ -2,8 +2,14 @@
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 
-def _make_update(thread_id: int = 42, user_id: int = 1) -> MagicMock:
+from ccgram.handlers.topics.topic_lifecycle import topic_closed_handler
+
+GENERAL_TOPIC_THREAD_ID = 1
+
+
+def _make_update(thread_id: int | None = 42, user_id: int = 1) -> MagicMock:
     """Create a mock Update for FORUM_TOPIC_CLOSED."""
     update = MagicMock()
     update.effective_user.id = user_id
@@ -11,109 +17,76 @@ def _make_update(thread_id: int = 42, user_id: int = 1) -> MagicMock:
     return update
 
 
-_PATCH_ALLOWED = patch("ccgram.config.Config.is_user_allowed", return_value=True)
+@pytest.fixture
+def router():
+    with patch("ccgram.handlers.topics.topic_lifecycle.thread_router") as mock_tr:
+        yield mock_tr
 
 
-class TestTopicClosedHandler:
-    @_PATCH_ALLOWED
-    @patch(
+@pytest.fixture
+def clear_state():
+    with patch(
         "ccgram.handlers.topics.topic_lifecycle.clear_topic_state",
         new_callable=AsyncMock,
-    )
-    @patch("ccgram.handlers.topics.topic_lifecycle.thread_router")
+    ) as mock_clear:
+        yield mock_clear
+
+
+@pytest.fixture
+def allowed_user():
+    with patch("ccgram.config.Config.is_user_allowed", return_value=True):
+        yield
+
+
+@pytest.mark.usefixtures("allowed_user")
+class TestTopicClosedHandler:
     async def test_unbinds_bound_topic(
-        self, mock_tr: MagicMock, mock_clear: AsyncMock, _allowed: MagicMock
+        self, router: MagicMock, clear_state: AsyncMock
     ) -> None:
-        from ccgram.handlers.topics.topic_lifecycle import topic_closed_handler
-
-        mock_tr.get_window_for_thread.return_value = "@0"
-        mock_tr.get_display_name.return_value = "my-project"
-
-        update = _make_update()
+        router.get_window_for_thread.return_value = "@0"
+        router.get_display_name.return_value = "my-project"
         ctx = MagicMock()
-        await topic_closed_handler(update, ctx)
 
-        mock_tr.get_window_for_thread.assert_called_once_with(1, 42)
-        mock_clear.assert_called_once()
-        clear_args = mock_clear.call_args
+        await topic_closed_handler(_make_update(), ctx)
+
+        router.get_window_for_thread.assert_called_once_with(1, 42)
+        router.unbind_thread.assert_called_once_with(1, 42)
+        clear_args = clear_state.call_args
         assert clear_args.args[0:2] == (1, 42)
         assert clear_args.args[2].bot is ctx.bot
         assert clear_args.args[3] is ctx.user_data
         assert clear_args.kwargs == {"window_id": "@0", "window_dead": False}
-        mock_tr.unbind_thread.assert_called_once_with(1, 42)
 
-    @_PATCH_ALLOWED
-    @patch(
-        "ccgram.handlers.topics.topic_lifecycle.clear_topic_state",
-        new_callable=AsyncMock,
-    )
-    @patch("ccgram.handlers.topics.topic_lifecycle.thread_router")
     async def test_skips_unbound_topic(
-        self, mock_tr: MagicMock, mock_clear: AsyncMock, _allowed: MagicMock
+        self, router: MagicMock, clear_state: AsyncMock
     ) -> None:
-        from ccgram.handlers.topics.topic_lifecycle import topic_closed_handler
+        router.get_window_for_thread.return_value = None
 
-        mock_tr.get_window_for_thread.return_value = None
+        await topic_closed_handler(_make_update(), MagicMock())
 
-        update = _make_update()
-        await topic_closed_handler(update, MagicMock())
+        router.unbind_thread.assert_not_called()
+        clear_state.assert_not_called()
 
-        mock_tr.unbind_thread.assert_not_called()
-        mock_clear.assert_not_called()
-
-    @patch(
-        "ccgram.handlers.topics.topic_lifecycle.clear_topic_state",
-        new_callable=AsyncMock,
+    @pytest.mark.parametrize(
+        "thread_id",
+        [GENERAL_TOPIC_THREAD_ID, None],
+        ids=["general_topic", "no_thread_id"],
     )
-    @patch("ccgram.handlers.topics.topic_lifecycle.thread_router")
+    async def test_skips_non_forum_thread(
+        self, router: MagicMock, clear_state: AsyncMock, thread_id: int | None
+    ) -> None:
+        await topic_closed_handler(_make_update(thread_id=thread_id), MagicMock())
+
+        router.get_window_for_thread.assert_not_called()
+        clear_state.assert_not_called()
+
+
+class TestTopicClosedAccessControl:
     async def test_skips_disallowed_user(
-        self, mock_tr: MagicMock, mock_clear: AsyncMock
+        self, router: MagicMock, clear_state: AsyncMock
     ) -> None:
-        from ccgram.handlers.topics.topic_lifecycle import topic_closed_handler
-
-        update = _make_update()
         with patch("ccgram.config.Config.is_user_allowed", return_value=False):
-            await topic_closed_handler(update, MagicMock())
+            await topic_closed_handler(_make_update(), MagicMock())
 
-        mock_tr.get_window_for_thread.assert_not_called()
-        mock_clear.assert_not_called()
-
-    @_PATCH_ALLOWED
-    @patch(
-        "ccgram.handlers.topics.topic_lifecycle.clear_topic_state",
-        new_callable=AsyncMock,
-    )
-    @patch("ccgram.handlers.topics.topic_lifecycle.thread_router")
-    async def test_skips_general_topic(
-        self, mock_tr: MagicMock, mock_clear: AsyncMock, _allowed: MagicMock
-    ) -> None:
-        from ccgram.handlers.topics.topic_lifecycle import topic_closed_handler
-
-        update = MagicMock()
-        update.effective_user.id = 1
-        update.message.message_thread_id = 1
-
-        await topic_closed_handler(update, MagicMock())
-
-        mock_tr.get_window_for_thread.assert_not_called()
-        mock_clear.assert_not_called()
-
-    @_PATCH_ALLOWED
-    @patch(
-        "ccgram.handlers.topics.topic_lifecycle.clear_topic_state",
-        new_callable=AsyncMock,
-    )
-    @patch("ccgram.handlers.topics.topic_lifecycle.thread_router")
-    async def test_skips_no_thread_id(
-        self, mock_tr: MagicMock, mock_clear: AsyncMock, _allowed: MagicMock
-    ) -> None:
-        from ccgram.handlers.topics.topic_lifecycle import topic_closed_handler
-
-        update = MagicMock()
-        update.effective_user.id = 1
-        update.message.message_thread_id = None
-
-        await topic_closed_handler(update, MagicMock())
-
-        mock_tr.get_window_for_thread.assert_not_called()
-        mock_clear.assert_not_called()
+        router.get_window_for_thread.assert_not_called()
+        clear_state.assert_not_called()

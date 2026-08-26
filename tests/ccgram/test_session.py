@@ -327,6 +327,45 @@ class TestPruneSessionMap:
         assert "@2" not in mgr.window_states
         assert "@3" not in mgr.window_states
 
+    def test_bound_window_keeps_its_state_for_the_recovery_banner(
+        self, mgr: SessionManager, tmp_path, monkeypatch
+    ) -> None:
+        """A dead window still bound to a topic keeps cwd/provider (#176).
+
+        The recovery banner is posted *because* the window died, and its
+        Fresh/Continue/Resume buttons read the directory back out of the
+        window state. Dropping that state the moment the session-map entry is
+        pruned turns every button into "Directory no longer exists" while the
+        directory is sitting there. The entry itself is still dead and goes;
+        only the state a live topic still points at survives, and the stale
+        sweep reclaims it once the topic unbinds.
+        """
+        session_map_file = tmp_path / "session_map.json"
+        session_map_file.write_text(
+            json.dumps(
+                {
+                    "ccgram:@1": {"session_id": "sid-1", "cwd": "/bound"},
+                    "ccgram:@2": {"session_id": "sid-2", "cwd": "/unbound"},
+                }
+            )
+        )
+        monkeypatch.setattr("ccgram.session.config.session_map_file", session_map_file)
+        monkeypatch.setattr("ccgram.session.config.tmux_session_name", "ccgram")
+
+        mgr.window_states["@1"] = WindowState(session_id="sid-1", cwd="/bound")
+        mgr.window_states["@2"] = WindowState(session_id="sid-2", cwd="/unbound")
+        thread_router.bind_thread(100, 7, "@1")
+        try:
+            session_map_sync.prune_session_map(live_window_ids=set())
+        finally:
+            thread_router.unbind_thread(100, 7)
+
+        # Both entries are dead, so both leave the session map.
+        assert json.loads(session_map_file.read_text()) == {}
+        # Only the bound window keeps the cwd the banner needs.
+        assert mgr.window_states["@1"].cwd == "/bound"
+        assert "@2" not in mgr.window_states
+
     def test_noop_when_all_alive(
         self, mgr: SessionManager, tmp_path, monkeypatch
     ) -> None:
@@ -398,6 +437,59 @@ class TestPruneSessionMap:
 
         result = json.loads(session_map_file.read_text())
         assert "ccgram:@5" not in result
+
+
+class TestSessionMapEntryMayExist:
+    """The guard that stops _bootstrap_identity clobbering a live hook entry."""
+
+    async def test_true_when_the_entry_is_present(self, mgr, tmp_path, monkeypatch):
+        f = tmp_path / "session_map.json"
+        f.write_text(json.dumps({"ccgram:@1": {"session_id": "s"}}))
+        monkeypatch.setattr("ccgram.session_map.config.session_map_file", f)
+        monkeypatch.setattr("ccgram.session_map.config.tmux_session_name", "ccgram")
+
+        assert await session_map_sync.session_map_entry_may_exist("@1") is True
+
+    async def test_false_when_the_file_is_readable_and_lacks_it(
+        self, mgr, tmp_path, monkeypatch
+    ):
+        f = tmp_path / "session_map.json"
+        f.write_text(json.dumps({"ccgram:@9": {"session_id": "s"}}))
+        monkeypatch.setattr("ccgram.session_map.config.session_map_file", f)
+        monkeypatch.setattr("ccgram.session_map.config.tmux_session_name", "ccgram")
+
+        assert await session_map_sync.session_map_entry_may_exist("@1") is False
+
+    async def test_false_when_the_entry_is_one_the_loader_will_reject(
+        self, mgr, tmp_path, monkeypatch
+    ):
+        """A key the monitor cannot turn into state is not tracking.
+
+        Treating it as tracking leaves the window unhealed on every tick, with
+        nothing else able to create its state either.
+        """
+        f = tmp_path / "session_map.json"
+        f.write_text(
+            json.dumps({"ccgram:@1": {"schema_version": 99, "session_id": "s"}})
+        )
+        monkeypatch.setattr("ccgram.session_map.config.session_map_file", f)
+        monkeypatch.setattr("ccgram.session_map.config.tmux_session_name", "ccgram")
+
+        assert await session_map_sync.session_map_entry_may_exist("@1") is False
+
+    async def test_true_when_the_map_cannot_be_read(self, mgr, tmp_path, monkeypatch):
+        """Unknown is not absent.
+
+        Answering False here lets the bootstrap write state that clears the
+        entry of a running session, which hook.py will not recreate outside
+        SessionStart. Deferring the heal one tick is the cheaper mistake.
+        """
+        f = tmp_path / "session_map.json"
+        f.write_text("{ corrupt")
+        monkeypatch.setattr("ccgram.session_map.config.session_map_file", f)
+        monkeypatch.setattr("ccgram.session_map.config.tmux_session_name", "ccgram")
+
+        assert await session_map_sync.session_map_entry_may_exist("@1") is True
 
 
 class TestWindowStateProviderName:

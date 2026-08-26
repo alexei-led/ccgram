@@ -12,9 +12,11 @@ import json
 import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from ccgram.multiplexer import herdr as herdr_module
 from ccgram.multiplexer.base import AgentStatus, ForegroundInfo, PaneDims
 from ccgram.multiplexer.herdr_events import translate_event
 from ccgram.multiplexer.herdr import (
@@ -50,6 +52,17 @@ class FakeHerdr:
         self.calls.append(call)
         matching = [key for key in self.responses if call[: len(key)] == list(key)]
         return self.responses[max(matching, key=len)] if matching else self.default
+
+
+@pytest.fixture
+def expired_discovery_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Collapse the created-session discovery deadline to a single poll.
+
+    The loop always polls once before checking the deadline, so the tests that
+    assert post-deadline behaviour keep their meaning without waiting out the
+    real 5s window.
+    """
+    monkeypatch.setattr(herdr_module, "_CREATED_SESSION_DISCOVERY_TIMEOUT_SECONDS", 0.0)
 
 
 def _manager(fake: FakeHerdr) -> HerdrManager:
@@ -429,24 +442,49 @@ async def test_capture_and_scrollback_guard_then_read_the_matched_pane() -> None
 
 
 async def test_send_variants_guard_then_dispatch_to_live_pane() -> None:
+    """Literal+enter is split into send-text then a separate Enter key."""
     fake = (
         _live_fake(_agent(pane_id="w7:p4"))
-        .on("pane", "run", out=_result(type="ok"))
         .on("pane", "send-text", out=_result(type="ok"))
         .on("pane", "send-keys", out=_result(type="ok"))
     )
     mux = _manager(fake)
-    assert await mux.send(_target(), "hello")
+    with patch("ccgram.multiplexer.herdr.asyncio.sleep"):
+        assert await mux.send(_target(), "hello")
     assert await mux.send(_target(), "partial", enter=False)
     assert await mux.send(_target(), "C-c Up", literal=False)
     assert fake.calls == [
         ["agent", "list"],
-        ["pane", "run", "w7:p4", "hello"],
+        ["pane", "send-text", "w7:p4", "hello"],
+        ["pane", "send-keys", "w7:p4", "Enter"],
         ["agent", "list"],
         ["pane", "send-text", "w7:p4", "partial"],
         ["agent", "list"],
         ["pane", "send-keys", "w7:p4", "C-c", "Up", "Enter"],
     ]
+
+
+async def test_send_literal_enter_is_split_with_delay() -> None:
+    """#177 regression: text and Enter must never arrive as one ``pane run`` batch."""
+    import ccgram.multiplexer.herdr as herdr_mod
+
+    fake = (
+        _live_fake(_agent(pane_id="w7:p5"))
+        .on("pane", "send-text", out=_result(type="ok"))
+        .on("pane", "send-keys", out=_result(type="ok"))
+    )
+    sleep_mock = AsyncMock()
+    with patch.object(herdr_mod.asyncio, "sleep", sleep_mock):
+        assert await _manager(fake).send(_target(), "hello world")
+
+    # ``pane run`` must never appear — that is the batched-Enter bug.
+    assert ["pane", "run", "w7:p5", "hello world"] not in fake.calls
+    # Text arrives before Enter.
+    text_idx = fake.calls.index(["pane", "send-text", "w7:p5", "hello world"])
+    enter_idx = fake.calls.index(["pane", "send-keys", "w7:p5", "Enter"])
+    assert text_idx < enter_idx
+    # The delay was awaited between them.
+    sleep_mock.assert_awaited_once_with(herdr_mod._SEND_ENTER_DELAY_SECONDS)
 
 
 async def test_every_mutating_tab_action_uses_live_record_locator() -> None:
@@ -587,6 +625,81 @@ def test_translate_event_maps_target_pane_exit_without_killing_siblings() -> Non
     ]
 
 
+@pytest.mark.parametrize(
+    "event_name",
+    ["pane.agent_status_changed", "pane_agent_status_changed"],
+)
+def test_translate_event_maps_the_agent_status_payload(event_name: str) -> None:
+    """herdr spells event names with a dot or an underscore; both must map."""
+    target = _target()
+    (event,) = translate_event(
+        {
+            "event": event_name,
+            "data": {
+                "pane_id": "w7:p4",
+                "agent_status": "working",
+                "agent": "claude",
+                "custom_status": "running tests",
+            },
+        },
+        {"w7:p4": target},
+        {},
+    )
+    assert event.kind == "agent_status"
+    assert event.window_id == target
+    assert event.status == AgentStatus("working", "claude", "running tests")
+
+
+def test_translate_event_defaults_an_absent_agent_status_to_unknown() -> None:
+    (event,) = translate_event(
+        {"event": "pane.agent_status_changed", "data": {"pane_id": "w7:p4"}},
+        {"w7:p4": _target()},
+        {},
+    )
+    assert event.status == AgentStatus("unknown", "", "")
+
+
+@pytest.mark.parametrize(
+    "event_name", ["pane.exited", "pane_exited", "pane.closed", "pane_closed"]
+)
+def test_translate_event_maps_every_pane_death_spelling(event_name: str) -> None:
+    translated = translate_event(
+        {"event": event_name, "data": {"pane_id": "w7:p4"}}, {"w7:p4": _target()}, {}
+    )
+    assert [(event.kind, event.window_id) for event in translated] == [
+        ("window_died", _target())
+    ]
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        pytest.param({"pane_id": "w7:p4"}, id="flat-locator"),
+        pytest.param({"pane": {"pane_id": "w7:p4"}}, id="nested-locator"),
+    ],
+)
+def test_translate_event_reads_both_locator_shapes(data: dict) -> None:
+    translated = translate_event(
+        {"event": "pane.exited", "data": data}, {"w7:p4": _target()}, {}
+    )
+    assert translated and translated[0].window_id == _target()
+
+
+@pytest.mark.parametrize(
+    "obj",
+    [
+        pytest.param(
+            {"event": "pane.focused", "data": {"pane_id": "w7:p4"}}, id="unwatched-kind"
+        ),
+        pytest.param({"event": "pane.exited"}, id="no-data"),
+        pytest.param({"event": "pane.exited", "data": "not-a-mapping"}, id="bad-data"),
+        pytest.param({"data": {"pane_id": "w7:p4"}}, id="no-event-name"),
+    ],
+)
+def test_translate_event_ignores_what_it_cannot_map(obj: dict) -> None:
+    assert translate_event(obj, {"w7:p4": _target()}, {"w7:t3": (_target(),)}) == ()
+
+
 async def test_watch_events_emits_each_guarded_target_for_shared_tab_close() -> None:
     first = _agent(pane_id="w7:p4", tab_id="w7:t3", value="first")
     second = _agent(pane_id="w7:p5", tab_id="w7:t3", value="second")
@@ -653,12 +766,24 @@ async def test_raw_pane_helpers_cannot_bypass_target_guard() -> None:
     assert fake.calls == []
 
 
+async def test_send_to_a_replaced_target_fails_without_dispatching() -> None:
+    """The bound target re-keyed its session; nothing may be typed into the
+    pane now carrying a different one."""
+    fake = _live_fake(_agent(value="replacement"))
+
+    assert not await _manager(fake).send(_target("session-a"), "must not dispatch")
+
+    assert fake.calls == [["agent", "list"]]
+
+
 async def test_action_error_refreshes_guard_without_retargeting() -> None:
-    fake = _live_fake(_agent(pane_id="w2:p1")).on("pane", "run", rc=1, err="closed")
+    fake = _live_fake(_agent(pane_id="w2:p1")).on(
+        "pane", "send-text", rc=1, err="closed"
+    )
     assert not await _manager(fake).send(_target(), "hello")
     assert fake.calls == [
         ["agent", "list"],
-        ["pane", "run", "w2:p1", "hello"],
+        ["pane", "send-text", "w2:p1", "hello"],
         ["agent", "list"],
     ]
 
@@ -686,7 +811,7 @@ async def test_post_guard_dispatch_race_never_retargets_another_pane() -> None:
     assert not await HerdrManager(runner=runner).send(_target(), "hello")
     assert runner.calls == [
         ["agent", "list"],
-        ["pane", "run", "w2:p1", "hello"],
+        ["pane", "send-text", "w2:p1", "hello"],
         ["agent", "list"],
     ]
     assert not any(
@@ -809,31 +934,6 @@ async def test_list_workspaces_resolves_cwdless_workspaces_from_panes_once() -> 
     assert fake.calls == [["workspace", "list"], ["pane", "list"]]
 
 
-async def test_create_topic_target_does_not_send_initial_input(
-    tmp_path: Path,
-) -> None:
-    fake = (
-        FakeHerdr()
-        .on("workspace", "list", out=_workspace("selected", tmp_path))
-        .on("tab", "create", out=_created())
-        .on("pane", "run", out=_result(type="ok"))
-        .on(
-            "agent",
-            "list",
-            out=_agents(
-                _agent(pane_id="w9:p1", tab_id="w9:t1", workspace_id="selected")
-            ),
-        )
-    )
-    target = await _manager(fake).create_topic_target(
-        str(tmp_path),
-        launch_command="agy",
-        workspace_id="selected",
-    )
-    assert target.target_id == _target()
-    assert ["pane", "run", "w9:p1", "hello"] not in fake.calls
-
-
 async def test_created_session_discovery_waits_for_delayed_pi_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -930,12 +1030,8 @@ async def test_implicit_workspace_is_closed_for_tab_and_session_failures(
     tab_response: str,
     agent_response: str | None,
     expected_error: str,
-    monkeypatch: pytest.MonkeyPatch,
+    expired_discovery_window: None,
 ) -> None:
-    async def no_sleep(_: float) -> None:
-        return None
-
-    monkeypatch.setattr(asyncio, "sleep", no_sleep)
     fake = (
         FakeHerdr()
         .on("workspace", "create", out=_result(workspace={"workspace_id": "owned"}))
@@ -1050,7 +1146,7 @@ async def test_create_topic_target_rolls_back_only_its_new_tab_when_launch_fails
 
 
 async def test_create_topic_target_rolls_back_on_duplicate_or_missing_session(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, expired_discovery_window: None
 ) -> None:
     duplicate = _agents(
         _agent(pane_id="w9:p1", tab_id="w9:t1", workspace_id="selected"),
@@ -1069,10 +1165,6 @@ async def test_create_topic_target_rolls_back_on_duplicate_or_missing_session(
         )
     assert ["tab", "close", "w9:t1"] in fake.calls
 
-    async def no_sleep(_: float) -> None:
-        return None
-
-    monkeypatch.setattr(asyncio, "sleep", no_sleep)
     missing = (
         FakeHerdr()
         .on("workspace", "list", out=_workspace("selected", tmp_path))
@@ -1269,7 +1361,7 @@ async def test_ensure_session_still_rejects_unavailable_server() -> None:
 
 
 async def test_creation_binds_terminal_target_while_agent_waits_at_a_prompt(
-    tmp_path: Path,
+    tmp_path: Path, expired_discovery_window: None
 ) -> None:
     """An agent stopped at a pre-session prompt must not be rolled away.
 
@@ -1313,7 +1405,7 @@ async def test_creation_binds_terminal_target_while_agent_waits_at_a_prompt(
 
 
 async def test_provisional_target_is_dropped_once_its_pane_is_gone(
-    tmp_path: Path,
+    tmp_path: Path, expired_discovery_window: None
 ) -> None:
     fake = (
         FakeHerdr()
@@ -1395,3 +1487,126 @@ async def test_a_still_live_target_is_never_published_as_superseded() -> None:
     windows = {w.window_id: w for w in await manager.list_windows()}
     assert _target("session-a") not in windows[_target("session-b")].alias_window_ids
     assert await manager.find_window_by_id(_target("session-a")) is not None
+
+
+# ── Fix 1: _foreground_for_pane argv0 fallback ─────────────────────────────
+
+
+async def test_foreground_falls_back_to_argv0_when_leader_has_no_argv() -> None:
+    """Pi rewrites its process title; herdr publishes argv0 but no argv.
+
+    The leader (pid == foreground_process_group_id) carries argv0="pi" and
+    name="node". A non-leader carries argv so we confirm the leader's argv0
+    wins over both the non-leader's argv AND the leader's name field.
+    """
+    process = {
+        "process_info": {
+            "foreground_process_group_id": 12,
+            "foreground_processes": [
+                # Non-leader has argv — must not be selected.
+                {"pid": 7, "argv": ["node", "/app/index.js"], "cwd": "/other"},
+                # Leader: no argv, argv0="pi", misleading name="node".
+                {"pid": 12, "argv0": "pi", "name": "node", "cwd": "/project"},
+            ],
+        }
+    }
+    fake = _live_fake(_agent(pane_id="w7:p4")).on(
+        "pane", "process-info", out=_result(**process)
+    )
+    result = await _manager(fake).foreground(_target())
+    # Must be ["pi"] from argv0, never ["node"] from name.
+    assert result == ForegroundInfo(12, 12, ["pi"], "/project", "")
+
+
+@pytest.mark.parametrize(
+    "leader",
+    [
+        pytest.param(
+            {"pid": 12, "argv0": "/bin/bash", "name": "bash", "cwd": "/project"},
+            id="name-matches-argv0",
+        ),
+        pytest.param(
+            {"pid": 12, "argv0": "/bin/bash", "cwd": "/project"},
+            id="no-name-published",
+        ),
+    ],
+)
+async def test_foreground_does_not_synthesize_argv_for_an_unrenamed_shell(
+    leader,
+) -> None:
+    """A shell whose args are unreadable must not look like an idle prompt.
+
+    ``shell_infra._is_interactive_shell`` reads a known-shell basename plus
+    ``len(argv) == 1`` as "sitting at a prompt, safe to interrupt", and
+    ``setup_shell_prompt`` sends C-c on that. Synthesizing ["bash"] for a pane
+    running ``bash ./deploy.sh`` would interrupt the script, so the fallback is
+    limited to an observed self-rename. A missing ``name`` is not evidence of
+    one — both shapes here fall through to the fail-safe None.
+    """
+    process = {
+        "process_info": {
+            "foreground_process_group_id": 12,
+            "foreground_processes": [leader],
+        }
+    }
+    fake = _live_fake(_agent(pane_id="w7:p4")).on(
+        "pane", "process-info", out=_result(**process)
+    )
+    assert await _manager(fake)._foreground_for_pane("w7:p4") is None
+
+
+async def test_foreground_returns_none_when_leader_has_neither_argv_nor_argv0() -> None:
+    process = {
+        "process_info": {
+            "foreground_process_group_id": 12,
+            "foreground_processes": [
+                {"pid": 12, "name": "node", "cwd": "/project"},
+            ],
+        }
+    }
+    fake = _live_fake(_agent(pane_id="w7:p4")).on(
+        "pane", "process-info", out=_result(**process)
+    )
+    # Call _foreground_for_pane directly to avoid the second agent-list refresh
+    # that foreground() issues when the result is None.
+    assert await _manager(fake)._foreground_for_pane("w7:p4") is None
+
+
+async def test_foreground_uses_argv_verbatim_when_present() -> None:
+    process = {
+        "process_info": {
+            "foreground_process_group_id": 12,
+            "foreground_processes": [
+                {
+                    "pid": 12,
+                    "argv": ["node", "/app/pi/dist/index.js"],
+                    "cwd": "/project",
+                }
+            ],
+        }
+    }
+    fake = _live_fake(_agent(pane_id="w7:p4")).on(
+        "pane", "process-info", out=_result(**process)
+    )
+    result = await _manager(fake).foreground(_target())
+    assert result == ForegroundInfo(
+        12, 12, ["node", "/app/pi/dist/index.js"], "/project", ""
+    )
+
+
+# ── Fix 2: list_windows WindowRef.cwd uses agent cwd not foreground_cwd ────
+
+
+async def test_list_windows_uses_agent_cwd_not_foreground_cwd() -> None:
+    """Pi's agent cwd is the project root; foreground_cwd follows shell chdir."""
+    agent = _agent(cwd="/project", foreground_cwd="/project/worktrees/review")
+    windows = await _manager(_live_fake(agent)).list_windows()
+    assert len(windows) == 1
+    assert windows[0].cwd == "/project"
+
+
+async def test_list_windows_cwd_empty_when_agent_record_has_no_cwd_key() -> None:
+    agent = _agent()  # _agent() never sets cwd
+    windows = await _manager(_live_fake(agent)).list_windows()
+    assert len(windows) == 1
+    assert windows[0].cwd == ""

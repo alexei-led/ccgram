@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from ccgram.hook import _encode_pi_cwd_dirname, _install_hook, hook_main
+from ccgram.hooks.adapters import detect_provider_from_payload, get_hook_adapter
 from ccgram.multiplexer.herdr import HerdrManager
 
 
@@ -15,6 +16,24 @@ def _tmux_result() -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(
         args=[], returncode=0, stdout="ccgram\t@0\tproject\n", stderr=""
     )
+
+
+def _pi_transcript(
+    home: Path, cwd: str, session_id: str, *, stamp: str = "2026-05-13T12-26-23-633Z"
+) -> Path:
+    """Create the on-disk Pi transcript the hook is expected to rediscover."""
+    directory = home / ".pi" / "agent" / "sessions" / _encode_pi_cwd_dirname(cwd)
+    directory.mkdir(parents=True, exist_ok=True)
+    transcript = directory / f"{stamp}_{session_id}.jsonl"
+    transcript.write_text('{"type":"session"}\n')
+    return transcript
+
+
+def _write_session_map(state_dir: Path, entry: dict[str, str]) -> Path:
+    state_dir.mkdir(parents=True, exist_ok=True)
+    path = state_dir / "session_map.json"
+    path.write_text(json.dumps({"ccgram:@0": entry}))
+    return path
 
 
 def _run_hook(monkeypatch, payload: dict[str, object], provider_name: str) -> None:
@@ -93,24 +112,22 @@ def test_herdr_nested_claude_hook_does_not_overwrite_live_pi_session(
     assert not (state_dir / "events.jsonl").exists()
 
 
+_PI_SESSION_ID = "019e214d-7011-754d-9efb-60106dfa967c"
+_STALE_PI_SESSION_ID = "019e214d-7011-754d-9efb-60106dfa0000"
+
+
 def test_pi_session_start_writes_provider_and_resolves_transcript(
     tmp_path: Path, monkeypatch
 ) -> None:
     cwd = str(tmp_path / "proj")
-    session_id = "019e214d-7011-754d-9efb-60106dfa967c"
-    transcript_dir = (
-        tmp_path / ".pi" / "agent" / "sessions" / _encode_pi_cwd_dirname(cwd)
-    )
-    transcript_dir.mkdir(parents=True)
-    transcript = transcript_dir / f"2026-05-13T12-26-23-633Z_{session_id}.jsonl"
-    transcript.write_text('{"type":"session"}\n')
+    transcript = _pi_transcript(tmp_path, cwd, _PI_SESSION_ID)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("CCGRAM_DIR", str(tmp_path / "state"))
 
     _run_hook(
         monkeypatch,
         {
-            "session_id": session_id,
+            "session_id": _PI_SESSION_ID,
             "cwd": cwd,
             "hook_event_name": "SessionStart",
             "source": "startup",
@@ -128,36 +145,29 @@ def test_pi_session_start_ignores_stale_payload_transcript_path(
     tmp_path: Path, monkeypatch
 ) -> None:
     cwd = str(tmp_path / "proj")
-    session_id = "019e214d-7011-754d-9efb-60106dfa967c"
-    stale_session_id = "019e214d-7011-754d-9efb-60106dfa0000"
-    transcript_dir = (
-        tmp_path / ".pi" / "agent" / "sessions" / _encode_pi_cwd_dirname(cwd)
+    stale = _pi_transcript(
+        tmp_path, cwd, _STALE_PI_SESSION_ID, stamp="2026-05-13T12-00-00-000Z"
     )
-    transcript_dir.mkdir(parents=True)
-    stale_transcript = (
-        transcript_dir / f"2026-05-13T12-00-00-000Z_{stale_session_id}.jsonl"
-    )
-    transcript = transcript_dir / f"2026-05-13T12-26-23-633Z_{session_id}.jsonl"
-    stale_transcript.write_text('{"type":"session"}\n')
-    transcript.write_text('{"type":"session"}\n')
+    transcript = _pi_transcript(tmp_path, cwd, _PI_SESSION_ID)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("CCGRAM_DIR", str(tmp_path / "state"))
 
     _run_hook(
         monkeypatch,
         {
-            "session_id": session_id,
+            "session_id": _PI_SESSION_ID,
             "cwd": cwd,
             "hook_event_name": "SessionStart",
-            "transcript_path": str(stale_transcript),
+            "transcript_path": str(stale),
         },
         "pi",
     )
 
-    session_map = json.loads((tmp_path / "state" / "session_map.json").read_text())
-    entry = session_map["ccgram:@0"]
+    entry = json.loads((tmp_path / "state" / "session_map.json").read_text())[
+        "ccgram:@0"
+    ]
     assert entry["provider_name"] == "pi"
-    assert entry["session_id"] == session_id
+    assert entry["session_id"] == _PI_SESSION_ID
     assert entry["transcript_path"] == str(transcript)
 
 
@@ -165,56 +175,39 @@ def test_pi_stop_refreshes_stale_transcript_path_when_session_is_in_sync(
     tmp_path: Path, monkeypatch
 ) -> None:
     cwd = str(tmp_path / "proj")
-    session_id = "019e214d-7011-754d-9efb-60106dfa967c"
-    stale_session_id = "019e214d-7011-754d-9efb-60106dfa0000"
-    transcript_dir = (
-        tmp_path / ".pi" / "agent" / "sessions" / _encode_pi_cwd_dirname(cwd)
+    stale = _pi_transcript(
+        tmp_path, cwd, _STALE_PI_SESSION_ID, stamp="2026-05-13T12-00-00-000Z"
     )
-    transcript_dir.mkdir(parents=True)
-    stale_transcript = (
-        transcript_dir / f"2026-05-13T12-00-00-000Z_{stale_session_id}.jsonl"
-    )
-    transcript = transcript_dir / f"2026-05-13T12-26-23-633Z_{session_id}.jsonl"
-    stale_transcript.write_text('{"type":"session"}\n')
-    transcript.write_text('{"type":"session"}\n')
+    transcript = _pi_transcript(tmp_path, cwd, _PI_SESSION_ID)
     monkeypatch.setenv("HOME", str(tmp_path))
     state_dir = tmp_path / "state"
-    state_dir.mkdir()
     monkeypatch.setenv("CCGRAM_DIR", str(state_dir))
-    (state_dir / "session_map.json").write_text(
-        json.dumps(
-            {
-                "ccgram:@0": {
-                    "session_id": session_id,
-                    "cwd": cwd,
-                    "window_name": "project",
-                    "transcript_path": str(stale_transcript),
-                    "provider_name": "pi",
-                }
-            }
-        )
+    session_map_path = _write_session_map(
+        state_dir,
+        {
+            "session_id": _PI_SESSION_ID,
+            "cwd": cwd,
+            "window_name": "project",
+            "transcript_path": str(stale),
+            "provider_name": "pi",
+        },
     )
 
     _run_hook(
         monkeypatch,
         {
-            "session_id": session_id,
+            "session_id": _PI_SESSION_ID,
             "cwd": cwd,
             "hook_event_name": "Stop",
-            "transcript_path": str(stale_transcript),
+            "transcript_path": str(stale),
         },
         "pi",
     )
 
-    session_map = json.loads((state_dir / "session_map.json").read_text())
-    entry = session_map["ccgram:@0"]
-    assert entry["session_id"] == session_id
+    entry = json.loads(session_map_path.read_text())["ccgram:@0"]
+    assert entry["session_id"] == _PI_SESSION_ID
     assert entry["provider_name"] == "pi"
     assert entry["transcript_path"] == str(transcript)
-
-
-_CODEX_SESSION_ID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
-_GEMINI_SESSION_ID = "b2c3d4e5-f678-90ab-cdef-1234567890ab"
 
 
 def test_pi_stop_refreshes_stale_claude_entry_in_session_map(
@@ -222,46 +215,37 @@ def test_pi_stop_refreshes_stale_claude_entry_in_session_map(
 ) -> None:
     cwd = str(tmp_path / "proj")
     pi_session_id = "019e557d-01b3-7e20-9a83-76ba0fdaae3d"
-    stale_claude_session_id = "019e557e-f3cc-70c5-95af-d2ea388ed166"
-    transcript_dir = (
-        tmp_path / ".pi" / "agent" / "sessions" / _encode_pi_cwd_dirname(cwd)
+    transcript = _pi_transcript(
+        tmp_path, cwd, pi_session_id, stamp="2026-05-23T15-38-36-340Z"
     )
-    transcript_dir.mkdir(parents=True)
-    transcript = transcript_dir / f"2026-05-23T15-38-36-340Z_{pi_session_id}.jsonl"
-    transcript.write_text('{"type":"session"}\n')
     monkeypatch.setenv("HOME", str(tmp_path))
     state_dir = tmp_path / "state"
-    state_dir.mkdir()
     monkeypatch.setenv("CCGRAM_DIR", str(state_dir))
-    (state_dir / "session_map.json").write_text(
-        json.dumps(
-            {
-                "ccgram:@0": {
-                    "session_id": stale_claude_session_id,
-                    "cwd": cwd,
-                    "window_name": "project",
-                    "transcript_path": "",
-                    "provider_name": "claude",
-                }
-            }
-        )
+    session_map_path = _write_session_map(
+        state_dir,
+        {
+            "session_id": "019e557e-f3cc-70c5-95af-d2ea388ed166",
+            "cwd": cwd,
+            "window_name": "project",
+            "transcript_path": "",
+            "provider_name": "claude",
+        },
     )
 
     _run_hook(
         monkeypatch,
-        {
-            "session_id": pi_session_id,
-            "cwd": cwd,
-            "hook_event_name": "Stop",
-        },
+        {"session_id": pi_session_id, "cwd": cwd, "hook_event_name": "Stop"},
         "pi",
     )
 
-    session_map = json.loads((state_dir / "session_map.json").read_text())
-    entry = session_map["ccgram:@0"]
+    entry = json.loads(session_map_path.read_text())["ccgram:@0"]
     assert entry["session_id"] == pi_session_id
     assert entry["provider_name"] == "pi"
     assert entry["transcript_path"] == str(transcript)
+
+
+_CODEX_SESSION_ID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+_GEMINI_SESSION_ID = "b2c3d4e5-f678-90ab-cdef-1234567890ab"
 
 
 def test_codex_stop_does_not_refresh_session_map_when_in_sync(
@@ -354,34 +338,20 @@ def test_codex_stop_outputs_valid_stop_hook_json(
     assert json.loads(captured.out) == {}
 
 
-def test_codex_adapter_rejects_non_uuid_session_id() -> None:
-    from ccgram.hooks.adapters import get_hook_adapter
-
-    adapter = get_hook_adapter("codex")
+@pytest.mark.parametrize("provider", ["codex", "pi"])
+def test_adapter_rejects_non_uuid_session_id(provider: str) -> None:
+    adapter = get_hook_adapter(provider)
     assert adapter is not None
-    result = adapter.normalize(
-        {
-            "session_id": "not-a-uuid",
-            "cwd": "/tmp/project",
-            "hook_event_name": "Stop",
-        }
+    assert (
+        adapter.normalize(
+            {
+                "session_id": "not-a-uuid",
+                "cwd": "/tmp/project",
+                "hook_event_name": "Stop",
+            }
+        )
+        is None
     )
-    assert result is None
-
-
-def test_pi_adapter_rejects_non_uuid_session_id() -> None:
-    from ccgram.hooks.adapters import get_hook_adapter
-
-    adapter = get_hook_adapter("pi")
-    assert adapter is not None
-    result = adapter.normalize(
-        {
-            "session_id": "garbage",
-            "cwd": "/tmp/project",
-            "hook_event_name": "Stop",
-        }
-    )
-    assert result is None
 
 
 def test_gemini_after_agent_maps_to_stop(tmp_path: Path, monkeypatch) -> None:
@@ -408,72 +378,47 @@ def test_gemini_after_agent_maps_to_stop(tmp_path: Path, monkeypatch) -> None:
     assert "prompt_response" not in event["data"]
 
 
-def test_detect_provider_from_payload_defaults_to_none() -> None:
-    from ccgram.hooks.adapters import detect_provider_from_payload
-
-    assert detect_provider_from_payload({}) is None
-
-
-def test_detect_provider_from_payload_uses_transcript_path_codex() -> None:
-    from ccgram.hooks.adapters import detect_provider_from_payload
-
-    assert (
-        detect_provider_from_payload({"transcript_path": "/home/u/.codex/sess.jsonl"})
-        == "codex"
-    )
-
-
-def test_detect_provider_from_payload_uses_transcript_path_gemini() -> None:
-    from ccgram.hooks.adapters import detect_provider_from_payload
-
-    assert (
-        detect_provider_from_payload({"transcript_path": "/home/u/.gemini/sess.jsonl"})
-        == "gemini"
-    )
-
-
-def test_detect_provider_from_payload_uses_transcript_path_pi() -> None:
-    from ccgram.hooks.adapters import detect_provider_from_payload
-
-    assert (
-        detect_provider_from_payload({"transcript_path": "/home/u/.pi/agent/s.jsonl"})
-        == "pi"
-    )
-
-
-def test_detect_provider_from_payload_uses_explicit_provider_field() -> None:
-    from ccgram.hooks.adapters import detect_provider_from_payload
-
-    assert detect_provider_from_payload({"provider_name": "codex"}) == "codex"
-
-
-def test_detect_provider_from_payload_uses_gemini_only_event_name() -> None:
-    from ccgram.hooks.adapters import detect_provider_from_payload
-
-    # AfterAgent is unique to Gemini
-    assert detect_provider_from_payload({"hook_event_name": "AfterAgent"}) == "gemini"
-
-
-def test_detect_provider_from_payload_claude_model_field_not_codex() -> None:
-    from ccgram.hooks.adapters import detect_provider_from_payload
-
-    # Claude Stop/Notification payloads now carry a ``model`` field; a Claude
-    # transcript path must not be misdetected as codex.
-    payload: dict[str, object] = {
-        "session_id": "550e8400-e29b-41d4-a716-446655440000",
-        "hook_event_name": "Stop",
-        "transcript_path": "/home/u/.claude/projects/proj/sess.jsonl",
-        "model": "claude-opus-4-8",
-        "permission_mode": "default",
-    }
-    assert detect_provider_from_payload(payload) is None
-
-
-def test_detect_provider_from_payload_codex_model_field_still_codex() -> None:
-    from ccgram.hooks.adapters import detect_provider_from_payload
-
-    # A model-bearing payload that is not a Claude transcript still infers codex.
-    assert detect_provider_from_payload({"model": "gpt-5-codex"}) == "codex"
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        pytest.param({}, None, id="empty-payload"),
+        pytest.param(
+            {"transcript_path": "/home/u/.codex/sess.jsonl"}, "codex", id="codex-path"
+        ),
+        pytest.param(
+            {"transcript_path": "/home/u/.gemini/sess.jsonl"},
+            "gemini",
+            id="gemini-path",
+        ),
+        pytest.param(
+            {"transcript_path": "/home/u/.pi/agent/s.jsonl"}, "pi", id="pi-path"
+        ),
+        pytest.param({"provider_name": "codex"}, "codex", id="explicit-field"),
+        # AfterAgent is unique to Gemini.
+        pytest.param(
+            {"hook_event_name": "AfterAgent"}, "gemini", id="gemini-only-event"
+        ),
+        # A model-bearing payload that is not a Claude transcript infers codex...
+        pytest.param({"model": "gpt-5-codex"}, "codex", id="codex-model-field"),
+        # ...but Claude Stop/Notification payloads now carry ``model`` too, and a
+        # Claude transcript path must not be misdetected as codex.
+        pytest.param(
+            {
+                "session_id": "550e8400-e29b-41d4-a716-446655440000",
+                "hook_event_name": "Stop",
+                "transcript_path": "/home/u/.claude/projects/proj/sess.jsonl",
+                "model": "claude-opus-4-8",
+                "permission_mode": "default",
+            },
+            None,
+            id="claude-model-field",
+        ),
+    ],
+)
+def test_detect_provider_from_payload(
+    payload: dict[str, object], expected: str | None
+) -> None:
+    assert detect_provider_from_payload(payload) == expected
 
 
 @pytest.mark.parametrize("event_name", ["Stop", "Notification"])

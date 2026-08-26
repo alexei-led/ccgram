@@ -1,3 +1,4 @@
+import pytest
 from telegram import MessageEntity
 from telegramify_markdown import utf16_len as _utf16_len
 
@@ -206,57 +207,71 @@ class TestTruncateQuoteText:
 
 
 class TestStripIndentedCodeBlocks:
-    def test_strips_indented_block_after_blank_line(self) -> None:
-        text = "hello\n\n    indented\n    block\n\nend"
+    @pytest.mark.parametrize(
+        ("text", "present", "absent"),
+        [
+            pytest.param(
+                "hello\n\n    indented\n    block\n\nend",
+                ["indented\nblock"],
+                ["    indented"],
+                id="strips_block_after_blank_line",
+            ),
+            pytest.param(
+                "    indented start\n\nrest",
+                ["indented start"],
+                ["    indented"],
+                id="strips_block_at_start",
+            ),
+            pytest.param(
+                "text\n\n```python\ndef foo():\n    x = 1\n\n    y = 2\n```\n\nend",
+                ["    x = 1", "    y = 2"],
+                [],
+                id="preserves_backtick_fence_indentation",
+            ),
+            pytest.param(
+                "```\n    code\n```\n\ntext",
+                ["    code"],
+                [],
+                id="preserves_fence_at_start",
+            ),
+            pytest.param(
+                "```\n    keep\n```\n\n    strip this\n\nend",
+                ["    keep", "strip this"],
+                ["    strip"],
+                id="mixed_fenced_and_indented",
+            ),
+            pytest.param(
+                "~~~\n    keep\n~~~\n\n    strip this\n\nend",
+                ["    keep", "strip this"],
+                ["    strip"],
+                id="tilde_fence_behaves_like_backtick",
+            ),
+            pytest.param(
+                "before\n\n```python\n    indented code\n    more",
+                ["    indented code"],
+                [],
+                id="unclosed_fence_kept_verbatim",
+            ),
+            pytest.param(
+                "`````\n    keep\n```\n\n    also keep\n`````",
+                ["    keep", "    also keep"],
+                [],
+                id="shorter_fence_does_not_close_longer_one",
+            ),
+        ],
+    )
+    def test_strips_only_unfenced_indentation(
+        self, text: str, present: list[str], absent: list[str]
+    ) -> None:
         result = _strip_indented_code_blocks(text)
-        assert "    indented" not in result
-        assert "indented\nblock" in result
-
-    def test_strips_indented_block_at_start(self) -> None:
-        text = "    indented start\n\nrest"
-        result = _strip_indented_code_blocks(text)
-        assert "    indented" not in result
-        assert "indented start" in result
-
-    def test_preserves_fenced_block_indentation(self) -> None:
-        text = "text\n\n```python\ndef foo():\n    x = 1\n\n    y = 2\n```\n\nend"
-        result = _strip_indented_code_blocks(text)
-        assert "    x = 1" in result
-        assert "    y = 2" in result
-
-    def test_preserves_fenced_block_at_start(self) -> None:
-        text = "```\n    code\n```\n\ntext"
-        result = _strip_indented_code_blocks(text)
-        assert "    code" in result
-
-    def test_mixed_fenced_and_indented(self) -> None:
-        text = "```\n    keep\n```\n\n    strip this\n\nend"
-        result = _strip_indented_code_blocks(text)
-        assert "    keep" in result
-        assert "    strip" not in result
-        assert "strip this" in result
+        for fragment in present:
+            assert fragment in result
+        for fragment in absent:
+            assert fragment not in result
 
     def test_no_indentation_passthrough(self) -> None:
         text = "plain text\nno indentation"
         assert _strip_indented_code_blocks(text) == text
-
-    def test_unclosed_fence_kept_verbatim(self) -> None:
-        text = "before\n\n```python\n    indented code\n    more"
-        result = _strip_indented_code_blocks(text)
-        assert "    indented code" in result
-
-    def test_nested_fence_longer_opening(self) -> None:
-        text = "`````\n    keep\n```\n\n    also keep\n`````"
-        result = _strip_indented_code_blocks(text)
-        assert "    keep" in result
-        assert "    also keep" in result
-
-    def test_tilde_fence_preserved(self) -> None:
-        text = "~~~\n    keep\n~~~\n\n    strip this\n\nend"
-        result = _strip_indented_code_blocks(text)
-        assert "    keep" in result
-        assert "    strip" not in result
-        assert "strip this" in result
 
 
 class TestExpandableQuoteTruncation:

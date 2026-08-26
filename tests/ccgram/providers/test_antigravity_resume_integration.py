@@ -8,6 +8,7 @@ from urllib.parse import quote
 
 import pytest
 
+from ccgram import providers as providers_pkg
 from ccgram.providers import resolve_launch_command
 from ccgram.providers.antigravity import AntigravityProvider
 
@@ -105,7 +106,7 @@ class TestProviderScopedResumeDiscovery:
             )
         ]
         get_provider = MagicMock(return_value=provider)
-        monkeypatch.setattr(resume_command, "get_provider_for_window", get_provider)
+        monkeypatch.setattr(providers_pkg, "get_provider_for_window", get_provider)
 
         sessions = resume_command.scan_all_sessions("antigravity")
 
@@ -126,7 +127,7 @@ class TestProviderScopedResumeDiscovery:
             )
         ]
         get_provider = MagicMock(return_value=provider)
-        monkeypatch.setattr(resume_picker, "get_provider_for_window", get_provider)
+        monkeypatch.setattr(providers_pkg, "get_provider_for_window", get_provider)
 
         sessions = resume_picker.scan_sessions_for_cwd(
             str(tmp_path), provider_name="antigravity"
