@@ -5,7 +5,7 @@ from __future__ import annotations
 import ast
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from ccgram.handlers.messaging_pipeline import message_queue as mq
 from ccgram.monitor_state import MonitorState, TrackedSession
@@ -92,7 +92,11 @@ async def test_monitor_does_not_commit_when_queue_busy(tmp_path, monkeypatch):
     with open(session_file, "a") as f:
         f.write(line)
     os.utime(session_file)
-    await monitor.check_for_updates(current_map)
+    monitor.set_message_callback(AsyncMock(return_value=None))
+    messages = await monitor.check_for_updates(current_map)
+    pending = monitor._register_delivery_receipts(messages)
+    for message, receipt in pending:
+        await monitor._dispatch_message_with_receipt(message, receipt)
 
     tracked = monitor.state.get_session("s1")
     assert tracked is not None
@@ -137,10 +141,28 @@ async def test_failed_delivery_receipt_withholds_watermark_until_restart(tmp_pat
     assert tracked.last_byte_offset == 10
 
     # A process restart discards in-memory parse state; the persisted offset
-    # remains 10, so the failed range is read and delivered again.
-    monitor._delivery_receipts.clear()
+    # remains 10. A successful replay receipt may then commit the range.
+    replay = DeliveryReceipt()
+    replay.track()
+    replay.close()
+    replay.settle(DeliveryOutcome.DELIVERED)
+    monitor._delivery_receipts["s1"] = [replay]
     monitor._commit_watermark_if_idle()
     assert tracked.last_byte_offset == 50
+
+
+def test_receipt_free_parsed_offset_is_not_committed(tmp_path):
+    from ccgram.session_monitor import SessionMonitor
+
+    monitor = SessionMonitor(projects_path=tmp_path, state_file=tmp_path / "ms.json")
+    tracked = TrackedSession(
+        session_id="s1", file_path="/x", last_byte_offset=10, parsed_offset=50
+    )
+    monitor.state.update_session(tracked)
+
+    monitor._commit_watermark_if_idle()
+
+    assert tracked.last_byte_offset == 10
 
 
 async def test_queues_idle_semantics():

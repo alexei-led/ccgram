@@ -178,14 +178,10 @@ class SessionMonitor:
             if session_id not in self._transcript_reader._pending_tools
             and delivery_receipts_ready(receipts)
         }
-        # Sessions that parsed no visible message have no receipt and are safe
-        # to advance; parser policy intentionally filters that content.
-        committable.update(
-            session_id
-            for session_id in self.state.tracked_sessions
-            if session_id not in self._delivery_receipts
-            and session_id not in self._transcript_reader._pending_tools
-        )
+        # Receipt-free offsets are not proven delivered. Keeping them in memory
+        # is cheap and avoids every parse/cancellation race: a later delivered
+        # message commits the accumulated range, while a restart harmlessly
+        # reparses filtered entries from the previous durable watermark.
         if self.state.commit_parsed_offsets(committable):
             self.state.save_if_dirty()
         for session_id in committable:
