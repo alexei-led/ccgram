@@ -458,13 +458,22 @@ class SessionMapSync:
         session_map: dict[str, Any],
         old_format_keys: list[str],
     ) -> None:
-        """Remove old-format (window-name-keyed) entries from session_map.json."""
-        if not old_format_keys:
-            return
+        """Retain unrecognized persistence keys until explicit migration/rebind.
+
+        A raw legacy Herdr key can be the only evidence that connects an old
+        Telegram topic to a newly discovered canonical target.  Deleting it
+        before the adapter has supplied an unambiguous alias makes recovery
+        impossible, so this method intentionally does not mutate the file.
+        ``session_map`` stays non-actionable because parsing still accepts only
+        backend-valid identities.
+        """
+        del session_map
         for key in old_format_keys:
-            logger.info("Removing old-format session_map key: %s", key)
-            del session_map[key]
-        atomic_write_json(config.session_map_file, session_map)
+            logger.warning(
+                "Retaining unrecognized session_map key for recovery; "
+                "wait for a unique live alias or explicitly rebind: %s",
+                key,
+            )
 
     async def wait_for_session_map_entry(
         self,
@@ -564,23 +573,28 @@ class SessionMapSync:
         except OSError as exc:
             logger.warning("Failed to lock session_map for pruning: %s", exc)
 
-    def rename_session_map_entry(self, alias_window_id: str, window_id: str) -> bool:
-        """Re-key a hook-written entry from a superseded window id onto the live one.
+    @staticmethod
+    def identity_migration_backup_path(map_file: Path) -> Path:
+        """Return the retained pre-migration copy for a hook-written map."""
+        return map_file.with_name(f"{map_file.name}.identity-migration.bak")
 
-        Pairs with ``window_resolver.migrate_window_aliases``: that moves the
-        in-memory state, this moves the file the hook wrote it to. Without the
-        file side, ``load_session_map`` recreates the alias window state on the
-        next cycle and the reconciliation never sticks.
+    def rename_session_map_entries(self, migrations: list[tuple[str, str]]) -> bool:
+        """Atomically re-key a set of aliases while holding the hook file lock.
 
-        Returns True when the file changed. When both keys exist the live entry
-        wins and the alias is simply dropped — the hook has already written a
-        fresher entry under the current identity.
+        The first destructive migration retains the complete pre-migration map
+        beside it.  A missing map is not an error: there is no coupled file
+        state to move.  A read, backup, lock, or write failure is an error so
+        callers can leave every in-memory store untouched and retry later.
         """
         map_file = config.session_map_file
-        if alias_window_id == window_id or not map_file.exists():
-            return False
+        pairs = [
+            (alias_id, canonical_id)
+            for alias_id, canonical_id in migrations
+            if alias_id and canonical_id and alias_id != canonical_id
+        ]
+        if not pairs or not map_file.exists():
+            return True
         prefix = session_map_prefix()
-        alias_key, live_key = f"{prefix}{alias_window_id}", f"{prefix}{window_id}"
         lock_path = map_file.with_suffix(".lock")
         try:
             with open(lock_path, "w") as lock_f:
@@ -589,14 +603,31 @@ class SessionMapSync:
                     # Re-read under the hook-compatible lock so a concurrent
                     # hook write cannot be lost between read and write.
                     raw = _read_session_map_for_pruning()
-                    if raw is None or alias_key not in raw:
+                    if raw is None:
+                        logger.warning(
+                            "Session-map migration deferred: map is unreadable"
+                        )
                         return False
-                    entry = raw.pop(alias_key)
-                    if live_key not in raw:
-                        raw[live_key] = entry
+                    moves = [
+                        (f"{prefix}{alias_id}", f"{prefix}{canonical_id}")
+                        for alias_id, canonical_id in pairs
+                        if f"{prefix}{alias_id}" in raw
+                    ]
+                    if not moves:
+                        return True
+                    backup = self.identity_migration_backup_path(map_file)
+                    if not backup.exists():
+                        atomic_write_json(backup, raw)
+                    for alias_key, live_key in moves:
+                        entry = raw.pop(alias_key)
+                        # The live hook entry is fresher; retain it on a
+                        # collision while still removing the superseded key.
+                        raw.setdefault(live_key, entry)
                     atomic_write_json(map_file, raw)
                     logger.info(
-                        "Re-keyed session_map entry %s -> %s", alias_key, live_key
+                        "Re-keyed %d session_map entr%s",
+                        len(moves),
+                        "y" if len(moves) == 1 else "ies",
                     )
                     return True
                 finally:
@@ -604,6 +635,23 @@ class SessionMapSync:
         except OSError as exc:
             logger.warning("Failed to lock session_map for re-keying: %s", exc)
             return False
+
+    def rename_session_map_entry(self, alias_window_id: str, window_id: str) -> bool:
+        """Backward-compatible single-entry wrapper.
+
+        False retains the historical meaning that no file entry changed; batch
+        callers use ``rename_session_map_entries`` to distinguish safe no-ops
+        from a failed migration.
+        """
+        map_file = config.session_map_file
+        if alias_window_id == window_id or not map_file.exists():
+            return False
+        prefix = session_map_prefix()
+        alias_key = f"{prefix}{alias_window_id}"
+        raw = _read_session_map_for_pruning()
+        if raw is None or alias_key not in raw:
+            return False
+        return self.rename_session_map_entries([(alias_window_id, window_id)])
 
     def register_hookless_session(
         self,

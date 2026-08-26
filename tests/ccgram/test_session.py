@@ -9,6 +9,7 @@ from ccgram.session_map import session_map_sync
 from ccgram.session_resolver import session_resolver
 from ccgram.thread_router import thread_router
 from ccgram.user_preferences import user_preferences
+from ccgram.window_resolver import resolve_window_alias
 from ccgram.window_state_store import APPROVAL_MODES, WindowState, window_store
 
 
@@ -46,6 +47,139 @@ class TestLegacyHerdrMigration:
         assert window_store.archive_legacy_herdr("w2:t1", 1, 10)
         assert mgr.prune_stale_window_states(set()) is False
         assert "w2:t1" in window_store.window_states
+
+    async def test_raw_legacy_session_map_key_is_retained_until_reconciled(
+        self, mgr: SessionManager, tmp_path, monkeypatch
+    ) -> None:
+        map_file = tmp_path / "session_map.json"
+        original = {
+            "herdr:w2:t1": {
+                "session_id": "sid",
+                "cwd": "/repo",
+                "window_name": "tab",
+                "transcript_path": "",
+                "provider_name": "claude",
+            }
+        }
+        map_file.write_text(json.dumps(original))
+        monkeypatch.setattr("ccgram.session.config.multiplexer_name", "herdr")
+        monkeypatch.setattr("ccgram.session.config.session_map_file", map_file)
+
+        await session_map_sync.load_session_map()
+
+        assert json.loads(map_file.read_text()) == original
+
+
+class TestLegacyHerdrAliasConvergence:
+    @staticmethod
+    def _target(char: str = "a") -> str:
+        return "herdr-session-v1-" + char * 64
+
+    def test_unique_legacy_alias_moves_all_stores_and_keeps_recovery_backups(
+        self, mgr: SessionManager, tmp_path, monkeypatch
+    ) -> None:
+        """The old tab key becomes one canonical target, never a new topic."""
+        alias, canonical = "w2:t1", self._target()
+        state_file = tmp_path / "state.json"
+        map_file = tmp_path / "session_map.json"
+        map_file.write_text(
+            json.dumps(
+                {
+                    f"herdr:{alias}": {
+                        "session_id": "sid-old",
+                        "cwd": "/repo",
+                        "window_name": "repo ▸ tab",
+                        "transcript_path": "/repo/t.jsonl",
+                        "provider_name": "claude",
+                    }
+                }
+            )
+        )
+        monkeypatch.setattr("ccgram.session.config.multiplexer_name", "herdr")
+        monkeypatch.setattr("ccgram.session.config.state_file", state_file)
+        monkeypatch.setattr("ccgram.session.config.session_map_file", map_file)
+        user_preferences.user_window_offsets.clear()
+        window_store.window_states[alias] = WindowState(
+            session_id="sid-old",
+            cwd="/repo",
+            transcript_path="/repo/t.jsonl",
+            window_name="repo ▸ tab",
+            legacy_herdr=True,
+        )
+        thread_router.bind_thread(7, 41, alias, window_name="repo ▸ tab")
+        thread_router.chat_thread_bindings[(7, -100, 41)] = alias
+        user_preferences.user_window_offsets[7] = {alias: 123}
+
+        mgr.reconcile_window_aliases(
+            [SimpleNamespace(window_id=canonical, legacy_alias_window_ids=(alias,))]
+        )
+
+        assert alias not in window_store.window_states
+        assert window_store.window_states[canonical].session_id == "sid-old"
+        assert window_store.window_states[canonical].legacy_herdr is False
+        assert thread_router.get_window_for_thread(7, 41) == canonical
+        assert thread_router.chat_thread_bindings[(7, -100, 41)] == canonical
+        assert user_preferences.user_window_offsets[7] == {canonical: 123}
+        assert thread_router.get_display_name(canonical) == "repo ▸ tab"
+        raw = json.loads(map_file.read_text())
+        assert f"herdr:{alias}" not in raw
+        assert raw[f"herdr:{canonical}"]["session_id"] == "sid-old"
+        assert json.loads(
+            map_file.with_name("session_map.json.identity-migration.bak").read_text()
+        ) == {f"herdr:{alias}": raw[f"herdr:{canonical}"]}
+        assert state_file.with_name("state.json.identity-migration.bak").exists()
+
+        # Restart/reconciliation is idempotent: no state or file key flips back.
+        mgr.reconcile_window_aliases(
+            [SimpleNamespace(window_id=canonical, legacy_alias_window_ids=(alias,))]
+        )
+        assert list(json.loads(map_file.read_text())) == [f"herdr:{canonical}"]
+
+    def test_ambiguous_legacy_alias_is_retained_and_action_blocked(
+        self, mgr: SessionManager, tmp_path, monkeypatch
+    ) -> None:
+        alias = "w2:t1"
+        map_file = tmp_path / "session_map.json"
+        original = {f"herdr:{alias}": {"session_id": "sid", "cwd": "/repo"}}
+        map_file.write_text(json.dumps(original))
+        monkeypatch.setattr("ccgram.session.config.multiplexer_name", "herdr")
+        monkeypatch.setattr("ccgram.session.config.session_map_file", map_file)
+        window_store.window_states[alias] = WindowState(cwd="/repo", legacy_herdr=True)
+        thread_router.bind_thread(7, 41, alias)
+
+        mgr.reconcile_window_aliases(
+            [
+                SimpleNamespace(
+                    window_id=self._target("a"), legacy_alias_window_ids=(alias,)
+                ),
+                SimpleNamespace(
+                    window_id=self._target("b"), legacy_alias_window_ids=(alias,)
+                ),
+            ]
+        )
+
+        assert thread_router.get_window_for_thread(7, 41) == alias
+        assert window_store.is_legacy_herdr(alias)
+        assert json.loads(map_file.read_text()) == original
+
+    def test_session_map_failure_keeps_all_memory_state_for_retry(
+        self, mgr: SessionManager, tmp_path, monkeypatch
+    ) -> None:
+        alias, canonical = "w2:t99", self._target()
+        monkeypatch.setattr("ccgram.session.config.state_file", tmp_path / "state.json")
+        window_store.window_states[alias] = WindowState(cwd="/repo", legacy_herdr=True)
+        thread_router.bind_thread(7, 41, alias)
+        monkeypatch.setattr(
+            session_map_sync, "rename_session_map_entries", lambda _m: False
+        )
+
+        mgr.reconcile_window_aliases(
+            [SimpleNamespace(window_id=canonical, legacy_alias_window_ids=(alias,))]
+        )
+
+        assert alias in window_store.window_states
+        assert thread_router.get_window_for_thread(7, 41) == alias
+        assert resolve_window_alias(alias) == alias
 
 
 class TestThreadBindings:
@@ -182,6 +316,24 @@ class TestFindUsersForSession:
     def test_ignores_windows_without_state(self, mgr: SessionManager) -> None:
         thread_router.bind_thread(100, 1, "@1")
         assert session_resolver.find_users_for_session("sid-1") == []
+
+    def test_uses_alias_convergence_for_a_bound_superseded_id(
+        self, mgr: SessionManager
+    ) -> None:
+        """Routing uses the canonical identity contract, not another mapping."""
+        from ccgram.window_resolver import migrate_window_aliases
+
+        alias = "herdr-session-v1-" + "a" * 64
+        canonical = "herdr-session-v1-" + "b" * 64
+        mgr.window_states[canonical] = self._ws("sid-1")
+        # Record a redirect before a late binding arrives; no locator/digest
+        # conversion is available to the session resolver itself.
+        migrate_window_aliases({alias: canonical}, {}, {}, {}, {}, {})
+        thread_router.bind_thread(100, 1, alias)
+
+        assert session_resolver.find_users_for_session("sid-1") == [
+            (100, canonical, 1, None)
+        ]
 
 
 class TestLoadSessionMapDisplayName:

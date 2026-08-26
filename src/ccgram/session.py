@@ -17,6 +17,8 @@ Thread routing: delegated to ThreadRouter (see thread_router.py) — no pass-thr
 """
 
 import json
+from copy import deepcopy
+
 import structlog
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -39,6 +41,7 @@ from .user_preferences import (
     install_user_preferences,
     user_preferences,
 )
+from .utils import atomic_write_json
 from .window_view import WindowView
 from .window_state_ports import identity_state as _identity_state
 from .window_state_ports import lifecycle_state as _lifecycle_state
@@ -226,28 +229,94 @@ class SessionManager:
         if migrated:
             self._save_state()
 
-    def reconcile_window_aliases(self, windows: Sequence[Any]) -> None:
-        """Fold state persisted under superseded window ids onto the live ones.
+    @staticmethod
+    def _unique_window_aliases(
+        windows: Sequence[Any], attribute: str
+    ) -> dict[str, str]:
+        """Return aliases with exactly one fresh canonical attestation."""
+        candidates: dict[str, set[str]] = {}
+        for window in windows:
+            canonical_id = getattr(window, "window_id", "")
+            if not canonical_id:
+                continue
+            for alias_id in getattr(window, attribute, ()):
+                if alias_id and alias_id != canonical_id:
+                    candidates.setdefault(alias_id, set()).add(canonical_id)
+        aliases: dict[str, str] = {}
+        for alias_id, canonical_ids in candidates.items():
+            if len(canonical_ids) == 1:
+                aliases[alias_id] = next(iter(canonical_ids))
+            else:
+                logger.warning(
+                    "Identity migration deferred: alias has %d live targets; "
+                    "explicitly rebind the affected topic",
+                    len(canonical_ids),
+                    alias=alias_id,
+                )
+        return aliases
 
-        Runs every monitor cycle, not just at startup: the identities a backend
-        supersedes are minted whenever an agent session starts, which is long
-        after bootstrap. Backends with one stable identity publish no aliases,
-        so this is a no-op for them (tmux never populates ``alias_window_ids``).
+    def _backup_identity_migration_state(self) -> bool:
+        """Persist one pre-migration state snapshot for rollback/recovery."""
+        backup = config.state_file.with_name(
+            f"{config.state_file.name}.identity-migration.bak"
+        )
+        if backup.exists():
+            return True
+        try:
+            atomic_write_json(backup, self._serialize_state())
+        except OSError as exc:
+            logger.warning("Identity migration deferred: state backup failed: %s", exc)
+            return False
+        return True
+
+    def reconcile_window_aliases(self, windows: Sequence[Any]) -> None:
+        """Converge uniquely-attested aliases through the single fold owner.
+
+        Canonical aliases describe a target supersession.  Legacy aliases are
+        adapter-provided migration evidence only; raw locators remain blocked
+        unless one fresh listing attests exactly one target.  The file re-key
+        happens under the hook lock before any in-memory state is changed, so
+        a failed persistence operation leaves every coupled in-memory store
+        intact for the next reconciliation.
         """
         # Lazy: same cycle as resolve_stale_ids — window_resolver imports
         # session-state types, so hoisting forms a session → window_resolver →
         # session.WindowState cycle.
         from .window_resolver import migrate_window_aliases
 
-        aliases = {
-            alias_id: window.window_id
-            for window in windows
-            for alias_id in getattr(window, "alias_window_ids", ())
-        }
+        aliases = self._unique_window_aliases(windows, "alias_window_ids")
+        legacy_aliases = self._unique_window_aliases(windows, "legacy_alias_window_ids")
+        aliases.update(legacy_aliases)
         if not aliases:
             return
 
+        # Validate the complete in-memory fold before changing its coupled
+        # hook file.  The actual maps remain unmodified until the locked write
+        # and its recoverable backups have succeeded.
+        cloned_states = deepcopy(self.window_states)
+        cloned_bindings = deepcopy(thread_router.thread_bindings)
+        cloned_chat_bindings = deepcopy(thread_router.chat_thread_bindings)
+        cloned_offsets = deepcopy(user_preferences.user_window_offsets)
+        cloned_display_names = deepcopy(thread_router.window_display_names)
         migrations = migrate_window_aliases(
+            aliases,
+            cloned_states,
+            cloned_bindings,
+            cloned_chat_bindings,
+            cloned_offsets,
+            cloned_display_names,
+            record_redirects=False,
+        )
+        if migrations and not self._backup_identity_migration_state():
+            return
+        if not session_map_sync.rename_session_map_entries(list(aliases.items())):
+            logger.warning(
+                "Identity migration deferred: session_map re-key failed; "
+                "state was preserved for retry"
+            )
+            return
+
+        applied = migrate_window_aliases(
             aliases,
             self.window_states,
             thread_router.thread_bindings,
@@ -255,15 +324,20 @@ class SessionManager:
             user_preferences.user_window_offsets,
             thread_router.window_display_names,
         )
-        if not migrations:
-            return
-
-        for migration in migrations:
-            session_map_sync.rename_session_map_entry(
-                migration.alias_id, migration.canonical_id
-            )
-        thread_router._rebuild_reverse_index()
-        self._save_state()
+        for migration in applied:
+            if migration.alias_id not in legacy_aliases:
+                continue
+            state = self.window_states.get(migration.canonical_id)
+            if state is not None:
+                # The adapter just supplied the evidence that unblocks this
+                # old record.  Archive metadata applies only to the raw key.
+                state.legacy_herdr = False
+                state.legacy_herdr_archived = False
+                state.legacy_herdr_archive_user_id = None
+                state.legacy_herdr_archive_thread_id = None
+        if migrations or applied:
+            thread_router._rebuild_reverse_index()
+            self._save_state()
 
     async def resolve_stale_ids(self) -> None:
         """Re-resolve persisted window IDs against live tmux windows.
@@ -282,6 +356,12 @@ class SessionManager:
                 "Startup window reconciliation skipped: multiplexer listing unavailable"
             )
             return
+
+        # Alias convergence must happen before startup adoption and before
+        # any session-map reader can discard an old key.  This also gives an
+        # old tab/pane persistence record exactly one fresh, adapter-attested
+        # chance to become its canonical durable target.
+        self.reconcile_window_aliases(windows)
 
         live = [
             LiveWindow(window_id=w.window_id, window_name=w.window_name)

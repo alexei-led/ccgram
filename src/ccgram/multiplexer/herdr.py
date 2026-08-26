@@ -705,13 +705,25 @@ class HerdrManager:
 
     @staticmethod
     def _live_ref(record: HerdrLiveRecord, label: str) -> WindowRef:
-        """Project a guarded session record without exposing its locator."""
+        """Project a guarded record with canonical and migration-only aliases.
+
+        Old ccgram versions persisted the tab or pane locator directly.  The
+        locator is not returned as an actionable ID: it is an adapter-attested
+        migration candidate only.  The core accepts it only if this fresh
+        snapshot attests exactly one canonical target for it.
+        """
+        legacy_ids = tuple(
+            locator
+            for locator in (record.tab_id, record.pane_id, record.terminal_id)
+            if locator
+        )
         return WindowRef(
             window_id=record.target_id,
             window_name=label,
             cwd=record.cwd,
             pane_current_command=record.composite.agent,
             alias_window_ids=record.alias_target_ids,
+            legacy_alias_window_ids=legacy_ids,
         )
 
     async def _reconciliation_labels(

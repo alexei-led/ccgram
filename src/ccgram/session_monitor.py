@@ -535,6 +535,12 @@ class SessionMonitor:
         error_streak = 0
         while self._running:
             try:
+                raw_session_map = await read_session_map_raw()
+
+                # A fresh listing owns identity convergence. It must precede
+                # session-map loading because loading rejects raw legacy keys;
+                # after a successful fold, re-read the hook file under its
+                # normal parser so the canonical key is what lifecycle sees.
                 all_windows = await list_windows_for_reconciliation(tmux_manager)
                 if all_windows is None:
                     logger.warning(
@@ -559,13 +565,13 @@ class SessionMonitor:
                     from .session import session_manager as _sm
 
                     _sm.reconcile_window_aliases(all_windows)
+                    raw_session_map = await read_session_map_raw()
 
-                # Hooks carry the canonical backend identity.  Reconcile aliases
-                # first so an event emitted during a Herdr re-key finds the topic
-                # moved from its superseded target before its file offset advances.
+                # Dispatch only after identity convergence and the session-map
+                # re-read: hook routing is exact-bound, so consuming a canonical
+                # event before moving a legacy topic binding would drop it.
                 await self._read_hook_events()
 
-                raw_session_map = await read_session_map_raw()
                 await session_map_sync.load_session_map(raw_session_map)
                 current_map = await self._detect_and_cleanup_changes(raw_session_map)
 

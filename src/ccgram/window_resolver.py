@@ -282,6 +282,8 @@ def migrate_window_aliases(
     chat_thread_bindings: dict,
     user_window_offsets: dict,
     window_display_names: dict,
+    *,
+    record_redirects: bool = True,
 ) -> list[AliasMigration]:
     """Fold state persisted under superseded window ids onto the current ones.
 
@@ -297,7 +299,9 @@ def migrate_window_aliases(
 
     Mutates every dict in place. Returns the migrations performed so the caller
     can mirror them into ``session_map.json`` (whose hook-written entry would
-    otherwise recreate the alias state on the next sync).
+    otherwise recreate the alias state on the next sync). ``record_redirects``
+    may be disabled for a pure preflight over cloned maps; redirects then remain
+    unchanged until the persisted migration commits.
     """
     migrations: list[AliasMigration] = []
     active_aliases = {
@@ -310,8 +314,10 @@ def migrate_window_aliases(
             continue
         # Record the redirect before the reference check: the identity is
         # superseded whether or not any state moved, and a flow still holding
-        # the old id needs the answer either way.
-        _record_alias_redirect(alias_id, canonical_id)
+        # the old id needs the answer either way. Preflight callers disable
+        # this side effect until persistence succeeds.
+        if record_redirects:
+            _record_alias_redirect(alias_id, canonical_id)
         if not _alias_is_referenced(
             alias_id,
             window_states,
@@ -333,7 +339,8 @@ def migrate_window_aliases(
         )
         migrations.append(AliasMigration(alias_id=alias_id, canonical_id=canonical_id))
         logger.info("Reconciled superseded window id %s -> %s", alias_id, canonical_id)
-    _prune_stale_alias_redirects(active_aliases)
+    if record_redirects:
+        _prune_stale_alias_redirects(active_aliases)
     return migrations
 
 
