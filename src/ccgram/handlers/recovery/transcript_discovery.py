@@ -327,7 +327,7 @@ async def _bootstrap_identity(
     """
     if w is None:
         return None
-    if await session_map_sync.has_session_map_entry(window_id):
+    if await session_map_sync.session_map_entry_may_exist(window_id):
         # The hook already tracks this window, so ccgram is not missing its
         # record — only the in-memory state, which the monitor rebuilds from
         # that entry within one sync. Seeding here would race it and, worse,

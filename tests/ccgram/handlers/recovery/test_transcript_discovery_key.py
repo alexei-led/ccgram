@@ -138,7 +138,7 @@ class TestBootstrapIdentity:
         )
         monkeypatch.setattr(
             "ccgram.handlers.recovery.transcript_discovery.session_map_sync"
-            ".has_session_map_entry",
+            ".session_map_entry_may_exist",
             AsyncMock(return_value=True),
         )
 

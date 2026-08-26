@@ -143,6 +143,19 @@ def picker_capable_providers() -> list[AgentProvider]:
     ]
 
 
+def is_known_provider(provider_name: str | None) -> bool:
+    """Return whether ``provider_name`` names a provider this build registers.
+
+    Registers first: ``is_valid`` on an empty registry answers False for every
+    name, which would silently widen a caller's narrow request rather than
+    failing loudly.
+    """
+    if not provider_name:
+        return False
+    _ensure_registered()
+    return registry.is_valid(provider_name)
+
+
 def providers_to_scan(provider_name: str | None) -> list[AgentProvider]:
     """Resolve which providers a resumable-session scan should cover.
 
@@ -158,7 +171,7 @@ def providers_to_scan(provider_name: str | None) -> list[AgentProvider]:
     is how the recovery banner's Resume button kept the defaulting behaviour
     after /resume and Browse were fixed.
     """
-    if not provider_name or not registry.is_valid(provider_name):
+    if not is_known_provider(provider_name):
         return picker_capable_providers()
     return [get_provider_for_window("", provider_name=provider_name)]
 
@@ -382,6 +395,7 @@ def resolve_capabilities(provider_name: str | None = None) -> ProviderCapabiliti
 
 
 __all__ = [
+    "is_known_provider",
     "picker_capable_providers",
     "providers_to_scan",
     "AgentMessage",

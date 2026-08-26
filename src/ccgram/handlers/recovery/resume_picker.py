@@ -30,7 +30,11 @@ from telegram import (
 )
 
 from ... import window_query
-from ...providers import get_provider_for_window, providers_to_scan
+from ...providers import (
+    get_provider_for_window,
+    is_known_provider,
+    providers_to_scan,
+)
 from ..callback_data import (
     CB_RECOVERY_BACK,
     CB_RECOVERY_CANCEL,
@@ -224,7 +228,10 @@ async def _handle_resume_pick(
     window_provider = view.provider_name if view else ""
     if not provider_name:
         provider_name = window_provider
-    if window_provider and provider_name != window_provider:
+    # Same test the scan used: an unregistered name widened the picker, so
+    # refusing every foreign-provider row it then listed would leave nothing
+    # pickable.
+    if is_known_provider(window_provider) and provider_name != window_provider:
         await query.answer("Session provider mismatch", show_alert=True)
         return
 

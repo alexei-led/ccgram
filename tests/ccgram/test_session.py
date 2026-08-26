@@ -439,6 +439,42 @@ class TestPruneSessionMap:
         assert "ccgram:@5" not in result
 
 
+class TestSessionMapEntryMayExist:
+    """The guard that stops _bootstrap_identity clobbering a live hook entry."""
+
+    async def test_true_when_the_entry_is_present(self, mgr, tmp_path, monkeypatch):
+        f = tmp_path / "session_map.json"
+        f.write_text(json.dumps({"ccgram:@1": {"session_id": "s"}}))
+        monkeypatch.setattr("ccgram.session_map.config.session_map_file", f)
+        monkeypatch.setattr("ccgram.session_map.config.tmux_session_name", "ccgram")
+
+        assert await session_map_sync.session_map_entry_may_exist("@1") is True
+
+    async def test_false_when_the_file_is_readable_and_lacks_it(
+        self, mgr, tmp_path, monkeypatch
+    ):
+        f = tmp_path / "session_map.json"
+        f.write_text(json.dumps({"ccgram:@9": {"session_id": "s"}}))
+        monkeypatch.setattr("ccgram.session_map.config.session_map_file", f)
+        monkeypatch.setattr("ccgram.session_map.config.tmux_session_name", "ccgram")
+
+        assert await session_map_sync.session_map_entry_may_exist("@1") is False
+
+    async def test_true_when_the_map_cannot_be_read(self, mgr, tmp_path, monkeypatch):
+        """Unknown is not absent.
+
+        Answering False here lets the bootstrap write state that clears the
+        entry of a running session, which hook.py will not recreate outside
+        SessionStart. Deferring the heal one tick is the cheaper mistake.
+        """
+        f = tmp_path / "session_map.json"
+        f.write_text("{ corrupt")
+        monkeypatch.setattr("ccgram.session_map.config.session_map_file", f)
+        monkeypatch.setattr("ccgram.session_map.config.tmux_session_name", "ccgram")
+
+        assert await session_map_sync.session_map_entry_may_exist("@1") is True
+
+
 class TestWindowStateProviderName:
     def test_default_provider_name_is_empty(self) -> None:
 

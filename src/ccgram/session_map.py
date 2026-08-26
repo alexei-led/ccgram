@@ -697,11 +697,18 @@ class SessionMapSync:
         except OSError:
             logger.exception("Failed to write session_map for hookless session")
 
-    async def has_session_map_entry(self, window_id: str) -> bool:
-        """Return whether the hook has written an entry for ``window_id``."""
+    async def session_map_entry_may_exist(self, window_id: str) -> bool:
+        """Return whether the hook may have an entry for ``window_id``.
+
+        Deliberately answers True when the file cannot be read: callers use
+        this to decide whether it is safe to write state that would clear a
+        live entry, and an unreadable map is "unknown", not "absent". Guessing
+        absent there destroys a running session's tracking; guessing present
+        only defers a heal to the next tick.
+        """
         raw = await read_session_map_raw()
-        if not raw:
-            return False
+        if raw is None:
+            return True
         return f"{session_map_prefix()}{window_id}" in raw
 
     def clear_session_map_entry(self, window_id: str) -> None:
