@@ -210,6 +210,7 @@ def _make_ctx(
     has_seen_status: bool = False,
     is_recently_active: bool = False,
     startup_time: float | None = None,
+    startup_quietly_settled: bool = False,
     is_dead_window: bool = False,
     supports_hook: bool = True,
 ) -> TickContext:
@@ -220,6 +221,7 @@ def _make_ctx(
         has_seen_status=has_seen_status,
         is_recently_active=is_recently_active,
         startup_time=startup_time,
+        startup_quietly_settled=startup_quietly_settled,
         is_dead_window=is_dead_window,
         supports_hook=supports_hook,
     )
@@ -531,6 +533,73 @@ class TestTransitionToIdle:
         mock_enqueue.assert_called_once()
         assert mock_enqueue.call_args[0][3] == IDLE_STATUS_TEXT
         assert mock_enqueue.call_args[1]["thread_id"] == 42
+
+
+class TestQuietStartupSettlement:
+    async def test_startup_expiry_stays_quiet_and_runs_idle_cleanup(self) -> None:
+        """A dormant window must never turn its quiet expiry into Ready later."""
+        from ccgram.handlers.polling.window_tick import _apply_tick_decision
+
+        runtime = PollingRuntime.create()
+        runtime.poll_state.begin_startup_timer("@0", time.monotonic() - 31.0)
+        runtime.lifecycle.start_autoclose_timer(1, 42, "done", 0.0)
+        runtime.lifecycle.record_typing_sent(1, 42)
+        bot = AsyncMock(spec=Bot)
+
+        first = decide_tick(
+            _make_ctx(
+                startup_time=runtime.poll_state.get_state("@0").startup_time,
+                startup_quietly_settled=False,
+            )
+        )
+        assert first.transition == "idle"
+        assert first.send_status is False
+
+        with (
+            patch(
+                "ccgram.handlers.polling.window_tick.apply.update_topic_emoji",
+                new_callable=AsyncMock,
+            ) as mock_emoji,
+            patch(
+                "ccgram.handlers.polling.window_tick.apply.enqueue_status_update",
+                new_callable=AsyncMock,
+            ) as mock_enqueue,
+            patch(
+                "ccgram.handlers.polling.window_tick.apply.thread_router"
+            ) as mock_router,
+        ):
+            mock_router.resolve_chat_id.return_value = -100
+            mock_router.get_display_name.return_value = "project"
+            await _apply_tick_decision(bot, 1, "@0", 42, first, runtime=runtime)
+
+        state = runtime.poll_state.get_state("@0")
+        assert state.startup_time is None
+        assert state.has_seen_status is False
+        assert state.startup_quietly_settled is True
+        assert runtime.lifecycle.get_state(1, 42).autoclose is None
+        assert runtime.lifecycle.get_state(1, 42).last_typing_sent is None
+        mock_emoji.assert_awaited_once()
+        mock_enqueue.assert_not_awaited()
+
+        second = decide_tick(
+            _make_ctx(
+                startup_time=state.startup_time,
+                has_seen_status=state.has_seen_status,
+                startup_quietly_settled=state.startup_quietly_settled,
+            )
+        )
+        assert second.transition == "idle"
+        assert second.send_status is False
+
+    def test_real_status_clears_quiet_settlement(self) -> None:
+        runtime = PollingRuntime.create()
+        runtime.poll_state.mark_startup_quietly_settled("@0")
+
+        runtime.poll_state.mark_seen_status("@0")
+
+        state = runtime.poll_state.get_state("@0")
+        assert state.has_seen_status is True
+        assert state.startup_quietly_settled is False
 
 
 class TestSettledWindowsStaySettled:

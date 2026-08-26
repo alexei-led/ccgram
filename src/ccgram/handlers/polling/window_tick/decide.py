@@ -56,8 +56,10 @@ def decide_tick(ctx: TickContext) -> TickDecision:
         # Ready bubble is wanted here.
         return TickDecision(transition="idle", send_status=True)
 
-    if ctx.has_seen_status:
-        return TickDecision(transition="idle", send_status=True)
+    if ctx.has_seen_status or ctx.startup_quietly_settled:
+        # Quiet settlement is deliberately distinct from has_seen_status:
+        # no bubble was shown, so it must remain quiet on later dormant ticks.
+        return TickDecision(transition="idle", send_status=ctx.has_seen_status)
 
     startup_expired = (
         ctx.startup_time is not None

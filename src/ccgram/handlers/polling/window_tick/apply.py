@@ -126,9 +126,12 @@ async def _transition_to_idle(
     # Settle the window, don't just stop its clock: clearing the startup
     # timestamp alone leaves it indistinguishable from one that never started,
     # so the very next tick decides "starting" again — green topic, typing
-    # indicator, another 30s grace, idle, repeat. A window that reached idle
-    # has finished starting.
-    ps.mark_seen_status(window_id)
+    # indicator, another 30s grace, idle, repeat. A quiet settlement also
+    # cannot use has_seen_status: that flag means a genuine status was shown.
+    if send_status:
+        ps.mark_seen_status(window_id)
+    else:
+        ps.mark_startup_quietly_settled(window_id)
     client = PTBTelegramClient(bot)
     await update_topic_emoji(client, chat_id, thread_id, "idle", display)
     lc.clear_autoclose_timer(user_id, thread_id)
