@@ -327,6 +327,17 @@ async def _bootstrap_identity(
     """
     if w is None:
         return None
+    if await session_map_sync.has_session_map_entry(window_id):
+        # The hook already tracks this window, so ccgram is not missing its
+        # record — only the in-memory state, which the monitor rebuilds from
+        # that entry within one sync. Seeding here would race it and, worse,
+        # destroy it: on a state-less window set_window_provider counts as a
+        # provider switch and clears the entry, and hook.py refuses to recreate
+        # one from any non-SessionStart event ("SessionStart owns initial
+        # creation"). The live session would go untracked until the agent is
+        # restarted, with its messages no longer reaching the topic.
+        return None
+
     detected = await detect_provider_from_pane(
         w.pane_current_command or "", window_id=window_id
     )

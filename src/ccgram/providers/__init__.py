@@ -148,7 +148,8 @@ def providers_to_scan(provider_name: str | None) -> list[AgentProvider]:
 
     A falsy name means the caller could not resolve the window's provider:
     ``None`` when there is no state row, ``""`` when the row exists but never
-    recorded one. Resolving either to the config default lists one agent's
+    recorded one, and a name this build does not register (version skew — a
+    provider persisted by a build that had it). Resolving either to the config default lists one agent's
     sessions under another agent's topic, so cover every picker-capable
     provider instead and let each entry's own ``provider_name`` decide what a
     pick relaunches.
@@ -157,7 +158,7 @@ def providers_to_scan(provider_name: str | None) -> list[AgentProvider]:
     is how the recovery banner's Resume button kept the defaulting behaviour
     after /resume and Browse were fixed.
     """
-    if not provider_name:
+    if not provider_name or not registry.is_valid(provider_name):
         return picker_capable_providers()
     return [get_provider_for_window("", provider_name=provider_name)]
 

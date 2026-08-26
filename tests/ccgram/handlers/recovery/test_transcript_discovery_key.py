@@ -115,6 +115,39 @@ class TestBootstrapIdentity:
         assert result is None
         mock_sm.set_window_provider.assert_not_called()
 
+    async def test_existing_session_map_entry_is_never_bootstrapped_over(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Seeding state must not destroy the hook's entry for a live session.
+
+        On a state-less window set_window_provider counts as a provider switch
+        and clears the session_map entry, and hook.py refuses to recreate one
+        from any non-SessionStart event. Bootstrapping a window the hook is
+        already tracking would leave a running agent untracked until it was
+        restarted, with its messages no longer reaching the topic.
+        """
+        detect = AsyncMock(return_value="claude")
+        monkeypatch.setattr(
+            "ccgram.handlers.recovery.transcript_discovery.detect_provider_from_pane",
+            detect,
+        )
+        mock_sm = MagicMock()
+        monkeypatch.setattr(
+            "ccgram.handlers.recovery.transcript_discovery.session_manager",
+            mock_sm,
+        )
+        monkeypatch.setattr(
+            "ccgram.handlers.recovery.transcript_discovery.session_map_sync"
+            ".has_session_map_entry",
+            AsyncMock(return_value=True),
+        )
+
+        result = await _bootstrap_identity("@9", _window_ref(cwd="/project"))
+
+        assert result is None
+        mock_sm.set_window_provider.assert_not_called()
+        detect.assert_not_called()
+
     async def test_shell_detection_writes_no_state(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

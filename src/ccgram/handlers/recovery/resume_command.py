@@ -284,7 +284,6 @@ async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 "\u274c Resume browsing is not supported by the current provider.",
             )
             return
-        known_provider = provider.capabilities.name
 
     sessions = await asyncio.to_thread(scan_all_sessions, known_provider)
     if not sessions:

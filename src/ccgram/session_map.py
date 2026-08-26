@@ -697,6 +697,13 @@ class SessionMapSync:
         except OSError:
             logger.exception("Failed to write session_map for hookless session")
 
+    async def has_session_map_entry(self, window_id: str) -> bool:
+        """Return whether the hook has written an entry for ``window_id``."""
+        raw = await read_session_map_raw()
+        if not raw:
+            return False
+        return f"{session_map_prefix()}{window_id}" in raw
+
     def clear_session_map_entry(self, window_id: str) -> None:
         """Remove a window's entry from session_map.json if present."""
         if not config.session_map_file.exists():
