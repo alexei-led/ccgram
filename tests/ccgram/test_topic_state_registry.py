@@ -11,25 +11,11 @@ def registry():
 
 
 class TestRegister:
-    def test_register_topic_scope(self, registry: TopicStateRegistry):
+    @pytest.mark.parametrize("scope", ["topic", "window", "qualified", "chat"])
+    def test_register_known_scope(self, registry: TopicStateRegistry, scope: str):
         fn = MagicMock()
-        registry.register("topic")(fn)
-        assert fn in registry._cleanups["topic"]
-
-    def test_register_window_scope(self, registry: TopicStateRegistry):
-        fn = MagicMock()
-        registry.register("window")(fn)
-        assert fn in registry._cleanups["window"]
-
-    def test_register_qualified_scope(self, registry: TopicStateRegistry):
-        fn = MagicMock()
-        registry.register("qualified")(fn)
-        assert fn in registry._cleanups["qualified"]
-
-    def test_register_chat_scope(self, registry: TopicStateRegistry):
-        fn = MagicMock()
-        registry.register("chat")(fn)
-        assert fn in registry._cleanups["chat"]
+        registry.register(scope)(fn)
+        assert fn in registry._cleanups[scope]
 
     def test_register_invalid_scope_raises(self, registry: TopicStateRegistry):
         with pytest.raises(ValueError, match="Unknown cleanup scope"):

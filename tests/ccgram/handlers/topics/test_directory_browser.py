@@ -145,41 +145,39 @@ def _callback_data_values(keyboard) -> list[str]:
     ]
 
 
-class TestBuildWorktreePicker:
-    def test_three_rows_one_button_each(self) -> None:
-        _text, kb = build_worktree_picker("/home/u/proj", "main")
-        rows = kb.inline_keyboard
-        assert [len(r) for r in rows] == [1, 1, 1]
+TELEGRAM_CALLBACK_DATA_LIMIT = 64
 
-    def test_callbacks_and_branch_in_label(self) -> None:
+
+def _worktree_confirm(branch: str = "ccg/feature", dirty: bool = False):
+    return build_worktree_confirm(
+        "/home/u/proj",
+        branch,
+        f"/home/u/proj.worktrees/{branch.replace('/', '-')}",
+        dirty,
+    )
+
+
+class TestBuildWorktreePicker:
+    def test_offers_use_current_new_and_cancel_one_per_row(self) -> None:
         _text, kb = build_worktree_picker("/home/u/proj", "develop")
-        values = _callback_data_values(kb)
-        assert values == [CB_WT_USE_CURRENT, CB_WT_NEW, CB_DIR_CANCEL]
-        use_current_label = kb.inline_keyboard[0][0].text
-        assert "develop" in use_current_label
+        assert [len(row) for row in kb.inline_keyboard] == [1, 1, 1]
+        assert _callback_data_values(kb) == [
+            CB_WT_USE_CURRENT,
+            CB_WT_NEW,
+            CB_DIR_CANCEL,
+        ]
+        assert "develop" in kb.inline_keyboard[0][0].text
 
     def test_text_includes_repo_and_branch(self) -> None:
         text, _kb = build_worktree_picker("/home/u/proj", "feat/x")
         assert "/home/u/proj" in text
         assert "feat/x" in text
 
-    def test_callback_data_within_budget(self) -> None:
-        _text, kb = build_worktree_picker("/home/u/proj", "main")
-        for value in _callback_data_values(kb):
-            assert len(value.encode()) <= 64
-
 
 class TestBuildWorktreeConfirm:
-    def test_three_rows_one_button_each(self) -> None:
-        _text, kb = build_worktree_confirm(
-            "/home/u/proj", "ccg/feature", "/home/u/proj.worktrees/ccg-feature", False
-        )
-        assert [len(r) for r in kb.inline_keyboard] == [1, 1, 1]
-
-    def test_callbacks_and_branch_in_text(self) -> None:
-        text, kb = build_worktree_confirm(
-            "/home/u/proj", "ccg/feature", "/home/u/proj.worktrees/ccg-feature", False
-        )
+    def test_offers_confirm_rename_and_cancel_one_per_row(self) -> None:
+        text, kb = _worktree_confirm()
+        assert [len(row) for row in kb.inline_keyboard] == [1, 1, 1]
         assert _callback_data_values(kb) == [
             CB_WT_CONFIRM,
             CB_WT_EDIT_NAME,
@@ -189,18 +187,20 @@ class TestBuildWorktreeConfirm:
         assert "/home/u/proj.worktrees/ccg-feature" in text
 
     def test_dirty_warning_shown_only_when_dirty(self) -> None:
-        clean_text, _ = build_worktree_confirm(
-            "/home/u/proj", "ccg/x", "/home/u/proj.worktrees/ccg-x", False
-        )
-        dirty_text, _ = build_worktree_confirm(
-            "/home/u/proj", "ccg/x", "/home/u/proj.worktrees/ccg-x", True
-        )
+        clean_text, _ = _worktree_confirm("ccg/x", dirty=False)
+        dirty_text, _ = _worktree_confirm("ccg/x", dirty=True)
         assert "uncommitted" not in clean_text
         assert "uncommitted" in dirty_text
 
-    def test_callback_data_within_budget(self) -> None:
-        _text, kb = build_worktree_confirm(
-            "/home/u/proj", "ccg/feature", "/home/u/proj.worktrees/ccg-feature", True
-        )
-        for value in _callback_data_values(kb):
-            assert len(value.encode()) <= 64
+
+@pytest.mark.parametrize(
+    "keyboard",
+    [
+        build_worktree_picker("/home/u/proj", "main")[1],
+        _worktree_confirm(dirty=True)[1],
+    ],
+    ids=["worktree_picker", "worktree_confirm"],
+)
+def test_callback_data_fits_telegram_budget(keyboard) -> None:
+    for value in _callback_data_values(keyboard):
+        assert len(value.encode()) <= TELEGRAM_CALLBACK_DATA_LIMIT

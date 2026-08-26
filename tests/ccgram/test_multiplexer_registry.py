@@ -42,31 +42,22 @@ class _FakeBackend:
 
 
 class TestRegistryResolution:
-    def test_tmux_registered(self) -> None:
-        assert "tmux" in multiplexer_names()
-
-    def test_herdr_registered(self) -> None:
-        assert "herdr" in multiplexer_names()
-
-    def test_get_tmux_returns_tmux_backend(self) -> None:
-        backend = get_multiplexer("tmux")
-        assert backend.capabilities.name == "tmux"
-
-    def test_get_herdr_returns_herdr_backend(self) -> None:
-        # Construction is I/O-free, so this resolves without a running herdr.
-        backend = get_multiplexer("herdr")
-        assert backend.capabilities.name == "herdr"
+    @pytest.mark.parametrize("name", ["tmux", "herdr"])
+    def test_registered_backend_resolves_to_itself(self, name: str) -> None:
+        # Both constructors are I/O-free, so this resolves without a running
+        # multiplexer.
+        assert name in multiplexer_names()
+        assert get_multiplexer(name).capabilities.name == name
 
     def test_get_caches_one_instance_per_name(self) -> None:
         assert get_multiplexer("tmux") is get_multiplexer("tmux")
 
-    def test_unknown_name_raises(self) -> None:
-        with pytest.raises(UnknownMultiplexerError, match="screen"):
+    def test_unknown_name_raises_and_lists_the_registered_ones(self) -> None:
+        with pytest.raises(UnknownMultiplexerError) as excinfo:
             get_multiplexer("screen")
-
-    def test_unknown_name_lists_available(self) -> None:
-        with pytest.raises(UnknownMultiplexerError, match="tmux"):
-            get_multiplexer("nope")
+        message = str(excinfo.value)
+        assert "screen" in message
+        assert all(name in message for name in multiplexer_names())
 
 
 class TestProxy:

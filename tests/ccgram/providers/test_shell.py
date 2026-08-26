@@ -2,8 +2,43 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from ccgram.providers.shell import PromptMatch, ShellProvider, detect_pane_shell
-from ccgram.multiplexer.base import WindowRef as TmuxWindow
+from ccgram.providers.shell import (
+    PromptMatch,
+    ShellProvider,
+    detect_pane_shell,
+    has_prompt_marker,
+    setup_shell_prompt,
+)
+from ccgram.multiplexer.base import ForegroundInfo, WindowRef as TmuxWindow
+
+
+def _window(pane_cmd: str = "") -> TmuxWindow:
+    return TmuxWindow(
+        window_id="@0",
+        window_name="test",
+        cwd="/tmp",
+        pane_current_command=pane_cmd,
+    )
+
+
+def _env_shell(path: str):
+    return patch("ccgram.providers.shell_infra.os.environ.get", return_value=path)
+
+
+@pytest.fixture
+def prompt_setup_mux():
+    """multiplexer proxy for setup_shell_prompt: interactive shell, bare pane."""
+    with (
+        patch("ccgram.multiplexer.multiplexer") as mock_tm,
+        patch(
+            "ccgram.providers.shell_infra._is_interactive_shell",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+    ):
+        mock_tm.capture_pane = AsyncMock(return_value=None)
+        mock_tm.send_keys = AsyncMock()
+        yield mock_tm
 
 
 class TestShellCapabilities:
@@ -123,63 +158,21 @@ class TestDetectPaneShell:
     async def test_detects_shell_from_pane_command(
         self, mock_tmux, pane_cmd: str, expected: str
     ) -> None:
-        mock_tmux.find_window_by_id = AsyncMock(
-            return_value=TmuxWindow(
-                window_id="@0",
-                window_name="test",
-                cwd="/tmp",
-                pane_current_command=pane_cmd,
-            )
-        )
+        mock_tmux.find_window_by_id = AsyncMock(return_value=_window(pane_cmd))
         assert await detect_pane_shell("@0") == expected
 
-    async def test_falls_back_to_env_when_pane_not_found(self, mock_tmux) -> None:
-        mock_tmux.find_window_by_id = AsyncMock(return_value=None)
-        with patch(
-            "ccgram.providers.shell_infra.os.environ.get", return_value="/bin/zsh"
-        ):
-            assert await detect_pane_shell("@0") == "zsh"
-
-    async def test_falls_back_to_env_when_command_not_a_shell(self, mock_tmux) -> None:
-        mock_tmux.find_window_by_id = AsyncMock(
-            return_value=TmuxWindow(
-                window_id="@0",
-                window_name="test",
-                cwd="/tmp",
-                pane_current_command="python",
-            )
-        )
-        with patch(
-            "ccgram.providers.shell_infra.os.environ.get", return_value="/bin/fish"
-        ):
-            assert await detect_pane_shell("@0") == "fish"
-
-    async def test_falls_back_to_env_when_command_empty(self, mock_tmux) -> None:
-        mock_tmux.find_window_by_id = AsyncMock(
-            return_value=TmuxWindow(
-                window_id="@0",
-                window_name="test",
-                cwd="/tmp",
-                pane_current_command="",
-            )
-        )
-        with patch(
-            "ccgram.providers.shell_infra.os.environ.get", return_value="/bin/bash"
-        ):
-            assert await detect_pane_shell("@0") == "bash"
-
-    async def test_whitespace_only_command_falls_back(self, mock_tmux) -> None:
-        mock_tmux.find_window_by_id = AsyncMock(
-            return_value=TmuxWindow(
-                window_id="@0",
-                window_name="test",
-                cwd="/tmp",
-                pane_current_command="   ",
-            )
-        )
-        with patch(
-            "ccgram.providers.shell_infra.os.environ.get", return_value="/bin/zsh"
-        ):
+    @pytest.mark.parametrize(
+        "window",
+        [
+            pytest.param(None, id="pane_not_found"),
+            pytest.param(_window("python"), id="foreground_is_not_a_shell"),
+            pytest.param(_window(""), id="empty_command"),
+            pytest.param(_window("   "), id="whitespace_only_command"),
+        ],
+    )
+    async def test_falls_back_to_env_shell(self, mock_tmux, window) -> None:
+        mock_tmux.find_window_by_id = AsyncMock(return_value=window)
+        with _env_shell("/bin/zsh"):
             assert await detect_pane_shell("@0") == "zsh"
 
     @pytest.mark.parametrize(
@@ -195,56 +188,27 @@ class TestDetectPaneShell:
     ) -> None:
         # herdr leaves pane_current_command empty for a bare shell; the shell is
         # identified from the foreground process via the seam, not the bot $SHELL.
-        from ccgram.multiplexer.base import ForegroundInfo
-
-        mock_tmux.find_window_by_id = AsyncMock(
-            return_value=TmuxWindow(
-                window_id="@0", window_name="test", cwd="/tmp", pane_current_command=""
-            )
-        )
+        mock_tmux.find_window_by_id = AsyncMock(return_value=_window(""))
         mock_tmux.foreground = AsyncMock(
             return_value=ForegroundInfo(pid=1, pgid=1, argv=argv, cwd="/tmp", tty="")
         )
-        with patch(
-            "ccgram.providers.shell_infra.os.environ.get", return_value="/bin/dash"
-        ):
+        with _env_shell("/bin/dash"):
             assert await detect_pane_shell("@0") == expected
 
     async def test_foreground_non_shell_falls_back_to_env(self, mock_tmux) -> None:
         # A non-shell foreground (e.g. a JS agent runtime) is not a shell match;
         # detection still falls back to the env shell name.
-        from ccgram.multiplexer.base import ForegroundInfo
-
-        mock_tmux.find_window_by_id = AsyncMock(
-            return_value=TmuxWindow(
-                window_id="@0", window_name="test", cwd="/tmp", pane_current_command=""
-            )
-        )
+        mock_tmux.find_window_by_id = AsyncMock(return_value=_window(""))
         mock_tmux.foreground = AsyncMock(
             return_value=ForegroundInfo(
                 pid=1, pgid=1, argv=["node", "cli.js"], cwd="/tmp", tty=""
             )
         )
-        with patch(
-            "ccgram.providers.shell_infra.os.environ.get", return_value="/bin/bash"
-        ):
+        with _env_shell("/bin/bash"):
             assert await detect_pane_shell("@0") == "bash"
 
 
 class TestSetupShellPrompt:
-    @pytest.fixture
-    def mock_tmux(self):
-        with (
-            patch("ccgram.multiplexer.multiplexer") as mock_tm,
-            patch(
-                "ccgram.providers.shell_infra._is_interactive_shell",
-                new_callable=AsyncMock,
-                return_value=True,
-            ),
-        ):
-            mock_tm.capture_pane = AsyncMock(return_value=None)
-            yield mock_tm
-
     @pytest.mark.parametrize(
         ("shell", "expected_substring"),
         [
@@ -257,99 +221,67 @@ class TestSetupShellPrompt:
         ids=["fish", "bash", "zsh", "tcsh", "ksh-fallback"],
     )
     async def test_sends_correct_prompt_command(
-        self, mock_tmux, shell: str, expected_substring: str
+        self, prompt_setup_mux, shell: str, expected_substring: str
     ) -> None:
-        from ccgram.providers.shell import setup_shell_prompt
-
-        mock_tmux.find_window_by_id = AsyncMock(
-            return_value=TmuxWindow(
-                window_id="@0",
-                window_name="test",
-                cwd="/tmp",
-                pane_current_command=shell,
-            )
-        )
-        mock_tmux.send_keys = AsyncMock()
+        prompt_setup_mux.find_window_by_id = AsyncMock(return_value=_window(shell))
+        prompt_setup_mux.send_keys = AsyncMock()
 
         await setup_shell_prompt("@0")
 
-        calls = mock_tmux.send_keys.call_args_list
+        calls = prompt_setup_mux.send_keys.call_args_list
         prompt_call = calls[1]
         assert expected_substring in prompt_call[0][1]
 
-    async def test_sends_clear_after_prompt(self, mock_tmux) -> None:
-        from ccgram.providers.shell import setup_shell_prompt
-
-        mock_tmux.find_window_by_id = AsyncMock(
-            return_value=TmuxWindow(
-                window_id="@0",
-                window_name="test",
-                cwd="/tmp",
-                pane_current_command="bash",
-            )
-        )
-        mock_tmux.send_keys = AsyncMock()
+    async def test_sends_clear_after_prompt(self, prompt_setup_mux) -> None:
+        prompt_setup_mux.find_window_by_id = AsyncMock(return_value=_window("bash"))
+        prompt_setup_mux.send_keys = AsyncMock()
 
         await setup_shell_prompt("@0")
 
-        calls = mock_tmux.send_keys.call_args_list
+        calls = prompt_setup_mux.send_keys.call_args_list
         assert len(calls) == 3
         assert calls[2][0][1] == "clear"
 
-    async def test_send_keys_uses_raw_true(self, mock_tmux) -> None:
-        from ccgram.providers.shell import setup_shell_prompt
-
-        mock_tmux.find_window_by_id = AsyncMock(
-            return_value=TmuxWindow(
-                window_id="@0",
-                window_name="test",
-                cwd="/tmp",
-                pane_current_command="bash",
-            )
-        )
-        mock_tmux.send_keys = AsyncMock()
+    async def test_send_keys_uses_raw_true(self, prompt_setup_mux) -> None:
+        prompt_setup_mux.find_window_by_id = AsyncMock(return_value=_window("bash"))
+        prompt_setup_mux.send_keys = AsyncMock()
 
         await setup_shell_prompt("@0")
 
-        calls = mock_tmux.send_keys.call_args_list
+        calls = prompt_setup_mux.send_keys.call_args_list
         assert calls[1][1].get("raw") is True
         assert calls[2][1].get("raw") is True
 
     @pytest.mark.usefixtures("_wrap_mode")
-    async def test_skips_setup_when_marker_present(self, mock_tmux) -> None:
-        from ccgram.providers.shell import setup_shell_prompt
-
-        mock_tmux.capture_pane = AsyncMock(return_value="~/code main ❯ ⌘0⌘ ")
-        mock_tmux.send_keys = AsyncMock()
+    async def test_skips_setup_when_marker_present(self, prompt_setup_mux) -> None:
+        prompt_setup_mux.capture_pane = AsyncMock(return_value="~/code main ❯ ⌘0⌘ ")
+        prompt_setup_mux.send_keys = AsyncMock()
 
         await setup_shell_prompt("@0")
 
-        mock_tmux.send_keys.assert_not_called()
+        prompt_setup_mux.send_keys.assert_not_called()
 
 
 class TestGetShellName:
-    def test_returns_basename_of_shell_env(self) -> None:
+    @pytest.mark.parametrize(
+        ("shell_env", "expected"),
+        [
+            pytest.param("/bin/zsh", "zsh", id="absolute_path"),
+            pytest.param("/opt/homebrew/bin/fish", "fish", id="nested_path"),
+            pytest.param("bash", "bash", id="bare_name"),
+        ],
+    )
+    def test_returns_basename_of_shell_env(self, shell_env: str, expected: str) -> None:
         from ccgram.providers.shell import get_shell_name
 
-        with patch(
-            "ccgram.providers.shell_infra.os.environ.get", return_value="/bin/zsh"
-        ):
-            assert get_shell_name() == "zsh"
+        with _env_shell(shell_env):
+            assert get_shell_name() == expected
 
     def test_returns_empty_when_shell_unset(self) -> None:
         from ccgram.providers.shell import get_shell_name
 
         with patch.dict("os.environ", {}, clear=True):
             assert get_shell_name() == ""
-
-    def test_returns_basename_from_full_path(self) -> None:
-        from ccgram.providers.shell import get_shell_name
-
-        with patch(
-            "ccgram.providers.shell_infra.os.environ.get",
-            return_value="/opt/homebrew/bin/fish",
-        ):
-            assert get_shell_name() == "fish"
 
 
 class TestPromptMatch:
@@ -442,19 +374,6 @@ class TestWrapModeRegex:
 
 @pytest.mark.usefixtures("_wrap_mode")
 class TestWrapModeSetup:
-    @pytest.fixture
-    def mock_tmux(self):
-        with (
-            patch("ccgram.multiplexer.multiplexer") as mock_tm,
-            patch(
-                "ccgram.providers.shell_infra._is_interactive_shell",
-                new_callable=AsyncMock,
-                return_value=True,
-            ),
-        ):
-            mock_tm.capture_pane = AsyncMock(return_value=None)
-            yield mock_tm
-
     @pytest.mark.parametrize(
         ("shell", "expected_substring"),
         [
@@ -466,58 +385,40 @@ class TestWrapModeSetup:
         ids=["fish-wrap", "bash-wrap", "zsh-wrap", "tcsh-wrap"],
     )
     async def test_wrap_sends_correct_prompt_command(
-        self, mock_tmux, shell: str, expected_substring: str
+        self, prompt_setup_mux, shell: str, expected_substring: str
     ) -> None:
-        from ccgram.providers.shell import setup_shell_prompt
-
-        mock_tmux.find_window_by_id = AsyncMock(
-            return_value=TmuxWindow(
-                window_id="@0",
-                window_name="test",
-                cwd="/tmp",
-                pane_current_command=shell,
-            )
-        )
-        mock_tmux.send_keys = AsyncMock()
+        prompt_setup_mux.find_window_by_id = AsyncMock(return_value=_window(shell))
+        prompt_setup_mux.send_keys = AsyncMock()
 
         await setup_shell_prompt("@0")
 
-        calls = mock_tmux.send_keys.call_args_list
+        calls = prompt_setup_mux.send_keys.call_args_list
         prompt_call = calls[1]
         assert expected_substring in prompt_call[0][1]
 
-    async def test_wrap_fish_preserves_original_prompt(self, mock_tmux) -> None:
-        from ccgram.providers.shell import setup_shell_prompt
-
-        mock_tmux.find_window_by_id = AsyncMock(
-            return_value=TmuxWindow(
-                window_id="@0",
-                window_name="test",
-                cwd="/tmp",
-                pane_current_command="fish",
-            )
-        )
-        mock_tmux.send_keys = AsyncMock()
+    async def test_wrap_fish_preserves_original_prompt(self, prompt_setup_mux) -> None:
+        prompt_setup_mux.find_window_by_id = AsyncMock(return_value=_window("fish"))
+        prompt_setup_mux.send_keys = AsyncMock()
 
         await setup_shell_prompt("@0")
 
-        cmd = mock_tmux.send_keys.call_args_list[1][0][1]
+        cmd = prompt_setup_mux.send_keys.call_args_list[1][0][1]
         assert "builtin functions --copy fish_prompt __ccgram_orig_prompt" in cmd
         assert "builtin functions --query __ccgram_orig_prompt" in cmd
         assert "__ccgram_orig_prompt" in cmd
         assert "⌘%d⌘" in cmd
         assert "set_color brblack" in cmd
 
-    async def test_wrap_has_prompt_marker_detects_wrap_marker(self, mock_tmux) -> None:
-        from ccgram.providers.shell import has_prompt_marker
-
-        mock_tmux.capture_pane = AsyncMock(return_value="~/code main ❯ ⌘0⌘ ")
+    async def test_wrap_has_prompt_marker_detects_wrap_marker(
+        self, prompt_setup_mux
+    ) -> None:
+        prompt_setup_mux.capture_pane = AsyncMock(return_value="~/code main ❯ ⌘0⌘ ")
         assert await has_prompt_marker("@0") is True
 
-    async def test_wrap_has_prompt_marker_rejects_no_marker(self, mock_tmux) -> None:
-        from ccgram.providers.shell import has_prompt_marker
-
-        mock_tmux.capture_pane = AsyncMock(return_value="~/code main ❯ ")
+    async def test_wrap_has_prompt_marker_rejects_no_marker(
+        self, prompt_setup_mux
+    ) -> None:
+        prompt_setup_mux.capture_pane = AsyncMock(return_value="~/code main ❯ ")
         assert await has_prompt_marker("@0") is False
 
 
@@ -672,54 +573,23 @@ class TestReplaceSetupCommands:
 
 
 class TestSetupShellPromptClearsBefore:
-    @pytest.fixture
-    def mock_tmux(self):
-        with (
-            patch("ccgram.multiplexer.multiplexer") as mock_tm,
-            patch(
-                "ccgram.providers.shell_infra._is_interactive_shell",
-                new_callable=AsyncMock,
-                return_value=True,
-            ),
-        ):
-            mock_tm.capture_pane = AsyncMock(return_value=None)
-            yield mock_tm
-
-    async def test_sends_ctrl_c_before_prompt_command(self, mock_tmux) -> None:
-        from ccgram.providers.shell import setup_shell_prompt
-
-        mock_tmux.find_window_by_id = AsyncMock(
-            return_value=TmuxWindow(
-                window_id="@0",
-                window_name="test",
-                cwd="/tmp",
-                pane_current_command="bash",
-            )
-        )
-        mock_tmux.send_keys = AsyncMock()
+    async def test_sends_ctrl_c_before_prompt_command(self, prompt_setup_mux) -> None:
+        prompt_setup_mux.find_window_by_id = AsyncMock(return_value=_window("bash"))
+        prompt_setup_mux.send_keys = AsyncMock()
 
         await setup_shell_prompt("@0")
 
-        first_call = mock_tmux.send_keys.call_args_list[0]
+        first_call = prompt_setup_mux.send_keys.call_args_list[0]
         assert first_call[0][1] == "C-c"
         assert first_call[1].get("enter") is False
         assert first_call[1].get("literal") is False
 
-    async def test_no_clear_when_clear_false(self, mock_tmux) -> None:
-        from ccgram.providers.shell import setup_shell_prompt
-
-        mock_tmux.find_window_by_id = AsyncMock(
-            return_value=TmuxWindow(
-                window_id="@0",
-                window_name="test",
-                cwd="/tmp",
-                pane_current_command="bash",
-            )
-        )
-        mock_tmux.send_keys = AsyncMock()
+    async def test_no_clear_when_clear_false(self, prompt_setup_mux) -> None:
+        prompt_setup_mux.find_window_by_id = AsyncMock(return_value=_window("bash"))
+        prompt_setup_mux.send_keys = AsyncMock()
 
         await setup_shell_prompt("@0", clear=False)
 
-        calls = mock_tmux.send_keys.call_args_list
+        calls = prompt_setup_mux.send_keys.call_args_list
         assert len(calls) == 2
         assert all(c[0][1] != "clear" for c in calls)

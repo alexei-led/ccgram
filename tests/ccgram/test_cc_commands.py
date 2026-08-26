@@ -70,24 +70,25 @@ class TestParseFrontmatter:
             "user-invocable": "true",
         }
 
-    def test_no_frontmatter(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        "content",
+        [
+            pytest.param(
+                "# Just a markdown file\nNo frontmatter here.\n", id="no_frontmatter"
+            ),
+            pytest.param("", id="empty_file"),
+            pytest.param("---\nname: broken\nno closing delimiter", id="unclosed"),
+        ],
+    )
+    def test_returns_empty_without_valid_frontmatter(
+        self, tmp_path: Path, content: str
+    ) -> None:
         p = tmp_path / "test.md"
-        p.write_text("# Just a markdown file\nNo frontmatter here.\n")
-        assert parse_frontmatter(p) == {}
-
-    def test_empty_file(self, tmp_path: Path) -> None:
-        p = tmp_path / "test.md"
-        p.write_text("")
+        p.write_text(content)
         assert parse_frontmatter(p) == {}
 
     def test_missing_file(self, tmp_path: Path) -> None:
-        p = tmp_path / "nonexistent.md"
-        assert parse_frontmatter(p) == {}
-
-    def test_unclosed_frontmatter(self, tmp_path: Path) -> None:
-        p = tmp_path / "test.md"
-        p.write_text("---\nname: broken\nno closing delimiter")
-        assert parse_frontmatter(p) == {}
+        assert parse_frontmatter(tmp_path / "nonexistent.md") == {}
 
     def test_quoted_values(self, tmp_path: Path) -> None:
         p = tmp_path / "test.md"

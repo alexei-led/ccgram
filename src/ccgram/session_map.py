@@ -294,12 +294,22 @@ def _dead_session_map_entries(
 def _remove_dead_session_map_entries(
     raw: dict[str, Any], dead_entries: list[tuple[str, str]], window_store: Any
 ) -> bool:
+    # Lazy: window_state_store / thread_router proxies wired by SessionManager constructor
+    from .thread_router import thread_router
+
+    # A window dying is exactly when the recovery banner goes up, and its
+    # Fresh/Continue/Resume buttons read the directory back out of the window
+    # state. Dropping that state here answered every button with "Directory no
+    # longer exists" while the directory was sitting there (#176). The dead
+    # entry still goes; the state a live topic still points at stays until the
+    # topic unbinds and ``_remove_stale_window_states`` reclaims it.
+    bound_wids = thread_router.all_bound_window_ids()
     changed_state = False
     for key, window_id in dead_entries:
         logger.info("Pruning dead session_map entry: %s (window %s)", key, window_id)
         del raw[key]
         log_throttle_reset(f"preserve-primary:{window_id}")
-        if window_store.has_window(window_id):
+        if window_id not in bound_wids and window_store.has_window(window_id):
             window_store.remove_window(window_id)
             changed_state = True
     return changed_state
@@ -414,12 +424,12 @@ class SessionMapSync:
         # Lazy: window_state_store / thread_router proxies wired by SessionManager constructor
         from .window_state_store import window_store
 
-        bound_wids = {
-            wid
-            for user_bindings in thread_router.thread_bindings.values()
-            for wid in user_bindings.values()
-            if wid
-        }
+        # Must cover chat-scoped bindings too: ``set_group_chat_id`` moves a
+        # binding out of ``thread_bindings`` into ``chat_thread_bindings``, so
+        # in a forum deployment the legacy dict is empty and reading it alone
+        # leaves this guard dead — sweeping the state of every bound window
+        # whose provider has no hook to keep it in the session map.
+        bound_wids = {wid for wid in thread_router.all_bound_window_ids() if wid}
         stale_wids = [
             w
             for w in window_store.iter_window_ids()
@@ -686,6 +696,32 @@ class SessionMapSync:
                     fcntl.flock(lock_f, fcntl.LOCK_UN)
         except OSError:
             logger.exception("Failed to write session_map for hookless session")
+
+    async def session_map_entry_may_exist(self, window_id: str) -> bool:
+        """Return whether the hook may have an entry for ``window_id``.
+
+        Deliberately answers True when the file cannot be read: callers use
+        this to decide whether it is safe to write state that would clear a
+        live entry, and an unreadable map is "unknown", not "absent". Guessing
+        absent there destroys a running session's tracking; guessing present
+        only defers a heal to the next tick.
+        """
+        raw = await read_session_map_raw()
+        if raw is None:
+            return True
+        info = raw.get(f"{session_map_prefix()}{window_id}")
+        if info is None:
+            return False
+        try:
+            # The premise is that the monitor will rebuild state from this
+            # entry, which only holds for entries load_session_map accepts. One
+            # it rejects (no session_id, or a schema_version from a newer build
+            # after a downgrade) never becomes state, so treating the bare key
+            # as proof of tracking would wedge the window unhealed forever.
+            parse_session_map_entry(info)
+        except StateFileValidationError:
+            return False
+        return True
 
     def clear_session_map_entry(self, window_id: str) -> None:
         """Remove a window's entry from session_map.json if present."""

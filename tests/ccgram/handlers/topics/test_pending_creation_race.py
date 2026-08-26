@@ -73,8 +73,10 @@ def test_pending_creation_expires_after_ttl(monkeypatch):
     assert "@42" not in _pending_user_creations
 
 
-def test_clear_pending_creation_is_idempotent():
-    clear_pending_creation("@nonexistent")  # should not raise
+def test_clear_pending_creation_ignores_unknown_window():
+    register_pending_creation("@42")
+    clear_pending_creation("@nonexistent")
+    assert _is_pending_user_creation("@42")
 
 
 def test_creation_transaction_defers_unbound_window_adoption():
@@ -97,7 +99,6 @@ def test_register_pending_creation_ignores_blank_window_id():
     assert not _is_pending_user_creation("")
 
 
-@pytest.mark.asyncio
 async def test_handle_new_window_skips_when_pending(monkeypatch):
     register_pending_creation("@42")
 
@@ -118,7 +119,6 @@ async def test_handle_new_window_skips_when_pending(monkeypatch):
     rebind_mock.assert_not_awaited()
 
 
-@pytest.mark.asyncio
 async def test_handle_new_window_proceeds_when_not_pending(monkeypatch):
     create_topic_mock = AsyncMock()
     rebind_mock = AsyncMock(return_value=False)
@@ -139,7 +139,6 @@ async def test_handle_new_window_proceeds_when_not_pending(monkeypatch):
     create_topic_mock.assert_awaited_once()
 
 
-@pytest.mark.asyncio
 async def test_handle_new_window_skips_when_already_bound_takes_priority(monkeypatch):
     """already-bound check runs first; pending-creation check is a fallback."""
     register_pending_creation("@42")  # also pending

@@ -32,6 +32,7 @@ entry.
 from __future__ import annotations
 
 import ast
+import functools
 from collections import defaultdict
 from pathlib import Path
 
@@ -195,6 +196,7 @@ def _iter_audited_files() -> list[Path]:
     return paths
 
 
+@functools.cache
 def _collect_all_hits() -> list[tuple[str, str, int, str]]:
     out: list[tuple[str, str, int, str]] = []
     for p in _iter_audited_files():

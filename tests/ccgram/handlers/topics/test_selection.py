@@ -14,6 +14,7 @@ from ccgram.handlers.topics.directory_browser import (
     build_provider_picker,
 )
 from ccgram.handlers.topics.directory_callbacks import (
+    _accept_yolo_confirmation,
     _handle_confirm,
     _handle_mode_select,
     _handle_provider_select,
@@ -22,73 +23,52 @@ from ccgram.handlers.user_state import PENDING_THREAD_ID, PENDING_THREAD_TEXT
 from ccgram.window_query import resolve_window_alias
 
 
+def _buttons(keyboard: InlineKeyboardMarkup) -> list:
+    return [btn for row in keyboard.inline_keyboard for btn in row]
+
+
 class TestBuildProviderPicker:
-    def test_returns_text_and_keyboard(self) -> None:
-        text, keyboard = build_provider_picker("/home/user/project")
+    def test_header_names_the_selected_directory(self) -> None:
+        text, keyboard = build_provider_picker("/home/user/my-project")
         assert "Select Provider" in text
+        assert "my-project" in text
         assert isinstance(keyboard, InlineKeyboardMarkup)
 
-    def test_shows_all_providers(self) -> None:
-        text, keyboard = build_provider_picker("/tmp/test")
-        buttons = keyboard.inline_keyboard
-        labels = [btn.text for row in buttons for btn in row]
-        assert any("Claude" in label for label in labels)
-        assert any("Codex" in label for label in labels)
-        assert any("Gemini" in label for label in labels)
-        assert any("Pi" in label for label in labels)
-        assert any("Shell" in label for label in labels)
+    def test_home_directory_is_shown_as_tilde(self) -> None:
+        text, _keyboard = build_provider_picker(f"{Path.home()}/project")
+        assert "~/project" in text
+
+    @pytest.mark.parametrize(
+        ("provider", "label"),
+        [
+            ("claude", "Claude"),
+            ("codex", "Codex"),
+            ("gemini", "Gemini"),
+            ("pi", "Pi"),
+            ("shell", "Shell"),
+        ],
+    )
+    def test_offers_every_provider(self, provider: str, label: str) -> None:
+        _text, keyboard = build_provider_picker("/tmp/test")
+        buttons = _buttons(keyboard)
+        assert any(label in btn.text for btn in buttons)
+        assert f"{CB_PROV_SELECT}{provider}" in [btn.callback_data for btn in buttons]
 
     def test_claude_marked_as_default(self) -> None:
         _text, keyboard = build_provider_picker("/tmp/test")
-        buttons = keyboard.inline_keyboard
-        claude_labels = [
-            btn.text for row in buttons for btn in row if "Claude" in btn.text
-        ]
+        claude_labels = [btn.text for btn in _buttons(keyboard) if "Claude" in btn.text]
         assert any("default" in label for label in claude_labels)
-
-    def test_callback_data_uses_prov_prefix(self) -> None:
-        _text, keyboard = build_provider_picker("/tmp/test")
-        buttons = keyboard.inline_keyboard
-        provider_callbacks = [
-            btn.callback_data
-            for row in buttons
-            for btn in row
-            if isinstance(btn.callback_data, str)
-            and btn.callback_data.startswith(CB_PROV_SELECT)
-        ]
-        assert f"{CB_PROV_SELECT}claude" in provider_callbacks
-        assert f"{CB_PROV_SELECT}codex" in provider_callbacks
-        assert f"{CB_PROV_SELECT}gemini" in provider_callbacks
-        assert f"{CB_PROV_SELECT}pi" in provider_callbacks
-        assert f"{CB_PROV_SELECT}shell" in provider_callbacks
 
     def test_has_cancel_button(self) -> None:
         _text, keyboard = build_provider_picker("/tmp/test")
-        buttons = keyboard.inline_keyboard
-        cancel_callbacks = [btn.callback_data for row in buttons for btn in row]
-        assert CB_DIR_CANCEL in cancel_callbacks
-
-    def test_displays_directory_path(self) -> None:
-        text, _keyboard = build_provider_picker("/home/user/my-project")
-        assert "my-project" in text
-
-    def test_tilde_substitution(self) -> None:
-        home = str(Path.home())
-        text, _keyboard = build_provider_picker(f"{home}/project")
-        assert "~/project" in text
+        assert CB_DIR_CANCEL in [btn.callback_data for btn in _buttons(keyboard)]
 
 
 class TestBuildModePicker:
-    def test_returns_text_and_keyboard(self) -> None:
-        text, keyboard = build_mode_picker("/home/user/project", "claude")
+    def test_offers_normal_yolo_and_cancel_for_the_chosen_provider(self) -> None:
+        text, keyboard = build_mode_picker("/tmp/test", "codex")
         assert "Select Session Mode" in text
-        assert isinstance(keyboard, InlineKeyboardMarkup)
-
-    def test_mode_callbacks(self) -> None:
-        _text, keyboard = build_mode_picker("/tmp/test", "codex")
-        callbacks = [
-            btn.callback_data for row in keyboard.inline_keyboard for btn in row
-        ]
+        callbacks = [btn.callback_data for btn in _buttons(keyboard)]
         assert f"{CB_MODE_SELECT}codex:normal" in callbacks
         assert f"{CB_MODE_SELECT}codex:yolo" in callbacks
         assert CB_DIR_CANCEL in callbacks
@@ -159,7 +139,7 @@ class TestHandleConfirmShowsProviderPicker:
     )
     @patch("ccgram.handlers.topics.workspace_callbacks.tmux_manager")
     @patch("ccgram.handlers.topics.directory_callbacks.thread_router")
-    async def test_confirm_clears_browse_state(
+    async def test_confirm_keeps_browse_state_for_the_provider_step(
         self, mock_tr: MagicMock, mock_mux: MagicMock, mock_edit: AsyncMock
     ) -> None:
         mock_tr.get_window_for_thread.return_value = None
@@ -284,6 +264,8 @@ class TestHandleModeSelect:
             return_value=(True, "Created window 'proj'", "proj", "@5")
         )
         mock_tmux.stamp_pane_title = AsyncMock()
+        mock_tmux.capabilities.native_worktrees = False
+        mock_tmux.capabilities.native_agent_status = False
         mock_tr.get_window_for_thread.return_value = None
         mock_tr.resolve_chat_id.return_value = 123
         mock_sm.send_to_window = AsyncMock(return_value=(True, "ok"))
@@ -348,6 +330,8 @@ class TestHandleModeSelect:
             return_value=(True, "Created window 'proj'", "proj", "@5")
         )
         mock_tmux.stamp_pane_title = AsyncMock()
+        mock_tmux.capabilities.native_worktrees = False
+        mock_tmux.capabilities.native_agent_status = False
         mock_tr.get_window_for_thread.return_value = None
         mock_tr.resolve_chat_id.return_value = 123
         mock_sm.get_window_state.return_value = MagicMock()
@@ -438,6 +422,8 @@ class TestHandleModeSelect:
             return_value=(True, "Created window 'proj'", "proj", "@1")
         )
         mock_tmux.stamp_pane_title = AsyncMock()
+        mock_tmux.capabilities.native_worktrees = False
+        mock_tmux.capabilities.native_agent_status = False
         mock_tr.get_window_for_thread.return_value = None
         mock_tr.resolve_chat_id.return_value = 123
         mock_send_to_window.return_value = (True, "ok")
@@ -467,75 +453,46 @@ class TestAcceptYoloConfirmation:
 
         monkeypatch.setattr(window_launch_service.asyncio, "sleep", AsyncMock())
 
+    @pytest.mark.parametrize(
+        "pane_text",
+        [
+            "WARNING: Claude Code running in Bypass Permissions mode\n"
+            "  ❯ 1. No, exit\n"
+            "    2. Yes, I accept all responsibility",
+            "BYPASS PERMISSIONS mode warning",
+        ],
+        ids=["full_prompt", "uppercase"],
+    )
     @patch("ccgram.handlers.topics.window_launch_service.tmux_manager")
-    async def test_detects_prompt_and_sends_down_then_enter(
-        self, mock_tmux: MagicMock
+    async def test_detected_prompt_is_answered_with_down_then_enter(
+        self, mock_tmux: MagicMock, pane_text: str
     ) -> None:
         from unittest.mock import call
 
-        from ccgram.handlers.topics.directory_callbacks import _accept_yolo_confirmation
-
-        mock_tmux.capture_pane = AsyncMock(
-            return_value=(
-                "WARNING: Claude Code running in Bypass Permissions mode\n"
-                "  ❯ 1. No, exit\n"
-                "    2. Yes, I accept all responsibility"
-            )
-        )
+        mock_tmux.capture_pane = AsyncMock(return_value=pane_text)
         mock_tmux.send_keys = AsyncMock(return_value=True)
 
-        result = await _accept_yolo_confirmation("@5", timeout=2.0)
+        assert await _accept_yolo_confirmation("@5", timeout=2.0) is True
+        assert mock_tmux.send_keys.call_args_list == [
+            call("@5", "Down", enter=False, literal=False),
+            call("@5", "Enter", enter=False, literal=False),
+        ]
 
-        assert result is True
-        assert mock_tmux.send_keys.await_count == 2
-        calls = mock_tmux.send_keys.call_args_list
-        assert calls[0] == call("@5", "Down", enter=False, literal=False)
-        assert calls[1] == call("@5", "Enter", enter=False, literal=False)
-
+    @pytest.mark.parametrize(
+        "capture", [None, "some other output"], ids=["no_capture", "unrelated_output"]
+    )
     @patch("ccgram.handlers.topics.window_launch_service.tmux_manager")
-    async def test_returns_false_on_timeout_without_sending_keys(
-        self, mock_tmux: MagicMock
+    async def test_timeout_without_prompt_sends_no_keys(
+        self, mock_tmux: MagicMock, capture: str | None
     ) -> None:
-        from ccgram.handlers.topics.directory_callbacks import _accept_yolo_confirmation
-
-        mock_tmux.capture_pane = AsyncMock(return_value="some other output")
+        mock_tmux.capture_pane = AsyncMock(return_value=capture)
         mock_tmux.send_keys = AsyncMock(return_value=True)
 
-        result = await _accept_yolo_confirmation("@5", timeout=0.1)
-
-        assert result is False
+        assert await _accept_yolo_confirmation("@5", timeout=0.1) is False
         mock_tmux.send_keys.assert_not_awaited()
-
-    @patch("ccgram.handlers.topics.window_launch_service.tmux_manager")
-    async def test_handles_none_capture(self, mock_tmux: MagicMock) -> None:
-        from ccgram.handlers.topics.directory_callbacks import _accept_yolo_confirmation
-
-        mock_tmux.capture_pane = AsyncMock(return_value=None)
-        mock_tmux.send_keys = AsyncMock(return_value=True)
-
-        result = await _accept_yolo_confirmation("@5", timeout=0.1)
-
-        assert result is False
-        mock_tmux.send_keys.assert_not_awaited()
-
-    @patch("ccgram.handlers.topics.window_launch_service.tmux_manager")
-    async def test_case_insensitive_detection(self, mock_tmux: MagicMock) -> None:
-        from ccgram.handlers.topics.directory_callbacks import _accept_yolo_confirmation
-
-        mock_tmux.capture_pane = AsyncMock(
-            return_value="BYPASS PERMISSIONS mode warning"
-        )
-        mock_tmux.send_keys = AsyncMock(return_value=True)
-
-        result = await _accept_yolo_confirmation("@5", timeout=2.0)
-
-        assert result is True
-        assert mock_tmux.send_keys.await_count == 2
 
     @patch("ccgram.handlers.topics.window_launch_service.tmux_manager")
     async def test_polls_until_prompt_appears(self, mock_tmux: MagicMock) -> None:
-        from ccgram.handlers.topics.directory_callbacks import _accept_yolo_confirmation
-
         mock_tmux.capture_pane = AsyncMock(
             side_effect=[
                 None,
@@ -545,7 +502,5 @@ class TestAcceptYoloConfirmation:
         )
         mock_tmux.send_keys = AsyncMock(return_value=True)
 
-        result = await _accept_yolo_confirmation("@5", timeout=5.0)
-
-        assert result is True
+        assert await _accept_yolo_confirmation("@5", timeout=5.0) is True
         assert mock_tmux.capture_pane.await_count == 3

@@ -1,5 +1,6 @@
 import io
 
+import pytest
 from PIL import Image
 
 from ccgram.screenshot import strip_non_sgr, text_to_image
@@ -67,38 +68,25 @@ async def test_live_mode_palette_size():
     assert unique_colors <= 32
 
 
-def test_strip_non_sgr_removes_cursor_move():
-    text = "\x1b[2Ahello"
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        pytest.param("\x1b[2Ahello", "hello", id="cursor_move"),
+        pytest.param("\x1b]0;title\x07hello", "hello", id="osc_bel_terminated"),
+        pytest.param("\x1b]0;title\x1b\\hello", "hello", id="osc_st_terminated"),
+        pytest.param(
+            "\x1b]8;;http://x\x1by\x1b\\link\x07hello",
+            "link\x07hello",
+            id="osc_with_embedded_esc",
+        ),
+        pytest.param("\x1b[?2004hhello", "hello", id="bracketed_paste"),
+        pytest.param("plain text", "plain text", id="no_escapes"),
+        pytest.param("", "", id="empty"),
+    ],
+)
+def test_strip_non_sgr_removes_non_colour_sequences(text: str, expected: str):
     result = strip_non_sgr(text)
-    assert result == "hello"
-    assert "\x1b" not in result
-
-
-def test_strip_non_sgr_removes_osc_bel():
-    text = "\x1b]0;title\x07hello"
-    result = strip_non_sgr(text)
-    assert result == "hello"
-    assert "\x1b" not in result
-
-
-def test_strip_non_sgr_removes_osc_st():
-    text = "\x1b]0;title\x1b\\hello"
-    result = strip_non_sgr(text)
-    assert result == "hello"
-    assert "\x1b" not in result
-
-
-def test_strip_non_sgr_removes_osc_with_embedded_esc():
-    text = "\x1b]8;;http://x\x1by\x1b\\link\x07hello"
-    result = strip_non_sgr(text)
-    assert result == "link\x07hello"
-    assert "\x1b" not in result
-
-
-def test_strip_non_sgr_removes_bracketed_paste():
-    text = "\x1b[?2004hhello"
-    result = strip_non_sgr(text)
-    assert result == "hello"
+    assert result == expected
     assert "\x1b" not in result
 
 

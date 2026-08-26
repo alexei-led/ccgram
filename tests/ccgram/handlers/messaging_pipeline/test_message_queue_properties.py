@@ -1,4 +1,8 @@
-"""Property-based tests for message queue merge logic."""
+"""Property-based tests for message queue merge logic.
+
+Concrete input/output cases live in ``test_message_queue.py``; this file only
+covers invariants that must hold for *any* sequence of queued tasks.
+"""
 
 import asyncio
 
@@ -7,23 +11,14 @@ from hypothesis import strategies as st
 
 from ccgram.handlers.messaging_pipeline.message_queue import (
     MERGE_MAX_LENGTH,
-    _can_merge_tasks,
-    _coalesce_status_updates,
     _merge_content_tasks,
 )
 from ccgram.handlers.messaging_pipeline.message_task import (
     ContentTask,
     ContentType,
     MessageTask,
-    StatusUpdateTask,
 )
 
-# --- Strategies ---
-
-_mergeable_types: st.SearchStrategy[ContentType] = st.sampled_from(["text"])
-_unmergeable_types: st.SearchStrategy[ContentType] = st.sampled_from(
-    ["tool_use", "tool_result"]
-)
 _all_content_types: st.SearchStrategy[ContentType] = st.sampled_from(
     ["text", "tool_use", "tool_result"]
 )
@@ -40,44 +35,6 @@ def _content_task(
         parts=parts or ("hello",),
         content_type=content_type,
     )
-
-
-# --- _can_merge_tasks unit properties ---
-
-
-@given(ct=_mergeable_types)
-def test_same_window_mergeable_types_can_merge(ct: ContentType) -> None:
-    base = _content_task(content_type=ct)
-    candidate = _content_task(content_type=ct)
-    assert _can_merge_tasks(base, candidate) is True
-
-
-@given(base_ct=_unmergeable_types, cand_ct=_all_content_types)
-def test_unmergeable_base_blocks_merge(
-    base_ct: ContentType, cand_ct: ContentType
-) -> None:
-    base = _content_task(content_type=base_ct)
-    candidate = _content_task(content_type=cand_ct)
-    assert _can_merge_tasks(base, candidate) is False
-
-
-@given(cand_ct=_unmergeable_types)
-def test_unmergeable_candidate_blocks_merge(cand_ct: ContentType) -> None:
-    base = _content_task(content_type="text")
-    candidate = _content_task(content_type=cand_ct)
-    assert _can_merge_tasks(base, candidate) is False
-
-
-@given(w1=_window_ids, w2=_window_ids)
-def test_different_windows_block_merge(w1: str, w2: str) -> None:
-    if w1 == w2:
-        return
-    base = _content_task(window_id=w1)
-    candidate = _content_task(window_id=w2)
-    assert _can_merge_tasks(base, candidate) is False
-
-
-# --- _merge_content_tasks property tests ---
 
 
 @given(
@@ -161,53 +118,3 @@ async def test_different_window_breaks_chain(window_ids: list[str]) -> None:
             break
         expected_merges += 1
     assert count == expected_merges
-
-
-# --- Edge case tests ---
-
-
-async def test_all_unmergeable_no_merge() -> None:
-    first = _content_task(parts=("hello",))
-    queue: asyncio.Queue[MessageTask] = asyncio.Queue()
-    lock = asyncio.Lock()
-
-    for _ in range(3):
-        await queue.put(_content_task(content_type="tool_use", parts=("tool",)))
-
-    merged, count = await _merge_content_tasks(queue, first, lock)
-    assert count == 0
-    assert queue.qsize() == 3
-
-
-async def test_exact_boundary() -> None:
-    half = "x" * (MERGE_MAX_LENGTH // 2)
-    first = _content_task(parts=(half,))
-    queue: asyncio.Queue[MessageTask] = asyncio.Queue()
-    lock = asyncio.Lock()
-
-    await queue.put(_content_task(parts=(half,)))
-    await queue.put(_content_task(parts=("overflow",)))
-
-    merged, count = await _merge_content_tasks(queue, first, lock)
-    total = sum(len(p) for p in merged.parts)
-    assert total <= MERGE_MAX_LENGTH
-    assert count == 1
-    assert queue.qsize() == 1
-
-
-async def test_status_coalesce_keeps_latest_same_window_thread() -> None:
-    first = StatusUpdateTask(text="old", window_id="@1", thread_id=10)
-    queue: asyncio.Queue[MessageTask] = asyncio.Queue()
-    lock = asyncio.Lock()
-
-    await queue.put(StatusUpdateTask(text="mid", window_id="@1", thread_id=10))
-    await queue.put(StatusUpdateTask(text="new", window_id="@1", thread_id=10))
-    await queue.put(StatusUpdateTask(text="other-window", window_id="@2", thread_id=10))
-
-    selected, dropped = await _coalesce_status_updates(queue, first, lock)
-    assert selected.text == "new"
-    assert dropped == 2
-    assert queue.qsize() == 1
-    remaining = queue.get_nowait()
-    assert isinstance(remaining, StatusUpdateTask)
-    assert remaining.text == "other-window"

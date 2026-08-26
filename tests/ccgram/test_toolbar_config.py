@@ -9,6 +9,7 @@ import pytest
 from ccgram.toolbar_config import (
     BUILTIN_ACTIONS,
     DEFAULT_LAYOUTS,
+    ButtonStyle,
     ToolbarAction,
     ToolbarConfig,
     load_toolbar_config,
@@ -29,14 +30,18 @@ class TestRender:
             payload="screenshot",
         )
 
-    def test_emoji_only(self, action: ToolbarAction) -> None:
-        assert action.render("emoji") == "\U0001f4f7"
-
-    def test_text_only(self, action: ToolbarAction) -> None:
-        assert action.render("text") == "Screen"
-
-    def test_emoji_text(self, action: ToolbarAction) -> None:
-        assert action.render("emoji_text") == "\U0001f4f7 Screen"
+    @pytest.mark.parametrize(
+        ("style", "expected"),
+        [
+            ("emoji", "\U0001f4f7"),
+            ("text", "Screen"),
+            ("emoji_text", "\U0001f4f7 Screen"),
+        ],
+    )
+    def test_render_style(
+        self, action: ToolbarAction, style: ButtonStyle, expected: str
+    ) -> None:
+        assert action.render(style) == expected
 
 
 # ── for_provider() ────────────────────────────────────────────────────
@@ -114,51 +119,44 @@ class TestLoadUserActions:
         assert cfg.actions["mode"].emoji == "🆕"
         assert cfg.actions["mode"].payload == "Tab"
 
-    def test_invalid_type_skipped(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        ("name", "body"),
+        [
+            pytest.param(
+                "bad",
+                'emoji = "?"\ntext = "Bad"\ntype = "wat"\npayload = "x"\n',
+                id="unknown_type",
+            ),
+            pytest.param(
+                "steal",
+                'emoji = "?"\ntext = "Steal"\ntype = "builtin"\npayload = "screenshot"\n',
+                id="user_cannot_claim_builtin_type",
+            ),
+            pytest.param(
+                "np", 'emoji = "?"\ntext = "NP"\ntype = "key"\n', id="missing_payload"
+            ),
+            pytest.param(
+                "np", 'type = "key"\npayload = "Tab"\n', id="missing_emoji_and_text"
+            ),
+            pytest.param(
+                "x" * 25,
+                'emoji = "?"\ntext = "Hi"\ntype = "key"\npayload = "Tab"\n',
+                id="name_over_max_len",
+            ),
+        ],
+    )
+    def test_invalid_action_skipped(self, tmp_path: Path, name: str, body: str) -> None:
         f = tmp_path / "t.toml"
-        f.write_text(
-            '[actions.bad]\nemoji = "?"\ntext = "Bad"\ntype = "wat"\npayload = "x"\n'
-        )
-        cfg = load_toolbar_config(f)
-        assert "bad" not in cfg.actions
-
-    def test_user_cannot_define_builtin_type(self, tmp_path: Path) -> None:
-        f = tmp_path / "t.toml"
-        f.write_text(
-            '[actions.steal]\nemoji = "?"\ntext = "Steal"\ntype = "builtin"\npayload = "screenshot"\n'
-        )
-        cfg = load_toolbar_config(f)
-        assert "steal" not in cfg.actions
-
-    def test_missing_payload_skipped(self, tmp_path: Path) -> None:
-        f = tmp_path / "t.toml"
-        f.write_text('[actions.np]\nemoji = "?"\ntext = "NP"\ntype = "key"\n')
-        cfg = load_toolbar_config(f)
-        assert "np" not in cfg.actions
-
-    def test_missing_emoji_and_text_skipped(self, tmp_path: Path) -> None:
-        f = tmp_path / "t.toml"
-        f.write_text('[actions.np]\ntype = "key"\npayload = "Tab"\n')
-        cfg = load_toolbar_config(f)
-        assert "np" not in cfg.actions
-
-    def test_action_name_too_long_skipped(self, tmp_path: Path) -> None:
-        long_name = "x" * 25  # _MAX_NAME_LEN is 24
-        f = tmp_path / "t.toml"
-        f.write_text(
-            f'[actions.{long_name}]\nemoji = "?"\ntext = "Hi"\ntype = "key"\npayload = "Tab"\n'
-        )
-        cfg = load_toolbar_config(f)
-        assert long_name not in cfg.actions
+        f.write_text(f"[actions.{name}]\n{body}")
+        assert name not in load_toolbar_config(f).actions
 
     def test_action_name_at_limit_accepted(self, tmp_path: Path) -> None:
-        name = "x" * 24
+        name = "x" * 24  # _MAX_NAME_LEN
         f = tmp_path / "t.toml"
         f.write_text(
             f'[actions.{name}]\nemoji = "?"\ntext = "Hi"\ntype = "key"\npayload = "Tab"\n'
         )
-        cfg = load_toolbar_config(f)
-        assert name in cfg.actions
+        assert name in load_toolbar_config(f).actions
 
     def test_emoji_falls_back_to_text(self, tmp_path: Path) -> None:
         f = tmp_path / "t.toml"

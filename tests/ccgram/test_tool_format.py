@@ -1,3 +1,5 @@
+import pytest
+
 from ccgram.tool_format import (
     TOOL_EMOJI,
     compact_arg,
@@ -5,172 +7,180 @@ from ccgram.tool_format import (
     tool_emoji,
 )
 
+BASH = "\U0001f4bb"
+READ = "\U0001f4d6"
+WRITE = "\U0001f4dd"
+EDIT = "✏️"
+GREP = "\U0001f50e"
+FOLDER = "\U0001f4c2"
+CLIPBOARD = "\U0001f4cb"
+SKILL = "\U0001f4da"
+QUESTION = "❓"
+WEB = "\U0001f310"
+WRENCH = "\U0001f527"
+
 
 class TestToolEmoji:
-    def test_exact_match(self) -> None:
-        assert tool_emoji("Bash") == "\U0001f4bb"
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [
+            ("Bash", BASH),
+            ("Read", READ),
+            ("Write", WRITE),
+            ("Edit", EDIT),
+            ("MultiEdit", EDIT),
+            ("Grep", GREP),
+            ("Glob", FOLDER),
+            ("Skill", SKILL),
+            ("TaskCreate", CLIPBOARD),
+            ("AskUserQuestion", QUESTION),
+            ("WebFetch", WEB),
+        ],
+    )
+    def test_claude_canonical_names(self, name: str, expected: str) -> None:
+        assert tool_emoji(name) == expected
 
-    def test_exact_match_read(self) -> None:
-        assert tool_emoji("Read") == "\U0001f4d6"
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [
+            ("bash", BASH),
+            ("read_file", READ),
+            ("write_file", WRITE),
+            ("apply_patch", EDIT),
+            ("exec_command", BASH),
+            ("search_files", GREP),
+            ("find", FOLDER),
+            ("web_search", GREP),
+            ("fetch", WEB),
+        ],
+    )
+    def test_provider_aliases(self, name: str, expected: str) -> None:
+        assert tool_emoji(name) == expected
 
-    def test_case_insensitive(self) -> None:
-        assert tool_emoji("bash") == "\U0001f4bb"
-        assert tool_emoji("READ") == "\U0001f4d6"
-        assert tool_emoji("TASKCREATE") == "\U0001f4cb"
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [
+            ("bash", BASH),
+            ("BASH", BASH),
+            ("READ", READ),
+            ("TASKCREATE", CLIPBOARD),
+            ("mUlTiEdIt", EDIT),
+        ],
+    )
+    def test_lookup_is_case_insensitive(self, name: str, expected: str) -> None:
+        assert tool_emoji(name) == expected
 
-    def test_mcp_prefix_stripped(self) -> None:
-        assert tool_emoji("mcp__deepwiki__ask_question") == tool_emoji("ask_question")
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [
+            ("mcp__deepwiki__ask_question", QUESTION),
+            ("mcp__server__ASK_QUESTION", QUESTION),
+            ("mcp__server__Bash", BASH),
+            ("mcp__server__totally_unknown_xyz", WRENCH),
+        ],
+    )
+    def test_mcp_prefix_stripped_before_lookup(self, name: str, expected: str) -> None:
+        assert tool_emoji(name) == expected
 
-    def test_mcp_prefix_unknown_bare_name_falls_back(self) -> None:
-        assert tool_emoji("mcp__server__totally_unknown_xyz") == "\U0001f527"
+    @pytest.mark.parametrize(
+        "name", ["ZZZUnknownTool", "", "mcp__x__y", "mcp__malformed", "  "]
+    )
+    def test_unknown_names_fall_back_to_wrench(self, name: str) -> None:
+        assert tool_emoji(name) == WRENCH
 
-    def test_fallback_for_unknown(self) -> None:
-        assert tool_emoji("ZZZUnknownTool") == "\U0001f527"
-
-    def test_never_returns_empty(self) -> None:
-        assert tool_emoji("") != ""
-        assert tool_emoji("mcp__x__y") != ""
-
-    def test_skill_emoji(self) -> None:
-        assert tool_emoji("Skill") == "\U0001f4da"
-
-    def test_grep_emoji(self) -> None:
-        assert tool_emoji("Grep") == "\U0001f50e"
-
-    def test_edit_emoji(self) -> None:
-        assert tool_emoji("Edit") == "✏️"
-
-    def test_multiedit_emoji(self) -> None:
-        assert tool_emoji("MultiEdit") == "✏️"
-
-    def test_pi_alias_bash(self) -> None:
-        assert tool_emoji("bash") == "\U0001f4bb"
-
-    def test_pi_alias_read_file(self) -> None:
-        assert tool_emoji("read_file") == "\U0001f4d6"
-
-    def test_codex_alias_exec_command(self) -> None:
-        assert tool_emoji("exec_command") == "\U0001f4bb"
-
-    def test_codex_alias_apply_patch(self) -> None:
-        assert tool_emoji("apply_patch") == "✏️"
-
-    def test_gemini_search_files(self) -> None:
-        assert tool_emoji("search_files") == "\U0001f50e"
-
-    def test_task_create_emoji(self) -> None:
-        assert tool_emoji("TaskCreate") == "\U0001f4cb"
-
-    def test_tool_emoji_dict_has_bash(self) -> None:
-        assert "Bash" in TOOL_EMOJI
-        assert TOOL_EMOJI["Bash"] == "\U0001f4bb"
+    @pytest.mark.parametrize("name", list(TOOL_EMOJI))
+    def test_every_mapped_name_renders_non_empty(self, name: str) -> None:
+        assert tool_emoji(name) != ""
 
 
 class TestCompactArg:
-    def test_collapses_whitespace(self) -> None:
-        result = compact_arg("  hello   world  ")
-        assert result == "hello world"
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("  hello   world  ", "hello world"),
+            ("line1\nline2\nline3", "line1 line2 line3"),
+            ("set -e\n\tprintf 'x'", "set -e printf 'x'"),
+            ("", ""),
+            ("   \n\t  ", ""),
+        ],
+    )
+    def test_collapses_whitespace(self, raw: str, expected: str) -> None:
+        assert compact_arg(raw) == expected
 
-    def test_collapses_newlines(self) -> None:
-        result = compact_arg("line1\nline2\nline3")
-        assert "\n" not in result
-        assert result == "line1 line2 line3"
+    def test_backticks_become_single_quotes(self) -> None:
+        assert compact_arg("run `make test`") == "run 'make test'"
 
-    def test_collapses_mixed_whitespace(self) -> None:
-        result = compact_arg("set -e\n  printf 'x'\n  git --version")
-        assert "\n" not in result
-        assert "\t" not in result
+    @pytest.mark.parametrize(
+        ("raw", "cap", "expected"),
+        [
+            ("a" * 50, 50, "a" * 50),
+            ("a" * 51, 50, "a" * 50 + "…"),
+            ("a" * 90, 50, "a" * 50 + "…"),
+            ("hello world", 5, "hello…"),
+            ("hello", 5, "hello"),
+        ],
+    )
+    def test_trims_at_cap(self, raw: str, cap: int, expected: str) -> None:
+        assert compact_arg(raw, cap=cap) == expected
 
-    def test_trims_at_cap(self) -> None:
-        long_text = "a" * 90
-        result = compact_arg(long_text)
-        assert result == "a" * 50 + "…"
-        assert len(result) == 51
-
-    def test_no_trim_at_cap(self) -> None:
-        text = "a" * 50
-        result = compact_arg(text)
-        assert result == text
-        assert "…" not in result
-
-    def test_custom_cap(self) -> None:
-        result = compact_arg("hello world", cap=5)
-        assert result == "hello…"
-
-    def test_backtick_replaced_with_single_quote(self) -> None:
-        result = compact_arg("run `make test`")
-        assert "`" not in result
-        assert "'" in result
-        assert result == "run 'make test'"
-
-    def test_empty_string(self) -> None:
-        assert compact_arg("") == ""
-
-    def test_whitespace_only(self) -> None:
-        assert compact_arg("   \n\t  ") == ""
+    def test_cap_applies_after_whitespace_collapse(self) -> None:
+        """Collapsing runs first, so padded input under the cap is not trimmed."""
+        assert compact_arg("a" * 40 + "\n\n\n" + "b" * 9, cap=50) == (
+            "a" * 40 + " " + "b" * 9
+        )
 
 
 class TestFormatToolLine:
-    def test_with_summary(self) -> None:
-        result = format_tool_line("Bash", "ls -la")
-        assert result == "\U0001f4bb **bash**: `ls -la`"
+    @pytest.mark.parametrize(
+        ("name", "summary", "expected"),
+        [
+            ("Bash", "ls -la", f"{BASH} **bash**: `ls -la`"),
+            (
+                "Read",
+                "src/ccgram/config.py",
+                f"{READ} **read**: `src/ccgram/config.py`",
+            ),
+            (
+                "Skill",
+                "github-repo-management",
+                f"{SKILL} **skill**: `github-repo-management`",
+            ),
+            ("TodoRead", "", f"{CLIPBOARD} **todoread**"),
+            ("UnknownXYZ", "some arg", f"{WRENCH} **unknownxyz**: `some arg`"),
+        ],
+    )
+    def test_renders_emoji_bold_name_and_mono_arg(
+        self, name: str, summary: str, expected: str
+    ) -> None:
+        assert format_tool_line(name, summary) == expected
 
-    def test_without_summary(self) -> None:
-        result = format_tool_line("TodoRead", "")
-        assert result == "\U0001f4cb **todoread**"
-
-    def test_action_word_is_bold(self) -> None:
-        result = format_tool_line("Read", "src/config.py")
-        assert "**read**" in result
+    @pytest.mark.parametrize("summary", ["", "   ", "\n\t "])
+    def test_blank_summary_omits_the_arg_section(self, summary: str) -> None:
+        assert format_tool_line("TodoRead", summary) == f"{CLIPBOARD} **todoread**"
 
     def test_backticks_in_input_replaced_with_quotes(self) -> None:
         """Input backticks must be neutralized to avoid breaking inline-mono wrap."""
         result = format_tool_line("Bash", "run `make`")
-        # Output has exactly two backticks — the wrapping pair around the arg.
+        assert result == f"{BASH} **bash**: `run 'make'`"
         assert result.count("`") == 2
-        assert result == "\U0001f4bb **bash**: `run 'make'`"
 
-    def test_no_double_quote_around_summary(self) -> None:
-        result = format_tool_line("Read", "src/config.py")
-        assert '"' not in result
-
-    def test_multiline_command_collapsed(self) -> None:
+    def test_multiline_command_collapsed_to_one_line(self) -> None:
         cmd = "set -e\nprintf 'git: '\ngit --version"
         result = format_tool_line("Bash", cmd)
         assert "\n" not in result
-        assert result.startswith("\U0001f4bb **bash**: `")
+        assert result == f"{BASH} **bash**: `set -e printf 'git: ' git --version`"
 
-    def test_mcp_tool_fallback_emoji(self) -> None:
+    def test_summary_trimmed_to_cap(self) -> None:
+        result = format_tool_line("Bash", "x" * 90)
+        assert result == f"{BASH} **bash**: `{'x' * 50}…`"
+
+    def test_preserves_real_tool_name_lowercased(self) -> None:
+        assert (
+            format_tool_line("exec_command", "ls") == f"{BASH} **exec_command**: `ls`"
+        )
+
+    def test_mcp_name_kept_intact_with_fallback_emoji(self) -> None:
         result = format_tool_line(
             "mcp__deepwiki__totally_unknown_xyz", "how does X work"
         )
-        assert result.startswith("\U0001f527 **mcp__deepwiki__totally_unknown_xyz**")
-
-    def test_grep_with_summary(self) -> None:
-        result = format_tool_line(
-            "Grep", "config.yaml|auth.json|state.db|longer_pattern"
-        )
-        assert result.startswith("\U0001f50e **grep**: `")
-
-    def test_skill_with_summary(self) -> None:
-        result = format_tool_line("Skill", "github-repo-management")
-        assert result == "\U0001f4da **skill**: `github-repo-management`"
-
-    def test_read_with_path(self) -> None:
-        result = format_tool_line("Read", "src/ccgram/config.py")
-        assert result == "\U0001f4d6 **read**: `src/ccgram/config.py`"
-
-    def test_summary_trimmed_to_cap(self) -> None:
-        long_arg = "x" * 90
-        result = format_tool_line("Bash", long_arg)
-        assert "…" in result
-        assert "x" * 50 in result
-        assert "x" * 51 not in result
-
-    def test_format_preserves_real_tool_name(self) -> None:
-        result = format_tool_line("exec_command", "ls")
-        assert "exec_command" in result
-
-    def test_unknown_tool_uses_wrench(self) -> None:
-        result = format_tool_line("UnknownXYZ", "some arg")
-        assert result.startswith("\U0001f527 **unknownxyz**")
+        assert result.startswith(f"{WRENCH} **mcp__deepwiki__totally_unknown_xyz**")
