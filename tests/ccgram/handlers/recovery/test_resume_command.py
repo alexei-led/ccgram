@@ -454,7 +454,7 @@ class TestScanAllSessions:
         )
 
         with patch(
-            "ccgram.handlers.recovery.resume_command.picker_capable_providers",
+            "ccgram.providers.picker_capable_providers",
             return_value=[alpha, beta],
         ):
             result = scan_all_sessions(unknown)
@@ -464,12 +464,8 @@ class TestScanAllSessions:
 
     def test_named_provider_does_not_merge_others(self) -> None:
         with (
-            patch(
-                "ccgram.handlers.recovery.resume_command.picker_capable_providers"
-            ) as mock_all,
-            patch(
-                "ccgram.handlers.recovery.resume_command.get_provider_for_window"
-            ) as mock_get,
+            patch("ccgram.providers.picker_capable_providers") as mock_all,
+            patch("ccgram.providers.get_provider_for_window") as mock_get,
         ):
             mock_get.return_value.discover_resumable_sessions.return_value = []
             scan_all_sessions("claude")
@@ -870,7 +866,7 @@ class TestBuildResumeKeyboard:
 
 
 class TestResumeCommand:
-    @patch(f"{_RC}.picker_capable_providers", return_value=[MagicMock()])
+    @patch("ccgram.providers.picker_capable_providers", return_value=[MagicMock()])
     @patch(f"{_RC}.scan_all_sessions")
     @patch(f"{_RC}.window_query")
     @patch(f"{_RC}.thread_router")

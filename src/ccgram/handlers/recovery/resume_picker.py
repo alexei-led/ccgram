@@ -30,7 +30,7 @@ from telegram import (
 )
 
 from ... import window_query
-from ...providers import get_provider_for_window
+from ...providers import get_provider_for_window, providers_to_scan
 from ..callback_data import (
     CB_RECOVERY_BACK,
     CB_RECOVERY_CANCEL,
@@ -140,26 +140,31 @@ def scan_sessions_for_cwd(
     cwd: str,
     provider_name: str | None = "claude",
 ) -> list[_SessionEntry]:
-    """List one provider's resumable sessions for an exact workspace."""
+    """List resumable sessions for an exact workspace.
+
+    Covers one provider when the caller knows which; every picker-capable one
+    when it does not — see ``providers_to_scan``.
+    """
     try:
         resolved_cwd = str(Path(cwd).expanduser().resolve())
     except OSError, ValueError:
         return []
 
-    provider = get_provider_for_window("", provider_name=provider_name)
-    discovered = provider.discover_resumable_sessions(
-        cwd=resolved_cwd,
-        limit=_MAX_RESUME_SESSIONS,
-    )
-    return [
+    entries = [
         _SessionEntry(
             session_id=session.session_id,
             summary=session.summary,
             mtime=session.mtime,
             provider_name=session.provider_name,
         )
-        for session in discovered
+        for provider in providers_to_scan(provider_name)
+        for session in provider.discover_resumable_sessions(
+            cwd=resolved_cwd,
+            limit=_MAX_RESUME_SESSIONS,
+        )
     ]
+    entries.sort(key=lambda e: e.mtime, reverse=True)
+    return entries[:_MAX_RESUME_SESSIONS]
 
 
 async def _handle_resume_pick(
@@ -220,7 +225,7 @@ async def _handle_resume_pick(
     cwd = view.cwd
     if not provider_name:
         provider_name = view.provider_name
-    if provider_name != view.provider_name:
+    if view.provider_name and provider_name != view.provider_name:
         await query.answer("Session provider mismatch", show_alert=True)
         return
 

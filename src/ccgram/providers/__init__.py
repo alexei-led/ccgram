@@ -143,6 +143,25 @@ def picker_capable_providers() -> list[AgentProvider]:
     ]
 
 
+def providers_to_scan(provider_name: str | None) -> list[AgentProvider]:
+    """Resolve which providers a resumable-session scan should cover.
+
+    A falsy name means the caller could not resolve the window's provider:
+    ``None`` when there is no state row, ``""`` when the row exists but never
+    recorded one. Resolving either to the config default lists one agent's
+    sessions under another agent's topic, so cover every picker-capable
+    provider instead and let each entry's own ``provider_name`` decide what a
+    pick relaunches.
+
+    Every session scan must route through here. Normalising inside one scanner
+    is how the recovery banner's Resume button kept the defaulting behaviour
+    after /resume and Browse were fixed.
+    """
+    if not provider_name:
+        return picker_capable_providers()
+    return [get_provider_for_window("", provider_name=provider_name)]
+
+
 def detect_provider_from_command(pane_current_command: str) -> str:
     """Detect provider name from a tmux pane's running process.
 
@@ -363,6 +382,7 @@ def resolve_capabilities(provider_name: str | None = None) -> ProviderCapabiliti
 
 __all__ = [
     "picker_capable_providers",
+    "providers_to_scan",
     "AgentMessage",
     "AgentProvider",
     "DiscoveredCommand",

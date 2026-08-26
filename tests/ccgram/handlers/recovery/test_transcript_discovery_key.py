@@ -98,9 +98,8 @@ class TestBootstrapIdentity:
     async def test_undetected_provider_returns_none(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # _bootstrap_identity uses a lazy import; patch at the canonical location.
         monkeypatch.setattr(
-            "ccgram.providers.detect_provider_from_pane",
+            "ccgram.handlers.recovery.transcript_discovery.detect_provider_from_pane",
             AsyncMock(return_value=None),
         )
         mock_sm = MagicMock()
@@ -127,7 +126,7 @@ class TestBootstrapIdentity:
         banner would never fire for that window again.
         """
         monkeypatch.setattr(
-            "ccgram.providers.detect_provider_from_pane",
+            "ccgram.handlers.recovery.transcript_discovery.detect_provider_from_pane",
             AsyncMock(return_value="shell"),
         )
         mock_sm = MagicMock()
@@ -147,7 +146,7 @@ class TestBootstrapIdentity:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(
-            "ccgram.providers.detect_provider_from_pane",
+            "ccgram.handlers.recovery.transcript_discovery.detect_provider_from_pane",
             AsyncMock(return_value="pi"),
         )
         mock_sm = MagicMock()
@@ -194,7 +193,7 @@ class TestBootstrapIdentity:
             mock_sm,
         )
         monkeypatch.setattr(
-            "ccgram.providers.detect_provider_from_pane",
+            "ccgram.handlers.recovery.transcript_discovery.detect_provider_from_pane",
             AsyncMock(return_value="pi"),
         )
         # Patch _detect_and_apply_provider to signal "agent exited", which makes

@@ -35,6 +35,7 @@ from ...providers import (
     get_provider,
     get_provider_for_window,
     picker_capable_providers,
+    providers_to_scan,
     resolve_launch_command,
 )
 from ...providers._resume import index_message_count
@@ -142,15 +143,13 @@ def scan_all_sessions(provider_name: str | None = "claude") -> list[ResumeEntry]
     and the recovery banner's Browse button both reach this with the same
     three-valued input.
     """
-    if not provider_name:
-        merged = [
-            entry
-            for provider in picker_capable_providers()
-            for entry in _entries_for(provider)
-        ]
-        merged.sort(key=lambda e: e.mtime, reverse=True)
-        return merged
-    return _entries_for(get_provider_for_window("", provider_name=provider_name))
+    merged = [
+        entry
+        for provider in providers_to_scan(provider_name)
+        for entry in _entries_for(provider)
+    ]
+    merged.sort(key=lambda e: e.mtime, reverse=True)
+    return merged
 
 
 def _entries_for(provider: AgentProvider) -> list[ResumeEntry]:

@@ -327,10 +327,6 @@ async def _bootstrap_identity(
     """
     if w is None:
         return None
-    # Lazy: providers package bootstrap is heavy; only pay for it when a live
-    # window turns out to have no state at all.
-    from ...providers import detect_provider_from_pane
-
     detected = await detect_provider_from_pane(
         w.pane_current_command or "", window_id=window_id
     )

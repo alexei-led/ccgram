@@ -355,8 +355,10 @@ class TestPruneSessionMap:
         mgr.window_states["@1"] = WindowState(session_id="sid-1", cwd="/bound")
         mgr.window_states["@2"] = WindowState(session_id="sid-2", cwd="/unbound")
         thread_router.bind_thread(100, 7, "@1")
-
-        session_map_sync.prune_session_map(live_window_ids=set())
+        try:
+            session_map_sync.prune_session_map(live_window_ids=set())
+        finally:
+            thread_router.unbind_thread(100, 7)
 
         # Both entries are dead, so both leave the session map.
         assert json.loads(session_map_file.read_text()) == {}
