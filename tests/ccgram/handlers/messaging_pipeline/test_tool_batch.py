@@ -20,7 +20,11 @@ from ccgram.handlers.messaging_pipeline.tool_batch import (
     process_tool_event,
     ToolEventOutcome,
 )
-from ccgram.telegram_draft import mark_draft_unavailable, reset_draft_state
+from ccgram.telegram_draft import (
+    DRAFT_LEGACY,
+    mark_draft_unavailable,
+    reset_draft_state,
+)
 
 
 class TestHasEphemeralActiveBatch:
@@ -145,6 +149,7 @@ class TestDraftStreamIntegration:
 
         bot.send_message.assert_awaited_once()
         assert batch.draft is not None
+        assert batch.draft.mode == DRAFT_LEGACY
         assert batch.telegram_msg_id == 77
 
     async def test_failed_initial_draft_is_not_acknowledged(
@@ -272,7 +277,7 @@ class TestDraftStreamIntegration:
 
 
 class TestNativeDraftIntegration:
-    async def test_streaming_draft_is_kept_without_message_id(
+    async def test_tool_batch_forces_persistent_message_when_drafts_available(
         self, monkeypatch
     ) -> None:
         from ccgram.telegram_draft import reset_draft_state
@@ -309,21 +314,19 @@ class TestNativeDraftIntegration:
         )
         _active_batches[(1, 10)] = batch
 
-        await _send_or_edit_batch(bot, 1, batch, 42, 10, 10)
+        delivered = await _send_or_edit_batch(bot, 1, batch, 42, 10, 10)
+
+        assert delivered is True
         assert batch.draft is not None
-        assert batch.draft.mode == "streaming"
-        assert batch.telegram_msg_id is None
+        assert batch.draft.mode == DRAFT_LEGACY
+        assert batch.telegram_msg_id == 77
         assert batch.last_sent_text == "Read foo.py"
-
-        await _send_or_edit_batch(bot, 1, batch, 42, 10, 10)
-        bot.send_message_draft.assert_awaited_once()
-
-        await flush_batch(bot, 1, 10)
+        bot.send_message_draft.assert_not_awaited()
         bot.send_message.assert_awaited_once_with(
             chat_id=42, text="Read foo.py", message_thread_id=10
         )
 
-    async def test_failed_final_send_keeps_batch_for_retry(self, monkeypatch) -> None:
+    async def test_failed_persistent_send_can_be_retried(self, monkeypatch) -> None:
         monkeypatch.setattr(
             "ccgram.handlers.messaging_pipeline.tool_batch._rate_limit_chat",
             AsyncMock(return_value=None),
@@ -352,12 +355,13 @@ class TestNativeDraftIntegration:
         )
         _active_batches[(1, 10)] = batch
 
-        await _send_or_edit_batch(bot, 1, batch, 42, 10, 10)
-        await flush_batch(bot, 1, 10)
-        assert _active_batches[(1, 10)] is batch
+        first = await _send_or_edit_batch(bot, 1, batch, 42, 10, 10)
+        second = await _send_or_edit_batch(bot, 1, batch, 42, 10, 10)
 
-        await flush_batch(bot, 1, 10)
-        assert (1, 10) not in _active_batches
+        assert first is False
+        assert second is True
+        assert batch.telegram_msg_id == 9
+        assert _active_batches[(1, 10)] is batch
 
 
 class TestDedupConsecutiveEntries:

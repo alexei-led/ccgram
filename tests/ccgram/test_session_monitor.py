@@ -284,6 +284,32 @@ class TestMonitorLoop:
         assert monitor.state.tracked_sessions[session_id].last_byte_offset == 20
 
 
+async def test_cancelled_dispatch_retains_failed_receipt(
+    monitor: SessionMonitor,
+) -> None:
+    started = asyncio.Event()
+    blocked = asyncio.Event()
+
+    async def callback(_msg: NewMessage) -> None:
+        started.set()
+        await blocked.wait()
+
+    monitor.set_message_callback(callback)
+    task = asyncio.create_task(
+        monitor._dispatch_message_with_receipt(NewMessage("s1", "text", True))
+    )
+    await started.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    receipts = monitor._delivery_receipts["s1"]
+    assert len(receipts) == 1
+    assert receipts[0].failed is True
+    assert receipts[0].commit_ready is False
+
+
 class TestSessionMapReadFailures:
     async def test_unreadable_map_does_not_reconcile_as_empty(
         self, monitor: SessionMonitor

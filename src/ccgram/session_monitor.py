@@ -478,16 +478,23 @@ class SessionMonitor:
         if self._message_callback is None:
             return
         receipt = new_delivery_receipt()
+        # Register before the first cancellable await. Otherwise shutdown can
+        # cancel this coroutine after parsing but before the receipt becomes
+        # visible, and the watermark coordinator will treat the session as if
+        # it produced no deliverable message.
+        self._delivery_receipts.setdefault(msg.session_id, []).append(receipt)
         token = activate_delivery_receipt(receipt)
         try:
             await self._message_callback(msg)
+        except asyncio.CancelledError:
+            receipt.fail()
+            raise
         except _CallbackError:
             receipt.fail()
             logger.exception("Message callback error for session=%s", msg.session_id)
         finally:
             deactivate_delivery_receipt(token)
             receipt.close()
-        self._delivery_receipts.setdefault(msg.session_id, []).append(receipt)
 
     async def _monitor_loop(self) -> None:
         """Background poll loop."""

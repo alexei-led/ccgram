@@ -23,7 +23,7 @@ from enum import Enum
 import structlog
 
 from ...telegram_client import TelegramClient, unwrap_bot
-from ...telegram_draft import DRAFT_STREAMING, DRAFT_UNSET, DraftStream
+from ...telegram_draft import DRAFT_UNSET, DraftStream
 from ...thread_router import thread_router
 from ...topic_state_registry import topic_state
 from ...window_state_ports.tool_state import get_batch_mode, is_ephemeral_tools
@@ -386,13 +386,18 @@ async def _send_or_edit_batch(
     if batch.draft is None:
         await clear_status_message(client, user_id, thread_id_or_0)
         await _rate_limit_chat(chat_id)
+        # Tool-batch transcript work may advance a delivered watermark. A
+        # streaming draft is ephemeral until finalization, so it cannot
+        # acknowledge this task safely. Keep tool batches on persistent
+        # messages; other message paths may still use streaming drafts.
         batch.draft = DraftStream(
             unwrap_bot(client),
             chat_id,
             message_thread_id=raw_thread_id,
+            force_legacy=True,
         )
         msg_id = await batch.draft.start(batch_text)
-        if msg_id is not None or batch.draft.mode == DRAFT_STREAMING:
+        if msg_id is not None:
             batch.telegram_msg_id = msg_id
             batch.last_sent_text = batch_text
             return True

@@ -135,12 +135,14 @@ class DraftStream:
         message_thread_id: int | None = None,
         reply_to_message_id: int | None = None,
         reply_markup: InlineKeyboardMarkup | None = None,
+        force_legacy: bool = False,
     ) -> None:
         self._bot = bot
         self._chat_id = chat_id
         self._thread_id = message_thread_id
         self._reply_to = reply_to_message_id
         self._reply_markup = reply_markup
+        self._force_legacy = force_legacy
         self._draft_id = secrets.randbelow(2_147_483_646) + 1
         self._message_id: int | None = None
         self._buffer = ""
@@ -181,8 +183,10 @@ class DraftStream:
         self._buffer = initial_text
 
         try:
-            if _DRAFT_UNAVAILABLE or is_peer_draft_unsupported(
-                self._chat_id, self._thread_id
+            if (
+                self._force_legacy
+                or _DRAFT_UNAVAILABLE
+                or is_peer_draft_unsupported(self._chat_id, self._thread_id)
             ):
                 await self._start_legacy()
             else:
