@@ -54,9 +54,9 @@ class TestDecideTickActiveStatus:
         assert decision.send_status is False
         assert decision.status_text is None
 
-    def test_empty_status_after_seen_status_yields_ready_idle(self):
+    def test_empty_status_after_seen_status_yields_quiet_idle(self):
         decision = decide_tick(_make_ctx(resolved_status_text="", has_seen_status=True))
-        assert decision.send_status is True
+        assert decision.send_status is False
         assert decision.transition == "idle"
 
 
@@ -65,19 +65,34 @@ class TestDecideTickShellPrompt:
         decision = decide_tick(_make_ctx(is_shell_prompt=True, supports_hook=True))
         assert decision.transition == "done"
 
-    def test_no_hook_provider_yields_ready_idle(self):
+    def test_no_hook_provider_yields_quiet_idle(self):
         decision = decide_tick(_make_ctx(is_shell_prompt=True, supports_hook=False))
         assert decision.transition == "idle"
-        # A hookless provider returning to its shell prompt is a genuine
-        # completion, not startup settlement, so it must emit Ready.
-        assert decision.send_status is True
+        assert decision.send_status is False
 
 
 class TestDecideTickIdleAndStarting:
-    def test_seen_status_with_no_signal_yields_ready_idle(self):
+    def test_seen_status_with_no_signal_yields_quiet_idle(self):
         decision = decide_tick(_make_ctx(has_seen_status=True))
         assert decision.transition == "idle"
-        assert decision.send_status is True
+        assert decision.send_status is False
+
+    @pytest.mark.parametrize(
+        "context",
+        [
+            pytest.param({"has_seen_status": True}, id="seen-status"),
+            pytest.param(
+                {"is_shell_prompt": True, "supports_hook": False},
+                id="hookless-shell",
+            ),
+        ],
+    )
+    def test_steady_idle_never_requests_repeated_ready_updates(self, context):
+        """Polling the same idle level twice must not enqueue Ready twice."""
+        decisions = [decide_tick(_make_ctx(**context)) for _ in range(2)]
+
+        assert [decision.transition for decision in decisions] == ["idle", "idle"]
+        assert all(not decision.send_status for decision in decisions)
 
     def test_no_signal_no_startup_yields_starting(self):
         assert decide_tick(_make_ctx(startup_time=None)).transition == "starting"

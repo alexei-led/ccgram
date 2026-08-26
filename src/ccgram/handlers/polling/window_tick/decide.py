@@ -52,14 +52,15 @@ def decide_tick(ctx: TickContext) -> TickDecision:
     if ctx.is_shell_prompt:
         if ctx.supports_hook:
             return TickDecision(transition="done")
-        # Hookless provider back at its prompt: genuine end of turn, the
-        # Ready bubble is wanted here.
-        return TickDecision(transition="idle", send_status=True)
+        # A hookless provider stays at its shell prompt after completing a
+        # turn. This level state is polled repeatedly, so it must not enqueue
+        # a Ready update on every tick.
+        return TickDecision(transition="idle")
 
     if ctx.has_seen_status or ctx.startup_quietly_settled:
-        # Quiet settlement is deliberately distinct from has_seen_status:
-        # no bubble was shown, so it must remain quiet on later dormant ticks.
-        return TickDecision(transition="idle", send_status=ctx.has_seen_status)
+        # Both are steady idle states. ``has_seen_status`` records prior
+        # activity, not an idle edge, so neither may re-send Ready per tick.
+        return TickDecision(transition="idle")
 
     startup_expired = (
         ctx.startup_time is not None
