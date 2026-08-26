@@ -1,4 +1,6 @@
 import json
+
+import pytest
 from pathlib import Path
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
@@ -422,8 +424,11 @@ class TestScanAllSessions:
         assert len(result) == 1
         assert result[0].mtime == expected_mtime
 
-    def test_unknown_provider_merges_every_picker_capable_provider(self) -> None:
-        """None means "provider unknown", not "use the default one".
+    @pytest.mark.parametrize("unknown", [None, ""])
+    def test_unknown_provider_merges_every_picker_capable_provider(
+        self, unknown
+    ) -> None:
+        """Both falsy shapes mean "provider unknown", not "use the default one".
 
         A topic whose window state is gone has no provider to resolve, and
         answering it with only the config default listed one agent's sessions
@@ -452,7 +457,7 @@ class TestScanAllSessions:
             "ccgram.handlers.recovery.resume_command.picker_capable_providers",
             return_value=[alpha, beta],
         ):
-            result = scan_all_sessions(None)
+            result = scan_all_sessions(unknown)
 
         assert [e.session_id for e in result] == ["b-1", "a-1"]  # newest first
         assert {e.provider_name for e in result} == {"alpha", "beta"}
@@ -894,7 +899,8 @@ class TestResumeCommand:
 
         await resume_command(_make_update(), _make_context({}))
 
-        mock_scan.assert_called_once_with(None)
+        mock_scan.assert_called_once()
+        assert not mock_scan.call_args.args[0]  # falsy == unknown == merged scan
 
     @patch(f"{_RC}.scan_all_sessions")
     @patch(f"{_RC}.safe_reply", new_callable=AsyncMock)

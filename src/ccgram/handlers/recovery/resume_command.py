@@ -130,14 +130,19 @@ def format_session_entry(
 def scan_all_sessions(provider_name: str | None = "claude") -> list[ResumeEntry]:
     """List resumable sessions for one provider, or for every picker-capable one.
 
-    ``None`` means the caller could not resolve the window's provider, which
-    happens exactly when its window state is gone. Falling back to the config
-    default there answers a Codex topic with Claude's sessions, so merge every
-    provider that offers a picker instead; each entry carries its own
-    ``provider_name`` through to the resume, so the pick still relaunches the
-    right agent.
+    Any falsy name means the caller could not resolve the window's provider:
+    ``None`` when there is no state row at all, ``""`` when the row exists but
+    never recorded one (transcript_discovery's cwd-only reseed writes that).
+    Falling back to the config default there answers a Codex topic with
+    Claude's sessions, so merge every provider that offers a picker instead;
+    each entry carries its own ``provider_name`` through to the resume, so the
+    pick still relaunches the right agent.
+
+    Normalising here rather than at the call sites is deliberate — ``/resume``
+    and the recovery banner's Browse button both reach this with the same
+    three-valued input.
     """
-    if provider_name is None:
+    if not provider_name:
         merged = [
             entry
             for provider in picker_capable_providers()
@@ -257,9 +262,8 @@ async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # An unknown provider is not the same as the default one: resolving it here
     # would offer a Codex topic Claude's sessions. Scan every picker-capable
     # provider instead and let the picked entry decide what to relaunch.
-    # Both None (no state row) and "" (a row that never recorded one — see
-    # transcript_discovery's cwd-only reseed) mean "unknown"; only a real name
-    # may narrow the scan to one provider.
+    # Only a real provider name may narrow the scan; scan_all_sessions treats
+    # any falsy value as "unknown" and merges every picker-capable provider.
     known_provider = window_query.get_window_provider(window_id) if window_id else None
     if not known_provider:
         if not picker_capable_providers():
@@ -268,7 +272,6 @@ async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 "\u274c Resume browsing is not supported by any provider.",
             )
             return
-        known_provider = None
     else:
         provider = get_provider_for_window(
             window_id or "", provider_name=known_provider
