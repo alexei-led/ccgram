@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.6.6] - 2026-08-26
+
+### Fixed
+
+- Report a missing session state correctly. The recovery buttons answered `Directory no longer exists.` for a directory that was present ([#176](https://github.com/alexei-led/ccgram/issues/176)).
+- Keep the window state of a bound topic after its session ends. The recovery banner reads the directory from this state, and its buttons need it.
+- Keep the state of windows bound to a chat-scoped topic. In a forum group, the stale-state sweep deleted this state on each poll cycle.
+- List sessions from the correct agent. `/resume`, `/restore` and the Browse button showed sessions of the default agent for a topic with an unknown agent.
+- Start the agent that owns the selected session. A resume from the recovery banner started the default agent with the arguments of a different agent.
+- Read the working directory of a Herdr agent from its own record. The value was empty, and transcript discovery used the wrong directory.
+- Detect Pi in a Herdr pane. Pi renames its process, and the pane looked like a `node` process.
+- Create the window state of a live window that has none. This repair keeps the session map of the hook intact.
+
 ## [4.6.5] - 2026-08-23
 
 ### Added
