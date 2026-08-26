@@ -776,3 +776,42 @@ class TestShutdownDrain:
             new=AsyncMock(side_effect=lambda *a, **k: never()),
         ):
             await asyncio.wait_for(shutdown_workers(drain_timeout=0.3), timeout=5.0)
+
+
+class TestDeliveryPoison:
+    """Issue #179 review: permanent send failures must freeze the watermark."""
+
+    async def test_poison_makes_queues_idle_false(self) -> None:
+        from ccgram.handlers.messaging_pipeline import delivery_poison as dp
+        from ccgram.handlers.messaging_pipeline import message_queue as mq
+
+        dp.clear_poison()
+        mq._message_queues.clear()
+        assert mq.queues_idle() is True
+        dp.poison_delivery(1)
+        assert mq.queues_idle() is False
+        assert dp.delivery_poisoned(1) is True
+        assert dp.delivery_poisoned() is True
+        dp.clear_poison()
+
+    async def test_permanent_send_failure_poisons(self) -> None:
+        from ccgram.handlers.messaging_pipeline import delivery_poison as dp
+        from ccgram.handlers.messaging_pipeline import message_queue as mq
+        from ccgram.handlers.messaging_pipeline.message_task import ContentTask
+
+        dp.clear_poison()
+        await mq.shutdown_workers()
+        with patch(
+            "ccgram.handlers.messaging_pipeline.message_queue"
+            ".rate_limit_send_message",
+            new=AsyncMock(return_value=None),
+        ):
+            bot = AsyncMock()
+            q = mq.get_or_create_queue(bot, 77)
+            q.put_nowait(
+                ContentTask(window_id="@0", parts=("lost words",), content_type="text")
+            )
+            await asyncio.wait_for(q.join(), timeout=5)
+        assert dp.delivery_poisoned(77) is True
+        dp.clear_poison()
+        await mq.shutdown_workers()

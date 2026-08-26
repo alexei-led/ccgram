@@ -627,6 +627,12 @@ async def flush_batch(  # noqa: C901, PLR0911
         await draft.start(batch_text)
         if draft.mode == DRAFT_UNSET:
             logger.warning("flush_batch could not open a Telegram draft")
+            # The batch content was never delivered: freeze the watermark
+            # so a restart replays it (issue #179 review).
+            # Lazy: leaf latch module; no back-edge into message_queue.
+            from .delivery_poison import poison_delivery
+
+            poison_delivery(user_id)
             return
         await draft.finalize()
     except (RuntimeError, TelegramError) as exc:

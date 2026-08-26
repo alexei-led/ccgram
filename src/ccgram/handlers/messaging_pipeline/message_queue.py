@@ -66,13 +66,23 @@ _queue_locks: dict[int, asyncio.Lock] = {}  # Protect drain/refill operations
 # processing. "Queue empty" alone does not mean delivered.
 _inflight_count = 0
 
+# Lazy import at use sites; see delivery_poison.py for the latch itself.
+
 
 def queues_idle() -> bool:
     """True when no queue has pending items and no worker is mid-send.
 
     Used by the session monitor to decide when parsed transcript entries
-    count as delivered (committed watermark, issue #179).
+    count as delivered (committed watermark, issue #179). A poisoned
+    user (a content send failed permanently) keeps this False forever:
+    the watermark freezes and the failed messages are replayed after a
+    restart rather than acked as delivered.
     """
+    # Lazy: leaf latch module; keep message_queue's import surface stable.
+    from .delivery_poison import delivery_poisoned
+
+    if delivery_poisoned():
+        return False
     if not _message_queues:
         return True
     return all(q.empty() for q in _message_queues.values()) and _inflight_count == 0
@@ -483,8 +493,21 @@ async def _process_content_task(
             client, chat_id, part, **send_kwargs(task.thread_id)
         )
 
-        if sent:
-            last_msg_id = sent.message_id
+        if sent is None:
+            # Permanent send failure (retries exhausted): freeze the
+            # delivered watermark so a restart replays this content
+            # instead of acking it as delivered (issue #179 review).
+            # Lazy: leaf latch module (no back-edge from tool_batch).
+            from .delivery_poison import poison_delivery  # noqa: I001
+
+            poison_delivery(user_id)
+            logger.warning(
+                "Content send failed permanently for user %s; delivered"
+                " watermark frozen until restart",
+                user_id,
+            )
+            return
+        last_msg_id = sent.message_id
 
     if _should_send_tts(task) and (tts_text := prepare_tts_text(task.parts)):
         await _send_tts_voice(
