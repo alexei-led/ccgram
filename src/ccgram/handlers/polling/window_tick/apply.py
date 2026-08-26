@@ -123,12 +123,16 @@ async def _transition_to_idle(
     """
     ps = runtime.poll_state if runtime is not None else terminal_poll_state
     lc = runtime.lifecycle if runtime is not None else lifecycle_strategy
-    # Settle the window, don't just stop its clock: clearing the startup
-    # timestamp alone leaves it indistinguishable from one that never started,
-    # so the very next tick decides "starting" again — green topic, typing
-    # indicator, another 30s grace, idle, repeat. A window that reached idle
-    # has finished starting.
-    ps.mark_seen_status(window_id)
+    if send_status:
+        # Settle the window, don't just stop its clock: clearing the
+        # startup timestamp alone leaves it indistinguishable from one
+        # that never started (starting/starting/idle loop).
+        ps.mark_seen_status(window_id)
+    else:
+        # Quiet settle: same clock hygiene, but a latch that keeps later
+        # ticks silent instead of re-enabling the Ready bubble.
+        ps.mark_quiet_settled(window_id)
+
     client = PTBTelegramClient(bot)
     await update_topic_emoji(client, chat_id, thread_id, "idle", display)
     lc.clear_autoclose_timer(user_id, thread_id)
@@ -419,6 +423,9 @@ async def _apply_active_transition(
     ps = runtime.poll_state if runtime is not None else terminal_poll_state
     lc = runtime.lifecycle if runtime is not None else lifecycle_strategy
     if decision.send_status:
+        # A real status line ends any quiet settle: genuine Ready bubbles
+        # apply from here on.
+        ps.clear_quiet_settled(window_id)
         claude_task_state.clear_wait_header(window_id)
         claude_task_state.set_last_status(window_id, decision.status_text or "")
         ps.mark_seen_status(window_id)

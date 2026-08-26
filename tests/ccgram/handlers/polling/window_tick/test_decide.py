@@ -25,6 +25,7 @@ def _make_ctx(
     startup_time: float | None = None,
     is_dead_window: bool = False,
     supports_hook: bool = True,
+    quiet_settled: bool = False,
 ) -> TickContext:
     return TickContext(
         window_id=window_id,
@@ -35,6 +36,7 @@ def _make_ctx(
         startup_time=startup_time,
         is_dead_window=is_dead_window,
         supports_hook=supports_hook,
+        quiet_settled=quiet_settled,
     )
 
 
@@ -54,7 +56,8 @@ class TestDecideTickActiveStatus:
 
     def test_empty_status_text_is_not_treated_as_a_status(self):
         decision = decide_tick(_make_ctx(resolved_status_text="", has_seen_status=True))
-        assert decision.send_status is False
+        assert decision.transition == "idle"
+        assert decision.send_status is True  # genuine idle: bubble wanted
         assert decision.transition == "idle"
 
 
@@ -66,16 +69,14 @@ class TestDecideTickShellPrompt:
     def test_no_hook_provider_yields_idle(self):
         decision = decide_tick(_make_ctx(is_shell_prompt=True, supports_hook=False))
         assert decision.transition == "idle"
-        # A shell window at a prompt must not re-request a status send every
-        # tick — at 1s polling that is a status-bubble edit flood.
-        assert decision.send_status is False
+        assert decision.send_status is True  # hookless end of turn: bubble
 
 
 class TestDecideTickIdleAndStarting:
     def test_seen_status_with_no_signal_yields_idle(self):
         decision = decide_tick(_make_ctx(has_seen_status=True))
         assert decision.transition == "idle"
-        assert decision.send_status is False
+        assert decision.send_status is True
 
     def test_no_signal_no_startup_yields_starting(self):
         assert decide_tick(_make_ctx(startup_time=None)).transition == "starting"
@@ -189,3 +190,19 @@ class TestIsShellPrompt:
     )
     def test_classification(self, command, expected):
         assert is_shell_prompt(command) is expected
+
+
+class TestQuietSettledLatch:
+    """Greptile P1 on #184: quiet settle must not re-enable Ready next tick."""
+
+    def test_quiet_settled_window_stays_quiet_on_later_ticks(self):
+        ctx = _make_ctx(has_seen_status=False, quiet_settled=True)
+        decision = decide_tick(ctx)
+        assert decision.transition == "idle"
+        assert decision.send_status is False
+
+    def test_quiet_settled_window_with_real_status_goes_active(self):
+        ctx = _make_ctx(resolved_status_text="Working", quiet_settled=True)
+        decision = decide_tick(ctx)
+        assert decision.transition == "active"
+        assert decision.send_status is True

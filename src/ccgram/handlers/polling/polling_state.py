@@ -393,6 +393,28 @@ class TerminalPollState:
         ws.has_seen_status = True
         ws.startup_time = None
 
+    def mark_quiet_settled(self, window_id: str) -> None:
+        """Settle a window quietly: no startup grace, no Ready bubble later.
+
+        Distinct from ``mark_seen_status`` (which re-enables the Ready
+        bubble on the next tick): a never-active window must stay silent
+        for the whole run until real status appears.
+        """
+        ws = self.get_state(window_id)
+        ws.quiet_settled = True
+        ws.startup_time = None
+
+    def clear_quiet_settled(self, window_id: str) -> None:
+        """End a quiet settle (real status appeared)."""
+        ws = self._states.get(window_id)
+        if ws:
+            ws.quiet_settled = False
+
+    def is_quiet_settled(self, window_id: str) -> bool:
+        """True when the window settled quietly (no Ready bubble)."""
+        ws = self._states.get(window_id)
+        return ws.quiet_settled if ws else False
+
 
 # ── InteractiveUIStrategy ───────────────────────────────────────────────
 

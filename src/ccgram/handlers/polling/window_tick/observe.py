@@ -157,6 +157,7 @@ def build_context(
         resolved_status_text=resolved_status_text,
         is_shell_prompt=is_shell_prompt(w.pane_current_command),
         has_seen_status=ps.check_seen_status(window_id),
+        quiet_settled=ps.is_quiet_settled(window_id),
         is_recently_active=is_recently_active,
         startup_time=ws.startup_time if ws else None,
         is_dead_window=False,

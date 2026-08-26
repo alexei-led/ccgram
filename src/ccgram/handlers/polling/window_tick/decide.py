@@ -63,12 +63,13 @@ def decide_tick(ctx: TickContext) -> TickDecision:
         ctx.startup_time is not None
         and (time.monotonic() - ctx.startup_time) >= STARTUP_TIMEOUT
     )
-    if startup_expired:
-        # A window that never showed a status line in this run (agent not
-        # running, dormant tab) must not announce "Ready": one fresh bubble
-        # per topic on every restart is pure noise. Same "idle" transition
-        # with send_status=False drives the idle side effects (settle,
-        # typing cleared, emoji restored) minus the bubble.
+    # Quiet settle: a window that never showed a status line in this run
+    # (agent not running, dormant tab, or already quietly settled) must
+    # not announce "Ready" (one fresh bubble per topic per restart is
+    # noise). The idle transition with send_status=False runs the side
+    # effects (settle, typing cleared, emoji restored) minus the bubble,
+    # and its quiet latch keeps later ticks silent until real status.
+    if ctx.quiet_settled or startup_expired:
         return TickDecision(transition="idle", send_status=False)
 
     return TickDecision(transition="starting")

@@ -62,6 +62,9 @@ class WindowPollState:
     """Per-window polling state, keyed by window_id."""
 
     has_seen_status: bool = False
+    # Settled via the quiet path (startup timeout, never active): the
+    # window is settled but must NOT announce Ready on later ticks.
+    quiet_settled: bool = False
     startup_time: float | None = None
     probe_failures: int = 0
     screen_buffer: ScreenBuffer | None = field(default=None, repr=False)
@@ -103,6 +106,7 @@ class TickContext:
     startup_time: float | None  # None if no startup grace period is running
     is_dead_window: bool  # tmux window no longer exists
     supports_hook: bool  # provider emits hook events (Claude)
+    quiet_settled: bool = False  # settled quietly: no Ready bubble until real status
 
 
 @dataclass(frozen=True, slots=True)
