@@ -8,6 +8,7 @@ tool-use batching lives in ``tool_batch``.
 
 import asyncio
 import contextlib
+from dataclasses import dataclass
 from io import BytesIO
 from typing import assert_never
 
@@ -15,6 +16,15 @@ import structlog
 from telegram.error import RetryAfter, TelegramError
 
 from ...config import config
+from ...delivery_contract import (
+    DeliveryOutcome,
+    DeliveryReceipt,
+    activate_delivery_receipt,
+    deactivate_delivery_receipt,
+    delivery_receipts_ready,
+    get_active_delivery_receipt,
+    new_delivery_receipt,
+)
 from ...telegram_client import TelegramClient
 from ...thread_router import thread_router
 from ...topic_state_registry import topic_state
@@ -50,9 +60,21 @@ from .tool_batch import (
     has_ephemeral_active_batch,
     is_batch_eligible,
     process_tool_event,
+    ToolEventResult,
 )
 
 logger = structlog.get_logger()
+
+# Compatibility exports for internal callers; core code imports the neutral
+# contract directly and does not depend on this handler implementation.
+__all__ = [
+    "DeliveryOutcome",
+    "DeliveryReceipt",
+    "activate_delivery_receipt",
+    "deactivate_delivery_receipt",
+    "delivery_receipts_ready",
+    "new_delivery_receipt",
+]
 
 MERGE_MAX_LENGTH = 3800  # Leave room within Telegram's 4096 char message limit
 
@@ -60,6 +82,46 @@ MERGE_MAX_LENGTH = 3800  # Leave room within Telegram's 4096 char message limit
 _message_queues: dict[int, asyncio.Queue[MessageTask]] = {}
 _queue_workers: dict[int, asyncio.Task[None]] = {}
 _queue_locks: dict[int, asyncio.Lock] = {}  # Protect drain/refill operations
+
+# In-flight sends: incremented around each task a worker is actively
+# processing. "Queue empty" alone does not mean delivered.
+_inflight_count = 0
+
+
+class DispatchResult(int):
+    """Task-done count plus an explicit delivery outcome.
+
+    It remains an ``int`` so the mature queue merge tests and callers retain
+    their count contract while workers gain acknowledgement information.
+    """
+
+    outcome: DeliveryOutcome
+
+    def __new__(cls, extra_task_done: int, outcome: DeliveryOutcome):
+        value = int.__new__(cls, extra_task_done)
+        value.outcome = outcome
+        return value
+
+
+@dataclass
+class DispatchState:
+    """Accounting populated before a merged dispatch reaches an await."""
+
+    extra_task_done: int = 0
+    merged_receipts: tuple[DeliveryReceipt, ...] = ()
+    retry_task: ContentTask | None = None
+
+
+def queues_idle() -> bool:
+    """True when no queue has pending items and no worker is mid-send.
+
+    Used by the session monitor to decide when parsed transcript entries
+    count as delivered (committed watermark, issue #179).
+    """
+    if not _message_queues:
+        return True
+    return all(q.empty() for q in _message_queues.values()) and _inflight_count == 0
+
 
 # Map (tool_use_id, user_id, thread_key) -> telegram message_id
 # for editing tool_use messages with results
@@ -199,6 +261,7 @@ async def _merge_content_tasks(
         Without this compensation, queue.join() would wait indefinitely.
     """
     merged_parts = list(first.parts)
+    merged_receipts = list(first.delivery_receipts)
     current_length = sum(len(p) for p in merged_parts)
     merge_count = 0
 
@@ -218,6 +281,7 @@ async def _merge_content_tasks(
                 break
 
             merged_parts.extend(task.parts)
+            merged_receipts.extend(task.delivery_receipts)
             current_length += task_length
             merge_count += 1
 
@@ -237,6 +301,7 @@ async def _merge_content_tasks(
             role=first.role,
             thread_id=first.thread_id,
             chat_id=first.chat_id,
+            delivery_receipts=tuple(merged_receipts),
         ),
         merge_count,
     )
@@ -284,31 +349,47 @@ async def _handle_content_task(
     task: ContentTask,
     queue: asyncio.Queue[MessageTask],
     lock: asyncio.Lock,
-) -> int:
-    """Route a content task through batching or normal processing.
-
-    Returns the number of additional merged tasks (caller must call task_done for each).
-    """
+    dispatch_state: DispatchState | None = None,
+) -> DispatchResult:
+    """Route a content task through batching or normal processing."""
+    if dispatch_state is None:
+        dispatch_state = DispatchState()
     if task.content_type == "thinking" and config.hide_thinking:
-        return 0
+        return DispatchResult(0, DeliveryOutcome.INTENTIONALLY_DROPPED)
     if task.content_type in ("tool_use", "tool_result") and is_tool_calls_hidden(
         task.window_id
     ):
-        return 0
+        return DispatchResult(0, DeliveryOutcome.INTENTIONALLY_DROPPED)
 
     if is_batch_eligible(task):
-        followup = await process_tool_event(client, user_id, task)
-        if followup is not None:
-            await _process_content_task(client, user_id, followup)
-        return 0
+        batch_result = await process_tool_event(client, user_id, task)
+        if isinstance(batch_result, ToolEventResult):
+            if batch_result.followup is not None:
+                outcome = await _process_content_task(
+                    client, user_id, batch_result.followup
+                )
+                return DispatchResult(0, outcome)
+            outcome = DeliveryOutcome(batch_result.outcome.value)
+            return DispatchResult(0, outcome)
+
+        # Compatibility for callers that still return the former followup-only
+        # contract. Production batching always returns ToolEventResult above.
+        if batch_result is not None:
+            outcome = await _process_content_task(client, user_id, batch_result)
+            return DispatchResult(0, outcome)
+        return DispatchResult(0, DeliveryOutcome.DELIVERED)
 
     await flush_if_active(client, user_id, task)
 
     merged_task, merge_count = await _merge_content_tasks(queue, task, lock)
     if merge_count > 0:
         logger.debug("Merged %d tasks for user %s", merge_count, user_id)
-    await _process_content_task(client, user_id, merged_task)
-    return merge_count
+    original_receipts = len(task.delivery_receipts)
+    dispatch_state.extra_task_done = merge_count
+    dispatch_state.merged_receipts = merged_task.delivery_receipts[original_receipts:]
+    dispatch_state.retry_task = merged_task
+    outcome = await _process_content_task(client, user_id, merged_task)
+    return DispatchResult(merge_count, outcome)
 
 
 def _is_ghost_window_task_at_enqueue(window_id: str) -> bool:
@@ -334,11 +415,14 @@ async def _dispatch(
     task: MessageTask,
     queue: asyncio.Queue[MessageTask],
     lock: asyncio.Lock,
-) -> int:
-    """Dispatch a task by type. Returns extra task_done count for merged tasks."""
+    dispatch_state: DispatchState | None = None,
+) -> DispatchResult:
+    """Dispatch a task and report its explicit delivery outcome."""
     match task:
         case ContentTask() as ct:
-            return await _handle_content_task(client, user_id, ct, queue, lock)
+            return await _handle_content_task(
+                client, user_id, ct, queue, lock, dispatch_state
+            )
         case StatusUpdateTask() as st:
             # Suppress status polls while an ephemeral tool batch owns the
             # bubble — the batch itself is the activity indicator. Flushing
@@ -351,23 +435,39 @@ async def _dispatch(
                 _, dropped = await _coalesce_status_updates(queue, st, lock)
                 for _ in range(dropped):
                     queue.task_done()
-                return 0
+                return DispatchResult(0, DeliveryOutcome.INTENTIONALLY_DROPPED)
             await _flush_batch_for_task(user_id, st, client)
             collapsed_task, dropped = await _coalesce_status_updates(queue, st, lock)
             if dropped > 0:
                 for _ in range(dropped):
                     queue.task_done()
             await process_status_update(client, user_id, collapsed_task)
-            return 0
+            return DispatchResult(0, DeliveryOutcome.DELIVERED)
         case StatusClearTask() as cl:
             await _flush_batch_for_task(user_id, cl, client)
             await process_status_clear(client, user_id, cl)
-            return 0
+            return DispatchResult(0, DeliveryOutcome.DELIVERED)
         case _ as unreachable:
             assert_never(unreachable)
 
 
+def _retry_task_for_state(state: DispatchState, task: MessageTask) -> MessageTask:
+    return state.retry_task or task
+
+
+def _delivery_receipts_for_settlement(
+    task: MessageTask,
+    merged_receipts: tuple[DeliveryReceipt, ...],
+) -> list[DeliveryReceipt]:
+    receipts = task.delivery_receipts if isinstance(task, ContentTask) else ()
+    unique: dict[int, DeliveryReceipt] = {}
+    for receipt in (*receipts, *merged_receipts):
+        unique[id(receipt)] = receipt
+    return list(unique.values())
+
+
 async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
+    global _inflight_count
     """Process message tasks for a user sequentially."""
     queue = _message_queues[user_id]
     lock = _queue_locks[user_id]
@@ -376,14 +476,25 @@ async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
     while True:
         try:
             task = await queue.get()
+            _inflight_count += 1
+            outcome = DeliveryOutcome.DELIVERED
+            merged_receipts: tuple[DeliveryReceipt, ...] = ()
             try:
                 while True:
+                    dispatch_state = DispatchState()
                     try:
-                        extra = await _dispatch(client, user_id, task, queue, lock)
-                        for _ in range(extra):
-                            queue.task_done()
+                        result = await _dispatch(
+                            client,
+                            user_id,
+                            task,
+                            queue,
+                            lock,
+                            dispatch_state,
+                        )
+                        outcome = getattr(result, "outcome", DeliveryOutcome.DELIVERED)
                         break
                     except RetryAfter as e:
+                        task = _retry_task_for_state(dispatch_state, task)
                         retry_secs = min(
                             60,
                             (
@@ -398,13 +509,26 @@ async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
                             retry_secs,
                         )
                         await asyncio.sleep(retry_secs)
-            except (TelegramError, OSError):  # fmt: skip
+                    finally:
+                        for _ in range(dispatch_state.extra_task_done):
+                            queue.task_done()
+                        merged_receipts = dispatch_state.merged_receipts
+            except asyncio.CancelledError:
+                # A bounded shutdown may cancel an in-flight send. Do not
+                # acknowledge bytes whose task was interrupted; restart replays.
+                outcome = DeliveryOutcome.FAILED
+                raise
+            except Exception:  # noqa: BLE001 — delivery failures must not kill workers
+                outcome = DeliveryOutcome.FAILED
                 logger.exception(
                     "Error processing message task for user %s (thread %s)",
                     user_id,
                     getattr(task, "thread_id", None),
                 )
             finally:
+                for receipt in _delivery_receipts_for_settlement(task, merged_receipts):
+                    receipt.settle(outcome)
+                _inflight_count -= 1
                 queue.task_done()
         except asyncio.CancelledError:
             logger.debug("Message queue worker cancelled for user %s", user_id)
@@ -418,8 +542,8 @@ async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
 
 async def _process_content_task(
     client: TelegramClient, user_id: int, task: ContentTask
-) -> None:
-    """Process a content message task."""
+) -> DeliveryOutcome:
+    """Process a content message task and report whether it reached Telegram."""
     tkey = thread_key(task.thread_id)
     chat_id = task.chat_id or thread_router.resolve_chat_id(user_id, task.thread_id)
 
@@ -436,7 +560,7 @@ async def _process_content_task(
                 full_text,
             )
             if success:
-                return
+                return DeliveryOutcome.DELIVERED
             logger.debug("Failed to edit tool msg %s, sending new", edit_msg_id)
 
     first_part = True
@@ -465,6 +589,10 @@ async def _process_content_task(
 
         if sent:
             last_msg_id = sent.message_id
+        else:
+            # The sender exhausted its entity/plain fallback without raising.
+            # A transcript watermark must treat that as a terminal failure.
+            return DeliveryOutcome.FAILED
 
     if _should_send_tts(task) and (tts_text := prepare_tts_text(task.parts)):
         await _send_tts_voice(
@@ -477,6 +605,7 @@ async def _process_content_task(
 
     if last_msg_id and task.tool_use_id and task.content_type == "tool_use":
         _tool_msg_ids[(task.tool_use_id, user_id, tkey)] = last_msg_id
+    return DeliveryOutcome.DELIVERED
 
 
 async def enqueue_content_message(
@@ -496,6 +625,9 @@ async def enqueue_content_message(
         return
     queue = get_or_create_queue(client, user_id)
 
+    receipt = get_active_delivery_receipt()
+    if receipt is not None:
+        receipt.track()
     task = ContentTask(
         window_id=window_id,
         parts=tuple(parts),
@@ -505,6 +637,7 @@ async def enqueue_content_message(
         role=role,
         thread_id=thread_id,
         chat_id=chat_id,
+        delivery_receipts=(receipt,) if receipt is not None else (),
     )
     queue.put_nowait(task)
 
@@ -548,8 +681,25 @@ def clear_tool_msg_ids_for_topic(user_id: int, thread_id: int | None = None) -> 
         _tool_msg_ids.pop(key, None)
 
 
-async def shutdown_workers() -> None:
-    """Stop all queue workers (called during client shutdown)."""
+async def shutdown_workers(drain_timeout: float = 10.0) -> None:
+    """Stop all queue workers (called during client shutdown).
+
+    The monitor parses transcript entries before the queue delivers them
+    to Telegram; on this PR's delivered-watermark model anything the drain
+    cannot finish is replayed on the next start. Draining while the HTTP
+    transport is still alive (post_stop) bounds how much gets replayed.
+    Callers must already have stopped the monitor so no new work arrives
+    during the drain.
+    """
+    joins = [queue.join() for queue in _message_queues.values()]
+    if joins:
+        try:
+            # Queue.join() accounts for both queued and in-flight work. Its
+            # timeout must be external: asyncio.Queue has no timed join.
+            await asyncio.wait_for(asyncio.gather(*joins), timeout=drain_timeout)
+        except asyncio.TimeoutError:
+            pending = sum(q.qsize() for q in _message_queues.values())
+            logger.warning("Shutdown drain timeout: %d queued task(s) remain", pending)
     for _, worker in list(_queue_workers.items()):
         worker.cancel()
         with contextlib.suppress(asyncio.CancelledError):

@@ -325,8 +325,14 @@ async def bootstrap_application(application: Application) -> None:
     await start_miniapp_if_enabled()
 
 
-async def shutdown_runtime() -> None:
-    """Run the post_shutdown teardown sequence."""
+async def stop_delivery_runtime() -> None:
+    """Phase 1 (post_stop): stop producers and drain pending deliveries.
+
+    Runs while PTB's HTTP transport is still alive (post_stop precedes
+    Application.shutdown, which tears down HTTPXRequest), so the queue drain
+    can actually deliver parsed-but-unsent messages (TASK-5/6). Must run
+    before any consumer that could enqueue new work is gone.
+    """
     global _status_poll_task, session_monitor
 
     if _status_poll_task is not None:
@@ -336,8 +342,9 @@ async def shutdown_runtime() -> None:
         _status_poll_task = None
         logger.info("Status polling stopped")
 
-    if session_monitor is not None:
-        session_monitor.stop()
+    monitor_to_commit = session_monitor
+    if monitor_to_commit is not None:
+        await monitor_to_commit.stop_and_wait()
         logger.info("Session monitor stopped")
         session_monitor = None
     clear_active_monitor()
@@ -347,17 +354,24 @@ async def shutdown_runtime() -> None:
 
     event_stream = get_active_event_stream()
     if event_stream is not None:
-        event_stream.stop()
+        await event_stream.stop_and_wait()
         set_active_event_stream(None)
         logger.info("Event-stream consumer stopped")
 
     await shutdown_workers()
+    if monitor_to_commit is not None:
+        # A successful bounded drain can now advance receipts; cancellation or
+        # terminal delivery failures leave them unacknowledged for replay.
+        monitor_to_commit.commit_delivered_watermarks()
 
     # Lazy: tracker is only needed to discard ephemeral input correlations at shutdown.
     from .handlers.telegram_origin import clear_pending_telegram_injections
 
     clear_pending_telegram_injections()
 
+
+async def shutdown_runtime() -> None:
+    """Phase 2 (post_shutdown): teardown that needs no HTTP transport."""
     # Lazy: main → bot → bootstrap cycle (same as start path).
     from .main import stop_miniapp_if_enabled
 

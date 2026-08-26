@@ -168,9 +168,10 @@ async def test_incremental_read_picks_up_new_messages(
     assert new_messages[0].session_id == TEST_SESSION_ID
 
 
-async def test_file_truncation_resets_offset(
+async def test_post_start_truncation_does_not_replay_snapshot(
     state_dir, session_map_with_transcript, make_monitor
 ) -> None:
+    """A same-inode truncate/rewrite is a replacement snapshot, not new output."""
     transcript = state_dir / "transcript.jsonl"
     _write_jsonl(
         transcript,
@@ -186,8 +187,7 @@ async def test_file_truncation_resets_offset(
     _write_jsonl(transcript, [_make_assistant_entry("after truncation")])
     _bump_mtime(transcript)
     new_messages = await monitor.check_for_updates(current)
-    assert len(new_messages) == 1
-    assert new_messages[0].text == "after truncation"
+    assert new_messages == []
 
 
 async def test_nested_session_start_does_not_steal_forwarding(
