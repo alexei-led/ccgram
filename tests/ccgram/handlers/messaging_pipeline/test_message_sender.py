@@ -83,7 +83,10 @@ class TestRateLimitSend:
         assert 123 in _last_send_time
         first_time = _last_send_time[123]
 
-        await asyncio.sleep(0.01)
+        # Back-date so the interval is treated as elapsed — avoids a real 0.5s sleep.
+        # rate_limit_send will update _last_send_time[123] to time.monotonic() which
+        # is always > first_time (real clock moved forward even if only by microseconds).
+        _last_send_time[123] = first_time - MESSAGE_SEND_INTERVAL - 0.1
         await rate_limit_send(123)
         assert _last_send_time[123] > first_time
 

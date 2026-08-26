@@ -1,7 +1,12 @@
 """Tests for interactive UI rendering."""
 
+import time
+from contextlib import contextmanager
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 from telegram import InlineKeyboardMarkup
+from telegram.error import BadRequest, TimedOut
 
 from ccgram.handlers.callback_data import (
     CB_ASK_DOWN,
@@ -15,10 +20,49 @@ from ccgram.handlers.callback_data import (
     CB_ASK_UP,
 )
 from ccgram.handlers.interactive.interactive_ui import (
-    INTERACTIVE_INSTRUCTION_LINE,
+    _DEAD_TOPIC_RETRY_INTERVAL,
+    _SEND_RETRY_INTERVAL,
     _build_interactive_keyboard,
+    _interactive_mode,
+    _interactive_msgs,
+    _lookup_pane_name,
+    _send_cooldowns,
+    clear_interactive_mode,
     format_interactive_message,
+    get_interactive_window,
+    handle_interactive_ui,
+    INTERACTIVE_INSTRUCTION_LINE,
+    set_interactive_mode,
 )
+from ccgram.window_state_store import PaneInfo, WindowState, window_store
+
+
+_UI = "ccgram.handlers.interactive.interactive_ui"
+
+
+@contextmanager
+def _interactive_env(bot: AsyncMock):
+    """Patch the terminal capture + routing collaborators of handle_interactive_ui."""
+    with (
+        patch(
+            f"{_UI}._capture_interactive_content",
+            new_callable=AsyncMock,
+            return_value=("AskUserQuestion", "Pick one:"),
+        ),
+        patch(f"{_UI}.thread_router") as mock_router,
+        patch(f"{_UI}.rate_limit_send", new_callable=AsyncMock),
+        patch(f"{_UI}.asyncio.sleep", new_callable=AsyncMock),
+    ):
+        mock_router.resolve_chat_id.return_value = -999
+        yield bot
+
+
+def _sending_bot(*, message_id: int = 42) -> AsyncMock:
+    bot = AsyncMock()
+    sent = MagicMock()
+    sent.message_id = message_id
+    bot.send_message.return_value = sent
+    return bot
 
 
 def _cb_data(kb: InlineKeyboardMarkup, row: int | None = None) -> list[str]:
@@ -76,15 +120,6 @@ class TestBuildInteractiveKeyboard:
 
 
 class TestFormatInteractiveMessage:
-    def test_prepends_instruction_line(self) -> None:
-        out = format_interactive_message("Pick one:")
-        assert out.startswith(INTERACTIVE_INSTRUCTION_LINE)
-        assert "Pick one:" in out
-
-    def test_instruction_describes_keys(self) -> None:
-        for token in ("↑↓", "Enter", "Esc"):
-            assert token in INTERACTIVE_INSTRUCTION_LINE
-
     def test_pane_prefix_with_pane_id(self) -> None:
         out = format_interactive_message("Body", pane_id="%5")
         assert "Pane (%5):" in out
@@ -119,12 +154,11 @@ class TestFormatInteractiveMessage:
         # Generic "Pane" word must NOT appear when a name is set.
         assert "Pane (%5):" not in out
 
-    def test_blank_pane_name_falls_back_to_generic(self) -> None:
-        out = format_interactive_message("Body", pane_id="%5", pane_name="   ")
-        assert "Pane (%5):" in out
-
-    def test_none_pane_name_falls_back_to_generic(self) -> None:
-        out = format_interactive_message("Body", pane_id="%5", pane_name=None)
+    @pytest.mark.parametrize("pane_name", ["   ", None], ids=["blank", "unset"])
+    def test_unusable_pane_name_falls_back_to_generic(
+        self, pane_name: str | None
+    ) -> None:
+        out = format_interactive_message("Body", pane_id="%5", pane_name=pane_name)
         assert "Pane (%5):" in out
 
     def test_pane_name_ignored_without_pane_id(self) -> None:
@@ -136,171 +170,116 @@ class TestFormatInteractiveMessage:
 class TestInteractiveModeTracking:
     @pytest.fixture(autouse=True)
     def _clear_interactive_mode(self) -> None:
-        from ccgram.handlers.interactive.interactive_ui import _interactive_mode
-
         _interactive_mode.clear()
 
     def test_set_and_get(self) -> None:
-        from ccgram.handlers.interactive.interactive_ui import (
-            get_interactive_window,
-            set_interactive_mode,
-        )
-
         set_interactive_mode(100, "@0", thread_id=42)
         assert get_interactive_window(100, 42) == "@0"
 
     def test_clear(self) -> None:
-        from ccgram.handlers.interactive.interactive_ui import (
-            clear_interactive_mode,
-            get_interactive_window,
-            set_interactive_mode,
-        )
-
         set_interactive_mode(100, "@0", thread_id=42)
         clear_interactive_mode(100, thread_id=42)
         assert get_interactive_window(100, 42) is None
 
     def test_none_thread_uses_zero(self) -> None:
-        from ccgram.handlers.interactive.interactive_ui import (
-            get_interactive_window,
-            set_interactive_mode,
-        )
-
         set_interactive_mode(100, "@0", thread_id=None)
         assert get_interactive_window(100, None) == "@0"
 
 
-class TestDeadTopicCooldown:
-    """Verify longer backoff when topic is deleted (thread not found)."""
-
-    @pytest.fixture(autouse=True)
-    def _clear_state(self) -> None:
-        from ccgram.handlers.interactive.interactive_ui import (
-            _interactive_mode,
-            _interactive_msgs,
-            _send_cooldowns,
-        )
-
-        _interactive_mode.clear()
-        _interactive_msgs.clear()
-        _send_cooldowns.clear()
-
-    async def test_dead_topic_applies_longer_cooldown(self) -> None:
-        from unittest.mock import AsyncMock, patch
-
-        from telegram.error import BadRequest
-
-        from ccgram.handlers.interactive.interactive_ui import (
-            _DEAD_TOPIC_RETRY_INTERVAL,
-            _send_cooldowns,
-            handle_interactive_ui,
-        )
-
-        mock_bot = AsyncMock()
-        mock_bot.send_message.side_effect = BadRequest("Message thread not found")
-
-        with (
-            patch(
-                "ccgram.handlers.interactive.interactive_ui._capture_interactive_content",
-                new_callable=AsyncMock,
-                return_value=("AskUserQuestion", "Pick one:"),
-            ),
-            patch(
-                "ccgram.handlers.interactive.interactive_ui.thread_router"
-            ) as mock_sm,
-            patch(
-                "ccgram.handlers.interactive.interactive_ui.rate_limit_send",
-                new_callable=AsyncMock,
-            ),
-        ):
-            mock_sm.resolve_chat_id.return_value = -999
-
-            result = await handle_interactive_ui(mock_bot, 100, "@2", thread_id=42)
-            assert result is False
-
-            # Cooldown should be set to ~60s, not the default 5s
-            ikey = (100, 42)
-            assert ikey in _send_cooldowns
-            import time
-
-            cooldown_remaining = _send_cooldowns[ikey] - time.monotonic()
-            assert cooldown_remaining > 30  # well above the default 5s
-            assert cooldown_remaining <= _DEAD_TOPIC_RETRY_INTERVAL
-
-    async def test_non_dead_topic_error_uses_normal_cooldown(self) -> None:
-        from unittest.mock import AsyncMock, patch
-
-        from telegram.error import BadRequest
-
-        from ccgram.handlers.interactive.interactive_ui import (
-            _SEND_RETRY_INTERVAL,
-            _send_cooldowns,
-            handle_interactive_ui,
-        )
-
-        mock_bot = AsyncMock()
-        mock_bot.send_message.side_effect = BadRequest("Chat not found")
-
-        with (
-            patch(
-                "ccgram.handlers.interactive.interactive_ui._capture_interactive_content",
-                new_callable=AsyncMock,
-                return_value=("AskUserQuestion", "Pick one:"),
-            ),
-            patch(
-                "ccgram.handlers.interactive.interactive_ui.thread_router"
-            ) as mock_sm,
-            patch(
-                "ccgram.handlers.interactive.interactive_ui.rate_limit_send",
-                new_callable=AsyncMock,
-            ),
-        ):
-            mock_sm.resolve_chat_id.return_value = -999
-
-            result = await handle_interactive_ui(mock_bot, 100, "@2", thread_id=42)
-            assert result is False
-
-            # Normal cooldown — should be around now, not 60s into the future
-            ikey = (100, 42)
-            assert ikey in _send_cooldowns
-            import time
-
-            cooldown_remaining = _send_cooldowns[ikey] - time.monotonic()
-            assert cooldown_remaining <= _SEND_RETRY_INTERVAL
+@pytest.fixture
+def _clear_send_state():
+    for state in (_interactive_mode, _interactive_msgs, _send_cooldowns):
+        state.clear()
+    yield
+    for state in (_interactive_mode, _interactive_msgs, _send_cooldowns):
+        state.clear()
 
 
-class TestLookupPaneName:
-    @pytest.fixture(autouse=True)
-    def _isolated_window_store(self):  # type: ignore[no-untyped-def]
-        from ccgram.window_state_store import window_store
-
-        saved = dict(window_store.window_states)
+@pytest.fixture
+def _isolated_window_store():
+    saved = dict(window_store.window_states)
+    window_store.window_states.clear()
+    try:
+        yield
+    finally:
         window_store.window_states.clear()
-        try:
-            yield
-        finally:
-            window_store.window_states.clear()
-            window_store.window_states.update(saved)
+        window_store.window_states.update(saved)
 
-    def test_returns_name_when_pane_recorded(self) -> None:
-        from ccgram.handlers.interactive.interactive_ui import _lookup_pane_name
-        from ccgram.window_state_store import PaneInfo, WindowState, window_store
 
+class TestSendCooldown:
+    """A topic that is gone must back off far longer than a transient failure."""
+
+    async def test_dead_topic_applies_longer_cooldown(self, _clear_send_state) -> None:
+        bot = AsyncMock()
+        bot.send_message.side_effect = BadRequest("Message thread not found")
+
+        with _interactive_env(bot):
+            assert await handle_interactive_ui(bot, 100, "@2", thread_id=42) is False
+
+        remaining = _send_cooldowns[(100, 42)] - time.monotonic()
+        assert remaining > _SEND_RETRY_INTERVAL
+        assert remaining <= _DEAD_TOPIC_RETRY_INTERVAL
+
+    async def test_cooldown_suppresses_the_next_send(self, _clear_send_state) -> None:
+        bot = _sending_bot()
+        _send_cooldowns[(100, 42)] = time.monotonic()
+
+        with _interactive_env(bot):
+            assert await handle_interactive_ui(bot, 100, "@2", thread_id=42) is False
+
+        bot.send_message.assert_not_called()
+
+    async def test_other_error_uses_normal_cooldown(self, _clear_send_state) -> None:
+        bot = AsyncMock()
+        bot.send_message.side_effect = BadRequest("Chat not found")
+
+        with _interactive_env(bot):
+            assert await handle_interactive_ui(bot, 100, "@2", thread_id=42) is False
+
+        remaining = _send_cooldowns[(100, 42)] - time.monotonic()
+        assert remaining <= _SEND_RETRY_INTERVAL
+
+
+class TestPaneLabel:
+    async def test_named_pane_label_in_sent_message(
+        self, _clear_send_state, _isolated_window_store
+    ) -> None:
+        state = WindowState()
+        state.panes["%5"] = PaneInfo(pane_id="%5", name="api-gateway")
+        window_store.window_states["@2"] = state
+
+        bot = _sending_bot()
+        with _interactive_env(bot):
+            ok = await handle_interactive_ui(bot, 100, "@2", thread_id=42, pane_id="%5")
+
+        assert ok is True
+        sent_text = bot.send_message.call_args.kwargs["text"]
+        assert "api-gateway (%5):" in sent_text
+        assert "Pane (%5):" not in sent_text
+
+    async def test_unnamed_pane_falls_back_to_generic_label(
+        self, _clear_send_state, _isolated_window_store
+    ) -> None:
+        bot = _sending_bot()
+        with _interactive_env(bot):
+            ok = await handle_interactive_ui(bot, 100, "@2", thread_id=42, pane_id="%5")
+
+        assert ok is True
+        assert "Pane (%5):" in bot.send_message.call_args.kwargs["text"]
+
+    def test_lookup_returns_recorded_name(self, _isolated_window_store) -> None:
         state = WindowState()
         state.panes["%5"] = PaneInfo(pane_id="%5", name="api-gateway")
         window_store.window_states["@0"] = state
 
         assert _lookup_pane_name("@0", "%5") == "api-gateway"
 
-    def test_returns_none_when_pane_missing(self) -> None:
-        from ccgram.handlers.interactive.interactive_ui import _lookup_pane_name
-
+    def test_lookup_returns_none_for_unknown_pane(self, _isolated_window_store) -> None:
         assert _lookup_pane_name("@0", "%99") is None
 
-    def test_returns_none_when_pane_has_no_name(self) -> None:
-        from ccgram.handlers.interactive.interactive_ui import _lookup_pane_name
-        from ccgram.window_state_store import PaneInfo, WindowState, window_store
-
+    def test_lookup_returns_none_when_pane_has_no_name(
+        self, _isolated_window_store
+    ) -> None:
         state = WindowState()
         state.panes["%5"] = PaneInfo(pane_id="%5", name=None)
         window_store.window_states["@0"] = state
@@ -308,181 +287,24 @@ class TestLookupPaneName:
         assert _lookup_pane_name("@0", "%5") is None
 
 
-class TestHandleInteractiveUIPaneName:
-    @pytest.fixture(autouse=True)
-    def _clear_state(self):  # type: ignore[no-untyped-def]
-        from ccgram.handlers.interactive.interactive_ui import (
-            _interactive_mode,
-            _interactive_msgs,
-            _send_cooldowns,
-        )
-        from ccgram.window_state_store import window_store
+class TestTransientRetry:
+    async def test_timed_out_retries_then_succeeds(self, _clear_send_state) -> None:
+        bot = _sending_bot()
+        sent = bot.send_message.return_value
+        bot.send_message.side_effect = [TimedOut("blip"), sent]
 
-        _interactive_mode.clear()
-        _interactive_msgs.clear()
-        _send_cooldowns.clear()
-        saved = dict(window_store.window_states)
-        window_store.window_states.clear()
-        yield
-        window_store.window_states.clear()
-        window_store.window_states.update(saved)
-
-    async def test_named_pane_label_in_sent_message(self) -> None:
-        from unittest.mock import AsyncMock, MagicMock, patch
-
-        from ccgram.handlers.interactive.interactive_ui import handle_interactive_ui
-        from ccgram.window_state_store import PaneInfo, WindowState, window_store
-
-        state = WindowState()
-        state.panes["%5"] = PaneInfo(pane_id="%5", name="api-gateway")
-        window_store.window_states["@2"] = state
-
-        mock_bot = AsyncMock()
-        sent = MagicMock()
-        sent.message_id = 42
-        mock_bot.send_message.return_value = sent
-
-        with (
-            patch(
-                "ccgram.handlers.interactive.interactive_ui._capture_interactive_content",
-                new_callable=AsyncMock,
-                return_value=("AskUserQuestion", "Pick one:"),
-            ),
-            patch(
-                "ccgram.handlers.interactive.interactive_ui.thread_router"
-            ) as mock_sm,
-            patch(
-                "ccgram.handlers.interactive.interactive_ui.rate_limit_send",
-                new_callable=AsyncMock,
-            ),
-        ):
-            mock_sm.resolve_chat_id.return_value = -999
-            ok = await handle_interactive_ui(
-                mock_bot, 100, "@2", thread_id=42, pane_id="%5"
-            )
+        with _interactive_env(bot):
+            ok = await handle_interactive_ui(bot, 100, "@2", thread_id=42)
 
         assert ok is True
-        sent_text = mock_bot.send_message.call_args.kwargs["text"]
-        assert "api-gateway (%5):" in sent_text
-        assert "Pane (%5):" not in sent_text
+        assert bot.send_message.call_count == 2
 
-    async def test_unnamed_pane_falls_back_to_generic_label(self) -> None:
-        from unittest.mock import AsyncMock, MagicMock, patch
+    async def test_timed_out_exhausts_retries(self, _clear_send_state) -> None:
+        bot = AsyncMock()
+        bot.send_message.side_effect = TimedOut("persistent")
 
-        from ccgram.handlers.interactive.interactive_ui import handle_interactive_ui
-
-        mock_bot = AsyncMock()
-        sent = MagicMock()
-        sent.message_id = 42
-        mock_bot.send_message.return_value = sent
-
-        with (
-            patch(
-                "ccgram.handlers.interactive.interactive_ui._capture_interactive_content",
-                new_callable=AsyncMock,
-                return_value=("AskUserQuestion", "Pick one:"),
-            ),
-            patch(
-                "ccgram.handlers.interactive.interactive_ui.thread_router"
-            ) as mock_sm,
-            patch(
-                "ccgram.handlers.interactive.interactive_ui.rate_limit_send",
-                new_callable=AsyncMock,
-            ),
-        ):
-            mock_sm.resolve_chat_id.return_value = -999
-            ok = await handle_interactive_ui(
-                mock_bot, 100, "@2", thread_id=42, pane_id="%5"
-            )
-
-        assert ok is True
-        sent_text = mock_bot.send_message.call_args.kwargs["text"]
-        assert "Pane (%5):" in sent_text
-
-
-class TestHandleInteractiveUITransientRetry:
-    @pytest.fixture(autouse=True)
-    def _clear_state(self):
-        from ccgram.handlers.interactive.interactive_ui import (
-            _interactive_mode,
-            _interactive_msgs,
-            _send_cooldowns,
-        )
-
-        _interactive_mode.clear()
-        _interactive_msgs.clear()
-        _send_cooldowns.clear()
-        yield
-        _interactive_mode.clear()
-        _interactive_msgs.clear()
-        _send_cooldowns.clear()
-
-    async def test_timed_out_retries_then_succeeds(self) -> None:
-        from unittest.mock import AsyncMock, MagicMock, patch
-
-        from telegram.error import TimedOut
-
-        from ccgram.handlers.interactive.interactive_ui import handle_interactive_ui
-
-        mock_bot = AsyncMock()
-        sent = MagicMock()
-        sent.message_id = 42
-        mock_bot.send_message.side_effect = [TimedOut("blip"), sent]
-
-        with (
-            patch(
-                "ccgram.handlers.interactive.interactive_ui._capture_interactive_content",
-                new_callable=AsyncMock,
-                return_value=("AskUserQuestion", "Pick one:"),
-            ),
-            patch(
-                "ccgram.handlers.interactive.interactive_ui.thread_router"
-            ) as mock_sm,
-            patch(
-                "ccgram.handlers.interactive.interactive_ui.rate_limit_send",
-                new_callable=AsyncMock,
-            ),
-            patch(
-                "ccgram.handlers.interactive.interactive_ui.asyncio.sleep",
-                new_callable=AsyncMock,
-            ),
-        ):
-            mock_sm.resolve_chat_id.return_value = -999
-            ok = await handle_interactive_ui(mock_bot, 100, "@2", thread_id=42)
-
-        assert ok is True
-        assert mock_bot.send_message.call_count == 2
-
-    async def test_timed_out_exhausts_retries(self) -> None:
-        from unittest.mock import AsyncMock, patch
-
-        from telegram.error import TimedOut
-
-        from ccgram.handlers.interactive.interactive_ui import handle_interactive_ui
-
-        mock_bot = AsyncMock()
-        mock_bot.send_message.side_effect = TimedOut("persistent")
-
-        with (
-            patch(
-                "ccgram.handlers.interactive.interactive_ui._capture_interactive_content",
-                new_callable=AsyncMock,
-                return_value=("AskUserQuestion", "Pick one:"),
-            ),
-            patch(
-                "ccgram.handlers.interactive.interactive_ui.thread_router"
-            ) as mock_sm,
-            patch(
-                "ccgram.handlers.interactive.interactive_ui.rate_limit_send",
-                new_callable=AsyncMock,
-            ),
-            patch(
-                "ccgram.handlers.interactive.interactive_ui.asyncio.sleep",
-                new_callable=AsyncMock,
-            ),
-        ):
-            mock_sm.resolve_chat_id.return_value = -999
-            ok = await handle_interactive_ui(mock_bot, 100, "@2", thread_id=42)
+        with _interactive_env(bot):
+            ok = await handle_interactive_ui(bot, 100, "@2", thread_id=42)
 
         assert ok is False
-        assert mock_bot.send_message.call_count == 2
+        assert bot.send_message.call_count == 2

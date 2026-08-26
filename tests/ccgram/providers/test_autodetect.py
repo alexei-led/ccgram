@@ -174,232 +174,110 @@ class TestDetectProviderFromRuntime:
         assert detect_provider_from_runtime("bun", pane_title="ccgram:unknown") == ""
 
 
+class _NewWindowHarness:
+    """Drives ``topic_orchestration.handle_new_window`` with every collaborator
+    stubbed, so the tests read as pane-state → provider-set decisions."""
+
+    def __init__(self, detect, session_manager, mux) -> None:
+        self.detect = detect
+        self.session_manager = session_manager
+        self.mux = mux
+
+    async def run(
+        self,
+        window_id: str,
+        *,
+        pane_command: str | None,
+        pane_title: str = "",
+    ) -> None:
+        # Lazy: importing at module scope would pull the handler package in
+        # before the patches above are installed.
+        from ccgram.handlers.topics.topic_orchestration import handle_new_window
+        from ccgram.session_monitor import NewWindowEvent
+
+        window = None
+        if pane_command is not None:
+            window = MagicMock()
+            window.pane_current_command = pane_command
+        self.mux.find_window_by_id = AsyncMock(return_value=window)
+        self.mux.get_pane_title = AsyncMock(return_value=pane_title)
+
+        event = NewWindowEvent(
+            window_id=window_id,
+            session_id=f"uuid-{window_id}",
+            window_name="proj",
+            cwd="/tmp/proj",
+        )
+        await handle_new_window(event, AsyncMock())
+
+
+@pytest.fixture
+def new_window():
+    module = "ccgram.handlers.topics.topic_orchestration"
+    with (
+        patch(f"{module}.tmux_manager") as mux,
+        patch(f"{module}.session_manager") as session_manager,
+        patch(f"{module}.config") as config,
+        patch(
+            f"{module}.detect_provider_from_pane",
+            new_callable=AsyncMock,
+            return_value="",
+        ) as detect,
+    ):
+        config.group_id = None
+        session_manager.iter_thread_bindings.return_value = []
+        session_manager.view_window.return_value = MagicMock(provider_name="")
+        yield _NewWindowHarness(detect, session_manager, mux)
+
+
 class TestHandleNewWindowAutoDetection:
-    @patch("ccgram.handlers.topics.topic_orchestration.tmux_manager")
-    @patch("ccgram.handlers.topics.topic_orchestration.session_manager")
-    @patch("ccgram.handlers.topics.topic_orchestration.config")
-    @patch(
-        "ccgram.handlers.topics.topic_orchestration.detect_provider_from_pane",
-        new_callable=AsyncMock,
-        return_value="codex",
+    async def test_sets_detected_provider(self, new_window) -> None:
+        new_window.detect.return_value = "codex"
+
+        await new_window.run("@5", pane_command="codex")
+
+        new_window.detect.assert_awaited_once()
+        new_window.session_manager.set_window_provider.assert_called_once_with(
+            "@5", "codex"
+        )
+
+    @pytest.mark.parametrize(
+        "pane_command",
+        [pytest.param("", id="empty_command"), pytest.param(None, id="window_gone")],
     )
-    async def test_sets_detected_provider(
-        self,
-        mock_detect: MagicMock,
-        mock_config: MagicMock,
-        mock_sm: MagicMock,
-        mock_tmux: MagicMock,
+    async def test_skips_detection_without_a_pane_command(
+        self, new_window, pane_command: str | None
     ) -> None:
-        from ccgram.handlers.topics.topic_orchestration import (
-            handle_new_window as _handle_new_window,
-        )
-        from ccgram.session_monitor import NewWindowEvent
+        await new_window.run("@6", pane_command=pane_command)
 
-        mock_config.group_id = None
-        mock_sm.iter_thread_bindings.return_value = []
-        mock_sm.view_window.return_value = MagicMock(provider_name="")
+        new_window.detect.assert_not_called()
+        new_window.session_manager.set_window_provider.assert_not_called()
 
-        mock_window = MagicMock()
-        mock_window.pane_current_command = "codex"
-        mock_tmux.find_window_by_id = AsyncMock(return_value=mock_window)
-
-        event = NewWindowEvent(
-            window_id="@5", session_id="uuid-1", window_name="proj", cwd="/tmp/proj"
-        )
-        bot = AsyncMock()
-
-        await _handle_new_window(event, bot)
-
-        mock_detect.assert_awaited_once()
-        mock_sm.set_window_provider.assert_called_once_with("@5", "codex")
-
-    @patch("ccgram.handlers.topics.topic_orchestration.tmux_manager")
-    @patch("ccgram.handlers.topics.topic_orchestration.session_manager")
-    @patch("ccgram.handlers.topics.topic_orchestration.config")
-    @patch(
-        "ccgram.handlers.topics.topic_orchestration.detect_provider_from_pane",
-        new_callable=AsyncMock,
-    )
-    async def test_skips_detection_when_no_pane_command(
-        self,
-        mock_detect: MagicMock,
-        mock_config: MagicMock,
-        mock_sm: MagicMock,
-        mock_tmux: MagicMock,
+    async def test_detects_gemini_from_pane_title_when_command_is_a_js_runtime(
+        self, new_window
     ) -> None:
-        from ccgram.handlers.topics.topic_orchestration import (
-            handle_new_window as _handle_new_window,
+        await new_window.run("@8", pane_command="bun", pane_title="◇  Ready (ccgram)")
+
+        new_window.detect.assert_awaited_once()
+        new_window.mux.get_pane_title.assert_awaited_once_with("@8")
+        new_window.session_manager.set_window_provider.assert_called_once_with(
+            "@8", "gemini"
         )
-        from ccgram.session_monitor import NewWindowEvent
 
-        mock_config.group_id = None
-        mock_sm.iter_thread_bindings.return_value = []
-
-        mock_window = MagicMock()
-        mock_window.pane_current_command = ""
-        mock_tmux.find_window_by_id = AsyncMock(return_value=mock_window)
-
-        event = NewWindowEvent(
-            window_id="@6", session_id="uuid-2", window_name="proj", cwd="/tmp"
+    async def test_generic_pane_title_does_not_imply_gemini(self, new_window) -> None:
+        await new_window.run(
+            "@10", pane_command="bun", pane_title="Working on build..."
         )
-        bot = AsyncMock()
 
-        await _handle_new_window(event, bot)
+        new_window.detect.assert_awaited_once()
+        new_window.mux.get_pane_title.assert_awaited_once_with("@10")
+        new_window.session_manager.set_window_provider.assert_not_called()
 
-        mock_detect.assert_not_called()
-        mock_sm.set_window_provider.assert_not_called()
+    async def test_unrecognized_command_leaves_provider_unset(self, new_window) -> None:
+        await new_window.run("@9", pane_command="bash")
 
-    @patch("ccgram.handlers.topics.topic_orchestration.tmux_manager")
-    @patch("ccgram.handlers.topics.topic_orchestration.session_manager")
-    @patch("ccgram.handlers.topics.topic_orchestration.config")
-    @patch(
-        "ccgram.handlers.topics.topic_orchestration.detect_provider_from_pane",
-        new_callable=AsyncMock,
-    )
-    async def test_skips_detection_when_window_not_found(
-        self,
-        mock_detect: MagicMock,
-        mock_config: MagicMock,
-        mock_sm: MagicMock,
-        mock_tmux: MagicMock,
-    ) -> None:
-        from ccgram.handlers.topics.topic_orchestration import (
-            handle_new_window as _handle_new_window,
-        )
-        from ccgram.session_monitor import NewWindowEvent
-
-        mock_config.group_id = None
-        mock_sm.iter_thread_bindings.return_value = []
-
-        mock_tmux.find_window_by_id = AsyncMock(return_value=None)
-
-        event = NewWindowEvent(
-            window_id="@7", session_id="uuid-3", window_name="proj", cwd="/tmp"
-        )
-        bot = AsyncMock()
-
-        await _handle_new_window(event, bot)
-
-        mock_detect.assert_not_called()
-        mock_sm.set_window_provider.assert_not_called()
-
-    @patch("ccgram.handlers.topics.topic_orchestration.tmux_manager")
-    @patch("ccgram.handlers.topics.topic_orchestration.session_manager")
-    @patch("ccgram.handlers.topics.topic_orchestration.config")
-    @patch(
-        "ccgram.handlers.topics.topic_orchestration.detect_provider_from_pane",
-        new_callable=AsyncMock,
-        return_value="",
-    )
-    async def test_detects_gemini_from_pane_title_when_command_is_bun(
-        self,
-        mock_detect: MagicMock,
-        mock_config: MagicMock,
-        mock_sm: MagicMock,
-        mock_tmux: MagicMock,
-    ) -> None:
-        from ccgram.handlers.topics.topic_orchestration import (
-            handle_new_window as _handle_new_window,
-        )
-        from ccgram.session_monitor import NewWindowEvent
-
-        mock_config.group_id = None
-        mock_sm.iter_thread_bindings.return_value = []
-        mock_sm.view_window.return_value = MagicMock(provider_name="")
-
-        mock_window = MagicMock()
-        mock_window.pane_current_command = "bun"
-        mock_tmux.find_window_by_id = AsyncMock(return_value=mock_window)
-        mock_tmux.get_pane_title = AsyncMock(return_value="◇  Ready (ccgram)")
-
-        event = NewWindowEvent(
-            window_id="@8", session_id="uuid-4", window_name="proj", cwd="/tmp"
-        )
-        bot = AsyncMock()
-
-        await _handle_new_window(event, bot)
-
-        mock_detect.assert_awaited_once()
-        mock_tmux.get_pane_title.assert_awaited_once_with("@8")
-        mock_sm.set_window_provider.assert_called_once_with("@8", "gemini")
-
-    @patch("ccgram.handlers.topics.topic_orchestration.tmux_manager")
-    @patch("ccgram.handlers.topics.topic_orchestration.session_manager")
-    @patch("ccgram.handlers.topics.topic_orchestration.config")
-    @patch(
-        "ccgram.handlers.topics.topic_orchestration.detect_provider_from_pane",
-        new_callable=AsyncMock,
-        return_value="",
-    )
-    async def test_does_not_detect_gemini_from_generic_working_text(
-        self,
-        mock_detect: MagicMock,
-        mock_config: MagicMock,
-        mock_sm: MagicMock,
-        mock_tmux: MagicMock,
-    ) -> None:
-        from ccgram.handlers.topics.topic_orchestration import (
-            handle_new_window as _handle_new_window,
-        )
-        from ccgram.session_monitor import NewWindowEvent
-
-        mock_config.group_id = None
-        mock_sm.iter_thread_bindings.return_value = []
-        mock_sm.view_window.return_value = MagicMock(provider_name="")
-
-        mock_window = MagicMock()
-        mock_window.pane_current_command = "bun"
-        mock_tmux.find_window_by_id = AsyncMock(return_value=mock_window)
-        mock_tmux.get_pane_title = AsyncMock(return_value="Working on build...")
-
-        event = NewWindowEvent(
-            window_id="@10", session_id="uuid-6", window_name="proj", cwd="/tmp"
-        )
-        bot = AsyncMock()
-
-        await _handle_new_window(event, bot)
-
-        mock_detect.assert_awaited_once()
-        mock_tmux.get_pane_title.assert_awaited_once_with("@10")
-        mock_sm.set_window_provider.assert_not_called()
-
-    @patch("ccgram.handlers.topics.topic_orchestration.tmux_manager")
-    @patch("ccgram.handlers.topics.topic_orchestration.session_manager")
-    @patch("ccgram.handlers.topics.topic_orchestration.config")
-    @patch(
-        "ccgram.handlers.topics.topic_orchestration.detect_provider_from_pane",
-        new_callable=AsyncMock,
-        return_value="",
-    )
-    async def test_skips_provider_set_for_unrecognized_command(
-        self,
-        mock_detect: MagicMock,
-        mock_config: MagicMock,
-        mock_sm: MagicMock,
-        mock_tmux: MagicMock,
-    ) -> None:
-        from ccgram.handlers.topics.topic_orchestration import (
-            handle_new_window as _handle_new_window,
-        )
-        from ccgram.session_monitor import NewWindowEvent
-
-        mock_config.group_id = None
-        mock_sm.iter_thread_bindings.return_value = []
-        mock_sm.view_window.return_value = MagicMock(provider_name="")
-
-        mock_window = MagicMock()
-        mock_window.pane_current_command = "bash"
-        mock_tmux.find_window_by_id = AsyncMock(return_value=mock_window)
-
-        event = NewWindowEvent(
-            window_id="@9", session_id="uuid-5", window_name="proj", cwd="/tmp"
-        )
-        bot = AsyncMock()
-
-        await _handle_new_window(event, bot)
-
-        mock_detect.assert_awaited_once()
-        mock_sm.set_window_provider.assert_not_called()
+        new_window.detect.assert_awaited_once()
+        new_window.session_manager.set_window_provider.assert_not_called()
 
 
 class TestSessionMonitorProviderFromMap:

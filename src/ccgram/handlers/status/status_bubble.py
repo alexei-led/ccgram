@@ -62,13 +62,17 @@ def build_status_keyboard(
     history: list[str] | None = None,
     *,
     user_id: int | None = None,
+    is_group: bool = False,
 ) -> InlineKeyboardMarkup:
     """Build inline keyboard for status messages.
 
     Layout:
       Row 1 (optional): up to 2 history-recall buttons
       Row 2: [⎋ Esc] [📸 Screenshot] [📄 Last] [📥 Get File]
-      Row 3 (optional): [🪟 Dashboard] when Mini App is enabled and user_id is set
+      Row 3 (optional): [🪟 Dashboard] when Mini App is enabled, user_id is set,
+        and the chat is private (``is_group=False``). Telegram rejects
+        ``web_app`` buttons in groups and supergroups, so the button is hidden
+        there to stop every status-bubble edit from raising a TelegramError.
     """
     # Lazy: command_history → messaging_pipeline → status → status_bubble
     # forms a cycle when imported at module top. Keep lazy.
@@ -130,7 +134,7 @@ def build_status_keyboard(
             ),
         ]
     )
-    if user_id is not None:
+    if user_id is not None and not is_group:
         dashboard = build_dashboard_button(window_id, user_id)
         if dashboard is not None:
             rows.append([dashboard])
@@ -318,6 +322,7 @@ async def send_status_text(
         window_id,
         history=history,
         user_id=user_id,
+        is_group=(thread_id_or_0 != 0),
     )
 
     existing = _status_msg_info.get(skey)

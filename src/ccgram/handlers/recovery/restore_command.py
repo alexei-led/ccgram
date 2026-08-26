@@ -64,8 +64,19 @@ async def restore_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return
 
+    # Two different failures, two different ways out (#176): without window
+    # state the folder is merely unknown, and saying it is gone sends the user
+    # to check a filesystem that is fine. /resume takes its cwd from the picked
+    # session, so it still works when this state does not.
     view = window_query.view_window(window_id)
-    if view is None or not view.cwd or not Path(view.cwd).is_dir():
+    if view is None or not view.cwd:
+        await safe_reply(
+            update.message,
+            "This topic's session state is gone, so its folder is unknown. "
+            "Use /resume to pick a past session.",
+        )
+        return
+    if not Path(view.cwd).is_dir():
         await safe_reply(update.message, "Directory no longer exists.")
         return
 

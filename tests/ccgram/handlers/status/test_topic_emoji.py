@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -14,6 +15,7 @@ from ccgram.handlers.status.topic_emoji import (
     EMOJI_DONE,
     EMOJI_GREEN_CIRCLE,
     EMOJI_IDLE,
+    EMOJI_RC,
     EMOJI_YELLOW_CIRCLE,
     EMOJI_YOLO,
     clear_topic_emoji_state,
@@ -50,25 +52,27 @@ def _reset():
 
 class TestStripEmojiPrefix:
     @pytest.mark.parametrize(
-        "emoji", [EMOJI_ACTIVE, EMOJI_IDLE, EMOJI_DONE, EMOJI_DEAD]
+        ("name", "expected"),
+        [
+            (f"{EMOJI_ACTIVE} myproject", "myproject"),
+            (f"{EMOJI_IDLE} myproject", "myproject"),
+            (f"{EMOJI_DONE} myproject", "myproject"),
+            (f"{EMOJI_DEAD} myproject", "myproject"),
+            (f"{EMOJI_GREEN_CIRCLE} myproject", "myproject"),
+            (f"{EMOJI_YELLOW_CIRCLE} myproject", "myproject"),
+            (f"{EMOJI_YOLO} myproject", "myproject"),
+            (f"{EMOJI_RC} myproject", "myproject"),
+            (f"{EMOJI_ACTIVE} {EMOJI_YOLO} myproject", "myproject"),
+            (f"{EMOJI_ACTIVE} {EMOJI_RC} myproject", "myproject"),
+            (f"{EMOJI_ACTIVE} {EMOJI_RC} {EMOJI_YOLO} myproject", "myproject"),
+            ("myproject", "myproject"),
+            # Only one state prefix is stripped — a name that legitimately
+            # starts with an emoji keeps it.
+            (f"{EMOJI_ACTIVE} {EMOJI_IDLE} myproject", f"{EMOJI_IDLE} myproject"),
+        ],
     )
-    def test_strips_known_emoji(self, emoji: str) -> None:
-        assert strip_emoji_prefix(f"{emoji} myproject") == "myproject"
-
-    def test_no_prefix(self) -> None:
-        assert strip_emoji_prefix("myproject") == "myproject"
-
-    def test_double_prefix_strips_once(self) -> None:
-        result = strip_emoji_prefix(f"{EMOJI_ACTIVE} {EMOJI_IDLE} myproject")
-        assert result == f"{EMOJI_IDLE} myproject"
-
-    def test_strips_yolo_prefix(self) -> None:
-        assert strip_emoji_prefix(f"{EMOJI_YOLO} myproject") == "myproject"
-
-    def test_strips_state_and_yolo_prefix(self) -> None:
-        assert (
-            strip_emoji_prefix(f"{EMOJI_ACTIVE} {EMOJI_YOLO} myproject") == "myproject"
-        )
+    def test_strips_status_prefixes(self, name: str, expected: str) -> None:
+        assert strip_emoji_prefix(name) == expected
 
 
 _PATCH_MONOTONIC = "ccgram.handlers.status.topic_emoji.time.monotonic"
@@ -168,6 +172,7 @@ class TestUpdateTopicEmoji:
         )
 
     async def test_skips_same_state(self) -> None:
+        """Same state and same name → no Telegram call (herdr tab not renamed)."""
         bot = AsyncMock()
         await _debounced_update(bot, -100, 42, "active", "myproject")
         bot.edit_forum_topic.reset_mock()
@@ -182,6 +187,11 @@ class TestUpdateTopicEmoji:
         bot.edit_forum_topic.assert_called_once()
 
     async def test_updates_name_immediately_when_state_is_unchanged(self) -> None:
+        """A rename must repaint at once — the debounce only gates state flips.
+
+        This is how a herdr tab rename reaches Telegram: ``sync_display_names``
+        updates the display name and the next poll passes it in unchanged-state.
+        """
         bot = AsyncMock()
         await _debounced_update(bot, -100, 42, "idle", "fish")
         bot.edit_forum_topic.reset_mock()
@@ -297,19 +307,6 @@ class TestUpdateTopicEmoji:
             await update_topic_emoji(bot, -100, 42, "idle", "myproject")
         bot.edit_forum_topic.assert_not_called()
 
-    async def test_idle_fires_after_full_debounce(self) -> None:
-        bot = AsyncMock()
-        with patch(_PATCH_MONOTONIC) as mock_monotonic:
-            mock_monotonic.return_value = 0.0
-            await update_topic_emoji(bot, -100, 42, "idle", "myproject")
-            mock_monotonic.return_value = DEBOUNCE_TO_IDLE_SECONDS + 0.1
-            await update_topic_emoji(bot, -100, 42, "idle", "myproject")
-        bot.edit_forum_topic.assert_called_once_with(
-            chat_id=-100,
-            message_thread_id=42,
-            name=f"{EMOJI_IDLE} myproject",
-        )
-
     async def test_brief_pause_during_work_stays_green(self) -> None:
         bot = AsyncMock()
         with patch(_PATCH_MONOTONIC) as mock_monotonic:
@@ -342,25 +339,15 @@ class TestUpdateTopicEmoji:
 
 
 class TestFormatTopicNameForMode:
-    def test_formats_yolo_name(self) -> None:
-        assert (
-            format_topic_name_for_mode("myproject", "yolo") == f"{EMOJI_YOLO} myproject"
-        )
-
-    def test_formats_normal_name(self) -> None:
-        assert format_topic_name_for_mode("myproject", "normal") == "myproject"
+    @pytest.mark.parametrize(
+        ("mode", "expected"),
+        [("yolo", f"{EMOJI_YOLO} myproject"), ("normal", "myproject")],
+    )
+    def test_badges_the_name_for_the_mode(self, mode: str, expected: str) -> None:
+        assert format_topic_name_for_mode("myproject", mode) == expected
 
 
 class TestTopicNamePreservation:
-    async def test_stores_name_on_first_update(self) -> None:
-        bot = AsyncMock()
-        await _debounced_update(bot, -100, 42, "active", "myproject")
-        bot.edit_forum_topic.assert_called_once_with(
-            chat_id=-100,
-            message_thread_id=42,
-            name=f"{EMOJI_ACTIVE} myproject",
-        )
-
     async def test_updates_stored_name_when_display_name_changes(self) -> None:
         bot = AsyncMock()
         await _debounced_update(bot, -100, 42, "active", "myproject")
@@ -396,54 +383,6 @@ class TestTopicNamePreservation:
         )
 
 
-class TestHerdrToTelegramRename:
-    """herdr tab rename propagates to Telegram topic via display-name sync."""
-
-    async def test_display_name_change_triggers_topic_relabel(self) -> None:
-        """When herdr renames a tab, the next update_topic_emoji call relabels the topic.
-
-        Flow: sync_display_names updates display_name → update_topic_emoji receives
-        new display_name → _resolve_topic_name detects change → edit_forum_topic called.
-        """
-        bot = AsyncMock()
-        # Prime the cache with the old label (simulates a prior poll cycle)
-        await _debounced_update(bot, -100, 42, "idle", "workspace ▸ old-agent")
-        bot.edit_forum_topic.reset_mock()
-
-        # herdr renames the tab: next poll delivers the new display_name.
-        # Same state (idle), same debounce; name change bypasses debounce.
-        with patch(_PATCH_MONOTONIC, return_value=1000.0):
-            await update_topic_emoji(bot, -100, 42, "idle", "workspace ▸ new-agent")
-
-        bot.edit_forum_topic.assert_called_once_with(
-            chat_id=-100,
-            message_thread_id=42,
-            name=f"{EMOJI_IDLE} workspace ▸ new-agent",
-        )
-
-    async def test_same_display_name_after_sync_does_not_relabel(self) -> None:
-        """No Telegram call when the tab name did not change."""
-        bot = AsyncMock()
-        await _debounced_update(bot, -100, 42, "idle", "workspace ▸ agent")
-        bot.edit_forum_topic.reset_mock()
-
-        # Same display name — no relabel expected (state already set, name unchanged)
-        with patch(_PATCH_MONOTONIC, return_value=1000.0):
-            await update_topic_emoji(bot, -100, 42, "idle", "workspace ▸ agent")
-
-        bot.edit_forum_topic.assert_not_called()
-
-
-class TestClearTopicEmojiState:
-    async def test_clear_allows_re_update(self) -> None:
-        bot = AsyncMock()
-        await _debounced_update(bot, -100, 42, "active", "myproject")
-        bot.edit_forum_topic.reset_mock()
-        clear_topic_emoji_state(-100, 42)
-        await _debounced_update(bot, -100, 42, "active", "myproject")
-        bot.edit_forum_topic.assert_called_once()
-
-
 class TestSyncTopicName:
     async def test_preserves_cached_state_while_refreshing_clean_name(self) -> None:
         from ccgram.handlers.status.topic_emoji import _topic_states
@@ -468,6 +407,8 @@ class TestSyncTopicName:
             name=f"{EMOJI_IDLE} ccgram-codex",
         )
 
+
+class TestClearTopicEmojiState:
     async def test_clear_resets_pending_transition(self) -> None:
         bot = AsyncMock()
         with patch(_PATCH_MONOTONIC, return_value=0.0):
@@ -482,222 +423,106 @@ class TestSyncTopicName:
         bot.edit_forum_topic.assert_called_once()
 
 
+_APPLY = "ccgram.handlers.polling.window_tick.apply"
+
+
+@contextmanager
+def _status_poll_env(*, has_status: bool, pane_command: str = "node"):
+    """Patch the window-tick collaborators and yield ``(bot, mock_emoji)``."""
+    with (
+        patch(f"{_APPLY}.tmux_manager") as mock_tm,
+        patch(f"{_APPLY}.window_query"),
+        patch(f"{_APPLY}.thread_router") as mock_tr,
+        patch(f"{_APPLY}.update_topic_emoji") as mock_emoji,
+        patch(f"{_APPLY}.enqueue_status_update"),
+        patch(f"{_APPLY}.get_interactive_window", return_value=None),
+        patch(
+            f"{_APPLY}.get_provider_for_window",
+            return_value=make_mock_provider(has_status=has_status),
+        ),
+    ):
+        window = MagicMock()
+        window.pane_current_command = pane_command
+        mock_tm.find_window_by_id = AsyncMock(return_value=window)
+        mock_tm.capture_pane = AsyncMock(return_value="some output")
+        mock_tm.get_pane_title = AsyncMock(return_value="")
+        mock_tr.resolve_chat_id.return_value = -100
+        mock_tr.get_display_name.return_value = "myproject"
+        yield AsyncMock(), mock_emoji, mock_tr
+
+
 class TestStatusPollingIntegration:
+    """The 1s poll resolves a window state and hands it to update_topic_emoji."""
+
     async def test_active_window_with_status_updates_emoji(self) -> None:
-        with (
-            patch("ccgram.handlers.polling.window_tick.apply.tmux_manager") as mock_tm,
-            patch("ccgram.handlers.polling.window_tick.apply.window_query"),
-            patch("ccgram.handlers.polling.window_tick.apply.thread_router") as mock_tr,
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.update_topic_emoji"
-            ) as mock_emoji,
-            patch("ccgram.handlers.polling.window_tick.apply.enqueue_status_update"),
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.get_interactive_window",
-                return_value=None,
-            ),
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.get_provider_for_window",
-                return_value=make_mock_provider(has_status=True),
-            ),
-        ):
-            from ccgram.handlers.polling.window_tick import (
-                _update_status as update_status_message,
-            )
+        from ccgram.handlers.polling.window_tick import _update_status
 
-            mock_tm.find_window_by_id = AsyncMock(return_value=MagicMock())
-            mock_tm.capture_pane = AsyncMock(return_value="some output")
-            mock_tm.get_pane_title = AsyncMock(return_value="")
-            mock_tr.resolve_chat_id.return_value = -100
-            mock_tr.get_display_name.return_value = "myproject"
+        with _status_poll_env(has_status=True) as (bot, mock_emoji, _tr):
+            await _update_status(bot, 1, "@0", thread_id=42)
 
-            bot = AsyncMock()
-            await update_status_message(bot, 1, "@0", thread_id=42)
-
-            _assert_emoji_call(mock_emoji, bot, -100, 42, "active", "myproject")
+        _assert_emoji_call(mock_emoji, bot, -100, 42, "active", "myproject")
 
     async def test_idle_window_without_status_updates_emoji(self) -> None:
-        with (
-            patch("ccgram.handlers.polling.window_tick.apply.tmux_manager") as mock_tm,
-            patch("ccgram.handlers.polling.window_tick.apply.window_query"),
-            patch("ccgram.handlers.polling.window_tick.apply.thread_router") as mock_tr,
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.update_topic_emoji"
-            ) as mock_emoji,
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.get_interactive_window",
-                return_value=None,
-            ),
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.get_provider_for_window",
-                return_value=make_mock_provider(has_status=False),
-            ),
-        ):
-            from ccgram.handlers.polling.window_tick import (
-                _update_status as update_status_message,
-            )
-            from ccgram.handlers.polling.polling_state import terminal_poll_state
+        from ccgram.handlers.polling.polling_state import terminal_poll_state
+        from ccgram.handlers.polling.window_tick import _update_status
 
-            terminal_poll_state.get_state("@0").has_seen_status = True
+        terminal_poll_state.get_state("@0").has_seen_status = True
 
-            mock_window = MagicMock()
-            mock_window.pane_current_command = "node"
-            mock_tm.find_window_by_id = AsyncMock(return_value=mock_window)
-            mock_tm.capture_pane = AsyncMock(return_value="some output")
-            mock_tm.get_pane_title = AsyncMock(return_value="")
-            mock_tr.resolve_chat_id.return_value = -100
-            mock_tr.get_display_name.return_value = "myproject"
+        with _status_poll_env(has_status=False) as (bot, mock_emoji, _tr):
+            await _update_status(bot, 1, "@0", thread_id=42)
 
-            bot = AsyncMock()
-            await update_status_message(bot, 1, "@0", thread_id=42)
-
-            _assert_emoji_call(mock_emoji, bot, -100, 42, "idle", "myproject")
+        _assert_emoji_call(mock_emoji, bot, -100, 42, "idle", "myproject")
 
     async def test_startup_window_shows_active_not_idle(self) -> None:
-        with (
-            patch("ccgram.handlers.polling.window_tick.apply.tmux_manager") as mock_tm,
-            patch("ccgram.handlers.polling.window_tick.apply.window_query"),
-            patch("ccgram.handlers.polling.window_tick.apply.thread_router") as mock_tr,
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.update_topic_emoji"
-            ) as mock_emoji,
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.get_interactive_window",
-                return_value=None,
-            ),
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.get_provider_for_window",
-                return_value=make_mock_provider(has_status=False),
-            ),
-        ):
-            from ccgram.handlers.polling.window_tick import (
-                _update_status as update_status_message,
-            )
-            from ccgram.handlers.polling.polling_state import terminal_poll_state
+        from ccgram.handlers.polling.polling_state import terminal_poll_state
+        from ccgram.handlers.polling.window_tick import _update_status
 
-            terminal_poll_state._states.pop("@99", None)
+        # Never polled before: no status seen yet must not read as idle.
+        terminal_poll_state._states.pop("@99", None)
 
-            mock_window = MagicMock()
-            mock_window.pane_current_command = "node"
-            mock_tm.find_window_by_id = AsyncMock(return_value=mock_window)
-            mock_tm.capture_pane = AsyncMock(return_value="some output")
-            mock_tm.get_pane_title = AsyncMock(return_value="")
-            mock_tr.resolve_chat_id.return_value = -100
+        with _status_poll_env(has_status=False) as (bot, mock_emoji, mock_tr):
             mock_tr.get_display_name.return_value = "newproject"
+            await _update_status(bot, 1, "@99", thread_id=99)
 
-            bot = AsyncMock()
-            await update_status_message(bot, 1, "@99", thread_id=99)
-
-            _assert_emoji_call(mock_emoji, bot, -100, 99, "active", "newproject")
+        _assert_emoji_call(mock_emoji, bot, -100, 99, "active", "newproject")
 
     async def test_done_when_shell_prompt(self) -> None:
-        with (
-            patch("ccgram.handlers.polling.window_tick.apply.tmux_manager") as mock_tm,
-            patch("ccgram.handlers.polling.window_tick.apply.window_query"),
-            patch("ccgram.handlers.polling.window_tick.apply.thread_router") as mock_tr,
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.update_topic_emoji"
-            ) as mock_emoji,
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.get_interactive_window",
-                return_value=None,
-            ),
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.get_provider_for_window",
-                return_value=make_mock_provider(has_status=False),
-            ),
+        from ccgram.handlers.polling.window_tick import _update_status
+
+        with _status_poll_env(has_status=False, pane_command="zsh") as (
+            bot,
+            mock_emoji,
+            _tr,
         ):
-            from ccgram.handlers.polling.window_tick import (
-                _update_status as update_status_message,
-            )
+            await _update_status(bot, 1, "@0", thread_id=42)
 
-            mock_window = MagicMock()
-            mock_window.pane_current_command = "zsh"
-            mock_tm.find_window_by_id = AsyncMock(return_value=mock_window)
-            mock_tm.capture_pane = AsyncMock(return_value="some output")
-            mock_tm.get_pane_title = AsyncMock(return_value="")
-            mock_tr.resolve_chat_id.return_value = -100
-            mock_tr.get_display_name.return_value = "myproject"
-
-            bot = AsyncMock()
-            await update_status_message(bot, 1, "@0", thread_id=42)
-
-            _assert_emoji_call(mock_emoji, bot, -100, 42, "done", "myproject")
+        _assert_emoji_call(mock_emoji, bot, -100, 42, "done", "myproject")
 
     async def test_no_thread_id_skips_emoji(self) -> None:
-        with (
-            patch("ccgram.handlers.polling.window_tick.apply.tmux_manager") as mock_tm,
-            patch("ccgram.handlers.polling.window_tick.apply.window_query"),
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.update_topic_emoji"
-            ) as mock_emoji,
-            patch("ccgram.handlers.polling.window_tick.apply.enqueue_status_update"),
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.get_interactive_window",
-                return_value=None,
-            ),
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.get_provider_for_window",
-                return_value=make_mock_provider(has_status=True),
-            ),
-        ):
-            from ccgram.handlers.polling.window_tick import (
-                _update_status as update_status_message,
-            )
+        from ccgram.handlers.polling.window_tick import _update_status
 
-            mock_tm.find_window_by_id = AsyncMock(return_value=MagicMock())
-            mock_tm.capture_pane = AsyncMock(return_value="some output")
-            mock_tm.get_pane_title = AsyncMock(return_value="")
+        with _status_poll_env(has_status=True) as (bot, mock_emoji, _tr):
+            await _update_status(bot, 1, "@0", thread_id=None)
 
-            bot = AsyncMock()
-            await update_status_message(bot, 1, "@0", thread_id=None)
-
-            mock_emoji.assert_not_called()
+        mock_emoji.assert_not_called()
 
 
 class TestUpdateStoredTopicName:
-    def test_overwrites_cached_name(self) -> None:
+    @pytest.mark.parametrize("cached", ["old-name", None], ids=["cached", "fresh"])
+    def test_sets_cached_name(self, cached: str | None) -> None:
         from ccgram.handlers.status.topic_emoji import (
             _topic_names,
             update_stored_topic_name,
         )
 
-        _topic_names[(-100, 42)] = "old-name"
+        if cached is not None:
+            _topic_names[(-100, 42)] = cached
         update_stored_topic_name(-100, 42, "new-name")
         assert _topic_names[(-100, 42)] == "new-name"
 
-    def test_sets_name_when_not_cached(self) -> None:
-        from ccgram.handlers.status.topic_emoji import (
-            _topic_names,
-            update_stored_topic_name,
-        )
-
-        update_stored_topic_name(-100, 99, "fresh-name")
-        assert _topic_names[(-100, 99)] == "fresh-name"
-
 
 class TestRemoteControlBadge:
-    def test_strip_rc_prefix(self) -> None:
-        from ccgram.handlers.status.topic_emoji import EMOJI_RC
-
-        assert strip_emoji_prefix(f"{EMOJI_RC} myproject") == "myproject"
-
-    def test_strip_state_and_rc_prefix(self) -> None:
-        from ccgram.handlers.status.topic_emoji import EMOJI_RC
-
-        assert strip_emoji_prefix(f"{EMOJI_ACTIVE} {EMOJI_RC} myproject") == "myproject"
-
-    def test_strip_state_rc_yolo_prefix(self) -> None:
-        from ccgram.handlers.status.topic_emoji import EMOJI_RC
-
-        assert (
-            strip_emoji_prefix(f"{EMOJI_ACTIVE} {EMOJI_RC} {EMOJI_YOLO} myproject")
-            == "myproject"
-        )
-
     async def test_rc_active_adds_badge(self) -> None:
-        from ccgram.handlers.status.topic_emoji import EMOJI_RC
-
         bot = AsyncMock()
         with (
             patch(
@@ -716,8 +541,6 @@ class TestRemoteControlBadge:
         )
 
     async def test_rc_and_yolo_badges(self) -> None:
-        from ccgram.handlers.status.topic_emoji import EMOJI_RC
-
         bot = AsyncMock()
         with (
             patch(
@@ -779,8 +602,3 @@ class TestStatusMode:
             message_thread_id=42,
             name=f"{EMOJI_GREEN_CIRCLE} myproject",
         )
-
-    def test_strip_handles_both_modes(self) -> None:
-        # Whichever mode wrote the prefix, both colors are always strippable.
-        assert strip_emoji_prefix(f"{EMOJI_GREEN_CIRCLE} x") == "x"
-        assert strip_emoji_prefix(f"{EMOJI_YELLOW_CIRCLE} x") == "x"

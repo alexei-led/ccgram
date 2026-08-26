@@ -1,10 +1,11 @@
-"""Unit tests for OpenAICompatTranscriber — mocks httpx.AsyncClient."""
+"""Unit tests for the whisper transcriber and its config-driven factory."""
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
+from ccgram.whisper import get_transcriber
 from ccgram.whisper.httpx_transcriber import OpenAICompatTranscriber
 
 
@@ -30,7 +31,6 @@ def _mock_httpx():
 class TestTranscribe:
     """Tests for OpenAICompatTranscriber.transcribe()."""
 
-    @pytest.mark.usefixtures("_mock_httpx")
     async def test_success(self, _mock_httpx: tuple[AsyncMock, MagicMock]) -> None:
         mock_client, mock_response = _mock_httpx
         mock_response.json.return_value = {"text": "hello world"}
@@ -44,7 +44,6 @@ class TestTranscribe:
         assert call_kw["files"] == {"file": ("voice.ogg", b"audio")}
         assert "Bearer k" in call_kw["headers"]["Authorization"]
 
-    @pytest.mark.usefixtures("_mock_httpx")
     async def test_language_forwarded(
         self, _mock_httpx: tuple[AsyncMock, MagicMock]
     ) -> None:
@@ -60,7 +59,6 @@ class TestTranscribe:
             "language": "zh",
         }
 
-    @pytest.mark.usefixtures("_mock_httpx")
     async def test_empty_result(self, _mock_httpx: tuple[AsyncMock, MagicMock]) -> None:
         _, mock_response = _mock_httpx
         mock_response.json.return_value = {"text": ""}
@@ -73,7 +71,6 @@ class TestTranscribe:
         with pytest.raises(ValueError, match="too large"):
             await t.transcribe(b"x" * (25 * 1024 * 1024 + 1), "v.ogg")
 
-    @pytest.mark.usefixtures("_mock_httpx")
     async def test_exactly_at_limit(
         self, _mock_httpx: tuple[AsyncMock, MagicMock]
     ) -> None:
@@ -84,7 +81,6 @@ class TestTranscribe:
         result = await t.transcribe(b"x" * (25 * 1024 * 1024), "v.ogg")
         assert result.text == "ok"
 
-    @pytest.mark.usefixtures("_mock_httpx")
     async def test_http_status_error(
         self, _mock_httpx: tuple[AsyncMock, MagicMock]
     ) -> None:
@@ -98,7 +94,6 @@ class TestTranscribe:
         with pytest.raises(RuntimeError, match="401"):
             await t.transcribe(b"audio", "v.ogg")
 
-    @pytest.mark.usefixtures("_mock_httpx")
     async def test_network_error(
         self, _mock_httpx: tuple[AsyncMock, MagicMock]
     ) -> None:
@@ -109,7 +104,6 @@ class TestTranscribe:
         with pytest.raises(RuntimeError, match="Transcription failed"):
             await t.transcribe(b"audio", "v.ogg")
 
-    @pytest.mark.usefixtures("_mock_httpx")
     async def test_unexpected_json_response(
         self, _mock_httpx: tuple[AsyncMock, MagicMock]
     ) -> None:
@@ -134,3 +128,28 @@ class TestTranscribe:
     def test_base_url_resolution(self, base_url: str | None, expected: str) -> None:
         t = OpenAICompatTranscriber(api_key="k", model="m", base_url=base_url)
         assert t._base_url == expected
+
+
+class TestGetTranscriber:
+    """Only the whisper-specific key rule lives here — provider defaults,
+    config overrides and the unknown-provider failure are covered against a real
+    Config in tests/integration/test_whisper_integration.py."""
+
+    def test_openai_key_does_not_satisfy_another_provider(self, monkeypatch) -> None:
+        """Unlike the LLM factory, whisper has no universal OPENAI_API_KEY
+        fallback: a groq transcriber must not silently use an OpenAI key."""
+        monkeypatch.setattr(
+            "ccgram.config.config",
+            MagicMock(
+                whisper_provider="groq",
+                whisper_api_key="",
+                whisper_base_url="",
+                whisper_model="",
+                whisper_language="",
+            ),
+        )
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-wrong-service")
+
+        with pytest.raises(ValueError, match="set GROQ_API_KEY"):
+            get_transcriber()

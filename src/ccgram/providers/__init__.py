@@ -132,6 +132,50 @@ def get_provider_for_window(
     return get_provider()
 
 
+def picker_capable_providers() -> list[AgentProvider]:
+    """Return every registered provider that offers a resume picker."""
+    _ensure_registered()
+    providers = [registry.get(name) for name in registry.provider_names()]
+    return [
+        p
+        for p in providers
+        if p.capabilities.supports_resume and p.capabilities.supports_resume_picker
+    ]
+
+
+def is_known_provider(provider_name: str | None) -> bool:
+    """Return whether ``provider_name`` names a provider this build registers.
+
+    Registers first: ``is_valid`` on an empty registry answers False for every
+    name, which would silently widen a caller's narrow request rather than
+    failing loudly.
+    """
+    if not provider_name:
+        return False
+    _ensure_registered()
+    return registry.is_valid(provider_name)
+
+
+def providers_to_scan(provider_name: str | None) -> list[AgentProvider]:
+    """Resolve which providers a resumable-session scan should cover.
+
+    A falsy name means the caller could not resolve the window's provider:
+    ``None`` when there is no state row, ``""`` when the row exists but never
+    recorded one, and a name this build does not register (version skew — a
+    provider persisted by a build that had it). Resolving either to the config default lists one agent's
+    sessions under another agent's topic, so cover every picker-capable
+    provider instead and let each entry's own ``provider_name`` decide what a
+    pick relaunches.
+
+    Every session scan must route through here. Normalising inside one scanner
+    is how the recovery banner's Resume button kept the defaulting behaviour
+    after /resume and Browse were fixed.
+    """
+    if not is_known_provider(provider_name):
+        return picker_capable_providers()
+    return [get_provider_for_window("", provider_name=provider_name)]
+
+
 def detect_provider_from_command(pane_current_command: str) -> str:
     """Detect provider name from a tmux pane's running process.
 
@@ -351,6 +395,9 @@ def resolve_capabilities(provider_name: str | None = None) -> ProviderCapabiliti
 
 
 __all__ = [
+    "is_known_provider",
+    "picker_capable_providers",
+    "providers_to_scan",
     "AgentMessage",
     "AgentProvider",
     "DiscoveredCommand",

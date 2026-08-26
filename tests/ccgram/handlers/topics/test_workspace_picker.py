@@ -1,12 +1,7 @@
 """Tests for Task 9: workspace picker step in the /new flow.
 
-Covers:
-- herdr backend (native_agent_status=True): workspace picker shown when workspaces exist
-- herdr backend: fall-through to provider picker when list_workspaces returns []
-- CB_WS_SELECT stores chosen workspace_id via index into cached list
-- CB_WS_SKIP clears pending workspace id and goes to provider picker
-- workspace_id threaded to create_window
-- tmux backend (native_agent_status=False): no picker shown (regression)
+The picker is gated on ``native_agent_status``: herdr shows it, tmux never does.
+The chosen workspace id then has to survive all the way to window creation.
 """
 
 from __future__ import annotations
@@ -14,12 +9,17 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from ccgram.handlers.callback_data import CB_WS_SELECT, CB_WS_SKIP
 from ccgram.handlers.topics.directory_callbacks import (
     _handle_workspace_callback,
     _show_workspace_picker_or_provider,
 )
-from ccgram.handlers.topics.window_launch_service import WindowLaunchRequest
+from ccgram.handlers.topics.window_launch_service import (
+    WindowLaunchRequest,
+    launch_window,
+)
 from ccgram.handlers.user_state import (
     PENDING_THREAD_ID,
     PENDING_WORKSPACE_ID,
@@ -218,13 +218,21 @@ class TestHandleWorkspaceCallback:
         query.answer.assert_awaited_once()
         assert query.answer.call_args[1].get("show_alert") is True
 
+    @pytest.mark.parametrize(
+        ("suffix", "expected"),
+        [
+            ("5", "Workspace list changed"),
+            ("-1", "Workspace list changed"),
+            ("abc", "Invalid workspace selection"),
+        ],
+        ids=["out_of_range", "negative", "not_a_number"],
+    )
     @patch(
         "ccgram.handlers.topics.workspace_callbacks.safe_edit", new_callable=AsyncMock
     )
-    async def test_out_of_range_index_shows_error(
-        self, mock_edit: AsyncMock, tmp_path: Path
+    async def test_unusable_index_shows_error_without_crashing(
+        self, mock_edit: AsyncMock, tmp_path: Path, suffix: str, expected: str
     ) -> None:
-        """Out-of-range index shows error, does not crash."""
         user_data = {
             PENDING_THREAD_ID: 42,
             BROWSE_PATH_KEY: str(tmp_path),
@@ -233,77 +241,64 @@ class TestHandleWorkspaceCallback:
         context = _make_context(user_data)
 
         await _handle_workspace_callback(
-            _make_query(), f"{CB_WS_SELECT}5", _make_update(42), context
+            _make_query(), f"{CB_WS_SELECT}{suffix}", _make_update(42), context
         )
 
         text = mock_edit.call_args[0][1]
-        assert "❌" in text
+        assert text.startswith("❌")
+        assert expected in text
+        assert PENDING_WORKSPACE_ID not in user_data
 
 
 # ── workspace_id threaded to create_window ────────────────────────────
 
 
 class TestWorkspaceIdThreaded:
-    @patch(
-        "ccgram.handlers.topics.window_launch_service.safe_edit", new_callable=AsyncMock
+    @pytest.mark.parametrize(
+        "chosen_workspace_id",
+        ["ws-chosen", None],
+        ids=["explicit_pick", "auto_resolve"],
     )
-    @patch("ccgram.handlers.topics.window_launch_service.tmux_manager")
-    @patch("ccgram.handlers.topics.window_launch_service.session_manager")
-    @patch("ccgram.handlers.topics.window_launch_service.thread_router")
-    @patch("ccgram.handlers.topics.window_launch_service.topic_orchestration")
-    @patch("ccgram.handlers.topics.window_launch_service.user_preferences")
-    @patch("ccgram.handlers.topics.window_launch_service.session_map_sync")
-    async def test_chosen_workspace_id_passed_to_create_window(
-        self,
-        mock_sms: MagicMock,
-        mock_prefs: MagicMock,
-        mock_orch: MagicMock,
-        mock_tr: MagicMock,
-        mock_sm: MagicMock,
-        mock_mux: MagicMock,
-        mock_edit: AsyncMock,
-        tmp_path: Path,
+    async def test_pending_workspace_id_reaches_create_window(
+        self, tmp_path: Path, chosen_workspace_id: str | None
     ) -> None:
-        """PENDING_WORKSPACE_ID is forwarded as workspace_id= to create_window."""
-        from ccgram.handlers.topics.directory_callbacks import _create_window_and_bind
+        module = "ccgram.handlers.topics.window_launch_service."
+        user_data: dict[str, object] = {PENDING_THREAD_ID: 42}
+        if chosen_workspace_id is not None:
+            user_data[PENDING_WORKSPACE_ID] = chosen_workspace_id
 
-        mock_mux.create_window = AsyncMock(return_value=(True, "ok", "my-tab", "w1:t1"))
-        mock_mux.stamp_pane_title = AsyncMock()
-        mock_mux.capabilities.native_worktrees = False
-        mock_tr.get_window_for_thread.return_value = None
-        mock_tr.resolve_chat_id.return_value = -100999
-        mock_sm.set_window_provider = MagicMock()
-        mock_sm.set_window_origin = MagicMock()
-        mock_sm.set_window_cwd = MagicMock()
-        mock_sm.set_window_approval_mode = MagicMock()
-        mock_sms.wait_for_session_map_entry = AsyncMock()
-
-        # Patch provider resolution + capabilities
         with (
+            patch(f"{module}tmux_manager") as mock_mux,
+            patch(f"{module}session_manager"),
+            patch(f"{module}thread_router") as mock_tr,
+            patch(f"{module}topic_orchestration"),
+            patch(f"{module}user_preferences"),
+            patch(f"{module}session_map_sync") as mock_sms,
+            patch(f"{module}safe_edit", new_callable=AsyncMock),
+            patch(f"{module}provider_registry") as mock_reg,
             patch("ccgram.providers.resolve_launch_command", return_value="claude"),
-            patch(
-                "ccgram.handlers.topics.window_launch_service.provider_registry"
-            ) as mock_reg,
         ):
-            mock_caps = MagicMock()
-            mock_caps.chat_first_command_path = False
-            mock_caps.has_yolo_confirmation = False
-            mock_caps.supports_hook = False
-            mock_reg.get.return_value.capabilities = mock_caps
+            mock_mux.create_window = AsyncMock(
+                return_value=(True, "ok", "my-tab", "w1:t1")
+            )
+            mock_mux.stamp_pane_title = AsyncMock()
+            mock_mux.capabilities.native_worktrees = False
+            mock_mux.capabilities.native_agent_status = False
+            mock_tr.get_window_for_thread.return_value = None
+            mock_tr.resolve_chat_id.return_value = -100999
+            mock_sms.wait_for_session_map_entry = AsyncMock(return_value=True)
+            mock_reg.get.return_value.capabilities = MagicMock(
+                chat_first_command_path=False,
+                has_yolo_confirmation=False,
+                supports_hook=False,
+            )
 
-            user_data = {
-                PENDING_THREAD_ID: 42,
-                PENDING_WORKSPACE_ID: "ws-chosen",
-            }
-            query = _make_query()
-            context = _make_context(user_data)
-
-            await _create_window_and_bind(
-                query,
-                context,
+            await launch_window(
+                _make_query(),
+                _make_context(user_data),
                 WindowLaunchRequest(
                     user_id=100,
-                    thread_id=user_data.get(PENDING_THREAD_ID),
+                    thread_id=42,
                     provider_name="claude",
                     cwd=str(tmp_path),
                     mode="normal",
@@ -312,72 +307,7 @@ class TestWorkspaceIdThreaded:
             )
 
         mock_mux.create_window.assert_awaited_once()
-        call_kwargs = mock_mux.create_window.call_args[1]
-        assert call_kwargs.get("workspace_id") == "ws-chosen"
-
-    @patch(
-        "ccgram.handlers.topics.window_launch_service.safe_edit", new_callable=AsyncMock
-    )
-    @patch("ccgram.handlers.topics.window_launch_service.tmux_manager")
-    @patch("ccgram.handlers.topics.window_launch_service.session_manager")
-    @patch("ccgram.handlers.topics.window_launch_service.thread_router")
-    @patch("ccgram.handlers.topics.window_launch_service.topic_orchestration")
-    @patch("ccgram.handlers.topics.window_launch_service.user_preferences")
-    @patch("ccgram.handlers.topics.window_launch_service.session_map_sync")
-    async def test_no_workspace_id_passes_none(
-        self,
-        mock_sms: MagicMock,
-        mock_prefs: MagicMock,
-        mock_orch: MagicMock,
-        mock_tr: MagicMock,
-        mock_sm: MagicMock,
-        mock_mux: MagicMock,
-        mock_edit: AsyncMock,
-        tmp_path: Path,
-    ) -> None:
-        """When no workspace was chosen, workspace_id=None is passed (auto-resolve)."""
-        from ccgram.handlers.topics.directory_callbacks import _create_window_and_bind
-
-        mock_mux.create_window = AsyncMock(return_value=(True, "ok", "my-tab", "w1:t1"))
-        mock_mux.stamp_pane_title = AsyncMock()
-        mock_mux.capabilities.native_worktrees = False
-        mock_tr.get_window_for_thread.return_value = None
-        mock_tr.resolve_chat_id.return_value = -100999
-        mock_sm.set_window_provider = MagicMock()
-        mock_sm.set_window_origin = MagicMock()
-        mock_sm.set_window_cwd = MagicMock()
-        mock_sm.set_window_approval_mode = MagicMock()
-        mock_sms.wait_for_session_map_entry = AsyncMock()
-
-        with (
-            patch("ccgram.providers.resolve_launch_command", return_value="claude"),
-            patch(
-                "ccgram.handlers.topics.window_launch_service.provider_registry"
-            ) as mock_reg,
-        ):
-            mock_caps = MagicMock()
-            mock_caps.chat_first_command_path = False
-            mock_caps.has_yolo_confirmation = False
-            mock_caps.supports_hook = False
-            mock_reg.get.return_value.capabilities = mock_caps
-
-            # No PENDING_WORKSPACE_ID in user_data
-            user_data = {PENDING_THREAD_ID: 42}
-            query = _make_query()
-            context = _make_context(user_data)
-
-            await _create_window_and_bind(
-                query,
-                context,
-                WindowLaunchRequest(
-                    user_id=100,
-                    thread_id=user_data.get(PENDING_THREAD_ID),
-                    provider_name="claude",
-                    cwd=str(tmp_path),
-                    mode="normal",
-                    pending_text=None,
-                ),
-            )
-
-        call_kwargs = mock_mux.create_window.call_args[1]
-        assert call_kwargs.get("workspace_id") is None
+        assert (
+            mock_mux.create_window.call_args.kwargs.get("workspace_id")
+            == chosen_workspace_id
+        )

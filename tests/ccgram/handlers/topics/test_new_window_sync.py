@@ -1,19 +1,17 @@
 """Integration tests for manual tmux window -> Telegram topic sync (TASK-033).
 
 Verifies the full chain: session_map update -> SessionMonitor detection ->
-_handle_new_window callback -> topic creation -> binding established.
-Unlike unit tests in test_handle_new_window.py, these tests wire the monitor's
-detection logic through to _handle_new_window with a real SessionManager
-(disk I/O mocked) to verify end-to-end state changes.
+handle_new_window -> topic creation -> binding established.
+Unlike the fully-mocked unit tests in test_topic_orchestration.py, these wire the
+monitor's detection logic through to handle_new_window with a real SessionManager
+and a real ThreadRouter (disk I/O mocked) to verify end-to-end state changes.
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ccgram.handlers.topics.topic_orchestration import (
-    handle_new_window as _handle_new_window,
-)
+from ccgram.handlers.topics.topic_orchestration import handle_new_window
 from ccgram.session import SessionManager
 from ccgram.thread_router import thread_router
 from ccgram.session_monitor import NewWindowEvent, SessionMonitor
@@ -43,77 +41,89 @@ def _make_topic(thread_id: int = 999) -> MagicMock:
     return topic
 
 
+def _map_entry(
+    session_id: str, cwd: str = "/proj", window_name: str = "proj"
+) -> dict[str, str]:
+    return {"session_id": session_id, "cwd": cwd, "window_name": window_name}
+
+
+def _wire_orchestration(
+    monitor: SessionMonitor,
+    sm: SessionManager,
+    bot: AsyncMock,
+    *,
+    group_id: int | None,
+    allowed_users: set[int],
+    captured: list[NewWindowEvent] | None = None,
+) -> None:
+    """Route the monitor's new-window callback into the real orchestration handler."""
+
+    async def on_new_window(event: NewWindowEvent) -> None:
+        if captured is not None:
+            captured.append(event)
+        with (
+            patch("ccgram.handlers.topics.topic_orchestration.session_manager", sm),
+            patch("ccgram.handlers.topics.topic_orchestration.config") as mock_config,
+        ):
+            mock_config.group_id = group_id
+            mock_config.allowed_users = allowed_users
+            await handle_new_window(event, bot)
+
+    monitor.set_new_window_callback(on_new_window)
+
+
+async def _detect(monitor: SessionMonitor, session_map: dict) -> None:
+    with patch.object(
+        monitor,
+        "_load_current_session_map",
+        spec=True,
+        new_callable=AsyncMock,
+        return_value=session_map,
+    ):
+        await monitor._detect_and_cleanup_changes()
+
+
 class TestNewWindowSyncWithBindings:
     """Full flow: existing bindings provide target group, monitor detects new window."""
 
     async def test_monitor_detect_triggers_topic_and_binding(
         self, monitor: SessionMonitor, sm: SessionManager
     ) -> None:
-        user_id = 100
-        existing_thread = 5
-        existing_window = "@1"
-        group_chat = -100200
-        new_window = "@7"
-        new_thread = 77
+        user_id, existing_thread, existing_window = 100, 5, "@1"
+        group_chat, new_window, new_thread = -100200, "@7", 77
 
         thread_router.thread_bindings = {user_id: {existing_thread: existing_window}}
         thread_router.group_chat_ids = {f"{user_id}:{existing_thread}": group_chat}
 
         bot = AsyncMock()
         bot.create_forum_topic = AsyncMock(return_value=_make_topic(new_thread))
-
-        captured_events: list[NewWindowEvent] = []
-
-        async def on_new_window(event: NewWindowEvent) -> None:
-            captured_events.append(event)
-            with (
-                patch("ccgram.handlers.topics.topic_orchestration.session_manager", sm),
-                patch(
-                    "ccgram.handlers.topics.topic_orchestration.config"
-                ) as mock_config,
-            ):
-                mock_config.group_id = None
-                mock_config.allowed_users = {user_id}
-                await _handle_new_window(event, bot)
-
-        monitor.set_new_window_callback(on_new_window)
-        monitor._last_session_map = {
-            existing_window: {
-                "session_id": "old-sess",
-                "cwd": "/proj",
-                "window_name": "proj",
-            }
-        }
-
-        new_map = {
-            existing_window: {
-                "session_id": "old-sess",
-                "cwd": "/proj",
-                "window_name": "proj",
-            },
-            new_window: {
-                "session_id": "new-sess",
-                "cwd": "/home/user/new-project",
-                "window_name": "new-project",
-            },
-        }
-        with patch.object(
+        captured: list[NewWindowEvent] = []
+        _wire_orchestration(
             monitor,
-            "_load_current_session_map",
-            spec=True,
-            new_callable=AsyncMock,
-            return_value=new_map,
-        ):
-            await monitor._detect_and_cleanup_changes()
+            sm,
+            bot,
+            group_id=None,
+            allowed_users={user_id},
+            captured=captured,
+        )
+        monitor._last_session_map = {existing_window: _map_entry("old-sess")}
 
-        assert len(captured_events) == 1
-        assert captured_events[0].window_id == new_window
-        assert captured_events[0].window_name == "new-project"
+        await _detect(
+            monitor,
+            {
+                existing_window: _map_entry("old-sess"),
+                new_window: _map_entry(
+                    "new-sess", "/home/user/new-project", "new-project"
+                ),
+            },
+        )
 
+        assert [(e.window_id, e.window_name) for e in captured] == [
+            (new_window, "new-project")
+        ]
         bot.create_forum_topic.assert_called_once_with(
             chat_id=group_chat, name="new-project"
         )
-
         assert thread_router.get_window_for_thread(user_id, new_thread) == new_window
         assert thread_router.resolve_chat_id(user_id, new_thread) == group_chat
         assert thread_router.window_display_names.get(new_window) == "new-project"
@@ -123,98 +133,46 @@ class TestNewWindowSyncWithBindings:
     ) -> None:
         user_a, user_b = 100, 200
         group_a, group_b = -100100, -100200
-        new_window = "@9"
 
         thread_router.thread_bindings = {user_a: {1: "@1"}, user_b: {2: "@2"}}
-        thread_router.group_chat_ids = {
-            f"{user_a}:1": group_a,
-            f"{user_b}:2": group_b,
-        }
+        thread_router.group_chat_ids = {f"{user_a}:1": group_a, f"{user_b}:2": group_b}
 
         topic_counter = iter([50, 60])
         bot = AsyncMock()
         bot.create_forum_topic = AsyncMock(
             side_effect=lambda **kw: _make_topic(next(topic_counter))
         )
-
-        async def on_new_window(event: NewWindowEvent) -> None:
-            with (
-                patch("ccgram.handlers.topics.topic_orchestration.session_manager", sm),
-                patch(
-                    "ccgram.handlers.topics.topic_orchestration.config"
-                ) as mock_config,
-            ):
-                mock_config.group_id = None
-                mock_config.allowed_users = {user_a, user_b}
-                await _handle_new_window(event, bot)
-
-        monitor.set_new_window_callback(on_new_window)
+        _wire_orchestration(
+            monitor, sm, bot, group_id=None, allowed_users={user_a, user_b}
+        )
         monitor._last_session_map = {}
 
-        new_map = {
-            new_window: {
-                "session_id": "s1",
-                "cwd": "/proj",
-                "window_name": "proj",
-            }
-        }
-        with patch.object(
-            monitor,
-            "_load_current_session_map",
-            spec=True,
-            new_callable=AsyncMock,
-            return_value=new_map,
-        ):
-            await monitor._detect_and_cleanup_changes()
+        await _detect(monitor, {"@9": _map_entry("s1")})
 
         assert bot.create_forum_topic.call_count == 2
-        called_chats = {
+        assert {
             call.kwargs["chat_id"] for call in bot.create_forum_topic.call_args_list
-        }
-        assert called_chats == {group_a, group_b}
+        } == {group_a, group_b}
 
     async def test_same_user_does_not_create_orphan_topics_in_multiple_groups(
         self, monitor: SessionMonitor, sm: SessionManager
     ) -> None:
-        user_id = 100
-        new_window = "@9"
+        user_id, new_window = 100, "@9"
         thread_router.thread_bindings = {user_id: {1: "@1", 2: "@2"}}
         thread_router.group_chat_ids = {
             f"{user_id}:1": -100100,
             f"{user_id}:2": -100200,
         }
+
         topic_counter = iter([50, 60])
         bot = AsyncMock()
         bot.create_forum_topic = AsyncMock(
             side_effect=lambda **kw: _make_topic(next(topic_counter))
         )
-
-        async def on_new_window(event: NewWindowEvent) -> None:
-            with (
-                patch("ccgram.handlers.topics.topic_orchestration.session_manager", sm),
-                patch(
-                    "ccgram.handlers.topics.topic_orchestration.config"
-                ) as mock_config,
-            ):
-                mock_config.group_id = None
-                mock_config.allowed_users = {user_id}
-                await _handle_new_window(event, bot)
-
-        monitor.set_new_window_callback(on_new_window)
+        _wire_orchestration(monitor, sm, bot, group_id=None, allowed_users={user_id})
         monitor._last_session_map = {}
-        with patch.object(
-            monitor,
-            "_load_current_session_map",
-            new_callable=AsyncMock,
-            return_value={
-                new_window: {
-                    "session_id": "s1",
-                    "cwd": "/proj",
-                    "window_name": "proj",
-                }
-            },
-        ):
-            await monitor._detect_and_cleanup_changes()
+
+        await _detect(monitor, {new_window: _map_entry("s1")})
 
         assert bot.create_forum_topic.call_count == 2
         for chat_id in (-100100, -100200):
@@ -236,43 +194,19 @@ class TestNewWindowSyncColdStart:
     async def test_cold_start_with_group_id_creates_and_binds(
         self, monitor: SessionMonitor, sm: SessionManager
     ) -> None:
-        group_id = -100500
-        user_id = 12345
-        new_window = "@3"
-        new_thread = 42
+        group_id, user_id, new_window, new_thread = -100500, 12345, "@3", 42
 
         bot = AsyncMock()
         bot.create_forum_topic = AsyncMock(return_value=_make_topic(new_thread))
-
-        async def on_new_window(event: NewWindowEvent) -> None:
-            with (
-                patch("ccgram.handlers.topics.topic_orchestration.session_manager", sm),
-                patch(
-                    "ccgram.handlers.topics.topic_orchestration.config"
-                ) as mock_config,
-            ):
-                mock_config.group_id = group_id
-                mock_config.allowed_users = {user_id}
-                await _handle_new_window(event, bot)
-
-        monitor.set_new_window_callback(on_new_window)
+        _wire_orchestration(
+            monitor, sm, bot, group_id=group_id, allowed_users={user_id}
+        )
         monitor._last_session_map = {}
 
-        new_map = {
-            new_window: {
-                "session_id": "fresh-sess",
-                "cwd": "/home/user/project",
-                "window_name": "project",
-            }
-        }
-        with patch.object(
+        await _detect(
             monitor,
-            "_load_current_session_map",
-            spec=True,
-            new_callable=AsyncMock,
-            return_value=new_map,
-        ):
-            await monitor._detect_and_cleanup_changes()
+            {new_window: _map_entry("fresh-sess", "/home/user/project", "project")},
+        )
 
         bot.create_forum_topic.assert_called_once_with(chat_id=group_id, name="project")
         assert thread_router.get_window_for_thread(user_id, new_thread) == new_window
@@ -282,36 +216,10 @@ class TestNewWindowSyncColdStart:
         self, monitor: SessionMonitor, sm: SessionManager
     ) -> None:
         bot = AsyncMock()
-
-        async def on_new_window(event: NewWindowEvent) -> None:
-            with (
-                patch("ccgram.handlers.topics.topic_orchestration.session_manager", sm),
-                patch(
-                    "ccgram.handlers.topics.topic_orchestration.config"
-                ) as mock_config,
-            ):
-                mock_config.group_id = None
-                mock_config.allowed_users = set()
-                await _handle_new_window(event, bot)
-
-        monitor.set_new_window_callback(on_new_window)
+        _wire_orchestration(monitor, sm, bot, group_id=None, allowed_users=set())
         monitor._last_session_map = {}
 
-        new_map = {
-            "@4": {
-                "session_id": "s1",
-                "cwd": "/proj",
-                "window_name": "proj",
-            }
-        }
-        with patch.object(
-            monitor,
-            "_load_current_session_map",
-            spec=True,
-            new_callable=AsyncMock,
-            return_value=new_map,
-        ):
-            await monitor._detect_and_cleanup_changes()
+        await _detect(monitor, {"@4": _map_entry("s1")})
 
         bot.create_forum_topic.assert_not_called()
         assert thread_router.thread_bindings == {}
@@ -323,94 +231,45 @@ class TestNewWindowSyncEdgeCases:
     async def test_already_bound_window_skips_topic_creation(
         self, monitor: SessionMonitor, sm: SessionManager
     ) -> None:
-        user_id = 100
-        window_id = "@5"
-        thread_id = 10
+        user_id, window_id, thread_id = 100, "@5", 10
 
         thread_router.thread_bindings = {user_id: {thread_id: window_id}}
         thread_router._rebuild_reverse_index()
         thread_router.group_chat_ids = {f"{user_id}:{thread_id}": -100100}
 
         bot = AsyncMock()
-
-        async def on_new_window(event: NewWindowEvent) -> None:
-            with (
-                patch("ccgram.handlers.topics.topic_orchestration.session_manager", sm),
-                patch(
-                    "ccgram.handlers.topics.topic_orchestration.config"
-                ) as mock_config,
-            ):
-                mock_config.group_id = -100100
-                mock_config.allowed_users = {user_id}
-                await _handle_new_window(event, bot)
-
-        monitor.set_new_window_callback(on_new_window)
+        _wire_orchestration(monitor, sm, bot, group_id=-100100, allowed_users={user_id})
         monitor._last_session_map = {}
 
-        new_map = {
-            window_id: {
-                "session_id": "s-new",
-                "cwd": "/proj",
-                "window_name": "proj",
-            }
-        }
-        with patch.object(
-            monitor,
-            "_load_current_session_map",
-            spec=True,
-            new_callable=AsyncMock,
-            return_value=new_map,
-        ):
-            await monitor._detect_and_cleanup_changes()
+        await _detect(monitor, {window_id: _map_entry("s-new")})
 
         bot.create_forum_topic.assert_not_called()
 
     async def test_topic_name_falls_back_to_cwd(
         self, monitor: SessionMonitor, sm: SessionManager
     ) -> None:
-        group_id = -100500
-        user_id = 12345
-        new_thread = 88
+        group_id, user_id = -100500, 12345
 
         bot = AsyncMock()
-        bot.create_forum_topic = AsyncMock(return_value=_make_topic(new_thread))
-
-        async def on_new_window(event: NewWindowEvent) -> None:
-            with (
-                patch("ccgram.handlers.topics.topic_orchestration.session_manager", sm),
-                patch(
-                    "ccgram.handlers.topics.topic_orchestration.config"
-                ) as mock_config,
-            ):
-                mock_config.group_id = group_id
-                mock_config.allowed_users = {user_id}
-                await _handle_new_window(event, bot)
-
-        monitor.set_new_window_callback(on_new_window)
+        bot.create_forum_topic = AsyncMock(return_value=_make_topic(88))
+        _wire_orchestration(
+            monitor, sm, bot, group_id=group_id, allowed_users={user_id}
+        )
         monitor._last_session_map = {}
 
-        new_map = {
-            "@6": {
-                "session_id": "s1",
-                "cwd": "/home/user/cool-project",
-                "window_name": "",
-            }
-        }
-        with patch.object(
-            monitor,
-            "_load_current_session_map",
-            spec=True,
-            new_callable=AsyncMock,
-            return_value=new_map,
-        ):
-            await monitor._detect_and_cleanup_changes()
+        await _detect(monitor, {"@6": _map_entry("s1", "/home/user/cool-project", "")})
 
         bot.create_forum_topic.assert_called_once_with(
             chat_id=group_id, name="cool-project"
         )
 
-    async def test_unbound_session_change_fires_new_window(
-        self, monitor: SessionMonitor
+    @pytest.mark.parametrize(
+        ("already_bound", "expected_events"),
+        [(False, ["@1"]), (True, [])],
+        ids=["unbound_window_fires", "bound_window_stays_quiet"],
+    )
+    async def test_session_id_change_fires_only_for_unbound_window(
+        self, monitor: SessionMonitor, already_bound: bool, expected_events: list[str]
     ) -> None:
         events: list[NewWindowEvent] = []
 
@@ -418,55 +277,10 @@ class TestNewWindowSyncEdgeCases:
             events.append(event)
 
         monitor.set_new_window_callback(on_new_window)
-        monitor._last_session_map = {
-            "@1": {"session_id": "old-sess", "cwd": "/proj", "window_name": "proj"}
-        }
+        monitor._last_session_map = {"@1": _map_entry("old-sess")}
 
-        updated_map = {
-            "@1": {"session_id": "new-sess", "cwd": "/proj", "window_name": "proj"}
-        }
-        with (
-            patch.object(
-                monitor,
-                "_load_current_session_map",
-                spec=True,
-                new_callable=AsyncMock,
-                return_value=updated_map,
-            ),
-            patch("ccgram.thread_router.thread_router") as mock_router,
-        ):
-            mock_router.has_window.return_value = False
-            await monitor._detect_and_cleanup_changes()
+        with patch("ccgram.thread_router.thread_router") as mock_router:
+            mock_router.has_window.return_value = already_bound
+            await _detect(monitor, {"@1": _map_entry("new-sess")})
 
-        assert [event.window_id for event in events] == ["@1"]
-
-    async def test_bound_session_change_does_not_fire_new_window(
-        self, monitor: SessionMonitor
-    ) -> None:
-        events: list[NewWindowEvent] = []
-
-        async def on_new_window(event: NewWindowEvent) -> None:
-            events.append(event)
-
-        monitor.set_new_window_callback(on_new_window)
-        monitor._last_session_map = {
-            "@1": {"session_id": "old-sess", "cwd": "/proj", "window_name": "proj"}
-        }
-
-        updated_map = {
-            "@1": {"session_id": "new-sess", "cwd": "/proj", "window_name": "proj"}
-        }
-        with (
-            patch.object(
-                monitor,
-                "_load_current_session_map",
-                spec=True,
-                new_callable=AsyncMock,
-                return_value=updated_map,
-            ),
-            patch("ccgram.thread_router.thread_router") as mock_router,
-        ):
-            mock_router.has_window.return_value = True
-            await monitor._detect_and_cleanup_changes()
-
-        assert events == []
+        assert [event.window_id for event in events] == expected_events

@@ -8,13 +8,12 @@ behaviors are covered by unit tests in test_session_monitor_events.py.
 import pytest
 
 from ccgram.providers.base import HookEvent
-from ccgram.session_monitor import SessionMonitor
 
 pytestmark = pytest.mark.integration
 
 
 async def test_event_offset_persists_across_monitor_instances(
-    state_dir, append_event
+    make_monitor, append_event
 ) -> None:
     received: list[HookEvent] = []
 
@@ -23,37 +22,25 @@ async def test_event_offset_persists_across_monitor_instances(
 
     append_event("Stop")
 
-    monitor1 = SessionMonitor(
-        projects_path=state_dir / "projects",
-        poll_interval=0.1,
-        state_file=state_dir / "monitor_state.json",
-    )
+    monitor1 = make_monitor()
     monitor1.set_hook_event_callback(on_event)
     await monitor1._read_hook_events()
     monitor1.state.save()
     assert len(received) == 1
 
-    monitor2 = SessionMonitor(
-        projects_path=state_dir / "projects",
-        poll_interval=0.1,
-        state_file=state_dir / "monitor_state.json",
-    )
+    monitor2 = make_monitor()
     monitor2.set_hook_event_callback(on_event)
     await monitor2._read_hook_events()
     assert len(received) == 1
 
 
-async def test_multiple_event_types_dispatched(state_dir, append_event) -> None:
+async def test_multiple_event_types_dispatched(make_monitor, append_event) -> None:
     received: list[HookEvent] = []
 
     async def on_event(event: HookEvent) -> None:
         received.append(event)
 
-    monitor = SessionMonitor(
-        projects_path=state_dir / "projects",
-        poll_interval=0.1,
-        state_file=state_dir / "monitor_state.json",
-    )
+    monitor = make_monitor()
     monitor.set_hook_event_callback(on_event)
 
     append_event("SubagentStart", data={"subagent_id": "a1", "name": "researcher"})

@@ -1,7 +1,6 @@
 import json
 import hashlib
 import os
-import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -57,29 +56,30 @@ HOOK_AWARE_JSONL_PROVIDERS = [CodexProvider, GeminiProvider]
 
 
 @pytest.fixture(params=HOOK_AWARE_JSONL_PROVIDERS, ids=lambda cls: cls.__name__)
-def hook_aware_jsonl_provider(request: pytest.FixtureRequest):
-    return request.param()
-
-
-@pytest.fixture(params=HOOK_AWARE_JSONL_PROVIDERS, ids=lambda cls: cls.__name__)
 def jsonl_provider(request: pytest.FixtureRequest):
     return request.param()
 
 
 class TestHookAwareCapabilities:
-    def test_hook_flags(self, hook_aware_jsonl_provider) -> None:
-        caps = hook_aware_jsonl_provider.capabilities
+    def test_hook_flags(self, jsonl_provider) -> None:
+        caps = jsonl_provider.capabilities
         assert caps.supports_hook is True
         assert caps.supports_resume is True
         assert caps.supports_continue is True
 
-    def test_invalid_resume_id_raises(self, hook_aware_jsonl_provider) -> None:
+    @pytest.mark.parametrize(
+        "resume_id",
+        ["abc; rm -rf /", "abc && curl evil.sh", "../../etc/passwd", "$(whoami)"],
+    )
+    def test_shell_metacharacters_in_resume_id_are_rejected(
+        self, jsonl_provider, resume_id: str
+    ) -> None:
         with pytest.raises(ValueError, match="Invalid resume_id"):
-            hook_aware_jsonl_provider.make_launch_args(resume_id="abc; rm -rf /")
+            jsonl_provider.make_launch_args(resume_id=resume_id)
 
-    def test_valid_resume_ids(self, hook_aware_jsonl_provider) -> None:
-        assert hook_aware_jsonl_provider.make_launch_args(resume_id="abc-123")
-        assert hook_aware_jsonl_provider.make_launch_args(resume_id="session_42")
+    @pytest.mark.parametrize("resume_id", ["abc-123", "session_42"])
+    def test_valid_resume_ids(self, jsonl_provider, resume_id: str) -> None:
+        assert resume_id in jsonl_provider.make_launch_args(resume_id=resume_id)
 
 
 class TestCodexLaunchArgs:
@@ -1032,86 +1032,75 @@ class TestGeminiTerminalStatus:
         "(Press Esc to close)\n"
     )
 
-    def test_detects_shell_permission(self) -> None:
-        gemini = GeminiProvider()
-        status = gemini.parse_terminal_status(self.SHELL_PERMISSION_PANE)
-        assert status is not None
-        assert status.is_interactive is True
-        assert status.ui_type == "PermissionPrompt"
-
-    def test_detects_write_permission(self) -> None:
-        gemini = GeminiProvider()
-        status = gemini.parse_terminal_status(self.WRITE_PERMISSION_PANE)
-        assert status is not None
-        assert status.is_interactive is True
-        assert status.ui_type == "PermissionPrompt"
-
-    def test_detects_selection_ui(self) -> None:
-        gemini = GeminiProvider()
-        status = gemini.parse_terminal_status(self.SELECT_MODEL_PANE)
-        assert status is not None
-        assert status.is_interactive is True
-        assert status.ui_type == "SelectionUI"
-        assert "Auto (Gemini 3)" in status.raw_text
-
-    def test_permission_content_includes_options(self) -> None:
-        gemini = GeminiProvider()
-        status = gemini.parse_terminal_status(self.SHELL_PERMISSION_PANE)
-        assert status is not None
-        assert "Allow once" in status.raw_text
-        assert "Allow for this session" in status.raw_text
-        assert "Action Required" in status.raw_text
-
-    def test_detects_boxed_permission_prompt_content(self) -> None:
-        gemini = GeminiProvider()
-        status = gemini.parse_terminal_status(self.BOXED_PERMISSION_PANE)
-        assert status is not None
-        assert status.is_interactive is True
-        assert status.ui_type == "PermissionPrompt"
-        assert "Allow for this session" in status.raw_text
-        assert status.raw_text != "Action Required"
-
-    def test_returns_none_for_non_interactive_pane(self) -> None:
-        gemini = GeminiProvider()
-        pane = "Working on something...\nProcessing files\n"
-        status = gemini.parse_terminal_status(pane)
-        assert status is None
-
-    def test_returns_none_for_normal_output(self) -> None:
-        gemini = GeminiProvider()
-        pane = "\u2726 Here is your answer.\n\nSome normal output text.\n> \n"
-        status = gemini.parse_terminal_status(pane)
-        assert status is None
-
-    def test_returns_none_for_gemini_chrome(self) -> None:
-        gemini = GeminiProvider()
-        pane = (
+    NON_INTERACTIVE_PANES = {
+        "plain_progress": "Working on something...\nProcessing files\n",
+        "answer_at_prompt": (
+            "\u2726 Here is your answer.\n\nSome normal output text.\n> \n"
+        ),
+        "gemini_status_chrome": (
             "✦ Here is your answer.\n"
             "[INSERT] ~/Workspace/ccgram (main)           "
             "no sandbox (see /docs)           "
             "/model Auto (Gemini 3) 100% context left | 375.5 MB\n"
-        )
-        status = gemini.parse_terminal_status(pane)
-        assert status is None
-
-    def test_no_interactive_when_bottom_marker_missing(self) -> None:
-        pane = "Action Required\n? Shell ls -la\nAllow execution of: 'ls'?\n"
-        gemini = GeminiProvider()
-        status = gemini.parse_terminal_status(pane)
-        assert status is None
-
-    def test_no_false_positive_from_response_text(self) -> None:
-        pane = (
+        ),
+        "prompt_without_bottom_marker": (
+            "Action Required\n? Shell ls -la\nAllow execution of: 'ls'?\n"
+        ),
+        "action_required_inside_prose": (
             "\u2726 Here's what you need to know:\n"
             "\n"
             "Action Required: You must update the config file.\n"
             "Edit settings.json and set the flag to true.\n"
             "Then restart the service.\n"
             "> \n"
-        )
-        gemini = GeminiProvider()
-        status = gemini.parse_terminal_status(pane)
-        assert status is None
+        ),
+    }
+
+    @pytest.mark.parametrize(
+        ("pane_attr", "ui_type", "expected_in_raw_text"),
+        [
+            pytest.param(
+                "SHELL_PERMISSION_PANE",
+                "PermissionPrompt",
+                ("Action Required", "Allow once", "Allow for this session"),
+                id="shell_permission",
+            ),
+            pytest.param(
+                "WRITE_PERMISSION_PANE", "PermissionPrompt", (), id="write_permission"
+            ),
+            pytest.param(
+                "BOXED_PERMISSION_PANE",
+                "PermissionPrompt",
+                ("Allow for this session",),
+                id="boxed_permission",
+            ),
+            pytest.param(
+                "SELECT_MODEL_PANE",
+                "SelectionUI",
+                ("Auto (Gemini 3)",),
+                id="model_picker",
+            ),
+        ],
+    )
+    def test_detects_interactive_ui(
+        self, pane_attr: str, ui_type: str, expected_in_raw_text: tuple[str, ...]
+    ) -> None:
+        status = GeminiProvider().parse_terminal_status(getattr(self, pane_attr))
+        assert status is not None
+        assert status.is_interactive is True
+        assert status.ui_type == ui_type
+        for fragment in expected_in_raw_text:
+            assert fragment in status.raw_text
+
+    def test_boxed_prompt_keeps_the_body_not_just_the_header(self) -> None:
+        status = GeminiProvider().parse_terminal_status(self.BOXED_PERMISSION_PANE)
+        assert status is not None
+        assert status.raw_text != "Action Required"
+
+    @pytest.mark.parametrize("pane_id", list(NON_INTERACTIVE_PANES))
+    def test_returns_none_for_non_interactive_pane(self, pane_id: str) -> None:
+        pane = self.NON_INTERACTIVE_PANES[pane_id]
+        assert GeminiProvider().parse_terminal_status(pane) is None
 
 
 class TestGeminiBoxedPrompt:
@@ -1506,7 +1495,6 @@ class TestCodexDiscoverTranscript:
         old = _write_codex_session(
             sessions_dir, "2026/03/01", "old", "uuid-old", "/my/project"
         )
-        time.sleep(0.05)
         _write_codex_session(
             sessions_dir, "2026/03/02", "new", "uuid-new", "/my/project"
         )
@@ -1569,7 +1557,6 @@ class TestCodexDiscoverTranscript:
         old_time = stale.stat().st_mtime - 300
         os.utime(stale, (old_time, old_time))
 
-        time.sleep(0.05)
         _write_codex_session(
             sessions_dir, "2026/03/02", "fresh", "uuid-fresh", "/my/project"
         )
@@ -1582,10 +1569,9 @@ class TestCodexDiscoverTranscript:
 
     def test_skips_newer_guardian_subagent_transcript(self, tmp_path: Path) -> None:
         sessions_dir = tmp_path / ".codex" / "sessions"
-        _write_codex_session(
+        main = _write_codex_session(
             sessions_dir, "2026/03/01", "main", "uuid-main", "/my/project"
         )
-        time.sleep(0.05)
         _write_codex_session(
             sessions_dir,
             "2026/03/02",
@@ -1594,6 +1580,9 @@ class TestCodexDiscoverTranscript:
             "/my/project",
             source={"subagent": {"other": "guardian"}},
         )
+        # Ensure guardian is "newer" so the test proves content-based filtering,
+        # not just mtime ordering — back-date main explicitly.
+        os.utime(main, (main.stat().st_mtime - 1, main.stat().st_mtime - 1))
 
         codex = CodexProvider()
         with patch.object(Path, "home", return_value=tmp_path):
@@ -1624,14 +1613,13 @@ class TestCodexDiscoverTranscript:
         hookless discovery, even if a real interactive session exists in the
         same cwd. The interactive session wins."""
         sessions_dir = tmp_path / ".codex" / "sessions"
-        _write_codex_session(
+        main = _write_codex_session(
             sessions_dir,
             "2026/03/01",
             "main",
             "uuid-main",
             "/my/project",
         )
-        time.sleep(0.05)
         _write_codex_session(
             sessions_dir,
             "2026/03/02",
@@ -1641,6 +1629,9 @@ class TestCodexDiscoverTranscript:
             source="exec",
             originator="codex_exec",
         )
+        # Ensure exec-run is "newer" so the test proves content-based filtering,
+        # not mtime ordering — back-date main explicitly.
+        os.utime(main, (main.stat().st_mtime - 1, main.stat().st_mtime - 1))
 
         codex = CodexProvider()
         with patch.object(Path, "home", return_value=tmp_path):
