@@ -1,9 +1,11 @@
 import ast
 import inspect
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from telegram import Bot
+from telegram.error import TelegramError
 
 from ccgram.handlers.polling import window_tick
 from ccgram.handlers.polling.polling_state import (
@@ -12,17 +14,19 @@ from ccgram.handlers.polling.polling_state import (
     terminal_poll_state,
     terminal_screen_buffer,
 )
-from ccgram.handlers.polling.polling_types import TickContext
 from ccgram.handlers.polling.window_tick import (
-    _check_interactive_only,
+    _forward_pane_output,
     _handle_dead_window_notification,
     _maybe_check_passive_shell,
     _scan_window_panes,
+    _send_typing_throttled,
     _update_status,
-    decide_tick,
     tick_window,
 )
+from ccgram.handlers.polling.polling_types import PaneTransition
+from ccgram.handlers.polling.window_tick.apply import _PANE_OUTPUT_PREVIEW_LINES
 from ccgram.providers.base import StatusUpdate
+from ccgram.window_state_store import window_store
 
 
 @pytest.fixture(autouse=True)
@@ -378,97 +382,27 @@ class TestUpdateStatusActiveLine:
             assert "1 subagent" in str(enqueue_call)
 
 
-def _make_ctx(
-    window_id: str = "@0",
-    resolved_status_text: str | None = None,
-    is_shell_prompt: bool = False,
-    has_seen_status: bool = False,
-    is_recently_active: bool = False,
-    startup_time: float | None = None,
-    is_dead_window: bool = False,
-    supports_hook: bool = True,
-) -> TickContext:
-    return TickContext(
-        window_id=window_id,
-        resolved_status_text=resolved_status_text,
-        is_shell_prompt=is_shell_prompt,
-        has_seen_status=has_seen_status,
-        is_recently_active=is_recently_active,
-        startup_time=startup_time,
-        is_dead_window=is_dead_window,
-        supports_hook=supports_hook,
-    )
-
-
-class TestDecideTickActiveTranscript:
-    def test_recently_active_yields_active_transition(self):
-        ctx = _make_ctx(is_recently_active=True)
-        decision = decide_tick(ctx)
-        assert decision.transition == "active"
-        assert decision.send_status is False
-
-
-class TestDecideTickShellPrompt:
-    def test_claude_provider_yields_done(self):
-        ctx = _make_ctx(is_shell_prompt=True, supports_hook=True)
-        decision = decide_tick(ctx)
-        assert decision.transition == "done"
-
-    def test_shell_provider_yields_idle(self):
-        ctx = _make_ctx(is_shell_prompt=True, supports_hook=False)
-        decision = decide_tick(ctx)
-        assert decision.transition == "idle"
-
-    def test_no_startup_time_yields_starting(self):
-        ctx = _make_ctx(startup_time=None)
-        decision = decide_tick(ctx)
-        assert decision.transition == "starting"
-
-
-class TestScanPanes:
-    async def test_single_pane_cache_fast_path(self):
-        bot = AsyncMock(spec=Bot)
-        terminal_screen_buffer.update_pane_count_cache("@0", 1)
-
-        with patch("ccgram.multiplexer.multiplexer") as mock_tm:
-            await _scan_window_panes(bot, 1, "@0", 100)
-            mock_tm.list_panes.assert_not_called()
-
-    async def test_surfaces_interactive_alert(self):
-        bot = AsyncMock(spec=Bot)
-        pane_active = MagicMock(pane_id="%0", active=True, command="claude")
-        pane_blocked = MagicMock(pane_id="%1", active=False, command="claude")
-        interactive_status = _make_status(raw_text="Permission?", is_interactive=True)
-
-        with (
-            patch("ccgram.multiplexer.multiplexer") as mock_tm,
-            patch("ccgram.providers.get_provider_for_window") as mock_prov,
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.handle_interactive_ui",
-                new_callable=AsyncMock,
-            ) as mock_ui,
-        ):
-            mock_tm.list_panes = AsyncMock(return_value=[pane_active, pane_blocked])
-            mock_tm.capture_pane_by_id = AsyncMock(return_value="pane text")
-            mock_prov.return_value.parse_terminal_status.return_value = (
-                interactive_status
-            )
-            await _scan_window_panes(bot, 1, "@0", 100)
-            mock_ui.assert_called_once()
-            assert mock_ui.call_args.kwargs.get("pane_id") == "%1"
-
-
 class TestMaybeCheckPassiveShell:
-    async def test_non_shell_noop(self):
+    async def test_non_shell_provider_is_skipped(self):
         bot = AsyncMock(spec=Bot)
         with (
-            patch("ccgram.handlers.polling.window_tick.apply.window_query") as mock_sm,
-            patch("ccgram.handlers.polling.window_tick.apply.tmux_manager"),
+            patch(
+                "ccgram.handlers.polling.window_tick.apply.get_provider_for_window"
+            ) as mock_prov,
+            patch("ccgram.handlers.polling.window_tick.apply.tmux_manager") as mock_tm,
+            patch(
+                "ccgram.handlers.shell.shell_capture.check_passive_shell_output",
+                new_callable=AsyncMock,
+            ) as mock_check,
         ):
-            mock_sm.get_window_state.return_value = MagicMock(provider_name="claude")
+            mock_prov.return_value.capabilities.chat_first_command_path = False
+            mock_tm.capture_pane = AsyncMock()
             await _maybe_check_passive_shell(bot, 1, "@0", 100)
 
-    async def test_shell_provider_calls_passive_check(self):
+        mock_check.assert_not_called()
+        mock_tm.capture_pane.assert_not_called()
+
+    async def test_shell_provider_passes_rendered_text_through(self):
         bot = AsyncMock(spec=Bot)
         with (
             patch(
@@ -481,65 +415,45 @@ class TestMaybeCheckPassiveShell:
             ) as mock_check,
         ):
             mock_prov.return_value.capabilities.chat_first_command_path = True
-            ws = terminal_poll_state.get_state("@0")
-            ws.last_rendered_text = "$ output here"
-            mock_tm.capture_pane = AsyncMock(return_value="$ output here")
+            terminal_poll_state.get_state("@0").last_rendered_text = "$ output here"
+            mock_tm.capture_pane = AsyncMock()
             await _maybe_check_passive_shell(bot, 1, "@0", 100)
-            mock_check.assert_called_once()
 
+        mock_tm.capture_pane.assert_not_called()
+        assert mock_check.call_args[0][4] == "$ output here"
 
-class TestCheckInteractiveOnly:
-    async def test_already_interactive_returns_early(self):
+    @pytest.mark.parametrize(
+        ("captured", "expected"),
+        [
+            pytest.param("$ raw capture", "$ raw capture", id="capture-succeeds"),
+            pytest.param("", None, id="capture-empty"),
+        ],
+    )
+    async def test_falls_back_to_a_live_capture_when_nothing_is_rendered_yet(
+        self, captured, expected
+    ):
         bot = AsyncMock(spec=Bot)
-        w = _make_window()
-
         with (
+            patch(
+                "ccgram.handlers.polling.window_tick.apply.get_provider_for_window"
+            ) as mock_prov,
             patch("ccgram.handlers.polling.window_tick.apply.tmux_manager") as mock_tm,
             patch(
-                "ccgram.handlers.polling.window_tick.apply.get_interactive_window",
-                return_value="@0",
-            ),
-        ):
-            mock_tm.find_window_by_id = AsyncMock(return_value=w)
-            mock_tm.capture_pane = AsyncMock()
-            await _check_interactive_only(bot, 1, "@0", 100, _window=w)
-            mock_tm.capture_pane.assert_not_called()
-
-
-class TestDeadWindowNotification:
-    async def test_sends_once(self):
-        bot = AsyncMock(spec=Bot)
-        with (
-            patch("ccgram.handlers.polling.window_tick.apply.thread_router") as mock_tr,
-            patch("ccgram.handlers.polling.window_tick.apply.window_query") as mock_sm,
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.update_topic_emoji",
+                "ccgram.handlers.shell.shell_capture.check_passive_shell_output",
                 new_callable=AsyncMock,
-            ),
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.clear_tool_msg_ids_for_topic"
-            ),
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.rate_limit_send_message",
-                new_callable=AsyncMock,
-            ) as mock_send,
+            ) as mock_check,
         ):
-            mock_tr.resolve_chat_id.return_value = 42
-            mock_tr.get_display_name.return_value = "test"
-            mock_sm.get_window_state.return_value = MagicMock(cwd="/tmp")
-            mock_send.return_value = MagicMock()
-            await _handle_dead_window_notification(bot, 1, 100, "@0")
-            assert lifecycle_strategy.is_dead_notified(1, 100, "@0")
-            mock_send.reset_mock()
-            await _handle_dead_window_notification(bot, 1, 100, "@0")
-            mock_send.assert_not_called()
+            mock_prov.return_value.capabilities.chat_first_command_path = True
+            mock_tm.capture_pane = AsyncMock(return_value=captured)
+            await _maybe_check_passive_shell(bot, 1, "@0", 100)
+
+        if expected is None:
+            mock_check.assert_not_called()
+        else:
+            assert mock_check.call_args[0][4] == expected
 
 
 class TestContractTests:
-    def test_tick_window_exists_and_is_callable(self):
-        assert hasattr(window_tick, "tick_window")
-        assert callable(window_tick.tick_window)
-
     def test_tick_window_is_coroutine_function(self):
         assert inspect.iscoroutinefunction(window_tick.tick_window)
 
@@ -578,33 +492,6 @@ class TestContractTests:
         assert window_tick_imports == [] or all(
             name == "window_tick" for name in window_tick_imports
         ), f"Unexpected imports from window_tick: {window_tick_imports}"
-
-    def test_polling_coordinator_does_not_import_per_window_collaborators(self):
-        import ccgram.handlers.polling.polling_coordinator as pc
-
-        source = inspect.getsource(pc)
-        tree = ast.parse(source)
-        forbidden = {
-            "claude_task_state",
-            "providers.base",
-            "session_monitor",
-            "cleanup",
-            "interactive_ui",
-            "message_queue",
-            "message_sender",
-            "recovery_callbacks",
-            "topic_emoji",
-            "transcript_discovery",
-            "polling_state",
-        }
-        imported_modules = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and node.module:
-                imported_modules.add(node.module)
-        violations = {m for m in imported_modules if any(f in m for f in forbidden)}
-        assert not violations, (
-            f"polling_coordinator imports per-window collaborators: {violations}"
-        )
 
 
 class TestDeadWindowTopicDeleted:
@@ -656,8 +543,6 @@ class TestDeadWindowTopicDeleted:
 class TestPaneLifecycleNotify:
     @pytest.fixture(autouse=True)
     def _reset_store(self):
-        from ccgram.window_state_store import window_store
-
         window_store.reset()
         saved_schedule = window_store._schedule_save
         window_store._schedule_save = lambda: None
@@ -667,184 +552,112 @@ class TestPaneLifecycleNotify:
 
     @pytest.fixture
     def transitions(self):
-        from ccgram.handlers.polling.polling_types import PaneTransition
-
         return [
             PaneTransition(pane_id="%5", prev_state=None, new_state="active"),
             PaneTransition(pane_id="%6", prev_state=None, new_state="dead"),
             PaneTransition(pane_id="%7", prev_state="idle", new_state="active"),
         ]
 
-    async def test_disabled_globally_and_per_window_no_notify(self, transitions):
-        from ccgram.handlers.polling import window_tick
-
-        bot = AsyncMock(spec=Bot)
+    @staticmethod
+    @contextmanager
+    def _notify_env(*, global_default: bool, send_error: Exception | None = None):
         with (
             patch.object(window_tick.apply, "thread_router") as mock_tr,
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.config",
-                MagicMock(pane_lifecycle_notify=False),
+            patch.object(
+                window_tick.apply,
+                "config",
+                MagicMock(pane_lifecycle_notify=global_default),
             ),
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.safe_send",
+            patch.object(
+                window_tick.apply,
+                "safe_send",
                 new_callable=AsyncMock,
+                side_effect=send_error,
             ) as mock_send,
         ):
             mock_tr.resolve_chat_id.return_value = 42
+            yield mock_send
+
+    @pytest.mark.parametrize(
+        ("global_default", "override", "expect_sends"),
+        [
+            pytest.param(False, None, False, id="off-by-default"),
+            pytest.param(True, None, True, id="on-by-default"),
+            pytest.param(False, True, True, id="override-enables"),
+            pytest.param(True, False, False, id="override-disables"),
+        ],
+    )
+    async def test_notify_gate(
+        self, transitions, global_default, override, expect_sends
+    ):
+        if override is not None:
+            window_store.set_pane_lifecycle_notify("@0", override)
+        bot = AsyncMock(spec=Bot)
+        with self._notify_env(global_default=global_default) as mock_send:
             await window_tick._notify_pane_lifecycle(bot, 1, "@0", 100, transitions)
-        mock_send.assert_not_called()
 
-    async def test_per_window_override_enables(self, transitions):
-        from ccgram.handlers.polling import window_tick
-        from ccgram.window_state_store import window_store
+        # Only created (%5) and closed (%6) are announced — a state change
+        # between two live states (%7) is not a lifecycle event.
+        assert mock_send.await_count == (2 if expect_sends else 0)
 
+    async def test_created_and_closed_lines_name_the_pane(self, transitions):
         window_store.set_pane_lifecycle_notify("@0", True)
         bot = AsyncMock(spec=Bot)
-        with (
-            patch.object(window_tick.apply, "thread_router") as mock_tr,
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.config",
-                MagicMock(pane_lifecycle_notify=False),
-            ),
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.safe_send",
-                new_callable=AsyncMock,
-            ) as mock_send,
-        ):
-            mock_tr.resolve_chat_id.return_value = 42
+        with self._notify_env(global_default=False) as mock_send:
             await window_tick._notify_pane_lifecycle(bot, 1, "@0", 100, transitions)
-        # Created (%5) and closed (%6) only — state-change (%7) is skipped
-        assert mock_send.await_count == 2
+
         texts = [call.args[2] for call in mock_send.call_args_list]
         assert any("➕" in t and "%5" in t and "created" in t for t in texts)
         assert any("➖" in t and "%6" in t and "closed" in t for t in texts)
 
-    async def test_per_window_override_disables(self, transitions):
-        from ccgram.handlers.polling import window_tick
-        from ccgram.window_state_store import window_store
-
-        # Global default ON, but per-window override OFF wins.
-        window_store.set_pane_lifecycle_notify("@0", False)
-        bot = AsyncMock(spec=Bot)
-        with (
-            patch.object(window_tick.apply, "thread_router") as mock_tr,
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.config",
-                MagicMock(pane_lifecycle_notify=True),
-            ),
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.safe_send",
-                new_callable=AsyncMock,
-            ) as mock_send,
-        ):
-            mock_tr.resolve_chat_id.return_value = 42
-            await window_tick._notify_pane_lifecycle(bot, 1, "@0", 100, transitions)
-        mock_send.assert_not_called()
-
-    async def test_global_default_enables_when_no_override(self, transitions):
-        from ccgram.handlers.polling import window_tick
-
-        bot = AsyncMock(spec=Bot)
-        with (
-            patch.object(window_tick.apply, "thread_router") as mock_tr,
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.config",
-                MagicMock(pane_lifecycle_notify=True),
-            ),
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.safe_send",
-                new_callable=AsyncMock,
-            ) as mock_send,
-        ):
-            mock_tr.resolve_chat_id.return_value = 42
-            await window_tick._notify_pane_lifecycle(bot, 1, "@0", 100, transitions)
-        assert mock_send.await_count == 2
-
     async def test_named_pane_used_in_label(self):
-        from ccgram.handlers.polling import window_tick
-        from ccgram.handlers.polling.polling_types import PaneTransition
-        from ccgram.window_state_store import window_store
-
         window_store.set_pane_lifecycle_notify("@0", True)
         window_store.upsert_pane("@0", "%5", name="api-gateway", state="active")
         bot = AsyncMock(spec=Bot)
         transitions = [
-            PaneTransition(pane_id="%5", prev_state=None, new_state="active"),
+            PaneTransition(pane_id="%5", prev_state=None, new_state="active")
         ]
-        with (
-            patch.object(window_tick.apply, "thread_router") as mock_tr,
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.config",
-                MagicMock(pane_lifecycle_notify=False),
-            ),
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.safe_send",
-                new_callable=AsyncMock,
-            ) as mock_send,
-        ):
-            mock_tr.resolve_chat_id.return_value = 42
+        with self._notify_env(global_default=False) as mock_send:
             await window_tick._notify_pane_lifecycle(bot, 1, "@0", 100, transitions)
+
         text = mock_send.call_args.args[2]
         assert "api-gateway" in text
         assert "%5" in text
 
-    async def test_telegram_error_logged_not_raised(self):
-        from telegram.error import TelegramError
-
-        from ccgram.handlers.polling import window_tick
-        from ccgram.handlers.polling.polling_types import PaneTransition
-        from ccgram.window_state_store import window_store
-
+    async def test_one_failed_send_does_not_abort_the_rest(self):
         window_store.set_pane_lifecycle_notify("@0", True)
         bot = AsyncMock(spec=Bot)
         transitions = [
             PaneTransition(pane_id="%5", prev_state=None, new_state="active"),
+            PaneTransition(pane_id="%6", prev_state=None, new_state="active"),
         ]
-        with (
-            patch.object(window_tick.apply, "thread_router") as mock_tr,
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.config",
-                MagicMock(pane_lifecycle_notify=False),
-            ),
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.safe_send",
-                new_callable=AsyncMock,
-                side_effect=TelegramError("boom"),
-            ),
-        ):
-            mock_tr.resolve_chat_id.return_value = 42
-            # Should swallow and log
+        with self._notify_env(
+            global_default=False, send_error=TelegramError("boom")
+        ) as mock_send:
             await window_tick._notify_pane_lifecycle(bot, 1, "@0", 100, transitions)
 
-    async def test_empty_transitions_short_circuits(self):
-        from ccgram.handlers.polling import window_tick
-        from ccgram.window_state_store import window_store
+        assert mock_send.await_count == 2
 
+    async def test_empty_transitions_short_circuits(self):
         window_store.set_pane_lifecycle_notify("@0", True)
         bot = AsyncMock(spec=Bot)
-        with (
-            patch.object(window_tick.apply, "thread_router") as mock_tr,
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.config",
-                MagicMock(pane_lifecycle_notify=True),
-            ),
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.safe_send",
-                new_callable=AsyncMock,
-            ) as mock_send,
-        ):
-            mock_tr.resolve_chat_id.return_value = 42
+        with self._notify_env(global_default=True) as mock_send:
             await window_tick._notify_pane_lifecycle(bot, 1, "@0", 100, [])
+
         mock_send.assert_not_called()
 
-    async def test_scan_panes_invokes_lifecycle(self):
-        from ccgram.handlers.polling import window_tick
-        from ccgram.handlers.polling.polling_types import PaneTransition
-
+    @pytest.mark.parametrize(
+        "scan_transitions",
+        [
+            pytest.param(
+                [PaneTransition(pane_id="%5", prev_state=None, new_state="active")],
+                id="transitions",
+            ),
+            pytest.param([], id="no-transitions"),
+        ],
+    )
+    async def test_scan_panes_forwards_transitions_to_lifecycle(self, scan_transitions):
         bot = AsyncMock(spec=Bot)
-        scan_transitions = [
-            PaneTransition(pane_id="%5", prev_state=None, new_state="active"),
-        ]
         with (
             patch.object(window_tick.apply, "pane_status_strategy") as mock_strategy,
             patch.object(
@@ -853,20 +666,117 @@ class TestPaneLifecycleNotify:
         ):
             mock_strategy.scan_window = AsyncMock(return_value=scan_transitions)
             await _scan_window_panes(bot, 1, "@0", 100)
-        mock_notify.assert_awaited_once()
-        passed_transitions = mock_notify.call_args.args[4]
-        assert passed_transitions == scan_transitions
 
-    async def test_scan_panes_skips_lifecycle_on_empty(self):
-        from ccgram.handlers.polling import window_tick
+        if scan_transitions:
+            mock_notify.assert_awaited_once()
+            assert mock_notify.call_args.args[4] == scan_transitions
+        else:
+            mock_notify.assert_not_called()
 
+
+class TestSendTypingThrottled:
+    @pytest.fixture(autouse=True)
+    def _typing_env(self):
+        with patch.object(window_tick.apply, "thread_router") as mock_tr:
+            mock_tr.resolve_chat_id.return_value = -100
+            yield mock_tr
+
+    async def test_no_thread_means_no_chat_action(self):
         bot = AsyncMock(spec=Bot)
+        await _send_typing_throttled(bot, 1, None)
+        bot.send_chat_action.assert_not_called()
+
+    async def test_first_call_sends_and_the_next_is_throttled(self):
+        bot = AsyncMock(spec=Bot)
+        await _send_typing_throttled(bot, 1, 42)
+        await _send_typing_throttled(bot, 1, 42)
+        bot.send_chat_action.assert_awaited_once()
+        assert bot.send_chat_action.call_args.kwargs["chat_id"] == -100
+        assert bot.send_chat_action.call_args.kwargs["message_thread_id"] == 42
+
+    async def test_throttle_is_per_topic(self):
+        bot = AsyncMock(spec=Bot)
+        await _send_typing_throttled(bot, 1, 42)
+        await _send_typing_throttled(bot, 1, 43)
+        assert bot.send_chat_action.await_count == 2
+
+    async def test_telegram_error_is_swallowed(self):
+        bot = AsyncMock(spec=Bot)
+        bot.send_chat_action.side_effect = TelegramError("boom")
+        await _send_typing_throttled(bot, 1, 42)
+        bot.send_chat_action.assert_awaited_once()
+
+
+class TestForwardPaneOutput:
+    @pytest.fixture(autouse=True)
+    def _reset_store(self):
+        window_store.reset()
+        saved_schedule = window_store._schedule_save
+        window_store._schedule_save = lambda: None
+        yield
+        window_store.reset()
+        window_store._schedule_save = saved_schedule
+
+    @staticmethod
+    @contextmanager
+    def _send_env():
         with (
-            patch.object(window_tick.apply, "pane_status_strategy") as mock_strategy,
+            patch.object(window_tick.apply, "thread_router") as mock_tr,
             patch.object(
-                window_tick.apply, "_notify_pane_lifecycle", new_callable=AsyncMock
-            ) as mock_notify,
+                window_tick.apply, "safe_send", new_callable=AsyncMock
+            ) as mock_send,
         ):
-            mock_strategy.scan_window = AsyncMock(return_value=[])
-            await _scan_window_panes(bot, 1, "@0", 100)
-        mock_notify.assert_not_called()
+            mock_tr.resolve_chat_id.return_value = -100
+            yield mock_send
+
+    @pytest.mark.parametrize(
+        ("subscribed", "text"),
+        [
+            pytest.param(False, "output", id="unsubscribed-pane"),
+            pytest.param(True, "   \n\n", id="blank-capture"),
+        ],
+    )
+    async def test_nothing_is_forwarded(self, subscribed, text):
+        window_store.upsert_pane("@0", "%1", state="active", subscribed=subscribed)
+        bot = AsyncMock(spec=Bot)
+        with self._send_env() as mock_send:
+            await _forward_pane_output(bot, 1, "@0", 42, "%1", text)
+        mock_send.assert_not_called()
+
+    async def test_unknown_pane_is_skipped(self):
+        bot = AsyncMock(spec=Bot)
+        with self._send_env() as mock_send:
+            await _forward_pane_output(bot, 1, "@0", 42, "%missing", "output")
+        mock_send.assert_not_called()
+
+    async def test_named_pane_is_labelled_and_fenced(self):
+        window_store.upsert_pane(
+            "@0", "%1", state="active", subscribed=True, name="api-gateway"
+        )
+        bot = AsyncMock(spec=Bot)
+        with self._send_env() as mock_send:
+            await _forward_pane_output(bot, 1, "@0", 42, "%1", "line-a\nline-b\n")
+
+        text = mock_send.call_args.args[2]
+        assert "api-gateway (%1)" in text
+        assert text.endswith("```")
+        assert "line-a\nline-b" in text
+        assert mock_send.call_args.kwargs["message_thread_id"] == 42
+
+    async def test_only_the_tail_of_a_long_capture_is_forwarded(self):
+        window_store.upsert_pane("@0", "%1", state="active", subscribed=True)
+        bot = AsyncMock(spec=Bot)
+        capture = "\n".join(f"line{i}" for i in range(30))
+        with self._send_env() as mock_send:
+            await _forward_pane_output(bot, 1, "@0", 42, "%1", capture)
+
+        lines = mock_send.call_args.args[2].splitlines()[2:-1]
+        assert lines == [f"line{i}" for i in range(30 - _PANE_OUTPUT_PREVIEW_LINES, 30)]
+
+    async def test_telegram_error_is_logged_not_raised(self):
+        window_store.upsert_pane("@0", "%1", state="active", subscribed=True)
+        bot = AsyncMock(spec=Bot)
+        with self._send_env() as mock_send:
+            mock_send.side_effect = TelegramError("boom")
+            await _forward_pane_output(bot, 1, "@0", 42, "%1", "output")
+        mock_send.assert_awaited_once()

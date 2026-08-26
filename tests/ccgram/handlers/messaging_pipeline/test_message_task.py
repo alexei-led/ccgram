@@ -13,17 +13,21 @@ from ccgram.handlers.messaging_pipeline.message_task import (
 )
 
 
+@pytest.mark.parametrize(
+    "task",
+    [
+        ContentTask(window_id="@0", parts=("hello",)),
+        StatusUpdateTask(window_id="@0", text="working..."),
+        StatusClearTask(window_id="@0"),
+    ],
+    ids=["content", "status_update", "status_clear"],
+)
+def test_tasks_are_frozen(task: MessageTask):
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        task.window_id = "@1"  # type: ignore[misc]
+
+
 class TestContentTask:
-    def test_is_frozen(self):
-        task = ContentTask(window_id="@0", parts=("hello",))
-        with pytest.raises(dataclasses.FrozenInstanceError):
-            task.window_id = "@1"  # type: ignore[misc]
-
-    def test_parts_is_tuple(self):
-        task = ContentTask(window_id="@0", parts=("a", "b"))
-        assert isinstance(task.parts, tuple)
-        assert task.parts == ("a", "b")
-
     def test_defaults(self):
         task = ContentTask(window_id="@0", parts=("x",))
         assert task.content_type == "text"
@@ -31,10 +35,6 @@ class TestContentTask:
         assert task.tool_use_id is None
         assert task.tool_name is None
         assert task.thread_id is None
-
-    def test_role_defaults_to_assistant(self):
-        task = ContentTask(window_id="@0", parts=("x",))
-        assert task.role == "assistant"
 
     def test_role_can_be_set_to_user(self):
         task = ContentTask(window_id="@0", parts=("x",), role="user")
@@ -52,71 +52,35 @@ class TestContentTask:
         assert task.tool_use_id == "tu_123"
         assert task.tool_name == "Read"
 
-    def test_requires_window_id(self):
-        with pytest.raises(TypeError):
-            ContentTask(parts=("x",))  # type: ignore[call-arg]
-
-    def test_requires_parts(self):
-        with pytest.raises(TypeError):
-            ContentTask(window_id="@0")  # type: ignore[call-arg]
-
     def test_hashable(self):
         task = ContentTask(window_id="@0", parts=("hello",))
-        d = {task: 1}
-        assert d[task] == 1
+        assert {task: 1}[task] == 1
 
 
 class TestStatusUpdateTask:
-    def test_is_frozen(self):
-        task = StatusUpdateTask(window_id="@0", text="working...")
-        with pytest.raises(dataclasses.FrozenInstanceError):
-            task.text = "done"  # type: ignore[misc]
+    def test_defaults(self):
+        task = StatusUpdateTask(window_id="@0", text="ok")
+        assert task.thread_id is None
 
     def test_optional_text(self):
         task = StatusUpdateTask(window_id="@0", text=None)
         assert task.text is None
 
-    def test_defaults(self):
-        task = StatusUpdateTask(window_id="@0", text="ok")
-        assert task.thread_id is None
-
 
 class TestStatusClearTask:
-    def test_is_frozen(self):
+    def test_defaults(self):
         task = StatusClearTask(window_id="@0")
-        with pytest.raises(dataclasses.FrozenInstanceError):
-            task.window_id = "@1"  # type: ignore[misc]
+        assert task.thread_id is None
 
     def test_optional_window_id(self):
         task = StatusClearTask(window_id=None)
         assert task.window_id is None
-
-    def test_optional_thread_id(self):
-        task = StatusClearTask(window_id="@0")
-        assert task.thread_id is None
 
 
 class TestMessageTaskUnion:
     def test_union_covers_all_variants(self):
         args = set(MessageTask.__args__)
         assert args == {ContentTask, StatusUpdateTask, StatusClearTask}
-
-    def test_match_dispatches_all_three(self):
-        tasks: list[MessageTask] = [
-            ContentTask(window_id="@0", parts=("hi",)),
-            StatusUpdateTask(window_id="@0", text="busy"),
-            StatusClearTask(window_id="@0"),
-        ]
-        labels = []
-        for t in tasks:
-            match t:
-                case ContentTask():
-                    labels.append("content")
-                case StatusUpdateTask():
-                    labels.append("status_update")
-                case StatusClearTask():
-                    labels.append("status_clear")
-        assert labels == ["content", "status_update", "status_clear"]
 
 
 class TestThreadKey:

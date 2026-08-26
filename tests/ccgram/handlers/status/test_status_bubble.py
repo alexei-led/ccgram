@@ -3,6 +3,7 @@ import inspect
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from telegram.error import TelegramError
 
 from ccgram.expandable_quote import EXPANDABLE_QUOTE_END, EXPANDABLE_QUOTE_START
 from ccgram.handlers.messaging_pipeline.message_task import (
@@ -88,7 +89,12 @@ class TestSendStatusText:
 
         mock_edit.assert_awaited_once()
         bot.send_message.assert_not_called()
-        assert _status_msg_info[(USER_ID, THREAD_ID)][2] == "new text"
+        assert _status_msg_info[(USER_ID, THREAD_ID)] == (
+            50,
+            WINDOW_ID,
+            "new text",
+            CHAT_ID,
+        )
 
     @patch("ccgram.handlers.status.status_bubble.thread_router")
     @patch(
@@ -119,6 +125,29 @@ class TestSendStatusText:
 
     @patch("ccgram.handlers.status.status_bubble.thread_router")
     @patch(
+        "ccgram.handlers.status.status_bubble.clear_status_message",
+        new_callable=AsyncMock,
+    )
+    async def test_existing_status_for_other_window_is_cleared_first(
+        self, mock_clear, mock_router
+    ):
+        mock_router.resolve_chat_id.return_value = CHAT_ID
+        _status_msg_info[(USER_ID, THREAD_ID)] = (50, "@1", "running...", CHAT_ID)
+
+        bot = _make_bot(send_id=300)
+        await send_status_text(bot, USER_ID, THREAD_ID, WINDOW_ID, "running...")
+
+        mock_clear.assert_called_once_with(bot, USER_ID, THREAD_ID)
+        bot.send_message.assert_awaited_once()
+        assert _status_msg_info[(USER_ID, THREAD_ID)] == (
+            300,
+            WINDOW_ID,
+            "running...",
+            CHAT_ID,
+        )
+
+    @patch("ccgram.handlers.status.status_bubble.thread_router")
+    @patch(
         "ccgram.handlers.status.status_bubble.edit_with_fallback",
         new_callable=AsyncMock,
     )
@@ -142,6 +171,15 @@ class TestClearStatusMessage:
         await clear_status_message(bot, USER_ID, THREAD_ID)
 
         bot.delete_message.assert_called_once_with(chat_id=CHAT_ID, message_id=50)
+        assert (USER_ID, THREAD_ID) not in _status_msg_info
+
+    async def test_swallows_delete_failure_and_forgets_tracking(self):
+        _status_msg_info[(USER_ID, THREAD_ID)] = (50, WINDOW_ID, "text", CHAT_ID)
+
+        bot = AsyncMock()
+        bot.delete_message.side_effect = TelegramError("message to delete not found")
+        await clear_status_message(bot, USER_ID, THREAD_ID)
+
         assert (USER_ID, THREAD_ID) not in _status_msg_info
 
     async def test_noop_when_no_tracking(self):
@@ -176,6 +214,22 @@ class TestConvertStatusToContent:
         )
 
         assert result is None
+
+    @patch(
+        "ccgram.handlers.status.status_bubble.edit_with_fallback",
+        new_callable=AsyncMock,
+    )
+    async def test_returns_none_when_edit_fails(self, mock_edit):
+        _status_msg_info[(USER_ID, THREAD_ID)] = (50, WINDOW_ID, "old", CHAT_ID)
+        mock_edit.return_value = False
+
+        result = await convert_status_to_content(
+            AsyncMock(), USER_ID, THREAD_ID, WINDOW_ID, "content text"
+        )
+
+        assert result is None
+        # Tracking is dropped either way — the bubble is no longer ours to edit.
+        assert (USER_ID, THREAD_ID) not in _status_msg_info
 
     @patch(
         "ccgram.handlers.status.status_bubble.edit_with_fallback",
@@ -281,12 +335,6 @@ class TestProcessStatusUpdate:
 
         assert result is None
         assert (USER_ID, THREAD_ID) not in _status_msg_info
-
-    async def test_uses_thread_key_for_none_thread(self):
-        task = StatusUpdateTask(window_id=WINDOW_ID, text="running", thread_id=None)
-        from ccgram.handlers.messaging_pipeline.message_task import thread_key
-
-        assert thread_key(task.thread_id) == 0
 
 
 class TestProcessStatusClear:
@@ -570,3 +618,63 @@ class TestFormatClaudeTaskStatusWithPanes:
         assert lines[0] == "Running"
         assert lines[1].startswith("└ ")
         assert "1 tasks (0 done, 1 open)" in lines[2]
+
+
+# Patch target for the lazily-imported build_dashboard_button (loaded inside
+# build_status_keyboard at call time from status_bar_actions, not at module level).
+_DASH_PATCH = "ccgram.handlers.status.status_bar_actions.build_dashboard_button"
+
+
+class TestBuildStatusKeyboardGroupVsPrivate:
+    """#178: web_app (Dashboard) button must not appear in group/topic chats."""
+
+    @patch(_DASH_PATCH)
+    def test_private_chat_shows_dashboard_button(self, mock_dash):
+        """is_group=False → private chat → build_dashboard_button is consulted."""
+        from ccgram.handlers.status.status_bubble import build_status_keyboard
+
+        mock_dash.return_value = MagicMock(web_app=MagicMock(), callback_data=None)
+        build_status_keyboard(WINDOW_ID, user_id=USER_ID, is_group=False)
+        mock_dash.assert_called_once_with(WINDOW_ID, USER_ID)
+
+    @patch(_DASH_PATCH)
+    def test_group_chat_hides_dashboard_button(self, mock_dash):
+        """is_group=True → Telegram rejects web_app → build_dashboard_button skipped."""
+        from ccgram.handlers.status.status_bubble import build_status_keyboard
+
+        mock_dash.return_value = MagicMock(web_app=MagicMock(), callback_data=None)
+        build_status_keyboard(WINDOW_ID, user_id=USER_ID, is_group=True)
+        mock_dash.assert_not_called()
+
+    @patch("ccgram.handlers.status.status_bubble.config", create=True)
+    @patch("ccgram.handlers.status.status_bubble.thread_router")
+    @patch(_DASH_PATCH)
+    async def test_send_in_thread_does_not_call_dashboard_button(
+        self, mock_dash, mock_router, mock_config
+    ):
+        """send_status_text with non-zero thread_id suppresses the dashboard button."""
+        mock_config.hide_status = False
+        mock_router.resolve_chat_id.return_value = CHAT_ID
+        import ccgram.handlers.status.status_bubble as bubble_mod
+
+        await bubble_mod.send_status_text(
+            _make_bot(77), USER_ID, THREAD_ID, WINDOW_ID, "working"
+        )
+        mock_dash.assert_not_called()
+
+    @patch("ccgram.handlers.status.status_bubble.config", create=True)
+    @patch("ccgram.handlers.status.status_bubble.thread_router")
+    @patch(_DASH_PATCH)
+    async def test_send_in_private_calls_dashboard_button(
+        self, mock_dash, mock_router, mock_config
+    ):
+        """send_status_text with thread_id==0 (private chat) consults the dashboard button."""
+        mock_config.hide_status = False
+        mock_router.resolve_chat_id.return_value = CHAT_ID
+        mock_dash.return_value = None  # Mini App not configured — button absent
+        import ccgram.handlers.status.status_bubble as bubble_mod
+
+        await bubble_mod.send_status_text(
+            _make_bot(78), USER_ID, 0, WINDOW_ID, "working"
+        )
+        mock_dash.assert_called_once_with(WINDOW_ID, USER_ID)

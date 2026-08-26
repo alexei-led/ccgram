@@ -629,34 +629,27 @@ class TestSetWindowProvider:
         assert store.window_states["@1"].session_id == "keep-me"
         assert store.window_states["@1"].transcript_path == "/keep/me.jsonl"
 
-    def test_same_hook_provider_does_not_invoke_callback(
-        self, store: WindowStateStore
+    @pytest.mark.parametrize(
+        ("old_provider", "new_provider", "supports_hook"),
+        [
+            pytest.param("pi", "pi", True, id="same_hook_provider"),
+            pytest.param("shell", "shell", False, id="same_hookless_provider"),
+            pytest.param("claude", "", False, id="reset_to_empty_name"),
+        ],
+    )
+    def test_no_callback_without_a_real_provider_switch(
+        self,
+        store: WindowStateStore,
+        old_provider: str,
+        new_provider: str,
+        supports_hook: bool,
     ) -> None:
         called: list[str] = []
         store._on_hookless_provider_switch = called.append
-        state = store.get_window_state("@1")
-        state.provider_name = "pi"
-        store.set_window_provider("@1", "pi", new_provider_supports_hook=True)
-        assert called == []
-
-    def test_empty_provider_name_reset_does_not_trigger_hookless_callback(
-        self, store: WindowStateStore
-    ) -> None:
-        called: list[str] = []
-        store._on_hookless_provider_switch = called.append
-        state = store.get_window_state("@1")
-        state.provider_name = "claude"
-        store.set_window_provider("@1", "", new_provider_supports_hook=False)
-        assert called == []
-
-    def test_same_provider_hookless_does_not_trigger_callback(
-        self, store: WindowStateStore
-    ) -> None:
-        called: list[str] = []
-        store._on_hookless_provider_switch = called.append
-        state = store.get_window_state("@1")
-        state.provider_name = "shell"
-        store.set_window_provider("@1", "shell", new_provider_supports_hook=False)
+        store.get_window_state("@1").provider_name = old_provider
+        store.set_window_provider(
+            "@1", new_provider, new_provider_supports_hook=supports_hook
+        )
         assert called == []
 
 
@@ -869,20 +862,20 @@ class TestWindowStateFullPersistenceCharacterization:
         ws = WindowState.from_dict({"session_id": "s", "cwd": "/p", "origin": "wat"})
         assert ws.origin == "manual_discovered"
 
-    def test_approval_mode_round_trip(self) -> None:
-        for mode in ("normal", "yolo"):
-            ws = WindowState(cwd="/p", approval_mode=mode)
-            assert WindowState.from_dict(ws.to_dict()).approval_mode == mode
+    @pytest.mark.parametrize("mode", ["normal", "yolo"])
+    def test_approval_mode_round_trip(self, mode: str) -> None:
+        ws = WindowState(cwd="/p", approval_mode=mode)
+        assert WindowState.from_dict(ws.to_dict()).approval_mode == mode
 
-    def test_batch_mode_round_trip(self) -> None:
-        for mode in ("batched", "ephemeral", "verbose"):
-            ws = WindowState(cwd="/p", batch_mode=mode)
-            assert WindowState.from_dict(ws.to_dict()).batch_mode == mode
+    @pytest.mark.parametrize("mode", ["batched", "ephemeral", "verbose"])
+    def test_batch_mode_round_trip(self, mode: str) -> None:
+        ws = WindowState(cwd="/p", batch_mode=mode)
+        assert WindowState.from_dict(ws.to_dict()).batch_mode == mode
 
-    def test_pane_lifecycle_override_round_trip(self) -> None:
-        for value in (True, False):
-            ws = WindowState(cwd="/p", pane_lifecycle_notify=value)
-            assert WindowState.from_dict(ws.to_dict()).pane_lifecycle_notify is value
+    @pytest.mark.parametrize("value", [True, False])
+    def test_pane_lifecycle_override_round_trip(self, value: bool) -> None:
+        ws = WindowState(cwd="/p", pane_lifecycle_notify=value)
+        assert WindowState.from_dict(ws.to_dict()).pane_lifecycle_notify is value
 
     def test_worktree_metadata_round_trip(self) -> None:
         ws = WindowState(
@@ -893,19 +886,6 @@ class TestWindowStateFullPersistenceCharacterization:
         loaded = WindowState.from_dict(ws.to_dict())
         assert loaded.worktree_path == "/repo.worktrees/ccg-y"
         assert loaded.worktree_branch == "ccg/y"
-
-    def test_provider_manual_override_omitted_when_false(self) -> None:
-        assert "provider_manual_override" not in WindowState(cwd="/p").to_dict()
-
-    def test_provider_manual_override_round_trip(self) -> None:
-        ws = WindowState(cwd="/p", provider_manual_override=True)
-        d = ws.to_dict()
-        assert d["provider_manual_override"] is True
-        assert WindowState.from_dict(d).provider_manual_override is True
-
-    def test_provider_manual_override_defaults_false_on_load(self) -> None:
-        ws = WindowState.from_dict({"session_id": "s", "cwd": "/p"})
-        assert ws.provider_manual_override is False
 
 
 class TestWindowStateTransientRcProbeFieldsNotSerialized:

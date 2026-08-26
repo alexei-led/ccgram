@@ -1,5 +1,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from ccgram.handlers.callback_data import (
     CB_KEYS_PREFIX,
     CB_STATUS_ESC,
@@ -161,19 +163,12 @@ class TestClearKeyRefreshes:
 
 
 class TestBuildDashboardButton:
-    def test_returns_none_when_miniapp_disabled(self):
+    @pytest.mark.parametrize("base_url", ["", None], ids=["empty", "unset"])
+    def test_returns_none_when_miniapp_disabled(self, base_url: str | None):
         from ccgram.handlers.status.status_bar_actions import build_dashboard_button
 
         with patch(f"{MOD}.config") as cfg:
-            cfg.miniapp_base_url = ""
-            assert build_dashboard_button("@0", 42) is None
-
-    def test_returns_none_for_whitespace_url(self):
-        from ccgram.handlers.status.status_bar_actions import build_dashboard_button
-
-        # Config strips at load, but defensively guard against runtime mutation.
-        with patch(f"{MOD}.config") as cfg:
-            cfg.miniapp_base_url = ""
+            cfg.miniapp_base_url = base_url
             assert build_dashboard_button("@0", 42) is None
 
     def test_builds_webapp_button_when_enabled(self):

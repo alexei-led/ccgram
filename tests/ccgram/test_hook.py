@@ -80,77 +80,44 @@ class TestInstallHook:
         assert len(hooks_list) == 2
         assert hooks_list[1]["command"] == _expected_module_command()
 
-    def test_install_rewrites_wrapped_relative_command(
-        self, tmp_path, monkeypatch
+    @pytest.mark.parametrize(
+        "existing_command",
+        [
+            pytest.param("ccgram hook 2>/dev/null || true", id="shell-wrapped"),
+            pytest.param("/usr/local/bin/ccgram hook", id="absolute-path"),
+        ],
+    )
+    def test_install_rewrites_an_existing_ccgram_command_in_place(
+        self, tmp_path, monkeypatch, existing_command: str
     ) -> None:
         settings_file = tmp_path / "settings.json"
-        settings = {
-            "hooks": {
-                "SessionStart": [
-                    {
-                        "hooks": [
+        settings_file.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "SessionStart": [
                             {
-                                "type": "command",
-                                "command": "ccgram hook 2>/dev/null || true",
-                                "timeout": 5,
+                                "hooks": [
+                                    {
+                                        "type": "command",
+                                        "command": existing_command,
+                                        "timeout": 5,
+                                    }
+                                ]
                             }
                         ]
                     }
-                ]
-            }
-        }
-        settings_file.write_text(json.dumps(settings))
+                }
+            )
+        )
         monkeypatch.setattr("ccgram.hook._claude_settings_file", lambda: settings_file)
 
-        result = _install_hook()
-        assert result == 0
+        assert _install_hook() == 0
 
         updated = json.loads(settings_file.read_text())
         hooks_list = updated["hooks"]["SessionStart"][0]["hooks"]
         assert len(hooks_list) == 1
         assert hooks_list[0]["command"] == _expected_module_command()
-
-    def test_install_rewrites_full_path_command(self, tmp_path, monkeypatch) -> None:
-        settings_file = tmp_path / "settings.json"
-        settings = {
-            "hooks": {
-                "SessionStart": [
-                    {
-                        "hooks": [
-                            {
-                                "type": "command",
-                                "command": "/usr/local/bin/ccgram hook",
-                                "timeout": 5,
-                            }
-                        ]
-                    }
-                ]
-            }
-        }
-        settings_file.write_text(json.dumps(settings))
-        monkeypatch.setattr("ccgram.hook._claude_settings_file", lambda: settings_file)
-
-        result = _install_hook()
-        assert result == 0
-
-        updated = json.loads(settings_file.read_text())
-        hooks_list = updated["hooks"]["SessionStart"][0]["hooks"]
-        assert len(hooks_list) == 1
-        assert hooks_list[0]["command"] == _expected_module_command()
-
-    def test_install_uses_current_python_module_command(
-        self, tmp_path, monkeypatch
-    ) -> None:
-        settings_file = tmp_path / "settings.json"
-        settings_file.parent.mkdir(parents=True, exist_ok=True)
-        monkeypatch.setattr("ccgram.hook._claude_settings_file", lambda: settings_file)
-
-        _install_hook()
-
-        updated = json.loads(settings_file.read_text())
-        cmd = updated["hooks"]["SessionStart"][0]["hooks"][0]["command"]
-        assert cmd == _expected_module_command()
-        assert " -m ccgram.main hook" in cmd
 
 
 class TestInstallMultipleEvents:
@@ -252,87 +219,37 @@ class TestUuidRegex:
 
 
 class TestIsHookInstalled:
-    def test_hook_present(self) -> None:
-        settings = {
+    @staticmethod
+    def _settings(command: str) -> dict:
+        return {
             "hooks": {
                 "SessionStart": [
-                    {
-                        "hooks": [
-                            {"type": "command", "command": "ccgram hook", "timeout": 5}
-                        ]
-                    }
+                    {"hooks": [{"type": "command", "command": command, "timeout": 5}]}
                 ]
             }
         }
-        assert _is_hook_installed(settings) is True
+
+    @pytest.mark.parametrize(
+        ("command", "installed"),
+        [
+            pytest.param("ccgram hook", True, id="bare"),
+            pytest.param("/usr/bin/ccgram hook", True, id="absolute-path"),
+            pytest.param("ccgram hook 2>/dev/null || true", True, id="shell-wrapped"),
+            pytest.param(
+                f"{shlex.quote(sys.executable)} -m ccgram.main hook",
+                True,
+                id="python-module",
+            ),
+            pytest.param("other-tool hook", False, id="another-tool"),
+        ],
+    )
+    def test_recognises_every_command_spelling(
+        self, command: str, installed: bool
+    ) -> None:
+        assert _is_hook_installed(self._settings(command)) is installed
 
     def test_no_hooks_key(self) -> None:
         assert _is_hook_installed({}) is False
-
-    def test_different_hook_command(self) -> None:
-        settings = {
-            "hooks": {
-                "SessionStart": [
-                    {"hooks": [{"type": "command", "command": "other-tool hook"}]}
-                ]
-            }
-        }
-        assert _is_hook_installed(settings) is False
-
-    def test_shell_wrapped_command_matches(self) -> None:
-        settings = {
-            "hooks": {
-                "SessionStart": [
-                    {
-                        "hooks": [
-                            {
-                                "type": "command",
-                                "command": "ccgram hook 2>/dev/null || true",
-                            }
-                        ]
-                    }
-                ]
-            }
-        }
-        assert _is_hook_installed(settings) is True
-
-    def test_full_path_matches(self) -> None:
-        settings = {
-            "hooks": {
-                "SessionStart": [
-                    {
-                        "hooks": [
-                            {
-                                "type": "command",
-                                "command": "/usr/bin/ccgram hook",
-                                "timeout": 5,
-                            }
-                        ]
-                    }
-                ]
-            }
-        }
-        assert _is_hook_installed(settings) is True
-
-    def test_python_module_command_matches(self) -> None:
-        settings = {
-            "hooks": {
-                "SessionStart": [
-                    {
-                        "hooks": [
-                            {
-                                "type": "command",
-                                "command": (
-                                    f"{shlex.quote(sys.executable)} -m ccgram.main hook"
-                                ),
-                                "timeout": 5,
-                            }
-                        ]
-                    }
-                ]
-            }
-        }
-        assert _is_hook_installed(settings) is True
 
 
 class TestHookMainValidation:
@@ -412,6 +329,30 @@ class TestHookMainValidation:
         assert event["window_key"] == "ccgram:@0"
         assert event["data"]["stop_reason"] == "end_turn"
 
+    @pytest.mark.parametrize(
+        "stdin_text",
+        [
+            pytest.param("not json at all", id="invalid-json"),
+            pytest.param("[]", id="json-array"),
+            pytest.param('"a string"', id="json-scalar"),
+            pytest.param("", id="empty-stdin"),
+        ],
+    )
+    def test_unusable_stdin_writes_nothing_and_does_not_raise(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path, stdin_text: str
+    ) -> None:
+        """The hook runs inside the agent's own pane; a crash there is visible
+        to the user, so a payload it cannot read must be dropped silently."""
+        monkeypatch.setenv("CCGRAM_DIR", str(tmp_path))
+        monkeypatch.setattr(sys, "argv", ["ccgram", "hook"])
+        monkeypatch.setattr(sys, "stdin", io.StringIO(stdin_text))
+        monkeypatch.setenv("TMUX_PANE", "%0")
+
+        hook_main()
+
+        assert not (tmp_path / "session_map.json").exists()
+        assert not (tmp_path / "events.jsonl").exists()
+
     def test_unhandled_event_ignored(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path
     ) -> None:
@@ -429,34 +370,47 @@ class TestHookMainValidation:
 
 
 class TestUninstallHook:
-    def test_uninstall_removes_hook(self, tmp_path, monkeypatch) -> None:
+    @pytest.mark.parametrize(
+        "installed_command",
+        [
+            pytest.param("ccgram hook", id="bare"),
+            pytest.param("ccgram hook 2>/dev/null || true", id="shell-wrapped"),
+            pytest.param(
+                f"{shlex.quote(sys.executable)} -m ccgram.main hook",
+                id="python-module",
+            ),
+        ],
+    )
+    def test_uninstall_removes_every_command_spelling(
+        self, tmp_path, monkeypatch, installed_command: str
+    ) -> None:
         settings_file = tmp_path / "settings.json"
-        settings = {
-            "hooks": {
-                "SessionStart": [
-                    {
-                        "hooks": [
-                            {"type": "command", "command": "ccgram hook", "timeout": 5}
+        settings_file.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "SessionStart": [
+                            {
+                                "hooks": [
+                                    {
+                                        "type": "command",
+                                        "command": installed_command,
+                                        "timeout": 5,
+                                    }
+                                ]
+                            }
                         ]
                     }
-                ]
-            }
-        }
-        settings_file.write_text(json.dumps(settings))
+                }
+            )
+        )
         monkeypatch.setattr("ccgram.hook._claude_settings_file", lambda: settings_file)
 
-        result = _uninstall_hook()
-        assert result == 0
+        assert _uninstall_hook() == 0
 
         updated = json.loads(settings_file.read_text())
         assert not _is_hook_installed(updated)
-
-    def test_uninstall_no_settings_file(self, tmp_path, monkeypatch) -> None:
-        settings_file = tmp_path / "nonexistent.json"
-        monkeypatch.setattr("ccgram.hook._claude_settings_file", lambda: settings_file)
-
-        result = _uninstall_hook()
-        assert result == 0
+        assert updated["hooks"]["SessionStart"] == []
 
     def test_uninstall_preserves_other_hooks_in_same_group(
         self, tmp_path, monkeypatch
@@ -482,81 +436,29 @@ class TestUninstallHook:
         settings_file.write_text(json.dumps(settings))
         monkeypatch.setattr("ccgram.hook._claude_settings_file", lambda: settings_file)
 
-        result = _uninstall_hook()
-        assert result == 0
+        assert _uninstall_hook() == 0
 
         updated = json.loads(settings_file.read_text())
         session_start = updated["hooks"]["SessionStart"]
         assert len(session_start) == 1
-        hooks_list = session_start[0]["hooks"]
-        assert len(hooks_list) == 1
-        assert hooks_list[0]["command"] == "session-start.sh"
+        assert [h["command"] for h in session_start[0]["hooks"]] == ["session-start.sh"]
 
-    def test_uninstall_removes_wrapped_variant(self, tmp_path, monkeypatch) -> None:
-        settings_file = tmp_path / "settings.json"
-        settings = {
-            "hooks": {
-                "SessionStart": [
-                    {
-                        "hooks": [
-                            {
-                                "type": "command",
-                                "command": "ccgram hook 2>/dev/null || true",
-                                "timeout": 5,
-                            }
-                        ]
-                    }
-                ]
-            }
-        }
-        settings_file.write_text(json.dumps(settings))
-        monkeypatch.setattr("ccgram.hook._claude_settings_file", lambda: settings_file)
-
-        result = _uninstall_hook()
-        assert result == 0
-
-        updated = json.loads(settings_file.read_text())
-        assert not _is_hook_installed(updated)
-        assert updated["hooks"]["SessionStart"] == []
-
-    def test_uninstall_removes_python_module_variant(
-        self, tmp_path, monkeypatch
+    @pytest.mark.parametrize(
+        "settings_body",
+        [
+            pytest.param(None, id="no-settings-file"),
+            pytest.param({"hooks": {}}, id="not-installed"),
+        ],
+    )
+    def test_uninstall_is_a_no_op_when_nothing_is_installed(
+        self, tmp_path, monkeypatch, settings_body: dict | None
     ) -> None:
         settings_file = tmp_path / "settings.json"
-        settings = {
-            "hooks": {
-                "SessionStart": [
-                    {
-                        "hooks": [
-                            {
-                                "type": "command",
-                                "command": (
-                                    f"{shlex.quote(sys.executable)} -m ccgram.main hook"
-                                ),
-                                "timeout": 5,
-                            }
-                        ]
-                    }
-                ]
-            }
-        }
-        settings_file.write_text(json.dumps(settings))
+        if settings_body is not None:
+            settings_file.write_text(json.dumps(settings_body))
         monkeypatch.setattr("ccgram.hook._claude_settings_file", lambda: settings_file)
 
-        result = _uninstall_hook()
-        assert result == 0
-
-        updated = json.loads(settings_file.read_text())
-        assert not _is_hook_installed(updated)
-        assert updated["hooks"]["SessionStart"] == []
-
-    def test_uninstall_not_installed(self, tmp_path, monkeypatch) -> None:
-        settings_file = tmp_path / "settings.json"
-        settings_file.write_text(json.dumps({"hooks": {}}))
-        monkeypatch.setattr("ccgram.hook._claude_settings_file", lambda: settings_file)
-
-        result = _uninstall_hook()
-        assert result == 0
+        assert _uninstall_hook() == 0
 
 
 class TestTabDelimitedParsing:
@@ -1033,36 +935,28 @@ class TestNestedHookEndToEnd:
 
 
 class TestProviderFromPaneTty:
-    def _run(self, stdout: str) -> object:
+    @pytest.mark.parametrize(
+        ("foreground_command", "provider"),
+        [
+            pytest.param("/usr/local/bin/gemini --model flash", "gemini", id="gemini"),
+            pytest.param("/usr/local/bin/codex", "codex", id="codex"),
+            pytest.param("/usr/local/bin/claude", "claude", id="claude"),
+            pytest.param("/usr/local/bin/pi", "pi", id="pi"),
+            # ``pi`` matches on the exact basename only — never a pip* tool.
+            pytest.param("/usr/bin/pip install requests", None, id="pip"),
+            pytest.param("/usr/local/bin/pipenv shell", None, id="pipenv"),
+            pytest.param("/usr/bin/pip3 install foo", None, id="pip3"),
+            pytest.param("/usr/bin/python3 script.py", None, id="unknown-process"),
+        ],
+    )
+    def test_detects_provider_from_foreground_process(
+        self, foreground_command: str, provider: str | None
+    ) -> None:
         result = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout=stdout, stderr=""
+            args=[], returncode=0, stdout=foreground_command + "\n", stderr=""
         )
         with patch("ccgram.hook.subprocess.run", return_value=result):
-            return _provider_from_pane_tty("/dev/ttys012")
-
-    def test_detects_gemini(self) -> None:
-        assert self._run("/usr/local/bin/gemini --model flash\n") == "gemini"
-
-    def test_detects_codex(self) -> None:
-        assert self._run("/usr/local/bin/codex\n") == "codex"
-
-    def test_detects_claude(self) -> None:
-        assert self._run("/usr/local/bin/claude\n") == "claude"
-
-    def test_detects_pi_exact_basename(self) -> None:
-        assert self._run("/usr/local/bin/pi\n") == "pi"
-
-    def test_pi_does_not_match_pip(self) -> None:
-        assert self._run("/usr/bin/pip install requests\n") is None
-
-    def test_pi_does_not_match_pipenv(self) -> None:
-        assert self._run("/usr/local/bin/pipenv shell\n") is None
-
-    def test_pi_does_not_match_pip3(self) -> None:
-        assert self._run("/usr/bin/pip3 install foo\n") is None
+            assert _provider_from_pane_tty("/dev/ttys012") == provider
 
     def test_empty_tty_returns_none(self) -> None:
         assert _provider_from_pane_tty("") is None
-
-    def test_unknown_process_returns_none(self) -> None:
-        assert self._run("/usr/bin/python3 script.py\n") is None

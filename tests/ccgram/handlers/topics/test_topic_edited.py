@@ -4,7 +4,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ccgram.handlers.status.topic_emoji import reset_all_state
+from ccgram.handlers.status.topic_emoji import _topic_names, reset_all_state
+from ccgram.handlers.topics.topic_lifecycle import topic_edited_handler
+
+CHAT_ID = -100
+THREAD_ID = 42
 
 
 @pytest.fixture(autouse=True)
@@ -14,8 +18,36 @@ def _reset():
     reset_all_state()
 
 
+@pytest.fixture(autouse=True)
+def allowed_user():
+    with patch("ccgram.config.Config.is_user_allowed", return_value=True):
+        yield
+
+
+@pytest.fixture
+def mux():
+    with patch("ccgram.handlers.topics.topic_lifecycle.tmux_manager") as mock_mux:
+        mock_mux.rename_window = AsyncMock(return_value=True)
+        yield mock_mux
+
+
+@pytest.fixture
+def router():
+    with patch("ccgram.handlers.topics.topic_lifecycle.thread_router") as mock_router:
+        yield mock_router
+
+
+@pytest.fixture
+def session():
+    with patch("ccgram.handlers.topics.topic_lifecycle.session_manager") as mock_sm:
+        yield mock_sm
+
+
 def _make_update(
-    new_name: str | None, thread_id: int = 42, chat_id: int = -100, user_id: int = 1
+    new_name: str | None,
+    thread_id: int = THREAD_ID,
+    chat_id: int = CHAT_ID,
+    user_id: int = 1,
 ) -> MagicMock:
     """Create a mock Update for FORUM_TOPIC_EDITED."""
     update = MagicMock()
@@ -27,142 +59,78 @@ def _make_update(
     return update
 
 
-_PATCH_ALLOWED = patch("ccgram.config.Config.is_user_allowed", return_value=True)
-
-
-class TestTopicEditedHandler:
-    @_PATCH_ALLOWED
-    @patch("ccgram.handlers.topics.topic_lifecycle.tmux_manager")
-    @patch("ccgram.handlers.topics.topic_lifecycle.session_manager")
-    @patch("ccgram.handlers.topics.topic_lifecycle.thread_router")
-    async def test_renames_tmux_window(
+class TestTopicEditedRenamesWindow:
+    @pytest.mark.parametrize(
+        ("window_id", "old_display"),
+        [("@0", "old-name"), ("w1:t1", "workspace ▸ old-agent")],
+        ids=["tmux_window", "herdr_tab"],
+    )
+    async def test_rename_reaches_the_multiplexer_proxy(
         self,
-        mock_tr: MagicMock,
-        mock_sm: MagicMock,
-        mock_tm: MagicMock,
-        _allowed: MagicMock,
+        mux: MagicMock,
+        router: MagicMock,
+        session: MagicMock,
+        window_id: str,
+        old_display: str,
     ) -> None:
-        from ccgram.handlers.topics.topic_lifecycle import topic_edited_handler
+        router.get_window_for_chat_thread.return_value = window_id
+        router.get_display_name.return_value = old_display
 
-        mock_tr.get_window_for_chat_thread.return_value = "@0"
-        mock_tr.get_display_name.return_value = "old-name"
-        mock_tm.rename_window = AsyncMock(return_value=True)
+        await topic_edited_handler(_make_update("new-name"), MagicMock())
 
-        update = _make_update("new-name")
-        await topic_edited_handler(update, MagicMock())
+        mux.rename_window.assert_called_once_with(window_id, "new-name")
+        session.set_display_name.assert_called_once_with(window_id, "new-name")
 
-        mock_tm.rename_window.assert_called_once_with("@0", "new-name")
-        mock_sm.set_display_name.assert_called_once_with("@0", "new-name")
-
-    @_PATCH_ALLOWED
-    @patch("ccgram.handlers.topics.topic_lifecycle.tmux_manager")
-    @patch("ccgram.handlers.topics.topic_lifecycle.thread_router")
-    async def test_ignores_emoji_only_change(
-        self, mock_tr: MagicMock, mock_tm: MagicMock, _allowed: MagicMock
-    ) -> None:
-        from ccgram.handlers.topics.topic_lifecycle import topic_edited_handler
-
-        mock_tr.get_window_for_chat_thread.return_value = "@0"
-        mock_tr.get_display_name.return_value = "myproject"
-        mock_tm.rename_window = AsyncMock()
-
-        # Bot set "🟢 myproject" — clean name matches current display
-        update = _make_update("\U0001f7e2 myproject")
-        await topic_edited_handler(update, MagicMock())
-
-        mock_tm.rename_window.assert_not_called()
-
-    @patch("ccgram.handlers.topics.topic_lifecycle.tmux_manager")
-    @patch("ccgram.handlers.topics.topic_lifecycle.thread_router")
-    async def test_ignores_icon_only_edit(
-        self, mock_tr: MagicMock, mock_tm: MagicMock
-    ) -> None:
-        from ccgram.handlers.topics.topic_lifecycle import topic_edited_handler
-
-        mock_tm.rename_window = AsyncMock()
-
-        update = _make_update(None)
-        await topic_edited_handler(update, MagicMock())
-
-        mock_tr.get_window_for_chat_thread.assert_not_called()
-        mock_tm.rename_window.assert_not_called()
-
-    @_PATCH_ALLOWED
-    @patch("ccgram.handlers.topics.topic_lifecycle.tmux_manager")
-    @patch("ccgram.handlers.topics.topic_lifecycle.thread_router")
-    async def test_ignores_unbound_topic(
-        self, mock_tr: MagicMock, mock_tm: MagicMock, _allowed: MagicMock
-    ) -> None:
-        from ccgram.handlers.topics.topic_lifecycle import topic_edited_handler
-
-        mock_tr.get_window_for_chat_thread.return_value = None
-        mock_tm.rename_window = AsyncMock()
-
-        update = _make_update("new-name")
-        await topic_edited_handler(update, MagicMock())
-
-        mock_tm.rename_window.assert_not_called()
-
-    @_PATCH_ALLOWED
-    @patch("ccgram.handlers.topics.topic_lifecycle.tmux_manager")
-    @patch("ccgram.handlers.topics.topic_lifecycle.thread_router")
     async def test_updates_emoji_cache(
-        self, mock_tr: MagicMock, mock_tm: MagicMock, _allowed: MagicMock
+        self, mux: MagicMock, router: MagicMock, session: MagicMock
     ) -> None:
-        from ccgram.handlers.topics.topic_lifecycle import topic_edited_handler
-        from ccgram.handlers.status.topic_emoji import _topic_names
+        _topic_names[(CHAT_ID, THREAD_ID)] = "old-name"
+        router.get_window_for_chat_thread.return_value = "@0"
+        router.get_display_name.return_value = "old-name"
 
-        _topic_names[(-100, 42)] = "old-name"
-        mock_tr.get_window_for_chat_thread.return_value = "@0"
-        mock_tr.get_display_name.return_value = "old-name"
-        mock_tm.rename_window = AsyncMock(return_value=True)
+        await topic_edited_handler(_make_update("new-name"), MagicMock())
 
-        update = _make_update("new-name")
-        await topic_edited_handler(update, MagicMock())
+        assert _topic_names[(CHAT_ID, THREAD_ID)] == "new-name"
 
-        assert _topic_names[(-100, 42)] == "new-name"
 
-    @_PATCH_ALLOWED
-    @patch("ccgram.handlers.topics.topic_lifecycle.tmux_manager")
-    @patch("ccgram.handlers.topics.topic_lifecycle.session_manager")
-    @patch("ccgram.handlers.topics.topic_lifecycle.thread_router")
-    async def test_renames_herdr_tab_via_proxy(
-        self,
-        mock_tr: MagicMock,
-        mock_sm: MagicMock,
-        mock_tm: MagicMock,
-        _allowed: MagicMock,
+class TestTopicEditedIgnoredEdits:
+    async def test_ignores_emoji_only_change(
+        self, mux: MagicMock, router: MagicMock
     ) -> None:
-        """FORUM_TOPIC_EDITED calls rename_window via the multiplexer proxy for herdr IDs."""
-        from ccgram.handlers.topics.topic_lifecycle import topic_edited_handler
+        """The bot itself wrote "🟢 myproject"; the clean name is unchanged."""
+        router.get_window_for_chat_thread.return_value = "@0"
+        router.get_display_name.return_value = "myproject"
 
-        herdr_id = "w1:t1"
-        mock_tr.get_window_for_chat_thread.return_value = herdr_id
-        mock_tr.get_display_name.return_value = "workspace ▸ old-agent"
-        mock_tm.rename_window = AsyncMock(return_value=True)
+        await topic_edited_handler(_make_update("\U0001f7e2 myproject"), MagicMock())
 
-        update = _make_update("new-agent", thread_id=42, chat_id=-100)
-        await topic_edited_handler(update, MagicMock())
+        mux.rename_window.assert_not_called()
 
-        mock_tm.rename_window.assert_called_once_with(herdr_id, "new-agent")
-        mock_sm.set_display_name.assert_called_once_with(herdr_id, "new-agent")
+    async def test_ignores_icon_only_edit(
+        self, mux: MagicMock, router: MagicMock
+    ) -> None:
+        await topic_edited_handler(_make_update(None), MagicMock())
 
-    @_PATCH_ALLOWED
-    @patch("ccgram.handlers.topics.topic_lifecycle.tmux_manager")
-    @patch("ccgram.handlers.topics.topic_lifecycle.thread_router")
+        router.get_window_for_chat_thread.assert_not_called()
+        mux.rename_window.assert_not_called()
+
+    async def test_ignores_unbound_topic(
+        self, mux: MagicMock, router: MagicMock
+    ) -> None:
+        router.get_window_for_chat_thread.return_value = None
+
+        await topic_edited_handler(_make_update("new-name"), MagicMock())
+
+        mux.rename_window.assert_not_called()
+
     async def test_caches_unchanged_when_rename_fails(
-        self, mock_tr: MagicMock, mock_tm: MagicMock, _allowed: MagicMock
+        self, mux: MagicMock, router: MagicMock
     ) -> None:
-        from ccgram.handlers.topics.topic_lifecycle import topic_edited_handler
-        from ccgram.handlers.status.topic_emoji import _topic_names
+        _topic_names[(CHAT_ID, THREAD_ID)] = "old-name"
+        router.get_window_for_chat_thread.return_value = "@0"
+        router.get_display_name.return_value = "old-name"
+        mux.rename_window = AsyncMock(return_value=False)
 
-        _topic_names[(-100, 42)] = "old-name"
-        mock_tr.get_window_for_chat_thread.return_value = "@0"
-        mock_tr.get_display_name.return_value = "old-name"
-        mock_tm.rename_window = AsyncMock(return_value=False)
+        await topic_edited_handler(_make_update("new-name"), MagicMock())
 
-        update = _make_update("new-name")
-        await topic_edited_handler(update, MagicMock())
-
-        assert _topic_names[(-100, 42)] == "old-name"
-        mock_tr.set_display_name.assert_not_called()
+        assert _topic_names[(CHAT_ID, THREAD_ID)] == "old-name"
+        router.set_display_name.assert_not_called()

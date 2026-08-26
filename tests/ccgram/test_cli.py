@@ -82,25 +82,19 @@ class TestCliCommands:
 
 
 class TestRunValidation:
-    def test_zero_interval_rejected(self, runner):
-        result = runner.invoke(cli, ["run", "--monitor-interval", "0"])
+    @pytest.mark.parametrize(
+        ("flag", "value", "message"),
+        [
+            ("--monitor-interval", "0", "must be positive"),
+            ("--monitor-interval", "-1", "must be positive"),
+            ("--autoclose-done", "-5", "must be non-negative"),
+            ("--autoclose-dead", "-1", "must be non-negative"),
+        ],
+    )
+    def test_out_of_range_values_rejected(self, runner, flag, value, message):
+        result = runner.invoke(cli, ["run", flag, value])
         assert result.exit_code != 0
-        assert "must be positive" in result.output
-
-    def test_negative_interval_rejected(self, runner):
-        result = runner.invoke(cli, ["run", "--monitor-interval", "-1"])
-        assert result.exit_code != 0
-        assert "must be positive" in result.output
-
-    def test_negative_autoclose_done_rejected(self, runner):
-        result = runner.invoke(cli, ["run", "--autoclose-done", "-5"])
-        assert result.exit_code != 0
-        assert "must be non-negative" in result.output
-
-    def test_negative_autoclose_dead_rejected(self, runner):
-        result = runner.invoke(cli, ["run", "--autoclose-dead", "-1"])
-        assert result.exit_code != 0
-        assert "must be non-negative" in result.output
+        assert message in result.output
 
     def test_invalid_log_level_rejected(self, runner):
         result = runner.invoke(cli, ["run", "--log-level", "XYZZY"])

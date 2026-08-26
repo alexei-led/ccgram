@@ -62,9 +62,12 @@ class TestBuildStatusKeyboard:
                 assert any(cb.startswith(p) for p in prefixes)
                 assert resolve_callback_data(cb, 1, lambda _uid, wid: wid == long_id)
 
-    def test_no_history_single_row(self) -> None:
-        kb = build_status_keyboard("@0")
-        assert len(kb.inline_keyboard) == 1
+    @pytest.mark.parametrize("history", [None, []], ids=["none", "empty"])
+    def test_history_absent_keeps_single_row(self, history: list[str] | None) -> None:
+        assert len(build_status_keyboard("@0", history=history).inline_keyboard) == 1
+
+    def test_no_history_argument_keeps_single_row(self) -> None:
+        assert len(build_status_keyboard("@0").inline_keyboard) == 1
 
     def test_history_adds_row(self) -> None:
         kb = build_status_keyboard("@0", history=["hello", "world"])
@@ -80,14 +83,6 @@ class TestBuildStatusKeyboard:
         assert label.endswith("…")
         assert len(label) <= 2 + 20 + 1
 
-    def test_history_none_no_extra_row(self) -> None:
-        kb = build_status_keyboard("@0", history=None)
-        assert len(kb.inline_keyboard) == 1
-
-    def test_history_empty_list_no_extra_row(self) -> None:
-        kb = build_status_keyboard("@0", history=[])
-        assert len(kb.inline_keyboard) == 1
-
     def test_history_long_window_id_uses_lossless_callback_token(self) -> None:
         long_id = "@" + "x" * 60
         kb = build_status_keyboard(long_id, history=["cmd"])
@@ -100,39 +95,22 @@ class TestBuildStatusKeyboard:
             f"{CB_STATUS_RECALL}{long_id}:0"
         )
 
-    def test_last_reply_button_present(self) -> None:
-        data = _all_callback_data("@0")
-        assert any(d.startswith(CB_STATUS_LAST_REPLY) for d in data)
-
-    def test_get_file_button_present(self) -> None:
-        data = _all_callback_data("@0")
-        assert any(d.startswith(CB_STATUS_GET_FILE) for d in data)
-
-    def test_no_remote_button(self) -> None:
-        data = _all_callback_data("@0")
-        assert not any(d.startswith("st:rmt:") for d in data)
-
-    def test_last_reply_button_label(self) -> None:
+    @pytest.mark.parametrize(
+        ("prefix", "label"),
+        [
+            (CB_STATUS_LAST_REPLY, "\U0001f4c4 Last"),
+            (CB_STATUS_GET_FILE, "\U0001f4e5 Get File"),
+        ],
+    )
+    def test_button_label(self, prefix: str, label: str) -> None:
         kb = build_status_keyboard("@0")
-        btn = [
-            b
+        texts = [
+            b.text
             for row in kb.inline_keyboard
             for b in row
-            if isinstance(b.callback_data, str)
-            and b.callback_data.startswith(CB_STATUS_LAST_REPLY)
-        ][0]
-        assert btn.text == "\U0001f4c4 Last"
-
-    def test_get_file_button_label(self) -> None:
-        kb = build_status_keyboard("@0")
-        btn = [
-            b
-            for row in kb.inline_keyboard
-            for b in row
-            if isinstance(b.callback_data, str)
-            and b.callback_data.startswith(CB_STATUS_GET_FILE)
-        ][0]
-        assert btn.text == "\U0001f4e5 Get File"
+            if isinstance(b.callback_data, str) and b.callback_data.startswith(prefix)
+        ]
+        assert texts == [label]
 
 
 class TestDashboardButtonRow:

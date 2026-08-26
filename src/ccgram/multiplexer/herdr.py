@@ -148,6 +148,14 @@ _CALL_TIMEOUT_SECONDS = 8.0
 _CREATED_SESSION_DISCOVERY_TIMEOUT_SECONDS = 5.0
 _CREATED_SESSION_POLL_INTERVAL_SECONDS = 0.1
 
+# Agent TUIs (Claude Code, Codex, Pi) read a submit key that arrives in the
+# same input batch as the prompt text as a literal newline, so the prompt is
+# typed but never sent. ``pane run`` delivers exactly that batch, so a literal
+# submit is split into ``send-text`` + a separate ``Enter``, with this gap for
+# the TUI to consume the text first. Mirrors the tmux backend's 0.5s delay in
+# ``_send_literal_then_enter``.
+_SEND_ENTER_DELAY_SECONDS = 0.5
+
 # Event-stream reconnect backoff (seconds): exponential, capped.
 _STREAM_BACKOFF_BASE = 1.0
 _STREAM_BACKOFF_MAX = 30.0
@@ -253,6 +261,7 @@ class HerdrLiveRecord:
     pane_id: str
     tab_id: str
     workspace_id: str
+    cwd: str = ""
     alias_target_ids: tuple[str, ...] = ()
 
 
@@ -340,6 +349,10 @@ def _parse_live_record(record: Mapping[str, object]) -> HerdrLiveRecord | None:
             value=locators["terminal_id"] or "",
         )
     )
+    # ``cwd`` is the agent's own working directory; ``foreground_cwd`` follows
+    # whatever the agent currently shells into (a worktree, a plugin cache) and
+    # would send hookless transcript discovery to the wrong session directory.
+    cwd = _session_field(record.get("cwd")) or ""
     return HerdrLiveRecord(
         target_id=target_id,
         composite=composite,
@@ -347,6 +360,7 @@ def _parse_live_record(record: Mapping[str, object]) -> HerdrLiveRecord | None:
         pane_id=locators["pane_id"] or "",
         tab_id=locators["tab_id"] or "",
         workspace_id=locators["workspace_id"] or "",
+        cwd=cwd,
         alias_target_ids=() if alias_id == target_id else (alias_id,),
     )
 
@@ -695,7 +709,7 @@ class HerdrManager:
         return WindowRef(
             window_id=record.target_id,
             window_name=label,
-            cwd="",
+            cwd=record.cwd,
             pane_current_command=record.composite.agent,
             alias_window_ids=record.alias_target_ids,
         )
@@ -841,6 +855,30 @@ class HerdrManager:
         pid = leader.get("pid")
         argv = leader.get("argv")
         cwd = leader.get("cwd")
+        if argv is None:
+            # An agent that rewrites its process title (Pi runs on node and
+            # renames itself to "pi") is published with argv0 but no argv.
+            # argv0 carries the identity callers classify on; ``name`` is the
+            # runtime ("node") and would misclassify the pane.
+            #
+            # Only synthesize when argv0 really is a rename. A plain shell
+            # publishes argv0 == name, and a one-element argv is exactly what
+            # `shell_infra._is_interactive_shell` reads as "idle at a prompt,
+            # safe to interrupt" — so faking one for `bash ./deploy.sh` whose
+            # args happened to be unreadable would earn a running script a C-c.
+            # Falling through to None keeps that detection fail-safe.
+            argv0 = leader.get("argv0")
+            name = leader.get("name")
+            # A rename has to be *observed*: both fields present and different.
+            # Treating an absent ``name`` as evidence of one would synthesize
+            # argv for the very record shape this guard exists to reject.
+            renamed = (
+                isinstance(argv0, str)
+                and bool(argv0)
+                and isinstance(name, str)
+                and argv0.rsplit("/", 1)[-1].lstrip("-") != name
+            )
+            argv = [argv0] if renamed else None
         if (
             not isinstance(pid, int)
             or not isinstance(argv, Sequence)
@@ -941,9 +979,13 @@ class HerdrManager:
             return bool(keys) and await self._call_ok(
                 ["pane", "send-keys", pane_id, *keys]
             )
-        return await self._call_ok(
-            ["pane", "run" if enter else "send-text", pane_id, text]
-        )
+        if not await self._call_ok(["pane", "send-text", pane_id, text]):
+            return False
+        if not enter:
+            return True
+        # Never collapse back into ``pane run``: the batched Enter is the bug.
+        await asyncio.sleep(_SEND_ENTER_DELAY_SECONDS)
+        return await self._call_ok(["pane", "send-keys", pane_id, "Enter"])
 
     async def kill_window(self, window_id: str) -> bool:
         try:

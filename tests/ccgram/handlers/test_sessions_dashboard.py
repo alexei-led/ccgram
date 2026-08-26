@@ -1,8 +1,11 @@
 """Tests for /sessions dashboard command."""
 
+from collections.abc import Iterator
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from telegram import InlineKeyboardMarkup
 
 from ccgram.handlers.callback_data import (
     CB_SESSIONS_NEW,
@@ -18,307 +21,237 @@ from ccgram.handlers.sessions_dashboard import (
 )
 from ccgram.session import WindowState
 
+_CB_KILL = "sess:kill:"
+
 
 @pytest.fixture(autouse=True)
-def _patch_deps():
+def deps() -> Iterator[SimpleNamespace]:
     with (
-        patch("ccgram.handlers.sessions_dashboard.view_window") as mock_view,
-        patch("ccgram.handlers.sessions_dashboard.thread_router") as mock_tr,
-        patch("ccgram.handlers.sessions_dashboard.tmux_manager") as mock_tm,
-        patch("ccgram.handlers.sessions_dashboard.config") as mock_cfg,
+        patch("ccgram.handlers.sessions_dashboard.view_window") as view,
+        patch("ccgram.handlers.sessions_dashboard.thread_router") as router,
+        patch("ccgram.handlers.sessions_dashboard.tmux_manager") as mux,
+        patch("ccgram.handlers.sessions_dashboard.config") as config,
     ):
-        mock_tr.get_all_thread_windows.return_value = {}
-        mock_tr.get_display_name.side_effect = lambda wid: wid
-        mock_view.side_effect = lambda wid: WindowState()
-        mock_tm.list_windows = AsyncMock(return_value=[])
-        mock_cfg.is_user_allowed.return_value = True
-        yield mock_view, mock_tr, mock_tm, mock_cfg
+        router.get_all_thread_windows.return_value = {}
+        router.get_display_name.side_effect = lambda wid: wid
+        view.side_effect = lambda wid: WindowState()
+        mux.list_windows = AsyncMock(return_value=[])
+        config.is_user_allowed.return_value = True
+
+        def _sessions(
+            *,
+            windows: dict[int, str],
+            alive: list[str] | None = None,
+            names: dict[str, str] | None = None,
+            state: WindowState | None = None,
+        ) -> None:
+            router.get_all_thread_windows.return_value = windows
+            if names is not None:
+                router.get_display_name.side_effect = lambda wid: names[wid]
+            if state is not None:
+                view.side_effect = lambda wid: state
+            live = [] if alive is None else alive
+            mux.list_windows = AsyncMock(
+                return_value=[MagicMock(window_id=wid) for wid in live]
+            )
+
+        yield SimpleNamespace(
+            view=view, router=router, mux=mux, config=config, sessions=_sessions
+        )
+
+
+def _callback_data(keyboard: InlineKeyboardMarkup) -> list[str]:
+    return [
+        btn.callback_data
+        for row in keyboard.inline_keyboard
+        for btn in row
+        if isinstance(btn.callback_data, str)
+    ]
+
+
+async def _one_alive_session(deps: SimpleNamespace, **kwargs) -> tuple:
+    deps.sessions(windows={42: "@0"}, alive=["@0"], names={"@0": "myproject"}, **kwargs)
+    return await _build_dashboard(100)
 
 
 class TestBuildDashboard:
-    async def test_empty(self, _patch_deps) -> None:
+    async def test_no_sessions_offers_refresh_and_new_only(
+        self, deps: SimpleNamespace
+    ) -> None:
         text, keyboard = await _build_dashboard(100)
+
         assert "No active sessions" in text
-        data = [
-            btn.callback_data
-            for row in keyboard.inline_keyboard
-            for btn in row
-            if isinstance(btn.callback_data, str)
-        ]
+        data = _callback_data(keyboard)
         assert CB_SESSIONS_REFRESH in data
         assert CB_SESSIONS_NEW in data
+        assert not any(d.startswith(_CB_KILL) for d in data)
 
-    async def test_alive_session(self, _patch_deps) -> None:
-        mock_sm, mock_tr, mock_tm, _ = _patch_deps
-        mock_tr.get_all_thread_windows.return_value = {42: "@0"}
-        mock_tr.get_display_name.side_effect = lambda wid: "myproject"
-        mock_sm.side_effect = lambda wid: WindowState(cwd="/home/user/myproject")
-        mock_tm.list_windows = AsyncMock(return_value=[MagicMock(window_id="@0")])
+    async def test_alive_session_shows_name_and_cwd(
+        self, deps: SimpleNamespace
+    ) -> None:
+        text, _kb = await _one_alive_session(
+            deps, state=WindowState(cwd="/home/user/myproject")
+        )
 
-        text, _kb = await _build_dashboard(100)
         assert "\U0001f7e2 myproject" in text
-
-    async def test_alive_session_shows_cwd(self, _patch_deps) -> None:
-        mock_sm, mock_tr, mock_tm, _ = _patch_deps
-        mock_tr.get_all_thread_windows.return_value = {42: "@0"}
-        mock_tr.get_display_name.side_effect = lambda wid: "myproject"
-        mock_sm.side_effect = lambda wid: WindowState(cwd="/home/user/myproject")
-        mock_tm.list_windows = AsyncMock(return_value=[MagicMock(window_id="@0")])
-
-        text, _kb = await _build_dashboard(100)
         assert "/home/user/myproject" in text
 
-    async def test_no_cwd_shows_no_path(self, _patch_deps) -> None:
-        mock_sm, mock_tr, mock_tm, _ = _patch_deps
-        mock_tr.get_all_thread_windows.return_value = {42: "@0"}
-        mock_tr.get_display_name.side_effect = lambda wid: "myproject"
-        mock_sm.side_effect = lambda wid: WindowState(cwd="")
-        mock_tm.list_windows = AsyncMock(return_value=[MagicMock(window_id="@0")])
+    async def test_session_without_cwd_shows_no_path_line(
+        self, deps: SimpleNamespace
+    ) -> None:
+        text, _kb = await _one_alive_session(deps, state=WindowState(cwd=""))
 
-        text, _kb = await _build_dashboard(100)
         assert "    " not in text
 
-    async def test_dead_session(self, _patch_deps) -> None:
-        _mock_sm, mock_tr, mock_tm, _ = _patch_deps
-        mock_tr.get_all_thread_windows.return_value = {42: "@0"}
-        mock_tr.get_display_name.side_effect = lambda wid: "oldproject"
-        mock_tm.list_windows = AsyncMock(return_value=[])
-
-        text, _kb = await _build_dashboard(100)
-        assert "\u26ab oldproject" in text
-
-    async def test_multiple_sessions(self, _patch_deps) -> None:
-        _mock_sm, mock_tr, mock_tm, _ = _patch_deps
-        mock_tr.get_all_thread_windows.return_value = {10: "@0", 20: "@5"}
-        mock_tr.get_display_name.side_effect = lambda wid: {
-            "@0": "alive",
-            "@5": "dead",
-        }[wid]
-        mock_tm.list_windows = AsyncMock(return_value=[MagicMock(window_id="@0")])
-
-        text, _kb = await _build_dashboard(100)
-        assert "\U0001f7e2 alive" in text
-        assert "\u26ab dead" in text
-
-    async def test_refresh_and_new_buttons(self, _patch_deps) -> None:
-        _mock_sm, mock_tr, mock_tm, _ = _patch_deps
-        mock_tr.get_all_thread_windows.return_value = {42: "@0"}
-        mock_tm.list_windows = AsyncMock(return_value=[MagicMock(window_id="@0")])
-
-        _text, keyboard = await _build_dashboard(100)
-        labels = [btn.text for row in keyboard.inline_keyboard for btn in row]
-        data = [
-            btn.callback_data
-            for row in keyboard.inline_keyboard
-            for btn in row
-            if isinstance(btn.callback_data, str)
-        ]
-        assert any("Refresh" in label for label in labels)
-        assert any("New" in label for label in labels)
-        assert CB_SESSIONS_REFRESH in data
-        assert CB_SESSIONS_NEW in data
-
-    async def test_herdr_target_callbacks_are_lossless_tokens(
-        self, _patch_deps
+    async def test_dead_session_marked_with_grey_dot(
+        self, deps: SimpleNamespace
     ) -> None:
-        _mock_sm, mock_tr, mock_tm, _ = _patch_deps
-        window_id = "herdr-session-v1-" + "a" * 64
-        mock_tr.get_all_thread_windows.return_value = {42: window_id}
-        mock_tm.list_windows = AsyncMock(return_value=[MagicMock(window_id=window_id)])
+        deps.sessions(windows={42: "@0"}, alive=[], names={"@0": "oldproject"})
 
-        _text, keyboard = await _build_dashboard(100)
-        callbacks = [
-            button.callback_data
-            for row in keyboard.inline_keyboard
-            for button in row
-            if isinstance(button.callback_data, str)
-            and button.callback_data.startswith("sess:kill:")
-        ]
-        assert len(callbacks) == 1
-        callback_data = callbacks[0]
-        assert len(callback_data.encode("utf-8")) <= 64
-        assert (
-            resolve_callback_data(
-                callback_data, 100, lambda _uid, wid: wid == window_id
-            )
-            == f"sess:kill:{window_id}"
+        text, _kb = await _build_dashboard(100)
+
+        assert "⚫ oldproject" in text
+
+    async def test_alive_and_dead_sessions_listed_together(
+        self, deps: SimpleNamespace
+    ) -> None:
+        deps.sessions(
+            windows={10: "@0", 20: "@5"},
+            alive=["@0"],
+            names={"@0": "alive", "@5": "dead"},
         )
 
-    async def test_alive_session_has_esc_button(self, _patch_deps) -> None:
-        _mock_sm, mock_tr, mock_tm, _ = _patch_deps
-        mock_tr.get_all_thread_windows.return_value = {42: "@0"}
-        mock_tm.list_windows = AsyncMock(return_value=[MagicMock(window_id="@0")])
+        text, _kb = await _build_dashboard(100)
 
-        _text, keyboard = await _build_dashboard(100)
-        data = [
-            btn.callback_data
-            for row in keyboard.inline_keyboard
-            for btn in row
-            if isinstance(btn.callback_data, str)
-        ]
+        assert "\U0001f7e2 alive" in text
+        assert "⚫ dead" in text
+
+    @pytest.mark.parametrize(
+        ("state", "expected_tag", "present"),
+        [
+            pytest.param(
+                WindowState(cwd="/p", provider_name="codex"),
+                "[codex]",
+                True,
+                id="non-default-provider-tagged",
+            ),
+            pytest.param(
+                WindowState(cwd="/p", provider_name=""),
+                "[",
+                False,
+                id="default-untagged",
+            ),
+            pytest.param(
+                WindowState(cwd="/p", provider_name="codex", approval_mode="yolo"),
+                "[YOLO]",
+                True,
+                id="yolo-mode-tagged",
+            ),
+        ],
+    )
+    async def test_session_tags(
+        self,
+        deps: SimpleNamespace,
+        state: WindowState,
+        expected_tag: str,
+        present: bool,
+    ) -> None:
+        text, _kb = await _one_alive_session(deps, state=state)
+
+        assert (expected_tag in text) is present
+
+    async def test_alive_session_offers_all_actions(
+        self, deps: SimpleNamespace
+    ) -> None:
+        _text, keyboard = await _one_alive_session(deps)
+
+        data = _callback_data(keyboard)
         assert any(d.startswith(CB_STATUS_ESC) for d in data)
-
-    async def test_alive_session_has_screenshot_button(self, _patch_deps) -> None:
-        _mock_sm, mock_tr, mock_tm, _ = _patch_deps
-        mock_tr.get_all_thread_windows.return_value = {42: "@0"}
-        mock_tm.list_windows = AsyncMock(return_value=[MagicMock(window_id="@0")])
-
-        _text, keyboard = await _build_dashboard(100)
-        data = [
-            btn.callback_data
-            for row in keyboard.inline_keyboard
-            for btn in row
-            if isinstance(btn.callback_data, str)
-        ]
         assert any(d.startswith(CB_STATUS_SCREENSHOT) for d in data)
-
-    async def test_alive_session_shows_provider(self, _patch_deps) -> None:
-        mock_sm, mock_tr, mock_tm, _ = _patch_deps
-        mock_tr.get_all_thread_windows.return_value = {42: "@0"}
-        mock_tr.get_display_name.side_effect = lambda wid: "myproject"
-        mock_sm.side_effect = lambda wid: WindowState(
-            cwd="/home/user/myproject", provider_name="codex"
+        assert any(d.startswith(_CB_KILL) for d in data)
+        assert any(
+            "Refresh" in btn.text for row in keyboard.inline_keyboard for btn in row
         )
-        mock_tm.list_windows = AsyncMock(return_value=[MagicMock(window_id="@0")])
+        assert any("New" in btn.text for row in keyboard.inline_keyboard for btn in row)
 
-        text, _kb = await _build_dashboard(100)
-        assert "[codex]" in text
-
-    async def test_default_provider_shows_no_tag(self, _patch_deps) -> None:
-        mock_sm, mock_tr, mock_tm, _ = _patch_deps
-        mock_tr.get_all_thread_windows.return_value = {42: "@0"}
-        mock_tr.get_display_name.side_effect = lambda wid: "myproject"
-        mock_sm.side_effect = lambda wid: WindowState(
-            cwd="/home/user/myproject", provider_name=""
-        )
-        mock_tm.list_windows = AsyncMock(return_value=[MagicMock(window_id="@0")])
-
-        text, _kb = await _build_dashboard(100)
-        assert "[" not in text
-
-    async def test_yolo_mode_shows_tag(self, _patch_deps) -> None:
-        mock_sm, mock_tr, mock_tm, _ = _patch_deps
-        mock_tr.get_all_thread_windows.return_value = {42: "@0"}
-        mock_tr.get_display_name.side_effect = lambda wid: "myproject"
-        mock_sm.side_effect = lambda wid: WindowState(
-            cwd="/home/user/myproject",
-            provider_name="codex",
-            approval_mode="yolo",
-        )
-        mock_tm.list_windows = AsyncMock(return_value=[MagicMock(window_id="@0")])
-
-        text, _kb = await _build_dashboard(100)
-        assert "[YOLO]" in text
-
-    async def test_dead_session_no_action_buttons(self, _patch_deps) -> None:
-        _mock_sm, mock_tr, mock_tm, _ = _patch_deps
-        mock_tr.get_all_thread_windows.return_value = {42: "@0"}
-        mock_tr.get_display_name.side_effect = lambda wid: "deadproject"
-        mock_tm.list_windows = AsyncMock(return_value=[])
+    async def test_dead_session_offers_no_actions(self, deps: SimpleNamespace) -> None:
+        deps.sessions(windows={42: "@0"}, alive=[], names={"@0": "deadproject"})
 
         _text, keyboard = await _build_dashboard(100)
-        data = [
-            btn.callback_data
-            for row in keyboard.inline_keyboard
-            for btn in row
-            if isinstance(btn.callback_data, str)
-        ]
+
+        data = _callback_data(keyboard)
         assert not any(d.startswith(CB_STATUS_ESC) for d in data)
         assert not any(d.startswith(CB_STATUS_SCREENSHOT) for d in data)
+        assert not any(d.startswith(_CB_KILL) for d in data)
+
+    async def test_long_window_id_kill_button_uses_a_lossless_token(
+        self, deps: SimpleNamespace
+    ) -> None:
+        """A herdr window id blows the 64-byte callback budget, so the kill
+        button carries a token that must resolve back to the full id."""
+        window_id = "herdr-session-v1-" + "a" * 64
+        deps.sessions(windows={42: window_id}, alive=[window_id])
+
+        _text, keyboard = await _build_dashboard(100)
+
+        callbacks = [d for d in _callback_data(keyboard) if d.startswith(_CB_KILL)]
+        assert len(callbacks) == 1
+        assert len(callbacks[0].encode("utf-8")) <= 64
+        assert (
+            resolve_callback_data(callbacks[0], 100, lambda _uid, wid: wid == window_id)
+            == f"{_CB_KILL}{window_id}"
+        )
 
 
 class TestSessionsCommand:
-    async def test_calls_reply(self, _patch_deps) -> None:
+    @staticmethod
+    def _update(*, user_id: int | None = 100, with_message: bool = True) -> MagicMock:
         update = MagicMock()
-        update.effective_user = MagicMock(id=100)
-        update.message = AsyncMock()
+        update.effective_user = None if user_id is None else MagicMock(id=user_id)
+        update.message = AsyncMock() if with_message else None
+        return update
+
+    async def test_replies_with_the_dashboard(self, deps: SimpleNamespace) -> None:
+        update = self._update()
 
         with patch("ccgram.handlers.sessions_dashboard.safe_reply") as mock_reply:
             await sessions_command(update, MagicMock())
-            mock_reply.assert_called_once()
-            assert update.message == mock_reply.call_args[0][0]
-            assert "No active sessions" in mock_reply.call_args[0][1]
 
-    async def test_unauthorized(self, _patch_deps) -> None:
-        _, _, _, mock_cfg = _patch_deps
-        mock_cfg.is_user_allowed.return_value = False
+        mock_reply.assert_called_once()
+        assert mock_reply.call_args[0][0] is update.message
+        assert "No active sessions" in mock_reply.call_args[0][1]
 
-        update = MagicMock()
-        update.effective_user = MagicMock(id=100)
-        update.message = AsyncMock()
+    async def test_unauthorized_user_is_told_so(self, deps: SimpleNamespace) -> None:
+        deps.config.is_user_allowed.return_value = False
 
         with patch("ccgram.handlers.sessions_dashboard.safe_reply") as mock_reply:
-            await sessions_command(update, MagicMock())
-            mock_reply.assert_called_once()
-            assert "not authorized" in mock_reply.call_args[0][1]
+            await sessions_command(self._update(), MagicMock())
 
-    async def test_no_user(self) -> None:
-        update = MagicMock()
-        update.effective_user = None
-        update.message = AsyncMock()
+        assert "not authorized" in mock_reply.call_args[0][1]
 
+    @pytest.mark.parametrize(
+        "update_kwargs",
+        [
+            pytest.param({"user_id": None}, id="no-user"),
+            pytest.param({"with_message": False}, id="no-message"),
+        ],
+    )
+    async def test_incomplete_update_is_ignored(self, update_kwargs: dict) -> None:
         with patch("ccgram.handlers.sessions_dashboard.safe_reply") as mock_reply:
-            await sessions_command(update, MagicMock())
-            mock_reply.assert_not_called()
+            await sessions_command(self._update(**update_kwargs), MagicMock())
 
-    async def test_no_message(self) -> None:
-        update = MagicMock()
-        update.effective_user = MagicMock(id=100)
-        update.message = None
-
-        with patch("ccgram.handlers.sessions_dashboard.safe_reply") as mock_reply:
-            await sessions_command(update, MagicMock())
-            mock_reply.assert_not_called()
+        mock_reply.assert_not_called()
 
 
 class TestSessionsRefresh:
-    async def test_refresh_edits(self, _patch_deps) -> None:
+    async def test_refresh_edits_the_dashboard_in_place(
+        self, deps: SimpleNamespace
+    ) -> None:
         query = AsyncMock()
 
         with patch("ccgram.handlers.sessions_dashboard.safe_edit") as mock_edit:
             await handle_sessions_refresh(query, 100)
-            mock_edit.assert_called_once()
-            assert query == mock_edit.call_args[0][0]
-            assert "No active sessions" in mock_edit.call_args[0][1]
 
-
-class TestKillButtons:
-    async def test_alive_session_has_kill_button(self, _patch_deps) -> None:
-        _mock_sm, mock_tr, mock_tm, _ = _patch_deps
-        mock_tr.get_all_thread_windows.return_value = {42: "@0"}
-        mock_tr.get_display_name.side_effect = lambda wid: "myproject"
-        mock_tm.list_windows = AsyncMock(return_value=[MagicMock(window_id="@0")])
-
-        _text, keyboard = await _build_dashboard(100)
-        data = [
-            btn.callback_data
-            for row in keyboard.inline_keyboard
-            for btn in row
-            if isinstance(btn.callback_data, str)
-        ]
-        assert any(d.startswith("sess:kill:") for d in data)
-
-    async def test_dead_session_no_kill_button(self, _patch_deps) -> None:
-        _mock_sm, mock_tr, mock_tm, _ = _patch_deps
-        mock_tr.get_all_thread_windows.return_value = {42: "@0"}
-        mock_tr.get_display_name.side_effect = lambda wid: "oldproject"
-        mock_tm.list_windows = AsyncMock(return_value=[])
-
-        _text, keyboard = await _build_dashboard(100)
-        data = [
-            btn.callback_data
-            for row in keyboard.inline_keyboard
-            for btn in row
-            if isinstance(btn.callback_data, str)
-        ]
-        assert not any(d.startswith("sess:kill:") for d in data)
-
-    async def test_empty_dashboard_no_kill_button(self, _patch_deps) -> None:
-        _text, keyboard = await _build_dashboard(100)
-        data = [
-            btn.callback_data
-            for row in keyboard.inline_keyboard
-            for btn in row
-            if isinstance(btn.callback_data, str)
-        ]
-        assert not any(d.startswith("sess:kill:") for d in data)
+        mock_edit.assert_called_once()
+        assert mock_edit.call_args[0][0] is query
+        assert "No active sessions" in mock_edit.call_args[0][1]
