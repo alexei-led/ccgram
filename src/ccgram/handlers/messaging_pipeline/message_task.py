@@ -8,6 +8,8 @@ keeping the dependency graph acyclic.
 from dataclasses import dataclass, field
 from typing import Literal, TypeAlias
 
+from ccgram.delivery_contract import DeliveryReceipt
+
 ContentType: TypeAlias = Literal["text", "thinking", "tool_use", "tool_result"]
 MessageRole: TypeAlias = Literal["assistant", "user"]
 
@@ -24,9 +26,11 @@ class ContentTask:
     tool_name: str | None = None
     thread_id: int | None = None
     chat_id: int | None = None
-    # Opaque delivery-boundary receipts. Transcript producers set this when a
-    # task belongs to a watermark cycle; task routing does not inspect it.
-    delivery_receipts: tuple[object, ...] = field(compare=False, hash=False, default=())
+    # Transcript producers set receipts for watermark cycles; routing carries
+    # them unchanged until the queue worker settles delivery.
+    delivery_receipts: tuple[DeliveryReceipt, ...] = field(
+        compare=False, hash=False, default=()
+    )
 
 
 @dataclass(frozen=True, slots=True)

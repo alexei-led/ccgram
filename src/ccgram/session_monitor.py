@@ -473,16 +473,28 @@ class SessionMonitor:
                     window_id,
                 )
 
-    async def _dispatch_message_with_receipt(self, msg: NewMessage) -> None:
+    def _register_delivery_receipts(
+        self, messages: list[NewMessage]
+    ) -> list[tuple[NewMessage, DeliveryReceipt]]:
+        """Register a non-ready receipt for every parsed message synchronously."""
+        pending: list[tuple[NewMessage, DeliveryReceipt]] = []
+        if self._message_callback is None:
+            return pending
+        for msg in messages:
+            receipt = new_delivery_receipt()
+            self._delivery_receipts.setdefault(msg.session_id, []).append(receipt)
+            pending.append((msg, receipt))
+        return pending
+
+    async def _dispatch_message_with_receipt(
+        self, msg: NewMessage, receipt: DeliveryReceipt | None = None
+    ) -> None:
         """Run one transcript callback under a delivery-boundary receipt."""
         if self._message_callback is None:
             return
-        receipt = new_delivery_receipt()
-        # Register before the first cancellable await. Otherwise shutdown can
-        # cancel this coroutine after parsing but before the receipt becomes
-        # visible, and the watermark coordinator will treat the session as if
-        # it produced no deliverable message.
-        self._delivery_receipts.setdefault(msg.session_id, []).append(receipt)
+        if receipt is None:
+            receipt = new_delivery_receipt()
+            self._delivery_receipts.setdefault(msg.session_id, []).append(receipt)
         token = activate_delivery_receipt(receipt)
         try:
             await self._message_callback(msg)
@@ -559,8 +571,12 @@ class SessionMonitor:
                     )
 
                 new_messages = await self.check_for_updates(current_map)
+                # Register every parsed message before the next await. A
+                # shutdown cancellation between parse and dispatch must leave
+                # a non-ready receipt so its offset remains replayable.
+                pending_dispatches = self._register_delivery_receipts(new_messages)
 
-                for msg in new_messages:
+                for msg, receipt in pending_dispatches:
                     structlog.contextvars.clear_contextvars()
                     structlog.contextvars.bind_contextvars(session_id=msg.session_id)
                     status = "complete" if msg.is_complete else "streaming"
@@ -568,7 +584,7 @@ class SessionMonitor:
                         "..." if len(msg.text) > _MSG_PREVIEW_LENGTH else ""
                     )
                     logger.debug("[%s] session=%s: %s", status, msg.session_id, preview)
-                    await self._dispatch_message_with_receipt(msg)
+                    await self._dispatch_message_with_receipt(msg, receipt)
 
                 self.commit_delivered_watermarks()
 

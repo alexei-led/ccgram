@@ -95,10 +95,17 @@ class DispatchResult(int):
     """
 
     outcome: DeliveryOutcome
+    merged_receipts: tuple[DeliveryReceipt, ...]
 
-    def __new__(cls, extra_task_done: int, outcome: DeliveryOutcome):
+    def __new__(
+        cls,
+        extra_task_done: int,
+        outcome: DeliveryOutcome,
+        merged_receipts: tuple[DeliveryReceipt, ...] = (),
+    ):
         value = int.__new__(cls, extra_task_done)
         value.outcome = outcome
+        value.merged_receipts = merged_receipts
         return value
 
 
@@ -372,7 +379,12 @@ async def _handle_content_task(
     if merge_count > 0:
         logger.debug("Merged %d tasks for user %s", merge_count, user_id)
     outcome = await _process_content_task(client, user_id, merged_task)
-    return DispatchResult(merge_count, outcome)
+    original_receipts = len(task.delivery_receipts)
+    return DispatchResult(
+        merge_count,
+        outcome,
+        merged_receipts=merged_task.delivery_receipts[original_receipts:],
+    )
 
 
 def _is_ghost_window_task_at_enqueue(window_id: str) -> bool:
@@ -443,6 +455,7 @@ async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
             task = await queue.get()
             _inflight_count += 1
             outcome = DeliveryOutcome.DELIVERED
+            merged_receipts: tuple[DeliveryReceipt, ...] = ()
             try:
                 while True:
                     try:
@@ -450,6 +463,7 @@ async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
                         for _ in range(result):
                             queue.task_done()
                         outcome = getattr(result, "outcome", DeliveryOutcome.DELIVERED)
+                        merged_receipts = getattr(result, "merged_receipts", ())
                         break
                     except RetryAfter as e:
                         retry_secs = min(
@@ -479,9 +493,10 @@ async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
                     getattr(task, "thread_id", None),
                 )
             finally:
-                for receipt in (
+                receipts = (
                     task.delivery_receipts if isinstance(task, ContentTask) else ()
-                ):
+                )
+                for receipt in (*receipts, *merged_receipts):
                     assert isinstance(receipt, DeliveryReceipt)
                     receipt.settle(outcome)
                 _inflight_count -= 1

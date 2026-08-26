@@ -563,6 +563,45 @@ class TestMessageQueueWorker:
             mq._message_queues.pop(user_id, None)
             mq._queue_locks.pop(user_id, None)
 
+    async def test_merged_content_settles_every_delivery_receipt(self, bot):
+        from ccgram.handlers.messaging_pipeline import message_queue as mq
+
+        user_id = 87997
+        mq._message_queues[user_id] = asyncio.Queue()
+        mq._queue_locks[user_id] = asyncio.Lock()
+        receipts = [mq.DeliveryReceipt(), mq.DeliveryReceipt()]
+        tasks = []
+        for text, receipt in zip(("first", "second"), receipts, strict=True):
+            receipt.track()
+            receipt.close()
+            tasks.append(
+                ContentTask(
+                    window_id="@0",
+                    parts=(text,),
+                    role="assistant",
+                    delivery_receipts=(receipt,),
+                )
+            )
+            mq._message_queues[user_id].put_nowait(tasks[-1])
+
+        worker = asyncio.create_task(mq._message_queue_worker(bot, user_id))
+        try:
+            with patch.object(
+                mq,
+                "_process_content_task",
+                new_callable=AsyncMock,
+                return_value=mq.DeliveryOutcome.DELIVERED,
+            ):
+                await asyncio.wait_for(mq._message_queues[user_id].join(), timeout=1)
+
+            assert all(receipt.commit_ready for receipt in receipts)
+        finally:
+            worker.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await worker
+            mq._message_queues.pop(user_id, None)
+            mq._queue_locks.pop(user_id, None)
+
     async def test_telegram_error_calls_task_done(self, bot):
         from ccgram.handlers.messaging_pipeline.message_queue import (
             _message_queue_worker,

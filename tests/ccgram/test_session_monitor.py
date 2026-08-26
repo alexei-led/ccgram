@@ -295,8 +295,15 @@ async def test_cancelled_dispatch_retains_failed_receipt(
         await blocked.wait()
 
     monitor.set_message_callback(callback)
+    pending = monitor._register_delivery_receipts(
+        [
+            NewMessage("s1", "first", True),
+            NewMessage("s1", "second", True),
+        ]
+    )
+    first_msg, first_receipt = pending[0]
     task = asyncio.create_task(
-        monitor._dispatch_message_with_receipt(NewMessage("s1", "text", True))
+        monitor._dispatch_message_with_receipt(first_msg, first_receipt)
     )
     await started.wait()
     task.cancel()
@@ -305,9 +312,10 @@ async def test_cancelled_dispatch_retains_failed_receipt(
         await task
 
     receipts = monitor._delivery_receipts["s1"]
-    assert len(receipts) == 1
+    assert len(receipts) == 2
     assert receipts[0].failed is True
     assert receipts[0].commit_ready is False
+    assert receipts[1].commit_ready is False
 
 
 class TestSessionMapReadFailures:
