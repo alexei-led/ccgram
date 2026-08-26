@@ -443,7 +443,6 @@ class SessionMonitor:
         error_streak = 0
         while self._running:
             try:
-                await self._read_hook_events()
                 raw_session_map = await read_session_map_raw()
 
                 # A fresh listing owns identity convergence.  It must precede
@@ -475,6 +474,11 @@ class SessionMonitor:
 
                     _sm.reconcile_window_aliases(all_windows)
                     raw_session_map = await read_session_map_raw()
+
+                # Dispatch only after identity convergence: hook routing is
+                # exact-bound, so consuming a canonical event before moving a
+                # legacy topic binding would permanently drop that event.
+                await self._read_hook_events()
 
                 await session_map_sync.load_session_map(raw_session_map)
                 current_map = await self._detect_and_cleanup_changes(raw_session_map)

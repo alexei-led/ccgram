@@ -71,16 +71,17 @@ class TestMonitorLoop:
 
         mock_sync.prune_session_map.assert_not_called()
 
-    async def test_rekeyed_window_folds_before_its_map_delta_is_read(
+    async def test_rekeyed_window_folds_before_its_map_delta_or_hook_events(
         self, monitor: SessionMonitor, monkeypatch
     ) -> None:
-        """A window that re-keys its identity is not adopted into a second topic.
+        """A re-keyed window converges before its map delta or hooks are read.
 
         On a backend whose window id derives from the agent session (herdr),
         ``/clear`` mints a brand-new id for a window that already has a topic.
         The live listing says the new id supersedes the bound one; the session
-        map only says a key vanished and another appeared. Reading the map
-        delta before folding the alias turns one agent into two topics.
+        map only says a key vanished and another appeared. Reading either the
+        map delta or an exactly-routed hook event before folding the alias
+        turns one agent into a second topic or drops its hook event.
         """
         thread_router.reset()
         window_store.window_states.clear()
@@ -110,9 +111,15 @@ class TestMonitorLoop:
         async def _stop_after_cycle(_delay: float) -> None:
             monitor._running = False
 
+        async def _read_after_identity_convergence() -> None:
+            # Hook dispatch uses exact topic bindings. The canonical target
+            # must own the legacy topic before event reading advances its offset.
+            assert thread_router.thread_bindings[100][42] == new_id
+
+        read_hook_events = AsyncMock(side_effect=_read_after_identity_convergence)
         with (
             patch.object(monitor, "_cleanup_all_stale_sessions", AsyncMock()),
-            patch.object(monitor, "_read_hook_events", AsyncMock()),
+            patch.object(monitor, "_read_hook_events", read_hook_events),
             patch.object(monitor, "check_for_updates", AsyncMock(return_value=[])),
             patch.object(
                 monitor,
@@ -147,6 +154,7 @@ class TestMonitorLoop:
             await monitor._monitor_loop()
 
         assert thread_router.thread_bindings[100][42] == new_id
+        read_hook_events.assert_awaited_once()
         surfaced = [c.args[0].window_id for c in cb.call_args_list]
         assert surfaced == []
 
