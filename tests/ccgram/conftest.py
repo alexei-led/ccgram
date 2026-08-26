@@ -30,6 +30,24 @@ async def _shutdown_queue_workers():
 
 
 @pytest.fixture(autouse=True)
+def _clean_reaction_dedupe_cache():
+    """Reset the module-level reaction dedupe cache between tests.
+
+    ``reactions._last_reaction`` suppresses a repeat reaction to the same
+    (chat_id, message_id). That is correct in production and poison across
+    tests: one that reacts and then takes a failure path leaves the entry
+    behind, and the next test to react to the same ids has its call silently
+    skipped. Six test files reach this code, and xdist ordering decides which
+    pairing happens, so it surfaces only as a rare parallel-run failure.
+    """
+    from ccgram.handlers import reactions
+
+    reactions._last_reaction.clear()
+    yield
+    reactions._last_reaction.clear()
+
+
+@pytest.fixture(autouse=True)
 def _clean_provider_env(monkeypatch):
     """Remove CCGRAM_*_COMMAND env vars so tests use provider defaults."""
     for key in list(os.environ):

@@ -174,8 +174,9 @@ class TestDeadWorkerRespawn:
 
 class TestRateLimitSendLocking:
     async def test_concurrent_sends_serialized(self):
-        import time
+        from unittest.mock import patch
 
+        import ccgram.handlers.messaging_pipeline.message_sender as _ms
         from ccgram.handlers.messaging_pipeline.message_sender import (
             MESSAGE_SEND_INTERVAL,
             _last_send_time,
@@ -187,19 +188,36 @@ class TestRateLimitSendLocking:
         _last_send_time.pop(chat_id, None)
         _rate_limit_locks.pop(chat_id, None)
 
+        # Fake clock shared by both the production code and this test, so the
+        # timing assertion `ts - t0 >= MESSAGE_SEND_INTERVAL * 0.8` holds
+        # without spending any real wall-clock time.
+        fake_clock: list[float] = [0.0]
+        _real_sleep = asyncio.sleep  # capture before patching to avoid recursion
+
+        def fake_monotonic() -> float:
+            return fake_clock[0]
+
+        async def fake_sleep(secs: float) -> None:
+            fake_clock[0] += secs
+            await _real_sleep(0)  # yield to the event loop via the real sleep
+
         timestamps: list[float] = []
 
         async def timed_send():
             await rate_limit_send(chat_id)
-            timestamps.append(time.monotonic())
+            timestamps.append(fake_monotonic())
 
-        # Seed the rate limiter so subsequent calls must wait
-        await rate_limit_send(chat_id)
-        t0 = time.monotonic()
+        with (
+            patch.object(_ms.time, "monotonic", fake_monotonic),
+            patch.object(_ms.asyncio, "sleep", fake_sleep),
+        ):
+            # Seed the rate limiter so subsequent calls must wait
+            await rate_limit_send(chat_id)
+            t0 = fake_monotonic()
 
-        # Launch 2 concurrent senders — they should be serialized by the lock
-        tasks = [asyncio.create_task(timed_send()) for _ in range(2)]
-        await asyncio.gather(*tasks)
+            # Launch 2 concurrent senders — they should be serialized by the lock
+            tasks = [asyncio.create_task(timed_send()) for _ in range(2)]
+            await asyncio.gather(*tasks)
 
         assert len(timestamps) == 2
         # Each send should be spaced at least MESSAGE_SEND_INTERVAL apart from seed

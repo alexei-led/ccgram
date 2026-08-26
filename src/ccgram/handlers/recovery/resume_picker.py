@@ -30,7 +30,11 @@ from telegram import (
 )
 
 from ... import window_query
-from ...providers import get_provider_for_window
+from ...providers import (
+    get_provider_for_window,
+    is_known_provider,
+    providers_to_scan,
+)
 from ..callback_data import (
     CB_RECOVERY_BACK,
     CB_RECOVERY_CANCEL,
@@ -40,13 +44,11 @@ from ..callback_data import (
 )
 from ..callback_helpers import get_thread_id
 from ..callback_tokens import compact_callback_data
-from ..messaging_pipeline.message_sender import safe_edit
 from ..user_state import (
     PENDING_THREAD_ID,
     RECOVERY_SESSIONS,
     RECOVERY_WINDOW_ID,
 )
-from .recovery_callbacks import _clear_recovery_state
 
 if TYPE_CHECKING:
     from telegram.ext import ContextTypes
@@ -140,26 +142,31 @@ def scan_sessions_for_cwd(
     cwd: str,
     provider_name: str | None = "claude",
 ) -> list[_SessionEntry]:
-    """List one provider's resumable sessions for an exact workspace."""
+    """List resumable sessions for an exact workspace.
+
+    Covers one provider when the caller knows which; every picker-capable one
+    when it does not — see ``providers_to_scan``.
+    """
     try:
         resolved_cwd = str(Path(cwd).expanduser().resolve())
     except OSError, ValueError:
         return []
 
-    provider = get_provider_for_window("", provider_name=provider_name)
-    discovered = provider.discover_resumable_sessions(
-        cwd=resolved_cwd,
-        limit=_MAX_RESUME_SESSIONS,
-    )
-    return [
+    entries = [
         _SessionEntry(
             session_id=session.session_id,
             summary=session.summary,
             mtime=session.mtime,
             provider_name=session.provider_name,
         )
-        for session in discovered
+        for provider in providers_to_scan(provider_name)
+        for session in provider.discover_resumable_sessions(
+            cwd=resolved_cwd,
+            limit=_MAX_RESUME_SESSIONS,
+        )
     ]
+    entries.sort(key=lambda e: e.mtime, reverse=True)
+    return entries[:_MAX_RESUME_SESSIONS]
 
 
 async def _handle_resume_pick(
@@ -211,16 +218,20 @@ async def _handle_resume_pick(
         await query.answer("Recovery menu expired", show_alert=True)
         return
 
-    view = window_query.view_window(old_wid)
-    if view is None or not view.cwd or not Path(view.cwd).is_dir():
-        await safe_edit(query, "❌ Directory no longer exists.")
-        _clear_recovery_state(context.user_data)
-        await query.answer("Project gone")
+    # Lazy: resume_picker ↔ recovery_banner cycle
+    from .recovery_banner import _recovery_cwd_or_report
+
+    cwd = await _recovery_cwd_or_report(query, old_wid, context)
+    if cwd is None:
         return
-    cwd = view.cwd
+    view = window_query.view_window(old_wid)
+    window_provider = view.provider_name if view else ""
     if not provider_name:
-        provider_name = view.provider_name
-    if provider_name != view.provider_name:
+        provider_name = window_provider
+    # Same test the scan used: an unregistered name widened the picker, so
+    # refusing every foreign-provider row it then listed would leave nothing
+    # pickable.
+    if is_known_provider(window_provider) and provider_name != window_provider:
         await query.answer("Session provider mismatch", show_alert=True)
         return
 
@@ -236,4 +247,5 @@ async def _handle_resume_pick(
         agent_args=launch_args,
         success_label=f"Resuming session: {picked['summary'][:40]}",
         old_window_id=old_wid,
+        provider_name=provider_name,
     )

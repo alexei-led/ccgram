@@ -27,17 +27,21 @@ def _clear_dedupe_cache():
 
 
 class TestAllowedReactions:
-    def test_known_emoji_in_allowed_set(self) -> None:
-        assert "👀" in ALLOWED_REACTIONS
-        assert "🤔" in ALLOWED_REACTIONS
-        assert "🔥" in ALLOWED_REACTIONS
-        assert "💔" in ALLOWED_REACTIONS
-
-    def test_audit_emojis_not_in_allowed_set(self) -> None:
-        assert "✅" not in ALLOWED_REACTIONS
-        assert "❌" not in ALLOWED_REACTIONS
-        assert "📬" not in ALLOWED_REACTIONS
-        assert "⚙" not in ALLOWED_REACTIONS
+    @pytest.mark.parametrize(
+        ("emoji", "allowed"),
+        [
+            pytest.param("👀", True, id="eyes"),
+            pytest.param("🤔", True, id="thinking"),
+            pytest.param("🔥", True, id="fire"),
+            pytest.param("💔", True, id="broken-heart"),
+            pytest.param("✅", False, id="check-mark"),
+            pytest.param("❌", False, id="cross-mark"),
+            pytest.param("📬", False, id="mailbox"),
+            pytest.param("⚙", False, id="gear"),
+        ],
+    )
+    def test_telegram_reaction_allowlist(self, emoji: str, allowed: bool) -> None:
+        assert (emoji in ALLOWED_REACTIONS) is allowed
 
     def test_semantic_constants_are_valid(self) -> None:
         for emoji in (

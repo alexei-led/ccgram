@@ -3,6 +3,8 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 from ccgram.handlers.commands.failure_probe import (
     _extract_pane_delta,
     _extract_probe_error_line,
@@ -14,24 +16,43 @@ from ccgram.handlers.commands.failure_probe import (
 _FP = "ccgram.handlers.commands.failure_probe"
 
 
-class TestExtractHelpers:
-    def test_extract_probe_error_line(self) -> None:
-        assert (
-            _extract_probe_error_line("ok\nunrecognized command '/cost'\n")
-            == "unrecognized command '/cost'"
-        )
-        assert (
-            _extract_probe_error_line("all good\nERROR executing command /x\n")
-            == "ERROR executing command /x"
-        )
-        assert _extract_probe_error_line("all good\nstill fine\n") is None
+class TestExtractProbeErrorLine:
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            pytest.param(
+                "ok\nunrecognized command '/cost'\n",
+                "unrecognized command '/cost'",
+                id="unrecognized-command",
+            ),
+            pytest.param(
+                "all good\nERROR executing command /x\n",
+                "ERROR executing command /x",
+                id="error-executing",
+            ),
+            pytest.param("all good\nstill fine\n", None, id="no-error-line"),
+            pytest.param("", None, id="empty"),
+        ],
+    )
+    def test_extraction(self, text: str, expected: str | None) -> None:
+        assert _extract_probe_error_line(text) == expected
 
-    def test_extract_pane_delta(self) -> None:
-        assert _extract_pane_delta("line1\nline2", "line1\nline2\nline3") == "line3"
-        assert _extract_pane_delta("A\nB", "B\nC\nD") == "C\nD"
-        assert _extract_pane_delta("same", "same") == ""
-        assert _extract_pane_delta(None, "only after") == "only after"
-        assert _extract_pane_delta("abc", "xabcx\ndef") == "xabcx\ndef"
+
+class TestExtractPaneDelta:
+    @pytest.mark.parametrize(
+        ("before", "after", "expected"),
+        [
+            pytest.param("line1\nline2", "line1\nline2\nline3", "line3", id="appended"),
+            pytest.param("A\nB", "B\nC\nD", "C\nD", id="scrolled"),
+            pytest.param("same", "same", "", id="unchanged"),
+            pytest.param(None, "only after", "only after", id="no-baseline"),
+            pytest.param(
+                "abc", "xabcx\ndef", "xabcx\ndef", id="no-common-line-keeps-all"
+            ),
+        ],
+    )
+    def test_delta(self, before: str | None, after: str, expected: str) -> None:
+        assert _extract_pane_delta(before, after) == expected
 
 
 class TestProbeTranscriptCommandError:

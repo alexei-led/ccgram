@@ -313,6 +313,61 @@ async def _complete_transcript_discovery(
     return False
 
 
+async def _bootstrap_identity(
+    window_id: str, w: "TmuxWindow | None"
+) -> identity_state.IdentityProjection | None:
+    """Create window state for a live window ccgram has no state for yet.
+
+    Binding a window normally writes its state, so this is a recovery path:
+    a window whose state was swept while the stale-state guard was dead, or
+    one bound by a build that predates that fix, is otherwise stuck — without
+    state there is no identity, and without an identity discovery returns
+    before it can create one. Seeding the provider (and cwd when the backend
+    exposes it) lets such a window heal on the next tick.
+    """
+    if w is None:
+        return None
+    if await session_map_sync.session_map_entry_may_exist(window_id):
+        # The hook already tracks this window, so ccgram is not missing its
+        # record — only the in-memory state, which the monitor rebuilds from
+        # that entry within one sync. Seeding here would race it and, worse,
+        # destroy it: on a state-less window set_window_provider counts as a
+        # provider switch and clears the entry, and hook.py refuses to recreate
+        # one from any non-SessionStart event ("SessionStart owns initial
+        # creation"). The live session would go untracked until the agent is
+        # restarted, with its messages no longer reaching the topic.
+        return None
+
+    detected = await detect_provider_from_pane(
+        w.pane_current_command or "", window_id=window_id
+    )
+    if not detected or detected == "shell":
+        # On a state-less window ``set_window_provider`` seeds
+        # ``initial_provider_name`` from the value being written, so bootstrapping
+        # a shell would stamp the window shell-origin permanently and
+        # ``_is_agent_origin`` would never fire the recovery banner again — for a
+        # dead topic whose agent already exited to a shell, which is exactly the
+        # population this heals. A shell has no transcript to discover, so
+        # skipping loses nothing.
+        return None
+
+    if await session_map_sync.session_map_entry_may_exist(window_id):
+        # Re-checked after the probe. The guard above ran before an await, and
+        # SessionStart writes the entry from a separate process, so it can land
+        # while the probe is in flight — and the write below would delete the
+        # entry it had just made. Nothing suspends between here and the write.
+        return None
+
+    session_manager.set_window_provider(window_id, detected, cwd=w.cwd or None)
+    logger.info(
+        "Bootstrapped window state for untracked live window",
+        window_id=window_id,
+        provider=detected,
+        cwd=w.cwd or "",
+    )
+    return identity_state.get_identity(window_id)
+
+
 async def discover_and_register_transcript(
     window_id: str,
     *,
@@ -330,13 +385,15 @@ async def discover_and_register_transcript(
     # Lazy: thread_router proxy resolved when transcript discovery is invoked
     from ...thread_router import thread_router
 
+    w = _window or await tmux_manager.find_window_by_id(window_id)
+
     identity = identity_state.get_identity(window_id)
+    if identity is None:
+        identity = await _bootstrap_identity(window_id, w)
     if identity is None:
         return False
 
     chat_id = thread_router.resolve_chat_id(user_id, thread_id) if user_id else 0
-
-    w = _window or await tmux_manager.find_window_by_id(window_id)
 
     pgid_before = get_cached_foreground_pgid(window_id)
     original_identity = identity
