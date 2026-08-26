@@ -112,19 +112,33 @@ async def _transition_to_idle(
     chat_id: int,
     display: str,
     runtime: "PollingRuntime | None" = None,
+    *,
+    send_status: bool = True,
 ) -> None:
+    """Idle transition; ``send_status=False`` does the side effects only.
+
+    Used for never-active windows on startup timeout: the window must be
+    settled and its typing/emoji restored, but a fresh "Ready" bubble would
+    be restart noise (issue #180).
+    """
     ps = runtime.poll_state if runtime is not None else terminal_poll_state
     lc = runtime.lifecycle if runtime is not None else lifecycle_strategy
     # Settle the window, don't just stop its clock: clearing the startup
     # timestamp alone leaves it indistinguishable from one that never started,
     # so the very next tick decides "starting" again — green topic, typing
-    # indicator, another 30s grace, idle, repeat. A window that reached idle
-    # has finished starting.
-    ps.mark_seen_status(window_id)
+    # indicator, another 30s grace, idle, repeat. A quiet settlement also
+    # cannot use has_seen_status: that flag means a genuine status was shown.
+    if send_status:
+        ps.mark_seen_status(window_id)
+        ps.mark_idle_status_announced(window_id)
+    else:
+        ps.mark_startup_quietly_settled(window_id)
     client = PTBTelegramClient(bot)
     await update_topic_emoji(client, chat_id, thread_id, "idle", display)
     lc.clear_autoclose_timer(user_id, thread_id)
     lc.clear_typing_state(user_id, thread_id)
+    if not send_status:
+        return
     await enqueue_status_update(
         client, user_id, window_id, IDLE_STATUS_TEXT, thread_id=thread_id
     )
@@ -510,6 +524,7 @@ async def _apply_tick_decision(
             thread_router.resolve_chat_id(user_id, thread_id),
             thread_router.get_display_name(window_id),
             runtime=runtime,
+            send_status=decision.send_status,
         )
     elif decision.transition == "done":
         await _apply_done_transition(

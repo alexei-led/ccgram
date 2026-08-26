@@ -161,6 +161,8 @@ def build_context(
         startup_time=ws.startup_time if ws else None,
         is_dead_window=False,
         supports_hook=provider.capabilities.supports_hook,
+        startup_quietly_settled=ws.startup_quietly_settled if ws else False,
+        idle_status_announced=ws.idle_status_announced if ws else False,
     )
 
 

@@ -63,6 +63,10 @@ class WindowPollState:
 
     has_seen_status: bool = False
     startup_time: float | None = None
+    # A never-active startup was settled without a Ready bubble. Keep this
+    # separate from has_seen_status, which means a genuine status was shown.
+    startup_quietly_settled: bool = False
+    idle_status_announced: bool = False
     probe_failures: int = 0
     screen_buffer: ScreenBuffer | None = field(default=None, repr=False)
     pane_count_cache: tuple[int, float] | None = None
@@ -103,6 +107,11 @@ class TickContext:
     startup_time: float | None  # None if no startup grace period is running
     is_dead_window: bool  # tmux window no longer exists
     supports_hook: bool  # provider emits hook events (Claude)
+    # Startup grace expired without any evidence of an active turn. This is
+    # deliberately distinct from ``has_seen_status``: no status was shown.
+    startup_quietly_settled: bool = False
+    # An idle Ready bubble was already emitted for the current active cycle.
+    idle_status_announced: bool = False
 
 
 @dataclass(frozen=True, slots=True)

@@ -52,9 +52,17 @@ def decide_tick(ctx: TickContext) -> TickDecision:
     if ctx.is_shell_prompt:
         if ctx.supports_hook:
             return TickDecision(transition="done")
-        return TickDecision(transition="idle")
+        # Hookless providers have no completion hook: the active-to-shell edge
+        # is their real end-of-turn signal. Announce it once, but keep dormant
+        # startup shells and later level polls quiet.
+        return TickDecision(
+            transition="idle",
+            send_status=ctx.has_seen_status and not ctx.idle_status_announced,
+        )
 
-    if ctx.has_seen_status:
+    if ctx.has_seen_status or ctx.startup_quietly_settled:
+        # Both are steady idle states. ``has_seen_status`` records prior
+        # activity, not an idle edge, so neither may re-send Ready per tick.
         return TickDecision(transition="idle")
 
     startup_expired = (
@@ -62,7 +70,12 @@ def decide_tick(ctx: TickContext) -> TickDecision:
         and (time.monotonic() - ctx.startup_time) >= STARTUP_TIMEOUT
     )
     if startup_expired:
-        return TickDecision(transition="idle")
+        # A window that never showed a status line in this run (agent not
+        # running, dormant tab) must not announce "Ready": one fresh bubble
+        # per topic on every restart is pure noise. Same "idle" transition
+        # with send_status=False drives the idle side effects (settle,
+        # typing cleared, emoji restored) minus the bubble.
+        return TickDecision(transition="idle", send_status=False)
 
     return TickDecision(transition="starting")
 
