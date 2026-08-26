@@ -1,3 +1,5 @@
+import pytest
+
 from ccgram.screen_buffer import ScreenBuffer
 
 
@@ -53,24 +55,25 @@ class TestFeedAndDisplay:
 
 
 class TestRenderedText:
-    def test_trims_trailing_blank_lines(self):
+    @pytest.mark.parametrize(
+        ("fed", "expected"),
+        [
+            pytest.param("Hello\r\nWorld", "Hello\nWorld", id="trims_trailing_blanks"),
+            pytest.param("", "", id="empty_screen"),
+            pytest.param(
+                "\x1b[31mred\x1b[0m\r\n\x1b[1mbold\x1b[0m",
+                "red\nbold",
+                id="strips_ansi",
+            ),
+            pytest.param(
+                "first\r\n\r\nthird", "first\n\nthird", id="preserves_internal_blanks"
+            ),
+        ],
+    )
+    def test_rendered_text(self, fed: str, expected: str):
         buf = ScreenBuffer(columns=40, rows=5)
-        buf.feed("Hello\r\nWorld")
-        assert buf.rendered_text == "Hello\nWorld"
-
-    def test_empty_screen(self):
-        buf = ScreenBuffer(columns=40, rows=5)
-        assert buf.rendered_text == ""
-
-    def test_strips_ansi(self):
-        buf = ScreenBuffer(columns=40, rows=5)
-        buf.feed("\x1b[31mred\x1b[0m\r\n\x1b[1mbold\x1b[0m")
-        assert buf.rendered_text == "red\nbold"
-
-    def test_preserves_internal_blank_lines(self):
-        buf = ScreenBuffer(columns=40, rows=5)
-        buf.feed("first\r\n\r\nthird")
-        assert buf.rendered_text == "first\n\nthird"
+        buf.feed(fed)
+        assert buf.rendered_text == expected
 
 
 class TestCursorPosition:

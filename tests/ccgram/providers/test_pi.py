@@ -366,45 +366,54 @@ class TestParseBashExecution:
 
 
 class TestNormalizePending:
-    def test_accepts_tuple(self) -> None:
-        assert normalize_pending({"x": ("bash", "Bash")}) == {"x": ("bash", "Bash")}
-
-    def test_accepts_legacy_string(self) -> None:
-        assert normalize_pending({"x": "bash"}) == {"x": ("bash", "Bash")}
-
-    def test_rejects_garbage(self) -> None:
-        assert normalize_pending({"x": 123, "y": None}) == {}
-
-    def test_non_dict(self) -> None:
-        assert normalize_pending(None) == {}
-        assert normalize_pending([]) == {}
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            pytest.param(
+                {"x": ("bash", "Bash")}, {"x": ("bash", "Bash")}, id="tuple_kept"
+            ),
+            pytest.param(
+                {"x": "bash"}, {"x": ("bash", "Bash")}, id="legacy_string_upgraded"
+            ),
+            pytest.param({"x": 123, "y": None}, {}, id="non_string_values_dropped"),
+            pytest.param(None, {}, id="none"),
+            pytest.param([], {}, id="list"),
+        ],
+    )
+    def test_normalize_pending(self, raw: object, expected: dict) -> None:
+        assert normalize_pending(raw) == expected
 
 
 class TestMakeLaunchArgs:
-    def setup_method(self) -> None:
-        self.provider = PiProvider()
-
-    def test_fresh(self) -> None:
-        assert self.provider.make_launch_args() == ""
-
-    def test_continue(self) -> None:
-        assert self.provider.make_launch_args(use_continue=True) == "--continue"
-
-    def test_session_by_uuid(self) -> None:
-        uuid = "019d9fcf-3663-750a-b941-946136546d38"
-        assert self.provider.make_launch_args(resume_id=uuid) == f"--session {uuid}"
-
-    def test_session_by_path(self) -> None:
-        args = self.provider.make_launch_args(resume_id="/tmp/a.jsonl")
-        assert args == "--session /tmp/a.jsonl"
-
-    def test_shell_quoting_path_with_space(self) -> None:
-        args = self.provider.make_launch_args(resume_id="/tmp/has space.jsonl")
-        assert args == "--session '/tmp/has space.jsonl'"
-
-    def test_resume_wins_over_continue(self) -> None:
-        args = self.provider.make_launch_args(resume_id="x", use_continue=True)
-        assert args == "--session x"
+    @pytest.mark.parametrize(
+        ("kwargs", "expected"),
+        [
+            pytest.param({}, "", id="fresh"),
+            pytest.param({"use_continue": True}, "--continue", id="continue"),
+            pytest.param(
+                {"resume_id": "019d9fcf-3663-750a-b941-946136546d38"},
+                "--session 019d9fcf-3663-750a-b941-946136546d38",
+                id="session_by_uuid",
+            ),
+            pytest.param(
+                {"resume_id": "/tmp/a.jsonl"},
+                "--session /tmp/a.jsonl",
+                id="session_by_path",
+            ),
+            pytest.param(
+                {"resume_id": "/tmp/has space.jsonl"},
+                "--session '/tmp/has space.jsonl'",
+                id="path_with_space_is_shell_quoted",
+            ),
+            pytest.param(
+                {"resume_id": "x", "use_continue": True},
+                "--session x",
+                id="resume_wins_over_continue",
+            ),
+        ],
+    )
+    def test_make_launch_args(self, kwargs: dict, expected: str) -> None:
+        assert PiProvider().make_launch_args(**kwargs) == expected
 
 
 class TestParseTranscriptLine:

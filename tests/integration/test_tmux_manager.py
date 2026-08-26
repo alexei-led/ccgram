@@ -56,9 +56,6 @@ async def test_find_window_by_id(tmux, tmp_path) -> None:
     assert found is not None
     assert found.window_name == "find-me"
 
-    missing = await tmux.find_window_by_id("@99999")
-    assert missing is None
-
 
 async def test_kill_window(tmux, tmp_path) -> None:
     ok, _msg, _name, window_id = await tmux.create_window(
@@ -87,14 +84,16 @@ async def test_reset_server_reconnects(tmux, tmp_path) -> None:
     assert window_id in ids
 
 
-async def test_get_pane_title(tmux, tmp_path) -> None:
+async def test_stamped_pane_title_reads_back(tmux, tmp_path) -> None:
+    """stamp_pane_title is how a window advertises its provider to re-detection."""
     ok, _msg, _name, window_id = await tmux.create_window(
         str(tmp_path), window_name="title-test", start_agent=False
     )
     assert ok
 
-    title = await tmux.get_pane_title(window_id)
-    assert isinstance(title, str)
+    await tmux.stamp_pane_title(window_id, "claude")
+
+    assert await tmux.get_pane_title(window_id) == "ccgram:claude"
 
 
 # ── Pane-level operations ────────────────────────────────────────────
@@ -114,31 +113,6 @@ async def test_list_panes_single(tmux, tmp_path) -> None:
     assert panes[0].height > 0
 
 
-async def test_list_panes_multiple(tmux, tmp_path) -> None:
-    ok, _msg, _name, window_id = await tmux.create_window(
-        str(tmp_path), window_name="multi-pane", start_agent=False
-    )
-    assert ok
-
-    # Split the window to create a second pane
-    session = tmux.get_session()
-    assert session
-    window = session.windows.get(window_id=window_id)
-    window.split()
-
-    panes = await tmux.list_panes(window_id)
-    assert len(panes) == 2
-    pane_ids = [p.pane_id for p in panes]
-    assert len(set(pane_ids)) == 2  # IDs are unique
-    active_count = sum(1 for p in panes if p.active)
-    assert active_count == 1
-
-
-async def test_list_panes_missing_window(tmux) -> None:
-    panes = await tmux.list_panes("@99999")
-    assert panes == []
-
-
 async def test_split_window_adds_pane(tmux, tmp_path) -> None:
     ok, _msg, _name, window_id = await tmux.create_window(
         str(tmp_path), window_name="split-me", start_agent=False
@@ -151,16 +125,25 @@ async def test_split_window_adds_pane(tmux, tmp_path) -> None:
 
     panes = await tmux.list_panes(window_id)
     assert len(panes) == 2
-    assert any(p.pane_id == new_pane for p in panes)
+    assert {p.pane_id for p in panes} >= {new_pane}
+    assert len({p.pane_id for p in panes}) == 2
+    assert sum(1 for p in panes if p.active) == 1
 
 
-async def test_split_window_missing_returns_none(tmux) -> None:
-    assert await tmux.split_window("@99999") is None
-
-
-async def test_capture_pane_by_id_missing(tmux) -> None:
-    output = await tmux.capture_pane_by_id("%99999")
-    assert output is None
+@pytest.mark.parametrize(
+    ("method", "target", "expected"),
+    [
+        ("find_window_by_id", "@99999", None),
+        ("list_panes", "@99999", []),
+        ("split_window", "@99999", None),
+        ("capture_pane_by_id", "%99999", None),
+        ("get_pane_title", "@99999", ""),
+    ],
+)
+async def test_missing_target_returns_empty_result(
+    tmux, method: str, target: str, expected
+) -> None:
+    assert await getattr(tmux, method)(target) == expected
 
 
 # ── ANSI capture ───────────────────────────────────────────────────────

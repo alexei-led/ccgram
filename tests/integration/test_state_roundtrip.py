@@ -7,7 +7,6 @@ is covered by unit tests in test_session.py.
 """
 
 import json
-from pathlib import Path
 
 import pytest
 
@@ -17,21 +16,6 @@ from ccgram.user_preferences import user_preferences
 from ccgram.window_state_store import window_store
 
 pytestmark = pytest.mark.integration
-
-
-@pytest.fixture
-def make_session_manager(tmp_path, monkeypatch):
-    """Factory: create a SessionManager with isolated state files."""
-
-    def _make(state_file: Path | None = None) -> SessionManager:
-        sf = state_file or (tmp_path / "state.json")
-        monkeypatch.setattr("ccgram.config.config.state_file", sf)
-        monkeypatch.setattr(
-            "ccgram.config.config.session_map_file", tmp_path / "session_map.json"
-        )
-        return SessionManager()
-
-    return _make
 
 
 @pytest.mark.parametrize(

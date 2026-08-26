@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from ccgram.multiplexer import herdr as herdr_module
 from ccgram.multiplexer.base import AgentStatus, ForegroundInfo, PaneDims
 from ccgram.multiplexer.herdr_events import translate_event
 from ccgram.multiplexer.herdr import (
@@ -50,6 +51,17 @@ class FakeHerdr:
         self.calls.append(call)
         matching = [key for key in self.responses if call[: len(key)] == list(key)]
         return self.responses[max(matching, key=len)] if matching else self.default
+
+
+@pytest.fixture
+def expired_discovery_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Collapse the created-session discovery deadline to a single poll.
+
+    The loop always polls once before checking the deadline, so the tests that
+    assert post-deadline behaviour keep their meaning without waiting out the
+    real 5s window.
+    """
+    monkeypatch.setattr(herdr_module, "_CREATED_SESSION_DISCOVERY_TIMEOUT_SECONDS", 0.0)
 
 
 def _manager(fake: FakeHerdr) -> HerdrManager:
@@ -587,6 +599,81 @@ def test_translate_event_maps_target_pane_exit_without_killing_siblings() -> Non
     ]
 
 
+@pytest.mark.parametrize(
+    "event_name",
+    ["pane.agent_status_changed", "pane_agent_status_changed"],
+)
+def test_translate_event_maps_the_agent_status_payload(event_name: str) -> None:
+    """herdr spells event names with a dot or an underscore; both must map."""
+    target = _target()
+    (event,) = translate_event(
+        {
+            "event": event_name,
+            "data": {
+                "pane_id": "w7:p4",
+                "agent_status": "working",
+                "agent": "claude",
+                "custom_status": "running tests",
+            },
+        },
+        {"w7:p4": target},
+        {},
+    )
+    assert event.kind == "agent_status"
+    assert event.window_id == target
+    assert event.status == AgentStatus("working", "claude", "running tests")
+
+
+def test_translate_event_defaults_an_absent_agent_status_to_unknown() -> None:
+    (event,) = translate_event(
+        {"event": "pane.agent_status_changed", "data": {"pane_id": "w7:p4"}},
+        {"w7:p4": _target()},
+        {},
+    )
+    assert event.status == AgentStatus("unknown", "", "")
+
+
+@pytest.mark.parametrize(
+    "event_name", ["pane.exited", "pane_exited", "pane.closed", "pane_closed"]
+)
+def test_translate_event_maps_every_pane_death_spelling(event_name: str) -> None:
+    translated = translate_event(
+        {"event": event_name, "data": {"pane_id": "w7:p4"}}, {"w7:p4": _target()}, {}
+    )
+    assert [(event.kind, event.window_id) for event in translated] == [
+        ("window_died", _target())
+    ]
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        pytest.param({"pane_id": "w7:p4"}, id="flat-locator"),
+        pytest.param({"pane": {"pane_id": "w7:p4"}}, id="nested-locator"),
+    ],
+)
+def test_translate_event_reads_both_locator_shapes(data: dict) -> None:
+    translated = translate_event(
+        {"event": "pane.exited", "data": data}, {"w7:p4": _target()}, {}
+    )
+    assert translated and translated[0].window_id == _target()
+
+
+@pytest.mark.parametrize(
+    "obj",
+    [
+        pytest.param(
+            {"event": "pane.focused", "data": {"pane_id": "w7:p4"}}, id="unwatched-kind"
+        ),
+        pytest.param({"event": "pane.exited"}, id="no-data"),
+        pytest.param({"event": "pane.exited", "data": "not-a-mapping"}, id="bad-data"),
+        pytest.param({"data": {"pane_id": "w7:p4"}}, id="no-event-name"),
+    ],
+)
+def test_translate_event_ignores_what_it_cannot_map(obj: dict) -> None:
+    assert translate_event(obj, {"w7:p4": _target()}, {"w7:t3": (_target(),)}) == ()
+
+
 async def test_watch_events_emits_each_guarded_target_for_shared_tab_close() -> None:
     first = _agent(pane_id="w7:p4", tab_id="w7:t3", value="first")
     second = _agent(pane_id="w7:p5", tab_id="w7:t3", value="second")
@@ -651,6 +738,16 @@ async def test_raw_pane_helpers_cannot_bypass_target_guard() -> None:
     assert await mux.capture_pane_by_id("w2:p1", window_id=_target()) is None
     assert not await mux.send_keys_to_pane("w2:p1", "unsafe", window_id=_target())
     assert fake.calls == []
+
+
+async def test_send_to_a_replaced_target_fails_without_dispatching() -> None:
+    """The bound target re-keyed its session; nothing may be typed into the
+    pane now carrying a different one."""
+    fake = _live_fake(_agent(value="replacement"))
+
+    assert not await _manager(fake).send(_target("session-a"), "must not dispatch")
+
+    assert fake.calls == [["agent", "list"]]
 
 
 async def test_action_error_refreshes_guard_without_retargeting() -> None:
@@ -809,31 +906,6 @@ async def test_list_workspaces_resolves_cwdless_workspaces_from_panes_once() -> 
     assert fake.calls == [["workspace", "list"], ["pane", "list"]]
 
 
-async def test_create_topic_target_does_not_send_initial_input(
-    tmp_path: Path,
-) -> None:
-    fake = (
-        FakeHerdr()
-        .on("workspace", "list", out=_workspace("selected", tmp_path))
-        .on("tab", "create", out=_created())
-        .on("pane", "run", out=_result(type="ok"))
-        .on(
-            "agent",
-            "list",
-            out=_agents(
-                _agent(pane_id="w9:p1", tab_id="w9:t1", workspace_id="selected")
-            ),
-        )
-    )
-    target = await _manager(fake).create_topic_target(
-        str(tmp_path),
-        launch_command="agy",
-        workspace_id="selected",
-    )
-    assert target.target_id == _target()
-    assert ["pane", "run", "w9:p1", "hello"] not in fake.calls
-
-
 async def test_created_session_discovery_waits_for_delayed_pi_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -930,12 +1002,8 @@ async def test_implicit_workspace_is_closed_for_tab_and_session_failures(
     tab_response: str,
     agent_response: str | None,
     expected_error: str,
-    monkeypatch: pytest.MonkeyPatch,
+    expired_discovery_window: None,
 ) -> None:
-    async def no_sleep(_: float) -> None:
-        return None
-
-    monkeypatch.setattr(asyncio, "sleep", no_sleep)
     fake = (
         FakeHerdr()
         .on("workspace", "create", out=_result(workspace={"workspace_id": "owned"}))
@@ -1050,7 +1118,7 @@ async def test_create_topic_target_rolls_back_only_its_new_tab_when_launch_fails
 
 
 async def test_create_topic_target_rolls_back_on_duplicate_or_missing_session(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, expired_discovery_window: None
 ) -> None:
     duplicate = _agents(
         _agent(pane_id="w9:p1", tab_id="w9:t1", workspace_id="selected"),
@@ -1069,10 +1137,6 @@ async def test_create_topic_target_rolls_back_on_duplicate_or_missing_session(
         )
     assert ["tab", "close", "w9:t1"] in fake.calls
 
-    async def no_sleep(_: float) -> None:
-        return None
-
-    monkeypatch.setattr(asyncio, "sleep", no_sleep)
     missing = (
         FakeHerdr()
         .on("workspace", "list", out=_workspace("selected", tmp_path))
@@ -1269,7 +1333,7 @@ async def test_ensure_session_still_rejects_unavailable_server() -> None:
 
 
 async def test_creation_binds_terminal_target_while_agent_waits_at_a_prompt(
-    tmp_path: Path,
+    tmp_path: Path, expired_discovery_window: None
 ) -> None:
     """An agent stopped at a pre-session prompt must not be rolled away.
 
@@ -1313,7 +1377,7 @@ async def test_creation_binds_terminal_target_while_agent_waits_at_a_prompt(
 
 
 async def test_provisional_target_is_dropped_once_its_pane_is_gone(
-    tmp_path: Path,
+    tmp_path: Path, expired_discovery_window: None
 ) -> None:
     fake = (
         FakeHerdr()

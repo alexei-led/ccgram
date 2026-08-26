@@ -1,5 +1,6 @@
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -28,6 +29,10 @@ from ccgram.window_state_store import window_store
 
 pytestmark = pytest.mark.integration
 
+_MOD_DC = "ccgram.handlers.topics.directory_callbacks"
+_MOD_WC = "ccgram.handlers.topics.workspace_callbacks"
+_MOD_WL = "ccgram.handlers.topics.window_launch_service"
+
 
 def _git(cwd: Path, *args: str) -> None:
     subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
@@ -45,15 +50,6 @@ def git_repo(tmp_path: Path) -> Path:
     _git(repo, "commit", "-m", "init")
     _git(repo, "branch", "-M", "main")
     return repo
-
-
-@pytest.fixture
-def session_manager(tmp_path, monkeypatch) -> SessionManager:
-    monkeypatch.setattr("ccgram.config.config.state_file", tmp_path / "state.json")
-    monkeypatch.setattr(
-        "ccgram.config.config.session_map_file", tmp_path / "session_map.json"
-    )
-    return SessionManager()
 
 
 def _make_query() -> AsyncMock:
@@ -83,27 +79,53 @@ def _make_context(user_data: dict) -> MagicMock:
     return ctx
 
 
-@patch("ccgram.handlers.topics.workspace_callbacks.safe_edit", new_callable=AsyncMock)
-@patch("ccgram.handlers.topics.directory_callbacks.safe_edit", new_callable=AsyncMock)
-@patch("ccgram.handlers.topics.workspace_callbacks.tmux_manager")
-@patch("ccgram.handlers.topics.directory_callbacks.thread_router")
+def _agent_provider() -> MagicMock:
+    """A provider with every optional launch step switched off."""
+    provider = MagicMock()
+    provider.capabilities.supports_hook = False
+    provider.capabilities.chat_first_command_path = False
+    provider.capabilities.has_yolo_confirmation = False
+    return provider
+
+
+@pytest.fixture(autouse=True)
+def safe_edit():
+    """The flow's two ``safe_edit`` call sites, patched.
+
+    ``.dc`` renders the directory/worktree screens, ``.wc`` the workspace and
+    provider pickers; a test asserts on whichever screen it drove the flow to.
+    """
+    with (
+        patch(f"{_MOD_DC}.safe_edit", new_callable=AsyncMock) as dc,
+        patch(f"{_MOD_WC}.safe_edit", new_callable=AsyncMock) as wc,
+    ):
+        yield SimpleNamespace(dc=dc, wc=wc)
+
+
+@pytest.fixture
+def unbound_thread():
+    """The target topic has no window yet, so the creation flow proceeds."""
+    with patch(f"{_MOD_DC}.thread_router") as mock_tr:
+        mock_tr.get_window_for_thread.return_value = None
+        yield mock_tr
+
+
+@patch(f"{_MOD_WC}.tmux_manager")
 async def test_use_current_branch_skips_to_provider_picker(
-    mock_tr: MagicMock,
     mock_mux: MagicMock,
-    mock_edit_dc: AsyncMock,
-    mock_edit_wc: AsyncMock,
+    unbound_thread: MagicMock,
+    safe_edit: SimpleNamespace,
     git_repo: Path,
 ) -> None:
-    mock_tr.get_window_for_thread.return_value = None
     mock_mux.capabilities.native_agent_status = False
     user_data = {BROWSE_PATH_KEY: str(git_repo), PENDING_THREAD_ID: 42}
     context = _make_context(user_data)
 
     await _handle_confirm(_make_query(), 100, _make_update(42), context)
-    assert "Git Worktree" in mock_edit_dc.call_args[0][1]
+    assert "Git Worktree" in safe_edit.dc.call_args[0][1]
 
     await _handle_wt_use_current(_make_query(), context)
-    assert "Select Provider" in mock_edit_wc.call_args[0][1]
+    assert "Select Provider" in safe_edit.wc.call_args[0][1]
     assert PENDING_WORKTREE_REPO not in user_data
 
 
@@ -116,34 +138,19 @@ async def test_new_worktree_creates_and_persists_to_window_state(
     }
     context = _make_context(user_data)
 
-    with patch(
-        "ccgram.handlers.topics.directory_callbacks.safe_edit",
-        new_callable=AsyncMock,
-    ):
-        await _handle_wt_new(_make_query(), context)
-        branch = user_data[PENDING_WORKTREE_BRANCH]
-        await _handle_wt_confirm(_make_query(), context)
+    await _handle_wt_new(_make_query(), context)
+    branch = user_data[PENDING_WORKTREE_BRANCH]
+    await _handle_wt_confirm(_make_query(), context)
 
     worktree_path = Path(user_data[PENDING_WORKTREE_PATH])
     assert worktree_path.is_dir()
     assert (worktree_path / "file.txt").exists()
     assert user_data[BROWSE_PATH_KEY] == str(worktree_path)
 
-    mock_provider = MagicMock()
-    mock_provider.capabilities.supports_hook = False
-    mock_provider.capabilities.chat_first_command_path = False
-    mock_provider.capabilities.has_yolo_confirmation = False
-
     with (
         patch("ccgram.providers.resolve_launch_command", return_value="claude"),
-        patch(
-            "ccgram.handlers.topics.directory_callbacks.safe_edit",
-            new_callable=AsyncMock,
-        ),
-        patch("ccgram.handlers.topics.window_launch_service.tmux_manager") as mock_tmux,
-        patch(
-            "ccgram.handlers.topics.window_launch_service.provider_registry"
-        ) as mock_registry,
+        patch(f"{_MOD_WL}.tmux_manager") as mock_tmux,
+        patch(f"{_MOD_WL}.provider_registry") as mock_registry,
     ):
         mock_tmux.capabilities.native_worktrees = False
         mock_tmux.create_window = AsyncMock(
@@ -151,7 +158,7 @@ async def test_new_worktree_creates_and_persists_to_window_state(
         )
         mock_tmux.stamp_pane_title = AsyncMock()
         mock_registry.is_valid.return_value = True
-        mock_registry.get.return_value = mock_provider
+        mock_registry.get.return_value = _agent_provider()
 
         await _create_window_and_bind(
             _make_query(),
@@ -181,22 +188,14 @@ async def test_create_window_failure_clears_worktree_state(
     }
     context = _make_context(user_data)
 
-    with patch(
-        "ccgram.handlers.topics.directory_callbacks.safe_edit",
-        new_callable=AsyncMock,
-    ):
-        await _handle_wt_new(_make_query(), context)
-        await _handle_wt_confirm(_make_query(), context)
+    await _handle_wt_new(_make_query(), context)
+    await _handle_wt_confirm(_make_query(), context)
 
     assert user_data[PENDING_WORKTREE_CREATING] is True
 
     with (
         patch("ccgram.providers.resolve_launch_command", return_value="claude"),
-        patch(
-            "ccgram.handlers.topics.directory_callbacks.safe_edit",
-            new_callable=AsyncMock,
-        ),
-        patch("ccgram.handlers.topics.window_launch_service.tmux_manager") as mock_tmux,
+        patch(f"{_MOD_WL}.tmux_manager") as mock_tmux,
     ):
         mock_tmux.capabilities.native_worktrees = False
         mock_tmux.create_window = AsyncMock(
@@ -219,12 +218,8 @@ async def test_create_window_failure_clears_worktree_state(
     assert PENDING_WORKTREE_REPO not in user_data
     assert PENDING_WORKTREE_PATH not in user_data
 
-    with patch(
-        "ccgram.handlers.topics.directory_callbacks.safe_edit",
-        new_callable=AsyncMock,
-    ):
-        q = _make_query()
-        await _handle_wt_confirm(q, context)
+    q = _make_query()
+    await _handle_wt_confirm(q, context)
     assert ("Creating worktree…",) not in [c.args for c in q.answer.await_args_list]
 
 
@@ -242,22 +237,11 @@ async def test_herdr_delegates_worktree_creation(
     }
     context = _make_context(user_data)
 
-    mock_provider = MagicMock()
-    mock_provider.capabilities.supports_hook = False
-    mock_provider.capabilities.chat_first_command_path = False
-    mock_provider.capabilities.has_yolo_confirmation = False
-
     with (
         patch("ccgram.providers.resolve_launch_command", return_value="claude"),
-        patch(
-            "ccgram.handlers.topics.directory_callbacks.safe_edit",
-            new_callable=AsyncMock,
-        ),
-        patch("ccgram.handlers.topics.window_launch_service.thread_router"),
-        patch("ccgram.handlers.topics.window_launch_service.tmux_manager") as mock_tmux,
-        patch(
-            "ccgram.handlers.topics.window_launch_service.provider_registry"
-        ) as mock_registry,
+        patch(f"{_MOD_WL}.thread_router"),
+        patch(f"{_MOD_WL}.tmux_manager") as mock_tmux,
+        patch(f"{_MOD_WL}.provider_registry") as mock_registry,
     ):
         mock_tmux.capabilities.native_worktrees = True
         mock_tmux.create_worktree_window = AsyncMock(
@@ -265,7 +249,7 @@ async def test_herdr_delegates_worktree_creation(
         )
         mock_tmux.stamp_pane_title = AsyncMock()
         mock_registry.is_valid.return_value = True
-        mock_registry.get.return_value = mock_provider
+        mock_registry.get.return_value = _agent_provider()
 
         await _create_window_and_bind(
             _make_query(),
@@ -295,11 +279,9 @@ async def test_herdr_delegates_worktree_creation(
     assert PENDING_WORKTREE_PATH not in user_data
 
 
-@patch("ccgram.handlers.topics.directory_callbacks.thread_router")
 async def test_new_worktree_from_subdir_roots_topic_in_subdir(
-    mock_tr: MagicMock, git_repo: Path
+    unbound_thread: MagicMock, git_repo: Path
 ) -> None:
-    mock_tr.get_window_for_thread.return_value = None
     (git_repo / "frontend").mkdir()
     (git_repo / "frontend" / "app.txt").write_text("x")
     _git(git_repo, "add", ".")
@@ -309,25 +291,19 @@ async def test_new_worktree_from_subdir_roots_topic_in_subdir(
     user_data = {BROWSE_PATH_KEY: str(subdir), PENDING_THREAD_ID: 42}
     context = _make_context(user_data)
 
-    with patch(
-        "ccgram.handlers.topics.directory_callbacks.safe_edit",
-        new_callable=AsyncMock,
-    ):
-        await _handle_confirm(_make_query(), 100, _make_update(42), context)
-        await _handle_wt_new(_make_query(), context)
-        worktree_root = Path(user_data[PENDING_WORKTREE_PATH])
-        await _handle_wt_confirm(_make_query(), context)
+    await _handle_confirm(_make_query(), 100, _make_update(42), context)
+    await _handle_wt_new(_make_query(), context)
+    worktree_root = Path(user_data[PENDING_WORKTREE_PATH])
+    await _handle_wt_confirm(_make_query(), context)
 
     expected = worktree_root / "frontend"
     assert expected.is_dir()
     assert user_data[BROWSE_PATH_KEY] == str(expected)
 
 
-@patch("ccgram.handlers.topics.directory_callbacks.thread_router")
 async def test_new_worktree_untracked_subdir_falls_back_to_root(
-    mock_tr: MagicMock, git_repo: Path
+    unbound_thread: MagicMock, git_repo: Path
 ) -> None:
-    mock_tr.get_window_for_thread.return_value = None
     # Subdir exists on disk but is NOT committed → absent in fresh HEAD checkout.
     (git_repo / "scratch").mkdir()
     subdir = git_repo / "scratch"
@@ -335,14 +311,10 @@ async def test_new_worktree_untracked_subdir_falls_back_to_root(
     user_data = {BROWSE_PATH_KEY: str(subdir), PENDING_THREAD_ID: 42}
     context = _make_context(user_data)
 
-    with patch(
-        "ccgram.handlers.topics.directory_callbacks.safe_edit",
-        new_callable=AsyncMock,
-    ):
-        await _handle_confirm(_make_query(), 100, _make_update(42), context)
-        await _handle_wt_new(_make_query(), context)
-        worktree_root = Path(user_data[PENDING_WORKTREE_PATH])
-        await _handle_wt_confirm(_make_query(), context)
+    await _handle_confirm(_make_query(), 100, _make_update(42), context)
+    await _handle_wt_new(_make_query(), context)
+    worktree_root = Path(user_data[PENDING_WORKTREE_PATH])
+    await _handle_wt_confirm(_make_query(), context)
 
     assert not (worktree_root / "scratch").exists()
     assert user_data[BROWSE_PATH_KEY] == str(worktree_root)
@@ -449,16 +421,7 @@ async def test_wt_confirm_double_tap_creates_worktree_once(git_repo: Path) -> No
     create_mock = MagicMock()
     q1, q2 = _make_query(), _make_query()
 
-    with (
-        patch(
-            "ccgram.handlers.topics.directory_callbacks.create_worktree",
-            create_mock,
-        ),
-        patch(
-            "ccgram.handlers.topics.directory_callbacks.safe_edit",
-            new_callable=AsyncMock,
-        ),
-    ):
+    with patch(f"{_MOD_DC}.create_worktree", create_mock):
         await _handle_wt_confirm(q1, context)
         await _handle_wt_confirm(q2, context)
 
@@ -516,13 +479,13 @@ async def test_edit_name_inactive_when_flag_unset() -> None:
     assert handled is False
 
 
-@patch("ccgram.handlers.topics.workspace_callbacks.safe_edit", new_callable=AsyncMock)
-@patch("ccgram.handlers.topics.workspace_callbacks.tmux_manager")
-@patch("ccgram.handlers.topics.directory_callbacks.thread_router")
+@patch(f"{_MOD_WC}.tmux_manager")
 async def test_non_git_directory_skips_worktree_picker(
-    mock_tr: MagicMock, mock_mux: MagicMock, mock_edit: AsyncMock, tmp_path: Path
+    mock_mux: MagicMock,
+    unbound_thread: MagicMock,
+    safe_edit: SimpleNamespace,
+    tmp_path: Path,
 ) -> None:
-    mock_tr.get_window_for_thread.return_value = None
     mock_mux.capabilities.native_agent_status = False
     plain = tmp_path / "plain"
     plain.mkdir()
@@ -531,5 +494,5 @@ async def test_non_git_directory_skips_worktree_picker(
 
     await _handle_confirm(_make_query(), 100, _make_update(42), context)
 
-    assert "Select Provider" in mock_edit.call_args[0][1]
+    assert "Select Provider" in safe_edit.wc.call_args[0][1]
     assert PENDING_WORKTREE_REPO not in user_data

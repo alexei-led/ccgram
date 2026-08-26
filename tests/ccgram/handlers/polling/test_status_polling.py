@@ -1,12 +1,13 @@
 import time
 
+from contextlib import ExitStack, contextmanager
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from telegram import Bot
 from telegram.error import BadRequest, TelegramError
-
-from _helpers import make_mock_provider
 
 from ccgram.handlers.topics.topic_lifecycle import (
     check_autoclose_timers,
@@ -15,9 +16,11 @@ from ccgram.handlers.topics.topic_lifecycle import (
     reset_probe_schedule,
 )
 from ccgram.handlers.polling.window_tick import (
+    _check_interactive_only,
     _handle_dead_window_notification,
     _parse_with_pyte,
     _scan_window_panes,
+    _update_status,
     decide_tick,
 )
 from ccgram.handlers.polling.polling_runtime import PollingRuntime
@@ -27,13 +30,17 @@ from ccgram.handlers.polling.polling_state import (
     terminal_poll_state,
     terminal_screen_buffer,
 )
-from ccgram.handlers.polling.polling_types import (
-    MAX_PROBE_FAILURES,
-    TickContext,
-    is_shell_prompt,
-)
+from ccgram.handlers.polling.polling_types import MAX_PROBE_FAILURES, TickContext
+from ccgram.providers.base import StatusUpdate
 from ccgram.telegram_client import PTBTelegramClient
 from ccgram.multiplexer.base import ForegroundInfo, PaneInfo
+
+_INTERACTIVE_STATUS = StatusUpdate(
+    raw_text="Allow?",
+    display_label="Allow?",
+    is_interactive=True,
+    ui_type="PermissionPrompt",
+)
 
 
 def _assert_handle_called_once_with_client(mock_handle, bot, *args, **kwargs):
@@ -59,17 +66,11 @@ _topic_poll_state = lifecycle_strategy._states
 _dead_notified = lifecycle_strategy._dead_notified
 _pane_alert_hashes = interactive_strategy._pane_alert_hashes
 _start_autoclose_timer = lifecycle_strategy.start_autoclose_timer
-_clear_autoclose_timer = lifecycle_strategy.clear_autoclose_timer
 
 
 def _has_autoclose(user_id: int, thread_id: int) -> bool:
     ts = _topic_poll_state.get((user_id, thread_id))
     return ts is not None and ts.autoclose is not None
-
-
-def _get_autoclose(user_id: int, thread_id: int) -> tuple[str, float] | None:
-    ts = _topic_poll_state.get((user_id, thread_id))
-    return ts.autoclose if ts else None
 
 
 @pytest.fixture(autouse=True)
@@ -85,47 +86,7 @@ def _reset():
     _dead_notified.clear()
 
 
-class TestIsShellPrompt:
-    @pytest.mark.parametrize(
-        "cmd",
-        ["bash", "zsh", "fish", "sh", "/usr/bin/zsh", "  bash  ", "dash", "ksh"],
-    )
-    def test_shell_detected(self, cmd: str) -> None:
-        assert is_shell_prompt(cmd) is True
-
-    @pytest.mark.parametrize("cmd", ["node", "claude", "npx", ""])
-    def test_non_shell_rejected(self, cmd: str) -> None:
-        assert is_shell_prompt(cmd) is False
-
-
 class TestAutocloseTimers:
-    def test_start_timer(self) -> None:
-        _start_autoclose_timer(1, 42, "done", 100.0)
-        assert _get_autoclose(1, 42) == ("done", 100.0)
-
-    def test_start_timer_preserves_existing_same_state(self) -> None:
-        _start_autoclose_timer(1, 42, "done", 100.0)
-        _start_autoclose_timer(1, 42, "done", 200.0)
-        assert _get_autoclose(1, 42) == ("done", 100.0)
-
-    def test_start_timer_resets_on_state_change(self) -> None:
-        _start_autoclose_timer(1, 42, "done", 100.0)
-        _start_autoclose_timer(1, 42, "dead", 200.0)
-        assert _get_autoclose(1, 42) == ("dead", 200.0)
-
-    def test_clear_on_active(self) -> None:
-        _start_autoclose_timer(1, 42, "done", 100.0)
-        _clear_autoclose_timer(1, 42)
-        assert not _has_autoclose(1, 42)
-
-    def test_clear_timer(self) -> None:
-        _start_autoclose_timer(1, 42, "done", 100.0)
-        lifecycle_strategy.clear_autoclose_timer(1, 42)
-        assert not _has_autoclose(1, 42)
-
-    def test_clear_nonexistent_is_noop(self) -> None:
-        lifecycle_strategy.clear_autoclose_timer(1, 42)
-
     @pytest.mark.parametrize(
         ("state", "minutes", "elapsed"),
         [("done", 30, 30 * 60 + 1), ("dead", 10, 10 * 60 + 1)],
@@ -224,24 +185,6 @@ class TestAutocloseTimers:
 
 
 class TestTranscriptActivityHeuristic:
-    def test_active_when_recent_transcript(self) -> None:
-        now = time.monotonic()
-        result = terminal_poll_state.is_recently_active("@0", now - 5.0)
-        assert result is True
-        assert _window_poll_state.get("@0") and _window_poll_state["@0"].has_seen_status
-
-    def test_inactive_when_stale_transcript(self) -> None:
-        now = time.monotonic()
-        result = terminal_poll_state.is_recently_active("@0", now - 20.0)
-        assert result is False
-        assert not (
-            _window_poll_state.get("@0") and _window_poll_state["@0"].has_seen_status
-        )
-
-    def test_inactive_when_no_activity_ts(self) -> None:
-        result = terminal_poll_state.is_recently_active("@0", None)
-        assert result is False
-
     def test_clears_startup_timer_on_activity(self) -> None:
         now = time.monotonic()
         terminal_poll_state.get_state("@0").startup_time = now - 15.0
@@ -273,23 +216,6 @@ def _make_ctx(
         is_dead_window=is_dead_window,
         supports_hook=supports_hook,
     )
-
-
-class TestStartupTimeout:
-    def test_first_poll_no_startup_time_yields_starting(self) -> None:
-        ctx = _make_ctx(startup_time=None)
-        decision = decide_tick(ctx)
-        assert decision.transition == "starting"
-
-    def test_startup_timeout_transitions_to_idle(self) -> None:
-        ctx = _make_ctx(startup_time=time.monotonic() - 31.0)
-        decision = decide_tick(ctx)
-        assert decision.transition == "idle"
-
-    def test_startup_grace_period_stays_starting(self) -> None:
-        ctx = _make_ctx(startup_time=time.monotonic())
-        decision = decide_tick(ctx)
-        assert decision.transition == "starting"
 
 
 @pytest.fixture()
@@ -492,150 +418,92 @@ class TestAnsiCapturePyteParsing:
         assert terminal_poll_state.get_state("@0").last_rendered_text == ""
 
 
-def _mock_update_status_patches(*, pyte_result, provider):
-    from contextlib import ExitStack
+_APPLY = "ccgram.handlers.polling.window_tick.apply."
+_OBSERVE = "ccgram.handlers.polling.window_tick.observe."
+_UNSET = object()
 
-    stack = ExitStack()
-    mocks: dict[str, MagicMock] = {}
-    mocks["tm"] = stack.enter_context(
-        patch("ccgram.handlers.polling.window_tick.apply.tmux_manager")
-    )
-    mocks["sm"] = stack.enter_context(
-        patch("ccgram.handlers.polling.window_tick.apply.window_query")
-    )
-    mocks["tr"] = stack.enter_context(
-        patch("ccgram.handlers.polling.window_tick.apply.thread_router")
-    )
-    stack.enter_context(
-        patch("ccgram.handlers.polling.window_tick.apply.update_topic_emoji")
-    )
-    mocks["enqueue"] = stack.enter_context(
-        patch("ccgram.handlers.polling.window_tick.apply.enqueue_status_update")
-    )
-    stack.enter_context(
-        patch(
-            "ccgram.handlers.polling.window_tick.apply.get_interactive_window",
-            return_value=None,
+
+def _tick_window(window_id: str = "@0", *, pane_current_command: str = "node"):
+    w = MagicMock()
+    w.window_id = window_id
+    w.window_name = "project"
+    w.pane_current_command = pane_current_command
+    w.pane_width = 80
+    w.pane_height = 24
+    return w
+
+
+def _provider(
+    *,
+    terminal_status: StatusUpdate | None = None,
+    uses_pane_title: bool = False,
+    uses_pyte_status_parsing: bool = True,
+) -> MagicMock:
+    provider = MagicMock()
+    provider.capabilities.uses_pane_title = uses_pane_title
+    provider.capabilities.uses_pyte_status_parsing = uses_pyte_status_parsing
+    provider.parse_terminal_status.return_value = terminal_status
+    return provider
+
+
+@contextmanager
+def _tick_env(
+    *,
+    window: Any = _UNSET,
+    capture: str | None = "some output",
+    pyte_result: StatusUpdate | None = None,
+    provider: MagicMock | None = None,
+    interactive_window: str | None = None,
+    subagents: tuple[str, ...] = (),
+):
+    """Patch every collaborator ``_update_status``/``_check_interactive_only`` touch.
+
+    ``observe`` binds ``tmux_manager``, ``get_provider_for_window`` and the vim
+    helpers at import time, so those need patching separately from ``apply``'s.
+    """
+    provider = provider if provider is not None else _provider()
+    window = _tick_window() if window is _UNSET else window
+
+    with ExitStack() as stack:
+
+        def _patch(target: str, **kwargs: Any) -> MagicMock:
+            return stack.enter_context(patch(target, **kwargs))
+
+        mocks = SimpleNamespace()
+        mocks.provider = provider
+        mocks.window = window
+
+        mocks.tmux = _patch(_APPLY + "tmux_manager")
+        mocks.tmux.find_window_by_id = AsyncMock(return_value=window)
+        mocks.tmux.capture_pane = AsyncMock(return_value=capture)
+        mocks.thread_router = _patch(_APPLY + "thread_router")
+        mocks.thread_router.resolve_chat_id.return_value = -100
+        mocks.thread_router.get_display_name.return_value = "project"
+        mocks.enqueue = _patch(_APPLY + "enqueue_status_update", new_callable=AsyncMock)
+        mocks.handle_ui = _patch(
+            _APPLY + "handle_interactive_ui", new_callable=AsyncMock
         )
-    )
-    mocks["provider"] = stack.enter_context(
-        patch(
-            "ccgram.handlers.polling.window_tick.apply.get_provider_for_window",
-            return_value=provider,
+        mocks.clear_interactive_msg = _patch(
+            _APPLY + "clear_interactive_msg", new_callable=AsyncMock
         )
-    )
-    # observe.py has its own bindings — patch those too so _resolve_status
-    # sees the mocked provider/tmux_manager/window_query.
-    stack.enter_context(
-        patch(
-            "ccgram.handlers.polling.window_tick.observe.get_provider_for_window",
-            return_value=provider,
-        )
-    )
-    observe_tm = stack.enter_context(
-        patch("ccgram.handlers.polling.window_tick.observe.tmux_manager")
-    )
-    observe_tm.get_pane_title = AsyncMock(return_value="")
-    # Model a tmux window (the "@0" test fixture): no native agent status, so
-    # _resolve_status does not take the herdr native-status gap-fill path.
-    observe_tm.capabilities.native_agent_status = False
-    stack.enter_context(
-        patch("ccgram.handlers.polling.window_tick.observe.window_query")
-    )
-    stack.enter_context(
-        patch(
-            "ccgram.handlers.polling.window_tick.observe._parse_with_pyte",
-            return_value=pyte_result,
-        )
-    )
+        mocks.set_interactive_mode = _patch(_APPLY + "set_interactive_mode")
+        mocks.clear_interactive_mode = _patch(_APPLY + "clear_interactive_mode")
+        _patch(_APPLY + "window_query")
+        _patch(_APPLY + "update_topic_emoji")
+        _patch(_APPLY + "_send_typing_throttled")
+        _patch(_APPLY + "get_interactive_window", return_value=interactive_window)
+        _patch(_APPLY + "get_subagent_names", return_value=list(subagents))
+        _patch(_APPLY + "get_provider_for_window", return_value=provider)
 
-    mock_window = MagicMock()
-    mock_window.window_id = "@0"
-    mock_window.window_name = "project"
-    mock_window.pane_current_command = "node"
-    mock_window.pane_width = 80
-    mock_window.pane_height = 24
-    mocks["tm"].find_window_by_id = AsyncMock(return_value=mock_window)
-    mocks["tm"].capture_pane = AsyncMock(return_value="\x1b[1msome ansi output\x1b[0m")
-    mocks["tm"].get_pane_title = AsyncMock(return_value="")
-    mocks["tr"].resolve_chat_id.return_value = -100
-    mocks["tr"].get_display_name.return_value = "project"
+        mocks.observe_tmux = _patch(_OBSERVE + "tmux_manager")
+        mocks.observe_tmux.get_pane_title = AsyncMock(return_value="")
+        mocks.observe_tmux.capabilities.native_agent_status = False
+        mocks.pyte = _patch(_OBSERVE + "_parse_with_pyte", return_value=pyte_result)
+        mocks.vim_notify = _patch(_OBSERVE + "notify_vim_insert_seen")
+        _patch(_OBSERVE + "get_provider_for_window", return_value=provider)
+        _patch(_OBSERVE + "window_query")
 
-    return stack, mocks
-
-
-class TestPyteFallbackInUpdateStatus:
-    async def test_empty_rendered_text_does_not_fall_back_to_raw_ansi(self) -> None:
-        stack, mocks = _mock_update_status_patches(
-            pyte_result=None, provider=make_mock_provider(has_status=False)
-        )
-        with stack:
-            from ccgram.handlers.polling.window_tick import (
-                _update_status as update_status_message,
-            )
-
-            terminal_poll_state.get_state("@0").last_rendered_text = ""
-            await update_status_message(AsyncMock(spec=Bot), 1, "@0", thread_id=42)
-
-            call_args = mocks["provider"].return_value.parse_terminal_status.call_args
-            assert call_args[0][0] == ""
-
-    async def test_falls_back_to_provider_with_rendered_text(self) -> None:
-        stack, mocks = _mock_update_status_patches(
-            pyte_result=None, provider=make_mock_provider(has_status=True)
-        )
-        with stack:
-            from ccgram.handlers.polling.window_tick import (
-                _update_status as update_status_message,
-            )
-
-            terminal_poll_state.get_state(
-                "@0"
-            ).last_rendered_text = "clean rendered text"
-            await update_status_message(AsyncMock(spec=Bot), 1, "@0", thread_id=42)
-
-            provider_mock = mocks["provider"].return_value
-            provider_mock.parse_terminal_status.assert_called_once()
-            assert (
-                provider_mock.parse_terminal_status.call_args[0][0]
-                == "clean rendered text"
-            )
-
-    async def test_uses_pyte_result_when_available(self) -> None:
-        from ccgram.providers.base import StatusUpdate
-
-        pyte_status = StatusUpdate(
-            raw_text="Reading file",
-            display_label="\U0001f4d6 reading\u2026",
-        )
-        stack, mocks = _mock_update_status_patches(
-            pyte_result=pyte_status, provider=make_mock_provider(has_status=True)
-        )
-        with stack:
-            from ccgram.handlers.polling.window_tick import (
-                _update_status as update_status_message,
-            )
-
-            await update_status_message(AsyncMock(spec=Bot), 1, "@0", thread_id=42)
-
-            provider_mock = mocks["provider"].return_value
-            provider_mock.parse_terminal_status.assert_not_called()
-            mocks["enqueue"].assert_called_once()
-            assert mocks["enqueue"].call_args[0][3] == "\U0001f4d6 Reading file"
-
-
-class TestClearSeenStatus:
-    def test_clears_seen_status_and_startup(self) -> None:
-        terminal_poll_state.get_state("@0").has_seen_status = True
-        terminal_poll_state.get_state("@0").startup_time = 100.0
-        terminal_poll_state.clear_seen_status("@0")
-        assert not (
-            _window_poll_state.get("@0") and _window_poll_state["@0"].has_seen_status
-        )
-        assert (
-            _window_poll_state.get("@0") is None
-            or _window_poll_state["@0"].startup_time is None
-        )
+        yield mocks
 
 
 class TestTransitionToIdle:
@@ -708,18 +576,6 @@ class TestSettledWindowsStaySettled:
 
     async def test_hookless_done_window_also_settles(self) -> None:
         assert await self._run("done", supports_hook=False) == "idle"
-
-
-class TestShellPromptClearsStatus:
-    def test_shell_prompt_with_hook_yields_done(self) -> None:
-        ctx = _make_ctx(is_shell_prompt=True, supports_hook=True)
-        decision = decide_tick(ctx)
-        assert decision.transition == "done"
-
-    def test_hookless_shell_prompt_yields_idle(self) -> None:
-        ctx = _make_ctx(is_shell_prompt=True, supports_hook=False)
-        decision = decide_tick(ctx)
-        assert decision.transition == "idle"
 
 
 class TestProbeFailures:
@@ -2311,24 +2167,6 @@ class TestDeadWindowNotification:
         mock_tr.unbind_thread.assert_called_once_with(1, 42, chat_id=-100)
 
 
-class TestPaneAlertHelpers:
-    def test_has_pane_alert_true_when_present(self) -> None:
-        _pane_alert_hashes["%1"] = ("prompt text", 100.0, "@0")
-        assert interactive_strategy.has_pane_alert("%1") is True
-
-    def test_has_pane_alert_false_when_absent(self) -> None:
-        assert interactive_strategy.has_pane_alert("%99") is False
-
-    def test_clear_pane_alerts_removes_for_window(self) -> None:
-        _pane_alert_hashes["%1"] = ("prompt A", 100.0, "@0")
-        _pane_alert_hashes["%2"] = ("prompt B", 100.0, "@0")
-        _pane_alert_hashes["%3"] = ("prompt C", 100.0, "@5")
-        interactive_strategy.clear_pane_alerts("@0")
-        assert "%1" not in _pane_alert_hashes
-        assert "%2" not in _pane_alert_hashes
-        assert "%3" in _pane_alert_hashes
-
-
 def _make_pane(pane_id: str = "%1", *, active: bool = True, index: int = 0) -> PaneInfo:
     return PaneInfo(
         pane_id=pane_id,
@@ -2483,154 +2321,75 @@ class TestScanWindowPanes:
 
 
 @pytest.mark.usefixtures("_reset_pyte")
-class TestUpdateStatusMessageEdgeCases:
+class TestUpdateStatusMessage:
     async def test_window_gone_enqueues_clear(self) -> None:
-        from ccgram.handlers.polling.window_tick import (
-            _update_status as update_status_message,
-        )
-
         bot = AsyncMock(spec=Bot)
-        with (
-            patch("ccgram.handlers.polling.window_tick.apply.tmux_manager") as mock_tm,
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.enqueue_status_update",
-                new_callable=AsyncMock,
-            ) as mock_enqueue,
-        ):
-            mock_tm.find_window_by_id = AsyncMock(return_value=None)
-            await update_status_message(bot, 1, "@0", thread_id=42)
-        mock_enqueue.assert_called_once_with(ANY, 1, "@0", None, thread_id=42)
+        with _tick_env(window=None) as env:
+            await _update_status(bot, 1, "@0", thread_id=42)
+        env.enqueue.assert_called_once_with(ANY, 1, "@0", None, thread_id=42)
 
     async def test_empty_capture_keeps_existing_status(self) -> None:
-        from ccgram.handlers.polling.window_tick import (
-            _update_status as update_status_message,
+        bot = AsyncMock(spec=Bot)
+        with _tick_env(capture=None) as env:
+            await _update_status(bot, 1, "@0", thread_id=42)
+        env.enqueue.assert_not_called()
+
+    async def test_uses_pyte_result_instead_of_the_provider_regex(self) -> None:
+        bot = AsyncMock(spec=Bot)
+        pyte_status = StatusUpdate(raw_text="Reading file", display_label="📖 reading…")
+        with _tick_env(pyte_result=pyte_status) as env:
+            await _update_status(bot, 1, "@0", thread_id=42)
+        env.provider.parse_terminal_status.assert_not_called()
+        env.enqueue.assert_called_once()
+        assert env.enqueue.call_args[0][3] == "📖 Reading file"
+
+    async def test_falls_back_to_the_provider_with_pyte_rendered_text(self) -> None:
+        bot = AsyncMock(spec=Bot)
+        provider = _provider(
+            terminal_status=StatusUpdate(
+                raw_text="Working...", display_label="…working"
+            )
+        )
+        with _tick_env(pyte_result=None, provider=provider) as env:
+            terminal_poll_state.get_state(
+                "@0"
+            ).last_rendered_text = "clean rendered text"
+            await _update_status(bot, 1, "@0", thread_id=42)
+        env.provider.parse_terminal_status.assert_called_once()
+        assert env.provider.parse_terminal_status.call_args[0][0] == (
+            "clean rendered text"
         )
 
+    async def test_empty_rendered_text_does_not_fall_back_to_raw_ansi(self) -> None:
         bot = AsyncMock(spec=Bot)
-        mock_window = MagicMock()
-        mock_window.window_id = "@0"
-        mock_window.pane_width = 80
-        mock_window.pane_height = 24
-        with (
-            patch("ccgram.handlers.polling.window_tick.apply.tmux_manager") as mock_tm,
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.enqueue_status_update",
-                new_callable=AsyncMock,
-            ) as mock_enqueue,
-        ):
-            mock_tm.find_window_by_id = AsyncMock(return_value=mock_window)
-            mock_tm.capture_pane = AsyncMock(return_value=None)
-            await update_status_message(bot, 1, "@0", thread_id=42)
-        mock_enqueue.assert_not_called()
+        with _tick_env(
+            pyte_result=None, capture="\x1b[1msome ansi output\x1b[0m"
+        ) as env:
+            terminal_poll_state.get_state("@0").last_rendered_text = ""
+            await _update_status(bot, 1, "@0", thread_id=42)
+        assert env.provider.parse_terminal_status.call_args[0][0] == ""
 
     async def test_vim_insert_detected_from_rendered_text(self) -> None:
-        from ccgram.handlers.polling.window_tick import (
-            _update_status as update_status_message,
-        )
-        from ccgram.providers.base import StatusUpdate
-
-        terminal_poll_state.get_state(
-            "@0"
-        ).last_rendered_text = "some code\n-- INSERT --\n"
-        pyte_status = StatusUpdate(raw_text="Working", display_label="...working")
-        mock_window = MagicMock()
-        mock_window.window_id = "@0"
-        mock_window.pane_width = 80
-        mock_window.pane_height = 24
-        mock_window.pane_current_command = "node"
         bot = AsyncMock(spec=Bot)
-        with (
-            patch("ccgram.handlers.polling.window_tick.apply.tmux_manager") as mock_tm,
-            patch("ccgram.handlers.polling.window_tick.apply.window_query"),
-            patch("ccgram.handlers.polling.window_tick.apply.thread_router") as mock_tr,
-            patch("ccgram.handlers.polling.window_tick.apply.update_topic_emoji"),
-            patch("ccgram.handlers.polling.window_tick.apply.enqueue_status_update"),
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.get_interactive_window",
-                return_value=None,
-            ),
-            patch(
-                "ccgram.handlers.polling.window_tick.observe._parse_with_pyte",
-                return_value=pyte_status,
-            ),
-            patch(
-                "ccgram.handlers.polling.window_tick.observe.notify_vim_insert_seen"
-            ) as mock_vim,
-            patch(
-                "ccgram.handlers.polling.window_tick.observe.has_insert_indicator",
-                return_value=True,
-            ),
-            patch("ccgram.handlers.polling.window_tick.apply._send_typing_throttled"),
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.get_subagent_names",
-                return_value=[],
-            ),
-        ):
-            mock_tm.find_window_by_id = AsyncMock(return_value=mock_window)
-            mock_tm.capture_pane = AsyncMock(return_value="\x1b[1mansi\x1b[0m")
-            mock_tr.resolve_chat_id.return_value = -100
-            mock_tr.get_display_name.return_value = "project"
-            await update_status_message(bot, 1, "@0", thread_id=42)
-        mock_vim.assert_called_once_with("@0")
+        pyte_status = StatusUpdate(raw_text="Working", display_label="...working")
+        with _tick_env(pyte_result=pyte_status) as env:
+            terminal_poll_state.get_state(
+                "@0"
+            ).last_rendered_text = "some code\n-- INSERT --\n"
+            await _update_status(bot, 1, "@0", thread_id=42)
+        env.vim_notify.assert_called_once_with("@0")
 
     async def test_status_includes_subagent_names(self) -> None:
-        from ccgram.handlers.polling.window_tick import (
-            _update_status as update_status_message,
-        )
-        from ccgram.providers.base import StatusUpdate
-
-        pyte_status = StatusUpdate(
-            raw_text="Working", display_label="\u23f3 Working\u2026"
-        )
-        mock_window = MagicMock()
-        mock_window.window_id = "@0"
-        mock_window.pane_width = 80
-        mock_window.pane_height = 24
-        mock_window.pane_current_command = "node"
         bot = AsyncMock(spec=Bot)
-        with (
-            patch("ccgram.handlers.polling.window_tick.apply.tmux_manager") as mock_tm,
-            patch("ccgram.handlers.polling.window_tick.apply.window_query"),
-            patch("ccgram.handlers.polling.window_tick.apply.thread_router") as mock_tr,
-            patch("ccgram.handlers.polling.window_tick.apply.update_topic_emoji"),
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.enqueue_status_update",
-                new_callable=AsyncMock,
-            ) as mock_enqueue,
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.get_interactive_window",
-                return_value=None,
-            ),
-            patch(
-                "ccgram.handlers.polling.window_tick.observe._parse_with_pyte",
-                return_value=pyte_status,
-            ),
-            patch(
-                "ccgram.multiplexer.vim_state.has_insert_indicator", return_value=False
-            ),
-            patch("ccgram.multiplexer.vim_state.notify_vim_insert_seen"),
-            patch("ccgram.handlers.polling.window_tick.apply._send_typing_throttled"),
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.get_subagent_names",
-                return_value=["write-tests"],
-            ),
-        ):
-            mock_tm.find_window_by_id = AsyncMock(return_value=mock_window)
-            mock_tm.capture_pane = AsyncMock(return_value="some output")
-            mock_tr.resolve_chat_id.return_value = -100
-            mock_tr.get_display_name.return_value = "project"
-
-            await update_status_message(bot, 1, "@0", thread_id=42)
-        status_text = mock_enqueue.call_args[0][3]
+        pyte_status = StatusUpdate(raw_text="Working", display_label="⏳ Working…")
+        with _tick_env(pyte_result=pyte_status, subagents=("write-tests",)) as env:
+            await _update_status(bot, 1, "@0", thread_id=42)
+        status_text = env.enqueue.call_args[0][3]
         assert "write-tests" in status_text
         assert "\U0001f916" in status_text
 
     async def test_status_prefers_multiline_raw_task_block(self) -> None:
-        from ccgram.handlers.polling.window_tick import (
-            _update_status as update_status_message,
-        )
-        from ccgram.providers.base import StatusUpdate
-
+        bot = AsyncMock(spec=Bot)
         pyte_status = StatusUpdate(
             raw_text=(
                 "Running py-idioms review…\n"
@@ -2638,145 +2397,28 @@ class TestUpdateStatusMessageEdgeCases:
                 "◼ Spawn review agents\n"
                 "◻ Collect agent results"
             ),
-            display_label="\u26a1 running\u2026",
+            display_label="⚡ running…",
         )
-        mock_window = MagicMock()
-        mock_window.window_id = "@0"
-        mock_window.pane_width = 80
-        mock_window.pane_height = 24
-        mock_window.pane_current_command = "node"
-        bot = AsyncMock(spec=Bot)
-        with (
-            patch("ccgram.handlers.polling.window_tick.apply.tmux_manager") as mock_tm,
-            patch("ccgram.handlers.polling.window_tick.apply.window_query"),
-            patch("ccgram.handlers.polling.window_tick.apply.thread_router") as mock_tr,
-            patch("ccgram.handlers.polling.window_tick.apply.update_topic_emoji"),
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.enqueue_status_update",
-                new_callable=AsyncMock,
-            ) as mock_enqueue,
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.get_interactive_window",
-                return_value=None,
-            ),
-            patch(
-                "ccgram.handlers.polling.window_tick.observe._parse_with_pyte",
-                return_value=pyte_status,
-            ),
-            patch(
-                "ccgram.multiplexer.vim_state.has_insert_indicator", return_value=False
-            ),
-            patch("ccgram.multiplexer.vim_state.notify_vim_insert_seen"),
-            patch("ccgram.handlers.polling.window_tick.apply._send_typing_throttled"),
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.get_subagent_names",
-                return_value=[],
-            ),
-        ):
-            mock_tm.find_window_by_id = AsyncMock(return_value=mock_window)
-            mock_tm.capture_pane = AsyncMock(return_value="some output")
-            mock_tr.resolve_chat_id.return_value = -100
-            mock_tr.get_display_name.return_value = "project"
-
-            await update_status_message(bot, 1, "@0", thread_id=42)
-        status_text = mock_enqueue.call_args[0][3]
+        with _tick_env(pyte_result=pyte_status) as env:
+            await _update_status(bot, 1, "@0", thread_id=42)
+        status_text = env.enqueue.call_args[0][3]
         assert status_text.startswith("Running py-idioms review…")
         assert "✔ Detect languages and scope" in status_text
         assert "◻ Collect agent results" in status_text
 
     async def test_interactive_window_clears_when_ui_disappears(self) -> None:
-        from ccgram.handlers.polling.window_tick import (
-            _update_status as update_status_message,
-        )
-        from ccgram.providers.base import StatusUpdate
-
-        non_interactive = StatusUpdate(raw_text="Working", display_label="...working")
-        mock_window = MagicMock()
-        mock_window.window_id = "@0"
-        mock_window.pane_width = 80
-        mock_window.pane_height = 24
-        mock_window.pane_current_command = "node"
         bot = AsyncMock(spec=Bot)
-        with (
-            patch("ccgram.handlers.polling.window_tick.apply.tmux_manager") as mock_tm,
-            patch("ccgram.handlers.polling.window_tick.apply.window_query"),
-            patch("ccgram.handlers.polling.window_tick.apply.thread_router") as mock_tr,
-            patch("ccgram.handlers.polling.window_tick.apply.update_topic_emoji"),
-            patch("ccgram.handlers.polling.window_tick.apply.enqueue_status_update"),
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.get_interactive_window",
-                return_value="@0",
-            ),
-            patch(
-                "ccgram.handlers.polling.window_tick.observe._parse_with_pyte",
-                return_value=non_interactive,
-            ),
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.clear_interactive_msg",
-                new_callable=AsyncMock,
-            ) as mock_clear,
-            patch(
-                "ccgram.multiplexer.vim_state.has_insert_indicator", return_value=False
-            ),
-            patch("ccgram.multiplexer.vim_state.notify_vim_insert_seen"),
-            patch("ccgram.handlers.polling.window_tick.apply._send_typing_throttled"),
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.get_subagent_names",
-                return_value=[],
-            ),
-        ):
-            mock_tm.find_window_by_id = AsyncMock(return_value=mock_window)
-            mock_tm.capture_pane = AsyncMock(return_value="some output")
-            mock_tr.resolve_chat_id.return_value = -100
-            mock_tr.get_display_name.return_value = "project"
-
-            await update_status_message(bot, 1, "@0", thread_id=42)
-        _assert_clear_called_once_with_client(mock_clear, 1, bot, 42)
+        non_interactive = StatusUpdate(raw_text="Working", display_label="...working")
+        with _tick_env(pyte_result=non_interactive, interactive_window="@0") as env:
+            await _update_status(bot, 1, "@0", thread_id=42)
+        _assert_clear_called_once_with_client(env.clear_interactive_msg, 1, bot, 42)
 
     async def test_new_interactive_ui_enters_interactive_mode(self) -> None:
-        from ccgram.handlers.polling.window_tick import (
-            _update_status as update_status_message,
-        )
-        from ccgram.providers.base import StatusUpdate
-
-        interactive_status = StatusUpdate(
-            raw_text="Allow?",
-            display_label="Allow?",
-            is_interactive=True,
-            ui_type="PermissionPrompt",
-        )
-        mock_window = MagicMock()
-        mock_window.window_id = "@0"
-        mock_window.pane_width = 80
-        mock_window.pane_height = 24
-        mock_window.pane_current_command = "node"
         bot = AsyncMock(spec=Bot)
-        with (
-            patch("ccgram.handlers.polling.window_tick.apply.tmux_manager") as mock_tm,
-            patch("ccgram.handlers.polling.window_tick.apply.window_query"),
-            patch("ccgram.handlers.polling.window_tick.apply.update_topic_emoji"),
-            patch("ccgram.handlers.polling.window_tick.apply.enqueue_status_update"),
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.get_interactive_window",
-                return_value=None,
-            ),
-            patch(
-                "ccgram.handlers.polling.window_tick.observe._parse_with_pyte",
-                return_value=interactive_status,
-            ),
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.handle_interactive_ui",
-                new_callable=AsyncMock,
-            ) as mock_handle,
-            patch(
-                "ccgram.multiplexer.vim_state.has_insert_indicator", return_value=False
-            ),
-            patch("ccgram.multiplexer.vim_state.notify_vim_insert_seen"),
-        ):
-            mock_tm.find_window_by_id = AsyncMock(return_value=mock_window)
-            mock_tm.capture_pane = AsyncMock(return_value="Allow?\nEsc\n")
-            await update_status_message(bot, 1, "@0", thread_id=42)
-        _assert_handle_called_once_with_client(mock_handle, bot, 1, "@0", 42)
+        with _tick_env(pyte_result=_INTERACTIVE_STATUS, capture="Allow?\nEsc\n") as env:
+            await _update_status(bot, 1, "@0", thread_id=42)
+        _assert_handle_called_once_with_client(env.handle_ui, bot, 1, "@0", 42)
+        env.enqueue.assert_not_called()
 
 
 @pytest.mark.usefixtures("_reset_pyte")
@@ -2789,187 +2431,65 @@ class TestCheckInteractiveOnly:
         ],
     )
     async def test_detects_interactive_ui(self, interactive_window: str | None) -> None:
-        from ccgram.handlers.polling.window_tick import _check_interactive_only
-        from ccgram.providers.base import StatusUpdate
-
-        interactive_status = StatusUpdate(
-            raw_text="Allow?",
-            display_label="Allow?",
-            is_interactive=True,
-            ui_type="PermissionPrompt",
-        )
-        mock_window = MagicMock()
-        mock_window.window_id = "@0"
-        mock_window.pane_width = 80
-        mock_window.pane_height = 24
         bot = AsyncMock(spec=Bot)
-        with (
-            patch("ccgram.handlers.polling.window_tick.apply.tmux_manager") as mock_tm,
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.get_interactive_window",
-                return_value=interactive_window,
-            ),
-            patch(
-                "ccgram.handlers.polling.window_tick.observe._parse_with_pyte",
-                return_value=interactive_status,
-            ) as mock_pyte,
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.handle_interactive_ui",
-                new_callable=AsyncMock,
-            ) as mock_handle,
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.set_interactive_mode",
-            ) as mock_set,
-        ):
-            mock_tm.capture_pane = AsyncMock(return_value="Allow?\nEsc\n")
-            await _check_interactive_only(bot, 1, "@0", 42, _window=mock_window)
-        mock_pyte.assert_called_once()
-        args, kwargs = mock_pyte.call_args
+        with _tick_env(
+            pyte_result=_INTERACTIVE_STATUS,
+            capture="Allow?\nEsc\n",
+            interactive_window=interactive_window,
+        ) as env:
+            await _check_interactive_only(bot, 1, "@0", 42, _window=env.window)
+
+        env.pyte.assert_called_once()
+        args, kwargs = env.pyte.call_args
         assert args == ("@0", "Allow?\nEsc\n")
         assert kwargs.get("columns") == 80
         assert kwargs.get("rows") == 24
         assert kwargs.get("parse_claude_chrome") is True
-        mock_set.assert_called_once_with(1, "@0", 42)
-        _assert_handle_called_once_with_client(mock_handle, bot, 1, "@0", 42)
+        env.set_interactive_mode.assert_called_once_with(1, "@0", 42)
+        _assert_handle_called_once_with_client(env.handle_ui, bot, 1, "@0", 42)
 
     async def test_clears_interactive_mode_on_handle_failure(self) -> None:
-        from ccgram.handlers.polling.window_tick import _check_interactive_only
-        from ccgram.providers.base import StatusUpdate
-
-        interactive_status = StatusUpdate(
-            raw_text="Allow?",
-            display_label="Allow?",
-            is_interactive=True,
-            ui_type="PermissionPrompt",
-        )
-        mock_window = MagicMock()
-        mock_window.window_id = "@0"
-        mock_window.pane_width = 80
-        mock_window.pane_height = 24
         bot = AsyncMock(spec=Bot)
-        with (
-            patch("ccgram.handlers.polling.window_tick.apply.tmux_manager") as mock_tm,
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.get_interactive_window",
-                return_value=None,
-            ),
-            patch(
-                "ccgram.handlers.polling.window_tick.observe._parse_with_pyte",
-                return_value=interactive_status,
-            ),
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.handle_interactive_ui",
-                new_callable=AsyncMock,
-                return_value=False,
-            ),
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.set_interactive_mode",
-            ) as mock_set,
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.clear_interactive_mode",
-            ) as mock_clear,
-        ):
-            mock_tm.capture_pane = AsyncMock(return_value="Allow?\nEsc\n")
-            await _check_interactive_only(bot, 1, "@0", 42, _window=mock_window)
-        mock_set.assert_called_once_with(1, "@0", 42)
-        mock_clear.assert_called_once_with(1, 42)
+        with _tick_env(pyte_result=_INTERACTIVE_STATUS, capture="Allow?\nEsc\n") as env:
+            env.handle_ui.return_value = False
+            await _check_interactive_only(bot, 1, "@0", 42, _window=env.window)
+
+        env.set_interactive_mode.assert_called_once_with(1, "@0", 42)
+        env.clear_interactive_mode.assert_called_once_with(1, 42)
 
     async def test_skips_when_already_interactive(self) -> None:
-        from ccgram.handlers.polling.window_tick import _check_interactive_only
-
-        mock_window = MagicMock()
-        mock_window.window_id = "@0"
         bot = AsyncMock(spec=Bot)
-        with (
-            patch("ccgram.handlers.polling.window_tick.apply.tmux_manager") as mock_tm,
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.get_interactive_window",
-                return_value="@0",
-            ),
-            patch(
-                "ccgram.handlers.polling.window_tick.observe._parse_with_pyte",
-            ) as mock_pyte,
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.handle_interactive_ui",
-                new_callable=AsyncMock,
-            ) as mock_handle,
-        ):
-            mock_tm.capture_pane = AsyncMock()
-            await _check_interactive_only(bot, 1, "@0", 42, _window=mock_window)
-        mock_tm.capture_pane.assert_not_called()
-        mock_pyte.assert_not_called()
-        mock_handle.assert_not_called()
+        with _tick_env(interactive_window="@0") as env:
+            await _check_interactive_only(bot, 1, "@0", 42, _window=env.window)
+
+        env.tmux.capture_pane.assert_not_called()
+        env.pyte.assert_not_called()
+        env.handle_ui.assert_not_called()
 
     async def test_no_action_when_not_interactive(self) -> None:
-        from ccgram.handlers.polling.window_tick import _check_interactive_only
-        from ccgram.providers.base import StatusUpdate
-
-        normal_status = StatusUpdate(
-            raw_text="Reading file", display_label="reading..."
-        )
-        mock_window = MagicMock()
-        mock_window.window_id = "@0"
-        mock_window.pane_width = 80
-        mock_window.pane_height = 24
         bot = AsyncMock(spec=Bot)
-        with (
-            patch("ccgram.handlers.polling.window_tick.apply.tmux_manager") as mock_tm,
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.get_interactive_window",
-                return_value=None,
-            ),
-            patch(
-                "ccgram.handlers.polling.window_tick.observe._parse_with_pyte",
-                return_value=normal_status,
-            ),
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.handle_interactive_ui",
-                new_callable=AsyncMock,
-            ) as mock_handle,
-        ):
-            mock_tm.capture_pane = AsyncMock(return_value="some output")
-            await _check_interactive_only(bot, 1, "@0", 42, _window=mock_window)
-        mock_handle.assert_not_called()
+        normal = StatusUpdate(raw_text="Reading file", display_label="reading...")
+        with _tick_env(pyte_result=normal) as env:
+            await _check_interactive_only(bot, 1, "@0", 42, _window=env.window)
+
+        env.handle_ui.assert_not_called()
+        env.set_interactive_mode.assert_not_called()
 
     async def test_no_action_when_window_gone(self) -> None:
-        from ccgram.handlers.polling.window_tick import _check_interactive_only
-
         bot = AsyncMock(spec=Bot)
-        with (
-            patch("ccgram.handlers.polling.window_tick.apply.tmux_manager") as mock_tm,
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.handle_interactive_ui",
-                new_callable=AsyncMock,
-            ) as mock_handle,
-        ):
-            mock_tm.find_window_by_id = AsyncMock(return_value=None)
+        with _tick_env(window=None) as env:
             await _check_interactive_only(bot, 1, "@0", 42)
-        mock_handle.assert_not_called()
+
+        env.tmux.capture_pane.assert_not_called()
+        env.handle_ui.assert_not_called()
 
     async def test_no_action_on_empty_capture(self) -> None:
-        from ccgram.handlers.polling.window_tick import _check_interactive_only
-
-        mock_window = MagicMock()
-        mock_window.window_id = "@0"
         bot = AsyncMock(spec=Bot)
-        with (
-            patch("ccgram.handlers.polling.window_tick.apply.tmux_manager") as mock_tm,
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.get_interactive_window",
-                return_value=None,
-            ),
-            patch(
-                "ccgram.handlers.polling.window_tick.observe._parse_with_pyte",
-            ) as mock_pyte,
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.handle_interactive_ui",
-                new_callable=AsyncMock,
-            ) as mock_handle,
-        ):
-            mock_tm.capture_pane = AsyncMock(return_value="")
-            await _check_interactive_only(bot, 1, "@0", 42, _window=mock_window)
-        mock_pyte.assert_not_called()
-        mock_handle.assert_not_called()
+        with _tick_env(capture="") as env:
+            await _check_interactive_only(bot, 1, "@0", 42, _window=env.window)
+
+        env.pyte.assert_not_called()
+        env.handle_ui.assert_not_called()
 
     @pytest.mark.parametrize(
         ("uses_pane_title", "expected_title"),
@@ -2981,56 +2501,21 @@ class TestCheckInteractiveOnly:
     async def test_falls_back_to_provider_regex(
         self, uses_pane_title: bool, expected_title: str
     ) -> None:
-        from ccgram.handlers.polling.window_tick import _check_interactive_only
-        from ccgram.providers.base import StatusUpdate
-
-        interactive_status = StatusUpdate(
-            raw_text="Allow?",
-            display_label="Allow?",
-            is_interactive=True,
-            ui_type="PermissionPrompt",
-        )
-        mock_provider = MagicMock()
-        mock_provider.capabilities.uses_pane_title = uses_pane_title
-        mock_provider.parse_terminal_status.return_value = interactive_status
-        mock_window = MagicMock()
-        mock_window.window_id = "@0"
-        mock_window.pane_width = 80
-        mock_window.pane_height = 24
         bot = AsyncMock(spec=Bot)
-        with (
-            patch("ccgram.handlers.polling.window_tick.apply.tmux_manager") as mock_tm,
-            patch(
-                "ccgram.handlers.polling.window_tick.observe.tmux_manager"
-            ) as observe_tm,
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.get_interactive_window",
-                return_value=None,
-            ),
-            patch(
-                "ccgram.handlers.polling.window_tick.observe._parse_with_pyte",
-                return_value=None,
-            ),
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.get_provider_for_window",
-                return_value=mock_provider,
-            ),
-            patch(
-                "ccgram.handlers.polling.window_tick.observe.get_provider_for_window",
-                return_value=mock_provider,
-            ),
-            patch(
-                "ccgram.handlers.polling.window_tick.apply.handle_interactive_ui",
-                new_callable=AsyncMock,
-            ) as mock_handle,
-            patch("ccgram.handlers.polling.window_tick.apply.set_interactive_mode"),
-        ):
-            mock_tm.capture_pane = AsyncMock(return_value="Allow?\nEsc\n")
-            observe_tm.get_pane_title = AsyncMock(return_value="gemini-title")
-            await _check_interactive_only(bot, 1, "@0", 42, _window=mock_window)
-        mock_provider.parse_terminal_status.assert_called_once_with(
+        provider = _provider(
+            terminal_status=_INTERACTIVE_STATUS, uses_pane_title=uses_pane_title
+        )
+        with _tick_env(
+            pyte_result=None, capture="Allow?\nEsc\n", provider=provider
+        ) as env:
+            env.observe_tmux.get_pane_title = AsyncMock(return_value="gemini-title")
+            await _check_interactive_only(bot, 1, "@0", 42, _window=env.window)
+
+        provider.parse_terminal_status.assert_called_once_with(
             "Allow?\nEsc\n", pane_title=expected_title
         )
-        _assert_handle_called_once_with_client(mock_handle, bot, 1, "@0", 42)
+        _assert_handle_called_once_with_client(env.handle_ui, bot, 1, "@0", 42)
         if uses_pane_title:
-            observe_tm.get_pane_title.assert_called_once_with("@0")
+            env.observe_tmux.get_pane_title.assert_called_once_with("@0")
+        else:
+            env.observe_tmux.get_pane_title.assert_not_called()

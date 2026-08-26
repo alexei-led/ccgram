@@ -62,32 +62,49 @@ class TestReads:
         assert is_ephemeral_tools("@1") is True
         assert is_ephemeral_tools("@2") is False
 
-    def test_get_tool_call_visibility_default(self, store: WindowStateStore) -> None:
-        assert get_tool_call_visibility("@missing") == "default"
-
-    def test_get_tool_call_visibility_invalid_falls_back(
-        self, store: WindowStateStore
+    @pytest.mark.parametrize(
+        ("stored", "expected"),
+        [
+            (None, "default"),
+            ("default", "default"),
+            ("shown", "shown"),
+            ("hidden", "hidden"),
+            ("garbage", "default"),
+        ],
+    )
+    def test_get_tool_call_visibility(
+        self, store: WindowStateStore, stored: str | None, expected: str
     ) -> None:
-        store.window_states["@1"] = WindowState(tool_call_visibility="garbage")
-        assert get_tool_call_visibility("@1") == "default"
+        if stored is not None:
+            store.window_states["@1"] = WindowState(tool_call_visibility=stored)
+        assert get_tool_call_visibility("@1") == expected
 
-    def test_is_tool_calls_hidden_per_window_override(
-        self, store: WindowStateStore, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize("global_hide", [True, False])
+    @pytest.mark.parametrize(
+        ("stored", "expected"),
+        [
+            ("hidden", True),
+            ("shown", False),
+            ("default", None),
+            ("garbage", None),
+            (None, None),
+        ],
+    )
+    def test_is_tool_calls_hidden_matrix(
+        self,
+        store: WindowStateStore,
+        monkeypatch: pytest.MonkeyPatch,
+        stored: str | None,
+        expected: bool | None,
+        global_hide: bool,
     ) -> None:
-        monkeypatch.setattr(config, "hide_tool_calls", False, raising=False)
-        store.window_states["@1"] = WindowState(tool_call_visibility="hidden")
-        store.window_states["@2"] = WindowState(tool_call_visibility="shown")
-        store.window_states["@3"] = WindowState(tool_call_visibility="default")
-        assert is_tool_calls_hidden("@1") is True
-        assert is_tool_calls_hidden("@2") is False
-        assert is_tool_calls_hidden("@3") is False
-
-    def test_is_tool_calls_hidden_default_uses_global(
-        self, store: WindowStateStore, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(config, "hide_tool_calls", True, raising=False)
-        store.window_states["@1"] = WindowState(tool_call_visibility="default")
-        assert is_tool_calls_hidden("@1") is True
+        """`expected is None` means the window defers to the global config."""
+        monkeypatch.setattr(config, "hide_tool_calls", global_hide, raising=False)
+        if stored is not None:
+            store.window_states["@1"] = WindowState(tool_call_visibility=stored)
+        assert is_tool_calls_hidden("@1") is (
+            global_hide if expected is None else expected
+        )
 
 
 class TestWrites:

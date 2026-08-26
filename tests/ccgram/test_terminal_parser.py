@@ -203,15 +203,6 @@ class TestExtractInteractiveContent:
         assert "Would you like to proceed?" in result.content
         assert "ctrl-g to edit in" in result.content
 
-    def test_exit_plan_mode_variant(self):
-        pane = (
-            "  Claude has written up a plan\n  ─────\n  Details here\n  Esc to cancel\n"
-        )
-        result = extract_interactive_content(pane)
-        assert result is not None
-        assert result.name == "ExitPlanMode"
-        assert "Claude has written up a plan" in result.content
-
     def test_ask_user_multi_tab(self, sample_pane_ask_user_multi_tab: str):
         result = extract_interactive_content(sample_pane_ask_user_multi_tab)
         assert result is not None
@@ -230,61 +221,185 @@ class TestExtractInteractiveContent:
         assert result.name == "PermissionPrompt"
         assert "Do you want to proceed?" in result.content
 
-    def test_edit_permission_prompt_structural(self):
-        pane = (
-            "  Do you want to make this edit to status_polling.py?\n"
-            "\n"
-            "  ❯ Yes    Yes All    No\n"
-            "\n"
-            "  Esc to cancel\n"
-        )
+    @pytest.mark.parametrize(
+        ("pane", "expected_name", "expected_fragments"),
+        [
+            pytest.param(
+                "  Claude has written up a plan\n"
+                "  ─────\n"
+                "  Details here\n"
+                "  Esc to cancel\n",
+                "ExitPlanMode",
+                ["Claude has written up a plan"],
+                id="exit_plan_mode_variant",
+            ),
+            pytest.param(
+                "  Do you want to make this edit to status_polling.py?\n"
+                "\n"
+                "  ❯ Yes    Yes All    No\n"
+                "\n"
+                "  Esc to cancel\n",
+                "PermissionPrompt",
+                ["make this edit"],
+                id="edit_permission_prompt",
+            ),
+            pytest.param(
+                "  Allow mcp__server__tool to access /tmp?\n"
+                "\n"
+                "  ❯ Yes    No\n"
+                "\n"
+                "  Esc to cancel\n",
+                "PermissionPrompt",
+                ["Allow mcp__server__tool"],
+                id="allow_permission_prompt",
+            ),
+            pytest.param(
+                "  Network request outside of sandbox\n"
+                "\n"
+                "  WebFetch wants to access: https://example.com\n"
+                "\n"
+                "  ❯ Yes    No\n"
+                "\n"
+                "  Esc to cancel\n",
+                "PermissionPrompt",
+                ["Network request outside of sandbox"],
+                id="network_request_outside_sandbox",
+            ),
+            pytest.param(
+                "  Bash command\n"
+                "  make test\n"
+                "  This command requires approval\n"
+                "\n"
+                "  ❯ Yes    Yes All    No\n"
+                "\n"
+                "  Esc to cancel\n",
+                "PermissionPrompt",
+                ["requires approval"],
+                id="bash_command_requires_approval",
+            ),
+            pytest.param(
+                "  Some brand new question nobody predicted?\n"
+                "\n"
+                "  ❯ Option A    Option B    Option C\n"
+                "\n"
+                "  Esc to cancel\n",
+                "SelectionUI",
+                ["❯", "brand new question"],
+                id="unknown_selection_ui",
+            ),
+            pytest.param(
+                "  Pick a thing:\n  ❯ Alpha\n    Beta\n  Enter to confirm\n",
+                "SelectionUI",
+                ["Pick a thing"],
+                id="structural_catchall_enter_to_confirm",
+            ),
+            pytest.param(
+                "Remote Control\n"
+                "\n"
+                "   Remote Control lets you access this CLI session.\n"
+                "\n"
+                "   ❯ 1. Enable Remote Control for this session\n"
+                "     2. Never mind\n",
+                "SelectionUI",
+                ["Remote Control", "❯"],
+                id="numbered_list_without_footer",
+            ),
+            pytest.param(
+                "  Which option?\n\n  › Option A    Option B\n\n  Esc to cancel\n",
+                "SelectionUI",
+                ["Which option?"],
+                id="codex_selection_cursor",
+            ),
+            pytest.param(
+                "  Restore the code to a previous state?\n"
+                "  ─────\n"
+                "  Some details\n"
+                "  Enter to continue\n",
+                "RestoreCheckpoint",
+                ["Restore the code"],
+                id="restore_checkpoint",
+            ),
+            pytest.param(
+                "  Settings: press tab to cycle\n"
+                "  ─────\n"
+                "  Option 1\n"
+                "  Esc to cancel\n",
+                "Settings",
+                ["Settings:"],
+                id="settings_esc_to_cancel",
+            ),
+            pytest.param(
+                "  Settings: press tab to cycle\n  ─────\n  Option 1\n  Esc to exit\n",
+                "Settings",
+                ["Settings:"],
+                id="settings_esc_to_exit",
+            ),
+            pytest.param(
+                " Select model\n"
+                " Switch between Claude models.\n"
+                "\n"
+                " ❯ 1. Default (recommended) ✔  Opus 4.6\n"
+                "   2. Sonnet                   Sonnet 4.6\n"
+                "\n"
+                " ▌▌▌ Medium effort ← → to adjust\n"
+                "\n"
+                " Enter to confirm · Esc to exit\n",
+                "SelectModel",
+                ["Select model", "Enter to confirm"],
+                id="select_model_enter_to_confirm",
+            ),
+            pytest.param(
+                " Select model\n"
+                " Switch between Claude models.\n"
+                "\n"
+                " ❯ 1. Default (recommended)\n"
+                "   2. Sonnet\n"
+                "\n"
+                " Esc to exit\n",
+                "SelectModel",
+                ["Select model"],
+                id="select_model_esc_to_exit",
+            ),
+        ],
+    )
+    def test_classifies_pane_by_structure(
+        self, pane: str, expected_name: str, expected_fragments: list[str]
+    ):
+        result = extract_interactive_content(pane)
+        assert result is not None
+        assert result.name == expected_name
+        for fragment in expected_fragments:
+            assert fragment in result.content
+
+    @pytest.mark.parametrize(
+        "pane",
+        [
+            pytest.param(
+                "  Network request outside of sandbox\n"
+                "\n"
+                "  WebFetch wants to access: https://example.com\n"
+                "\n"
+                "  Yes    No\n"
+                "\n"
+                "  Esc to cancel\n",
+                id="network_request",
+            ),
+            pytest.param(
+                "  Bash command\n"
+                "  make test\n"
+                "  This command requires approval\n"
+                "\n"
+                "  Yes    Yes All    No\n"
+                "\n"
+                "  Esc to cancel\n",
+                id="bash_command_requires_approval",
+            ),
+        ],
+    )
+    def test_detects_permission_prompt_without_selection_cursor(self, pane: str):
         result = extract_interactive_content(pane)
         assert result is not None
         assert result.name == "PermissionPrompt"
-        assert "make this edit" in result.content
-
-    def test_unknown_selection_ui_structural(self):
-        pane = (
-            "  Some brand new question nobody predicted?\n"
-            "\n"
-            "  ❯ Option A    Option B    Option C\n"
-            "\n"
-            "  Esc to cancel\n"
-        )
-        result = extract_interactive_content(pane)
-        assert result is not None
-        assert result.name == "SelectionUI"
-        assert "❯" in result.content
-        assert "brand new question" in result.content
-
-    def test_structural_catchall_enter_to_confirm(self):
-        pane = "  Pick a thing:\n  ❯ Alpha\n    Beta\n  Enter to confirm\n"
-        result = extract_interactive_content(pane)
-        assert result is not None
-        assert result.name == "SelectionUI"
-        assert "Pick a thing" in result.content
-
-    def test_numbered_list_without_footer(self):
-        pane = (
-            "Remote Control\n"
-            "\n"
-            "   Remote Control lets you access this CLI session.\n"
-            "\n"
-            "   ❯ 1. Enable Remote Control for this session\n"
-            "     2. Never mind\n"
-        )
-        result = extract_interactive_content(pane)
-        assert result is not None
-        assert result.name == "SelectionUI"
-        assert "Remote Control" in result.content
-        assert "❯" in result.content
-
-    def test_codex_selection_cursor(self):
-        pane = "  Which option?\n\n  › Option A    Option B\n\n  Esc to cancel\n"
-        result = extract_interactive_content(pane)
-        assert result is not None
-        assert result.name == "SelectionUI"
-        assert "Which option?" in result.content
 
     @pytest.mark.parametrize(
         "bottom_text",
@@ -310,148 +425,6 @@ class TestExtractInteractiveContent:
         result = extract_interactive_content(pane)
         assert result is not None
         assert result.name == "SelectionUI"
-
-    def test_restore_checkpoint(self):
-        pane = (
-            "  Restore the code to a previous state?\n"
-            "  ─────\n"
-            "  Some details\n"
-            "  Enter to continue\n"
-        )
-        result = extract_interactive_content(pane)
-        assert result is not None
-        assert result.name == "RestoreCheckpoint"
-        assert "Restore the code" in result.content
-
-    def test_settings(self):
-        pane = "  Settings: press tab to cycle\n  ─────\n  Option 1\n  Esc to cancel\n"
-        result = extract_interactive_content(pane)
-        assert result is not None
-        assert result.name == "Settings"
-        assert "Settings:" in result.content
-
-    def test_select_model(self):
-        pane = (
-            " Select model\n"
-            " Switch between Claude models.\n"
-            "\n"
-            " ❯ 1. Default (recommended) ✔  Opus 4.6\n"
-            "   2. Sonnet                   Sonnet 4.6\n"
-            "\n"
-            " ▌▌▌ Medium effort ← → to adjust\n"
-            "\n"
-            " Enter to confirm · Esc to exit\n"
-        )
-        result = extract_interactive_content(pane)
-        assert result is not None
-        assert result.name == "SelectModel"
-        assert "Select model" in result.content
-        assert "Enter to confirm" in result.content
-
-    def test_permission_prompt_edit_tool(self):
-        pane = (
-            "  Do you want to make this edit to config.py?\n"
-            "\n"
-            "  ❯ Yes    Yes All    No\n"
-            "\n"
-            "  Esc to cancel\n"
-        )
-        result = extract_interactive_content(pane)
-        assert result is not None
-        assert result.name == "PermissionPrompt"
-        assert "make this edit" in result.content
-
-    def test_network_request_outside_sandbox(self):
-        pane = (
-            "  Network request outside of sandbox\n"
-            "\n"
-            "  WebFetch wants to access: https://example.com\n"
-            "\n"
-            "  ❯ Yes    No\n"
-            "\n"
-            "  Esc to cancel\n"
-        )
-        result = extract_interactive_content(pane)
-        assert result is not None
-        assert result.name == "PermissionPrompt"
-        assert "Network request outside of sandbox" in result.content
-
-    def test_network_request_no_cursor(self):
-        pane = (
-            "  Network request outside of sandbox\n"
-            "\n"
-            "  WebFetch wants to access: https://example.com\n"
-            "\n"
-            "  Yes    No\n"
-            "\n"
-            "  Esc to cancel\n"
-        )
-        result = extract_interactive_content(pane)
-        assert result is not None
-        assert result.name == "PermissionPrompt"
-
-    def test_allow_permission_prompt(self):
-        pane = (
-            "  Allow mcp__server__tool to access /tmp?\n"
-            "\n"
-            "  ❯ Yes    No\n"
-            "\n"
-            "  Esc to cancel\n"
-        )
-        result = extract_interactive_content(pane)
-        assert result is not None
-        assert result.name == "PermissionPrompt"
-
-    def test_bash_command_requires_approval(self):
-        pane = (
-            "  Bash command\n"
-            "  make test\n"
-            "  This command requires approval\n"
-            "\n"
-            "  ❯ Yes    Yes All    No\n"
-            "\n"
-            "  Esc to cancel\n"
-        )
-        result = extract_interactive_content(pane)
-        assert result is not None
-        assert result.name == "PermissionPrompt"
-        assert "requires approval" in result.content
-
-    def test_bash_command_requires_approval_no_cursor(self):
-        pane = (
-            "  Bash command\n"
-            "  make test\n"
-            "  This command requires approval\n"
-            "\n"
-            "  Yes    Yes All    No\n"
-            "\n"
-            "  Esc to cancel\n"
-        )
-        result = extract_interactive_content(pane)
-        assert result is not None
-        assert result.name == "PermissionPrompt"
-
-    def test_settings_esc_to_exit(self):
-        pane = "  Settings: press tab to cycle\n  ─────\n  Option 1\n  Esc to exit\n"
-        result = extract_interactive_content(pane)
-        assert result is not None
-        assert result.name == "Settings"
-        assert "Settings:" in result.content
-
-    def test_select_model_esc_to_exit(self):
-        pane = (
-            " Select model\n"
-            " Switch between Claude models.\n"
-            "\n"
-            " ❯ 1. Default (recommended)\n"
-            "   2. Sonnet\n"
-            "\n"
-            " Esc to exit\n"
-        )
-        result = extract_interactive_content(pane)
-        assert result is not None
-        assert result.name == "SelectModel"
-        assert "Select model" in result.content
 
     @pytest.mark.parametrize(
         "pane",
@@ -595,19 +568,26 @@ class TestFormatStatusDisplay:
     def test_known_patterns(self, raw: str, expected: str) -> None:
         assert format_status_display(raw) == expected
 
-    def test_case_insensitive(self) -> None:
-        assert format_status_display("READING file") == "\U0001f4d6 reading\u2026"
-
-    def test_first_word_priority(self) -> None:
-        assert (
-            format_status_display("Writing tests for module")
-            == "\U0001f4dd writing\u2026"
-        )
-
-    def test_fallback_to_full_string(self) -> None:
-        assert (
-            format_status_display("foo bar testing baz") == "\U0001f9ea testing\u2026"
-        )
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            pytest.param(
+                "READING file", "\U0001f4d6 reading\u2026", id="case_insensitive"
+            ),
+            pytest.param(
+                "Writing tests for module",
+                "\U0001f4dd writing\u2026",
+                id="first_word_wins",
+            ),
+            pytest.param(
+                "foo bar testing baz",
+                "\U0001f9ea testing\u2026",
+                id="falls_back_to_full_string",
+            ),
+        ],
+    )
+    def test_keyword_resolution(self, raw: str, expected: str) -> None:
+        assert format_status_display(raw) == expected
 
 
 class TestStatusEmojiPrefix:
@@ -785,29 +765,35 @@ class TestBottomUpFallback:
         result = extract_interactive_content(pane)
         assert result is None
 
-    def test_infers_selection_ui_name(self):
-        pane = "  Unknown Title\n  ❯ Option A\n    Option B\n  Esc to cancel\n"
+    @pytest.mark.parametrize(
+        ("pane", "expected_name"),
+        [
+            pytest.param(
+                "  Unknown Title\n  ❯ Option A\n    Option B\n  Esc to cancel\n",
+                "SelectionUI",
+                id="selection_cursor_infers_selection_ui",
+            ),
+            pytest.param(
+                "  Unknown Title\n  ☐ Option A\n  ✔ Option B\n  Enter to select\n",
+                "AskUserQuestion",
+                id="checkboxes_infer_ask_user_question",
+            ),
+            pytest.param(
+                "  Unknown Title\n\n  Some text\n\n  Esc to cancel\n",
+                "InteractiveUI",
+                id="no_widget_infers_generic",
+            ),
+            pytest.param(
+                "  Do you want to proceed?\n\n  ❯ Yes    No\n\n  Esc to cancel\n",
+                "PermissionPrompt",
+                id="title_pattern_beats_bottom_up_inference",
+            ),
+        ],
+    )
+    def test_infers_name_from_widgets(self, pane: str, expected_name: str):
         result = extract_interactive_content(pane)
         assert result is not None
-        assert result.name == "SelectionUI"
-
-    def test_infers_ask_user_name(self):
-        pane = "  Unknown Title\n  ☐ Option A\n  ✔ Option B\n  Enter to select\n"
-        result = extract_interactive_content(pane)
-        assert result is not None
-        assert result.name == "AskUserQuestion"
-
-    def test_infers_generic_name(self):
-        pane = "  Unknown Title\n\n  Some text\n\n  Esc to cancel\n"
-        result = extract_interactive_content(pane)
-        assert result is not None
-        assert result.name == "InteractiveUI"
-
-    def test_pattern_match_takes_precedence(self):
-        pane = "  Do you want to proceed?\n\n  ❯ Yes    No\n\n  Esc to cancel\n"
-        result = extract_interactive_content(pane)
-        assert result is not None
-        assert result.name == "PermissionPrompt"  # not bottom-up
+        assert result.name == expected_name
 
 
 class TestExtractInteractiveContentWithLines:

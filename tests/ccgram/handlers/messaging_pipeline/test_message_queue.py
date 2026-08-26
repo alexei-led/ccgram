@@ -117,29 +117,29 @@ class TestGetOrCreateQueue:
 
 class TestCanMergeTasks:
     def test_same_window_text_tasks_merge(self):
-        a = _content_task("hello")
-        b = _content_task("world")
-        assert _can_merge_tasks(a, b)
+        assert _can_merge_tasks(_content_task("hello"), _content_task("world"))
+
+    @pytest.mark.parametrize("base_type", ["tool_use", "tool_result"])
+    @pytest.mark.parametrize("candidate_type", ["text", "tool_use", "tool_result"])
+    def test_tool_base_blocks_merge(
+        self, base_type: ContentType, candidate_type: ContentType
+    ):
+        base = _content_task("hello", content_type=base_type)
+        candidate = _content_task("world", content_type=candidate_type)
+        assert not _can_merge_tasks(base, candidate)
+
+    @pytest.mark.parametrize("candidate_type", ["tool_use", "tool_result"])
+    def test_tool_candidate_blocks_merge(self, candidate_type: ContentType):
+        candidate = _content_task("world", content_type=candidate_type)
+        assert not _can_merge_tasks(_content_task("hello"), candidate)
 
     def test_different_window_blocks_merge(self):
         a = _content_task("hello", window_id="@0")
         b = _content_task("world", window_id="@1")
         assert not _can_merge_tasks(a, b)
 
-    def test_tool_use_base_blocks_merge(self):
-        a = _content_task("hello", content_type="tool_use")
-        b = _content_task("world")
-        assert not _can_merge_tasks(a, b)
-
-    def test_tool_result_candidate_blocks_merge(self):
-        a = _content_task("hello")
-        b = _content_task("world", content_type="tool_result")
-        assert not _can_merge_tasks(a, b)
-
     def test_non_content_candidate_blocks_merge(self):
-        a = _content_task("hello")
-        b = _status_task()
-        assert not _can_merge_tasks(a, b)
+        assert not _can_merge_tasks(_content_task("hello"), _status_task())
 
 
 class TestMergeContentTasks:
@@ -176,6 +176,18 @@ class TestMergeContentTasks:
         assert merged.parts == (big_text,)
         assert queue.qsize() == 1
 
+    async def test_merges_up_to_the_exact_length_limit(self, queue, lock):
+        half = "x" * (MERGE_MAX_LENGTH // 2)
+        queue.put_nowait(_content_task(half))
+        queue.put_nowait(_content_task("overflow"))
+        first = _content_task(half)
+
+        merged, count = await _merge_content_tasks(queue, first, lock)
+
+        assert count == 1
+        assert sum(len(p) for p in merged.parts) <= MERGE_MAX_LENGTH
+        assert queue.qsize() == 1
+
     async def test_no_merge_returns_zero(self, queue, lock):
         first = _content_task("solo")
 
@@ -195,6 +207,19 @@ class TestCoalesceStatusUpdates:
 
         assert selected.text == "Writing..."
         assert dropped == 2
+
+    async def test_stops_at_status_for_a_different_window(self, queue, lock):
+        queue.put_nowait(_status_task("Writing...", window_id="@0"))
+        queue.put_nowait(_status_task("other window", window_id="@1"))
+        first = _status_task("Reading...", window_id="@0")
+
+        selected, dropped = await _coalesce_status_updates(queue, first, lock)
+
+        assert selected.text == "Writing..."
+        assert dropped == 1
+        remaining = queue.get_nowait()
+        assert isinstance(remaining, StatusUpdateTask)
+        assert remaining.text == "other window"
 
     async def test_preserves_non_status_tasks(self, queue, lock):
         queue.put_nowait(_content_task("hello"))

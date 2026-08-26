@@ -47,14 +47,13 @@ class TestCheckWorktreeEligibility:
         assert result.repo_path == git_repo.resolve()
         assert result.reason is None
 
-    def test_dirty_repo_is_eligible_with_dirty_flag(self, git_repo: Path) -> None:
-        (git_repo / "file.txt").write_text("changed")
-        result = check_worktree_eligibility(git_repo)
-        assert result.eligible is True
-        assert result.dirty is True
-
-    def test_untracked_file_marks_dirty(self, git_repo: Path) -> None:
-        (git_repo / "new.txt").write_text("x")
+    @pytest.mark.parametrize(
+        "filename", ["file.txt", "new.txt"], ids=["modified_tracked", "untracked"]
+    )
+    def test_dirty_repo_is_eligible_with_dirty_flag(
+        self, git_repo: Path, filename: str
+    ) -> None:
+        (git_repo / filename).write_text("changed")
         result = check_worktree_eligibility(git_repo)
         assert result.eligible is True
         assert result.dirty is True
@@ -105,11 +104,11 @@ class TestSuggestBranchName:
     def test_kebab_case_from_title(self, git_repo: Path) -> None:
         assert suggest_branch_name("Fix the Bug!", git_repo) == "ccg/fix-the-bug"
 
-    def test_no_title_falls_back_to_agent(self, git_repo: Path) -> None:
-        assert suggest_branch_name(None, git_repo) == "ccg/agent-1"
-
-    def test_empty_title_falls_back_to_agent(self, git_repo: Path) -> None:
-        assert suggest_branch_name("   ", git_repo) == "ccg/agent-1"
+    @pytest.mark.parametrize("title", [None, "   "], ids=["none", "blank"])
+    def test_missing_title_falls_back_to_agent(
+        self, git_repo: Path, title: str | None
+    ) -> None:
+        assert suggest_branch_name(title, git_repo) == "ccg/agent-1"
 
     def test_collision_with_existing_branch(self, git_repo: Path) -> None:
         _git(git_repo, "branch", "ccg/feature")
@@ -127,31 +126,40 @@ class TestSuggestBranchName:
 
 
 class TestValidateBranchName:
-    def test_valid_simple_name(self) -> None:
-        assert validate_branch_name("ccg/feature") is True
+    @pytest.mark.parametrize(
+        "name",
+        ["ccg/feature", "feature", "ccg/fix-the-bug", "a" * 200],
+    )
+    def test_accepts_valid_name(self, name: str) -> None:
+        assert validate_branch_name(name) is True
 
-    def test_name_with_space_is_invalid(self) -> None:
-        assert validate_branch_name("has space") is False
-
-    def test_name_with_double_dot_is_invalid(self) -> None:
-        assert validate_branch_name("bad..name") is False
-
-    def test_empty_name_is_invalid(self) -> None:
-        assert validate_branch_name("") is False
-
-    def test_leading_dash_is_invalid(self) -> None:
-        assert validate_branch_name("-leading") is False
-
-    def test_overlong_name_is_invalid(self) -> None:
-        assert validate_branch_name("a" * 300) is False
+    @pytest.mark.parametrize(
+        ("name", "reason"),
+        [
+            ("", "empty"),
+            ("-leading", "leading dash reads as a git option"),
+            ("a" * 201, "one over the length cap"),
+            ("has space", "space"),
+            ("bad..name", "double dot"),
+            ("feature.lock", "reserved .lock suffix"),
+            ("foo~1", "revision operator"),
+            ("a:b", "colon"),
+            ("foo^", "caret"),
+            ("foo//bar", "empty path component"),
+            ("foo.", "trailing dot"),
+        ],
+    )
+    def test_rejects_invalid_name(self, name: str, reason: str) -> None:
+        assert validate_branch_name(name) is False, reason
 
 
 class TestPathHelpers:
-    def test_slug_for_path_replaces_slashes(self) -> None:
-        assert slug_for_path("ccg/foo/bar") == "ccg-foo-bar"
-
-    def test_slug_for_path_noop_without_slash(self) -> None:
-        assert slug_for_path("ccg-x") == "ccg-x"
+    @pytest.mark.parametrize(
+        ("branch", "expected"),
+        [("ccg/foo/bar", "ccg-foo-bar"), ("ccg-x", "ccg-x")],
+    )
+    def test_slug_for_path(self, branch: str, expected: str) -> None:
+        assert slug_for_path(branch) == expected
 
     def test_worktree_path_for(self) -> None:
         repo = Path("/a/b/myrepo")

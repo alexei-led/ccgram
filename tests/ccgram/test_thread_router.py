@@ -247,6 +247,114 @@ class TestChatScopedBindings:
         assert list(restored.iter_thread_bindings()) == [(100, 7, "@a")]
 
 
+class TestUnbindChatScoped:
+    def test_unbind_with_chat_id_removes_only_that_chat(
+        self, router: ThreadRouter
+    ) -> None:
+        router.bind_thread(100, 7, "@a", chat_id=-1001)
+        router.bind_thread(100, 7, "@b", chat_id=-1002)
+
+        assert router.unbind_thread(100, 7, chat_id=-1001) == "@a"
+        assert router.get_window_for_chat_thread(-1001, 7) is None
+        assert router.get_window_for_chat_thread(-1002, 7) == "@b"
+
+    def test_unbind_with_unknown_chat_id_returns_none(
+        self, router: ThreadRouter
+    ) -> None:
+        router.bind_thread(100, 7, "@a", chat_id=-1001)
+        assert router.unbind_thread(100, 7, chat_id=-9999) is None
+        assert router.get_window_for_chat_thread(-1001, 7) == "@a"
+
+    def test_chatless_unbind_infers_the_sole_chat_scoped_binding(
+        self, router: ThreadRouter
+    ) -> None:
+        router.bind_thread(100, 7, "@a", chat_id=-1001)
+        assert router.unbind_thread(100, 7) == "@a"
+        assert router.get_window_for_chat_thread(-1001, 7) is None
+
+    def test_chatless_unbind_refuses_when_the_thread_is_ambiguous(
+        self, router: ThreadRouter
+    ) -> None:
+        """Two chats share thread id 7 — unbinding without a chat_id must not
+        guess which one the caller meant."""
+        router.bind_thread(100, 7, "@a", chat_id=-1001)
+        router.bind_thread(100, 7, "@b", chat_id=-1002)
+
+        assert router.unbind_thread(100, 7) is None
+        assert router.get_window_for_chat_thread(-1001, 7) == "@a"
+        assert router.get_window_for_chat_thread(-1002, 7) == "@b"
+
+    def test_chatless_unbind_prefers_the_legacy_binding(
+        self, router: ThreadRouter
+    ) -> None:
+        router.bind_thread(100, 7, "@legacy")
+        router.bind_thread(100, 7, "@scoped", chat_id=-1001)
+
+        assert router.unbind_thread(100, 7) == "@legacy"
+        assert router.get_window_for_chat_thread(-1001, 7) == "@scoped"
+
+    def test_unbinding_a_scoped_thread_keeps_the_users_other_bindings(
+        self, router: ThreadRouter
+    ) -> None:
+        """The user's legacy bindings live in a per-user dict; removing a
+        chat-scoped binding must not drop that dict along with it."""
+        router.bind_thread(100, 1, "@other")
+        router.bind_thread(100, 7, "@scoped", chat_id=-1001)
+
+        assert router.unbind_thread(100, 7) == "@scoped"
+        assert router.get_window_for_thread(100, 1) == "@other"
+        assert router.get_window_for_chat_thread(-1001, 7) is None
+
+
+class TestIterThreadBindingsWithChat:
+    def test_yields_chat_id_for_scoped_and_legacy_bindings(
+        self, router: ThreadRouter
+    ) -> None:
+        router.bind_thread(100, 1, "@legacy")
+        router.bind_thread(100, 7, "@scoped", chat_id=-1001)
+
+        assert set(router.iter_thread_bindings_with_chat()) == {
+            (100, None, 1, "@legacy"),
+            (100, -1001, 7, "@scoped"),
+        }
+
+    def test_legacy_binding_reports_its_stored_group_chat_id(
+        self, router: ThreadRouter
+    ) -> None:
+        router.bind_thread(100, 1, "@1")
+        router.group_chat_ids["100:1"] = -500
+
+        assert list(router.iter_thread_bindings_with_chat()) == [(100, -500, 1, "@1")]
+
+    def test_empty(self, router: ThreadRouter) -> None:
+        assert list(router.iter_thread_bindings_with_chat()) == []
+
+
+class TestPopDisplayName:
+    def test_returns_and_removes_stored_name(self, router: ThreadRouter) -> None:
+        router.set_display_name("@1", "proj")
+        assert router.pop_display_name("@1") == "proj"
+        assert router.get_display_name("@1") == "@1"
+
+    def test_unknown_window_falls_back_to_window_id(self, router: ThreadRouter) -> None:
+        assert router.pop_display_name("@missing") == "@missing"
+
+    def test_pop_persists_only_when_a_name_was_removed(self) -> None:
+        saves: list[int] = []
+        router = ThreadRouter(
+            schedule_save=lambda: saves.append(1),
+            has_window_state=lambda _wid: False,
+        )
+        router.set_display_name("@1", "proj")
+        saves.clear()
+
+        router.pop_display_name("@missing")
+        assert saves == []
+
+        router.pop_display_name("@1")
+        assert len(saves) == 1
+
+
 class TestReset:
     def test_reset_clears_all(self, router: ThreadRouter) -> None:
         router.bind_thread(100, 1, "@1", window_name="proj")

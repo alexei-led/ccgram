@@ -1,5 +1,6 @@
 """Tests for LLM command generation modules."""
 
+import json
 from unittest.mock import MagicMock
 
 import pytest
@@ -8,80 +9,129 @@ from ccgram.llm.httpx_completer import _build_user_message, _parse_command_resul
 
 
 class TestParseCommandResult:
-    def test_valid_json_all_fields(self) -> None:
-        text = (
-            '{"command": "ls -la", "explanation": "List all files", "dangerous": false}'
+    @pytest.mark.parametrize(
+        ("text", "command", "explanation", "dangerous"),
+        [
+            pytest.param(
+                '{"command": "ls -la", "explanation": "List all files", "dangerous": false}',
+                "ls -la",
+                "List all files",
+                False,
+                id="all_fields",
+            ),
+            pytest.param(
+                '{"command": "touch a", "explanation": "Delete everything", "dangerous": true}',
+                "touch a",
+                "Delete everything",
+                True,
+                id="dangerous_flag_honoured",
+            ),
+            pytest.param(
+                '```json\n{"command": "echo hi", "explanation": "Print hi", "dangerous": false}\n```',
+                "echo hi",
+                "Print hi",
+                False,
+                id="markdown_code_fences",
+            ),
+            pytest.param(
+                '```\n{"command": "pwd", "explanation": "Print dir", "dangerous": false}\n```',
+                "pwd",
+                "Print dir",
+                False,
+                id="plain_code_fences",
+            ),
+            pytest.param(
+                '  \n{"command": "ls", "explanation": "list", "dangerous": false}\n  ',
+                "ls",
+                "list",
+                False,
+                id="surrounding_whitespace",
+            ),
+            pytest.param(
+                '{"command": "ls", "explanation": "list"}',
+                "ls",
+                "list",
+                False,
+                id="dangerous_defaults_to_false",
+            ),
+            pytest.param(
+                '{"command": "ls", "explanation": 42, "dangerous": false}',
+                "ls",
+                "",
+                False,
+                id="non_string_explanation_dropped",
+            ),
+        ],
+    )
+    def test_parses_well_formed_response(
+        self, text: str, command: str, explanation: str, dangerous: bool
+    ) -> None:
+        result = _parse_command_result(text)
+        assert (result.command, result.explanation, result.is_dangerous) == (
+            command,
+            explanation,
+            dangerous,
+        )
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            pytest.param("this is not json at all", id="not_json"),
+            pytest.param("", id="empty"),
+            pytest.param(
+                '{"explanation": "No command here", "dangerous": false}',
+                id="no_command_key",
+            ),
+            pytest.param(
+                '{"command": "", "explanation": "nothing", "dangerous": false}',
+                id="empty_command",
+            ),
+            pytest.param(
+                '{"command": 42, "explanation": "nothing"}', id="non_string_command"
+            ),
+            pytest.param('[{"command": "ls"}]', id="json_array"),
+            pytest.param('"just a string"', id="json_scalar"),
+        ],
+    )
+    def test_unusable_response_falls_back_to_raw_text_marked_dangerous(
+        self, text: str
+    ) -> None:
+        result = _parse_command_result(text)
+        assert result.command == text.strip()
+        assert result.explanation == ""
+        assert result.is_dangerous is True
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "rm -rf /tmp/x",
+            "rm --recursive /tmp/x",
+            "sudo rm /etc/passwd",
+            "dd if=/dev/zero of=/dev/sda",
+            "mkfs.ext4 /dev/sda1",
+            "shutdown -h now",
+            "kill -9 1",
+            "killall -q python",
+            "chmod -R 777 /",
+            "echo x > /dev/sda",
+            "psql -c 'DROP TABLE users'",
+        ],
+    )
+    def test_heuristic_overrides_a_benign_dangerous_flag(self, command: str) -> None:
+        """The model claiming dangerous:false must not disarm the local guard —
+        it gates the extra confirmation step in the shell approval flow."""
+        text = json.dumps(
+            {"command": command, "explanation": "harmless", "dangerous": False}
         )
         result = _parse_command_result(text)
-        assert result.command == "ls -la"
-        assert result.explanation == "List all files"
-        assert result.is_dangerous is False
-
-    def test_dangerous_true(self) -> None:
-        text = '{"command": "rm -rf /", "explanation": "Delete everything", "dangerous": true}'
-        result = _parse_command_result(text)
-        assert result.command == "rm -rf /"
-        assert result.explanation == "Delete everything"
         assert result.is_dangerous is True
+        assert result.command == command
 
-    def test_json_in_markdown_code_fences(self) -> None:
-        text = '```json\n{"command": "echo hi", "explanation": "Print hi", "dangerous": false}\n```'
-        result = _parse_command_result(text)
-        assert result.command == "echo hi"
-        assert result.explanation == "Print hi"
-        assert result.is_dangerous is False
-
-    def test_json_in_plain_code_fences(self) -> None:
-        text = '```\n{"command": "pwd", "explanation": "Print dir", "dangerous": false}\n```'
-        result = _parse_command_result(text)
-        assert result.command == "pwd"
-        assert result.explanation == "Print dir"
-
-    def test_invalid_json_returns_raw_text_marked_dangerous(self) -> None:
-        text = "this is not json at all"
-        result = _parse_command_result(text)
-        assert result.command == "this is not json at all"
-        assert result.explanation == ""
-        assert result.is_dangerous is True
-
-    def test_json_missing_command_field(self) -> None:
-        text = '{"explanation": "No command here", "dangerous": false}'
-        result = _parse_command_result(text)
-        assert result.command == text.strip()
-        assert result.explanation == ""
-
-    def test_empty_string_marked_dangerous(self) -> None:
-        result = _parse_command_result("")
-        assert result.command == ""
-        assert result.explanation == ""
-        assert result.is_dangerous is True
-
-    def test_json_with_empty_command(self) -> None:
-        text = '{"command": "", "explanation": "nothing", "dangerous": false}'
-        result = _parse_command_result(text)
-        assert result.command == text.strip()
-
-    def test_json_array_returns_raw_text(self) -> None:
-        text = '[{"command": "ls"}]'
-        result = _parse_command_result(text)
-        assert result.command == text.strip()
-        assert result.explanation == ""
-
-    def test_non_string_explanation_treated_as_empty(self) -> None:
-        text = '{"command": "ls", "explanation": 42, "dangerous": false}'
-        result = _parse_command_result(text)
-        assert result.command == "ls"
-        assert result.explanation == ""
-
-    def test_dangerous_defaults_to_false(self) -> None:
-        text = '{"command": "ls", "explanation": "list"}'
-        result = _parse_command_result(text)
-        assert result.is_dangerous is False
-
-    def test_whitespace_around_json(self) -> None:
-        text = '  \n{"command": "ls", "explanation": "list", "dangerous": false}\n  '
-        result = _parse_command_result(text)
-        assert result.command == "ls"
+    def test_heuristic_leaves_safe_commands_alone(self) -> None:
+        text = json.dumps(
+            {"command": "rm /tmp/one-file", "explanation": "", "dangerous": False}
+        )
+        assert _parse_command_result(text).is_dangerous is False
 
 
 class TestBuildUserMessage:

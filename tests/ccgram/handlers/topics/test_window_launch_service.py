@@ -1,7 +1,10 @@
-"""Tests for window_launch_service.py — _cwd_within, _persist_worktree_state, launch_window."""
+"""Tests for window_launch_service.py — pure helpers plus the launch_window flow."""
 
 from __future__ import annotations
 
+import contextlib
+from collections.abc import Iterator
+from dataclasses import dataclass
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
@@ -9,7 +12,9 @@ import pytest
 from ccgram.multiplexer.base import TopicTargetResult
 from ccgram.handlers.topics.window_launch_service import (
     WindowLaunchRequest,
+    _create_topic_window,
     _cwd_within,
+    _follow_supersession,
     _persist_worktree_state,
     launch_window,
 )
@@ -18,7 +23,10 @@ from ccgram.handlers.user_state import (
     PENDING_THREAD_TEXT,
     PENDING_WORKTREE_BRANCH,
     PENDING_WORKTREE_PATH,
+    PENDING_WORKTREE_REPO,
 )
+
+_MODULE = "ccgram.handlers.topics.window_launch_service."
 
 
 # ── _cwd_within ──────────────────────────────────────────────────────────────
@@ -55,67 +63,155 @@ class TestCwdWithin:
 
 
 class TestPersistWorktreeState:
-    @patch("ccgram.handlers.topics.window_launch_service.session_manager")
-    def test_writes_worktree_state_when_cwd_matches(
-        self, mock_sm: MagicMock, tmp_path
+    @staticmethod
+    def _context(user_data: dict) -> MagicMock:
+        context = MagicMock()
+        context.user_data = user_data
+        return context
+
+    def test_writes_worktree_state_and_clears_keys_when_cwd_matches(
+        self, tmp_path
     ) -> None:
         wt_path = str(tmp_path)
         user_data = {
             PENDING_WORKTREE_PATH: wt_path,
             PENDING_WORKTREE_BRANCH: "ccg/feat",
         }
-        context = MagicMock()
-        context.user_data = user_data
 
-        _persist_worktree_state("@1", wt_path, context)
+        with patch(f"{_MODULE}session_manager") as mock_sm:
+            _persist_worktree_state("@1", wt_path, self._context(user_data))
 
         mock_sm.set_window_worktree.assert_called_once_with("@1", wt_path, "ccg/feat")
-
-    @patch("ccgram.handlers.topics.window_launch_service.session_manager")
-    def test_clears_worktree_state_after_call(
-        self, mock_sm: MagicMock, tmp_path
-    ) -> None:
-        wt_path = str(tmp_path)
-        user_data = {
-            PENDING_WORKTREE_PATH: wt_path,
-            PENDING_WORKTREE_BRANCH: "ccg/feat",
-        }
-        context = MagicMock()
-        context.user_data = user_data
-
-        _persist_worktree_state("@1", wt_path, context)
-
-        # clear_worktree_state removes the pending worktree keys
         assert PENDING_WORKTREE_PATH not in user_data
         assert PENDING_WORKTREE_BRANCH not in user_data
 
-    @patch("ccgram.handlers.topics.window_launch_service.session_manager")
-    def test_skips_write_when_cwd_outside_worktree(
-        self, mock_sm: MagicMock, tmp_path
-    ) -> None:
-        wt_path = str(tmp_path / "worktrees" / "feat")
-        cwd = str(tmp_path / "other")
+    def test_skips_write_when_cwd_outside_worktree(self, tmp_path) -> None:
+        """A stale path from an aborted attempt must not attach to a new window."""
         user_data = {
-            PENDING_WORKTREE_PATH: wt_path,
+            PENDING_WORKTREE_PATH: str(tmp_path / "worktrees" / "feat"),
             PENDING_WORKTREE_BRANCH: "ccg/feat",
         }
-        context = MagicMock()
-        context.user_data = user_data
 
-        _persist_worktree_state("@1", cwd, context)
+        with patch(f"{_MODULE}session_manager") as mock_sm:
+            _persist_worktree_state(
+                "@1", str(tmp_path / "other"), self._context(user_data)
+            )
 
         mock_sm.set_window_worktree.assert_not_called()
-        # Keys are still cleared
         assert PENDING_WORKTREE_PATH not in user_data
 
-    @patch("ccgram.handlers.topics.window_launch_service.session_manager")
-    def test_no_op_when_worktree_path_missing(
-        self, mock_sm: MagicMock, tmp_path
-    ) -> None:
+    def test_no_op_when_worktree_path_missing(self, tmp_path) -> None:
+        with patch(f"{_MODULE}session_manager") as mock_sm:
+            _persist_worktree_state("@1", str(tmp_path), self._context({}))
+        mock_sm.set_window_worktree.assert_not_called()
+
+
+# ── _follow_supersession ─────────────────────────────────────────────────────
+
+
+class TestFollowSupersession:
+    def test_stable_id_leaves_the_creation_guard_alone(self) -> None:
+        with (
+            patch(f"{_MODULE}window_query") as mock_wq,
+            patch(f"{_MODULE}topic_orchestration") as mock_orch,
+        ):
+            mock_wq.resolve_window_alias.return_value = "@5"
+            assert _follow_supersession("@5") == "@5"
+
+        mock_orch.register_pending_creation.assert_not_called()
+        mock_orch.clear_pending_creation.assert_not_called()
+
+    def test_superseded_id_carries_the_creation_guard_forward(self) -> None:
+        """Herdr re-keys a target mid-creation; the guard must move with it."""
+        with (
+            patch(f"{_MODULE}window_query") as mock_wq,
+            patch(f"{_MODULE}topic_orchestration") as mock_orch,
+        ):
+            mock_wq.resolve_window_alias.return_value = "w1:t9"
+            assert _follow_supersession("w1:t1") == "w1:t9"
+
+        mock_orch.register_pending_creation.assert_called_once_with("w1:t9")
+        mock_orch.clear_pending_creation.assert_called_once_with("w1:t1")
+
+
+# ── _create_topic_window ─────────────────────────────────────────────────────
+
+
+class TestCreateTopicWindow:
+    @staticmethod
+    def _worktree_context() -> MagicMock:
+        context = MagicMock()
+        context.user_data = {
+            PENDING_WORKTREE_REPO: "/repo",
+            PENDING_WORKTREE_BRANCH: "ccg/feat",
+            PENDING_WORKTREE_PATH: "/repo.worktrees/ccg-feat",
+        }
+        return context
+
+    async def test_native_worktree_delegates_to_one_call(self) -> None:
+        with patch(f"{_MODULE}tmux_manager") as mux:
+            mux.capabilities.native_worktrees = True
+            mux.create_worktree_window = AsyncMock(
+                return_value=(True, "ok", "ccg-feat", "w1:t1")
+            )
+            result = await _create_topic_window(
+                "/repo.worktrees/ccg-feat", "claude", None, self._worktree_context()
+            )
+
+        assert result == (True, "ok", "ccg-feat", "w1:t1")
+        mux.create_worktree_window.assert_awaited_once_with(
+            "/repo",
+            "/repo.worktrees/ccg-feat",
+            "ccg/feat",
+            window_name="ccg-feat",
+            launch_command="claude",
+        )
+
+    async def test_preselected_workspace_blocks_native_worktree_creation(self) -> None:
+        """The native worktree API cannot pin a workspace — refuse, don't override."""
+        with patch(f"{_MODULE}tmux_manager") as mux:
+            mux.capabilities.native_worktrees = True
+            mux.create_worktree_window = AsyncMock()
+            success, message, name, window_id = await _create_topic_window(
+                "/repo.worktrees/ccg-feat",
+                "claude",
+                "ws-chosen",
+                self._worktree_context(),
+            )
+
+        assert success is False
+        assert message == "Selected workspace cannot create a native worktree"
+        assert (name, window_id) == ("", "")
+        mux.create_worktree_window.assert_not_awaited()
+
+    async def test_tmux_backend_uses_create_window(self) -> None:
         context = MagicMock()
         context.user_data = {}
-        _persist_worktree_state("@1", str(tmp_path), context)
-        mock_sm.set_window_worktree.assert_not_called()
+        with patch(f"{_MODULE}tmux_manager") as mux:
+            mux.capabilities.native_worktrees = False
+            mux.capabilities.native_agent_status = False
+            mux.create_window = AsyncMock(return_value=(True, "ok", "proj", "@7"))
+            result = await _create_topic_window("/proj", "claude", "ws1", context)
+
+        assert result == (True, "ok", "proj", "@7")
+        mux.create_window.assert_awaited_once_with(
+            "/proj", launch_command="claude", workspace_id="ws1"
+        )
+
+    async def test_guarded_target_failure_is_reported_not_raised(self) -> None:
+        context = MagicMock()
+        context.user_data = {}
+        with patch(f"{_MODULE}tmux_manager") as mux:
+            mux.capabilities.native_worktrees = False
+            mux.capabilities.native_agent_status = True
+            mux.create_topic_target = AsyncMock(side_effect=RuntimeError("no socket"))
+            success, message, name, window_id = await _create_topic_window(
+                "/proj", "claude", None, context
+            )
+
+        assert success is False
+        assert message == "no socket"
+        assert (name, window_id) == ("", "")
 
 
 # ── launch_window ────────────────────────────────────────────────────────────
@@ -138,440 +234,251 @@ def _make_context(user_data: dict | None = None) -> MagicMock:
     return ctx
 
 
-def _base_patches():
-    """Return a dict of patch targets → return values for a successful launch."""
-    return {
-        "ccgram.handlers.topics.window_launch_service.tmux_manager": None,
-        "ccgram.handlers.topics.window_launch_service.session_manager": None,
-        "ccgram.handlers.topics.window_launch_service.thread_router": None,
-        "ccgram.handlers.topics.window_launch_service.topic_orchestration": None,
-        "ccgram.handlers.topics.window_launch_service.user_preferences": None,
-        "ccgram.handlers.topics.window_launch_service.session_map_sync": None,
-        "ccgram.handlers.topics.window_launch_service.safe_edit": None,
-        "ccgram.handlers.topics.window_launch_service.provider_registry": None,
+@dataclass
+class _LaunchMocks:
+    """Every collaborator ``launch_window`` reaches for, so tests can steer them."""
+
+    mux: MagicMock
+    session: MagicMock
+    router: MagicMock
+    orchestration: MagicMock
+    preferences: MagicMock
+    session_map: MagicMock
+    edit: AsyncMock
+    registry: MagicMock
+
+
+@contextlib.contextmanager
+def _launch_env(
+    *,
+    supports_hook: bool = False,
+    has_yolo_confirmation: bool = False,
+    chat_first_command_path: bool = False,
+    launch_command: str = "claude",
+) -> Iterator[_LaunchMocks]:
+    """Patch launch_window's collaborators for a successful hookless launch.
+
+    Defaults describe a guarded-target backend creating ``@5`` with no hook to
+    wait for; each test overrides only the piece it is about.
+    """
+    with (
+        patch(f"{_MODULE}tmux_manager") as mux,
+        patch(f"{_MODULE}session_manager") as session,
+        patch(f"{_MODULE}thread_router") as router,
+        patch(f"{_MODULE}topic_orchestration") as orchestration,
+        patch(f"{_MODULE}user_preferences") as preferences,
+        patch(f"{_MODULE}session_map_sync") as session_map,
+        patch(f"{_MODULE}safe_edit", new_callable=AsyncMock) as edit,
+        patch(f"{_MODULE}provider_registry") as registry,
+        patch("ccgram.providers.resolve_launch_command", return_value=launch_command),
+    ):
+        mux.create_topic_target = AsyncMock(
+            return_value=TopicTargetResult("@5", "my-win", "@5")
+        )
+        mux.stamp_pane_title = AsyncMock()
+        mux.kill_window = AsyncMock(return_value=True)
+        mux.capabilities.native_worktrees = False
+        mux.capabilities.native_agent_status = True
+        router.get_window_for_thread.return_value = None
+        router.resolve_chat_id.return_value = -100999
+        session_map.wait_for_session_map_entry = AsyncMock(return_value=True)
+        registry.get.return_value.capabilities = MagicMock(
+            supports_hook=supports_hook,
+            has_yolo_confirmation=has_yolo_confirmation,
+            chat_first_command_path=chat_first_command_path,
+        )
+        yield _LaunchMocks(
+            mux=mux,
+            session=session,
+            router=router,
+            orchestration=orchestration,
+            preferences=preferences,
+            session_map=session_map,
+            edit=edit,
+            registry=registry,
+        )
+
+
+def _request(**overrides) -> WindowLaunchRequest:
+    fields = {
+        "user_id": 100,
+        "thread_id": 42,
+        "provider_name": "claude",
+        "cwd": "/tmp/proj",
+        "mode": "normal",
+        "pending_text": None,
     }
+    fields.update(overrides)
+    return WindowLaunchRequest(**fields)
 
 
-@pytest.mark.asyncio
 class TestLaunchWindowSuccess:
     async def test_creates_window_and_binds_thread(self, tmp_path) -> None:
-        """Happy path: window created, thread bound, success message sent."""
-        user_data = {PENDING_THREAD_ID: 42}
         query = _make_query()
+        context = _make_context({PENDING_THREAD_ID: 42})
+
+        with _launch_env() as m:
+            await launch_window(query, context, _request(cwd=str(tmp_path)))
+
+        m.mux.create_topic_target.assert_awaited_once()
+        m.router.bind_thread.assert_called_once()
+        m.orchestration.pending_creation_transaction.assert_called_once_with()
+        m.orchestration.register_pending_creation.assert_called_once_with("@5")
+        m.orchestration.clear_pending_creation.assert_called_once_with("@5")
+        m.edit.assert_awaited_once()
+        assert "✅" in m.edit.call_args[0][1]
+
+    async def test_no_thread_success_releases_pending_creation_guard(
+        self, tmp_path
+    ) -> None:
+        with _launch_env() as m:
+            result = await launch_window(
+                _make_query(),
+                _make_context(),
+                _request(thread_id=None, cwd=str(tmp_path)),
+            )
+
+        assert result.success
+        m.orchestration.clear_pending_creation.assert_called_once_with("@5")
+
+    async def test_pending_text_is_forwarded_after_binding(self, tmp_path) -> None:
+        """A non-chat-first provider's first prompt uses the bound-window send path."""
+        user_data = {PENDING_THREAD_ID: 42, PENDING_THREAD_TEXT: "hello agent"}
         context = _make_context(user_data)
 
         with (
+            _launch_env(launch_command="agy") as m,
             patch(
-                "ccgram.handlers.topics.window_launch_service.tmux_manager"
-            ) as mock_mux,
-            patch(
-                "ccgram.handlers.topics.window_launch_service.session_manager"
-            ) as mock_sm,
-            patch(
-                "ccgram.handlers.topics.window_launch_service.thread_router"
-            ) as mock_tr,
-            patch(
-                "ccgram.handlers.topics.window_launch_service.topic_orchestration"
-            ) as mock_orch,
-            patch("ccgram.handlers.topics.window_launch_service.user_preferences"),
-            patch(
-                "ccgram.handlers.topics.window_launch_service.session_map_sync"
-            ) as mock_sms,
-            patch(
-                "ccgram.handlers.topics.window_launch_service.safe_edit",
+                f"{_MODULE}send_telegram_to_window",
                 new_callable=AsyncMock,
-            ) as mock_edit,
-            patch(
-                "ccgram.handlers.topics.window_launch_service.provider_registry"
-            ) as mock_reg,
-            patch("ccgram.providers.resolve_launch_command", return_value="claude"),
+                return_value=(True, "ok"),
+            ) as mock_send,
         ):
-            mock_mux.create_topic_target = AsyncMock(
-                return_value=TopicTargetResult("@5", "my-win", "@5")
-            )
-            mock_mux.stamp_pane_title = AsyncMock()
-            mock_mux.capabilities.native_worktrees = False
-            mock_mux.capabilities.native_agent_status = True
-            mock_tr.get_window_for_thread.return_value = None
-            mock_tr.resolve_chat_id.return_value = -100999
-            mock_sm.set_window_provider = MagicMock()
-            mock_sm.set_window_origin = MagicMock()
-            mock_sm.set_window_cwd = MagicMock()
-            mock_sm.set_window_approval_mode = MagicMock()
-            mock_sms.wait_for_session_map_entry = AsyncMock()
-
-            caps = MagicMock()
-            caps.chat_first_command_path = False
-            caps.has_yolo_confirmation = False
-            caps.supports_hook = False
-            mock_reg.get.return_value.capabilities = caps
-
             await launch_window(
-                query,
+                _make_query(),
                 context,
-                WindowLaunchRequest(
-                    user_id=100,
-                    thread_id=42,
-                    provider_name="claude",
+                _request(
+                    provider_name="antigravity",
                     cwd=str(tmp_path),
-                    mode="normal",
-                    pending_text=None,
+                    pending_text="hello agent",
                 ),
             )
 
-        mock_mux.create_topic_target.assert_awaited_once()
-        mock_tr.bind_thread.assert_called_once()
-        mock_orch.pending_creation_transaction.assert_called_once_with()
-        mock_orch.register_pending_creation.assert_called_once_with("@5")
-        mock_orch.clear_pending_creation.assert_called_once_with("@5")
-        mock_edit.assert_awaited_once()
-        assert "✅" in mock_edit.call_args[0][1]
+        m.mux.create_topic_target.assert_awaited_once_with(
+            str(tmp_path), launch_command="agy", workspace_id=None
+        )
+        mock_send.assert_awaited_once_with(100, "@5", 42, "hello agent", ANY)
+        assert PENDING_THREAD_TEXT not in user_data
+
+
+class TestLaunchWindowFailure:
+    async def test_create_failure_aborts_without_binding_and_clears_flow_state(
+        self, tmp_path
+    ) -> None:
+        user_data = {PENDING_THREAD_ID: 42, PENDING_THREAD_TEXT: "hi"}
+        context = _make_context(user_data)
+
+        with _launch_env() as m:
+            m.mux.create_topic_target = AsyncMock(
+                side_effect=RuntimeError("tmux error")
+            )
+            result = await launch_window(
+                _make_query(), context, _request(cwd=str(tmp_path))
+            )
+
+        assert result.success is False
+        m.router.bind_thread.assert_not_called()
+        m.edit.assert_awaited_once()
+        assert "❌" in m.edit.call_args[0][1]
+        assert PENDING_THREAD_ID not in user_data
+        assert PENDING_THREAD_TEXT not in user_data
 
     async def test_post_create_stamp_error_closes_target_before_reraising(
         self, tmp_path
     ) -> None:
-        query = _make_query()
-        context = _make_context({PENDING_THREAD_ID: 42})
-        with (
-            patch("ccgram.handlers.topics.window_launch_service.tmux_manager") as mux,
-            patch("ccgram.handlers.topics.window_launch_service.session_manager"),
-            patch(
-                "ccgram.handlers.topics.window_launch_service.thread_router"
-            ) as router,
-            patch(
-                "ccgram.handlers.topics.window_launch_service.topic_orchestration"
-            ) as orchestration,
-            patch("ccgram.handlers.topics.window_launch_service.user_preferences"),
-            patch("ccgram.handlers.topics.window_launch_service.session_map_sync"),
-            patch("ccgram.handlers.topics.window_launch_service.provider_registry"),
-            patch("ccgram.providers.resolve_launch_command", return_value="claude"),
-        ):
-            mux.create_topic_target = AsyncMock(
-                return_value=TopicTargetResult("@5", "new", "@5")
-            )
-            mux.stamp_pane_title = AsyncMock(side_effect=RuntimeError("stamp failed"))
-            mux.kill_window = AsyncMock(return_value=True)
-            mux.capabilities.native_worktrees = False
-            mux.capabilities.native_agent_status = True
+        with _launch_env() as m:
+            m.mux.stamp_pane_title = AsyncMock(side_effect=RuntimeError("stamp failed"))
             with pytest.raises(RuntimeError, match="stamp failed"):
                 await launch_window(
-                    query,
-                    context,
-                    WindowLaunchRequest(
-                        100, 42, "claude", str(tmp_path), "normal", None
-                    ),
+                    _make_query(),
+                    _make_context({PENDING_THREAD_ID: 42}),
+                    _request(cwd=str(tmp_path)),
                 )
-        mux.kill_window.assert_awaited_once_with("@5")
-        orchestration.clear_pending_creation.assert_called_once_with("@5")
-        router.unbind_thread.assert_called_once_with(100, 42)
+
+        m.mux.kill_window.assert_awaited_once_with("@5")
+        m.orchestration.clear_pending_creation.assert_called_once_with("@5")
+        m.router.unbind_thread.assert_called_once_with(100, 42)
 
     async def test_session_map_timeout_closes_target_before_unbinding_late_hook(
         self, tmp_path
     ) -> None:
         """A late hook cannot orphan the just-created target after timeout."""
-        query = _make_query()
-        context = _make_context({PENDING_THREAD_ID: 42})
         cleanup_order: list[str] = []
 
-        with (
-            patch(
-                "ccgram.handlers.topics.window_launch_service.tmux_manager"
-            ) as mock_mux,
-            patch(
-                "ccgram.handlers.topics.window_launch_service.session_manager"
-            ) as mock_sm,
-            patch(
-                "ccgram.handlers.topics.window_launch_service.thread_router"
-            ) as mock_tr,
-            patch(
-                "ccgram.handlers.topics.window_launch_service.topic_orchestration"
-            ) as mock_orch,
-            patch("ccgram.handlers.topics.window_launch_service.user_preferences"),
-            patch(
-                "ccgram.handlers.topics.window_launch_service.session_map_sync"
-            ) as mock_sms,
-            patch(
-                "ccgram.handlers.topics.window_launch_service.safe_edit",
-                new_callable=AsyncMock,
-            ) as mock_edit,
-            patch(
-                "ccgram.handlers.topics.window_launch_service.provider_registry"
-            ) as mock_reg,
-            patch("ccgram.providers.resolve_launch_command", return_value="claude"),
-        ):
-
-            async def close_created_target(target_id: str) -> bool:
-                cleanup_order.append(f"close:{target_id}")
-                return True
-
-            mock_mux.create_topic_target = AsyncMock(
-                return_value=TopicTargetResult("@5", "my-win", "@5")
+        with _launch_env(supports_hook=True) as m:
+            m.mux.kill_window = AsyncMock(
+                side_effect=lambda target_id: (
+                    cleanup_order.append(f"close:{target_id}") or True
+                )
             )
-            mock_mux.kill_window = AsyncMock(side_effect=close_created_target)
-            mock_mux.stamp_pane_title = AsyncMock()
-            mock_mux.capabilities.native_worktrees = False
-            mock_mux.capabilities.native_agent_status = True
-            mock_tr.resolve_chat_id.return_value = -100999
-            mock_tr.unbind_thread.side_effect = lambda *_: cleanup_order.append(
+            m.router.unbind_thread.side_effect = lambda *_: cleanup_order.append(
                 "unbind"
             )
-            mock_orch.clear_pending_creation.side_effect = lambda *_: (
+            m.orchestration.clear_pending_creation.side_effect = lambda *_: (
                 cleanup_order.append("clear-pending")
             )
-            mock_sm.set_window_provider = MagicMock()
-            mock_sm.set_window_origin = MagicMock()
-            mock_sm.set_window_cwd = MagicMock()
-            mock_sm.set_window_approval_mode = MagicMock()
-            mock_sms.wait_for_session_map_entry = AsyncMock(return_value=False)
-            caps = MagicMock(
-                chat_first_command_path=False,
-                has_yolo_confirmation=False,
-                supports_hook=True,
-            )
-            mock_reg.get.return_value.capabilities = caps
+            m.session_map.wait_for_session_map_entry = AsyncMock(return_value=False)
 
             result = await launch_window(
-                query,
-                context,
-                WindowLaunchRequest(100, 42, "claude", str(tmp_path), "normal", None),
+                _make_query(),
+                _make_context({PENDING_THREAD_ID: 42}),
+                _request(cwd=str(tmp_path)),
             )
 
         assert result.success is False
-        mock_mux.kill_window.assert_awaited_once_with("@5")
-        mock_tr.unbind_thread.assert_called_once_with(100, 42)
+        m.mux.kill_window.assert_awaited_once_with("@5")
+        m.router.unbind_thread.assert_called_once_with(100, 42)
         # The target is closed before the pending guard and binding are removed,
         # so a late hook cannot adopt it into an orphan topic.
         assert cleanup_order == ["close:@5", "clear-pending", "unbind"]
-        assert "❌" in mock_edit.call_args.args[1]
+        assert "❌" in m.edit.call_args.args[1]
 
     async def test_session_map_timeout_keeps_guard_and_binding_when_close_fails(
         self, tmp_path
     ) -> None:
-        query = _make_query()
-        context = _make_context({PENDING_THREAD_ID: 42})
-        with (
-            patch("ccgram.handlers.topics.window_launch_service.tmux_manager") as mux,
-            patch("ccgram.handlers.topics.window_launch_service.session_manager"),
-            patch(
-                "ccgram.handlers.topics.window_launch_service.thread_router"
-            ) as router,
-            patch(
-                "ccgram.handlers.topics.window_launch_service.topic_orchestration"
-            ) as orchestration,
-            patch("ccgram.handlers.topics.window_launch_service.user_preferences"),
-            patch(
-                "ccgram.handlers.topics.window_launch_service.session_map_sync"
-            ) as maps,
-            patch(
-                "ccgram.handlers.topics.window_launch_service.safe_edit",
-                new_callable=AsyncMock,
-            ),
-            patch(
-                "ccgram.handlers.topics.window_launch_service.provider_registry"
-            ) as registry,
-            patch("ccgram.providers.resolve_launch_command", return_value="claude"),
-        ):
-            mux.create_topic_target = AsyncMock(
-                return_value=TopicTargetResult("@5", "my-win", "@5")
-            )
-            mux.stamp_pane_title = AsyncMock()
-            mux.kill_window = AsyncMock(return_value=False)
-            mux.capabilities.native_worktrees = False
-            mux.capabilities.native_agent_status = True
-            maps.wait_for_session_map_entry = AsyncMock(return_value=False)
-            registry.get.return_value.capabilities = MagicMock(
-                chat_first_command_path=False,
-                has_yolo_confirmation=False,
-                supports_hook=True,
-            )
+        with _launch_env(supports_hook=True) as m:
+            m.mux.kill_window = AsyncMock(return_value=False)
+            m.session_map.wait_for_session_map_entry = AsyncMock(return_value=False)
 
             result = await launch_window(
-                query,
-                context,
-                WindowLaunchRequest(100, 42, "claude", str(tmp_path), "normal", None),
+                _make_query(),
+                _make_context({PENDING_THREAD_ID: 42}),
+                _request(cwd=str(tmp_path)),
             )
 
         assert not result.success and "cleanup failed" in (result.error_message or "")
-        orchestration.clear_pending_creation.assert_not_called()
-        router.unbind_thread.assert_not_called()
+        m.orchestration.clear_pending_creation.assert_not_called()
+        m.router.unbind_thread.assert_not_called()
 
-    async def test_no_thread_success_releases_pending_creation_guard(
+    async def test_pending_text_send_failure_reports_back_to_the_topic(
         self, tmp_path
     ) -> None:
-        query = _make_query()
-        context = _make_context()
         with (
-            patch("ccgram.handlers.topics.window_launch_service.tmux_manager") as mux,
-            patch("ccgram.handlers.topics.window_launch_service.session_manager"),
-            patch("ccgram.handlers.topics.window_launch_service.thread_router"),
+            _launch_env(),
             patch(
-                "ccgram.handlers.topics.window_launch_service.topic_orchestration"
-            ) as orchestration,
-            patch("ccgram.handlers.topics.window_launch_service.user_preferences"),
-            patch("ccgram.handlers.topics.window_launch_service.session_map_sync"),
-            patch(
-                "ccgram.handlers.topics.window_launch_service.safe_edit",
+                f"{_MODULE}send_telegram_to_window",
                 new_callable=AsyncMock,
+                return_value=(False, "pane is gone"),
             ),
-            patch(
-                "ccgram.handlers.topics.window_launch_service.provider_registry"
-            ) as registry,
-            patch("ccgram.providers.resolve_launch_command", return_value="claude"),
+            patch(f"{_MODULE}safe_send", new_callable=AsyncMock) as mock_safe_send,
         ):
-            mux.create_topic_target = AsyncMock(
-                return_value=TopicTargetResult("@5", "my-win", "@5")
-            )
-            mux.stamp_pane_title = AsyncMock()
-            mux.capabilities.native_worktrees = False
-            mux.capabilities.native_agent_status = True
-            registry.get.return_value.capabilities = MagicMock(
-                chat_first_command_path=False,
-                has_yolo_confirmation=False,
-                supports_hook=False,
-            )
-
             result = await launch_window(
-                query,
-                context,
-                WindowLaunchRequest(100, None, "claude", str(tmp_path), "normal", None),
+                _make_query(),
+                _make_context({PENDING_THREAD_ID: 42, PENDING_THREAD_TEXT: "hi"}),
+                _request(cwd=str(tmp_path), pending_text="hi"),
             )
 
-        assert result.success
-        orchestration.clear_pending_creation.assert_called_once_with("@5")
-
-    async def test_create_window_failure_calls_abort(self, tmp_path) -> None:
-        """When create_window returns success=False, abort is called, no bind."""
-        user_data = {PENDING_THREAD_ID: 42}
-        query = _make_query()
-        context = _make_context(user_data)
-
-        with (
-            patch(
-                "ccgram.handlers.topics.window_launch_service.tmux_manager"
-            ) as mock_mux,
-            patch("ccgram.handlers.topics.window_launch_service.session_manager"),
-            patch(
-                "ccgram.handlers.topics.window_launch_service.thread_router"
-            ) as mock_tr,
-            patch("ccgram.handlers.topics.window_launch_service.topic_orchestration"),
-            patch("ccgram.handlers.topics.window_launch_service.user_preferences"),
-            patch("ccgram.handlers.topics.window_launch_service.session_map_sync"),
-            patch(
-                "ccgram.handlers.topics.window_launch_service.safe_edit",
-                new_callable=AsyncMock,
-            ) as mock_edit,
-            patch(
-                "ccgram.handlers.topics.window_launch_service.provider_registry"
-            ) as mock_reg,
-            patch("ccgram.providers.resolve_launch_command", return_value="claude"),
-        ):
-            mock_mux.create_topic_target = AsyncMock(
-                side_effect=RuntimeError("tmux error")
-            )
-            mock_mux.capabilities.native_worktrees = False
-            mock_mux.capabilities.native_agent_status = True
-
-            caps = MagicMock()
-            caps.chat_first_command_path = False
-            caps.has_yolo_confirmation = False
-            caps.supports_hook = False
-            mock_reg.get.return_value.capabilities = caps
-
-            await launch_window(
-                query,
-                context,
-                WindowLaunchRequest(
-                    user_id=100,
-                    thread_id=42,
-                    provider_name="claude",
-                    cwd=str(tmp_path),
-                    mode="normal",
-                    pending_text=None,
-                ),
-            )
-
-        # Thread must not be bound on failure
-        mock_tr.bind_thread.assert_not_called()
-        # Error message sent via safe_edit
-        mock_edit.assert_awaited_once()
-        assert "❌" in mock_edit.call_args[0][1]
-
-    async def test_antigravity_pending_text_is_forwarded_after_binding(
-        self, tmp_path
-    ) -> None:
-        """Antigravity's first prompt uses the bound-window send path."""
-        user_data = {
-            PENDING_THREAD_ID: 42,
-            PENDING_THREAD_TEXT: "hello agent",
-        }
-        query = _make_query()
-        context = _make_context(user_data)
-
-        with (
-            patch(
-                "ccgram.handlers.topics.window_launch_service.tmux_manager"
-            ) as mock_mux,
-            patch(
-                "ccgram.handlers.topics.window_launch_service.session_manager"
-            ) as mock_sm,
-            patch(
-                "ccgram.handlers.topics.window_launch_service.thread_router"
-            ) as mock_tr,
-            patch("ccgram.handlers.topics.window_launch_service.topic_orchestration"),
-            patch("ccgram.handlers.topics.window_launch_service.user_preferences"),
-            patch(
-                "ccgram.handlers.topics.window_launch_service.session_map_sync"
-            ) as mock_sms,
-            patch(
-                "ccgram.handlers.topics.window_launch_service.safe_edit",
-                new_callable=AsyncMock,
-            ),
-            patch(
-                "ccgram.handlers.topics.window_launch_service.provider_registry"
-            ) as mock_reg,
-            patch("ccgram.providers.resolve_launch_command", return_value="agy"),
-            patch(
-                "ccgram.handlers.topics.window_launch_service.send_telegram_to_window",
-                new_callable=AsyncMock,
-                return_value=(True, "ok"),
-            ) as mock_send,
-        ):
-            mock_mux.create_topic_target = AsyncMock(
-                return_value=TopicTargetResult("@5", "my-win", "@5")
-            )
-            mock_mux.stamp_pane_title = AsyncMock()
-            mock_mux.capabilities.native_worktrees = False
-            mock_mux.capabilities.native_agent_status = True
-            mock_tr.get_window_for_thread.return_value = None
-            mock_tr.resolve_chat_id.return_value = -100999
-            mock_sm.set_window_provider = MagicMock()
-            mock_sm.set_window_origin = MagicMock()
-            mock_sm.set_window_cwd = MagicMock()
-            mock_sm.set_window_approval_mode = MagicMock()
-            mock_sms.wait_for_session_map_entry = AsyncMock()
-
-            caps = MagicMock()
-            caps.chat_first_command_path = False
-            caps.has_yolo_confirmation = False
-            caps.supports_hook = False
-            mock_reg.get.return_value.capabilities = caps
-
-            await launch_window(
-                query,
-                context,
-                WindowLaunchRequest(
-                    user_id=100,
-                    thread_id=42,
-                    provider_name="antigravity",
-                    cwd=str(tmp_path),
-                    mode="normal",
-                    pending_text="hello agent",
-                ),
-            )
-
-        mock_mux.create_topic_target.assert_awaited_once_with(
-            str(tmp_path), launch_command="agy", workspace_id=None
-        )
-        mock_send.assert_awaited_once_with(100, "@5", 42, "hello agent", ANY)
-        # Keys consumed after forwarding
-        assert PENDING_THREAD_TEXT not in user_data
+        assert result.success is True
+        mock_safe_send.assert_awaited_once()
+        assert "pane is gone" in mock_safe_send.call_args.args[2]
+        assert mock_safe_send.call_args.kwargs == {"message_thread_id": 42}

@@ -408,42 +408,50 @@ class TestAssertSendable:
 
 
 class TestShortenPath:
-    def test_subpath_shortened(self) -> None:
-        assert (
-            shorten_path("/home/user/project/src/file.py", "/home/user/project")
-            == "src/file.py"
-        )
-
-    def test_not_subpath_unchanged(self) -> None:
-        assert (
-            shorten_path("/other/path/file.py", "/home/user/project")
-            == "/other/path/file.py"
-        )
-
-    def test_cwd_none_unchanged(self) -> None:
-        assert shorten_path("/some/path/file.py", None) == "/some/path/file.py"
-
-    def test_empty_path_unchanged(self) -> None:
-        assert shorten_path("", "/home/user") == ""
-
-    def test_cwd_trailing_slash(self) -> None:
-        assert (
-            shorten_path("/home/user/project/src/f.py", "/home/user/project/")
-            == "src/f.py"
-        )
-
-    def test_exact_cwd_match(self) -> None:
-        result = shorten_path("/home/user/project", "/home/user/project")
-        assert result == "/home/user/project"
-
-    def test_relative_path_unchanged(self) -> None:
-        assert shorten_path("src/file.py", "/home/user/project") == "src/file.py"
-
-    def test_prefix_match_guard(self) -> None:
-        assert (
-            shorten_path("/home/userextra/file.py", "/home/user")
-            == "/home/userextra/file.py"
-        )
+    @pytest.mark.parametrize(
+        ("path", "cwd", "expected"),
+        [
+            pytest.param(
+                "/home/user/project/src/file.py",
+                "/home/user/project",
+                "src/file.py",
+                id="subpath_shortened",
+            ),
+            pytest.param(
+                "/home/user/project/src/f.py",
+                "/home/user/project/",
+                "src/f.py",
+                id="cwd_trailing_slash",
+            ),
+            pytest.param(
+                "/other/path/file.py",
+                "/home/user/project",
+                "/other/path/file.py",
+                id="not_subpath_unchanged",
+            ),
+            pytest.param(
+                "/some/path/file.py", None, "/some/path/file.py", id="cwd_none"
+            ),
+            pytest.param("", "/home/user", "", id="empty_path"),
+            pytest.param(
+                "/home/user/project",
+                "/home/user/project",
+                "/home/user/project",
+                id="exact_cwd_match_unchanged",
+            ),
+            pytest.param(
+                "src/file.py", "/home/user/project", "src/file.py", id="relative_path"
+            ),
+            pytest.param(
+                "/home/userextra/file.py",
+                "/home/user",
+                "/home/userextra/file.py",
+                id="sibling_prefix_not_treated_as_subpath",
+            ),
+        ],
+    )
+    def test_shorten_path(self, path: str, cwd: str | None, expected: str) -> None:
+        assert shorten_path(path, cwd) == expected
 
 
 class TestHandleGeneralTopicMessage:
@@ -544,32 +552,28 @@ class TestHandleGeneralTopicMessage:
 
 
 class TestIsGeneralTopic:
-    def test_general_topic_thread_id_1(self) -> None:
+    @staticmethod
+    def _message(thread_id: int | None, *, is_forum: bool | None) -> MagicMock:
         message = MagicMock()
-        message.message_thread_id = 1
-        message.chat.is_forum = True
-        assert is_general_topic(message) is True
+        message.message_thread_id = thread_id
+        if is_forum is None:
+            message.chat = None
+        else:
+            message.chat.is_forum = is_forum
+        return message
 
-    def test_general_topic_thread_id_none_in_forum(self) -> None:
-        message = MagicMock()
-        message.message_thread_id = None
-        message.chat.is_forum = True
-        assert is_general_topic(message) is True
-
-    def test_named_topic(self) -> None:
-        message = MagicMock()
-        message.message_thread_id = 42
-        message.chat.is_forum = True
-        assert is_general_topic(message) is False
-
-    def test_non_forum_context(self) -> None:
-        message = MagicMock()
-        message.message_thread_id = None
-        message.chat.is_forum = False
-        assert is_general_topic(message) is False
-
-    def test_no_chat(self) -> None:
-        message = MagicMock()
-        message.chat = None
-        message.message_thread_id = None
-        assert is_general_topic(message) is False
+    @pytest.mark.parametrize(
+        ("thread_id", "is_forum", "expected"),
+        [
+            pytest.param(1, True, True, id="forum_thread_id_1"),
+            pytest.param(None, True, True, id="forum_thread_id_none"),
+            pytest.param(42, True, False, id="named_topic"),
+            pytest.param(None, False, False, id="non_forum_chat"),
+            pytest.param(1, False, False, id="non_forum_thread_id_1"),
+            pytest.param(None, None, False, id="no_chat"),
+        ],
+    )
+    def test_is_general_topic(
+        self, thread_id: int | None, is_forum: bool | None, expected: bool
+    ) -> None:
+        assert is_general_topic(self._message(thread_id, is_forum=is_forum)) is expected
