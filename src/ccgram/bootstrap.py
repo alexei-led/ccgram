@@ -342,8 +342,9 @@ async def stop_delivery_runtime() -> None:
         _status_poll_task = None
         logger.info("Status polling stopped")
 
-    if session_monitor is not None:
-        session_monitor.stop()
+    monitor_to_commit = session_monitor
+    if monitor_to_commit is not None:
+        await monitor_to_commit.stop_and_wait()
         logger.info("Session monitor stopped")
         session_monitor = None
     clear_active_monitor()
@@ -353,11 +354,15 @@ async def stop_delivery_runtime() -> None:
 
     event_stream = get_active_event_stream()
     if event_stream is not None:
-        event_stream.stop()
+        await event_stream.stop_and_wait()
         set_active_event_stream(None)
         logger.info("Event-stream consumer stopped")
 
     await shutdown_workers()
+    if monitor_to_commit is not None:
+        # A successful bounded drain can now advance receipts; cancellation or
+        # terminal delivery failures leave them unacknowledged for replay.
+        monitor_to_commit.commit_delivered_watermarks()
 
     # Lazy: tracker is only needed to discard ephemeral input correlations at shutdown.
     from .handlers.telegram_origin import clear_pending_telegram_injections

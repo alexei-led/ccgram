@@ -1,5 +1,6 @@
 """Tests for SessionMonitor."""
 
+import asyncio
 import json
 import os
 from types import SimpleNamespace
@@ -40,6 +41,25 @@ def monitor(tmp_path) -> SessionMonitor:
 
 
 class TestMonitorLoop:
+    async def test_stop_and_wait_awaits_producer_before_return(
+        self, monitor: SessionMonitor
+    ) -> None:
+        started = asyncio.Event()
+
+        async def producer() -> None:
+            try:
+                started.set()
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                raise
+
+        monitor._running = True
+        monitor._task = asyncio.create_task(producer())
+        await started.wait()
+        await monitor.stop_and_wait()
+
+        assert monitor._task is None
+
     async def test_unavailable_listing_skips_pruning(
         self, monitor: SessionMonitor
     ) -> None:

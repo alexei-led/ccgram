@@ -100,6 +100,35 @@ def test_to_dict_excludes_parsed_offset():
     assert d["last_byte_offset"] == 5
 
 
+async def test_failed_delivery_receipt_withholds_watermark_until_restart(tmp_path):
+    """A terminal send failure must replay the parsed range after recovery."""
+    from ccgram.handlers.messaging_pipeline.message_queue import (
+        DeliveryOutcome,
+        DeliveryReceipt,
+    )
+    from ccgram.session_monitor import SessionMonitor
+
+    monitor = SessionMonitor(projects_path=tmp_path, state_file=tmp_path / "ms.json")
+    tracked = TrackedSession(
+        session_id="s1", file_path="/x", last_byte_offset=10, parsed_offset=50
+    )
+    monitor.state.update_session(tracked)
+    receipt = DeliveryReceipt()
+    receipt.track()
+    receipt.close()
+    receipt.settle(DeliveryOutcome.FAILED)
+    monitor._delivery_receipts["s1"] = [receipt]
+
+    monitor._commit_watermark_if_idle()
+    assert tracked.last_byte_offset == 10
+
+    # A process restart discards in-memory parse state; the persisted offset
+    # remains 10, so the failed range is read and delivered again.
+    monitor._delivery_receipts.clear()
+    monitor._commit_watermark_if_idle()
+    assert tracked.last_byte_offset == 50
+
+
 async def test_queues_idle_semantics():
     import asyncio
 

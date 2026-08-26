@@ -115,15 +115,18 @@ class MonitorState:
             del self.tracked_sessions[session_id]
             self._dirty = True
 
-    def commit_parsed_offsets(self) -> bool:
-        """Fold in-memory parse positions into the delivered watermark.
+    def commit_parsed_offsets(self, session_ids: set[str] | None = None) -> bool:
+        """Fold acknowledged in-memory parse positions into the watermark.
 
-        Called by the monitor when the message queues are idle: everything
-        parsed up to parsed_offset has been sent. Returns True when any
-        watermark advanced (state is marked dirty for the next save).
+        ``session_ids`` is selected by the delivery boundary once every
+        transcript-derived task for that session has acknowledged delivery or
+        an explicit intentional drop. ``None`` retains the compatibility path
+        for callers that have no per-session delivery work.
         """
         advanced = False
         for session in self.tracked_sessions.values():
+            if session_ids is not None and session.session_id not in session_ids:
+                continue
             if (
                 session.parsed_offset >= 0
                 and session.parsed_offset != session.last_byte_offset

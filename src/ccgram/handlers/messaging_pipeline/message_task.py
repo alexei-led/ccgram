@@ -5,7 +5,7 @@ Three frozen dataclasses replace the monolithic ``MessageTask`` that lived in
 keeping the dependency graph acyclic.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, TypeAlias
 
 ContentType: TypeAlias = Literal["text", "thinking", "tool_use", "tool_result"]
@@ -24,6 +24,9 @@ class ContentTask:
     tool_name: str | None = None
     thread_id: int | None = None
     chat_id: int | None = None
+    # Opaque delivery-boundary receipts. Transcript producers set this when a
+    # task belongs to a watermark cycle; task routing does not inspect it.
+    delivery_receipts: tuple[object, ...] = field(compare=False, hash=False, default=())
 
 
 @dataclass(frozen=True, slots=True)

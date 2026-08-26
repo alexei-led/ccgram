@@ -17,6 +17,7 @@ Re-exported from transcript_reader for backward-compatible imports.
 """
 
 import asyncio
+import contextlib
 import structlog
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -99,6 +100,9 @@ class SessionMonitor:
 
         self._idle_tracker = IdleTracker()
         self._transcript_reader = TranscriptReader(self.state, self._idle_tracker)
+        # Receipts are opaque delivery-boundary acknowledgements, grouped by
+        # transcript session so one failed send only freezes its own watermark.
+        self._delivery_receipts: dict[str, list[Any]] = {}
 
     # Delegation properties for backward-compatible test access
     @property
@@ -144,21 +148,45 @@ class SessionMonitor:
         if session_id:
             self._idle_tracker.record_activity(session_id)
 
+    def commit_delivered_watermarks(self) -> None:
+        """Persist receipts acknowledged by the delivery boundary.
+
+        Called after a normal monitor cycle and after the bounded shutdown
+        drain. It intentionally has no queue implementation knowledge.
+        """
+        self._commit_watermark_if_idle()
+
     def _commit_watermark_if_idle(self) -> None:
-        """Issue #179 at-least-once: fold parsed offsets into the delivered
-        watermark, but only when every queue is empty, no worker is
-        mid-send, and no tool_use is still waiting for its result (the
-        parser holds those back; their lines are already parsed). Called
-        from the monitor loop AFTER the cycle's messages are dispatched, so
-        a crash before this point replays the cycle instead of losing it.
+        """Commit only sessions acknowledged by the delivery boundary.
+
+        Queue emptiness is deliberately not an acknowledgement: a terminal
+        Telegram failure also empties its queue. The queue owns receipt state;
+        this coordinator only asks which completed transcript cycles are safe
+        to persist. Failed receipts stay until restart, causing bounded replay
+        from the previous persisted watermark rather than loss.
         """
         # Lazy: monitor → handlers.message_queue → status bubble →
         # monitor-adjacent singletons; importing at top forms a cycle.
-        from .handlers.messaging_pipeline.message_queue import queues_idle
+        from .handlers.messaging_pipeline.message_queue import delivery_receipts_ready
 
-        if queues_idle() and not self._transcript_reader._pending_tools:
-            self.state.commit_parsed_offsets()
+        committable = {
+            session_id
+            for session_id, receipts in self._delivery_receipts.items()
+            if session_id not in self._transcript_reader._pending_tools
+            and delivery_receipts_ready(receipts)
+        }
+        # Sessions that parsed no visible message have no receipt and are safe
+        # to advance; parser policy intentionally filters that content.
+        committable.update(
+            session_id
+            for session_id in self.state.tracked_sessions
+            if session_id not in self._delivery_receipts
+            and session_id not in self._transcript_reader._pending_tools
+        )
+        if self.state.commit_parsed_offsets(committable):
             self.state.save_if_dirty()
+        for session_id in committable:
+            self._delivery_receipts.pop(session_id, None)
 
     async def check_for_updates(self, current_map: dict) -> list[NewMessage]:
         """Check all sessions for new assistant messages.
@@ -442,6 +470,30 @@ class SessionMonitor:
                     window_id,
                 )
 
+    async def _dispatch_message_with_receipt(self, msg: NewMessage) -> None:
+        """Run one transcript callback under a delivery-boundary receipt."""
+        if self._message_callback is None:
+            return
+        # Lazy: importing the delivery boundary here avoids a
+        # session-monitor/message-routing import cycle.
+        from .handlers.messaging_pipeline.message_queue import (
+            activate_delivery_receipt,
+            deactivate_delivery_receipt,
+            new_delivery_receipt,
+        )
+
+        receipt = new_delivery_receipt()
+        token = activate_delivery_receipt(receipt)
+        try:
+            await self._message_callback(msg)
+        except _CallbackError:
+            receipt.fail()
+            logger.exception("Message callback error for session=%s", msg.session_id)
+        finally:
+            deactivate_delivery_receipt(token)
+            receipt.close()
+        self._delivery_receipts.setdefault(msg.session_id, []).append(receipt)
+
     async def _monitor_loop(self) -> None:
         """Background poll loop."""
         logger.info("Session monitor started, polling every %ss", self.poll_interval)
@@ -511,16 +563,9 @@ class SessionMonitor:
                         "..." if len(msg.text) > _MSG_PREVIEW_LENGTH else ""
                     )
                     logger.debug("[%s] session=%s: %s", status, msg.session_id, preview)
-                    if self._message_callback:
-                        try:
-                            await self._message_callback(msg)
-                        except _CallbackError:
-                            logger.exception(
-                                "Message callback error for session=%s",
-                                msg.session_id,
-                            )
+                    await self._dispatch_message_with_receipt(msg)
 
-                self._commit_watermark_if_idle()
+                self.commit_delivered_watermarks()
 
             except _LoopError:
                 logger.exception("Monitor loop error")
@@ -549,14 +594,24 @@ class SessionMonitor:
         self._task.add_done_callback(task_done_callback)
 
     def stop(self) -> None:
+        """Request producer cancellation; use ``stop_and_wait`` before drain."""
         self._running = False
         if self._task:
             self._task.cancel()
-            self._task = None
         self.state.save()
         # Distinct from the loop's "Session monitor stopped" (logged when the
         # poll loop actually exits) — this marks the stop request + state save.
         logger.info("Session monitor stop requested; state saved")
+
+    async def stop_and_wait(self) -> None:
+        """Cancel the monitor producer and wait until it cannot enqueue again."""
+        self.stop()
+        task = self._task
+        if task is not None:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            if self._task is task:
+                self._task = None
 
 
 _active_monitor: SessionMonitor | None = None

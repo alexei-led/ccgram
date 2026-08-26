@@ -214,7 +214,7 @@ class TestShutdownRuntime:
 
         bootstrap._status_poll_task = asyncio.create_task(_noop())  # type: ignore[assignment]
         monitor = MagicMock()
-        monitor.stop = MagicMock()
+        monitor.stop_and_wait = AsyncMock()
         bootstrap.session_monitor = monitor
 
         with (
@@ -224,7 +224,8 @@ class TestShutdownRuntime:
         ):
             await bootstrap.stop_delivery_runtime()
 
-        monitor.stop.assert_called_once()
+        monitor.stop_and_wait.assert_awaited_once()
+        monitor.commit_delivered_watermarks.assert_called_once()
         workers.assert_awaited_once()
         assert bootstrap.session_monitor is None
         assert bootstrap._status_poll_task is None
@@ -239,6 +240,30 @@ class TestShutdownRuntime:
             await bootstrap.shutdown_runtime()
         stop_mini.assert_awaited_once()
         sm.flush_state.assert_called_once()
+
+    async def test_awaits_all_producers_before_draining_workers(self):
+        order: list[str] = []
+        monitor = MagicMock()
+        monitor.stop_and_wait = AsyncMock(side_effect=lambda: order.append("monitor"))
+        monitor.commit_delivered_watermarks.side_effect = lambda: order.append("commit")
+        stream = MagicMock()
+        stream.stop_and_wait = AsyncMock(side_effect=lambda: order.append("stream"))
+        bootstrap.session_monitor = monitor
+
+        with (
+            patch(
+                "ccgram.event_stream_monitor.get_active_event_stream",
+                return_value=stream,
+            ),
+            patch("ccgram.event_stream_monitor.set_active_event_stream"),
+            patch(
+                "ccgram.bootstrap.shutdown_workers",
+                new=AsyncMock(side_effect=lambda: order.append("drain")),
+            ),
+        ):
+            await bootstrap.stop_delivery_runtime()
+
+        assert order == ["monitor", "stream", "drain", "commit"]
 
     async def test_handles_no_running_components(self):
         bootstrap._status_poll_task = None
@@ -280,7 +305,7 @@ class TestResetForTesting:
         from ccgram import session_monitor as sm_mod
 
         monitor = MagicMock()
-        monitor.stop = MagicMock()
+        monitor.stop_and_wait = AsyncMock()
         sm_mod.set_active_monitor(monitor)
         bootstrap.session_monitor = monitor
 
