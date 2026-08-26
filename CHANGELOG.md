@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.6.8] - 2026-08-26
+
+### Fixed
+
+- Preserve transcript messages across shutdowns and Telegram delivery failures. Offsets now advance only after confirmed delivery, with bounded queue draining and safe replay ([#179](https://github.com/alexei-led/ccgram/issues/179)).
+- Avoid repeated `Ready` notifications after restart while preserving genuine hookless provider completion signals ([#180](https://github.com/alexei-led/ccgram/issues/180)).
+- Recover legacy Herdr identity bindings through safe alias migration without destructive pruning or cross-session routing ([#187](https://github.com/alexei-led/ccgram/issues/187)).
+
 ## [4.6.7] - 2026-08-26
 
 ### Fixed
