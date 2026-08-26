@@ -1,3 +1,4 @@
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -24,9 +25,15 @@ def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-@pytest.fixture
-def git_repo(tmp_path: Path) -> Path:
-    repo = tmp_path / "repo"
+@pytest.fixture(scope="session")
+def _git_repo_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """One-time git repo creation per session (or per xdist worker).
+
+    Seven git subprocess calls run once instead of once per test.
+    Each test gets an isolated copy via shutil.copytree (see git_repo).
+    """
+    base = tmp_path_factory.mktemp("git_template")
+    repo = base / "repo"
     repo.mkdir()
     _git(repo, "init")
     _git(repo, "config", "user.email", "t@example.com")
@@ -35,6 +42,14 @@ def git_repo(tmp_path: Path) -> Path:
     _git(repo, "add", ".")
     _git(repo, "commit", "-m", "init")
     _git(repo, "branch", "-M", "main")
+    return repo
+
+
+@pytest.fixture
+def git_repo(tmp_path: Path, _git_repo_template: Path) -> Path:
+    """Per-test copy of the template repo — filesystem copy, no git subprocess."""
+    repo = tmp_path / "repo"
+    shutil.copytree(_git_repo_template, repo)
     return repo
 
 

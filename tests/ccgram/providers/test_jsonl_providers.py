@@ -1,7 +1,6 @@
 import json
 import hashlib
 import os
-import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1496,7 +1495,6 @@ class TestCodexDiscoverTranscript:
         old = _write_codex_session(
             sessions_dir, "2026/03/01", "old", "uuid-old", "/my/project"
         )
-        time.sleep(0.05)
         _write_codex_session(
             sessions_dir, "2026/03/02", "new", "uuid-new", "/my/project"
         )
@@ -1559,7 +1557,6 @@ class TestCodexDiscoverTranscript:
         old_time = stale.stat().st_mtime - 300
         os.utime(stale, (old_time, old_time))
 
-        time.sleep(0.05)
         _write_codex_session(
             sessions_dir, "2026/03/02", "fresh", "uuid-fresh", "/my/project"
         )
@@ -1572,10 +1569,9 @@ class TestCodexDiscoverTranscript:
 
     def test_skips_newer_guardian_subagent_transcript(self, tmp_path: Path) -> None:
         sessions_dir = tmp_path / ".codex" / "sessions"
-        _write_codex_session(
+        main = _write_codex_session(
             sessions_dir, "2026/03/01", "main", "uuid-main", "/my/project"
         )
-        time.sleep(0.05)
         _write_codex_session(
             sessions_dir,
             "2026/03/02",
@@ -1584,6 +1580,9 @@ class TestCodexDiscoverTranscript:
             "/my/project",
             source={"subagent": {"other": "guardian"}},
         )
+        # Ensure guardian is "newer" so the test proves content-based filtering,
+        # not just mtime ordering — back-date main explicitly.
+        os.utime(main, (main.stat().st_mtime - 1, main.stat().st_mtime - 1))
 
         codex = CodexProvider()
         with patch.object(Path, "home", return_value=tmp_path):
@@ -1614,14 +1613,13 @@ class TestCodexDiscoverTranscript:
         hookless discovery, even if a real interactive session exists in the
         same cwd. The interactive session wins."""
         sessions_dir = tmp_path / ".codex" / "sessions"
-        _write_codex_session(
+        main = _write_codex_session(
             sessions_dir,
             "2026/03/01",
             "main",
             "uuid-main",
             "/my/project",
         )
-        time.sleep(0.05)
         _write_codex_session(
             sessions_dir,
             "2026/03/02",
@@ -1631,6 +1629,9 @@ class TestCodexDiscoverTranscript:
             source="exec",
             originator="codex_exec",
         )
+        # Ensure exec-run is "newer" so the test proves content-based filtering,
+        # not mtime ordering — back-date main explicitly.
+        os.utime(main, (main.stat().st_mtime - 1, main.stat().st_mtime - 1))
 
         codex = CodexProvider()
         with patch.object(Path, "home", return_value=tmp_path):
