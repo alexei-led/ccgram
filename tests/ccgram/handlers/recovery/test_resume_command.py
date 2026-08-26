@@ -865,6 +865,37 @@ class TestBuildResumeKeyboard:
 
 
 class TestResumeCommand:
+    @patch(f"{_RC}.picker_capable_providers", return_value=[MagicMock()])
+    @patch(f"{_RC}.scan_all_sessions")
+    @patch(f"{_RC}.window_query")
+    @patch(f"{_RC}.thread_router")
+    @patch(f"{_RC}.safe_reply", new_callable=AsyncMock)
+    @patch(f"{_RC}.get_thread_id", return_value=42)
+    @patch(f"{_RC}.config")
+    async def test_blank_provider_scans_every_provider_not_the_default(
+        self,
+        mock_config: MagicMock,
+        _mock_thread_id: MagicMock,
+        _mock_safe_reply: AsyncMock,
+        mock_tr: MagicMock,
+        mock_wq: MagicMock,
+        mock_scan: MagicMock,
+        _mock_pickers: MagicMock,
+    ) -> None:
+        """A state row that never recorded a provider is unknown, not default.
+
+        Narrowing to the config default here lists one agent's sessions under
+        another agent's topic — the symptom the merged scan exists to remove.
+        """
+        mock_config.is_user_allowed.return_value = True
+        mock_tr.get_window_for_thread.return_value = "@5"
+        mock_wq.get_window_provider.return_value = ""
+        mock_scan.return_value = []
+
+        await resume_command(_make_update(), _make_context({}))
+
+        mock_scan.assert_called_once_with(None)
+
     @patch(f"{_RC}.scan_all_sessions")
     @patch(f"{_RC}.safe_reply", new_callable=AsyncMock)
     @patch(f"{_RC}.get_thread_id", return_value=42)

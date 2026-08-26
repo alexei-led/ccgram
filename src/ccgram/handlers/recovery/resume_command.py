@@ -16,6 +16,7 @@ Key functions:
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+import asyncio
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -256,14 +257,18 @@ async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # An unknown provider is not the same as the default one: resolving it here
     # would offer a Codex topic Claude's sessions. Scan every picker-capable
     # provider instead and let the picked entry decide what to relaunch.
+    # Both None (no state row) and "" (a row that never recorded one — see
+    # transcript_discovery's cwd-only reseed) mean "unknown"; only a real name
+    # may narrow the scan to one provider.
     known_provider = window_query.get_window_provider(window_id) if window_id else None
-    if known_provider is None:
+    if not known_provider:
         if not picker_capable_providers():
             await safe_reply(
                 update.message,
                 "\u274c Resume browsing is not supported by any provider.",
             )
             return
+        known_provider = None
     else:
         provider = get_provider_for_window(
             window_id or "", provider_name=known_provider
@@ -279,7 +284,7 @@ async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
         known_provider = provider.capabilities.name
 
-    sessions = scan_all_sessions(known_provider)
+    sessions = await asyncio.to_thread(scan_all_sessions, known_provider)
     if not sessions:
         await safe_reply(update.message, "\u274c No past sessions found.")
         return
