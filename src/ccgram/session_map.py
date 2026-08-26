@@ -578,9 +578,7 @@ class SessionMapSync:
         """Return the retained pre-migration copy for a hook-written map."""
         return map_file.with_name(f"{map_file.name}.identity-migration.bak")
 
-    def rename_session_map_entries(
-        self, migrations: list[tuple[str, str]]
-    ) -> bool:
+    def rename_session_map_entries(self, migrations: list[tuple[str, str]]) -> bool:
         """Atomically re-key a set of aliases while holding the hook file lock.
 
         The first destructive migration retains the complete pre-migration map
@@ -606,7 +604,9 @@ class SessionMapSync:
                     # hook write cannot be lost between read and write.
                     raw = _read_session_map_for_pruning()
                     if raw is None:
-                        logger.warning("Session-map migration deferred: map is unreadable")
+                        logger.warning(
+                            "Session-map migration deferred: map is unreadable"
+                        )
                         return False
                     moves = [
                         (f"{prefix}{alias_id}", f"{prefix}{canonical_id}")
@@ -624,7 +624,11 @@ class SessionMapSync:
                         # collision while still removing the superseded key.
                         raw.setdefault(live_key, entry)
                     atomic_write_json(map_file, raw)
-                    logger.info("Re-keyed %d session_map entr%s", len(moves), "y" if len(moves) == 1 else "ies")
+                    logger.info(
+                        "Re-keyed %d session_map entr%s",
+                        len(moves),
+                        "y" if len(moves) == 1 else "ies",
+                    )
                     return True
                 finally:
                     fcntl.flock(lock_f, fcntl.LOCK_UN)

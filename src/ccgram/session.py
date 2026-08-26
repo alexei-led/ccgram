@@ -285,9 +285,7 @@ class SessionManager:
         from .window_resolver import migrate_window_aliases
 
         aliases = self._unique_window_aliases(windows, "alias_window_ids")
-        legacy_aliases = self._unique_window_aliases(
-            windows, "legacy_alias_window_ids"
-        )
+        legacy_aliases = self._unique_window_aliases(windows, "legacy_alias_window_ids")
         aliases.update(legacy_aliases)
         if not aliases:
             return

@@ -123,9 +123,9 @@ class TestLegacyHerdrAliasConvergence:
         raw = json.loads(map_file.read_text())
         assert f"herdr:{alias}" not in raw
         assert raw[f"herdr:{canonical}"]["session_id"] == "sid-old"
-        assert json.loads(map_file.with_name("session_map.json.identity-migration.bak").read_text()) == {
-            f"herdr:{alias}": raw[f"herdr:{canonical}"]
-        }
+        assert json.loads(
+            map_file.with_name("session_map.json.identity-migration.bak").read_text()
+        ) == {f"herdr:{alias}": raw[f"herdr:{canonical}"]}
         assert state_file.with_name("state.json.identity-migration.bak").exists()
 
         # Restart/reconciliation is idempotent: no state or file key flips back.
@@ -168,7 +168,9 @@ class TestLegacyHerdrAliasConvergence:
         monkeypatch.setattr("ccgram.session.config.state_file", tmp_path / "state.json")
         window_store.window_states[alias] = WindowState(cwd="/repo", legacy_herdr=True)
         thread_router.bind_thread(7, 41, alias)
-        monkeypatch.setattr(session_map_sync, "rename_session_map_entries", lambda _m: False)
+        monkeypatch.setattr(
+            session_map_sync, "rename_session_map_entries", lambda _m: False
+        )
 
         mgr.reconcile_window_aliases(
             [SimpleNamespace(window_id=canonical, legacy_alias_window_ids=(alias,))]
