@@ -209,14 +209,22 @@ class SessionResolver:
     ) -> list[tuple[int, str, int, int | None]]:
         """Find all users whose thread-bound window maps to the given session_id."""
         result: list[tuple[int, str, int, int | None]] = []
+        # Bindings can briefly retain a superseded id while state has already
+        # folded onto its canonical target.  Use the one alias-convergence
+        # contract rather than attempting a second digest/locator mapping here.
+        # Lazy: window_resolver imports session-state types; defer to preserve
+        # the read-only query layer's cold-import boundary.
+        from .window_resolver import resolve_window_alias
+
         for (
             user_id,
             chat_id,
             thread_id,
             window_id,
         ) in thread_router.iter_thread_bindings_with_chat():
-            if identity_state.get_session_id(window_id) == session_id:
-                result.append((user_id, window_id, thread_id, chat_id))
+            canonical_id = resolve_window_alias(window_id)
+            if identity_state.get_session_id(canonical_id) == session_id:
+                result.append((user_id, canonical_id, thread_id, chat_id))
         return result
 
     async def get_recent_messages(

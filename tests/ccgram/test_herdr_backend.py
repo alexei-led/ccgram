@@ -211,6 +211,15 @@ async def test_list_windows_exposes_all_detected_agent_targets() -> None:
     assert all("w2:" not in win.window_id for win in windows)
 
 
+async def test_legacy_locator_aliases_are_migration_only_and_adapter_attested() -> None:
+    """The adapter exposes old tab/pane keys only through the typed seam."""
+    window = (await _manager(_live_fake(_agent())).list_windows())[0]
+
+    assert window.window_id == _target("session-a")
+    assert set(window.legacy_alias_window_ids) == {"w2:t1", "w2:p1", "term-a"}
+    assert all("w2:" not in value for value in window.alias_window_ids)
+
+
 async def test_session_target_aliases_the_hook_time_sessionless_target() -> None:
     """The same pane, before and after Herdr publishes its agent session.
 
