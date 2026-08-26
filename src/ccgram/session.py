@@ -305,6 +305,7 @@ class SessionManager:
             cloned_chat_bindings,
             cloned_offsets,
             cloned_display_names,
+            record_redirects=False,
         )
         if migrations and not self._backup_identity_migration_state():
             return

@@ -9,6 +9,7 @@ from ccgram.session_map import session_map_sync
 from ccgram.session_resolver import session_resolver
 from ccgram.thread_router import thread_router
 from ccgram.user_preferences import user_preferences
+from ccgram.window_resolver import resolve_window_alias
 from ccgram.window_state_store import APPROVAL_MODES, WindowState, window_store
 
 
@@ -164,7 +165,7 @@ class TestLegacyHerdrAliasConvergence:
     def test_session_map_failure_keeps_all_memory_state_for_retry(
         self, mgr: SessionManager, tmp_path, monkeypatch
     ) -> None:
-        alias, canonical = "w2:t1", self._target()
+        alias, canonical = "w2:t99", self._target()
         monkeypatch.setattr("ccgram.session.config.state_file", tmp_path / "state.json")
         window_store.window_states[alias] = WindowState(cwd="/repo", legacy_herdr=True)
         thread_router.bind_thread(7, 41, alias)
@@ -178,6 +179,7 @@ class TestLegacyHerdrAliasConvergence:
 
         assert alias in window_store.window_states
         assert thread_router.get_window_for_thread(7, 41) == alias
+        assert resolve_window_alias(alias) == alias
 
 
 class TestThreadBindings:
