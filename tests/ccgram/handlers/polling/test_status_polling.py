@@ -108,9 +108,10 @@ class TestAutocloseTimers:
             mock_time.monotonic.return_value = elapsed
             mock_tr.resolve_chat_id.return_value = -100
             await check_autoclose_timers(bot)
-        bot.delete_forum_topic.assert_called_once_with(
+        bot.close_forum_topic.assert_called_once_with(
             chat_id=-100, message_thread_id=42
         )
+        bot.delete_forum_topic.assert_not_called()
         mock_tr.unbind_thread.assert_called_once_with(1, 42)
         assert not _has_autoclose(1, 42)
 
@@ -141,7 +142,8 @@ class TestAutocloseTimers:
             await check_autoclose_timers(bot)
         bot.close_forum_topic.assert_not_called()
 
-    async def test_check_telegram_error_handled(self) -> None:
+    async def test_check_telegram_error_does_not_clear_timer(self) -> None:
+        """A non-fatal TelegramError leaves the timer so the next cycle retries."""
         _start_autoclose_timer(1, 42, "done", 0.0)
         bot = AsyncMock(spec=Bot)
         bot.close_forum_topic.side_effect = TelegramError("fail")
@@ -155,12 +157,14 @@ class TestAutocloseTimers:
             mock_time.monotonic.return_value = 30 * 60 + 1
             mock_tr.resolve_chat_id.return_value = -100
             await check_autoclose_timers(bot)
-        assert not _has_autoclose(1, 42)
+        # Timer must stay so the next cycle can retry.
+        assert _has_autoclose(1, 42)
 
     async def test_check_treats_missing_topic_as_removed(self) -> None:
+        """A gone topic is cleaned up whether close_forum_topic says it's gone."""
         _start_autoclose_timer(1, 42, "done", 0.0)
         bot = AsyncMock(spec=Bot)
-        bot.delete_forum_topic.side_effect = BadRequest("Topic_id_invalid")
+        bot.close_forum_topic.side_effect = BadRequest("Topic_id_invalid")
         with (
             patch("ccgram.handlers.topics.topic_lifecycle.config") as mock_config,
             patch("ccgram.handlers.topics.topic_lifecycle.thread_router") as mock_tr,
@@ -178,7 +182,10 @@ class TestAutocloseTimers:
 
             await check_autoclose_timers(bot)
 
-        bot.close_forum_topic.assert_not_called()
+        bot.close_forum_topic.assert_called_once_with(
+            chat_id=-100, message_thread_id=42
+        )
+        bot.delete_forum_topic.assert_not_called()
         mock_tr.unbind_thread.assert_called_once_with(1, 42)
         mock_clear.assert_awaited_once()
         assert not _has_autoclose(1, 42)

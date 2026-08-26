@@ -618,3 +618,63 @@ class TestFormatClaudeTaskStatusWithPanes:
         assert lines[0] == "Running"
         assert lines[1].startswith("└ ")
         assert "1 tasks (0 done, 1 open)" in lines[2]
+
+
+# Patch target for the lazily-imported build_dashboard_button (loaded inside
+# build_status_keyboard at call time from status_bar_actions, not at module level).
+_DASH_PATCH = "ccgram.handlers.status.status_bar_actions.build_dashboard_button"
+
+
+class TestBuildStatusKeyboardGroupVsPrivate:
+    """#178: web_app (Dashboard) button must not appear in group/topic chats."""
+
+    @patch(_DASH_PATCH)
+    def test_private_chat_shows_dashboard_button(self, mock_dash):
+        """is_group=False → private chat → build_dashboard_button is consulted."""
+        from ccgram.handlers.status.status_bubble import build_status_keyboard
+
+        mock_dash.return_value = MagicMock(web_app=MagicMock(), callback_data=None)
+        build_status_keyboard(WINDOW_ID, user_id=USER_ID, is_group=False)
+        mock_dash.assert_called_once_with(WINDOW_ID, USER_ID)
+
+    @patch(_DASH_PATCH)
+    def test_group_chat_hides_dashboard_button(self, mock_dash):
+        """is_group=True → Telegram rejects web_app → build_dashboard_button skipped."""
+        from ccgram.handlers.status.status_bubble import build_status_keyboard
+
+        mock_dash.return_value = MagicMock(web_app=MagicMock(), callback_data=None)
+        build_status_keyboard(WINDOW_ID, user_id=USER_ID, is_group=True)
+        mock_dash.assert_not_called()
+
+    @patch("ccgram.handlers.status.status_bubble.config", create=True)
+    @patch("ccgram.handlers.status.status_bubble.thread_router")
+    @patch(_DASH_PATCH)
+    async def test_send_in_thread_does_not_call_dashboard_button(
+        self, mock_dash, mock_router, mock_config
+    ):
+        """send_status_text with non-zero thread_id suppresses the dashboard button."""
+        mock_config.hide_status = False
+        mock_router.resolve_chat_id.return_value = CHAT_ID
+        import ccgram.handlers.status.status_bubble as bubble_mod
+
+        await bubble_mod.send_status_text(
+            _make_bot(77), USER_ID, THREAD_ID, WINDOW_ID, "working"
+        )
+        mock_dash.assert_not_called()
+
+    @patch("ccgram.handlers.status.status_bubble.config", create=True)
+    @patch("ccgram.handlers.status.status_bubble.thread_router")
+    @patch(_DASH_PATCH)
+    async def test_send_in_private_calls_dashboard_button(
+        self, mock_dash, mock_router, mock_config
+    ):
+        """send_status_text with thread_id==0 (private chat) consults the dashboard button."""
+        mock_config.hide_status = False
+        mock_router.resolve_chat_id.return_value = CHAT_ID
+        mock_dash.return_value = None  # Mini App not configured — button absent
+        import ccgram.handlers.status.status_bubble as bubble_mod
+
+        await bubble_mod.send_status_text(
+            _make_bot(78), USER_ID, 0, WINDOW_ID, "working"
+        )
+        mock_dash.assert_called_once_with(WINDOW_ID, USER_ID)

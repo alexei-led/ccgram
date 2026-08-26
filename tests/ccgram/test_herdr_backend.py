@@ -12,6 +12,7 @@ import json
 import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -441,24 +442,49 @@ async def test_capture_and_scrollback_guard_then_read_the_matched_pane() -> None
 
 
 async def test_send_variants_guard_then_dispatch_to_live_pane() -> None:
+    """Literal+enter is split into send-text then a separate Enter key."""
     fake = (
         _live_fake(_agent(pane_id="w7:p4"))
-        .on("pane", "run", out=_result(type="ok"))
         .on("pane", "send-text", out=_result(type="ok"))
         .on("pane", "send-keys", out=_result(type="ok"))
     )
     mux = _manager(fake)
-    assert await mux.send(_target(), "hello")
+    with patch("ccgram.multiplexer.herdr.asyncio.sleep"):
+        assert await mux.send(_target(), "hello")
     assert await mux.send(_target(), "partial", enter=False)
     assert await mux.send(_target(), "C-c Up", literal=False)
     assert fake.calls == [
         ["agent", "list"],
-        ["pane", "run", "w7:p4", "hello"],
+        ["pane", "send-text", "w7:p4", "hello"],
+        ["pane", "send-keys", "w7:p4", "Enter"],
         ["agent", "list"],
         ["pane", "send-text", "w7:p4", "partial"],
         ["agent", "list"],
         ["pane", "send-keys", "w7:p4", "C-c", "Up", "Enter"],
     ]
+
+
+async def test_send_literal_enter_is_split_with_delay() -> None:
+    """#177 regression: text and Enter must never arrive as one ``pane run`` batch."""
+    import ccgram.multiplexer.herdr as herdr_mod
+
+    fake = (
+        _live_fake(_agent(pane_id="w7:p5"))
+        .on("pane", "send-text", out=_result(type="ok"))
+        .on("pane", "send-keys", out=_result(type="ok"))
+    )
+    sleep_mock = AsyncMock()
+    with patch.object(herdr_mod.asyncio, "sleep", sleep_mock):
+        assert await _manager(fake).send(_target(), "hello world")
+
+    # ``pane run`` must never appear — that is the batched-Enter bug.
+    assert ["pane", "run", "w7:p5", "hello world"] not in fake.calls
+    # Text arrives before Enter.
+    text_idx = fake.calls.index(["pane", "send-text", "w7:p5", "hello world"])
+    enter_idx = fake.calls.index(["pane", "send-keys", "w7:p5", "Enter"])
+    assert text_idx < enter_idx
+    # The delay was awaited between them.
+    sleep_mock.assert_awaited_once_with(herdr_mod._SEND_ENTER_DELAY_SECONDS)
 
 
 async def test_every_mutating_tab_action_uses_live_record_locator() -> None:
@@ -751,11 +777,13 @@ async def test_send_to_a_replaced_target_fails_without_dispatching() -> None:
 
 
 async def test_action_error_refreshes_guard_without_retargeting() -> None:
-    fake = _live_fake(_agent(pane_id="w2:p1")).on("pane", "run", rc=1, err="closed")
+    fake = _live_fake(_agent(pane_id="w2:p1")).on(
+        "pane", "send-text", rc=1, err="closed"
+    )
     assert not await _manager(fake).send(_target(), "hello")
     assert fake.calls == [
         ["agent", "list"],
-        ["pane", "run", "w2:p1", "hello"],
+        ["pane", "send-text", "w2:p1", "hello"],
         ["agent", "list"],
     ]
 
@@ -783,7 +811,7 @@ async def test_post_guard_dispatch_race_never_retargets_another_pane() -> None:
     assert not await HerdrManager(runner=runner).send(_target(), "hello")
     assert runner.calls == [
         ["agent", "list"],
-        ["pane", "run", "w2:p1", "hello"],
+        ["pane", "send-text", "w2:p1", "hello"],
         ["agent", "list"],
     ]
     assert not any(
