@@ -30,7 +30,12 @@ from telegram import (
 from telegram.error import TelegramError
 
 from ...config import config
-from ...providers import get_provider, get_provider_for_window, resolve_launch_command
+from ...providers import (
+    get_provider,
+    get_provider_for_window,
+    picker_capable_providers,
+    resolve_launch_command,
+)
 from ...providers._resume import index_message_count
 from ... import window_query
 from ...session import session_manager
@@ -48,6 +53,8 @@ from ..user_state import RESUME_SESSIONS
 
 if TYPE_CHECKING:
     from telegram.ext import ContextTypes
+
+    from ...providers.base import AgentProvider
 
 logger = structlog.get_logger()
 
@@ -120,8 +127,27 @@ def format_session_entry(
 
 
 def scan_all_sessions(provider_name: str | None = "claude") -> list[ResumeEntry]:
-    """List resumable sessions owned by one provider."""
-    provider = get_provider_for_window("", provider_name=provider_name)
+    """List resumable sessions for one provider, or for every picker-capable one.
+
+    ``None`` means the caller could not resolve the window's provider, which
+    happens exactly when its window state is gone. Falling back to the config
+    default there answers a Codex topic with Claude's sessions, so merge every
+    provider that offers a picker instead; each entry carries its own
+    ``provider_name`` through to the resume, so the pick still relaunches the
+    right agent.
+    """
+    if provider_name is None:
+        merged = [
+            entry
+            for provider in picker_capable_providers()
+            for entry in _entries_for(provider)
+        ]
+        merged.sort(key=lambda e: e.mtime, reverse=True)
+        return merged
+    return _entries_for(get_provider_for_window("", provider_name=provider_name))
+
+
+def _entries_for(provider: AgentProvider) -> list[ResumeEntry]:
     discovered = provider.discover_resumable_sessions()
     return [
         ResumeEntry(
@@ -226,27 +252,34 @@ async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
-    # Check resume capability using per-window provider (or global fallback)
     window_id = thread_router.get_window_for_thread(user.id, thread_id)
-    provider = (
-        get_provider_for_window(
-            window_id,
-            provider_name=window_query.get_window_provider(window_id),
+    # An unknown provider is not the same as the default one: resolving it here
+    # would offer a Codex topic Claude's sessions. Scan every picker-capable
+    # provider instead and let the picked entry decide what to relaunch.
+    known_provider = window_query.get_window_provider(window_id) if window_id else None
+    if known_provider is None:
+        if not picker_capable_providers():
+            await safe_reply(
+                update.message,
+                "\u274c Resume browsing is not supported by any provider.",
+            )
+            return
+    else:
+        provider = get_provider_for_window(
+            window_id or "", provider_name=known_provider
         )
-        if window_id
-        else get_provider()
-    )
-    if not (
-        provider.capabilities.supports_resume
-        and provider.capabilities.supports_resume_picker
-    ):
-        await safe_reply(
-            update.message,
-            "\u274c Resume browsing is not supported by the current provider.",
-        )
-        return
+        if not (
+            provider.capabilities.supports_resume
+            and provider.capabilities.supports_resume_picker
+        ):
+            await safe_reply(
+                update.message,
+                "\u274c Resume browsing is not supported by the current provider.",
+            )
+            return
+        known_provider = provider.capabilities.name
 
-    sessions = scan_all_sessions(provider.capabilities.name)
+    sessions = scan_all_sessions(known_provider)
     if not sessions:
         await safe_reply(update.message, "\u274c No past sessions found.")
         return

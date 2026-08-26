@@ -422,6 +422,56 @@ class TestScanAllSessions:
         assert len(result) == 1
         assert result[0].mtime == expected_mtime
 
+    def test_unknown_provider_merges_every_picker_capable_provider(self) -> None:
+        """None means "provider unknown", not "use the default one".
+
+        A topic whose window state is gone has no provider to resolve, and
+        answering it with only the config default listed one agent's sessions
+        under another agent's topic.
+        """
+        from types import SimpleNamespace
+
+        def _session(sid, mtime, provider):
+            return SimpleNamespace(
+                session_id=sid,
+                summary=f"work in {sid}",
+                cwd="/proj",
+                mtime=mtime,
+                msg_count=3,
+                provider_name=provider,
+            )
+
+        alpha = SimpleNamespace(
+            discover_resumable_sessions=lambda: [_session("a-1", 100.0, "alpha")]
+        )
+        beta = SimpleNamespace(
+            discover_resumable_sessions=lambda: [_session("b-1", 200.0, "beta")]
+        )
+
+        with patch(
+            "ccgram.handlers.recovery.resume_command.picker_capable_providers",
+            return_value=[alpha, beta],
+        ):
+            result = scan_all_sessions(None)
+
+        assert [e.session_id for e in result] == ["b-1", "a-1"]  # newest first
+        assert {e.provider_name for e in result} == {"alpha", "beta"}
+
+    def test_named_provider_does_not_merge_others(self) -> None:
+        with (
+            patch(
+                "ccgram.handlers.recovery.resume_command.picker_capable_providers"
+            ) as mock_all,
+            patch(
+                "ccgram.handlers.recovery.resume_command.get_provider_for_window"
+            ) as mock_get,
+        ):
+            mock_get.return_value.discover_resumable_sessions.return_value = []
+            scan_all_sessions("claude")
+
+        mock_all.assert_not_called()
+        mock_get.assert_called_once_with("", provider_name="claude")
+
 
 class TestRelativeTime:
     _NOW = 1_700_000_000.0

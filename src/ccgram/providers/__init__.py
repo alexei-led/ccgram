@@ -132,6 +132,17 @@ def get_provider_for_window(
     return get_provider()
 
 
+def picker_capable_providers() -> list[AgentProvider]:
+    """Return every registered provider that offers a resume picker."""
+    _ensure_registered()
+    providers = [registry.get(name) for name in registry.provider_names()]
+    return [
+        p
+        for p in providers
+        if p.capabilities.supports_resume and p.capabilities.supports_resume_picker
+    ]
+
+
 def detect_provider_from_command(pane_current_command: str) -> str:
     """Detect provider name from a tmux pane's running process.
 
@@ -351,6 +362,7 @@ def resolve_capabilities(provider_name: str | None = None) -> ProviderCapabiliti
 
 
 __all__ = [
+    "picker_capable_providers",
     "AgentMessage",
     "AgentProvider",
     "DiscoveredCommand",

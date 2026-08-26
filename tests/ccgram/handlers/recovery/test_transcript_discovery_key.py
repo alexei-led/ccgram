@@ -116,6 +116,33 @@ class TestBootstrapIdentity:
         assert result is None
         mock_sm.set_window_provider.assert_not_called()
 
+    async def test_shell_detection_writes_no_state(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A bare shell must not be stamped as the window's origin provider.
+
+        ``set_window_provider`` seeds ``initial_provider_name`` from the value
+        being written when the state is fresh, so bootstrapping "shell" would
+        make ``_is_agent_origin`` False forever and the agent-exit recovery
+        banner would never fire for that window again.
+        """
+        monkeypatch.setattr(
+            "ccgram.providers.detect_provider_from_pane",
+            AsyncMock(return_value="shell"),
+        )
+        mock_sm = MagicMock()
+        monkeypatch.setattr(
+            "ccgram.handlers.recovery.transcript_discovery.session_manager",
+            mock_sm,
+        )
+
+        result = await _bootstrap_identity(
+            "@9", _window_ref(pane_current_command="zsh")
+        )
+
+        assert result is None
+        mock_sm.set_window_provider.assert_not_called()
+
     async def test_detected_provider_creates_state_with_correct_cwd(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

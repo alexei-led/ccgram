@@ -334,7 +334,14 @@ async def _bootstrap_identity(
     detected = await detect_provider_from_pane(
         w.pane_current_command or "", window_id=window_id
     )
-    if not detected:
+    if not detected or detected == "shell":
+        # On a state-less window ``set_window_provider`` seeds
+        # ``initial_provider_name`` from the value being written, so bootstrapping
+        # a shell would stamp the window shell-origin permanently and
+        # ``_is_agent_origin`` would never fire the recovery banner again — for a
+        # dead topic whose agent already exited to a shell, which is exactly the
+        # population this heals. A shell has no transcript to discover, so
+        # skipping loses nothing.
         return None
     session_manager.set_window_provider(window_id, detected, cwd=w.cwd or None)
     logger.info(
