@@ -28,7 +28,7 @@
 #   contract), reduce structural distance (co-locate), or accept low volatility.
 #   Because you personally absorb every cascade, honest `volatility` is the right
 #   primary signal — it tells you which couplings will actually bite.
-version: 1
+version: 2
 languages:
   python:
     package: ccgram
