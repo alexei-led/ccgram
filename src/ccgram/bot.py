@@ -18,7 +18,7 @@ import signal
 import time
 
 import structlog
-from telegram.error import BadRequest, Conflict, NetworkError
+from telegram.error import BadRequest, Conflict, NetworkError, RetryAfter
 from telegram.ext import (
     Application,
     ContextTypes,
@@ -37,7 +37,7 @@ from .handlers.text.text_handler import handle_text_message, text_handler
 from .handlers.topics import new_command
 from .handlers.topics.directory_browser import clear_browse_state
 from .session import session_manager
-from .telegram_rate_limiter import CCGramAIORateLimiter
+from .telegram_rate_limiter import CCGramAIORateLimiter, retry_after_seconds
 from .telegram_request import ResilientPollingHTTPXRequest
 from .thread_router import thread_router
 
@@ -199,6 +199,12 @@ async def _error_handler(_update: object, context: ContextTypes.DEFAULT_TYPE) ->
     if isinstance(context.error, BadRequest) and "too old" in str(context.error):
         logger.debug("Callback query expired (query too old)")
         return
+    if isinstance(context.error, RetryAfter):
+        logger.warning(
+            "Telegram rate limit persisted after retries",
+            retry_after_seconds=retry_after_seconds(context.error),
+        )
+        return
     if isinstance(context.error, NetworkError) and not isinstance(
         context.error, BadRequest
     ):
@@ -218,7 +224,7 @@ def create_bot() -> Application:
     application = (
         Application.builder()
         .token(config.telegram_bot_token)
-        .rate_limiter(CCGramAIORateLimiter(max_retries=5))
+        .rate_limiter(CCGramAIORateLimiter(max_retries=3))
         .request(
             ResilientPollingHTTPXRequest(
                 read_timeout=10,

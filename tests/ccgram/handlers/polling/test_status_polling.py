@@ -33,6 +33,7 @@ from ccgram.handlers.polling.polling_state import (
 from ccgram.handlers.polling.polling_types import MAX_PROBE_FAILURES, TickContext
 from ccgram.providers.base import StatusUpdate
 from ccgram.telegram_client import PTBTelegramClient
+from ccgram.telegram_rate_limiter import NO_RETRY_RATE_LIMIT_ARGS
 from ccgram.multiplexer.base import ForegroundInfo, PaneInfo
 
 _INTERACTIVE_STATUS = StatusUpdate(
@@ -718,7 +719,7 @@ class TestProbeFailures:
         bot.unpin_all_forum_topic_messages.assert_called_once_with(
             chat_id=-100,
             message_thread_id=42,
-            rate_limit_args=0,
+            rate_limit_args=NO_RETRY_RATE_LIMIT_ARGS,
         )
 
     @pytest.mark.parametrize(

@@ -1,11 +1,12 @@
 import ast
 import asyncio
 import contextlib
+from datetime import timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from telegram.error import TelegramError
+from telegram.error import RetryAfter, TelegramError
 
 from ccgram.handlers.messaging_pipeline.message_queue import (
     MERGE_MAX_LENGTH,
@@ -429,6 +430,58 @@ class TestNoBackEdgeImports:
 
 
 class TestMessageQueueWorker:
+    async def test_retry_after_backoff_keeps_receipt_pending_until_delivery(self, bot):
+        from ccgram.handlers.messaging_pipeline import message_queue as mq
+
+        user_id = 88003
+        mq._message_queues[user_id] = asyncio.Queue()
+        mq._queue_locks[user_id] = asyncio.Lock()
+        receipt = mq.DeliveryReceipt()
+        receipt.track()
+        receipt.close()
+        q = mq._message_queues[user_id]
+        q.put_nowait(
+            ContentTask(
+                window_id="@0",
+                parts=("hello",),
+                thread_id=42,
+                delivery_receipts=(receipt,),
+            )
+        )
+        dispatch = AsyncMock(
+            side_effect=[
+                RetryAfter(timedelta(seconds=3)),
+                RetryAfter(timedelta(seconds=3)),
+                mq.DispatchResult(0, mq.DeliveryOutcome.DELIVERED),
+            ]
+        )
+        pending_during_sleep: list[bool] = []
+        delays: list[float] = []
+
+        async def record_sleep(delay: float) -> None:
+            delays.append(delay)
+            pending_during_sleep.append(not receipt.failed and not receipt.commit_ready)
+
+        worker = asyncio.create_task(mq._message_queue_worker(bot, user_id))
+        try:
+            with (
+                patch.object(mq, "_dispatch", dispatch),
+                patch.object(mq.asyncio, "sleep", side_effect=record_sleep),
+                patch("random.uniform", return_value=0.25),
+            ):
+                await asyncio.wait_for(q.join(), timeout=1.0)
+
+            assert delays == [3.25, 4.25]
+            assert pending_during_sleep == [True, True]
+            assert dispatch.await_count == 3
+            assert receipt.commit_ready is True
+        finally:
+            worker.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await worker
+            mq._message_queues.pop(user_id, None)
+            mq._queue_locks.pop(user_id, None)
+
     async def test_terminal_send_failure_blocks_delivery_receipt(self, bot):
         """A drained queue is not a delivery acknowledgement after a send error."""
         from ccgram.handlers.messaging_pipeline import message_queue as mq

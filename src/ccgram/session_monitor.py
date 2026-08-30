@@ -567,6 +567,7 @@ class SessionMonitor:
                 await session_map_sync.load_session_map(raw_session_map)
                 current_map = await self._detect_and_cleanup_changes(raw_session_map)
 
+                monitored_map = current_map
                 if all_windows is not None:
                     live_window_ids = {w.window_id for w in all_windows}
                     session_map_sync.prune_session_map(live_window_ids)
@@ -577,8 +578,13 @@ class SessionMonitor:
                     await self._emit_known_unbound_window_events(
                         current_map, live_window_ids
                     )
+                    monitored_map = {
+                        window_id: details
+                        for window_id, details in current_map.items()
+                        if window_id in live_window_ids
+                    }
 
-                new_messages = await self.check_for_updates(current_map)
+                new_messages = await self.check_for_updates(monitored_map)
                 # Register every parsed message before the next await. A
                 # shutdown cancellation between parse and dispatch must leave
                 # a non-ready receipt so its offset remains replayable.

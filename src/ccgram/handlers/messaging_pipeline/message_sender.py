@@ -88,11 +88,12 @@ def retry_after_seconds(exc: RetryAfter) -> float:
 # Rate limiting: last send time per chat to avoid Telegram flood control
 _last_send_time: dict[int, float] = {}
 _rate_limit_locks: dict[int, asyncio.Lock] = {}
-MESSAGE_SEND_INTERVAL = 0.5  # seconds between messages to same chat
+MESSAGE_SEND_INTERVAL = 1.0  # Telegram's private-chat guidance: 1 message/second
+GROUP_MESSAGE_SEND_INTERVAL = 3.1  # Headroom below 20 messages/minute per group
 
 
 async def rate_limit_send(chat_id: int) -> None:
-    """Wait if necessary to avoid Telegram flood control (max 1 msg/sec per chat).
+    """Wait to respect private-chat and group message limits.
 
     Uses a per-chat lock to serialize concurrent senders, preventing two
     coroutines from computing the same wake-up time and sending simultaneously.
@@ -100,8 +101,9 @@ async def rate_limit_send(chat_id: int) -> None:
     lock = _rate_limit_locks.setdefault(chat_id, asyncio.Lock())
     async with lock:
         now = time.monotonic()
+        interval = GROUP_MESSAGE_SEND_INTERVAL if chat_id < 0 else MESSAGE_SEND_INTERVAL
         if chat_id in _last_send_time:
-            target = _last_send_time[chat_id] + MESSAGE_SEND_INTERVAL
+            target = _last_send_time[chat_id] + interval
             if target > now:
                 await asyncio.sleep(target - now)
                 _last_send_time[chat_id] = time.monotonic()
@@ -130,9 +132,9 @@ async def _with_entity_fallback(
 ) -> Message | None:
     """Convert to entities, send, fall back to plain text on error.
 
-    Entity-based formatting uses character offsets — no syntax to parse,
-    no parse errors possible. The only failure mode is Telegram API errors
-    (rate limiting, message gone, etc.), which fall back to plain text.
+    Entity-based formatting uses character offsets — no syntax to parse.
+    Formatting-related Telegram errors fall back to plain text. Rate limits
+    propagate unchanged so the durable queue retries the same task later.
 
     Args:
         send_fn: Async callable accepting (text, **kwargs).
@@ -158,14 +160,9 @@ async def _with_entity_fallback(
             send_kwargs["entities"] = phase_entities
         try:
             return await send_fn(plain_text, **send_kwargs)
-        except RetryAfter as e:
-            await asyncio.sleep(retry_after_seconds(e) + 1)
-            try:
-                return await send_fn(plain_text, **send_kwargs)
-            except TelegramError as e2:
-                if is_thread_gone(e2):
-                    return None
-                last_error = e2
+        except RetryAfter:
+            # Formatting cannot fix flood control; preserve the task for queue retry.
+            raise
         except TelegramError as e:
             if is_thread_gone(e):
                 return None

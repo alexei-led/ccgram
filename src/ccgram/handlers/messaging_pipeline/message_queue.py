@@ -8,6 +8,7 @@ tool-use batching lives in ``tool_batch``.
 
 import asyncio
 import contextlib
+import random
 from dataclasses import dataclass
 from io import BytesIO
 from typing import assert_never
@@ -26,6 +27,7 @@ from ...delivery_contract import (
     new_delivery_receipt,
 )
 from ...telegram_client import TelegramClient
+from ...telegram_rate_limiter import retry_after_seconds
 from ...thread_router import thread_router
 from ...topic_state_registry import topic_state
 from ...utils import task_done_callback
@@ -77,6 +79,9 @@ __all__ = [
 ]
 
 MERGE_MAX_LENGTH = 3800  # Leave room within Telegram's 4096 char message limit
+_QUEUE_RETRY_BACKOFF_BASE_SECONDS = 2.0
+_QUEUE_RETRY_BACKOFF_MAX_SECONDS = 60.0
+_QUEUE_RETRY_JITTER_MAX_SECONDS = 1.0
 
 # Per-user message queues and worker tasks
 _message_queues: dict[int, asyncio.Queue[MessageTask]] = {}
@@ -480,6 +485,7 @@ async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
             outcome = DeliveryOutcome.DELIVERED
             merged_receipts: tuple[DeliveryReceipt, ...] = ()
             try:
+                rate_limit_retry = 0
                 while True:
                     dispatch_state = DispatchState()
                     try:
@@ -493,22 +499,27 @@ async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
                         )
                         outcome = getattr(result, "outcome", DeliveryOutcome.DELIVERED)
                         break
-                    except RetryAfter as e:
+                    except RetryAfter as exc:
                         task = _retry_task_for_state(dispatch_state, task)
-                        retry_secs = min(
-                            60,
-                            (
-                                e.retry_after
-                                if isinstance(e.retry_after, int)
-                                else int(e.retry_after.total_seconds())
-                            ),
+                        rate_limit_retry += 1
+                        telegram_delay = retry_after_seconds(exc)
+                        exponent = min(rate_limit_retry - 1, 5)
+                        backoff = min(
+                            _QUEUE_RETRY_BACKOFF_MAX_SECONDS,
+                            _QUEUE_RETRY_BACKOFF_BASE_SECONDS * (2**exponent),
                         )
+                        jitter = random.uniform(0, _QUEUE_RETRY_JITTER_MAX_SECONDS)
+                        retry_in = max(telegram_delay, backoff) + jitter
                         logger.warning(
-                            "Flood control for user %s, pausing %ss",
-                            user_id,
-                            retry_secs,
+                            "Telegram flood control; retrying queued message",
+                            user_id=user_id,
+                            retry=rate_limit_retry,
+                            telegram_retry_after_seconds=telegram_delay,
+                            backoff_seconds=backoff,
+                            jitter_seconds=jitter,
+                            retry_in_seconds=retry_in,
                         )
-                        await asyncio.sleep(retry_secs)
+                        await asyncio.sleep(retry_in)
                     finally:
                         for _ in range(dispatch_state.extra_task_done):
                             queue.task_done()

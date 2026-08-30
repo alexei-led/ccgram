@@ -64,6 +64,12 @@ class TestMonitorLoop:
     async def test_unavailable_listing_skips_pruning(
         self, monitor: SessionMonitor
     ) -> None:
+        current_map = {
+            HERDR_TARGETS["a"]: {"session_id": "live"},
+            HERDR_TARGETS["b"]: {"session_id": "possibly-live"},
+        }
+        check_for_updates = AsyncMock(return_value=[])
+
         async def _stop_after_cycle(_delay: float) -> None:
             monitor._running = False
 
@@ -73,8 +79,11 @@ class TestMonitorLoop:
                 monitor, "_load_current_session_map", AsyncMock(return_value={})
             ),
             patch.object(
-                monitor, "_detect_and_cleanup_changes", AsyncMock(return_value={})
+                monitor,
+                "_detect_and_cleanup_changes",
+                AsyncMock(return_value=current_map),
             ),
+            patch.object(monitor, "check_for_updates", check_for_updates),
             patch(
                 "ccgram.session_monitor.read_session_map_raw",
                 AsyncMock(return_value={}),
@@ -91,6 +100,49 @@ class TestMonitorLoop:
             await monitor._monitor_loop()
 
         mock_sync.prune_session_map.assert_not_called()
+        check_for_updates.assert_awaited_once_with(current_map)
+
+    async def test_reliable_listing_monitors_only_live_windows(
+        self, monitor: SessionMonitor
+    ) -> None:
+        live_id = HERDR_TARGETS["a"]
+        current_map = {
+            live_id: {"session_id": "live"},
+            HERDR_TARGETS["b"]: {"session_id": "stale"},
+        }
+        live = WindowRef(window_id=live_id, window_name="live", cwd="/live")
+        check_for_updates = AsyncMock(return_value=[])
+
+        async def _stop_after_cycle(_delay: float) -> None:
+            monitor._running = False
+
+        with (
+            patch.object(monitor, "_cleanup_all_stale_sessions", AsyncMock()),
+            patch.object(
+                monitor, "_load_current_session_map", AsyncMock(return_value={})
+            ),
+            patch.object(
+                monitor,
+                "_detect_and_cleanup_changes",
+                AsyncMock(return_value=current_map),
+            ),
+            patch.object(monitor, "check_for_updates", check_for_updates),
+            patch(
+                "ccgram.session_monitor.read_session_map_raw",
+                AsyncMock(return_value={}),
+            ),
+            patch("ccgram.session_map.session_map_sync") as mock_sync,
+            patch(
+                "ccgram.session_monitor.list_windows_for_reconciliation",
+                AsyncMock(return_value=[live]),
+            ),
+            patch("ccgram.session_monitor.asyncio.sleep", _stop_after_cycle),
+        ):
+            mock_sync.load_session_map = AsyncMock()
+            monitor._running = True
+            await monitor._monitor_loop()
+
+        check_for_updates.assert_awaited_once_with({live_id: current_map[live_id]})
 
     async def test_rekeyed_window_folds_before_its_map_delta_or_hook_events(
         self, monitor: SessionMonitor, monkeypatch

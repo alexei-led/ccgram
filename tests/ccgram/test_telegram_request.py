@@ -242,6 +242,7 @@ class TestCreateBotPollingRequest:
         app = create_bot()
 
         assert isinstance(app.bot.rate_limiter, CCGramAIORateLimiter)
+        assert app.bot.rate_limiter._max_retries == 3  # pyright: ignore[reportPrivateUsage]
         assert isinstance(app.bot._request[0], ResilientPollingHTTPXRequest)
         assert isinstance(app.bot._request[1], ResilientPollingHTTPXRequest)
         assert app.bot._request[0]._client._transport._pool._max_connections == 1

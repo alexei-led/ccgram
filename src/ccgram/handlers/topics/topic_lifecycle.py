@@ -26,6 +26,7 @@ from ...window_state_ports import legacy_state
 from ...window_state_store import CCGRAM_CREATED_WINDOW_ORIGIN
 from ..callback_tokens import revoke_window_tokens
 from ..cleanup import clear_topic_state
+from ...telegram_rate_limiter import NO_RETRY_RATE_LIMIT_ARGS
 from ..messaging_pipeline.message_sender import is_thread_gone, retry_after_seconds
 from ..polling.polling_state import (
     lifecycle_strategy,
@@ -347,7 +348,7 @@ async def probe_topic_existence(client: TelegramClient) -> None:
             await client.unpin_all_forum_topic_messages(
                 chat_id=chat_id,
                 message_thread_id=thread_id,
-                rate_limit_args=0,
+                rate_limit_args=NO_RETRY_RATE_LIMIT_ARGS,
             )
             terminal_poll_state.reset_probe_failures(wid)
         except TelegramError as e:
@@ -364,10 +365,10 @@ async def probe_topic_existence(client: TelegramClient) -> None:
                 )
             elif isinstance(e, RetryAfter):
                 # Flood control is chat-wide and says nothing about topic
-                # existence: counting it would suspend deleted-topic detection
-                # for a live topic. Give this chat its budget back instead.
-                _probe_last_ts.pop(probe_key, None)
-                delay = retry_after_seconds(e)
+                # existence. Keep this probe's normal interval and suspend the
+                # whole chat for at least that long instead of spending another
+                # admin request on the next lifecycle cycle.
+                delay = max(retry_after_seconds(e), PROBE_INTERVAL)
                 _probe_backoff_until[chat_id] = time.monotonic() + delay
                 log_throttled(
                     logger,
