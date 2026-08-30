@@ -239,13 +239,14 @@ async def start_session_monitor(application: Application) -> SessionMonitor:
     # Lazy: message routing imports monitor NewMessage for transcript dispatch.
     from .handlers.messaging_pipeline.message_routing import enqueue_backlog_skip_notice
 
-    async def purge_backlog(intent) -> int:
+    async def purge_backlog(intent) -> int | None:
         return await purge_source_tasks(
             intent.user_id,
             intent.window_id,
             intent.thread_id,
             intent.session_id,
             intent.snapshot_offset,
+            intent.chat_id,
         )
 
     async def send_skip_notice(intent) -> None:

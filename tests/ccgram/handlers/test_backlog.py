@@ -94,6 +94,32 @@ def test_backlog_status_reports_count_age_lag_and_throttles() -> None:
     assert get_snapshot.call_count == 2
 
 
+async def test_purge_refuses_rebound_topic_before_draining() -> None:
+    user_id = 702
+    queue: asyncio.Queue = asyncio.Queue()
+    mq._message_queues[user_id] = queue
+    mq._queue_locks[user_id] = asyncio.Lock()
+    queue.put_nowait(
+        ContentTask(
+            window_id="@0",
+            parts=("old",),
+            thread_id=4,
+            chat_id=99,
+            source_session_id="s1",
+            source_checkpoint=50,
+        )
+    )
+    try:
+        with patch.object(
+            mq.thread_router, "resolve_window_for_thread", return_value="@1"
+        ):
+            assert await mq.purge_source_tasks(user_id, "@0", 4, "s1", 50, 99) is None
+        assert queue.qsize() == 1
+    finally:
+        mq._message_queues.clear()
+        mq._queue_locks.clear()
+
+
 async def test_purge_is_source_scoped_and_settles_only_retired_receipts() -> None:
     user_id = 701
     queue: asyncio.Queue = asyncio.Queue()

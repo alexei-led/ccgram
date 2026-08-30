@@ -127,8 +127,8 @@ class MonitorState:
             logger.warning("Failed to load state file: %s", e)
             self.tracked_sessions = {}
 
-    def save(self) -> None:
-        """Save state to file atomically."""
+    def save(self) -> bool:
+        """Save state to file atomically and report whether it succeeded."""
         data = {
             "tracked_sessions": {
                 k: v.to_dict() for k, v in self.tracked_sessions.items()
@@ -143,8 +143,10 @@ class MonitorState:
         try:
             atomic_write_json(self.state_file, data)
             self._dirty = False
+            return True
         except OSError:
             logger.exception("Failed to save state file")
+            return False
 
     def get_session(self, session_id: str) -> TrackedSession | None:
         """Get tracked session by ID."""
@@ -205,6 +207,11 @@ class MonitorState:
             intent.purge_complete = True
             self._dirty = True
 
+    def cancel_skip(self, session_id: str) -> None:
+        """Remove a skip barrier without changing the delivered watermark."""
+        if self.pending_skips.pop(session_id, None) is not None:
+            self._dirty = True
+
     def complete_skip(self, session_id: str) -> bool:
         """Atomically retire a delivered skip barrier and advance its watermark."""
         intent = self.pending_skips.get(session_id)
@@ -218,7 +225,6 @@ class MonitorState:
         self._dirty = True
         return True
 
-    def save_if_dirty(self) -> None:
-        """Save state only if it has been modified."""
-        if self._dirty:
-            self.save()
+    def save_if_dirty(self) -> bool:
+        """Save state only if it has been modified and report success."""
+        return not self._dirty or self.save()

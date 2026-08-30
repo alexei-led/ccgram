@@ -116,7 +116,7 @@ class SessionMonitor:
         # Backlog skips cross the monitor/queue boundary through injected
         # adapters, preserving this module's handler independence.
         self._skip_purge_callback: (
-            Callable[[BacklogSkipIntent], Awaitable[int]] | None
+            Callable[[BacklogSkipIntent], Awaitable[int | None]] | None
         ) = None
         self._skip_notice_callback: (
             Callable[[BacklogSkipIntent], Awaitable[None]] | None
@@ -166,7 +166,7 @@ class SessionMonitor:
     def set_skip_callbacks(
         self,
         *,
-        purge: Callable[[BacklogSkipIntent], Awaitable[int]],
+        purge: Callable[[BacklogSkipIntent], Awaitable[int | None]],
         notice: Callable[[BacklogSkipIntent], Awaitable[None]],
     ) -> None:
         """Install the queue adapters used by confirmed backlog skips."""
@@ -208,8 +208,13 @@ class SessionMonitor:
         )
         # The durable barrier is written before destructive queue retirement.
         self.state.begin_skip(intent)
-        self.state.save_if_dirty()
-        if await self._prepare_pending_skip(intent):
+        if not self.state.save_if_dirty():
+            self.state.cancel_skip(session_id)
+            return None
+        prepared = await self._prepare_pending_skip(intent)
+        if prepared is None:
+            return None
+        if prepared:
             await self._enqueue_pending_skip_notice(intent)
         return intent
 
@@ -235,7 +240,7 @@ class SessionMonitor:
         self._skip_retry_attempts.pop(session_id, None)
         self._skip_retry_at.pop(session_id, None)
 
-    async def _prepare_pending_skip(self, intent: BacklogSkipIntent) -> bool:
+    async def _prepare_pending_skip(self, intent: BacklogSkipIntent) -> bool | None:
         """Retire frozen source work before a skip notice may be sent."""
         if intent.purge_complete:
             return True
@@ -250,8 +255,17 @@ class SessionMonitor:
             logger.exception("Failed to purge backlog for %s", intent.session_id)
             self._schedule_skip_retry(intent.session_id)
             return False
+        if skipped is None:
+            logger.warning("Cancelling stale backlog skip for %s", intent.session_id)
+            self.state.cancel_skip(intent.session_id)
+            self.state.save_if_dirty()
+            self._clear_skip_retry(intent.session_id)
+            return None
         self.state.update_skip_count(intent.session_id, skipped)
-        self.state.save_if_dirty()
+        if not self.state.save_if_dirty():
+            intent.purge_complete = False
+            self._schedule_skip_retry(intent.session_id)
+            return False
         self._clear_skip_retry(intent.session_id)
         return True
 
@@ -289,7 +303,8 @@ class SessionMonitor:
         for intent in tuple(self.state.pending_skips.values()):
             if not self._skip_retry_due(intent.session_id):
                 continue
-            if await self._prepare_pending_skip(intent):
+            prepared = await self._prepare_pending_skip(intent)
+            if prepared:
                 await self._enqueue_pending_skip_notice(intent)
 
     def _commit_pending_skips(self) -> None:

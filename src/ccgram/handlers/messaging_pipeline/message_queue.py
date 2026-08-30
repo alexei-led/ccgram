@@ -147,7 +147,8 @@ async def purge_source_tasks(
     thread_id: int | None,
     source_session_id: str,
     snapshot_offset: int,
-) -> int:
+    chat_id: int | None = None,
+) -> int | None:
     """Retire queued (never in-flight) source tasks through a frozen offset.
 
     Callers persist their skip barrier before this operation.  Each removed
@@ -161,6 +162,18 @@ async def purge_source_tasks(
     tkey = thread_key(thread_id)
     removed: list[ContentTask] = []
     async with lock:
+        if (
+            chat_id is not None
+            and thread_router.resolve_window_for_thread(user_id, thread_id, chat_id)
+            != window_id
+        ):
+            logger.warning(
+                "Skipping stale backlog purge for rebound topic",
+                user_id=user_id,
+                window_id=window_id,
+                thread_id=thread_id,
+            )
+            return None
         retained: list[MessageTask] = []
         for task in _drain_queue(queue):
             if (
