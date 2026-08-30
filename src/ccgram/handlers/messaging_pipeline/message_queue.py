@@ -9,6 +9,7 @@ tool-use batching lives in ``tool_batch``.
 import asyncio
 import contextlib
 import random
+import time
 from dataclasses import dataclass
 from io import BytesIO
 from typing import assert_never
@@ -42,6 +43,7 @@ from ..status.status_bubble import (
     process_status_clear,
     process_status_update,
 )
+from .backlog import BacklogSnapshot, register_snapshot_provider
 from .message_sender import (
     edit_with_fallback,
     rate_limit_send,
@@ -96,6 +98,90 @@ _queue_locks: dict[int, asyncio.Lock] = {}  # Protect drain/refill operations
 # In-flight sends: incremented around each task a worker is actively
 # processing. "Queue empty" alone does not mean delivered.
 _inflight_count = 0
+_inflight_tasks: dict[int, ContentTask] = {}
+
+# Per source/topic delivery lag, updated only when a content task reaches the
+# Telegram boundary.  It is deliberately in-memory telemetry, not state.
+_delivery_lags: dict[tuple[int, str, int], float] = {}
+
+
+def _get_backlog_snapshot(
+    user_id: int, window_id: str, thread_id: int | None
+) -> BacklogSnapshot:
+    """Return pending count, oldest age, and last delivery lag for one topic."""
+    tkey = thread_key(thread_id)
+    now = time.monotonic()
+    tasks: list[ContentTask] = []
+    queue = _message_queues.get(user_id)
+    if queue is not None:
+        tasks.extend(
+            task
+            for task in getattr(queue, "_queue", ())
+            if isinstance(task, ContentTask)
+            and task.window_id == window_id
+            and thread_key(task.thread_id) == tkey
+            and task.source_session_id is not None
+        )
+    inflight = _inflight_tasks.get(user_id)
+    if (
+        inflight is not None
+        and inflight.window_id == window_id
+        and thread_key(inflight.thread_id) == tkey
+        and inflight.source_session_id is not None
+    ):
+        tasks.append(inflight)
+    oldest = min((task.enqueued_monotonic for task in tasks), default=now)
+    return BacklogSnapshot(
+        pending_count=len(tasks),
+        oldest_age_seconds=max(0.0, now - oldest) if tasks else 0.0,
+        delivery_lag_seconds=_delivery_lags.get((user_id, window_id, tkey)),
+    )
+
+
+register_snapshot_provider(_get_backlog_snapshot)
+
+
+async def purge_source_tasks(
+    user_id: int,
+    window_id: str,
+    thread_id: int | None,
+    source_session_id: str,
+    snapshot_offset: int,
+) -> int:
+    """Retire queued (never in-flight) source tasks through a frozen offset.
+
+    Callers persist their skip barrier before this operation.  Each removed
+    receipt is intentionally dropped so it cannot block the later notice
+    receipt, while an in-flight send is left alone rather than cancelled.
+    """
+    queue = _message_queues.get(user_id)
+    lock = _queue_locks.get(user_id)
+    if queue is None or lock is None:
+        return 0
+    tkey = thread_key(thread_id)
+    removed: list[ContentTask] = []
+    async with lock:
+        retained: list[MessageTask] = []
+        for task in _drain_queue(queue):
+            if (
+                isinstance(task, ContentTask)
+                and task.window_id == window_id
+                and thread_key(task.thread_id) == tkey
+                and task.source_session_id == source_session_id
+                and task.source_checkpoint is not None
+                and task.source_checkpoint <= snapshot_offset
+            ):
+                removed.append(task)
+                queue.task_done()
+            else:
+                retained.append(task)
+        for task in retained:
+            queue.put_nowait(task)
+            queue.task_done()
+    for task in removed:
+        for receipt in task.delivery_receipts:
+            receipt.settle(DeliveryOutcome.INTENTIONALLY_DROPPED)
+    return len(removed)
 
 
 class DispatchResult(int):
@@ -260,8 +346,14 @@ def _can_merge_tasks(base: ContentTask, candidate: MessageTask) -> bool:
         or base.chat_id is None
     ):
         return False
+    # A skip notice retains its own delivery boundary. Transcript tasks may
+    # have different checkpoints, but only tasks from the same source can be
+    # acknowledged together.
     if (
-        base.content_type != "text"
+        base.is_backlog_notice
+        or candidate.is_backlog_notice
+        or base.source_session_id != candidate.source_session_id
+        or base.content_type != "text"
         or candidate.content_type != "text"
         or base.tool_use_id is not None
         or candidate.tool_use_id is not None
@@ -298,6 +390,8 @@ async def _merge_content_tasks(
     merged_parts = list(first.parts)
     merged_receipts = list(first.delivery_receipts)
     current_length = sum(len(p) for p in merged_parts)
+    oldest_enqueued_monotonic = first.enqueued_monotonic
+    latest_source_checkpoint = first.source_checkpoint
     merge_count = 0
 
     async with lock:
@@ -321,6 +415,14 @@ async def _merge_content_tasks(
             merged_parts.extend(task.parts)
             merged_receipts.extend(task.delivery_receipts)
             current_length += len(_TEXT_BATCH_SEPARATOR) + task_length
+            oldest_enqueued_monotonic = min(
+                oldest_enqueued_monotonic, task.enqueued_monotonic
+            )
+            if task.source_checkpoint is not None:
+                latest_source_checkpoint = max(
+                    latest_source_checkpoint or task.source_checkpoint,
+                    task.source_checkpoint,
+                )
             merge_count += 1
 
         for item in remaining:
@@ -341,6 +443,9 @@ async def _merge_content_tasks(
             chat_id=first.chat_id,
             delivery_receipts=tuple(merged_receipts),
             is_text_batch=True,
+            source_session_id=first.source_session_id,
+            source_checkpoint=latest_source_checkpoint,
+            enqueued_monotonic=oldest_enqueued_monotonic,
         ),
         merge_count,
     )
@@ -505,6 +610,21 @@ def _delivery_receipts_for_settlement(
     return list(unique.values())
 
 
+def _mark_task_inflight(user_id: int, task: MessageTask) -> None:
+    """Expose a content task to source-scoped backlog telemetry."""
+    if isinstance(task, ContentTask):
+        _inflight_tasks[user_id] = task
+
+
+def _record_content_delivery(user_id: int, task: MessageTask) -> None:
+    """Settle in-memory delivery-lag telemetry after a worker attempt."""
+    if isinstance(task, ContentTask):
+        _inflight_tasks.pop(user_id, None)
+        _delivery_lags[(user_id, task.window_id, thread_key(task.thread_id))] = max(
+            0.0, time.monotonic() - task.enqueued_monotonic
+        )
+
+
 async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
     global _inflight_count
     """Process message tasks for a user sequentially."""
@@ -516,6 +636,7 @@ async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
         try:
             task = await queue.get()
             _inflight_count += 1
+            _mark_task_inflight(user_id, task)
             outcome = DeliveryOutcome.DELIVERED
             merged_receipts: tuple[DeliveryReceipt, ...] = ()
             try:
@@ -573,6 +694,7 @@ async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
             finally:
                 for receipt in _delivery_receipts_for_settlement(task, merged_receipts):
                     receipt.settle(outcome)
+                _record_content_delivery(user_id, task)
                 _inflight_count -= 1
                 queue.task_done()
         except asyncio.CancelledError:
@@ -726,10 +848,13 @@ async def enqueue_content_message(
     role: MessageRole = "assistant",
     thread_id: int | None = None,
     chat_id: int | None = None,
-) -> None:
-    """Enqueue a content message task."""
+    source_session_id: str | None = None,
+    source_checkpoint: int | None = None,
+    is_backlog_notice: bool = False,
+) -> bool:
+    """Enqueue a content message task and report whether it entered the queue."""
     if _is_ghost_window_task_at_enqueue(window_id):
-        return
+        return False
     queue = get_or_create_queue(client, user_id)
 
     receipt = get_active_delivery_receipt()
@@ -745,8 +870,16 @@ async def enqueue_content_message(
         thread_id=thread_id,
         chat_id=chat_id,
         delivery_receipts=(receipt,) if receipt is not None else (),
+        source_session_id=source_session_id,
+        source_checkpoint=(
+            source_checkpoint
+            if source_checkpoint is not None
+            else (receipt.checkpoint if receipt is not None else None)
+        ),
+        is_backlog_notice=is_backlog_notice,
     )
     queue.put_nowait(task)
+    return True
 
 
 async def enqueue_status_update(
@@ -814,5 +947,7 @@ async def shutdown_workers(drain_timeout: float = 10.0) -> None:
     _queue_workers.clear()
     _message_queues.clear()
     _queue_locks.clear()
+    _inflight_tasks.clear()
+    _delivery_lags.clear()
     clear_all_batches()
     logger.info("Message queue workers stopped")

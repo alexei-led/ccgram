@@ -231,6 +231,28 @@ async def start_session_monitor(application: Application) -> SessionMonitor:
 
     monitor.set_message_callback(message_callback)
 
+    # Keep queue ownership at the bootstrap boundary: the monitor owns durable
+    # watermarks while the queue owns source-scoped task retirement and notice I/O.
+    # Lazy: messaging pipeline imports status handlers during queue dispatch.
+    from .handlers.messaging_pipeline.message_queue import purge_source_tasks
+
+    # Lazy: message routing imports monitor NewMessage for transcript dispatch.
+    from .handlers.messaging_pipeline.message_routing import enqueue_backlog_skip_notice
+
+    async def purge_backlog(intent) -> int:
+        return await purge_source_tasks(
+            intent.user_id,
+            intent.window_id,
+            intent.thread_id,
+            intent.session_id,
+            intent.snapshot_offset,
+        )
+
+    async def send_skip_notice(intent) -> None:
+        await enqueue_backlog_skip_notice(client, intent)
+
+    monitor.set_skip_callbacks(purge=purge_backlog, notice=send_skip_notice)
+
     async def new_window_callback(event: NewWindowEvent) -> None:
         await _handle_new_window(event, client)
 

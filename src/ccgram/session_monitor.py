@@ -35,7 +35,7 @@ from .delivery_contract import (
 )
 from .event_reader import read_new_events
 from .idle_tracker import IdleTracker
-from .monitor_state import MonitorState
+from .monitor_state import BacklogSkipIntent, MonitorState
 from .providers import get_provider_for_window, registry  # noqa: F401 (used by test patches)
 from .session_map import parse_session_map, read_session_map_raw, session_map_prefix
 from .session_lifecycle import session_lifecycle
@@ -110,6 +110,15 @@ class SessionMonitor:
         # Receipts are grouped by transcript session so one failed send only
         # freezes its own watermark.
         self._delivery_receipts: dict[str, list[DeliveryReceipt]] = {}
+        # Backlog skips cross the monitor/queue boundary through injected
+        # adapters, preserving this module's handler independence.
+        self._skip_purge_callback: (
+            Callable[[BacklogSkipIntent], Awaitable[int]] | None
+        ) = None
+        self._skip_notice_callback: (
+            Callable[[BacklogSkipIntent], Awaitable[None]] | None
+        ) = None
+        self._skip_notice_receipts: dict[str, DeliveryReceipt] = {}
 
     # Delegation properties for backward-compatible test access
     @property
@@ -149,6 +158,97 @@ class SessionMonitor:
     def set_hook_event_callback(self, callback: Callable[..., Awaitable[None]]) -> None:
         self._hook_event_callback = callback
 
+    def set_skip_callbacks(
+        self,
+        *,
+        purge: Callable[[BacklogSkipIntent], Awaitable[int]],
+        notice: Callable[[BacklogSkipIntent], Awaitable[None]],
+    ) -> None:
+        """Install the queue adapters used by confirmed backlog skips."""
+        self._skip_purge_callback = purge
+        self._skip_notice_callback = notice
+
+    async def request_backlog_skip(
+        self, user_id: int, window_id: str, thread_id: int | None, chat_id: int
+    ) -> BacklogSkipIntent | None:
+        """Freeze one source at EOF, persist its barrier, then retire its queue work."""
+        if self._skip_purge_callback is None or self._skip_notice_callback is None:
+            raise RuntimeError("backlog skip callbacks are not wired")
+        session_id = session_lifecycle.resolve_session_id(window_id)
+        if not session_id:
+            return None
+        session = self.state.get_session(session_id)
+        if session is None or session_id in self.state.pending_skips:
+            return None
+        try:
+            snapshot_offset = Path(session.file_path).stat().st_size
+        except OSError:
+            logger.warning(
+                "Cannot snapshot transcript for backlog skip: %s", session.file_path
+            )
+            return None
+        if snapshot_offset < session.last_byte_offset:
+            logger.warning(
+                "Refusing backlog skip with regressed transcript EOF: %s", session_id
+            )
+            return None
+        intent = BacklogSkipIntent(
+            session_id=session_id,
+            window_id=window_id,
+            user_id=user_id,
+            thread_id=thread_id,
+            chat_id=chat_id,
+            snapshot_offset=snapshot_offset,
+            range_start=session.last_byte_offset,
+        )
+        # The durable barrier is written before destructive queue retirement.
+        self.state.begin_skip(intent)
+        self.state.save_if_dirty()
+        skipped = await self._skip_purge_callback(intent)
+        self.state.update_skip_count(session_id, skipped)
+        self.state.save_if_dirty()
+        await self._enqueue_pending_skip_notice(intent)
+        return intent
+
+    async def _enqueue_pending_skip_notice(self, intent: BacklogSkipIntent) -> None:
+        """Create one receipt-tracked visible notice for a persisted barrier."""
+        if intent.session_id in self._skip_notice_receipts:
+            return
+        callback = self._skip_notice_callback
+        if callback is None:
+            return
+        receipt = new_delivery_receipt(checkpoint=intent.snapshot_offset)
+        token = activate_delivery_receipt(receipt)
+        try:
+            await callback(intent)
+        except asyncio.CancelledError:
+            receipt.fail()
+            raise
+        except Exception:
+            receipt.fail()
+            logger.exception(
+                "Failed to enqueue backlog skip notice for %s", intent.session_id
+            )
+        finally:
+            deactivate_delivery_receipt(token)
+            receipt.close()
+        self._skip_notice_receipts[intent.session_id] = receipt
+
+    async def _resume_pending_skip_notices(self) -> None:
+        """Resume persisted skip barriers before reading any skipped bytes."""
+        for intent in tuple(self.state.pending_skips.values()):
+            await self._enqueue_pending_skip_notice(intent)
+
+    def _commit_pending_skips(self) -> None:
+        """Advance only barriers whose visible notices reached Telegram."""
+        for session_id, receipt in tuple(self._skip_notice_receipts.items()):
+            if not receipt.commit_ready:
+                continue
+            if self.state.complete_skip(session_id):
+                self.state.save_if_dirty()
+                self._delivery_receipts.pop(session_id, None)
+            self._skip_notice_receipts.pop(session_id, None)
+
     def record_hook_activity(self, window_id: str) -> None:
         """Record hook-based activity for a window (resets idle timers)."""
         session_id = session_lifecycle.resolve_session_id(window_id)
@@ -173,9 +273,11 @@ class SessionMonitor:
         from the previous persisted watermark rather than loss.
         """
         delivered_offsets: dict[str, int] = {}
+        self._commit_pending_skips()
         for session_id, receipts in self._delivery_receipts.items():
             if (
-                session_id in self._transcript_reader._pending_tools
+                session_id in self.state.pending_skips
+                or session_id in self._transcript_reader._pending_tools
                 or not delivery_receipts_ready(receipts)
                 or any(receipt.checkpoint is None for receipt in receipts)
             ):
@@ -221,6 +323,8 @@ class SessionMonitor:
             fallback_session_ids.add(session_id)
 
         for session_id, file_path in direct_sessions:
+            if session_id in self.state.pending_skips:
+                continue
             try:
                 await self._process_session_file(
                     session_id,
@@ -235,7 +339,10 @@ class SessionMonitor:
             active_cwds = await self._get_active_cwds()
             sessions = self._scan_projects_sync(active_cwds) if active_cwds else []
             for session_info in sessions:
-                if session_info.session_id not in fallback_session_ids:
+                if (
+                    session_info.session_id not in fallback_session_ids
+                    or session_info.session_id in self.state.pending_skips
+                ):
                     continue
                 try:
                     await self._process_session_file(
@@ -584,6 +691,10 @@ class SessionMonitor:
                         if window_id in live_window_ids
                     }
 
+                # A persisted barrier must be noticed before its source is read
+                # again; this preserves the exact EOF snapshot across restarts.
+                await self._resume_pending_skip_notices()
+                self._commit_pending_skips()
                 new_messages = await self.check_for_updates(monitored_map)
                 # Register every parsed message before the next await. A
                 # shutdown cancellation between parse and dispatch must leave

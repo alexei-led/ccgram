@@ -52,6 +52,40 @@ class TrackedSession:
 
 
 @dataclass
+class BacklogSkipIntent:
+    """Durable barrier for a confirmed transcript backlog skip.
+
+    The transcript remains untouched. Until the notice is acknowledged this
+    record prevents replay of the frozen range across a restart.
+    """
+
+    session_id: str
+    window_id: str
+    user_id: int
+    thread_id: int | None
+    chat_id: int
+    snapshot_offset: int
+    range_start: int
+    skipped_count: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "BacklogSkipIntent":
+        return cls(
+            session_id=str(data.get("session_id", "")),
+            window_id=str(data.get("window_id", "")),
+            user_id=int(data.get("user_id", 0)),
+            thread_id=data.get("thread_id"),
+            chat_id=int(data.get("chat_id", 0)),
+            snapshot_offset=int(data.get("snapshot_offset", 0)),
+            range_start=int(data.get("range_start", 0)),
+            skipped_count=int(data.get("skipped_count", 0)),
+        )
+
+
+@dataclass
 class MonitorState:
     """Persistent state for the session monitor.
 
@@ -63,6 +97,7 @@ class MonitorState:
     state_file: Path
     tracked_sessions: dict[str, TrackedSession] = field(default_factory=dict)
     events_offset: int = 0
+    pending_skips: dict[str, BacklogSkipIntent] = field(default_factory=dict)
     _dirty: bool = field(default=False, repr=False)
 
     def load(self) -> None:
@@ -78,6 +113,11 @@ class MonitorState:
                 k: TrackedSession.from_dict(v) for k, v in sessions.items()
             }
             self.events_offset = data.get("events_offset", 0)
+            self.pending_skips = {
+                session_id: BacklogSkipIntent.from_dict(intent)
+                for session_id, intent in data.get("pending_skips", {}).items()
+                if isinstance(intent, dict)
+            }
             logger.info(
                 "Loaded %d tracked sessions from state", len(self.tracked_sessions)
             )
@@ -92,6 +132,10 @@ class MonitorState:
                 k: v.to_dict() for k, v in self.tracked_sessions.items()
             },
             "events_offset": self.events_offset,
+            "pending_skips": {
+                session_id: intent.to_dict()
+                for session_id, intent in self.pending_skips.items()
+            },
         }
 
         try:
@@ -145,6 +189,30 @@ class MonitorState:
                 advanced = True
                 self._dirty = True
         return advanced
+
+    def begin_skip(self, intent: BacklogSkipIntent) -> None:
+        """Persist a skip barrier before any queued source work is retired."""
+        self.pending_skips[intent.session_id] = intent
+        self._dirty = True
+
+    def update_skip_count(self, session_id: str, skipped_count: int) -> None:
+        """Record the exact queued items retired for a pending skip."""
+        intent = self.pending_skips.get(session_id)
+        if intent is not None:
+            intent.skipped_count = skipped_count
+            self._dirty = True
+
+    def complete_skip(self, session_id: str) -> bool:
+        """Atomically retire a delivered skip barrier and advance its watermark."""
+        intent = self.pending_skips.get(session_id)
+        session = self.tracked_sessions.get(session_id)
+        if intent is None or session is None:
+            return False
+        session.last_byte_offset = intent.snapshot_offset
+        session.parsed_offset = intent.snapshot_offset
+        self.pending_skips.pop(session_id, None)
+        self._dirty = True
+        return True
 
     def save_if_dirty(self) -> None:
         """Save state only if it has been modified."""
