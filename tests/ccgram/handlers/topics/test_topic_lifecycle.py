@@ -280,6 +280,11 @@ class TestProbeTopicExistence:
             mock_strategy.should_skip_probe.return_value = False
 
             await probe_topic_existence(bot)
+            bot.unpin_all_forum_topic_messages.assert_awaited_once_with(
+                chat_id=42,
+                message_thread_id=100,
+                rate_limit_args=0,
+            )
             mock_strategy.record_probe_failure.assert_not_called()
 
             # Whole pass is paused while the chat is flood-limited.

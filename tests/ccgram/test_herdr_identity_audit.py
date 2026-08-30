@@ -2,16 +2,13 @@
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 HERDR = ROOT / "src/ccgram/multiplexer/herdr.py"
 
 
-# Layout/volatile record fields that must never feed a session composite. The
-# terminal fallback composite deliberately uses ``terminal_id``; the ban is on
-# display and filesystem state, not on locators as such.
+# Layout/volatile record fields must never feed a session composite.
 FORBIDDEN = ("focused", "title", "cwd", "directory", "screen", "layout")
 
 
@@ -30,17 +27,15 @@ def test_one_canonical_digest_owner_and_no_layout_identity() -> None:
         assert forbidden not in identity_section
 
 
-def test_record_assembler_builds_composites_only_from_agent_and_terminal() -> None:
-    """``_parse_live_record`` may carry layout data, never hash it."""
+def test_record_assembler_rejects_sessionless_identity() -> None:
+    """``_parse_live_record`` never hashes a volatile locator as identity."""
     source = HERDR.read_text()
     section = source[
         source.index("def _parse_live_record") : source.index("class HerdrManager")
     ]
-    constructions = re.findall(r"HerdrSessionComposite\((.*?)\)", section, re.DOTALL)
-    assert constructions, "expected the terminal fallback composite construction"
-    for args in constructions:
-        for forbidden in FORBIDDEN:
-            assert forbidden not in args
+    assert "if composite is None:" in section
+    assert "return None" in section
+    assert "HerdrSessionComposite(" not in section
 
 
 def test_persisted_target_predicate_uses_the_shared_exact_validator() -> None:

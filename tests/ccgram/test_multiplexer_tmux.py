@@ -46,6 +46,7 @@ def test_capabilities_full_snapshot(mgr: TmuxManager) -> None:
         "self_identify_env": "TMUX_PANE",
         "supports_event_stream": False,
         "native_worktrees": False,
+        "supports_display_name_rebind": True,
     }
 
 

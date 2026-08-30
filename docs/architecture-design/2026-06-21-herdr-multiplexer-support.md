@@ -14,16 +14,18 @@ ambiguous targets fail closed.
 
 - Tab, pane, terminal, workspace, display, directory, and focus values are
   short-lived adapter locators. They are never a topic binding or a remapping
-  source. Legacy tab/pane bindings are action-blocked and retained only for
-  explicit archive/rollback.
+  source. Legacy tab/pane/terminal bindings are action-blocked and retained
+  only for explicit archive/rollback.
 - `$HERDR_PANE_ID` is process-local hook input, not identity. The hook uses it
   only to locate a live record and writes the resulting guarded target.
 - A Herdr restart never triggers tab/pane re-resolution. The persisted target
   is guarded again against fresh `agent.list`.
 - Event notifications may prompt refresh work, but they are not an identity or
   authority stream. Polling, reconciliation, and actions use `agent.list`.
-- `"<workspace> ▸ <tab>"` is display-only. One Telegram topic binds to one
-  guarded agent session target.
+- Topic labels are display-only: every agent uses
+  `"<workspace> ▸ <tab> ▸ <pane>"`, independent of sibling count. One Telegram
+  topic binds to one guarded agent session target. Telegram-to-Herdr
+  rename is disabled for shared tabs because Herdr tab rename affects siblings.
 
 See `docs/guides.md` and `docs/architecture.md` for active documentation.
 
@@ -185,8 +187,8 @@ This consumes the seam; it is not part of the `Multiplexer` contract (which stop
 
 - **group = herdr session.** Forced, not chosen: bots cannot create Telegram groups via the Bot API, so the group must be a stable, pre-existing container; a herdr session is exactly that. (Named herdr sessions → separate groups when needed.)
 - **topic = pane = agent.** Each herdr agent pane is one Telegram topic. Preserves ccgram's `1 topic = 1 session` invariant with no "primary pane" fudge; a tab with splits (an agent team) becomes N topics — one independent chat thread per agent, which suits an agent-native multiplexer. Rejected alternative: topic = tab (the tmux-window analog) keeps a team as one topic via the existing multi-pane code, but multiplexes two agents' message streams into one thread; choose it only if teams are predominantly used as a single unit.
-- **Binding key = agent session id** (durable across herdr restart); `pane_id` is the live handle; `workspace_id`/`tab_id` are label sources only. Renaming a workspace re-labels the topic, never rebinds.
-- **Adaptive topic title.** `"[status-emoji] <workspace> ▸ <tab>"`; the tab label is primary so two same-agent sessions remain distinct. Sources: status-emoji from herdr `agent_status`; labels from `workspace list` and `tab list`. The title is derived state and never a binding key.
+- **Binding key = agent session id** (durable across Herdr restart); `pane_id` is the live handle; `workspace_id`/`tab_id` are label sources only. Sessionless records are ignored until they publish a real session. Legacy locators require explicit rebind. Renaming a workspace re-labels the topic, never rebinds.
+- **Adaptive topic title.** Every agent uses `"[status-emoji] <workspace> ▸ <tab> ▸ <pane>"`, independent of sibling count. Sources: status-emoji from herdr `agent_status`; labels from `workspace list` and `tab list`; pane suffix from the live pane locator. The title is derived state and never a binding key. Telegram-to-Herdr rename is disabled for shared tabs because Herdr tab rename affects siblings.
 - **cwd → workspace.** A picker-selected workspace is used exactly. When no workspace was selected, new-topic creation explicitly creates a workspace at the chosen directory and uses the returned ID; it never infers an active or matching workspace. It then adds a tab+pane inside that workspace; the persisted binding is the resulting guarded session target, never a pane or tab ID.
 
 ## Module test specifications

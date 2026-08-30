@@ -76,9 +76,23 @@ ccgram doctor --fix   # Auto-fix common issues (install hooks, kill orphans, etc
 
 Herdr topics use `agent.list` as their sole identity source. CCGram stores only an opaque `herdr-session-v1-…` target; tabs, panes, terminal IDs, names, directories, and focus are live locators, not topic identity. Each action takes a fresh snapshot and fails closed when its target is missing, duplicate, malformed, or sessionless.
 
-Existing Herdr tab/pane bindings are marked `legacy_herdr` and blocked. Use `/unbind` to archive the CCGram binding without closing the Herdr session; rollback can restore that record but it remains blocked. Send a message in the topic and explicitly choose a listed session target to rebind. CCGram never guesses a migration target.
+Existing Herdr tab/pane/terminal bindings are marked `legacy_herdr` and blocked. Use `/unbind` to archive the CCGram binding without closing the Herdr session; rollback can restore that record but it remains blocked. Send a message in the topic and explicitly choose a listed session target to rebind. CCGram never guesses a migration target from a name or reusable locator. If an old tab binding now covers several agents, it remains blocked while each live session surfaces as a new pane-qualified topic. Archive the historical binding with `/unbind`, or explicitly rebind it to one selected session; CCGram never chooses for you.
 
 A session can change after the fresh guard and before Herdr receives an action. CCGram records that post-guard dispatch race and does not claim atomic delivery. Run live Herdr tests only against a disposable server and redact target/session evidence.
+
+### Shared tabs and topic names
+
+Herdr exposes one Telegram topic for each agent session, not one topic for each
+tab. Every generated name is `<workspace> ▸ <tab> ▸ <pane>`, including a tab
+that currently has one agent. The pane suffix distinguishes siblings without
+flapping when siblings join or leave, but it remains display state rather than
+identity and can change when Herdr remints pane locators.
+
+Telegram topic rename is disabled for shared tabs because Herdr's tab rename
+would rename every sibling. Rename the Herdr tab directly only when its tab has
+one agent; the next reconciliation updates the topic name. If Herdr reports the
+same session target more than once, CCGram quarantines only that target and
+keeps unrelated topics operational.
 
 ## Local Dev in tmux
 
@@ -330,7 +344,7 @@ CCGRAM_MULTIPLEXER=herdr
 
 ### Protocol version pinning
 
-ccgram accepts herdr socket protocols 14, 15, 16, and 17 without warnings. On the first call it reads `herdr status`; an older, newer, missing, or otherwise unknown protocol emits a warning and ccgram continues in best-effort mode, so CLI-backed operations can still work after a herdr upgrade or downgrade. A stopped server, failed status command, or malformed status response still prevents startup. Run the live herdr contract suite before relying on an untested protocol.
+ccgram accepts herdr socket protocols 14–20 without warnings. On the first call it reads `herdr status`; an older, newer, missing, or otherwise unknown protocol emits a warning and ccgram continues in best-effort mode, so CLI-backed operations can still work after a herdr upgrade or downgrade. A stopped server, failed status command, or malformed status response still prevents startup. Run the live herdr contract suite before relying on an untested protocol.
 
 ### Differences from tmux
 
@@ -338,12 +352,12 @@ herdr advertises its own capabilities through the seam; the behavioral consequen
 
 | Aspect                    | tmux                            | herdr                                                                      |
 | ------------------------- | ------------------------------- | -------------------------------------------------------------------------- |
-| Topic = window            | every window is eligible        | only **agent tabs** surface as topics — a bare shell tab does not          |
+| Topic = agent session     | every window is eligible        | each reported agent session surfaces as one topic; a bare shell does not   |
 | Foreground detection      | `ps -t <tty>`                   | `pane process-info` (no tty)                                               |
 | Scrollback capture        | unbounded                       | clamped to **1000 lines**; longer output is flagged as truncated           |
 | Agent status              | inferred from terminal scraping | native (herdr reports agent status directly)                               |
 | Window IDs across restart | stable                          | guarded session target is revalidated from fresh `agent.list`; ccgram never re-resolves a tab/pane ID |
-| Topic labels              | window name                     | adaptive `"<workspace> ▸ <tab>"` (tab name is primary)                     |
+| Topic labels              | window name                     | `<workspace> ▸ <tab> ▸ <pane>` for every reported agent session             |
 
 Creating sessions from the terminal on herdr is covered in [Creating Sessions from the Terminal](#creating-sessions-from-the-terminal).
 

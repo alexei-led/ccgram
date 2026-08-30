@@ -19,7 +19,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "python-telegram-bot[socks,rate-limiter]>=21.0",
+    "python-telegram-bot[socks,rate-limiter]>=22.6,<22.7",
     "python-dotenv>=1.0.0",
     "httpx>=0.27.0",
     "libtmux>=0.50.0",

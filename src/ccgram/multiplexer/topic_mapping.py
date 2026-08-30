@@ -7,8 +7,8 @@ windows/tabs project onto ccgram's flat ``group → topic`` structure.
 The design maps each reported Herdr agent to one Telegram topic. Herdr
 ``WindowRef.window_id`` is an opaque target, never a raw tab, pane, or other
 locator. A published agent session has a durable target; a sessionless detected
-agent falls back to a terminal-derived target and is reconciled after restart. A
-bare shell record does not become a topic. tmux behavior remains unchanged.
+agent does not become a topic. A bare shell record does not become a topic, and
+raw locator aliases are never auto-migrated. tmux behavior remains unchanged.
 
 Lives in ``multiplexer/`` (not ``handlers/``) so both the core session monitor
 and the topic handlers can import it without crossing the F1 boundary, and
@@ -20,31 +20,22 @@ from __future__ import annotations
 from ..herdr_targets import is_herdr_session_target
 from .base import MultiplexerCapabilities, WindowRef
 
-# Separates the workspace prefix from the tab name in a herdr topic title
-# (design "Adaptive topic title": ``"<workspace> ▸ <tab>"``).
+# Separates workspace, tab, and optional pane parts in a Herdr topic title.
 TOPIC_PREFIX_SEPARATOR = " ▸ "
 
 
-def format_agent_topic_prefix(workspace: str, tab: str) -> str:
-    """Render a herdr tab's adaptive topic label (no status emoji).
+def format_agent_topic_prefix(workspace: str, tab: str, pane: str = "") -> str:
+    """Render a Herdr topic label, adding a pane when needed.
 
-    Produces ``"<workspace> ▸ <tab>"`` — the tab name is primary so two tabs
-    running the same agent in one workspace get distinct titles
-    (``"ccgram ▸ herdr-support"`` vs ``"ccgram ▸ ralphex"``). The status emoji
-    is prepended later by the topic-emoji machinery; this is the clean name it
-    composes onto.
+    Produces ``"<workspace> ▸ <tab>"`` when pane is omitted and
+    ``"<workspace> ▸ <tab> ▸ <pane>"`` for Herdr agent topics. The status emoji is prepended later by
+    the topic-emoji machinery.
 
-    Backend-neutral and pure: the herdr adapter sources the labels (workspace
-    from ``workspace list``, tab label from ``tab list``) and calls this. Empty
-    parts degrade gracefully so a half-populated tab never renders a stray
-    separator: missing workspace falls back to the tab label alone, missing tab
-    to the workspace alone.
+    Empty parts degrade gracefully so a half-populated tab never renders a
+    stray separator.
     """
-    workspace = workspace.strip()
-    tab = tab.strip()
-    if workspace and tab:
-        return f"{workspace}{TOPIC_PREFIX_SEPARATOR}{tab}"
-    return workspace or tab
+    parts = [part.strip() for part in (workspace, tab, pane) if part.strip()]
+    return TOPIC_PREFIX_SEPARATOR.join(parts)
 
 
 def is_agent_topic_window(window: WindowRef, caps: MultiplexerCapabilities) -> bool:

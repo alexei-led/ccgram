@@ -547,19 +547,11 @@ class SessionMonitor:
                         "Multiplexer listing unavailable; skipping window reconciliation"
                     )
                 else:
-                    # Before anything keys off these ids — the session-map
-                    # delta below included: fold state written under a
-                    # superseded identity onto the live one, so a topic and the
-                    # session_map entry for the same window cannot sit on two
-                    # different ids (herdr hook vs. post-session target). The
-                    # delta cannot make that call on its own. Where identity is
-                    # derived from the agent session, re-keying it in place
-                    # (/clear, --resume) or publishing it late (a pane bound to
-                    # its terminal-derived target while the agent starts up)
-                    # retires one key and adds another, which reads as a window
-                    # nobody has bound and gets adopted into a second topic for
-                    # the one agent. The live listing is what knows better, so
-                    # it is consulted first.
+                    # Before anything keys off these ids, let the backend
+                    # reconcile only aliases it explicitly attests as safe.
+                    # Herdr publishes no raw locator aliases, so a missing or
+                    # changed session target remains unresolved until an
+                    # operator explicitly rebinds it.
                     # Lazy: importing session_manager at module scope forms a
                     # hard cycle on bootstrap (same reason as below).
                     from .session import session_manager as _sm

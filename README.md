@@ -56,7 +56,7 @@ graph LR
   style machine fill:#f0faf0,stroke:#2ea44f,stroke-width:2px,color:#333
 ```
 
-Each Telegram topic maps to one tmux window. With Herdr, it maps instead to one guarded agent session: `agent.list` is the sole identity source and CCGram persists only an opaque `herdr-session-v1-…` target, never a tab or pane ID. Every action reads a fresh `agent.list` record and fails closed for missing, duplicate, malformed, sessionless, or legacy bindings. A session can still change after that guard and before Herdr dispatches, so delivery is not atomic and may be indeterminate after this post-guard race.
+Each Telegram topic maps to one tmux window. With Herdr, it maps instead to one guarded agent session: `agent.list` is the sole identity source and CCGram persists only an opaque `herdr-session-v1-…` target, never a tab, pane, or terminal ID. Every Herdr agent topic is pane-qualified as `<workspace> ▸ <tab> ▸ <pane>`, so its label remains stable when siblings join or leave the tab. Every action reads a fresh `agent.list` record and fails closed for missing, malformed, sessionless, or legacy bindings. Duplicate canonical targets are quarantined while unrelated sessions remain operational. Legacy locator bindings require explicit rebind and are never inferred from names. A session can still change after that guard and before Herdr dispatches, so delivery is not atomic and may be indeterminate after this post-guard race.
 
 ---
 
@@ -108,7 +108,7 @@ Open your Telegram group, create a topic, send a message — directory browser a
 
 ### Herdr setup
 
-CCGram supports Herdr socket protocols **14–17 and 19–20**. Unknown protocol versions are attempted with a warning for forward compatibility; individual command failures still surface if the protocol is not usable. Install Herdr's integration before launching an agent that needs a native session identity:
+CCGram supports Herdr socket protocols **14–20**. Later and otherwise unknown protocol versions are attempted with a warning for forward compatibility; individual command failures still surface if the protocol is not usable. Telegram rate limiting uses a protected PTB adapter seam and is therefore tested against and constrained to `python-telegram-bot>=22.6,<22.7`. Install Herdr's integration before launching an agent that needs a native session identity:
 
 ```bash
 herdr integration install pi

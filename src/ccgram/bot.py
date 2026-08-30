@@ -20,7 +20,6 @@ import time
 import structlog
 from telegram.error import BadRequest, Conflict, NetworkError
 from telegram.ext import (
-    AIORateLimiter,
     Application,
     ContextTypes,
     filters,
@@ -38,6 +37,7 @@ from .handlers.text.text_handler import handle_text_message, text_handler
 from .handlers.topics import new_command
 from .handlers.topics.directory_browser import clear_browse_state
 from .session import session_manager
+from .telegram_rate_limiter import CCGramAIORateLimiter
 from .telegram_request import ResilientPollingHTTPXRequest
 from .thread_router import thread_router
 
@@ -218,7 +218,7 @@ def create_bot() -> Application:
     application = (
         Application.builder()
         .token(config.telegram_bot_token)
-        .rate_limiter(AIORateLimiter(max_retries=5))
+        .rate_limiter(CCGramAIORateLimiter(max_retries=5))
         .request(
             ResilientPollingHTTPXRequest(
                 read_timeout=10,

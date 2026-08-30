@@ -1,5 +1,9 @@
 # herdr tab-identity topics (full integration)
 
+> Historical plan. The tab-identity model described below was superseded by
+> guarded session identity: one topic per agent session, displayed as
+> `<workspace> ▸ <tab> ▸ <pane>`. See `docs/architecture.md` for current behavior.
+
 ## Overview
 
 ccgram's multiplexer seam already speaks herdr (status, foreground, send, capture, shell).

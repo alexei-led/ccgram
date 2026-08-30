@@ -207,6 +207,9 @@ class MultiplexerCapabilities:
     (False) keeps ccgram's own ``git worktree add`` + ``create_window`` path.
     """
 
+    supports_display_name_rebind: bool = True
+    """True when a stale topic may be recovered by matching its display name."""
+
 
 # ── Protocol ───────────────────────────────────────────────────────────
 

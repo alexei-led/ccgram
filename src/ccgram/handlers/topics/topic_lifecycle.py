@@ -347,6 +347,7 @@ async def probe_topic_existence(client: TelegramClient) -> None:
             await client.unpin_all_forum_topic_messages(
                 chat_id=chat_id,
                 message_thread_id=thread_id,
+                rate_limit_args=0,
             )
             terminal_poll_state.reset_probe_failures(wid)
         except TelegramError as e:

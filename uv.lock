@@ -170,7 +170,7 @@ requires-dist = [
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0" },
     { name = "pytest-timeout", marker = "extra == 'dev'", specifier = ">=2.3" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
-    { name = "python-telegram-bot", extras = ["rate-limiter", "socks"], specifier = ">=21.0" },
+    { name = "python-telegram-bot", extras = ["rate-limiter", "socks"], specifier = ">=22.6,<22.7" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8.0" },
     { name = "structlog", specifier = ">=24.0.0" },
     { name = "telegramify-markdown", specifier = ">=1.0.0" },

@@ -716,7 +716,9 @@ class TestProbeFailures:
             or _window_poll_state["@5"].probe_failures == 0
         )
         bot.unpin_all_forum_topic_messages.assert_called_once_with(
-            chat_id=-100, message_thread_id=42
+            chat_id=-100,
+            message_thread_id=42,
+            rate_limit_args=0,
         )
 
     @pytest.mark.parametrize(

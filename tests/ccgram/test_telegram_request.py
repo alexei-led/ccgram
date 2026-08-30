@@ -10,6 +10,7 @@ from telegram.error import Conflict, NetworkError, TimedOut
 from telegram.request import HTTPXRequest
 
 from ccgram.bot import create_bot
+from ccgram.telegram_rate_limiter import CCGramAIORateLimiter
 from ccgram.telegram_request import ResilientPollingHTTPXRequest
 
 
@@ -240,6 +241,7 @@ class TestCreateBotPollingRequest:
 
         app = create_bot()
 
+        assert isinstance(app.bot.rate_limiter, CCGramAIORateLimiter)
         assert isinstance(app.bot._request[0], ResilientPollingHTTPXRequest)
         assert isinstance(app.bot._request[1], ResilientPollingHTTPXRequest)
         assert app.bot._request[0]._client._transport._pool._max_connections == 1

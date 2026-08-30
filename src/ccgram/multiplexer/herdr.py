@@ -9,10 +9,9 @@ herdr.py is adapter, anti-corruption).
 
 Identity mapping: Herdr ``agent.list`` is the sole identity source. A complete
 agent-session composite becomes an opaque durable target. Detected agents that
-do not publish ``agent_session`` fall back to an opaque target derived from
-their current terminal ID, so they can receive a Telegram topic across pane and
-tab re-layout; that fallback is reconciled after a Herdr restart. Raw locators
-are used only after a fresh guard authorizes one action.
+do not publish ``agent_session`` are not reconcilable and never receive a
+persistent Telegram topic. Raw locators are used only after a fresh guard
+authorizes one action; they are never persisted as aliases.
 
 The backend shells out to the ``herdr`` CLI (which the design explicitly allows
 as an alternative to talking the socket directly); the socket path is passed
@@ -45,12 +44,12 @@ from collections.abc import (
     Mapping,
     Sequence,
 )
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 
 import structlog
 
-from ..herdr_targets import is_herdr_session_target
+from ..herdr_targets import HERDR_SESSION_TARGET_PREFIX, is_herdr_session_target
 from .base import (
     AgentStatus,
     CaptureResult,
@@ -89,9 +88,9 @@ __all__ = [
 logger = structlog.get_logger()
 
 # Supported herdr socket protocols (``herdr status`` → ``server.protocol``).
-# 14–17 and 19–20 are supported. Other versions are attempted with a warning so
-# ccgram remains usable across Herdr upgrades and downgrades.
-HERDR_SUPPORTED_PROTOCOLS = frozenset({14, 15, 16, 17, 19, 20})
+# 14–20 are supported. Other versions are attempted with a warning so ccgram
+# remains usable across Herdr upgrades and downgrades.
+HERDR_SUPPORTED_PROTOCOLS = frozenset(range(14, 21))
 HERDR_PROTOCOL_VERSION = max(HERDR_SUPPORTED_PROTOCOLS)
 
 # Static capability declaration for the herdr backend (design Task 7).
@@ -104,17 +103,8 @@ _HERDR_CAPABILITIES = MultiplexerCapabilities(
     self_identify_env="HERDR_PANE_ID",
     supports_event_stream=True,
     native_worktrees=True,
+    supports_display_name_rebind=False,
 )
-
-# Upper bound on remembered terminal → session-target lineage entries (see
-# ``_with_session_lineage``). One entry per terminal that has ever run an agent
-# this process lifetime; pruned against the live snapshot once exceeded.
-_SESSION_LINEAGE_MAX = 512
-
-# How many superseded targets one terminal retains. A topic is folded onto the
-# live target on the first monitor cycle after a re-key, so one is enough in
-# practice; the rest cover a reconcile that could not run in between.
-_SESSION_LINEAGE_DEPTH = 4
 
 # Filter for self-hosted / internal workspaces and tabs (e.g. ``__main__``).
 # Entries matching this pattern are skipped in ``list_windows`` so ccgram
@@ -201,14 +191,6 @@ def _workspace_cwd_from_panes(
     return shared_cwd("cwd") if has_stable_cwd else shared_cwd("foreground_cwd")
 
 
-def _agent_name(launch_command: str | None) -> str:
-    """Best-effort agent name from a launch command (``claude --foo`` -> claude)."""
-    if not launch_command:
-        return ""
-    first = launch_command.split()[0]
-    return Path(first).name
-
-
 class HerdrError(RuntimeError):
     """A herdr CLI/socket call failed (exit≠0, bad JSON, or an error payload)."""
 
@@ -244,14 +226,6 @@ class HerdrSessionComposite:
 
 
 @dataclass(frozen=True)
-class _TerminalLineage:
-    """One terminal's current session target and the ones it has superseded."""
-
-    current: str
-    superseded: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
 class HerdrLiveRecord:
     """One detected agent and its short-lived current Herdr locator."""
 
@@ -262,7 +236,6 @@ class HerdrLiveRecord:
     tab_id: str
     workspace_id: str
     cwd: str = ""
-    alias_target_ids: tuple[str, ...] = ()
 
 
 def _session_field(value: object) -> str | None:
@@ -302,6 +275,8 @@ def canonical_session_bytes(composite: HerdrSessionComposite) -> bytes:
     }
     if any(not isinstance(value, str) or not value for value in values.values()):
         raise HerdrMalformedRecordError("session composite is incomplete")
+    # Field order is part of the persisted target-ID protocol. A golden test
+    # pins it so refactors cannot silently orphan existing topic bindings.
     payload = json.dumps(values, ensure_ascii=False, separators=(",", ":"))
     return payload.encode("utf-8")
 
@@ -310,7 +285,7 @@ def herdr_session_target_id(composite: HerdrSessionComposite) -> str:
     """Return the opaque versioned ID for a complete session composite."""
     prefix = b"ccgram-herdr-session-v1\0"
     digest = hashlib.sha256(prefix + canonical_session_bytes(composite)).hexdigest()
-    return f"herdr-session-v1-{digest}"
+    return f"{HERDR_SESSION_TARGET_PREFIX}{digest}"
 
 
 def _parse_live_record(record: Mapping[str, object]) -> HerdrLiveRecord | None:
@@ -320,35 +295,14 @@ def _parse_live_record(record: Mapping[str, object]) -> HerdrLiveRecord | None:
         for key in ("terminal_id", "pane_id", "tab_id", "workspace_id")
     }
     if composite is None:
-        agent = _session_field(record.get("agent"))
-        if agent is None:
-            return None
-        composite = HerdrSessionComposite(
-            source="herdr",
-            agent=agent,
-            kind="terminal",
-            value=locators["terminal_id"] or "",
-        )
+        # A terminal locator is transient and cannot identify a session across
+        # a Herdr restart. Wait for the agent to publish its real session.
+        return None
     if any(value is None for value in locators.values()):
         raise HerdrMalformedRecordError(
             "agent.list contains an incomplete live locator"
         )
     target_id = herdr_session_target_id(composite)
-    # Herdr publishes ``agent`` as soon as it detects the CLI but
-    # ``agent_session`` only once the agent reports its session id, so the
-    # ccgram SessionStart hook can resolve this pane to the terminal-derived
-    # fallback moments before the session-derived target exists. That earlier
-    # id is not stale state to discard: it is where session_map.json and
-    # window_states were written. Publish it as an alias so the core can move
-    # that state (and any topic bound to it) onto the durable target.
-    alias_id = herdr_session_target_id(
-        HerdrSessionComposite(
-            source="herdr",
-            agent=composite.agent,
-            kind="terminal",
-            value=locators["terminal_id"] or "",
-        )
-    )
     # ``cwd`` is the agent's own working directory; ``foreground_cwd`` follows
     # whatever the agent currently shells into (a worktree, a plugin cache) and
     # would send hookless transcript discovery to the wrong session directory.
@@ -361,8 +315,47 @@ def _parse_live_record(record: Mapping[str, object]) -> HerdrLiveRecord | None:
         tab_id=locators["tab_id"] or "",
         workspace_id=locators["workspace_id"] or "",
         cwd=cwd,
-        alias_target_ids=() if alias_id == target_id else (alias_id,),
     )
+
+
+def _parse_agent_records(
+    agents: Sequence[object],
+) -> tuple[list[HerdrLiveRecord], int]:
+    records: list[HerdrLiveRecord] = []
+    malformed = 0
+    for agent in agents:
+        if not isinstance(agent, Mapping):
+            malformed += 1
+            continue
+        try:
+            parsed = _parse_live_record(agent)
+        except HerdrMalformedRecordError:
+            malformed += 1
+            continue
+        if parsed is not None:
+            records.append(parsed)
+    return records, malformed
+
+
+def _quarantine_ambiguous_records(
+    records: Sequence[HerdrLiveRecord],
+) -> tuple[list[HerdrLiveRecord], int, int]:
+    target_counts: dict[str, int] = {}
+    pane_counts: dict[str, int] = {}
+    for record in records:
+        target_counts[record.target_id] = target_counts.get(record.target_id, 0) + 1
+        pane_counts[record.pane_id] = pane_counts.get(record.pane_id, 0) + 1
+    duplicate_targets = {
+        target_id for target_id, count in target_counts.items() if count > 1
+    }
+    duplicate_panes = {pane_id for pane_id, count in pane_counts.items() if count > 1}
+    safe = [
+        record
+        for record in records
+        if record.target_id not in duplicate_targets
+        and record.pane_id not in duplicate_panes
+    ]
+    return safe, len(duplicate_targets), len(duplicate_panes)
 
 
 class HerdrManager:
@@ -404,13 +397,6 @@ class HerdrManager:
         self._binary = shutil.which(binary) or binary
         self._run: HerdrRunner = runner or self._subprocess_run
         self._open_stream: HerdrStreamOpener = stream_opener or self._default_stream
-        # Targets minted for a pane Herdr has not classified yet (see
-        # _provisional_record). Dropped as soon as agent.list reports them.
-        self._provisional_targets: dict[str, HerdrLiveRecord] = {}
-        # terminal_id → the session targets seen there, so an agent that
-        # re-keys its session in place keeps publishing the superseded target
-        # as an alias (see _with_session_lineage).
-        self._session_lineage: dict[str, _TerminalLineage] = {}
 
     def _default_stream(
         self, subscriptions: Sequence[Mapping[str, object]]
@@ -556,9 +542,9 @@ class HerdrManager:
     async def _agent_list_snapshot(self) -> list[HerdrLiveRecord]:
         """Read and parse one fresh ``agent.list`` snapshot.
 
-        Sessionless detected agents fall back to an opaque terminal-derived target.
-        No focus, title, name, directory, screen, or layout field participates
-        in this snapshot.
+        Agents without a complete session composite are ignored because no
+        stable topic identity exists. No focus, title, name, directory, screen,
+        or layout field participates in this snapshot.
         """
         result = await self._call_json(["agent", "list"])
         if result is None:
@@ -566,104 +552,22 @@ class HerdrManager:
         agents = result.get("agents")
         if not isinstance(agents, list):
             raise HerdrMalformedRecordError("agent.list returned no agents list")
-        records: list[HerdrLiveRecord] = []
-        for agent in agents:
-            if not isinstance(agent, Mapping):
-                raise HerdrMalformedRecordError(
-                    "agent.list contains a malformed record"
-                )
-            parsed = _parse_live_record(agent)
-            if parsed is not None:
-                records.append(parsed)
-        records = self._with_session_lineage(records)
-        self._forget_provisional(records)
-        return records
-
-    def _with_session_lineage(
-        self, records: Sequence[HerdrLiveRecord]
-    ) -> list[HerdrLiveRecord]:
-        """Publish a terminal's superseded session targets as aliases.
-
-        Identity is the agent *session* composite, so re-keying a session in
-        place (``/clear``, ``--resume``) mints a brand-new target for the same
-        terminal: the bound topic is orphaned and the new target reads as a
-        window nobody has bound, which is the duplicate topic per ``/clear``.
-        The terminal is the continuity, and the superseded target is exactly
-        the input ``migrate_window_aliases`` folds forward.
-
-        Three shapes are deliberately not a supersession: a sessionless
-        record, whose target is the terminal fallback ``_parse_live_record``
-        already publishes as the next session's alias; two sessions on one
-        terminal in one snapshot, which are siblings, not sequential; and a
-        superseded target Herdr still reports, which a resume brought back to
-        life and nothing has replaced.
-        """
-        self._prune_session_lineage(records)
-        live_targets = {record.target_id for record in records}
-        sessions_per_terminal: dict[str, int] = {}
-        for record in records:
-            if record.terminal_id and record.composite.kind != "terminal":
-                sessions_per_terminal[record.terminal_id] = (
-                    sessions_per_terminal.get(record.terminal_id, 0) + 1
-                )
-        updated: list[HerdrLiveRecord] = []
-        for record in records:
-            terminal_id = record.terminal_id
-            if (
-                not terminal_id
-                or record.composite.kind == "terminal"
-                or sessions_per_terminal.get(terminal_id, 0) > 1
-            ):
-                updated.append(record)
-                continue
-            aliases = self._track_session_lineage(terminal_id, record.target_id)
-            extra = tuple(
-                target_id
-                for target_id in aliases
-                if target_id != record.target_id
-                and target_id not in record.alias_target_ids
-                and target_id not in live_targets
+        records, malformed = _parse_agent_records(agents)
+        if malformed:
+            logger.warning(
+                "quarantining malformed Herdr agent records",
+                malformed_record_count=malformed,
             )
-            if not extra:
-                updated.append(record)
-                continue
-            updated.append(
-                replace(record, alias_target_ids=(*record.alias_target_ids, *extra))
+        safe, duplicate_targets, duplicate_panes = _quarantine_ambiguous_records(
+            records
+        )
+        if duplicate_targets or duplicate_panes:
+            logger.warning(
+                "quarantining ambiguous Herdr agent records",
+                duplicate_target_count=duplicate_targets,
+                duplicate_pane_count=duplicate_panes,
             )
-        return updated
-
-    def _track_session_lineage(
-        self, terminal_id: str, target_id: str
-    ) -> tuple[str, ...]:
-        """Record the terminal's current target; return the ones it superseded."""
-        lineage = self._session_lineage.get(terminal_id)
-        if lineage is None:
-            self._session_lineage[terminal_id] = _TerminalLineage(current=target_id)
-            return ()
-        if lineage.current == target_id:
-            return lineage.superseded
-        logger.info(
-            "herdr agent re-keyed its session in place; publishing alias",
-            terminal_id=terminal_id,
-            superseded_target=lineage.current,
-            target=target_id,
-        )
-        superseded = (lineage.current, *lineage.superseded)[:_SESSION_LINEAGE_DEPTH]
-        self._session_lineage[terminal_id] = _TerminalLineage(
-            current=target_id, superseded=superseded
-        )
-        return superseded
-
-    def _prune_session_lineage(self, records: Sequence[HerdrLiveRecord]) -> None:
-        """Bound lineage memory by dropping terminals no longer in the snapshot."""
-        if len(self._session_lineage) <= _SESSION_LINEAGE_MAX:
-            return
-        live_terminals = {record.terminal_id for record in records}
-        self._session_lineage = {
-            terminal_id: lineage
-            for terminal_id, lineage in self._session_lineage.items()
-            if terminal_id in live_terminals
-        }
+        return safe
 
     def target_id_for_live_record(self, record: Mapping[str, object]) -> str | None:
         """Return a guarded opaque target for one ``agent.list`` record.
@@ -685,15 +589,8 @@ class HerdrManager:
                 f"herdr session target has invalid format: {target_id}"
             )
         records = await self._agent_list_snapshot()
-        matches = [
-            record
-            for record in records
-            if record.target_id == target_id or target_id in record.alias_target_ids
-        ]
+        matches = [record for record in records if record.target_id == target_id]
         if not matches:
-            provisional = await self._refresh_provisional(target_id)
-            if provisional is not None:
-                return provisional
             raise HerdrUnresolvedTargetError(
                 f"herdr session target unresolved: {target_id}"
             )
@@ -705,31 +602,18 @@ class HerdrManager:
 
     @staticmethod
     def _live_ref(record: HerdrLiveRecord, label: str) -> WindowRef:
-        """Project a guarded record with canonical and migration-only aliases.
-
-        Old ccgram versions persisted the tab or pane locator directly.  The
-        locator is not returned as an actionable ID: it is an adapter-attested
-        migration candidate only.  The core accepts it only if this fresh
-        snapshot attests exactly one canonical target for it.
-        """
-        legacy_ids = tuple(
-            locator
-            for locator in (record.tab_id, record.pane_id, record.terminal_id)
-            if locator
-        )
+        """Project a live record without exposing reusable locator aliases."""
         return WindowRef(
             window_id=record.target_id,
             window_name=label,
             cwd=record.cwd,
             pane_current_command=record.composite.agent,
-            alias_window_ids=record.alias_target_ids,
-            legacy_alias_window_ids=legacy_ids,
         )
 
     async def _reconciliation_labels(
         self, records: Sequence[HerdrLiveRecord]
-    ) -> dict[tuple[str, str], tuple[str, str, str]]:
-        """Resolve safe display labels for live locators without using them as identity."""
+    ) -> dict[tuple[str, str], tuple[str, str]]:
+        """Resolve best-effort display labels without using them as identity."""
         workspace_result = await self._call_json(["workspace", "list"])
         tab_result = await self._call_json(["tab", "list"])
         if workspace_result is None or tab_result is None:
@@ -748,48 +632,86 @@ class HerdrManager:
             and isinstance(tab.get("tab_id"), str)
             and isinstance(tab.get("label"), str)
         }
-        labels: dict[tuple[str, str], tuple[str, str, str]] = {}
+        labels: dict[tuple[str, str], tuple[str, str]] = {}
+        missing = 0
         for record in records:
             workspace_label = workspace_labels.get(record.workspace_id)
             tab_label = tab_labels.get(record.tab_id)
             if workspace_label is None or tab_label is None:
-                raise HerdrError("Herdr live locator has no display label")
+                missing += 1
+                continue
             labels[(record.workspace_id, record.tab_id)] = (
                 workspace_label,
                 tab_label,
-                format_agent_topic_prefix(workspace_label, tab_label),
+            )
+        if missing:
+            logger.warning(
+                "skipping Herdr sessions with missing display labels",
+                missing_record_count=missing,
             )
         return labels
 
+    async def _project_live_refs(
+        self,
+        records: Sequence[HerdrLiveRecord],
+        *,
+        include_internal: bool = False,
+        include_unlabeled: bool = False,
+    ) -> list[WindowRef]:
+        """Project one agent snapshot with best-effort live labels."""
+        labels = await self._reconciliation_labels(records)
+        refs: list[WindowRef] = []
+        for record in records:
+            label = labels.get((record.workspace_id, record.tab_id))
+            if label is None:
+                if include_unlabeled:
+                    refs.append(
+                        self._live_ref(
+                            record,
+                            f"Herdr ▸ {record.target_id[-12:]}",
+                        )
+                    )
+                continue
+            workspace_label, tab_label = label
+            if not include_internal and (
+                _INTERNAL_LABEL_RE.match(workspace_label)
+                or _INTERNAL_LABEL_RE.match(tab_label)
+            ):
+                continue
+            pane = record.pane_id.rsplit(":", 1)[-1]
+            refs.append(
+                self._live_ref(
+                    record,
+                    format_agent_topic_prefix(workspace_label, tab_label, pane),
+                )
+            )
+        return refs
+
     async def list_windows(self) -> list[WindowRef]:
-        """List reconcilable detected agents keyed by opaque session targets."""
+        """Return a best-effort UI listing; reconciliation uses the tri-state API."""
         return await self.list_windows_for_reconciliation() or []
 
     async def list_windows_for_reconciliation(self) -> list[WindowRef] | None:
         try:
-            records = await self._agent_list_snapshot()
-            labels = await self._reconciliation_labels(records)
-            return [
-                self._live_ref(record, labels[(record.workspace_id, record.tab_id)][2])
-                for record in records
-                if not _INTERNAL_LABEL_RE.match(
-                    labels[(record.workspace_id, record.tab_id)][0]
-                )
-                and not _INTERNAL_LABEL_RE.match(
-                    labels[(record.workspace_id, record.tab_id)][1]
-                )
-            ]
+            return await self._project_live_refs(
+                await self._agent_list_snapshot(), include_unlabeled=True
+            )
         except HerdrError:
             return None
 
     async def find_window_by_id(self, window_id: str) -> WindowRef | None:
-        """Resolve a topic target through a fresh session snapshot."""
+        """Resolve a topic target through one consistent live snapshot."""
+        if not is_herdr_session_target(window_id):
+            return None
         try:
-            record = await self.guard_session_target(window_id)
-            labels = await self._reconciliation_labels([record])
-            return self._live_ref(
-                record, labels[(record.workspace_id, record.tab_id)][2]
+            records = await self._agent_list_snapshot()
+            matches = [record for record in records if record.target_id == window_id]
+            if len(matches) != 1:
+                return None
+            refs = await self._project_live_refs(
+                records, include_internal=True, include_unlabeled=True
             )
+            return next((ref for ref in refs if ref.window_id == window_id), None)
         except HerdrError:
             return None
 
@@ -1014,8 +936,26 @@ class HerdrManager:
 
     async def rename_window(self, window_id: str, new_name: str) -> bool:
         try:
-            record = await self.guard_session_target(window_id)
+            records = await self._agent_list_snapshot()
         except HerdrError:
+            return False
+        matches = [record for record in records if record.target_id == window_id]
+        if len(matches) != 1:
+            return False
+        record = matches[0]
+        siblings = [
+            candidate
+            for candidate in records
+            if (candidate.workspace_id, candidate.tab_id)
+            == (record.workspace_id, record.tab_id)
+        ]
+        if len(siblings) > 1:
+            logger.warning(
+                "refusing to rename shared Herdr tab through one agent topic",
+                target_id=window_id,
+                tab_id=record.tab_id,
+                agent_count=len(siblings),
+            )
             return False
         ok = await self._call_ok(["tab", "rename", record.tab_id, new_name])
         if not ok:
@@ -1100,16 +1040,19 @@ class HerdrManager:
     async def _resolve_event_targets(
         self, window_ids: Sequence[str]
     ) -> tuple[dict[str, str], dict[str, tuple[str, ...]]]:
-        """Resolve event subscriptions and tab closures through fresh guards."""
+        """Resolve all event subscriptions from one fresh agent snapshot."""
+        try:
+            records = await self._agent_list_snapshot()
+        except HerdrError:
+            return {}, {}
+        requested = set(window_ids)
         pane_to_target: dict[str, str] = {}
         tab_to_targets: dict[str, list[str]] = {}
-        for target_id in window_ids:
-            try:
-                record = await self.guard_session_target(target_id)
-            except HerdrError:
+        for record in records:
+            if record.target_id not in requested:
                 continue
-            pane_to_target[record.pane_id] = target_id
-            tab_to_targets.setdefault(record.tab_id, []).append(target_id)
+            pane_to_target[record.pane_id] = record.target_id
+            tab_to_targets.setdefault(record.tab_id, []).append(record.target_id)
         return pane_to_target, {
             tab_id: tuple(targets) for tab_id, targets in tab_to_targets.items()
         }
@@ -1199,74 +1142,12 @@ class HerdrManager:
             target.target_id,
         )
 
-    async def _pane_locator(self, pane_id: str) -> Mapping[str, object] | None:
-        """Return the raw ``pane list`` entry for *pane_id*, or None if it is gone."""
-        result = await self._call_json(["pane", "list"])
-        panes = (result or {}).get("panes")
-        if not isinstance(panes, list):
-            return None
-        for pane in panes:
-            if isinstance(pane, Mapping) and pane.get("pane_id") == pane_id:
-                return pane
-        return None
-
-    async def _provisional_record(
-        self, *, pane_id: str, agent: str
-    ) -> HerdrLiveRecord | None:
-        """Mint a terminal-derived target for a pane Herdr has not classified yet.
-
-        An agent that stops for input before reporting a session — Claude's
-        "do you trust the files in this folder?" prompt is the common case —
-        never appears in ``agent.list``, so creation would otherwise time out
-        and roll the tab away while the agent sits at the prompt. The pane
-        itself is visible from the moment it exists, and its ``terminal_id``
-        is exactly what a later sessionless record would hash, so the target
-        minted here is the one the agent will answer to. Once the session
-        arrives it becomes an alias of the session-derived target and the core
-        folds the state forward (``migrate_window_aliases``).
-        """
-        pane = await self._pane_locator(pane_id)
-        if pane is None:
-            return None
-        record = _parse_live_record({**pane, "agent": agent})
-        if record is not None:
-            self._provisional_targets[record.target_id] = record
-        return record
-
-    async def _refresh_provisional(self, target_id: str) -> HerdrLiveRecord | None:
-        """Re-resolve a provisional target against its pane's current locator.
-
-        Keeps an action working while the agent is still at a pre-session
-        prompt. The pane is re-read every time, so a closed pane drops the
-        target and the caller fails exactly as it would for any dead window.
-        """
-        known = self._provisional_targets.get(target_id)
-        if known is None:
-            return None
-        record = await self._provisional_record(
-            pane_id=known.pane_id, agent=known.composite.agent
-        )
-        if record is None or record.target_id != target_id:
-            self._provisional_targets.pop(target_id, None)
-            return None
-        return record
-
-    def _forget_provisional(self, records: Sequence[HerdrLiveRecord]) -> None:
-        """Drop provisional targets that Herdr now reports for itself."""
-        if not self._provisional_targets:
-            return
-        for record in records:
-            self._provisional_targets.pop(record.target_id, None)
-            for alias in record.alias_target_ids:
-                self._provisional_targets.pop(alias, None)
-
     async def _await_created_session_target(
         self,
         *,
         tab_id: str,
         pane_id: str,
         workspace_id: str | None,
-        agent: str,
     ) -> HerdrLiveRecord:
         """Wait for exactly one session reported for a newly-created pane."""
         loop = asyncio.get_running_loop()
@@ -1288,14 +1169,6 @@ class HerdrManager:
             if loop.time() >= deadline:
                 break
             await asyncio.sleep(_CREATED_SESSION_POLL_INTERVAL_SECONDS)
-        provisional = await self._provisional_record(pane_id=pane_id, agent=agent)
-        if provisional is not None:
-            logger.info(
-                "Herdr pane %s has not reported a session yet; binding its "
-                "terminal-derived target until it does",
-                pane_id,
-            )
-            return provisional
         raise HerdrUnresolvedTargetError("new Herdr pane did not report a session")
 
     async def create_topic_target(  # noqa: C901
@@ -1356,8 +1229,11 @@ class HerdrManager:
             root = (result or {}).get("root_pane") or {}
             tab_id = tab.get("tab_id") if isinstance(tab, Mapping) else None
             pane_id = root.get("pane_id") if isinstance(root, Mapping) else None
+            label = tab.get("label") if isinstance(tab, Mapping) else None
             if not isinstance(tab_id, str) or not tab_id:
                 raise HerdrError("herdr tab creation returned no tab id")
+            if not isinstance(label, str) or not label:
+                raise HerdrError("herdr tab creation returned no valid label")
             # A tab may have been allocated even when the response omitted its
             # root pane. Close it before closing the workspace we created.
             if not isinstance(pane_id, str) or not pane_id:
@@ -1370,11 +1246,13 @@ class HerdrManager:
                 tab_id=tab_id,
                 pane_id=pane_id,
                 workspace_id=workspace_id,
-                agent=_agent_name(launch_command),
             )
+            refs = await self._project_live_refs([record])
+            if len(refs) != 1:
+                raise HerdrError("new Herdr pane has no valid display metadata")
             return TopicTargetResult(
                 record.target_id,
-                tab.get("label", window_name or ""),
+                refs[0].window_name,
                 tab_id,
                 pane_id,
             )
@@ -1444,7 +1322,7 @@ class HerdrManager:
             await self._call_ok(["tab", "close", tab_id])
             return False, "herdr worktree created without a root pane", "", ""
         label = tab.get("label", window_name or "")
-        if not isinstance(label, str):
+        if not isinstance(label, str) or not label:
             await self._call_ok(["tab", "close", tab_id])
             return False, "herdr worktree created without a valid tab label", "", ""
         created_workspace = workspace.get("workspace_id")
@@ -1462,7 +1340,6 @@ class HerdrManager:
                 tab_id=tab_id,
                 pane_id=pane_id,
                 workspace_id=workspace_id,
-                agent=_agent_name(launch_command),
             )
         except BaseException as exc:
             await self._call_ok(["tab", "close", tab_id])
@@ -1470,6 +1347,16 @@ class HerdrManager:
                 return False, str(exc), "", ""
             raise
 
+        refs = await self._project_live_refs([record])
+        if len(refs) != 1:
+            await self._call_ok(["tab", "close", tab_id])
+            return (
+                False,
+                "new Herdr worktree pane has no valid display metadata",
+                "",
+                "",
+            )
+        label = refs[0].window_name
         logger.info("Created herdr worktree target %r at %s", label, worktree_path)
         return (
             True,
@@ -1478,7 +1365,7 @@ class HerdrManager:
             record.target_id,
         )
 
-    async def watch_events(  # noqa: C901
+    async def watch_events(  # noqa: C901, PLR0912
         self, window_ids: Sequence[str]
     ) -> AsyncGenerator[MuxEvent, None]:
         """Stream push events for *window_ids* (see ``Multiplexer.watch_events``).
@@ -1514,62 +1401,80 @@ class HerdrManager:
                 async with contextlib.aclosing(
                     self._open_stream(subscriptions)
                 ) as stream:
-                    while True:
-                        try:
-                            async with asyncio.timeout(_STREAM_REPRIME_INTERVAL):
-                                obj = await anext(stream)
-                        except TimeoutError:
-                            # No event may arrive after a target moves because
-                            # Herdr subscriptions are pane-specific. Reconnect
-                            # with fresh guarded locators instead of waiting for
-                            # an event on the stale pane forever.
-                            refresh_subscriptions = True
-                            break
-                        if is_subscribed_sentinel(obj):
-                            # Subscription is live — reprime now so the status cache
-                            # isn't cold; events during reprime are buffered + read
-                            # on the next iterations (no reprime-vs-subscribe race).
-                            backoff = _STREAM_BACKOFF_BASE
-                            for pane_id, window_id in pane_to_window.items():
-                                status = await self.agent_status(window_id)
-                                if status is not None:
-                                    yield MuxEvent(
-                                        kind="agent_status",
-                                        window_id=window_id,
-                                        pane_id=pane_id,
-                                        status=status,
-                                    )
-                            continue
-                        # Terminal events identify the pane/tab that just vanished.
-                        # Resolve and emit them through the pre-refresh guard: a
-                        # fresh snapshot cannot contain the closed locator, so
-                        # refreshing first would silently drop the close event.
-                        guarded_terminal_events = tuple(
-                            event
+                    pending_event: asyncio.Task[dict] | None = None
+                    try:
+                        while True:
+                            if pending_event is None:
+                                pending_event = asyncio.create_task(anext(stream))
+                            done, _ = await asyncio.wait(
+                                {pending_event}, timeout=_STREAM_REPRIME_INTERVAL
+                            )
+                            if not done:
+                                # Keep the socket read pending while checking
+                                # whether pane-specific subscriptions changed.
+                                (
+                                    fresh_panes,
+                                    fresh_tabs,
+                                ) = await self._resolve_event_targets(ids)
+                                if (
+                                    fresh_panes != pane_to_window
+                                    or fresh_tabs != tab_to_windows
+                                ):
+                                    refresh_subscriptions = True
+                                    break
+                                continue
+                            try:
+                                obj = pending_event.result()
+                            except StopAsyncIteration:
+                                pending_event = None
+                                break
+                            pending_event = None
+                            if is_subscribed_sentinel(obj):
+                                # Subscription is live — reprime now so the status
+                                # cache isn't cold. Events are buffered meanwhile.
+                                backoff = _STREAM_BACKOFF_BASE
+                                for pane_id, window_id in pane_to_window.items():
+                                    status = await self.agent_status(window_id)
+                                    if status is not None:
+                                        yield MuxEvent(
+                                            kind="agent_status",
+                                            window_id=window_id,
+                                            pane_id=pane_id,
+                                            status=status,
+                                        )
+                                continue
+                            # Resolve terminal events through the pre-refresh guard:
+                            # a fresh snapshot cannot contain a closed locator.
+                            guarded_terminal_events = tuple(
+                                event
+                                for event in translate_event(
+                                    obj, pane_to_window, tab_to_windows
+                                )
+                                if event.kind == "window_died"
+                            )
+                            if guarded_terminal_events:
+                                for event in guarded_terminal_events:
+                                    yield event
+                                continue
+                            # Status events may reveal a moved agent. Reconnect before
+                            # translating them if the guarded mapping changed.
+                            fresh_panes, fresh_tabs = await self._resolve_event_targets(
+                                ids
+                            )
+                            if (
+                                fresh_panes != pane_to_window
+                                or fresh_tabs != tab_to_windows
+                            ):
+                                refresh_subscriptions = True
+                                break
                             for event in translate_event(
                                 obj, pane_to_window, tab_to_windows
-                            )
-                            if event.kind == "window_died"
-                        )
-                        if guarded_terminal_events:
-                            for event in guarded_terminal_events:
+                            ):
                                 yield event
-                            continue
-                        # Agent locators can move while a stream is open. Herdr does
-                        # not support incremental subscription updates, so refresh
-                        # the guarded mapping and reconnect before translating status
-                        # events whenever a move is observed.
-                        fresh_panes, fresh_tabs = await self._resolve_event_targets(ids)
-                        if (
-                            fresh_panes != pane_to_window
-                            or fresh_tabs != tab_to_windows
-                        ):
-                            refresh_subscriptions = True
-                            break
-                        for event in translate_event(
-                            obj, pane_to_window, tab_to_windows
-                        ):
-                            yield event
+                    finally:
+                        if pending_event is not None:
+                            pending_event.cancel()
+                            await asyncio.gather(pending_event, return_exceptions=True)
             except OSError as exc:
                 logger.debug("herdr event stream error: %s", exc)
             if refresh_subscriptions:
