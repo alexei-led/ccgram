@@ -389,7 +389,7 @@ async def _merge_content_tasks(
     """
     merged_parts = list(first.parts)
     merged_receipts = list(first.delivery_receipts)
-    current_length = sum(len(p) for p in merged_parts)
+    current_length = sum(utf16_len(part) for part in merged_parts)
     oldest_enqueued_monotonic = first.enqueued_monotonic
     latest_source_checkpoint = first.source_checkpoint
     merge_count = 0
@@ -404,9 +404,9 @@ async def _merge_content_tasks(
                 break
 
             assert isinstance(task, ContentTask)
-            task_length = sum(len(p) for p in task.parts)
+            task_length = sum(utf16_len(part) for part in task.parts)
             if (
-                current_length + len(_TEXT_BATCH_SEPARATOR) + task_length
+                current_length + utf16_len(_TEXT_BATCH_SEPARATOR) + task_length
                 > MERGE_MAX_LENGTH
             ):
                 remaining = items[i:]
@@ -414,7 +414,7 @@ async def _merge_content_tasks(
 
             merged_parts.extend(task.parts)
             merged_receipts.extend(task.delivery_receipts)
-            current_length += len(_TEXT_BATCH_SEPARATOR) + task_length
+            current_length += utf16_len(_TEXT_BATCH_SEPARATOR) + task_length
             oldest_enqueued_monotonic = min(
                 oldest_enqueued_monotonic, task.enqueued_monotonic
             )

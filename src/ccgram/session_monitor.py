@@ -19,6 +19,7 @@ Re-exported from transcript_reader for backward-compatible imports.
 import asyncio
 import contextlib
 import structlog
+import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -63,6 +64,8 @@ _LoopError = (OSError, RuntimeError, json.JSONDecodeError, ValueError, TelegramE
 
 _BACKOFF_MIN = 2.0
 _BACKOFF_MAX = 30.0
+_SKIP_RETRY_BASE_SECONDS = 2.0
+_SKIP_RETRY_MAX_SECONDS = 60.0
 _MSG_PREVIEW_LENGTH = 80
 
 logger = structlog.get_logger()
@@ -119,6 +122,8 @@ class SessionMonitor:
             Callable[[BacklogSkipIntent], Awaitable[None]] | None
         ) = None
         self._skip_notice_receipts: dict[str, DeliveryReceipt] = {}
+        self._skip_retry_attempts: dict[str, int] = {}
+        self._skip_retry_at: dict[str, float] = {}
 
     # Delegation properties for backward-compatible test access
     @property
@@ -204,15 +209,57 @@ class SessionMonitor:
         # The durable barrier is written before destructive queue retirement.
         self.state.begin_skip(intent)
         self.state.save_if_dirty()
-        skipped = await self._skip_purge_callback(intent)
-        self.state.update_skip_count(session_id, skipped)
-        self.state.save_if_dirty()
-        await self._enqueue_pending_skip_notice(intent)
+        if await self._prepare_pending_skip(intent):
+            await self._enqueue_pending_skip_notice(intent)
         return intent
+
+    def _skip_retry_due(self, session_id: str) -> bool:
+        return time.monotonic() >= self._skip_retry_at.get(session_id, 0.0)
+
+    def _schedule_skip_retry(self, session_id: str) -> None:
+        attempt = self._skip_retry_attempts.get(session_id, 0) + 1
+        delay = min(
+            _SKIP_RETRY_MAX_SECONDS,
+            _SKIP_RETRY_BASE_SECONDS * (2 ** min(attempt - 1, 5)),
+        )
+        self._skip_retry_attempts[session_id] = attempt
+        self._skip_retry_at[session_id] = time.monotonic() + delay
+        logger.warning(
+            "Backlog skip step failed; retrying later",
+            session_id=session_id,
+            retry=attempt,
+            retry_in_seconds=delay,
+        )
+
+    def _clear_skip_retry(self, session_id: str) -> None:
+        self._skip_retry_attempts.pop(session_id, None)
+        self._skip_retry_at.pop(session_id, None)
+
+    async def _prepare_pending_skip(self, intent: BacklogSkipIntent) -> bool:
+        """Retire frozen source work before a skip notice may be sent."""
+        if intent.purge_complete:
+            return True
+        callback = self._skip_purge_callback
+        if callback is None or not self._skip_retry_due(intent.session_id):
+            return False
+        try:
+            skipped = await callback(intent)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Failed to purge backlog for %s", intent.session_id)
+            self._schedule_skip_retry(intent.session_id)
+            return False
+        self.state.update_skip_count(intent.session_id, skipped)
+        self.state.save_if_dirty()
+        self._clear_skip_retry(intent.session_id)
+        return True
 
     async def _enqueue_pending_skip_notice(self, intent: BacklogSkipIntent) -> None:
         """Create one receipt-tracked visible notice for a persisted barrier."""
-        if intent.session_id in self._skip_notice_receipts:
+        if intent.session_id in self._skip_notice_receipts or not self._skip_retry_due(
+            intent.session_id
+        ):
             return
         callback = self._skip_notice_callback
         if callback is None:
@@ -229,25 +276,39 @@ class SessionMonitor:
             logger.exception(
                 "Failed to enqueue backlog skip notice for %s", intent.session_id
             )
+            self._schedule_skip_retry(intent.session_id)
         finally:
             deactivate_delivery_receipt(token)
             receipt.close()
-        self._skip_notice_receipts[intent.session_id] = receipt
+        if not receipt.failed:
+            self._clear_skip_retry(intent.session_id)
+            self._skip_notice_receipts[intent.session_id] = receipt
 
     async def _resume_pending_skip_notices(self) -> None:
         """Resume persisted skip barriers before reading any skipped bytes."""
         for intent in tuple(self.state.pending_skips.values()):
-            await self._enqueue_pending_skip_notice(intent)
+            if not self._skip_retry_due(intent.session_id):
+                continue
+            if await self._prepare_pending_skip(intent):
+                await self._enqueue_pending_skip_notice(intent)
 
     def _commit_pending_skips(self) -> None:
         """Advance only barriers whose visible notices reached Telegram."""
         for session_id, receipt in tuple(self._skip_notice_receipts.items()):
+            if receipt.failed:
+                # A failed notice has no acknowledgement boundary. Remove the
+                # failed receipt so the persisted barrier can retry in-process;
+                # the source remains paused until a notice is delivered.
+                self._skip_notice_receipts.pop(session_id, None)
+                self._schedule_skip_retry(session_id)
+                continue
             if not receipt.commit_ready:
                 continue
             if self.state.complete_skip(session_id):
                 self.state.save_if_dirty()
                 self._delivery_receipts.pop(session_id, None)
             self._skip_notice_receipts.pop(session_id, None)
+            self._clear_skip_retry(session_id)
 
     def record_hook_activity(self, window_id: str) -> None:
         """Record hook-based activity for a window (resets idle timers)."""

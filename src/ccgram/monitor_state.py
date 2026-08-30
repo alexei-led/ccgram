@@ -67,6 +67,7 @@ class BacklogSkipIntent:
     snapshot_offset: int
     range_start: int
     skipped_count: int = 0
+    purge_complete: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -82,6 +83,7 @@ class BacklogSkipIntent:
             snapshot_offset=int(data.get("snapshot_offset", 0)),
             range_start=int(data.get("range_start", 0)),
             skipped_count=int(data.get("skipped_count", 0)),
+            purge_complete=bool(data.get("purge_complete", False)),
         )
 
 
@@ -200,6 +202,7 @@ class MonitorState:
         intent = self.pending_skips.get(session_id)
         if intent is not None:
             intent.skipped_count = skipped_count
+            intent.purge_complete = True
             self._dirty = True
 
     def complete_skip(self, session_id: str) -> bool:
@@ -208,8 +211,9 @@ class MonitorState:
         session = self.tracked_sessions.get(session_id)
         if intent is None or session is None:
             return False
-        session.last_byte_offset = intent.snapshot_offset
-        session.parsed_offset = intent.snapshot_offset
+        target_offset = max(session.last_byte_offset, intent.snapshot_offset)
+        session.last_byte_offset = target_offset
+        session.parsed_offset = target_offset
         self.pending_skips.pop(session_id, None)
         self._dirty = True
         return True

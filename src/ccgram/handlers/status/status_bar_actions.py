@@ -376,6 +376,12 @@ async def _handle_backlog_jump(
     if thread_id is None or chat_id is None:
         await query.answer("Use in a topic", show_alert=True)
         return
+    if (
+        thread_router.resolve_window_for_thread(user_id, thread_id, chat_id)
+        != window_id
+    ):
+        await query.answer("Stale status button", show_alert=True)
+        return
     # Lazy: status_bubble loads this module to build its optional dashboard row.
     from .status_bubble import (
         SEVERE_BACKLOG_AGE_SECONDS,
@@ -438,6 +444,30 @@ async def _handle_backlog_confirm(
     thread_id = get_thread_id(update)
     if thread_id is None or chat_id is None:
         await query.answer("Use in a topic", show_alert=True)
+        return
+    if (
+        thread_router.resolve_window_for_thread(user_id, thread_id, chat_id)
+        != window_id
+    ):
+        await query.answer("Stale status button", show_alert=True)
+        return
+    # Confirmation may sit in Telegram while the queue drains. Recheck the
+    # destructive action's threshold instead of applying a stale decision.
+    # Lazy: status_bubble imports this module to build optional action rows.
+    from .status_bubble import (
+        SEVERE_BACKLOG_AGE_SECONDS,
+        SEVERE_BACKLOG_COUNT,
+    )
+
+    # Lazy: messaging pipeline is loaded only for a confirmed severe action.
+    from ..messaging_pipeline.backlog import get_backlog_snapshot
+
+    snapshot = get_backlog_snapshot(user_id, window_id, thread_id)
+    if (
+        snapshot.pending_count < SEVERE_BACKLOG_COUNT
+        and snapshot.oldest_age_seconds < SEVERE_BACKLOG_AGE_SECONDS
+    ):
+        await query.answer("Backlog is no longer severe", show_alert=True)
         return
     # Lazy: session_monitor reaches handler routing through bootstrap callbacks.
     from ...session_monitor import get_active_monitor

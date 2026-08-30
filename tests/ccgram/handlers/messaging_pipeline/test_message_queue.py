@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from telegram.error import RetryAfter, TelegramError
+from telegramify_markdown import utf16_len
 
 from ccgram.handlers.messaging_pipeline.message_queue import (
     MERGE_MAX_LENGTH,
@@ -229,6 +230,17 @@ class TestMergeContentTasks:
 
         merged, count = await _merge_content_tasks(queue, first, lock)
 
+        assert merged is first
+        assert count == 0
+        assert queue.qsize() == 1
+
+    async def test_utf16_units_count_toward_length_limit(self, queue, lock):
+        first = _content_task("😀" * (MERGE_MAX_LENGTH // 2))
+        queue.put_nowait(_content_task("x"))
+
+        merged, count = await _merge_content_tasks(queue, first, lock)
+
+        assert utf16_len(first.parts[0]) == MERGE_MAX_LENGTH
         assert merged is first
         assert count == 0
         assert queue.qsize() == 1

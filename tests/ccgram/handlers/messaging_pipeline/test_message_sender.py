@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, patch
 
 from telegram import Message
 from telegram.error import BadRequest, RetryAfter, TelegramError
+from telegramify_markdown import utf16_len
 
 from ccgram.expandable_quote import EXPANDABLE_QUOTE_END as EXP_END
 from ccgram.expandable_quote import EXPANDABLE_QUOTE_START as EXP_START
@@ -276,6 +277,20 @@ class TestEmptyAndOverlongGuards:
         assert last is not None
         sent_text = last.kwargs["text"]
         assert len(sent_text) <= TELEGRAM_MAX_MESSAGE_LENGTH
+        assert sent_text.endswith("…")
+
+    async def test_overlong_emoji_text_truncates_by_utf16_units(
+        self, client: FakeTelegramClient
+    ) -> None:
+        from ccgram.telegram_sender import TELEGRAM_MAX_MESSAGE_LENGTH
+
+        client.returns["send_message"] = _fake_message()
+        await _send_with_fallback(client, 123, "😀" * 3000)
+
+        last = client.last_call("send_message")
+        assert last is not None
+        sent_text = last.kwargs["text"]
+        assert utf16_len(sent_text) <= TELEGRAM_MAX_MESSAGE_LENGTH
         assert sent_text.endswith("…")
 
 

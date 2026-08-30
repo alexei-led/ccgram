@@ -21,6 +21,7 @@ from typing import Any
 
 from telegram import CallbackQuery, LinkPreviewOptions, Message, ReactionTypeEmoji
 from telegram.error import BadRequest, RetryAfter, TelegramError
+from telegramify_markdown import utf16_len
 
 from ...config import config
 from ...entity_formatting import convert_to_entities
@@ -115,13 +116,24 @@ async def rate_limit_send(chat_id: int) -> None:
 def _cap_to_telegram_limit(
     plain_text: str, entities: list[Any]
 ) -> tuple[str, list[Any]]:
-    """Truncate plain_text + drop overflow entities so a single send fits Telegram's limit."""
-    if len(plain_text) <= TELEGRAM_MAX_MESSAGE_LENGTH:
+    """Truncate text and entities to Telegram's UTF-16 message limit."""
+    if utf16_len(plain_text) <= TELEGRAM_MAX_MESSAGE_LENGTH:
         return plain_text, entities
+
     ellipsis = "…"
-    cap = TELEGRAM_MAX_MESSAGE_LENGTH - len(ellipsis)
-    truncated = plain_text[:cap] + ellipsis
-    kept = [e for e in entities if e.offset + e.length <= cap]
+    budget = TELEGRAM_MAX_MESSAGE_LENGTH - utf16_len(ellipsis)
+    used = 0
+    end = 0
+    for end, char in enumerate(plain_text):
+        char_units = utf16_len(char)
+        if used + char_units > budget:
+            break
+        used += char_units
+    else:
+        end = len(plain_text)
+
+    truncated = plain_text[:end] + ellipsis
+    kept = [entity for entity in entities if entity.offset + entity.length <= used]
     return truncated, kept
 
 
