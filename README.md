@@ -71,6 +71,12 @@ Each Telegram topic maps to one tmux window. With Herdr, it maps instead to one 
 - **Send workspace files** — Share files to Telegram via `/send` (glob, path, or substring search)
 - **Action toolbar** — Provider-specific buttons for common actions (Screenshot, Mode, Esc, Enter, etc.)
 
+## Delivery and Sync Safety
+
+CCGram losslessly combines only eligible consecutive transcript text deliveries for the same chat, topic, window, role, and source session. It preserves each item's formatting and keeps tool updates, media, status updates, and other boundaries separate. The status bubble shows queue progress; at a severe backlog (100 pending items or an oldest item aged 5 minutes), its inline **Jump to live** action requires confirmation and posts a skipped-range notice. The raw provider transcript is never deleted. Delivery is at-least-once, so a Telegram failure or restart before acknowledgement can repeat a transcript message rather than silently losing it.
+
+`/sync` can clean up only locally recorded, eligible retired topics. It never discovers or enumerates arbitrary Telegram topics; an active or rebound topic is protected before any cleanup request. See the [delivery, backlog, and Sync guide](docs/guides.md#delivery-backlog-and-jump-to-live) for boundaries, safety guarantees, and Telegram admin permissions.
+
 ---
 
 ## Quick Start
@@ -131,8 +137,9 @@ Native Windows does not provide the Unix file locking, signal handling, and term
 
 ## Documentation
 
-- **[Guides](docs/guides.md)** — CLI reference, configuration, voice transcription, multi-instance setup, session recovery, testing
-- **[Providers](docs/providers.md)** — Claude Code, Codex, Gemini, Pi, Shell; session modes, LLM config, custom commands, git worktrees
+- **[Guides](docs/guides.md)** — CLI reference, configuration, delivery/backlog safety, `/sync`, voice transcription, multi-instance setup, session recovery, testing
+- **[Providers](docs/providers.md)** — Claude Code, Codex, Gemini, Pi, Shell; transcript delivery, session modes, LLM config, custom commands, git worktrees
+- **[Architecture](docs/architecture.md)** — delivery queue, transcript watermark, and provider/multiplexer design
 
 ---
 

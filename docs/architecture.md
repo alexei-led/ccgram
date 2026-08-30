@@ -241,6 +241,14 @@ sequenceDiagram
     end
 ```
 
+## Delivery Queue, Progress, and Watermarks
+
+Transcript `NewMessage` events route into a per-user ordered queue. Consecutive text tasks can share one Telegram send only when they are non-empty, one-part text from the same chat, thread, window, role, and source session; the queue stops at every other boundary. Each part is converted to Telegram entities before assembly, then separated with a blank line and sent as one formatted payload. This preserves each source item's rendering and prevents Markdown/entity state from crossing items. Tool batching, status tasks, media/TTS, and skip notices retain their separate delivery boundaries.
+
+Queue telemetry is window/topic scoped: pending transcript content tasks include queued and in-flight tasks, oldest age is measured from enqueue time, and delivery lag is measured when a content attempt reaches the Telegram boundary. The status bubble renders these values and opens the inline Jump-to-live confirmation only at `pending >= 100 OR oldest_age >= 300s`. The metrics are deliberately in-memory telemetry, not durable state.
+
+Transcript state keeps a persisted delivered watermark and an in-memory parsed offset. The monitor advances the watermark only after every receipt through the relevant checkpoint is delivered or intentionally dropped; a failed/unconfirmed attempt remains replayable, making the contract at-least-once rather than exactly-once. A confirmed Jump to live snapshots source EOF, persists a `BacklogSkipIntent` before source-scoped queue retirement, and waits for the visible skipped-range notice receipt before atomically advancing the watermark. The raw transcript is not changed. Pending barriers survive restart and block rereading the frozen range until their notice is delivered.
+
 ## Hook Event Flow
 
 ```mermaid
@@ -299,6 +307,8 @@ graph TB
 
 ## Key Design Decisions
 
+<!-- markdownlint-disable MD060 -->
+
 | Decision                                          | Rationale                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | ------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Window ID-centric routing (`@0`, `@12`)           | Unique within a tmux server; window names are display-only                                                                                                                                                                                                                                                                                                                                                                                            |
@@ -327,3 +337,5 @@ graph TB
 | Recovery split                                    | `recovery_callbacks.py` is a thin dispatcher; `recovery_banner.py` owns dead-window banner UX; `resume_picker.py` owns the resume picker + transcript scan. `recovery/__init__.py` re-exports the public surface                                                                                                                                                                                                                                      |
 | Commands subpackage                               | `handlers/commands/` mirrors the `shell/` pattern: `forward.py`, `menu_sync.py`, `failure_probe.py`, `status_snapshot.py`. `commands/__init__.py` hosts `commands_command` + `toolbar_command`                                                                                                                                                                                                                                                        |
 | Lazy-import contract                              | In-function `Import`/`ImportFrom` must carry `# Lazy: <reason>` (or live inside `if TYPE_CHECKING:` / `_reset_*_for_testing`). `scripts/lint_lazy_imports.py` runs in `make lint`; cycle regressions caught by `tests/integration/test_import_no_cycles.py`                                                                                                                                                                                           |
+
+<!-- markdownlint-enable MD060 -->
