@@ -49,6 +49,7 @@ def _content_task(
     content_type: ContentType = "text",
     thread_id: int | None = 42,
     tool_use_id: str | None = None,
+    chat_id: int | None = -1001,
 ) -> ContentTask:
     return ContentTask(
         window_id=window_id,
@@ -56,6 +57,7 @@ def _content_task(
         content_type=content_type,
         thread_id=thread_id,
         tool_use_id=tool_use_id,
+        chat_id=chat_id,
     )
 
 
@@ -140,6 +142,36 @@ class TestCanMergeTasks:
         b = _content_task("world", window_id="@1")
         assert not _can_merge_tasks(a, b)
 
+    @pytest.mark.parametrize("content_type", ["thinking", "tool_use", "tool_result"])
+    def test_non_plain_text_blocks_merge(self, content_type: ContentType):
+        candidate = _content_task("world", content_type=content_type)
+        assert not _can_merge_tasks(_content_task("hello"), candidate)
+
+    def test_chat_and_thread_boundaries_block_merge(self):
+        base = ContentTask(
+            window_id="@0", parts=("hello",), thread_id=42, chat_id=-1001
+        )
+        assert not _can_merge_tasks(
+            base,
+            ContentTask(window_id="@0", parts=("world",), thread_id=43, chat_id=-1001),
+        )
+        assert not _can_merge_tasks(
+            base,
+            ContentTask(window_id="@0", parts=("world",), thread_id=42, chat_id=-1002),
+        )
+        assert not _can_merge_tasks(
+            ContentTask(window_id="@0", parts=("hello",), thread_id=42),
+            ContentTask(window_id="@0", parts=("world",), thread_id=42),
+        )
+
+    def test_tool_metadata_and_paginated_parts_block_merge(self):
+        base = _content_task("hello")
+        assert not _can_merge_tasks(base, _content_task("world", tool_use_id="tool-1"))
+        assert not _can_merge_tasks(
+            base,
+            ContentTask(window_id="@0", parts=("page one", "page two"), thread_id=42),
+        )
+
     def test_non_content_candidate_blocks_merge(self):
         assert not _can_merge_tasks(_content_task("hello"), _status_task())
 
@@ -179,7 +211,7 @@ class TestMergeContentTasks:
         assert queue.qsize() == 1
 
     async def test_merges_up_to_the_exact_length_limit(self, queue, lock):
-        half = "x" * (MERGE_MAX_LENGTH // 2)
+        half = "x" * ((MERGE_MAX_LENGTH - 2) // 2)
         queue.put_nowait(_content_task(half))
         queue.put_nowait(_content_task("overflow"))
         first = _content_task(half)
@@ -187,7 +219,18 @@ class TestMergeContentTasks:
         merged, count = await _merge_content_tasks(queue, first, lock)
 
         assert count == 1
-        assert sum(len(p) for p in merged.parts) <= MERGE_MAX_LENGTH
+        assert sum(len(p) for p in merged.parts) + 2 <= MERGE_MAX_LENGTH
+        assert merged.is_text_batch is True
+        assert queue.qsize() == 1
+
+    async def test_separator_counts_toward_length_limit(self, queue, lock):
+        first = _content_task("x" * (MERGE_MAX_LENGTH - 1))
+        queue.put_nowait(_content_task("x"))
+
+        merged, count = await _merge_content_tasks(queue, first, lock)
+
+        assert merged is first
+        assert count == 0
         assert queue.qsize() == 1
 
     async def test_no_merge_returns_zero(self, queue, lock):
@@ -197,6 +240,40 @@ class TestMergeContentTasks:
 
         assert count == 0
         assert merged is first
+
+
+class TestActualTextBatching:
+    async def test_consecutive_text_tasks_use_one_formatted_api_call(
+        self, bot, queue, lock
+    ):
+        first = ContentTask(
+            window_id="@0", parts=("**first**",), thread_id=42, chat_id=-1001
+        )
+        queue.put_nowait(
+            ContentTask(
+                window_id="@0", parts=("_second_",), thread_id=42, chat_id=-1001
+            )
+        )
+
+        result = await _handle_content_task(bot, 1, first, queue, lock)
+
+        assert result == 1
+        assert bot.call_count("send_message") == 1
+        call = bot.last_call("send_message")
+        assert call is not None
+        assert call.kwargs["text"] == "first\n\nsecond"
+        assert {entity.type for entity in call.kwargs["entities"]} == {"bold", "italic"}
+        assert [entity.offset for entity in call.kwargs["entities"]] == [0, 7]
+
+    async def test_tts_media_tasks_do_not_merge(self, monkeypatch):
+        first = _content_task("first")
+        candidate = _content_task("second")
+        monkeypatch.setattr(
+            "ccgram.handlers.messaging_pipeline.message_queue.config.tts_provider",
+            "edge",
+        )
+
+        assert not _can_merge_tasks(first, candidate)
 
 
 class TestCoalesceStatusUpdates:
@@ -685,6 +762,97 @@ class TestMessageQueueWorker:
             ):
                 await asyncio.wait_for(mq._message_queues[user_id].join(), timeout=1)
 
+            assert all(receipt.failed for receipt in receipts)
+            assert all(not receipt.commit_ready for receipt in receipts)
+        finally:
+            worker.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await worker
+            mq._message_queues.pop(user_id, None)
+            mq._queue_locks.pop(user_id, None)
+
+    async def test_batched_retry_after_retries_one_combined_payload_and_receipts(
+        self, bot
+    ):
+        from ccgram.handlers.messaging_pipeline import message_queue as mq
+
+        user_id = 88004
+        mq._message_queues[user_id] = asyncio.Queue()
+        mq._queue_locks[user_id] = asyncio.Lock()
+        receipts = [mq.DeliveryReceipt(), mq.DeliveryReceipt()]
+        for receipt in receipts:
+            receipt.track()
+            receipt.close()
+        mq._message_queues[user_id].put_nowait(
+            ContentTask(
+                window_id="@0",
+                parts=("first",),
+                thread_id=42,
+                chat_id=-1001,
+                delivery_receipts=(receipts[0],),
+            )
+        )
+        mq._message_queues[user_id].put_nowait(
+            ContentTask(
+                window_id="@0",
+                parts=("second",),
+                thread_id=42,
+                chat_id=-1001,
+                delivery_receipts=(receipts[1],),
+            )
+        )
+        bot.set_side_effect("send_message", [RetryAfter(timedelta(seconds=0)), True])
+        worker = asyncio.create_task(mq._message_queue_worker(bot, user_id))
+        try:
+            with (
+                patch.object(mq.asyncio, "sleep", new_callable=AsyncMock),
+                patch("random.uniform", return_value=0),
+            ):
+                await asyncio.wait_for(mq._message_queues[user_id].join(), timeout=1)
+
+            assert bot.call_count("send_message") == 2
+            assert [call.kwargs["text"] for call in bot.calls] == [
+                "first\n\nsecond",
+                "first\n\nsecond",
+            ]
+            assert all(receipt.commit_ready for receipt in receipts)
+        finally:
+            worker.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await worker
+            mq._message_queues.pop(user_id, None)
+            mq._queue_locks.pop(user_id, None)
+
+    async def test_batched_terminal_failure_fails_every_receipt(self, bot):
+        from ccgram.handlers.messaging_pipeline import message_queue as mq
+
+        user_id = 88005
+        mq._message_queues[user_id] = asyncio.Queue()
+        mq._queue_locks[user_id] = asyncio.Lock()
+        receipts = [mq.DeliveryReceipt(), mq.DeliveryReceipt()]
+        for receipt in receipts:
+            receipt.track()
+            receipt.close()
+        for text, receipt in zip(("first", "second"), receipts, strict=True):
+            mq._message_queues[user_id].put_nowait(
+                ContentTask(
+                    window_id="@0",
+                    parts=(text,),
+                    thread_id=42,
+                    chat_id=-1001,
+                    delivery_receipts=(receipt,),
+                )
+            )
+        # Entity and plain fallback both fail, so the batch reports a terminal
+        # delivery failure rather than advancing either transcript receipt.
+        bot.set_side_effect(
+            "send_message", [TelegramError("entity"), TelegramError("plain")]
+        )
+        worker = asyncio.create_task(mq._message_queue_worker(bot, user_id))
+        try:
+            await asyncio.wait_for(mq._message_queues[user_id].join(), timeout=1)
+
+            assert bot.call_count("send_message") == 2
             assert all(receipt.failed for receipt in receipts)
             assert all(not receipt.commit_ready for receipt in receipts)
         finally:

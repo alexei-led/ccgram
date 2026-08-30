@@ -14,9 +14,12 @@ from io import BytesIO
 from typing import assert_never
 
 import structlog
+from telegram import MessageEntity
 from telegram.error import RetryAfter, TelegramError
+from telegramify_markdown import utf16_len
 
 from ...config import config
+from ...entity_formatting import convert_to_entities
 from ...delivery_contract import (
     DeliveryOutcome,
     DeliveryReceipt,
@@ -42,6 +45,7 @@ from ..status.status_bubble import (
 from .message_sender import (
     edit_with_fallback,
     rate_limit_send,
+    rate_limit_send_formatted_message,
     rate_limit_send_message,
     send_kwargs,
 )
@@ -79,6 +83,7 @@ __all__ = [
 ]
 
 MERGE_MAX_LENGTH = 3800  # Leave room within Telegram's 4096 char message limit
+_TEXT_BATCH_SEPARATOR = "\n\n"
 _QUEUE_RETRY_BACKOFF_BASE_SECONDS = 2.0
 _QUEUE_RETRY_BACKOFF_MAX_SECONDS = 60.0
 _QUEUE_RETRY_JITTER_MAX_SECONDS = 1.0
@@ -236,18 +241,43 @@ def _drain_queue(queue: asyncio.Queue[MessageTask]) -> list[MessageTask]:
 
 
 def _can_merge_tasks(base: ContentTask, candidate: MessageTask) -> bool:
-    """Check if two content tasks can be merged."""
+    """Return whether two tasks can safely share one Telegram text message.
+
+    Batching is deliberately narrower than generic content merging.  Only
+    one-part, non-empty ``text`` tasks qualify, so tool edits, status updates,
+    paginated messages, and TTS voice attachments retain their message
+    boundaries.
+    """
     if not isinstance(candidate, ContentTask):
         return False
-    if base.window_id != candidate.window_id:
+    if (
+        base.window_id != candidate.window_id
+        or base.thread_id != candidate.thread_id
+        or base.chat_id != candidate.chat_id
+        or base.role != candidate.role
+        # A missing chat ID follows the legacy status-conversion path, which
+        # may edit an existing bubble instead of sending a message.
+        or base.chat_id is None
+    ):
         return False
-    # Never merge across topics or chats: identical thread IDs can exist in
-    # different chats, and merged text is delivered to a single destination.
-    if base.thread_id != candidate.thread_id or base.chat_id != candidate.chat_id:
+    if (
+        base.content_type != "text"
+        or candidate.content_type != "text"
+        or base.tool_use_id is not None
+        or candidate.tool_use_id is not None
+        or base.tool_name is not None
+        or candidate.tool_name is not None
+        or base.is_text_batch
+        or candidate.is_text_batch
+        or len(base.parts) != 1
+        or len(candidate.parts) != 1
+        or not base.parts[0].strip()
+        or not candidate.parts[0].strip()
+    ):
         return False
-    if base.content_type in ("tool_use", "tool_result"):
-        return False
-    return candidate.content_type not in ("tool_use", "tool_result")
+    # A text task can produce a voice message when TTS is configured.  Keep
+    # those media deliveries one-for-one with their source task.
+    return not _should_send_tts(base)
 
 
 async def _merge_content_tasks(
@@ -281,13 +311,16 @@ async def _merge_content_tasks(
 
             assert isinstance(task, ContentTask)
             task_length = sum(len(p) for p in task.parts)
-            if current_length + task_length > MERGE_MAX_LENGTH:
+            if (
+                current_length + len(_TEXT_BATCH_SEPARATOR) + task_length
+                > MERGE_MAX_LENGTH
+            ):
                 remaining = items[i:]
                 break
 
             merged_parts.extend(task.parts)
             merged_receipts.extend(task.delivery_receipts)
-            current_length += task_length
+            current_length += len(_TEXT_BATCH_SEPARATOR) + task_length
             merge_count += 1
 
         for item in remaining:
@@ -307,6 +340,7 @@ async def _merge_content_tasks(
             thread_id=first.thread_id,
             chat_id=first.chat_id,
             delivery_receipts=tuple(merged_receipts),
+            is_text_batch=True,
         ),
         merge_count,
     )
@@ -551,6 +585,78 @@ async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
             )
 
 
+def _render_text_batch(parts: tuple[str, ...]) -> tuple[str, list[MessageEntity]]:
+    """Render text tasks independently, then combine their Telegram payloads.
+
+    Rendering raw markdown only after concatenation lets syntax opened in one
+    task affect another task.  Converting each source task first preserves the
+    exact entities it would have received alone, while shifted UTF-16 offsets
+    make the combined API call valid.
+    """
+    plain_parts: list[str] = []
+    entities: list[MessageEntity] = []
+    offset = 0
+    for raw_part in parts:
+        plain, part_entities = convert_to_entities(raw_part)
+        if plain_parts:
+            plain_parts.append(_TEXT_BATCH_SEPARATOR)
+            offset += utf16_len(_TEXT_BATCH_SEPARATOR)
+        plain_parts.append(plain)
+        for entity in part_entities:
+            entities.append(
+                MessageEntity(
+                    type=entity.type,
+                    offset=entity.offset + offset,
+                    length=entity.length,
+                    url=entity.url,
+                    language=entity.language,
+                    custom_emoji_id=entity.custom_emoji_id,
+                )
+            )
+        offset += utf16_len(plain)
+    return "".join(plain_parts), entities
+
+
+async def _process_text_batch(
+    client: TelegramClient, chat_id: int, task: ContentTask
+) -> DeliveryOutcome:
+    """Deliver a rendered text batch as one Telegram message."""
+    plain_text, entities = _render_text_batch(task.parts)
+    sent = await rate_limit_send_formatted_message(
+        client,
+        chat_id,
+        plain_text,
+        entities,
+        **send_kwargs(task.thread_id),
+    )
+    return DeliveryOutcome.DELIVERED if sent else DeliveryOutcome.FAILED
+
+
+async def _try_edit_tool_result(
+    client: TelegramClient,
+    user_id: int,
+    chat_id: int,
+    tkey: int,
+    task: ContentTask,
+) -> bool:
+    """Edit a prior tool-use message when this task supplies its result."""
+    if task.content_type != "tool_result" or not task.tool_use_id:
+        return False
+    edit_msg_id = _tool_msg_ids.pop((task.tool_use_id, user_id, tkey), None)
+    if edit_msg_id is None:
+        return False
+    await clear_status_message(client, user_id, tkey)
+    success = await edit_with_fallback(
+        client,
+        chat_id,
+        edit_msg_id,
+        "\n\n".join(task.parts),
+    )
+    if not success:
+        logger.debug("Failed to edit tool msg %s, sending new", edit_msg_id)
+    return success
+
+
 async def _process_content_task(
     client: TelegramClient, user_id: int, task: ContentTask
 ) -> DeliveryOutcome:
@@ -558,21 +664,11 @@ async def _process_content_task(
     tkey = thread_key(task.thread_id)
     chat_id = task.chat_id or thread_router.resolve_chat_id(user_id, task.thread_id)
 
-    if task.content_type == "tool_result" and task.tool_use_id:
-        _tkey = (task.tool_use_id, user_id, tkey)
-        edit_msg_id = _tool_msg_ids.pop(_tkey, None)
-        if edit_msg_id is not None:
-            await clear_status_message(client, user_id, tkey)
-            full_text = "\n\n".join(task.parts)
-            success = await edit_with_fallback(
-                client,
-                chat_id,
-                edit_msg_id,
-                full_text,
-            )
-            if success:
-                return DeliveryOutcome.DELIVERED
-            logger.debug("Failed to edit tool msg %s, sending new", edit_msg_id)
+    if task.is_text_batch:
+        return await _process_text_batch(client, chat_id, task)
+
+    if await _try_edit_tool_result(client, user_id, chat_id, tkey, task):
+        return DeliveryOutcome.DELIVERED
 
     first_part = True
     last_msg_id: int | None = None

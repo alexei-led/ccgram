@@ -51,6 +51,7 @@ __all__ = [
     "edit_with_fallback",
     "is_thread_gone",
     "rate_limit_send",
+    "rate_limit_send_formatted_message",
     "rate_limit_send_message",
     "react",
     "retry_after_seconds",
@@ -183,14 +184,49 @@ async def _send_with_fallback(
 
     Returns the sent Message on success, None on failure.
     """
+    plain_text, entities = convert_to_entities(text)
+    return await _send_formatted_with_fallback(
+        client, chat_id, plain_text, entities, **kwargs
+    )
+
+
+async def _send_formatted_with_fallback(
+    client: TelegramClient,
+    chat_id: int,
+    plain_text: str,
+    entities: list[Any],
+    **kwargs: Any,
+) -> Message | None:
+    """Send already-rendered text and entities with the normal plain fallback."""
     kwargs.setdefault("link_preview_options", NO_LINK_PREVIEW)
+    if not plain_text.strip():
+        return None
+
+    plain_text, entities = _cap_to_telegram_limit(plain_text, entities)
 
     async def _send(text: str, **kw: Any) -> Message:
         return await client.send_message(chat_id=chat_id, text=text, **kw)
 
-    return await _with_entity_fallback(
-        _send, text, f"send message to {chat_id}", **kwargs
-    )
+    # Keep the two-phase contract used for single-message sends, but do not
+    # reparse a batch: each constituent was rendered independently to prevent
+    # markdown opened in one task from changing a later task's formatting.
+    last_error: TelegramError | None = None
+    for phase_entities in (entities, None):
+        send_kwargs = {**kwargs}
+        if phase_entities is not None:
+            send_kwargs["entities"] = phase_entities
+        try:
+            return await _send(plain_text, **send_kwargs)
+        except RetryAfter:
+            raise
+        except TelegramError as exc:
+            if is_thread_gone(exc):
+                return None
+            last_error = exc
+
+    if last_error is not None:
+        logger.warning("Failed to send message to %s: %s", chat_id, last_error)
+    return None
 
 
 async def rate_limit_send_message(
@@ -206,6 +242,20 @@ async def rate_limit_send_message(
     """
     await rate_limit_send(chat_id)
     return await _send_with_fallback(client, chat_id, text, **kwargs)
+
+
+async def rate_limit_send_formatted_message(
+    client: TelegramClient,
+    chat_id: int,
+    plain_text: str,
+    entities: list[Any],
+    **kwargs: Any,
+) -> Message | None:
+    """Rate-limit and send independently rendered text without reparsing it."""
+    await rate_limit_send(chat_id)
+    return await _send_formatted_with_fallback(
+        client, chat_id, plain_text, entities, **kwargs
+    )
 
 
 async def safe_reply(message: Message, text: str, **kwargs: Any) -> Message | None:
