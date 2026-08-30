@@ -5,8 +5,20 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from ccgram.idle_tracker import IdleTracker
-from ccgram.monitor_state import MonitorState, TrackedSession
+from ccgram.monitor_state import BacklogSkipIntent, MonitorState, TrackedSession
 from ccgram.transcript_reader import TranscriptReader, _StableRead
+
+
+def test_clear_session_cancels_pending_skip_barrier(tmp_path) -> None:
+    state = MonitorState(state_file=tmp_path / "monitor.json")
+    state.update_session(TrackedSession("sess", str(tmp_path / "session.jsonl")))
+    state.begin_skip(BacklogSkipIntent("sess", "@1", 1, 4, 99, 10, 0))
+    reader = TranscriptReader(state, IdleTracker())
+
+    reader.clear_session("sess")
+
+    assert "sess" not in state.pending_skips
+    assert state.get_session("sess") is None
 
 
 async def test_same_transcript_reuses_offset_after_session_map_refresh(
@@ -30,6 +42,9 @@ async def test_same_transcript_reuses_offset_after_session_map_refresh(
             last_byte_offset=len(first.encode()),
         )
     )
+    state.begin_skip(
+        BacklogSkipIntent("sess-before-rename", "@1", 1, 4, 99, 50, 0)
+    )
     reader = TranscriptReader(state, IdleTracker())
 
     messages = []
@@ -44,6 +59,7 @@ async def test_same_transcript_reuses_offset_after_session_map_refresh(
     tracked = state.get_session("sess-after-rename")
     assert tracked is not None
     assert tracked.parsed_offset == session_file.stat().st_size
+    assert "sess-before-rename" not in state.pending_skips
 
 
 async def test_catch_up_read_after_restart_is_not_activity(tmp_path) -> None:

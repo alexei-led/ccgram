@@ -203,7 +203,9 @@ class MonitorState:
         """Record the exact queued items retired for a pending skip."""
         intent = self.pending_skips.get(session_id)
         if intent is not None:
-            intent.skipped_count = skipped_count
+            # Purge can be retried after state persistence fails. Retried
+            # purges may return zero after the queue was already drained.
+            intent.skipped_count += skipped_count
             intent.purge_complete = True
             self._dirty = True
 

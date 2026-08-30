@@ -252,7 +252,19 @@ async def start_session_monitor(application: Application) -> SessionMonitor:
     async def send_skip_notice(intent) -> None:
         await enqueue_backlog_skip_notice(client, intent)
 
-    monitor.set_skip_callbacks(purge=purge_backlog, notice=send_skip_notice)
+    def validate_skip(intent) -> bool:
+        return (
+            thread_router.resolve_window_for_thread(
+                intent.user_id, intent.thread_id, intent.chat_id
+            )
+            == intent.window_id
+        )
+
+    monitor.set_skip_callbacks(
+        purge=purge_backlog,
+        notice=send_skip_notice,
+        validate=validate_skip,
+    )
 
     async def new_window_callback(event: NewWindowEvent) -> None:
         await _handle_new_window(event, client)

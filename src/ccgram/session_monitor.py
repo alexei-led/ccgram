@@ -118,6 +118,7 @@ class SessionMonitor:
         self._skip_purge_callback: (
             Callable[[BacklogSkipIntent], Awaitable[int | None]] | None
         ) = None
+        self._skip_validate_callback: Callable[[BacklogSkipIntent], bool] | None = None
         self._skip_notice_callback: (
             Callable[[BacklogSkipIntent], Awaitable[None]] | None
         ) = None
@@ -168,16 +169,22 @@ class SessionMonitor:
         *,
         purge: Callable[[BacklogSkipIntent], Awaitable[int | None]],
         notice: Callable[[BacklogSkipIntent], Awaitable[None]],
+        validate: Callable[[BacklogSkipIntent], bool],
     ) -> None:
         """Install the queue adapters used by confirmed backlog skips."""
         self._skip_purge_callback = purge
+        self._skip_validate_callback = validate
         self._skip_notice_callback = notice
 
     async def request_backlog_skip(
         self, user_id: int, window_id: str, thread_id: int | None, chat_id: int
     ) -> BacklogSkipIntent | None:
         """Freeze one source at EOF, persist its barrier, then retire its queue work."""
-        if self._skip_purge_callback is None or self._skip_notice_callback is None:
+        if (
+            self._skip_purge_callback is None
+            or self._skip_notice_callback is None
+            or self._skip_validate_callback is None
+        ):
             raise RuntimeError("backlog skip callbacks are not wired")
         session_id = session_lifecycle.resolve_session_id(window_id)
         if not session_id:
@@ -206,17 +213,28 @@ class SessionMonitor:
             snapshot_offset=snapshot_offset,
             range_start=session.last_byte_offset,
         )
+        if not self._skip_is_current(intent):
+            return None
         # The durable barrier is written before destructive queue retirement.
         self.state.begin_skip(intent)
         if not self.state.save_if_dirty():
             self.state.cancel_skip(session_id)
             return None
         prepared = await self._prepare_pending_skip(intent)
-        if prepared is None:
+        if prepared is not True:
             return None
-        if prepared:
-            await self._enqueue_pending_skip_notice(intent)
+        await self._enqueue_pending_skip_notice(intent)
         return intent
+
+    def _skip_is_current(self, intent: BacklogSkipIntent) -> bool:
+        callback = self._skip_validate_callback
+        if callback is None:
+            return False
+        try:
+            return callback(intent)
+        except Exception:
+            logger.exception("Failed to validate backlog skip for %s", intent.session_id)
+            return False
 
     def _skip_retry_due(self, session_id: str) -> bool:
         return time.monotonic() >= self._skip_retry_at.get(session_id, 0.0)
@@ -242,6 +260,12 @@ class SessionMonitor:
 
     async def _prepare_pending_skip(self, intent: BacklogSkipIntent) -> bool | None:
         """Retire frozen source work before a skip notice may be sent."""
+        if not self._skip_is_current(intent):
+            logger.warning("Cancelling stale backlog skip for %s", intent.session_id)
+            self.state.cancel_skip(intent.session_id)
+            self.state.save_if_dirty()
+            self._clear_skip_retry(intent.session_id)
+            return None
         if intent.purge_complete:
             return True
         callback = self._skip_purge_callback
@@ -320,6 +344,12 @@ class SessionMonitor:
             if not receipt.commit_ready:
                 continue
             if self.state.complete_skip(session_id):
+                self.state.save_if_dirty()
+                self._delivery_receipts.pop(session_id, None)
+            else:
+                # The tracked session was removed or re-keyed. Do not retain a
+                # barrier that can no longer be committed or replay safely.
+                self.state.cancel_skip(session_id)
                 self.state.save_if_dirty()
                 self._delivery_receipts.pop(session_id, None)
             self._skip_notice_receipts.pop(session_id, None)

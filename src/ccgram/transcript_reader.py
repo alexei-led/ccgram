@@ -421,6 +421,9 @@ class TranscriptReader:
 
     def clear_session(self, session_id: str) -> None:
         """Remove all per-session state for a cleaned-up session."""
+        # A skip barrier belongs to the tracked session lifetime. Once that
+        # session disappears, cancel it so it cannot block a future replay.
+        self._state.cancel_skip(session_id)
         self._state.remove_session(session_id)
         self._file_mtimes.pop(session_id, None)
         self._pending_tools.pop(session_id, None)
@@ -456,6 +459,9 @@ class TranscriptReader:
                 file_path=str(file_path),
                 last_byte_offset=old_session.last_byte_offset,
             )
+            # Session IDs can be refreshed for the same transcript. A pending
+            # skip is tied to the old identity and must not follow it silently.
+            self._state.cancel_skip(old_session_id)
             self._state.remove_session(old_session_id)
             self._state.update_session(tracked)
             if old_session_id in self._file_mtimes:

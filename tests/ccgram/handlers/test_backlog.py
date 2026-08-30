@@ -23,7 +23,7 @@ from ccgram.handlers.status.status_bubble import (
     build_status_keyboard,
     format_backlog_status,
 )
-from ccgram.monitor_state import TrackedSession
+from ccgram.monitor_state import BacklogSkipIntent, TrackedSession
 from ccgram.session_monitor import SessionMonitor
 
 
@@ -194,7 +194,9 @@ async def test_failed_notice_retries_in_process_before_watermark_advances(
         assert receipt is not None
         receipt.track()
 
-    monitor.set_skip_callbacks(purge=purge, notice=notice)
+    monitor.set_skip_callbacks(
+        purge=purge, notice=notice, validate=lambda _intent: True
+    )
     intent = await monitor.request_backlog_skip(1, "@0", 4, 99)
     assert intent is not None
     assert intent.snapshot_offset == 50
@@ -251,7 +253,9 @@ async def test_notice_enqueue_failure_retries_in_process(tmp_path: Path) -> None
         assert receipt is not None
         receipt.track()
 
-    monitor.set_skip_callbacks(purge=purge, notice=notice)
+    monitor.set_skip_callbacks(
+        purge=purge, notice=notice, validate=lambda _intent: True
+    )
     intent = await monitor.request_backlog_skip(1, "@0", 4, 99)
     assert intent is not None
     assert attempts == 1
@@ -281,10 +285,12 @@ async def test_failed_purge_resumes_after_restart_before_notice(tmp_path: Path) 
         raise RuntimeError("queue unavailable")
 
     notice = AsyncMock()
-    monitor.set_skip_callbacks(purge=failed_purge, notice=notice)
+    monitor.set_skip_callbacks(
+        purge=failed_purge, notice=notice, validate=lambda _intent: True
+    )
     intent = await monitor.request_backlog_skip(1, "@0", 4, 99)
-    assert intent is not None
-    assert intent.purge_complete is False
+    assert intent is None
+    assert monitor.state.pending_skips["s1"].purge_complete is False
     notice.assert_not_awaited()
     assert "s1" in monitor.state.pending_skips
 
@@ -298,13 +304,92 @@ async def test_failed_purge_resumes_after_restart_before_notice(tmp_path: Path) 
         assert receipt is not None
         receipt.track()
 
-    restarted.set_skip_callbacks(purge=purge, notice=resumed_notice)
+    restarted.set_skip_callbacks(
+        purge=purge, notice=resumed_notice, validate=lambda _intent: True
+    )
     await restarted._resume_pending_skip_notices()
     assert restarted.state.pending_skips["s1"].purge_complete is True
     assert restarted.state.pending_skips["s1"].skipped_count == 3
     restarted._skip_notice_receipts["s1"].settle(DeliveryOutcome.DELIVERED)
     restarted.commit_delivered_watermarks()
     assert restarted.state.get_session("s1").last_byte_offset == 50  # type: ignore[union-attr]
+    assert "s1" not in restarted.state.pending_skips
+
+
+async def test_purge_retry_preserves_retired_count_after_state_save_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    transcript = tmp_path / "session.jsonl"
+    transcript.write_bytes(b"x" * 50)
+    monitor = SessionMonitor(
+        projects_path=tmp_path, state_file=tmp_path / "monitor.json"
+    )
+    monitor.state.update_session(
+        TrackedSession("s1", str(transcript), last_byte_offset=10, parsed_offset=50)
+    )
+    monitor._last_session_map = {"@0": {"session_id": "s1"}}
+    purge_calls = 0
+
+    async def purge(_intent) -> int:
+        nonlocal purge_calls
+        purge_calls += 1
+        return 3 if purge_calls == 1 else 0
+
+    async def notice(_intent) -> None:
+        receipt = get_active_delivery_receipt()
+        assert receipt is not None
+        receipt.track()
+
+    real_save = monitor.state.save_if_dirty
+    save_calls = 0
+
+    def save_once_as_failed() -> bool:
+        nonlocal save_calls
+        save_calls += 1
+        if save_calls == 2:
+            return False
+        return real_save()
+
+    monkeypatch.setattr(monitor.state, "save_if_dirty", save_once_as_failed)
+    monitor.set_skip_callbacks(
+        purge=purge, notice=notice, validate=lambda _intent: True
+    )
+    assert await monitor.request_backlog_skip(1, "@0", 4, 99) is None
+    assert monitor.state.pending_skips["s1"].skipped_count == 3
+
+    monitor._skip_retry_at["s1"] = 0.0
+    await monitor._resume_pending_skip_notices()
+
+    assert monitor.state.pending_skips["s1"].skipped_count == 3
+    assert monitor.state.pending_skips["s1"].purge_complete is True
+
+
+async def test_purge_complete_skip_is_cancelled_after_topic_rebound(
+    tmp_path: Path,
+) -> None:
+    transcript = tmp_path / "session.jsonl"
+    transcript.write_bytes(b"x" * 50)
+    state_file = tmp_path / "monitor.json"
+    monitor = SessionMonitor(projects_path=tmp_path, state_file=state_file)
+    monitor.state.update_session(
+        TrackedSession("s1", str(transcript), last_byte_offset=10, parsed_offset=50)
+    )
+    monitor._last_session_map = {"@0": {"session_id": "s1"}}
+    intent = BacklogSkipIntent("s1", "@0", 1, 4, 99, 50, 10)
+    monitor.state.begin_skip(intent)
+    monitor.state.update_skip_count("s1", 3)
+    assert monitor.state.save_if_dirty()
+
+    restarted = SessionMonitor(projects_path=tmp_path, state_file=state_file)
+    notice = AsyncMock()
+    restarted.set_skip_callbacks(
+        purge=AsyncMock(return_value=0),
+        notice=notice,
+        validate=lambda _intent: False,
+    )
+    await restarted._resume_pending_skip_notices()
+
+    notice.assert_not_awaited()
     assert "s1" not in restarted.state.pending_skips
 
 
