@@ -796,6 +796,21 @@ async def _process_content_task(
     client: TelegramClient, user_id: int, task: ContentTask
 ) -> DeliveryOutcome:
     """Process a content message task and report whether it reached Telegram."""
+    if task.is_backlog_notice and (
+        task.chat_id is None
+        or thread_router.resolve_window_for_thread(
+            user_id, task.thread_id, task.chat_id
+        )
+        != task.window_id
+    ):
+        logger.warning(
+            "Dropping stale backlog skip notice",
+            user_id=user_id,
+            window_id=task.window_id,
+            thread_id=task.thread_id,
+        )
+        return DeliveryOutcome.FAILED
+
     tkey = thread_key(task.thread_id)
     chat_id = task.chat_id or thread_router.resolve_chat_id(user_id, task.thread_id)
 

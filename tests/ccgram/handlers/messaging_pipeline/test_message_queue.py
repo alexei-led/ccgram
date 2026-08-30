@@ -9,6 +9,7 @@ import pytest
 from telegram.error import RetryAfter, TelegramError
 from telegramify_markdown import utf16_len
 
+from ccgram.delivery_contract import DeliveryOutcome
 from ccgram.handlers.messaging_pipeline.message_queue import (
     MERGE_MAX_LENGTH,
     _can_merge_tasks,
@@ -467,6 +468,31 @@ class TestDispatch:
 
 
 class TestChatScopedContentDelivery:
+    async def test_stale_backlog_notice_is_not_sent(self) -> None:
+        client = FakeTelegramClient()
+        task = ContentTask(
+            window_id="@0",
+            parts=("skipped",),
+            thread_id=42,
+            chat_id=-1002,
+            is_backlog_notice=True,
+        )
+
+        with (
+            patch(
+                "ccgram.handlers.messaging_pipeline.message_queue.thread_router.resolve_window_for_thread",
+                return_value="@other",
+            ),
+            patch(
+                "ccgram.handlers.messaging_pipeline.message_queue.rate_limit_send_message",
+                new_callable=AsyncMock,
+            ) as mock_send,
+        ):
+            outcome = await _process_content_task(client, 100, task)
+
+        assert outcome is DeliveryOutcome.FAILED
+        mock_send.assert_not_awaited()
+
     async def test_content_task_uses_explicit_chat_id(self) -> None:
         client = FakeTelegramClient()
         task = ContentTask(

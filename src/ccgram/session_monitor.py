@@ -109,7 +109,11 @@ class SessionMonitor:
         self._hook_event_callback: Callable[[HookEvent], Awaitable[None]] | None = None
 
         self._idle_tracker = IdleTracker()
-        self._transcript_reader = TranscriptReader(self.state, self._idle_tracker)
+        self._transcript_reader = TranscriptReader(
+            self.state,
+            self._idle_tracker,
+            on_session_retired=self._discard_session_delivery_state,
+        )
         # Receipts are grouped by transcript session so one failed send only
         # freezes its own watermark.
         self._delivery_receipts: dict[str, list[DeliveryReceipt]] = {}
@@ -150,6 +154,12 @@ class SessionMonitor:
     def get_last_activity(self, session_id: str) -> float | None:
         """Get monotonic timestamp of last transcript activity for a session."""
         return self._idle_tracker.get_last_activity(session_id)
+
+    def _discard_session_delivery_state(self, session_id: str) -> None:
+        """Drop receipts tied to a session identity that no longer exists."""
+        self._delivery_receipts.pop(session_id, None)
+        self._skip_notice_receipts.pop(session_id, None)
+        self._clear_skip_retry(session_id)
 
     def set_message_callback(
         self, callback: Callable[[NewMessage], Awaitable[None]]
@@ -295,6 +305,11 @@ class SessionMonitor:
 
     async def _enqueue_pending_skip_notice(self, intent: BacklogSkipIntent) -> None:
         """Create one receipt-tracked visible notice for a persisted barrier."""
+        if not self._skip_is_current(intent):
+            self.state.cancel_skip(intent.session_id)
+            self.state.save_if_dirty()
+            self._clear_skip_retry(intent.session_id)
+            return
         if intent.session_id in self._skip_notice_receipts or not self._skip_retry_due(
             intent.session_id
         ):
@@ -342,6 +357,16 @@ class SessionMonitor:
                 self._schedule_skip_retry(session_id)
                 continue
             if not receipt.commit_ready:
+                continue
+            intent = self.state.pending_skips.get(session_id)
+            if intent is None or not self._skip_is_current(intent):
+                # A topic may rebind after the notice was queued or delivered.
+                # Never advance the old source watermark across that boundary.
+                self.state.cancel_skip(session_id)
+                self.state.save_if_dirty()
+                self._delivery_receipts.pop(session_id, None)
+                self._skip_notice_receipts.pop(session_id, None)
+                self._clear_skip_retry(session_id)
                 continue
             if self.state.complete_skip(session_id):
                 self.state.save_if_dirty()

@@ -316,6 +316,43 @@ async def test_failed_purge_resumes_after_restart_before_notice(tmp_path: Path) 
     assert "s1" not in restarted.state.pending_skips
 
 
+async def test_rebound_after_notice_delivery_does_not_commit_skip(
+    tmp_path: Path,
+) -> None:
+    transcript = tmp_path / "session.jsonl"
+    transcript.write_bytes(b"x" * 50)
+    monitor = SessionMonitor(
+        projects_path=tmp_path, state_file=tmp_path / "monitor.json"
+    )
+    monitor.state.update_session(
+        TrackedSession("s1", str(transcript), last_byte_offset=10, parsed_offset=50)
+    )
+    monitor._last_session_map = {"@0": {"session_id": "s1"}}
+    binding_current = True
+
+    async def purge(_intent) -> int:
+        return 3
+
+    def validate(_intent) -> bool:
+        return binding_current
+
+    async def notice(_intent) -> None:
+        nonlocal binding_current
+        receipt = get_active_delivery_receipt()
+        assert receipt is not None
+        receipt.track()
+        binding_current = False
+
+    monitor.set_skip_callbacks(purge=purge, notice=notice, validate=validate)
+    intent = await monitor.request_backlog_skip(1, "@0", 4, 99)
+    assert intent is not None
+    monitor._skip_notice_receipts["s1"].settle(DeliveryOutcome.DELIVERED)
+    monitor.commit_delivered_watermarks()
+
+    assert monitor.state.get_session("s1").last_byte_offset == 10  # type: ignore[union-attr]
+    assert "s1" not in monitor.state.pending_skips
+
+
 async def test_purge_retry_preserves_retired_count_after_state_save_failure(
     tmp_path: Path, monkeypatch
 ) -> None:
