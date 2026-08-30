@@ -257,6 +257,7 @@ modules:
       - ccgram.multiplexer.tmux
       - ccgram.multiplexer.herdr
       - ccgram.multiplexer.herdr_events # herdr-only unix-socket event-stream reader
+      - ccgram.multiplexer.agterm
       - ccgram.multiplexer.registry
     layer: adapter
     owner: alexei-led

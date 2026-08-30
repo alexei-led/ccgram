@@ -42,9 +42,19 @@ def _make_herdr() -> Multiplexer:
     return HerdrManager()
 
 
+def _make_agterm() -> Multiplexer:
+    # Lazy: same reason as herdr — keep the backend out of the registry's
+    # import-time deps; the constructor only reads the socket path out of the
+    # environment and never connects.
+    from ccgram.multiplexer.agterm import AgtermManager
+
+    return AgtermManager()
+
+
 _FACTORIES: dict[str, Callable[[], Multiplexer]] = {
     "tmux": _make_tmux,
     "herdr": _make_herdr,
+    "agterm": _make_agterm,
 }
 
 _instances: dict[str, Multiplexer] = {}
