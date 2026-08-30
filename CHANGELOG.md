@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.8.0] - 2026-08-30
+
+### Added
+
+- Add lossless queued text batching and source-scoped backlog telemetry for large transcript backlogs.
+- Add `/sync` cleanup for locally known retired Telegram topics.
+- Add a confirmed, retry-safe **Jump to live** action with visible skipped-range notices while retaining raw transcripts.
+
+### Fixed
+
+- Revalidate topic ownership at backlog purge, notice delivery, and watermark commit boundaries.
+- Preserve backlog skip barriers, receipts, and retired counts across retries, restarts, session re-keying, and topic rebounds.
+- Honor Telegram UTF-16 message limits without truncating batched text or entity offsets.
+
 ## [4.7.1] - 2026-08-30
 
 ### Fixed
