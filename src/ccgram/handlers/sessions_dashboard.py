@@ -175,7 +175,12 @@ async def handle_sessions_kill_confirm(
     for uid, tid, bound_wid in list(thread_router.iter_thread_bindings()):
         if bound_wid == window_id:
             await clear_topic_state(uid, tid, client, window_id=window_id)
-            thread_router.unbind_thread(uid, tid)
+            thread_router.unbind_thread(
+                uid,
+                tid,
+                retirement_reason="stale_owned_binding",
+                cleanup_eligible=True,
+            )
 
     logger.info(
         "sessions_kill_confirm: killed window %s (%s), user=%d",

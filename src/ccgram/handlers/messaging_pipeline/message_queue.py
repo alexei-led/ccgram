@@ -9,14 +9,18 @@ tool-use batching lives in ``tool_batch``.
 import asyncio
 import contextlib
 import random
+import time
 from dataclasses import dataclass
 from io import BytesIO
 from typing import assert_never
 
 import structlog
+from telegram import MessageEntity
 from telegram.error import RetryAfter, TelegramError
+from telegramify_markdown import utf16_len
 
 from ...config import config
+from ...entity_formatting import convert_to_entities
 from ...delivery_contract import (
     DeliveryOutcome,
     DeliveryReceipt,
@@ -39,9 +43,11 @@ from ..status.status_bubble import (
     process_status_clear,
     process_status_update,
 )
+from .backlog import BacklogSnapshot, register_snapshot_provider
 from .message_sender import (
     edit_with_fallback,
     rate_limit_send,
+    rate_limit_send_formatted_message,
     rate_limit_send_message,
     send_kwargs,
 )
@@ -79,6 +85,7 @@ __all__ = [
 ]
 
 MERGE_MAX_LENGTH = 3800  # Leave room within Telegram's 4096 char message limit
+_TEXT_BATCH_SEPARATOR = "\n\n"
 _QUEUE_RETRY_BACKOFF_BASE_SECONDS = 2.0
 _QUEUE_RETRY_BACKOFF_MAX_SECONDS = 60.0
 _QUEUE_RETRY_JITTER_MAX_SECONDS = 1.0
@@ -91,6 +98,103 @@ _queue_locks: dict[int, asyncio.Lock] = {}  # Protect drain/refill operations
 # In-flight sends: incremented around each task a worker is actively
 # processing. "Queue empty" alone does not mean delivered.
 _inflight_count = 0
+_inflight_tasks: dict[int, ContentTask] = {}
+
+# Per source/topic delivery lag, updated only when a content task reaches the
+# Telegram boundary.  It is deliberately in-memory telemetry, not state.
+_delivery_lags: dict[tuple[int, str, int], float] = {}
+
+
+def _get_backlog_snapshot(
+    user_id: int, window_id: str, thread_id: int | None
+) -> BacklogSnapshot:
+    """Return pending count, oldest age, and last delivery lag for one topic."""
+    tkey = thread_key(thread_id)
+    now = time.monotonic()
+    tasks: list[ContentTask] = []
+    queue = _message_queues.get(user_id)
+    if queue is not None:
+        tasks.extend(
+            task
+            for task in getattr(queue, "_queue", ())
+            if isinstance(task, ContentTask)
+            and task.window_id == window_id
+            and thread_key(task.thread_id) == tkey
+            and task.source_session_id is not None
+        )
+    inflight = _inflight_tasks.get(user_id)
+    if (
+        inflight is not None
+        and inflight.window_id == window_id
+        and thread_key(inflight.thread_id) == tkey
+        and inflight.source_session_id is not None
+    ):
+        tasks.append(inflight)
+    oldest = min((task.enqueued_monotonic for task in tasks), default=now)
+    return BacklogSnapshot(
+        pending_count=len(tasks),
+        oldest_age_seconds=max(0.0, now - oldest) if tasks else 0.0,
+        delivery_lag_seconds=_delivery_lags.get((user_id, window_id, tkey)),
+    )
+
+
+register_snapshot_provider(_get_backlog_snapshot)
+
+
+async def purge_source_tasks(
+    user_id: int,
+    window_id: str,
+    thread_id: int | None,
+    source_session_id: str,
+    snapshot_offset: int,
+    chat_id: int | None = None,
+) -> int | None:
+    """Retire queued (never in-flight) source tasks through a frozen offset.
+
+    Callers persist their skip barrier before this operation.  Each removed
+    receipt is intentionally dropped so it cannot block the later notice
+    receipt, while an in-flight send is left alone rather than cancelled.
+    """
+    queue = _message_queues.get(user_id)
+    lock = _queue_locks.get(user_id)
+    if queue is None or lock is None:
+        return 0
+    tkey = thread_key(thread_id)
+    removed: list[ContentTask] = []
+    async with lock:
+        if (
+            chat_id is not None
+            and thread_router.resolve_window_for_thread(user_id, thread_id, chat_id)
+            != window_id
+        ):
+            logger.warning(
+                "Skipping stale backlog purge for rebound topic",
+                user_id=user_id,
+                window_id=window_id,
+                thread_id=thread_id,
+            )
+            return None
+        retained: list[MessageTask] = []
+        for task in _drain_queue(queue):
+            if (
+                isinstance(task, ContentTask)
+                and task.window_id == window_id
+                and thread_key(task.thread_id) == tkey
+                and task.source_session_id == source_session_id
+                and task.source_checkpoint is not None
+                and task.source_checkpoint <= snapshot_offset
+            ):
+                removed.append(task)
+                queue.task_done()
+            else:
+                retained.append(task)
+        for task in retained:
+            queue.put_nowait(task)
+            queue.task_done()
+    for task in removed:
+        for receipt in task.delivery_receipts:
+            receipt.settle(DeliveryOutcome.INTENTIONALLY_DROPPED)
+    return len(removed)
 
 
 class DispatchResult(int):
@@ -236,18 +340,49 @@ def _drain_queue(queue: asyncio.Queue[MessageTask]) -> list[MessageTask]:
 
 
 def _can_merge_tasks(base: ContentTask, candidate: MessageTask) -> bool:
-    """Check if two content tasks can be merged."""
+    """Return whether two tasks can safely share one Telegram text message.
+
+    Batching is deliberately narrower than generic content merging.  Only
+    one-part, non-empty ``text`` tasks qualify, so tool edits, status updates,
+    paginated messages, and TTS voice attachments retain their message
+    boundaries.
+    """
     if not isinstance(candidate, ContentTask):
         return False
-    if base.window_id != candidate.window_id:
+    if (
+        base.window_id != candidate.window_id
+        or base.thread_id != candidate.thread_id
+        or base.chat_id != candidate.chat_id
+        or base.role != candidate.role
+        # A missing chat ID follows the legacy status-conversion path, which
+        # may edit an existing bubble instead of sending a message.
+        or base.chat_id is None
+    ):
         return False
-    # Never merge across topics or chats: identical thread IDs can exist in
-    # different chats, and merged text is delivered to a single destination.
-    if base.thread_id != candidate.thread_id or base.chat_id != candidate.chat_id:
+    # A skip notice retains its own delivery boundary. Transcript tasks may
+    # have different checkpoints, but only tasks from the same source can be
+    # acknowledged together.
+    if (
+        base.is_backlog_notice
+        or candidate.is_backlog_notice
+        or base.source_session_id != candidate.source_session_id
+        or base.content_type != "text"
+        or candidate.content_type != "text"
+        or base.tool_use_id is not None
+        or candidate.tool_use_id is not None
+        or base.tool_name is not None
+        or candidate.tool_name is not None
+        or base.is_text_batch
+        or candidate.is_text_batch
+        or len(base.parts) != 1
+        or len(candidate.parts) != 1
+        or not base.parts[0].strip()
+        or not candidate.parts[0].strip()
+    ):
         return False
-    if base.content_type in ("tool_use", "tool_result"):
-        return False
-    return candidate.content_type not in ("tool_use", "tool_result")
+    # A text task can produce a voice message when TTS is configured.  Keep
+    # those media deliveries one-for-one with their source task.
+    return not _should_send_tts(base)
 
 
 async def _merge_content_tasks(
@@ -267,7 +402,9 @@ async def _merge_content_tasks(
     """
     merged_parts = list(first.parts)
     merged_receipts = list(first.delivery_receipts)
-    current_length = sum(len(p) for p in merged_parts)
+    current_length = sum(utf16_len(part) for part in merged_parts)
+    oldest_enqueued_monotonic = first.enqueued_monotonic
+    latest_source_checkpoint = first.source_checkpoint
     merge_count = 0
 
     async with lock:
@@ -280,14 +417,25 @@ async def _merge_content_tasks(
                 break
 
             assert isinstance(task, ContentTask)
-            task_length = sum(len(p) for p in task.parts)
-            if current_length + task_length > MERGE_MAX_LENGTH:
+            task_length = sum(utf16_len(part) for part in task.parts)
+            if (
+                current_length + utf16_len(_TEXT_BATCH_SEPARATOR) + task_length
+                > MERGE_MAX_LENGTH
+            ):
                 remaining = items[i:]
                 break
 
             merged_parts.extend(task.parts)
             merged_receipts.extend(task.delivery_receipts)
-            current_length += task_length
+            current_length += utf16_len(_TEXT_BATCH_SEPARATOR) + task_length
+            oldest_enqueued_monotonic = min(
+                oldest_enqueued_monotonic, task.enqueued_monotonic
+            )
+            if task.source_checkpoint is not None:
+                latest_source_checkpoint = max(
+                    latest_source_checkpoint or task.source_checkpoint,
+                    task.source_checkpoint,
+                )
             merge_count += 1
 
         for item in remaining:
@@ -307,6 +455,10 @@ async def _merge_content_tasks(
             thread_id=first.thread_id,
             chat_id=first.chat_id,
             delivery_receipts=tuple(merged_receipts),
+            is_text_batch=True,
+            source_session_id=first.source_session_id,
+            source_checkpoint=latest_source_checkpoint,
+            enqueued_monotonic=oldest_enqueued_monotonic,
         ),
         merge_count,
     )
@@ -471,6 +623,21 @@ def _delivery_receipts_for_settlement(
     return list(unique.values())
 
 
+def _mark_task_inflight(user_id: int, task: MessageTask) -> None:
+    """Expose a content task to source-scoped backlog telemetry."""
+    if isinstance(task, ContentTask):
+        _inflight_tasks[user_id] = task
+
+
+def _record_content_delivery(user_id: int, task: MessageTask) -> None:
+    """Settle in-memory delivery-lag telemetry after a worker attempt."""
+    if isinstance(task, ContentTask):
+        _inflight_tasks.pop(user_id, None)
+        _delivery_lags[(user_id, task.window_id, thread_key(task.thread_id))] = max(
+            0.0, time.monotonic() - task.enqueued_monotonic
+        )
+
+
 async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
     global _inflight_count
     """Process message tasks for a user sequentially."""
@@ -482,6 +649,7 @@ async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
         try:
             task = await queue.get()
             _inflight_count += 1
+            _mark_task_inflight(user_id, task)
             outcome = DeliveryOutcome.DELIVERED
             merged_receipts: tuple[DeliveryReceipt, ...] = ()
             try:
@@ -539,6 +707,7 @@ async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
             finally:
                 for receipt in _delivery_receipts_for_settlement(task, merged_receipts):
                     receipt.settle(outcome)
+                _record_content_delivery(user_id, task)
                 _inflight_count -= 1
                 queue.task_done()
         except asyncio.CancelledError:
@@ -551,28 +720,105 @@ async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
             )
 
 
+def _render_text_batch(parts: tuple[str, ...]) -> tuple[str, list[MessageEntity]]:
+    """Render text tasks independently, then combine their Telegram payloads.
+
+    Rendering raw markdown only after concatenation lets syntax opened in one
+    task affect another task.  Converting each source task first preserves the
+    exact entities it would have received alone, while shifted UTF-16 offsets
+    make the combined API call valid.
+    """
+    plain_parts: list[str] = []
+    entities: list[MessageEntity] = []
+    offset = 0
+    for raw_part in parts:
+        plain, part_entities = convert_to_entities(raw_part)
+        if plain_parts:
+            plain_parts.append(_TEXT_BATCH_SEPARATOR)
+            offset += utf16_len(_TEXT_BATCH_SEPARATOR)
+        plain_parts.append(plain)
+        for entity in part_entities:
+            entities.append(
+                MessageEntity(
+                    type=entity.type,
+                    offset=entity.offset + offset,
+                    length=entity.length,
+                    url=entity.url,
+                    language=entity.language,
+                    custom_emoji_id=entity.custom_emoji_id,
+                )
+            )
+        offset += utf16_len(plain)
+    return "".join(plain_parts), entities
+
+
+async def _process_text_batch(
+    client: TelegramClient, chat_id: int, task: ContentTask
+) -> DeliveryOutcome:
+    """Deliver a rendered text batch as one Telegram message."""
+    plain_text, entities = _render_text_batch(task.parts)
+    sent = await rate_limit_send_formatted_message(
+        client,
+        chat_id,
+        plain_text,
+        entities,
+        **send_kwargs(task.thread_id),
+    )
+    return DeliveryOutcome.DELIVERED if sent else DeliveryOutcome.FAILED
+
+
+async def _try_edit_tool_result(
+    client: TelegramClient,
+    user_id: int,
+    chat_id: int,
+    tkey: int,
+    task: ContentTask,
+) -> bool:
+    """Edit a prior tool-use message when this task supplies its result."""
+    if task.content_type != "tool_result" or not task.tool_use_id:
+        return False
+    edit_msg_id = _tool_msg_ids.pop((task.tool_use_id, user_id, tkey), None)
+    if edit_msg_id is None:
+        return False
+    await clear_status_message(client, user_id, tkey)
+    success = await edit_with_fallback(
+        client,
+        chat_id,
+        edit_msg_id,
+        "\n\n".join(task.parts),
+    )
+    if not success:
+        logger.debug("Failed to edit tool msg %s, sending new", edit_msg_id)
+    return success
+
+
 async def _process_content_task(
     client: TelegramClient, user_id: int, task: ContentTask
 ) -> DeliveryOutcome:
     """Process a content message task and report whether it reached Telegram."""
+    if task.is_backlog_notice and (
+        task.chat_id is None
+        or thread_router.resolve_window_for_thread(
+            user_id, task.thread_id, task.chat_id
+        )
+        != task.window_id
+    ):
+        logger.warning(
+            "Dropping stale backlog skip notice",
+            user_id=user_id,
+            window_id=task.window_id,
+            thread_id=task.thread_id,
+        )
+        return DeliveryOutcome.FAILED
+
     tkey = thread_key(task.thread_id)
     chat_id = task.chat_id or thread_router.resolve_chat_id(user_id, task.thread_id)
 
-    if task.content_type == "tool_result" and task.tool_use_id:
-        _tkey = (task.tool_use_id, user_id, tkey)
-        edit_msg_id = _tool_msg_ids.pop(_tkey, None)
-        if edit_msg_id is not None:
-            await clear_status_message(client, user_id, tkey)
-            full_text = "\n\n".join(task.parts)
-            success = await edit_with_fallback(
-                client,
-                chat_id,
-                edit_msg_id,
-                full_text,
-            )
-            if success:
-                return DeliveryOutcome.DELIVERED
-            logger.debug("Failed to edit tool msg %s, sending new", edit_msg_id)
+    if task.is_text_batch:
+        return await _process_text_batch(client, chat_id, task)
+
+    if await _try_edit_tool_result(client, user_id, chat_id, tkey, task):
+        return DeliveryOutcome.DELIVERED
 
     first_part = True
     last_msg_id: int | None = None
@@ -630,10 +876,13 @@ async def enqueue_content_message(
     role: MessageRole = "assistant",
     thread_id: int | None = None,
     chat_id: int | None = None,
-) -> None:
-    """Enqueue a content message task."""
+    source_session_id: str | None = None,
+    source_checkpoint: int | None = None,
+    is_backlog_notice: bool = False,
+) -> bool:
+    """Enqueue a content message task and report whether it entered the queue."""
     if _is_ghost_window_task_at_enqueue(window_id):
-        return
+        return False
     queue = get_or_create_queue(client, user_id)
 
     receipt = get_active_delivery_receipt()
@@ -649,8 +898,16 @@ async def enqueue_content_message(
         thread_id=thread_id,
         chat_id=chat_id,
         delivery_receipts=(receipt,) if receipt is not None else (),
+        source_session_id=source_session_id,
+        source_checkpoint=(
+            source_checkpoint
+            if source_checkpoint is not None
+            else (receipt.checkpoint if receipt is not None else None)
+        ),
+        is_backlog_notice=is_backlog_notice,
     )
     queue.put_nowait(task)
+    return True
 
 
 async def enqueue_status_update(
@@ -718,5 +975,7 @@ async def shutdown_workers(drain_timeout: float = 10.0) -> None:
     _queue_workers.clear()
     _message_queues.clear()
     _queue_locks.clear()
+    _inflight_tasks.clear()
+    _delivery_lags.clear()
     clear_all_batches()
     logger.info("Message queue workers stopped")

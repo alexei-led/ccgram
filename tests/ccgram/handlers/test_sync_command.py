@@ -6,6 +6,7 @@ from telegram.error import BadRequest, TelegramError
 
 from ccgram.handlers.callback_data import CB_SYNC_DISMISS, CB_SYNC_FIX
 from ccgram.handlers.sync_command import (
+    _cleanup_retired_topics,
     _close_ghost_topics,
     _format_report,
     _probe_dead_topics,
@@ -17,6 +18,7 @@ from ccgram.handlers.sync_command import (
     sync_command,
 )
 from ccgram.session import AuditIssue, AuditResult
+from ccgram.thread_router import RetiredTopic
 
 
 @pytest.fixture(autouse=True)
@@ -123,6 +125,40 @@ class TestFormatReport:
         assert CB_SYNC_FIX in buttons
         assert CB_SYNC_DISMISS in buttons
 
+    def test_known_retired_candidate_reports_reason_and_offers_fix(self) -> None:
+        text, keyboard = _format_report(
+            _audit(
+                AuditIssue(
+                    "retired_topic",
+                    "reason:system_replacement",
+                    fixable=True,
+                ),
+                total=0,
+                live=0,
+            )
+        )
+
+        assert "known retired topic cleanup candidate" in text
+        assert "system_replacement" in text
+        assert keyboard is not None
+        assert "Fix 1 issue" in keyboard.inline_keyboard[0][0].text
+
+    def test_retired_cleanup_outcomes_are_distinguished_in_report(self) -> None:
+        text, _keyboard = _format_report(
+            _audit(total=0, live=0),
+            retired_outcomes={
+                "deleted": 1,
+                "closed": 2,
+                "already_gone": 3,
+                "failed": 4,
+            },
+        )
+
+        assert "Deleted 1 known retired topic" in text
+        assert "Closed 2 known retired topic" in text
+        assert "Already gone 3 known retired topic" in text
+        assert "Could not remove 4 known retired topic" in text
+
     def test_fix_button_counts_every_issue(self) -> None:
         _text, keyboard = _format_report(
             _audit(
@@ -183,6 +219,98 @@ class TestFormatReport:
     def test_fixed_mode_summary(self, kwargs: dict, expected_text: str) -> None:
         text, _keyboard = _format_report(_audit(total=0, live=0), **kwargs)
         assert expected_text in text
+
+
+class TestRetiredTopicCleanup:
+    @staticmethod
+    def _topic() -> RetiredTopic:
+        return RetiredTopic(
+            user_id=100,
+            chat_id=-999,
+            thread_id=42,
+            reason="system_replacement",
+            cleanup_eligible=True,
+            sequence=1,
+        )
+
+    async def test_deleted_outcome_removes_known_retired_topic(
+        self, _patch_deps
+    ) -> None:
+        *_, mock_tr, _, _ = _patch_deps
+        topic = self._topic()
+        mock_tr.iter_retired_topics.return_value = [topic]
+        mock_tr.get_window_for_chat_thread.return_value = None
+        client = AsyncMock()
+
+        outcomes = await _cleanup_retired_topics(client)
+
+        assert outcomes == {"deleted": 1}
+        client.delete_forum_topic.assert_awaited_once_with(-999, 42)
+        client.close_forum_topic.assert_not_awaited()
+        mock_tr.discard_retired_topic.assert_called_once_with(topic)
+
+    async def test_close_fallback_is_reported_separately(self, _patch_deps) -> None:
+        *_, mock_tr, _, _ = _patch_deps
+        topic = self._topic()
+        mock_tr.iter_retired_topics.return_value = [topic]
+        mock_tr.get_window_for_chat_thread.return_value = None
+        client = AsyncMock()
+        client.delete_forum_topic.side_effect = TelegramError("not permitted")
+
+        outcomes = await _cleanup_retired_topics(client)
+
+        assert outcomes == {"closed": 1}
+        client.close_forum_topic.assert_awaited_once_with(-999, 42)
+        mock_tr.discard_retired_topic.assert_called_once_with(topic)
+
+    async def test_already_gone_is_terminal_not_a_failed_delete(
+        self, _patch_deps
+    ) -> None:
+        *_, mock_tr, _, _ = _patch_deps
+        topic = self._topic()
+        mock_tr.iter_retired_topics.return_value = [topic]
+        mock_tr.get_window_for_chat_thread.return_value = None
+        client = AsyncMock()
+        client.delete_forum_topic.side_effect = BadRequest("Message thread not found")
+
+        outcomes = await _cleanup_retired_topics(client)
+
+        assert outcomes == {"already_gone": 1}
+        client.close_forum_topic.assert_not_awaited()
+        mock_tr.discard_retired_topic.assert_called_once_with(topic)
+
+    async def test_failed_calls_remain_in_registry_for_later_fix(
+        self, _patch_deps
+    ) -> None:
+        *_, mock_tr, _, _ = _patch_deps
+        topic = self._topic()
+        mock_tr.iter_retired_topics.return_value = [topic]
+        mock_tr.get_window_for_chat_thread.return_value = None
+        client = AsyncMock()
+        client.delete_forum_topic.side_effect = TelegramError("not permitted")
+        client.close_forum_topic.side_effect = TelegramError("not permitted")
+
+        outcomes = await _cleanup_retired_topics(client)
+
+        assert outcomes == {"failed": 1}
+        mock_tr.discard_retired_topic.assert_not_called()
+
+    async def test_active_or_rebound_topic_is_protected_before_api_call(
+        self, _patch_deps
+    ) -> None:
+        *_, mock_tr, _, _ = _patch_deps
+        topic = self._topic()
+        mock_tr.iter_retired_topics.return_value = [topic]
+        # Simulates a rebind after the Fix snapshot but before its API call.
+        mock_tr.get_window_for_chat_thread.return_value = "@rebound"
+        client = AsyncMock()
+
+        outcomes = await _cleanup_retired_topics(client)
+
+        assert outcomes == {"protected_active": 1}
+        client.delete_forum_topic.assert_not_awaited()
+        client.close_forum_topic.assert_not_awaited()
+        mock_tr.discard_retired_topic.assert_not_called()
 
 
 class TestSyncDismiss:
@@ -559,7 +687,9 @@ class TestSyncFix:
             assert cleanup_args.args[:2] == (100, 42)
             assert cleanup_args.kwargs["window_id"] == "w2:t1"
             assert cleanup_args.kwargs["client"].bot is mock_bot
-            mock_tr.unbind_thread.assert_called_once_with(100, 42)
+            mock_tr.unbind_thread.assert_called_once_with(
+                100, 42, retirement_reason="remote_removed"
+            )
             report_text = mock_edit.call_args[0][1]
             assert "Removed 1 stale topic" in report_text
 
@@ -644,7 +774,9 @@ class TestSyncFix:
             assert cleanup_args.args[:2] == (100, 42)
             assert cleanup_args.kwargs["window_id"] == "@7"
             assert cleanup_args.kwargs["client"].bot is mock_bot
-            mock_tr.unbind_thread.assert_called_once_with(100, 42)
+            mock_tr.unbind_thread.assert_called_once_with(
+                100, 42, retirement_reason="remote_removed"
+            )
 
     async def test_fix_adopts_orphaned_windows(self, _patch_deps) -> None:
         mock_sm, _, mock_wq, _, _, _ = _patch_deps
@@ -795,7 +927,9 @@ class TestDeadTopicRecreation:
         ) as mock_handle:
             count = await _recreate_dead_topics(mock_bot, issues)
             assert count == 1
-            mock_tr.unbind_thread.assert_called_once_with(100, 42)
+            mock_tr.unbind_thread.assert_called_once_with(
+                100, 42, retirement_reason="remote_deleted"
+            )
             mock_handle.assert_called_once()
             event = mock_handle.call_args[0][0]
             assert event.window_id == "w2:t2"
@@ -904,7 +1038,9 @@ class TestDeadTopicRecreation:
         ):
             count = await _recreate_dead_topics(mock_bot, issues)
             assert count == 0
-            mock_tr.unbind_thread.assert_called_once_with(100, 42)
+            mock_tr.unbind_thread.assert_called_once_with(
+                100, 42, retirement_reason="remote_deleted"
+            )
             mock_tr.bind_thread.assert_called_once_with(
                 100, 42, "@2", window_name="proj", chat_id=-999
             )
@@ -945,7 +1081,9 @@ class TestSyncFixDeadTopic:
             ) as mock_handle,
         ):
             await handle_sync_fix(query)
-            mock_tr.unbind_thread.assert_called_once_with(100, 42)
+            mock_tr.unbind_thread.assert_called_once_with(
+                100, 42, retirement_reason="remote_deleted"
+            )
             mock_handle.assert_called_once()
             report_text = mock_edit.call_args[0][1]
             assert "Recreated 1 topic" in report_text

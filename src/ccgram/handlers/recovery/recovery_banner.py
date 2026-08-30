@@ -251,7 +251,12 @@ async def _create_and_bind_window(
 
     Returns True on success, False on failure.
     """
-    thread_router.unbind_thread(user_id, thread_id)
+    thread_router.unbind_thread(
+        user_id,
+        thread_id,
+        retirement_reason="system_replacement",
+        cleanup_eligible=True,
+    )
     # Lazy: polling_state → recovery_banner via callback_registry
     # side effects.
     # Lazy: polling.polling_state pulls heavy strategy stack; defer per-call

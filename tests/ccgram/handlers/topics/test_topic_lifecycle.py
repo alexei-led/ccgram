@@ -257,7 +257,9 @@ class TestProbeTopicExistence:
             mock_tmux.kill_window = AsyncMock()
             await probe_topic_existence(bot)
 
-        mock_router.unbind_thread.assert_called_once_with(1, 100, chat_id=42)
+        mock_router.unbind_thread.assert_called_once_with(
+            1, 100, chat_id=42, retirement_reason="remote_deleted"
+        )
         if expect_kill:
             mock_tmux.kill_window.assert_called_once_with(window_id)
         else:

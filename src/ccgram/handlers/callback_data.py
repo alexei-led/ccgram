@@ -65,6 +65,9 @@ CB_STATUS_SCREENSHOT = "st:ss:"  # st:ss:<window_id>
 CB_STATUS_RECALL = "st:rc:"  # st:rc:<window_id>:<history_index>
 CB_STATUS_LAST_REPLY = "st:lr:"  # st:lr:<window_id>
 CB_STATUS_GET_FILE = "st:gf:"  # st:gf:<window_id>
+CB_STATUS_BACKLOG_JUMP = "st:bl:"  # st:bl:<window_id> (opens confirmation)
+CB_STATUS_BACKLOG_CONFIRM = "st:blok:"  # st:blok:<window_id>
+CB_STATUS_BACKLOG_CANCEL = "st:blx:"  # st:blx:<window_id>
 
 # Recovery UI (dead window)
 CB_RECOVERY_FRESH = "rec:f:"  # rec:f:<window_id>

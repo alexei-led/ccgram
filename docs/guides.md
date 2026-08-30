@@ -10,7 +10,7 @@ brew upgrade ccgram                   # Homebrew
 
 ## CLI Reference
 
-```
+```text
 ccgram                        # Start the bot
 ccgram status                 # Show running state (no token needed)
 ccgram doctor                 # Validate setup and diagnose issues
@@ -175,6 +175,8 @@ The tests create an isolated `ccgram-e2e` tmux session that does not interfere w
 
 All settings accept both CLI flags and environment variables. CLI flags take precedence. `TELEGRAM_BOT_TOKEN` is env-only for security (flags are visible in `ps`).
 
+<!-- markdownlint-disable MD060 -->
+
 | Variable / Flag                                      | Default                        | Description                                                                                          |
 | ---------------------------------------------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------- |
 | `TELEGRAM_BOT_TOKEN`                                 | _(required)_                   | Bot token from @BotFather (env only)                                                                 |
@@ -224,6 +226,8 @@ All settings accept both CLI flags and environment variables. CLI flags take pre
 | `CCGRAM_TTS_MODEL`                                   | `gpt-4o-mini-tts`              | OpenAI TTS model (only used when `CCGRAM_TTS_PROVIDER=openai`)                                       |
 | `CCGRAM_TTS_API_KEY`                                 | _(empty)_                      | API key for OpenAI TTS; falls back to `OPENAI_API_KEY`                                               |
 
+<!-- markdownlint-enable MD060 -->
+
 ## Topic Emoji Color Scheme
 
 Topic emojis change color to reflect agent status. The mapping between color and meaning is configurable:
@@ -249,6 +253,32 @@ By default, `tool_use` and `tool_result` events from Claude/Codex/Gemini are for
 - **Per-window**: `/toolcalls` in a topic cycles `default → shown → hidden`. The per-window setting always wins over the global default.
 
 Hook events (Stop, StopFailure, SubagentStart/Stop, TaskCompleted, TeammateIdle) are **never** suppressed — they bypass the gate so you still see what matters.
+
+## Delivery, Backlog, and Jump to Live
+
+### Lossless text batching
+
+The outbound queue can combine consecutive eligible transcript text tasks into one Telegram message to reduce API calls. This is not the `/verbose` tool-call batching mode: `/verbose` controls the separate live tool-use display.
+
+A text batch is eligible only when every item is a non-empty, one-part text task with the same **chat, topic/thread, window, role, and transcript source session**. CCGram stops at the first different or ineligible queued item, so it never crosses chats, topics, windows, roles, sessions, tool updates, status updates, media/TTS deliveries, or other queue boundaries. Batches are capped below Telegram's message limit and use a blank line between original items.
+
+Each item is rendered to Telegram entities before the items are combined. Formatting opened in one item cannot alter the next item's formatting, and each item retains the formatting it would have had if sent on its own. This makes the batching lossless for eligible text while preserving the delivery boundaries of everything else.
+
+### Queue progress and severe backlogs
+
+The editable topic status bubble reports:
+
+- **pending** — queued and in-flight transcript content items for that topic/window;
+- **age** — how long the oldest of those items has waited; and
+- **delivery lag** — the elapsed time for the latest completed content delivery (`—` until one completes).
+
+These are in-memory progress metrics, so they reset when CCGram restarts. The status line is refreshed with status updates and its displayed text is throttled for up to 15 seconds. A backlog is severe when it has **100 or more pending items** **or** its oldest item is **5 minutes (300 seconds) or older**. Only then does the status keyboard include **⏭ Jump to live**.
+
+### Confirmed jump semantics
+
+**Jump to live** is an inline, two-step action: tap it, then tap **Confirm jump to live**. Cancel leaves the queue and all watermarks unchanged. On confirmation, CCGram snapshots the selected transcript source at its current EOF, persists a skip barrier before retiring only that source's queued range, and queues a visible notice such as `⏭ Skipped N queued transcript item(s) for live view (bytes A–B). Raw transcript retained.` New transcript bytes written after the snapshot are not part of the jump; an already in-flight send is also left alone rather than cancelled.
+
+The raw provider transcript is retained; Jump to live does not delete or rewrite it. CCGram advances the durable delivered watermark past the skipped range only after Telegram acknowledges the skipped-range notice. If CCGram restarts or notice delivery fails first, it restores the barrier and retries the notice rather than silently advancing. Normal transcript relay is **at-least-once**, not exactly-once: a Telegram outcome that is not confirmed before a retry or restart can produce a duplicate message. This watermark policy favors retaining/replaying output over losing it.
 
 ## Thinking Visibility
 
@@ -350,6 +380,8 @@ ccgram accepts herdr socket protocols 14–20 without warnings. On the first cal
 
 herdr advertises its own capabilities through the seam; the behavioral consequences a user sees:
 
+<!-- markdownlint-disable MD060 -->
+
 | Aspect                    | tmux                            | herdr                                                                      |
 | ------------------------- | ------------------------------- | -------------------------------------------------------------------------- |
 | Topic = agent session     | every window is eligible        | each reported agent session surfaces as one topic; a bare shell does not   |
@@ -359,11 +391,23 @@ herdr advertises its own capabilities through the seam; the behavioral consequen
 | Window IDs across restart | stable                          | guarded session target is revalidated from fresh `agent.list`; ccgram never re-resolves a tab/pane ID |
 | Topic labels              | window name                     | `<workspace> ▸ <tab> ▸ <pane>` for every reported agent session             |
 
+<!-- markdownlint-enable MD060 -->
+
 Creating sessions from the terminal on herdr is covered in [Creating Sessions from the Terminal](#creating-sessions-from-the-terminal).
 
 > **Workspace picker:** On herdr, `/new` shows an extra step after directory selection. Choose a workspace to pin the new tab there, or skip it: ccgram then explicitly creates a workspace from the requested directory and uses only its returned ID. It never infers the active or a matching workspace.
 >
 > **Self-hosting escape hatch:** Workspaces or tabs whose label matches `__*__` (e.g. `__main__`) are invisible to ccgram. Use this naming convention to run ccgram itself inside herdr without it auto-adopting its own terminal as a topic.
+
+## Sync and Retired Topic Cleanup
+
+`/sync` audits CCGram's local bindings and offers **Fix** for repairable items. Its retired-topic cleanup is intentionally narrow: it considers only a bounded local registry (up to 100 entries) of exact chat/topic bindings that CCGram previously owned and marked eligible for cleanup. It does **not** discover, list, or act on arbitrary forum topics. The Bot API does not let bots enumerate unknown topics, so a topic that was never recorded by CCGram cannot become a `/sync` cleanup candidate.
+
+When you choose **Fix**, CCGram rechecks each known retired topic immediately before the Bot API call. A topic that is active or was rebound in the meantime is reported as **Protected active or rebound** and receives no delete or close request. A new binding for the same chat/topic also removes the old retired record.
+
+For an eligible, still-retired topic, `/sync` tries `deleteForumTopic` first. Deletion is irreversible and removes the topic history. If deletion is unavailable or fails, `/sync` tries `closeForumTopic`; closing hides/closes the topic but retains its history. A successful delete, successful close, or an already-gone topic is removed from the local registry. Failed delete-and-close attempts stay in the registry for a later `/sync` attempt, and the report distinguishes Deleted, Closed, Already gone, Could not remove, and Protected active or rebound outcomes.
+
+The bot must be a group administrator with Telegram's **Manage Topics** (`can_manage_topics`) permission for topic cleanup. Configure forum topics and the admin permissions in [BotFather Setup](#botfather-setup); if Telegram denies either operation, `/sync` leaves the local record in place and reports the failure. Review candidates before pressing Fix because a successful delete cannot be undone.
 
 ## Auto-Close Behavior
 
@@ -464,7 +508,7 @@ The buttons shown adapt to each provider's capabilities. Claude and Antigravity 
 
 Forms:
 
-```
+```text
 /agent              # show picker (current marked ✓, with (manual override) badge if set)
 /agent shell        # switch to shell
 /agent claude       # switch to Claude (also: codex, gemini, pi)
@@ -599,14 +643,14 @@ CCGram supports Claude Code, Codex CLI, Gemini CLI, Pi, and Shell. Each topic ca
 
 All state files live in `$CCGRAM_DIR` (`~/.ccgram/` by default):
 
-| File                 | Description                                                 |
-| -------------------- | ----------------------------------------------------------- |
-| `state.json`         | Thread bindings, window states, display names, read offsets |
-| `session_map.json`   | Hook-generated window → session mappings                    |
-| `events.jsonl`       | Append-only hook event log (read incrementally by monitor)  |
-| `monitor_state.json` | Byte offsets per session (prevents duplicate notifications) |
+| File                 | Description                                                         |
+| -------------------- | ------------------------------------------------------------------- |
+| `state.json`         | Thread bindings, window states, display names, read offsets         |
+| `session_map.json`   | Hook-generated window → session mappings                            |
+| `events.jsonl`       | Append-only hook event log (read incrementally by monitor)          |
+| `monitor_state.json` | Delivered transcript watermarks and pending Jump-to-live barriers   |
 
-Session transcripts are read from provider-specific locations (read-only): `~/.claude/projects/` (Claude), `~/.codex/sessions/` (Codex), `~/.gemini/tmp/` (Gemini), `~/.pi/agent/sessions/` (Pi). Shell has no transcript — output is captured directly from the tmux pane. The bot never writes to agent data directories.
+Session transcripts are read from provider-specific locations (read-only): `~/.claude/projects/` (Claude), `~/.codex/sessions/` (Codex), `~/.gemini/tmp/` (Gemini), `~/.pi/agent/sessions/` (Pi). Shell has no transcript — output is captured directly from the tmux pane. The bot never writes to agent data directories; the delivered watermark records relay progress, not a mutation of the raw transcript.
 
 ## Running as a Service
 

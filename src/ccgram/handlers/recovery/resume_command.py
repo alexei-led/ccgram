@@ -378,7 +378,12 @@ async def _create_resume_window(
     )
 
     if old_window_id:
-        thread_router.unbind_thread(user_id, thread_id)
+        thread_router.unbind_thread(
+            user_id,
+            thread_id,
+            retirement_reason="system_replacement",
+            cleanup_eligible=True,
+        )
         # Lazy: polling_state cycle — same path as recovery_callbacks.
         from ..polling.polling_state import lifecycle_strategy
 

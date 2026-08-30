@@ -131,7 +131,11 @@ async def _close_expired_topic(
         if scoped_chat_id is not None:
             cleanup_kwargs["chat_id"] = scoped_chat_id
         await clear_topic_state(user_id, thread_id, client=client, **cleanup_kwargs)
-        thread_router.unbind_thread(user_id, thread_id)
+        thread_router.unbind_thread(
+            user_id,
+            thread_id,
+            retirement_reason="remote_closed",
+        )
 
 
 # ── Unbound window TTL ────────────────────────────────────────────────────
@@ -317,7 +321,12 @@ async def _unbind_deleted_topic(
         killed = True
     terminal_poll_state.reset_probe_failures(wid)
     await clear_topic_state(user_id, thread_id, client, window_id=wid, chat_id=chat_id)
-    thread_router.unbind_thread(user_id, thread_id, chat_id=chat_id)
+    thread_router.unbind_thread(
+        user_id,
+        thread_id,
+        chat_id=chat_id,
+        retirement_reason="remote_deleted",
+    )
     logger.info(
         "Topic deleted: %s window_id '%s' and unbound thread %d for user %d",
         "killed" if killed else "unbound",
@@ -433,9 +442,18 @@ async def topic_closed_handler(
             **cleanup_kwargs,
         )
         if isinstance(chat_id, int):
-            thread_router.unbind_thread(user.id, thread_id, chat_id=chat_id)
+            thread_router.unbind_thread(
+                user.id,
+                thread_id,
+                chat_id=chat_id,
+                retirement_reason="remote_closed",
+            )
         else:
-            thread_router.unbind_thread(user.id, thread_id)
+            thread_router.unbind_thread(
+                user.id,
+                thread_id,
+                retirement_reason="remote_closed",
+            )
         logger.info(
             "Topic closed: window %s unbound (kept alive for rebinding, user=%d, thread=%d)",
             display,

@@ -125,6 +125,27 @@ async def _handle_assistant_stream(
     return True
 
 
+async def enqueue_backlog_skip_notice(client: TelegramClient, intent: object) -> None:
+    """Queue a visible, receipt-tracked notice for a confirmed skipped range."""
+    snapshot = int(getattr(intent, "snapshot_offset"))
+    start = int(getattr(intent, "range_start"))
+    count = int(getattr(intent, "skipped_count"))
+    enqueued = await enqueue_content_message(
+        client=client,
+        user_id=int(getattr(intent, "user_id")),
+        window_id=str(getattr(intent, "window_id")),
+        parts=[
+            f"⏭ Skipped {count} queued transcript item(s) for live view "
+            f"(bytes {start}–{snapshot}). Raw transcript retained."
+        ],
+        thread_id=getattr(intent, "thread_id"),
+        chat_id=int(getattr(intent, "chat_id")),
+        is_backlog_notice=True,
+    )
+    if not enqueued:
+        raise RuntimeError("backlog skip notice could not enter the delivery queue")
+
+
 async def handle_new_message(msg: NewMessage, client: TelegramClient) -> None:  # noqa: C901, PLR0912
     """Handle a new assistant message — enqueue for sequential processing.
 
@@ -210,6 +231,7 @@ async def handle_new_message(msg: NewMessage, client: TelegramClient) -> None:  
                 role=msg.role,  # type: ignore[arg-type]  # NewMessage.role is str, narrows at runtime
                 thread_id=thread_id,
                 chat_id=chat_id,
+                source_session_id=msg.session_id,
             )
 
             await _update_window_offset(user_id, window_id)

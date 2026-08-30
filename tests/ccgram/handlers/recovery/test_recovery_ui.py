@@ -449,7 +449,12 @@ class TestRecoveryFreshCallback:
 
         await _tap(f"{CB_RECOVERY_FRESH}@0", _make_context(_recovery_user_data()))
 
-        recovery_env.router.unbind_thread.assert_called_once_with(100, 42)
+        recovery_env.router.unbind_thread.assert_called_once_with(
+            100,
+            42,
+            retirement_reason="system_replacement",
+            cleanup_eligible=True,
+        )
         recovery_env.tmux.create_window.assert_called_once_with(
             "/tmp/project", agent_args="", launch_command="claude"
         )

@@ -312,7 +312,12 @@ class TestHandleDeadWindow:
             )
 
         assert result is True
-        mock_tr.unbind_thread.assert_called_once_with(100, 42)
+        mock_tr.unbind_thread.assert_called_once_with(
+            100,
+            42,
+            retirement_reason="system_replacement",
+            cleanup_eligible=True,
+        )
         mock_browser.assert_called_once()
 
 

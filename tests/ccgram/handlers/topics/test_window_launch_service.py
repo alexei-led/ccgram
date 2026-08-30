@@ -407,7 +407,12 @@ class TestLaunchWindowFailure:
 
         m.mux.kill_window.assert_awaited_once_with("@5")
         m.orchestration.clear_pending_creation.assert_called_once_with("@5")
-        m.router.unbind_thread.assert_called_once_with(100, 42)
+        m.router.unbind_thread.assert_called_once_with(
+            100,
+            42,
+            retirement_reason="system_replacement",
+            cleanup_eligible=True,
+        )
 
     async def test_session_map_timeout_closes_target_before_unbinding_late_hook(
         self, tmp_path
@@ -421,8 +426,8 @@ class TestLaunchWindowFailure:
                     cleanup_order.append(f"close:{target_id}") or True
                 )
             )
-            m.router.unbind_thread.side_effect = lambda *_: cleanup_order.append(
-                "unbind"
+            m.router.unbind_thread.side_effect = lambda *_args, **_kwargs: (
+                cleanup_order.append("unbind")
             )
             m.orchestration.clear_pending_creation.side_effect = lambda *_: (
                 cleanup_order.append("clear-pending")
@@ -437,7 +442,12 @@ class TestLaunchWindowFailure:
 
         assert result.success is False
         m.mux.kill_window.assert_awaited_once_with("@5")
-        m.router.unbind_thread.assert_called_once_with(100, 42)
+        m.router.unbind_thread.assert_called_once_with(
+            100,
+            42,
+            retirement_reason="system_replacement",
+            cleanup_eligible=True,
+        )
         # The target is closed before the pending guard and binding are removed,
         # so a late hook cannot adopt it into an orphan topic.
         assert cleanup_order == ["close:@5", "clear-pending", "unbind"]

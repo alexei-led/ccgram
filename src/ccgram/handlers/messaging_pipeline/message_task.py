@@ -5,6 +5,7 @@ Three frozen dataclasses replace the monolithic ``MessageTask`` that lived in
 keeping the dependency graph acyclic.
 """
 
+import time
 from dataclasses import dataclass, field
 from typing import Literal, TypeAlias
 
@@ -31,6 +32,14 @@ class ContentTask:
     delivery_receipts: tuple[DeliveryReceipt, ...] = field(
         compare=False, hash=False, default=()
     )
+    # Queue-internal marker: each part is an independently rendered text task
+    # which may be delivered together in one Telegram message.
+    is_text_batch: bool = field(compare=False, hash=False, default=False)
+    # Source identity makes a confirmed backlog skip narrowly purgeable.
+    source_session_id: str | None = None
+    source_checkpoint: int | None = None
+    enqueued_monotonic: float = field(default_factory=time.monotonic, compare=False)
+    is_backlog_notice: bool = False
 
 
 @dataclass(frozen=True, slots=True)

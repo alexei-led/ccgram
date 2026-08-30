@@ -15,6 +15,12 @@ CCGram supports multiple agent CLI backends. Each Telegram topic can use a diffe
 
 `Resume` in this table means the CLI accepts a known session ID. CCGram's Telegram Resume picker can enumerate sessions for Claude and Antigravity. Codex, Gemini, and Pi currently expose Fresh and Continue recovery actions only.
 
+## Transcript Delivery Guarantees
+
+For transcript-backed providers, CCGram delivers parsed output through an ordered queue. Consecutive eligible text items may be losslessly combined into one Telegram message only within the same chat, topic/thread, window, role, and transcript source session. Tool-use batching (`/verbose`), attachments/TTS, status updates, and any other queue boundary remain separate. Each original text item is rendered before batching, so its Telegram formatting is preserved and cannot leak into the next item.
+
+Delivery is at-least-once. CCGram persists a transcript's delivered watermark only after its queued delivery receipts succeed (or are intentionally dropped by a confirmed Jump to live). After a process restart or an unconfirmed Telegram result, it can replay output and therefore show a duplicate rather than risk losing output. Provider transcript files stay read-only; a confirmed Jump to live records a durable barrier and a visible skipped-range notice before advancing past that range. See [Delivery, Backlog, and Jump to Live](guides.md#delivery-backlog-and-jump-to-live) for queue metrics, severe thresholds, and the action's exact boundaries.
+
 ## Choosing a Provider
 
 **From Telegram**: When you create a new topic and select a directory, then — if the directory is an eligible git repo — choose whether to use the current branch or create a new worktree on a new branch (non-git directories skip this step), a provider picker appears with Claude (default), Codex, Gemini, Pi, Antigravity, and Shell options. After provider selection, CCGram asks for session mode:

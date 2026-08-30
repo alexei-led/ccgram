@@ -27,6 +27,7 @@ from ...window_state_ports.pane_state import PaneProjection, list_pane_projectio
 
 from ..callback_tokens import compact_callback_data
 from ..callback_data import (
+    CB_STATUS_BACKLOG_JUMP,
     CB_STATUS_ESC,
     CB_STATUS_GET_FILE,
     CB_STATUS_LAST_REPLY,
@@ -50,6 +51,10 @@ logger = structlog.get_logger()
 
 # Status message tracking: (user_id, thread_key) -> (message_id, window_id, last_text, chat_id)
 _status_msg_info: dict[tuple[int, int], tuple[int, str, str, int]] = {}
+_backlog_status_cache: dict[tuple[int, int, str], tuple[float, str]] = {}
+_BACKLOG_STATUS_THROTTLE_SECONDS = 15.0
+SEVERE_BACKLOG_COUNT = 100
+SEVERE_BACKLOG_AGE_SECONDS = 300.0
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +68,7 @@ def build_status_keyboard(
     *,
     user_id: int | None = None,
     is_group: bool = False,
+    backlog_severe: bool = False,
 ) -> InlineKeyboardMarkup:
     """Build inline keyboard for status messages.
 
@@ -134,6 +140,19 @@ def build_status_keyboard(
             ),
         ]
     )
+    if backlog_severe:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    "⏭ Jump to live",
+                    callback_data=compact_callback_data(
+                        CB_STATUS_BACKLOG_JUMP,
+                        f"{CB_STATUS_BACKLOG_JUMP}{window_id}",
+                        window_id,
+                    ),
+                )
+            ]
+        )
     if user_id is not None and not is_group:
         dashboard = build_dashboard_button(window_id, user_id)
         if dashboard is not None:
@@ -144,6 +163,37 @@ def build_status_keyboard(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def format_backlog_status(
+    user_id: int, thread_id_or_0: int, window_id: str
+) -> tuple[str, bool]:
+    """Render throttled queue telemetry and report whether its skip gate is open."""
+    # Lazy: queue imports this status module for dispatch, so keep the reverse
+    # dependency at call time.
+    from ..messaging_pipeline.backlog import get_backlog_snapshot
+
+    snapshot = get_backlog_snapshot(user_id, window_id, thread_id_or_0 or None)
+    severe = (
+        snapshot.pending_count >= SEVERE_BACKLOG_COUNT
+        or snapshot.oldest_age_seconds >= SEVERE_BACKLOG_AGE_SECONDS
+    )
+    key = (user_id, thread_id_or_0, window_id)
+    now = time.monotonic()
+    cached = _backlog_status_cache.get(key)
+    if cached is not None and now - cached[0] < _BACKLOG_STATUS_THROTTLE_SECONDS:
+        return cached[1], severe
+    lag = (
+        f" · delivery lag {snapshot.delivery_lag_seconds:.1f}s"
+        if snapshot.delivery_lag_seconds is not None
+        else " · delivery lag —"
+    )
+    line = (
+        f"Queue: {snapshot.pending_count} pending · age {snapshot.oldest_age_seconds:.0f}s"
+        f"{lag}"
+    )
+    _backlog_status_cache[key] = (now, line)
+    return line, severe
 
 
 def _get_idle_history(
@@ -302,6 +352,8 @@ async def send_status_text(
     thread_id_or_0: int,
     window_id: str,
     text: str,
+    *,
+    backlog_severe: bool = False,
 ) -> None:
     """Send a new status message with action buttons and track it.
 
@@ -323,6 +375,7 @@ async def send_status_text(
         history=history,
         user_id=user_id,
         is_group=(thread_id_or_0 != 0),
+        backlog_severe=backlog_severe,
     )
 
     existing = _status_msg_info.get(skey)
@@ -424,7 +477,15 @@ async def process_status_update(
         await clear_status_message(client, user_id, tkey)
         return
 
-    await send_status_text(client, user_id, tkey, task.window_id, status_text)
+    backlog_line, severe = format_backlog_status(user_id, tkey, task.window_id)
+    await send_status_text(
+        client,
+        user_id,
+        tkey,
+        task.window_id,
+        f"{status_text}\n{backlog_line}",
+        backlog_severe=severe,
+    )
 
 
 async def process_status_clear(
@@ -437,7 +498,15 @@ async def process_status_clear(
     tkey = thread_key(task.thread_id)
     status_text = format_claude_task_status(window_id, None)
     if status_text and window_id:
-        await send_status_text(client, user_id, tkey, window_id, status_text)
+        backlog_line, severe = format_backlog_status(user_id, tkey, window_id)
+        await send_status_text(
+            client,
+            user_id,
+            tkey,
+            window_id,
+            f"{status_text}\n{backlog_line}",
+            backlog_severe=severe,
+        )
         return
     await clear_status_message(client, user_id, tkey)
 

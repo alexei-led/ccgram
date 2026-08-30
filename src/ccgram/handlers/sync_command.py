@@ -12,6 +12,7 @@ Key functions:
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import TYPE_CHECKING
 import asyncio
 import re
@@ -29,7 +30,7 @@ from ..config import config
 from ..session import AuditIssue, AuditResult, session_manager
 from ..session_map import session_map_sync
 from ..telegram_client import PTBTelegramClient, TelegramClient
-from ..thread_router import thread_router
+from ..thread_router import RetiredTopic, thread_router
 from ..multiplexer import multiplexer as tmux_manager
 from ..multiplexer.reconciliation import list_windows_for_reconciliation
 from ..user_preferences import user_preferences
@@ -63,6 +64,14 @@ _CATEGORY_LABELS: dict[str, str] = {
     "legacy_herdr": "legacy Herdr binding (blocked; archive or explicitly rebind)",
 }
 
+_RETIRED_OUTCOME_LABELS = {
+    "deleted": "Deleted",
+    "closed": "Closed",
+    "already_gone": "Already gone",
+    "failed": "Could not remove",
+    "protected_active": "Protected active or rebound",
+}
+
 
 async def _run_audit() -> AuditResult:
     """Fetch live multiplexer state and run audit."""
@@ -80,11 +89,23 @@ def _issue_summary_lines(audit: AuditResult) -> list[str]:
             continue  # shown in dedicated report lines
         category_counts[issue.category] = category_counts.get(issue.category, 0) + 1
 
-    if category_counts:
-        return [
-            f"⚠ {count} {_CATEGORY_LABELS.get(cat, cat)}"
-            for cat, count in category_counts.items()
-        ]
+    retired_reasons = Counter(
+        issue.detail.removeprefix("reason:")
+        for issue in audit.issues
+        if issue.category == "retired_topic"
+    )
+    if retired_reasons:
+        category_counts.pop("retired_topic", None)
+    lines = [
+        f"⚠ {count} {_CATEGORY_LABELS.get(cat, cat)}"
+        for cat, count in category_counts.items()
+    ]
+    lines.extend(
+        f"⚠ {count} known retired topic cleanup candidate(s) ({reason})"
+        for reason, count in retired_reasons.items()
+    )
+    if lines:
+        return lines
     if audit.total_bindings > 0:
         return ["✓ No orphaned entries", "✓ Tmux display cache in sync"]
     return []
@@ -128,6 +149,16 @@ async def _sync_live_topic_names(
             logger.error("Unexpected error syncing topic name", exc_info=result)
 
 
+def _retired_outcome_lines(retired_outcomes: dict[str, int] | None) -> list[str]:
+    """Format explicit outcomes for locally known retired-topic cleanup."""
+    return [
+        f"{'⚠' if outcome == 'failed' else 'ℹ'} "
+        f"{_RETIRED_OUTCOME_LABELS[outcome]} {count} known retired topic(s)"
+        for outcome, count in (retired_outcomes or {}).items()
+        if count
+    ]
+
+
 def _format_report(
     audit: AuditResult,
     *,
@@ -135,6 +166,7 @@ def _format_report(
     closed_topic_count: int = 0,
     recreated_topic_count: int = 0,
     manual_close_count: int = 0,
+    retired_outcomes: dict[str, int] | None = None,
 ) -> tuple[str, InlineKeyboardMarkup | None]:
     """Build report text and optional keyboard."""
     lines: list[str] = []
@@ -159,6 +191,8 @@ def _format_report(
             f"⚠ {manual_close_count} {topic_word} could not be closed automatically; "
             "safe to close manually"
         )
+
+    lines.extend(_retired_outcome_lines(retired_outcomes))
 
     # Binding summary
     if audit.total_bindings == 0:
@@ -203,6 +237,19 @@ def _format_report(
     return text, keyboard
 
 
+def _retired_topic_issues() -> list[AuditIssue]:
+    """Return Fix candidates known from local retired-binding state only."""
+    return [
+        AuditIssue(
+            category="retired_topic",
+            detail=f"reason:{topic.reason}",
+            fixable=True,
+        )
+        for topic in thread_router.iter_retired_topics()
+        if topic.cleanup_eligible
+    ]
+
+
 async def _remove_topic(client: TelegramClient, chat_id: int, thread_id: int) -> bool:
     """Try to delete a topic, fall back to close. Returns True on success.
 
@@ -222,6 +269,51 @@ async def _remove_topic(client: TelegramClient, chat_id: int, thread_id: int) ->
         return True
     except TelegramError:
         return False
+
+
+async def _delete_retired_topic(client: TelegramClient, topic: RetiredTopic) -> str:
+    """Delete a known topic, returning a terminal result or close fallback."""
+    chat_id = topic.chat_id
+    thread_id = topic.thread_id
+    try:
+        deleted = await client.delete_forum_topic(chat_id, thread_id)
+    except BadRequest as exc:
+        return "already_gone" if is_thread_gone(exc) else "failed"
+    except TelegramError:
+        return "failed"
+    return "deleted" if deleted is not False else "failed"
+
+
+async def _close_retired_topic(client: TelegramClient, topic: RetiredTopic) -> str:
+    """Close a known topic when deletion is unavailable."""
+    try:
+        closed = await client.close_forum_topic(topic.chat_id, topic.thread_id)
+    except TelegramError as exc:
+        return "already_gone" if is_thread_gone(exc) else "failed"
+    return "closed" if closed is not False else "failed"
+
+
+async def _cleanup_retired_topics(client: TelegramClient) -> dict[str, int]:
+    """Remove only locally known, eligible retired topics.
+
+    A binding is rechecked immediately before the Telegram request. This does
+    not discover remote topics: it operates solely on the bounded registry.
+    """
+    outcomes: Counter[str] = Counter()
+    terminal_outcomes = {"deleted", "closed", "already_gone"}
+    for topic in tuple(thread_router.iter_retired_topics()):
+        if not topic.cleanup_eligible:
+            continue
+        if thread_router.get_window_for_chat_thread(topic.chat_id, topic.thread_id):
+            outcomes["protected_active"] += 1
+            continue
+        outcome = await _delete_retired_topic(client, topic)
+        if outcome == "failed":
+            outcome = await _close_retired_topic(client, topic)
+        outcomes[outcome] += 1
+        if outcome in terminal_outcomes:
+            thread_router.discard_retired_topic(topic)
+    return dict(outcomes)
 
 
 async def _close_ghost_topics(
@@ -270,7 +362,11 @@ async def _close_ghost_topics(
                 await clear_topic_state(
                     user_id, thread_id, client=client, window_id=window_id
                 )
-                thread_router.unbind_thread(user_id, thread_id)
+                thread_router.unbind_thread(
+                    user_id,
+                    thread_id,
+                    retirement_reason="remote_removed",
+                )
                 if topic_removed:
                     closed_count += 1
             except OSError, TelegramError:
@@ -406,7 +502,11 @@ async def _recreate_dead_topics(
         # directly so another user's binding cannot short-circuit recreation.
         chat_id = thread_router.resolve_chat_id(user_id, thread_id)
 
-        thread_router.unbind_thread(user_id, thread_id)
+        thread_router.unbind_thread(
+            user_id,
+            thread_id,
+            retirement_reason="remote_deleted",
+        )
 
         created = False
         try:
@@ -477,6 +577,7 @@ async def sync_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> N
             "Telegram topic probe completed",
             dead_topic_count=len(dead_issues),
         )
+    audit.issues.extend(_retired_topic_issues())
     text, keyboard = _format_report(audit)
     if status_msg is not None:
         await safe_edit(status_msg, text, reply_markup=keyboard)
@@ -510,6 +611,7 @@ async def handle_sync_fix(query: CallbackQuery) -> None:
     pre_audit = session_manager.audit_state(live_ids, live_pairs)
     dead_issues = await _probe_dead_topics(client)
     pre_audit.issues.extend(dead_issues)
+    pre_audit.issues.extend(_retired_topic_issues())
 
     # Run state cleanup operations
     try:
@@ -533,6 +635,7 @@ async def handle_sync_fix(query: CallbackQuery) -> None:
         client, pre_audit.issues
     )
     recreated_count = await _recreate_dead_topics(client, pre_audit.issues)
+    retired_outcomes = await _cleanup_retired_topics(client)
 
     # Re-audit and compute actual fixed count (handles partial failures).
     # No skip_threads here: successful recreations use a new thread_id (old
@@ -541,6 +644,7 @@ async def handle_sync_fix(query: CallbackQuery) -> None:
     post_audit = await _run_audit()
     post_dead = await _probe_dead_topics(client)
     post_audit.issues.extend(post_dead)
+    post_audit.issues.extend(_retired_topic_issues())
     actual_fixed = pre_audit.fixable_count - post_audit.fixable_count
     text, keyboard = _format_report(
         post_audit,
@@ -548,6 +652,7 @@ async def handle_sync_fix(query: CallbackQuery) -> None:
         closed_topic_count=closed_count,
         recreated_topic_count=recreated_count,
         manual_close_count=manual_close_count,
+        retired_outcomes=retired_outcomes,
     )
     await safe_edit(query, text, reply_markup=keyboard)
 
