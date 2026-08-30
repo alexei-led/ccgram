@@ -242,7 +242,9 @@ class SessionMonitor:
         try:
             return callback(intent)
         except Exception:
-            logger.exception("Failed to validate backlog skip for %s", intent.session_id)
+            logger.exception(
+                "Failed to validate backlog skip for %s", intent.session_id
+            )
             return False
 
     def _skip_retry_due(self, session_id: str) -> bool:

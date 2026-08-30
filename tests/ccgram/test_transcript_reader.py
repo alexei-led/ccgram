@@ -42,9 +42,7 @@ async def test_same_transcript_reuses_offset_after_session_map_refresh(
             last_byte_offset=len(first.encode()),
         )
     )
-    state.begin_skip(
-        BacklogSkipIntent("sess-before-rename", "@1", 1, 4, 99, 50, 0)
-    )
+    state.begin_skip(BacklogSkipIntent("sess-before-rename", "@1", 1, 4, 99, 50, 0))
     reader = TranscriptReader(state, IdleTracker())
 
     messages = []
