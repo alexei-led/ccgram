@@ -223,8 +223,6 @@ class SessionMonitor:
             snapshot_offset=snapshot_offset,
             range_start=session.last_byte_offset,
         )
-        if not self._skip_is_current(intent):
-            return None
         # The durable barrier is written before destructive queue retirement.
         self.state.begin_skip(intent)
         if not self.state.save_if_dirty():
@@ -233,7 +231,8 @@ class SessionMonitor:
         prepared = await self._prepare_pending_skip(intent)
         if prepared is not True:
             return None
-        await self._enqueue_pending_skip_notice(intent)
+        if not await self._enqueue_pending_skip_notice(intent):
+            return None
         return intent
 
     def _skip_is_current(self, intent: BacklogSkipIntent) -> bool:
@@ -303,20 +302,20 @@ class SessionMonitor:
         self._clear_skip_retry(intent.session_id)
         return True
 
-    async def _enqueue_pending_skip_notice(self, intent: BacklogSkipIntent) -> None:
+    async def _enqueue_pending_skip_notice(self, intent: BacklogSkipIntent) -> bool:
         """Create one receipt-tracked visible notice for a persisted barrier."""
         if not self._skip_is_current(intent):
             self.state.cancel_skip(intent.session_id)
             self.state.save_if_dirty()
             self._clear_skip_retry(intent.session_id)
-            return
+            return False
         if intent.session_id in self._skip_notice_receipts or not self._skip_retry_due(
             intent.session_id
         ):
-            return
+            return False
         callback = self._skip_notice_callback
         if callback is None:
-            return
+            return False
         receipt = new_delivery_receipt(checkpoint=intent.snapshot_offset)
         token = activate_delivery_receipt(receipt)
         try:
@@ -333,9 +332,11 @@ class SessionMonitor:
         finally:
             deactivate_delivery_receipt(token)
             receipt.close()
-        if not receipt.failed:
-            self._clear_skip_retry(intent.session_id)
-            self._skip_notice_receipts[intent.session_id] = receipt
+        if receipt.failed:
+            return False
+        self._clear_skip_retry(intent.session_id)
+        self._skip_notice_receipts[intent.session_id] = receipt
+        return True
 
     async def _resume_pending_skip_notices(self) -> None:
         """Resume persisted skip barriers before reading any skipped bytes."""

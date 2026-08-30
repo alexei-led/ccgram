@@ -257,7 +257,7 @@ async def test_notice_enqueue_failure_retries_in_process(tmp_path: Path) -> None
         purge=purge, notice=notice, validate=lambda _intent: True
     )
     intent = await monitor.request_backlog_skip(1, "@0", 4, 99)
-    assert intent is not None
+    assert intent is None
     assert attempts == 1
     assert "s1" not in monitor._skip_notice_receipts
     assert "s1" in monitor.state.pending_skips
