@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.7.0] - 2026-08-30
+
+### Added
+
+- Support one Telegram topic per Herdr agent pane, including multiple agents in one tab.
+
+### Fixed
+
+- Prevent Telegram flood-control retries from overwhelming outbound delivery.
+- Preserve guarded Herdr identity across restarts, renames, and shared tabs.
+- Accept Herdr protocols 14–20 and continue best-effort with later protocol versions.
+
 ## [4.6.8] - 2026-08-26
 
 ### Fixed
