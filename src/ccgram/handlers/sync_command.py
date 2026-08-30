@@ -271,9 +271,7 @@ async def _remove_topic(client: TelegramClient, chat_id: int, thread_id: int) ->
         return False
 
 
-async def _delete_retired_topic(
-    client: TelegramClient, topic: RetiredTopic
-) -> str:
+async def _delete_retired_topic(client: TelegramClient, topic: RetiredTopic) -> str:
     """Delete a known topic, returning a terminal result or close fallback."""
     chat_id = topic.chat_id
     thread_id = topic.thread_id

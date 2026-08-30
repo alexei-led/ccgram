@@ -233,7 +233,9 @@ class TestRetiredTopicCleanup:
             sequence=1,
         )
 
-    async def test_deleted_outcome_removes_known_retired_topic(self, _patch_deps) -> None:
+    async def test_deleted_outcome_removes_known_retired_topic(
+        self, _patch_deps
+    ) -> None:
         *_, mock_tr, _, _ = _patch_deps
         topic = self._topic()
         mock_tr.iter_retired_topics.return_value = [topic]
@@ -261,7 +263,9 @@ class TestRetiredTopicCleanup:
         client.close_forum_topic.assert_awaited_once_with(-999, 42)
         mock_tr.discard_retired_topic.assert_called_once_with(topic)
 
-    async def test_already_gone_is_terminal_not_a_failed_delete(self, _patch_deps) -> None:
+    async def test_already_gone_is_terminal_not_a_failed_delete(
+        self, _patch_deps
+    ) -> None:
         *_, mock_tr, _, _ = _patch_deps
         topic = self._topic()
         mock_tr.iter_retired_topics.return_value = [topic]
@@ -275,7 +279,9 @@ class TestRetiredTopicCleanup:
         client.close_forum_topic.assert_not_awaited()
         mock_tr.discard_retired_topic.assert_called_once_with(topic)
 
-    async def test_failed_calls_remain_in_registry_for_later_fix(self, _patch_deps) -> None:
+    async def test_failed_calls_remain_in_registry_for_later_fix(
+        self, _patch_deps
+    ) -> None:
         *_, mock_tr, _, _ = _patch_deps
         topic = self._topic()
         mock_tr.iter_retired_topics.return_value = [topic]

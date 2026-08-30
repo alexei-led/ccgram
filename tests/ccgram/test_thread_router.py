@@ -107,7 +107,9 @@ class TestRetiredTopics:
         assert router.get_window_for_chat_thread(-999, 42) == "@2"
         assert list(router.iter_retired_topics()) == []
 
-    def test_default_unbind_preserves_remote_topic_intent(self, router: ThreadRouter) -> None:
+    def test_default_unbind_preserves_remote_topic_intent(
+        self, router: ThreadRouter
+    ) -> None:
         router.bind_thread(100, 42, "@1", chat_id=-999)
         router.unbind_thread(100, 42, chat_id=-999)
 

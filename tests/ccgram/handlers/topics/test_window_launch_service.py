@@ -426,8 +426,8 @@ class TestLaunchWindowFailure:
                     cleanup_order.append(f"close:{target_id}") or True
                 )
             )
-            m.router.unbind_thread.side_effect = lambda *_args, **_kwargs: cleanup_order.append(
-                "unbind"
+            m.router.unbind_thread.side_effect = lambda *_args, **_kwargs: (
+                cleanup_order.append("unbind")
             )
             m.orchestration.clear_pending_creation.side_effect = lambda *_: (
                 cleanup_order.append("clear-pending")

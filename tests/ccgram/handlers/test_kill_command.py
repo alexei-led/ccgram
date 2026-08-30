@@ -67,8 +67,18 @@ class TestHandleSessionsKillConfirm:
 
         mock_tm.kill_window.assert_called_once_with("@5")
         assert mock_tr.unbind_thread.call_count == 2
-        mock_tr.unbind_thread.assert_any_call(100, 42)
-        mock_tr.unbind_thread.assert_any_call(200, 99)
+        mock_tr.unbind_thread.assert_any_call(
+            100,
+            42,
+            retirement_reason="stale_owned_binding",
+            cleanup_eligible=True,
+        )
+        mock_tr.unbind_thread.assert_any_call(
+            200,
+            99,
+            retirement_reason="stale_owned_binding",
+            cleanup_eligible=True,
+        )
         assert mock_clear.call_count == 2
 
     async def test_window_already_gone(self, _patch_deps) -> None:
@@ -84,7 +94,12 @@ class TestHandleSessionsKillConfirm:
             await handle_sessions_kill_confirm(query, 100, "@5", bot)
 
         mock_tm.kill_window.assert_not_called()
-        mock_tr.unbind_thread.assert_called_once_with(100, 42)
+        mock_tr.unbind_thread.assert_called_once_with(
+            100,
+            42,
+            retirement_reason="stale_owned_binding",
+            cleanup_eligible=True,
+        )
 
     async def test_refreshes_dashboard_after_kill(self, _patch_deps) -> None:
         _mock_sm, mock_tr, mock_tm, _ = _patch_deps

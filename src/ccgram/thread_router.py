@@ -201,7 +201,12 @@ class ThreadRouter:
         )
         self._dedup_thread_bindings()
         self._rebuild_reverse_index()
-        for _user_id, chat_id, thread_id, _window_id in self.iter_thread_bindings_with_chat():
+        for (
+            _user_id,
+            chat_id,
+            thread_id,
+            _window_id,
+        ) in self.iter_thread_bindings_with_chat():
             self._restore_active_topic(chat_id, thread_id)
 
     @staticmethod
@@ -224,7 +229,7 @@ class ThreadRouter:
                     cleanup_eligible=cleanup_eligible,
                     sequence=int(raw["sequence"]),
                 )
-            except (KeyError, TypeError, ValueError):
+            except KeyError, TypeError, ValueError:
                 continue
             if (
                 not isinstance(reason, str)
