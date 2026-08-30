@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.7.1] - 2026-08-30
+
+### Fixed
+
+- Stop stale Herdr sessions from relaying retained transcripts while preserving durable session identity.
+- Handle Telegram flood control with quiet, bounded retries and durable queue backoff without advancing undelivered transcript offsets.
+- Prevent topic-existence probes from retrying flood-limited administrative requests.
+
 ## [4.7.0] - 2026-08-30
 
 ### Added
