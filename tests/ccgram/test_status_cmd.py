@@ -177,8 +177,13 @@ class TestStatusMainHerdr:
         # it counts herdr: keys and lists herdr panes — not default to tmux.
         monkeypatch.setenv("CCGRAM_DIR", str(tmp_path))
         monkeypatch.setenv("TMUX_SESSION_NAME", "ccgram")
-        # Registers the key so the load_dotenv-set value is restored on teardown.
-        monkeypatch.delenv("CCGRAM_MULTIPLEXER", raising=False)
+        # The key must be absent for load_dotenv to supply it (dotenv does not
+        # override an existing value), and it must be registered with monkeypatch
+        # or the value dotenv writes into os.environ outlives the test and every
+        # later test in this worker resolves the herdr backend. delenv alone does
+        # not register an absent key, so set it first: setenv always registers.
+        monkeypatch.setenv("CCGRAM_MULTIPLEXER", "tmux")
+        monkeypatch.delenv("CCGRAM_MULTIPLEXER")
         (tmp_path / ".env").write_text("CCGRAM_MULTIPLEXER=herdr\n")
 
         session_map = {"herdr:w2:p1": {"session_id": "abc-123", "cwd": "/tmp"}}
