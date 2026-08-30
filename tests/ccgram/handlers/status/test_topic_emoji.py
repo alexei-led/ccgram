@@ -715,9 +715,66 @@ class TestFirstPaintPacing:
             await update_topic_emoji(bot, -100, 1, "idle", "alpha")
             assert bot.edit_forum_topic.await_count == 1
 
-            mock_monotonic.return_value = 0.2
-            with patch(f"{MOD}.asyncio") as aio:
-                aio.sleep = AsyncMock()
+            clock = {"now": 0.2}
+            mock_monotonic.side_effect = lambda: clock["now"]
+
+            async def advance(seconds: float) -> None:
+                clock["now"] += seconds
+
+            with patch(
+                f"{MOD}.asyncio.sleep", new=AsyncMock(side_effect=advance)
+            ) as sleep_mock:
                 await sync_topic_name(bot, -100, 2, "beta")
-        aio.sleep.assert_awaited_once_with(CHAT_EDIT_MIN_INTERVAL - 0.2)
+        sleep_mock.assert_awaited_once_with(CHAT_EDIT_MIN_INTERVAL - 0.2)
         assert bot.edit_forum_topic.await_count == 2
+
+    async def test_sync_rechecks_stamp_after_sleeping(self) -> None:
+        """Greptile #206 P1: while /sync sleeps out the spacing, the poll
+        task may rename another topic and move the stamp; sync must
+        re-check and sleep again rather than send inside the interval."""
+        from ccgram.handlers.status.topic_emoji import (
+            CHAT_EDIT_MIN_INTERVAL,
+            _last_chat_edit,
+        )
+
+        bot = AsyncMock()
+        _last_chat_edit[-100] = (0.0, (-100, 1))
+        clock = {"now": 0.2}
+
+        async def poll_renames_during_sleep(_seconds: float) -> None:
+            # The poll task (no sync lock) renames another topic just as
+            # sync wakes, then time advances by the spacing interval.
+            clock["now"] += CHAT_EDIT_MIN_INTERVAL
+            _last_chat_edit[-100] = (clock["now"], (-100, 3))
+
+        with (
+            patch(_PATCH_MONOTONIC, side_effect=lambda: clock["now"]),
+            patch(
+                f"{MOD}.asyncio.sleep",
+                new=AsyncMock(side_effect=poll_renames_during_sleep),
+            ) as sleep_mock,
+        ):
+            await sync_topic_name(bot, -100, 2, "beta")
+
+        # Every sleep is undercut by a fresh different-topic stamp, so the
+        # bounded loop sleeps three times and then sends (degrading to the
+        # unspaced send rather than starving the command).
+        assert sleep_mock.await_count == 3
+        assert bot.edit_forum_topic.await_count == 1
+
+    def test_topic_cleanup_keeps_chat_pacing_stamp(self) -> None:
+        """Greptile #206: the pacing stamp is chat-scoped and must survive
+        a single topic's teardown (only the permission set is cleared)."""
+        from ccgram.handlers.status.topic_emoji import (
+            _disabled_chats,
+            _last_chat_edit,
+            clear_disabled_chat,
+        )
+
+        _disabled_chats.add(-100)
+        _last_chat_edit[-100] = (0.0, (-100, 1))
+
+        clear_disabled_chat(-100, 42)
+
+        assert -100 not in _disabled_chats
+        assert _last_chat_edit[-100] == (0.0, (-100, 1))

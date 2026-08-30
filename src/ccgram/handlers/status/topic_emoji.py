@@ -352,10 +352,23 @@ async def sync_topic_name(
         now = time.monotonic()
         if _flood_paused(chat_id, now):
             return
-        last = _last_chat_edit.get(chat_id)
-        if last is not None and now - last[0] < CHAT_EDIT_MIN_INTERVAL:
+        # Re-check the stamp after each sleep: the poll task renames other
+        # topics without this lock and moves it, so a single sleep-then-send
+        # could land inside the interval it just waited out (#206 review).
+        # Bounded retries: a pathological interleaving degrades to the
+        # unspaced send rather than starving the command forever.
+        for _ in range(3):
+            last = _last_chat_edit.get(chat_id)
+            if (
+                last is None
+                or last[1] == key
+                or now - last[0] >= CHAT_EDIT_MIN_INTERVAL
+            ):
+                break
             await asyncio.sleep(CHAT_EDIT_MIN_INTERVAL - (now - last[0]))
             now = time.monotonic()
+            if _flood_paused(chat_id, now):
+                return
         _last_chat_edit[chat_id] = (now, key)
         await _edit_topic_name(
             client,
@@ -497,11 +510,11 @@ _MAX_DISABLED_CHATS = 1000
 @topic_state.register("chat")
 def clear_disabled_chat(chat_id: int, _thread_id: int = 0) -> None:
     """Clear chat-scoped rename state on topic cleanup: the permission
-    disabled set and the rename pacing stamp. The flood cooldown is NOT
-    cleared here: it is chat-wide and must outlive any single topic's
-    teardown until it lazily expires (#199)."""
+    disabled set only. The flood cooldown and the pacing stamp are NOT
+    cleared here: both are chat-wide and must outlive any single topic's
+    teardown (a stale stamp ages out of the spacing check on its own;
+    the cooldown expires lazily) (#199, #206 review)."""
     _disabled_chats.discard(chat_id)
-    _last_chat_edit.pop(chat_id, None)
     if len(_disabled_chats) > _MAX_DISABLED_CHATS:
         _disabled_chats.clear()
 
