@@ -1,9 +1,11 @@
 """Dependency-light acknowledgement contract for transcript delivery.
 
 Producers create a receipt for one transcript item. Queue workers settle each
-tracked outbound task. Persistence may advance only after every receipt closes
-without a failed task. This module deliberately knows nothing about Telegram,
-handlers, queues, or session monitoring.
+tracked outbound task. Persistence advances over the leading run of receipts
+that closed without a failed task (see ``settled_prefix`` and
+``settled_run_offset``); the first pending, failed, or unclosed receipt, or
+one without a checkpoint, fences the rest. This module deliberately knows
+nothing about Telegram, handlers, queues, or session monitoring.
 """
 
 from __future__ import annotations
@@ -84,3 +86,58 @@ def get_active_delivery_receipt() -> DeliveryReceipt | None:
 def delivery_receipts_ready(receipts: list[DeliveryReceipt]) -> bool:
     """Whether every receipt is explicitly acknowledged or intentionally dropped."""
     return all(receipt.commit_ready for receipt in receipts)
+
+
+def settled_prefix(receipts: list[DeliveryReceipt]) -> list[DeliveryReceipt]:
+    """The leading run of receipts whose delivery may commit now.
+
+    The queue settles tasks in dispatch order, so the leading run of
+    commit-ready receipts is durable progress even while later receipts of
+    the same session are still in flight (#205): waiting for every receipt
+    to close never commits under sustained output, and a restart then
+    replays the whole settled run. The first pending, failed, or unclosed
+    receipt, or one without a checkpoint, fences the rest; replay resumes
+    from the fence, preserving at-least-once delivery.
+
+    The run alone does not fix a commit VALUE: receipts registered in one
+    parse cycle share that cycle's batch-end checkpoint, so the run's last
+    checkpoint can equal the fence's. Use ``settled_run_offset`` for the
+    durable offset.
+    """
+    prefix: list[DeliveryReceipt] = []
+    for receipt in receipts:
+        if receipt.checkpoint is None or not receipt.commit_ready:
+            break
+        prefix.append(receipt)
+    return prefix
+
+
+def settled_run_offset(
+    run: list[DeliveryReceipt], fence: DeliveryReceipt | None
+) -> int | None:
+    """Durable commit offset for a settled run, honoring checkpoint ties.
+
+    Receipts registered in one parse cycle share that cycle's batch-end
+    checkpoint: an unsettled sibling sitting below the shared checkpoint
+    would be lost by a restart replaying from it. The offset is therefore
+    the run's last checkpoint STRICTLY below the fence's, so persistence
+    marks only fully settled batches and lags delivery by at most one
+    in-flight batch. Without a fence the whole run commits. A fence
+    without a checkpoint is unorderable and blocks the commit
+    conservatively.
+    """
+    if not run:
+        return None
+    if fence is None:
+        boundary = run[-1].checkpoint
+        assert boundary is not None  # settled_prefix fences None out
+        return boundary
+    fence_checkpoint = fence.checkpoint
+    if fence_checkpoint is None:
+        return None
+    for receipt in reversed(run):
+        checkpoint = receipt.checkpoint
+        assert checkpoint is not None  # settled_prefix fences None out
+        if checkpoint < fence_checkpoint:
+            return checkpoint
+    return None
