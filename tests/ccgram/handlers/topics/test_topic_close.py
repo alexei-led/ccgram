@@ -50,7 +50,9 @@ class TestTopicClosedHandler:
         await topic_closed_handler(_make_update(), ctx)
 
         router.get_window_for_thread.assert_called_once_with(1, 42)
-        router.unbind_thread.assert_called_once_with(1, 42)
+        router.unbind_thread.assert_called_once_with(
+            1, 42, retirement_reason="remote_closed"
+        )
         clear_args = clear_state.call_args
         assert clear_args.args[0:2] == (1, 42)
         assert clear_args.args[2].bot is ctx.bot

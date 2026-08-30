@@ -398,7 +398,11 @@ async def _handle_dead_window_notification(
                     window_id=wid,
                     window_dead=True,
                 )
-                thread_router.unbind_thread(user_id, thread_id)
+                thread_router.unbind_thread(
+                    user_id,
+                    thread_id,
+                    retirement_reason="remote_deleted",
+                )
                 logger.info(
                     "Topic deleted: unbound window %s for thread %d, user %d",
                     wid,

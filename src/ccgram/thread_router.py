@@ -25,11 +25,32 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+from dataclasses import dataclass
 import structlog
 from collections.abc import Callable, Iterator
 from typing import Any, cast
 
 logger = structlog.get_logger()
+
+_RETIRED_TOPIC_LIMIT = 100
+
+
+@dataclass(frozen=True)
+class RetiredTopic:
+    """A known former forum-topic binding retained for Sync cleanup.
+
+    This is deliberately local evidence only: a record means ccgram previously
+    owned this exact chat/thread binding. It is not evidence that arbitrary
+    Telegram topics can be enumerated or safely removed.
+    """
+
+    user_id: int
+    chat_id: int
+    thread_id: int
+    reason: str
+    cleanup_eligible: bool
+    sequence: int
+
 
 _active_chat_id: contextvars.ContextVar[int | None] = contextvars.ContextVar(
     "active_thread_chat_id", default=None
@@ -78,6 +99,8 @@ class ThreadRouter:
         # Reverse index: (user_id, window_id) -> thread_id for O(1) lookups
         self._window_to_thread: dict[tuple[int, str], int] = {}
         self._chat_window_to_thread: dict[tuple[int, int, str], int] = {}
+        self._retired_topics: list[RetiredTopic] = []
+        self._next_retired_sequence = 1
         self._schedule_save: Callable[[], None] = schedule_save
         self._has_window_state: Callable[[str], bool] = has_window_state
 
@@ -89,6 +112,8 @@ class ThreadRouter:
         self.window_display_names.clear()
         self._window_to_thread.clear()
         self._chat_window_to_thread.clear()
+        self._retired_topics.clear()
+        self._next_retired_sequence = 1
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -141,6 +166,17 @@ class ThreadRouter:
                 for (uid, chat_id, tid), wid in self.chat_thread_bindings.items()
             },
             "window_display_names": self.window_display_names,
+            "retired_topics": [
+                {
+                    "user_id": topic.user_id,
+                    "chat_id": topic.chat_id,
+                    "thread_id": topic.thread_id,
+                    "reason": topic.reason,
+                    "cleanup_eligible": topic.cleanup_eligible,
+                    "sequence": topic.sequence,
+                }
+                for topic in self._retired_topics
+            ],
         }
 
     def from_dict(self, data: dict[str, Any]) -> None:
@@ -159,8 +195,111 @@ class ThreadRouter:
             uid, chat_id, tid = (int(part) for part in key.split(":", 2))
             self.chat_thread_bindings[(uid, chat_id, tid)] = wid
         self.window_display_names = data.get("window_display_names", {})
+        self._retired_topics = self._load_retired_topics(data.get("retired_topics", []))
+        self._next_retired_sequence = (
+            max((topic.sequence for topic in self._retired_topics), default=0) + 1
+        )
         self._dedup_thread_bindings()
         self._rebuild_reverse_index()
+        for _user_id, chat_id, thread_id, _window_id in self.iter_thread_bindings_with_chat():
+            self._restore_active_topic(chat_id, thread_id)
+
+    @staticmethod
+    def _load_retired_topics(raw_topics: Any) -> list[RetiredTopic]:
+        """Load a bounded, validated retired-topic registry from persisted state."""
+        if not isinstance(raw_topics, list):
+            return []
+        loaded: list[RetiredTopic] = []
+        for raw in raw_topics[-_RETIRED_TOPIC_LIMIT:]:
+            if not isinstance(raw, dict):
+                continue
+            try:
+                reason = raw["reason"]
+                cleanup_eligible = raw["cleanup_eligible"]
+                topic = RetiredTopic(
+                    user_id=int(raw["user_id"]),
+                    chat_id=int(raw["chat_id"]),
+                    thread_id=int(raw["thread_id"]),
+                    reason=reason,
+                    cleanup_eligible=cleanup_eligible,
+                    sequence=int(raw["sequence"]),
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+            if (
+                not isinstance(reason, str)
+                or not reason
+                or not isinstance(cleanup_eligible, bool)
+                or topic.chat_id == topic.user_id
+                or topic.thread_id <= 0
+                or topic.sequence <= 0
+            ):
+                continue
+            loaded = [
+                existing
+                for existing in loaded
+                if (existing.chat_id, existing.thread_id)
+                != (topic.chat_id, topic.thread_id)
+            ]
+            loaded.append(topic)
+        return loaded
+
+    # ------------------------------------------------------------------
+    # Retired topic registry
+    # ------------------------------------------------------------------
+
+    def iter_retired_topics(self) -> Iterator[RetiredTopic]:
+        """Yield locally known retired topics in oldest-first retention order."""
+        return iter(tuple(self._retired_topics))
+
+    def discard_retired_topic(self, topic: RetiredTopic) -> bool:
+        """Remove exactly *topic* after a terminal Telegram API outcome."""
+        try:
+            self._retired_topics.remove(topic)
+        except ValueError:
+            return False
+        self._schedule_save()
+        return True
+
+    def _retire_topic(
+        self,
+        user_id: int,
+        chat_id: int | None,
+        thread_id: int,
+        *,
+        reason: str,
+        cleanup_eligible: bool,
+    ) -> None:
+        """Remember a known local forum topic, never an inferred Telegram topic."""
+        if chat_id is None or chat_id == user_id:
+            return
+        self._retired_topics = [
+            topic
+            for topic in self._retired_topics
+            if (topic.chat_id, topic.thread_id) != (chat_id, thread_id)
+        ]
+        self._retired_topics.append(
+            RetiredTopic(
+                user_id=user_id,
+                chat_id=chat_id,
+                thread_id=thread_id,
+                reason=reason,
+                cleanup_eligible=cleanup_eligible,
+                sequence=self._next_retired_sequence,
+            )
+        )
+        self._next_retired_sequence += 1
+        self._retired_topics = self._retired_topics[-_RETIRED_TOPIC_LIMIT:]
+
+    def _restore_active_topic(self, chat_id: int | None, thread_id: int) -> None:
+        """Forget a retired record when the same chat/topic is bound again."""
+        if chat_id is None:
+            return
+        self._retired_topics = [
+            topic
+            for topic in self._retired_topics
+            if (topic.chat_id, topic.thread_id) != (chat_id, thread_id)
+        ]
 
     # ------------------------------------------------------------------
     # Thread binding operations
@@ -214,10 +353,17 @@ class ThreadRouter:
             self._window_to_thread[(user_id, window_id)] = thread_id
         if window_name:
             self.window_display_names[window_id] = window_name
+        self._restore_active_topic(chat_id, thread_id)
         self._schedule_save()
 
     def unbind_thread(
-        self, user_id: int, thread_id: int, chat_id: int | None = None
+        self,
+        user_id: int,
+        thread_id: int,
+        chat_id: int | None = None,
+        *,
+        retirement_reason: str = "keep_remote",
+        cleanup_eligible: bool = False,
     ) -> str | None:
         """Remove a thread binding.  Returns the previously bound window_id.
 
@@ -225,6 +371,7 @@ class ThreadRouter:
         display names — the caller (SessionManager) handles display-name
         lifecycle because it requires window_states knowledge.
         """
+        known_chat_id: int | None = chat_id
         if chat_id is not None:
             key = (user_id, chat_id, thread_id)
             window_id = self.chat_thread_bindings.pop(key, None)
@@ -243,11 +390,13 @@ class ThreadRouter:
                 if len(candidates) != 1:
                     return None
                 key, window_id = candidates[0]
+                known_chat_id = key[1]
                 self.chat_thread_bindings.pop(key, None)
                 self._chat_window_to_thread.pop((user_id, key[1], window_id), None)
                 self.group_chat_ids.pop(f"{user_id}:{thread_id}:{key[1]}", None)
             else:
                 window_id = bindings.pop(thread_id)
+                known_chat_id = self.group_chat_ids.get(f"{user_id}:{thread_id}")
                 self._window_to_thread.pop((user_id, window_id), None)
                 if not bindings:
                     del self.thread_bindings[user_id]
@@ -263,6 +412,14 @@ class ThreadRouter:
             thread_id,
             window_id,
             user_id,
+        )
+
+        self._retire_topic(
+            user_id,
+            known_chat_id,
+            thread_id,
+            reason=retirement_reason,
+            cleanup_eligible=cleanup_eligible,
         )
 
         # Clean up group_chat_id for the unbound thread
@@ -402,6 +559,7 @@ class ThreadRouter:
             self._window_to_thread.pop((user_id, window_id), None)
             self.chat_thread_bindings[(user_id, chat_id, thread_id)] = window_id
             self._chat_window_to_thread[(user_id, chat_id, window_id)] = thread_id
+            self._restore_active_topic(chat_id, thread_id)
         key = f"{user_id}:{thread_id}"
         if self.group_chat_ids.get(key) != chat_id:
             self.group_chat_ids[key] = chat_id
