@@ -31,8 +31,9 @@ from .delivery_contract import (
     DeliveryReceipt,
     activate_delivery_receipt,
     deactivate_delivery_receipt,
-    delivery_receipts_ready,
     new_delivery_receipt,
+    settled_prefix,
+    settled_run_offset,
 )
 from .event_reader import read_new_events
 from .idle_tracker import IdleTracker
@@ -395,43 +396,51 @@ class SessionMonitor:
         Called after a normal monitor cycle and after the bounded shutdown
         drain. It intentionally has no queue implementation knowledge.
         """
-        self._commit_watermark_if_idle()
+        self._commit_watermark_prefixes()
 
-    def _commit_watermark_if_idle(self) -> None:
-        """Commit only sessions acknowledged by the delivery boundary.
+    def _commit_watermark_prefixes(self) -> None:
+        """Commit each session's longest settled receipt run (#205).
 
-        Queue emptiness is deliberately not an acknowledgement: a terminal
-        Telegram failure also empties its queue. The queue owns receipt state;
-        this coordinator only asks which completed transcript cycles are safe
-        to persist. Failed receipts stay until restart, causing bounded replay
-        from the previous persisted watermark rather than loss.
+        Waiting for every receipt of a session to close (the previous
+        policy) never commits under sustained output: in-flight tasks hold
+        back the whole settled run, so a restart replays it in full into
+        the outbound queue. The run policy lives in
+        delivery_contract.settled_prefix / settled_run_offset (including
+        the shared-batch-checkpoint tie rule: persistence lags delivery by
+        at most one in-flight batch); this coordinator groups receipts by
+        session, keeps the pending-tools and pending-skip fences, and persists
+        one batched commit per cycle. The settled run
+        is consumed even when the tie rule defers its commit: replay then
+        re-delivers those messages, which at-least-once permits.
         """
         delivered_offsets: dict[str, int] = {}
+        consumed: dict[str, int] = {}
         self._commit_pending_skips()
         for session_id, receipts in self._delivery_receipts.items():
             if (
-                session_id in self.state.pending_skips
-                or session_id in self._transcript_reader._pending_tools
-                or not delivery_receipts_ready(receipts)
-                or any(receipt.checkpoint is None for receipt in receipts)
+                not receipts
+                or session_id in self.state.pending_skips
+                or session_id in self._pending_tools
             ):
                 continue
-            delivered_offsets[session_id] = max(
-                receipt.checkpoint
-                for receipt in receipts
-                if receipt.checkpoint is not None
-            )
-        committable = set(delivered_offsets)
-        # Receipt-free offsets are not proven delivered. Keeping them in memory
-        # is cheap and avoids every parse/cancellation race: a later delivered
-        # message commits the accumulated range, while a restart harmlessly
-        # reparses filtered entries from the previous durable watermark.
-        if self.state.commit_parsed_offsets(
-            committable, delivered_offsets=delivered_offsets
+            prefix = settled_prefix(receipts)
+            if not prefix:
+                continue
+            fence = receipts[len(prefix)] if len(prefix) < len(receipts) else None
+            offset = settled_run_offset(prefix, fence)
+            if offset is not None:
+                delivered_offsets[session_id] = offset
+            consumed[session_id] = len(prefix)
+        if delivered_offsets and self.state.commit_parsed_offsets(
+            set(delivered_offsets), delivered_offsets=delivered_offsets
         ):
             self.state.save_if_dirty()
-        for session_id in committable:
-            self._delivery_receipts.pop(session_id, None)
+        for session_id, count in consumed.items():
+            remainder = self._delivery_receipts[session_id][count:]
+            if remainder:
+                self._delivery_receipts[session_id] = remainder
+            else:
+                self._delivery_receipts.pop(session_id, None)
 
     async def check_for_updates(self, current_map: dict) -> list[NewMessage]:
         """Check all sessions for new assistant messages.

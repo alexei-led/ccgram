@@ -89,7 +89,7 @@ async def test_monitor_does_not_commit_when_queue_busy(tmp_path, monkeypatch):
         }
     }
     monkeypatch.setattr(mq, "queues_idle", lambda: False)
-    monitor._commit_watermark_if_idle()
+    monitor.commit_delivered_watermarks()
     with open(session_file, "a") as f:
         f.write(line)
     os.utime(session_file)
@@ -107,7 +107,7 @@ async def test_monitor_does_not_commit_when_queue_busy(tmp_path, monkeypatch):
     # Queues go idle (and the cycle's messages are dispatched): the loop's
     # post-dispatch commit folds the watermark.
     monkeypatch.setattr(mq, "queues_idle", lambda: True)
-    monitor._commit_watermark_if_idle()
+    monitor.commit_delivered_watermarks()
     assert tracked.last_byte_offset == 2 * size1
 
 
@@ -134,7 +134,7 @@ async def test_failed_delivery_receipt_withholds_watermark_until_restart(tmp_pat
     receipt.settle(DeliveryOutcome.FAILED)
     monitor._delivery_receipts["s1"] = [receipt]
 
-    monitor._commit_watermark_if_idle()
+    monitor.commit_delivered_watermarks()
     assert tracked.last_byte_offset == 10
 
     # A process restart discards in-memory parse state; the persisted offset
@@ -144,7 +144,7 @@ async def test_failed_delivery_receipt_withholds_watermark_until_restart(tmp_pat
     replay.close()
     replay.settle(DeliveryOutcome.DELIVERED)
     monitor._delivery_receipts["s1"] = [replay]
-    monitor._commit_watermark_if_idle()
+    monitor.commit_delivered_watermarks()
     assert tracked.last_byte_offset == 50
 
 
@@ -162,7 +162,7 @@ def test_ready_receipt_commits_only_its_checkpoint(tmp_path):
     receipt.settle(DeliveryOutcome.DELIVERED)
     monitor._delivery_receipts["s1"] = [receipt]
 
-    monitor._commit_watermark_if_idle()
+    monitor.commit_delivered_watermarks()
 
     assert tracked.last_byte_offset == 50
 
@@ -176,7 +176,7 @@ def test_receipt_free_parsed_offset_is_not_committed(tmp_path):
     )
     monitor.state.update_session(tracked)
 
-    monitor._commit_watermark_if_idle()
+    monitor.commit_delivered_watermarks()
 
     assert tracked.last_byte_offset == 10
 
@@ -199,3 +199,29 @@ async def test_queues_idle_semantics():
     mq._inflight_count = 0
     assert mq.queues_idle() is True
     mq._message_queues.clear()
+
+
+def test_settled_prefix_before_failure_commits(tmp_path):
+    """The #205 policy change: progress strictly below a failed receipt is
+    durable; the failed receipt and everything after it replay."""
+    from ccgram.session_monitor import SessionMonitor
+
+    monitor = SessionMonitor(projects_path=tmp_path, state_file=tmp_path / "ms.json")
+    tracked = TrackedSession(
+        session_id="s1", file_path="/x", last_byte_offset=10, parsed_offset=90
+    )
+    monitor.state.update_session(tracked)
+    ok = DeliveryReceipt(checkpoint=50)
+    ok.track()
+    ok.close()
+    ok.settle(DeliveryOutcome.DELIVERED)
+    failed = DeliveryReceipt(checkpoint=90)
+    failed.track()
+    failed.close()
+    failed.settle(DeliveryOutcome.FAILED)
+    monitor._delivery_receipts["s1"] = [ok, failed]
+
+    monitor.commit_delivered_watermarks()
+
+    assert tracked.last_byte_offset == 50
+    assert monitor._delivery_receipts["s1"] == [failed]
