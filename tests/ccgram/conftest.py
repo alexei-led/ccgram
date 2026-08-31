@@ -8,9 +8,10 @@ import os
 import time
 
 import pytest
+import pytest_asyncio
 
 
-@pytest.fixture(autouse=True)
+@pytest_asyncio.fixture(autouse=True)
 async def _shutdown_queue_workers():
     """Kill background queue workers created as side-effects of handler calls.
 
