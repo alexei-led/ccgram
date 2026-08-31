@@ -103,6 +103,7 @@ class TestDirectChoiceKeyboard:
 def _callback_update(*, chat_id: int, thread_id: int | None, message_id: int):
     message = MagicMock()
     message.chat.id = chat_id
+    message.chat.type = "supergroup"
     message.message_id = message_id
     message.message_thread_id = thread_id
     query = AsyncMock()

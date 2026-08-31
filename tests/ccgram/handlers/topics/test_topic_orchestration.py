@@ -114,18 +114,29 @@ class TestCollectTargetChats:
             result = collect_target_chats("@5")
             assert result == set()
 
-    def test_skips_positive_ids(self):
+    def test_skips_positive_ids_without_private_topic_capability(self):
         with (
             patch(
                 "ccgram.handlers.topics.topic_orchestration.thread_router"
             ) as mock_router,
             patch("ccgram.handlers.topics.topic_orchestration.config") as mock_config,
         ):
+            mock_router.iter_direct_message_chat_ids.return_value = []
             mock_router.iter_thread_bindings.return_value = []
             mock_router.group_chat_ids = {"100:5": 100}
             mock_config.group_id = None
             result = collect_target_chats("@5")
             assert result == set()
+
+    def test_includes_private_chat_with_observed_topic_capability(self):
+        with patch(
+            "ccgram.handlers.topics.topic_orchestration.thread_router"
+        ) as mock_router:
+            mock_router.iter_direct_message_chat_ids.return_value = [100]
+            mock_router.iter_thread_bindings.return_value = []
+            mock_router.group_chat_ids = {}
+
+            assert collect_target_chats("@5") == {100}
 
 
 class TestHandleNewWindow:

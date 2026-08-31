@@ -32,6 +32,30 @@ from telegram._files.inputmedia import InputMedia
 from telegram._reaction import ReactionType
 
 
+def _route_direct_message_topic(
+    chat_id: int | str, kwargs: dict[str, Any]
+) -> dict[str, Any]:
+    """Use the direct-message API parameter only for observed capable topics.
+
+    The internal router deliberately stores a topic ID uniformly. Telegram's
+    Bot API, however, requires ``direct_messages_topic_id`` for private
+    threaded DMs and ``message_thread_id`` for forum supergroups.
+    """
+    thread_id = kwargs.get("message_thread_id")
+    if not isinstance(chat_id, int) or not isinstance(thread_id, int):
+        return kwargs
+
+    # Lazy: avoid making the Telegram seam own session initialization.
+    from .thread_router import thread_router
+
+    if not thread_router.is_direct_message_topic(chat_id, thread_id):
+        return kwargs
+    routed = dict(kwargs)
+    routed.pop("message_thread_id")
+    routed.setdefault("direct_messages_topic_id", thread_id)
+    return routed
+
+
 @runtime_checkable
 class TelegramClient(Protocol):
     """Narrow seam over the PTB ``Bot`` methods used in this codebase.
@@ -194,7 +218,11 @@ class PTBTelegramClient:
     async def send_message(
         self, chat_id: int | str, text: str, **kwargs: Any
     ) -> Message:
-        return await self._bot.send_message(chat_id=chat_id, text=text, **kwargs)
+        return await self._bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            **_route_direct_message_topic(chat_id, kwargs),
+        )
 
     async def edit_message_text(
         self,
@@ -238,26 +266,40 @@ class PTBTelegramClient:
     async def send_photo(
         self, chat_id: int | str, photo: Any, **kwargs: Any
     ) -> Message:
-        return await self._bot.send_photo(chat_id=chat_id, photo=photo, **kwargs)
+        return await self._bot.send_photo(
+            chat_id=chat_id,
+            photo=photo,
+            **_route_direct_message_topic(chat_id, kwargs),
+        )
 
     async def send_document(
         self, chat_id: int | str, document: Any, **kwargs: Any
     ) -> Message:
         return await self._bot.send_document(
-            chat_id=chat_id, document=document, **kwargs
+            chat_id=chat_id,
+            document=document,
+            **_route_direct_message_topic(chat_id, kwargs),
         )
 
     async def send_chat_action(
         self, chat_id: int | str, action: str, **kwargs: Any
     ) -> bool:
+        # Bot API has no direct_messages_topic_id for chat actions. Do not
+        # leak the forum-only parameter into an observed private topic.
+        routed = _route_direct_message_topic(chat_id, kwargs)
+        routed.pop("direct_messages_topic_id", None)
         return await self._bot.send_chat_action(
-            chat_id=chat_id, action=action, **kwargs
+            chat_id=chat_id, action=action, **routed
         )
 
     async def send_voice(
         self, chat_id: int | str, voice: Any, **kwargs: Any
     ) -> Message:
-        return await self._bot.send_voice(chat_id=chat_id, voice=voice, **kwargs)
+        return await self._bot.send_voice(
+            chat_id=chat_id,
+            voice=voice,
+            **_route_direct_message_topic(chat_id, kwargs),
+        )
 
     async def set_message_reaction(
         self,
@@ -396,7 +438,12 @@ class FakeTelegramClient:
         self, chat_id: int | str, text: str, **kwargs: Any
     ) -> Message:
         return self._record(
-            "send_message", {"chat_id": chat_id, "text": text, **kwargs}
+            "send_message",
+            {
+                "chat_id": chat_id,
+                "text": text,
+                **_route_direct_message_topic(chat_id, kwargs),
+            },
         )
 
     async def edit_message_text(
@@ -446,28 +493,45 @@ class FakeTelegramClient:
         self, chat_id: int | str, photo: Any, **kwargs: Any
     ) -> Message:
         return self._record(
-            "send_photo", {"chat_id": chat_id, "photo": photo, **kwargs}
+            "send_photo",
+            {
+                "chat_id": chat_id,
+                "photo": photo,
+                **_route_direct_message_topic(chat_id, kwargs),
+            },
         )
 
     async def send_document(
         self, chat_id: int | str, document: Any, **kwargs: Any
     ) -> Message:
         return self._record(
-            "send_document", {"chat_id": chat_id, "document": document, **kwargs}
+            "send_document",
+            {
+                "chat_id": chat_id,
+                "document": document,
+                **_route_direct_message_topic(chat_id, kwargs),
+            },
         )
 
     async def send_chat_action(
         self, chat_id: int | str, action: str, **kwargs: Any
     ) -> bool:
+        routed = _route_direct_message_topic(chat_id, kwargs)
+        routed.pop("direct_messages_topic_id", None)
         return self._record(
-            "send_chat_action", {"chat_id": chat_id, "action": action, **kwargs}
+            "send_chat_action", {"chat_id": chat_id, "action": action, **routed}
         )
 
     async def send_voice(
         self, chat_id: int | str, voice: Any, **kwargs: Any
     ) -> Message:
         return self._record(
-            "send_voice", {"chat_id": chat_id, "voice": voice, **kwargs}
+            "send_voice",
+            {
+                "chat_id": chat_id,
+                "voice": voice,
+                **_route_direct_message_topic(chat_id, kwargs),
+            },
         )
 
     async def set_message_reaction(

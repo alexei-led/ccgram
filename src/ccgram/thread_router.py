@@ -91,6 +91,10 @@ class ThreadRouter:
         self.thread_bindings: dict[int, dict[int, str]] = {}
         # Chat-scoped bindings preserve Telegram's chat-local thread identity.
         self.chat_thread_bindings: dict[tuple[int, int, int], str] = {}
+        # Chat/topic pairs observed with Bot API direct-message topic metadata.
+        # This is deliberately capability-driven: a positive chat ID alone is
+        # not evidence that it accepts ``direct_messages_topic_id``.
+        self.direct_message_topics: set[tuple[int, int]] = set()
         # "user_id:thread_id" -> chat_id for legacy/direct-message bindings.
         self.group_chat_ids: dict[str, int] = {}
         self.default_group_id = default_group_id
@@ -109,6 +113,7 @@ class ThreadRouter:
         self.thread_bindings.clear()
         self.group_chat_ids.clear()
         self.chat_thread_bindings.clear()
+        self.direct_message_topics.clear()
         self.window_display_names.clear()
         self._window_to_thread.clear()
         self._chat_window_to_thread.clear()
@@ -152,21 +157,22 @@ class ThreadRouter:
         self._dedup_chat_thread_bindings()
 
     def _dedup_chat_thread_bindings(self) -> None:
-        """Keep one deterministic chat-scoped binding for each window."""
-        window_bindings: dict[str, list[tuple[int, int, int]]] = {}
+        """Keep one deterministic binding per chat and window."""
+        window_bindings: dict[tuple[int, str], list[tuple[int, int, int]]] = {}
         for key, wid in self.chat_thread_bindings.items():
-            window_bindings.setdefault(wid, []).append(key)
-        for wid, keys in window_bindings.items():
+            window_bindings.setdefault((key[1], wid), []).append(key)
+        for (chat_id, wid), keys in window_bindings.items():
             if len(keys) <= 1:
                 continue
-            keep = max(keys, key=lambda key: (key[2], key[0], key[1]))
+            keep = max(keys, key=lambda key: (key[2], key[0]))
             for key in keys:
                 if key == keep:
                     continue
                 del self.chat_thread_bindings[key]
                 logger.warning(
-                    "Startup: removed duplicate binding thread %d -> window %s "
-                    "(keeping thread %d)",
+                    "Startup: removed duplicate binding chat %d thread %d -> "
+                    "window %s (keeping thread %d)",
+                    chat_id,
                     key[2],
                     wid,
                     keep[2],
@@ -188,6 +194,10 @@ class ThreadRouter:
                 f"{uid}:{chat_id}:{tid}": wid
                 for (uid, chat_id, tid), wid in self.chat_thread_bindings.items()
             },
+            "direct_message_topics": [
+                f"{chat_id}:{thread_id}"
+                for chat_id, thread_id in sorted(self.direct_message_topics)
+            ],
             "window_display_names": self.window_display_names,
             "retired_topics": [
                 {
@@ -217,6 +227,15 @@ class ThreadRouter:
         for key, wid in data.get("chat_thread_bindings", {}).items():
             uid, chat_id, tid = (int(part) for part in key.split(":", 2))
             self.chat_thread_bindings[(uid, chat_id, tid)] = wid
+        self.direct_message_topics = set()
+        raw_direct_topics = data.get("direct_message_topics", [])
+        for key in raw_direct_topics if isinstance(raw_direct_topics, list) else []:
+            try:
+                chat_id, thread_id = (int(part) for part in key.split(":", 1))
+            except AttributeError, TypeError, ValueError:
+                continue
+            if thread_id > 1:
+                self.direct_message_topics.add((chat_id, thread_id))
         self.window_display_names = data.get("window_display_names", {})
         self._retired_topics = self._load_retired_topics(data.get("retired_topics", []))
         self._next_retired_sequence = (
@@ -352,7 +371,7 @@ class ThreadRouter:
             stale = [
                 candidate
                 for candidate, wid in self.chat_thread_bindings.items()
-                if wid == window_id and candidate != key
+                if candidate[1] == chat_id and wid == window_id and candidate != key
             ]
             for candidate in stale:
                 self.chat_thread_bindings.pop(candidate, None)
@@ -571,8 +590,31 @@ class ThreadRouter:
         return {window_id for _, _, window_id in self.iter_thread_bindings()}
 
     # ------------------------------------------------------------------
-    # Group chat ID management
+    # Chat capability and ID management
     # ------------------------------------------------------------------
+
+    def mark_direct_message_topic(self, chat_id: int, thread_id: int) -> None:
+        """Record Bot API metadata proving this private topic is supported.
+
+        Topic 1 is Telegram's General/control lane, never a session topic.
+        """
+        if (
+            not isinstance(chat_id, int)
+            or not isinstance(thread_id, int)
+            or thread_id <= 1
+            or (chat_id, thread_id) in self.direct_message_topics
+        ):
+            return
+        self.direct_message_topics.add((chat_id, thread_id))
+        self._schedule_save()
+
+    def is_direct_message_topic(self, chat_id: int, thread_id: int) -> bool:
+        """Return whether this exact chat/topic was observed as a direct DM topic."""
+        return (chat_id, thread_id) in self.direct_message_topics
+
+    def iter_direct_message_chat_ids(self) -> Iterator[int]:
+        """Iterate private chats with observed direct-message topic support."""
+        yield from sorted({chat_id for chat_id, _ in self.direct_message_topics})
 
     def set_group_chat_id(self, user_id: int, thread_id: int, chat_id: int) -> None:
         """Store the group chat ID and promote the binding to chat scope."""

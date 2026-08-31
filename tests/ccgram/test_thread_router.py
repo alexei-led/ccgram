@@ -158,6 +158,26 @@ class TestRetiredTopics:
         assert list(router.iter_retired_topics()) == []
 
 
+class TestDirectMessageTopics:
+    def test_observed_topic_persists_across_restart(self, router: ThreadRouter) -> None:
+        router.mark_direct_message_topic(100, 42)
+
+        restored = ThreadRouter(
+            schedule_save=lambda: None,
+            has_window_state=lambda _wid: False,
+        )
+        restored.from_dict(router.to_dict())
+
+        assert restored.is_direct_message_topic(100, 42) is True
+
+    def test_general_topic_is_never_recorded_as_a_session_topic(
+        self, router: ThreadRouter
+    ) -> None:
+        router.mark_direct_message_topic(100, 1)
+
+        assert router.is_direct_message_topic(100, 1) is False
+
+
 class TestReverseIndex:
     def test_get_thread_for_window(self, router: ThreadRouter) -> None:
         router.bind_thread(100, 42, "@5")
@@ -370,6 +390,21 @@ class TestChatScopedBindings:
         assert router.get_window_for_thread(100, 2, -1001) is None
         assert router.get_window_for_thread(200, 142, -1001) == "@5"
         assert router.get_thread_for_window(200, "@5", -1001) == 142
+
+    def test_same_window_routes_independently_in_different_chats(
+        self, router: ThreadRouter
+    ) -> None:
+        router.bind_thread(100, 2, "@5", chat_id=-1001)
+        router.bind_thread(200, 142, "@5", chat_id=-1002)
+
+        restored = ThreadRouter(
+            schedule_save=lambda: None,
+            has_window_state=lambda _wid: False,
+        )
+        restored.from_dict(router.to_dict())
+
+        assert restored.get_window_for_thread(100, 2, -1001) == "@5"
+        assert restored.get_window_for_thread(200, 142, -1002) == "@5"
 
 
 class TestUnbindChatScoped:

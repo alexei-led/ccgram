@@ -237,8 +237,8 @@ async def _auto_detect_provider(window_id: str) -> None:
 
 
 def collect_target_chats(window_id: str) -> set[int]:
-    """Collect unique group chat IDs for topic creation."""
-    seen_chats: set[int] = set()
+    """Collect topic-capable group and private chat IDs for topic creation."""
+    seen_chats = set(thread_router.iter_direct_message_chat_ids())
     for user_id, thread_id, _ in thread_router.iter_thread_bindings():
         chat_id = thread_router.resolve_chat_id(user_id, thread_id)
         if isinstance(chat_id, int) and chat_id < 0:

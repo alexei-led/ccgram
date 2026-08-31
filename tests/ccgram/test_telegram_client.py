@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from telegram import BotCommand, InputMedia, Message
@@ -68,6 +68,21 @@ class TestPTBTelegramClient:
         assert result is sentinel
         fake_bot.send_message.assert_awaited_once_with(
             chat_id=42, text="hi", message_thread_id=7, parse_mode="MarkdownV2"
+        )
+
+    async def test_routes_observed_private_topic_to_direct_messages_parameter(
+        self, fake_bot: MagicMock
+    ) -> None:
+        client = PTBTelegramClient(fake_bot)
+
+        with patch(
+            "ccgram.thread_router.thread_router.is_direct_message_topic",
+            return_value=True,
+        ):
+            await client.send_message(chat_id=42, text="hi", message_thread_id=7)
+
+        fake_bot.send_message.assert_awaited_once_with(
+            chat_id=42, text="hi", direct_messages_topic_id=7
         )
 
     async def test_edit_message_text_delegates(self, fake_bot: MagicMock):

@@ -23,7 +23,7 @@ from ...thread_router import thread_router
 from ...multiplexer import multiplexer as tmux_manager
 from ..telegram_origin import send_telegram_to_window
 from ..callback_data import CB_WIN_BIND, CB_WIN_CANCEL, CB_WIN_NEW
-from ..callback_helpers import get_thread_id
+from ..callback_helpers import get_thread_id, is_direct_messages_topic
 from .directory_browser import (
     BROWSE_DIRS_KEY,
     BROWSE_PAGE_KEY,
@@ -60,6 +60,24 @@ def _store_group_chat_id(
     chat = _get_topic_chat(update, query)
     if chat and chat.type in ("group", "supergroup"):
         thread_router.set_group_chat_id(user_id, thread_id, chat.id)
+
+
+async def _rename_forum_topic(
+    client: TelegramClient, chat_id: int, thread_id: int, display: str, window_id: str
+) -> None:
+    """Rename a forum topic, leaving observed private direct topics untouched."""
+    if thread_router.is_direct_message_topic(chat_id, thread_id):
+        return
+    try:
+        await client.edit_forum_topic(
+            chat_id=chat_id,
+            message_thread_id=thread_id,
+            name=format_topic_name_for_mode(
+                display, window_query.get_approval_mode(window_id)
+            ),
+        )
+    except TelegramError as exc:
+        logger.debug("Failed to rename topic: %s", exc)
 
 
 async def handle_window_callback(
@@ -232,6 +250,11 @@ async def _handle_bind(
         ),
     )
     _store_group_chat_id(user_id, thread_id, update, query)
+    topic_message = (
+        update.callback_query.message if update.callback_query else query.message
+    )
+    if topic_message and is_direct_messages_topic(topic_message):
+        thread_router.mark_direct_message_topic(topic_message.chat.id, thread_id)
 
     client: TelegramClient = PTBTelegramClient(context.bot)
     detected = await _detect_and_setup_provider(
@@ -242,16 +265,13 @@ async def _handle_bind(
         thread_id=thread_id,
     )
 
-    try:
-        await client.edit_forum_topic(
-            chat_id=thread_router.resolve_chat_id(user_id, thread_id),
-            message_thread_id=thread_id,
-            name=format_topic_name_for_mode(
-                display, window_query.get_approval_mode(selected_wid)
-            ),
-        )
-    except TelegramError as e:
-        logger.debug("Failed to rename topic: %s", e)
+    await _rename_forum_topic(
+        client,
+        thread_router.resolve_chat_id(user_id, thread_id),
+        thread_id,
+        display,
+        selected_wid,
+    )
 
     await safe_edit(
         query,
