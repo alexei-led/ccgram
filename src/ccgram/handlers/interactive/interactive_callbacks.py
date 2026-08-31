@@ -144,18 +144,24 @@ async def _handle_direct_choice(
     ):
         await query.answer("This prompt has expired", show_alert=True)
         return
-    advance_interactive_sequence(user_id, thread_id)
     enter = key in {"y", "n"}
-    if pane_id:
-        await tmux_manager.send_keys_to_pane(
-            pane_id, key, enter=enter, literal=True, window_id=window_id
-        )
-    else:
-        window = await tmux_manager.find_window_by_id(window_id)
-        if window:
-            await tmux_manager.send_keys(
+    try:
+        if pane_id:
+            sent = await tmux_manager.send_keys_to_pane(
+                pane_id, key, enter=enter, literal=True, window_id=window_id
+            )
+        else:
+            window = await tmux_manager.find_window_by_id(window_id)
+            sent = bool(window) and await tmux_manager.send_keys(
                 window.window_id, key, enter=enter, literal=True
             )
+    except Exception:  # noqa: BLE001 — report any backend delivery failure to user
+        logger.warning("Failed to send direct interactive choice", exc_info=True)
+        sent = False
+    if not sent:
+        await query.answer("Unable to send choice. Try again.", show_alert=True)
+        return
+    advance_interactive_sequence(user_id, thread_id, chat_id=chat_id)
     await query.answer()
 
 
@@ -204,7 +210,7 @@ async def handle_interactive_callback(
     client = PTBTelegramClient(context.bot)
     if cb_prefix == CB_ASK_REFRESH:
         await handle_interactive_ui(
-            client, user_id, window_id, thread_id, pane_id=pane_id
+            client, user_id, window_id, thread_id, pane_id=pane_id, chat_id=chat_id
         )
         await query.answer("\U0001f504")
     else:
@@ -221,10 +227,10 @@ async def handle_interactive_callback(
         if sent and refresh_ui:
             await asyncio.sleep(0.5)
             await handle_interactive_ui(
-                client, user_id, window_id, thread_id, pane_id=pane_id
+                client, user_id, window_id, thread_id, pane_id=pane_id, chat_id=chat_id
             )
         elif sent and not refresh_ui:
-            await clear_interactive_msg(user_id, client, thread_id)
+            await clear_interactive_msg(user_id, client, thread_id, chat_id=chat_id)
         await query.answer(INTERACTIVE_KEY_LABELS.get(cb_prefix, ""))
 
 

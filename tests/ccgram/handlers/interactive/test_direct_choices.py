@@ -17,6 +17,7 @@ from ccgram.handlers.interactive.interactive_ui import (
     _interactive_msgs,
     _interactive_sequences,
     handle_interactive_ui,
+    is_current_interactive_prompt,
     parse_direct_choices,
 )
 
@@ -42,6 +43,38 @@ class TestParseDirectChoices:
         assert parse_direct_choices("Would you like to proceed?\n  Yes     No\n") == (
             ("y", "Yes"),
             ("n", "No"),
+        )
+
+    def test_selects_menu_block_nearest_action_footer(self) -> None:
+        choices = parse_direct_choices(
+            "Previous output:\n"
+            "  1. First prose item\n"
+            "  2. Second prose item\n"
+            "Pick a deployment:\n"
+            "  1. Staging\n"
+            "  2. Production\n"
+            "  Enter to select"
+        )
+
+        assert choices == (("1", "1. Staging"), ("2", "2. Production"))
+
+    def test_rejects_ambiguous_numbered_blocks_around_action_footer(self) -> None:
+        assert (
+            parse_direct_choices(
+                "  1. Earlier\n  2. Menu\n  Enter to select\n  1. Later\n  2. Menu"
+            )
+            == ()
+        )
+
+    def test_rejects_textual_multi_select_prompt(self) -> None:
+        assert (
+            parse_direct_choices(
+                "Choose all applicable environments:\n"
+                "  ❯ 1. Staging\n"
+                "    2. Production\n"
+                "  Enter to select"
+            )
+            == ()
         )
 
     @pytest.mark.parametrize(
@@ -97,7 +130,7 @@ class TestDirectChoiceKeyboard:
 
         keyboard = client.send_message.call_args.kwargs["reply_markup"]
         assert _button_data(keyboard)[0] == f"{CB_ASK_CHOICE}1:1:@12"
-        assert _interactive_contexts[(10, 42)] == (-100, 99)
+        assert _interactive_contexts[(10, -100, 42)] == (-100, 99)
 
 
 def _callback_update(*, chat_id: int, thread_id: int | None, message_id: int):
@@ -147,10 +180,10 @@ class TestDirectChoiceCallbacks:
     async def test_sends_direct_choice_only_for_current_chat_thread_and_sequence(
         self,
     ) -> None:
-        _interactive_mode[(10, 42)] = "@12"
-        _interactive_msgs[(10, 42)] = 99
-        _interactive_contexts[(10, 42)] = (-100, 99)
-        _interactive_sequences[(10, 42)] = 7
+        _interactive_mode[(10, -100, 42)] = "@12"
+        _interactive_msgs[(10, -100, 42)] = 99
+        _interactive_contexts[(10, -100, 42)] = (-100, 99)
+        _interactive_sequences[(10, -100, 42)] = 7
         query, update = _callback_update(chat_id=-100, thread_id=42, message_id=99)
 
         multiplexer = MagicMock()
@@ -182,7 +215,7 @@ class TestDirectChoiceCallbacks:
         multiplexer.send_keys.assert_awaited_once_with(
             "@12", "1", enter=False, literal=True
         )
-        assert _interactive_sequences[(10, 42)] == 8
+        assert _interactive_sequences[(10, -100, 42)] == 8
 
     @pytest.mark.parametrize(
         ("chat_id", "thread_id", "message_id", "sequence"),
@@ -192,10 +225,10 @@ class TestDirectChoiceCallbacks:
     async def test_rejects_direct_choice_without_current_prompt_ownership(
         self, chat_id: int, thread_id: int, message_id: int, sequence: int
     ) -> None:
-        _interactive_mode[(10, 42)] = "@12"
-        _interactive_msgs[(10, 42)] = 99
-        _interactive_contexts[(10, 42)] = (-100, 99)
-        _interactive_sequences[(10, 42)] = 7
+        _interactive_mode[(10, -100, 42)] = "@12"
+        _interactive_msgs[(10, -100, 42)] = 99
+        _interactive_contexts[(10, -100, 42)] = (-100, 99)
+        _interactive_sequences[(10, -100, 42)] = 7
         query, update = _callback_update(
             chat_id=chat_id, thread_id=thread_id, message_id=message_id
         )
@@ -230,3 +263,52 @@ class TestDirectChoiceCallbacks:
         query.answer.assert_awaited_once_with(
             "This prompt has expired", show_alert=True
         )
+
+    async def test_keeps_choice_current_when_key_delivery_fails(self) -> None:
+        _interactive_mode[(10, -100, 42)] = "@12"
+        _interactive_msgs[(10, -100, 42)] = 99
+        _interactive_contexts[(10, -100, 42)] = (-100, 99)
+        _interactive_sequences[(10, -100, 42)] = 7
+        query, update = _callback_update(chat_id=-100, thread_id=42, message_id=99)
+
+        multiplexer = MagicMock()
+        multiplexer.find_window_by_id = AsyncMock(
+            return_value=MagicMock(window_id="@12")
+        )
+        multiplexer.send_keys = AsyncMock(return_value=False)
+        with (
+            patch(
+                "ccgram.handlers.callback_helpers.user_owns_window",
+                return_value=True,
+            ),
+            patch(
+                "ccgram.handlers.interactive.interactive_callbacks.tmux_manager",
+                multiplexer,
+            ),
+        ):
+            await handle_interactive_callback(
+                query,
+                10,
+                f"{CB_ASK_CHOICE}1:7:@12",
+                update,
+                MagicMock(),
+            )
+
+        assert _interactive_sequences[(10, -100, 42)] == 7
+        query.answer.assert_awaited_once_with(
+            "Unable to send choice. Try again.", show_alert=True
+        )
+
+    def test_interactive_state_is_scoped_to_chat_as_well_as_thread(self) -> None:
+        _interactive_mode[(10, -100, 42)] = "@12"
+        _interactive_msgs[(10, -100, 42)] = 99
+        _interactive_contexts[(10, -100, 42)] = (-100, 99)
+        _interactive_sequences[(10, -100, 42)] = 7
+        _interactive_mode[(10, -101, 42)] = "@13"
+        _interactive_msgs[(10, -101, 42)] = 99
+        _interactive_contexts[(10, -101, 42)] = (-101, 99)
+        _interactive_sequences[(10, -101, 42)] = 7
+
+        assert is_current_interactive_prompt(10, 42, "@12", -100, 99, 7)
+        assert is_current_interactive_prompt(10, 42, "@13", -101, 99, 7)
+        assert not is_current_interactive_prompt(10, 42, "@12", -101, 99, 7)
