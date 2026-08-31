@@ -56,7 +56,7 @@ async def _show_workspace_picker_or_provider(
     let the user pin the new session. Other backends go straight to provider pick.
     When only one workspace matches the cwd exactly, skip the picker and pre-select it.
     """
-    if tmux_manager.capabilities.supports_workspace_selection:
+    if tmux_manager.capabilities.supports_workspace_selection is True:
         workspaces = await tmux_manager.list_workspaces()
         ws_triples = [(w.workspace_id, w.label, w.cwd) for w in workspaces]
         if context is not None and context.user_data is not None:
