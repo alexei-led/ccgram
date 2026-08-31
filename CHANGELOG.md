@@ -5,6 +5,88 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.2] - 2026-08-31
+
+### Fixed
+
+- Prevent topic-rename flood control from rearming indefinitely after `RetryAfter`.
+- Pace topic renames across restart bursts without dropping pending names.
+- Keep Telegram `RetryAfter` sleeps local to the limited request instead of stalling unrelated chats.
+- Serialize `/sync` renames per chat and consolidate retry-delay handling across request paths.
+
+### Documentation
+
+- Document tmux, Herdr, and agterm backends, including agterm setup and macOS limits.
+- Document shared-token rate-limit considerations for multi-instance deployments.
+
+### Contributors
+
+- Thanks to [@paoloantinori](https://github.com/paoloantinori) for PR #206 and the topic-rename flood-control fix.
+
+## [4.9.1] - 2026-08-31
+
+### Fixed
+
+- Let `ccgram doctor` and `ccgram status` load the agterm backend without Telegram credentials.
+- Expand `~` before CCGram passes a work directory to `agtermctl`.
+- Keep workspace selection separate from native agent status and guarded topic targets.
+- Report native agterm session status and classify providers when the process-group ID is unavailable.
+- Declare the asynchronous test cleanup fixture with the pytest asyncio plugin.
+
+### Contributors
+
+- Thanks to [@paskal](https://github.com/paskal) for the agterm backend and focused tests.
+
+## [4.9.0] - 2026-08-31
+
+### Added
+
+- Add an agterm multiplexer backend for session discovery, transcript reads, input, lifecycle actions, and reconciliation.
+- Add agterm workspace filtering through `CCGRAM_AGTERM_WORKSPACES`.
+
+### Fixed
+
+- Detect the foreground provider when a multiplexer cannot provide a process-group ID.
+- Keep provider detection independent from stale process-group cache entries in this case.
+
+### Contributors
+
+- Thanks to [@paskal](https://github.com/paskal) for the agterm backend, focused tests, and design notes.
+
+## [4.8.0] - 2026-08-30
+
+### Added
+
+- Add lossless queued text batching and source-scoped backlog telemetry for large transcript backlogs.
+- Add `/sync` cleanup for locally known retired Telegram topics.
+- Add a confirmed, retry-safe **Jump to live** action with visible skipped-range notices while retaining raw transcripts.
+
+### Fixed
+
+- Revalidate topic ownership at backlog purge, notice delivery, and watermark commit boundaries.
+- Preserve backlog skip barriers, receipts, and retired counts across retries, restarts, session re-keying, and topic rebounds.
+- Honor Telegram UTF-16 message limits without truncating batched text or entity offsets.
+
+## [4.7.1] - 2026-08-30
+
+### Fixed
+
+- Stop stale Herdr sessions from relaying retained transcripts while preserving durable session identity.
+- Handle Telegram flood control with quiet, bounded retries and durable queue backoff without advancing undelivered transcript offsets.
+- Prevent topic-existence probes from retrying flood-limited administrative requests.
+
+## [4.7.0] - 2026-08-30
+
+### Added
+
+- Support one Telegram topic per Herdr agent pane, including multiple agents in one tab.
+
+### Fixed
+
+- Prevent Telegram flood-control retries from overwhelming outbound delivery.
+- Preserve guarded Herdr identity across restarts, renames, and shared tabs.
+- Accept Herdr protocols 14–20 and continue best-effort with later protocol versions.
+
 ## [4.6.8] - 2026-08-26
 
 ### Fixed

@@ -537,7 +537,9 @@ class TestDeadWindowTopicDeleted:
             mock_clear.assert_awaited_once()
             _, kwargs = mock_clear.call_args
             assert kwargs.get("window_dead") is True
-            mock_tr.unbind_thread.assert_called_once_with(1, 100)
+            mock_tr.unbind_thread.assert_called_once_with(
+                1, 100, retirement_reason="remote_deleted"
+            )
 
 
 class TestPaneLifecycleNotify:

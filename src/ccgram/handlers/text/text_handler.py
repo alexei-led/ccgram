@@ -364,7 +364,12 @@ async def _handle_dead_window(
             user_id,
             thread_id,
         )
-        thread_router.unbind_thread(user_id, thread_id)
+        thread_router.unbind_thread(
+            user_id,
+            thread_id,
+            retirement_reason="system_replacement",
+            cleanup_eligible=True,
+        )
         lifecycle_strategy.clear_dead_notification(user_id, thread_id)
         start_path = str(Path.cwd())
         msg_text, keyboard, subdirs = build_directory_browser(

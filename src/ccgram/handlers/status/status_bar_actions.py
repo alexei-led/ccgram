@@ -21,6 +21,7 @@ import structlog
 from telegram import (
     CallbackQuery,
     InlineKeyboardButton,
+    InlineKeyboardMarkup,
     InputMediaDocument,
     Update,
     WebAppInfo,
@@ -38,13 +39,16 @@ from ..telegram_origin import send_telegram_to_window
 from ...topic_state_registry import topic_state
 from ..callback_data import (
     CB_KEYS_PREFIX,
+    CB_STATUS_BACKLOG_CANCEL,
+    CB_STATUS_BACKLOG_CONFIRM,
+    CB_STATUS_BACKLOG_JUMP,
     CB_STATUS_ESC,
     CB_STATUS_GET_FILE,
     CB_STATUS_LAST_REPLY,
     CB_STATUS_RECALL,
 )
 from ..callback_helpers import get_thread_id, parse_target, user_owns_window
-from ..callback_tokens import resolve_callback_data
+from ..callback_tokens import compact_callback_data, resolve_callback_data
 from ..callback_registry import register
 from ..live.screenshot_callbacks import (
     KEY_LABELS,
@@ -359,6 +363,131 @@ async def _handle_get_file(
     await query.answer()
 
 
+async def _handle_backlog_jump(
+    query: CallbackQuery, user_id: int, data: str, update: Update
+) -> None:
+    """Ask for explicit confirmation before skipping one severe source backlog."""
+    window_id = data[len(CB_STATUS_BACKLOG_JUMP) :]
+    chat_id = query.message.chat.id if query.message else None
+    if not user_owns_window(user_id, window_id, chat_id):
+        await query.answer("Not your session", show_alert=True)
+        return
+    thread_id = get_thread_id(update)
+    if thread_id is None or chat_id is None:
+        await query.answer("Use in a topic", show_alert=True)
+        return
+    if (
+        thread_router.resolve_window_for_thread(user_id, thread_id, chat_id)
+        != window_id
+    ):
+        await query.answer("Stale status button", show_alert=True)
+        return
+    # Lazy: status_bubble loads this module to build its optional dashboard row.
+    from .status_bubble import (
+        SEVERE_BACKLOG_AGE_SECONDS,
+        SEVERE_BACKLOG_COUNT,
+    )
+
+    # Lazy: messaging pipeline is loaded only when a severe action is tapped.
+    from ..messaging_pipeline.backlog import get_backlog_snapshot
+
+    snapshot = get_backlog_snapshot(user_id, window_id, thread_id)
+    if (
+        snapshot.pending_count < SEVERE_BACKLOG_COUNT
+        and snapshot.oldest_age_seconds < SEVERE_BACKLOG_AGE_SECONDS
+    ):
+        await query.answer("Backlog is no longer severe", show_alert=True)
+        return
+    keyboard = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "⏭ Confirm jump to live",
+                    callback_data=compact_callback_data(
+                        CB_STATUS_BACKLOG_CONFIRM,
+                        f"{CB_STATUS_BACKLOG_CONFIRM}{window_id}",
+                        window_id,
+                    ),
+                ),
+                InlineKeyboardButton(
+                    "Cancel",
+                    callback_data=compact_callback_data(
+                        CB_STATUS_BACKLOG_CANCEL,
+                        f"{CB_STATUS_BACKLOG_CANCEL}{window_id}",
+                        window_id,
+                    ),
+                ),
+            ]
+        ]
+    )
+    await PTBTelegramClient(query.get_bot()).send_message(
+        chat_id=chat_id,
+        text=(
+            f"Queue has {snapshot.pending_count} pending item(s). Jump to live and "
+            "skip this source's queued range? The raw transcript is retained."
+        ),
+        message_thread_id=thread_id,
+        reply_markup=keyboard,
+    )
+    await query.answer("Confirm jump to live")
+
+
+async def _handle_backlog_confirm(
+    query: CallbackQuery, user_id: int, data: str, update: Update
+) -> None:
+    """Persist the source barrier and queue its visible skipped-range notice."""
+    window_id = data[len(CB_STATUS_BACKLOG_CONFIRM) :]
+    chat_id = query.message.chat.id if query.message else None
+    if not user_owns_window(user_id, window_id, chat_id):
+        await query.answer("Not your session", show_alert=True)
+        return
+    thread_id = get_thread_id(update)
+    if thread_id is None or chat_id is None:
+        await query.answer("Use in a topic", show_alert=True)
+        return
+    if (
+        thread_router.resolve_window_for_thread(user_id, thread_id, chat_id)
+        != window_id
+    ):
+        await query.answer("Stale status button", show_alert=True)
+        return
+    # Confirmation may sit in Telegram while the queue drains. Recheck the
+    # destructive action's threshold instead of applying a stale decision.
+    # Lazy: status_bubble imports this module to build optional action rows.
+    from .status_bubble import (
+        SEVERE_BACKLOG_AGE_SECONDS,
+        SEVERE_BACKLOG_COUNT,
+    )
+
+    # Lazy: messaging pipeline is loaded only for a confirmed severe action.
+    from ..messaging_pipeline.backlog import get_backlog_snapshot
+
+    snapshot = get_backlog_snapshot(user_id, window_id, thread_id)
+    if (
+        snapshot.pending_count < SEVERE_BACKLOG_COUNT
+        and snapshot.oldest_age_seconds < SEVERE_BACKLOG_AGE_SECONDS
+    ):
+        await query.answer("Backlog is no longer severe", show_alert=True)
+        return
+    # Lazy: session_monitor reaches handler routing through bootstrap callbacks.
+    from ...session_monitor import get_active_monitor
+
+    monitor = get_active_monitor()
+    if monitor is None:
+        await query.answer("Monitor unavailable", show_alert=True)
+        return
+    intent = await monitor.request_backlog_skip(user_id, window_id, thread_id, chat_id)
+    if intent is None:
+        await query.answer("Backlog changed; try again", show_alert=True)
+        return
+    await query.answer(f"Jumping to live ({intent.skipped_count} queued item(s))")
+
+
+async def _handle_backlog_cancel(query: CallbackQuery) -> None:
+    """Leave all source watermarks and queued work unchanged."""
+    await query.answer("Jump to live cancelled")
+
+
 async def _handle_status_bar_action(
     query: CallbackQuery,
     user_id: int,
@@ -371,6 +500,8 @@ async def _handle_status_bar_action(
         CB_STATUS_RECALL: _handle_status_recall,
         CB_KEYS_PREFIX: _handle_keys,
         CB_STATUS_LAST_REPLY: _handle_last_reply,
+        CB_STATUS_BACKLOG_JUMP: _handle_backlog_jump,
+        CB_STATUS_BACKLOG_CONFIRM: _handle_backlog_confirm,
     }
     for prefix, handler in with_update.items():
         if data.startswith(prefix):
@@ -379,6 +510,10 @@ async def _handle_status_bar_action(
 
     if data.startswith(CB_STATUS_ESC):
         await _handle_status_esc(query, user_id, data)
+        return
+
+    if data.startswith(CB_STATUS_BACKLOG_CANCEL):
+        await _handle_backlog_cancel(query)
         return
 
     if data.startswith(CB_STATUS_GET_FILE):
@@ -392,6 +527,9 @@ async def _handle_status_bar_action(
     CB_KEYS_PREFIX,
     CB_STATUS_LAST_REPLY,
     CB_STATUS_GET_FILE,
+    CB_STATUS_BACKLOG_JUMP,
+    CB_STATUS_BACKLOG_CONFIRM,
+    CB_STATUS_BACKLOG_CANCEL,
 )
 async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query

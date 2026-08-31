@@ -164,9 +164,9 @@ async def _create_topic_window(
             launch_command=launch_command,
         )
         return success, message, name, window_id
-    # Tmux preserves its long-standing creation behavior. Herdr's native
-    # agent-status capability selects the guarded-session creation transaction.
-    if tmux_manager.capabilities.native_agent_status is not True:
+    # Tmux and agterm create normal durable windows. Herdr uses its guarded
+    # native topic-target transaction.
+    if tmux_manager.capabilities.native_topic_targets is not True:
         success, message, name, window_id = await tmux_manager.create_window(
             selected_path,
             launch_command=launch_command,
@@ -332,7 +332,12 @@ async def launch_window(  # noqa: PLR0912, PLR0915, C901
         if await tmux_manager.kill_window(created_wid):
             topic_orchestration.clear_pending_creation(created_wid)
             if pending_thread_id is not None:
-                thread_router.unbind_thread(user_id, pending_thread_id)
+                thread_router.unbind_thread(
+                    user_id,
+                    pending_thread_id,
+                    retirement_reason="system_replacement",
+                    cleanup_eligible=True,
+                )
         raise
 
     query_message = query.message
@@ -349,7 +354,12 @@ async def launch_window(  # noqa: PLR0912, PLR0915, C901
             if await tmux_manager.kill_window(created_wid):
                 topic_orchestration.clear_pending_creation(created_wid)
                 if pending_thread_id is not None:
-                    thread_router.unbind_thread(user_id, pending_thread_id)
+                    thread_router.unbind_thread(
+                        user_id,
+                        pending_thread_id,
+                        retirement_reason="system_replacement",
+                        cleanup_eligible=True,
+                    )
             raise
 
     if pending_thread_id is not None:
@@ -380,7 +390,12 @@ async def launch_window(  # noqa: PLR0912, PLR0915, C901
         if await tmux_manager.kill_window(created_wid):
             topic_orchestration.clear_pending_creation(created_wid)
             if pending_thread_id is not None:
-                thread_router.unbind_thread(user_id, pending_thread_id)
+                thread_router.unbind_thread(
+                    user_id,
+                    pending_thread_id,
+                    retirement_reason="system_replacement",
+                    cleanup_eligible=True,
+                )
         raise
 
     created_wid = _follow_supersession(created_wid)
@@ -393,7 +408,12 @@ async def launch_window(  # noqa: PLR0912, PLR0915, C901
         if await tmux_manager.kill_window(created_wid):
             topic_orchestration.clear_pending_creation(created_wid)
             if pending_thread_id is not None:
-                thread_router.unbind_thread(user_id, pending_thread_id)
+                thread_router.unbind_thread(
+                    user_id,
+                    pending_thread_id,
+                    retirement_reason="system_replacement",
+                    cleanup_eligible=True,
+                )
             message = "Session did not register with ccgram in time"
         else:
             message = (

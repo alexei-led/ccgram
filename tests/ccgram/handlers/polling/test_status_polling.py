@@ -33,6 +33,7 @@ from ccgram.handlers.polling.polling_state import (
 from ccgram.handlers.polling.polling_types import MAX_PROBE_FAILURES, TickContext
 from ccgram.providers.base import StatusUpdate
 from ccgram.telegram_client import PTBTelegramClient
+from ccgram.telegram_rate_limiter import NO_RETRY_RATE_LIMIT_ARGS
 from ccgram.multiplexer.base import ForegroundInfo, PaneInfo
 
 _INTERACTIVE_STATUS = StatusUpdate(
@@ -112,7 +113,9 @@ class TestAutocloseTimers:
             chat_id=-100, message_thread_id=42
         )
         bot.delete_forum_topic.assert_not_called()
-        mock_tr.unbind_thread.assert_called_once_with(1, 42)
+        mock_tr.unbind_thread.assert_called_once_with(
+            1, 42, retirement_reason="remote_closed"
+        )
         assert not _has_autoclose(1, 42)
 
     async def test_check_not_expired_yet(self) -> None:
@@ -186,7 +189,9 @@ class TestAutocloseTimers:
             chat_id=-100, message_thread_id=42
         )
         bot.delete_forum_topic.assert_not_called()
-        mock_tr.unbind_thread.assert_called_once_with(1, 42)
+        mock_tr.unbind_thread.assert_called_once_with(
+            1, 42, retirement_reason="remote_closed"
+        )
         mock_clear.assert_awaited_once()
         assert not _has_autoclose(1, 42)
 
@@ -716,7 +721,9 @@ class TestProbeFailures:
             or _window_poll_state["@5"].probe_failures == 0
         )
         bot.unpin_all_forum_topic_messages.assert_called_once_with(
-            chat_id=-100, message_thread_id=42
+            chat_id=-100,
+            message_thread_id=42,
+            rate_limit_args=NO_RETRY_RATE_LIMIT_ARGS,
         )
 
     @pytest.mark.parametrize(
@@ -778,7 +785,9 @@ class TestProbeFailures:
             await probe_topic_existence(bot)
         mock_tm.kill_window.assert_not_called()
         mock_cleanup.assert_called_once_with(1, 42, bot, window_id="@5", chat_id=-100)
-        mock_tr.unbind_thread.assert_called_once_with(1, 42, chat_id=-100)
+        mock_tr.unbind_thread.assert_called_once_with(
+            1, 42, chat_id=-100, retirement_reason="remote_deleted"
+        )
         assert (
             _window_poll_state.get("@5") is None
             or _window_poll_state["@5"].probe_failures == 0
@@ -2281,7 +2290,9 @@ class TestDeadWindowNotification:
 
         mock_tm.kill_window.assert_not_called()
         mock_cleanup.assert_called_once_with(1, 42, bot, window_id="@5", chat_id=-100)
-        mock_tr.unbind_thread.assert_called_once_with(1, 42, chat_id=-100)
+        mock_tr.unbind_thread.assert_called_once_with(
+            1, 42, chat_id=-100, retirement_reason="remote_deleted"
+        )
 
 
 def _make_pane(pane_id: str = "%1", *, active: bool = True, index: int = 0) -> PaneInfo:

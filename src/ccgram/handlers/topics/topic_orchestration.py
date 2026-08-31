@@ -495,8 +495,10 @@ async def _handle_new_window_locked(
     await _auto_detect_provider(event.window_id)
 
     topic_name = event.window_name or Path(event.cwd).name or event.window_id
-    if target_user_id is None and await _rebind_existing_topic_by_name(
-        event, client, topic_name
+    if (
+        target_user_id is None
+        and tmux_manager.capabilities.supports_display_name_rebind
+        and await _rebind_existing_topic_by_name(event, client, topic_name)
     ):
         return True
 

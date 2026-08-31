@@ -46,6 +46,10 @@ def _disable_send_rate_limit(monkeypatch):
     monkeypatch.setattr(
         "ccgram.handlers.messaging_pipeline.message_sender.MESSAGE_SEND_INTERVAL", 0
     )
+    monkeypatch.setattr(
+        "ccgram.handlers.messaging_pipeline.message_sender.GROUP_MESSAGE_SEND_INTERVAL",
+        0,
+    )
 
 
 @pytest.fixture(autouse=True)

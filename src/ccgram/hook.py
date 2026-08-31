@@ -1207,7 +1207,8 @@ def _locate_primary_window(
     Identity resolution is backend-neutral via ``resolve_self_identity``: tmux
     panes resolve through ``_resolve_window_id`` (``display-message``), herdr
     panes resolve their exact workspace/pane locator to a session target, so
-    the session_map key becomes ``herdr:<opaque-target-id>``.
+    the session_map key becomes ``herdr:<opaque-target-id>``, and an agterm
+    session is its own identity, keyed ``agterm:<session-uuid>``.
     """
     identity = resolve_self_identity(
         os.environ,
@@ -1217,9 +1218,14 @@ def _locate_primary_window(
         ),
     )
     if identity is None:
-        if not os.environ.get("TMUX_PANE") and not os.environ.get("HERDR_PANE_ID"):
+        if (
+            not os.environ.get("TMUX_PANE")
+            and not os.environ.get("HERDR_PANE_ID")
+            and not os.environ.get("AGTERM_SESSION_ID")
+        ):
             logger.warning(
-                "Neither TMUX_PANE nor HERDR_PANE_ID set, cannot determine window"
+                "None of TMUX_PANE, HERDR_PANE_ID or AGTERM_SESSION_ID set, "
+                "cannot determine window"
             )
         elif os.environ.get("HERDR_PANE_ID"):
             logger.warning(

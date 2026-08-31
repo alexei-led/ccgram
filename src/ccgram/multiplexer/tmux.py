@@ -97,6 +97,8 @@ _TMUX_CAPABILITIES = MultiplexerCapabilities(
     self_identify_env="TMUX_PANE",
     supports_event_stream=False,
     native_worktrees=False,
+    supports_workspace_selection=False,
+    native_topic_targets=False,
 )
 
 

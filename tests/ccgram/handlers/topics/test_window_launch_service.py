@@ -204,6 +204,7 @@ class TestCreateTopicWindow:
         with patch(f"{_MODULE}tmux_manager") as mux:
             mux.capabilities.native_worktrees = False
             mux.capabilities.native_agent_status = True
+            mux.capabilities.native_topic_targets = True
             mux.create_topic_target = AsyncMock(side_effect=RuntimeError("no socket"))
             success, message, name, window_id = await _create_topic_window(
                 "/proj", "claude", None, context
@@ -279,6 +280,7 @@ def _launch_env(
         mux.kill_window = AsyncMock(return_value=True)
         mux.capabilities.native_worktrees = False
         mux.capabilities.native_agent_status = True
+        mux.capabilities.native_topic_targets = True
         router.get_window_for_thread.return_value = None
         router.resolve_chat_id.return_value = -100999
         session_map.wait_for_session_map_entry = AsyncMock(return_value=True)
@@ -407,7 +409,12 @@ class TestLaunchWindowFailure:
 
         m.mux.kill_window.assert_awaited_once_with("@5")
         m.orchestration.clear_pending_creation.assert_called_once_with("@5")
-        m.router.unbind_thread.assert_called_once_with(100, 42)
+        m.router.unbind_thread.assert_called_once_with(
+            100,
+            42,
+            retirement_reason="system_replacement",
+            cleanup_eligible=True,
+        )
 
     async def test_session_map_timeout_closes_target_before_unbinding_late_hook(
         self, tmp_path
@@ -421,8 +428,8 @@ class TestLaunchWindowFailure:
                     cleanup_order.append(f"close:{target_id}") or True
                 )
             )
-            m.router.unbind_thread.side_effect = lambda *_: cleanup_order.append(
-                "unbind"
+            m.router.unbind_thread.side_effect = lambda *_args, **_kwargs: (
+                cleanup_order.append("unbind")
             )
             m.orchestration.clear_pending_creation.side_effect = lambda *_: (
                 cleanup_order.append("clear-pending")
@@ -437,7 +444,12 @@ class TestLaunchWindowFailure:
 
         assert result.success is False
         m.mux.kill_window.assert_awaited_once_with("@5")
-        m.router.unbind_thread.assert_called_once_with(100, 42)
+        m.router.unbind_thread.assert_called_once_with(
+            100,
+            42,
+            retirement_reason="system_replacement",
+            cleanup_eligible=True,
+        )
         # The target is closed before the pending guard and binding are removed,
         # so a late hook cannot adopt it into an orphan topic.
         assert cleanup_order == ["close:@5", "clear-pending", "unbind"]

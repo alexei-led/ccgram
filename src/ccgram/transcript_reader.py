@@ -17,7 +17,7 @@ import asyncio
 import hashlib
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any, Callable, NamedTuple
 
 import aiofiles
 import structlog
@@ -132,9 +132,15 @@ class TranscriptReader:
     Delegates activity recording to IdleTracker (via session_id).
     """
 
-    def __init__(self, state: MonitorState, idle_tracker: IdleTracker) -> None:
+    def __init__(
+        self,
+        state: MonitorState,
+        idle_tracker: IdleTracker,
+        on_session_retired: Callable[[str], None] | None = None,
+    ) -> None:
         self._state = state
         self._idle_tracker = idle_tracker
+        self._on_session_retired = on_session_retired
         self._pending_tools: dict[str, dict[str, Any]] = {}
         self._file_mtimes: dict[str, float] = {}
         self._file_ctimes: dict[str, int] = self._snapshot_file_ctimes()
@@ -421,6 +427,11 @@ class TranscriptReader:
 
     def clear_session(self, session_id: str) -> None:
         """Remove all per-session state for a cleaned-up session."""
+        # A skip barrier belongs to the tracked session lifetime. Once that
+        # session disappears, cancel it so it cannot block a future replay.
+        self._state.cancel_skip(session_id)
+        if self._on_session_retired is not None:
+            self._on_session_retired(session_id)
         self._state.remove_session(session_id)
         self._file_mtimes.pop(session_id, None)
         self._pending_tools.pop(session_id, None)
@@ -456,6 +467,11 @@ class TranscriptReader:
                 file_path=str(file_path),
                 last_byte_offset=old_session.last_byte_offset,
             )
+            # Session IDs can be refreshed for the same transcript. A pending
+            # skip is tied to the old identity and must not follow it silently.
+            self._state.cancel_skip(old_session_id)
+            if self._on_session_retired is not None:
+                self._on_session_retired(old_session_id)
             self._state.remove_session(old_session_id)
             self._state.update_session(tracked)
             if old_session_id in self._file_mtimes:

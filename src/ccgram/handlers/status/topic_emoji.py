@@ -8,20 +8,26 @@ Updates topic names with status emoji prefixes to reflect session state:
 
 Tracks per-topic state to avoid redundant API calls. Debounces transitions
 to prevent rapid active/idle toggling from flooding the chat with rename
-messages. Gracefully degrades when the bot lacks editForumTopic permission.
+messages. Spaces renames of different topics in a chat by a minimum
+interval (poll path defers, /sync sleeps it out) and pauses a chat's
+renames entirely for a cooldown after flood control (#199). Gracefully
+degrades when the bot lacks editForumTopic permission.
 
 Key functions:
   - update_topic_emoji: Update emoji for a specific topic (debounced)
   - clear_topic_emoji_state: Clean up tracking for a topic
 """
 
+import asyncio
 import time
+from weakref import WeakValueDictionary
 
 import structlog
-from telegram.error import BadRequest, TelegramError
+from telegram.error import BadRequest, RetryAfter, TelegramError
 
 from ...config import config
 from ...telegram_client import TelegramClient
+from ...telegram_rate_limiter import retry_after_seconds
 from ...thread_router import thread_router
 from ...topic_state_registry import topic_state
 from ...window_query import get_approval_mode
@@ -90,7 +96,12 @@ _DEBOUNCE_BY_STATE: dict[str, float] = {
 # Topic state tracking: (chat_id, thread_id) -> (state, approval_mode, rc_active)
 _topic_states: dict[tuple[int, int], tuple[str, str, bool]] = {}
 
-# Pending transitions: (chat_id, thread_id) -> (desired_state, first_seen_monotonic)
+# Pending transitions: (chat_id, thread_id) -> (desired_state, first_seen_monotonic).
+# first_seen may be BACKDATED (now - debounce) as a "fire next cycle" marker:
+# the rename pacing re-arms this way so a spaced-out transition applies on
+# the next poll cycle without sitting through a full debounce again. The
+# marker is only honored while the state token is unapplied; a paced-out
+# NAME change (same token) is carried by the _topic_names rollback instead.
 _pending_transitions: dict[tuple[int, int], tuple[str, float]] = {}
 
 # Topics inherited at process startup. Their first observed state replaces the
@@ -104,6 +115,57 @@ _topic_names: dict[tuple[int, int], str] = {}
 
 # Chats where editForumTopic is disabled due to permission errors
 _disabled_chats: set[int] = set()
+
+# Flood-control cooldown (upstream #199): after a RetryAfter on a topic
+# rename, renames for that chat pause entirely for this long. Without it,
+# the unapplied state re-arms the debounce every cycle and re-attempts the
+# rename forever; each attempt holds PTB's shared retry-after event closed
+# for ~20s, starving ALL Bot API traffic, not just renames.
+FLOOD_COOLDOWN_SECONDS = 300.0
+
+# Minimum spacing between renames of DIFFERENT topics in the same chat.
+# The startup first paint applies one rename per inherited topic in a
+# single poll cycle (by design, no debounce); unspaced, that is a burst of
+# N editForumTopic calls that trips the per-chat method bucket (#199).
+# Same-topic updates bypass the spacing: one rename is never a burst.
+CHAT_EDIT_MIN_INTERVAL = 1.5
+
+# chat_id -> monotonic time until which renames are paused (lazily expires).
+_flood_cooldown_until: dict[int, float] = {}
+# chat_id -> (monotonic time of the last rename attempt, its topic key).
+_last_chat_edit: dict[int, tuple[float, tuple[int, int]]] = {}
+
+# Serializes sync_topic_name renames within each chat: /sync gathers several
+# per chat concurrently, and without a per-chat lock they would all wake from
+# the same pacing stamp at once (#199). Weak values remove idle locks without
+# replacing a held lock during cleanup.
+_sync_rename_locks: WeakValueDictionary[int, asyncio.Lock] = WeakValueDictionary()
+
+
+def _flood_paused(chat_id: int, now: float) -> bool:
+    """True while the chat's renames are paused after flood control."""
+    until = _flood_cooldown_until.get(chat_id)
+    if until is None:
+        return False
+    if now >= until:
+        _flood_cooldown_until.pop(chat_id, None)
+        return False
+    return True
+
+
+def _pause_renames_for_flood(chat_id: int) -> None:
+    """Start (or extend) the chat-wide rename flood cooldown."""
+    _flood_cooldown_until[chat_id] = time.monotonic() + FLOOD_COOLDOWN_SECONDS
+
+
+def _paced_out(chat_id: int, key: tuple[int, int], now: float) -> bool:
+    """True when a rename of ``key`` must wait: a different topic of the
+    same chat was renamed within CHAT_EDIT_MIN_INTERVAL."""
+    last = _last_chat_edit.get(chat_id)
+    if last is None:
+        return False
+    last_ts, last_key = last
+    return last_key != key and now - last_ts < CHAT_EDIT_MIN_INTERVAL
 
 
 def _resolve_topic_name(key: tuple[int, int], display_name: str) -> tuple[str, bool]:
@@ -201,6 +263,19 @@ async def _edit_topic_name(
             state or "sync",
             new_name,
         )
+    except RetryAfter as exc:
+        # Flood control: pause this chat's renames instead of letting the
+        # unapplied state re-arm the debounce and retry forever (#199). The
+        # flat floor subsumes Telegram's own retry_after: a still-flooded
+        # resume re-arms the cooldown, which is the self-correcting path.
+        _pause_renames_for_flood(chat_id)
+        logger.warning(
+            "Flood control on topic rename for chat %d (retry_after %ss): "
+            "pausing this chat's renames for %.0fs",
+            chat_id,
+            retry_after_seconds(exc),
+            FLOOD_COOLDOWN_SECONDS,
+        )
     except BadRequest as e:
         if "Not enough rights" in e.message:
             _disabled_chats.add(chat_id)
@@ -271,15 +346,42 @@ async def sync_topic_name(
         approval_mode=approval_mode,
         rc_active=rc_active,
     )
-    await _edit_topic_name(
-        client,
-        chat_id,
-        thread_id,
-        key,
-        new_name,
-        state_token=state_token,
-        state=state,
-    )
+    # /sync drives one rename per binding concurrently (semaphore 5); in
+    # this command context the per-chat spacing is slept out rather than
+    # deferred like the poll path, and the lock keeps gathered syncs from
+    # waking from one stamp together (#199).
+    lock = _sync_rename_locks.setdefault(chat_id, asyncio.Lock())
+    async with lock:
+        now = time.monotonic()
+        if _flood_paused(chat_id, now):
+            return
+        # Re-check the stamp after each sleep: the poll task renames other
+        # topics without this lock and moves it, so a single sleep-then-send
+        # could land inside the interval it just waited out (#206 review).
+        # Bounded retries: a pathological interleaving degrades to the
+        # unspaced send rather than starving the command forever.
+        for _ in range(3):
+            last = _last_chat_edit.get(chat_id)
+            if (
+                last is None
+                or last[1] == key
+                or now - last[0] >= CHAT_EDIT_MIN_INTERVAL
+            ):
+                break
+            await asyncio.sleep(CHAT_EDIT_MIN_INTERVAL - (now - last[0]))
+            now = time.monotonic()
+            if _flood_paused(chat_id, now):
+                return
+        _last_chat_edit[chat_id] = (now, key)
+        await _edit_topic_name(
+            client,
+            chat_id,
+            thread_id,
+            key,
+            new_name,
+            state_token=state_token,
+            state=state,
+        )
 
 
 async def update_topic_emoji(
@@ -306,6 +408,7 @@ async def update_topic_emoji(
         return
 
     key = (chat_id, thread_id)
+    prev_name = _topic_names.get(key)
     clean_name, name_changed = _resolve_topic_name(key, display_name)
 
     approval_mode = _resolve_approval_mode(chat_id, thread_id)
@@ -317,6 +420,8 @@ async def update_topic_emoji(
         return
 
     now = time.monotonic()
+    if _flood_paused(chat_id, now):
+        return
     if not _should_apply_update(
         key,
         state,
@@ -325,6 +430,25 @@ async def update_topic_emoji(
         now=now,
     ):
         return
+    if _paced_out(chat_id, key, now):
+        # A different topic of this chat was renamed moments ago: defer to
+        # the next poll cycle instead of bursting (#199). Two things must
+        # survive the deferral. The pending state transition is re-armed
+        # as if its debounce had just elapsed (fires next cycle). A name
+        # change must have its write-through cache update rolled back,
+        # else the next cycle would see name_changed=False and drop the
+        # rename entirely (the token-match branch consults name_changed).
+        _pending_transitions[key] = (
+            state,
+            now - _DEBOUNCE_BY_STATE.get(state, DEBOUNCE_TO_IDLE_SECONDS),
+        )
+        if name_changed:
+            if prev_name is None:
+                _topic_names.pop(key, None)
+            else:
+                _topic_names[key] = prev_name
+        return
+    _last_chat_edit[chat_id] = (now, key)
 
     new_name = _compose_topic_name(
         clean_name,
@@ -388,7 +512,11 @@ _MAX_DISABLED_CHATS = 1000
 
 @topic_state.register("chat")
 def clear_disabled_chat(chat_id: int, _thread_id: int = 0) -> None:
-    """Remove a chat from the disabled set (called on topic cleanup)."""
+    """Clear chat-scoped rename state on topic cleanup: the permission
+    disabled set only. The flood cooldown and the pacing stamp are NOT
+    cleared here: both are chat-wide and must outlive any single topic's
+    teardown (a stale stamp ages out of the spacing check on its own;
+    the cooldown expires lazily) (#199, #206 review)."""
     _disabled_chats.discard(chat_id)
     if len(_disabled_chats) > _MAX_DISABLED_CHATS:
         _disabled_chats.clear()
@@ -401,3 +529,6 @@ def reset_all_state() -> None:
     _awaiting_first_paint.clear()
     _disabled_chats.clear()
     _topic_names.clear()
+    _flood_cooldown_until.clear()
+    _last_chat_edit.clear()
+    _sync_rename_locks.clear()

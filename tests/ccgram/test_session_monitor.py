@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from ccgram.monitor_state import TrackedSession
+from ccgram.monitor_state import BacklogSkipIntent, TrackedSession
 from ccgram.multiplexer.base import MultiplexerCapabilities, WindowRef
 from ccgram.providers.claude import ClaudeProvider
 from ccgram.providers.codex import CodexProvider
@@ -64,6 +64,12 @@ class TestMonitorLoop:
     async def test_unavailable_listing_skips_pruning(
         self, monitor: SessionMonitor
     ) -> None:
+        current_map = {
+            HERDR_TARGETS["a"]: {"session_id": "live"},
+            HERDR_TARGETS["b"]: {"session_id": "possibly-live"},
+        }
+        check_for_updates = AsyncMock(return_value=[])
+
         async def _stop_after_cycle(_delay: float) -> None:
             monitor._running = False
 
@@ -73,8 +79,11 @@ class TestMonitorLoop:
                 monitor, "_load_current_session_map", AsyncMock(return_value={})
             ),
             patch.object(
-                monitor, "_detect_and_cleanup_changes", AsyncMock(return_value={})
+                monitor,
+                "_detect_and_cleanup_changes",
+                AsyncMock(return_value=current_map),
             ),
+            patch.object(monitor, "check_for_updates", check_for_updates),
             patch(
                 "ccgram.session_monitor.read_session_map_raw",
                 AsyncMock(return_value={}),
@@ -91,6 +100,49 @@ class TestMonitorLoop:
             await monitor._monitor_loop()
 
         mock_sync.prune_session_map.assert_not_called()
+        check_for_updates.assert_awaited_once_with(current_map)
+
+    async def test_reliable_listing_monitors_only_live_windows(
+        self, monitor: SessionMonitor
+    ) -> None:
+        live_id = HERDR_TARGETS["a"]
+        current_map = {
+            live_id: {"session_id": "live"},
+            HERDR_TARGETS["b"]: {"session_id": "stale"},
+        }
+        live = WindowRef(window_id=live_id, window_name="live", cwd="/live")
+        check_for_updates = AsyncMock(return_value=[])
+
+        async def _stop_after_cycle(_delay: float) -> None:
+            monitor._running = False
+
+        with (
+            patch.object(monitor, "_cleanup_all_stale_sessions", AsyncMock()),
+            patch.object(
+                monitor, "_load_current_session_map", AsyncMock(return_value={})
+            ),
+            patch.object(
+                monitor,
+                "_detect_and_cleanup_changes",
+                AsyncMock(return_value=current_map),
+            ),
+            patch.object(monitor, "check_for_updates", check_for_updates),
+            patch(
+                "ccgram.session_monitor.read_session_map_raw",
+                AsyncMock(return_value={}),
+            ),
+            patch("ccgram.session_map.session_map_sync") as mock_sync,
+            patch(
+                "ccgram.session_monitor.list_windows_for_reconciliation",
+                AsyncMock(return_value=[live]),
+            ),
+            patch("ccgram.session_monitor.asyncio.sleep", _stop_after_cycle),
+        ):
+            mock_sync.load_session_map = AsyncMock()
+            monitor._running = True
+            await monitor._monitor_loop()
+
+        check_for_updates.assert_awaited_once_with({live_id: current_map[live_id]})
 
     async def test_rekeyed_window_folds_before_its_map_delta_or_hook_events(
         self, monitor: SessionMonitor, monkeypatch
@@ -424,6 +476,44 @@ class TestSettledPrefixWatermarkCommit:
 
         assert self._offset(monitor, "s1") == 0
         assert len(monitor._delivery_receipts["s1"]) == 1
+
+    @staticmethod
+    def _begin_skip(monitor: SessionMonitor, snapshot_offset: int = 500) -> None:
+        monitor.state.begin_skip(
+            BacklogSkipIntent(
+                session_id="s1",
+                window_id="window-1",
+                user_id=1,
+                thread_id=2,
+                chat_id=-100,
+                snapshot_offset=snapshot_offset,
+                range_start=0,
+            )
+        )
+
+    def test_pending_skip_fences_settled_prefix(self, monitor: SessionMonitor) -> None:
+        ready = self._ready(100)
+        self._track(monitor, "s1", [ready])
+        self._begin_skip(monitor)
+
+        monitor.commit_delivered_watermarks()
+
+        assert self._offset(monitor, "s1") == 0
+        assert monitor._delivery_receipts["s1"] == [ready]
+
+    def test_delivered_skip_wins_and_discards_ordinary_receipts(
+        self, monitor: SessionMonitor
+    ) -> None:
+        self._track(monitor, "s1", [self._ready(100)])
+        self._begin_skip(monitor)
+        monitor._skip_notice_receipts["s1"] = self._ready(500)
+
+        with patch.object(monitor, "_skip_is_current", return_value=True):
+            monitor.commit_delivered_watermarks()
+
+        assert self._offset(monitor, "s1") == 500
+        assert "s1" not in monitor.state.pending_skips
+        assert "s1" not in monitor._delivery_receipts
 
     def test_shared_batch_checkpoint_defers_commit(
         self, monitor: SessionMonitor

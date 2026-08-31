@@ -21,6 +21,7 @@ from ccgram.handlers.polling.polling_state import (
     lifecycle_strategy,
     terminal_poll_state,
 )
+from ccgram.telegram_rate_limiter import NO_RETRY_RATE_LIMIT_ARGS
 
 
 @pytest.fixture(autouse=True)
@@ -256,7 +257,9 @@ class TestProbeTopicExistence:
             mock_tmux.kill_window = AsyncMock()
             await probe_topic_existence(bot)
 
-        mock_router.unbind_thread.assert_called_once_with(1, 100, chat_id=42)
+        mock_router.unbind_thread.assert_called_once_with(
+            1, 100, chat_id=42, retirement_reason="remote_deleted"
+        )
         if expect_kill:
             mock_tmux.kill_window.assert_called_once_with(window_id)
         else:
@@ -273,13 +276,18 @@ class TestProbeTopicExistence:
         with (
             patch.object(tl, "thread_router") as mock_router,
             patch.object(tl, "lifecycle_strategy") as mock_strategy,
-            patch.object(tl.time, "monotonic", return_value=100.0),
+            patch.object(tl.time, "monotonic", return_value=100.0) as mock_time,
         ):
             mock_router.iter_thread_bindings.return_value = [(1, 100, "@0")]
             mock_router.resolve_chat_id.return_value = 42
             mock_strategy.should_skip_probe.return_value = False
 
             await probe_topic_existence(bot)
+            bot.unpin_all_forum_topic_messages.assert_awaited_once_with(
+                chat_id=42,
+                message_thread_id=100,
+                rate_limit_args=NO_RETRY_RATE_LIMIT_ARGS,
+            )
             mock_strategy.record_probe_failure.assert_not_called()
 
             # Whole pass is paused while the chat is flood-limited.
@@ -287,9 +295,13 @@ class TestProbeTopicExistence:
             await probe_topic_existence(bot)
             bot.unpin_all_forum_topic_messages.assert_not_called()
 
-            # Once the chat backoff expires, retry the failed topic instead of
-            # waiting for the normal five-minute probe interval.
+            # Clearing Telegram's short delay does not spend another admin
+            # request before the normal five-minute probe interval.
             tl._probe_backoff_until[42] = 0.0
+            await probe_topic_existence(bot)
+            bot.unpin_all_forum_topic_messages.assert_not_called()
+
+            mock_time.return_value = 100.0 + tl.PROBE_INTERVAL
             await probe_topic_existence(bot)
             bot.unpin_all_forum_topic_messages.assert_called_once()
 
@@ -306,7 +318,7 @@ class TestProbeTopicExistence:
         ]
         with (
             patch.object(tl, "thread_router") as mock_router,
-            patch.object(tl.time, "monotonic", return_value=100.0),
+            patch.object(tl.time, "monotonic", return_value=100.0) as mock_time,
         ):
             mock_router.iter_thread_bindings_with_chat.return_value = bindings
             await probe_topic_existence(bot)
@@ -325,9 +337,14 @@ class TestProbeTopicExistence:
             await probe_topic_existence(bot)
             bot.unpin_all_forum_topic_messages.assert_not_called()
 
-            # Thread IDs are chat-local. Once chat 42's backoff expires, retry
-            # its failed topic even though chat 43 probed thread 100.
+            # Thread IDs are chat-local. Clearing chat 42's short backoff still
+            # preserves the normal probe interval for its failed topic.
             tl._probe_backoff_until[42] = 0.0
+            await probe_topic_existence(bot)
+            bot.unpin_all_forum_topic_messages.assert_not_called()
+
+            tl._probe_last_ts[(1, 43, 100)] = 200.0
+            mock_time.return_value = 100.0 + tl.PROBE_INTERVAL
             await probe_topic_existence(bot)
             bot.unpin_all_forum_topic_messages.assert_called_once()
             assert bot.unpin_all_forum_topic_messages.call_args.kwargs["chat_id"] == 42

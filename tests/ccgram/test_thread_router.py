@@ -1,6 +1,6 @@
 import pytest
 
-from ccgram.thread_router import ThreadRouter
+from ccgram.thread_router import _RETIRED_TOPIC_LIMIT, ThreadRouter
 
 
 @pytest.fixture
@@ -59,6 +59,103 @@ class TestUnbindThread:
         router.bind_thread(100, 1, "@1")
         router.unbind_thread(100, 1)
         assert 100 not in router.thread_bindings
+
+
+class TestRetiredTopics:
+    def test_persists_eligible_topic_across_restart(self, router: ThreadRouter) -> None:
+        router.bind_thread(100, 42, "@1", chat_id=-999)
+        router.unbind_thread(
+            100,
+            42,
+            chat_id=-999,
+            retirement_reason="system_replacement",
+            cleanup_eligible=True,
+        )
+
+        restored = ThreadRouter(
+            schedule_save=lambda: None,
+            has_window_state=lambda _wid: False,
+        )
+        restored.from_dict(router.to_dict())
+
+        retired = list(restored.iter_retired_topics())
+        assert len(retired) == 1
+        assert retired[0].chat_id == -999
+        assert retired[0].thread_id == 42
+        assert retired[0].reason == "system_replacement"
+        assert retired[0].cleanup_eligible is True
+
+    def test_restart_discards_record_for_an_active_rebound_topic(
+        self, router: ThreadRouter
+    ) -> None:
+        router.from_dict(
+            {
+                "chat_thread_bindings": {"100:-999:42": "@2"},
+                "retired_topics": [
+                    {
+                        "user_id": 100,
+                        "chat_id": -999,
+                        "thread_id": 42,
+                        "reason": "system_replacement",
+                        "cleanup_eligible": True,
+                        "sequence": 1,
+                    }
+                ],
+            }
+        )
+
+        assert router.get_window_for_chat_thread(-999, 42) == "@2"
+        assert list(router.iter_retired_topics()) == []
+
+    def test_default_unbind_preserves_remote_topic_intent(
+        self, router: ThreadRouter
+    ) -> None:
+        router.bind_thread(100, 42, "@1", chat_id=-999)
+        router.unbind_thread(100, 42, chat_id=-999)
+
+        retired = list(router.iter_retired_topics())
+        assert len(retired) == 1
+        assert retired[0].reason == "keep_remote"
+        assert retired[0].cleanup_eligible is False
+
+    def test_rebind_clears_retired_topic_before_sync_can_delete(
+        self, router: ThreadRouter
+    ) -> None:
+        router.bind_thread(100, 42, "@1", chat_id=-999)
+        router.unbind_thread(
+            100,
+            42,
+            chat_id=-999,
+            retirement_reason="system_replacement",
+            cleanup_eligible=True,
+        )
+        router.bind_thread(100, 42, "@2", chat_id=-999)
+
+        assert list(router.iter_retired_topics()) == []
+
+    def test_retention_drops_oldest_topics(self, router: ThreadRouter) -> None:
+        for thread_id in range(1, _RETIRED_TOPIC_LIMIT + 3):
+            router.bind_thread(100, thread_id, f"@{thread_id}", chat_id=-999)
+            router.unbind_thread(
+                100,
+                thread_id,
+                chat_id=-999,
+                retirement_reason="system_replacement",
+                cleanup_eligible=True,
+            )
+
+        retired = list(router.iter_retired_topics())
+        assert len(retired) == _RETIRED_TOPIC_LIMIT
+        assert retired[0].thread_id == 3
+        assert retired[-1].thread_id == _RETIRED_TOPIC_LIMIT + 2
+
+    def test_chatless_binding_is_not_treated_as_a_known_forum_topic(
+        self, router: ThreadRouter
+    ) -> None:
+        router.bind_thread(100, 42, "@1")
+        router.unbind_thread(100, 42, cleanup_eligible=True)
+
+        assert list(router.iter_retired_topics()) == []
 
 
 class TestReverseIndex:

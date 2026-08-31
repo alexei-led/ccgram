@@ -860,7 +860,12 @@ class TestResumePickCallback:
 
         await _pick(0, [_session()], _make_context())
 
-        pick_env.router.unbind_thread.assert_called_once_with(100, 42)
+        pick_env.router.unbind_thread.assert_called_once_with(
+            100,
+            42,
+            retirement_reason="system_replacement",
+            cleanup_eligible=True,
+        )
 
     async def test_pick_sets_group_chat_id(self, pick_env) -> None:
         await _pick(0, [_session()], _make_context())

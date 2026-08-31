@@ -3,9 +3,11 @@ from unittest.mock import AsyncMock, patch
 
 from telegram import Message
 from telegram.error import BadRequest, RetryAfter, TelegramError
+from telegramify_markdown import utf16_len
 
 from ccgram.expandable_quote import EXPANDABLE_QUOTE_END as EXP_END
 from ccgram.expandable_quote import EXPANDABLE_QUOTE_START as EXP_START
+from ccgram.handlers.messaging_pipeline import message_sender
 from ccgram.handlers.messaging_pipeline.message_sender import (
     MESSAGE_SEND_INTERVAL,
     _last_send_time,
@@ -41,8 +43,17 @@ class TestRateLimitSend:
         # value here so wait-time assertions hold.
         monkeypatch.setattr(
             "ccgram.handlers.messaging_pipeline.message_sender.MESSAGE_SEND_INTERVAL",
-            0.5,
+            1.0,
         )
+        monkeypatch.setattr(
+            "ccgram.handlers.messaging_pipeline.message_sender.GROUP_MESSAGE_SEND_INTERVAL",
+            3.1,
+            raising=False,
+        )
+
+    def test_recommended_send_intervals(self) -> None:
+        assert MESSAGE_SEND_INTERVAL == 1.0
+        assert getattr(message_sender, "GROUP_MESSAGE_SEND_INTERVAL", None) == 3.1
 
     async def test_first_call_no_wait(self) -> None:
         with patch(
@@ -76,6 +87,19 @@ class TestRateLimitSend:
         ) as mock_sleep:
             await rate_limit_send(2)
             mock_sleep.assert_not_called()
+
+    async def test_group_send_uses_twenty_per_minute_interval(self) -> None:
+        await rate_limit_send(-1001)
+
+        with patch(
+            "ccgram.handlers.messaging_pipeline.message_sender.asyncio.sleep",
+            new_callable=AsyncMock,
+            spec=asyncio.sleep,
+        ) as mock_sleep:
+            await rate_limit_send(-1001)
+
+        wait_time = mock_sleep.call_args.args[0]
+        assert 3.0 < wait_time <= 3.1
 
     async def test_updates_last_send_time(self) -> None:
         assert 123 not in _last_send_time
@@ -131,54 +155,28 @@ class TestSendWithFallback:
         result = await _send_with_fallback(client, 123, "hello")
         assert result is None
 
-    async def test_retry_after_sleeps_and_retries(
+    async def test_retry_after_is_reraised_without_local_retry(
         self, client: FakeTelegramClient
     ) -> None:
-        sent = _fake_message()
-        client.set_side_effect("send_message", [RetryAfter(1), sent])
+        client.set_side_effect("send_message", [RetryAfter(1)])
 
-        result = await _send_with_fallback(client, 123, "hello")
-        assert result is sent
+        with pytest.raises(RetryAfter):
+            await _send_with_fallback(client, 123, "hello")
+
+        assert client.call_count("send_message") == 1
+
+    async def test_plain_text_retry_after_is_reraised(
+        self, client: FakeTelegramClient
+    ) -> None:
+        client.set_side_effect(
+            "send_message",
+            [TelegramError("entity fail"), RetryAfter(1)],
+        )
+
+        with pytest.raises(RetryAfter):
+            await _send_with_fallback(client, 123, "hello")
+
         assert client.call_count("send_message") == 2
-
-    async def test_retry_after_then_permanent_fail_falls_through_to_plain(
-        self, client: FakeTelegramClient
-    ) -> None:
-        sent = _fake_message()
-        client.set_side_effect(
-            "send_message",
-            [RetryAfter(1), TelegramError("permanent fail"), sent],
-        )
-        result = await _send_with_fallback(client, 123, "hello")
-        assert result is sent
-        assert client.call_count("send_message") == 3
-
-    async def test_plain_text_retry_after_then_success(
-        self, client: FakeTelegramClient
-    ) -> None:
-        sent = _fake_message()
-        client.set_side_effect(
-            "send_message",
-            [TelegramError("entity fail"), RetryAfter(1), sent],
-        )
-        result = await _send_with_fallback(client, 123, "hello")
-        assert result is sent
-        assert client.call_count("send_message") == 3
-
-    async def test_plain_text_retry_after_then_permanent_fail(
-        self, client: FakeTelegramClient
-    ) -> None:
-        client.set_side_effect(
-            "send_message",
-            [
-                TelegramError("entity fail"),
-                RetryAfter(1),
-                TelegramError("plain also dead"),
-            ],
-        )
-        result = await _send_with_fallback(client, 123, "hello")
-        assert result is None
-        assert client.call_count("send_message") == 3
 
     async def test_bold_formatting_sends_entities(
         self, client: FakeTelegramClient
@@ -279,6 +277,20 @@ class TestEmptyAndOverlongGuards:
         assert last is not None
         sent_text = last.kwargs["text"]
         assert len(sent_text) <= TELEGRAM_MAX_MESSAGE_LENGTH
+        assert sent_text.endswith("…")
+
+    async def test_overlong_emoji_text_truncates_by_utf16_units(
+        self, client: FakeTelegramClient
+    ) -> None:
+        from ccgram.telegram_sender import TELEGRAM_MAX_MESSAGE_LENGTH
+
+        client.returns["send_message"] = _fake_message()
+        await _send_with_fallback(client, 123, "😀" * 3000)
+
+        last = client.last_call("send_message")
+        assert last is not None
+        sent_text = last.kwargs["text"]
+        assert utf16_len(sent_text) <= TELEGRAM_MAX_MESSAGE_LENGTH
         assert sent_text.endswith("…")
 
 

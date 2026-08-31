@@ -26,7 +26,8 @@ from ...window_state_ports import legacy_state
 from ...window_state_store import CCGRAM_CREATED_WINDOW_ORIGIN
 from ..callback_tokens import revoke_window_tokens
 from ..cleanup import clear_topic_state
-from ..messaging_pipeline.message_sender import is_thread_gone, retry_after_seconds
+from ...telegram_rate_limiter import NO_RETRY_RATE_LIMIT_ARGS, retry_after_seconds
+from ..messaging_pipeline.message_sender import is_thread_gone
 from ..polling.polling_state import (
     lifecycle_strategy,
     terminal_poll_state,
@@ -130,7 +131,11 @@ async def _close_expired_topic(
         if scoped_chat_id is not None:
             cleanup_kwargs["chat_id"] = scoped_chat_id
         await clear_topic_state(user_id, thread_id, client=client, **cleanup_kwargs)
-        thread_router.unbind_thread(user_id, thread_id)
+        thread_router.unbind_thread(
+            user_id,
+            thread_id,
+            retirement_reason="remote_closed",
+        )
 
 
 # ── Unbound window TTL ────────────────────────────────────────────────────
@@ -316,7 +321,12 @@ async def _unbind_deleted_topic(
         killed = True
     terminal_poll_state.reset_probe_failures(wid)
     await clear_topic_state(user_id, thread_id, client, window_id=wid, chat_id=chat_id)
-    thread_router.unbind_thread(user_id, thread_id, chat_id=chat_id)
+    thread_router.unbind_thread(
+        user_id,
+        thread_id,
+        chat_id=chat_id,
+        retirement_reason="remote_deleted",
+    )
     logger.info(
         "Topic deleted: %s window_id '%s' and unbound thread %d for user %d",
         "killed" if killed else "unbound",
@@ -347,6 +357,7 @@ async def probe_topic_existence(client: TelegramClient) -> None:
             await client.unpin_all_forum_topic_messages(
                 chat_id=chat_id,
                 message_thread_id=thread_id,
+                rate_limit_args=NO_RETRY_RATE_LIMIT_ARGS,
             )
             terminal_poll_state.reset_probe_failures(wid)
         except TelegramError as e:
@@ -363,10 +374,10 @@ async def probe_topic_existence(client: TelegramClient) -> None:
                 )
             elif isinstance(e, RetryAfter):
                 # Flood control is chat-wide and says nothing about topic
-                # existence: counting it would suspend deleted-topic detection
-                # for a live topic. Give this chat its budget back instead.
-                _probe_last_ts.pop(probe_key, None)
-                delay = retry_after_seconds(e)
+                # existence. Keep this probe's normal interval and suspend the
+                # whole chat for at least that long instead of spending another
+                # admin request on the next lifecycle cycle.
+                delay = max(retry_after_seconds(e), PROBE_INTERVAL)
                 _probe_backoff_until[chat_id] = time.monotonic() + delay
                 log_throttled(
                     logger,
@@ -431,9 +442,18 @@ async def topic_closed_handler(
             **cleanup_kwargs,
         )
         if isinstance(chat_id, int):
-            thread_router.unbind_thread(user.id, thread_id, chat_id=chat_id)
+            thread_router.unbind_thread(
+                user.id,
+                thread_id,
+                chat_id=chat_id,
+                retirement_reason="remote_closed",
+            )
         else:
-            thread_router.unbind_thread(user.id, thread_id)
+            thread_router.unbind_thread(
+                user.id,
+                thread_id,
+                retirement_reason="remote_closed",
+            )
         logger.info(
             "Topic closed: window %s unbound (kept alive for rebinding, user=%d, thread=%d)",
             display,

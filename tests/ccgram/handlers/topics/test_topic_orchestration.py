@@ -516,6 +516,37 @@ class TestHandleNewWindow:
         bot.delete_message.assert_awaited_once_with(-100200, 555)
         bot.create_forum_topic.assert_not_called()
 
+    async def test_herdr_does_not_rebind_stale_topic_by_display_name(self) -> None:
+        event = _make_event(window_id="herdr-session-v1-new", window_name="reflex-gh")
+        bot = AsyncMock()
+        bot.create_forum_topic = AsyncMock(return_value=_make_topic(thread_id=78))
+
+        with (
+            patch("ccgram.handlers.topics.topic_orchestration.session_manager"),
+            patch(
+                "ccgram.handlers.topics.topic_orchestration.thread_router"
+            ) as mock_tr,
+            patch(
+                "ccgram.handlers.topics.topic_orchestration.tmux_manager"
+            ) as mock_tmux,
+            patch("ccgram.handlers.topics.topic_orchestration.config") as mock_config,
+        ):
+            mock_tmux.capabilities.supports_display_name_rebind = False
+            mock_tmux.find_window_by_id = AsyncMock(return_value=None)
+            mock_tr.has_window.return_value = False
+            mock_tr.iter_thread_bindings.return_value = iter([(100, 120014, "old")])
+            mock_tr.resolve_chat_id.return_value = -100200
+            mock_tr.get_display_name.return_value = "reflex-gh"
+            mock_config.group_id = -100200
+            mock_config.allowed_users = {100}
+
+            assert await handle_new_window(event, bot)
+
+        bot.create_forum_topic.assert_awaited_once_with(
+            chat_id=-100200, name="reflex-gh"
+        )
+        mock_tr.bind_thread.assert_called_once()
+
     async def test_dead_same_name_topic_is_unbound_then_new_topic_created(self) -> None:
         event = _make_event(window_id="@3", window_name="reflex-gh")
         bot = AsyncMock()

@@ -1,7 +1,7 @@
 [project]
 name = "ccgram"
 dynamic = ["version"]
-description = "CCGram — manage AI coding agents from Telegram via tmux"
+description = "CCGram — manage AI coding agents from Telegram via terminal multiplexers"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.14"
@@ -19,7 +19,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "python-telegram-bot[socks,rate-limiter]>=21.0",
+    "python-telegram-bot[socks,rate-limiter]>=22.6,<22.7",
     "python-dotenv>=1.0.0",
     "httpx>=0.27.0",
     "libtmux>=0.50.0",
@@ -144,6 +144,7 @@ markers = [
     "e2e: end-to-end tests with real agent CLIs (local only, slow)",
     "llm: tests requiring real LLM API keys (slow, requires env vars)",
     "herdr: contract tests against a running herdr server (local only, needs socket)",
+    "agterm: smoke tests against a running agterm socket (local only)",
 ]
 
 [tool.coverage.run]

@@ -116,8 +116,7 @@ class Config:
         # Provider selection
         self.provider_name: str = os.getenv("CCGRAM_PROVIDER", "claude")
 
-        # Terminal-multiplexer backend selection (tmux default; herdr opt-in)
-        self.multiplexer_name: str = os.getenv("CCGRAM_MULTIPLEXER", "tmux")
+        self._init_multiplexer()
 
         # Directory browser: show hidden (dot) directories
         self.show_hidden_dirs: bool = os.getenv(
@@ -200,6 +199,11 @@ class Config:
             len(self.allowed_users),
             self.tmux_session_name,
         )
+
+    def _init_multiplexer(self) -> None:
+        """Select the terminal-multiplexer backend."""
+        # tmux default; herdr and agterm opt-in.
+        self.multiplexer_name: str = os.getenv("CCGRAM_MULTIPLEXER", "tmux")
 
     def _init_live_view(self) -> None:
         self.live_view_interval: int = max(

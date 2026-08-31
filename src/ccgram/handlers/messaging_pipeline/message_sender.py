@@ -21,6 +21,7 @@ from typing import Any
 
 from telegram import CallbackQuery, LinkPreviewOptions, Message, ReactionTypeEmoji
 from telegram.error import BadRequest, RetryAfter, TelegramError
+from telegramify_markdown import utf16_len
 
 from ...config import config
 from ...entity_formatting import convert_to_entities
@@ -51,9 +52,9 @@ __all__ = [
     "edit_with_fallback",
     "is_thread_gone",
     "rate_limit_send",
+    "rate_limit_send_formatted_message",
     "rate_limit_send_message",
     "react",
-    "retry_after_seconds",
     "safe_edit",
     "safe_reply",
     "safe_send",
@@ -79,20 +80,15 @@ class _MessageGoneError(Exception):
     """Raised when the target message no longer exists (deleted topic)."""
 
 
-def retry_after_seconds(exc: RetryAfter) -> float:
-    """Extract retry delay from RetryAfter, handling both int and timedelta."""
-    ra = exc.retry_after
-    return float(ra) if isinstance(ra, int) else ra.total_seconds()
-
-
 # Rate limiting: last send time per chat to avoid Telegram flood control
 _last_send_time: dict[int, float] = {}
 _rate_limit_locks: dict[int, asyncio.Lock] = {}
-MESSAGE_SEND_INTERVAL = 0.5  # seconds between messages to same chat
+MESSAGE_SEND_INTERVAL = 1.0  # Telegram's private-chat guidance: 1 message/second
+GROUP_MESSAGE_SEND_INTERVAL = 3.1  # Headroom below 20 messages/minute per group
 
 
 async def rate_limit_send(chat_id: int) -> None:
-    """Wait if necessary to avoid Telegram flood control (max 1 msg/sec per chat).
+    """Wait to respect private-chat and group message limits.
 
     Uses a per-chat lock to serialize concurrent senders, preventing two
     coroutines from computing the same wake-up time and sending simultaneously.
@@ -100,8 +96,9 @@ async def rate_limit_send(chat_id: int) -> None:
     lock = _rate_limit_locks.setdefault(chat_id, asyncio.Lock())
     async with lock:
         now = time.monotonic()
+        interval = GROUP_MESSAGE_SEND_INTERVAL if chat_id < 0 else MESSAGE_SEND_INTERVAL
         if chat_id in _last_send_time:
-            target = _last_send_time[chat_id] + MESSAGE_SEND_INTERVAL
+            target = _last_send_time[chat_id] + interval
             if target > now:
                 await asyncio.sleep(target - now)
                 _last_send_time[chat_id] = time.monotonic()
@@ -112,13 +109,24 @@ async def rate_limit_send(chat_id: int) -> None:
 def _cap_to_telegram_limit(
     plain_text: str, entities: list[Any]
 ) -> tuple[str, list[Any]]:
-    """Truncate plain_text + drop overflow entities so a single send fits Telegram's limit."""
-    if len(plain_text) <= TELEGRAM_MAX_MESSAGE_LENGTH:
+    """Truncate text and entities to Telegram's UTF-16 message limit."""
+    if utf16_len(plain_text) <= TELEGRAM_MAX_MESSAGE_LENGTH:
         return plain_text, entities
+
     ellipsis = "…"
-    cap = TELEGRAM_MAX_MESSAGE_LENGTH - len(ellipsis)
-    truncated = plain_text[:cap] + ellipsis
-    kept = [e for e in entities if e.offset + e.length <= cap]
+    budget = TELEGRAM_MAX_MESSAGE_LENGTH - utf16_len(ellipsis)
+    used = 0
+    end = 0
+    for end, char in enumerate(plain_text):
+        char_units = utf16_len(char)
+        if used + char_units > budget:
+            break
+        used += char_units
+    else:
+        end = len(plain_text)
+
+    truncated = plain_text[:end] + ellipsis
+    kept = [entity for entity in entities if entity.offset + entity.length <= used]
     return truncated, kept
 
 
@@ -130,9 +138,9 @@ async def _with_entity_fallback(
 ) -> Message | None:
     """Convert to entities, send, fall back to plain text on error.
 
-    Entity-based formatting uses character offsets — no syntax to parse,
-    no parse errors possible. The only failure mode is Telegram API errors
-    (rate limiting, message gone, etc.), which fall back to plain text.
+    Entity-based formatting uses character offsets — no syntax to parse.
+    Formatting-related Telegram errors fall back to plain text. Rate limits
+    propagate unchanged so the durable queue retries the same task later.
 
     Args:
         send_fn: Async callable accepting (text, **kwargs).
@@ -158,14 +166,9 @@ async def _with_entity_fallback(
             send_kwargs["entities"] = phase_entities
         try:
             return await send_fn(plain_text, **send_kwargs)
-        except RetryAfter as e:
-            await asyncio.sleep(retry_after_seconds(e) + 1)
-            try:
-                return await send_fn(plain_text, **send_kwargs)
-            except TelegramError as e2:
-                if is_thread_gone(e2):
-                    return None
-                last_error = e2
+        except RetryAfter:
+            # Formatting cannot fix flood control; preserve the task for queue retry.
+            raise
         except TelegramError as e:
             if is_thread_gone(e):
                 return None
@@ -186,14 +189,49 @@ async def _send_with_fallback(
 
     Returns the sent Message on success, None on failure.
     """
+    plain_text, entities = convert_to_entities(text)
+    return await _send_formatted_with_fallback(
+        client, chat_id, plain_text, entities, **kwargs
+    )
+
+
+async def _send_formatted_with_fallback(
+    client: TelegramClient,
+    chat_id: int,
+    plain_text: str,
+    entities: list[Any],
+    **kwargs: Any,
+) -> Message | None:
+    """Send already-rendered text and entities with the normal plain fallback."""
     kwargs.setdefault("link_preview_options", NO_LINK_PREVIEW)
+    if not plain_text.strip():
+        return None
+
+    plain_text, entities = _cap_to_telegram_limit(plain_text, entities)
 
     async def _send(text: str, **kw: Any) -> Message:
         return await client.send_message(chat_id=chat_id, text=text, **kw)
 
-    return await _with_entity_fallback(
-        _send, text, f"send message to {chat_id}", **kwargs
-    )
+    # Keep the two-phase contract used for single-message sends, but do not
+    # reparse a batch: each constituent was rendered independently to prevent
+    # markdown opened in one task from changing a later task's formatting.
+    last_error: TelegramError | None = None
+    for phase_entities in (entities, None):
+        send_kwargs = {**kwargs}
+        if phase_entities is not None:
+            send_kwargs["entities"] = phase_entities
+        try:
+            return await _send(plain_text, **send_kwargs)
+        except RetryAfter:
+            raise
+        except TelegramError as exc:
+            if is_thread_gone(exc):
+                return None
+            last_error = exc
+
+    if last_error is not None:
+        logger.warning("Failed to send message to %s: %s", chat_id, last_error)
+    return None
 
 
 async def rate_limit_send_message(
@@ -209,6 +247,20 @@ async def rate_limit_send_message(
     """
     await rate_limit_send(chat_id)
     return await _send_with_fallback(client, chat_id, text, **kwargs)
+
+
+async def rate_limit_send_formatted_message(
+    client: TelegramClient,
+    chat_id: int,
+    plain_text: str,
+    entities: list[Any],
+    **kwargs: Any,
+) -> Message | None:
+    """Rate-limit and send independently rendered text without reparsing it."""
+    await rate_limit_send(chat_id)
+    return await _send_formatted_with_fallback(
+        client, chat_id, plain_text, entities, **kwargs
+    )
 
 
 async def safe_reply(message: Message, text: str, **kwargs: Any) -> Message | None:

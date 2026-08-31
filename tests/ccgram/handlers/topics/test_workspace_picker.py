@@ -1,6 +1,6 @@
 """Tests for Task 9: workspace picker step in the /new flow.
 
-The picker is gated on ``native_agent_status``: herdr shows it, tmux never does.
+The picker is gated on ``supports_workspace_selection``: herdr and agterm show it, tmux never does.
 The chosen workspace id then has to survive all the way to window creation.
 """
 
@@ -32,7 +32,11 @@ from ccgram.handlers.topics.directory_browser import BROWSE_PATH_KEY
 # ── Fixtures & helpers ─────────────────────────────────────────────────
 
 
-def _capabilities(native_agent_status: bool) -> MultiplexerCapabilities:
+def _capabilities(
+    native_agent_status: bool,
+    *,
+    supports_workspace_selection: bool | None = None,
+) -> MultiplexerCapabilities:
     return MultiplexerCapabilities(
         name="herdr" if native_agent_status else "tmux",
         ids_stable_across_restart=not native_agent_status,
@@ -42,6 +46,12 @@ def _capabilities(native_agent_status: bool) -> MultiplexerCapabilities:
         self_identify_env="HERDR_PANE_ID" if native_agent_status else "TMUX_PANE",
         supports_event_stream=native_agent_status,
         native_worktrees=native_agent_status,
+        supports_workspace_selection=(
+            native_agent_status
+            if supports_workspace_selection is None
+            else supports_workspace_selection
+        ),
+        native_topic_targets=native_agent_status,
     )
 
 
@@ -119,6 +129,24 @@ class TestShowWorkspacePickerOrProvider:
 
         text = mock_edit.call_args[0][1]
         assert "Select Provider" in text
+
+    @patch(
+        "ccgram.handlers.topics.workspace_callbacks.safe_edit", new_callable=AsyncMock
+    )
+    @patch("ccgram.handlers.topics.workspace_callbacks.tmux_manager")
+    async def test_agterm_with_workspaces_shows_picker(
+        self, mock_mux: MagicMock, mock_edit: AsyncMock, tmp_path: Path
+    ) -> None:
+        mock_mux.capabilities = _capabilities(
+            native_agent_status=False, supports_workspace_selection=True
+        )
+        mock_mux.list_workspaces = AsyncMock(return_value=_WORKSPACES)
+
+        context = _make_context()
+        await _show_workspace_picker_or_provider(_make_query(), str(tmp_path), context)
+
+        assert "Select Workspace" in mock_edit.call_args[0][1]
+        mock_mux.list_workspaces.assert_awaited_once()
 
     @patch(
         "ccgram.handlers.topics.workspace_callbacks.safe_edit", new_callable=AsyncMock

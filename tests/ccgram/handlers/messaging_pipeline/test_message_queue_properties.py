@@ -34,6 +34,7 @@ def _content_task(
         window_id=window_id,
         parts=parts or ("hello",),
         content_type=content_type,
+        chat_id=-1001,
     )
 
 
@@ -57,7 +58,7 @@ async def test_merged_length_never_exceeds_limit(parts_list: list[str]) -> None:
         await queue.put(_content_task(parts=(p,)))
 
     merged, _count = await _merge_content_tasks(queue, first, lock)
-    total = sum(len(p) for p in merged.parts)
+    total = sum(len(p) for p in merged.parts) + 2 * (len(merged.parts) - 1)
     assert total <= MERGE_MAX_LENGTH
 
 
