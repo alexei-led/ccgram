@@ -343,6 +343,34 @@ class TestChatScopedBindings:
         assert restored.get_window_for_chat_thread(-1001, 7) == "@a"
         assert list(restored.iter_thread_bindings()) == [(100, 7, "@a")]
 
+    def test_cross_user_bind_evicts_existing_window_claim(
+        self, router: ThreadRouter
+    ) -> None:
+        router.bind_thread(100, 2, "@5", chat_id=-1001)
+
+        router.bind_thread(200, 142, "@5", chat_id=-1001)
+
+        assert router.get_window_for_thread(100, 2, -1001) is None
+        assert router.get_thread_for_window(100, "@5", -1001) is None
+        assert router.get_window_for_thread(200, 142, -1001) == "@5"
+        assert router.get_thread_for_window(200, "@5", -1001) == 142
+
+    def test_from_dict_repairs_cross_user_duplicate_window_deterministically(
+        self, router: ThreadRouter
+    ) -> None:
+        router.from_dict(
+            {
+                "chat_thread_bindings": {
+                    "200:-1001:142": "@5",
+                    "100:-1001:2": "@5",
+                }
+            }
+        )
+
+        assert router.get_window_for_thread(100, 2, -1001) is None
+        assert router.get_window_for_thread(200, 142, -1001) == "@5"
+        assert router.get_thread_for_window(200, "@5", -1001) == 142
+
 
 class TestUnbindChatScoped:
     def test_unbind_with_chat_id_removes_only_that_chat(

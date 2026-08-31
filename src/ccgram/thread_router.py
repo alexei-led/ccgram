@@ -149,6 +149,29 @@ class ThreadRouter:
                                 keep,
                             )
 
+        self._dedup_chat_thread_bindings()
+
+    def _dedup_chat_thread_bindings(self) -> None:
+        """Keep one deterministic chat-scoped binding for each window."""
+        window_bindings: dict[str, list[tuple[int, int, int]]] = {}
+        for key, wid in self.chat_thread_bindings.items():
+            window_bindings.setdefault(wid, []).append(key)
+        for wid, keys in window_bindings.items():
+            if len(keys) <= 1:
+                continue
+            keep = max(keys, key=lambda key: (key[2], key[0], key[1]))
+            for key in keys:
+                if key == keep:
+                    continue
+                del self.chat_thread_bindings[key]
+                logger.warning(
+                    "Startup: removed duplicate binding thread %d -> window %s "
+                    "(keeping thread %d)",
+                    key[2],
+                    wid,
+                    keep[2],
+                )
+
     # ------------------------------------------------------------------
     # Serialization
     # ------------------------------------------------------------------
@@ -329,15 +352,12 @@ class ThreadRouter:
             stale = [
                 candidate
                 for candidate, wid in self.chat_thread_bindings.items()
-                if candidate[0] == user_id
-                and candidate[1] == chat_id
-                and wid == window_id
-                and candidate != key
+                if wid == window_id and candidate != key
             ]
             for candidate in stale:
                 self.chat_thread_bindings.pop(candidate, None)
                 self._chat_window_to_thread.pop(
-                    (user_id, candidate[1], window_id), None
+                    (candidate[0], candidate[1], window_id), None
                 )
             self.chat_thread_bindings[key] = window_id
             self._chat_window_to_thread[(user_id, chat_id, window_id)] = thread_id
