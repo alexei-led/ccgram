@@ -83,7 +83,7 @@ class ForegroundInfo:
     """
 
     pid: int
-    pgid: int
+    pgid: int  # Zero when the backend cannot provide a process-group ID.
     argv: list[str]
     cwd: str
     tty: str = ""  # Empty when not available (herdr on macOS)

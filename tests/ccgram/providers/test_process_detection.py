@@ -134,11 +134,19 @@ class TestDetectProviderCached:
         assert result == ""
         assert "@0" not in _pgid_cache
 
-    async def test_zero_pgid_returns_empty(self) -> None:
-        fg = ForegroundInfo(pid=0, pgid=0, argv=["bun", "claude"], cwd="/tmp")
-        result = await detect_provider_cached("@0", fg)
-        assert result == ""
-        assert "@0" not in _pgid_cache
+    async def test_zero_pgid_classifies_without_cache(self) -> None:
+        _pgid_cache["@0"] = (8668, "claude")
+        fg = ForegroundInfo(pid=0, pgid=0, argv=["bun", "codex"], cwd="/tmp")
+
+        with patch(
+            "ccgram.providers.process_detection.classify_provider_from_argv"
+        ) as mock_classify:
+            mock_classify.return_value = "codex"
+            result = await detect_provider_cached("@0", fg)
+
+        assert result == "codex"
+        mock_classify.assert_called_once_with(["bun", "codex"])
+        assert _pgid_cache["@0"] == (8668, "claude")
 
     async def test_unrecognized_argv_not_cached(self) -> None:
         result = await detect_provider_cached("@0", _fg(["vim", "x.py"], 555))
