@@ -12,13 +12,14 @@ sends.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Sequence
 
 import pytest
 
 from ccgram.multiplexer.agterm import AgtermManager, _key_to_bytes
-from ccgram.multiplexer.base import Multiplexer
+from ccgram.multiplexer.base import AgentStatus, Multiplexer
 
 
 class FakeAgtermctl:
@@ -154,24 +155,31 @@ def test_capability_values() -> None:
     assert caps.self_identify_env == "AGTERM_SESSION_ID"
     assert caps.supports_event_stream is False
     assert caps.native_worktrees is False
+    assert caps.supports_workspace_selection is True
+    assert caps.native_topic_targets is False
+    assert caps.native_agent_status is True
 
 
-def test_native_agent_status_is_false_despite_agterm_reporting_one() -> None:
-    """The flag also selects herdr-shaped topic behaviour; see the module docs.
-
-    Declaring it True would make ``topic_mapping.is_agent_topic_window`` reject
-    every agterm window, so no session would ever surface as a topic.
-    """
-    assert _manager(FakeAgtermctl()).capabilities.native_agent_status is False
-
-
-async def test_agent_status_returns_none() -> None:
+def test_agterm_native_status_is_reported() -> None:
     fake = (
         FakeAgtermctl()
         .on("window", "list", out=_windows())
         .on("tree", out=_tree(_session(status="active")))
     )
-    assert await _manager(fake).agent_status(SESSION_A) is None
+
+    status = asyncio.run(_manager(fake).agent_status(SESSION_A))
+
+    assert status == AgentStatus(state="active")
+
+
+def test_agterm_native_status_is_none_when_unreported() -> None:
+    fake = (
+        FakeAgtermctl()
+        .on("window", "list", out=_windows())
+        .on("tree", out=_tree(_session()))
+    )
+
+    assert asyncio.run(_manager(fake).agent_status(SESSION_A)) is None
 
 
 # ── key translation ────────────────────────────────────────────────────
@@ -553,6 +561,29 @@ async def test_pane_operations_authorised_by_the_session_id_go_through() -> None
 
 
 # ── creation, renaming, teardown ───────────────────────────────────────
+
+
+async def test_create_window_expands_tilde_before_calling_agterm(
+    tmp_path, monkeypatch
+) -> None:
+    work_dir = tmp_path / "project"
+    work_dir.mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    fake = (
+        FakeAgtermctl()
+        .ok("session", "new", result={"id": SESSION_A})
+        .on("window", "list", out=_windows())
+        .on("tree", out=_tree(_session(SESSION_A, name="project")))
+    )
+
+    ok, _message, _name, _window_id = await _manager(fake).create_window(
+        "~/project", start_agent=False
+    )
+
+    assert ok is True
+    call = fake.call_with("session", "new")
+    assert call is not None
+    assert call[call.index("--cwd") + 1] == str(work_dir)
 
 
 async def test_create_window_makes_a_shell_and_types_the_command(tmp_path) -> None:

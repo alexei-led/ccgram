@@ -45,18 +45,6 @@ def _resolve_toolbar_path() -> str:
     return str(fallback) if fallback.exists() else ""
 
 
-def _parse_workspaces(raw: str) -> tuple[str, ...] | None:
-    """Parse the agterm workspace scope; None means every workspace.
-
-    ``*`` (or an empty setting) opts out of scoping entirely. Anything else is
-    a comma-separated list of workspace names, matched case-insensitively.
-    """
-    names = tuple(part.strip() for part in raw.split(",") if part.strip())
-    if not names or "*" in names:
-        return None
-    return names
-
-
 class Config:
     """Application configuration loaded from environment variables."""
 
@@ -213,17 +201,9 @@ class Config:
         )
 
     def _init_multiplexer(self) -> None:
-        """Terminal-multiplexer backend selection and its per-backend scope."""
+        """Select the terminal-multiplexer backend."""
         # tmux default; herdr and agterm opt-in.
         self.multiplexer_name: str = os.getenv("CCGRAM_MULTIPLEXER", "tmux")
-        # agterm: which workspaces ccgram may adopt sessions from. agterm has no
-        # per-application container the way tmux has its own session, so without
-        # a scope every session the user has open would surface as a topic. One
-        # named workspace is the analogue of ``TMUX_SESSION_NAME``. Comma-
-        # separated for several; ``*`` opts into every workspace.
-        self.agterm_workspaces: tuple[str, ...] | None = _parse_workspaces(
-            os.getenv("CCGRAM_AGTERM_WORKSPACES", "ccgram")
-        )
 
     def _init_live_view(self) -> None:
         self.live_view_interval: int = max(

@@ -210,6 +210,12 @@ class MultiplexerCapabilities:
     supports_display_name_rebind: bool = True
     """True when a stale topic may be recovered by matching its display name."""
 
+    supports_workspace_selection: bool = False
+    """True when callers can select the workspace for a new target."""
+
+    native_topic_targets: bool = False
+    """True when creation must use the backend's guarded topic-target flow."""
+
 
 # ── Protocol ───────────────────────────────────────────────────────────
 

@@ -204,6 +204,7 @@ class TestCreateTopicWindow:
         with patch(f"{_MODULE}tmux_manager") as mux:
             mux.capabilities.native_worktrees = False
             mux.capabilities.native_agent_status = True
+            mux.capabilities.native_topic_targets = True
             mux.create_topic_target = AsyncMock(side_effect=RuntimeError("no socket"))
             success, message, name, window_id = await _create_topic_window(
                 "/proj", "claude", None, context
@@ -279,6 +280,7 @@ def _launch_env(
         mux.kill_window = AsyncMock(return_value=True)
         mux.capabilities.native_worktrees = False
         mux.capabilities.native_agent_status = True
+        mux.capabilities.native_topic_targets = True
         router.get_window_for_thread.return_value = None
         router.resolve_chat_id.return_value = -100999
         session_map.wait_for_session_map_entry = AsyncMock(return_value=True)

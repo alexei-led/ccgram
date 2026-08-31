@@ -29,16 +29,11 @@ Two agterm behaviours drive the shape of this adapter:
   exactly as the Protocol prescribes for a backend that cannot expose a safe
   sibling handle.
 
-Capabilities: ``native_agent_status`` is **False** even though agterm reports a
-status natively. In this codebase that flag also selects herdr-shaped creation,
-workspace and topic-eligibility behaviour (``handlers/topics/window_launch_service.py``,
-``handlers/split_command.py``, ``multiplexer/topic_mapping.py``), so declaring it
-True would stop agterm windows from ever surfacing as topics. Adopting agterm's
-native status needs that conflation untangled upstream first; until then ccgram's
-terminal scraping supplies status, as it does for tmux. ``exposes_pane_tty`` is
-False (agterm reports foreground argv, no tty or pid), ``read_max_lines`` is None
-(``session text --lines N`` takes any N; agterm imposes no cap), and ``supports_event_stream`` is False
-(the control channel has no event subscription).
+Capabilities: agterm reports native agent status and supports workspace selection.
+It does not use the guarded topic-target flow because its session UUID is already
+its durable target. ``exposes_pane_tty`` is False (agterm reports foreground argv,
+no tty or pid), ``read_max_lines`` is None (``session text --lines N`` takes any N),
+and ``supports_event_stream`` is False (the control channel has no event subscription).
 """
 
 from __future__ import annotations
@@ -53,7 +48,6 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 
 import structlog
 
-from ..config import config
 from .base import (
     AgentStatus,
     CaptureResult,
@@ -109,11 +103,13 @@ _AGTERM_CAPABILITIES = MultiplexerCapabilities(
     name="agterm",
     ids_stable_across_restart=True,
     exposes_pane_tty=False,
-    native_agent_status=False,
+    native_agent_status=True,
     read_max_lines=None,
     self_identify_env="AGTERM_SESSION_ID",
     supports_event_stream=False,
     native_worktrees=False,
+    supports_workspace_selection=True,
+    native_topic_targets=False,
 )
 
 # tmux key names (callers send these with ``literal=False``) → the bytes a pty
@@ -147,6 +143,14 @@ _CONTROL_SYMBOLS: dict[str, str] = {
     "^": "\x1e",
     "_": "\x1f",
 }
+
+
+def _parse_workspaces(raw: str) -> tuple[str, ...] | None:
+    """Parse the agterm workspace scope; None means every workspace."""
+    names = tuple(part.strip() for part in raw.split(",") if part.strip())
+    if not names or "*" in names:
+        return None
+    return names
 
 
 def _validated_work_dir(work_dir: str) -> tuple[Path | None, str]:
@@ -222,7 +226,7 @@ class AgtermManager:
             own_session_id: the session ccgram runs in, excluded from listings;
                 defaults to ``$AGTERM_SESSION_ID``. Pass ``""`` to exclude none.
             workspaces: workspace names discovery may adopt from; ``None`` means
-                every workspace. Defaults to ``config.agterm_workspaces``.
+                every workspace. Defaults to ``$CCGRAM_AGTERM_WORKSPACES`` or ``ccgram``.
         """
         self._socket_path = socket_path or os.environ.get("AGTERM_SOCKET", "")
         # Resolve to an absolute path so CPython takes the fork-free
@@ -240,7 +244,9 @@ class AgtermManager:
             else os.environ.get("AGTERM_SESSION_ID", "")
         ).casefold()
         scope = (
-            config.agterm_workspaces if isinstance(workspaces, _Unset) else workspaces
+            _parse_workspaces(os.environ.get("CCGRAM_AGTERM_WORKSPACES", "ccgram"))
+            if isinstance(workspaces, _Unset)
+            else workspaces
         )
         self._workspaces = (
             None if scope is None else {name.casefold() for name in scope}
@@ -791,7 +797,7 @@ class AgtermManager:
         path, problem = _validated_work_dir(work_dir)
         if path is None:
             return (False, problem, "", "")
-        args = ["session", "new", "--cwd", work_dir, "--no-select"]
+        args = ["session", "new", "--cwd", str(path), "--no-select"]
         if window_name:
             args += ["--name", window_name]
         if workspace_id:
@@ -887,13 +893,9 @@ class AgtermManager:
         terminal somebody is using. Lifting this needs agterm to report the
         shell on an idle node.
 
-        A pgid of 0 has a consequence worth stating plainly:
-        ``providers.process_detection.detect_provider_cached`` returns early on
-        ``fg.pgid == 0``, so argv classification never runs for this backend.
-        Providers named directly still resolve through
-        ``WindowRef.pane_current_command``; a provider launched behind a
-        wrapper (``node``/``bun``/``npx``) loses the argv fallback until
-        detection learns to classify an uncacheable foreground.
+        The provider detector classifies this argv directly because agterm cannot
+        provide a process-group ID. This preserves provider detection behind
+        wrappers such as ``node``, ``bun``, and ``npx``.
         """
         session = await self._find_session(window_id)
         if session is None:
@@ -910,15 +912,22 @@ class AgtermManager:
         )
 
     async def agent_status(self, window_id: str) -> AgentStatus | None:
-        """Always None: ``native_agent_status`` is False for this backend.
-
-        agterm does report a status, but that capability flag currently also
-        selects herdr-shaped creation and topic-eligibility behaviour elsewhere
-        in ccgram (see the module docstring), so honouring the contract means
-        leaving status to terminal scraping until the flag is split upstream.
-        """
-        del window_id
-        return None
+        """Return the status reported by the agterm session, when present."""
+        session = await self._find_session(window_id)
+        if session is None:
+            return None
+        raw_state = session.get("status")
+        if not isinstance(raw_state, str) or not raw_state.strip():
+            return None
+        raw_agent = session.get("agent")
+        raw_custom_status = session.get("custom_status")
+        return AgentStatus(
+            state=raw_state.strip(),
+            agent=raw_agent.strip() if isinstance(raw_agent, str) else "",
+            custom_status=(
+                raw_custom_status.strip() if isinstance(raw_custom_status, str) else ""
+            ),
+        )
 
     async def watch_events(
         self, window_ids: Sequence[str]

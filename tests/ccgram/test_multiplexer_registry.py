@@ -3,6 +3,10 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+from pathlib import Path
 from typing import cast
 
 import pytest
@@ -51,6 +55,27 @@ class TestRegistryResolution:
 
     def test_get_caches_one_instance_per_name(self) -> None:
         assert get_multiplexer("tmux") is get_multiplexer("tmux")
+
+    def test_agterm_registry_loads_without_bot_credentials(self, tmp_path) -> None:
+        source_root = Path(__file__).parents[2] / "src"
+        env = {
+            "HOME": str(tmp_path),
+            "PYTHONPATH": str(source_root),
+            "PATH": os.environ.get("PATH", ""),
+        }
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from ccgram.multiplexer import get_multiplexer; "
+                "assert get_multiplexer('agterm').capabilities.name == 'agterm'",
+            ],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
 
     def test_unknown_name_raises_and_lists_the_registered_ones(self) -> None:
         with pytest.raises(UnknownMultiplexerError) as excinfo:

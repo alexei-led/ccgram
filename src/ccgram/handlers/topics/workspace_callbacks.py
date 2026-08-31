@@ -50,14 +50,13 @@ async def _show_workspace_picker_or_provider(
     selected_path: str,
     context: ContextTypes.DEFAULT_TYPE | None = None,
 ) -> None:
-    """Gate on native_agent_status: show workspace picker (herdr) or go straight to provider.
+    """Show the workspace picker when the backend supports workspace selection.
 
-    On backends where ``native_agent_status`` is True (herdr), fetch the workspace list and
-    show the picker so the user can pin the new tab in a workspace.  On tmux (False) fall
-    through directly to provider pick — byte-identical to the previous behaviour.
+    Backends that support workspace selection return their workspace list and
+    let the user pin the new session. Other backends go straight to provider pick.
     When only one workspace matches the cwd exactly, skip the picker and pre-select it.
     """
-    if tmux_manager.capabilities.native_agent_status:
+    if tmux_manager.capabilities.supports_workspace_selection:
         workspaces = await tmux_manager.list_workspaces()
         ws_triples = [(w.workspace_id, w.label, w.cwd) for w in workspaces]
         if context is not None and context.user_data is not None:

@@ -164,9 +164,9 @@ async def _create_topic_window(
             launch_command=launch_command,
         )
         return success, message, name, window_id
-    # Tmux preserves its long-standing creation behavior. Herdr's native
-    # agent-status capability selects the guarded-session creation transaction.
-    if tmux_manager.capabilities.native_agent_status is not True:
+    # Tmux and agterm create normal durable windows. Herdr uses its guarded
+    # native topic-target transaction.
+    if tmux_manager.capabilities.native_topic_targets is not True:
         success, message, name, window_id = await tmux_manager.create_window(
             selected_path,
             launch_command=launch_command,

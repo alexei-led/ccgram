@@ -104,6 +104,8 @@ def test_backend_capabilities_shape(backend: Multiplexer) -> None:
     assert isinstance(caps.self_identify_env, str) and caps.self_identify_env
     assert isinstance(caps.supports_event_stream, bool)
     assert isinstance(caps.native_worktrees, bool)
+    assert isinstance(caps.supports_workspace_selection, bool)
+    assert isinstance(caps.native_topic_targets, bool)
 
 
 def test_tmux_capability_values() -> None:
@@ -117,6 +119,8 @@ def test_tmux_capability_values() -> None:
     assert caps.self_identify_env == "TMUX_PANE"
     assert caps.supports_event_stream is False
     assert caps.native_worktrees is False
+    assert caps.supports_workspace_selection is False
+    assert caps.native_topic_targets is False
 
 
 async def test_tmux_agent_status_returns_none() -> None:
@@ -150,3 +154,5 @@ def test_herdr_capability_values() -> None:
     assert caps.self_identify_env == "HERDR_PANE_ID"
     assert caps.supports_event_stream is True
     assert caps.native_worktrees is True
+    assert caps.supports_workspace_selection is True
+    assert caps.native_topic_targets is True

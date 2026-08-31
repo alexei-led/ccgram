@@ -94,6 +94,22 @@ one agent; the next reconciliation updates the topic name. If Herdr reports the
 same session target more than once, CCGram quarantines only that target and
 keeps unrelated topics operational.
 
+## Local Dev in agterm
+
+Set `CCGRAM_MULTIPLEXER=agterm` to use agterm as the session backend.
+Install `agterm` and make sure that `agtermctl` can reach its control socket.
+
+Set `CCGRAM_AGTERM_WORKSPACES` to a comma-separated list of workspace names.
+Use `*` to include all workspaces. CCGram shows the workspace picker when agterm
+supports workspace selection, and it uses the selected workspace for new sessions.
+
+Agterm reports session state through its native status field. Provider detection
+uses foreground argv when agterm cannot provide a process-group ID. CCGram does
+not subscribe to agterm events, so status and transcript updates use polling.
+
+Run the standard unit and integration checks before deployment. Run live agterm
+checks only against a disposable agterm instance.
+
 ## Local Dev in tmux
 
 Recommended local development model:
