@@ -42,7 +42,7 @@ class _FakeBackend:
 
 
 class TestRegistryResolution:
-    @pytest.mark.parametrize("name", ["tmux", "herdr"])
+    @pytest.mark.parametrize("name", ["tmux", "herdr", "agterm"])
     def test_registered_backend_resolves_to_itself(self, name: str) -> None:
         # Both constructors are I/O-free, so this resolves without a running
         # multiplexer.

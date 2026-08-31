@@ -32,6 +32,7 @@ SRC_ROOT = Path(__file__).resolve().parents[2] / "src" / "ccgram"
 FORBIDDEN_PREFIXES: tuple[str, ...] = (
     "ccgram.multiplexer.tmux",
     "ccgram.multiplexer.herdr",
+    "ccgram.multiplexer.agterm",
     "ccgram.tmux_manager",
     "libtmux",
 )

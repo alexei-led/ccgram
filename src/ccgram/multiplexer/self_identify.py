@@ -4,9 +4,9 @@ The Claude Code hook runs as a separate process spawned inside a multiplexer
 pane; it cannot import bot config or wire the ``multiplexer`` proxy. It only
 needs to answer "which window am I?" from the environment. Each backend exposes
 that differently — tmux via ``$TMUX_PANE`` + ``tmux display-message``, herdr via
-``$HERDR_PANE_ID`` — so this module picks the backend by which
-``self_identify_env`` variable is present (never a ``name == "<backend>"``
-conditional) and returns a neutral ``SelfIdentity``.
+``$HERDR_PANE_ID``, agterm via ``$AGTERM_SESSION_ID`` — so this module picks the
+backend by which ``self_identify_env`` variable is present (never a ``name ==
+"<backend>"`` conditional) and returns a neutral ``SelfIdentity``.
 
 The tmux probe (a ``display-message`` subprocess) is injected as ``tmux_query``
 so this module stays I/O-free and table-testable; the hook supplies its own
@@ -36,7 +36,8 @@ class SelfIdentity:
     """Neutral identity of the window that fired the hook.
 
     ``session_window_key`` is the ``session_map.json`` key (``<session>:<id>``
-    for tmux, ``herdr:<opaque-target-id>`` for herdr). ``pane_tty`` is tmux-only
+    for tmux, ``herdr:<opaque-target-id>`` for herdr, ``agterm:<session-uuid>``
+    for agterm). ``pane_tty`` is tmux-only
     (herdr does not expose a tty).
     """
 
@@ -57,9 +58,16 @@ def resolve_self_identity(
 
     Dispatches on which backend's ``self_identify_env`` var is present:
     ``$TMUX_PANE`` → tmux (via ``tmux_query``), ``$HERDR_PANE_ID`` → herdr.
-    Returns None when neither is set or the tmux probe fails (today's
-    "cannot determine window" path). tmux wins when both are present (a herdr
-    pane running inside a tmux pane still reports the outer tmux identity).
+    Returns None when none is set or the tmux probe fails (today's
+    "cannot determine window" path).
+
+    The order is fixed: tmux, then herdr, then agterm. It is a precedence list,
+    not a rule about which multiplexer is innermost. tmux is first because it
+    is the established path and a herdr pane inside a tmux pane reports the
+    tmux identity. agterm is last because its variable is the least specific
+    evidence of anything: every shell agterm spawns inherits
+    ``AGTERM_SESSION_ID``, including one running a nested tmux or herdr, so
+    checking it earlier would claim panes owned by the inner multiplexer.
 
     For herdr: ``herdr_query(workspace_id, pane_id)`` resolves the exact live
     locator to a guarded session target, so ``session_window_key`` becomes
@@ -95,6 +103,20 @@ def resolve_self_identity(
             mux="herdr",
             session_window_key=f"herdr:{target_id}",
             window_id=target_id,
+            window_name="",
+        )
+
+    # agterm is checked last on purpose. ``AGTERM_SESSION_ID`` belongs to the
+    # outer terminal and every shell it spawns inherits it, including one
+    # running a nested tmux or herdr session, so an earlier check would claim
+    # panes that belong to the inner multiplexer. No probe is needed: the
+    # session UUID is the identity, and agterm persists it across a restart.
+    agterm_session = env.get("AGTERM_SESSION_ID", "")
+    if agterm_session:
+        return SelfIdentity(
+            mux="agterm",
+            session_window_key=f"agterm:{agterm_session}",
+            window_id=agterm_session,
             window_name="",
         )
 

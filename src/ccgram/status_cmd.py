@@ -35,6 +35,7 @@ _TMUX_FORMAT_PARTS = 2
 _MULTIPLEXER_ENV = "CCGRAM_MULTIPLEXER"
 _DEFAULT_MULTIPLEXER = "tmux"
 _HERDR_BACKEND = "herdr"
+_TMUX_BACKEND = "tmux"
 
 
 def _active_multiplexer_name() -> str:
@@ -55,6 +56,23 @@ def _list_herdr_windows() -> list[dict[str, str]]:
 
     try:
         windows = asyncio.run(get_multiplexer(_HERDR_BACKEND).list_windows())
+    except Exception:  # noqa: BLE001 — status is best-effort; degrade to empty
+        return []
+    return [{"id": w.window_id, "name": w.window_name} for w in windows]
+
+
+def _list_backend_windows(mux_name: str) -> list[dict]:
+    """List windows through the seam, for a backend with no bespoke listing.
+
+    Best-effort like the herdr listing above: a failure degrades to empty so
+    status still prints its state-file data.
+    """
+    # Lazy: the registry lazy-imports the backend; defer to keep status startup
+    # light and touch only the neutral seam (never a concrete backend, F1).
+    from .multiplexer import get_multiplexer
+
+    try:
+        windows = asyncio.run(get_multiplexer(mux_name).list_windows())
     except Exception:  # noqa: BLE001 — status is best-effort; degrade to empty
         return []
     return [{"id": w.window_id, "name": w.window_name} for w in windows]
@@ -135,6 +153,12 @@ def status_main() -> None:
     if mux_name == _HERDR_BACKEND:
         live_windows = _list_herdr_windows()
         backend_line = f"Herdr: {len(live_windows)} pane(s)"
+    elif mux_name != _TMUX_BACKEND:
+        # Any other backend answers through the seam; only tmux and herdr have
+        # a bespoke listing, and routing a third backend into the tmux branch
+        # reports its session count as zero.
+        live_windows = _list_backend_windows(mux_name)
+        backend_line = f"{mux_name}: {len(live_windows)} session(s)"
     else:
         live_windows = _list_tmux_windows(session_name)
         backend_line = f"Tmux session: {session_name} ({len(live_windows)} windows)"

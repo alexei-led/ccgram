@@ -19,12 +19,16 @@ from ccgram.multiplexer import UnknownMultiplexerError, get_multiplexer
 from ccgram.multiplexer.base import Multiplexer, MultiplexerCapabilities
 
 # Every backend the contract should hold for. Unregistered names skip.
-CANDIDATE_BACKENDS = ["tmux", "herdr"]
+CANDIDATE_BACKENDS = ["tmux", "herdr", "agterm"]
 
 # The full method surface every backend must expose (Protocol + transitional).
 CONTRACT_METHODS = (
     "ensure_session",
     "list_windows",
+    # Reached by getattr in multiplexer/reconciliation.py, which raises when a
+    # backend lacks it, so a backend can pass every other check here and still
+    # bring the bot down at startup and on every monitor cycle.
+    "list_windows_for_reconciliation",
     "capture_scrollback",
     "pane_dims",
     "send",

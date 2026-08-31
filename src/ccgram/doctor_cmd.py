@@ -40,6 +40,8 @@ _MAIN_WINDOW_NAME = "__main__"
 _MULTIPLEXER_ENV = "CCGRAM_MULTIPLEXER"
 _DEFAULT_MULTIPLEXER = "tmux"
 _HERDR_BACKEND = "herdr"
+_TMUX_BACKEND = "tmux"
+_AGTERM_BACKEND = "agterm"
 
 
 def _active_multiplexer_name() -> str:
@@ -136,6 +138,27 @@ def _print_check(status: str, message: str) -> None:
     """Print a single check result."""
     sym = _SYMBOLS.get(status, "?")
     print(f"  {sym} {message}")
+
+
+def _check_agterm() -> tuple[str, str]:
+    """agterm: the CLI is installed and its control socket answers."""
+    if not shutil.which("agtermctl"):
+        return (
+            _FAIL,
+            "agtermctl not found — install it from agterm's "
+            "Help > Install Command Line Tool",
+        )
+    socket = os.environ.get("AGTERM_SOCKET", "")
+    # Lazy: defer the registry import (see _check_multiplexer).
+    from .multiplexer import get_multiplexer
+
+    backend = get_multiplexer(_AGTERM_BACKEND)
+    try:
+        asyncio.run(backend.ensure_session())
+    except Exception as exc:  # noqa: BLE001 — surface any backend failure verbatim
+        return _FAIL, f"agterm control socket unreachable: {exc}"
+    where = f" ({socket})" if socket else " (default socket)"
+    return _PASS, f"agterm control socket reachable{where}"
 
 
 def _check_tmux() -> tuple[str, str]:
@@ -468,11 +491,16 @@ def doctor_main(fix: bool = False) -> None:
     _, _, failed = _run_check(lambda: _check_provider_command(caps.name))
     has_failures = has_failures or failed
 
-    # Backend-specific terminal/session health
+    # Backend-specific terminal/session health. Dispatched by name, never by an
+    # else-branch: a backend that falls through to the tmux checks fails them
+    # all and exits 1 on a machine where tmux is neither installed nor wanted.
     if mux_name == _HERDR_BACKEND:
         _, _, failed = _run_check(_check_herdr)
         has_failures = has_failures or failed
         _, _, failed = _run_check(_check_herdr_hook_coexistence)
+        has_failures = has_failures or failed
+    elif mux_name == _AGTERM_BACKEND:
+        _, _, failed = _run_check(_check_agterm)
         has_failures = has_failures or failed
     else:
         _, _, failed = _run_check(_check_tmux)
@@ -502,7 +530,7 @@ def doctor_main(fix: bool = False) -> None:
     _run_check(_check_draft_streaming)
 
     # Orphaned windows — tmux-only (herdr panes are not tmux windows)
-    if mux_name != _HERDR_BACKEND:
+    if mux_name == _TMUX_BACKEND:
         orphans = _find_orphaned_windows()
         if orphans:
             names = ", ".join(f"{wid} ({wname})" for wid, wname in orphans)
