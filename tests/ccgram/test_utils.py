@@ -577,3 +577,10 @@ class TestIsGeneralTopic:
         self, thread_id: int | None, is_forum: bool | None, expected: bool
     ) -> None:
         assert is_general_topic(self._message(thread_id, is_forum=is_forum)) is expected
+
+    def test_private_topic_one_is_general_control_lane(self) -> None:
+        message = self._message(1, is_forum=False)
+        message.chat.type = "private"
+        message.is_topic_message = True
+
+        assert is_general_topic(message) is True

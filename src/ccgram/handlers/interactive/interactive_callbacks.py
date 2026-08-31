@@ -17,6 +17,7 @@ from telegram import CallbackQuery, Update
 from ...telegram_client import PTBTelegramClient
 from ...multiplexer import multiplexer as tmux_manager
 from ..callback_data import (
+    CB_ASK_CHOICE,
     CB_ASK_DOWN,
     CB_ASK_ENTER,
     CB_ASK_ESC,
@@ -28,7 +29,12 @@ from ..callback_data import (
     CB_ASK_UP,
 )
 from ..callback_registry import register
-from .interactive_ui import clear_interactive_msg, handle_interactive_ui
+from .interactive_ui import (
+    advance_interactive_sequence,
+    clear_interactive_msg,
+    handle_interactive_ui,
+    is_current_interactive_prompt,
+)
 
 if TYPE_CHECKING:
     from telegram.ext import ContextTypes
@@ -59,7 +65,34 @@ INTERACTIVE_KEY_LABELS: dict[str, str] = {
 INTERACTIVE_PREFIXES: tuple[str, ...] = (
     *INTERACTIVE_KEY_MAP,
     CB_ASK_REFRESH,
+    CB_ASK_CHOICE,
 )
+
+
+def parse_direct_choice_callback(
+    data: str,
+) -> tuple[str, int, str, str | None] | None:
+    """Parse a direct choice callback without splitting opaque target IDs."""
+    if not data.startswith(CB_ASK_CHOICE):
+        return None
+    remainder = data.removeprefix(CB_ASK_CHOICE)
+    key, separator, remainder = remainder.partition(":")
+    sequence_text, separator2, target = remainder.partition(":")
+    if (
+        not separator
+        or not separator2
+        or key not in {"y", "n", "1", "2", "3", "4", "5", "6", "7", "8"}
+        or not sequence_text.isdecimal()
+        or not target
+    ):
+        return None
+    # Lazy: callback_data keeps the pane separator colocated with other formats.
+    from ..callback_data import CB_PANE_DELIMITER
+
+    if CB_PANE_DELIMITER in target:
+        window_id, pane_id = target.split(CB_PANE_DELIMITER, 1)
+        return key, int(sequence_text), window_id, pane_id
+    return key, int(sequence_text), target, None
 
 
 def match_interactive_prefix(data: str) -> tuple[str, str, str | None] | None:
@@ -72,6 +105,11 @@ def match_interactive_prefix(data: str) -> tuple[str, str, str | None] | None:
       - ``"aq:enter:@12|%5"``      → tmux: window @12, pane %5
       - callback target suffixes remain opaque and are resolved by the backend
     """
+    direct_choice = parse_direct_choice_callback(data)
+    if direct_choice is not None:
+        _, _, window_id, pane_id = direct_choice
+        return CB_ASK_CHOICE, window_id, pane_id
+
     # Lazy: avoid a module-level import that ruff flags as unused before the
     # function body is reached; CB_PANE_DELIMITER is a plain string constant.
     from ..callback_data import CB_PANE_DELIMITER
@@ -84,6 +122,47 @@ def match_interactive_prefix(data: str) -> tuple[str, str, str | None] | None:
                 return prefix, window_id, pane_id
             return prefix, remainder, None
     return None
+
+
+async def _handle_direct_choice(
+    query: CallbackQuery,
+    user_id: int,
+    thread_id: int | None,
+    chat_id: int | None,
+    message_id: int | None,
+    window_id: str,
+    pane_id: str | None,
+    choice: tuple[str, int, str, str | None] | None,
+) -> None:
+    """Send one validated direct choice and invalidate its sequence."""
+    if choice is None:
+        await query.answer("This prompt has expired", show_alert=True)
+        return
+    key, sequence, _window_id, _pane_id = choice
+    if not is_current_interactive_prompt(
+        user_id, thread_id, window_id, chat_id, message_id, sequence
+    ):
+        await query.answer("This prompt has expired", show_alert=True)
+        return
+    enter = key in {"y", "n"}
+    try:
+        if pane_id:
+            sent = await tmux_manager.send_keys_to_pane(
+                pane_id, key, enter=enter, literal=True, window_id=window_id
+            )
+        else:
+            window = await tmux_manager.find_window_by_id(window_id)
+            sent = bool(window) and await tmux_manager.send_keys(
+                window.window_id, key, enter=enter, literal=True
+            )
+    except Exception:  # noqa: BLE001 — report any backend delivery failure to user
+        logger.warning("Failed to send direct interactive choice", exc_info=True)
+        sent = False
+    if not sent:
+        await query.answer("Unable to send choice. Try again.", show_alert=True)
+        return
+    advance_interactive_sequence(user_id, thread_id, chat_id=chat_id)
+    await query.answer()
 
 
 async def handle_interactive_callback(
@@ -103,16 +182,41 @@ async def handle_interactive_callback(
     # cycle through registration side effects.
     from ..callback_helpers import get_thread_id, user_owns_window
 
-    if not user_owns_window(user_id, window_id):
+    thread_id = get_thread_id(update)
+    message = query.message
+    chat_id = message.chat.id if message is not None else None
+    private_topic = (
+        message is not None
+        and message.chat.type == "private"
+        and getattr(message, "is_topic_message", False) is True
+        and isinstance(getattr(message, "message_thread_id", None), int)
+    )
+    ownership_chat_id = (
+        chat_id
+        if private_topic or message is None or message.chat.type != "private"
+        else None
+    )
+    if not user_owns_window(user_id, window_id, ownership_chat_id):
         await query.answer("Not your session", show_alert=True)
         return
 
-    thread_id = get_thread_id(update)
-    client = PTBTelegramClient(context.bot)
+    if cb_prefix == CB_ASK_CHOICE:
+        await _handle_direct_choice(
+            query,
+            user_id,
+            thread_id,
+            chat_id,
+            message.message_id if message is not None else None,
+            window_id,
+            pane_id,
+            parse_direct_choice_callback(data),
+        )
+        return
 
+    client = PTBTelegramClient(context.bot)
     if cb_prefix == CB_ASK_REFRESH:
         await handle_interactive_ui(
-            client, user_id, window_id, thread_id, pane_id=pane_id
+            client, user_id, window_id, thread_id, pane_id=pane_id, chat_id=chat_id
         )
         await query.answer("\U0001f504")
     else:
@@ -129,10 +233,10 @@ async def handle_interactive_callback(
         if sent and refresh_ui:
             await asyncio.sleep(0.5)
             await handle_interactive_ui(
-                client, user_id, window_id, thread_id, pane_id=pane_id
+                client, user_id, window_id, thread_id, pane_id=pane_id, chat_id=chat_id
             )
         elif sent and not refresh_ui:
-            await clear_interactive_msg(user_id, client, thread_id)
+            await clear_interactive_msg(user_id, client, thread_id, chat_id=chat_id)
         await query.answer(INTERACTIVE_KEY_LABELS.get(cb_prefix, ""))
 
 
@@ -150,7 +254,24 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # Lazy: resolve tokens only when an interactive callback is dispatched.
     from ..callback_tokens import resolve_callback_data
 
-    data = resolve_callback_data(query.data, user.id, user_owns_window)
+    message = query.message
+    chat_id = message.chat.id if message is not None else None
+    private_topic = (
+        message is not None
+        and message.chat.type == "private"
+        and getattr(message, "is_topic_message", False) is True
+        and isinstance(getattr(message, "message_thread_id", None), int)
+    )
+    ownership_chat_id = (
+        chat_id
+        if private_topic or message is None or message.chat.type != "private"
+        else None
+    )
+    data = resolve_callback_data(
+        query.data,
+        user.id,
+        lambda uid, window_id: user_owns_window(uid, window_id, ownership_chat_id),
+    )
     if data is None:
         await query.answer("This button has expired", show_alert=True)
         return

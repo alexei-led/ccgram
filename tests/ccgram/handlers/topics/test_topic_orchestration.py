@@ -114,18 +114,29 @@ class TestCollectTargetChats:
             result = collect_target_chats("@5")
             assert result == set()
 
-    def test_skips_positive_ids(self):
+    def test_skips_positive_ids_without_private_topic_capability(self):
         with (
             patch(
                 "ccgram.handlers.topics.topic_orchestration.thread_router"
             ) as mock_router,
             patch("ccgram.handlers.topics.topic_orchestration.config") as mock_config,
         ):
+            mock_router.iter_private_topic_chat_ids.return_value = []
             mock_router.iter_thread_bindings.return_value = []
             mock_router.group_chat_ids = {"100:5": 100}
             mock_config.group_id = None
             result = collect_target_chats("@5")
             assert result == set()
+
+    def test_includes_private_chat_with_observed_topic_metadata(self):
+        with patch(
+            "ccgram.handlers.topics.topic_orchestration.thread_router"
+        ) as mock_router:
+            mock_router.iter_private_topic_chat_ids.return_value = [100]
+            mock_router.iter_thread_bindings.return_value = []
+            mock_router.group_chat_ids = {}
+
+            assert collect_target_chats("@5") == {100}
 
 
 class TestHandleNewWindow:
@@ -183,6 +194,49 @@ class TestHandleNewWindow:
             100, 77, "@2", window_name="proj", chat_id=-100100
         )
         mock_tr.set_group_chat_id.assert_called_once_with(100, 77, -100100)
+
+    async def test_private_topic_creation_requires_enabled_bot_capability(self) -> None:
+        event = _make_event()
+        bot = AsyncMock()
+        bot.get_me.return_value = MagicMock(has_topics_enabled=False)
+
+        with (
+            patch("ccgram.handlers.topics.topic_orchestration.session_manager"),
+            patch(
+                "ccgram.handlers.topics.topic_orchestration.thread_router"
+            ) as mock_tr,
+        ):
+            created = await handle_new_window(
+                event, bot, target_user_id=100, target_chat_id=100
+            )
+
+        assert created is False
+        bot.get_me.assert_awaited_once_with()
+        bot.create_forum_topic.assert_not_called()
+        mock_tr.bind_thread.assert_not_called()
+
+    async def test_private_topic_creation_uses_enabled_bot_capability(self) -> None:
+        event = _make_event()
+        bot = AsyncMock()
+        bot.get_me.return_value = MagicMock(has_topics_enabled=True)
+        bot.create_forum_topic.return_value = _make_topic(thread_id=42)
+
+        with (
+            patch("ccgram.handlers.topics.topic_orchestration.session_manager"),
+            patch(
+                "ccgram.handlers.topics.topic_orchestration.thread_router"
+            ) as mock_tr,
+        ):
+            created = await handle_new_window(
+                event, bot, target_user_id=100, target_chat_id=100
+            )
+
+        assert created is True
+        bot.get_me.assert_awaited_once_with()
+        bot.create_forum_topic.assert_awaited_once_with(chat_id=100, name="my-project")
+        mock_tr.bind_thread.assert_called_once_with(
+            100, 42, "@10", window_name="my-project", chat_id=100
+        )
 
     async def test_skips_already_bound(self):
         event = NewWindowEvent(

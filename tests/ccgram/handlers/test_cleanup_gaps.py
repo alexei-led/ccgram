@@ -35,9 +35,9 @@ class TestCancelBashCapture:
 
 class TestClearSendCooldowns:
     def test_clears_existing_cooldown(self) -> None:
-        _send_cooldowns[(1, 42)] = 123.0
+        _send_cooldowns[(1, -100, 42)] = 123.0
         clear_send_cooldowns(1, 42)
-        assert (1, 42) not in _send_cooldowns
+        assert (1, -100, 42) not in _send_cooldowns
 
     def test_missing_key_no_error(self) -> None:
         _send_cooldowns.clear()

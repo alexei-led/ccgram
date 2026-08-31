@@ -26,7 +26,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol, cast, runtime_checkable
 
-from telegram import Bot, BotCommand, ChatFullInfo, File, ForumTopic, Message
+from telegram import Bot, BotCommand, ChatFullInfo, File, ForumTopic, Message, User
 from telegram._botcommandscope import BotCommandScope
 from telegram._files.inputmedia import InputMedia
 from telegram._reaction import ReactionType
@@ -118,6 +118,8 @@ class TelegramClient(Protocol):
 
     async def get_chat(self, chat_id: int | str, **kwargs: Any) -> ChatFullInfo: ...
 
+    async def get_me(self, **kwargs: Any) -> User: ...
+
     async def get_file(self, file_id: str, **kwargs: Any) -> File: ...
 
     async def create_forum_topic(
@@ -194,7 +196,11 @@ class PTBTelegramClient:
     async def send_message(
         self, chat_id: int | str, text: str, **kwargs: Any
     ) -> Message:
-        return await self._bot.send_message(chat_id=chat_id, text=text, **kwargs)
+        return await self._bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            **kwargs,
+        )
 
     async def edit_message_text(
         self,
@@ -238,13 +244,19 @@ class PTBTelegramClient:
     async def send_photo(
         self, chat_id: int | str, photo: Any, **kwargs: Any
     ) -> Message:
-        return await self._bot.send_photo(chat_id=chat_id, photo=photo, **kwargs)
+        return await self._bot.send_photo(
+            chat_id=chat_id,
+            photo=photo,
+            **kwargs,
+        )
 
     async def send_document(
         self, chat_id: int | str, document: Any, **kwargs: Any
     ) -> Message:
         return await self._bot.send_document(
-            chat_id=chat_id, document=document, **kwargs
+            chat_id=chat_id,
+            document=document,
+            **kwargs,
         )
 
     async def send_chat_action(
@@ -257,7 +269,11 @@ class PTBTelegramClient:
     async def send_voice(
         self, chat_id: int | str, voice: Any, **kwargs: Any
     ) -> Message:
-        return await self._bot.send_voice(chat_id=chat_id, voice=voice, **kwargs)
+        return await self._bot.send_voice(
+            chat_id=chat_id,
+            voice=voice,
+            **kwargs,
+        )
 
     async def set_message_reaction(
         self,
@@ -272,6 +288,9 @@ class PTBTelegramClient:
 
     async def get_chat(self, chat_id: int | str, **kwargs: Any) -> ChatFullInfo:
         return await self._bot.get_chat(chat_id=chat_id, **kwargs)
+
+    async def get_me(self, **kwargs: Any) -> User:
+        return await self._bot.get_me(**kwargs)
 
     async def get_file(self, file_id: str, **kwargs: Any) -> File:
         return await self._bot.get_file(file_id=file_id, **kwargs)
@@ -396,7 +415,12 @@ class FakeTelegramClient:
         self, chat_id: int | str, text: str, **kwargs: Any
     ) -> Message:
         return self._record(
-            "send_message", {"chat_id": chat_id, "text": text, **kwargs}
+            "send_message",
+            {
+                "chat_id": chat_id,
+                "text": text,
+                **kwargs,
+            },
         )
 
     async def edit_message_text(
@@ -446,14 +470,24 @@ class FakeTelegramClient:
         self, chat_id: int | str, photo: Any, **kwargs: Any
     ) -> Message:
         return self._record(
-            "send_photo", {"chat_id": chat_id, "photo": photo, **kwargs}
+            "send_photo",
+            {
+                "chat_id": chat_id,
+                "photo": photo,
+                **kwargs,
+            },
         )
 
     async def send_document(
         self, chat_id: int | str, document: Any, **kwargs: Any
     ) -> Message:
         return self._record(
-            "send_document", {"chat_id": chat_id, "document": document, **kwargs}
+            "send_document",
+            {
+                "chat_id": chat_id,
+                "document": document,
+                **kwargs,
+            },
         )
 
     async def send_chat_action(
@@ -467,7 +501,12 @@ class FakeTelegramClient:
         self, chat_id: int | str, voice: Any, **kwargs: Any
     ) -> Message:
         return self._record(
-            "send_voice", {"chat_id": chat_id, "voice": voice, **kwargs}
+            "send_voice",
+            {
+                "chat_id": chat_id,
+                "voice": voice,
+                **kwargs,
+            },
         )
 
     async def set_message_reaction(
@@ -489,6 +528,9 @@ class FakeTelegramClient:
 
     async def get_chat(self, chat_id: int | str, **kwargs: Any) -> ChatFullInfo:
         return self._record("get_chat", {"chat_id": chat_id, **kwargs})
+
+    async def get_me(self, **kwargs: Any) -> User:
+        return self._record("get_me", kwargs)
 
     async def get_file(self, file_id: str, **kwargs: Any) -> File:
         return self._record("get_file", {"file_id": file_id, **kwargs})

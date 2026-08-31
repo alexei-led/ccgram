@@ -237,8 +237,8 @@ async def _auto_detect_provider(window_id: str) -> None:
 
 
 def collect_target_chats(window_id: str) -> set[int]:
-    """Collect unique group chat IDs for topic creation."""
-    seen_chats: set[int] = set()
+    """Collect topic-capable group and observed private-topic chats."""
+    seen_chats = set(thread_router.iter_private_topic_chat_ids())
     for user_id, thread_id, _ in thread_router.iter_thread_bindings():
         chat_id = thread_router.resolve_chat_id(user_id, thread_id)
         if isinstance(chat_id, int) and chat_id < 0:
@@ -326,7 +326,27 @@ async def create_topic_in_chat(
     *,
     user_id: int | None = None,
 ) -> bool:
-    """Create and bind one forum topic, returning whether it succeeded."""
+    """Create and bind one topic, returning whether it succeeded."""
+    if chat_id > 0:
+        try:
+            bot_user = await client.get_me()
+        except TelegramError:
+            logger.warning(
+                "Skipping private topic creation for window %s in chat %d: "
+                "could not observe bot topic capability",
+                window_id,
+                chat_id,
+            )
+            return False
+        if getattr(bot_user, "has_topics_enabled", None) is not True:
+            logger.info(
+                "Skipping private topic creation for window %s in chat %d: "
+                "bot topics are not enabled",
+                window_id,
+                chat_id,
+            )
+            return False
+
     owner_id = _find_topic_owner(chat_id, window_id, user_id)
     if owner_id is None:
         logger.warning(
@@ -404,8 +424,6 @@ async def _rebind_existing_topic_by_name(
         if await tmux_manager.find_window_by_id(old_window_id):
             continue
         chat_id = thread_router.resolve_chat_id(user_id, thread_id)
-        if chat_id == user_id:
-            continue
         matches.append((user_id, thread_id, old_window_id, chat_id))
 
     if len(matches) != 1:

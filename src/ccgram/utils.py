@@ -355,16 +355,23 @@ _general_topic_pin_cache: dict[int, bool] = {}
 
 
 def is_general_topic(message: Message) -> bool:
-    """Return True if the message is in the General (default) forum topic.
+    """Return True if the message is in Telegram's General/control topic.
 
-    In Telegram forum groups, messages sent directly in the General topic
-    (not as replies) may have message_thread_id=None instead of 1.
-    We check chat.is_forum to distinguish General-topic messages from
-    non-forum contexts.
+    Forum-group General messages may omit ``message_thread_id``. Private
+    topics use ``is_topic_message`` with ``message_thread_id == 1`` for their
+    control lane; topic 1 is never eligible to become a ccgram session in
+    either surface.
     """
+    chat = message.chat
     thread_id = getattr(message, "message_thread_id", None)
-    is_forum = getattr(message.chat, "is_forum", False) if message.chat else False
-    return is_forum and (thread_id is None or thread_id == 1)
+    is_forum = getattr(chat, "is_forum", False) if chat else False
+    if is_forum and (thread_id is None or thread_id == 1):
+        return True
+    return (
+        getattr(chat, "type", None) == "private"
+        and getattr(message, "is_topic_message", None) is True
+        and thread_id == 1
+    )
 
 
 async def handle_general_topic_message(

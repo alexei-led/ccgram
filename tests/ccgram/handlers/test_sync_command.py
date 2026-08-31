@@ -856,16 +856,46 @@ class TestDeadTopicDetection:
         issues = await _probe_dead_topics(mock_bot)
         assert issues == []
 
-    async def test_probe_skips_bindings_without_group_chat(self, _patch_deps) -> None:
+    async def test_probe_includes_private_chat_binding(self, _patch_deps) -> None:
         _, _, _, mock_tr, _, _ = _patch_deps
         mock_tr.iter_thread_bindings.return_value = [(100, 42, "@2")]
         mock_tr.resolve_chat_id.return_value = 100
-
         mock_bot = AsyncMock()
+        mock_bot.send_message.return_value = MagicMock(message_id=999)
 
         issues = await _probe_dead_topics(mock_bot)
+
         assert issues == []
-        mock_bot.send_message.assert_not_called()
+        mock_bot.send_message.assert_awaited_once_with(
+            100,
+            ".",
+            message_thread_id=42,
+            disable_notification=True,
+        )
+        mock_bot.delete_message.assert_awaited_once_with(100, 999)
+
+
+class TestPrivateTopicSyncLifecycle:
+    async def test_closes_and_unbinds_private_ghost_topic(self, _patch_deps) -> None:
+        _, _, _, mock_tr, _, _ = _patch_deps
+        mock_tr.get_window_for_thread.return_value = "@2"
+        mock_tr.resolve_chat_id.return_value = 100
+        issue = AuditIssue(
+            "ghost_binding", "user:100 thread:42 window:@2 (private)", fixable=True
+        )
+        client = AsyncMock()
+
+        with patch(
+            "ccgram.handlers.sync_command.clear_topic_state", new_callable=AsyncMock
+        ) as clear_state:
+            closed, manual_close = await _close_ghost_topics(client, [issue])
+
+        assert (closed, manual_close) == (1, 0)
+        client.delete_forum_topic.assert_awaited_once_with(100, 42)
+        clear_state.assert_awaited_once_with(100, 42, client=client, window_id="@2")
+        mock_tr.unbind_thread.assert_called_once_with(
+            100, 42, retirement_reason="remote_removed"
+        )
 
 
 class TestDeadTopicRecreation:

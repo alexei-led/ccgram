@@ -33,6 +33,7 @@ def fake_bot() -> MagicMock:
         "send_chat_action",
         "set_message_reaction",
         "get_chat",
+        "get_me",
         "get_file",
         "create_forum_topic",
         "edit_forum_topic",
@@ -68,6 +69,17 @@ class TestPTBTelegramClient:
         assert result is sentinel
         fake_bot.send_message.assert_awaited_once_with(
             chat_id=42, text="hi", message_thread_id=7, parse_mode="MarkdownV2"
+        )
+
+    async def test_private_topic_uses_regular_thread_parameter(
+        self, fake_bot: MagicMock
+    ) -> None:
+        client = PTBTelegramClient(fake_bot)
+
+        await client.send_message(chat_id=42, text="hi", message_thread_id=7)
+
+        fake_bot.send_message.assert_awaited_once_with(
+            chat_id=42, text="hi", message_thread_id=7
         )
 
     async def test_edit_message_text_delegates(self, fake_bot: MagicMock):
@@ -156,10 +168,12 @@ class TestPTBTelegramClient:
             chat_id=1, message_id=2, reaction="👍"
         )
 
-    async def test_get_chat_and_get_file_delegate(self, fake_bot: MagicMock):
+    async def test_get_chat_get_me_and_get_file_delegate(self, fake_bot: MagicMock):
         client = PTBTelegramClient(fake_bot)
         await client.get_chat(chat_id=42)
         fake_bot.get_chat.assert_awaited_once_with(chat_id=42)
+        await client.get_me()
+        fake_bot.get_me.assert_awaited_once_with()
         await client.get_file(file_id="ABC")
         fake_bot.get_file.assert_awaited_once_with(file_id="ABC")
 

@@ -6,6 +6,7 @@ import pytest
 from telegram import Bot
 
 from ccgram.claude_task_state import claude_task_state
+from ccgram.config import config
 from ccgram.handlers.callback_data import IDLE_STATUS_TEXT
 
 from ccgram.claude_task_state import (
@@ -65,13 +66,30 @@ class TestResolveUsersForWindowKey:
 
         assert _resolve_users_for_window_key("ccgram:@0") == [(111, 42, "@0")]
 
-    def test_herdr_window_id_keeps_its_own_colon(self, bindings) -> None:
-        """herdr keys are ``herdr:<pane_id>`` and the pane id itself contains a
-        colon (w2:p1). Splitting on the FIRST colon must recover "w2:p1"; an
-        rsplit would yield "p1", which never matches a bound window id."""
-        bindings((111, 42, "w2:p1"))
+    def test_herdr_window_id_keeps_its_own_colon(self, bindings, monkeypatch) -> None:
+        """An opaque target can contain colons after its backend prefix."""
+        monkeypatch.setattr(config, "multiplexer_name", "herdr")
+        bindings((111, 42, "opaque:target:id"))
 
-        assert _resolve_users_for_window_key("herdr:w2:p1") == [(111, 42, "w2:p1")]
+        assert _resolve_users_for_window_key("herdr:opaque:target:id") == [
+            (111, 42, "opaque:target:id")
+        ]
+
+    @pytest.mark.parametrize(
+        "window_key",
+        [
+            pytest.param("other-session:@0", id="wrong-tmux-session"),
+            pytest.param("herdr:@0", id="wrong-backend"),
+        ],
+    )
+    def test_rejects_wrong_backend_or_session_prefix(
+        self, bindings, monkeypatch, window_key: str
+    ) -> None:
+        monkeypatch.setattr(config, "multiplexer_name", "tmux")
+        monkeypatch.setattr(config, "tmux_session_name", "ccgram")
+        bindings((111, 42, "@0"))
+
+        assert _resolve_users_for_window_key(window_key) == []
 
     @pytest.mark.parametrize(
         "window_key",
@@ -152,6 +170,18 @@ class TestHandleStop:
         bot = AsyncMock(spec=Bot)
         with patch("ccgram.handlers.hook_events.enqueue_status_update") as mock_enqueue:
             event = _make_event(event_type="Stop")
+            await dispatch_hook_event(event, bot)
+            mock_enqueue.assert_not_called()
+
+    async def test_stop_wrong_prefix_has_no_users_and_skips_dispatch(
+        self, bindings, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(config, "multiplexer_name", "tmux")
+        monkeypatch.setattr(config, "tmux_session_name", "ccgram")
+        bindings((100, 42, "@0"))
+        bot = AsyncMock(spec=Bot)
+        with patch("ccgram.handlers.hook_events.enqueue_status_update") as mock_enqueue:
+            event = _make_event(event_type="Stop", window_key="other-session:@0")
             await dispatch_hook_event(event, bot)
             mock_enqueue.assert_not_called()
 
@@ -331,6 +361,36 @@ class TestHandleNotification:
 
             assert claude_task_state.get_wait_header("@0") == "Approval needed: Bash"
             mock_enqueue.assert_awaited_once_with(ANY, 100, "@0", None, thread_id=42)
+
+    async def test_notification_keeps_chat_identity_for_interactive_state(
+        self, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(
+            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
+            lambda: iter(()),
+        )
+        monkeypatch.setattr(
+            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings_with_chat",
+            lambda: iter(((100, -101, 42, "@0"),)),
+        )
+        bot = AsyncMock(spec=Bot)
+        with (
+            patch(
+                "ccgram.handlers.hook_events.get_interactive_window", return_value=None
+            ) as get_mode,
+            patch("ccgram.handlers.hook_events.set_interactive_mode") as set_mode,
+            patch(
+                "ccgram.handlers.hook_events.handle_interactive_ui", return_value=False
+            ) as render,
+            patch("ccgram.handlers.hook_events.clear_interactive_mode") as clear_mode,
+            patch("asyncio.sleep"),
+        ):
+            await dispatch_hook_event(_make_event(event_type="Notification"), bot)
+
+        get_mode.assert_called_once_with(100, 42, chat_id=-101)
+        set_mode.assert_called_once_with(100, "@0", 42, chat_id=-101)
+        render.assert_awaited_once_with(ANY, 100, "@0", 42, chat_id=-101)
+        clear_mode.assert_called_once_with(100, 42, chat_id=-101)
 
 
 class TestHandleSubagentStart:

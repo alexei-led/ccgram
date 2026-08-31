@@ -62,6 +62,22 @@ def _store_group_chat_id(
         thread_router.set_group_chat_id(user_id, thread_id, chat.id)
 
 
+async def _rename_forum_topic(
+    client: TelegramClient, chat_id: int, thread_id: int, display: str, window_id: str
+) -> None:
+    """Rename a topic in either a forum or a private topic chat."""
+    try:
+        await client.edit_forum_topic(
+            chat_id=chat_id,
+            message_thread_id=thread_id,
+            name=format_topic_name_for_mode(
+                display, window_query.get_approval_mode(window_id)
+            ),
+        )
+    except TelegramError as exc:
+        logger.debug("Failed to rename topic: %s", exc)
+
+
 async def handle_window_callback(
     query: CallbackQuery,
     user_id: int,
@@ -232,7 +248,6 @@ async def _handle_bind(
         ),
     )
     _store_group_chat_id(user_id, thread_id, update, query)
-
     client: TelegramClient = PTBTelegramClient(context.bot)
     detected = await _detect_and_setup_provider(
         selected_wid,
@@ -242,16 +257,13 @@ async def _handle_bind(
         thread_id=thread_id,
     )
 
-    try:
-        await client.edit_forum_topic(
-            chat_id=thread_router.resolve_chat_id(user_id, thread_id),
-            message_thread_id=thread_id,
-            name=format_topic_name_for_mode(
-                display, window_query.get_approval_mode(selected_wid)
-            ),
-        )
-    except TelegramError as e:
-        logger.debug("Failed to rename topic: %s", e)
+    await _rename_forum_topic(
+        client,
+        thread_router.resolve_chat_id(user_id, thread_id),
+        thread_id,
+        display,
+        selected_wid,
+    )
 
     await safe_edit(
         query,

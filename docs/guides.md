@@ -39,29 +39,25 @@ You need a Telegram bot token to run CCGram. Create one via [@BotFather](https:/
    - Name: anything (e.g., "MyCodeBot")
    - Username: must be unique and end with `bot` (e.g., "my_code_bot")
    - You'll receive a **Bot Token** — save this for `TELEGRAM_BOT_TOKEN`
-3. **Configure bot settings:** Send `/mybots` → select your bot → **Bot Settings**
-   - Enable **Allow Groups**: On
-   - Enable **Group Privacy**: Off _(required so the bot sees all messages in topics)_
-   - Enable **Topics**: On
-4. **Add bot to your Telegram group:**
-   - Create or open a Telegram group with Topics enabled
-   - Invite the bot to the group
-   - **Promote the bot to Administrator** with these permissions:
-     - Create Topics
-     - Pin Messages
-     - Read Messages / View The Chat
-5. **Get your user ID:** Open [@userinfobot](https://t.me/userinfobot) → it shows your numeric user ID. Save this for `ALLOWED_USERS`
-6. **Get your group ID:** Open [@RawDataBot](https://t.me/RawDataBot) in the group → under **Peer ID**, note the number (remove leading `-100`, or keep it — both formats work)
-   - Save this for `CCGRAM_GROUP_ID` (prefix with `-100` if needed)
+3. **Configure bot settings:** Send `/mybots` → select your bot → **Bot Settings**.
+   - Enable **Topics** for a private-chat setup.
+   - Enable **Allow Groups** for a group setup.
+   - Disable **Group Privacy** so the bot can read all group-topic messages.
+4. **Choose a topic setup:**
+   - **Private chat:** Open the bot chat. Topic 1 is the General/control topic.
+   - **Group:** Create or open a Topics-enabled group. Add the bot and promote it to Administrator with Create Topics, Pin Messages, and Read Messages permissions.
+5. **Get your user ID:** Open [@userinfobot](https://t.me/userinfobot). Save the numeric ID for `ALLOWED_USERS`.
+6. **For a group, get its ID:** Open [@RawDataBot](https://t.me/RawDataBot) in the group. Save the Peer ID for `CCGRAM_GROUP_ID`. Both forms with and without the `-100` prefix work.
 7. **Create `~/.ccgram/.env`:**
 
    ```ini
    TELEGRAM_BOT_TOKEN=your_bot_token_here
    ALLOWED_USERS=your_user_id_here
+   # Group setup only:
    CCGRAM_GROUP_ID=your_group_id_here
    ```
 
-8. **Test:** Run `ccgram` and create a new topic in your Telegram group. Send a message and the directory browser should appear.
+8. **Test:** Run `ccgram`. Create a topic in the configured chat and send a message. The directory browser must appear.
 
 ### Validation
 

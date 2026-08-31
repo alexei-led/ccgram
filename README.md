@@ -22,7 +22,7 @@ This means:
 
 ```mermaid
 graph LR
-  subgraph phone["📱 Telegram Group (Forum Topics)"]
+  subgraph phone["📱 Telegram Topics (Group or Private Chat)"]
     direction TB
     T1["💬 api — Claude"]
     T2["💬 ui — Codex"]
@@ -62,7 +62,7 @@ Each Telegram topic maps to one tmux window. With Herdr, it maps instead to one 
 
 ## What You Can Do
 
-- **Bind agents to topics** — one agent per Telegram topic; create via directory browser
+- **Bind agents to topics** — one agent per group or private-chat topic; create via directory browser
 - **Auto-detect providers** — Supports Claude Code, Codex, Gemini, Pi, and Shell simultaneously
 - **Monitor live** — Terminal screenshots on demand or auto-refresh every 5 seconds
 - **Send commands** — Slash commands, voice messages (transcribed via Whisper), or raw shell input
@@ -70,6 +70,7 @@ Each Telegram topic maps to one tmux window. With Herdr, it maps instead to one 
 - **Recover gracefully** — Resume, continue, or start fresh if a session crashes
 - **Send workspace files** — Share files to Telegram via `/send` (glob, path, or substring search)
 - **Action toolbar** — Provider-specific buttons for common actions (Screenshot, Mode, Esc, Enter, etc.)
+- **Direct choices** — Answer supported numbered and yes/no agent prompts with one tap
 
 ## Delivery and Sync Safety
 
@@ -91,16 +92,19 @@ uv tool install ccgram          # recommended
 **Telegram setup:**
 
 1. Create a bot via [@BotFather](https://t.me/BotFather) — [full instructions](docs/guides.md#getting-started)
-2. Add bot to a Telegram group with Topics enabled; promote to Admin
+2. Choose one topic setup:
+   - **Private chat:** Enable Topics for the bot in BotFather. Topic 1 is the control topic.
+   - **Group:** Add the bot to a Topics-enabled group and promote it to Admin.
 3. Create `~/.ccgram/.env`:
 
 ```ini
 TELEGRAM_BOT_TOKEN=your_bot_token_here
 ALLOWED_USERS=your_telegram_user_id
+# Group setup only:
 CCGRAM_GROUP_ID=your_telegram_group_id
 ```
 
-Get user ID from [@userinfobot](https://t.me/userinfobot). Get group ID via [@RawDataBot](https://t.me/RawDataBot) (prefix Peer ID with `-100`).
+Get your user ID from [@userinfobot](https://t.me/userinfobot). For a group, get its ID via [@RawDataBot](https://t.me/RawDataBot) and prefix the Peer ID with `-100`.
 
 **Run:**
 
@@ -108,7 +112,7 @@ Get user ID from [@userinfobot](https://t.me/userinfobot). Get group ID via [@Ra
 ccgram
 ```
 
-Open your Telegram group, create a topic, send a message — directory browser appears. Pick a project directory, choose your agent (Claude, Codex, Gemini, Pi, or Shell), and you're connected.
+Open the configured group or private bot chat. Create a topic and send a message. The directory browser appears. Pick a project directory and an agent (Claude, Codex, Gemini, Pi, or Shell).
 
 **Prerequisites:** Python 3.14+, [tmux](https://github.com/tmux/tmux), [herdr](https://github.com/ogulcancelik/herdr), or [agterm](https://github.com/umputun/agterm), and one agent CLI. CCGram does not modify agent SDKs.
 

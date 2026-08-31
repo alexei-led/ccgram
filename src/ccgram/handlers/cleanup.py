@@ -103,7 +103,7 @@ async def clear_topic_state(
     if window_id:
         log_throttle_reset(f"topic-probe:{window_id}")
 
-    await clear_interactive_msg(user_id, client, thread_id)
+    await clear_interactive_msg(user_id, client, thread_id, chat_id=chat_id)
 
     # user_data cleanup
     if user_data is not None and user_data.get(PENDING_THREAD_ID) == thread_id:

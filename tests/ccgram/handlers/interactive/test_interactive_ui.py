@@ -173,17 +173,17 @@ class TestInteractiveModeTracking:
         _interactive_mode.clear()
 
     def test_set_and_get(self) -> None:
-        set_interactive_mode(100, "@0", thread_id=42)
-        assert get_interactive_window(100, 42) == "@0"
+        set_interactive_mode(100, "@0", thread_id=42, chat_id=-999)
+        assert get_interactive_window(100, 42, chat_id=-999) == "@0"
 
     def test_clear(self) -> None:
-        set_interactive_mode(100, "@0", thread_id=42)
-        clear_interactive_mode(100, thread_id=42)
-        assert get_interactive_window(100, 42) is None
+        set_interactive_mode(100, "@0", thread_id=42, chat_id=-999)
+        clear_interactive_mode(100, thread_id=42, chat_id=-999)
+        assert get_interactive_window(100, 42, chat_id=-999) is None
 
     def test_none_thread_uses_zero(self) -> None:
-        set_interactive_mode(100, "@0", thread_id=None)
-        assert get_interactive_window(100, None) == "@0"
+        set_interactive_mode(100, "@0", thread_id=None, chat_id=-999)
+        assert get_interactive_window(100, None, chat_id=-999) == "@0"
 
 
 @pytest.fixture
@@ -216,13 +216,13 @@ class TestSendCooldown:
         with _interactive_env(bot):
             assert await handle_interactive_ui(bot, 100, "@2", thread_id=42) is False
 
-        remaining = _send_cooldowns[(100, 42)] - time.monotonic()
+        remaining = _send_cooldowns[(100, -999, 42)] - time.monotonic()
         assert remaining > _SEND_RETRY_INTERVAL
         assert remaining <= _DEAD_TOPIC_RETRY_INTERVAL
 
     async def test_cooldown_suppresses_the_next_send(self, _clear_send_state) -> None:
         bot = _sending_bot()
-        _send_cooldowns[(100, 42)] = time.monotonic()
+        _send_cooldowns[(100, -999, 42)] = time.monotonic()
 
         with _interactive_env(bot):
             assert await handle_interactive_ui(bot, 100, "@2", thread_id=42) is False
@@ -236,7 +236,7 @@ class TestSendCooldown:
         with _interactive_env(bot):
             assert await handle_interactive_ui(bot, 100, "@2", thread_id=42) is False
 
-        remaining = _send_cooldowns[(100, 42)] - time.monotonic()
+        remaining = _send_cooldowns[(100, -999, 42)] - time.monotonic()
         assert remaining <= _SEND_RETRY_INTERVAL
 
 

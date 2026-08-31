@@ -158,6 +158,26 @@ class TestRetiredTopics:
         assert list(router.iter_retired_topics()) == []
 
 
+class TestPrivateTopicChats:
+    def test_observed_chat_persists_across_restart(self, router: ThreadRouter) -> None:
+        router.mark_private_topic_chat(100)
+
+        restored = ThreadRouter(
+            schedule_save=lambda: None,
+            has_window_state=lambda _wid: False,
+        )
+        restored.from_dict(router.to_dict())
+
+        assert restored.is_private_topic_chat(100) is True
+
+    def test_previous_direct_message_state_migrates_to_private_chat(
+        self, router: ThreadRouter
+    ) -> None:
+        router.from_dict({"direct_message_topics": ["100:1"]})
+
+        assert router.is_private_topic_chat(100) is True
+
+
 class TestReverseIndex:
     def test_get_thread_for_window(self, router: ThreadRouter) -> None:
         router.bind_thread(100, 42, "@5")
@@ -303,9 +323,42 @@ class TestToDictRoundtrip:
             "group_chat_ids": {},
             "window_display_names": {},
         }
-        router.from_dict(data)
+        assert router.from_dict(data) is True
         assert router.get_window_for_thread(100, 2) == "@1"
         assert router.get_window_for_thread(100, 1) is None
+
+    def test_from_dict_normalizes_mixed_legacy_and_scoped_claims(
+        self, router: ThreadRouter
+    ) -> None:
+        repaired = router.from_dict(
+            {
+                "thread_bindings": {"100": {"2": "@5"}},
+                "group_chat_ids": {"100:2": -1001},
+                "chat_thread_bindings": {"200:-1001:142": "@5"},
+            }
+        )
+
+        assert repaired is True
+        assert router.thread_bindings == {}
+        assert router.get_window_for_thread(100, 2, -1001) is None
+        assert router.get_window_for_thread(200, 142, -1001) == "@5"
+        assert router.get_thread_for_window(200, "@5", -1001) == 142
+        assert router.group_chat_ids == {}
+
+    def test_from_dict_keeps_a_window_claim_in_each_chat(
+        self, router: ThreadRouter
+    ) -> None:
+        repaired = router.from_dict(
+            {
+                "thread_bindings": {"100": {"2": "@5"}},
+                "group_chat_ids": {"100:2": -1001},
+                "chat_thread_bindings": {"200:-1002:142": "@5"},
+            }
+        )
+
+        assert repaired is True
+        assert router.get_window_for_thread(100, 2, -1001) == "@5"
+        assert router.get_window_for_thread(200, 142, -1002) == "@5"
 
 
 class TestChatScopedBindings:
@@ -342,6 +395,56 @@ class TestChatScopedBindings:
 
         assert restored.get_window_for_chat_thread(-1001, 7) == "@a"
         assert list(restored.iter_thread_bindings()) == [(100, 7, "@a")]
+
+    def test_cross_user_bind_evicts_existing_window_claim(
+        self, router: ThreadRouter
+    ) -> None:
+        router.bind_thread(100, 2, "@5", chat_id=-1001)
+        # Simulate metadata persisted by an earlier version before it learned
+        # that chat-scoped rows make this fallback route redundant.
+        router.group_chat_ids["100:2"] = -1001
+
+        router.bind_thread(200, 142, "@5", chat_id=-1001)
+
+        assert router.get_window_for_thread(100, 2, -1001) is None
+        assert router.get_thread_for_window(100, "@5", -1001) is None
+        assert router.get_window_for_thread(200, 142, -1001) == "@5"
+        assert router.get_thread_for_window(200, "@5", -1001) == 142
+        assert "100:2" not in router.group_chat_ids
+
+    def test_from_dict_repairs_cross_user_duplicate_window_deterministically(
+        self, router: ThreadRouter
+    ) -> None:
+        assert (
+            router.from_dict(
+                {
+                    "chat_thread_bindings": {
+                        "200:-1001:142": "@5",
+                        "100:-1001:2": "@5",
+                    }
+                }
+            )
+            is True
+        )
+
+        assert router.get_window_for_thread(100, 2, -1001) is None
+        assert router.get_window_for_thread(200, 142, -1001) == "@5"
+        assert router.get_thread_for_window(200, "@5", -1001) == 142
+
+    def test_same_window_routes_independently_in_different_chats(
+        self, router: ThreadRouter
+    ) -> None:
+        router.bind_thread(100, 2, "@5", chat_id=-1001)
+        router.bind_thread(200, 142, "@5", chat_id=-1002)
+
+        restored = ThreadRouter(
+            schedule_save=lambda: None,
+            has_window_state=lambda _wid: False,
+        )
+        restored.from_dict(router.to_dict())
+
+        assert restored.get_window_for_thread(100, 2, -1001) == "@5"
+        assert restored.get_window_for_thread(200, 142, -1002) == "@5"
 
 
 class TestUnbindChatScoped:

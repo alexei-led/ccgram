@@ -91,7 +91,10 @@ class ThreadRouter:
         self.thread_bindings: dict[int, dict[int, str]] = {}
         # Chat-scoped bindings preserve Telegram's chat-local thread identity.
         self.chat_thread_bindings: dict[tuple[int, int, int], str] = {}
-        # "user_id:thread_id" -> chat_id for legacy/direct-message bindings.
+        # Private chats observed to carry Telegram's regular topic-message
+        # metadata. A positive chat ID alone is not enough to infer this.
+        self.private_topic_chats: set[int] = set()
+        # "user_id:thread_id" -> chat_id for legacy and chat-scoped bindings.
         self.group_chat_ids: dict[str, int] = {}
         self.default_group_id = default_group_id
         # window_id -> display name (window_name)
@@ -109,6 +112,7 @@ class ThreadRouter:
         self.thread_bindings.clear()
         self.group_chat_ids.clear()
         self.chat_thread_bindings.clear()
+        self.private_topic_chats.clear()
         self.window_display_names.clear()
         self._window_to_thread.clear()
         self._chat_window_to_thread.clear()
@@ -129,8 +133,48 @@ class ThreadRouter:
         for (uid, chat_id, _tid), wid in self.chat_thread_bindings.items():
             self._chat_window_to_thread[(uid, chat_id, wid)] = _tid
 
-    def _dedup_thread_bindings(self) -> None:
+    def _remove_group_routing_metadata(self, user_id: int, thread_id: int) -> bool:
+        """Remove routing metadata belonging to one evicted topic claim."""
+        prefix = f"{user_id}:{thread_id}"
+        stale_keys = [
+            key
+            for key in self.group_chat_ids
+            if key == prefix or key.startswith(f"{prefix}:")
+        ]
+        for key in stale_keys:
+            del self.group_chat_ids[key]
+        return bool(stale_keys)
+
+    def _normalize_group_backed_bindings(self) -> bool:
+        """Promote legacy bindings with a persisted chat ID to chat scope.
+
+        ``thread_bindings`` predates chat-local topic identity.  A matching
+        ``group_chat_ids`` entry is sufficient evidence to promote one of
+        those rows; an already chat-scoped row for the same topic wins over
+        the older representation.  The routing metadata becomes redundant
+        after promotion and must not survive as a stale fallback route.
+        """
+        changed = False
+        for user_id, bindings in list(self.thread_bindings.items()):
+            for thread_id, window_id in list(bindings.items()):
+                metadata_key = f"{user_id}:{thread_id}"
+                chat_id = self.group_chat_ids.get(metadata_key)
+                if not isinstance(chat_id, int) or isinstance(chat_id, bool):
+                    continue
+                del bindings[thread_id]
+                scoped_key = (user_id, chat_id, thread_id)
+                # A natively scoped row is the newer, unambiguous record for
+                # this exact topic, so never overwrite it based on JSON order.
+                self.chat_thread_bindings.setdefault(scoped_key, window_id)
+                self._remove_group_routing_metadata(user_id, thread_id)
+                changed = True
+            if not bindings:
+                del self.thread_bindings[user_id]
+        return changed
+
+    def _dedup_thread_bindings(self) -> bool:
         """Enforce 1 window = 1 thread.  Keep highest thread_id per window."""
+        changed = False
         for _uid, bindings in self.thread_bindings.items():
             window_threads: dict[str, list[int]] = {}
             for tid, wid in bindings.items():
@@ -141,6 +185,7 @@ class ThreadRouter:
                     for tid in tids:
                         if tid != keep:
                             del bindings[tid]
+                            changed = True
                             logger.warning(
                                 "Startup: removed duplicate binding "
                                 "thread %d -> window %s (keeping %d)",
@@ -148,6 +193,34 @@ class ThreadRouter:
                                 wid,
                                 keep,
                             )
+
+        return self._dedup_chat_thread_bindings() or changed
+
+    def _dedup_chat_thread_bindings(self) -> bool:
+        """Keep one deterministic binding per chat and window."""
+        changed = False
+        window_bindings: dict[tuple[int, str], list[tuple[int, int, int]]] = {}
+        for key, wid in self.chat_thread_bindings.items():
+            window_bindings.setdefault((key[1], wid), []).append(key)
+        for (chat_id, wid), keys in window_bindings.items():
+            if len(keys) <= 1:
+                continue
+            keep = max(keys, key=lambda key: (key[2], key[0]))
+            for key in keys:
+                if key == keep:
+                    continue
+                del self.chat_thread_bindings[key]
+                self._remove_group_routing_metadata(key[0], key[2])
+                changed = True
+                logger.warning(
+                    "Startup: removed duplicate binding chat %d thread %d -> "
+                    "window %s (keeping thread %d)",
+                    chat_id,
+                    key[2],
+                    wid,
+                    keep[2],
+                )
+        return changed
 
     # ------------------------------------------------------------------
     # Serialization
@@ -165,6 +238,7 @@ class ThreadRouter:
                 f"{uid}:{chat_id}:{tid}": wid
                 for (uid, chat_id, tid), wid in self.chat_thread_bindings.items()
             },
+            "private_topic_chats": sorted(self.private_topic_chats),
             "window_display_names": self.window_display_names,
             "retired_topics": [
                 {
@@ -179,11 +253,12 @@ class ThreadRouter:
             ],
         }
 
-    def from_dict(self, data: dict[str, Any]) -> None:
-        """Restore routing state from persisted data.
+    def from_dict(self, data: dict[str, Any]) -> bool:
+        """Restore routing state and return whether persisted routing was repaired.
 
-        Does NOT call ``_schedule_save`` — loading from disk must not
-        trigger a write.
+        Loading itself does not schedule persistence.  The owning
+        ``SessionManager`` saves once when this method reports a normalization
+        or de-duplication repair.
         """
         self.thread_bindings = {
             int(uid): {int(tid): wid for tid, wid in bindings.items()}
@@ -194,12 +269,25 @@ class ThreadRouter:
         for key, wid in data.get("chat_thread_bindings", {}).items():
             uid, chat_id, tid = (int(part) for part in key.split(":", 2))
             self.chat_thread_bindings[(uid, chat_id, tid)] = wid
+        raw_private_chats = data.get("private_topic_chats", [])
+        self.private_topic_chats = {
+            chat_id for chat_id in raw_private_chats if isinstance(chat_id, int)
+        }
+        # Migrate short-lived state written by the previous direct-message
+        # topic implementation without retaining its incorrect API shape.
+        for key in data.get("direct_message_topics", []):
+            try:
+                chat_id, _thread_id = (int(part) for part in key.split(":", 1))
+            except AttributeError, TypeError, ValueError:
+                continue
+            self.private_topic_chats.add(chat_id)
         self.window_display_names = data.get("window_display_names", {})
         self._retired_topics = self._load_retired_topics(data.get("retired_topics", []))
         self._next_retired_sequence = (
             max((topic.sequence for topic in self._retired_topics), default=0) + 1
         )
-        self._dedup_thread_bindings()
+        repaired = self._normalize_group_backed_bindings()
+        repaired = self._dedup_thread_bindings() or repaired
         self._rebuild_reverse_index()
         for (
             _user_id,
@@ -208,6 +296,7 @@ class ThreadRouter:
             _window_id,
         ) in self.iter_thread_bindings_with_chat():
             self._restore_active_topic(chat_id, thread_id)
+        return repaired
 
     @staticmethod
     def _load_retired_topics(raw_topics: Any) -> list[RetiredTopic]:
@@ -235,7 +324,6 @@ class ThreadRouter:
                 not isinstance(reason, str)
                 or not reason
                 or not isinstance(cleanup_eligible, bool)
-                or topic.chat_id == topic.user_id
                 or topic.thread_id <= 0
                 or topic.sequence <= 0
             ):
@@ -275,8 +363,8 @@ class ThreadRouter:
         reason: str,
         cleanup_eligible: bool,
     ) -> None:
-        """Remember a known local forum topic, never an inferred Telegram topic."""
-        if chat_id is None or chat_id == user_id:
+        """Remember a known local topic, never an inferred Telegram topic."""
+        if chat_id is None:
             return
         self._retired_topics = [
             topic
@@ -310,6 +398,35 @@ class ThreadRouter:
     # Thread binding operations
     # ------------------------------------------------------------------
 
+    def _bind_chat_scoped(
+        self, user_id: int, chat_id: int, thread_id: int, window_id: str
+    ) -> None:
+        """Claim a window once within a chat, evicting stale topic owners."""
+        key = (user_id, chat_id, thread_id)
+        old_window = self.chat_thread_bindings.get(key)
+        if old_window is not None and old_window != window_id:
+            self._chat_window_to_thread.pop((user_id, chat_id, old_window), None)
+        old_thread = self._chat_window_to_thread.pop(
+            (user_id, chat_id, window_id), None
+        )
+        if old_thread is not None and old_thread != thread_id:
+            self.chat_thread_bindings.pop((user_id, chat_id, old_thread), None)
+            self._remove_group_routing_metadata(user_id, old_thread)
+        stale = [
+            candidate
+            for candidate, wid in self.chat_thread_bindings.items()
+            if candidate[1] == chat_id and wid == window_id and candidate != key
+        ]
+        for candidate in stale:
+            self.chat_thread_bindings.pop(candidate, None)
+            self._chat_window_to_thread.pop(
+                (candidate[0], candidate[1], window_id), None
+            )
+            self._remove_group_routing_metadata(candidate[0], candidate[2])
+        self.chat_thread_bindings[key] = window_id
+        self._chat_window_to_thread[(user_id, chat_id, window_id)] = thread_id
+        self._remove_group_routing_metadata(user_id, thread_id)
+
     def bind_thread(
         self,
         user_id: int,
@@ -320,27 +437,7 @@ class ThreadRouter:
     ) -> None:
         """Bind a topic, using chat-scoped identity when ``chat_id`` is known."""
         if chat_id is not None:
-            key = (user_id, chat_id, thread_id)
-            old_thread = self._chat_window_to_thread.pop(
-                (user_id, chat_id, window_id), None
-            )
-            if old_thread is not None and old_thread != thread_id:
-                self.chat_thread_bindings.pop((user_id, chat_id, old_thread), None)
-            stale = [
-                candidate
-                for candidate, wid in self.chat_thread_bindings.items()
-                if candidate[0] == user_id
-                and candidate[1] == chat_id
-                and wid == window_id
-                and candidate != key
-            ]
-            for candidate in stale:
-                self.chat_thread_bindings.pop(candidate, None)
-                self._chat_window_to_thread.pop(
-                    (user_id, candidate[1], window_id), None
-                )
-            self.chat_thread_bindings[key] = window_id
-            self._chat_window_to_thread[(user_id, chat_id, window_id)] = thread_id
+            self._bind_chat_scoped(user_id, chat_id, thread_id, window_id)
         else:
             if user_id not in self.thread_bindings:
                 self.thread_bindings[user_id] = {}
@@ -551,20 +648,34 @@ class ThreadRouter:
         return {window_id for _, _, window_id in self.iter_thread_bindings()}
 
     # ------------------------------------------------------------------
-    # Group chat ID management
+    # Chat capability and ID management
     # ------------------------------------------------------------------
 
+    def mark_private_topic_chat(self, chat_id: int) -> None:
+        """Record a private chat observed with valid topic-message metadata."""
+        if not isinstance(chat_id, int) or chat_id in self.private_topic_chats:
+            return
+        self.private_topic_chats.add(chat_id)
+        self._schedule_save()
+
+    def is_private_topic_chat(self, chat_id: int) -> bool:
+        """Return whether *chat_id* was observed as a private topic chat."""
+        return chat_id in self.private_topic_chats
+
+    def iter_private_topic_chat_ids(self) -> Iterator[int]:
+        """Iterate private chats that have supplied topic-message metadata."""
+        yield from sorted(self.private_topic_chats)
+
     def set_group_chat_id(self, user_id: int, thread_id: int, chat_id: int) -> None:
-        """Store the group chat ID and promote the binding to chat scope."""
+        """Store a chat ID, promoting an existing legacy binding when present."""
         bindings = self.thread_bindings.get(user_id)
         if bindings and thread_id in bindings:
             window_id = bindings.pop(thread_id)
+            self._window_to_thread.pop((user_id, window_id), None)
             if not bindings:
                 self.thread_bindings.pop(user_id, None)
-            self._window_to_thread.pop((user_id, window_id), None)
-            self.chat_thread_bindings[(user_id, chat_id, thread_id)] = window_id
-            self._chat_window_to_thread[(user_id, chat_id, window_id)] = thread_id
-            self._restore_active_topic(chat_id, thread_id)
+            self.bind_thread(user_id, thread_id, window_id, chat_id=chat_id)
+            return
         key = f"{user_id}:{thread_id}"
         if self.group_chat_ids.get(key) != chat_id:
             self.group_chat_ids[key] = chat_id

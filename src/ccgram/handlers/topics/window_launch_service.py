@@ -368,7 +368,7 @@ async def launch_window(  # noqa: PLR0912, PLR0915, C901
             pending_thread_id,
             created_wid,
             window_name=created_wname,
-            chat_id=chat.id if chat and chat.type in ("group", "supergroup") else None,
+            chat_id=chat.id if chat else None,
         )
         if chat and chat.type in ("group", "supergroup"):
             thread_router.set_group_chat_id(user_id, pending_thread_id, chat.id)
@@ -430,9 +430,10 @@ async def launch_window(  # noqa: PLR0912, PLR0915, C901
         await safe_edit(query, f"✅ {message}")
         return WindowLaunchResult(success=True, window_id=created_wid)
 
+    chat_id = thread_router.resolve_chat_id(user_id, pending_thread_id)
     try:
         await context.bot.edit_forum_topic(
-            chat_id=thread_router.resolve_chat_id(user_id, pending_thread_id),
+            chat_id=chat_id,
             message_thread_id=pending_thread_id,
             name=format_topic_name_for_mode(created_wname, approval_mode),
         )

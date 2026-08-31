@@ -127,6 +127,18 @@ def session_map_prefix() -> str:
     return session_map_prefix_for(config.multiplexer_name, config.tmux_session_name)
 
 
+def strip_session_map_prefix(window_key: str, prefix: str) -> str | None:
+    """Return a window ID only when ``window_key`` has the exact ``prefix``.
+
+    ``events.jsonl`` and ``session_map.json`` share this key scheme. A target
+    alone is not enough to route a hook event: another backend or tmux session
+    can use the same target, so callers must reject unmatched prefixes.
+    """
+    if not window_key.startswith(prefix):
+        return None
+    return window_key.removeprefix(prefix)
+
+
 def is_backend_window_id(window_id: str) -> bool:
     """Validate a prefix-stripped session_map window id for the active backend.
 
@@ -239,9 +251,11 @@ def parse_session_map(raw: dict[str, Any], prefix: str) -> dict[str, dict[str, s
         return {}
     result: dict[str, dict[str, str]] = {}
     for key, info in raw.items():
-        if not isinstance(key, str) or not key.startswith(prefix):
+        if not isinstance(key, str):
             continue
-        window_name = key[len(prefix) :]
+        window_name = strip_session_map_prefix(key, prefix)
+        if window_name is None:
+            continue
         # A Herdr prefix alone is not authority: only an exact versioned
         # guarded-session target is accepted. Raw tab/pane IDs are legacy
         # migration records and must not reach monitor lifecycle processing.
