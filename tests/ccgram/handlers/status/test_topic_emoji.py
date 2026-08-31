@@ -2,7 +2,7 @@ from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from telegram.error import BadRequest, TelegramError
+from telegram.error import BadRequest, RetryAfter, TelegramError
 
 from _helpers import make_mock_provider
 
@@ -602,3 +602,179 @@ class TestStatusMode:
             message_thread_id=42,
             name=f"{EMOJI_GREEN_CIRCLE} myproject",
         )
+
+
+MOD = "ccgram.handlers.status.topic_emoji"
+
+
+class TestFloodControlCooldown:
+    """Upstream #199: a RetryAfter on a topic rename must pause the chat's
+    renames instead of silently re-arming the debounce forever."""
+
+    async def test_retry_after_pauses_renames_for_the_chat(self) -> None:
+        from ccgram.handlers.status.topic_emoji import FLOOD_COOLDOWN_SECONDS
+
+        bot = AsyncMock()
+        bot.edit_forum_topic.side_effect = RetryAfter(3)
+        mark_awaiting_first_paint(-100, 42)
+
+        with patch(_PATCH_MONOTONIC) as mock_monotonic:
+            mock_monotonic.return_value = 0.0
+            # First paint hits flood control: cooldown starts, no crash.
+            await update_topic_emoji(bot, -100, 42, "idle", "myproject")
+
+            bot.edit_forum_topic.reset_mock()
+            bot.edit_forum_topic.side_effect = None
+            # While paused: no rename attempt for this chat, by any path.
+            await update_topic_emoji(bot, -100, 42, "active", "myproject")
+            await sync_topic_name(bot, -100, 42, "myproject")
+            bot.edit_forum_topic.assert_not_called()
+
+            # After the cooldown lapses, debounced renames apply again.
+            mock_monotonic.return_value = FLOOD_COOLDOWN_SECONDS + 0.1
+            await update_topic_emoji(bot, -100, 42, "active", "myproject")
+            mock_monotonic.return_value = (
+                FLOOD_COOLDOWN_SECONDS + 0.1 + _debounce_for("active") + 0.1
+            )
+            await update_topic_emoji(bot, -100, 42, "active", "myproject")
+        bot.edit_forum_topic.assert_called_once()
+
+
+class TestFirstPaintPacing:
+    """Upstream #199: the inherited-topic repaint burst at startup must be
+    spaced across poll cycles, one topic per chat at a time."""
+
+    async def test_burst_of_inherited_topics_is_paced(self) -> None:
+        from ccgram.handlers.status.topic_emoji import CHAT_EDIT_MIN_INTERVAL
+
+        bot = AsyncMock()
+        mark_awaiting_first_paint(-100, 1)
+        mark_awaiting_first_paint(-100, 2)
+
+        with patch(_PATCH_MONOTONIC) as mock_monotonic:
+            mock_monotonic.return_value = 0.0
+            await update_topic_emoji(bot, -100, 1, "idle", "alpha")
+            await update_topic_emoji(bot, -100, 2, "idle", "beta")
+            # Only the first rename of the burst goes out immediately.
+            assert bot.edit_forum_topic.await_count == 1
+
+            mock_monotonic.return_value = CHAT_EDIT_MIN_INTERVAL + 0.1
+            await update_topic_emoji(bot, -100, 2, "idle", "beta")
+        assert bot.edit_forum_topic.await_count == 2
+
+    async def test_same_topic_updates_are_not_paced(self) -> None:
+        bot = AsyncMock()
+        with patch(_PATCH_MONOTONIC) as mock_monotonic:
+            mock_monotonic.return_value = 0.0
+            mark_awaiting_first_paint(-100, 1)
+            await update_topic_emoji(bot, -100, 1, "idle", "alpha")
+            # Same key, immediate follow-up (name change): never deferred.
+            mock_monotonic.return_value = 0.2
+            await update_topic_emoji(bot, -100, 1, "idle", "alpha2")
+        assert bot.edit_forum_topic.await_count == 2
+
+    async def test_paced_name_change_survives_deferral(self) -> None:
+        """Regression (comment-compliance review 2026-08-29): a name change
+        arriving inside another topic's spacing window must defer, not be
+        dropped. The deferral rolls back the write-through name cache so
+        the next cycle re-detects the rename instead of consuming it."""
+        from ccgram.handlers.status.topic_emoji import (
+            CHAT_EDIT_MIN_INTERVAL,
+            _topic_states,
+        )
+
+        bot = AsyncMock()
+        _topic_states[(-100, 2)] = ("idle", "normal", False)
+        with patch(_PATCH_MONOTONIC) as mock_monotonic:
+            mock_monotonic.return_value = 0.0
+            mark_awaiting_first_paint(-100, 1)
+            await update_topic_emoji(bot, -100, 1, "idle", "alpha")
+            assert bot.edit_forum_topic.await_count == 1
+
+            # Topic 2's rename (token unchanged, name changed) lands inside
+            # topic 1's spacing window: deferred this cycle...
+            mock_monotonic.return_value = 0.1
+            await update_topic_emoji(bot, -100, 2, "idle", "beta-renamed")
+            assert bot.edit_forum_topic.await_count == 1
+
+            # ...and actually sent on the next one.
+            mock_monotonic.return_value = CHAT_EDIT_MIN_INTERVAL + 0.2
+            await update_topic_emoji(bot, -100, 2, "idle", "beta-renamed")
+        assert bot.edit_forum_topic.await_count == 2
+
+    async def test_sync_sleeps_out_chat_spacing(self) -> None:
+        """The /sync path cannot defer to a later poll cycle; it sleeps
+        out the per-chat spacing instead, so a sync rename cannot land
+        inside the interval opened by another topic's rename (#199)."""
+        from ccgram.handlers.status.topic_emoji import CHAT_EDIT_MIN_INTERVAL
+
+        bot = AsyncMock()
+        with patch(_PATCH_MONOTONIC) as mock_monotonic:
+            mock_monotonic.return_value = 0.0
+            mark_awaiting_first_paint(-100, 1)
+            await update_topic_emoji(bot, -100, 1, "idle", "alpha")
+            assert bot.edit_forum_topic.await_count == 1
+
+            clock = {"now": 0.2}
+            mock_monotonic.side_effect = lambda: clock["now"]
+
+            async def advance(seconds: float) -> None:
+                clock["now"] += seconds
+
+            with patch(
+                f"{MOD}.asyncio.sleep", new=AsyncMock(side_effect=advance)
+            ) as sleep_mock:
+                await sync_topic_name(bot, -100, 2, "beta")
+        sleep_mock.assert_awaited_once_with(CHAT_EDIT_MIN_INTERVAL - 0.2)
+        assert bot.edit_forum_topic.await_count == 2
+
+    async def test_sync_rechecks_stamp_after_sleeping(self) -> None:
+        """Greptile #206 P1: while /sync sleeps out the spacing, the poll
+        task may rename another topic and move the stamp; sync must
+        re-check and sleep again rather than send inside the interval."""
+        from ccgram.handlers.status.topic_emoji import (
+            CHAT_EDIT_MIN_INTERVAL,
+            _last_chat_edit,
+        )
+
+        bot = AsyncMock()
+        _last_chat_edit[-100] = (0.0, (-100, 1))
+        clock = {"now": 0.2}
+
+        async def poll_renames_during_sleep(_seconds: float) -> None:
+            # The poll task (no sync lock) renames another topic just as
+            # sync wakes, then time advances by the spacing interval.
+            clock["now"] += CHAT_EDIT_MIN_INTERVAL
+            _last_chat_edit[-100] = (clock["now"], (-100, 3))
+
+        with (
+            patch(_PATCH_MONOTONIC, side_effect=lambda: clock["now"]),
+            patch(
+                f"{MOD}.asyncio.sleep",
+                new=AsyncMock(side_effect=poll_renames_during_sleep),
+            ) as sleep_mock,
+        ):
+            await sync_topic_name(bot, -100, 2, "beta")
+
+        # Every sleep is undercut by a fresh different-topic stamp, so the
+        # bounded loop sleeps three times and then sends (degrading to the
+        # unspaced send rather than starving the command).
+        assert sleep_mock.await_count == 3
+        assert bot.edit_forum_topic.await_count == 1
+
+    def test_topic_cleanup_keeps_chat_pacing_stamp(self) -> None:
+        """Greptile #206: the pacing stamp is chat-scoped and must survive
+        a single topic's teardown (only the permission set is cleared)."""
+        from ccgram.handlers.status.topic_emoji import (
+            _disabled_chats,
+            _last_chat_edit,
+            clear_disabled_chat,
+        )
+
+        _disabled_chats.add(-100)
+        _last_chat_edit[-100] = (0.0, (-100, 1))
+
+        clear_disabled_chat(-100, 42)
+
+        assert -100 not in _disabled_chats
+        assert _last_chat_edit[-100] == (0.0, (-100, 1))
