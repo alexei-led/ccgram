@@ -137,7 +137,7 @@ async def test_interactive_tool_use_handled_skips_enqueue(bot, mock_deps):
         ),
         bot,
     )
-    mock_deps["sim"].assert_called_once_with(100, "@5", 42, -100)
+    mock_deps["sim"].assert_called_once_with(100, "@5", 42, chat_id=-100)
     mock_deps["hui"].assert_called_once()
     mock_deps["eq"].assert_not_called()
 

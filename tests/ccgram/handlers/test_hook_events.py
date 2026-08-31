@@ -387,10 +387,10 @@ class TestHandleNotification:
         ):
             await dispatch_hook_event(_make_event(event_type="Notification"), bot)
 
-        get_mode.assert_called_once_with(100, 42, -101)
-        set_mode.assert_called_once_with(100, "@0", 42, -101)
+        get_mode.assert_called_once_with(100, 42, chat_id=-101)
+        set_mode.assert_called_once_with(100, "@0", 42, chat_id=-101)
         render.assert_awaited_once_with(ANY, 100, "@0", 42, chat_id=-101)
-        clear_mode.assert_called_once_with(100, 42, -101)
+        clear_mode.assert_called_once_with(100, 42, chat_id=-101)
 
 
 class TestHandleSubagentStart:

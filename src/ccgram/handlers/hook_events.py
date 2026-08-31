@@ -113,7 +113,7 @@ async def _handle_notification(event: HookEvent, client: TelegramClient) -> None
 
         # Skip if already in interactive mode for this window
         existing = (
-            get_interactive_window(user_id, thread_id, chat_id)
+            get_interactive_window(user_id, thread_id, chat_id=chat_id)
             if chat_id is not None
             else get_interactive_window(user_id, thread_id)
         )
@@ -129,7 +129,7 @@ async def _handle_notification(event: HookEvent, client: TelegramClient) -> None
         if chat_id is None:
             set_interactive_mode(user_id, window_id, thread_id)
         else:
-            set_interactive_mode(user_id, window_id, thread_id, chat_id)
+            set_interactive_mode(user_id, window_id, thread_id, chat_id=chat_id)
 
         # Wait briefly for Claude Code to render the UI in the terminal
 
@@ -145,7 +145,7 @@ async def _handle_notification(event: HookEvent, client: TelegramClient) -> None
             if chat_id is None:
                 clear_interactive_mode(user_id, thread_id)
             else:
-                clear_interactive_mode(user_id, thread_id, chat_id)
+                clear_interactive_mode(user_id, thread_id, chat_id=chat_id)
 
 
 _LLM_SUMMARY_TIMEOUT = 3.0  # seconds to wait for LLM summary before falling back to the standard completion text

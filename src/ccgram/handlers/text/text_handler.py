@@ -456,7 +456,9 @@ async def _forward_message(
         _bash_capture_tasks[(user_id, thread_id)] = task
 
     # If in interactive mode, refresh the UI after sending text
-    interactive_window = get_interactive_window(user_id, thread_id, message.chat.id)
+    interactive_window = get_interactive_window(
+        user_id, thread_id, chat_id=message.chat.id
+    )
     if interactive_window and interactive_window == window_id:
         await asyncio.sleep(0.2)
         await handle_interactive_ui(
