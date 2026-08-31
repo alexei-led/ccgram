@@ -47,6 +47,8 @@ def test_capabilities_full_snapshot(mgr: TmuxManager) -> None:
         "supports_event_stream": False,
         "native_worktrees": False,
         "supports_display_name_rebind": True,
+        "supports_workspace_selection": False,
+        "native_topic_targets": False,
     }
 
 
