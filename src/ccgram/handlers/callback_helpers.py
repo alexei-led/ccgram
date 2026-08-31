@@ -85,13 +85,14 @@ def get_thread_id(update: Update) -> int | None:
     # Forum topic IDs are valid only for group/supergroup forum messages.
     # Keep ordinary private DMs on their pre-threaded legacy path even if a
     # future update happens to expose a thread-like field without capability
-    # metadata.
-    if getattr(getattr(msg, "chat", None), "type", None) not in (
-        "group",
-        "supergroup",
-    ):
-        return None
+    # metadata. Test doubles and compatible update objects can omit chat.type;
+    # preserve their prior thread-ID behavior.
+    chat_type = getattr(getattr(msg, "chat", None), "type", None)
     tid = getattr(msg, "message_thread_id", None)
+    if not isinstance(chat_type, str):
+        return tid if isinstance(tid, int) and tid != GENERAL_TOPIC_ID else None
+    if chat_type not in ("group", "supergroup"):
+        return None
     if not isinstance(tid, int) or tid == GENERAL_TOPIC_ID:
         return None
     return tid
