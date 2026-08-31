@@ -91,11 +91,10 @@ class ThreadRouter:
         self.thread_bindings: dict[int, dict[int, str]] = {}
         # Chat-scoped bindings preserve Telegram's chat-local thread identity.
         self.chat_thread_bindings: dict[tuple[int, int, int], str] = {}
-        # Chat/topic pairs observed with Bot API direct-message topic metadata.
-        # This is deliberately capability-driven: a positive chat ID alone is
-        # not evidence that it accepts ``direct_messages_topic_id``.
-        self.direct_message_topics: set[tuple[int, int]] = set()
-        # "user_id:thread_id" -> chat_id for legacy/direct-message bindings.
+        # Private chats observed to carry Telegram's regular topic-message
+        # metadata. A positive chat ID alone is not enough to infer this.
+        self.private_topic_chats: set[int] = set()
+        # "user_id:thread_id" -> chat_id for legacy and chat-scoped bindings.
         self.group_chat_ids: dict[str, int] = {}
         self.default_group_id = default_group_id
         # window_id -> display name (window_name)
@@ -113,7 +112,7 @@ class ThreadRouter:
         self.thread_bindings.clear()
         self.group_chat_ids.clear()
         self.chat_thread_bindings.clear()
-        self.direct_message_topics.clear()
+        self.private_topic_chats.clear()
         self.window_display_names.clear()
         self._window_to_thread.clear()
         self._chat_window_to_thread.clear()
@@ -194,10 +193,7 @@ class ThreadRouter:
                 f"{uid}:{chat_id}:{tid}": wid
                 for (uid, chat_id, tid), wid in self.chat_thread_bindings.items()
             },
-            "direct_message_topics": [
-                f"{chat_id}:{thread_id}"
-                for chat_id, thread_id in sorted(self.direct_message_topics)
-            ],
+            "private_topic_chats": sorted(self.private_topic_chats),
             "window_display_names": self.window_display_names,
             "retired_topics": [
                 {
@@ -227,15 +223,18 @@ class ThreadRouter:
         for key, wid in data.get("chat_thread_bindings", {}).items():
             uid, chat_id, tid = (int(part) for part in key.split(":", 2))
             self.chat_thread_bindings[(uid, chat_id, tid)] = wid
-        self.direct_message_topics = set()
-        raw_direct_topics = data.get("direct_message_topics", [])
-        for key in raw_direct_topics if isinstance(raw_direct_topics, list) else []:
+        raw_private_chats = data.get("private_topic_chats", [])
+        self.private_topic_chats = {
+            chat_id for chat_id in raw_private_chats if isinstance(chat_id, int)
+        }
+        # Migrate short-lived state written by the previous direct-message
+        # topic implementation without retaining its incorrect API shape.
+        for key in data.get("direct_message_topics", []):
             try:
-                chat_id, thread_id = (int(part) for part in key.split(":", 1))
+                chat_id, _thread_id = (int(part) for part in key.split(":", 1))
             except AttributeError, TypeError, ValueError:
                 continue
-            if thread_id > 1:
-                self.direct_message_topics.add((chat_id, thread_id))
+            self.private_topic_chats.add(chat_id)
         self.window_display_names = data.get("window_display_names", {})
         self._retired_topics = self._load_retired_topics(data.get("retired_topics", []))
         self._next_retired_sequence = (
@@ -277,7 +276,6 @@ class ThreadRouter:
                 not isinstance(reason, str)
                 or not reason
                 or not isinstance(cleanup_eligible, bool)
-                or topic.chat_id == topic.user_id
                 or topic.thread_id <= 0
                 or topic.sequence <= 0
             ):
@@ -317,8 +315,8 @@ class ThreadRouter:
         reason: str,
         cleanup_eligible: bool,
     ) -> None:
-        """Remember a known local forum topic, never an inferred Telegram topic."""
-        if chat_id is None or chat_id == user_id:
+        """Remember a known local topic, never an inferred Telegram topic."""
+        if chat_id is None:
             return
         self._retired_topics = [
             topic
@@ -593,28 +591,20 @@ class ThreadRouter:
     # Chat capability and ID management
     # ------------------------------------------------------------------
 
-    def mark_direct_message_topic(self, chat_id: int, thread_id: int) -> None:
-        """Record Bot API metadata proving this private topic is supported.
-
-        Topic 1 is Telegram's General/control lane, never a session topic.
-        """
-        if (
-            not isinstance(chat_id, int)
-            or not isinstance(thread_id, int)
-            or thread_id <= 1
-            or (chat_id, thread_id) in self.direct_message_topics
-        ):
+    def mark_private_topic_chat(self, chat_id: int) -> None:
+        """Record a private chat observed with valid topic-message metadata."""
+        if not isinstance(chat_id, int) or chat_id in self.private_topic_chats:
             return
-        self.direct_message_topics.add((chat_id, thread_id))
+        self.private_topic_chats.add(chat_id)
         self._schedule_save()
 
-    def is_direct_message_topic(self, chat_id: int, thread_id: int) -> bool:
-        """Return whether this exact chat/topic was observed as a direct DM topic."""
-        return (chat_id, thread_id) in self.direct_message_topics
+    def is_private_topic_chat(self, chat_id: int) -> bool:
+        """Return whether *chat_id* was observed as a private topic chat."""
+        return chat_id in self.private_topic_chats
 
-    def iter_direct_message_chat_ids(self) -> Iterator[int]:
-        """Iterate private chats with observed direct-message topic support."""
-        yield from sorted({chat_id for chat_id, _ in self.direct_message_topics})
+    def iter_private_topic_chat_ids(self) -> Iterator[int]:
+        """Iterate private chats that have supplied topic-message metadata."""
+        yield from sorted(self.private_topic_chats)
 
     def set_group_chat_id(self, user_id: int, thread_id: int, chat_id: int) -> None:
         """Store the group chat ID and promote the binding to chat scope."""

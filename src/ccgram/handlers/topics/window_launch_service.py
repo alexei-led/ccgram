@@ -24,7 +24,6 @@ from ...session_map import session_map_sync
 from ...thread_router import thread_router
 from ...multiplexer import multiplexer as tmux_manager
 from ..telegram_origin import send_telegram_to_window
-from ..callback_helpers import is_direct_messages_topic
 from ...user_preferences import user_preferences
 from ... import window_query
 from ...window_state_store import CCGRAM_CREATED_WINDOW_ORIGIN
@@ -373,8 +372,6 @@ async def launch_window(  # noqa: PLR0912, PLR0915, C901
         )
         if chat and chat.type in ("group", "supergroup"):
             thread_router.set_group_chat_id(user_id, pending_thread_id, chat.id)
-        elif chat and query_message and is_direct_messages_topic(query_message):
-            thread_router.mark_direct_message_topic(chat.id, pending_thread_id)
 
     provider = provider_registry.get(provider_name)
     try:
@@ -434,15 +431,14 @@ async def launch_window(  # noqa: PLR0912, PLR0915, C901
         return WindowLaunchResult(success=True, window_id=created_wid)
 
     chat_id = thread_router.resolve_chat_id(user_id, pending_thread_id)
-    if not thread_router.is_direct_message_topic(chat_id, pending_thread_id):
-        try:
-            await context.bot.edit_forum_topic(
-                chat_id=chat_id,
-                message_thread_id=pending_thread_id,
-                name=format_topic_name_for_mode(created_wname, approval_mode),
-            )
-        except TelegramError as e:
-            logger.debug("Failed to rename topic: %s", e)
+    try:
+        await context.bot.edit_forum_topic(
+            chat_id=chat_id,
+            message_thread_id=pending_thread_id,
+            name=format_topic_name_for_mode(created_wname, approval_mode),
+        )
+    except TelegramError as e:
+        logger.debug("Failed to rename topic: %s", e)
 
     await safe_edit(
         query,

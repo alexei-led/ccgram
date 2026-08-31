@@ -578,9 +578,9 @@ class TestIsGeneralTopic:
     ) -> None:
         assert is_general_topic(self._message(thread_id, is_forum=is_forum)) is expected
 
-    def test_direct_messages_topic_one_is_general_control_lane(self) -> None:
-        message = self._message(None, is_forum=False)
-        message.chat.is_direct_messages = True
-        message.direct_messages_topic.topic_id = 1
+    def test_private_topic_one_is_general_control_lane(self) -> None:
+        message = self._message(1, is_forum=False)
+        message.chat.type = "private"
+        message.is_topic_message = True
 
         assert is_general_topic(message) is True

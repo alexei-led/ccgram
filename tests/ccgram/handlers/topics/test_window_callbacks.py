@@ -107,27 +107,24 @@ class TestBindWindowCallback:
         m.edit.assert_called_once()
         assert "my-project" in m.edit.call_args[0][1]
 
-    async def test_private_direct_topic_binds_without_forum_rename(self) -> None:
+    async def test_private_topic_binds_and_renames_with_regular_topic_api(self) -> None:
         query, update, context = _make_query_update_context(
             user_data={UNBOUND_WINDOWS_KEY: ["@5"], PENDING_THREAD_ID: 42}
         )
         message = update.callback_query.message
-        message.message_thread_id = None
+        message.message_thread_id = 42
+        message.is_topic_message = True
         message.chat.type = "private"
         message.chat.id = 100
-        message.chat.is_direct_messages = True
-        message.direct_messages_topic.topic_id = 42
 
         with _bind_env(_unbound_window("my-project")) as m:
             m.router.resolve_chat_id.return_value = 100
-            m.router.is_direct_message_topic.return_value = True
             await handle_window_callback(query, 100, f"{CB_WIN_BIND}0", update, context)
 
         m.router.bind_thread.assert_called_once_with(
             100, 42, "@5", window_name="my-project", chat_id=100
         )
-        m.router.mark_direct_message_topic.assert_called_once_with(100, 42)
-        context.bot.edit_forum_topic.assert_not_called()
+        context.bot.edit_forum_topic.assert_awaited_once()
 
     async def test_bind_forwards_pending_text(self) -> None:
         query, update, context = _make_query_update_context(

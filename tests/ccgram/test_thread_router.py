@@ -158,9 +158,9 @@ class TestRetiredTopics:
         assert list(router.iter_retired_topics()) == []
 
 
-class TestDirectMessageTopics:
-    def test_observed_topic_persists_across_restart(self, router: ThreadRouter) -> None:
-        router.mark_direct_message_topic(100, 42)
+class TestPrivateTopicChats:
+    def test_observed_chat_persists_across_restart(self, router: ThreadRouter) -> None:
+        router.mark_private_topic_chat(100)
 
         restored = ThreadRouter(
             schedule_save=lambda: None,
@@ -168,14 +168,14 @@ class TestDirectMessageTopics:
         )
         restored.from_dict(router.to_dict())
 
-        assert restored.is_direct_message_topic(100, 42) is True
+        assert restored.is_private_topic_chat(100) is True
 
-    def test_general_topic_is_never_recorded_as_a_session_topic(
+    def test_previous_direct_message_state_migrates_to_private_chat(
         self, router: ThreadRouter
     ) -> None:
-        router.mark_direct_message_topic(100, 1)
+        router.from_dict({"direct_message_topics": ["100:1"]})
 
-        assert router.is_direct_message_topic(100, 1) is False
+        assert router.is_private_topic_chat(100) is True
 
 
 class TestReverseIndex:

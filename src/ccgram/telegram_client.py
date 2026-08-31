@@ -26,34 +26,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol, cast, runtime_checkable
 
-from telegram import Bot, BotCommand, ChatFullInfo, File, ForumTopic, Message
+from telegram import Bot, BotCommand, ChatFullInfo, File, ForumTopic, Message, User
 from telegram._botcommandscope import BotCommandScope
 from telegram._files.inputmedia import InputMedia
 from telegram._reaction import ReactionType
-
-
-def _route_direct_message_topic(
-    chat_id: int | str, kwargs: dict[str, Any]
-) -> dict[str, Any]:
-    """Use the direct-message API parameter only for observed capable topics.
-
-    The internal router deliberately stores a topic ID uniformly. Telegram's
-    Bot API, however, requires ``direct_messages_topic_id`` for private
-    threaded DMs and ``message_thread_id`` for forum supergroups.
-    """
-    thread_id = kwargs.get("message_thread_id")
-    if not isinstance(chat_id, int) or not isinstance(thread_id, int):
-        return kwargs
-
-    # Lazy: avoid making the Telegram seam own session initialization.
-    from .thread_router import thread_router
-
-    if not thread_router.is_direct_message_topic(chat_id, thread_id):
-        return kwargs
-    routed = dict(kwargs)
-    routed.pop("message_thread_id")
-    routed.setdefault("direct_messages_topic_id", thread_id)
-    return routed
 
 
 @runtime_checkable
@@ -142,6 +118,8 @@ class TelegramClient(Protocol):
 
     async def get_chat(self, chat_id: int | str, **kwargs: Any) -> ChatFullInfo: ...
 
+    async def get_me(self, **kwargs: Any) -> User: ...
+
     async def get_file(self, file_id: str, **kwargs: Any) -> File: ...
 
     async def create_forum_topic(
@@ -221,7 +199,7 @@ class PTBTelegramClient:
         return await self._bot.send_message(
             chat_id=chat_id,
             text=text,
-            **_route_direct_message_topic(chat_id, kwargs),
+            **kwargs,
         )
 
     async def edit_message_text(
@@ -269,7 +247,7 @@ class PTBTelegramClient:
         return await self._bot.send_photo(
             chat_id=chat_id,
             photo=photo,
-            **_route_direct_message_topic(chat_id, kwargs),
+            **kwargs,
         )
 
     async def send_document(
@@ -278,18 +256,14 @@ class PTBTelegramClient:
         return await self._bot.send_document(
             chat_id=chat_id,
             document=document,
-            **_route_direct_message_topic(chat_id, kwargs),
+            **kwargs,
         )
 
     async def send_chat_action(
         self, chat_id: int | str, action: str, **kwargs: Any
     ) -> bool:
-        # Bot API has no direct_messages_topic_id for chat actions. Do not
-        # leak the forum-only parameter into an observed private topic.
-        routed = _route_direct_message_topic(chat_id, kwargs)
-        routed.pop("direct_messages_topic_id", None)
         return await self._bot.send_chat_action(
-            chat_id=chat_id, action=action, **routed
+            chat_id=chat_id, action=action, **kwargs
         )
 
     async def send_voice(
@@ -298,7 +272,7 @@ class PTBTelegramClient:
         return await self._bot.send_voice(
             chat_id=chat_id,
             voice=voice,
-            **_route_direct_message_topic(chat_id, kwargs),
+            **kwargs,
         )
 
     async def set_message_reaction(
@@ -314,6 +288,9 @@ class PTBTelegramClient:
 
     async def get_chat(self, chat_id: int | str, **kwargs: Any) -> ChatFullInfo:
         return await self._bot.get_chat(chat_id=chat_id, **kwargs)
+
+    async def get_me(self, **kwargs: Any) -> User:
+        return await self._bot.get_me(**kwargs)
 
     async def get_file(self, file_id: str, **kwargs: Any) -> File:
         return await self._bot.get_file(file_id=file_id, **kwargs)
@@ -442,7 +419,7 @@ class FakeTelegramClient:
             {
                 "chat_id": chat_id,
                 "text": text,
-                **_route_direct_message_topic(chat_id, kwargs),
+                **kwargs,
             },
         )
 
@@ -497,7 +474,7 @@ class FakeTelegramClient:
             {
                 "chat_id": chat_id,
                 "photo": photo,
-                **_route_direct_message_topic(chat_id, kwargs),
+                **kwargs,
             },
         )
 
@@ -509,17 +486,15 @@ class FakeTelegramClient:
             {
                 "chat_id": chat_id,
                 "document": document,
-                **_route_direct_message_topic(chat_id, kwargs),
+                **kwargs,
             },
         )
 
     async def send_chat_action(
         self, chat_id: int | str, action: str, **kwargs: Any
     ) -> bool:
-        routed = _route_direct_message_topic(chat_id, kwargs)
-        routed.pop("direct_messages_topic_id", None)
         return self._record(
-            "send_chat_action", {"chat_id": chat_id, "action": action, **routed}
+            "send_chat_action", {"chat_id": chat_id, "action": action, **kwargs}
         )
 
     async def send_voice(
@@ -530,7 +505,7 @@ class FakeTelegramClient:
             {
                 "chat_id": chat_id,
                 "voice": voice,
-                **_route_direct_message_topic(chat_id, kwargs),
+                **kwargs,
             },
         )
 
@@ -553,6 +528,9 @@ class FakeTelegramClient:
 
     async def get_chat(self, chat_id: int | str, **kwargs: Any) -> ChatFullInfo:
         return self._record("get_chat", {"chat_id": chat_id, **kwargs})
+
+    async def get_me(self, **kwargs: Any) -> User:
+        return self._record("get_me", kwargs)
 
     async def get_file(self, file_id: str, **kwargs: Any) -> File:
         return self._record("get_file", {"file_id": file_id, **kwargs})

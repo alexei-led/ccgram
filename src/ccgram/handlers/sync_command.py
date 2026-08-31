@@ -124,8 +124,6 @@ async def _sync_live_topic_names(
         if window_id not in live_ids:
             continue
         chat_id = thread_router.resolve_chat_id(user_id, thread_id)
-        if chat_id == user_id:
-            continue
         bindings.append((chat_id, thread_id, window_id))
 
     sem = asyncio.Semaphore(_TELEGRAM_API_CONCURRENCY)
@@ -341,40 +339,31 @@ async def _close_ghost_topics(
         if current_window_id != window_id:
             continue
         chat_id = thread_router.resolve_chat_id(user_id, thread_id)
-        topic_removed = False
-        if chat_id == user_id:
+        topic_removed = await _remove_topic(client, chat_id, thread_id)
+        if not topic_removed:
             logger.warning(
-                "No group chat_id for ghost topic thread=%d, skipping close",
+                "Failed to delete/close ghost topic thread=%d window=%s",
                 thread_id,
+                window_id,
             )
-        else:
-            topic_removed = await _remove_topic(client, chat_id, thread_id)
-            if not topic_removed:
-                logger.warning(
-                    "Failed to delete/close ghost topic thread=%d window=%s",
-                    thread_id,
-                    window_id,
-                )
-                manual_close_count += 1
-                continue
-        if topic_removed or chat_id == user_id:
-            try:
-                await clear_topic_state(
-                    user_id, thread_id, client=client, window_id=window_id
-                )
-                thread_router.unbind_thread(
-                    user_id,
-                    thread_id,
-                    retirement_reason="remote_removed",
-                )
-                if topic_removed:
-                    closed_count += 1
-            except OSError, TelegramError:
-                logger.exception(
-                    "Failed to clean up ghost binding thread=%d window=%s",
-                    thread_id,
-                    window_id,
-                )
+            manual_close_count += 1
+            continue
+        try:
+            await clear_topic_state(
+                user_id, thread_id, client=client, window_id=window_id
+            )
+            thread_router.unbind_thread(
+                user_id,
+                thread_id,
+                retirement_reason="remote_removed",
+            )
+            closed_count += 1
+        except OSError, TelegramError:
+            logger.exception(
+                "Failed to clean up ghost binding thread=%d window=%s",
+                thread_id,
+                window_id,
+            )
     return closed_count, manual_close_count
 
 
@@ -425,8 +414,6 @@ async def _probe_dead_topics(client: TelegramClient) -> list[AuditIssue]:
         (uid, tid, wid, thread_router.resolve_chat_id(uid, tid))
         for uid, tid, wid in thread_router.iter_thread_bindings()
     ]
-    # Only probe bindings with a group chat (chat_id != user_id)
-    bindings = [(uid, tid, wid, cid) for uid, tid, wid, cid in bindings if cid != uid]
     if not bindings:
         return []
 
@@ -527,8 +514,7 @@ async def _recreate_dead_topics(
                 thread_router.bind_thread(
                     user_id, thread_id, window_id, window_name=name, chat_id=chat_id
                 )
-                if chat_id != user_id:
-                    thread_router.set_group_chat_id(user_id, thread_id, chat_id)
+                thread_router.set_group_chat_id(user_id, thread_id, chat_id)
     return recreated
 
 

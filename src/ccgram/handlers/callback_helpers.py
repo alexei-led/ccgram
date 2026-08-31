@@ -41,30 +41,26 @@ GENERAL_TOPIC_ID = 1
 """Telegram's General topic: the explicit control lane, never a session."""
 
 
-def direct_messages_topic_id(message: object) -> int | None:
-    """Return an observed private direct-message topic ID, if supported.
+def private_topic_id(message: object) -> int | None:
+    """Return an observed private-chat topic ID, if present.
 
-    A positive ``chat_id`` or ``message_thread_id`` is not enough to infer the
-    newer private threaded-DM feature. Telegram explicitly advertises it with
-    both ``chat.is_direct_messages`` and ``message.direct_messages_topic``.
-    Ordinary unthreaded private DMs therefore keep their legacy ``None``
-    thread identity.
+    Private bot topics use the regular topic-message shape: a private chat,
+    ``is_topic_message``, and an integer ``message_thread_id``. Ordinary
+    private DMs deliberately keep their legacy ``None`` thread identity.
     """
     chat = getattr(message, "chat", None)
-    topic = getattr(message, "direct_messages_topic", None)
-    topic_id = getattr(topic, "topic_id", None)
-    if getattr(chat, "is_direct_messages", None) is True and isinstance(topic_id, int):
-        return topic_id
+    thread_id = getattr(message, "message_thread_id", None)
+    if (
+        getattr(chat, "type", None) == "private"
+        and getattr(message, "is_topic_message", None) is True
+        and isinstance(thread_id, int)
+    ):
+        return thread_id
     return None
 
 
-def is_direct_messages_topic(message: object) -> bool:
-    """Return whether *message* carries supported private-topic metadata."""
-    return direct_messages_topic_id(message) is not None
-
-
 def get_thread_id(update: Update) -> int | None:
-    """Extract a non-General topic ID from a forum or direct-message update.
+    """Extract a non-General topic ID from a forum or private-topic update.
 
     Topic 1 is an explicit General/control invariant in both topic-capable
     surfaces. It must not become a session binding or be replaced by ``/new``.
@@ -75,16 +71,16 @@ def get_thread_id(update: Update) -> int | None:
     if msg is None:
         return None
 
-    direct_topic_id = direct_messages_topic_id(msg)
-    if direct_topic_id is not None:
+    private_thread_id = private_topic_id(msg)
+    if private_thread_id is not None:
         chat_id = getattr(getattr(msg, "chat", None), "id", None)
-        if isinstance(chat_id, int) and direct_topic_id != GENERAL_TOPIC_ID:
-            thread_router.mark_direct_message_topic(chat_id, direct_topic_id)
-        return direct_topic_id if direct_topic_id != GENERAL_TOPIC_ID else None
+        if isinstance(chat_id, int):
+            thread_router.mark_private_topic_chat(chat_id)
+        return private_thread_id if private_thread_id != GENERAL_TOPIC_ID else None
 
     # Forum topic IDs are valid only for group/supergroup forum messages.
     # Keep ordinary private DMs on their pre-threaded legacy path even if a
-    # future update happens to expose a thread-like field without capability
+    # future update happens to expose a thread-like field without topic
     # metadata. Test doubles and compatible update objects can omit chat.type;
     # preserve their prior thread-ID behavior.
     chat_type = getattr(getattr(msg, "chat", None), "type", None)

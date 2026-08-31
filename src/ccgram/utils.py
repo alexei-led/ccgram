@@ -358,18 +358,20 @@ def is_general_topic(message: Message) -> bool:
     """Return True if the message is in Telegram's General/control topic.
 
     Forum-group General messages may omit ``message_thread_id``. Private
-    threaded DMs advertise their capability explicitly and carry the General
-    control lane as ``direct_messages_topic.topic_id == 1``; topic 1 is never
-    eligible to become a ccgram session in either surface.
+    topics use ``is_topic_message`` with ``message_thread_id == 1`` for their
+    control lane; topic 1 is never eligible to become a ccgram session in
+    either surface.
     """
     chat = message.chat
     thread_id = getattr(message, "message_thread_id", None)
     is_forum = getattr(chat, "is_forum", False) if chat else False
     if is_forum and (thread_id is None or thread_id == 1):
         return True
-    direct_topic = getattr(message, "direct_messages_topic", None)
-    direct_topic_id = getattr(direct_topic, "topic_id", None)
-    return getattr(chat, "is_direct_messages", None) is True and direct_topic_id == 1
+    return (
+        getattr(chat, "type", None) == "private"
+        and getattr(message, "is_topic_message", None) is True
+        and thread_id == 1
+    )
 
 
 async def handle_general_topic_message(
