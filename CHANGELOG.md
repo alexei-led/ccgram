@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.3] - 2026-08-31
+
+### Fixed
+
+- Persist the longest settled delivery prefix during sustained output, preventing restart replay backlogs from starving live topics.
+- Preserve at-least-once replay for pending or failed deliveries and protect watermark commits with checkpoint, pending-tool, and pending-skip fences.
+
+### Contributors
+
+- Thanks to [@paoloantinori](https://github.com/paoloantinori) for the production-driven PR #207.
+
 ## [4.9.2] - 2026-08-31
 
 ### Fixed
