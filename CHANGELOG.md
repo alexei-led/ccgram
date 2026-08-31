@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.1] - 2026-08-31
+
+### Fixed
+
+- Let `ccgram doctor` and `ccgram status` load the agterm backend without Telegram credentials.
+- Expand `~` before CCGram passes a work directory to `agtermctl`.
+- Keep workspace selection separate from native agent status and guarded topic targets.
+- Report native agterm session status and classify providers when the process-group ID is unavailable.
+- Declare the asynchronous test cleanup fixture with the pytest asyncio plugin.
+
+### Contributors
+
+- Thanks to [@paskal](https://github.com/paskal) for the agterm backend and focused tests.
+
 ## [4.9.0] - 2026-08-31
 
 ### Added
