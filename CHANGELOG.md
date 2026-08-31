@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.4] - 2026-08-31
+
+### Added
+
+- Support Telegram topics in private bot chats. Topic 1 remains the General/control topic.
+- Add direct Telegram buttons for supported numbered and yes/no agent prompts.
+
+### Fixed
+
+- Prevent one chat window from remaining bound to topics owned by different users.
+- Reject hook events with a backend or session prefix that does not match the active session.
+
+### Contributors
+
+- Thanks to [@bjesuiter](https://github.com/bjesuiter) for the private-chat topic request in #156.
+- Thanks to [@Akash-Saini-ai](https://github.com/Akash-Saini-ai) for the direct-choice request in #193.
+- Thanks to [@paoloantinori](https://github.com/paoloantinori) for the production reports in #196 and #202.
+
 ## [4.9.3] - 2026-08-31
 
 ### Fixed
