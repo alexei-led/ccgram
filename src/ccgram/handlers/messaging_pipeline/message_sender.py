@@ -55,7 +55,6 @@ __all__ = [
     "rate_limit_send_formatted_message",
     "rate_limit_send_message",
     "react",
-    "retry_after_seconds",
     "safe_edit",
     "safe_reply",
     "safe_send",
@@ -79,12 +78,6 @@ NO_LINK_PREVIEW = LinkPreviewOptions(is_disabled=True)
 
 class _MessageGoneError(Exception):
     """Raised when the target message no longer exists (deleted topic)."""
-
-
-def retry_after_seconds(exc: RetryAfter) -> float:
-    """Extract retry delay from RetryAfter, handling both int and timedelta."""
-    ra = exc.retry_after
-    return float(ra) if isinstance(ra, int) else ra.total_seconds()
 
 
 # Rate limiting: last send time per chat to avoid Telegram flood control

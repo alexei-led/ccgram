@@ -20,16 +20,17 @@ Key functions:
 
 import asyncio
 import time
+from weakref import WeakValueDictionary
 
 import structlog
 from telegram.error import BadRequest, RetryAfter, TelegramError
 
 from ...config import config
 from ...telegram_client import TelegramClient
+from ...telegram_rate_limiter import retry_after_seconds
 from ...thread_router import thread_router
 from ...topic_state_registry import topic_state
 from ...window_query import get_approval_mode
-from ..messaging_pipeline.message_sender import retry_after_seconds
 
 logger = structlog.get_logger()
 
@@ -134,10 +135,11 @@ _flood_cooldown_until: dict[int, float] = {}
 # chat_id -> (monotonic time of the last rename attempt, its topic key).
 _last_chat_edit: dict[int, tuple[float, tuple[int, int]]] = {}
 
-# Serializes sync_topic_name renames: /sync gathers several per chat
-# concurrently, and without the lock they would all wake from the same
-# pacing stamp at once (#199).
-_sync_rename_lock = asyncio.Lock()
+# Serializes sync_topic_name renames within each chat: /sync gathers several
+# per chat concurrently, and without a per-chat lock they would all wake from
+# the same pacing stamp at once (#199). Weak values remove idle locks without
+# replacing a held lock during cleanup.
+_sync_rename_locks: WeakValueDictionary[int, asyncio.Lock] = WeakValueDictionary()
 
 
 def _flood_paused(chat_id: int, now: float) -> bool:
@@ -348,7 +350,8 @@ async def sync_topic_name(
     # this command context the per-chat spacing is slept out rather than
     # deferred like the poll path, and the lock keeps gathered syncs from
     # waking from one stamp together (#199).
-    async with _sync_rename_lock:
+    lock = _sync_rename_locks.setdefault(chat_id, asyncio.Lock())
+    async with lock:
         now = time.monotonic()
         if _flood_paused(chat_id, now):
             return
@@ -528,3 +531,4 @@ def reset_all_state() -> None:
     _topic_names.clear()
     _flood_cooldown_until.clear()
     _last_chat_edit.clear()
+    _sync_rename_locks.clear()

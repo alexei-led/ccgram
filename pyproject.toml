@@ -1,7 +1,7 @@
 [project]
 name = "ccgram"
 dynamic = ["version"]
-description = "CCGram — manage AI coding agents from Telegram via tmux"
+description = "CCGram — manage AI coding agents from Telegram via terminal multiplexers"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.14"

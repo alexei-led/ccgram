@@ -26,8 +26,8 @@ from ...window_state_ports import legacy_state
 from ...window_state_store import CCGRAM_CREATED_WINDOW_ORIGIN
 from ..callback_tokens import revoke_window_tokens
 from ..cleanup import clear_topic_state
-from ...telegram_rate_limiter import NO_RETRY_RATE_LIMIT_ARGS
-from ..messaging_pipeline.message_sender import is_thread_gone, retry_after_seconds
+from ...telegram_rate_limiter import NO_RETRY_RATE_LIMIT_ARGS, retry_after_seconds
+from ..messaging_pipeline.message_sender import is_thread_gone
 from ..polling.polling_state import (
     lifecycle_strategy,
     terminal_poll_state,

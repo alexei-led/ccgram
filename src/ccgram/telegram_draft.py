@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import secrets
-from datetime import timedelta
 import time
 from typing import Any, Final, Literal
 
@@ -19,6 +18,7 @@ import structlog
 from telegram import Bot, InlineKeyboardMarkup
 from telegram.error import BadRequest, NetworkError, RetryAfter, TelegramError, TimedOut
 
+from .telegram_rate_limiter import retry_after_seconds
 from .utils import log_throttled
 
 _KEEP_MARKUP: Final[Any] = object()
@@ -105,13 +105,6 @@ def _is_unsupported_error(exc: BadRequest) -> bool:
 def _is_peer_invalid_error(exc: BadRequest) -> bool:
     message = (exc.message or "").lower()
     return any(marker in message for marker in _PEER_INVALID_MARKERS)
-
-
-def _retry_after_seconds(exc: RetryAfter) -> float:
-    retry_after = exc.retry_after
-    if isinstance(retry_after, timedelta):
-        return retry_after.total_seconds()
-    return float(retry_after)
 
 
 def _truncate(text: str) -> str:
@@ -334,7 +327,7 @@ class DraftStream:
             await self._start_legacy()
             return
         except RetryAfter as exc:
-            await asyncio.sleep(_retry_after_seconds(exc) + 1)
+            await asyncio.sleep(retry_after_seconds(exc) + 1)
             await self._start_legacy()
             return
         except TelegramError as exc:
@@ -428,7 +421,7 @@ class DraftStream:
                 mark_peer_draft_unsupported(self._chat_id, self._thread_id)
             await self._handle_stream_failure(exc)
         except RetryAfter as exc:
-            retry_delay = _retry_after_seconds(exc)
+            retry_delay = retry_after_seconds(exc)
             self._retry_not_before = time.monotonic() + retry_delay
             await self._handle_stream_failure(exc)
             return retry_delay
@@ -479,7 +472,7 @@ class DraftStream:
             if raise_on_error:
                 raise
         except RetryAfter as exc:
-            await asyncio.sleep(_retry_after_seconds(exc) + 1)
+            await asyncio.sleep(retry_after_seconds(exc) + 1)
             try:
                 await self._bot.edit_message_text(
                     chat_id=self._chat_id,

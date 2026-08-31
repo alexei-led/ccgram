@@ -26,9 +26,9 @@ ccgram -v                     # Run with debug logging
 
 ### Platform Support
 
-CCGram supports Linux, macOS, and WSL2. Native Windows is not supported.
+CCGram supports Linux, macOS, and WSL2. Native Windows is not supported. The agterm backend is macOS-native.
 
-On Windows, install and run CCGram inside WSL2. Install the multiplexer and agent CLI inside the WSL distribution.
+On Windows, install and run CCGram inside WSL2. Install the multiplexer and agent CLI inside the WSL distribution; use agterm only on macOS.
 
 ### BotFather Setup
 
@@ -96,8 +96,7 @@ keeps unrelated topics operational.
 
 ## Local Dev in agterm
 
-Set `CCGRAM_MULTIPLEXER=agterm` to use agterm as the session backend.
-Install `agterm` and make sure that `agtermctl` can reach its control socket.
+Set `CCGRAM_MULTIPLEXER=agterm` to use [agterm](https://github.com/umputun/agterm) as the session backend. agterm is macOS-native. Install `agtermctl` from agterm's **Help > Install Command Line Tool**, start agterm, and make sure that `agtermctl` can reach its control socket. Set `AGTERM_SOCKET` when the default control-socket path is not the one to use.
 
 Set `CCGRAM_AGTERM_WORKSPACES` to a comma-separated list of workspace names.
 Use `*` to include all workspaces. CCGram shows the workspace picker when agterm
@@ -350,7 +349,7 @@ Leave `CCGRAM_WHISPER_PROVIDER` empty (the default) to disable voice transcripti
 
 ## Tmux Session Auto-Detection
 
-> This section applies when `CCGRAM_MULTIPLEXER=tmux` (the default). The herdr backend uses its own workspace/tab model and does not use a tmux session name.
+> This section applies when `CCGRAM_MULTIPLEXER=tmux` (the default). The herdr and agterm backends use their own workspace/session models and do not use a tmux session name.
 
 When ccgram starts inside an existing tmux session, it auto-detects the session name and attaches to it instead of creating a new `ccgram` session. This is useful when you already have a tmux session with agent windows.
 
@@ -371,9 +370,9 @@ When ccgram starts inside an existing tmux session, it auto-detects the session 
 | Inside tmux, no flags            | Auto-detects session, skips own window, no creation |
 | Inside tmux, `--tmux-session=X`  | Overrides auto-detect, uses `X`                     |
 
-## Herdr Backend (Alternative Multiplexer)
+## Alternative Multiplexer Backends
 
-ccgram talks to the terminal multiplexer through a backend-neutral seam. tmux is the default; [herdr](https://github.com/ogulcancelik/herdr) is an opt-in alternative selected with `CCGRAM_MULTIPLEXER=herdr`. Everything else — topics, providers, hooks, status, recovery — works the same; only the multiplexer underneath changes.
+ccgram talks to the terminal multiplexer through a backend-neutral seam. tmux is the default; [herdr](https://github.com/ogulcancelik/herdr) and [agterm](https://github.com/umputun/agterm) are opt-in alternatives selected with `CCGRAM_MULTIPLEXER=herdr` and `CCGRAM_MULTIPLEXER=agterm`, respectively. Backend capabilities differ; the backend-specific sections describe their user-visible constraints.
 
 ### Setup
 
@@ -441,7 +440,7 @@ ccgram --autoclose-done 0 --autoclose-dead 0
 
 ## Multi-Instance Setup
 
-Run multiple ccgram instances on the same machine, each owning a different Telegram group. All instances can share a single bot token.
+Run multiple ccgram instances on the same machine, each owning a different Telegram group. All instances can share a single bot token. Because Telegram rate limits are token-wide, divide the expected aggregate traffic across instances; these processes do not share a rate-limit coordinator.
 
 ### Example: work + personal instances
 
@@ -503,9 +502,11 @@ The window must be in the ccgram tmux session (configurable via `TMUX_SESSION_NA
 
 Open a new herdr tab in the appropriate workspace, then start any supported agent CLI. CCGram discovers agent panes automatically; bare shell panes are not surfaced as topics (only active agent panes are).
 
-### Both backends
+### Multiplexer backends
 
 For Claude, the SessionStart hook registers the session automatically. For Codex, Gemini, and Pi, CCGram auto-detects the provider from the running process name and discovers the session from transcript files on disk. In all cases, the bot creates a matching Telegram topic.
+
+With agterm, open the session in the `ccgram` workspace (or a workspace listed in `CCGRAM_AGTERM_WORKSPACES`) and start a supported agent CLI. agterm reports the foreground command for active sessions; an idle shell has no foreground argv, so bare shell panes are not surfaced as topics.
 
 This works even on a fresh instance with no existing topic bindings (cold-start).
 

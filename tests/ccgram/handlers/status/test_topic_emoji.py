@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -727,6 +728,34 @@ class TestFirstPaintPacing:
                 await sync_topic_name(bot, -100, 2, "beta")
         sleep_mock.assert_awaited_once_with(CHAT_EDIT_MIN_INTERVAL - 0.2)
         assert bot.edit_forum_topic.await_count == 2
+
+    async def test_sync_lock_cleanup_never_replaces_held_chat_lock(self) -> None:
+        from ccgram.handlers.status.topic_emoji import (
+            _MAX_DISABLED_CHATS,
+            _sync_rename_locks,
+        )
+
+        held_lock = asyncio.Lock()
+        await held_lock.acquire()
+        keepalive = [held_lock]
+        _sync_rename_locks[-100] = held_lock
+        for chat_id in range(10_000, 10_000 + _MAX_DISABLED_CHATS + 1):
+            lock = asyncio.Lock()
+            keepalive.append(lock)
+            _sync_rename_locks[chat_id] = lock
+
+        bot = AsyncMock()
+        task = asyncio.create_task(sync_topic_name(bot, -100, 2, "beta"))
+        await asyncio.sleep(0)
+
+        try:
+            bot.edit_forum_topic.assert_not_awaited()
+        finally:
+            held_lock.release()
+            await task
+
+        bot.edit_forum_topic.assert_awaited_once()
+        assert keepalive
 
     async def test_sync_rechecks_stamp_after_sleeping(self) -> None:
         """Greptile #206 P1: while /sync sleeps out the spacing, the poll

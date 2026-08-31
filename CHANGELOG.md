@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.2] - 2026-08-31
+
+### Fixed
+
+- Prevent topic-rename flood control from rearming indefinitely after `RetryAfter`.
+- Pace topic renames across restart bursts without dropping pending names.
+- Keep Telegram `RetryAfter` sleeps local to the limited request instead of stalling unrelated chats.
+- Serialize `/sync` renames per chat and consolidate retry-delay handling across request paths.
+
+### Documentation
+
+- Document tmux, Herdr, and agterm backends, including agterm setup and macOS limits.
+- Document shared-token rate-limit considerations for multi-instance deployments.
+
+### Contributors
+
+- Thanks to [@paoloantinori](https://github.com/paoloantinori) for PR #206 and the topic-rename flood-control fix.
+
 ## [4.9.1] - 2026-08-31
 
 ### Fixed

@@ -35,6 +35,10 @@ class CCGramAIORateLimiter(AIORateLimiter):
     bounded exponential backoff and jitter, and exhaustion propagates so the queue or endpoint
     caller can apply its own deferred retry without a limiter traceback.
 
+    Retry waits stay local to the limited request. PTB's proactive overall and
+    group limiters protect shared budgets; a reactive global gate would stall
+    unrelated chats and concurrent requests could release it prematurely.
+
     Non-positive ``rate_limit_args`` values propagate the first response so
     probes with endpoint-specific backoff do not stall all Telegram requests.
     """
@@ -100,9 +104,6 @@ class CCGramAIORateLimiter(AIORateLimiter):
                     jitter_seconds=jitter,
                     retry_in_seconds=retry_in,
                 )
-                self._retry_after_event.clear()
                 await asyncio.sleep(retry_in)
-            finally:
-                self._retry_after_event.set()
 
         raise AssertionError("unreachable")

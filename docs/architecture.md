@@ -1,14 +1,18 @@
 # ccgram Architecture
 
-Generated from code state 2026-05-21.
+Generated from code state 2026-08-31.
 
 ## Herdr compatibility
 
 The Herdr adapter accepts socket protocols 14–20 without warnings and continues best-effort for other versions. Pi requires `herdr integration install pi`; Antigravity requires `herdr integration install antigravity-cli`. Agents must be started or restarted after installation to load the integration and publish their `agent_session` identity. Sessionless detections fail closed and do not receive persistent topics. Antigravity reports its identity after the first prompt creates a conversation.
 
+## agterm compatibility
+
+[agterm](https://github.com/umputun/agterm) is macOS-native. Its adapter drives the `agtermctl` CLI through agterm's local control socket. An agterm session UUID is the neutral `window_id`; agterm persists that UUID across restarts, so no alias reconciliation is required. Discovery defaults to the `ccgram` workspace and can be scoped with `CCGRAM_AGTERM_WORKSPACES`; agterm supports workspace selection for new sessions.
+
 ## System Overview
 
-ccgram maps each Telegram Forum topic to one terminal-multiplexer target running one agent CLI (Claude Code, Codex, Gemini, Pi, Antigravity, or Shell). Tmux routing remains keyed by window ID (`@0`, `@12`). Herdr routing is keyed only by opaque `herdr-session-v1-…` targets derived from `agent.list`; tab, pane, terminal, workspace, display, and focus values are short-lived locators inside a fresh guarded action, never persisted identity. Every Herdr session displays one pane-qualified topic, independent of sibling count. Missing, malformed, sessionless, and legacy targets fail closed; duplicate canonical targets are quarantined without disabling unrelated sessions; raw locator aliases and display-name recovery are never implicit. A target can change after the guard and before Herdr dispatches, so the adapter records a possible post-guard race rather than claiming atomic delivery. Multiplexer access goes through the `multiplexer/` seam (`Multiplexer` Protocol); tmux is the default backend and herdr is selectable via `CCGRAM_MULTIPLEXER=herdr`.
+ccgram maps each Telegram Forum topic to one terminal-multiplexer target running one agent CLI (Claude Code, Codex, Gemini, Pi, Antigravity, or Shell). Tmux routing remains keyed by window ID (`@0`, `@12`). Herdr routing is keyed only by opaque `herdr-session-v1-…` targets derived from `agent.list`; tab, pane, terminal, workspace, display, and focus values are short-lived locators inside a fresh guarded action, never persisted identity. Every Herdr session displays one pane-qualified topic, independent of sibling count. Missing, malformed, sessionless, and legacy targets fail closed; duplicate canonical targets are quarantined without disabling unrelated sessions; raw locator aliases and display-name recovery are never implicit. A target can change after the guard and before Herdr dispatches, so the adapter records a possible post-guard race rather than claiming atomic delivery. agterm routing is keyed by its durable session UUID. Multiplexer access goes through the `multiplexer/` seam (`Multiplexer` Protocol); tmux is the default backend, while herdr and agterm are selectable with `CCGRAM_MULTIPLEXER=herdr` and `CCGRAM_MULTIPLEXER=agterm`, respectively.
 
 ```mermaid
 graph TB
@@ -18,7 +22,7 @@ graph TB
     Registry["handlers/registry.py<br>PTB handler wiring"]
     TC["telegram_client.py<br>TelegramClient Protocol<br>+ PTBTelegramClient adapter"]
     Handlers["handlers/<br>14 feature subpackages"]
-    TmuxMgr["multiplexer/ seam <br> Multiplexer Protocol <br> (tmux default, herdr)"]
+    TmuxMgr["multiplexer/ seam <br> Multiplexer Protocol <br> (tmux default, herdr, agterm)"]
     Windows["multiplexer windows <br> (Claude, Codex, Gemini, Pi, Antigravity, Shell)"]
     Hook["hook.py<br>Claude Code hooks"]
     Monitor["session_monitor.py<br>poll loop"]
@@ -88,7 +92,7 @@ graph TD
     end
 
     subgraph infra["Infrastructure"]
-        TmuxMgr2["multiplexer/ seam<br>(tmux / herdr backends)"]
+        TmuxMgr2["multiplexer/ seam<br>(tmux / herdr / agterm backends)"]
         WR["window_resolver.py"]
         SP["state_persistence.py"]
     end
@@ -126,25 +130,27 @@ graph TD
     providers --> handlers
 ```
 
-## State Flow: Topic → Window → Session
+## State Flow: Topic → Target → Session
 
 For Herdr, the topic binding is an opaque guarded session target, not a window or pane. `multiplexer/herdr.py` alone parses `agent.list`, derives the digest, and uses the matched live locator for one action. A shared tab is projected as one pane-qualified topic per agent. Legacy tab/pane/terminal bindings are persisted as `legacy_herdr`, blocked, and retained only for archive/rollback until an explicit rebind.
+
+For agterm, the topic binding and neutral `window_id` are the same durable session UUID. `multiplexer/agterm.py` keeps agterm's private tree and surface locators inside the adapter; it does not expose a durable sibling-pane handle.
 
 ```mermaid
 graph LR
     Topic["Telegram Topic<br>(thread_id)"]
-    Window["tmux Window<br>(@id)"]
+    Target["Multiplexer target<br>(tmux window / Herdr target / agterm session)"]
     Session["Claude Session<br>(uuid)"]
 
-    Topic -- "thread_bindings<br>(thread_router.py)" --> Window
-    Window -- "session_map.json<br>(written by hook)" --> Session
+    Topic -- "thread_bindings<br>(thread_router.py)" --> Target
+    Target -- "session_map.json<br>(written by hook)" --> Session
 
     WQ["window_query.py<br>read-only state"]
     SQ["session_query.py<br>read-only resolution"]
     SM["SessionManager<br>writes + startup"]
 
-    Window -- "read" --> WQ
-    Window -- "write" --> SM
+    Target -- "read" --> WQ
+    Target -- "write" --> SM
     Session -- "read" --> SQ
 ```
 
