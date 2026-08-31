@@ -131,8 +131,10 @@ async def detect_provider_cached(window_id: str, fg: ForegroundInfo | None) -> s
     ``classify_provider_from_argv`` is skipped.  Returns ``""`` when there is
     no foreground process to classify.
     """
-    if fg is None or not fg.argv or fg.pgid == 0:
+    if fg is None or not fg.argv:
         return ""
+    if fg.pgid == 0:
+        return classify_provider_from_argv(fg.argv)
 
     cached = _pgid_cache.get(window_id)
     if cached and cached[0] == fg.pgid:
