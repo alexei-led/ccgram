@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.0] - 2026-08-31
+
+### Added
+
+- Add an agterm multiplexer backend for session discovery, transcript reads, input, lifecycle actions, and reconciliation.
+- Add agterm workspace filtering through `CCGRAM_AGTERM_WORKSPACES`.
+
+### Fixed
+
+- Detect the foreground provider when a multiplexer cannot provide a process-group ID.
+- Keep provider detection independent from stale process-group cache entries in this case.
+
+### Contributors
+
+- Thanks to [@paskal](https://github.com/paskal) for the agterm backend, focused tests, and design notes.
+
 ## [4.8.0] - 2026-08-30
 
 ### Added
