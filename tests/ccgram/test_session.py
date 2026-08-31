@@ -22,6 +22,29 @@ def mgr(monkeypatch) -> SessionManager:
     return SessionManager()
 
 
+class TestRoutingLoadRepair:
+    def test_persists_normalized_routing_claims(self, monkeypatch) -> None:
+        state = {
+            "thread_bindings": {"100": {"2": "@5"}},
+            "group_chat_ids": {"100:2": -1001},
+            "chat_thread_bindings": {"200:-1001:142": "@5"},
+        }
+        saves: list[None] = []
+        monkeypatch.setattr("ccgram.session.StatePersistence.load", lambda _self: state)
+        monkeypatch.setattr(
+            "ccgram.session.StatePersistence.schedule_save",
+            lambda _self: saves.append(None),
+        )
+
+        manager = SessionManager()
+
+        assert saves == [None]
+        assert manager.thread_bindings == {}
+        assert thread_router.get_window_for_thread(100, 2, -1001) is None
+        assert thread_router.get_window_for_thread(200, 142, -1001) == "@5"
+        assert manager.group_chat_ids == {}
+
+
 class TestLegacyHerdrMigration:
     def test_load_marks_every_legacy_id_without_short_circuit(
         self, monkeypatch

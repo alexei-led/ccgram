@@ -203,8 +203,9 @@ class SessionManager:
         # Load user preferences (starred dirs, MRU, read offsets)
         user_preferences.from_dict(state)
 
-        # Load routing data into ThreadRouter (handles dedup + reverse index)
-        thread_router.from_dict(state)
+        # Load routing data into ThreadRouter (handles normalization, dedup,
+        # and reverse-index rebuild). Persist any repaired persisted claims.
+        routing_repaired = thread_router.from_dict(state)
 
         # Detect old format: keys that don't look like window IDs
         needs_migration = False
@@ -226,7 +227,7 @@ class SessionManager:
                 "Detected old-format state (window_name keys), "
                 "will re-resolve on startup"
             )
-        if migrated:
+        if migrated or routing_repaired:
             self._save_state()
 
     @staticmethod
