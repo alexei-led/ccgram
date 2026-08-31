@@ -362,6 +362,36 @@ class TestHandleNotification:
             assert claude_task_state.get_wait_header("@0") == "Approval needed: Bash"
             mock_enqueue.assert_awaited_once_with(ANY, 100, "@0", None, thread_id=42)
 
+    async def test_notification_keeps_chat_identity_for_interactive_state(
+        self, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(
+            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings",
+            lambda: iter(()),
+        )
+        monkeypatch.setattr(
+            "ccgram.handlers.hook_events.thread_router.iter_thread_bindings_with_chat",
+            lambda: iter(((100, -101, 42, "@0"),)),
+        )
+        bot = AsyncMock(spec=Bot)
+        with (
+            patch(
+                "ccgram.handlers.hook_events.get_interactive_window", return_value=None
+            ) as get_mode,
+            patch("ccgram.handlers.hook_events.set_interactive_mode") as set_mode,
+            patch(
+                "ccgram.handlers.hook_events.handle_interactive_ui", return_value=False
+            ) as render,
+            patch("ccgram.handlers.hook_events.clear_interactive_mode") as clear_mode,
+            patch("asyncio.sleep"),
+        ):
+            await dispatch_hook_event(_make_event(event_type="Notification"), bot)
+
+        get_mode.assert_called_once_with(100, 42, -101)
+        set_mode.assert_called_once_with(100, "@0", 42, -101)
+        render.assert_awaited_once_with(ANY, 100, "@0", 42, chat_id=-101)
+        clear_mode.assert_called_once_with(100, 42, -101)
+
 
 class TestHandleSubagentStart:
     @pytest.mark.parametrize(

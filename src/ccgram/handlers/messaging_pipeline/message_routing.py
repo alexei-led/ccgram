@@ -188,20 +188,22 @@ async def handle_new_message(msg: NewMessage, client: TelegramClient) -> None:  
                 continue
 
         if msg.tool_name in INTERACTIVE_TOOL_NAMES and msg.content_type == "tool_use":
-            set_interactive_mode(user_id, window_id, thread_id)
+            set_interactive_mode(user_id, window_id, thread_id, chat_id)
             queue = get_message_queue(user_id)
             if queue:
                 await queue.join()
             await asyncio.sleep(0.3)
-            handled = await handle_interactive_ui(client, user_id, window_id, thread_id)
+            handled = await handle_interactive_ui(
+                client, user_id, window_id, thread_id, chat_id=chat_id
+            )
             if handled:
                 await _update_window_offset(user_id, window_id)
                 continue
             else:
-                clear_interactive_mode(user_id, thread_id)
+                clear_interactive_mode(user_id, thread_id, chat_id)
 
-        if get_interactive_msg_id(user_id, thread_id):
-            await clear_interactive_msg(user_id, client, thread_id)
+        if get_interactive_msg_id(user_id, thread_id, chat_id):
+            await clear_interactive_msg(user_id, client, thread_id, chat_id)
 
         if await _handle_assistant_stream(
             msg,

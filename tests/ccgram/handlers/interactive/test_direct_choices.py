@@ -169,6 +169,29 @@ def _clear_interactive_state():
 
 
 class TestDirectChoiceCallbacks:
+    async def test_private_topic_callback_uses_chat_scoped_ownership(self) -> None:
+        _interactive_mode[(10, 100, 42)] = "@12"
+        _interactive_msgs[(10, 100, 42)] = 99
+        _interactive_contexts[(10, 100, 42)] = (100, 99)
+        _interactive_sequences[(10, 100, 42)] = 7
+        query, update = _callback_update(chat_id=100, thread_id=42, message_id=99)
+        query.message.chat.type = "private"
+        query.message.is_topic_message = True
+
+        with patch(
+            "ccgram.handlers.callback_helpers.user_owns_window",
+            return_value=False,
+        ) as owns:
+            await handle_interactive_callback(
+                query,
+                10,
+                f"{CB_ASK_CHOICE}1:7:@12",
+                update,
+                MagicMock(),
+            )
+
+        owns.assert_called_once_with(10, "@12", 100)
+
     def test_parses_choice_sequence_and_opaque_pane_target(self) -> None:
         assert parse_direct_choice_callback(f"{CB_ASK_CHOICE}2:7:w2:t1|w2:p1") == (
             "2",

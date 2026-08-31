@@ -54,9 +54,33 @@ def _resolve_users_for_window_key(
     return results
 
 
+def _resolve_user_chats_for_window_key(
+    window_key: str,
+) -> list[tuple[int, int, str, int | None]]:
+    """Resolve notification targets with their exact chat identity."""
+    window_id = strip_session_map_prefix(window_key, session_map_prefix())
+    if window_id is None:
+        return []
+    targets = [
+        (user_id, thread_id, window_id, chat_id)
+        for user_id, chat_id, thread_id, bound_wid in (
+            thread_router.iter_thread_bindings_with_chat()
+        )
+        if bound_wid == window_id
+    ]
+    if targets:
+        return targets
+    # Keep compatibility with lightweight routers used by integrations.
+    return [
+        (user_id, thread_id, window_id, None)
+        for user_id, thread_id, bound_wid in thread_router.iter_thread_bindings()
+        if bound_wid == window_id
+    ]
+
+
 async def _handle_notification(event: HookEvent, client: TelegramClient) -> None:
     """Handle a Notification event — render interactive UI."""
-    users = _resolve_users_for_window_key(event.window_key)
+    users = _resolve_user_chats_for_window_key(event.window_key)
     if not users:
         logger.debug(
             "No users bound for notification event window_key=%s", event.window_key
@@ -73,7 +97,7 @@ async def _handle_notification(event: HookEvent, client: TelegramClient) -> None
     )
     wait_header = classify_wait_message(event.data.get("message", ""))
 
-    for user_id, thread_id, window_id in users:
+    for user_id, thread_id, window_id, chat_id in users:
         if wait_header:
             session_lifecycle.handle_notification_wait(window_id, wait_header)
             await enqueue_status_update(
@@ -88,7 +112,11 @@ async def _handle_notification(event: HookEvent, client: TelegramClient) -> None
             continue
 
         # Skip if already in interactive mode for this window
-        existing = get_interactive_window(user_id, thread_id)
+        existing = (
+            get_interactive_window(user_id, thread_id, chat_id)
+            if chat_id is not None
+            else get_interactive_window(user_id, thread_id)
+        )
         if existing == window_id:
             logger.debug(
                 "Interactive mode already set for user=%d window=%s, skipping",
@@ -98,15 +126,26 @@ async def _handle_notification(event: HookEvent, client: TelegramClient) -> None
             continue
 
         # Set interactive mode before rendering to prevent racing with terminal scraping
-        set_interactive_mode(user_id, window_id, thread_id)
+        if chat_id is None:
+            set_interactive_mode(user_id, window_id, thread_id)
+        else:
+            set_interactive_mode(user_id, window_id, thread_id, chat_id)
 
         # Wait briefly for Claude Code to render the UI in the terminal
 
         await asyncio.sleep(0.3)
 
-        handled = await handle_interactive_ui(client, user_id, window_id, thread_id)
+        if chat_id is None:
+            handled = await handle_interactive_ui(client, user_id, window_id, thread_id)
+        else:
+            handled = await handle_interactive_ui(
+                client, user_id, window_id, thread_id, chat_id=chat_id
+            )
         if not handled:
-            clear_interactive_mode(user_id, thread_id)
+            if chat_id is None:
+                clear_interactive_mode(user_id, thread_id)
+            else:
+                clear_interactive_mode(user_id, thread_id, chat_id)
 
 
 _LLM_SUMMARY_TIMEOUT = 3.0  # seconds to wait for LLM summary before falling back to the standard completion text

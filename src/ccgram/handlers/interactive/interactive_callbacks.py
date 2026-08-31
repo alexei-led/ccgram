@@ -185,10 +185,16 @@ async def handle_interactive_callback(
     thread_id = get_thread_id(update)
     message = query.message
     chat_id = message.chat.id if message is not None else None
-    # Legacy direct-message bindings have no stored chat ID; direct choices
-    # still verify their exact chat/message below.
+    private_topic = (
+        message is not None
+        and message.chat.type == "private"
+        and getattr(message, "is_topic_message", False) is True
+        and isinstance(getattr(message, "message_thread_id", None), int)
+    )
     ownership_chat_id = (
-        None if message is not None and message.chat.type == "private" else chat_id
+        chat_id
+        if private_topic or message is None or message.chat.type != "private"
+        else None
     )
     if not user_owns_window(user_id, window_id, ownership_chat_id):
         await query.answer("Not your session", show_alert=True)
@@ -250,8 +256,16 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     message = query.message
     chat_id = message.chat.id if message is not None else None
+    private_topic = (
+        message is not None
+        and message.chat.type == "private"
+        and getattr(message, "is_topic_message", False) is True
+        and isinstance(getattr(message, "message_thread_id", None), int)
+    )
     ownership_chat_id = (
-        None if message is not None and message.chat.type == "private" else chat_id
+        chat_id
+        if private_topic or message is None or message.chat.type != "private"
+        else None
     )
     data = resolve_callback_data(
         query.data,
