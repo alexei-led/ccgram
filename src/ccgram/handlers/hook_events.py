@@ -15,6 +15,7 @@ import structlog
 from ..claude_task_state import classify_wait_message, claude_task_state
 from ..providers.base import HookEvent
 from ..session_lifecycle import session_lifecycle
+from ..session_map import session_map_prefix, strip_session_map_prefix
 from ..session_state_ports.live_session_state import has_task_snapshot
 from ..telegram_client import TelegramClient
 from ..thread_router import thread_router
@@ -32,24 +33,19 @@ from .status.topic_emoji import update_topic_emoji
 
 logger = structlog.get_logger()
 
-_WINDOW_KEY_PARTS = 2
-
 
 def _resolve_users_for_window_key(
     window_key: str,
 ) -> list[tuple[int, int, str]]:
-    """Resolve window_key to list of (user_id, thread_id, window_id).
+    """Resolve a current-backend window key to bound users.
 
-    The window_key format is "<prefix>:<opaque-window-id>" (e.g. "ccgram:@0"
-    for tmux and a durable opaque session target for Herdr). The prefix is a
-    single colon-free token, so split on the FIRST colon to recover the complete
-    target and look up thread bindings.
+    The session-map prefix identifies both the active backend and, for tmux,
+    its configured session. Strip only that exact prefix so opaque IDs retain
+    any colons they contain and stale events from another backend cannot route.
     """
-    # Extract the opaque target ("ccgram:@0" -> "@0").
-    parts = window_key.split(":", 1)
-    if len(parts) < _WINDOW_KEY_PARTS:
+    window_id = strip_session_map_prefix(window_key, session_map_prefix())
+    if window_id is None:
         return []
-    window_id = parts[1]
 
     results: list[tuple[int, int, str]] = []
     for user_id, thread_id, bound_wid in thread_router.iter_thread_bindings():
