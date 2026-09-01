@@ -1869,3 +1869,47 @@ class TestAdoptionIdentityFoldsCaseInTheMonitor:
 
         assert canonical_window_id("9f1c2d3e-4a5b") in lookup
         assert canonical_window_id("other-id") not in lookup
+
+
+class TestActiveCwdsUseTheCompleteListing:
+    """Transcript discovery is gated on the live cwd set.
+
+    A window missing from that set has no discoverable history at all, so it
+    must be built from every live window, not only the ones a backend would
+    auto-adopt. On agterm that means a session outside CCGRAM_AGTERM_WORKSPACES
+    keeps its /restore and history pager working.
+    """
+
+    @staticmethod
+    def _reader():
+        from ccgram.transcript_reader import TranscriptReader
+
+        return TranscriptReader.__new__(TranscriptReader)
+
+    async def test_includes_a_window_the_ui_listing_hides(self, monkeypatch) -> None:
+        from ccgram.multiplexer.base import WindowRef
+
+        excluded = WindowRef(
+            window_id="@4", window_name="_paused", cwd="/repo", topic_eligible=False
+        )
+
+        async def _complete():
+            return [excluded]
+
+        monkeypatch.setattr(
+            "ccgram.multiplexer.reconciliation.list_windows_for_reconciliation",
+            _complete,
+        )
+
+        assert await self._reader()._get_active_cwds() == {"/repo"}
+
+    async def test_unconfirmed_listing_yields_no_cwds(self, monkeypatch) -> None:
+        async def _unavailable():
+            return None
+
+        monkeypatch.setattr(
+            "ccgram.multiplexer.reconciliation.list_windows_for_reconciliation",
+            _unavailable,
+        )
+
+        assert await self._reader()._get_active_cwds() == set()

@@ -162,16 +162,24 @@ class TmuxManager:
         return session
 
     @staticmethod
-    def _window_ref_for_reconciliation(window: libtmux.Window) -> TmuxWindow | None:
-        """Build a window ref while treating pane metadata as optional."""
+    def _window_ref_for_reconciliation(window: libtmux.Window) -> TmuxWindow:
+        """Build a window ref while treating pane metadata as optional.
+
+        Every window in the session comes back, including the ones
+        ``list_windows`` hides: the placeholder main window, ccgram's own
+        window, and the ``_``-prefixed hidden ones. Omitting them here made a
+        bound window vanish from liveness the moment it was renamed to start
+        with an underscore, and a window absent from this listing is a ghost
+        binding that /sync Fix offers to close. They come back stamped
+        ``topic_eligible=False`` so discovery still refuses to adopt them.
+        """
         name = window.window_name or ""
         window_id = window.window_id or ""
-        if name == config.tmux_main_window_name:
-            return None
-        if config.own_window_id and window_id == config.own_window_id:
-            return None
-        if name.startswith("_"):
-            return None
+        adoptable = not (
+            name == config.tmux_main_window_name
+            or (config.own_window_id and window_id == config.own_window_id)
+            or name.startswith("_")
+        )
 
         cwd = ""
         pane_cmd = ""
@@ -197,6 +205,7 @@ class TmuxManager:
             pane_tty=pane_tty,
             pane_width=pw,
             pane_height=ph,
+            topic_eligible=bool(adoptable),
         )
 
     async def list_windows(self) -> list[TmuxWindow]:
@@ -267,9 +276,8 @@ class TmuxManager:
                 if session is None:
                     return []
                 windows = [
-                    ref
+                    self._window_ref_for_reconciliation(window)
                     for window in session.windows
-                    if (ref := self._window_ref_for_reconciliation(window)) is not None
                 ]
             except _TmuxError:
                 self._reset_server()
@@ -296,14 +304,21 @@ class TmuxManager:
     async def find_window_by_id(self, window_id: str) -> TmuxWindow | None:
         """Find a window by its tmux window ID (e.g. '@0', '@12').
 
+        Resolves against the complete listing, as agterm and herdr do:
+        addressing a known id is not discovery. Every handler routes an
+        already-bound window through here, so filtering by adoptability made a
+        window unreachable — no text delivered, no screenshot, no toolbar — the
+        moment it was renamed to start with an underscore.
+
         Args:
             window_id: The tmux window ID to match
 
         Returns:
-            TmuxWindow if found, None otherwise
+            TmuxWindow if found, None otherwise (including when tmux could not
+            confirm the listing).
         """
-        windows = await self.list_windows()
-        for window in windows:
+        windows = await self.list_windows_for_reconciliation()
+        for window in windows or []:
             if window.window_id == window_id:
                 return window
         return None

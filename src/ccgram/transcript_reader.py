@@ -804,15 +804,21 @@ class TranscriptReader:
             raise
 
     async def _get_active_cwds(self) -> set[str]:
-        """Get normalized cwds of all active tmux windows."""
-        # Lazy: tmux_manager imports providers which transitively imports
-        # transcript_reader through provider format modules.
-        # Lazy: tmux_manager pulls providers eagerly; defer until pane lookup runs
-        from .multiplexer import multiplexer as tmux_manager
+        """Get normalised cwds of every live window.
+
+        Reads the complete listing, not the adoption-filtered one: this set
+        decides which transcripts are discoverable at all, so a live window a
+        backend merely will not auto-adopt (out of the agterm workspace scope,
+        under a herdr internal workspace, tmux-hidden) would have its history
+        silently invisible to /restore and the history pager.
+        """
+        # Lazy: importing the reconciliation seam at module load forms a cycle
+        # through providers, which import transcript_reader for their formats.
+        from .multiplexer.reconciliation import list_windows_for_reconciliation
 
         cwds: set[str] = set()
-        windows = await tmux_manager.list_windows()
-        for w in windows:
+        windows = await list_windows_for_reconciliation()
+        for w in windows or []:
             try:
                 cwds.add(str(Path(w.cwd).resolve()))
             except _PathResolveError:
