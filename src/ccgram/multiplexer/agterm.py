@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import os
 import shutil
 import subprocess
@@ -82,6 +83,12 @@ _RC_NO_BINARY = 127
 # The agent ccgram drives runs in the session's main pane. Passed explicitly on
 # every read and write because agterm's two defaults disagree (see module docs).
 _AGENT_PANE = "left"
+
+# agterm's refusal for a target it does not know. Matched rather than compared
+# so a trailing id or punctuation change does not silently turn a proof of
+# absence into "unknown", which would only make the guards more cautious, and
+# so an unrelated refusal is never read as absence, which would not.
+_NO_SUCH_SESSION_RE = re.compile(r"\bno such session\b", re.IGNORECASE)
 
 # ``C-x``: a control chord is exactly the prefix plus one character.
 _CONTROL_CHORD_LEN = 3
@@ -325,6 +332,57 @@ class AgtermManager:
             return None
         result = payload.get("result")
         return result if isinstance(result, dict) else {}
+
+    async def window_exists(self, window_id: str) -> bool | None:
+        """Ask agterm about one session: True, False, or None if it could not say.
+
+        The authoritative answer, and the only one this backend can give.
+        ``tree`` is per-window, so a merged listing is a sequence of RPCs with
+        no isolation: a session that stays ahead of the sweep is read in no
+        window at all, and two passes can agree on the same incomplete result.
+        No number of passes fixes that, because an atomic snapshot cannot be
+        assembled from non-atomic reads.
+
+        A targeted call can, because agterm answers it differently. An unknown
+        target returns a well-formed ``{"ok": false, "error": "no such session:
+        <id>"}`` envelope, while an unreachable socket fails before any
+        envelope exists. So a parsed refusal naming this session is proof of
+        absence, and everything else is unknown.
+        """
+        rc, out, _err = await self._run(
+            self._with_socket(
+                ["session", "text", "--pane", _AGENT_PANE, "--target", window_id]
+            ),
+            None,
+        )
+        try:
+            payload = json.loads(out)
+        except json.JSONDecodeError, ValueError:
+            # No envelope at all: the CLI could not reach agterm, or answered
+            # something this code does not understand. Not an absence.
+            return None
+        if not isinstance(payload, dict):
+            return None
+        ok = payload.get("ok")
+        if ok is True:
+            return True
+        error = payload.get("error")
+        # Absence needs the whole shape: an explicit refusal, a string reason,
+        # and this session named in it. Anything looser lets a malformed or
+        # unrelated payload authorise a deletion.
+        if (
+            ok is False
+            and isinstance(error, str)
+            and _NO_SUCH_SESSION_RE.search(error)
+            and window_id.casefold() in error.casefold()
+        ):
+            return False
+        # A refusal for some other reason (a busy pane, a schema change) says
+        # nothing about whether the session is there.
+        logger.debug(
+            "agterm refused an existence probe", window_id=window_id, error=error, rc=rc
+        )
+        return None
 
     async def _call_ok(
         self, args: Sequence[str], stdin_text: str | None = None

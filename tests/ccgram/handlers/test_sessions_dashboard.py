@@ -292,3 +292,28 @@ class TestSessionsRefresh:
         mock_edit.assert_called_once()
         assert mock_edit.call_args[0][0] is query
         assert "No active sessions" in mock_edit.call_args[0][1]
+
+
+class TestDashboardIdentityFoldsCase:
+    @pytest.mark.parametrize(
+        ("bound", "listed"),
+        [
+            pytest.param("9f1c2d3e-4a5b", "9F1C2D3E-4A5B", id="bound-lower"),
+            pytest.param("9F1C2D3E-4A5B", "9f1c2d3e-4a5b", id="bound-upper"),
+        ],
+    )
+    async def test_a_case_variant_binding_reads_as_running(
+        self, deps: SimpleNamespace, bound: str, listed: str
+    ) -> None:
+        """Raw set membership marked the session stopped and stripped its
+        Esc, Screenshot and Kill controls.
+
+        Both orderings, because the set and the lookup fold independently and
+        one of them alone leaves the other half untested.
+        """
+        deps.sessions(windows={10: bound}, alive=[listed], names={bound: "proj"})
+
+        text, _kb = await _build_dashboard(100)
+
+        assert "\U0001f7e2 proj" in text
+        assert "⚫" not in text

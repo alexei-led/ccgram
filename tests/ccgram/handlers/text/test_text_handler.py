@@ -16,6 +16,7 @@ from ccgram.handlers.text.text_handler import (
     handle_text_message,
 )
 from ccgram.handlers.polling.polling_state import lifecycle_strategy
+from ccgram.multiplexer.base import WindowRef
 from ccgram.handlers.topics.directory_browser import (
     STATE_BROWSING_DIRECTORY,
     STATE_KEY,
@@ -152,7 +153,9 @@ class TestHandleUnboundTopic:
 class TestHandleDeadWindow:
     @patch(f"{_TH}.tmux_manager")
     async def test_alive_window_returns_false(self, mock_tm: MagicMock) -> None:
-        mock_tm.find_window_by_id = AsyncMock(return_value=MagicMock())
+        mock_tm.list_windows_for_reconciliation = AsyncMock(
+            return_value=[WindowRef(window_id="@0", window_name="p", cwd="/p")]
+        )
         message = AsyncMock()
 
         result = await _handle_dead_window("@0", 100, 42, "hello", {}, message)
@@ -164,7 +167,9 @@ class TestHandleDeadWindow:
         self, mock_tm: MagicMock
     ) -> None:
         lifecycle_strategy.start_autoclose_timer(100, 42, "dead", 100.0)
-        mock_tm.find_window_by_id = AsyncMock(return_value=MagicMock())
+        mock_tm.list_windows_for_reconciliation = AsyncMock(
+            return_value=[WindowRef(window_id="@0", window_name="p", cwd="/p")]
+        )
         message = AsyncMock()
 
         result = await _handle_dead_window("@0", 100, 42, "hello", {}, message)
@@ -173,7 +178,15 @@ class TestHandleDeadWindow:
         assert lifecycle_strategy.get_state(100, 42).autoclose is None
 
     async def test_live_shell_after_agent_exit_shows_recovery(self) -> None:
-        window = MagicMock(pane_current_command="bash")
+        # A real ref, not a MagicMock: WindowRef.matches compares ids, and a
+        # mock would fail to match and route this through the window-is-gone
+        # branch, passing the assertions below without exercising the case.
+        window = WindowRef(
+            window_id="@0",
+            window_name="project",
+            cwd="/tmp/project",
+            pane_current_command="bash",
+        )
         view = MagicMock(cwd="/tmp/project", provider_name="claude")
         message = AsyncMock()
         message.chat.id = -100
@@ -190,7 +203,7 @@ class TestHandleDeadWindow:
             patch(f"{_TH}.safe_reply", new_callable=AsyncMock) as mock_reply,
             patch(f"{_TH}.Path") as mock_path,
         ):
-            mock_tm.find_window_by_id = AsyncMock(return_value=window)
+            mock_tm.list_windows_for_reconciliation = AsyncMock(return_value=[window])
             mock_query.get_window_provider.return_value = "claude"
             mock_query.view_window.return_value = view
             mock_router.get_display_name.return_value = "project"
@@ -214,7 +227,7 @@ class TestHandleDeadWindow:
         mock_render: MagicMock,
         mock_reply: AsyncMock,
     ) -> None:
-        mock_tm.find_window_by_id = AsyncMock(return_value=None)
+        mock_tm.list_windows_for_reconciliation = AsyncMock(return_value=[])
         mock_tr.get_display_name.return_value = "project"
         ws = MagicMock()
         ws.cwd = "/tmp/project"
@@ -253,7 +266,7 @@ class TestHandleDeadWindow:
         mock_tm: MagicMock,
         mock_reply: AsyncMock,
     ) -> None:
-        mock_tm.find_window_by_id = AsyncMock(return_value=None)
+        mock_tm.list_windows_for_reconciliation = AsyncMock(return_value=[])
         mock_tr.get_display_name.return_value = "project"
         ws = MagicMock()
         ws.cwd = "/tmp/project"
@@ -292,7 +305,7 @@ class TestHandleDeadWindow:
         _mock_reply: AsyncMock,
         cwd: str,
     ) -> None:
-        mock_tm.find_window_by_id = AsyncMock(return_value=None)
+        mock_tm.list_windows_for_reconciliation = AsyncMock(return_value=[])
         mock_tr.get_display_name.return_value = "project"
         ws = MagicMock()
         ws.cwd = cwd
@@ -592,3 +605,163 @@ class TestBashCaptureCleanup:
             await task_a  # A's finally runs
 
         assert _bash_capture_tasks.get(key) is sentinel
+
+
+class TestDeadWindowNeedsAConfirmedRead:
+    """An unreachable backend must not unbind a live topic.
+
+    find_window_by_id answers None both for a window that is gone and for a
+    backend that could not be reached. With a stale or invalid cached cwd, the
+    dead branch unbinds the thread as system_replacement and drops the user
+    into the directory browser, so the live session loses its topic.
+    """
+
+    async def test_unreachable_backend_preserves_the_binding(self) -> None:
+        message = AsyncMock()
+        with (
+            patch(f"{_TH}.tmux_manager") as mock_tm,
+            patch(f"{_TH}.window_query") as mock_query,
+            patch(f"{_TH}.thread_router") as mock_router,
+            patch(f"{_TH}.safe_reply", new_callable=AsyncMock) as mock_reply,
+        ):
+            mock_tm.list_windows_for_reconciliation = AsyncMock(return_value=None)
+            mock_query.is_legacy_herdr.return_value = False
+            # An invalid cached cwd: the shape that reaches the unbind.
+            mock_query.view_window.return_value = MagicMock(cwd="/nonexistent")
+
+            result = await _handle_dead_window("@0", 100, 42, "hi", {}, message)
+
+        assert result is True
+        mock_router.unbind_thread.assert_not_called()
+        assert "Could not reach" in mock_reply.await_args[0][1]
+
+
+class TestStaleDeadMarkerDoesNotOutliveTheWindow:
+    """The dead marker is sticky, so a live window must be able to clear it.
+
+    tick_window returns early once the marker is set, so nothing else clears
+    it. An agterm session comes back under the same UUID after an app restart,
+    and with a stale cached cwd the dead branch unbinds the topic.
+    """
+
+    async def test_live_agent_clears_the_marker_instead_of_unbinding(self) -> None:
+        lifecycle_strategy.mark_dead_notified(100, 42, "@0")
+        window = WindowRef(
+            window_id="@0",
+            window_name="project",
+            cwd="/tmp/project",
+            pane_current_command="claude",
+        )
+        message = AsyncMock()
+        with (
+            patch(f"{_TH}.tmux_manager") as mock_tm,
+            patch(f"{_TH}.window_query") as mock_query,
+            patch(f"{_TH}.thread_router") as mock_router,
+            patch(
+                f"{_TH}.agent_origin_returned_to_shell",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+        ):
+            mock_tm.list_windows_for_reconciliation = AsyncMock(return_value=[window])
+            mock_query.is_legacy_herdr.return_value = False
+            # Stale cached cwd: the shape that otherwise reaches the unbind.
+            mock_query.view_window.return_value = MagicMock(cwd="/nonexistent")
+
+            result = await _handle_dead_window("@0", 100, 42, "hi", {}, message)
+
+        assert result is False
+        mock_router.unbind_thread.assert_not_called()
+        assert not lifecycle_strategy.is_dead_notified(100, 42, "@0")
+
+    async def test_shell_return_still_shows_recovery(self) -> None:
+        """The marker clearing must not swallow the case recovery exists for."""
+        window = WindowRef(
+            window_id="@0",
+            window_name="project",
+            cwd="/tmp/project",
+            pane_current_command="bash",
+        )
+        message = AsyncMock()
+        message.chat.id = -100
+        with (
+            patch(f"{_TH}.tmux_manager") as mock_tm,
+            patch(f"{_TH}.window_query") as mock_query,
+            patch(f"{_TH}.thread_router") as mock_router,
+            patch(
+                f"{_TH}.agent_origin_returned_to_shell",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(f"{_TH}.render_banner", return_value=("recovery", MagicMock())),
+            patch(f"{_TH}.safe_reply", new_callable=AsyncMock) as mock_reply,
+            patch(f"{_TH}.Path") as mock_path,
+        ):
+            mock_tm.list_windows_for_reconciliation = AsyncMock(return_value=[window])
+            mock_query.is_legacy_herdr.return_value = False
+            mock_query.get_window_provider.return_value = "claude"
+            mock_query.view_window.return_value = MagicMock(
+                cwd="/tmp/project", provider_name="claude"
+            )
+            mock_router.get_display_name.return_value = "project"
+            mock_path.return_value.is_dir.return_value = True
+
+            result = await _handle_dead_window("@0", 100, 42, "hi", {}, message)
+
+        assert result is True
+        mock_reply.assert_awaited_once()
+
+
+class TestUnknownAgentStateDoesNotClearTheMarker:
+    """agterm reports no foreground for a shell, an unreadable process group
+    and a failed lookup alike, and detection maps all three to "". Treating
+    that as "an agent is running" clears the dead marker, forwards the next
+    message, and the shared send guard types it into the pane with Return, so
+    a session restored under the same UUID as a plain shell runs it.
+    """
+
+    @staticmethod
+    async def _run(pane_command: str) -> tuple[bool, AsyncMock, AsyncMock]:
+        lifecycle_strategy.mark_dead_notified(100, 42, "@0")
+        window = WindowRef(
+            window_id="@0",
+            window_name="project",
+            cwd="/tmp/project",
+            pane_current_command=pane_command,
+        )
+        message = AsyncMock()
+        with (
+            patch(f"{_TH}.tmux_manager") as mock_tm,
+            patch(f"{_TH}.window_query") as mock_query,
+            patch(f"{_TH}.thread_router") as mock_router,
+            patch(
+                f"{_TH}.agent_origin_returned_to_shell",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(f"{_TH}.safe_reply", new_callable=AsyncMock) as mock_reply,
+        ):
+            mock_tm.list_windows_for_reconciliation = AsyncMock(return_value=[window])
+            mock_query.is_legacy_herdr.return_value = False
+            # Stale cached cwd: the shape that reaches the unbind.
+            mock_query.view_window.return_value = MagicMock(cwd="/nonexistent")
+            result = await _handle_dead_window("@0", 100, 42, "hi", {}, message)
+        return result, mock_router, mock_reply
+
+    async def test_an_unknown_foreground_keeps_the_marker_and_forwards_nothing(
+        self,
+    ) -> None:
+        handled, mock_router, mock_reply = await self._run("")
+
+        assert handled is True, "the message must not be forwarded to the pane"
+        assert lifecycle_strategy.is_dead_notified(100, 42, "@0")
+        mock_router.unbind_thread.assert_not_called()
+        assert "nothing confirms an agent" in mock_reply.await_args[0][1]
+
+    async def test_a_named_agent_still_clears_the_marker(self) -> None:
+        """The other side: a confirmed agent is why the clearing exists."""
+        handled, mock_router, _ = await self._run("claude")
+
+        assert handled is False, "a live agent's topic keeps forwarding"
+        assert not lifecycle_strategy.is_dead_notified(100, 42, "@0")
+        mock_router.unbind_thread.assert_not_called()

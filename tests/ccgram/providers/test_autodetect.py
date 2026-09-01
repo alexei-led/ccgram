@@ -200,6 +200,9 @@ class _NewWindowHarness:
             window = MagicMock()
             window.pane_current_command = pane_command
         self.mux.find_window_by_id = AsyncMock(return_value=window)
+        # still_present reads this; confirmed empty means no stale same-name
+        # binding is alive, which is the state these cases describe.
+        self.mux.list_windows_for_reconciliation = AsyncMock(return_value=[])
         self.mux.get_pane_title = AsyncMock(return_value=pane_title)
 
         event = NewWindowEvent(
@@ -307,7 +310,7 @@ class TestSessionMonitorProviderFromMap:
             ),
             patch("ccgram.session.session_manager") as mock_sm,
         ):
-            await monitor._detect_and_cleanup_changes(adoptable_window_ids=None)
+            await monitor._detect_and_cleanup_changes(adoptable_window_ids=set(new_map))
             mock_sm.set_window_provider.assert_called_once_with("@5", "codex")
 
     async def test_skips_provider_when_not_in_map(self, tmp_path) -> None:
@@ -335,5 +338,5 @@ class TestSessionMonitorProviderFromMap:
             ),
             patch("ccgram.session.session_manager") as mock_sm,
         ):
-            await monitor._detect_and_cleanup_changes(adoptable_window_ids=None)
+            await monitor._detect_and_cleanup_changes(adoptable_window_ids=set(new_map))
             mock_sm.set_window_provider.assert_not_called()

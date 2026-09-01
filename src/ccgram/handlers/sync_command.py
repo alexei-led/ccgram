@@ -337,6 +337,9 @@ async def _close_ghost_topics(
     missing ``can_manage_topics`` or General topic).  Returns
     ``(closed_count, manual_close_count)``.
     """
+    # Lazy: importing the reconciliation seam at module load forms a cycle.
+    from ..multiplexer.reconciliation import window_presence
+
     closed_count = 0
     manual_close_count = 0
     for issue in issues:
@@ -350,6 +353,16 @@ async def _close_ghost_topics(
         window_id = match.group(3)
         current_window_id = thread_router.get_window_for_thread(user_id, thread_id)
         if current_window_id != window_id:
+            continue
+        # Per candidate, and the strictest of the three: this removes the
+        # user's topic. The audit's listing predates several network round
+        # trips, so re-confirm the window is really gone — present means the
+        # ghost verdict is stale, unknown means we cannot claim it at all.
+        if await window_presence(window_id, tmux_manager) is not False:
+            logger.info(
+                "Skipping ghost topic removal: window not confirmed gone",
+                window_id=window_id,
+            )
             continue
         chat_id = thread_router.resolve_chat_id(user_id, thread_id)
         topic_removed = await _remove_topic(client, chat_id, thread_id)
@@ -491,6 +504,9 @@ async def _recreate_dead_topics(
     # Lazy: session_monitor / topic_orchestration cycle through window-creation flow
     from .topics.topic_orchestration import handle_new_window as _handle_new_window
 
+    # Lazy: importing the reconciliation seam at module load forms a cycle.
+    from ..multiplexer.reconciliation import window_presence
+
     recreated = 0
     for issue in issues:
         if issue.category != "dead_topic":
@@ -503,6 +519,17 @@ async def _recreate_dead_topics(
         window_id = match.group(3)
         current_window_id = thread_router.get_window_for_thread(user_id, thread_id)
         if current_window_id != window_id:
+            continue
+        # Per candidate: the listing this issue came from was taken before the
+        # Telegram probes, the title sync, orphan adoption and ghost cleanup.
+        # Recreating unbinds the thread first, so a window that has since gone
+        # would get a fresh topic pointing at nothing, and an unreachable
+        # backend must change nothing at all.
+        if await window_presence(window_id, tmux_manager) is not True:
+            logger.info(
+                "Skipping dead-topic recreation: window not confirmed present",
+                window_id=window_id,
+            )
             continue
 
         view = window_query.view_window(window_id)

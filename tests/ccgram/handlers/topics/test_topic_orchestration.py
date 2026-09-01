@@ -873,3 +873,105 @@ class TestStillAdoptable:
 
     async def test_unconfirmed_listing_is_refused(self):
         assert await self._verdict(None) is False
+
+
+class TestSameNameRebindNeedsConfirmedDeath:
+    """Rebinding hands a live Telegram topic to a different window.
+
+    The old window is judged gone, then the topic is probed over the network,
+    and only then is the binding overwritten. Both reads must be confirmed:
+    find_window_by_id answers None for a window that is gone and for a backend
+    that could not be reached alike.
+    """
+
+    @staticmethod
+    def _ref(window_id: str):
+        return WindowRef(window_id=window_id, window_name="reflex-gh", cwd="/p")
+
+    async def _run(self, listings):
+        from ccgram.handlers.topics.topic_orchestration import (
+            _rebind_existing_topic_by_name,
+        )
+
+        event = _make_event(window_id="@new", window_name="reflex-gh")
+        with (
+            patch(
+                "ccgram.handlers.topics.topic_orchestration.thread_router"
+            ) as mock_tr,
+            patch("ccgram.handlers.topics.topic_orchestration.tmux_manager") as mock_tm,
+            patch(
+                "ccgram.handlers.topics.topic_orchestration.probe_topic_exists",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+        ):
+            mock_tr.iter_thread_bindings.return_value = [(100, 42, "@old")]
+            mock_tr.get_display_name.return_value = "reflex-gh"
+            mock_tr.resolve_chat_id.return_value = -100200
+            mock_tm.list_windows_for_reconciliation = AsyncMock(side_effect=listings)
+
+            result = await _rebind_existing_topic_by_name(
+                event, AsyncMock(), "reflex-gh"
+            )
+        return result, mock_tr
+
+    async def test_unavailable_listing_does_not_rebind(self) -> None:
+        result, mock_tr = await self._run([None, None])
+
+        assert result is False
+        mock_tr.bind_thread.assert_not_called()
+        mock_tr.unbind_thread.assert_not_called()
+
+    async def test_old_window_reappearing_during_the_probe_does_not_rebind(
+        self,
+    ) -> None:
+        """Gone when the candidate was chosen, back by the time of the write."""
+        result, mock_tr = await self._run([[], [self._ref("@old")]])
+
+        assert result is False
+        mock_tr.bind_thread.assert_not_called()
+        mock_tr.unbind_thread.assert_not_called()
+
+    async def test_confirmed_dead_old_window_still_rebinds(self) -> None:
+        """The other side, so the guard cannot pass by refusing everything."""
+        result, mock_tr = await self._run([[], []])
+
+        assert result is True
+        mock_tr.bind_thread.assert_called_once()
+
+
+class TestAdoptionIdentityFoldsCase:
+    """An orphan issue carries the persisted id, which may differ in case.
+
+    agterm reports UUIDs uppercase while a caller may round-trip one
+    lowercased. Comparing raw meant the refreshed listing looked as though the
+    window had gone, so /sync Fix skipped creating its topic on every attempt.
+    """
+
+    async def test_a_case_variant_id_is_still_adoptable(self) -> None:
+        from ccgram.handlers.topics.topic_orchestration import still_adoptable
+
+        live = WindowRef(
+            window_id="9F1C2D3E-4A5B", window_name="proj", cwd="/p", topic_eligible=True
+        )
+        with patch(
+            "ccgram.handlers.topics.topic_orchestration.tmux_manager"
+        ) as mock_tmux:
+            mock_tmux.list_windows_for_reconciliation = AsyncMock(return_value=[live])
+            assert await still_adoptable("9f1c2d3e-4a5b") is True
+
+    async def test_an_ineligible_case_variant_is_still_refused(self) -> None:
+        """Folding case must not soften the eligibility half of the check."""
+        from ccgram.handlers.topics.topic_orchestration import still_adoptable
+
+        live = WindowRef(
+            window_id="9F1C2D3E-4A5B",
+            window_name="proj",
+            cwd="/p",
+            topic_eligible=False,
+        )
+        with patch(
+            "ccgram.handlers.topics.topic_orchestration.tmux_manager"
+        ) as mock_tmux:
+            mock_tmux.list_windows_for_reconciliation = AsyncMock(return_value=[live])
+            assert await still_adoptable("9f1c2d3e-4a5b") is False

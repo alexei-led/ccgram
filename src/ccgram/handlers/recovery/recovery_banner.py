@@ -230,6 +230,43 @@ def build_recovery_keyboard(window_id: str) -> InlineKeyboardMarkup:
     )
 
 
+async def _stale_recovery_offer(old_window_id: str) -> str | None:
+    """Why this recovery offer must not be acted on, or None to proceed.
+
+    Every Fresh / Continue / Resume route converges on the replacement below,
+    and the banner offering them may have been drawn from an ambiguous lookup
+    minutes ago. The replacement unbinds before it creates, so a stale offer
+    leaves the old terminal running with its routing handed to a new window.
+
+    One confirmed read answers both questions — does it exist, and is what
+    holds it still an agent — because a presence check followed by a second
+    lookup is a second chance to fail.
+    """
+    if not old_window_id:
+        return None
+
+    # Lazy: importing the reconciliation seam at module load forms a cycle.
+    from ...multiplexer.reconciliation import window_snapshot
+
+    # Lazy: same cycle through provider/session initialization.
+    from ..telegram_origin import agent_origin_returned_to_shell
+
+    confirmed, window = await window_snapshot(old_window_id)
+    if not confirmed:
+        return (
+            "\u26a0 Could not reach the multiplexer, so nothing was changed. "
+            "Try again in a moment."
+        )
+    if window is None:
+        # Confirmed gone: recovery is exactly right.
+        return None
+    if await agent_origin_returned_to_shell(old_window_id, window):
+        # Alive, but the agent exited and left a shell — the case the text
+        # handler deliberately offers recovery for.
+        return None
+    return "That session is running again, so it was left alone."
+
+
 async def _create_and_bind_window(
     query: CallbackQuery,
     user_id: int,
@@ -251,6 +288,17 @@ async def _create_and_bind_window(
 
     Returns True on success, False on failure.
     """
+    # Every Fresh / Continue / Resume route converges here, and the banner
+    # offering them may have been drawn from an ambiguous lookup minutes ago.
+    # This unbinds before creating the replacement, so a stale offer would
+    # leave the old terminal running with its routing handed to a new window.
+    # One confirmed read answers both questions: does it exist, and is what
+    # holds it still an agent.
+    refusal = await _stale_recovery_offer(old_window_id)
+    if refusal is not None:
+        await safe_edit(query, refusal, reply_markup=None)
+        return False
+
     thread_router.unbind_thread(
         user_id,
         thread_id,

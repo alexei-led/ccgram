@@ -1271,6 +1271,121 @@ class TestDeadTopicRecreation:
             )
 
 
+class TestSyncFixRereadsBeforeDestroying:
+    """Both destructive repairs re-read liveness per candidate.
+
+    handle_sync_fix takes its listing, then probes every bound topic over the
+    network before these run. A ghost verdict can be stale by then, and the
+    repair either removes the user's topic or unbinds a thread to recreate it.
+    """
+
+    @staticmethod
+    def _ghost_issue() -> AuditIssue:
+        return AuditIssue(
+            "ghost_binding", "user:100 thread:42 window:@2 (proj)", fixable=True
+        )
+
+    @staticmethod
+    def _live(window_id: str):
+        from ccgram.multiplexer.base import WindowRef
+
+        return WindowRef(window_id=window_id, window_name="proj", cwd="/tmp")
+
+    async def test_ghost_topic_is_kept_when_the_window_is_back(
+        self, _patch_deps
+    ) -> None:
+        _, _, _, mock_tr, mock_tm, _ = _patch_deps
+        mock_tr.get_window_for_thread.return_value = "@2"
+        mock_tr.resolve_chat_id.return_value = -999
+        mock_tm.list_windows_for_reconciliation.return_value = [self._live("@2")]
+
+        client = AsyncMock()
+        closed, manual = await _close_ghost_topics(client, [self._ghost_issue()])
+
+        assert (closed, manual) == (0, 0)
+        client.delete_forum_topic.assert_not_called()
+        client.close_forum_topic.assert_not_called()
+
+    async def test_ghost_topic_is_kept_when_liveness_is_unknown(
+        self, _patch_deps
+    ) -> None:
+        _, _, _, mock_tr, mock_tm, _ = _patch_deps
+        mock_tr.get_window_for_thread.return_value = "@2"
+        mock_tr.resolve_chat_id.return_value = -999
+        mock_tm.list_windows_for_reconciliation.return_value = None
+
+        client = AsyncMock()
+        closed, manual = await _close_ghost_topics(client, [self._ghost_issue()])
+
+        assert (closed, manual) == (0, 0)
+        client.delete_forum_topic.assert_not_called()
+        client.close_forum_topic.assert_not_called()
+
+    async def test_ghost_topic_is_removed_when_confirmed_gone(
+        self, _patch_deps
+    ) -> None:
+        """The other side of the rule, so the guard cannot pass by refusing all."""
+        _, _, _, mock_tr, mock_tm, _ = _patch_deps
+        mock_tr.get_window_for_thread.return_value = "@2"
+        mock_tr.resolve_chat_id.return_value = -999
+        mock_tm.list_windows_for_reconciliation.return_value = []
+
+        client = AsyncMock()
+        closed, _manual = await _close_ghost_topics(client, [self._ghost_issue()])
+
+        assert closed == 1
+
+    async def test_dead_topic_is_not_recreated_when_the_window_went_away(
+        self, _patch_deps
+    ) -> None:
+        _, _, mock_wq, mock_tr, mock_tm, _ = _patch_deps
+        mock_tr.get_window_for_thread.return_value = "@2"
+        mock_wq.view_window.return_value = MagicMock(
+            session_id="s1", cwd="/tmp", window_name="proj"
+        )
+        mock_tm.list_windows_for_reconciliation.return_value = []
+
+        issues = [
+            AuditIssue(
+                "dead_topic", "user:100 thread:42 window:@2 (proj)", fixable=True
+            )
+        ]
+        with patch(
+            "ccgram.handlers.topics.topic_orchestration.handle_new_window",
+            new_callable=AsyncMock,
+        ) as mock_handle:
+            recreated = await _recreate_dead_topics(AsyncMock(), issues)
+
+        assert recreated == 0
+        mock_handle.assert_not_called()
+        mock_tr.unbind_thread.assert_not_called()
+
+    async def test_dead_topic_is_not_recreated_when_liveness_is_unknown(
+        self, _patch_deps
+    ) -> None:
+        _, _, mock_wq, mock_tr, mock_tm, _ = _patch_deps
+        mock_tr.get_window_for_thread.return_value = "@2"
+        mock_wq.view_window.return_value = MagicMock(
+            session_id="s1", cwd="/tmp", window_name="proj"
+        )
+        mock_tm.list_windows_for_reconciliation.return_value = None
+
+        issues = [
+            AuditIssue(
+                "dead_topic", "user:100 thread:42 window:@2 (proj)", fixable=True
+            )
+        ]
+        with patch(
+            "ccgram.handlers.topics.topic_orchestration.handle_new_window",
+            new_callable=AsyncMock,
+        ) as mock_handle:
+            recreated = await _recreate_dead_topics(AsyncMock(), issues)
+
+        assert recreated == 0
+        mock_handle.assert_not_called()
+        mock_tr.unbind_thread.assert_not_called()
+
+
 class TestSyncFixDeadTopic:
     async def test_fix_recreates_dead_topics(self, _patch_deps) -> None:
         from ccgram.multiplexer.base import WindowRef

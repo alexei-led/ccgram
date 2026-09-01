@@ -139,7 +139,13 @@ async def _apply_switch(
     """
     current = identity_state.get_provider_name(window_id) or ""
     if chosen == "auto":
-        target = await _redetect_provider(window_id)
+        detected = await _redetect_provider(window_id)
+        if detected is None:
+            return current or "unknown", (
+                "\u26a0 Could not reach the multiplexer, so the agent was left "
+                "as it is. Try again in a moment."
+            )
+        target = detected
         manual = False
         reply_intro = f"Auto-detected: **{target}**."
     else:
@@ -180,8 +186,14 @@ async def _apply_switch(
     return target, reply
 
 
-async def _redetect_provider(window_id: str) -> str:
-    """Re-run auto-detection for ``/agent auto``; return resolved provider."""
+async def _redetect_provider(window_id: str) -> str | None:
+    """Re-run auto-detection for ``/agent auto``; return resolved provider.
+
+    ``None`` when the multiplexer could not be reached: a lookup failure is
+    indistinguishable from a window that is gone, and the caller persists the
+    result and clears transcript bookkeeping, so an outage would otherwise
+    rewrite a working session to ``shell``.
+    """
     # Lazy: detect_provider_from_pane pulls the providers package — only
     # needed when the user actually requests re-detection via /agent auto.
     from ..providers import detect_provider_from_pane
@@ -189,9 +201,20 @@ async def _redetect_provider(window_id: str) -> str:
     # Lazy: tmux_manager imports providers; same cycle-break as above.
     from ..multiplexer import multiplexer as tmux_manager
 
+    # Lazy: importing the reconciliation seam at module load forms a cycle.
+    from ..multiplexer.reconciliation import window_presence
+
+    if await window_presence(window_id, tmux_manager) is None:
+        return None
+
     w = await tmux_manager.find_window_by_id(window_id)
+    if w is None:
+        # Either the window went in the meantime or this second read failed;
+        # neither is a confirmed "not an agent", and the caller persists what
+        # comes back. Report unknown instead of resolving to shell.
+        return None
     detected = ""
-    if w and w.pane_current_command:
+    if w.pane_current_command:
         detected = await detect_provider_from_pane(
             w.pane_current_command, window_id=window_id
         )

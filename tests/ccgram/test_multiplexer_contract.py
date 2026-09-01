@@ -156,3 +156,71 @@ def test_herdr_capability_values() -> None:
     assert caps.native_worktrees is True
     assert caps.supports_workspace_selection is True
     assert caps.native_topic_targets is True
+
+
+# ── window identity matching (WindowRef.matches / window_presence) ─────
+
+
+def test_window_ref_matches_is_case_insensitive() -> None:
+    """agterm UUIDs round-trip through callers that may lowercase them.
+
+    Its own ``_find_session`` case-folds for exactly this reason, so a
+    presence check that compared ids directly would report a bound window
+    gone — and every caller of ``window_presence`` takes a destructive branch
+    on a confirmed absence.
+    """
+    from ccgram.multiplexer.base import WindowRef
+
+    ref = WindowRef(window_id="ABC-DEF", window_name="proj", cwd="/p")
+
+    assert ref.matches("abc-def")
+    assert ref.matches("ABC-DEF")
+    assert not ref.matches("other")
+
+
+def test_window_ref_matches_superseded_identities() -> None:
+    """The value type's contract, ahead of any backend using it.
+
+    No backend publishes ``alias_window_ids`` today, and herdr deliberately
+    leaves them empty across a session re-key. This pins what the matcher owes
+    a backend that starts: a window persisted under a superseded id must read
+    as present, or the destructive guards fire on a live window.
+    """
+    from ccgram.multiplexer.base import WindowRef
+
+    ref = WindowRef(
+        window_id="new-id",
+        window_name="proj",
+        cwd="/p",
+        alias_window_ids=("OLD-ID",),
+        legacy_alias_window_ids=("MIGRATION-ONLY",),
+    )
+
+    assert ref.matches("old-id")
+    assert ref.matches("new-id")
+    # Legacy aliases are declared non-actionable, and window_snapshot hands
+    # the matched ref to callers that drive it.
+    assert not ref.matches("migration-only")
+
+
+async def test_window_presence_finds_a_lowercased_agterm_id() -> None:
+    """End to end through the seam helper, not just the dataclass."""
+    from ccgram.multiplexer.base import WindowRef
+    from ccgram.multiplexer.reconciliation import window_presence
+
+    class _Backend:
+        async def list_windows_for_reconciliation(self) -> list[WindowRef]:
+            return [WindowRef(window_id="9F1C2D3E-4A5B", window_name="agent", cwd="/p")]
+
+    assert await window_presence("9f1c2d3e-4a5b", _Backend()) is True
+    assert await window_presence("no-such-id", _Backend()) is False
+
+
+async def test_window_presence_is_none_when_the_backend_cannot_answer() -> None:
+    from ccgram.multiplexer.reconciliation import window_presence
+
+    class _Backend:
+        async def list_windows_for_reconciliation(self) -> None:
+            return None
+
+    assert await window_presence("@5", _Backend()) is None
