@@ -229,7 +229,8 @@ async def test_nested_session_start_does_not_steal_forwarding(
 
     _append_jsonl(parent_transcript, [_make_assistant_entry("parent new")])
     _bump_mtime(parent_transcript)
-    current = await monitor._detect_and_cleanup_changes()
+    # tmux: every live window is adoptable, which the loop derives per cycle.
+    current = await monitor._detect_and_cleanup_changes(adoptable_window_ids={"@0"})
     new_messages = await monitor.check_for_updates(current)
 
     assert current["@0"]["session_id"] == parent_id
@@ -277,7 +278,7 @@ async def test_session_change_cleanup(
     (state_dir / "session_map.json").write_text(
         json.dumps({"ccgram:@0": new_map["@0"]})
     )
-    await monitor._detect_and_cleanup_changes()
+    await monitor._detect_and_cleanup_changes(adoptable_window_ids={"@0"})
 
     assert monitor.state.get_session(TEST_SESSION_ID) is None
     assert get_claude_task_snapshot("@0") is None

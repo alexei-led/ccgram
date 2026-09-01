@@ -896,18 +896,32 @@ async def test_create_window_falls_back_to_the_cwd_basename(tmp_path) -> None:
 
 
 async def test_listings_exclude_the_session_ccgram_itself_runs_in() -> None:
-    """Every listed window is one discovery can auto-adopt.
+    """ccgram's own session is never offered, in either listing.
 
     The tmux backend skips ``config.own_window_id`` for this reason; without
-    the equivalent the bot binds a topic to its own terminal.
+    the equivalent the bot binds a topic to its own terminal. This exclusion is
+    not the ``topic_eligible`` verdict, which governs unattended adoption only:
+    a picker selection is an explicit bind and may name a window this listing
+    would not auto-adopt. Binding the bot's own session is wrong either way.
     """
     fake = (
         FakeAgtermctl()
         .on("window", "list", out=_windows())
         .on("tree", out=_tree(_session(SESSION_A), _session(SESSION_B, name="blog")))
     )
-    windows = await _manager(fake, own=SESSION_A).list_windows()
-    assert [w.window_id for w in windows] == [SESSION_B]
+    manager = _manager(fake, own=SESSION_A)
+
+    # Gone from the selection listing: the picker must never offer it.
+    assert [w.window_id for w in await manager.list_windows()] == [SESSION_B]
+
+    # Present in the complete listing, because it exists — but refused for
+    # adoption there, which is what keeps discovery off it.
+    complete = await manager.list_windows_for_reconciliation()
+    assert complete is not None
+    assert {w.window_id: w.topic_eligible for w in complete} == {
+        SESSION_A: False,
+        SESSION_B: True,
+    }
 
 
 async def test_own_session_exclusion_is_case_insensitive() -> None:
@@ -1205,3 +1219,180 @@ async def test_reconciliation_ignores_the_workspace_scope() -> None:
     ).list_windows_for_reconciliation()
     assert windows is not None
     assert sorted(w.window_id for w in windows) == sorted([SESSION_A, SESSION_B])
+
+
+# ── adoption travels on the window ─────────────────────────────────────
+
+
+async def test_reconciliation_listing_marks_what_discovery_may_not_adopt() -> None:
+    """The listing stays complete, but each window carries its verdict.
+
+    session_monitor hands the reconciliation listing straight to discovery, so
+    a filter that lives only in list_windows never runs for discovery at all.
+    """
+    fake = (
+        FakeAgtermctl()
+        .on("window", "list", out=_windows())
+        .on(
+            "tree",
+            out=_multi_tree(
+                {
+                    "code": [_session(SESSION_A, name="agent")],
+                    "personal": [_session(SESSION_B, name="elsewhere")],
+                }
+            ),
+        )
+    )
+    windows = await _manager(
+        fake, workspaces=("code",)
+    ).list_windows_for_reconciliation()
+    assert windows is not None
+    by_name = {w.window_name: w.topic_eligible for w in windows}
+    # both present, so cleanup still sees everything that exists
+    assert set(by_name) == {"agent", "elsewhere"}
+    # but only the in-scope one may be adopted
+    assert by_name == {"agent": True, "elsewhere": False}
+
+
+async def test_own_session_is_marked_ineligible_in_the_reconciliation_listing() -> None:
+    fake = (
+        FakeAgtermctl()
+        .on("window", "list", out=_windows())
+        .on("tree", out=_tree(_session(SESSION_A), _session(SESSION_B, name="other")))
+    )
+    windows = await _manager(
+        fake, own=SESSION_A, workspaces=None
+    ).list_windows_for_reconciliation()
+    assert windows is not None
+    assert {w.window_id: w.topic_eligible for w in windows} == {
+        SESSION_A: False,
+        SESSION_B: True,
+    }
+
+
+async def test_underscore_named_sessions_are_marked_ineligible() -> None:
+    fake = (
+        FakeAgtermctl()
+        .on("window", "list", out=_windows())
+        .on("tree", out=_tree(_session(SESSION_A, name="_scratch")))
+    )
+    windows = await _manager(fake, workspaces=None).list_windows_for_reconciliation()
+    assert windows is not None
+    assert windows[0].topic_eligible is False
+
+
+async def test_find_window_by_id_is_not_gated_by_eligibility() -> None:
+    """Addressing a known id is not discovery: an out-of-scope window stays drivable."""
+    fake = (
+        FakeAgtermctl()
+        .on("window", "list", out=_windows())
+        .on("tree", out=_multi_tree({"personal": [_session(SESSION_A)]}))
+    )
+    found = await _manager(fake, workspaces=("code",)).find_window_by_id(SESSION_A)
+    assert found is not None
+    assert found.window_id == SESSION_A
+
+
+async def test_a_non_agent_session_in_scope_is_present_but_ineligible() -> None:
+    """Present for cleanup, refused for adoption.
+
+    agterm reports whatever holds the pane, so an in-scope session running an
+    editor or a build must not be adopted, while still existing as far as
+    reconciliation is concerned.
+    """
+    fake = (
+        FakeAgtermctl()
+        .on("window", "list", out=_windows())
+        .on(
+            "tree",
+            out=_tree(
+                _session(SESSION_A, name="editing", foreground=["vim", "notes.md"]),
+                _session(SESSION_B, name="agent", foreground=["claude"]),
+            ),
+        )
+    )
+    windows = await _manager(fake).list_windows_for_reconciliation()
+    assert windows is not None
+    assert {w.window_name: w.topic_eligible for w in windows} == {
+        "editing": False,
+        "agent": True,
+    }
+
+
+async def test_a_non_agent_session_in_scope_is_still_offered_for_explicit_binding() -> (
+    None
+):
+    """The selection listing narrows by visibility, never by adoptability.
+
+    This is the case the three-question contract rests on: `list_windows`
+    keeps an in-scope session running an editor, carrying
+    ``topic_eligible=False``, so a user can bind it from the picker while
+    unattended discovery — which reads the reconciliation listing and this
+    verdict — leaves it alone. Filtering it out here would silently remove a
+    session the user can see in agterm from the picker.
+    """
+    fake = (
+        FakeAgtermctl()
+        .on("window", "list", out=_windows())
+        .on(
+            "tree",
+            out=_tree(
+                _session(SESSION_A, name="editing", foreground=["vim", "notes.md"]),
+                _session(SESSION_B, name="agent", foreground=["claude"]),
+            ),
+        )
+    )
+
+    windows = await _manager(fake).list_windows()
+
+    assert {w.window_name: w.topic_eligible for w in windows} == {
+        "editing": False,
+        "agent": True,
+    }
+
+
+async def test_a_wrapped_agent_is_eligible() -> None:
+    """codex runs as ``node .../codex``; argv[0] alone would reject it."""
+    fake = (
+        FakeAgtermctl()
+        .on("window", "list", out=_windows())
+        .on(
+            "tree",
+            out=_tree(
+                _session(
+                    SESSION_A,
+                    name="codex-session",
+                    foreground=["node", "/opt/homebrew/bin/codex", "--yolo"],
+                )
+            ),
+        )
+    )
+    windows = await _manager(fake).list_windows_for_reconciliation()
+    assert windows is not None
+    assert windows[0].topic_eligible is True
+
+
+async def test_a_build_running_under_node_is_not_an_agent() -> None:
+    """The wrapper skip must not turn every node process into an agent."""
+    fake = (
+        FakeAgtermctl()
+        .on("window", "list", out=_windows())
+        .on(
+            "tree",
+            out=_tree(_session(SESSION_A, foreground=["node", "server.js"])),
+        )
+    )
+    windows = await _manager(fake).list_windows_for_reconciliation()
+    assert windows is not None
+    assert windows[0].topic_eligible is False
+
+
+async def test_an_idle_shell_session_is_ineligible() -> None:
+    fake = (
+        FakeAgtermctl()
+        .on("window", "list", out=_windows())
+        .on("tree", out=_tree(_session(SESSION_A, foreground=None)))
+    )
+    windows = await _manager(fake).list_windows_for_reconciliation()
+    assert windows is not None
+    assert windows[0].topic_eligible is False
