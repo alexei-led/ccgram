@@ -33,6 +33,7 @@ from pathlib import Path
 
 import libtmux
 from libtmux.exc import LibTmuxException
+from libtmux.neo import fetch_objs
 
 from ..config import config
 from .base import (
@@ -256,14 +257,32 @@ class TmuxManager:
 
         return await asyncio.to_thread(_sync_list_windows)
 
+    def _fetch_session(self) -> libtmux.Session | None:
+        """Find the configured session, letting a failed listing raise.
+
+        ``Server.sessions`` wraps its listing in ``except Exception: pass`` and
+        hands back an empty ``QueryList``, so an unreachable or broken tmux is
+        indistinguishable from a server with no sessions. Every caller that
+        needs the difference would read "no such session", and the
+        reconciliation listing would answer ``[]`` - a confirmed empty listing,
+        on which the audit closes topics and prunes state.
+
+        Going to ``fetch_objs`` directly keeps the failure visible. A listing
+        that succeeds without the configured session still means ``[]``: the
+        server answered, the session is genuinely not there.
+        """
+        objs = fetch_objs(list_cmd="list-sessions", server=self.server)
+        for obj in objs:
+            if obj.get("session_name") == self.session_name:
+                return libtmux.Session(server=self.server, **obj)
+        return None
+
     async def list_windows_for_reconciliation(self) -> list[TmuxWindow] | None:
         """List windows, or return None when tmux cannot confirm the session."""
 
         def _sync_list_windows() -> list[TmuxWindow] | None:
             try:
-                session = self.server.sessions.get(
-                    session_name=self.session_name, default=None
-                )
+                session = self._fetch_session()
                 if session is None:
                     return []
                 windows = [
