@@ -320,9 +320,29 @@ def _parse_live_record(record: Mapping[str, object]) -> HerdrLiveRecord | None:
     )
 
 
+def _shows_an_agent(record: Mapping[str, object]) -> bool:
+    """Whether this record claims an agent, however incompletely.
+
+    A pane with no agent evidence at all was never a topic and never will be,
+    so skipping it costs nothing. A pane that names an agent but has not
+    published its session composite yet is a different thing: ccgram may hold
+    a binding to it, and skipping it silently makes that binding look dead.
+    """
+    if _session_field(record.get("agent")):
+        return True
+    session = record.get("agent_session")
+    return isinstance(session, Mapping) and bool(session)
+
+
 def _parse_agent_records(
     agents: Sequence[object],
 ) -> tuple[list[HerdrLiveRecord], int]:
+    """Parse the records, and count the ones that leave a gap in the account.
+
+    The count is not "records we skipped" but "live agents we cannot name":
+    a malformed record, and a record naming an agent whose session composite
+    herdr has not published yet. Both are panes a caller may be bound to.
+    """
     records: list[HerdrLiveRecord] = []
     malformed = 0
     for agent in agents:
@@ -336,6 +356,8 @@ def _parse_agent_records(
             continue
         if parsed is not None:
             records.append(parsed)
+        elif _shows_an_agent(agent):
+            malformed += 1
     return records, malformed
 
 
@@ -542,11 +564,30 @@ class HerdrManager:
             )
 
     async def _agent_list_snapshot(self) -> list[HerdrLiveRecord]:
-        """Read and parse one fresh ``agent.list`` snapshot.
+        """The safe records from one fresh ``agent.list`` snapshot.
 
         Agents without a complete session composite are ignored because no
         stable topic identity exists. No focus, title, name, directory, screen,
         or layout field participates in this snapshot.
+
+        Quarantined records are dropped silently, so this subset is safe to
+        address and safe to show, but it is not a complete account of what is
+        live. Anything answering "does this window still exist" must take
+        ``_agent_list_snapshot_checked`` instead.
+        """
+        records, _complete = await self._agent_list_snapshot_checked()
+        return records
+
+    async def _agent_list_snapshot_checked(
+        self,
+    ) -> tuple[list[HerdrLiveRecord], bool]:
+        """The safe records, plus whether they account for every live agent.
+
+        ``False`` when malformed or ambiguous records were quarantined: those
+        panes are live, ccgram may hold bindings to them, and they are absent
+        from the subset returned here. Reporting that subset as complete makes
+        such a binding look like a ghost, which the audit, the polling loop and
+        the destructive guards all act on.
         """
         result = await self._call_json(["agent", "list"])
         if result is None:
@@ -569,7 +610,8 @@ class HerdrManager:
                 duplicate_target_count=duplicate_targets,
                 duplicate_pane_count=duplicate_panes,
             )
-        return safe
+        complete = not (malformed or duplicate_targets or duplicate_panes)
+        return safe, complete
 
     def target_id_for_live_record(self, record: Mapping[str, object]) -> str | None:
         """Return a guarded opaque target for one ``agent.list`` record.
@@ -603,13 +645,25 @@ class HerdrManager:
         return matches[0]
 
     @staticmethod
-    def _live_ref(record: HerdrLiveRecord, label: str) -> WindowRef:
-        """Project a live record without exposing reusable locator aliases."""
+    def _live_ref(
+        record: HerdrLiveRecord, label: str, *, adoptable: bool = True
+    ) -> WindowRef:
+        """Project a live record without exposing reusable locator aliases.
+
+        ``topic_eligible`` is stamped here because this parser is already the
+        place that decides what counts: it emits a record only for a live agent
+        carrying a guarded target, and a bare shell pane never reaches it. The
+        verdict travels on the window so discovery needs no herdr-shaped check
+        of its own.
+        """
         return WindowRef(
             window_id=record.target_id,
             window_name=label,
             cwd=record.cwd,
             pane_current_command=record.composite.agent,
+            topic_eligible=adoptable
+            and is_herdr_session_target(record.target_id)
+            and bool(record.composite.agent.strip()),
         )
 
     async def _reconciliation_labels(
@@ -667,36 +721,74 @@ class HerdrManager:
             label = labels.get((record.workspace_id, record.tab_id))
             if label is None:
                 if include_unlabeled:
+                    # Kept for liveness and addressing, never for adoption:
+                    # without labels this cannot tell an internal ``__*__``
+                    # workspace or tab from an ordinary one, and adopting
+                    # ccgram's own pane is the failure that guard exists for.
                     refs.append(
                         self._live_ref(
                             record,
                             f"Herdr ▸ {record.target_id[-12:]}",
+                            adoptable=False,
                         )
                     )
                 continue
             workspace_label, tab_label = label
-            if not include_internal and (
+            internal = bool(
                 _INTERNAL_LABEL_RE.match(workspace_label)
                 or _INTERNAL_LABEL_RE.match(tab_label)
-            ):
+            )
+            if internal and not include_internal:
                 continue
             pane = record.pane_id.rsplit(":", 1)[-1]
             refs.append(
                 self._live_ref(
                     record,
                     format_agent_topic_prefix(workspace_label, tab_label, pane),
+                    adoptable=not internal,
                 )
             )
         return refs
 
     async def list_windows(self) -> list[WindowRef]:
-        """Return a best-effort UI listing; reconciliation uses the tri-state API."""
-        return await self.list_windows_for_reconciliation() or []
+        """Return a best-effort UI listing, hiding ccgram's own internal panes.
+
+        Built from the safe subset directly, not from the reconciliation
+        listing: quarantined records make that listing report unknown, and a
+        picker that empties itself because one unrelated record was malformed
+        would be worse than one showing everything it can address. Showing what
+        is addressable is exactly this listing's job.
+        """
+        try:
+            refs = await self._project_live_refs(await self._agent_list_snapshot())
+        except HerdrError:
+            # Best-effort, as before: a failed agent, workspace or tab listing
+            # empties the picker instead of raising through it. Only the
+            # reconciliation listing distinguishes this from "nothing there".
+            return []
+        return [w for w in refs if w.topic_eligible]
 
     async def list_windows_for_reconciliation(self) -> list[WindowRef] | None:
+        """Every live record, including internal ones, marked unadoptable.
+
+        Internal ``__*__`` workspaces and tabs are ccgram's own and must never
+        be adopted, but they have to stay in the listing: a bound session
+        renamed into one would otherwise vanish from liveness, be audited as a
+        ghost binding and have its topic closed. Existence and adoptability are
+        different questions, so this answers the first and stamps the second.
+        """
         try:
+            records, complete = await self._agent_list_snapshot_checked()
+            if not complete:
+                # Quarantined records are live panes missing from this subset,
+                # so it cannot answer what exists. Saying so beats handing back
+                # a listing whose gaps read as dead bindings.
+                logger.warning(
+                    "herdr agent.list incomplete; reporting liveness unknown"
+                )
+                return None
             return await self._project_live_refs(
-                await self._agent_list_snapshot(), include_unlabeled=True
+                records, include_internal=True, include_unlabeled=True
             )
         except HerdrError:
             return None

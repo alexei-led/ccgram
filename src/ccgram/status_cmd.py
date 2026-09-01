@@ -43,38 +43,54 @@ def _active_multiplexer_name() -> str:
     return os.environ.get(_MULTIPLEXER_ENV, _DEFAULT_MULTIPLEXER)
 
 
-def _list_herdr_windows() -> list[dict[str, str]]:
-    """List herdr agent panes via the neutral seam. Returns list of {id, name}.
+def _list_herdr_windows() -> list[dict[str, str]] | None:
+    """List herdr agent panes via the neutral seam, as {id, name}.
 
-    Best-effort like ``_list_tmux_windows``: degrades to an empty list when the
-    herdr socket is unreachable or the backend errors, so ``ccgram status``
-    still prints state-file data.
+    ``None`` when the herdr socket is unreachable or the backend errors, like
+    ``_list_tmux_windows``: not an empty listing, which the caller renders as
+    every binding dead. ``ccgram status`` still prints its state-file data.
     """
-    # Lazy: the registry lazy-imports the backend; defer to keep status startup
-    # light and touch only the neutral seam (never a concrete backend, F1).
-    from .multiplexer import get_multiplexer
-
-    try:
-        windows = asyncio.run(get_multiplexer(_HERDR_BACKEND).list_windows())
-    except Exception:  # noqa: BLE001 — status is best-effort; degrade to empty
-        return []
-    return [{"id": w.window_id, "name": w.window_name} for w in windows]
+    return _live_windows(_HERDR_BACKEND)
 
 
-def _list_backend_windows(mux_name: str) -> list[dict]:
+def _list_backend_windows(mux_name: str) -> list[dict[str, str]] | None:
     """List windows through the seam, for a backend with no bespoke listing.
 
-    Best-effort like the herdr listing above: a failure degrades to empty so
-    status still prints its state-file data.
+    ``None`` when the backend could not be asked, like the herdr listing above:
+    the caller renders an empty listing as every binding dead. Best-effort
+    either way — status still prints its state-file data.
+    """
+    return _live_windows(mux_name)
+
+
+def _live_windows(mux_name: str) -> list[dict[str, str]] | None:
+    """List every live window on ``mux_name``, for the alive/dead column.
+
+    Reads the reconciliation listing, not ``list_windows``: status reports
+    liveness, and the selection listing applies the backend's visibility
+    filters — the agterm workspace scope, a herdr internal workspace, tmux's
+    hidden names. Reporting a bound session dead because it fell outside one
+    of those would be wrong, and dead bindings are what /sync Fix offers to
+    clean up.
+
+    Returns ``None`` when the listing could not be confirmed — a backend
+    error, or the backend's own ``None``. That is distinct from a confirmed
+    empty listing: an outage means every window is unknown, and rendering
+    unknown as ``dead`` is the same false claim this listing exists to
+    prevent. The state-file data is still printed either way.
     """
     # Lazy: the registry lazy-imports the backend; defer to keep status startup
     # light and touch only the neutral seam (never a concrete backend, F1).
     from .multiplexer import get_multiplexer
 
     try:
-        windows = asyncio.run(get_multiplexer(mux_name).list_windows())
-    except Exception:  # noqa: BLE001 — status is best-effort; degrade to empty
-        return []
+        windows = asyncio.run(
+            get_multiplexer(mux_name).list_windows_for_reconciliation()
+        )
+    except Exception:  # noqa: BLE001 — status is best-effort; unknown, not empty
+        return None
+    if windows is None:
+        return None
     return [{"id": w.window_id, "name": w.window_name} for w in windows]
 
 
@@ -86,8 +102,13 @@ def _read_json(path: Path) -> dict:
         return {}
 
 
-def _list_tmux_windows(session_name: str) -> list[dict[str, str]]:
-    """List tmux windows via subprocess. Returns list of {id, name}."""
+def _list_tmux_windows(session_name: str) -> list[dict[str, str]] | None:
+    """List tmux windows via subprocess, or ``None`` if tmux could not answer.
+
+    A missing or unresponsive tmux is not an empty server: reporting it as one
+    labels every binding dead. See ``_live_windows`` for the same distinction
+    on the seam backends.
+    """
     try:
         result = subprocess.run(
             [
@@ -103,7 +124,7 @@ def _list_tmux_windows(session_name: str) -> list[dict[str, str]]:
             timeout=5,
         )
         if result.returncode != 0:
-            return []
+            return None
         windows = []
         for line in result.stdout.strip().splitlines():
             parts = line.split("\t", 1)
@@ -111,7 +132,7 @@ def _list_tmux_windows(session_name: str) -> list[dict[str, str]]:
                 windows.append({"id": parts[0], "name": parts[1]})
         return windows
     except (OSError, subprocess.TimeoutExpired):  # fmt: skip
-        return []
+        return None
 
 
 def _capability_summary() -> tuple[str, str]:
@@ -130,6 +151,13 @@ def _capability_summary() -> tuple[str, str]:
         if flag
     ]
     return caps.name, ", ".join(flags) or "none"
+
+
+def _backend_line(label: str, windows: list[dict[str, str]] | None, unit: str) -> str:
+    """One-line backend summary; an unconfirmed listing says so, not zero."""
+    if windows is None:
+        return f"{label}: unreachable"
+    return f"{label}: {len(windows)} {unit}"
 
 
 def status_main() -> None:
@@ -152,16 +180,20 @@ def status_main() -> None:
     # Get live windows from the active multiplexer backend
     if mux_name == _HERDR_BACKEND:
         live_windows = _list_herdr_windows()
-        backend_line = f"Herdr: {len(live_windows)} pane(s)"
+        backend_line = _backend_line("Herdr", live_windows, "pane(s)")
     elif mux_name != _TMUX_BACKEND:
         # Any other backend answers through the seam; only tmux and herdr have
         # a bespoke listing, and routing a third backend into the tmux branch
         # reports its session count as zero.
         live_windows = _list_backend_windows(mux_name)
-        backend_line = f"{mux_name}: {len(live_windows)} session(s)"
+        backend_line = _backend_line(mux_name, live_windows, "session(s)")
     else:
         live_windows = _list_tmux_windows(session_name)
-        backend_line = f"Tmux session: {session_name} ({len(live_windows)} windows)"
+        backend_line = (
+            f"Tmux session: {session_name} (unreachable)"
+            if live_windows is None
+            else f"Tmux session: {session_name} ({len(live_windows)} windows)"
+        )
 
     # Build binding index: window_id -> (thread_id, user_id)
     thread_bindings = state.get("thread_bindings", {})
@@ -188,7 +220,7 @@ def status_main() -> None:
 
     # Show live windows first
     shown_ids: set[str] = set()
-    for w in live_windows:
+    for w in live_windows or []:
         wid = w["id"]
         name = display_names.get(wid, w["name"])
         shown_ids.add(wid)
@@ -201,10 +233,15 @@ def status_main() -> None:
         else:
             print(f"  {wid:<5} {name:<16}                              (unbound)")
 
-    # Show dead bindings (bound but window gone)
+    # Bound but not in the live listing. Only a confirmed listing makes that
+    # "dead"; an unconfirmed one makes it unknown, and /sync Fix acts on dead.
+    verdict = "unknown" if live_windows is None else "dead"
     for wid, (thread_id, user_id) in bound_windows.items():
         if wid not in shown_ids:
             name = display_names.get(wid, wid)
-            print(f"  {wid:<5} {name:<16} -> topic {thread_id} (user {user_id})   dead")
+            print(
+                f"  {wid:<5} {name:<16} -> topic {thread_id} "
+                f"(user {user_id})   {verdict}"
+            )
 
     sys.exit(0)

@@ -390,3 +390,55 @@ class TestVerifyHooksInstalled:
 
         logger.info.assert_not_called()
         logger.warning.assert_not_called()
+
+
+class TestNewWindowCallbackChecksEligibility:
+    """The monitor's automatic creation sink re-reads the verdict per window.
+
+    Discovery emits a batch and this callback awaits each topic creation in
+    turn, so without a fresh read the last window in a batch is judged on a
+    listing taken before the first one's topic existed. Explicit binds go
+    straight to handle_new_window and are not affected.
+    """
+
+    @staticmethod
+    async def _callback(app):
+        with patch("ccgram.bootstrap.SessionMonitor") as monitor_cls:
+            instance = MagicMock()
+            instance.start = MagicMock()
+            monitor_cls.return_value = instance
+            await bootstrap.start_session_monitor(app)
+        return instance.set_new_window_callback.call_args[0][0]
+
+    async def _run(self, *, adoptable: bool):
+        from ccgram.session_monitor import NewWindowEvent
+
+        app = _make_app()
+        bootstrap.wire_runtime_callbacks()
+        callback = await self._callback(app)
+
+        with (
+            patch(
+                "ccgram.bootstrap._still_adoptable",
+                new_callable=AsyncMock,
+                return_value=adoptable,
+            ),
+            patch(
+                "ccgram.bootstrap._handle_new_window",
+                new_callable=AsyncMock,
+            ) as handle,
+        ):
+            await callback(
+                NewWindowEvent(
+                    window_id="@5", session_id="s", window_name="proj", cwd="/proj"
+                )
+            )
+        return handle
+
+    async def test_adoptable_window_gets_a_topic(self):
+        handle = await self._run(adoptable=True)
+        handle.assert_awaited_once()
+
+    async def test_window_that_is_no_longer_adoptable_gets_none(self):
+        handle = await self._run(adoptable=False)
+        handle.assert_not_awaited()

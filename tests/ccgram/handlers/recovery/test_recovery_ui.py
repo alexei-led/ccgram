@@ -49,8 +49,21 @@ _STALE_TOAST = "Stale recovery (topic mismatch)"
 
 @pytest.fixture(autouse=True)
 def _patch_recovery_session_manager():
-    """Mock session_manager writes (set_window_*) so tests don't hit real state."""
-    with patch(f"{_RC}.session_manager"):
+    """Mock session_manager writes (set_window_*) so tests don't hit real state.
+
+    Also confirms the old window is gone. Recovery replaces a binding, so it
+    refuses to act on a listing it could not obtain; these cases are all "the
+    old window really is dead", which is a confirmed empty listing, not the
+    absent one they used to get for free from libtmux swallowing the error.
+    """
+    with (
+        patch(f"{_RC}.session_manager"),
+        patch(
+            "ccgram.multiplexer.reconciliation.list_windows_for_reconciliation",
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
+    ):
         yield
 
 

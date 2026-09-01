@@ -896,18 +896,32 @@ async def test_create_window_falls_back_to_the_cwd_basename(tmp_path) -> None:
 
 
 async def test_listings_exclude_the_session_ccgram_itself_runs_in() -> None:
-    """Every listed window is one discovery can auto-adopt.
+    """ccgram's own session is never offered, in either listing.
 
     The tmux backend skips ``config.own_window_id`` for this reason; without
-    the equivalent the bot binds a topic to its own terminal.
+    the equivalent the bot binds a topic to its own terminal. This exclusion is
+    not the ``topic_eligible`` verdict, which governs unattended adoption only:
+    a picker selection is an explicit bind and may name a window this listing
+    would not auto-adopt. Binding the bot's own session is wrong either way.
     """
     fake = (
         FakeAgtermctl()
         .on("window", "list", out=_windows())
         .on("tree", out=_tree(_session(SESSION_A), _session(SESSION_B, name="blog")))
     )
-    windows = await _manager(fake, own=SESSION_A).list_windows()
-    assert [w.window_id for w in windows] == [SESSION_B]
+    manager = _manager(fake, own=SESSION_A)
+
+    # Gone from the selection listing: the picker must never offer it.
+    assert [w.window_id for w in await manager.list_windows()] == [SESSION_B]
+
+    # Present in the complete listing, because it exists — but refused for
+    # adoption there, which is what keeps discovery off it.
+    complete = await manager.list_windows_for_reconciliation()
+    assert complete is not None
+    assert {w.window_id: w.topic_eligible for w in complete} == {
+        SESSION_A: False,
+        SESSION_B: True,
+    }
 
 
 async def test_own_session_exclusion_is_case_insensitive() -> None:
@@ -1205,3 +1219,344 @@ async def test_reconciliation_ignores_the_workspace_scope() -> None:
     ).list_windows_for_reconciliation()
     assert windows is not None
     assert sorted(w.window_id for w in windows) == sorted([SESSION_A, SESSION_B])
+
+
+# ── adoption travels on the window ─────────────────────────────────────
+
+
+async def test_reconciliation_listing_marks_what_discovery_may_not_adopt() -> None:
+    """The listing stays complete, but each window carries its verdict.
+
+    session_monitor hands the reconciliation listing straight to discovery, so
+    a filter that lives only in list_windows never runs for discovery at all.
+    """
+    fake = (
+        FakeAgtermctl()
+        .on("window", "list", out=_windows())
+        .on(
+            "tree",
+            out=_multi_tree(
+                {
+                    "code": [_session(SESSION_A, name="agent")],
+                    "personal": [_session(SESSION_B, name="elsewhere")],
+                }
+            ),
+        )
+    )
+    windows = await _manager(
+        fake, workspaces=("code",)
+    ).list_windows_for_reconciliation()
+    assert windows is not None
+    by_name = {w.window_name: w.topic_eligible for w in windows}
+    # both present, so cleanup still sees everything that exists
+    assert set(by_name) == {"agent", "elsewhere"}
+    # but only the in-scope one may be adopted
+    assert by_name == {"agent": True, "elsewhere": False}
+
+
+async def test_own_session_is_marked_ineligible_in_the_reconciliation_listing() -> None:
+    fake = (
+        FakeAgtermctl()
+        .on("window", "list", out=_windows())
+        .on("tree", out=_tree(_session(SESSION_A), _session(SESSION_B, name="other")))
+    )
+    windows = await _manager(
+        fake, own=SESSION_A, workspaces=None
+    ).list_windows_for_reconciliation()
+    assert windows is not None
+    assert {w.window_id: w.topic_eligible for w in windows} == {
+        SESSION_A: False,
+        SESSION_B: True,
+    }
+
+
+async def test_underscore_named_sessions_are_marked_ineligible() -> None:
+    fake = (
+        FakeAgtermctl()
+        .on("window", "list", out=_windows())
+        .on("tree", out=_tree(_session(SESSION_A, name="_scratch")))
+    )
+    windows = await _manager(fake, workspaces=None).list_windows_for_reconciliation()
+    assert windows is not None
+    assert windows[0].topic_eligible is False
+
+
+async def test_find_window_by_id_is_not_gated_by_eligibility() -> None:
+    """Addressing a known id is not discovery: an out-of-scope window stays drivable."""
+    fake = (
+        FakeAgtermctl()
+        .on("window", "list", out=_windows())
+        .on("tree", out=_multi_tree({"personal": [_session(SESSION_A)]}))
+    )
+    found = await _manager(fake, workspaces=("code",)).find_window_by_id(SESSION_A)
+    assert found is not None
+    assert found.window_id == SESSION_A
+
+
+async def test_a_non_agent_session_in_scope_is_present_but_ineligible() -> None:
+    """Present for cleanup, refused for adoption.
+
+    agterm reports whatever holds the pane, so an in-scope session running an
+    editor or a build must not be adopted, while still existing as far as
+    reconciliation is concerned.
+    """
+    fake = (
+        FakeAgtermctl()
+        .on("window", "list", out=_windows())
+        .on(
+            "tree",
+            out=_tree(
+                _session(SESSION_A, name="editing", foreground=["vim", "notes.md"]),
+                _session(SESSION_B, name="agent", foreground=["claude"]),
+            ),
+        )
+    )
+    windows = await _manager(fake).list_windows_for_reconciliation()
+    assert windows is not None
+    assert {w.window_name: w.topic_eligible for w in windows} == {
+        "editing": False,
+        "agent": True,
+    }
+
+
+async def test_a_non_agent_session_in_scope_is_still_offered_for_explicit_binding() -> (
+    None
+):
+    """The selection listing narrows by visibility, never by adoptability.
+
+    This is the case the three-question contract rests on: `list_windows`
+    keeps an in-scope session running an editor, carrying
+    ``topic_eligible=False``, so a user can bind it from the picker while
+    unattended discovery — which reads the reconciliation listing and this
+    verdict — leaves it alone. Filtering it out here would silently remove a
+    session the user can see in agterm from the picker.
+    """
+    fake = (
+        FakeAgtermctl()
+        .on("window", "list", out=_windows())
+        .on(
+            "tree",
+            out=_tree(
+                _session(SESSION_A, name="editing", foreground=["vim", "notes.md"]),
+                _session(SESSION_B, name="agent", foreground=["claude"]),
+            ),
+        )
+    )
+
+    windows = await _manager(fake).list_windows()
+
+    assert {w.window_name: w.topic_eligible for w in windows} == {
+        "editing": False,
+        "agent": True,
+    }
+
+
+async def test_a_wrapped_agent_is_eligible() -> None:
+    """codex runs as ``node .../codex``; argv[0] alone would reject it."""
+    fake = (
+        FakeAgtermctl()
+        .on("window", "list", out=_windows())
+        .on(
+            "tree",
+            out=_tree(
+                _session(
+                    SESSION_A,
+                    name="codex-session",
+                    foreground=["node", "/opt/homebrew/bin/codex", "--yolo"],
+                )
+            ),
+        )
+    )
+    windows = await _manager(fake).list_windows_for_reconciliation()
+    assert windows is not None
+    assert windows[0].topic_eligible is True
+
+
+async def test_a_build_running_under_node_is_not_an_agent() -> None:
+    """The wrapper skip must not turn every node process into an agent."""
+    fake = (
+        FakeAgtermctl()
+        .on("window", "list", out=_windows())
+        .on(
+            "tree",
+            out=_tree(_session(SESSION_A, foreground=["node", "server.js"])),
+        )
+    )
+    windows = await _manager(fake).list_windows_for_reconciliation()
+    assert windows is not None
+    assert windows[0].topic_eligible is False
+
+
+async def test_an_idle_shell_session_is_ineligible() -> None:
+    fake = (
+        FakeAgtermctl()
+        .on("window", "list", out=_windows())
+        .on("tree", out=_tree(_session(SESSION_A, foreground=None)))
+    )
+    windows = await _manager(fake).list_windows_for_reconciliation()
+    assert windows is not None
+    assert windows[0].topic_eligible is False
+
+
+# ── targeted existence, because the merged tree cannot be a snapshot ───
+
+
+async def test_a_known_session_is_reported_present() -> None:
+    fake = FakeAgtermctl().ok("session", "text", result={"text": "hi"})
+
+    assert await _manager(fake).window_exists(SESSION_A) is True
+
+
+async def test_no_such_session_is_proof_of_absence() -> None:
+    """The one answer that licenses a destructive repair.
+
+    agterm answers an unknown target with a well-formed refusal, which is why
+    this backend can prove absence at all: its listing is assembled from
+    per-window RPCs with no isolation, so a session staying ahead of the sweep
+    is read in no window, and two identical passes can both omit it. An atomic
+    snapshot cannot be built out of non-atomic reads.
+    """
+    fake = FakeAgtermctl().on(
+        "session",
+        "text",
+        out=json.dumps({"ok": False, "error": f"no such session: {SESSION_A}"}),
+    )
+
+    assert await _manager(fake).window_exists(SESSION_A) is False
+
+
+async def test_an_unreachable_socket_is_not_absence() -> None:
+    """No envelope means the question was never answered."""
+    fake = FakeAgtermctl().on(
+        "session", "text", rc=1, err="connect(/tmp/nope.sock) failed"
+    )
+
+    assert await _manager(fake).window_exists(SESSION_A) is None
+
+
+async def test_an_unrelated_refusal_is_not_absence() -> None:
+    """A refusal for some other reason says nothing about existence."""
+    fake = FakeAgtermctl().on(
+        "session", "text", out=json.dumps({"ok": False, "error": "pane is busy"})
+    )
+
+    assert await _manager(fake).window_exists(SESSION_A) is None
+
+
+async def test_presence_through_the_seam_uses_the_targeted_probe() -> None:
+    """The seam must prefer the authoritative answer over the merged listing.
+
+    The listing here omits the session entirely, which is exactly the torn read
+    the probe exists to survive: absence in the aggregate is not evidence.
+    """
+    from ccgram.multiplexer.reconciliation import window_presence
+
+    fake = (
+        FakeAgtermctl()
+        .on("window", "list", out=_windows())
+        .on("tree", out=_tree())
+        .ok("session", "text", result={"text": "hi"})
+    )
+
+    assert await window_presence(SESSION_B, _manager(fake)) is True
+
+
+@pytest.mark.parametrize(
+    ("payload", "why"),
+    [
+        pytest.param(
+            {"message": f"no such session: {SESSION_A}"},
+            "the reason is not under the key the contract names",
+            id="wrong-key",
+        ),
+        pytest.param(
+            {"ok": False, "error": {"text": "no such session"}},
+            "the reason is not a string",
+            id="non-string-error",
+        ),
+        pytest.param(
+            {"ok": False, "error": "no such session: some-other-id"},
+            "the refusal names a different session",
+            id="other-session",
+        ),
+        pytest.param(
+            {"ok": "false", "error": f"no such session: {SESSION_A}"},
+            "ok is a string, so the envelope is not the documented one",
+            id="stringly-ok",
+        ),
+    ],
+)
+async def test_a_malformed_refusal_is_never_proof_of_absence(
+    payload: dict, why: str
+) -> None:
+    """Absence licenses deletion, so it needs the whole documented shape.
+
+    Anything looser lets a payload from a changed or broken agterm authorise
+    closing a live session's topic, which is the failure this probe exists to
+    prevent rather than introduce.
+    """
+    fake = FakeAgtermctl().on("session", "text", out=json.dumps(payload))
+
+    assert await _manager(fake).window_exists(SESSION_A) is None, why
+
+
+async def test_a_backend_without_a_probe_uses_the_listing() -> None:
+    """tmux and herdr have no targeted answer, so the seam still asks them."""
+    from ccgram.multiplexer.base import WindowRef
+    from ccgram.multiplexer.reconciliation import window_presence
+
+    class _ListingOnlyBackend:
+        async def list_windows_for_reconciliation(self) -> list[WindowRef]:
+            return [WindowRef(window_id="@5", window_name="p", cwd="/p")]
+
+    assert await window_presence("@5", _ListingOnlyBackend()) is True
+    assert await window_presence("@9", _ListingOnlyBackend()) is False
+
+
+async def test_a_probe_that_answers_nonsense_is_unknown_not_a_fallback() -> None:
+    """Once a backend claims an authoritative probe, that answer is the answer.
+
+    Falling back would reach for the aggregate listing this probe exists to
+    avoid trusting.
+    """
+    from ccgram.multiplexer.base import WindowRef
+    from ccgram.multiplexer.reconciliation import window_presence
+
+    class _BrokenProbeBackend:
+        async def window_exists(self, window_id: str):
+            return "yes"
+
+        async def list_windows_for_reconciliation(self) -> list[WindowRef]:
+            return [WindowRef(window_id="@5", window_name="p", cwd="/p")]
+
+    assert await window_presence("@5", _BrokenProbeBackend()) is None
+
+
+async def test_presence_through_the_module_facade_reaches_the_probe() -> None:
+    """Production callers hold the facade, not the backend.
+
+    The facade's type defines only __getattr__, so a static lookup on it finds
+    no methods at all and the seam would conclude this backend has no targeted
+    probe, falling back to the very aggregate the probe exists to distrust. A
+    test that passes a concrete AgtermManager cannot see that.
+    """
+    from ccgram.multiplexer import (
+        _reset_multiplexer_for_testing,
+        install_multiplexer,
+        multiplexer,
+    )
+    from ccgram.multiplexer.reconciliation import window_presence
+
+    fake = (
+        FakeAgtermctl()
+        .on("window", "list", out=_windows())
+        # The aggregate omits SESSION_B: the torn read this must survive.
+        .on("tree", out=_tree())
+        .ok("session", "text", result={"text": "hi"})
+    )
+    install_multiplexer(_manager(fake))
+    try:
+        assert await window_presence(SESSION_B, multiplexer) is True
+        assert await window_presence(SESSION_B) is True
+    finally:
+        _reset_multiplexer_for_testing()

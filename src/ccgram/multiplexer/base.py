@@ -35,6 +35,17 @@ class WindowRef:
     pane_tty: str = ""
     pane_width: int = 0
     pane_height: int = 0
+    topic_eligible: bool = True
+    """Whether discovery may adopt this window as a topic.
+
+    Stamped by the backend, because whether a window is ccgram's own, hidden by
+    convention, or outside the configured scope is backend knowledge. Discovery
+    consumes ``list_windows_for_reconciliation``, which stays complete on
+    purpose so cleanup never mistakes a filtered-out window for a dead one, so
+    the adoption decision has to travel on the window itself instead of being
+    applied by omission. Backends with nothing to exclude leave it True.
+    """
+
     alias_window_ids: tuple[str, ...] = ()
     """Superseded canonical identities this same window may be persisted under."""
     legacy_alias_window_ids: tuple[str, ...] = ()
@@ -45,6 +56,34 @@ class WindowRef:
     key onto this canonical window.  A repeated value in one listing is
     ambiguous and must not be migrated.
     """
+
+    def matches(self, window_id: str) -> bool:
+        """Whether *window_id* names this window, under any identity it has had.
+
+        Case-insensitive, and it consults ``alias_window_ids``.
+
+        The case-folding is what matters today: agterm's UUIDs round-trip
+        through callers that may lowercase them, which is why its own
+        ``_find_session`` case-folds, and a presence check comparing ids
+        directly would report such a window gone and take the destructive
+        branch.
+
+        The alias arm is the value type's contract, not a live behaviour: no
+        backend currently publishes ``alias_window_ids``, and herdr
+        deliberately leaves them empty across a session re-key. Should one
+        start, a window persisted under a superseded id must still read as
+        present. ``legacy_alias_window_ids`` is deliberately excluded: those
+        are declared non-actionable, and this answer feeds callers that drive
+        the window they get back.
+
+        Case-folding is safe for every current id form — tmux ``@N`` has no
+        case, herdr's guarded targets are hex digests, agterm's are UUIDs. A
+        backend whose ids are genuinely case-sensitive must override this.
+        """
+        wanted = window_id.casefold()
+        return wanted == self.window_id.casefold() or any(
+            wanted == alias.casefold() for alias in self.alias_window_ids
+        )
 
 
 @dataclass
@@ -183,7 +222,12 @@ class MultiplexerCapabilities:
     """True when ``foreground()`` can return a tty device path (tmux: True)."""
 
     native_agent_status: bool
-    """True when the backend exposes agent status natively (herdr: True)."""
+    """True when the backend exposes agent status natively (herdr, agterm).
+
+    Read only for status. It does not decide which windows become topics: that
+    is ``WindowRef.topic_eligible``, because keying discovery on this flag made
+    every agterm session permanently ineligible once agterm set it.
+    """
 
     read_max_lines: int | None
     """Maximum scrollback lines the backend can return; None = unlimited (tmux)."""
@@ -247,7 +291,38 @@ class Multiplexer(Protocol):
         ...
 
     async def list_windows(self) -> list[WindowRef]:
-        """List all agent windows in the session."""
+        """List the windows the backend presents for explicit selection.
+
+        The pickers. A backend applies its visibility filters here — its own
+        session, hidden names, a configured workspace scope — so this is not a
+        liveness answer; ask ``list_windows_for_reconciliation`` for that.
+
+        It is not the adoption answer either, and unattended discovery never
+        reads it. A window listed here may carry ``topic_eligible=False``:
+        agterm deliberately shows an in-scope session sitting at a shell so a
+        user can bind it by hand. Choosing from a picker is an explicit bind,
+        and the flows behind it do their own existence check.
+        """
+        ...
+
+    async def list_windows_for_reconciliation(self) -> list[WindowRef] | None:
+        """List every live window, or ``None`` when the listing is unconfirmed.
+
+        The complete view, used wherever absence means "this window is gone":
+        state cleanup, the monitor's change detection, ``/sync``, the sessions
+        dashboard, transcript discovery, and the alive column in ``status``. It
+        must include every window ``list_windows`` filters out, so a caller can
+        tell an excluded window from a departed one.
+
+        This is also the listing unattended discovery reads, and the only one
+        it reads. ``WindowRef.topic_eligible`` on these windows is the third
+        question — what may be adopted with nobody asking — kept separate from
+        both the visibility filters above and existence here.
+
+        ``None`` means the backend could not confirm the listing (an
+        unreachable socket, a failed command). It is never an empty listing:
+        treating it as one closes every binding the bot holds.
+        """
         ...
 
     async def list_workspaces(self) -> list[WorkspaceRef]:

@@ -343,10 +343,38 @@ async def _handle_dead_window(
         )
         return True
 
-    w = await tmux_manager.find_window_by_id(window_id)
-    logically_dead = lifecycle_strategy.is_dead_notified(
-        user_id, thread_id, window_id
-    ) or (w is not None and await agent_origin_returned_to_shell(window_id, w))
+    # One confirmed read: find_window_by_id answers None both for a window
+    # that is gone and for a backend that could not be reached, and the branch
+    # below unbinds the topic when the cached cwd has also gone stale.
+    # Lazy: importing the reconciliation seam at module load forms a cycle.
+    from ...multiplexer.reconciliation import window_snapshot
+
+    confirmed, w = await window_snapshot(window_id, tmux_manager)
+    if not confirmed:
+        await safe_reply(
+            message,
+            "\u26a0 Could not reach the multiplexer, so nothing was changed. "
+            "Send that again in a moment.",
+        )
+        return True
+
+    # The dead marker is sticky: tick_window returns early once it is set, so
+    # nothing clears it on its own. A window confirmed present and still
+    # running its agent is alive whatever the marker says — an agterm session
+    # comes back under the same UUID after an app restart — and treating it as
+    # dead reaches the unbind below whenever the cached cwd has gone stale too.
+    returned_to_shell = w is not None and await agent_origin_returned_to_shell(
+        window_id, w
+    )
+    if w is not None and not returned_to_shell:
+        lifecycle_strategy.clear_dead_notification(user_id, thread_id)
+        lifecycle_strategy.clear_autoclose_timer(user_id, thread_id)
+        return False
+
+    logically_dead = (
+        lifecycle_strategy.is_dead_notified(user_id, thread_id, window_id)
+        or returned_to_shell
+    )
     if w and not logically_dead:
         lifecycle_strategy.clear_autoclose_timer(user_id, thread_id)
         return False

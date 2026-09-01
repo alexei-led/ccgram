@@ -73,12 +73,25 @@ _RETIRED_OUTCOME_LABELS = {
 }
 
 
-async def _run_audit() -> AuditResult:
-    """Fetch live multiplexer state and run audit."""
-    all_windows = await tmux_manager.list_windows()
+async def _run_audit() -> AuditResult | None:
+    """Fetch live multiplexer state and run audit.
+
+    Liveness comes from the reconciliation listing, never from
+    ``list_windows``: that one is the UI listing and a backend legitimately
+    omits what it will not adopt, so using it here reports a live bound
+    session as a fixable ghost the moment it becomes excluded. Adoptability is
+    the ``topic_eligible`` subset of the same listing.
+
+    Returns None when no listing is available. The caller must not treat that
+    as "nothing is live", which would classify every binding as dead.
+    """
+    all_windows = await list_windows_for_reconciliation(tmux_manager)
+    if all_windows is None:
+        return None
     live_ids = {w.window_id for w in all_windows}
     live_pairs = [(w.window_id, w.window_name) for w in all_windows]
-    return session_manager.audit_state(live_ids, live_pairs)
+    adoptable = {w.window_id for w in all_windows if w.topic_eligible}
+    return session_manager.audit_state(live_ids, live_pairs, adoptable)
 
 
 def _issue_summary_lines(audit: AuditResult) -> list[str]:
@@ -324,6 +337,9 @@ async def _close_ghost_topics(
     missing ``can_manage_topics`` or General topic).  Returns
     ``(closed_count, manual_close_count)``.
     """
+    # Lazy: importing the reconciliation seam at module load forms a cycle.
+    from ..multiplexer.reconciliation import window_presence
+
     closed_count = 0
     manual_close_count = 0
     for issue in issues:
@@ -337,6 +353,16 @@ async def _close_ghost_topics(
         window_id = match.group(3)
         current_window_id = thread_router.get_window_for_thread(user_id, thread_id)
         if current_window_id != window_id:
+            continue
+        # Per candidate, and the strictest of the three: this removes the
+        # user's topic. The audit's listing predates several network round
+        # trips, so re-confirm the window is really gone — present means the
+        # ghost verdict is stale, unknown means we cannot claim it at all.
+        if await window_presence(window_id, tmux_manager) is not False:
+            logger.info(
+                "Skipping ghost topic removal: window not confirmed gone",
+                window_id=window_id,
+            )
             continue
         chat_id = thread_router.resolve_chat_id(user_id, thread_id)
         topic_removed = await _remove_topic(client, chat_id, thread_id)
@@ -370,7 +396,20 @@ async def _close_ghost_topics(
 async def _adopt_orphaned_windows(
     client: TelegramClient, issues: list[AuditIssue]
 ) -> None:
-    """Create Telegram topics for unbound multiplexer windows."""
+    """Create Telegram topics for unbound multiplexer windows.
+
+    The verdict on the issues handed in is as old as the listing the audit ran
+    against, and /sync Fix probes every bound topic over the network before
+    reaching here — seconds, with many topics. So eligibility is re-read at the
+    point of use: a window that has since gone away, or moved out of scope,
+    must not get a topic. An unavailable listing adopts nothing; adoption is
+    the one step here that is safe to skip and retry.
+
+    The re-read is per candidate, not once for the batch. Creating a topic is
+    itself several Telegram round-trips, so with a batch-wide snapshot the
+    second orphan is judged on a listing taken before the first one's topic was
+    created — the same staleness one level down.
+    """
     # Lazy: bidirectional cycle — topic_orchestration.adopt_unbound_windows
     # also lazy-imports _adopt_orphaned_windows from this module.  Either
     # side must remain lazy until one is split into a third module.
@@ -380,6 +419,9 @@ async def _adopt_orphaned_windows(
     # Lazy: session_monitor / topic_orchestration cycle through window-creation flow
     from .topics.topic_orchestration import handle_new_window as _handle_new_window
 
+    # Lazy: same bidirectional cycle as handle_new_window above.
+    from .topics.topic_orchestration import still_adoptable as _still_adoptable
+
     for issue in issues:
         if issue.category != "orphaned_window":
             continue
@@ -387,6 +429,8 @@ async def _adopt_orphaned_windows(
         if not match:
             continue
         window_id = match.group(1)
+        if not await _still_adoptable(window_id):
+            continue
         view = window_query.view_window(window_id)
         name = (view.window_name if view else "") or thread_router.get_display_name(
             window_id
@@ -460,6 +504,9 @@ async def _recreate_dead_topics(
     # Lazy: session_monitor / topic_orchestration cycle through window-creation flow
     from .topics.topic_orchestration import handle_new_window as _handle_new_window
 
+    # Lazy: importing the reconciliation seam at module load forms a cycle.
+    from ..multiplexer.reconciliation import window_presence
+
     recreated = 0
     for issue in issues:
         if issue.category != "dead_topic":
@@ -472,6 +519,17 @@ async def _recreate_dead_topics(
         window_id = match.group(3)
         current_window_id = thread_router.get_window_for_thread(user_id, thread_id)
         if current_window_id != window_id:
+            continue
+        # Per candidate: the listing this issue came from was taken before the
+        # Telegram probes, the title sync, orphan adoption and ghost cleanup.
+        # Recreating unbinds the thread first, so a window that has since gone
+        # would get a fresh topic pointing at nothing, and an unreachable
+        # backend must change nothing at all.
+        if await window_presence(window_id, tmux_manager) is not True:
+            logger.info(
+                "Skipping dead-topic recreation: window not confirmed present",
+                window_id=window_id,
+            )
             continue
 
         view = window_query.view_window(window_id)
@@ -536,6 +594,14 @@ async def sync_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> N
     status_msg = await safe_reply(update.message, "🔍 State audit…")
     client = PTBTelegramClient(update.get_bot())
     audit = await _run_audit()
+    if audit is None:
+        if status_msg is not None:
+            await safe_edit(
+                status_msg,
+                "⚠ Multiplexer unavailable. Cannot audit state right now.",
+                reply_markup=None,
+            )
+        return
     logger.info(
         "Local state audit completed",
         issue_count=len(audit.issues),
@@ -591,10 +657,14 @@ async def handle_sync_fix(query: CallbackQuery) -> None:
 
     live_ids = {w.window_id for w in all_windows}
     live_pairs = [(w.window_id, w.window_name) for w in all_windows]
+    # Fix adopts the orphans this audit reports, so the adoption question takes
+    # the backend's verdict. The live set stays complete: it drives the pruning
+    # below, and narrowing it would make a live excluded binding a fixable ghost.
+    adoptable_ids = {w.window_id for w in all_windows if w.topic_eligible}
 
     # Audit before fixing to count fixable issues
     client = PTBTelegramClient(query.get_bot())
-    pre_audit = session_manager.audit_state(live_ids, live_pairs)
+    pre_audit = session_manager.audit_state(live_ids, live_pairs, adoptable_ids)
     dead_issues = await _probe_dead_topics(client)
     pre_audit.issues.extend(dead_issues)
     pre_audit.issues.extend(_retired_topic_issues())
@@ -628,6 +698,16 @@ async def handle_sync_fix(query: CallbackQuery) -> None:
     # one is unbound and won't be probed), while failed ones restore the old
     # binding and must be re-probed to avoid inflating actual_fixed.
     post_audit = await _run_audit()
+    if post_audit is None:
+        # The repairs already ran; only the after-picture is missing, and
+        # reporting every binding as dead would be worse than saying so.
+        await safe_edit(
+            query,
+            "✅ Fixes applied. The multiplexer went away before the "
+            "after-audit, so the summary below is unavailable.",
+            reply_markup=None,
+        )
+        return
     post_dead = await _probe_dead_topics(client)
     post_audit.issues.extend(post_dead)
     post_audit.issues.extend(_retired_topic_issues())

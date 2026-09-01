@@ -202,15 +202,159 @@ class TestStatusMainHerdr:
         assert "Tmux session" not in captured.out
         assert "Monitored sessions: 1" in captured.out
 
-    def test_herdr_listing_degrades_to_empty_on_backend_error(
-        self, monkeypatch
-    ) -> None:
-        # Socket unreachable / backend error must degrade to [] (best-effort),
-        # not crash `ccgram status`.
+    def test_herdr_listing_reports_unknown_on_backend_error(self, monkeypatch) -> None:
+        # Socket unreachable / backend error must not crash `ccgram status`,
+        # and must not answer []: an unreachable herdr is not an empty one, and
+        # the caller renders an empty listing as every binding dead.
         from ccgram.status_cmd import _list_herdr_windows
 
         def _boom(_name):
             raise RuntimeError("socket down")
 
         monkeypatch.setattr("ccgram.multiplexer.get_multiplexer", _boom)
-        assert _list_herdr_windows() == []
+        assert _list_herdr_windows() is None
+
+
+class TestLiveWindowsListing:
+    """The alive/dead column must read liveness, not adoptability.
+
+    Backends narrow ``list_windows`` to what discovery may auto-adopt: agterm
+    drops out-of-scope workspaces and sessions sitting at a shell, herdr drops
+    internal workspaces. A bound session that becomes merely ineligible is
+    still live, and printing it dead points /sync Fix at a healthy binding.
+    """
+
+    @staticmethod
+    def _fake_backend(monkeypatch, *, ui: list, reconciliation) -> None:
+        from ccgram.multiplexer.base import WindowRef
+
+        class _Backend:
+            async def list_windows(self) -> list[WindowRef]:
+                return ui
+
+            async def list_windows_for_reconciliation(self) -> list[WindowRef] | None:
+                return reconciliation
+
+        monkeypatch.setattr(
+            "ccgram.multiplexer.get_multiplexer", lambda _name: _Backend()
+        )
+
+    def test_live_but_ineligible_window_is_listed(self, monkeypatch) -> None:
+        from ccgram.multiplexer.base import WindowRef
+        from ccgram.status_cmd import _live_windows
+
+        excluded = WindowRef(
+            window_id="AAAA",
+            window_name="out-of-scope",
+            cwd="/repo",
+            topic_eligible=False,
+        )
+        self._fake_backend(monkeypatch, ui=[], reconciliation=[excluded])
+
+        assert _live_windows("agterm") == [{"id": "AAAA", "name": "out-of-scope"}]
+
+    def test_unconfirmed_listing_is_unknown_not_empty(self, monkeypatch) -> None:
+        from ccgram.status_cmd import _live_windows
+
+        self._fake_backend(monkeypatch, ui=[], reconciliation=None)
+
+        assert _live_windows("agterm") is None
+
+
+class TestUnreachableBackendNeverPrintsDead:
+    """An outage means every window is unknown, not that every window is gone.
+
+    ``dead`` is what /sync Fix offers to clean up, so printing it for a
+    binding whose backend simply could not be reached invites closing live
+    sessions. A *confirmed* empty listing still says dead.
+    """
+
+    @staticmethod
+    def _bound(tmp_path, monkeypatch, mux: str) -> None:
+        monkeypatch.setenv("CCGRAM_DIR", str(tmp_path))
+        monkeypatch.setenv("CCGRAM_MULTIPLEXER", mux)
+        monkeypatch.setenv("TMUX_SESSION_NAME", "ccgram")
+        state = {
+            "thread_bindings": {"12345": {"42": "@5"}},
+            "window_display_names": {"@5": "my-project"},
+        }
+        (tmp_path / "state.json").write_text(json.dumps(state))
+
+    @staticmethod
+    def _run(capsys) -> str:
+        with contextlib.suppress(SystemExit):
+            status_main()
+        return capsys.readouterr().out
+
+    def test_seam_backend_returning_none(self, tmp_path, monkeypatch, capsys) -> None:
+        self._bound(tmp_path, monkeypatch, "agterm")
+        monkeypatch.setattr("ccgram.status_cmd._list_backend_windows", lambda _: None)
+
+        out = self._run(capsys)
+
+        assert "dead" not in out
+        assert "unknown" in out
+        assert "my-project" in out
+        assert "unreachable" in out
+
+    def test_tmux_listing_failure(self, tmp_path, monkeypatch, capsys) -> None:
+        self._bound(tmp_path, monkeypatch, "tmux")
+        monkeypatch.setattr("ccgram.status_cmd._list_tmux_windows", lambda _: None)
+
+        out = self._run(capsys)
+
+        assert "dead" not in out
+        assert "unknown" in out
+        assert "my-project" in out
+
+    def test_confirmed_empty_listing_still_says_dead(
+        self, tmp_path, monkeypatch, capsys
+    ) -> None:
+        self._bound(tmp_path, monkeypatch, "tmux")
+        monkeypatch.setattr("ccgram.status_cmd._list_tmux_windows", lambda _: [])
+
+        out = self._run(capsys)
+
+        assert "dead" in out
+        assert "unknown" not in out
+
+
+class TestTmuxListingIsUnknownOnFailure:
+    """The rendered tests stub _list_tmux_windows, so its own contract is here.
+
+    Both failure shapes must answer None: the caller renders [] as every
+    binding dead, and a tmux that is missing or wedged is not an empty server.
+    """
+
+    def test_nonzero_exit(self, monkeypatch) -> None:
+        import subprocess
+
+        from ccgram.status_cmd import _list_tmux_windows
+
+        def _failed(*_a, **_kw):
+            return subprocess.CompletedProcess([], returncode=1, stdout="", stderr="")
+
+        monkeypatch.setattr("ccgram.status_cmd.subprocess.run", _failed)
+        assert _list_tmux_windows("ccgram") is None
+
+    def test_tmux_not_installed(self, monkeypatch) -> None:
+        from ccgram.status_cmd import _list_tmux_windows
+
+        def _boom(*_a, **_kw):
+            raise FileNotFoundError("tmux")
+
+        monkeypatch.setattr("ccgram.status_cmd.subprocess.run", _boom)
+        assert _list_tmux_windows("ccgram") is None
+
+    def test_healthy_listing_is_parsed(self, monkeypatch) -> None:
+        import subprocess
+
+        from ccgram.status_cmd import _list_tmux_windows
+
+        def _ok(*_a, **_kw):
+            return subprocess.CompletedProcess(
+                [], returncode=0, stdout="@5\tmy-project\n", stderr=""
+            )
+
+        monkeypatch.setattr("ccgram.status_cmd.subprocess.run", _ok)
+        assert _list_tmux_windows("ccgram") == [{"id": "@5", "name": "my-project"}]

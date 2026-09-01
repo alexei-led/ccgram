@@ -408,23 +408,49 @@ async def create_topic_in_chat(
         return False
 
 
-async def _rebind_existing_topic_by_name(
-    event: NewWindowEvent, client: TelegramClient, topic_name: str
-) -> bool:
-    """Bind a stale same-name topic to a newly discovered manual window."""
-    clean_topic_name = strip_emoji_prefix(topic_name)
+async def _stale_same_name_bindings(
+    event: NewWindowEvent, clean_topic_name: str
+) -> list[tuple[int, int, str, int]] | None:
+    """Bindings with this topic name whose window is confirmed gone.
+
+    ``None`` when any candidate's liveness could not be confirmed: the caller
+    would hand that topic to a different window, and find_window_by_id answers
+    None both for a window that is gone and for a backend that could not be
+    reached. There is no rush to rebind, so unknown abandons the decision.
+    """
+    # Lazy: importing the reconciliation seam at module load forms a cycle.
+    from ...multiplexer.reconciliation import window_presence
+
     matches: list[tuple[int, int, str, int]] = []
-    bindings = list(thread_router.iter_thread_bindings())
-    for user_id, thread_id, old_window_id in bindings:
+    for user_id, thread_id, old_window_id in list(thread_router.iter_thread_bindings()):
         if old_window_id == event.window_id:
             continue
         display_name = strip_emoji_prefix(thread_router.get_display_name(old_window_id))
         if display_name != clean_topic_name:
             continue
-        if await tmux_manager.find_window_by_id(old_window_id):
+        present = await window_presence(old_window_id, tmux_manager)
+        if present is None:
+            logger.warning(
+                "Cannot confirm window %s is gone; not rebinding %s",
+                old_window_id,
+                event.window_id,
+            )
+            return None
+        if present:
             continue
         chat_id = thread_router.resolve_chat_id(user_id, thread_id)
         matches.append((user_id, thread_id, old_window_id, chat_id))
+    return matches
+
+
+async def _rebind_existing_topic_by_name(
+    event: NewWindowEvent, client: TelegramClient, topic_name: str
+) -> bool:
+    """Bind a stale same-name topic to a newly discovered manual window."""
+    clean_topic_name = strip_emoji_prefix(topic_name)
+    matches = await _stale_same_name_bindings(event, clean_topic_name)
+    if matches is None:
+        return False
 
     if len(matches) != 1:
         if len(matches) > 1:
@@ -450,6 +476,21 @@ async def _rebind_existing_topic_by_name(
             "Could not probe same-name topic thread %d for stale window %s; not rebinding",
             thread_id,
             old_window_id,
+        )
+        return False
+
+    # The topic probe above is a Telegram round trip, and the old window was
+    # judged gone before it. If it came back in that window, this bind would
+    # take its live topic away, so the verdict is re-read immediately before
+    # the write. Unknown refuses too: there is no rush to rebind.
+    # Lazy: importing the reconciliation seam at module load forms a cycle.
+    from ...multiplexer.reconciliation import window_presence
+
+    if await window_presence(old_window_id, tmux_manager) is not False:
+        logger.info(
+            "Old window %s is no longer confirmed gone; not rebinding %s",
+            old_window_id,
+            event.window_id,
         )
         return False
 
@@ -541,12 +582,55 @@ async def _handle_new_window_locked(
     return any(results)
 
 
+async def still_adoptable(window_id: str) -> bool:
+    """Confirm, right now, that discovery may adopt this window.
+
+    Read immediately before each automatic adoption, never once for a batch:
+    creating a topic is several Telegram round-trips, so the second window in
+    a batch would otherwise be judged on a listing taken before the first
+    one's topic existed. It has had time to go away, leave the configured
+    workspace scope, or stop being an agent.
+
+    Automatic adoption only. A picker selection is an explicit bind and may
+    name a window discovery would not have taken on its own.
+
+    An unconfirmed listing answers False: skipping costs a retry on the next
+    cycle, while adopting a window that has gone creates a topic nothing will
+    ever drive.
+    """
+    # Lazy: importing the reconciliation seam at module load forms a cycle.
+    from ...multiplexer.reconciliation import list_windows_for_reconciliation
+
+    windows = await list_windows_for_reconciliation(tmux_manager)
+    if windows is None:
+        logger.warning(
+            "Skipping adoption: no confirmed window listing", window_id=window_id
+        )
+        return False
+    if not any(w.window_id == window_id and w.topic_eligible for w in windows):
+        logger.info(
+            "Skipping adoption: window no longer adoptable", window_id=window_id
+        )
+        return False
+    return True
+
+
 async def adopt_unbound_windows(client: TelegramClient) -> None:
     """Auto-adopt known-but-unbound windows (post-restart recovery)."""
-    all_windows = await tmux_manager.list_windows()
+    # Orphan repair creates topics, so the adoption question takes the
+    # backend's verdict; liveness comes from the complete listing, or a
+    # present-but-excluded window becomes a ghost instead of being ignored.
+    # Lazy: importing the reconciliation seam at module load forms a cycle.
+    from ...multiplexer.reconciliation import list_windows_for_reconciliation
+
+    all_windows = await list_windows_for_reconciliation(tmux_manager)
+    if all_windows is None:
+        logger.warning("Skipping unbound-window adoption: no confirmed listing")
+        return
     live_ids = {w.window_id for w in all_windows}
     live_pairs = [(w.window_id, w.window_name) for w in all_windows]
-    audit = session_manager.audit_state(live_ids, live_pairs)
+    adoptable_ids = {w.window_id for w in all_windows if w.topic_eligible}
+    audit = session_manager.audit_state(live_ids, live_pairs, adoptable_ids)
     orphaned = [i for i in audit.issues if i.category == "orphaned_window"]
     if orphaned:
         # Lazy: bidirectional cycle with sync_command (see

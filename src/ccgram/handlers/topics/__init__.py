@@ -47,6 +47,7 @@ from .topic_orchestration import (
     collect_target_chats,
     create_topic_in_chat,
     handle_new_window,
+    still_adoptable,
 )
 from .window_callbacks import handle_window_callback
 
@@ -77,6 +78,7 @@ __all__ = [
     "get_favorites",
     "handle_directory_callback",
     "handle_new_window",
+    "still_adoptable",
     "handle_window_callback",
     "new_command",
     "probe_topic_existence",

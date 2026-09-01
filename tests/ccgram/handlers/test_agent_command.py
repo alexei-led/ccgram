@@ -163,6 +163,25 @@ async def test_arg_unknown_is_rejected(reply):
     assert window_store.window_states["@7"].provider_name == "claude"
 
 
+def _confirm_live(monkeypatch, window_id: str) -> None:
+    """Report *window_id* live through the reconciliation seam.
+
+    /agent auto persists what detection returns and clears transcript
+    bookkeeping, so it refuses to resolve at all unless the window is
+    confirmed present.
+    """
+    from ccgram.multiplexer.base import WindowRef
+
+    monkeypatch.setattr(
+        "ccgram.multiplexer.tmux.tmux_manager.list_windows_for_reconciliation",
+        AsyncMock(
+            return_value=[
+                WindowRef(window_id=window_id, window_name="proj", cwd="/proj")
+            ]
+        ),
+    )
+
+
 async def test_auto_clears_override_and_redetects(monkeypatch, reply):
     # Pre-mark as manual override so we can verify it gets cleared.
     identity_state.set_provider_manual_override("@7", value=True)
@@ -174,6 +193,7 @@ async def test_auto_clears_override_and_redetects(monkeypatch, reply):
         "ccgram.multiplexer.tmux.tmux_manager.find_window_by_id",
         AsyncMock(return_value=fake_window),
     )
+    _confirm_live(monkeypatch, "@7")
     monkeypatch.setattr(
         "ccgram.providers.detect_provider_from_pane",
         AsyncMock(return_value="codex"),
@@ -198,6 +218,7 @@ async def test_auto_falls_back_to_shell_and_triggers_ensure_setup(monkeypatch, r
         "ccgram.multiplexer.tmux.tmux_manager.find_window_by_id",
         AsyncMock(return_value=fake_window),
     )
+    _confirm_live(monkeypatch, "@7")
     monkeypatch.setattr(
         "ccgram.providers.detect_provider_from_pane",
         AsyncMock(return_value=""),
@@ -327,6 +348,7 @@ async def test_auto_resolving_to_same_provider_clears_override(
         "ccgram.multiplexer.tmux.tmux_manager.find_window_by_id",
         AsyncMock(return_value=fake_window),
     )
+    _confirm_live(monkeypatch, "@7")
     monkeypatch.setattr(
         "ccgram.providers.detect_provider_from_pane",
         AsyncMock(return_value="claude"),
@@ -386,3 +408,40 @@ async def test_rejected_callbacks_leave_provider_untouched(
 
     update.callback_query.answer.assert_awaited_once_with(expected_answer)
     assert window_store.window_states["@7"].provider_name == "claude"
+
+
+class TestAgentAutoNeedsConfirmedLiveness:
+    """/agent auto persists what it resolves, so an unknown answer must not.
+
+    find_window_by_id returns None both for a window that is gone and for a
+    backend that could not be reached. Resolving that to shell rewrites a
+    working session's provider and clears its transcript bookkeeping.
+    """
+
+    @staticmethod
+    async def _run(monkeypatch, reply, *, listing):
+        identity_state.set_provider_manual_override("@7", value=True)
+        monkeypatch.setattr(
+            "ccgram.multiplexer.tmux.tmux_manager.list_windows_for_reconciliation",
+            AsyncMock(return_value=listing),
+        )
+        monkeypatch.setattr(
+            "ccgram.multiplexer.tmux.tmux_manager.find_window_by_id",
+            AsyncMock(return_value=None),
+        )
+        await ac.agent_command(_make_update("/agent auto"), MagicMock())
+        return window_store.window_states["@7"]
+
+    async def test_unreachable_backend_changes_nothing(self, monkeypatch, reply):
+        state = await self._run(monkeypatch, reply, listing=None)
+
+        assert state.provider_name == "claude"
+        assert state.provider_manual_override is True
+        assert "Could not reach" in _sent_text(reply)
+
+    async def test_confirmed_absence_changes_nothing(self, monkeypatch, reply):
+        state = await self._run(monkeypatch, reply, listing=[])
+
+        assert state.provider_name == "claude"
+        assert state.provider_manual_override is True
+        assert "Could not reach" in _sent_text(reply)

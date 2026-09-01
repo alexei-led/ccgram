@@ -183,3 +183,59 @@ class TestRecoveryCwdOrReport:
         assert result is None
         assert "Directory no longer exists" in mock_edit.call_args[0][1]
         assert RECOVERY_WINDOW_ID not in ctx.user_data
+
+
+class TestStaleRecoveryOffer:
+    """Fresh, Continue and Resume all converge on one replacement.
+
+    That replacement unbinds the thread before creating its successor, and the
+    banner offering it may have been drawn minutes earlier from a lookup that
+    could not distinguish "gone" from "could not ask". So the decision is
+    re-read here, from one confirmed snapshot.
+    """
+
+    @staticmethod
+    async def _verdict(snapshot, *, returned_to_shell: bool = False):
+        from ccgram.handlers.recovery.recovery_banner import _stale_recovery_offer
+
+        async def _snapshot(*_a, **_kw):
+            return snapshot
+
+        async def _returned(*_a, **_kw):
+            return returned_to_shell
+
+        with (
+            patch("ccgram.multiplexer.reconciliation.window_snapshot", _snapshot),
+            patch(
+                "ccgram.handlers.telegram_origin.agent_origin_returned_to_shell",
+                _returned,
+            ),
+        ):
+            return await _stale_recovery_offer("@5")
+
+    async def test_unavailable_listing_changes_nothing(self) -> None:
+        verdict = await self._verdict((False, None))
+        assert verdict is not None
+        assert "Could not reach" in verdict
+
+    async def test_confirmed_live_agent_changes_nothing(self) -> None:
+        from ccgram.multiplexer.base import WindowRef
+
+        window = WindowRef(window_id="@5", window_name="proj", cwd="/p")
+        verdict = await self._verdict((True, window), returned_to_shell=False)
+        assert verdict is not None
+        assert "running again" in verdict
+
+    async def test_confirmed_missing_proceeds(self) -> None:
+        assert await self._verdict((True, None)) is None
+
+    async def test_confirmed_live_shell_after_agent_exit_proceeds(self) -> None:
+        from ccgram.multiplexer.base import WindowRef
+
+        window = WindowRef(window_id="@5", window_name="proj", cwd="/p")
+        assert await self._verdict((True, window), returned_to_shell=True) is None
+
+    async def test_no_old_window_is_not_a_refusal(self) -> None:
+        from ccgram.handlers.recovery.recovery_banner import _stale_recovery_offer
+
+        assert await _stale_recovery_offer("") is None

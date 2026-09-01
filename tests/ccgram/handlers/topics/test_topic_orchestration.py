@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from telegram.error import BadRequest, RetryAfter, TelegramError, TimedOut
 
+from ccgram.multiplexer.base import WindowRef
 from ccgram.handlers.topics.topic_orchestration import (
     collect_target_chats,
     _is_window_already_bound,
@@ -33,6 +34,10 @@ def _mock_tmux():
     mock_window.pane_current_command = ""
     with patch("ccgram.handlers.topics.topic_orchestration.tmux_manager") as mock_tmux:
         mock_tmux.find_window_by_id = AsyncMock(return_value=mock_window)
+        # still_present reads this listing, and a confirmed empty one means
+        # "that window is gone" — the default the rebind tests below want. A
+        # test that needs the old window alive supplies it explicitly.
+        mock_tmux.list_windows_for_reconciliation = AsyncMock(return_value=[])
         yield mock_tmux
 
 
@@ -554,6 +559,8 @@ class TestHandleNewWindow:
             mock_tr.get_display_name.return_value = "🟡 reflex-gh"
             mock_tr.resolve_chat_id.return_value = -100200
             mock_tmux.find_window_by_id = AsyncMock(return_value=None)
+            # Confirmed empty: the old window really is gone, not unreachable.
+            mock_tmux.list_windows_for_reconciliation = AsyncMock(return_value=[])
 
             await handle_new_window(event, bot)
 
@@ -587,6 +594,10 @@ class TestHandleNewWindow:
         ):
             mock_tmux.capabilities.supports_display_name_rebind = False
             mock_tmux.find_window_by_id = AsyncMock(return_value=None)
+            # Confirmed empty: the old window really is gone, not unreachable.
+            mock_tmux.list_windows_for_reconciliation = AsyncMock(return_value=[])
+            # Confirmed empty: the old window really is gone, not unreachable.
+            mock_tmux.list_windows_for_reconciliation = AsyncMock(return_value=[])
             mock_tr.has_window.return_value = False
             mock_tr.iter_thread_bindings.return_value = iter([(100, 120014, "old")])
             mock_tr.resolve_chat_id.return_value = -100200
@@ -626,6 +637,8 @@ class TestHandleNewWindow:
             mock_tr.get_display_name.return_value = "reflex-gh"
             mock_tr.resolve_chat_id.return_value = -100200
             mock_tmux.find_window_by_id = AsyncMock(return_value=None)
+            # Confirmed empty: the old window really is gone, not unreachable.
+            mock_tmux.list_windows_for_reconciliation = AsyncMock(return_value=[])
             mock_tr.group_chat_ids = {"100:120014": -100200}
             mock_config.group_id = None
             mock_config.allowed_users = {100}
@@ -716,7 +729,9 @@ class TestAdoptUnboundWindows:
                 new_callable=AsyncMock,
             ) as mock_adopt,
         ):
-            mock_tmux.list_windows = AsyncMock(return_value=[mock_window])
+            mock_tmux.list_windows_for_reconciliation = AsyncMock(
+                return_value=[mock_window]
+            )
             mock_sm.audit_state.return_value = self._audit("orphaned_window")
 
             await adopt_unbound_windows(bot)
@@ -738,9 +753,188 @@ class TestAdoptUnboundWindows:
                 new_callable=AsyncMock,
             ) as mock_adopt,
         ):
-            mock_tmux.list_windows = AsyncMock(return_value=[])
+            mock_tmux.list_windows_for_reconciliation = AsyncMock(return_value=[])
             mock_sm.audit_state.return_value = self._audit()
 
             await adopt_unbound_windows(bot)
 
         mock_adopt.assert_not_called()
+
+
+class TestAdoptUnboundWindowsRespectsEligibility:
+    """Startup orphan repair creates topics, so it takes the backend's verdict.
+
+    Adoption narrows, liveness does not: narrowing the live set would turn a
+    present-but-excluded window into a fixable ghost, which is what the first
+    attempt at this did.
+    """
+
+    async def test_an_ineligible_window_is_live_but_not_adoptable(self):
+        bot = AsyncMock()
+        refused = WindowRef(
+            window_id="OUT-OF-SCOPE",
+            window_name="elsewhere",
+            cwd="/other",
+            pane_current_command="claude",
+            topic_eligible=False,
+        )
+        allowed = WindowRef(
+            window_id="IN-SCOPE",
+            window_name="agent",
+            cwd="/proj",
+            pane_current_command="claude",
+        )
+
+        with (
+            patch(
+                "ccgram.handlers.topics.topic_orchestration.tmux_manager"
+            ) as mock_tmux,
+            patch(
+                "ccgram.handlers.topics.topic_orchestration.session_manager"
+            ) as mock_sm,
+            patch(
+                "ccgram.handlers.sync_command._adopt_orphaned_windows",
+                new_callable=AsyncMock,
+            ),
+        ):
+            mock_tmux.list_windows_for_reconciliation = AsyncMock(
+                return_value=[refused, allowed]
+            )
+            audit = MagicMock()
+            audit.issues = []
+            mock_sm.audit_state.return_value = audit
+
+            await adopt_unbound_windows(bot)
+
+            live_ids, live_pairs, adoptable = mock_sm.audit_state.call_args[0]
+
+        # Liveness stays complete: a present-but-excluded window is not a ghost.
+        assert live_ids == {"OUT-OF-SCOPE", "IN-SCOPE"}
+        assert {wid for wid, _ in live_pairs} == {"OUT-OF-SCOPE", "IN-SCOPE"}
+        # Only adoption is narrowed.
+        assert adoptable == {"IN-SCOPE"}
+
+
+class TestAdoptUnboundWindowsNeedsAConfirmedListing:
+    """Startup repair creates topics; it must not run on a guess."""
+
+    async def test_unavailable_listing_adopts_nothing(self):
+        bot = AsyncMock()
+
+        with (
+            patch(
+                "ccgram.handlers.topics.topic_orchestration.tmux_manager"
+            ) as mock_tmux,
+            patch(
+                "ccgram.handlers.topics.topic_orchestration.session_manager"
+            ) as mock_sm,
+            patch(
+                "ccgram.handlers.sync_command._adopt_orphaned_windows",
+                new_callable=AsyncMock,
+            ) as mock_adopt,
+        ):
+            mock_tmux.list_windows_for_reconciliation = AsyncMock(return_value=None)
+
+            await adopt_unbound_windows(bot)
+
+        mock_adopt.assert_not_called()
+        mock_sm.audit_state.assert_not_called()
+
+
+class TestStillAdoptable:
+    """The point-of-use check behind every automatic adoption."""
+
+    @staticmethod
+    def _ref(window_id: str, *, eligible: bool):
+        return WindowRef(
+            window_id=window_id,
+            window_name="proj",
+            cwd="/proj",
+            topic_eligible=eligible,
+        )
+
+    async def _verdict(self, windows) -> bool:
+        from ccgram.handlers.topics.topic_orchestration import still_adoptable
+
+        with patch(
+            "ccgram.handlers.topics.topic_orchestration.tmux_manager"
+        ) as mock_tmux:
+            mock_tmux.list_windows_for_reconciliation = AsyncMock(return_value=windows)
+            return await still_adoptable("@5")
+
+    async def test_eligible_window_passes(self):
+        assert await self._verdict([self._ref("@5", eligible=True)]) is True
+
+    async def test_window_that_left_scope_is_refused(self):
+        assert await self._verdict([self._ref("@5", eligible=False)]) is False
+
+    async def test_window_that_went_away_is_refused(self):
+        assert await self._verdict([self._ref("@9", eligible=True)]) is False
+
+    async def test_unconfirmed_listing_is_refused(self):
+        assert await self._verdict(None) is False
+
+
+class TestSameNameRebindNeedsConfirmedDeath:
+    """Rebinding hands a live Telegram topic to a different window.
+
+    The old window is judged gone, then the topic is probed over the network,
+    and only then is the binding overwritten. Both reads must be confirmed:
+    find_window_by_id answers None for a window that is gone and for a backend
+    that could not be reached alike.
+    """
+
+    @staticmethod
+    def _ref(window_id: str):
+        return WindowRef(window_id=window_id, window_name="reflex-gh", cwd="/p")
+
+    async def _run(self, listings):
+        from ccgram.handlers.topics.topic_orchestration import (
+            _rebind_existing_topic_by_name,
+        )
+
+        event = _make_event(window_id="@new", window_name="reflex-gh")
+        with (
+            patch(
+                "ccgram.handlers.topics.topic_orchestration.thread_router"
+            ) as mock_tr,
+            patch("ccgram.handlers.topics.topic_orchestration.tmux_manager") as mock_tm,
+            patch(
+                "ccgram.handlers.topics.topic_orchestration.probe_topic_exists",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+        ):
+            mock_tr.iter_thread_bindings.return_value = [(100, 42, "@old")]
+            mock_tr.get_display_name.return_value = "reflex-gh"
+            mock_tr.resolve_chat_id.return_value = -100200
+            mock_tm.list_windows_for_reconciliation = AsyncMock(side_effect=listings)
+
+            result = await _rebind_existing_topic_by_name(
+                event, AsyncMock(), "reflex-gh"
+            )
+        return result, mock_tr
+
+    async def test_unavailable_listing_does_not_rebind(self) -> None:
+        result, mock_tr = await self._run([None, None])
+
+        assert result is False
+        mock_tr.bind_thread.assert_not_called()
+        mock_tr.unbind_thread.assert_not_called()
+
+    async def test_old_window_reappearing_during_the_probe_does_not_rebind(
+        self,
+    ) -> None:
+        """Gone when the candidate was chosen, back by the time of the write."""
+        result, mock_tr = await self._run([[], [self._ref("@old")]])
+
+        assert result is False
+        mock_tr.bind_thread.assert_not_called()
+        mock_tr.unbind_thread.assert_not_called()
+
+    async def test_confirmed_dead_old_window_still_rebinds(self) -> None:
+        """The other side, so the guard cannot pass by refusing everything."""
+        result, mock_tr = await self._run([[], []])
+
+        assert result is True
+        mock_tr.bind_thread.assert_called_once()

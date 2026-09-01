@@ -27,6 +27,10 @@ from ..config import config
 from ..telegram_client import PTBTelegramClient, TelegramClient
 from ..thread_router import thread_router
 from ..multiplexer import multiplexer as tmux_manager
+from ..multiplexer.reconciliation import (
+    list_windows_for_reconciliation,
+    window_presence,
+)
 from ..window_query import view_window
 from .callback_data import (
     CB_SESSIONS_KILL,
@@ -52,6 +56,9 @@ _REFRESH_BTN = InlineKeyboardButton(
 )
 _NEW_BTN = InlineKeyboardButton("\u2795 New Session", callback_data=CB_SESSIONS_NEW)
 
+# Green running, black stopped, white when the multiplexer could not be asked.
+_LIVENESS_MARKER = {True: "\U0001f7e2", False: "\u26ab", None: "\u26aa"}
+
 
 async def _build_dashboard(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
     """Build dashboard text and keyboard for a user's sessions."""
@@ -64,16 +71,20 @@ async def _build_dashboard(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
             keyboard,
         )
 
-    all_windows = await tmux_manager.list_windows()
-    live_ids = {w.window_id for w in all_windows}
+    # The complete listing, not the adoption-filtered one: every id here is
+    # already bound, and a live window a backend merely will not auto-adopt
+    # would otherwise show as stopped. None means the backend could not be
+    # asked, which is not the same as every session being stopped.
+    all_windows = await list_windows_for_reconciliation()
+    live_ids = None if all_windows is None else {w.window_id for w in all_windows}
 
     lines: list[str] = []
     action_rows: list[list[InlineKeyboardButton]] = []
     for _thread_id, window_id in sorted(bindings.items()):
         display_name = thread_router.get_display_name(window_id)
         view = view_window(window_id)
-        alive = window_id in live_ids
-        status = "\U0001f7e2" if alive else "\u26ab"
+        alive = None if live_ids is None else window_id in live_ids
+        status = _LIVENESS_MARKER[alive]
 
         # Session line with provider + mode tags and cwd detail
         provider_tag = f" [{view.provider_name}]" if view and view.provider_name else ""
@@ -166,9 +177,29 @@ async def handle_sessions_kill_confirm(
     """Second tap — kill the tmux window, unbind all users, refresh dashboard."""
     display = thread_router.get_display_name(window_id)
 
-    w = await tmux_manager.find_window_by_id(window_id)
-    if w:
-        await tmux_manager.kill_window(w.window_id)
+    # find_window_by_id answers None both for a window that is gone and for a
+    # backend that could not be reached, and everything below deletes the
+    # routing to this session. Unknown changes nothing: the session would
+    # survive the outage with no way left to reach it.
+    presence = await window_presence(window_id, tmux_manager)
+    if presence is None:
+        await safe_edit(
+            query,
+            f"\u26a0 Could not reach the multiplexer, so '{display}' was left "
+            "alone. Nothing was killed or unbound.",
+            reply_markup=None,
+        )
+        return
+
+    if presence and not await tmux_manager.kill_window(window_id):
+        # The window was there a moment ago and the kill did not succeed, so
+        # it may still be running. Clearing the bindings now would strand it.
+        await safe_edit(
+            query,
+            f"\u26a0 Could not kill '{display}'. Nothing was unbound.",
+            reply_markup=None,
+        )
+        return
 
     # Clean up BEFORE unbind — resolve_chat_id needs group_chat_ids
     # which unbind_thread deletes
@@ -191,9 +222,8 @@ async def handle_sessions_kill_confirm(
 
     # Re-render dashboard
     text, keyboard = await _build_dashboard(user_id)
-    await safe_edit(
-        query, f"\U0001f5d1 Killed '{display}'\n\n{text}", reply_markup=keyboard
-    )
+    headline = "\U0001f5d1 Killed" if presence else "\U0001f5d1 Was already gone:"
+    await safe_edit(query, f"{headline} '{display}'\n\n{text}", reply_markup=keyboard)
 
 
 @register(
