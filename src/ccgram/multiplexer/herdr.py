@@ -22,8 +22,9 @@ feed JSON fixtures without a live socket and the constructor stays I/O-free
 touched on the first real call).
 
 Capabilities (design "MultiplexerCapabilities"): ``ids_stable_across_restart``
-is False (a herdr *server* restart re-mints ids — Task 8 re-resolves via
-session id), ``exposes_pane_tty`` is False (no tty in ``process-info`` on
+is False (a herdr *server* restart re-mints ids, and nothing re-resolves a
+stale target: guarded targets hash the agent-session composite, so a
+persisted one simply stops matching), ``exposes_pane_tty`` is False (no tty in ``process-info`` on
 macOS), ``native_agent_status`` and ``supports_event_stream`` are True,
 ``read_max_lines`` is 1000 (the ``pane read --source recent`` clamp).
 """
