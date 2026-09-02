@@ -34,6 +34,8 @@ from ...telegram_client import TelegramClient
 from ...telegram_rate_limiter import retry_after_seconds
 from ...thread_router import thread_router
 from ...topic_state_registry import topic_state
+from ...window_resolver import resolve_window_alias
+from ...multiplexer.window_liveness import is_window_live, reset_window_liveness
 from ...utils import task_done_callback
 from ...tts import TtsSynthesisError, get_synthesizer, prepare_tts_text
 from ...window_query import is_tool_calls_hidden
@@ -89,6 +91,7 @@ _TEXT_BATCH_SEPARATOR = "\n\n"
 _QUEUE_RETRY_BACKOFF_BASE_SECONDS = 2.0
 _QUEUE_RETRY_BACKOFF_MAX_SECONDS = 60.0
 _QUEUE_RETRY_JITTER_MAX_SECONDS = 1.0
+_QUEUE_RETRY_BUDGET_SECONDS = 300.0
 
 # Per-user message queues and worker tasks
 _message_queues: dict[int, asyncio.Queue[MessageTask]] = {}
@@ -219,6 +222,14 @@ class DispatchState:
     extra_task_done: int = 0
     merged_receipts: tuple[DeliveryReceipt, ...] = ()
     retry_task: ContentTask | None = None
+
+
+@dataclass
+class RetryDispatchState:
+    """Caller-visible task state preserved when retry dispatch raises."""
+
+    task: MessageTask
+    merged_receipts: tuple[DeliveryReceipt, ...] = ()
 
 
 def queues_idle() -> bool:
@@ -551,8 +562,27 @@ async def _handle_content_task(
 
 def _is_ghost_window_task_at_enqueue(window_id: str) -> bool:
     """Return True if the window is no longer bound to any topic."""
-    if window_id and not thread_router.has_window(window_id):
-        logger.debug("Skipping enqueue for unbound window %s", window_id)
+    if window_id:
+        canonical_id = resolve_window_alias(window_id)
+        if not thread_router.has_window(canonical_id) and not thread_router.has_window(
+            window_id
+        ):
+            logger.debug("Skipping enqueue for unbound window %s", window_id)
+            return True
+    return False
+
+
+def _is_stale_task(user_id: int, task: MessageTask) -> bool:
+    """Return True when a queued task targets a confirmed-dead session."""
+    if isinstance(task, StatusClearTask) or not task.window_id:
+        return False
+    if not is_window_live(task.window_id):
+        logger.info(
+            "Dropping queued message for closed multiplexer session",
+            user_id=user_id,
+            window_id=task.window_id,
+            thread_id=getattr(task, "thread_id", None),
+        )
         return True
     return False
 
@@ -638,6 +668,80 @@ def _record_content_delivery(user_id: int, task: MessageTask) -> None:
         )
 
 
+async def _dispatch_with_retry(
+    client: TelegramClient,
+    user_id: int,
+    state: RetryDispatchState,
+    queue: asyncio.Queue[MessageTask],
+    lock: asyncio.Lock,
+) -> DeliveryOutcome:
+    """Dispatch one task, dropping dead targets and bounding flood retries."""
+    rate_limit_retry = 0
+    retry_started = time.monotonic()
+    while True:
+        dispatch_state = DispatchState()
+        if _is_stale_task(user_id, state.task):
+            return DeliveryOutcome.INTENTIONALLY_DROPPED
+        outcome: DeliveryOutcome | None = None
+        structlog.contextvars.clear_contextvars()
+        with structlog.contextvars.bound_contextvars(
+            window_id=getattr(state.task, "window_id", "")
+        ):
+            try:
+                result = await _dispatch(
+                    client,
+                    user_id,
+                    state.task,
+                    queue,
+                    lock,
+                    dispatch_state,
+                )
+                outcome = getattr(result, "outcome", DeliveryOutcome.DELIVERED)
+            except RetryAfter as exc:
+                state.task = _retry_task_for_state(dispatch_state, state.task)
+                rate_limit_retry += 1
+                elapsed = time.monotonic() - retry_started
+                if elapsed >= _QUEUE_RETRY_BUDGET_SECONDS:
+                    logger.error(
+                        "Telegram flood control retry budget exhausted",
+                        user_id=user_id,
+                        retry=rate_limit_retry,
+                        retry_budget_seconds=_QUEUE_RETRY_BUDGET_SECONDS,
+                    )
+                    outcome = DeliveryOutcome.FAILED
+                else:
+                    telegram_delay = retry_after_seconds(exc)
+                    exponent = min(rate_limit_retry - 1, 5)
+                    backoff = min(
+                        _QUEUE_RETRY_BACKOFF_MAX_SECONDS,
+                        _QUEUE_RETRY_BACKOFF_BASE_SECONDS * (2**exponent),
+                    )
+                    jitter = random.uniform(0, _QUEUE_RETRY_JITTER_MAX_SECONDS)
+                    retry_in = max(telegram_delay, backoff) + jitter
+                    remaining = _QUEUE_RETRY_BUDGET_SECONDS - elapsed
+                    if remaining <= 0:
+                        outcome = DeliveryOutcome.FAILED
+                    else:
+                        retry_in = min(retry_in, remaining)
+                        logger.warning(
+                            "Telegram flood control; retrying queued message",
+                            user_id=user_id,
+                            retry=rate_limit_retry,
+                            telegram_retry_after_seconds=telegram_delay,
+                            backoff_seconds=backoff,
+                            jitter_seconds=jitter,
+                            retry_in_seconds=retry_in,
+                        )
+                        await asyncio.sleep(retry_in)
+            finally:
+                structlog.contextvars.clear_contextvars()
+                for _ in range(dispatch_state.extra_task_done):
+                    queue.task_done()
+                state.merged_receipts = dispatch_state.merged_receipts
+        if outcome is not None:
+            return outcome
+
+
 async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
     global _inflight_count
     """Process message tasks for a user sequentially."""
@@ -651,47 +755,11 @@ async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
             _inflight_count += 1
             _mark_task_inflight(user_id, task)
             outcome = DeliveryOutcome.DELIVERED
-            merged_receipts: tuple[DeliveryReceipt, ...] = ()
+            retry_state = RetryDispatchState(task)
             try:
-                rate_limit_retry = 0
-                while True:
-                    dispatch_state = DispatchState()
-                    try:
-                        result = await _dispatch(
-                            client,
-                            user_id,
-                            task,
-                            queue,
-                            lock,
-                            dispatch_state,
-                        )
-                        outcome = getattr(result, "outcome", DeliveryOutcome.DELIVERED)
-                        break
-                    except RetryAfter as exc:
-                        task = _retry_task_for_state(dispatch_state, task)
-                        rate_limit_retry += 1
-                        telegram_delay = retry_after_seconds(exc)
-                        exponent = min(rate_limit_retry - 1, 5)
-                        backoff = min(
-                            _QUEUE_RETRY_BACKOFF_MAX_SECONDS,
-                            _QUEUE_RETRY_BACKOFF_BASE_SECONDS * (2**exponent),
-                        )
-                        jitter = random.uniform(0, _QUEUE_RETRY_JITTER_MAX_SECONDS)
-                        retry_in = max(telegram_delay, backoff) + jitter
-                        logger.warning(
-                            "Telegram flood control; retrying queued message",
-                            user_id=user_id,
-                            retry=rate_limit_retry,
-                            telegram_retry_after_seconds=telegram_delay,
-                            backoff_seconds=backoff,
-                            jitter_seconds=jitter,
-                            retry_in_seconds=retry_in,
-                        )
-                        await asyncio.sleep(retry_in)
-                    finally:
-                        for _ in range(dispatch_state.extra_task_done):
-                            queue.task_done()
-                        merged_receipts = dispatch_state.merged_receipts
+                outcome = await _dispatch_with_retry(
+                    client, user_id, retry_state, queue, lock
+                )
             except asyncio.CancelledError:
                 # A bounded shutdown may cancel an in-flight send. Do not
                 # acknowledge bytes whose task was interrupted; restart replays.
@@ -705,9 +773,11 @@ async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
                     getattr(task, "thread_id", None),
                 )
             finally:
-                for receipt in _delivery_receipts_for_settlement(task, merged_receipts):
+                for receipt in _delivery_receipts_for_settlement(
+                    retry_state.task, retry_state.merged_receipts
+                ):
                     receipt.settle(outcome)
-                _record_content_delivery(user_id, task)
+                _record_content_delivery(user_id, retry_state.task)
                 _inflight_count -= 1
                 queue.task_done()
         except asyncio.CancelledError:
@@ -777,16 +847,25 @@ async def _try_edit_tool_result(
     """Edit a prior tool-use message when this task supplies its result."""
     if task.content_type != "tool_result" or not task.tool_use_id:
         return False
-    edit_msg_id = _tool_msg_ids.pop((task.tool_use_id, user_id, tkey), None)
+    key = (task.tool_use_id, user_id, tkey)
+    edit_msg_id = _tool_msg_ids.get(key)
     if edit_msg_id is None:
         return False
-    await clear_status_message(client, user_id, tkey)
-    success = await edit_with_fallback(
-        client,
-        chat_id,
-        edit_msg_id,
-        "\n\n".join(task.parts),
-    )
+    try:
+        await clear_status_message(client, user_id, tkey)
+        success = await edit_with_fallback(
+            client,
+            chat_id,
+            edit_msg_id,
+            "\n\n".join(task.parts),
+        )
+    except RetryAfter:
+        # Keep the ID so the queue retry edits the original tool-use message.
+        raise
+    except Exception:
+        _tool_msg_ids.pop(key, None)
+        raise
+    _tool_msg_ids.pop(key, None)
     if not success:
         logger.debug("Failed to edit tool msg %s, sending new", edit_msg_id)
     return success
@@ -883,6 +962,11 @@ async def enqueue_content_message(
     """Enqueue a content message task and report whether it entered the queue."""
     if _is_ghost_window_task_at_enqueue(window_id):
         return False
+    if not is_window_live(window_id):
+        logger.info(
+            "Skipping enqueue for closed multiplexer session", window_id=window_id
+        )
+        return False
     queue = get_or_create_queue(client, user_id)
 
     receipt = get_active_delivery_receipt()
@@ -918,6 +1002,11 @@ async def enqueue_status_update(
     thread_id: int | None = None,
 ) -> None:
     """Enqueue status update or clear."""
+    if status_text is not None and not is_window_live(window_id):
+        logger.info(
+            "Skipping status update for closed multiplexer session", window_id=window_id
+        )
+        return
     queue = get_or_create_queue(client, user_id)
 
     if status_text is not None:
@@ -977,5 +1066,6 @@ async def shutdown_workers(drain_timeout: float = 10.0) -> None:
     _queue_locks.clear()
     _inflight_tasks.clear()
     _delivery_lags.clear()
+    reset_window_liveness()
     clear_all_batches()
     logger.info("Message queue workers stopped")

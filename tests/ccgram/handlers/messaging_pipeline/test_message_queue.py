@@ -545,6 +545,200 @@ class TestNoBackEdgeImports:
 
 
 class TestMessageQueueWorker:
+    async def test_confirmed_dead_window_drops_queued_task_without_dispatch(self, bot):
+        from ccgram.handlers.messaging_pipeline import message_queue as mq
+        from ccgram.multiplexer.base import WindowRef
+        from ccgram.multiplexer.window_liveness import note_live_windows
+
+        user_id = 88006
+        await mq.shutdown_workers()
+        note_live_windows(
+            [WindowRef(window_id="@1", window_name="live", cwd="/tmp")],
+            tracked_window_ids=["@0"],
+        )
+        mq._message_queues[user_id] = asyncio.Queue()
+        mq._queue_locks[user_id] = asyncio.Lock()
+        receipt = mq.DeliveryReceipt()
+        receipt.track()
+        receipt.close()
+        q = mq._message_queues[user_id]
+        q.put_nowait(
+            ContentTask(
+                window_id="@0",
+                parts=("stale",),
+                thread_id=42,
+                delivery_receipts=(receipt,),
+            )
+        )
+        worker = asyncio.create_task(mq._message_queue_worker(bot, user_id))
+        try:
+            with patch.object(mq, "_dispatch", new_callable=AsyncMock) as dispatch:
+                await asyncio.wait_for(q.join(), timeout=1.0)
+            dispatch.assert_not_awaited()
+            assert receipt.commit_ready
+        finally:
+            worker.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await worker
+            await mq.shutdown_workers()
+
+    async def test_retry_flood_stops_when_target_session_closes(self, bot):
+        from ccgram.handlers.messaging_pipeline import message_queue as mq
+        from ccgram.multiplexer.base import WindowRef
+        from ccgram.multiplexer.window_liveness import note_live_windows
+
+        user_id = 88009
+        await mq.shutdown_workers()
+        note_live_windows(
+            [WindowRef(window_id="@0", window_name="live", cwd="/tmp")],
+            tracked_window_ids=["@0"],
+        )
+        mq._message_queues[user_id] = asyncio.Queue()
+        mq._queue_locks[user_id] = asyncio.Lock()
+        receipt = mq.DeliveryReceipt()
+        receipt.track()
+        receipt.close()
+        q = mq._message_queues[user_id]
+        q.put_nowait(
+            ContentTask(
+                window_id="@0",
+                parts=("flooded",),
+                thread_id=42,
+                delivery_receipts=(receipt,),
+            )
+        )
+
+        async def close_session_during_backoff(_delay: float) -> None:
+            note_live_windows([], tracked_window_ids=["@0"])
+
+        worker = asyncio.create_task(mq._message_queue_worker(bot, user_id))
+        try:
+            with (
+                patch.object(
+                    mq, "_dispatch", new_callable=AsyncMock, side_effect=RetryAfter(30)
+                ) as dispatch,
+                patch.object(
+                    mq.asyncio, "sleep", new_callable=AsyncMock
+                ) as retry_sleep,
+            ):
+                retry_sleep.side_effect = close_session_during_backoff
+                await asyncio.wait_for(q.join(), timeout=1.0)
+            dispatch.assert_awaited_once()
+            retry_sleep.assert_awaited_once()
+            assert receipt.commit_ready
+            assert not receipt.failed
+        finally:
+            worker.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await worker
+            await mq.shutdown_workers()
+
+    async def test_large_stale_backlog_drains_without_telegram_flood(self, bot):
+        from ccgram.handlers.messaging_pipeline import message_queue as mq
+        from ccgram.multiplexer.base import WindowRef
+        from ccgram.multiplexer.window_liveness import note_live_windows
+
+        user_id = 88010
+        stale_count = 1_000
+        await mq.shutdown_workers()
+        note_live_windows(
+            [WindowRef(window_id="live", window_name="live", cwd="/tmp")],
+            tracked_window_ids=["closed", "live"],
+        )
+        mq._message_queues[user_id] = asyncio.Queue()
+        mq._queue_locks[user_id] = asyncio.Lock()
+        receipts: list[mq.DeliveryReceipt] = []
+        q = mq._message_queues[user_id]
+        for index in range(stale_count):
+            receipt = mq.DeliveryReceipt()
+            receipt.track()
+            receipt.close()
+            receipts.append(receipt)
+            q.put_nowait(
+                ContentTask(
+                    window_id="closed",
+                    parts=(f"stale-{index}",),
+                    thread_id=42,
+                    delivery_receipts=(receipt,),
+                )
+            )
+        q.put_nowait(ContentTask(window_id="live", parts=("current",), thread_id=43))
+
+        worker = asyncio.create_task(mq._message_queue_worker(bot, user_id))
+        try:
+            with (
+                patch.object(
+                    mq,
+                    "_dispatch",
+                    new_callable=AsyncMock,
+                    return_value=mq.DispatchResult(0, mq.DeliveryOutcome.DELIVERED),
+                ) as dispatch,
+                patch.object(mq.logger, "info"),
+            ):
+                await asyncio.wait_for(q.join(), timeout=2.0)
+            dispatch.assert_awaited_once()
+            assert all(receipt.commit_ready for receipt in receipts)
+        finally:
+            worker.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await worker
+            await mq.shutdown_workers()
+
+    async def test_retry_budget_fails_bound_task_after_budget(self, bot):
+        from ccgram.handlers.messaging_pipeline import message_queue as mq
+
+        user_id = 88007
+        mq._message_queues[user_id] = asyncio.Queue()
+        mq._queue_locks[user_id] = asyncio.Lock()
+        receipt = mq.DeliveryReceipt()
+        receipt.track()
+        receipt.close()
+        q = mq._message_queues[user_id]
+        q.put_nowait(
+            ContentTask(window_id="@0", parts=("hello",), delivery_receipts=(receipt,))
+        )
+        worker = asyncio.create_task(mq._message_queue_worker(bot, user_id))
+        try:
+            with (
+                patch.object(mq, "_QUEUE_RETRY_BUDGET_SECONDS", 0),
+                patch.object(
+                    mq, "_dispatch", new_callable=AsyncMock, side_effect=RetryAfter(1)
+                ) as dispatch,
+            ):
+                await asyncio.wait_for(q.join(), timeout=1.0)
+            dispatch.assert_awaited_once()
+            assert receipt.failed
+            assert not receipt.commit_ready
+        finally:
+            worker.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await worker
+            mq._message_queues.pop(user_id, None)
+            mq._queue_locks.pop(user_id, None)
+
+    async def test_retry_after_tool_edit_keeps_original_message_id(self, bot):
+        from ccgram.handlers.messaging_pipeline import message_queue as mq
+
+        key = ("tool-1", 88008, 42)
+        mq._tool_msg_ids.clear()
+        mq._tool_msg_ids[key] = 123
+        task = ContentTask(
+            window_id="@0",
+            parts=("result",),
+            content_type="tool_result",
+            tool_use_id="tool-1",
+            thread_id=42,
+            chat_id=-1001,
+        )
+        bot.set_side_effect("edit_message_text", [RetryAfter(1), True])
+        with patch.object(mq, "clear_status_message", new_callable=AsyncMock):
+            with pytest.raises(RetryAfter):
+                await mq._try_edit_tool_result(bot, 88008, -1001, 42, task)
+            assert mq._tool_msg_ids[key] == 123
+            assert await mq._try_edit_tool_result(bot, 88008, -1001, 42, task)
+        assert key not in mq._tool_msg_ids
+        assert bot.call_count("edit_message_text") == 2
+
     async def test_retry_after_backoff_keeps_receipt_pending_until_delivery(self, bot):
         from ccgram.handlers.messaging_pipeline import message_queue as mq
 
@@ -786,6 +980,8 @@ class TestMessageQueueWorker:
                     window_id="@0",
                     parts=(text,),
                     role="assistant",
+                    thread_id=42,
+                    chat_id=-1001,
                     delivery_receipts=(receipt,),
                 )
             )
@@ -797,9 +993,71 @@ class TestMessageQueueWorker:
                 "_process_content_task",
                 new_callable=AsyncMock,
                 side_effect=TelegramError("send failed"),
-            ):
+            ) as process_content:
                 await asyncio.wait_for(mq._message_queues[user_id].join(), timeout=1)
 
+            process_content.assert_awaited_once()
+            assert process_content.await_args_list[0].args[2].parts == (
+                "first",
+                "second",
+            )
+            assert all(receipt.failed for receipt in receipts)
+            assert all(not receipt.commit_ready for receipt in receipts)
+        finally:
+            worker.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await worker
+            mq._message_queues.pop(user_id, None)
+            mq._queue_locks.pop(user_id, None)
+
+    async def test_cancelled_merged_retry_fails_every_receipt(self, bot):
+        from ccgram.handlers.messaging_pipeline import message_queue as mq
+
+        user_id = 88011
+        mq._message_queues[user_id] = asyncio.Queue()
+        mq._queue_locks[user_id] = asyncio.Lock()
+        receipts = [mq.DeliveryReceipt(), mq.DeliveryReceipt()]
+        for text, receipt in zip(("first", "second"), receipts, strict=True):
+            receipt.track()
+            receipt.close()
+            mq._message_queues[user_id].put_nowait(
+                ContentTask(
+                    window_id="@0",
+                    parts=(text,),
+                    role="assistant",
+                    thread_id=42,
+                    chat_id=-1001,
+                    delivery_receipts=(receipt,),
+                )
+            )
+        retry_sleep_started = asyncio.Event()
+
+        async def block_retry_sleep(_delay: float) -> None:
+            retry_sleep_started.set()
+            await asyncio.Event().wait()
+
+        worker = asyncio.create_task(mq._message_queue_worker(bot, user_id))
+        try:
+            with (
+                patch.object(
+                    mq,
+                    "_process_content_task",
+                    new_callable=AsyncMock,
+                    side_effect=RetryAfter(1),
+                ) as process_content,
+                patch.object(mq.asyncio, "sleep", side_effect=block_retry_sleep),
+                patch("random.uniform", return_value=0),
+            ):
+                await retry_sleep_started.wait()
+                worker.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await worker
+            await asyncio.wait_for(mq._message_queues[user_id].join(), timeout=1)
+            process_content.assert_awaited_once()
+            assert process_content.await_args_list[0].args[2].parts == (
+                "first",
+                "second",
+            )
             assert all(receipt.failed for receipt in receipts)
             assert all(not receipt.commit_ready for receipt in receipts)
         finally:

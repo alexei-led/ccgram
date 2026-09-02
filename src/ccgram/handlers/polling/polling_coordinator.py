@@ -9,6 +9,7 @@ from telegram.error import TelegramError
 from ...thread_router import chat_scope, thread_router
 from ...multiplexer import multiplexer as tmux_manager
 from ...multiplexer.reconciliation import list_windows_for_reconciliation
+from ...multiplexer.window_liveness import note_live_windows
 from ...utils import log_throttled
 from . import window_tick
 from .polling_runtime import PollingRuntime
@@ -95,6 +96,7 @@ async def status_poll_loop(bot: "Bot") -> None:
                 logger.warning("Status poll skipped: window listing unavailable")
                 await asyncio.sleep(poll_interval)
                 continue
+            note_live_windows(all_windows, thread_router.all_bound_window_ids())
             window_lookup = {w.window_id: w for w in all_windows}
 
             await run_periodic_tasks(client, all_windows, timers)

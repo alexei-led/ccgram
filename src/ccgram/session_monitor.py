@@ -43,6 +43,7 @@ from .session_map import parse_session_map, read_session_map_raw, session_map_pr
 from .session_lifecycle import session_lifecycle
 from .multiplexer import multiplexer as tmux_manager
 from .multiplexer.reconciliation import list_windows_for_reconciliation
+from .multiplexer.window_liveness import note_live_windows
 from .multiplexer.topic_mapping import is_agent_topic_window
 from .monitor_events import NewMessage, NewWindowEvent, SessionInfo
 from .transcript_reader import TranscriptReader
@@ -806,7 +807,11 @@ class SessionMonitor:
                     # hard cycle on bootstrap (same reason as below).
                     from .session import session_manager as _sm
 
+                    # Lazy: thread routing imports monitor-facing helpers.
+                    from .thread_router import thread_router
+
                     _sm.reconcile_window_aliases(all_windows)
+                    note_live_windows(all_windows, thread_router.all_bound_window_ids())
                     raw_session_map = await read_session_map_raw()
 
                 # Dispatch only after identity convergence and the session-map

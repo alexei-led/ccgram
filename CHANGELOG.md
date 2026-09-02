@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.5] - 2026-09-02
+
+### Fixed
+
+- Drop queued messages for sessions that disappeared from Herdr, tmux, or agterm.
+- Bound Telegram flood-control retries and preserve merged delivery receipts on failure.
+- Keep tool-result edits idempotent across Telegram rate-limit retries.
+
 ## [4.9.4] - 2026-08-31
 
 ### Added
