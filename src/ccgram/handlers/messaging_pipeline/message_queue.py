@@ -485,6 +485,7 @@ async def _coalesce_status_updates(
     queue: asyncio.Queue[MessageTask],
     first: StatusUpdateTask,
     lock: asyncio.Lock,
+    user_id: int | None = None,
 ) -> tuple[StatusUpdateTask, int]:
     """Keep only the latest pending status_update for the same topic/window.
 
@@ -507,6 +508,10 @@ async def _coalesce_status_updates(
             if task_key == key:
                 selected = task
                 dropped += 1
+                if user_id is not None:
+                    _pending_status_updates.discard(
+                        (user_id, task.window_id, thread_key(task.thread_id))
+                    )
             else:
                 remaining.append(task)
 
@@ -625,12 +630,14 @@ async def _dispatch(
             if has_ephemeral_active_batch(user_id, thread_key(st.thread_id)):
                 # Drop any siblings the coalescer would have consumed so
                 # the next poll cycle sees a clean queue.
-                _, dropped = await _coalesce_status_updates(queue, st, lock)
+                _, dropped = await _coalesce_status_updates(queue, st, lock, user_id)
                 for _ in range(dropped):
                     queue.task_done()
                 return DispatchResult(0, DeliveryOutcome.INTENTIONALLY_DROPPED)
             await _flush_batch_for_task(user_id, st, client)
-            collapsed_task, dropped = await _coalesce_status_updates(queue, st, lock)
+            collapsed_task, dropped = await _coalesce_status_updates(
+                queue, st, lock, user_id
+            )
             if dropped > 0:
                 for _ in range(dropped):
                     queue.task_done()
