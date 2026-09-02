@@ -48,7 +48,7 @@ def _ensure_loaded() -> None:
     _loaded_store_path = _TOKEN_STORE_PATH
     try:
         raw = json.loads(_TOKEN_STORE_PATH.read_text())
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return
     if not isinstance(raw, dict):
         return

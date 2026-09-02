@@ -1271,13 +1271,13 @@ def _provider_from_herdr_pane() -> ProviderName | None:
         result = subprocess.run(
             ["herdr", "agent", "list"], capture_output=True, text=True, timeout=5
         )
-    except (subprocess.TimeoutExpired, OSError):
+    except subprocess.TimeoutExpired, OSError:
         return None
     if result.returncode != 0:
         return None
     try:
         records = json.loads(result.stdout).get("result", {}).get("agents", [])
-    except (json.JSONDecodeError, AttributeError):
+    except json.JSONDecodeError, AttributeError:
         return None
     matches = [
         record
