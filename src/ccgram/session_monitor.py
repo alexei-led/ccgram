@@ -786,6 +786,9 @@ class SessionMonitor:
         error_streak = 0
         while self._running:
             try:
+                # The same long-lived task handles every cycle. Do not attach a
+                # prior message's session_id to reconciliation and hook logs.
+                structlog.contextvars.clear_contextvars()
                 raw_session_map = await read_session_map_raw()
 
                 # A fresh listing owns identity convergence. It must precede

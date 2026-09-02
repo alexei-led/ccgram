@@ -304,11 +304,12 @@ def _parse_live_record(record: Mapping[str, object]) -> HerdrLiveRecord | None:
     if composite is None:
         agent = _session_field(record.get("agent"))
         terminal_id = locators["terminal_id"]
-        if agent not in {"claude", "pi", "codex", "gemini"} or terminal_id is None:
+        if agent not in {"claude", "codex", "gemini"} or terminal_id is None:
             return None
-        # Herdr versions without agent_session still expose a unique terminal
-        # identity. It is intentionally short-lived: a Herdr restart can mint
-        # a new terminal id, so the next listing may require a new topic.
+        # Providers that may remain sessionless still expose a unique terminal
+        # identity. Pi is excluded: Herdr publishes its durable session shortly
+        # after startup, and creating a terminal topic in that gap would create
+        # a second topic when the durable identity arrives.
         composite = HerdrSessionComposite("herdr", agent, "terminal", terminal_id)
     target_id = herdr_session_target_id(composite)
     # ``cwd`` is the agent's own working directory; ``foreground_cwd`` follows
@@ -677,7 +678,8 @@ class HerdrManager:
                     refs.append(
                         self._live_ref(
                             record,
-                            f"Herdr ▸ {record.target_id[-12:]}",
+                            f"{record.composite.agent.capitalize()} ▸ Herdr ▸ "
+                            f"{record.target_id[-12:]}",
                         )
                     )
                 continue
@@ -691,7 +693,12 @@ class HerdrManager:
             refs.append(
                 self._live_ref(
                     record,
-                    format_agent_topic_prefix(workspace_label, tab_label, pane),
+                    format_agent_topic_prefix(
+                        workspace_label,
+                        tab_label,
+                        pane,
+                        provider=record.composite.agent,
+                    ),
                 )
             )
         return refs

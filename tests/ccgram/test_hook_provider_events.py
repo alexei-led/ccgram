@@ -7,7 +7,12 @@ from unittest.mock import patch
 
 import pytest
 
-from ccgram.hook import _encode_pi_cwd_dirname, _install_hook, hook_main
+from ccgram.hook import (
+    _encode_pi_cwd_dirname,
+    _install_hook,
+    _resolve_pi_transcript_path,
+    hook_main,
+)
 from ccgram.hooks.adapters import detect_provider_from_payload, get_hook_adapter
 from ccgram.multiplexer.herdr import HerdrManager
 
@@ -120,7 +125,15 @@ def test_herdr_pi_hook_without_provider_metadata_uses_live_agent(
     tmp_path: Path, monkeypatch
 ) -> None:
     cwd = str(tmp_path / "proj")
-    transcript = _pi_transcript(tmp_path, cwd, _PI_SESSION_ID)
+    transcript = (
+        tmp_path
+        / ".pi"
+        / "agent"
+        / "sessions"
+        / _encode_pi_cwd_dirname(cwd)
+        / f"2026-05-13T12-26-23-633Z_{_PI_SESSION_ID}.jsonl"
+    )
+    assert not transcript.exists()
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("CCGRAM_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("HERDR_WORKSPACE_ID", "w2")
@@ -169,6 +182,17 @@ def test_herdr_pi_hook_without_provider_metadata_uses_live_agent(
     ]
     assert entry["provider_name"] == "pi"
     assert entry["transcript_path"] == str(transcript)
+
+
+def test_pi_transcript_resolution_does_not_select_another_session(
+    tmp_path: Path, monkeypatch
+) -> None:
+    cwd = str(tmp_path / "proj")
+    other = _pi_transcript(tmp_path, cwd, _STALE_PI_SESSION_ID)
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    assert other.exists()
+    assert _resolve_pi_transcript_path(_PI_SESSION_ID, cwd) == ""
 
 
 def test_pi_session_start_writes_provider_and_resolves_transcript(

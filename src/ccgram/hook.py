@@ -1057,6 +1057,11 @@ def _resolve_pi_transcript_path(session_id: str, cwd: str) -> str:
     for _mtime, path in candidates:
         if session_id and session_id in path.name:
             return str(path)
+    # SessionStart can run before Pi creates its transcript. Never bind that
+    # new session to another live pane's newest transcript; Stop will refresh
+    # the empty path once the exact session file exists.
+    if session_id:
+        return ""
     return str(candidates[0][1]) if candidates else ""
 
 
@@ -1256,29 +1261,29 @@ def _locate_primary_window(
     return identity.session_window_key, identity.window_id, identity.window_name
 
 
-def _provider_from_herdr_pane() -> ProviderName | None:
-    """Infer the foreground provider when a Pi hook omits provider metadata.
+def _provider_from_herdr_pane() -> tuple[ProviderName | None, str]:
+    """Infer provider and exact Pi transcript from the live Herdr pane.
 
-    Pi's hook-runner emits the common CC hook envelope without a provider field
-    or transcript path. Herdr is the authoritative identity source in that
-    case, so use its exact pane match before falling back to Claude.
+    Pi's hook-runner emits the common CC hook envelope without provider or
+    transcript metadata. Herdr is authoritative for the exact pane and can
+    publish the future transcript path before Pi creates the file.
     """
     workspace_id = os.environ.get("HERDR_WORKSPACE_ID")
     pane_id = os.environ.get("HERDR_PANE_ID")
     if not workspace_id or not pane_id:
-        return None
+        return None, ""
     try:
         result = subprocess.run(
             ["herdr", "agent", "list"], capture_output=True, text=True, timeout=5
         )
     except subprocess.TimeoutExpired, OSError:
-        return None
+        return None, ""
     if result.returncode != 0:
-        return None
+        return None, ""
     try:
         records = json.loads(result.stdout).get("result", {}).get("agents", [])
     except json.JSONDecodeError, AttributeError:
-        return None
+        return None, ""
     matches = [
         record
         for record in records
@@ -1287,13 +1292,23 @@ def _provider_from_herdr_pane() -> ProviderName | None:
         and record.get("pane_id") == pane_id
     ]
     if len(matches) != 1:
-        return None
+        return None, ""
     record = matches[0]
+    session = record.get("agent_session")
     agent = record.get("agent")
     if not isinstance(agent, str):
-        session = record.get("agent_session")
         agent = session.get("agent") if isinstance(session, dict) else None
-    return cast(ProviderName, agent) if agent in _KNOWN_HOOK_PROVIDERS else None
+    provider = cast(ProviderName, agent) if agent in _KNOWN_HOOK_PROVIDERS else None
+    transcript_path = ""
+    if (
+        provider == "pi"
+        and isinstance(session, dict)
+        and session.get("agent") == "pi"
+        and session.get("kind") == "path"
+        and isinstance(session.get("value"), str)
+    ):
+        transcript_path = session["value"]
+    return provider, transcript_path
 
 
 def _process_hook_stdin(
@@ -1320,11 +1335,16 @@ def _process_hook_stdin(
             provider_name,
         )
     detected_provider = provider_name or payload_provider
+    herdr_transcript_path = ""
     # Pi's hook-runner omits provider metadata and transcript_path. Do not use
     # the live Herdr provider to reinterpret a nested Claude hook that carries
     # its own Claude transcript path.
-    if detected_provider is None and not payload.get("transcript_path"):
-        detected_provider = _provider_from_herdr_pane()
+    if not payload.get("transcript_path") and detected_provider in {None, "pi"}:
+        herdr_provider, candidate_path = _provider_from_herdr_pane()
+        if detected_provider is None:
+            detected_provider = herdr_provider
+        if detected_provider == "pi" and herdr_provider == "pi":
+            herdr_transcript_path = candidate_path
     if detected_provider is None:
         identity = resolve_self_identity(os.environ, tmux_query=_resolve_window_id)
         if identity:
@@ -1363,7 +1383,11 @@ def _process_hook_stdin(
             detected_provider,
             normalized.session_id,
             str(normalized.cwd) if normalized.cwd else "",
-            str(normalized.transcript_path) if normalized.transcript_path else "",
+            (
+                str(normalized.transcript_path)
+                if normalized.transcript_path
+                else herdr_transcript_path
+            ),
         )
         cwd = str(normalized.cwd) if normalized.cwd else ""
         _update_session_map(
@@ -1392,7 +1416,11 @@ def _process_hook_stdin(
         detected_provider,
         window_name,
         str(normalized.cwd) if normalized.cwd else "",
-        str(normalized.transcript_path) if normalized.transcript_path else "",
+        (
+            str(normalized.transcript_path)
+            if normalized.transcript_path
+            else herdr_transcript_path
+        ),
     )
     _write_event(event, normalized.session_id, session_window_key, normalized.data)
     return normalized

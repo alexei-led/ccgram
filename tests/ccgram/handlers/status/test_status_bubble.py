@@ -21,6 +21,7 @@ from ccgram.handlers.status.status_bubble import (
     process_status_update,
     send_status_text,
 )
+from ccgram.telegram_rate_limiter import NO_RETRY_RATE_LIMIT_ARGS
 from ccgram.window_state_store import PaneInfo, WindowState, window_store
 
 USER_ID = 1
@@ -67,6 +68,10 @@ class TestSendStatusText:
 
         # safe_send uses bot.send_message with entity-based formatting.
         bot.send_message.assert_awaited_once()
+        assert (
+            bot.send_message.await_args.kwargs["rate_limit_args"]
+            == NO_RETRY_RATE_LIMIT_ARGS
+        )
         assert _status_msg_info[(USER_ID, THREAD_ID)] == (
             99,
             WINDOW_ID,
@@ -88,6 +93,9 @@ class TestSendStatusText:
         await send_status_text(bot, USER_ID, THREAD_ID, WINDOW_ID, "new text")
 
         mock_edit.assert_awaited_once()
+        assert (
+            mock_edit.await_args.kwargs["rate_limit_args"] == NO_RETRY_RATE_LIMIT_ARGS
+        )
         bot.send_message.assert_not_called()
         assert _status_msg_info[(USER_ID, THREAD_ID)] == (
             50,

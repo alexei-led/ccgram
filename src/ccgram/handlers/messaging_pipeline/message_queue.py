@@ -112,6 +112,8 @@ _rate_limit_log_last_at: dict[int, float] = {}
 # never coalesced because each one carries delivery and watermark semantics.
 _pending_status_updates: set[tuple[int, str, int]] = set()
 _pending_status_clears: set[tuple[int, str, int]] = set()
+_status_suppressed_until: dict[int, float] = {}
+_stale_drop_log_last_at: dict[tuple[int, str], float] = {}
 
 
 def _get_backlog_snapshot(
@@ -588,12 +590,19 @@ def _is_stale_task(user_id: int, task: MessageTask) -> bool:
     if isinstance(task, StatusClearTask) or not task.window_id:
         return False
     if not is_window_live(task.window_id):
-        logger.info(
-            "Dropping queued message for closed multiplexer session",
-            user_id=user_id,
-            window_id=task.window_id,
-            thread_id=getattr(task, "thread_id", None),
-        )
+        now = time.monotonic()
+        log_key = (user_id, task.window_id)
+        last_at = _stale_drop_log_last_at.get(log_key)
+        if last_at is None or now - last_at >= _QUEUE_RATE_LIMIT_LOG_COOLDOWN_SECONDS:
+            _stale_drop_log_last_at[log_key] = now
+            queue = _message_queues.get(user_id)
+            logger.info(
+                "Dropping queued messages for closed multiplexer session",
+                user_id=user_id,
+                window_id=task.window_id,
+                thread_id=getattr(task, "thread_id", None),
+                queued_tasks=queue.qsize() if queue is not None else 0,
+            )
         return True
     return False
 
@@ -741,6 +750,18 @@ async def _dispatch_with_retry(
                 outcome = getattr(result, "outcome", DeliveryOutcome.DELIVERED)
             except RetryAfter as exc:
                 state.task = _retry_task_for_state(dispatch_state, state.task)
+                telegram_delay = retry_after_seconds(exc)
+                if isinstance(state.task, StatusUpdateTask):
+                    _status_suppressed_until[user_id] = max(
+                        _status_suppressed_until.get(user_id, 0.0),
+                        time.monotonic() + telegram_delay,
+                    )
+                    logger.debug(
+                        "Telegram flood control; dropping transient status update",
+                        user_id=user_id,
+                        telegram_retry_after_seconds=telegram_delay,
+                    )
+                    return DeliveryOutcome.INTENTIONALLY_DROPPED
                 rate_limit_retry += 1
                 elapsed = time.monotonic() - retry_started
                 if elapsed >= _QUEUE_RETRY_BUDGET_SECONDS:
@@ -752,7 +773,6 @@ async def _dispatch_with_retry(
                     )
                     outcome = DeliveryOutcome.FAILED
                 else:
-                    telegram_delay = retry_after_seconds(exc)
                     exponent = min(rate_limit_retry - 1, 5)
                     backoff = min(
                         _QUEUE_RETRY_BACKOFF_MAX_SECONDS,
@@ -1060,6 +1080,10 @@ async def enqueue_status_update(
     thread_id: int | None = None,
 ) -> None:
     """Enqueue status update or clear."""
+    if status_text is not None and time.monotonic() < _status_suppressed_until.get(
+        user_id, 0.0
+    ):
+        return
     if status_text is not None and not is_window_live(window_id):
         logger.info(
             "Skipping status update for closed multiplexer session", window_id=window_id
@@ -1139,6 +1163,8 @@ async def shutdown_workers(drain_timeout: float = 10.0) -> None:
     _rate_limit_log_last_at.clear()
     _pending_status_updates.clear()
     _pending_status_clears.clear()
+    _status_suppressed_until.clear()
+    _stale_drop_log_last_at.clear()
     reset_window_liveness()
     clear_all_batches()
     logger.info("Message queue workers stopped")

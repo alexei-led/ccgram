@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+import structlog
 
 from ccgram.monitor_state import BacklogSkipIntent, TrackedSession
 from ccgram.multiplexer.base import MultiplexerCapabilities, WindowRef
@@ -101,6 +102,62 @@ class TestMonitorLoop:
 
         mock_sync.prune_session_map.assert_not_called()
         check_for_updates.assert_awaited_once_with(current_map)
+
+    async def test_each_cycle_clears_prior_message_log_context(
+        self, monitor: SessionMonitor
+    ) -> None:
+        current_map = {HERDR_TARGETS["a"]: {"session_id": "session-a"}}
+        contexts: list[dict[str, object]] = []
+        cycles = 0
+        monitor.set_message_callback(AsyncMock())
+
+        async def inspect_hook_context() -> None:
+            contexts.append(structlog.contextvars.get_contextvars())
+
+        async def sleep_until_two_cycles(_delay: float) -> None:
+            nonlocal cycles
+            cycles += 1
+            if cycles == 2:
+                monitor._running = False
+
+        with (
+            patch.object(monitor, "_cleanup_all_stale_sessions", AsyncMock()),
+            patch.object(
+                monitor, "_load_current_session_map", AsyncMock(return_value={})
+            ),
+            patch.object(
+                monitor,
+                "_detect_and_cleanup_changes",
+                AsyncMock(return_value=current_map),
+            ),
+            patch.object(
+                monitor,
+                "check_for_updates",
+                AsyncMock(
+                    side_effect=[
+                        [NewMessage("session-a", "first", True)],
+                        [],
+                    ]
+                ),
+            ),
+            patch.object(monitor, "_read_hook_events", inspect_hook_context),
+            patch(
+                "ccgram.session_monitor.read_session_map_raw",
+                AsyncMock(return_value={}),
+            ),
+            patch("ccgram.session_map.session_map_sync") as mock_sync,
+            patch(
+                "ccgram.session_monitor.list_windows_for_reconciliation",
+                AsyncMock(return_value=None),
+            ),
+            patch("ccgram.session_monitor.asyncio.sleep", sleep_until_two_cycles),
+        ):
+            mock_sync.load_session_map = AsyncMock()
+            structlog.contextvars.clear_contextvars()
+            monitor._running = True
+            await monitor._monitor_loop()
+
+        assert contexts == [{}, {}]
 
     async def test_reliable_listing_monitors_only_live_windows(
         self, monitor: SessionMonitor
