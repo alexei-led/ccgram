@@ -108,6 +108,10 @@ _inflight_tasks: dict[int, ContentTask] = {}
 # Telegram boundary.  It is deliberately in-memory telemetry, not state.
 _delivery_lags: dict[tuple[int, str, int], float] = {}
 _rate_limit_log_last_at: dict[int, float] = {}
+# At most one queued status operation per user/window/topic. Content tasks are
+# never coalesced because each one carries delivery and watermark semantics.
+_pending_status_updates: set[tuple[int, str, int]] = set()
+_pending_status_clears: set[tuple[int, str, int]] = set()
 
 
 def _get_backlog_snapshot(
@@ -791,6 +795,14 @@ async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
     while True:
         try:
             task = await queue.get()
+            if isinstance(task, StatusUpdateTask):
+                _pending_status_updates.discard(
+                    (user_id, task.window_id, thread_key(task.thread_id))
+                )
+            elif isinstance(task, StatusClearTask):
+                _pending_status_clears.discard(
+                    (user_id, task.window_id or "", thread_key(task.thread_id))
+                )
             _inflight_count += 1
             _mark_task_inflight(user_id, task)
             outcome = DeliveryOutcome.DELIVERED
@@ -1047,6 +1059,18 @@ async def enqueue_status_update(
         )
         return
     queue = get_or_create_queue(client, user_id)
+    status_key = (user_id, window_id, thread_key(thread_id))
+    if status_text is not None:
+        if (
+            status_key in _pending_status_updates
+            or status_key in _pending_status_clears
+        ):
+            return
+        _pending_status_updates.add(status_key)
+    elif status_key in _pending_status_clears:
+        return
+    else:
+        _pending_status_clears.add(status_key)
 
     if status_text is not None:
         task: MessageTask = StatusUpdateTask(
@@ -1106,6 +1130,8 @@ async def shutdown_workers(drain_timeout: float = 10.0) -> None:
     _inflight_tasks.clear()
     _delivery_lags.clear()
     _rate_limit_log_last_at.clear()
+    _pending_status_updates.clear()
+    _pending_status_clears.clear()
     reset_window_liveness()
     clear_all_batches()
     logger.info("Message queue workers stopped")

@@ -86,6 +86,23 @@ def _clear_task(
 
 
 class TestGetOrCreateQueue:
+    async def test_coalesces_queued_status_operations(self, bot, monkeypatch):
+        from ccgram.handlers.messaging_pipeline import message_queue as mq
+
+        user_id = 99989
+        queue = asyncio.Queue()
+        monkeypatch.setattr(mq, "get_or_create_queue", lambda *_: queue)
+        monkeypatch.setattr(mq, "is_window_live", lambda _: True)
+
+        await mq.enqueue_status_update(bot, user_id, "@0", "first", thread_id=42)
+        await mq.enqueue_status_update(bot, user_id, "@0", "latest", thread_id=42)
+
+        assert queue.qsize() == 1
+        assert mq._pending_status_updates == {(user_id, "@0", 42)}
+        queue.get_nowait()
+        queue.task_done()
+        mq._pending_status_updates.clear()
+
     async def test_creates_queue_and_worker(self, bot):
         user_id = 99990
         from ccgram.handlers.messaging_pipeline.message_queue import (
