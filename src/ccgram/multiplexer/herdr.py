@@ -8,9 +8,10 @@ only the neutral value types from ``multiplexer.base`` (design "Module map":
 herdr.py is adapter, anti-corruption).
 
 Identity mapping: Herdr ``agent.list`` is the sole identity source. A complete
-agent-session composite becomes an opaque durable target. Detected agents that
-do not publish ``agent_session`` are not reconcilable and never receive a
-persistent Telegram topic. Raw locators are used only after a fresh guard
+agent-session composite becomes an opaque durable target. Older Herdr records
+for known hook-capable agents may omit ``agent_session``; those records use the
+current terminal identity as a short-lived fallback so hooks and reconciliation
+can still agree on a live target. Raw locators are used only after a fresh guard
 authorizes one action; they are never persisted as aliases.
 
 The backend shells out to the ``herdr`` CLI (which the design explicitly allows
@@ -296,14 +297,19 @@ def _parse_live_record(record: Mapping[str, object]) -> HerdrLiveRecord | None:
         key: _session_field(record.get(key))
         for key in ("terminal_id", "pane_id", "tab_id", "workspace_id")
     }
-    if composite is None:
-        # A terminal locator is transient and cannot identify a session across
-        # a Herdr restart. Wait for the agent to publish its real session.
-        return None
     if any(value is None for value in locators.values()):
         raise HerdrMalformedRecordError(
             "agent.list contains an incomplete live locator"
         )
+    if composite is None:
+        agent = _session_field(record.get("agent"))
+        terminal_id = locators["terminal_id"]
+        if agent not in {"claude", "pi", "codex", "gemini"} or terminal_id is None:
+            return None
+        # Herdr versions without agent_session still expose a unique terminal
+        # identity. It is intentionally short-lived: a Herdr restart can mint
+        # a new terminal id, so the next listing may require a new topic.
+        composite = HerdrSessionComposite("herdr", agent, "terminal", terminal_id)
     target_id = herdr_session_target_id(composite)
     # ``cwd`` is the agent's own working directory; ``foreground_cwd`` follows
     # whatever the agent currently shells into (a worktree, a plugin cache) and
@@ -544,9 +550,10 @@ class HerdrManager:
     async def _agent_list_snapshot(self) -> list[HerdrLiveRecord]:
         """Read and parse one fresh ``agent.list`` snapshot.
 
-        Agents without a complete session composite are ignored because no
-        stable topic identity exists. No focus, title, name, directory, screen,
-        or layout field participates in this snapshot.
+        Known hook-capable agents without a complete session composite use a
+        terminal fallback identity. Shells and malformed records remain
+        ignored. No focus, title, name, directory, screen, or layout field
+        participates in this snapshot.
         """
         result = await self._call_json(["agent", "list"])
         if result is None:

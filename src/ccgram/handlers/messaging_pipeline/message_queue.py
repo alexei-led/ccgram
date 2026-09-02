@@ -92,6 +92,7 @@ _QUEUE_RETRY_BACKOFF_BASE_SECONDS = 2.0
 _QUEUE_RETRY_BACKOFF_MAX_SECONDS = 60.0
 _QUEUE_RETRY_JITTER_MAX_SECONDS = 1.0
 _QUEUE_RETRY_BUDGET_SECONDS = 300.0
+_QUEUE_RATE_LIMIT_LOG_COOLDOWN_SECONDS = 30.0
 
 # Per-user message queues and worker tasks
 _message_queues: dict[int, asyncio.Queue[MessageTask]] = {}
@@ -106,6 +107,7 @@ _inflight_tasks: dict[int, ContentTask] = {}
 # Per source/topic delivery lag, updated only when a content task reaches the
 # Telegram boundary.  It is deliberately in-memory telemetry, not state.
 _delivery_lags: dict[tuple[int, str, int], float] = {}
+_rate_limit_log_last_at: dict[int, float] = {}
 
 
 def _get_backlog_snapshot(
@@ -668,6 +670,35 @@ def _record_content_delivery(user_id: int, task: MessageTask) -> None:
         )
 
 
+def _log_rate_limit_queue_state(
+    user_id: int,
+    task: MessageTask,
+    retry: int,
+    retry_after: float,
+    retry_in: float,
+    blocked_for: float,
+) -> None:
+    """Periodically report queue pressure while Telegram flood control blocks it."""
+    now = time.monotonic()
+    last_at = _rate_limit_log_last_at.get(user_id)
+    if last_at is not None and now - last_at < _QUEUE_RATE_LIMIT_LOG_COOLDOWN_SECONDS:
+        return
+    _rate_limit_log_last_at[user_id] = now
+    queue = _message_queues.get(user_id)
+    logger.debug(
+        "Telegram rate limit is blocking message queue",
+        user_id=user_id,
+        queued_tasks=queue.qsize() if queue is not None else 0,
+        current_task_in_flight=True,
+        retry=retry,
+        blocked_for_seconds=round(blocked_for, 1),
+        telegram_retry_after_seconds=round(retry_after, 1),
+        retry_in_seconds=round(retry_in, 1),
+        window_id=getattr(task, "window_id", ""),
+        thread_id=getattr(task, "thread_id", None),
+    )
+
+
 async def _dispatch_with_retry(
     client: TelegramClient,
     user_id: int,
@@ -723,6 +754,14 @@ async def _dispatch_with_retry(
                         outcome = DeliveryOutcome.FAILED
                     else:
                         retry_in = min(retry_in, remaining)
+                        _log_rate_limit_queue_state(
+                            user_id,
+                            state.task,
+                            rate_limit_retry,
+                            telegram_delay,
+                            retry_in,
+                            elapsed,
+                        )
                         logger.warning(
                             "Telegram flood control; retrying queued message",
                             user_id=user_id,
@@ -1066,6 +1105,7 @@ async def shutdown_workers(drain_timeout: float = 10.0) -> None:
     _queue_locks.clear()
     _inflight_tasks.clear()
     _delivery_lags.clear()
+    _rate_limit_log_last_at.clear()
     reset_window_liveness()
     clear_all_batches()
     logger.info("Message queue workers stopped")

@@ -27,15 +27,15 @@ def test_one_canonical_digest_owner_and_no_layout_identity() -> None:
         assert forbidden not in identity_section
 
 
-def test_record_assembler_rejects_sessionless_identity() -> None:
-    """``_parse_live_record`` never hashes a volatile locator as identity."""
+def test_record_assembler_uses_guarded_terminal_fallback() -> None:
+    """Sessionless known agents use only their guarded terminal identity."""
     source = HERDR.read_text()
     section = source[
         source.index("def _parse_live_record") : source.index("class HerdrManager")
     ]
     assert "if composite is None:" in section
-    assert "return None" in section
-    assert "HerdrSessionComposite(" not in section
+    assert 'agent not in {"claude", "pi", "codex", "gemini"}' in section
+    assert 'HerdrSessionComposite("herdr", agent, "terminal", terminal_id)' in section
 
 
 def test_persisted_target_predicate_uses_the_shared_exact_validator() -> None:

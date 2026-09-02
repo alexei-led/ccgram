@@ -24,7 +24,7 @@ import structlog
 import sys
 from pathlib import Path
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 from ccgram.hooks.adapters import (
     detect_provider_from_payload,
@@ -86,6 +86,7 @@ _ASYNC_EVENTS: frozenset[str] = frozenset(
         "TaskCompleted",
     }
 )
+_KNOWN_HOOK_PROVIDERS: frozenset[str] = frozenset({"claude", "pi", "codex", "gemini"})
 
 
 def _installable_events_for(provider_name: str) -> tuple[str, ...]:
@@ -689,10 +690,9 @@ def _resolve_herdr_target_id(
     agent_session = record.get("agent_session")
     if not isinstance(live_agent, str) and isinstance(agent_session, dict):
         live_agent = agent_session.get("agent")
-    known_hook_agents = {"claude", "pi", "codex", "gemini"}
     if (
         provider_name is not None
-        and live_agent in known_hook_agents
+        and live_agent in _KNOWN_HOOK_PROVIDERS
         and live_agent != provider_name
     ):
         logger.info(
@@ -1256,6 +1256,46 @@ def _locate_primary_window(
     return identity.session_window_key, identity.window_id, identity.window_name
 
 
+def _provider_from_herdr_pane() -> ProviderName | None:
+    """Infer the foreground provider when a Pi hook omits provider metadata.
+
+    Pi's hook-runner emits the common CC hook envelope without a provider field
+    or transcript path. Herdr is the authoritative identity source in that
+    case, so use its exact pane match before falling back to Claude.
+    """
+    workspace_id = os.environ.get("HERDR_WORKSPACE_ID")
+    pane_id = os.environ.get("HERDR_PANE_ID")
+    if not workspace_id or not pane_id:
+        return None
+    try:
+        result = subprocess.run(
+            ["herdr", "agent", "list"], capture_output=True, text=True, timeout=5
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        records = json.loads(result.stdout).get("result", {}).get("agents", [])
+    except (json.JSONDecodeError, AttributeError):
+        return None
+    matches = [
+        record
+        for record in records
+        if isinstance(record, dict)
+        and record.get("workspace_id") == workspace_id
+        and record.get("pane_id") == pane_id
+    ]
+    if len(matches) != 1:
+        return None
+    record = matches[0]
+    agent = record.get("agent")
+    if not isinstance(agent, str):
+        session = record.get("agent_session")
+        agent = session.get("agent") if isinstance(session, dict) else None
+    return cast(ProviderName, agent) if agent in _KNOWN_HOOK_PROVIDERS else None
+
+
 def _process_hook_stdin(
     provider_name: str | None = None,
 ) -> NormalizedHookEvent | None:
@@ -1280,6 +1320,11 @@ def _process_hook_stdin(
             provider_name,
         )
     detected_provider = provider_name or payload_provider
+    # Pi's hook-runner omits provider metadata and transcript_path. Do not use
+    # the live Herdr provider to reinterpret a nested Claude hook that carries
+    # its own Claude transcript path.
+    if detected_provider is None and not payload.get("transcript_path"):
+        detected_provider = _provider_from_herdr_pane()
     if detected_provider is None:
         identity = resolve_self_identity(os.environ, tmux_query=_resolve_window_id)
         if identity:

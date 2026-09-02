@@ -739,6 +739,36 @@ class TestMessageQueueWorker:
         assert key not in mq._tool_msg_ids
         assert bot.call_count("edit_message_text") == 2
 
+    def test_rate_limit_debug_log_is_throttled_and_reports_queue_state(self):
+        from ccgram.handlers.messaging_pipeline import message_queue as mq
+
+        user_id = 88012
+        task = ContentTask(window_id="@0", parts=("blocked",), thread_id=42)
+        mq._message_queues[user_id] = asyncio.Queue()
+        mq._message_queues[user_id].put_nowait(
+            ContentTask(window_id="@0", parts=("waiting",), thread_id=42)
+        )
+        mq._rate_limit_log_last_at.clear()
+        try:
+            with (
+                patch.object(mq.time, "monotonic", side_effect=(100.0, 110.0, 131.0)),
+                patch.object(mq.logger, "debug") as debug,
+            ):
+                mq._log_rate_limit_queue_state(user_id, task, 1, 5.0, 5.5, 0.2)
+                mq._log_rate_limit_queue_state(user_id, task, 2, 5.0, 5.5, 10.2)
+                mq._log_rate_limit_queue_state(user_id, task, 3, 5.0, 5.5, 31.2)
+
+            assert debug.call_count == 2
+            assert debug.call_args_list[0].args == (
+                "Telegram rate limit is blocking message queue",
+            )
+            assert debug.call_args_list[0].kwargs["queued_tasks"] == 1
+            assert debug.call_args_list[0].kwargs["current_task_in_flight"] is True
+            assert debug.call_args_list[1].kwargs["retry"] == 3
+        finally:
+            mq._message_queues.pop(user_id, None)
+            mq._rate_limit_log_last_at.clear()
+
     async def test_retry_after_backoff_keeps_receipt_pending_until_delivery(self, bot):
         from ccgram.handlers.messaging_pipeline import message_queue as mq
 

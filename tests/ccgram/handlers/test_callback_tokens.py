@@ -1,4 +1,5 @@
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
@@ -6,10 +7,14 @@ from ccgram.handlers import callback_tokens
 
 
 @pytest.fixture(autouse=True)
-def clear_tokens() -> Iterator[None]:
+def clear_tokens(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    store = tmp_path / "callback_tokens.json"
+    monkeypatch.setattr(callback_tokens, "_TOKEN_STORE_PATH", store)
     callback_tokens._tokens.clear()
+    callback_tokens._loaded_store_path = None
     yield
     callback_tokens._tokens.clear()
+    callback_tokens._loaded_store_path = None
 
 
 def test_token_cache_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -29,6 +34,16 @@ def test_token_cache_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
     assert (
         callback_tokens.resolve_callback_data(callbacks[-1], 1, lambda *_: True)
         == "x" * 65 + "2"
+    )
+
+
+def test_tokens_reload_after_process_restart(monkeypatch: pytest.MonkeyPatch) -> None:
+    callback = callback_tokens.compact_callback_data("st:ss:", "x" * 65, "@window")
+    callback_tokens._tokens.clear()
+    callback_tokens._loaded_store_path = None
+
+    assert (
+        callback_tokens.resolve_callback_data(callback, 1, lambda *_: True) == "x" * 65
     )
 
 

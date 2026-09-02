@@ -231,8 +231,8 @@ async def test_multiple_agents_in_one_tab_get_pane_topics_and_no_shared_tab_alia
         assert found.legacy_alias_window_ids == ()
 
 
-async def test_sessionless_snapshot_is_not_reconcilable() -> None:
-    """A pane becomes reconcilable only after Herdr publishes its session."""
+async def test_sessionless_snapshot_uses_terminal_fallback() -> None:
+    """Older Herdr agent records remain routable through terminal identity."""
     at_hook_time = {
         "terminal_id": "term-a",
         "pane_id": "w2:p1",
@@ -242,20 +242,23 @@ async def test_sessionless_snapshot_is_not_reconcilable() -> None:
     }
     once_published = _agent(value="session-a")
 
-    assert await _manager(_live_fake(at_hook_time)).list_windows() == []
+    fallback_window = (await _manager(_live_fake(at_hook_time)).list_windows())[0]
     live_window = (await _manager(_live_fake(once_published)).list_windows())[0]
 
+    assert fallback_window.window_id == _sessionless_target("term-a")
     assert live_window.window_id == _target("session-a")
+    assert fallback_window.alias_window_ids == ()
     assert live_window.alias_window_ids == ()
 
 
-async def test_terminal_derived_target_never_resolves_to_a_live_session() -> None:
-    live = _agent(value="session-a")
-    found = await _manager(_live_fake(live)).find_window_by_id(
-        _sessionless_target("term-a")
+async def test_terminal_derived_target_resolves_to_a_live_session() -> None:
+    sessionless = _sessionless("term-b")
+    found = await _manager(_live_fake(sessionless)).find_window_by_id(
+        _sessionless_target("term-b")
     )
 
-    assert found is None
+    assert found is not None
+    assert found.window_id == _sessionless_target("term-b")
 
 
 async def test_session_rekey_does_not_implicitly_rebind_the_previous_target() -> None:
@@ -293,8 +296,8 @@ async def test_direct_lookup_and_reconciliation_share_the_same_projection() -> N
     assert after.alias_window_ids == ()
 
 
-async def test_sessionless_gap_does_not_create_or_inherit_identity() -> None:
-    """A missing session never inherits another session's identity."""
+async def test_sessionless_gap_uses_only_its_terminal_identity() -> None:
+    """A missing session uses its terminal and never inherits another identity."""
     runner = _SnapshotSequence(
         _live_fake(_agent(value="session-a")),
         _live_fake(_sessionless()),
@@ -313,23 +316,19 @@ async def test_sessionless_gap_does_not_create_or_inherit_identity() -> None:
 
     assert windows[_target("session-b")].alias_window_ids == ()
     assert windows[_target("other")].alias_window_ids == ()
+    assert _sessionless_target("term-a") not in windows
 
 
-async def test_sessionless_agent_target_is_not_actionable() -> None:
-    sessionless = {
-        "terminal_id": "term-b",
-        "pane_id": "w2:p2",
-        "tab_id": "w2:t9",
-        "workspace_id": "w2",
-        "agent": "claude",
-    }
+async def test_sessionless_agent_target_is_actionable() -> None:
+    sessionless = _sessionless("term-b")
     found = await _manager(_live_fake(sessionless)).find_window_by_id(
         _sessionless_target("term-b")
     )
-    assert found is None
+    assert found is not None
+    assert found.window_id == _sessionless_target("term-b")
 
 
-async def test_sessionless_agent_is_not_preserved_by_pane_compaction() -> None:
+async def test_sessionless_agent_is_preserved_by_pane_compaction() -> None:
     before = {
         "terminal_id": "term-b",
         "pane_id": "w2:p8",
@@ -339,8 +338,11 @@ async def test_sessionless_agent_is_not_preserved_by_pane_compaction() -> None:
     }
     after = {**before, "pane_id": "w1:p2", "tab_id": "w1:t3", "workspace_id": "w1"}
 
-    assert await _manager(_live_fake(before)).list_windows() == []
-    assert await _manager(_live_fake(after)).list_windows() == []
+    before_window = (await _manager(_live_fake(before)).list_windows())[0]
+    after_window = (await _manager(_live_fake(after)).list_windows())[0]
+
+    assert before_window.window_id == _sessionless_target("term-b")
+    assert after_window.window_id == _sessionless_target("term-b")
 
 
 async def test_find_window_requires_a_fresh_matching_session_target() -> None:

@@ -116,6 +116,61 @@ _PI_SESSION_ID = "019e214d-7011-754d-9efb-60106dfa967c"
 _STALE_PI_SESSION_ID = "019e214d-7011-754d-9efb-60106dfa0000"
 
 
+def test_herdr_pi_hook_without_provider_metadata_uses_live_agent(
+    tmp_path: Path, monkeypatch
+) -> None:
+    cwd = str(tmp_path / "proj")
+    transcript = _pi_transcript(tmp_path, cwd, _PI_SESSION_ID)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("CCGRAM_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("HERDR_WORKSPACE_ID", "w2")
+    monkeypatch.setenv("HERDR_PANE_ID", "w2:p1")
+    live_record = {
+        "agent": "pi",
+        "workspace_id": "w2",
+        "pane_id": "w2:p1",
+        "tab_id": "w2:t1",
+        "terminal_id": "term-1",
+        "agent_session": {
+            "source": "herdr:pi",
+            "agent": "pi",
+            "kind": "path",
+            "value": str(transcript),
+        },
+    }
+    agent_list = subprocess.CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout=json.dumps({"result": {"agents": [live_record]}}),
+        stderr="",
+    )
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.StringIO(
+            json.dumps(
+                {
+                    "session_id": _PI_SESSION_ID,
+                    "cwd": cwd,
+                    "hook_event_name": "SessionStart",
+                    "source": "startup",
+                }
+            )
+        ),
+    )
+
+    with patch("ccgram.hook.subprocess.run", return_value=agent_list):
+        hook_main()
+
+    target_id = HerdrManager().target_id_for_live_record(live_record)
+    assert target_id is not None
+    entry = json.loads((tmp_path / "state" / "session_map.json").read_text())[
+        "herdr:" + target_id
+    ]
+    assert entry["provider_name"] == "pi"
+    assert entry["transcript_path"] == str(transcript)
+
+
 def test_pi_session_start_writes_provider_and_resolves_transcript(
     tmp_path: Path, monkeypatch
 ) -> None:
