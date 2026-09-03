@@ -1510,8 +1510,8 @@ async def test_reconciliation_keeps_internal_records_but_marks_them_unadoptable(
     }
     assert [(window.window_id, window.window_name) for window in windows] == [
         (_target("visible"), "Claude ▸ workspace ▸ tab ▸ p1"),
-        (_target("workspace-internal"), "Claude ▸ Herdr ▸ internal ▸ p2"),
-        (_target("tab-internal"), "Claude ▸ workspace ▸ __ccgram__ ▸ p3"),
+        (_target("workspace-internal"), "Claude ▸ __main__ ▸ tab ▸ p2"),
+        (_target("tab-internal"), "Claude ▸ workspace ▸ __worker__ ▸ p3"),
     ]
 
     # The UI listing still hides ccgram's own panes.
