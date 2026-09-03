@@ -307,7 +307,7 @@ class TestSessionMonitorProviderFromMap:
             ),
             patch("ccgram.session.session_manager") as mock_sm,
         ):
-            await monitor._detect_and_cleanup_changes()
+            await monitor._detect_and_cleanup_changes(adoptable_window_ids=None)
             mock_sm.set_window_provider.assert_called_once_with("@5", "codex")
 
     async def test_skips_provider_when_not_in_map(self, tmp_path) -> None:
@@ -335,5 +335,5 @@ class TestSessionMonitorProviderFromMap:
             ),
             patch("ccgram.session.session_manager") as mock_sm,
         ):
-            await monitor._detect_and_cleanup_changes()
+            await monitor._detect_and_cleanup_changes(adoptable_window_ids=None)
             mock_sm.set_window_provider.assert_not_called()

@@ -20,6 +20,22 @@ from typing import Protocol, runtime_checkable
 # ── Value types ────────────────────────────────────────────────────────
 
 
+def canonical_window_id(window_id: str) -> str:
+    """The comparison form of a window id.
+
+    Window ids are opaque, but they are not all case-stable. agterm reports
+    UUIDs uppercase while a caller may round-trip one lowercased, which is why
+    the backend's own lookup case-folds and why ``WindowRef.matches`` does.
+    Anything comparing a persisted id against a live listing has to agree with
+    them, or the batch sets classify a live session as dead and the audit
+    prunes its state, bindings and offsets.
+
+    Case-folding is safe for every current id form: tmux ``@N`` has no case,
+    herdr's guarded targets are hex digests, agterm's are UUIDs.
+    """
+    return window_id.casefold()
+
+
 @dataclass
 class WindowRef:
     """Neutral representation of a multiplexer window (tmux window / herdr pane).
@@ -35,6 +51,17 @@ class WindowRef:
     pane_tty: str = ""
     pane_width: int = 0
     pane_height: int = 0
+    topic_eligible: bool = True
+    """Whether discovery may adopt this window as a topic.
+
+    Stamped by the backend, because whether a window is ccgram's own, hidden by
+    convention, or outside the configured scope is backend knowledge. Discovery
+    consumes ``list_windows_for_reconciliation``, which stays complete on
+    purpose so cleanup never mistakes a filtered-out window for a dead one, so
+    the adoption decision has to travel on the window itself instead of being
+    applied by omission. Backends with nothing to exclude leave it True.
+    """
+
     alias_window_ids: tuple[str, ...] = ()
     """Superseded canonical identities this same window may be persisted under."""
     legacy_alias_window_ids: tuple[str, ...] = ()

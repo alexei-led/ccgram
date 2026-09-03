@@ -632,7 +632,7 @@ class TestSessionMapReadFailures:
             ),
             patch("ccgram.session_monitor.session_lifecycle") as lifecycle,
         ):
-            await monitor._detect_and_cleanup_changes()
+            await monitor._detect_and_cleanup_changes(adoptable_window_ids=set())
         lifecycle.reconcile.assert_not_called()
 
 
@@ -678,7 +678,7 @@ class TestPendingToolsCleanup:
             new_callable=AsyncMock,
             return_value=new_map,
         ):
-            await monitor._detect_and_cleanup_changes()
+            await monitor._detect_and_cleanup_changes(adoptable_window_ids=set(new_map))
 
         assert old_sid not in monitor._pending_tools
 
@@ -688,6 +688,8 @@ class TestNewWindowDetection:
         cb = AsyncMock(spec=lambda event: None)
         monitor.set_new_window_callback(cb)
         monitor._last_session_map = {}
+        # Adoption is gated on the backend's verdict from the current listing;
+        # the loop sets this before reaching here.
 
         new_map = {"@5": {"session_id": "s1", "cwd": "/proj", "window_name": "proj"}}
         with patch.object(
@@ -697,7 +699,7 @@ class TestNewWindowDetection:
             new_callable=AsyncMock,
             return_value=new_map,
         ):
-            await monitor._detect_and_cleanup_changes()
+            await monitor._detect_and_cleanup_changes(adoptable_window_ids=set(new_map))
 
         cb.assert_called_once()
         event = cb.call_args[0][0]
@@ -722,7 +724,9 @@ class TestNewWindowDetection:
             new_callable=AsyncMock,
             return_value=initial_map,
         ):
-            await monitor._detect_and_cleanup_changes()
+            await monitor._detect_and_cleanup_changes(
+                adoptable_window_ids=set(initial_map)
+            )
 
         cb.assert_not_called()
 
@@ -739,7 +743,7 @@ class TestNewWindowDetection:
             new_callable=AsyncMock,
             return_value=new_map,
         ):
-            await monitor._detect_and_cleanup_changes()
+            await monitor._detect_and_cleanup_changes(adoptable_window_ids=set(new_map))
 
         cb.assert_called_once()
 
@@ -763,15 +767,26 @@ _HERDR_CAPS = MultiplexerCapabilities(
     self_identify_env="HERDR_PANE_ID",
     supports_event_stream=True,
     native_worktrees=True,
+    # Production herdr sets this; without it these tests take the agterm
+    # branch and guarded-target validation regresses unnoticed.
+    native_topic_targets=True,
 )
 
 
-def _winref(window_id: str, command: str) -> WindowRef:
+def _winref(window_id: str, command: str, *, eligible: bool | None = None) -> WindowRef:
+    """A window as a backend would hand it over.
+
+    ``topic_eligible`` is the backend's verdict, so these fixtures mirror what
+    a real adapter stamps: a record with an agent is adoptable, a bare shell
+    pane is not. Passing ``eligible`` overrides that for the cases that are
+    about the flag itself.
+    """
     return WindowRef(
         window_id=window_id,
         window_name=window_id,
         cwd="/proj",
         pane_current_command=command,
+        topic_eligible=bool(command.strip()) if eligible is None else eligible,
     )
 
 
@@ -1869,3 +1884,144 @@ def _make_gemini_provider():
     from ccgram.providers.gemini import GeminiProvider
 
     return GeminiProvider()
+
+
+class TestAdoptionRespectsBackendEligibility:
+    """Every path that can create a topic honours the backend's verdict.
+
+    Three sites fire ``NewWindowEvent``: discovery, the session-map delta and
+    the known-unbound self-heal. Only the first consults
+    ``is_agent_topic_window``, so a window the backend excluded could still be
+    adopted through the other two the moment a globally installed agent hook
+    wrote a session_map entry for it.
+    """
+
+    @pytest.fixture
+    def wired(self, monkeypatch) -> None:
+        monkeypatch.setattr(SessionManager, "_save_state", lambda self: None)
+        SessionManager()
+
+    async def test_known_unbound_path_skips_an_ineligible_window(
+        self, monitor: SessionMonitor, wired
+    ) -> None:
+        cb = AsyncMock(spec=lambda event: None)
+        monitor.set_new_window_callback(cb)
+        current_map = {
+            "OUT-OF-SCOPE": {"session_id": "S1", "cwd": "/repo", "window_name": "x"}
+        }
+
+        await monitor._emit_known_unbound_window_events(current_map, set())
+
+        cb.assert_not_called()
+
+    async def test_known_unbound_path_still_surfaces_an_eligible_window(
+        self, monitor: SessionMonitor, wired
+    ) -> None:
+        cb = AsyncMock(spec=lambda event: None)
+        monitor.set_new_window_callback(cb)
+        current_map = {
+            "IN-SCOPE": {"session_id": "S1", "cwd": "/repo", "window_name": "x"}
+        }
+
+        await monitor._emit_known_unbound_window_events(current_map, {"IN-SCOPE"})
+
+        cb.assert_called_once()
+
+    async def test_delta_path_refuses_an_out_of_scope_hook_entry(
+        self, monitor: SessionMonitor, wired
+    ) -> None:
+        """Hooks are installed globally, so an agent started in any workspace
+        writes an entry. A hook entry is not permission to adopt."""
+        cb = AsyncMock(spec=lambda event: None)
+        monitor.set_new_window_callback(cb)
+        raw = {
+            "agterm:OUT-OF-SCOPE": {
+                "session_id": "S1",
+                "cwd": "/repo",
+                "window_name": "elsewhere",
+            }
+        }
+
+        await monitor._detect_and_cleanup_changes(raw, adoptable_window_ids=set())
+
+        cb.assert_not_called()
+
+    async def test_delta_path_adopts_nothing_when_no_listing_was_available(
+        self, monitor: SessionMonitor, wired
+    ) -> None:
+        """None is not "no restriction": it means ccgram has no verdict.
+
+        Inferring one from the hook entry is what the fail-open cache did.
+        """
+        cb = AsyncMock(spec=lambda event: None)
+        monitor.set_new_window_callback(cb)
+        raw = {"agterm:ANY": {"session_id": "S1", "cwd": "/repo", "window_name": "x"}}
+
+        await monitor._detect_and_cleanup_changes(raw, adoptable_window_ids=None)
+
+        cb.assert_not_called()
+
+
+class TestTheLoopPassesTheEligibleSubset:
+    """Behavioural, not source inspection.
+
+    The unit tests above prove the delta path obeys whatever verdict it is
+    given. This proves the loop gives it the *eligible* subset rather than
+    every live window, which is the mistake the parameter exists to prevent:
+    handing over the complete listing would adopt exactly the windows the
+    backend refused.
+    """
+
+    async def test_the_delta_path_receives_only_eligible_windows(
+        self, monitor: SessionMonitor, monkeypatch
+    ) -> None:
+        received: list[set[str] | None] = []
+
+        async def spy(raw=None, *, adoptable_window_ids):
+            received.append(adoptable_window_ids)
+            monitor._running = False  # one cycle is enough
+            return {}
+
+        monkeypatch.setattr(
+            "ccgram.session_monitor.list_windows_for_reconciliation",
+            AsyncMock(
+                return_value=[
+                    _winref("KEEP", "claude"),
+                    _winref("REFUSED", "claude", eligible=False),
+                ]
+            ),
+        )
+        monkeypatch.setattr(
+            "ccgram.session_monitor.read_session_map_raw", AsyncMock(return_value={})
+        )
+        monkeypatch.setattr(monitor, "_read_hook_events", AsyncMock())
+        monkeypatch.setattr(monitor, "_cleanup_all_stale_sessions", AsyncMock())
+        monkeypatch.setattr(monitor, "_detect_and_cleanup_changes", spy)
+        monitor._running = True
+
+        await monitor._monitor_loop()
+
+        assert received == [{"KEEP"}], (
+            "the loop must hand over the eligible subset, not every live window"
+        )
+
+
+class TestAdoptionIdentityFoldsCaseInTheMonitor:
+    """Session-map keys are written by the hook; the adoption set comes from
+    the backend's listing. On agterm those can spell one UUID differently, and
+    comparing raw means the window is never adopted on any cycle.
+    """
+
+    def test_the_lookup_folds_case(self) -> None:
+        from ccgram.session_monitor import _adoption_lookup
+
+        assert _adoption_lookup({"9F1C2D3E-4A5B"}) == {"9f1c2d3e-4a5b"}
+
+    def test_a_case_variant_key_is_adoptable(self) -> None:
+        from ccgram.multiplexer.base import canonical_window_id
+        from ccgram.session_monitor import _adoption_lookup
+
+        lookup = _adoption_lookup({"9F1C2D3E-4A5B"})
+
+        assert canonical_window_id("9f1c2d3e-4a5b") in lookup
+        assert canonical_window_id("other-id") not in lookup

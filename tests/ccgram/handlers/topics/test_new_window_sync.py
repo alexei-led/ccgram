@@ -73,6 +73,9 @@ def _wire_orchestration(
 
 
 async def _detect(monitor: SessionMonitor, session_map: dict) -> None:
+    # Adoption is gated on the backend's verdict from the current listing, which
+    # the monitor loop derives before reaching this call. These windows are live
+    # and on tmux every live window is adoptable, so mirror that here.
     with patch.object(
         monitor,
         "_load_current_session_map",
@@ -80,7 +83,7 @@ async def _detect(monitor: SessionMonitor, session_map: dict) -> None:
         new_callable=AsyncMock,
         return_value=session_map,
     ):
-        await monitor._detect_and_cleanup_changes()
+        await monitor._detect_and_cleanup_changes(adoptable_window_ids=set(session_map))
 
 
 class TestNewWindowSyncWithBindings:

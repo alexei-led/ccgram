@@ -47,6 +47,7 @@ from .session_map import (
 )
 from .session_lifecycle import session_lifecycle
 from .multiplexer import multiplexer as tmux_manager
+from .multiplexer.base import canonical_window_id
 from .multiplexer.reconciliation import list_windows_for_reconciliation
 from .multiplexer.window_liveness import note_live_windows
 from .multiplexer.topic_mapping import is_agent_topic_window
@@ -76,6 +77,17 @@ _SKIP_RETRY_MAX_SECONDS = 60.0
 _MSG_PREVIEW_LENGTH = 80
 
 logger = structlog.get_logger()
+
+
+def _adoption_lookup(adoptable_window_ids: set[str]) -> set[str]:
+    """The comparison form of the adoption set, built once per pass.
+
+    Folded, because these keys were written by the hook while the set comes
+    from the backend's listing, and agterm reports UUIDs uppercase while a
+    caller may round-trip one lowercased. The set itself keeps the backend's
+    spelling, since the audit reports orphan ids straight out of it.
+    """
+    return {canonical_window_id(wid) for wid in adoptable_window_ids}
 
 
 class SessionMonitor:
@@ -623,9 +635,20 @@ class SessionMonitor:
             self.state.save_if_dirty()
 
     async def _detect_and_cleanup_changes(
-        self, raw: dict | None = None
+        self,
+        raw: dict | None = None,
+        *,
+        adoptable_window_ids: set[str] | None,
     ) -> dict[str, dict[str, str]]:
-        """Reconcile session_map; clean up replaced/removed sessions; fire new-window events."""
+        """Reconcile session_map; clean up replaced/removed sessions; fire new-window events.
+
+        ``adoptable_window_ids`` is this cycle's verdict, required rather than
+        defaulted: it is per-cycle input with one production caller, so holding
+        it as monitor state let a stale cycle's answer be reused and let the
+        first cycle run with none at all. ``None`` means no listing was
+        available, and then nothing is adopted — a hook entry is not evidence
+        that ccgram may adopt the window it names.
+        """
         if raw is None:
             raw = await read_session_map_raw()
         if raw is None:
@@ -654,6 +677,11 @@ class SessionMonitor:
             # session_manager forms a hard cycle on bootstrap.
             from .session import session_manager as _sm
 
+            adoptable_lookup = (
+                None
+                if adoptable_window_ids is None
+                else _adoption_lookup(adoptable_window_ids)
+            )
             for window_id, details in adoption_windows.items():
                 provider_name = details.get("provider_name", "")
                 if provider_name:
@@ -666,6 +694,15 @@ class SessionMonitor:
                     # the topic it was bound under; announcing it here would
                     # ask for a second topic for the same agent. Both other
                     # discovery paths skip bound windows for the same reason.
+                    continue
+
+                if (
+                    adoptable_lookup is None
+                    or canonical_window_id(window_id) not in adoptable_lookup
+                ):
+                    # A hook entry proves an agent ran there, not that ccgram
+                    # may adopt it. Installed globally, the hook writes entries
+                    # for windows outside the configured scope too.
                     continue
 
                 if self._new_window_callback:
@@ -691,10 +728,13 @@ class SessionMonitor:
         """Fire a NewWindowEvent for each live window not in session_map / bound.
 
         Surfaces windows the hook never registered (no session_map entry) so
-        they can become topics. On backends that expose agent status natively
-        (herdr), only agent panes qualify — a bare shell pane is not a topic;
-        tmux surfaces every window, preserving today's behavior. The gate is the
-        ``native_agent_status`` capability, not a backend name.
+        they can become topics. What qualifies is the backend's own verdict,
+        carried per window in ``WindowRef.topic_eligible``: herdr marks records
+        holding a guarded target and an agent label, agterm marks in-scope
+        sessions running an agent, tmux marks everything except the placeholder
+        main window, its own window and ``_``-prefixed ones, which its complete
+        listing returns ineligible instead of dropping. No capability flag
+        gates this; keying it on one produced two bugs in a row.
         """
         if not self._new_window_callback:
             return
@@ -728,7 +768,7 @@ class SessionMonitor:
     async def _emit_known_unbound_window_events(
         self,
         current_map: dict,
-        live_window_ids: set[str],
+        adoptable_window_ids: set[str],
     ) -> None:
         """Fire a NewWindowEvent for each session_map window that is not bound.
 
@@ -737,9 +777,13 @@ class SessionMonitor:
         poll until it succeeds. ``handle_new_window`` is idempotent — it skips
         windows that are already bound — so this generates no spam for bound tabs.
 
-        ``live_window_ids`` is the set from ``list_windows``. Because ``list_windows``
-        already filters ``__*__`` workspace/tab labels, any such tab is absent from
-        ``live_window_ids`` and is silently skipped here as well.
+        ``adoptable_window_ids`` holds the live windows whose backend marked them
+        ``WindowRef.topic_eligible``. It is NOT the plain live set: the listing
+        this is built from is the complete reconciliation one, because pruning
+        needs every window that exists. Filtering here is what keeps a window
+        the backend excluded — out of scope, ccgram's own, hidden by convention
+        — from being adopted through the session-map path, which reaches this
+        code whenever a globally installed agent hook writes an entry for it.
         """
         if not self._new_window_callback:
             return
@@ -748,9 +792,10 @@ class SessionMonitor:
         from .thread_router import thread_router
 
         bound_window_ids = {wid for _, _, wid in thread_router.iter_thread_bindings()}
+        adoptable_lookup = _adoption_lookup(adoptable_window_ids)
         for window_id, details in current_map.items():
-            if window_id not in live_window_ids:
-                continue  # dead / __*__-filtered — skip
+            if canonical_window_id(window_id) not in adoptable_lookup:
+                continue  # dead, or the backend says it may not be adopted
             if window_id in bound_window_ids:
                 continue  # already has a topic
             event = NewWindowEvent(
@@ -833,6 +878,14 @@ class SessionMonitor:
                 # after a successful fold, re-read the hook file under its
                 # normal parser so the canonical key is what lifecycle sees.
                 all_windows = await list_windows_for_reconciliation(tmux_manager)
+                # Set before the session-map paths run, not after: they consume
+                # it. None while a listing is unavailable, so adoption fails
+                # closed instead of reusing a stale cycle's verdict.
+                adoptable_window_ids = (
+                    None
+                    if all_windows is None
+                    else {w.window_id for w in all_windows if w.topic_eligible}
+                )
                 if all_windows is None:
                     logger.warning(
                         "Multiplexer listing unavailable; skipping window reconciliation"
@@ -860,18 +913,23 @@ class SessionMonitor:
                 await self._read_hook_events()
 
                 await session_map_sync.load_session_map(raw_session_map)
-                current_map = await self._detect_and_cleanup_changes(raw_session_map)
+                current_map = await self._detect_and_cleanup_changes(
+                    raw_session_map, adoptable_window_ids=adoptable_window_ids
+                )
 
                 monitored_map = current_map
                 if all_windows is not None:
                     live_window_ids = {w.window_id for w in all_windows}
                     session_map_sync.prune_session_map(live_window_ids)
+                    # Pruning needs every live window; adoption needs only the
+                    # ones the backend says may be adopted. The listing is
+                    # complete on purpose, so the two sets differ.
                     known_window_ids = set(current_map.keys())
                     await self._emit_unbound_window_events(
                         all_windows, known_window_ids
                     )
                     await self._emit_known_unbound_window_events(
-                        current_map, live_window_ids
+                        current_map, adoptable_window_ids or set()
                     )
                     monitored_map = {
                         window_id: details
