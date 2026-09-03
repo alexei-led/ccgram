@@ -54,7 +54,9 @@ def is_agent_topic_window(window: WindowRef, caps: MultiplexerCapabilities) -> b
 
     Only the backend can answer this. herdr knows a record carries a guarded
     target and an agent label, agterm knows its workspace scope and how to read
-    a wrapped argv, tmux excludes nothing. ``caps`` stays in the signature
+    a wrapped argv, and tmux excludes only the placeholder main window, its
+    own, and the ``_``-prefixed ones its complete listing marks ineligible
+    instead of dropping. ``caps`` stays in the signature
     because it is the seam's shape and callers pass it.
     """
     del caps
