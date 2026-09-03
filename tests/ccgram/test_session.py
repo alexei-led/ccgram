@@ -1145,6 +1145,24 @@ class TestWriteHooklessSessionMap:
         assert entry["provider_name"] == "codex"
         assert entry["window_name"] == "pumba-codex"
 
+    def test_pi_discovery_preserves_first_reply_boundary(
+        self, mgr: SessionManager, tmp_path, monkeypatch
+    ) -> None:
+        session_map_file = tmp_path / "session_map.json"
+        monkeypatch.setattr("ccgram.session.config.session_map_file", session_map_file)
+        monkeypatch.setattr("ccgram.session.config.tmux_session_name", "ccgram")
+
+        session_map_sync.write_hookless_session_map(
+            window_id="@7",
+            session_id="pi-uuid",
+            cwd="/my/project",
+            transcript_path="/path/pi.jsonl",
+            provider_name="pi",
+        )
+
+        raw = json.loads(session_map_file.read_text())
+        assert raw["ccgram:@7"]["replay_from_start"] is True
+
     def test_preserves_existing_session_map_entries(
         self, mgr: SessionManager, tmp_path, monkeypatch
     ) -> None:

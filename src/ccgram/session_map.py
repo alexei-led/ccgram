@@ -784,7 +784,12 @@ class SessionMapSync:
                     from .hooks.state_files import serialize_session_map_entry
 
                     session_map[window_key] = serialize_session_map_entry(
-                        session_id, cwd, display_name, transcript_path, provider_name
+                        session_id,
+                        cwd,
+                        display_name,
+                        transcript_path,
+                        provider_name,
+                        replay_from_start=provider_name == "pi",
                     )
                     atomic_write_json(map_file, session_map)
                     logger.info(

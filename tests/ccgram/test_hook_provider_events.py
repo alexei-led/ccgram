@@ -117,6 +117,74 @@ def test_herdr_nested_claude_hook_does_not_overwrite_live_pi_session(
     assert not (state_dir / "events.jsonl").exists()
 
 
+@pytest.mark.parametrize("event_name", ["SessionStart", "Stop"])
+def test_herdr_nested_pi_hook_does_not_overwrite_live_claude_session(
+    tmp_path: Path, monkeypatch, event_name: str
+) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("CCGRAM_DIR", str(state_dir))
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    monkeypatch.setenv("HERDR_WORKSPACE_ID", "w2")
+    monkeypatch.setenv("HERDR_PANE_ID", "w2:p1")
+    live_record = {
+        "agent": "claude",
+        "workspace_id": "w2",
+        "pane_id": "w2:p1",
+        "tab_id": "w2:t1",
+        "terminal_id": "term-1",
+        "agent_session": {
+            "source": "herdr:claude",
+            "agent": "claude",
+            "kind": "uuid",
+            "value": "root-claude-session",
+        },
+    }
+    target_id = HerdrManager().target_id_for_live_record(live_record)
+    assert target_id is not None
+    session_map_path = state_dir / "session_map.json"
+    original = json.dumps(
+        {
+            f"herdr:{target_id}": {
+                "session_id": "root-claude-session",
+                "cwd": str(tmp_path / "proj"),
+                "window_name": "Claude ▸ project ▸ 1 ▸ p1",
+                "transcript_path": str(tmp_path / ".claude" / "root.jsonl"),
+                "provider_name": "claude",
+            }
+        },
+        indent=2,
+    )
+    session_map_path.write_text(original)
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.StringIO(
+            json.dumps(
+                {
+                    "session_id": "019e214d-7011-754d-9efb-60106dfa9999",
+                    "cwd": str(tmp_path / "nested-pi"),
+                    "hook_event_name": event_name,
+                }
+            )
+        ),
+    )
+    agent_list = subprocess.CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout=json.dumps({"result": {"agents": [live_record]}}),
+        stderr="",
+    )
+
+    with patch("ccgram.hook.subprocess.run", return_value=agent_list) as agent_list_run:
+        hook_main(provider_name="pi")
+
+    agent_list_run.assert_called_once()
+    assert session_map_path.read_text() == original
+    assert not (state_dir / "events.jsonl").exists()
+
+
 _PI_SESSION_ID = "019e214d-7011-754d-9efb-60106dfa967c"
 _STALE_PI_SESSION_ID = "019e214d-7011-754d-9efb-60106dfa0000"
 

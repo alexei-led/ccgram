@@ -1340,9 +1340,17 @@ def _provider_from_herdr_pane() -> tuple[ProviderName | None, str, str | None]:
 def _hook_adapter_for_context(
     provider_name: str,
     payload_session_id: object,
+    herdr_provider: ProviderName | None,
     herdr_transcript_path: str,
 ) -> HookAdapter | None:
-    """Return an adapter only when Herdr's Pi identity matches this hook."""
+    """Return an adapter only when the live Herdr identity matches this hook."""
+    if herdr_provider is not None and herdr_provider != provider_name:
+        logger.info(
+            "Skipping %s hook from nested agent in Herdr pane; live agent is %s",
+            provider_name,
+            herdr_provider,
+        )
+        return None
     if (
         provider_name == "pi"
         and herdr_transcript_path
@@ -1387,6 +1395,7 @@ def _process_hook_stdin(
             provider_name,
         )
     detected_provider = provider_name or payload_provider
+    herdr_provider: ProviderName | None = None
     herdr_transcript_path = ""
     herdr_target_id: str | None = None
     use_herdr_snapshot = False
@@ -1412,6 +1421,7 @@ def _process_hook_stdin(
     adapter = _hook_adapter_for_context(
         detected_provider,
         payload.get("session_id"),
+        herdr_provider,
         herdr_transcript_path,
     )
     if adapter is None:
