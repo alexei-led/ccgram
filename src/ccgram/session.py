@@ -516,16 +516,29 @@ class SessionManager:
         self,
         live_window_ids: set[str],
         live_windows: list[tuple[str, str]],
+        adoptable_window_ids: set[str] | None = None,
     ) -> AuditResult:
-        """Read-only audit of all state maps against live tmux windows.
+        """Read-only audit of all state maps against live multiplexer windows.
+
+        Liveness and adoptability are different questions and must stay
+        separate here. Ghost detection, cleanup and display-name sync all ask
+        "does this window exist", so they need the complete live set; feeding
+        them a narrowed one turns a live-but-excluded window into a fixable
+        ghost, and ``/sync`` Fix closes those. Only the orphan section asks
+        "may ccgram adopt this", and only it reads the narrowed set.
 
         Args:
-            live_window_ids: Set of currently alive tmux window IDs.
-            live_windows: List of (window_id, window_name) for live windows.
+            live_window_ids: Every window the backend reports as existing.
+            live_windows: (window_id, window_name) for those windows.
+            adoptable_window_ids: The subset discovery may adopt, from
+                ``WindowRef.topic_eligible``. None means every live window,
+                which is what a backend that excludes nothing reports.
 
         Returns:
             AuditResult with discovered issues.
         """
+        if adoptable_window_ids is None:
+            adoptable_window_ids = live_window_ids
         issues: list[AuditIssue] = []
 
         # Collect all bound window IDs
@@ -640,7 +653,7 @@ class SessionManager:
 
         # 7. Orphaned tmux windows (live, known to ccgram, but not bound to any topic)
         known_wids = session_map_wids | set(self.window_states.keys())
-        for wid in live_window_ids:
+        for wid in adoptable_window_ids:
             if wid not in bound_window_ids and wid in known_wids:
                 name = dict(live_windows).get(wid, wid)
                 issues.append(

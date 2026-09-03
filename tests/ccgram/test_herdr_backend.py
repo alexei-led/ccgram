@@ -1175,14 +1175,21 @@ async def test_implicit_workspace_is_closed_for_tab_and_session_failures(
 
 
 async def test_duplicate_live_targets_are_quarantined_without_hiding_others() -> None:
+    """Quarantined records stay unaddressable, and liveness becomes unknown.
+
+    The duplicate panes are live and ccgram may hold bindings to them, so a
+    listing that silently omits them is not an account of what exists. Handing
+    that partial subset back as complete makes those bindings look like ghosts,
+    which the audit, the polling loop and the destructive guards act on.
+    Addressing is a different question and still refuses the ambiguous target.
+    """
     duplicate = _agent(pane_id="w9:p1", tab_id="w9:t1", value="same")
     unrelated = _agent(pane_id="w9:p2", tab_id="w9:t2", value="other")
     fake = _live_fake(duplicate, duplicate, unrelated)
 
     manager = _manager(fake)
-    windows = await manager.list_windows_for_reconciliation()
-    assert windows is not None
-    assert [window.window_id for window in windows] == [_target("other")]
+
+    assert await manager.list_windows_for_reconciliation() is None
     assert await manager.find_window_by_id(_target("same")) is None
     assert await manager.find_window_by_id(_target("other")) is not None
 
@@ -1193,10 +1200,7 @@ async def test_distinct_targets_on_one_pane_are_quarantined() -> None:
     unrelated = _agent(pane_id="w9:p2", tab_id="w9:t1", value="other")
     fake = _live_fake(first, second, unrelated)
 
-    windows = await _manager(fake).list_windows_for_reconciliation()
-
-    assert windows is not None
-    assert [window.window_id for window in windows] == [_target("other")]
+    assert await _manager(fake).list_windows_for_reconciliation() is None
     assert await _manager(fake).find_window_by_id(_target("first")) is None
     assert await _manager(fake).find_window_by_id(_target("second")) is None
     assert await _manager(fake).capture_pane(_target("first")) is None
@@ -1460,7 +1464,9 @@ async def test_agent_status_and_workspace_list_fail_closed_on_malformed_fields()
     assert await _manager(malformed_workspaces).list_workspaces() == []
 
 
-async def test_reconciliation_filters_internal_workspace_and_tab_labels() -> None:
+async def test_reconciliation_keeps_internal_records_but_marks_them_unadoptable() -> (
+    None
+):
     visible = _agent(value="visible")
     internal_workspace = _agent(
         value="workspace-internal", workspace_id="internal", pane_id="w2:p2"
@@ -1490,9 +1496,26 @@ async def test_reconciliation_filters_internal_workspace_and_tab_labels() -> Non
             ),
         )
     )
-    windows = await _manager(fake).list_windows_for_reconciliation()
+    manager = _manager(fake)
+
+    # Reconciliation answers "what exists". Dropping internal records here made
+    # a bound session renamed into an internal workspace look dead, so the
+    # audit called its binding a fixable ghost and Fix closed the topic.
+    windows = await manager.list_windows_for_reconciliation()
     assert windows is not None
+    assert {w.window_id: w.topic_eligible for w in windows} == {
+        _target("visible"): True,
+        _target("workspace-internal"): False,
+        _target("tab-internal"): False,
+    }
     assert [(window.window_id, window.window_name) for window in windows] == [
+        (_target("visible"), "Claude ▸ workspace ▸ tab ▸ p1"),
+        (_target("workspace-internal"), "Claude ▸ __main__ ▸ tab ▸ p2"),
+        (_target("tab-internal"), "Claude ▸ workspace ▸ __worker__ ▸ p3"),
+    ]
+
+    # The UI listing still hides ccgram's own panes.
+    assert [(w.window_id, w.window_name) for w in await manager.list_windows()] == [
         (_target("visible"), "Claude ▸ workspace ▸ tab ▸ p1")
     ]
 
@@ -1532,6 +1555,15 @@ async def test_missing_label_uses_fallback_without_hiding_other_sessions() -> No
     found = await _manager(fake).find_window_by_id(_target("missing"))
     assert found is not None
     assert found.window_name.startswith("Claude ▸ Herdr ▸ ")
+
+    # An unlabeled record cannot be shown to be non-internal, so it is kept for
+    # liveness and addressing but never offered for adoption.
+    by_id = {w.window_id: w for w in windows}
+    assert by_id[_target("missing")].topic_eligible is False
+    assert by_id[_target("visible")].topic_eligible is True
+    assert _target("missing") not in {
+        w.window_id for w in await _manager(fake).list_windows()
+    }
 
 
 async def test_malformed_prefixed_target_never_reads_agent_list() -> None:
@@ -1816,3 +1848,119 @@ async def test_list_windows_cwd_empty_when_agent_record_has_no_cwd_key() -> None
     windows = await _manager(_live_fake(agent)).list_windows()
     assert len(windows) == 1
     assert windows[0].cwd == ""
+
+
+async def test_live_records_are_stamped_adoptable() -> None:
+    """The herdr topic rules live here now, not in ``is_agent_topic_window``.
+
+    Keying that gate on a capability flag broke twice: once on
+    ``native_agent_status`` when agterm began reporting status natively, once
+    on ``native_topic_targets``, whose documented meaning is which creation
+    flow to use. Whether a record carries a guarded target and an agent label
+    is herdr's own knowledge, so herdr answers it.
+    """
+    fake = _live_fake(_agent(pane_id="w9:p1", tab_id="w9:t1", value="one"))
+
+    windows = await _manager(fake).list_windows_for_reconciliation()
+
+    assert windows is not None
+    assert [w.window_id for w in windows] == [_target("one")]
+    assert windows[0].topic_eligible is True
+    assert windows[0].window_id.startswith("herdr-session-v1-")
+
+
+async def test_a_pane_without_an_agent_is_not_listed_or_adoptable() -> None:
+    """A bare shell pane was never a herdr topic; that must not have changed."""
+    fake = _live_fake(_agent(pane_id="w9:p1", tab_id="w9:t1", value="one", agent=""))
+
+    # An agent_session present but incomplete is a malformed record, not a
+    # bare pane: herdr published something that cannot be parsed, so this
+    # snapshot cannot account for what is live and says so.
+    assert await _manager(fake).list_windows_for_reconciliation() is None
+
+
+async def test_a_pane_with_no_agent_session_keeps_the_listing_complete() -> None:
+    """A genuinely agent-less pane is not a gap in the account.
+
+    herdr publishes no agent_session for a plain shell pane. That pane was
+    never a topic and never will be, so it is skipped without making liveness
+    unknown. Treating it as a gap would make the listing unknown whenever the
+    user has an ordinary pane open, which is to say always, and nothing would
+    ever be cleaned up again.
+    """
+    bare = {
+        "terminal_id": "term-a",
+        "pane_id": "w9:p1",
+        "tab_id": "w9:t1",
+        "workspace_id": "w9",
+    }
+    live = _agent(pane_id="w9:p2", tab_id="w9:t2", value="two")
+
+    windows = await _manager(_live_fake(bare, live)).list_windows_for_reconciliation()
+
+    assert windows is not None
+    assert [window.window_id for window in windows] == [_target("two")]
+
+
+async def test_ui_listing_is_best_effort_when_agent_list_fails() -> None:
+    """The picker empties rather than raising through the handler.
+
+    Only ``list_windows_for_reconciliation`` distinguishes this from an empty
+    herdr; the selection listing has always degraded, and it must keep doing so
+    now that it no longer routes through the guarded reconciliation path.
+    """
+    fake = FakeHerdr().on("agent", "list", rc=1)
+
+    assert await _manager(fake).list_windows() == []
+    assert await _manager(fake).list_windows_for_reconciliation() is None
+
+
+async def test_ui_listing_is_best_effort_when_label_lookup_fails() -> None:
+    """Same for the workspace and tab label listings the projection needs."""
+    fake = (
+        FakeHerdr()
+        .on("agent", "list", out=_agents(_agent(value="one")))
+        .on("workspace", "list", rc=1)
+    )
+
+    assert await _manager(fake).list_windows() == []
+
+
+async def test_a_recognised_sessionless_agent_keeps_the_listing_complete() -> None:
+    """It has a terminal-derived identity, so it is addressable, so it is no gap.
+
+    Completeness means every addressable guarded target. A recognised agent
+    that has not published its composite still gets one, so the seconds after
+    every /new must not read as an incomplete account.
+    """
+    manager = _manager(_live_fake(_sessionless("term-b")))
+
+    windows = await manager.list_windows_for_reconciliation()
+
+    assert windows is not None
+    assert [w.window_id for w in windows] == [_sessionless_target("term-b")]
+
+
+async def test_an_unrecognised_sessionless_agent_does_not_blank_the_listing() -> None:
+    """Antigravity is the live case, and it is not a transient.
+
+    It is a supported provider, excluded from the terminal-fallback set, and
+    documented to stay sessionless until its first prompt creates a
+    conversation. Counting it as a gap would make reconciliation unknown for
+    every topic while one sits idle, which never resolves on its own.
+    """
+    idle_antigravity = {
+        "terminal_id": "term-x",
+        "pane_id": "w9:p9",
+        "tab_id": "w9:t9",
+        "workspace_id": "w9",
+        "agent": "antigravity",
+    }
+    bound = _agent(pane_id="w2:p1", tab_id="w2:t1", value="session-a")
+
+    windows = await _manager(
+        _live_fake(idle_antigravity, bound)
+    ).list_windows_for_reconciliation()
+
+    assert windows is not None, "an unaddressable agent is not an unaccountable gap"
+    assert [w.window_id for w in windows] == [_target("session-a")]

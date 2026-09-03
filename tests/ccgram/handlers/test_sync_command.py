@@ -1,9 +1,14 @@
+import contextlib
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from telegram.error import BadRequest, TelegramError
 
+from ccgram.multiplexer.base import WindowRef
+from ccgram.session import SessionManager
+from ccgram.thread_router import thread_router
+from ccgram.handlers.sync_command import _run_audit
 from ccgram.handlers.callback_data import CB_SYNC_DISMISS, CB_SYNC_FIX
 from ccgram.handlers.sync_command import (
     _cleanup_retired_topics,
@@ -32,6 +37,11 @@ def _patch_deps():
         patch(
             "ccgram.handlers.sync_command.list_windows_for_reconciliation"
         ) as mock_listing,
+        # still_adoptable lives in topic_orchestration and reads its own
+        # backend reference, so the same listing has to answer there.
+        patch(
+            "ccgram.handlers.topics.topic_orchestration.tmux_manager"
+        ) as mock_tm_topics,
         patch("ccgram.handlers.sync_command.config") as mock_cfg,
     ):
         mock_sm.audit_state.return_value = AuditResult(
@@ -41,6 +51,7 @@ def _patch_deps():
         mock_sm.window_states = {}
         mock_tm.list_windows = AsyncMock(return_value=[])
         mock_tm.list_windows_for_reconciliation = mock_listing
+        mock_tm_topics.list_windows_for_reconciliation = mock_listing
         mock_listing.return_value = []
         mock_cfg.is_user_allowed.return_value = True
         yield mock_sm, mock_sms, mock_wq, mock_tr, mock_tm, mock_cfg
@@ -778,8 +789,30 @@ class TestSyncFix:
                 100, 42, retirement_reason="remote_removed"
             )
 
+    @staticmethod
+    def _listing(mock_tm, *refs) -> None:
+        """Set the confirmed listing both the audit and adoption read.
+
+        An orphaned_window issue means a live unbound window, so the window
+        must be in the listing: an issue with an empty listing is a state no
+        backend produces.
+        """
+        mock_tm.list_windows_for_reconciliation.return_value = list(refs)
+
+    @staticmethod
+    def _ref(window_id: str, name: str, *, eligible: bool = True):
+        from ccgram.multiplexer.base import WindowRef
+
+        return WindowRef(
+            window_id=window_id,
+            window_name=name,
+            cwd="/tmp",
+            topic_eligible=eligible,
+        )
+
     async def test_fix_adopts_orphaned_windows(self, _patch_deps) -> None:
-        mock_sm, _, mock_wq, _, _, _ = _patch_deps
+        mock_sm, _, mock_wq, _, mock_tm, _ = _patch_deps
+        self._listing(mock_tm, self._ref("w2:t5", "stray-proj"))
         mock_sm.audit_state.side_effect = [
             AuditResult(
                 issues=[
@@ -808,6 +841,146 @@ class TestSyncFix:
             event = mock_handle.call_args[0][0]
             assert event.window_id == "w2:t5"
             assert event.window_name == "stray-proj"
+
+    async def test_fix_does_not_adopt_a_window_that_became_ineligible(
+        self, _patch_deps
+    ) -> None:
+        """The audit's verdict is re-read at the point of adoption.
+
+        /sync Fix probes every bound topic over the network between the audit
+        and the adoption, so the listing behind an orphaned_window issue can be
+        seconds old. A window that moved out of scope, or went away, in that
+        gap must not be handed a topic.
+        """
+        mock_sm, _, mock_wq, _, mock_tm, _ = _patch_deps
+        mock_sm.audit_state.side_effect = [
+            AuditResult(
+                issues=[AuditIssue("orphaned_window", "w2:t5 (stray)", fixable=True)],
+                total_bindings=1,
+                live_binding_count=1,
+            ),
+            AuditResult(issues=[], total_bindings=1, live_binding_count=1),
+        ]
+        mock_wq.view_window.return_value = MagicMock(
+            session_id="s1", cwd="/tmp", window_name="stray-proj"
+        )
+        # First read (the audit) sees it adoptable; by the adoption read it has
+        # moved out of scope.
+        mock_tm.list_windows_for_reconciliation.side_effect = [
+            [self._ref("w2:t5", "stray-proj")],
+            [self._ref("w2:t5", "stray-proj", eligible=False)],
+            [self._ref("w2:t5", "stray-proj", eligible=False)],
+        ]
+
+        query = MagicMock()
+
+        with (
+            patch("ccgram.handlers.sync_command.safe_edit"),
+            patch(
+                "ccgram.handlers.topics.topic_orchestration.handle_new_window",
+                new_callable=AsyncMock,
+            ) as mock_handle,
+        ):
+            await handle_sync_fix(query)
+
+        mock_handle.assert_not_called()
+
+    async def test_second_orphan_is_judged_after_the_first_is_created(
+        self, _patch_deps
+    ) -> None:
+        """The re-read is per candidate, not once for the batch.
+
+        Creating a topic is several Telegram round-trips on its own, so a
+        batch-wide snapshot judges the second orphan on a listing taken before
+        the first one's topic existed. Here B leaves scope while A is being
+        created, and must not reach handle_new_window.
+        """
+        mock_sm, _, mock_wq, _, mock_tm, _ = _patch_deps
+        mock_sm.audit_state.side_effect = [
+            AuditResult(
+                issues=[
+                    AuditIssue("orphaned_window", "w2:tA (a)", fixable=True),
+                    AuditIssue("orphaned_window", "w2:tB (b)", fixable=True),
+                ],
+                total_bindings=2,
+                live_binding_count=2,
+            ),
+            AuditResult(issues=[], total_bindings=2, live_binding_count=2),
+        ]
+        mock_wq.view_window.return_value = MagicMock(
+            session_id="s1", cwd="/tmp", window_name="proj"
+        )
+
+        both_live = [self._ref("w2:tA", "a"), self._ref("w2:tB", "b")]
+        b_left_scope = [
+            self._ref("w2:tA", "a"),
+            self._ref("w2:tB", "b", eligible=False),
+        ]
+
+        # Creating A's topic is what takes B out of scope, so the flip happens
+        # exactly where a batch-wide snapshot would already have been taken.
+        state = {"windows": both_live}
+
+        async def _listing(*_a, **_kw):
+            return state["windows"]
+
+        # Mutate, never rebind: the fixture aliases this attribute to the
+        # module-level helper patch, and replacing it breaks the alias.
+        mock_tm.list_windows_for_reconciliation.side_effect = _listing
+
+        query = MagicMock()
+
+        with (
+            patch("ccgram.handlers.sync_command.safe_edit"),
+            patch(
+                "ccgram.handlers.topics.topic_orchestration.handle_new_window",
+                new_callable=AsyncMock,
+            ) as mock_handle,
+        ):
+
+            async def _create(*_a, **_kw):
+                state["windows"] = b_left_scope
+
+            mock_handle.side_effect = _create
+            await handle_sync_fix(query)
+
+        adopted = [call[0][0].window_id for call in mock_handle.call_args_list]
+        assert adopted == ["w2:tA"]
+
+    async def test_fix_adopts_nothing_when_the_listing_goes_away(
+        self, _patch_deps
+    ) -> None:
+        """Adoption is the one step here that is safe to skip and retry."""
+        mock_sm, _, mock_wq, _, mock_tm, _ = _patch_deps
+        mock_sm.audit_state.side_effect = [
+            AuditResult(
+                issues=[AuditIssue("orphaned_window", "w2:t5 (stray)", fixable=True)],
+                total_bindings=1,
+                live_binding_count=1,
+            ),
+            AuditResult(issues=[], total_bindings=1, live_binding_count=1),
+        ]
+        mock_wq.view_window.return_value = MagicMock(
+            session_id="s1", cwd="/tmp", window_name="stray-proj"
+        )
+        mock_tm.list_windows_for_reconciliation.side_effect = [
+            [self._ref("w2:t5", "stray-proj")],
+            None,
+            [self._ref("w2:t5", "stray-proj")],
+        ]
+
+        query = MagicMock()
+
+        with (
+            patch("ccgram.handlers.sync_command.safe_edit"),
+            patch(
+                "ccgram.handlers.topics.topic_orchestration.handle_new_window",
+                new_callable=AsyncMock,
+            ) as mock_handle,
+        ):
+            await handle_sync_fix(query)
+
+        mock_handle.assert_not_called()
 
 
 class TestDeadTopicDetection:
@@ -899,6 +1072,28 @@ class TestPrivateTopicSyncLifecycle:
 
 
 class TestDeadTopicRecreation:
+    """A dead topic is a live window whose Telegram topic was deleted.
+
+    So the window is present in the listing throughout: recreation is refused
+    unless it is confirmed present, because the repair unbinds the thread
+    before creating the replacement.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _window_is_live(self, _patch_deps):
+        """Whatever window a case binds, report it live."""
+        from ccgram.multiplexer.base import WindowRef
+
+        _, _, _, mock_tr, mock_tm, _ = _patch_deps
+
+        async def _listing(*_a, **_kw):
+            bound = mock_tr.get_window_for_thread.return_value
+            if not isinstance(bound, str):
+                return []
+            return [WindowRef(window_id=bound, window_name="proj", cwd="/tmp/proj")]
+
+        mock_tm.list_windows_for_reconciliation.side_effect = _listing
+
     async def test_skips_stale_issue_after_topic_was_rebound(self, _patch_deps) -> None:
         _mock_sm, _mock_sms, mock_wq, mock_tr, _mock_tm, _mock_cfg = _patch_deps
         mock_wq.view_window.return_value = MagicMock(
@@ -1078,7 +1273,15 @@ class TestDeadTopicRecreation:
 
 class TestSyncFixDeadTopic:
     async def test_fix_recreates_dead_topics(self, _patch_deps) -> None:
-        mock_sm, _, mock_wq, mock_tr, _, _ = _patch_deps
+        from ccgram.multiplexer.base import WindowRef
+
+        mock_sm, _, mock_wq, mock_tr, mock_tm, _ = _patch_deps
+        # The window is live throughout — a dead *topic* is a deleted Telegram
+        # topic, not a dead window — and recreation is refused unless the
+        # window is confirmed present at that point.
+        mock_tm.list_windows_for_reconciliation.return_value = [
+            WindowRef(window_id="@2", window_name="qmd-go", cwd="/tmp")
+        ]
         mock_sm.audit_state.side_effect = [
             AuditResult(issues=[], total_bindings=1, live_binding_count=1),
             AuditResult(issues=[], total_bindings=1, live_binding_count=1),
@@ -1117,3 +1320,179 @@ class TestSyncFixDeadTopic:
             mock_handle.assert_called_once()
             report_text = mock_edit.call_args[0][1]
             assert "Recreated 1 topic" in report_text
+
+
+class TestSyncAuditSeparatesLivenessFromAdoption:
+    """`/sync` Fix adopts the orphans the audit reports, so adoption takes the
+    backend's verdict — but liveness must stay complete, or a live binding to
+    an excluded window becomes a fixable ghost that Fix closes.
+    """
+
+    @staticmethod
+    def _windows() -> list[WindowRef]:
+        return [
+            WindowRef(
+                window_id="REFUSED",
+                window_name="elsewhere",
+                cwd="/other",
+                pane_current_command="claude",
+                topic_eligible=False,
+            ),
+            WindowRef(
+                window_id="ALLOWED",
+                window_name="agent",
+                cwd="/proj",
+                pane_current_command="claude",
+            ),
+        ]
+
+    async def test_audit_gets_every_window_live_and_only_some_adoptable(self):
+        """Backend-shaped: the UI listing omits what the backend refuses.
+
+        Mocking ``list_windows`` to return the refused window described a state
+        real agterm cannot produce, so it could not expose the defect. The
+        audit must take liveness from the reconciliation listing, which keeps
+        the refused window, and adoptability from its ``topic_eligible``.
+        """
+        with (
+            patch("ccgram.handlers.sync_command.tmux_manager") as mock_tmux,
+            patch(
+                "ccgram.handlers.sync_command.list_windows_for_reconciliation",
+                new_callable=AsyncMock,
+                return_value=self._windows(),
+            ),
+            patch("ccgram.handlers.sync_command.session_manager") as mock_sm,
+        ):
+            # what a real backend does: the UI listing hides the refused one
+            mock_tmux.list_windows = AsyncMock(
+                return_value=[w for w in self._windows() if w.topic_eligible]
+            )
+            mock_sm.audit_state.return_value = MagicMock(issues=[])
+
+            await _run_audit()
+
+            live_ids, live_pairs, adoptable = mock_sm.audit_state.call_args[0]
+
+        # liveness is not narrowed: the excluded window still exists
+        assert live_ids == {"REFUSED", "ALLOWED"}
+        assert {wid for wid, _ in live_pairs} == {"REFUSED", "ALLOWED"}
+        # adoption is
+        assert adoptable == {"ALLOWED"}
+
+    async def test_an_unavailable_listing_does_not_declare_everything_dead(self):
+        with (
+            patch(
+                "ccgram.handlers.sync_command.list_windows_for_reconciliation",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch("ccgram.handlers.sync_command.session_manager") as mock_sm,
+        ):
+            result = await _run_audit()
+
+        assert result is None
+        mock_sm.audit_state.assert_not_called()
+
+    def test_a_live_but_ineligible_binding_is_not_a_ghost(self):
+        """The regression my first attempt at this introduced.
+
+        Narrowing the live set made an existing topic, whose session merely
+        stopped qualifying for new adoption, look like a fixable ghost.
+        """
+        sm = SessionManager()
+        thread_router.bind_thread(1, 2, "REFUSED", chat_id=-100)
+
+        audit = sm.audit_state(
+            {"REFUSED", "ALLOWED"},
+            [("REFUSED", "elsewhere"), ("ALLOWED", "agent")],
+            {"ALLOWED"},
+        )
+
+        ghosts = [i for i in audit.issues if i.category == "ghost_binding"]
+        assert not ghosts, "a live window is not a ghost merely by being excluded"
+
+    def test_an_ineligible_window_is_not_a_fixable_orphan(self):
+        """Both windows must be orphan *candidates*, or this asserts nothing.
+
+        A window becomes an orphan only when ccgram already knows it (session
+        map or window state) and no topic is bound to it. With a fresh manager
+        that set is empty, no orphans are produced at all, and a check that
+        merely says "no orphan mentions REFUSED" passes without running.
+        """
+        sm = SessionManager()
+        with patch.object(
+            SessionManager,
+            "_get_session_map_window_ids",
+            return_value={"REFUSED", "ALLOWED"},
+        ):
+            audit = sm.audit_state(
+                {"REFUSED", "ALLOWED"},
+                [("REFUSED", "elsewhere"), ("ALLOWED", "agent")],
+                {"ALLOWED"},
+            )
+
+        orphans = [i for i in audit.issues if i.category == "orphaned_window"]
+        # the eligible one is offered for adoption...
+        assert any("ALLOWED" in i.detail for i in orphans), (
+            "the eligible window must be a candidate, or the check below is empty"
+        )
+        # ...and the refused one is not
+        assert not any("REFUSED" in i.detail for i in orphans)
+
+    async def test_handle_sync_fix_passes_both_sets_and_never_adopts_the_refused(
+        self,
+    ):
+        """The mutating path. ``handle_sync_fix`` does not call ``_run_audit``,
+        so testing that function proved nothing about pressing Fix.
+        """
+        query = MagicMock()
+        query.get_bot.return_value = MagicMock()
+
+        with (
+            patch(
+                "ccgram.handlers.sync_command.list_windows_for_reconciliation",
+                new_callable=AsyncMock,
+                return_value=self._windows(),
+            ),
+            patch("ccgram.handlers.sync_command.session_manager") as mock_sm,
+            patch("ccgram.handlers.sync_command.session_map_sync"),
+            patch("ccgram.handlers.sync_command.user_preferences"),
+            patch("ccgram.handlers.sync_command.window_query"),
+            patch("ccgram.handlers.sync_command.safe_edit", new_callable=AsyncMock),
+            patch(
+                "ccgram.handlers.sync_command._probe_dead_topics",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch(
+                "ccgram.handlers.sync_command._retired_topic_issues", return_value=[]
+            ),
+            patch(
+                "ccgram.handlers.sync_command._sync_live_topic_names",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "ccgram.handlers.sync_command._adopt_orphaned_windows",
+                new_callable=AsyncMock,
+            ) as mock_adopt,
+            patch(
+                "ccgram.handlers.sync_command._close_ghost_topics",
+                new_callable=AsyncMock,
+                return_value=(0, 0),
+            ),
+        ):
+            mock_sm.audit_state.return_value = MagicMock(issues=[])
+            with contextlib.suppress(Exception):
+                await handle_sync_fix(query)
+
+            # The later stages are mocked out and can raise on their mocks; the
+            # claim is about the audit call the fix path makes.
+            audits = [c for c in mock_sm.audit_state.call_args_list if len(c[0]) == 3]
+            assert audits, "handle_sync_fix must pass both sets to audit_state"
+            live_ids, live_pairs, adoptable = audits[0][0]
+
+        assert live_ids == {"REFUSED", "ALLOWED"}, "pruning needs every window"
+        assert adoptable == {"ALLOWED"}
+        for call in mock_adopt.call_args_list:
+            for issue in call[0][1]:
+                assert "REFUSED" not in getattr(issue, "detail", "")

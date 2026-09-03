@@ -40,6 +40,7 @@ from .handlers.topics.topic_orchestration import (
 )
 from .handlers.topics.topic_orchestration import (
     handle_new_window as _handle_new_window,
+    still_adoptable as _still_adoptable,
 )
 from .handlers.topics.topic_orchestration import (
     is_pending_creation as _is_pending_creation,
@@ -267,6 +268,12 @@ async def start_session_monitor(application: Application) -> SessionMonitor:
     )
 
     async def new_window_callback(event: NewWindowEvent) -> None:
+        # The automatic sink, so eligibility is re-read per window. The monitor
+        # emits a batch and awaits each creation in turn, so without this the
+        # last window in a batch is judged on a listing taken before the first
+        # one's topic existed. Explicit binds do not come through here.
+        if not await _still_adoptable(event.window_id):
+            return
         await _handle_new_window(event, client)
 
     monitor.set_new_window_callback(new_window_callback)
