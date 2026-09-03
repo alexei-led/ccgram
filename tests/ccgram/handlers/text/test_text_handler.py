@@ -724,7 +724,7 @@ class TestUnknownAgentStateDoesNotClearTheMarker:
     @staticmethod
     async def _run(
         pane_command: str, *, bound_provider: str = "claude"
-    ) -> tuple[bool, AsyncMock, AsyncMock]:
+    ) -> tuple[bool, AsyncMock, AsyncMock, AsyncMock]:
         lifecycle_strategy.mark_dead_notified(100, 42, "@0")
         window = WindowRef(
             window_id="@0",
@@ -742,6 +742,10 @@ class TestUnknownAgentStateDoesNotClearTheMarker:
                 new_callable=AsyncMock,
                 return_value=False,
             ),
+            patch(
+                f"{_TH}.discover_and_register_transcript",
+                new_callable=AsyncMock,
+            ) as mock_sync_provider,
             patch(f"{_TH}.safe_reply", new_callable=AsyncMock) as mock_reply,
         ):
             mock_tm.list_windows_for_reconciliation = AsyncMock(return_value=[window])
@@ -750,17 +754,20 @@ class TestUnknownAgentStateDoesNotClearTheMarker:
             # Stale cached cwd: the shape that reaches the unbind.
             mock_query.view_window.return_value = MagicMock(cwd="/nonexistent")
             result = await _handle_dead_window("@0", 100, 42, "hi", {}, message)
-        return result, mock_router, mock_reply
+        return result, mock_router, mock_reply, mock_sync_provider
 
     @pytest.mark.parametrize("pane_command", ["", "vim", "less", "top", "bash"])
     async def test_a_non_agent_foreground_keeps_the_marker_and_forwards_nothing(
         self, pane_command: str
     ) -> None:
-        handled, mock_router, mock_reply = await self._run(pane_command)
+        handled, mock_router, mock_reply, mock_sync_provider = await self._run(
+            pane_command
+        )
 
         assert handled is True, "the message must not be forwarded to the pane"
         assert lifecycle_strategy.is_dead_notified(100, 42, "@0")
         mock_router.unbind_thread.assert_not_called()
+        mock_sync_provider.assert_not_awaited()
         assert "nothing confirms an agent" in mock_reply.await_args[0][1]
 
     @pytest.mark.parametrize("pane_command", ["claude", "codex"])
@@ -768,15 +775,29 @@ class TestUnknownAgentStateDoesNotClearTheMarker:
         self, pane_command: str
     ) -> None:
         """Any confirmed agent is enough to resume forwarding safely."""
-        handled, mock_router, _ = await self._run(pane_command)
+        handled, mock_router, _, mock_sync_provider = await self._run(pane_command)
 
         assert handled is False, "a live agent's topic keeps forwarding"
         assert not lifecycle_strategy.is_dead_notified(100, 42, "@0")
         mock_router.unbind_thread.assert_not_called()
+        mock_sync_provider.assert_awaited_once()
 
     async def test_a_shell_bound_topic_accepts_a_shell_foreground(self) -> None:
-        handled, mock_router, _ = await self._run("bash", bound_provider="shell")
+        handled, mock_router, _, mock_sync_provider = await self._run(
+            "bash", bound_provider="shell"
+        )
 
         assert handled is False
         assert not lifecycle_strategy.is_dead_notified(100, 42, "@0")
         mock_router.unbind_thread.assert_not_called()
+        mock_sync_provider.assert_awaited_once()
+
+    async def test_a_shell_bound_topic_syncs_a_detected_agent(self) -> None:
+        handled, mock_router, _, mock_sync_provider = await self._run(
+            "codex", bound_provider="shell"
+        )
+
+        assert handled is False
+        assert not lifecycle_strategy.is_dead_notified(100, 42, "@0")
+        mock_router.unbind_thread.assert_not_called()
+        mock_sync_provider.assert_awaited_once()

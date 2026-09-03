@@ -50,6 +50,7 @@ from ..messaging_pipeline.message_sender import (
     safe_reply,
 )
 from ..recovery.recovery_banner import RecoveryBanner, render_banner
+from ..recovery.transcript_discovery import discover_and_register_transcript
 from ..polling.polling_state import lifecycle_strategy
 from ..telegram_origin import (
     agent_origin_returned_to_shell,
@@ -393,6 +394,8 @@ async def _handle_dead_window(
                 "/restore to start one.",
             )
             return True
+
+        await discover_and_register_transcript(window_id, _window=w)
 
     if w is not None and not returned_to_shell:
         lifecycle_strategy.clear_dead_notification(user_id, thread_id)
