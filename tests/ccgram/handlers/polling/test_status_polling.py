@@ -2462,7 +2462,9 @@ class TestUpdateStatusMessage:
         bot = AsyncMock(spec=Bot)
         with _tick_env(window=None) as env:
             await _update_status(bot, 1, "@0", thread_id=42)
-        env.enqueue.assert_called_once_with(ANY, 1, "@0", None, thread_id=42)
+        env.enqueue.assert_called_once_with(
+            ANY, 1, "@0", None, thread_id=42, transient=True
+        )
 
     async def test_empty_capture_keeps_existing_status(self) -> None:
         bot = AsyncMock(spec=Bot)

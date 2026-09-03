@@ -81,17 +81,40 @@ async def test_ensure_session_calls_get_or_create(mgr: TmuxManager) -> None:
         create.assert_called_once_with()
 
 
-async def test_reconciliation_listing_returns_none_without_session(
+async def test_reconciliation_listing_returns_empty_without_session(
     mgr: TmuxManager,
 ) -> None:
-    server = MagicMock()
-    server.sessions.get.return_value = None
-    mgr._server = server
+    """tmux answered, and the configured session is genuinely not there."""
+    with patch("ccgram.multiplexer.tmux.fetch_objs", return_value=[]):
+        assert await mgr.list_windows_for_reconciliation() == []
 
-    assert await mgr.list_windows_for_reconciliation() == []
 
-    server.sessions.get.side_effect = OSError("tmux unavailable")
-    assert await mgr.list_windows_for_reconciliation() is None
+async def test_reconciliation_listing_is_unknown_when_tmux_cannot_be_listed(
+    mgr: TmuxManager,
+) -> None:
+    """Through the real libtmux Server, because the stub cannot show this.
+
+    ``Server.sessions`` wraps its listing in ``except Exception: pass`` and
+    returns an empty QueryList, so a broken tmux looks exactly like a server
+    with no sessions. A test that patches ``sessions.get`` to raise is testing
+    a stub of the dependency, not the dependency: it passes either way. This
+    one fails the listing where libtmux actually performs it, which is the
+    shape a real outage has, and the answer must be unknown - the audit closes
+    topics and prunes state on a confirmed empty listing.
+    """
+    import libtmux.server
+
+    mgr._server = libtmux.server.Server()
+
+    def _boom(*_args, **_kwargs):
+        raise OSError("tmux unavailable")
+
+    with (
+        patch("libtmux.server.fetch_objs", _boom),
+        patch("ccgram.multiplexer.tmux.fetch_objs", _boom),
+    ):
+        assert await mgr.list_windows_for_reconciliation() is None
+
     assert mgr._server is None
 
 
@@ -110,11 +133,8 @@ async def test_reconciliation_listing_is_complete(mgr: TmuxManager) -> None:
         _FakeWindow("@5", "my-project"),
     ]
 
-    server = MagicMock()
-    server.sessions.get.return_value = session
-    mgr._server = server
-
-    windows = await mgr.list_windows_for_reconciliation()
+    with patch.object(mgr, "_fetch_session", return_value=session):
+        windows = await mgr.list_windows_for_reconciliation()
 
     assert windows is not None
     assert [w.window_id for w in windows] == ["@0", "@4", "@5"]

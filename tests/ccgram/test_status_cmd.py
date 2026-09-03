@@ -315,8 +315,8 @@ class TestUnreachableBackendNeverPrintsDead:
 
         out = self._run(capsys)
 
-        assert "dead" in out
-        assert "unknown" not in out
+        assert "(user 12345)   dead" in out
+        assert "(user 12345)   unknown" not in out
 
 
 class TestTmuxListingIsUnknownOnFailure:

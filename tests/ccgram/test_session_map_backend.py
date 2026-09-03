@@ -27,7 +27,7 @@ def tmux_backend(monkeypatch):
     monkeypatch.setattr(config, "multiplexer_name", "tmux")
 
 
-def _entry(session_id: str) -> dict[str, str]:
+def _entry(session_id: str) -> dict[str, object]:
     return {
         "session_id": session_id,
         "cwd": "/repo",
@@ -83,6 +83,15 @@ def test_parse_session_map_surfaces_herdr_entry(herdr_backend) -> None:
     parsed = parse_session_map(raw, session_map_prefix())
     assert _HERDR_TARGET in parsed
     assert parsed[_HERDR_TARGET]["session_id"] == "S1"
+
+
+def test_parse_session_map_surfaces_replay_marker(herdr_backend) -> None:
+    entry = _entry("S1")
+    entry["replay_from_start"] = True
+
+    parsed = parse_session_map({f"herdr:{_HERDR_TARGET}": entry}, session_map_prefix())
+
+    assert parsed[_HERDR_TARGET]["replay_from_start"] is True
 
 
 def test_parse_session_map_herdr_rejects_raw_and_legacy_ids(herdr_backend) -> None:

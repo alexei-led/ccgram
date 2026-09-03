@@ -7,8 +7,14 @@ from unittest.mock import patch
 
 import pytest
 
-from ccgram.hook import _encode_pi_cwd_dirname, _install_hook, hook_main
+from ccgram.hook import (
+    _encode_pi_cwd_dirname,
+    _install_hook,
+    _resolve_pi_transcript_path,
+    hook_main,
+)
 from ccgram.hooks.adapters import detect_provider_from_payload, get_hook_adapter
+from ccgram.hooks.state_files import pending_pi_replay_key
 from ccgram.multiplexer.herdr import HerdrManager
 
 
@@ -56,7 +62,8 @@ def test_herdr_nested_claude_hook_does_not_overwrite_live_pi_session(
 
     live_transcript = str(tmp_path / "root-pi-session.jsonl")
     live_record = {
-        "agent": "pi",
+        # Detection switched first; the durable session remains authoritative.
+        "agent": "claude",
         "workspace_id": "w2",
         "pane_id": "w2:p1",
         "tab_id": "w2:t1",
@@ -112,6 +119,75 @@ def test_herdr_nested_claude_hook_does_not_overwrite_live_pi_session(
     assert not (state_dir / "events.jsonl").exists()
 
 
+@pytest.mark.parametrize("event_name", ["SessionStart", "Stop"])
+def test_herdr_nested_pi_hook_does_not_overwrite_live_claude_session(
+    tmp_path: Path, monkeypatch, event_name: str
+) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("CCGRAM_DIR", str(state_dir))
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    monkeypatch.setenv("HERDR_WORKSPACE_ID", "w2")
+    monkeypatch.setenv("HERDR_PANE_ID", "w2:p1")
+    live_record = {
+        # Detection switched first; the durable session remains authoritative.
+        "agent": "pi",
+        "workspace_id": "w2",
+        "pane_id": "w2:p1",
+        "tab_id": "w2:t1",
+        "terminal_id": "term-1",
+        "agent_session": {
+            "source": "herdr:claude",
+            "agent": "claude",
+            "kind": "uuid",
+            "value": "root-claude-session",
+        },
+    }
+    target_id = HerdrManager().target_id_for_live_record(live_record)
+    assert target_id is not None
+    session_map_path = state_dir / "session_map.json"
+    original = json.dumps(
+        {
+            f"herdr:{target_id}": {
+                "session_id": "root-claude-session",
+                "cwd": str(tmp_path / "proj"),
+                "window_name": "Claude ▸ project ▸ 1 ▸ p1",
+                "transcript_path": str(tmp_path / ".claude" / "root.jsonl"),
+                "provider_name": "claude",
+            }
+        },
+        indent=2,
+    )
+    session_map_path.write_text(original)
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.StringIO(
+            json.dumps(
+                {
+                    "session_id": "019e214d-7011-754d-9efb-60106dfa9999",
+                    "cwd": str(tmp_path / "nested-pi"),
+                    "hook_event_name": event_name,
+                }
+            )
+        ),
+    )
+    agent_list = subprocess.CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout=json.dumps({"result": {"agents": [live_record]}}),
+        stderr="",
+    )
+
+    with patch("ccgram.hook.subprocess.run", return_value=agent_list) as agent_list_run:
+        hook_main(provider_name="pi")
+
+    agent_list_run.assert_called_once()
+    assert session_map_path.read_text() == original
+    assert not (state_dir / "events.jsonl").exists()
+
+
 _PI_SESSION_ID = "019e214d-7011-754d-9efb-60106dfa967c"
 _STALE_PI_SESSION_ID = "019e214d-7011-754d-9efb-60106dfa0000"
 
@@ -120,7 +196,15 @@ def test_herdr_pi_hook_without_provider_metadata_uses_live_agent(
     tmp_path: Path, monkeypatch
 ) -> None:
     cwd = str(tmp_path / "proj")
-    transcript = _pi_transcript(tmp_path, cwd, _PI_SESSION_ID)
+    transcript = (
+        tmp_path
+        / ".pi"
+        / "agent"
+        / "sessions"
+        / _encode_pi_cwd_dirname(cwd)
+        / f"2026-05-13T12-26-23-633Z_{_PI_SESSION_ID}.jsonl"
+    )
+    assert not transcript.exists()
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("CCGRAM_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("HERDR_WORKSPACE_ID", "w2")
@@ -159,9 +243,10 @@ def test_herdr_pi_hook_without_provider_metadata_uses_live_agent(
         ),
     )
 
-    with patch("ccgram.hook.subprocess.run", return_value=agent_list):
+    with patch("ccgram.hook.subprocess.run", return_value=agent_list) as agent_list_run:
         hook_main()
 
+    agent_list_run.assert_called_once()
     target_id = HerdrManager().target_id_for_live_record(live_record)
     assert target_id is not None
     entry = json.loads((tmp_path / "state" / "session_map.json").read_text())[
@@ -169,6 +254,186 @@ def test_herdr_pi_hook_without_provider_metadata_uses_live_agent(
     ]
     assert entry["provider_name"] == "pi"
     assert entry["transcript_path"] == str(transcript)
+    assert entry["replay_from_start"] is True
+
+
+def test_herdr_pi_hook_quarantines_duplicate_canonical_targets(
+    tmp_path: Path, monkeypatch
+) -> None:
+    cwd = str(tmp_path / "proj")
+    transcript = (
+        tmp_path
+        / ".pi"
+        / "agent"
+        / "sessions"
+        / _encode_pi_cwd_dirname(cwd)
+        / f"2026-05-13T12-26-23-633Z_{_PI_SESSION_ID}.jsonl"
+    )
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("CCGRAM_DIR", str(state_dir))
+    monkeypatch.setenv("HERDR_WORKSPACE_ID", "w2")
+    monkeypatch.setenv("HERDR_PANE_ID", "w2:p1")
+    composite = {
+        "source": "herdr:pi",
+        "agent": "pi",
+        "kind": "path",
+        "value": str(transcript),
+    }
+    records = [
+        {
+            "agent": "pi",
+            "workspace_id": "w2",
+            "pane_id": pane_id,
+            "tab_id": "w2:t1",
+            "terminal_id": terminal_id,
+            "agent_session": composite,
+        }
+        for pane_id, terminal_id in (("w2:p1", "term-1"), ("w2:p2", "term-2"))
+    ]
+    agent_list = subprocess.CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout=json.dumps({"result": {"agents": records}}),
+        stderr="",
+    )
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.StringIO(
+            json.dumps(
+                {
+                    "session_id": _PI_SESSION_ID,
+                    "cwd": cwd,
+                    "hook_event_name": "SessionStart",
+                }
+            )
+        ),
+    )
+
+    with patch("ccgram.hook.subprocess.run", return_value=agent_list) as agent_list_run:
+        hook_main()
+
+    agent_list_run.assert_called_once()
+    assert not (state_dir / "session_map.json").exists()
+    assert not (state_dir / "events.jsonl").exists()
+
+
+def test_herdr_pi_hook_defers_stale_live_session_identity(
+    tmp_path: Path, monkeypatch
+) -> None:
+    cwd = str(tmp_path / "proj")
+    stale_transcript = (
+        tmp_path
+        / ".pi"
+        / "agent"
+        / "sessions"
+        / _encode_pi_cwd_dirname(cwd)
+        / f"2026-05-13T12-00-00-000Z_{_STALE_PI_SESSION_ID}.jsonl"
+    )
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("CCGRAM_DIR", str(state_dir))
+    monkeypatch.setenv("HERDR_WORKSPACE_ID", "w2")
+    monkeypatch.setenv("HERDR_PANE_ID", "w2:p1")
+    live_record = {
+        "agent": "pi",
+        "workspace_id": "w2",
+        "pane_id": "w2:p1",
+        "tab_id": "w2:t1",
+        "terminal_id": "term-1",
+        "agent_session": {
+            "source": "herdr:pi",
+            "agent": "pi",
+            "kind": "path",
+            "value": str(stale_transcript),
+        },
+    }
+    agent_list = subprocess.CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout=json.dumps({"result": {"agents": [live_record]}}),
+        stderr="",
+    )
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.StringIO(
+            json.dumps(
+                {
+                    "session_id": _PI_SESSION_ID,
+                    "cwd": cwd,
+                    "hook_event_name": "SessionStart",
+                    "source": "startup",
+                }
+            )
+        ),
+    )
+
+    with patch("ccgram.hook.subprocess.run", return_value=agent_list):
+        hook_main()
+
+    deferred = json.loads((state_dir / "session_map.json").read_text())
+    assert list(deferred) == [pending_pi_replay_key(_PI_SESSION_ID)]
+    assert deferred[pending_pi_replay_key(_PI_SESSION_ID)]["replay_from_start"] is True
+    assert not (state_dir / "events.jsonl").exists()
+
+    matching_transcript = stale_transcript.with_name(
+        f"2026-05-13T12-01-00-000Z_{_PI_SESSION_ID}.jsonl"
+    )
+    matching_transcript.parent.mkdir(parents=True)
+    matching_transcript.write_text("{}\n")
+    matching_record = {
+        **live_record,
+        "agent_session": {
+            **live_record["agent_session"],
+            "value": str(matching_transcript),
+        },
+    }
+    matching_agent_list = subprocess.CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout=json.dumps({"result": {"agents": [matching_record]}}),
+        stderr="",
+    )
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.StringIO(
+            json.dumps(
+                {
+                    "session_id": _PI_SESSION_ID,
+                    "cwd": cwd,
+                    "hook_event_name": "Stop",
+                    "last_assistant_message": "done",
+                }
+            )
+        ),
+    )
+
+    with patch(
+        "ccgram.hook.subprocess.run", return_value=matching_agent_list
+    ) as agent_list_run:
+        hook_main()
+
+    agent_list_run.assert_called_once()
+    session_map = json.loads((state_dir / "session_map.json").read_text())
+    assert len(session_map) == 1
+    recovered = next(iter(session_map.values()))
+    assert recovered["session_id"] == _PI_SESSION_ID
+    assert recovered["transcript_path"] == str(matching_transcript)
+    assert recovered["replay_from_start"] is True
+
+
+def test_pi_transcript_resolution_does_not_select_another_session(
+    tmp_path: Path, monkeypatch
+) -> None:
+    cwd = str(tmp_path / "proj")
+    other = _pi_transcript(tmp_path, cwd, _STALE_PI_SESSION_ID)
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    assert other.exists()
+    assert _resolve_pi_transcript_path(_PI_SESSION_ID, cwd) == ""
 
 
 def test_pi_session_start_writes_provider_and_resolves_transcript(

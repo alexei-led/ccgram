@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.10.0] - 2026-09-02
+
+### Added
+
+- Prefix Herdr topic names with the agent provider so Pi, Claude, Codex, and Gemini sessions are easy to find.
+
+### Changed
+
+- Hide healthy queue telemetry from Telegram status bubbles while retaining actionable severe-backlog warnings.
+
+### Fixed
+
+- Persist and consume an offset-zero boundary for exact Pi/Herdr transcripts, including recovery after a stale `SessionStart` snapshot, so the first reply is not skipped.
+- Keep sessionless Pi panes out of temporary terminal fallback identities to prevent duplicate topics.
+- Drop transient status refreshes during Telegram flood control so queued content can continue progressing.
+- Throttle stale-session queue diagnostics and clear message-scoped logging context between monitor cycles.
+
 ## [4.9.8] - 2026-09-02
 
 ### Fixed
