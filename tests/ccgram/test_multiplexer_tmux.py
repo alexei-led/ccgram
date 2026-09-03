@@ -133,11 +133,8 @@ async def test_reconciliation_listing_is_complete(mgr: TmuxManager) -> None:
         _FakeWindow("@5", "my-project"),
     ]
 
-    server = MagicMock()
-    server.sessions.get.return_value = session
-    mgr._server = server
-
-    windows = await mgr.list_windows_for_reconciliation()
+    with patch.object(mgr, "_fetch_session", return_value=session):
+        windows = await mgr.list_windows_for_reconciliation()
 
     assert windows is not None
     assert [w.window_id for w in windows] == ["@0", "@4", "@5"]
