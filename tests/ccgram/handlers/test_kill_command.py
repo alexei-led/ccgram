@@ -126,7 +126,6 @@ class TestHandleSessionsKillConfirm:
             text = mock_edit.call_args[0][1]
             assert "Killed" in text
 
-
     async def test_kill_unbinds_case_variant_bindings(self, _patch_deps) -> None:
         _mock_sm, mock_tr, mock_tm, mock_clear = _patch_deps
         mock_tr.get_display_name.side_effect = lambda wid: "myproj"
@@ -136,9 +135,7 @@ class TestHandleSessionsKillConfirm:
         ]
         mock_tm.list_windows_for_reconciliation = AsyncMock(
             return_value=[
-                WindowRef(
-                    window_id="9F1C2D3E-4A5B", window_name="proj", cwd="/p"
-                )
+                WindowRef(window_id="9F1C2D3E-4A5B", window_name="proj", cwd="/p")
             ]
         )
         mock_tm.kill_window = AsyncMock()
