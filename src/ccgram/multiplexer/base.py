@@ -210,7 +210,12 @@ class MultiplexerCapabilities:
     """True when ``foreground()`` can return a tty device path (tmux: True)."""
 
     native_agent_status: bool
-    """True when the backend exposes agent status natively (herdr: True)."""
+    """True when the backend exposes agent status natively (herdr, agterm).
+
+    Read only for status. It does not decide which windows become topics: that
+    is ``WindowRef.topic_eligible``, because keying discovery on this flag made
+    every agterm session permanently ineligible once agterm set it.
+    """
 
     read_max_lines: int | None
     """Maximum scrollback lines the backend can return; None = unlimited (tmux)."""
@@ -274,7 +279,38 @@ class Multiplexer(Protocol):
         ...
 
     async def list_windows(self) -> list[WindowRef]:
-        """List all agent windows in the session."""
+        """List the windows the backend presents for explicit selection.
+
+        The pickers. A backend applies its visibility filters here — its own
+        session, hidden names, a configured workspace scope — so this is not a
+        liveness answer; ask ``list_windows_for_reconciliation`` for that.
+
+        It is not the adoption answer either, and unattended discovery never
+        reads it. A window listed here may carry ``topic_eligible=False``:
+        agterm deliberately shows an in-scope session sitting at a shell so a
+        user can bind it by hand. Choosing from a picker is an explicit bind,
+        and the flows behind it do their own existence check.
+        """
+        ...
+
+    async def list_windows_for_reconciliation(self) -> list[WindowRef] | None:
+        """List every live window, or ``None`` when the listing is unconfirmed.
+
+        The complete view, used wherever absence means "this window is gone":
+        state cleanup, the monitor's change detection, ``/sync``, the sessions
+        dashboard, transcript discovery, and the alive column in ``status``. It
+        must include every window ``list_windows`` filters out, so a caller can
+        tell an excluded window from a departed one.
+
+        This is also the listing unattended discovery reads, and the only one
+        it reads. ``WindowRef.topic_eligible`` on these windows is the third
+        question — what may be adopted with nobody asking — kept separate from
+        both the visibility filters above and existence here.
+
+        ``None`` means the backend could not confirm the listing (an
+        unreachable socket, a failed command). It is never an empty listing:
+        treating it as one closes every binding the bot holds.
+        """
         ...
 
     async def list_workspaces(self) -> list[WorkspaceRef]:
