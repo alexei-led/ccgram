@@ -665,6 +665,7 @@ class TestStaleDeadMarkerDoesNotOutliveTheWindow:
         ):
             mock_tm.list_windows_for_reconciliation = AsyncMock(return_value=[window])
             mock_query.is_legacy_herdr.return_value = False
+            mock_query.get_window_provider.return_value = "claude"
             # Stale cached cwd: the shape that otherwise reaches the unbind.
             mock_query.view_window.return_value = MagicMock(cwd="/nonexistent")
 
@@ -743,15 +744,17 @@ class TestUnknownAgentStateDoesNotClearTheMarker:
         ):
             mock_tm.list_windows_for_reconciliation = AsyncMock(return_value=[window])
             mock_query.is_legacy_herdr.return_value = False
+            mock_query.get_window_provider.return_value = "claude"
             # Stale cached cwd: the shape that reaches the unbind.
             mock_query.view_window.return_value = MagicMock(cwd="/nonexistent")
             result = await _handle_dead_window("@0", 100, 42, "hi", {}, message)
         return result, mock_router, mock_reply
 
+    @pytest.mark.parametrize("pane_command", ["", "vim", "less", "top"])
     async def test_an_unknown_foreground_keeps_the_marker_and_forwards_nothing(
-        self,
+        self, pane_command: str
     ) -> None:
-        handled, mock_router, mock_reply = await self._run("")
+        handled, mock_router, mock_reply = await self._run(pane_command)
 
         assert handled is True, "the message must not be forwarded to the pane"
         assert lifecycle_strategy.is_dead_notified(100, 42, "@0")

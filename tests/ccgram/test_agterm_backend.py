@@ -1461,6 +1461,19 @@ async def test_presence_through_the_seam_uses_the_targeted_probe() -> None:
     assert await window_presence(SESSION_B, _manager(fake)) is True
 
 
+async def test_snapshot_does_not_treat_a_torn_listing_as_absence() -> None:
+    from ccgram.multiplexer.reconciliation import window_snapshot
+
+    fake = (
+        FakeAgtermctl()
+        .on("window", "list", out=_windows())
+        .on("tree", out=_tree())
+        .ok("session", "text", result={"text": "hi"})
+    )
+
+    assert await window_snapshot(SESSION_B, _manager(fake)) == (False, None)
+
+
 @pytest.mark.parametrize(
     ("payload", "why"),
     [
