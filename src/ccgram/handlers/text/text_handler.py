@@ -380,10 +380,12 @@ async def _handle_dead_window(
             if w.pane_current_command
             else ""
         )
-        if not bound_provider or detected_provider != bound_provider:
-            # A present pane is not proof that the bound agent still owns it.
-            # Keep the marker so pending Telegram text cannot be injected into
-            # an unrelated foreground process with Return.
+        if not detected_provider or (
+            detected_provider == "shell" and bound_provider != "shell"
+        ):
+            # A present pane is safe only when it runs a recognized agent or
+            # belongs to an explicitly shell-bound topic. Keep the marker so
+            # Telegram text cannot reach an unrelated foreground process.
             await safe_reply(
                 message,
                 "\u26a0 That session is marked as ended and nothing confirms an "
