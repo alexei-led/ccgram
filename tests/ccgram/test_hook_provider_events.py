@@ -184,6 +184,64 @@ def test_herdr_pi_hook_without_provider_metadata_uses_live_agent(
     assert entry["transcript_path"] == str(transcript)
 
 
+def test_herdr_pi_hook_defers_stale_live_session_identity(
+    tmp_path: Path, monkeypatch
+) -> None:
+    cwd = str(tmp_path / "proj")
+    stale_transcript = (
+        tmp_path
+        / ".pi"
+        / "agent"
+        / "sessions"
+        / _encode_pi_cwd_dirname(cwd)
+        / f"2026-05-13T12-00-00-000Z_{_STALE_PI_SESSION_ID}.jsonl"
+    )
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("CCGRAM_DIR", str(state_dir))
+    monkeypatch.setenv("HERDR_WORKSPACE_ID", "w2")
+    monkeypatch.setenv("HERDR_PANE_ID", "w2:p1")
+    live_record = {
+        "agent": "pi",
+        "workspace_id": "w2",
+        "pane_id": "w2:p1",
+        "tab_id": "w2:t1",
+        "terminal_id": "term-1",
+        "agent_session": {
+            "source": "herdr:pi",
+            "agent": "pi",
+            "kind": "path",
+            "value": str(stale_transcript),
+        },
+    }
+    agent_list = subprocess.CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout=json.dumps({"result": {"agents": [live_record]}}),
+        stderr="",
+    )
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.StringIO(
+            json.dumps(
+                {
+                    "session_id": _PI_SESSION_ID,
+                    "cwd": cwd,
+                    "hook_event_name": "SessionStart",
+                    "source": "startup",
+                }
+            )
+        ),
+    )
+
+    with patch("ccgram.hook.subprocess.run", return_value=agent_list):
+        hook_main()
+
+    assert not (state_dir / "session_map.json").exists()
+    assert not (state_dir / "events.jsonl").exists()
+
+
 def test_pi_transcript_resolution_does_not_select_another_session(
     tmp_path: Path, monkeypatch
 ) -> None:

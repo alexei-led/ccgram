@@ -30,7 +30,7 @@ from ccgram.hooks.adapters import (
     detect_provider_from_payload,
     get_hook_adapter,
 )
-from ccgram.hooks.model import NormalizedHookEvent, ProviderName
+from ccgram.hooks.model import HookAdapter, NormalizedHookEvent, ProviderName
 from ccgram.multiplexer import get_multiplexer
 from ccgram.multiplexer.self_identify import resolve_self_identity
 
@@ -1311,6 +1311,32 @@ def _provider_from_herdr_pane() -> tuple[ProviderName | None, str]:
     return provider, transcript_path
 
 
+def _hook_adapter_for_context(
+    provider_name: str,
+    payload_session_id: object,
+    herdr_transcript_path: str,
+) -> HookAdapter | None:
+    """Return an adapter only when Herdr's Pi identity matches this hook."""
+    if (
+        provider_name == "pi"
+        and herdr_transcript_path
+        and isinstance(payload_session_id, str)
+        and payload_session_id not in Path(herdr_transcript_path).name
+    ):
+        # Herdr can briefly retain the preceding Pi identity while the new
+        # SessionStart hook is already running. Its target and transcript must
+        # move together; otherwise the new session binds to the old topic/file.
+        logger.debug(
+            "Deferring Pi hook until Herdr publishes the matching session: %s",
+            payload_session_id,
+        )
+        return None
+    adapter = get_hook_adapter(provider_name)
+    if adapter is None:
+        logger.debug("Ignoring hook for unsupported provider: %s", provider_name)
+    return adapter
+
+
 def _process_hook_stdin(
     provider_name: str | None = None,
 ) -> NormalizedHookEvent | None:
@@ -1352,9 +1378,12 @@ def _process_hook_stdin(
     if detected_provider is None:
         detected_provider = "claude"
 
-    adapter = get_hook_adapter(detected_provider)
+    adapter = _hook_adapter_for_context(
+        detected_provider,
+        payload.get("session_id"),
+        herdr_transcript_path,
+    )
     if adapter is None:
-        logger.debug("Ignoring hook for unsupported provider: %s", detected_provider)
         return None
     normalized = adapter.normalize(payload)
     if normalized is None:

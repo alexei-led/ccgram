@@ -678,8 +678,11 @@ class HerdrManager:
                     refs.append(
                         self._live_ref(
                             record,
-                            f"{record.composite.agent.capitalize()} ▸ Herdr ▸ "
-                            f"{record.target_id[-12:]}",
+                            format_agent_topic_prefix(
+                                "Herdr",
+                                record.target_id[-12:],
+                                provider=record.composite.agent,
+                            ),
                         )
                     )
                 continue

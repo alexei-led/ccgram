@@ -110,7 +110,7 @@ _delivery_lags: dict[tuple[int, str, int], float] = {}
 _rate_limit_log_last_at: dict[int, float] = {}
 # At most one queued status operation per user/window/topic. Content tasks are
 # never coalesced because each one carries delivery and watermark semantics.
-_pending_status_updates: set[tuple[int, str, int]] = set()
+_pending_status_updates: set[tuple[int, str, int, bool]] = set()
 _pending_status_clears: set[tuple[int, str, int]] = set()
 _status_suppressed_until: dict[int, float] = {}
 _stale_drop_log_last_at: dict[tuple[int, str], float] = {}
@@ -496,7 +496,7 @@ async def _coalesce_status_updates(
     """
     selected = first
     dropped = 0
-    key = (thread_key(first.thread_id), first.window_id)
+    key = (thread_key(first.thread_id), first.window_id, first.transient)
 
     async with lock:
         items = _drain_queue(queue)
@@ -506,13 +506,18 @@ async def _coalesce_status_updates(
             if not isinstance(task, StatusUpdateTask):
                 remaining.append(task)
                 continue
-            task_key = (thread_key(task.thread_id), task.window_id)
+            task_key = (thread_key(task.thread_id), task.window_id, task.transient)
             if task_key == key:
                 selected = task
                 dropped += 1
                 if user_id is not None:
                     _pending_status_updates.discard(
-                        (user_id, task.window_id, thread_key(task.thread_id))
+                        (
+                            user_id,
+                            task.window_id,
+                            thread_key(task.thread_id),
+                            task.transient,
+                        )
                     )
             else:
                 remaining.append(task)
@@ -719,6 +724,13 @@ def _log_rate_limit_queue_state(
     )
 
 
+def _is_transient_status_task(task: MessageTask) -> bool:
+    """Return whether flood control may safely discard this status operation."""
+    return isinstance(task, StatusClearTask) or (
+        isinstance(task, StatusUpdateTask) and task.transient
+    )
+
+
 async def _dispatch_with_retry(
     client: TelegramClient,
     user_id: int,
@@ -751,13 +763,13 @@ async def _dispatch_with_retry(
             except RetryAfter as exc:
                 state.task = _retry_task_for_state(dispatch_state, state.task)
                 telegram_delay = retry_after_seconds(exc)
-                if isinstance(state.task, StatusUpdateTask):
+                if _is_transient_status_task(state.task):
                     _status_suppressed_until[user_id] = max(
                         _status_suppressed_until.get(user_id, 0.0),
                         time.monotonic() + telegram_delay,
                     )
                     logger.debug(
-                        "Telegram flood control; dropping transient status update",
+                        "Telegram flood control; dropping transient status operation",
                         user_id=user_id,
                         telegram_retry_after_seconds=telegram_delay,
                     )
@@ -824,7 +836,12 @@ async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
             task = await queue.get()
             if isinstance(task, StatusUpdateTask):
                 _pending_status_updates.discard(
-                    (user_id, task.window_id, thread_key(task.thread_id))
+                    (
+                        user_id,
+                        task.window_id,
+                        thread_key(task.thread_id),
+                        task.transient,
+                    )
                 )
             elif isinstance(task, StatusClearTask):
                 _pending_status_clears.discard(
@@ -1078,10 +1095,14 @@ async def enqueue_status_update(
     window_id: str,
     status_text: str | None,
     thread_id: int | None = None,
+    *,
+    transient: bool = False,
 ) -> None:
-    """Enqueue status update or clear."""
-    if status_text is not None and time.monotonic() < _status_suppressed_until.get(
-        user_id, 0.0
+    """Enqueue a durable notice or a replaceable polling status operation."""
+    if (
+        transient
+        and status_text is not None
+        and time.monotonic() < _status_suppressed_until.get(user_id, 0.0)
     ):
         return
     if status_text is not None and not is_window_live(window_id):
@@ -1090,24 +1111,25 @@ async def enqueue_status_update(
         )
         return
     queue = get_or_create_queue(client, user_id)
-    status_key = (user_id, window_id, thread_key(thread_id))
+    clear_key = (user_id, window_id, thread_key(thread_id))
+    status_key = (*clear_key, transient)
     if status_text is not None:
-        if (
-            status_key in _pending_status_updates
-            or status_key in _pending_status_clears
+        if status_key in _pending_status_updates or (
+            transient and clear_key in _pending_status_clears
         ):
             return
         _pending_status_updates.add(status_key)
-    elif status_key in _pending_status_clears:
+    elif clear_key in _pending_status_clears:
         return
     else:
-        _pending_status_clears.add(status_key)
+        _pending_status_clears.add(clear_key)
 
     if status_text is not None:
         task: MessageTask = StatusUpdateTask(
             window_id=window_id,
             text=status_text,
             thread_id=thread_id,
+            transient=transient,
         )
     else:
         task = StatusClearTask(

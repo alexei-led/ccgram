@@ -1282,6 +1282,50 @@ class TestCheckForUpdates:
         # New sessions seed the delivered watermark directly at EOF.
         assert tracked.last_byte_offset == session_file.stat().st_size
 
+    async def test_pending_direct_session_preserves_first_reply(self, tmp_path) -> None:
+        """A hook can publish Pi's exact path before Pi creates the file."""
+        session_file = tmp_path / "future-pi.jsonl"
+        monitor = SessionMonitor(
+            projects_path=tmp_path / "projects",
+            state_file=tmp_path / "ms.json",
+        )
+        current_map = {
+            "@0": {
+                "session_id": "sess-pi",
+                "cwd": "/proj",
+                "window_name": "proj",
+                "transcript_path": str(session_file),
+            },
+        }
+
+        assert await monitor.check_for_updates(current_map) == []
+        tracked = monitor.state.get_session("sess-pi")
+        assert tracked is not None
+        assert tracked.last_byte_offset == 0
+        assert tracked.file_path == str(session_file)
+
+        session_file.write_text(
+            json.dumps(
+                {
+                    "type": "message",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "first reply"}],
+                    },
+                }
+            )
+            + "\n"
+        )
+        from ccgram.providers.pi import PiProvider
+
+        with patch(
+            "ccgram.transcript_reader.get_provider_for_window",
+            return_value=PiProvider(),
+        ):
+            messages = await monitor.check_for_updates(current_map)
+
+        assert [message.text for message in messages] == ["first reply"]
+
     async def test_unchanged_mtime_skips_read(self, tmp_path) -> None:
         projects_path = tmp_path / "projects"
         work_dir = tmp_path / "myproj"

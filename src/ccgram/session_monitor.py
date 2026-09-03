@@ -37,7 +37,7 @@ from .delivery_contract import (
 )
 from .event_reader import read_new_events
 from .idle_tracker import IdleTracker
-from .monitor_state import BacklogSkipIntent, MonitorState
+from .monitor_state import BacklogSkipIntent, MonitorState, TrackedSession
 from .providers import get_provider_for_window, registry  # noqa: F401 (used by test patches)
 from .session_map import parse_session_map, read_session_map_raw, session_map_prefix
 from .session_lifecycle import session_lifecycle
@@ -464,6 +464,22 @@ class SessionMonitor:
                 if path.exists():
                     direct_sessions.append((session_id, path))
                     continue
+                if self.state.get_session(session_id) is None:
+                    self.state.update_session(
+                        TrackedSession(
+                            session_id=session_id,
+                            file_path=str(path),
+                            last_byte_offset=0,
+                        )
+                    )
+                    logger.debug(
+                        "Reserved transcript start boundary for pending session: %s",
+                        session_id,
+                    )
+                # An explicit hook path is authoritative. Scanning can find a
+                # different generation and seed it at EOF before this file is
+                # created, losing the first response from the intended path.
+                continue
             fallback_session_ids.add(session_id)
 
         for session_id, file_path in direct_sessions:
