@@ -47,7 +47,7 @@ def test_jump_button_is_only_rendered_for_severe_backlog() -> None:
     )
 
 
-async def test_status_update_includes_backlog_progress() -> None:
+async def test_status_update_includes_severe_backlog_progress() -> None:
     with (
         patch(
             "ccgram.handlers.status.status_bubble.format_claude_task_status",
@@ -55,7 +55,7 @@ async def test_status_update_includes_backlog_progress() -> None:
         ),
         patch(
             "ccgram.handlers.status.status_bubble.format_backlog_status",
-            return_value=("Queue: 2 pending · age 4s · delivery lag 1.0s", False),
+            return_value=("Queue: 100 pending · age 301s · delivery lag 1.0s", True),
         ),
         patch(
             "ccgram.handlers.status.status_bubble.send_status_text",
@@ -71,8 +71,48 @@ async def test_status_update_includes_backlog_progress() -> None:
         )
     call = send.await_args
     assert call is not None
-    assert call.args[4] == "Working\nQueue: 2 pending · age 4s · delivery lag 1.0s"
+    assert call.args[4] == "Working\nQueue: 100 pending · age 301s · delivery lag 1.0s"
+    assert call.kwargs["backlog_severe"] is True
+
+
+async def test_status_update_hides_healthy_queue_telemetry() -> None:
+    with (
+        patch(
+            "ccgram.handlers.status.status_bubble.format_claude_task_status",
+            return_value="Working",
+        ),
+        patch(
+            "ccgram.handlers.status.status_bubble.format_backlog_status",
+            return_value=("", False),
+        ),
+        patch(
+            "ccgram.handlers.status.status_bubble.send_status_text",
+            new_callable=AsyncMock,
+        ) as send,
+    ):
+        from ccgram.handlers.status.status_bubble import process_status_update
+
+        await process_status_update(
+            MagicMock(),
+            1,
+            StatusUpdateTask(window_id="@0", text="Working", thread_id=4),
+        )
+
+    call = send.await_args
+    assert call is not None
+    assert call.args[4] == "Working"
     assert call.kwargs["backlog_severe"] is False
+
+
+def test_healthy_backlog_status_is_hidden() -> None:
+    from ccgram.handlers.status import status_bubble
+
+    status_bubble._backlog_status_cache.clear()
+    with patch(
+        "ccgram.handlers.messaging_pipeline.backlog.get_backlog_snapshot",
+        return_value=BacklogSnapshot(0, 0.0, None),
+    ):
+        assert format_backlog_status(1, 2, "@0") == ("", False)
 
 
 def test_backlog_status_reports_count_age_lag_and_throttles() -> None:

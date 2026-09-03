@@ -79,10 +79,12 @@ A session can change after the fresh guard and before Herdr receives an action. 
 ### Shared tabs and topic names
 
 Herdr exposes one Telegram topic for each agent session, not one topic for each
-tab. Every generated name is `<workspace> ▸ <tab> ▸ <pane>`, including a tab
-that currently has one agent. The pane suffix distinguishes siblings without
-flapping when siblings join or leave, but it remains display state rather than
-identity and can change when Herdr remints pane locators.
+tab. Every generated name is `<Provider> ▸ <workspace> ▸ <tab> ▸ <pane>`,
+including a tab that currently has one agent. If Herdr has not published labels
+yet, the temporary display name is `<Provider> ▸ Herdr ▸ <target-suffix>`. The
+provider prefix makes agent topics searchable; the pane suffix distinguishes
+siblings without flapping when siblings join or leave. Both remain display
+state rather than identity and can change when Herdr updates its live labels.
 
 Telegram topic rename is disabled for shared tabs because Herdr's tab rename
 would rename every sibling. Rename the Herdr tab directly only when its tab has
@@ -278,13 +280,13 @@ Each item is rendered to Telegram entities before the items are combined. Format
 
 ### Queue progress and severe backlogs
 
-The editable topic status bubble reports:
+The editable topic status bubble shows queue telemetry only for a severe backlog:
 
 - **pending** — queued and in-flight transcript content items for that topic/window;
 - **age** — how long the oldest of those items has waited; and
 - **delivery lag** — the elapsed time for the latest completed content delivery (`—` until one completes).
 
-These are in-memory progress metrics, so they reset when CCGram restarts. The status line is refreshed with status updates and its displayed text is throttled for up to 15 seconds. A backlog is severe when it has **100 or more pending items** **or** its oldest item is **5 minutes (300 seconds) or older**. Only then does the status keyboard include **⏭ Jump to live**.
+These are in-memory progress metrics, so they reset when CCGram restarts. Healthy queue telemetry stays in structured service logs instead of the Telegram topic. A backlog is severe when it has **100 or more pending items** **or** its oldest item is **5 minutes (300 seconds) or older**. Only then does the status bubble show the queue line and its keyboard include **⏭ Jump to live**; the displayed severe-backlog text is throttled for up to 15 seconds.
 
 ### Confirmed jump semantics
 
@@ -401,7 +403,7 @@ herdr advertises its own capabilities through the seam; the behavioral consequen
 | Scrollback capture        | unbounded                       | clamped to **1000 lines**; longer output is flagged as truncated           |
 | Agent status              | inferred from terminal scraping | native (herdr reports agent status directly)                               |
 | Window IDs across restart | stable                          | guarded session target is revalidated from fresh `agent.list`; ccgram never re-resolves a tab/pane ID |
-| Topic labels              | window name                     | `<workspace> ▸ <tab> ▸ <pane>` for every reported agent session             |
+| Topic labels              | window name                     | `<Provider> ▸ <workspace> ▸ <tab> ▸ <pane>` for every reported agent session |
 
 <!-- markdownlint-enable MD060 -->
 
