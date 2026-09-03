@@ -14,6 +14,7 @@ from ccgram.hook import (
     hook_main,
 )
 from ccgram.hooks.adapters import detect_provider_from_payload, get_hook_adapter
+from ccgram.hooks.state_files import pending_pi_replay_key
 from ccgram.multiplexer.herdr import HerdrManager
 
 
@@ -61,7 +62,8 @@ def test_herdr_nested_claude_hook_does_not_overwrite_live_pi_session(
 
     live_transcript = str(tmp_path / "root-pi-session.jsonl")
     live_record = {
-        "agent": "pi",
+        # Detection switched first; the durable session remains authoritative.
+        "agent": "claude",
         "workspace_id": "w2",
         "pane_id": "w2:p1",
         "tab_id": "w2:t1",
@@ -129,7 +131,8 @@ def test_herdr_nested_pi_hook_does_not_overwrite_live_claude_session(
     monkeypatch.setenv("HERDR_WORKSPACE_ID", "w2")
     monkeypatch.setenv("HERDR_PANE_ID", "w2:p1")
     live_record = {
-        "agent": "claude",
+        # Detection switched first; the durable session remains authoritative.
+        "agent": "pi",
         "workspace_id": "w2",
         "pane_id": "w2:p1",
         "tab_id": "w2:t1",
@@ -308,7 +311,9 @@ def test_herdr_pi_hook_defers_stale_live_session_identity(
     with patch("ccgram.hook.subprocess.run", return_value=agent_list):
         hook_main()
 
-    assert not (state_dir / "session_map.json").exists()
+    deferred = json.loads((state_dir / "session_map.json").read_text())
+    assert list(deferred) == [pending_pi_replay_key(_PI_SESSION_ID)]
+    assert deferred[pending_pi_replay_key(_PI_SESSION_ID)]["replay_from_start"] is True
     assert not (state_dir / "events.jsonl").exists()
 
     matching_transcript = stale_transcript.with_name(

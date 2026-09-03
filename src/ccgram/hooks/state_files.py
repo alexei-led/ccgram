@@ -37,6 +37,12 @@ from typing import Any
 
 EVENTS_SCHEMA_VERSION: int = 1
 SESSION_MAP_SCHEMA_VERSION: int = 1
+_PENDING_PI_REPLAY_PREFIX = "__pending_pi_replay__:"
+
+
+def pending_pi_replay_key(session_id: str) -> str:
+    """Return the non-window session-map key for a deferred Pi replay."""
+    return f"{_PENDING_PI_REPLAY_PREFIX}{session_id}"
 
 
 # ---------------------------------------------------------------------------

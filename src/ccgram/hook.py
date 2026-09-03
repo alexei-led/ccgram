@@ -686,10 +686,13 @@ def _resolve_herdr_target_id(
         return None
 
     record = matches[0]
-    live_agent = record.get("agent")
     agent_session = record.get("agent_session")
-    if not isinstance(live_agent, str) and isinstance(agent_session, dict):
-        live_agent = agent_session.get("agent")
+    session_agent = (
+        agent_session.get("agent") if isinstance(agent_session, dict) else None
+    )
+    live_agent = (
+        session_agent if isinstance(session_agent, str) else record.get("agent")
+    )
     if (
         provider_name is not None
         and live_agent in _KNOWN_HOOK_PROVIDERS
@@ -958,6 +961,7 @@ def _update_session_map(
     provider_name: str = "claude",
     *,
     replay_from_start: bool = False,
+    consume_pending_replay: bool = True,
 ) -> None:
     """Update session_map.json for a SessionStart event."""
     # Lazy: same hook fast-path rationale as ``_write_event``.
@@ -971,7 +975,7 @@ def _update_session_map(
         with open(lock_path, "w") as lock_f:
             fcntl.flock(lock_f, fcntl.LOCK_EX)
             try:
-                session_map: dict[str, dict[str, str]] = {}
+                session_map: dict[str, Any] = {}
                 if map_file.exists():
                     try:
                         raw = map_file.read_text()
@@ -1003,7 +1007,10 @@ def _update_session_map(
                         logger.warning("Failed to read session_map.json")
 
                 # Lazy: same hook fast-path rationale as _write_event.
-                from .hooks.state_files import serialize_session_map_entry
+                from .hooks.state_files import (
+                    pending_pi_replay_key,
+                    serialize_session_map_entry,
+                )
 
                 session_map[session_window_key] = serialize_session_map_entry(
                     session_id,
@@ -1013,6 +1020,8 @@ def _update_session_map(
                     provider_name,
                     replay_from_start=replay_from_start,
                 )
+                if consume_pending_replay:
+                    session_map.pop(pending_pi_replay_key(session_id), None)
 
                 # Clean up old-format key ("session:window_name") if it exists
                 old_key = f"{tmux_session_name}:{window_name}"
@@ -1031,6 +1040,25 @@ def _update_session_map(
                 fcntl.flock(lock_f, fcntl.LOCK_UN)
     except OSError:
         logger.exception("Failed to write session_map")
+
+
+def _record_pending_pi_replay(session_id: str) -> None:
+    """Persist recovery intent without binding a stale Herdr target."""
+    # Lazy: hooks.state_files stays off the hook CLI import fast path.
+    from .hooks.state_files import pending_pi_replay_key
+
+    pending_key = pending_pi_replay_key(session_id)
+    _update_session_map(
+        pending_key,
+        session_id,
+        "",
+        "",
+        "",
+        pending_key,
+        "pi",
+        replay_from_start=True,
+        consume_pending_replay=False,
+    )
 
 
 def _encode_pi_cwd_dirname(cwd: str) -> str:
@@ -1317,9 +1345,8 @@ def _provider_from_herdr_pane() -> tuple[ProviderName | None, str, str | None]:
         return None, "", None
     record = matches[0]
     session = record.get("agent_session")
-    agent = record.get("agent")
-    if not isinstance(agent, str):
-        agent = session.get("agent") if isinstance(session, dict) else None
+    session_agent = session.get("agent") if isinstance(session, dict) else None
+    agent = session_agent if isinstance(session_agent, str) else record.get("agent")
     provider = cast(ProviderName, agent) if agent in _KNOWN_HOOK_PROVIDERS else None
     transcript_path = ""
     if (
@@ -1339,9 +1366,7 @@ def _provider_from_herdr_pane() -> tuple[ProviderName | None, str, str | None]:
 
 def _hook_adapter_for_context(
     provider_name: str,
-    payload_session_id: object,
     herdr_provider: ProviderName | None,
-    herdr_transcript_path: str,
 ) -> HookAdapter | None:
     """Return an adapter only when the live Herdr identity matches this hook."""
     if herdr_provider is not None and herdr_provider != provider_name:
@@ -1351,24 +1376,35 @@ def _hook_adapter_for_context(
             herdr_provider,
         )
         return None
-    if (
-        provider_name == "pi"
-        and herdr_transcript_path
-        and isinstance(payload_session_id, str)
-        and payload_session_id not in Path(herdr_transcript_path).name
-    ):
-        # Herdr can briefly retain the preceding Pi identity while the new
-        # SessionStart hook is already running. Its target and transcript must
-        # move together; otherwise the new session binds to the old topic/file.
-        logger.debug(
-            "Deferring Pi hook until Herdr publishes the matching session: %s",
-            payload_session_id,
-        )
-        return None
     adapter = get_hook_adapter(provider_name)
     if adapter is None:
         logger.debug("Ignoring hook for unsupported provider: %s", provider_name)
     return adapter
+
+
+def _hook_event_is_actionable(
+    normalized: NormalizedHookEvent, herdr_transcript_path: str
+) -> bool:
+    """Validate event support before persisting deferred Pi recovery state."""
+    event = normalized.canonical_event_name
+    if event not in _HOOK_EVENT_TYPES and event not in {"PreCompact", "PostCompact"}:
+        logger.debug("Ignoring unhandled event: %s", event)
+        return False
+    if (
+        normalized.provider_name == "pi"
+        and herdr_transcript_path
+        and normalized.session_id not in Path(herdr_transcript_path).name
+    ):
+        # Herdr can briefly retain the preceding Pi identity while the new
+        # SessionStart hook is already running. Its target and transcript must
+        # move together; otherwise the new session binds to the old topic/file.
+        _record_pending_pi_replay(normalized.session_id)
+        logger.debug(
+            "Deferring Pi hook until Herdr publishes the matching session: %s",
+            normalized.session_id,
+        )
+        return False
+    return True
 
 
 def _process_hook_stdin(
@@ -1418,12 +1454,7 @@ def _process_hook_stdin(
     if detected_provider is None:
         detected_provider = "claude"
 
-    adapter = _hook_adapter_for_context(
-        detected_provider,
-        payload.get("session_id"),
-        herdr_provider,
-        herdr_transcript_path,
-    )
+    adapter = _hook_adapter_for_context(detected_provider, herdr_provider)
     if adapter is None:
         return None
     normalized = adapter.normalize(payload)
@@ -1433,10 +1464,9 @@ def _process_hook_stdin(
         )
         return None
 
-    event = normalized.canonical_event_name
-    if event not in _HOOK_EVENT_TYPES and event not in {"PreCompact", "PostCompact"}:
-        logger.debug("Ignoring unhandled event: %s", event)
+    if not _hook_event_is_actionable(normalized, herdr_transcript_path):
         return None
+    event = normalized.canonical_event_name
 
     located = _locate_primary_window(
         normalized.session_id,

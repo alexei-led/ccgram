@@ -781,16 +781,29 @@ class SessionMapSync:
                             )
                     display_name = thread_router.get_display_name(window_id)
                     # Lazy: same session_map ↔ stores cycle as _prefer_existing_primary
-                    from .hooks.state_files import serialize_session_map_entry
+                    from .hooks.state_files import (
+                        pending_pi_replay_key,
+                        serialize_session_map_entry,
+                    )
 
+                    pending_key = pending_pi_replay_key(session_id)
+                    existing = session_map.get(window_key)
+                    replay_from_start = provider_name == "pi" and (
+                        pending_key in session_map
+                        or (
+                            isinstance(existing, dict)
+                            and existing.get("replay_from_start") is True
+                        )
+                    )
                     session_map[window_key] = serialize_session_map_entry(
                         session_id,
                         cwd,
                         display_name,
                         transcript_path,
                         provider_name,
-                        replay_from_start=provider_name == "pi",
+                        replay_from_start=replay_from_start,
                     )
+                    session_map.pop(pending_key, None)
                     atomic_write_json(map_file, session_map)
                     logger.info(
                         "Registered hookless session: %s -> session_id=%s, cwd=%s",
