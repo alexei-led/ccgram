@@ -221,20 +221,23 @@ def _prefer_existing_primary(
 def effective_session_map_info(
     window_id: str,
     info: dict[str, Any],
-) -> dict[str, str]:
+) -> dict[str, Any]:
     preferred = _prefer_existing_primary(window_id, info)
     if preferred is not None:
         return preferred
-    return {
+    effective: dict[str, Any] = {
         "session_id": info.get("session_id", ""),
         "cwd": info.get("cwd", ""),
         "window_name": info.get("window_name", ""),
         "transcript_path": info.get("transcript_path", ""),
         "provider_name": info.get("provider_name", ""),
     }
+    if info.get("replay_from_start") is True:
+        effective["replay_from_start"] = True
+    return effective
 
 
-def parse_session_map(raw: dict[str, Any], prefix: str) -> dict[str, dict[str, str]]:
+def parse_session_map(raw: dict[str, Any], prefix: str) -> dict[str, dict[str, Any]]:
     """Parse session_map.json entries matching a backend prefix.
 
     Returns {window_id: {"session_id": ..., "cwd": ...}} for matching entries,
@@ -249,7 +252,7 @@ def parse_session_map(raw: dict[str, Any], prefix: str) -> dict[str, dict[str, s
     """
     if not isinstance(raw, dict):
         return {}
-    result: dict[str, dict[str, str]] = {}
+    result: dict[str, dict[str, Any]] = {}
     for key, info in raw.items():
         if not isinstance(key, str):
             continue
@@ -280,6 +283,42 @@ def parse_session_map(raw: dict[str, Any], prefix: str) -> dict[str, dict[str, s
         if effective["session_id"]:
             result[window_name] = effective
     return result
+
+
+def acknowledge_replay_from_start(window_id: str, session_id: str) -> bool:
+    """Consume a replay marker after offset zero is durably reserved."""
+    map_file = config.session_map_file
+    if not map_file.exists():
+        return False
+    lock_path = map_file.with_suffix(".lock")
+    try:
+        with open(lock_path, "w") as lock_f:
+            fcntl.flock(lock_f, fcntl.LOCK_EX)
+            try:
+                raw = json.loads(map_file.read_text())
+                if not isinstance(raw, dict):
+                    return False
+                key = f"{session_map_prefix()}{window_id}"
+                info = raw.get(key)
+                if not isinstance(info, dict) or info.get("session_id") != session_id:
+                    return False
+                if info.get("replay_from_start") is not True:
+                    return True
+                info.pop("replay_from_start")
+                atomic_write_json(map_file, raw)
+                logger.debug(
+                    "Consumed replay-from-start marker for session %s", session_id
+                )
+                return True
+            except json.JSONDecodeError, OSError:
+                return False
+            finally:
+                fcntl.flock(lock_f, fcntl.LOCK_UN)
+    except OSError as exc:
+        logger.warning(
+            "Failed to lock session_map replay marker for %s: %s", window_id, exc
+        )
+        return False
 
 
 def _read_session_map_for_pruning() -> dict[str, Any] | None:

@@ -956,6 +956,8 @@ def _update_session_map(
     transcript_path: str,
     tmux_session_name: str,
     provider_name: str = "claude",
+    *,
+    replay_from_start: bool = False,
 ) -> None:
     """Update session_map.json for a SessionStart event."""
     # Lazy: same hook fast-path rationale as ``_write_event``.
@@ -1004,7 +1006,12 @@ def _update_session_map(
                 from .hooks.state_files import serialize_session_map_entry
 
                 session_map[session_window_key] = serialize_session_map_entry(
-                    session_id, cwd, window_name, transcript_path, provider_name
+                    session_id,
+                    cwd,
+                    window_name,
+                    transcript_path,
+                    provider_name,
+                    replay_from_start=replay_from_start,
                 )
 
                 # Clean up old-format key ("session:window_name") if it exists
@@ -1115,26 +1122,22 @@ def _refresh_session_map_if_stale(
     payload_cwd: str,
     payload_transcript_path: str,
 ) -> None:
-    """Refresh ``session_map.json`` when a non-SessionStart event reports a
-    different session_id or provider than the stored entry.
+    """Refresh stale entries and recover a dropped Pi ``SessionStart``.
 
-    Some installs (notably Pi via cc-thingz hook-runner) deliver Stop/Subagent
-    hooks without a matching SessionStart through this hook path, so the map
-    can keep pointing at the previous provider's session. We use values the
-    hook payload already carries — no external scanning — to avoid the
-    recovery anti-pattern called out in PR #51.
+    A stale Herdr snapshot can make the one-shot Pi SessionStart unsafe to
+    bind. A later matching Pi hook may therefore create the missing entry once
+    its exact transcript exists. The replay marker tells SessionMonitor to
+    reserve offset zero before consuming the marker.
     """
     existing = _read_session_map_entry(session_window_key)
-    if not existing:
-        # SessionStart owns initial creation; never extend the map from a
-        # non-SessionStart event. Missing entry means no prior session was
-        # tracked here — leave the fallback (cwd-based discovery in
-        # SessionMonitor) to handle it.
+    if not existing and provider_name != "pi":
         return
     cwd = payload_cwd or existing.get("cwd", "")
     transcript_path = _resolve_transcript_path(
         provider_name, session_id, cwd, payload_transcript_path
     )
+    if not existing and not transcript_path:
+        return
     if (
         existing.get("session_id") == session_id
         and existing.get("provider_name") == provider_name
@@ -1144,7 +1147,11 @@ def _refresh_session_map_if_stale(
         )
     ):
         return
-    # Backend prefix token: split on the FIRST colon so herdr keys
+    replay_from_start = provider_name == "pi" and (
+        not existing
+        or existing.get("session_id") != session_id
+        or not existing.get("transcript_path")
+    )
     # Split only the backend prefix; Herdr target IDs may contain colons.
     tmux_session_name = session_window_key.split(":", 1)[0]
     _update_session_map(
@@ -1155,7 +1162,15 @@ def _refresh_session_map_if_stale(
         transcript_path,
         tmux_session_name,
         provider_name,
+        replay_from_start=replay_from_start,
     )
+    if not existing:
+        logger.info(
+            "Recovered Pi session_map from later hook for %s: %s",
+            session_window_key,
+            session_id[:8],
+        )
+        return
     logger.info(
         "Refreshed stale session_map for %s: %s/%s -> %s/%s",
         session_window_key,
@@ -1200,7 +1215,12 @@ def _provider_from_pane_tty(pane_tty: str) -> ProviderName | None:
 
 
 def _locate_primary_window(
-    session_id: str, event: str, provider_name: ProviderName = "claude"
+    session_id: str,
+    event: str,
+    provider_name: ProviderName = "claude",
+    *,
+    herdr_target_id: str | None = None,
+    use_herdr_snapshot: bool = False,
 ) -> tuple[str, str, str] | None:
     """Resolve TMUX_PANE → primary window, or None to drop the hook.
 
@@ -1218,8 +1238,10 @@ def _locate_primary_window(
     identity = resolve_self_identity(
         os.environ,
         tmux_query=_resolve_window_id,
-        herdr_query=lambda workspace_id, pane_id: _resolve_herdr_target_id(
-            workspace_id, pane_id, provider_name
+        herdr_query=lambda workspace_id, pane_id: (
+            herdr_target_id
+            if use_herdr_snapshot
+            else _resolve_herdr_target_id(workspace_id, pane_id, provider_name)
         ),
     )
     if identity is None:
@@ -1261,8 +1283,8 @@ def _locate_primary_window(
     return identity.session_window_key, identity.window_id, identity.window_name
 
 
-def _provider_from_herdr_pane() -> tuple[ProviderName | None, str]:
-    """Infer provider and exact Pi transcript from the live Herdr pane.
+def _provider_from_herdr_pane() -> tuple[ProviderName | None, str, str | None]:
+    """Infer provider, Pi transcript, and target from one Herdr snapshot.
 
     Pi's hook-runner emits the common CC hook envelope without provider or
     transcript metadata. Herdr is authoritative for the exact pane and can
@@ -1271,19 +1293,19 @@ def _provider_from_herdr_pane() -> tuple[ProviderName | None, str]:
     workspace_id = os.environ.get("HERDR_WORKSPACE_ID")
     pane_id = os.environ.get("HERDR_PANE_ID")
     if not workspace_id or not pane_id:
-        return None, ""
+        return None, "", None
     try:
         result = subprocess.run(
             ["herdr", "agent", "list"], capture_output=True, text=True, timeout=5
         )
     except subprocess.TimeoutExpired, OSError:
-        return None, ""
+        return None, "", None
     if result.returncode != 0:
-        return None, ""
+        return None, "", None
     try:
         records = json.loads(result.stdout).get("result", {}).get("agents", [])
     except json.JSONDecodeError, AttributeError:
-        return None, ""
+        return None, "", None
     matches = [
         record
         for record in records
@@ -1292,7 +1314,7 @@ def _provider_from_herdr_pane() -> tuple[ProviderName | None, str]:
         and record.get("pane_id") == pane_id
     ]
     if len(matches) != 1:
-        return None, ""
+        return None, "", None
     record = matches[0]
     session = record.get("agent_session")
     agent = record.get("agent")
@@ -1308,7 +1330,11 @@ def _provider_from_herdr_pane() -> tuple[ProviderName | None, str]:
         and isinstance(session.get("value"), str)
     ):
         transcript_path = session["value"]
-    return provider, transcript_path
+    target_for_record = getattr(
+        get_multiplexer("herdr"), "target_id_for_live_record", None
+    )
+    target_id = target_for_record(record) if callable(target_for_record) else None
+    return provider, transcript_path, target_id if isinstance(target_id, str) else None
 
 
 def _hook_adapter_for_context(
@@ -1362,11 +1388,16 @@ def _process_hook_stdin(
         )
     detected_provider = provider_name or payload_provider
     herdr_transcript_path = ""
+    herdr_target_id: str | None = None
+    use_herdr_snapshot = False
     # Pi's hook-runner omits provider metadata and transcript_path. Do not use
     # the live Herdr provider to reinterpret a nested Claude hook that carries
     # its own Claude transcript path.
     if not payload.get("transcript_path") and detected_provider in {None, "pi"}:
-        herdr_provider, candidate_path = _provider_from_herdr_pane()
+        use_herdr_snapshot = bool(
+            os.environ.get("HERDR_WORKSPACE_ID") and os.environ.get("HERDR_PANE_ID")
+        )
+        herdr_provider, candidate_path, herdr_target_id = _provider_from_herdr_pane()
         if detected_provider is None:
             detected_provider = herdr_provider
         if detected_provider == "pi" and herdr_provider == "pi":
@@ -1398,7 +1429,11 @@ def _process_hook_stdin(
         return None
 
     located = _locate_primary_window(
-        normalized.session_id, event, normalized.provider_name
+        normalized.session_id,
+        event,
+        normalized.provider_name,
+        herdr_target_id=herdr_target_id,
+        use_herdr_snapshot=use_herdr_snapshot,
     )
     if located is None:
         return None
@@ -1427,6 +1462,7 @@ def _process_hook_stdin(
             transcript_path,
             tmux_session_name,
             detected_provider,
+            replay_from_start=detected_provider == "pi",
         )
         data = dict(normalized.data)
         data.update(

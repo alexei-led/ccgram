@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from ccgram.session import SessionManager
-from ccgram.session_map import session_map_sync
+from ccgram.session_map import acknowledge_replay_from_start, session_map_sync
 from ccgram.session_resolver import session_resolver
 from ccgram.thread_router import thread_router
 from ccgram.user_preferences import user_preferences
@@ -665,6 +665,36 @@ class TestSessionMapEntryMayExist:
         monkeypatch.setattr("ccgram.session_map.config.tmux_session_name", "ccgram")
 
         assert await session_map_sync.session_map_entry_may_exist("@1") is True
+
+
+class TestAcknowledgeReplayFromStart:
+    def test_consumes_only_matching_marker(self, tmp_path, monkeypatch) -> None:
+        session_map_file = tmp_path / "session_map.json"
+        session_map_file.write_text(
+            json.dumps(
+                {
+                    "ccgram:@1": {
+                        "session_id": "s1",
+                        "replay_from_start": True,
+                    },
+                    "ccgram:@2": {
+                        "session_id": "s2",
+                        "replay_from_start": True,
+                    },
+                }
+            )
+        )
+        monkeypatch.setattr(
+            "ccgram.session_map.config.session_map_file", session_map_file
+        )
+        monkeypatch.setattr("ccgram.session_map.config.multiplexer_name", "tmux")
+        monkeypatch.setattr("ccgram.session_map.config.tmux_session_name", "ccgram")
+
+        assert acknowledge_replay_from_start("@1", "s1") is True
+
+        saved = json.loads(session_map_file.read_text())
+        assert "replay_from_start" not in saved["ccgram:@1"]
+        assert saved["ccgram:@2"]["replay_from_start"] is True
 
 
 class TestWindowStateProviderName:

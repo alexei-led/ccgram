@@ -79,6 +79,7 @@ class SessionMapEntry:
     window_name: str
     transcript_path: str
     provider_name: str
+    replay_from_start: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +192,11 @@ def parse_session_map_entry(raw: dict[str, Any]) -> SessionMapEntry:
     fields = ("session_id", "cwd", "window_name", "transcript_path", "provider_name")
     if any(not isinstance(raw.get(field, ""), str) for field in fields):
         raise StateFileValidationError("Session map entry fields must be strings")
+    replay_from_start = raw.get("replay_from_start", False)
+    if not isinstance(replay_from_start, bool):
+        raise StateFileValidationError(
+            "Session map entry replay_from_start must be a boolean"
+        )
 
     return SessionMapEntry(
         schema_version=version,
@@ -199,6 +205,7 @@ def parse_session_map_entry(raw: dict[str, Any]) -> SessionMapEntry:
         window_name=raw.get("window_name", ""),
         transcript_path=raw.get("transcript_path", ""),
         provider_name=raw.get("provider_name", ""),
+        replay_from_start=replay_from_start,
     )
 
 
@@ -208,9 +215,11 @@ def serialize_session_map_entry(
     window_name: str,
     transcript_path: str,
     provider_name: str,
+    *,
+    replay_from_start: bool = False,
 ) -> dict[str, Any]:
-    """Build a v1 session-map entry dict ready for JSON serialization."""
-    return {
+    """Build a backward-compatible v1 session-map entry."""
+    entry: dict[str, Any] = {
         "schema_version": SESSION_MAP_SCHEMA_VERSION,
         "session_id": session_id,
         "cwd": cwd,
@@ -218,3 +227,6 @@ def serialize_session_map_entry(
         "transcript_path": transcript_path,
         "provider_name": provider_name,
     }
+    if replay_from_start:
+        entry["replay_from_start"] = True
+    return entry

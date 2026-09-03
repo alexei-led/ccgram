@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Preserve Pi's exact Herdr transcript path before the transcript file exists, preventing the first reply from being skipped.
+- Persist and consume an offset-zero boundary for exact Pi/Herdr transcripts, including recovery after a stale `SessionStart` snapshot, so the first reply is not skipped.
 - Keep sessionless Pi panes out of temporary terminal fallback identities to prevent duplicate topics.
 - Drop transient status refreshes during Telegram flood control so queued content can continue progressing.
 - Throttle stale-session queue diagnostics and clear message-scoped logging context between monitor cycles.

@@ -1295,10 +1295,17 @@ class TestCheckForUpdates:
                 "cwd": "/proj",
                 "window_name": "proj",
                 "transcript_path": str(session_file),
+                "replay_from_start": True,
             },
         }
 
-        assert await monitor.check_for_updates(current_map) == []
+        with patch(
+            "ccgram.session_monitor.acknowledge_replay_from_start",
+            return_value=True,
+        ) as acknowledge:
+            assert await monitor.check_for_updates(current_map) == []
+        acknowledge.assert_called_once_with("@0", "sess-pi")
+        current_map["@0"].pop("replay_from_start")
         tracked = monitor.state.get_session("sess-pi")
         assert tracked is not None
         assert tracked.last_byte_offset == 0
@@ -1325,6 +1332,54 @@ class TestCheckForUpdates:
             messages = await monitor.check_for_updates(current_map)
 
         assert [message.text for message in messages] == ["first reply"]
+
+    async def test_replay_marker_reads_existing_pi_file_from_start(
+        self, tmp_path
+    ) -> None:
+        session_file = tmp_path / "pi.jsonl"
+        session_file.write_text(
+            json.dumps(
+                {
+                    "type": "message",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "fast first reply"}],
+                    },
+                }
+            )
+            + "\n"
+        )
+        monitor = SessionMonitor(
+            projects_path=tmp_path / "projects",
+            state_file=tmp_path / "ms.json",
+        )
+        current_map = {
+            "@0": {
+                "session_id": "sess-pi",
+                "cwd": "/proj",
+                "window_name": "proj",
+                "transcript_path": str(session_file),
+                "replay_from_start": True,
+            },
+        }
+        from ccgram.providers.pi import PiProvider
+
+        with (
+            patch(
+                "ccgram.transcript_reader.get_provider_for_window",
+                return_value=PiProvider(),
+            ),
+            patch(
+                "ccgram.session_monitor.acknowledge_replay_from_start",
+                return_value=True,
+            ) as acknowledge,
+        ):
+            messages = await monitor.check_for_updates(current_map)
+
+        acknowledge.assert_called_once_with("@0", "sess-pi")
+        assert [message.text for message in messages] == ["fast first reply"]
+        saved = json.loads((tmp_path / "ms.json").read_text())
+        assert saved["tracked_sessions"]["sess-pi"]["last_byte_offset"] == 0
 
     async def test_unchanged_mtime_skips_read(self, tmp_path) -> None:
         projects_path = tmp_path / "projects"

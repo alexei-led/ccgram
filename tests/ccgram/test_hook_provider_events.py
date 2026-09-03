@@ -172,9 +172,10 @@ def test_herdr_pi_hook_without_provider_metadata_uses_live_agent(
         ),
     )
 
-    with patch("ccgram.hook.subprocess.run", return_value=agent_list):
+    with patch("ccgram.hook.subprocess.run", return_value=agent_list) as agent_list_run:
         hook_main()
 
+    agent_list_run.assert_called_once()
     target_id = HerdrManager().target_id_for_live_record(live_record)
     assert target_id is not None
     entry = json.loads((tmp_path / "state" / "session_map.json").read_text())[
@@ -182,6 +183,7 @@ def test_herdr_pi_hook_without_provider_metadata_uses_live_agent(
     ]
     assert entry["provider_name"] == "pi"
     assert entry["transcript_path"] == str(transcript)
+    assert entry["replay_from_start"] is True
 
 
 def test_herdr_pi_hook_defers_stale_live_session_identity(
@@ -240,6 +242,52 @@ def test_herdr_pi_hook_defers_stale_live_session_identity(
 
     assert not (state_dir / "session_map.json").exists()
     assert not (state_dir / "events.jsonl").exists()
+
+    matching_transcript = stale_transcript.with_name(
+        f"2026-05-13T12-01-00-000Z_{_PI_SESSION_ID}.jsonl"
+    )
+    matching_transcript.parent.mkdir(parents=True)
+    matching_transcript.write_text("{}\n")
+    matching_record = {
+        **live_record,
+        "agent_session": {
+            **live_record["agent_session"],
+            "value": str(matching_transcript),
+        },
+    }
+    matching_agent_list = subprocess.CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout=json.dumps({"result": {"agents": [matching_record]}}),
+        stderr="",
+    )
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.StringIO(
+            json.dumps(
+                {
+                    "session_id": _PI_SESSION_ID,
+                    "cwd": cwd,
+                    "hook_event_name": "Stop",
+                    "last_assistant_message": "done",
+                }
+            )
+        ),
+    )
+
+    with patch(
+        "ccgram.hook.subprocess.run", return_value=matching_agent_list
+    ) as agent_list_run:
+        hook_main()
+
+    agent_list_run.assert_called_once()
+    session_map = json.loads((state_dir / "session_map.json").read_text())
+    assert len(session_map) == 1
+    recovered = next(iter(session_map.values()))
+    assert recovered["session_id"] == _PI_SESSION_ID
+    assert recovered["transcript_path"] == str(matching_transcript)
+    assert recovered["replay_from_start"] is True
 
 
 def test_pi_transcript_resolution_does_not_select_another_session(
