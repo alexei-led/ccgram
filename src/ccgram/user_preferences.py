@@ -23,6 +23,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 
+from .multiplexer.base import canonical_window_id
+
 logger = structlog.get_logger()
 
 
@@ -143,8 +145,11 @@ class UserPreferences:
         changed = False
         empty_users: list[int] = []
         pruned = 0
+        # Folded on both sides: an offset keyed in different case from the live
+        # listing belongs to the same window, and dropping it replays history.
+        known = {canonical_window_id(wid) for wid in known_window_ids}
         for uid, offsets in self.user_window_offsets.items():
-            stale = [wid for wid in offsets if wid not in known_window_ids]
+            stale = [wid for wid in offsets if canonical_window_id(wid) not in known]
             for wid in stale:
                 logger.debug("Pruning stale offset: user %d, window %s", uid, wid)
                 del offsets[wid]

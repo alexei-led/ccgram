@@ -34,6 +34,7 @@ from .session_map import (
 )
 from .state_persistence import StatePersistence
 from .multiplexer import multiplexer as tmux_manager
+from .multiplexer.base import canonical_window_id
 from .multiplexer.reconciliation import list_windows_for_reconciliation
 from .thread_router import ThreadRouter, install_thread_router, thread_router
 from .user_preferences import (
@@ -435,6 +436,7 @@ class SessionManager:
         When skip_chat_ids=True, group_chat_ids are preserved (used during startup
         so they remain available for post-restart topic creation).
         """
+        live_lookup = {canonical_window_id(w) for w in live_window_ids}
         # Collect window_ids that are "in use" (bound or have window_states)
         in_use = set(self.window_states.keys())
         in_use.update(thread_router.all_bound_window_ids())
@@ -443,7 +445,7 @@ class SessionManager:
         stale_display = [
             wid
             for wid in thread_router.window_display_names
-            if wid not in live_window_ids and wid not in in_use
+            if canonical_window_id(wid) not in live_lookup and wid not in in_use
         ]
 
         # Collect all bound thread keys "user_id:thread_id"
@@ -539,6 +541,13 @@ class SessionManager:
         """
         if adoptable_window_ids is None:
             adoptable_window_ids = live_window_ids
+        # Comparison sets only. The originals stay the reported identity: a
+        # window id is opaque and must reach the user, the session map and the
+        # repair flows exactly as the backend spelled it. Only the membership
+        # tests below fold case, because a persisted id may have round-tripped
+        # in different case from the live listing and would otherwise read as
+        # dead. See canonical_window_id.
+        live_lookup = {canonical_window_id(wid) for wid in live_window_ids}
         issues: list[AuditIssue] = []
 
         # Collect all bound window IDs
@@ -548,7 +557,7 @@ class SessionManager:
         for _uid, _tid, wid in thread_router.iter_thread_bindings():
             total_bindings += 1
             bound_window_ids.add(wid)
-            if wid in live_window_ids:
+            if canonical_window_id(wid) in live_lookup:
                 live_binding_count += 1
 
         session_map_wids = self._get_session_map_window_ids()
@@ -572,7 +581,10 @@ class SessionManager:
 
         # 2. Ghost bindings (thread → dead window) — fixable (close topic)
         for uid, tid, wid in thread_router.iter_thread_bindings():
-            if wid not in live_window_ids and wid not in legacy_bindings:
+            if (
+                canonical_window_id(wid) not in live_lookup
+                and wid not in legacy_bindings
+            ):
                 display = thread_router.get_display_name(wid)
                 issues.append(
                     AuditIssue(
@@ -585,7 +597,7 @@ class SessionManager:
         # 3. Orphaned display names
         in_use = set(self.window_states.keys()) | bound_window_ids
         for wid in thread_router.window_display_names:
-            if wid not in live_window_ids and wid not in in_use:
+            if canonical_window_id(wid) not in live_lookup and wid not in in_use:
                 name = thread_router.get_display_name(wid)
                 issues.append(
                     AuditIssue(
@@ -615,7 +627,7 @@ class SessionManager:
             if (
                 wid not in session_map_wids
                 and wid not in bound_window_ids
-                and wid not in live_window_ids
+                and canonical_window_id(wid) not in live_lookup
             ):
                 display = self.window_states[wid].window_name or wid
                 issues.append(
@@ -652,9 +664,17 @@ class SessionManager:
                 )
 
         # 7. Orphaned tmux windows (live, known to ccgram, but not bound to any topic)
-        known_wids = session_map_wids | set(self.window_states.keys())
+        # Comparison folds case on both sides: an id ccgram persisted may be
+        # spelled differently from the live listing, and an orphan that reads
+        # as unknown here is simply never adopted.
+        known_lookup = {
+            canonical_window_id(wid)
+            for wid in session_map_wids | set(self.window_states.keys())
+        }
+        bound_lookup = {canonical_window_id(wid) for wid in bound_window_ids}
         for wid in adoptable_window_ids:
-            if wid not in bound_window_ids and wid in known_wids:
+            key = canonical_window_id(wid)
+            if key not in bound_lookup and key in known_lookup:
                 name = dict(live_windows).get(wid, wid)
                 issues.append(
                     AuditIssue(
@@ -675,6 +695,7 @@ class SessionManager:
 
         Returns True if any changes were made.
         """
+        live_lookup = {canonical_window_id(w) for w in live_window_ids}
         session_map_wids = self._get_session_map_window_ids()
         bound_window_ids = thread_router.all_bound_window_ids()
 
@@ -684,7 +705,7 @@ class SessionManager:
             if (
                 wid not in session_map_wids
                 and wid not in bound_window_ids
-                and wid not in live_window_ids
+                and canonical_window_id(wid) not in live_lookup
                 and not window_store.is_archived_legacy_herdr(wid)
             )
         ]

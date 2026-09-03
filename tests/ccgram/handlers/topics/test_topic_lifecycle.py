@@ -6,6 +6,7 @@ import pytest
 from telegram import Bot
 from telegram.error import BadRequest, RetryAfter
 
+from ccgram.multiplexer.base import WindowRef
 from ccgram.window_view import WindowView
 
 from ccgram.handlers.topics.topic_lifecycle import (
@@ -117,6 +118,9 @@ class TestCheckAutocloseTimers:
             mock_config.autoclose_dead_minutes = 10
             mock_router.get_window_for_thread.return_value = "@0"
             mock_tmux.find_window_by_id = AsyncMock(return_value=MagicMock())
+            mock_tmux.list_windows_for_reconciliation = AsyncMock(
+                return_value=[WindowRef(window_id="@1", window_name="p", cwd="/p")]
+            )
             await check_autoclose_timers(bot)
         bot.delete_forum_topic.assert_not_called()
         assert lifecycle_strategy.get_state(user_id, thread_id).autoclose is None
@@ -481,3 +485,37 @@ class TestProbeTopicExistence:
                 bot.unpin_all_forum_topic_messages.assert_not_called()
         finally:
             tl._probe_pin_disabled.discard(wid)
+
+
+class TestAutocloseNeedsConfirmedDeath:
+    """An unreachable backend must not close the user's topic.
+
+    find_window_by_id answers None for a window that is gone and for a backend
+    that could not be reached, and this path closes a forum topic on that
+    answer. Unknown defers to the next expiry.
+    """
+
+    async def test_unreachable_backend_defers_the_close(self) -> None:
+        from ccgram.handlers.topics.topic_lifecycle import _close_expired_topic
+
+        client = AsyncMock()
+        with (
+            patch("ccgram.handlers.topics.topic_lifecycle.tmux_manager") as mock_tmux,
+            patch("ccgram.handlers.topics.topic_lifecycle.thread_router") as mock_tr,
+            patch(
+                "ccgram.handlers.topics.topic_lifecycle.lifecycle_strategy"
+            ) as strategy,
+            patch("ccgram.handlers.topics.topic_lifecycle.window_query") as wq,
+        ):
+            mock_tr.iter_thread_bindings_with_chat.return_value = [
+                (100, -100200, 42, "@1")
+            ]
+            mock_tr.get_window_for_thread.return_value = "@1"
+            wq.view_window.return_value = MagicMock(state="dead")
+            mock_tmux.find_window_by_id = AsyncMock(return_value=None)
+            mock_tmux.list_windows_for_reconciliation = AsyncMock(return_value=None)
+
+            await _close_expired_topic(client, 100, 42, "dead")
+
+        client.close_forum_topic.assert_not_called()
+        strategy.clear_autoclose_timer.assert_not_called()

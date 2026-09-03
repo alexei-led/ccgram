@@ -73,6 +73,34 @@ class WindowRef:
     ambiguous and must not be migrated.
     """
 
+    def matches(self, window_id: str) -> bool:
+        """Whether *window_id* names this window, under any identity it has had.
+
+        Case-insensitive, and it consults ``alias_window_ids``.
+
+        The case-folding is what matters today: agterm's UUIDs round-trip
+        through callers that may lowercase them, which is why its own
+        ``_find_session`` case-folds, and a presence check comparing ids
+        directly would report such a window gone and take the destructive
+        branch.
+
+        The alias arm is the value type's contract, not a live behaviour: no
+        backend currently publishes ``alias_window_ids``, and herdr
+        deliberately leaves them empty across a session re-key. Should one
+        start, a window persisted under a superseded id must still read as
+        present. ``legacy_alias_window_ids`` is deliberately excluded: those
+        are declared non-actionable, and this answer feeds callers that drive
+        the window they get back.
+
+        Case-folding is safe for every current id form — tmux ``@N`` has no
+        case, herdr's guarded targets are hex digests, agterm's are UUIDs. A
+        backend whose ids are genuinely case-sensitive must override this.
+        """
+        wanted = canonical_window_id(window_id)
+        return wanted == canonical_window_id(self.window_id) or any(
+            wanted == canonical_window_id(alias) for alias in self.alias_window_ids
+        )
+
 
 @dataclass
 class PaneInfo:

@@ -101,8 +101,23 @@ async def _close_expired_topic(
         else thread_router.get_window_for_thread(user_id, thread_id)
     )
     if state == "dead" and window_id is not None:
-        live_window = await tmux_manager.find_window_by_id(window_id)
-        if live_window is not None:
+        # Tri-state, read here instead of through find_window_by_id: that
+        # answers None both for a window that is gone and for a backend that
+        # could not be reached, and this path closes the user's topic. Present
+        # clears the stale timer, unknown defers to the next expiry.
+        # Lazy: importing the reconciliation seam at module load forms a cycle.
+        from ...multiplexer.reconciliation import window_presence
+
+        present = await window_presence(window_id, tmux_manager)
+        if present is None:
+            logger.warning(
+                "stale_dead_autoclose_deferred",
+                thread_id=thread_id,
+                user_id=user_id,
+                window_id=window_id,
+            )
+            return
+        if present:
             lifecycle_strategy.clear_autoclose_timer(user_id, thread_id)
             logger.info(
                 "stale_dead_autoclose_cleared",

@@ -1584,3 +1584,32 @@ class TestResolveStaleIdsHerdrRestart:
 
         assert thread_router.get_window_for_thread(100, 1) == "@1"
         assert "@1" in mgr.window_states
+
+
+class TestCaseFoldedIdentityInTheAudit:
+    """A persisted id may be spelled in different case from the live listing.
+
+    agterm reports UUIDs uppercase and its own lookup case-folds, saying in so
+    many words that a caller may round-trip one lowercased. The audit compares
+    persisted ids against the live set, so an exact-string comparison marks
+    that live session dead and the repair prunes its state, bindings and
+    offsets.
+    """
+
+    def test_a_lowercased_binding_is_not_a_ghost(self) -> None:
+        from ccgram.session import SessionManager
+
+        manager = SessionManager()
+        live = "9F1C2D3E-4A5B-4C6D-8E7F-0A1B2C3D4E5F"
+
+        with patch("ccgram.session.thread_router") as router:
+            router.iter_thread_bindings.return_value = [(100, 42, live.lower())]
+            router.window_display_names = {}
+            router.group_chat_ids = {}
+            router.iter_retired_topics.return_value = []
+            with patch("ccgram.session.session_map_sync") as maps:
+                maps.load_session_map.return_value = {}
+                audit = manager.audit_state({live}, [(live, "proj")], set())
+
+        ghosts = [i for i in audit.issues if i.category == "ghost_binding"]
+        assert ghosts == [], "a live window spelled in another case is not a ghost"

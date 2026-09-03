@@ -418,6 +418,9 @@ async def _stale_same_name_bindings(
     None both for a window that is gone and for a backend that could not be
     reached. There is no rush to rebind, so unknown abandons the decision.
     """
+    # Lazy: importing the reconciliation seam at module load forms a cycle.
+    from ...multiplexer.reconciliation import window_presence
+
     matches: list[tuple[int, int, str, int]] = []
     for user_id, thread_id, old_window_id in list(thread_router.iter_thread_bindings()):
         if old_window_id == event.window_id:
@@ -425,7 +428,15 @@ async def _stale_same_name_bindings(
         display_name = strip_emoji_prefix(thread_router.get_display_name(old_window_id))
         if display_name != clean_topic_name:
             continue
-        if await tmux_manager.find_window_by_id(old_window_id):
+        present = await window_presence(old_window_id, tmux_manager)
+        if present is None:
+            logger.warning(
+                "Cannot confirm window %s is gone; not rebinding %s",
+                old_window_id,
+                event.window_id,
+            )
+            return None
+        if present:
             continue
         chat_id = thread_router.resolve_chat_id(user_id, thread_id)
         matches.append((user_id, thread_id, old_window_id, chat_id))
@@ -465,6 +476,21 @@ async def _rebind_existing_topic_by_name(
             "Could not probe same-name topic thread %d for stale window %s; not rebinding",
             thread_id,
             old_window_id,
+        )
+        return False
+
+    # The topic probe above is a Telegram round trip, and the old window was
+    # judged gone before it. If it came back in that window, this bind would
+    # take its live topic away, so the verdict is re-read immediately before
+    # the write. Unknown refuses too: there is no rush to rebind.
+    # Lazy: importing the reconciliation seam at module load forms a cycle.
+    from ...multiplexer.reconciliation import window_presence
+
+    if await window_presence(old_window_id, tmux_manager) is not False:
+        logger.info(
+            "Old window %s is no longer confirmed gone; not rebinding %s",
+            old_window_id,
+            event.window_id,
         )
         return False
 
@@ -581,7 +607,7 @@ async def still_adoptable(window_id: str) -> bool:
             "Skipping adoption: no confirmed window listing", window_id=window_id
         )
         return False
-    if not any(w.window_id == window_id and w.topic_eligible for w in windows):
+    if not any(w.matches(window_id) and w.topic_eligible for w in windows):
         logger.info(
             "Skipping adoption: window no longer adoptable", window_id=window_id
         )

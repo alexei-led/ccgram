@@ -33,6 +33,7 @@ from typing import Any, cast
 
 import aiofiles
 
+from .multiplexer.base import canonical_window_id
 from .config import config
 from .herdr_targets import is_herdr_session_target
 from .hooks.state_files import StateFileValidationError, parse_session_map_entry
@@ -334,13 +335,21 @@ def _read_session_map_for_pruning() -> dict[str, Any] | None:
 def _dead_session_map_entries(
     raw: dict[str, Any], live_window_ids: set[str]
 ) -> list[tuple[str, str]]:
+    """Entries whose window is absent from the live listing.
+
+    The comparison folds case on both sides. A key written by the hook and a
+    listing from the backend can spell the same agterm UUID differently, and
+    deleting the entry here loses the session's provider, cwd and transcript
+    path for a session that is still running.
+    """
     prefix = session_map_prefix()
+    live = {canonical_window_id(wid) for wid in live_window_ids}
     return [
         (key, window_id)
         for key in raw
         if key.startswith(prefix)
         and is_backend_window_id(window_id := key[len(prefix) :])
-        and window_id not in live_window_ids
+        and canonical_window_id(window_id) not in live
     ]
 
 

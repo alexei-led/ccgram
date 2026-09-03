@@ -2,6 +2,8 @@
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from ccgram.multiplexer.base import WindowRef
+
 import pytest
 
 from ccgram.handlers.sessions_dashboard import (
@@ -58,6 +60,9 @@ class TestHandleSessionsKillConfirm:
             (300, 10, "@9"),
         ]
         mock_tm.find_window_by_id = AsyncMock(return_value=MagicMock(window_id="@5"))
+        mock_tm.list_windows_for_reconciliation = AsyncMock(
+            return_value=[WindowRef(window_id="@5", window_name="proj", cwd="/p")]
+        )
         mock_tm.kill_window = AsyncMock()
 
         query = AsyncMock()
@@ -86,6 +91,8 @@ class TestHandleSessionsKillConfirm:
         mock_tr.get_display_name.side_effect = lambda wid: "myproj"
         mock_tr.iter_thread_bindings.return_value = [(100, 42, "@5")]
         mock_tm.find_window_by_id = AsyncMock(return_value=None)
+        # Confirmed gone, not unreachable: the cleanup should still run.
+        mock_tm.list_windows_for_reconciliation = AsyncMock(return_value=[])
         mock_tm.kill_window = AsyncMock()
 
         query = AsyncMock()
@@ -106,6 +113,9 @@ class TestHandleSessionsKillConfirm:
         mock_tr.get_display_name.side_effect = lambda wid: "proj"
         mock_tr.iter_thread_bindings.return_value = [(100, 42, "@5")]
         mock_tm.find_window_by_id = AsyncMock(return_value=MagicMock(window_id="@5"))
+        mock_tm.list_windows_for_reconciliation = AsyncMock(
+            return_value=[WindowRef(window_id="@5", window_name="proj", cwd="/p")]
+        )
         mock_tm.kill_window = AsyncMock()
 
         query = AsyncMock()
@@ -115,3 +125,73 @@ class TestHandleSessionsKillConfirm:
             mock_edit.assert_called_once()
             text = mock_edit.call_args[0][1]
             assert "Killed" in text
+
+    async def test_kill_unbinds_case_variant_bindings(self, _patch_deps) -> None:
+        _mock_sm, mock_tr, mock_tm, mock_clear = _patch_deps
+        mock_tr.get_display_name.side_effect = lambda wid: "myproj"
+        mock_tr.iter_thread_bindings.return_value = [
+            (100, 42, "9f1c2d3e-4a5b"),
+            (200, 99, "9F1C2D3E-4A5B"),
+        ]
+        mock_tm.list_windows_for_reconciliation = AsyncMock(
+            return_value=[
+                WindowRef(window_id="9F1C2D3E-4A5B", window_name="proj", cwd="/p")
+            ]
+        )
+        mock_tm.kill_window = AsyncMock()
+
+        query = AsyncMock()
+        with patch("ccgram.handlers.sessions_dashboard.safe_edit"):
+            await handle_sessions_kill_confirm(query, 100, "9f1c2d3e-4a5b", AsyncMock())
+
+        assert mock_tr.unbind_thread.call_count == 2
+        assert mock_clear.call_count == 2
+
+
+class TestKillNeedsConfirmedLiveness:
+    """Kill deletes every route to a session, so an outage must change nothing.
+
+    find_window_by_id answers None both for a window that is gone and for a
+    backend that could not be reached. Acting on that during an outage leaves
+    the session running with no topic left to reach it from.
+    """
+
+    async def test_unreachable_backend_kills_and_unbinds_nothing(
+        self, _patch_deps
+    ) -> None:
+        _mock_sm, mock_tr, mock_tm, mock_clear = _patch_deps
+        mock_tr.get_display_name.side_effect = lambda wid: "myproj"
+        mock_tr.iter_thread_bindings.return_value = [(100, 42, "@5")]
+        mock_tm.find_window_by_id = AsyncMock(return_value=None)
+        mock_tm.list_windows_for_reconciliation = AsyncMock(return_value=None)
+        mock_tm.kill_window = AsyncMock()
+
+        query = AsyncMock()
+        with patch("ccgram.handlers.sessions_dashboard.safe_edit") as edit:
+            await handle_sessions_kill_confirm(query, 100, "@5", AsyncMock())
+
+        mock_tm.kill_window.assert_not_called()
+        mock_tr.unbind_thread.assert_not_called()
+        mock_clear.assert_not_called()
+        assert "Could not reach" in edit.call_args[0][1]
+
+
+class TestKillRequiresTheKillToSucceed:
+    """A failed kill must not clear the routing to a session still running."""
+
+    async def test_failed_kill_unbinds_nothing(self, _patch_deps) -> None:
+        _mock_sm, mock_tr, mock_tm, mock_clear = _patch_deps
+        mock_tr.get_display_name.side_effect = lambda wid: "myproj"
+        mock_tr.iter_thread_bindings.return_value = [(100, 42, "@5")]
+        mock_tm.list_windows_for_reconciliation = AsyncMock(
+            return_value=[WindowRef(window_id="@5", window_name="proj", cwd="/p")]
+        )
+        mock_tm.kill_window = AsyncMock(return_value=False)
+
+        query = AsyncMock()
+        with patch("ccgram.handlers.sessions_dashboard.safe_edit") as edit:
+            await handle_sessions_kill_confirm(query, 100, "@5", AsyncMock())
+
+        mock_tr.unbind_thread.assert_not_called()
+        mock_clear.assert_not_called()
+        assert "Could not kill" in edit.call_args[0][1]

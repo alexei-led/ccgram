@@ -103,6 +103,14 @@ class TestAutocloseTimers:
             patch("ccgram.handlers.topics.topic_lifecycle.thread_router") as mock_tr,
             patch("ccgram.handlers.topics.topic_lifecycle.time") as mock_time,
             patch("ccgram.handlers.topics.topic_lifecycle.clear_topic_state"),
+            # The dead case reads liveness before closing: a confirmed empty
+            # listing means the window really is gone. It used to get that for
+            # free from libtmux swallowing its own listing error.
+            patch(
+                "ccgram.multiplexer.reconciliation.list_windows_for_reconciliation",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
         ):
             mock_config.autoclose_done_minutes = 30
             mock_config.autoclose_dead_minutes = minutes
