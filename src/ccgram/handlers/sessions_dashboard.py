@@ -212,8 +212,8 @@ async def handle_sessions_kill_confirm(
     # Clean up BEFORE unbind — resolve_chat_id needs group_chat_ids
     # which unbind_thread deletes
     for uid, tid, bound_wid in list(thread_router.iter_thread_bindings()):
-        if bound_wid == window_id:
-            await clear_topic_state(uid, tid, client, window_id=window_id)
+        if canonical_window_id(bound_wid) == canonical_window_id(window_id):
+            await clear_topic_state(uid, tid, client, window_id=bound_wid)
             thread_router.unbind_thread(
                 uid,
                 tid,

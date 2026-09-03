@@ -127,6 +127,30 @@ class TestHandleSessionsKillConfirm:
             assert "Killed" in text
 
 
+    async def test_kill_unbinds_case_variant_bindings(self, _patch_deps) -> None:
+        _mock_sm, mock_tr, mock_tm, mock_clear = _patch_deps
+        mock_tr.get_display_name.side_effect = lambda wid: "myproj"
+        mock_tr.iter_thread_bindings.return_value = [
+            (100, 42, "9f1c2d3e-4a5b"),
+            (200, 99, "9F1C2D3E-4A5B"),
+        ]
+        mock_tm.list_windows_for_reconciliation = AsyncMock(
+            return_value=[
+                WindowRef(
+                    window_id="9F1C2D3E-4A5B", window_name="proj", cwd="/p"
+                )
+            ]
+        )
+        mock_tm.kill_window = AsyncMock()
+
+        query = AsyncMock()
+        with patch("ccgram.handlers.sessions_dashboard.safe_edit"):
+            await handle_sessions_kill_confirm(query, 100, "9f1c2d3e-4a5b", AsyncMock())
+
+        assert mock_tr.unbind_thread.call_count == 2
+        assert mock_clear.call_count == 2
+
+
 class TestKillNeedsConfirmedLiveness:
     """Kill deletes every route to a session, so an outage must change nothing.
 
