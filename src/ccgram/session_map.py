@@ -792,6 +792,7 @@ class SessionMapSync:
                         pending_key in session_map
                         or (
                             isinstance(existing, dict)
+                            and existing.get("session_id") == session_id
                             and existing.get("replay_from_start") is True
                         )
                     )

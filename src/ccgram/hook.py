@@ -706,14 +706,20 @@ def _resolve_herdr_target_id(
         )
         return None
 
-    # Keep record parsing and canonical target construction in the adapter;
-    # this hook only establishes the unique live locator match.
-    target_for_record = getattr(
-        get_multiplexer("herdr"), "target_id_for_live_record", None
-    )
-    if not callable(target_for_record):
-        return None
-    target_id = target_for_record(record)
+    return _target_id_from_herdr_snapshot(record, agents)
+
+
+def _target_id_from_herdr_snapshot(
+    record: dict[str, Any], records: list[object]
+) -> str | None:
+    """Derive a target only after applying whole-snapshot quarantine."""
+    manager = get_multiplexer("herdr")
+    target_for_snapshot = getattr(manager, "target_id_for_live_snapshot", None)
+    if callable(target_for_snapshot):
+        target_id = target_for_snapshot(record, records)
+    else:
+        target_for_record = getattr(manager, "target_id_for_live_record", None)
+        target_id = target_for_record(record) if callable(target_for_record) else None
     return target_id if isinstance(target_id, str) else None
 
 
@@ -1357,11 +1363,8 @@ def _provider_from_herdr_pane() -> tuple[ProviderName | None, str, str | None]:
         and isinstance(session.get("value"), str)
     ):
         transcript_path = session["value"]
-    target_for_record = getattr(
-        get_multiplexer("herdr"), "target_id_for_live_record", None
-    )
-    target_id = target_for_record(record) if callable(target_for_record) else None
-    return provider, transcript_path, target_id if isinstance(target_id, str) else None
+    target_id = _target_id_from_herdr_snapshot(record, records)
+    return provider, transcript_path, target_id
 
 
 def _hook_adapter_for_context(

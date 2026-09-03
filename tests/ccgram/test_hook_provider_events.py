@@ -257,6 +257,68 @@ def test_herdr_pi_hook_without_provider_metadata_uses_live_agent(
     assert entry["replay_from_start"] is True
 
 
+def test_herdr_pi_hook_quarantines_duplicate_canonical_targets(
+    tmp_path: Path, monkeypatch
+) -> None:
+    cwd = str(tmp_path / "proj")
+    transcript = (
+        tmp_path
+        / ".pi"
+        / "agent"
+        / "sessions"
+        / _encode_pi_cwd_dirname(cwd)
+        / f"2026-05-13T12-26-23-633Z_{_PI_SESSION_ID}.jsonl"
+    )
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("CCGRAM_DIR", str(state_dir))
+    monkeypatch.setenv("HERDR_WORKSPACE_ID", "w2")
+    monkeypatch.setenv("HERDR_PANE_ID", "w2:p1")
+    composite = {
+        "source": "herdr:pi",
+        "agent": "pi",
+        "kind": "path",
+        "value": str(transcript),
+    }
+    records = [
+        {
+            "agent": "pi",
+            "workspace_id": "w2",
+            "pane_id": pane_id,
+            "tab_id": "w2:t1",
+            "terminal_id": terminal_id,
+            "agent_session": composite,
+        }
+        for pane_id, terminal_id in (("w2:p1", "term-1"), ("w2:p2", "term-2"))
+    ]
+    agent_list = subprocess.CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout=json.dumps({"result": {"agents": records}}),
+        stderr="",
+    )
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.StringIO(
+            json.dumps(
+                {
+                    "session_id": _PI_SESSION_ID,
+                    "cwd": cwd,
+                    "hook_event_name": "SessionStart",
+                }
+            )
+        ),
+    )
+
+    with patch("ccgram.hook.subprocess.run", return_value=agent_list) as agent_list_run:
+        hook_main()
+
+    agent_list_run.assert_called_once()
+    assert not (state_dir / "session_map.json").exists()
+    assert not (state_dir / "events.jsonl").exists()
+
+
 def test_herdr_pi_hook_defers_stale_live_session_identity(
     tmp_path: Path, monkeypatch
 ) -> None:
