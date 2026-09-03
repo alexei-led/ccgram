@@ -24,17 +24,22 @@ from .base import MultiplexerCapabilities, WindowRef
 TOPIC_PREFIX_SEPARATOR = " ▸ "
 
 
-def format_agent_topic_prefix(workspace: str, tab: str, pane: str = "") -> str:
-    """Render a Herdr topic label, adding a pane when needed.
+def format_agent_topic_prefix(
+    workspace: str, tab: str, pane: str = "", *, provider: str = ""
+) -> str:
+    """Render a Herdr topic label with an easy-to-search provider prefix.
 
-    Produces ``"<workspace> ▸ <tab>"`` when pane is omitted and
-    ``"<workspace> ▸ <tab> ▸ <pane>"`` for Herdr agent topics. The status emoji is prepended later by
-    the topic-emoji machinery.
+    Produces ``"<Provider> ▸ <workspace> ▸ <tab> ▸ <pane>"`` when *provider*
+    is present. Without a provider, the legacy workspace/tab label is kept.
+    The status emoji is prepended later by the topic-emoji machinery.
 
     Empty parts degrade gracefully so a half-populated tab never renders a
     stray separator.
     """
-    parts = [part.strip() for part in (workspace, tab, pane) if part.strip()]
+    provider_label = provider.strip().capitalize()
+    parts = [
+        part.strip() for part in (provider_label, workspace, tab, pane) if part.strip()
+    ]
     return TOPIC_PREFIX_SEPARATOR.join(parts)
 
 

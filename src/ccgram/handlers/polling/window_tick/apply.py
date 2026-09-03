@@ -140,7 +140,12 @@ async def _transition_to_idle(
     if not send_status:
         return
     await enqueue_status_update(
-        client, user_id, window_id, IDLE_STATUS_TEXT, thread_id=thread_id
+        client,
+        user_id,
+        window_id,
+        IDLE_STATUS_TEXT,
+        thread_id=thread_id,
+        transient=True,
     )
 
 
@@ -442,6 +447,7 @@ async def _apply_active_transition(
             window_id,
             display_status,
             thread_id=thread_id,
+            transient=True,
         )
     else:
         claude_task_state.clear_wait_header(window_id)
@@ -478,7 +484,14 @@ async def _apply_done_transition(
     await update_topic_emoji(client, chat_id, thread_id, "done", display)
     lc.start_autoclose_timer(user_id, thread_id, "done", time.monotonic())
     lc.clear_typing_state(user_id, thread_id)
-    await enqueue_status_update(client, user_id, window_id, None, thread_id=thread_id)
+    await enqueue_status_update(
+        client,
+        user_id,
+        window_id,
+        None,
+        thread_id=thread_id,
+        transient=True,
+    )
 
 
 async def _apply_starting_transition(
@@ -555,7 +568,12 @@ async def _update_status(
     w = _window or await tmux_manager.find_window_by_id(window_id)
     if not w:
         await enqueue_status_update(
-            PTBTelegramClient(bot), user_id, window_id, None, thread_id=thread_id
+            PTBTelegramClient(bot),
+            user_id,
+            window_id,
+            None,
+            thread_id=thread_id,
+            transient=True,
         )
         return
 

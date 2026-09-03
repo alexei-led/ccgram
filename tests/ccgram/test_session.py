@@ -5,7 +5,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from ccgram.session import SessionManager
-from ccgram.session_map import session_map_sync
+from ccgram.hooks.state_files import pending_pi_replay_key
+from ccgram.session_map import acknowledge_replay_from_start, session_map_sync
 from ccgram.session_resolver import session_resolver
 from ccgram.thread_router import thread_router
 from ccgram.user_preferences import user_preferences
@@ -667,6 +668,36 @@ class TestSessionMapEntryMayExist:
         assert await session_map_sync.session_map_entry_may_exist("@1") is True
 
 
+class TestAcknowledgeReplayFromStart:
+    def test_consumes_only_matching_marker(self, tmp_path, monkeypatch) -> None:
+        session_map_file = tmp_path / "session_map.json"
+        session_map_file.write_text(
+            json.dumps(
+                {
+                    "ccgram:@1": {
+                        "session_id": "s1",
+                        "replay_from_start": True,
+                    },
+                    "ccgram:@2": {
+                        "session_id": "s2",
+                        "replay_from_start": True,
+                    },
+                }
+            )
+        )
+        monkeypatch.setattr(
+            "ccgram.session_map.config.session_map_file", session_map_file
+        )
+        monkeypatch.setattr("ccgram.session_map.config.multiplexer_name", "tmux")
+        monkeypatch.setattr("ccgram.session_map.config.tmux_session_name", "ccgram")
+
+        assert acknowledge_replay_from_start("@1", "s1") is True
+
+        saved = json.loads(session_map_file.read_text())
+        assert "replay_from_start" not in saved["ccgram:@1"]
+        assert saved["ccgram:@2"]["replay_from_start"] is True
+
+
 class TestWindowStateProviderName:
     def test_default_provider_name_is_empty(self) -> None:
 
@@ -1114,6 +1145,86 @@ class TestWriteHooklessSessionMap:
         assert entry["transcript_path"] == "/path/to/transcript.jsonl"
         assert entry["provider_name"] == "codex"
         assert entry["window_name"] == "pumba-codex"
+
+    def test_pi_discovery_without_recovery_starts_at_tail(
+        self, mgr: SessionManager, tmp_path, monkeypatch
+    ) -> None:
+        session_map_file = tmp_path / "session_map.json"
+        monkeypatch.setattr("ccgram.session.config.session_map_file", session_map_file)
+        monkeypatch.setattr("ccgram.session.config.tmux_session_name", "ccgram")
+
+        session_map_sync.write_hookless_session_map(
+            window_id="@7",
+            session_id="pi-uuid",
+            cwd="/my/project",
+            transcript_path="/path/pi.jsonl",
+            provider_name="pi",
+        )
+
+        raw = json.loads(session_map_file.read_text())
+        assert "replay_from_start" not in raw["ccgram:@7"]
+
+    def test_pi_discovery_consumes_deferred_recovery_marker(
+        self, mgr: SessionManager, tmp_path, monkeypatch
+    ) -> None:
+        session_map_file = tmp_path / "session_map.json"
+        pending_key = pending_pi_replay_key("pi-uuid")
+        session_map_file.write_text(
+            json.dumps(
+                {
+                    pending_key: {
+                        "session_id": "pi-uuid",
+                        "provider_name": "pi",
+                        "replay_from_start": True,
+                    }
+                }
+            )
+        )
+        monkeypatch.setattr("ccgram.session.config.session_map_file", session_map_file)
+        monkeypatch.setattr("ccgram.session.config.tmux_session_name", "ccgram")
+
+        session_map_sync.write_hookless_session_map(
+            window_id="@7",
+            session_id="pi-uuid",
+            cwd="/my/project",
+            transcript_path="/path/pi.jsonl",
+            provider_name="pi",
+        )
+
+        raw = json.loads(session_map_file.read_text())
+        assert raw["ccgram:@7"]["replay_from_start"] is True
+        assert pending_key not in raw
+
+    def test_pi_discovery_does_not_inherit_marker_from_prior_session(
+        self, mgr: SessionManager, tmp_path, monkeypatch
+    ) -> None:
+        session_map_file = tmp_path / "session_map.json"
+        session_map_file.write_text(
+            json.dumps(
+                {
+                    "ccgram:@7": {
+                        "session_id": "old-pi-uuid",
+                        "provider_name": "pi",
+                        "transcript_path": "/path/old.jsonl",
+                        "replay_from_start": True,
+                    }
+                }
+            )
+        )
+        monkeypatch.setattr("ccgram.session.config.session_map_file", session_map_file)
+        monkeypatch.setattr("ccgram.session.config.tmux_session_name", "ccgram")
+
+        session_map_sync.write_hookless_session_map(
+            window_id="@7",
+            session_id="new-pi-uuid",
+            cwd="/my/project",
+            transcript_path="/path/new.jsonl",
+            provider_name="pi",
+        )
+
+        raw = json.loads(session_map_file.read_text())
+        assert raw["ccgram:@7"]["session_id"] == "new-pi-uuid"
+        assert "replay_from_start" not in raw["ccgram:@7"]
 
     def test_preserves_existing_session_map_entries(
         self, mgr: SessionManager, tmp_path, monkeypatch

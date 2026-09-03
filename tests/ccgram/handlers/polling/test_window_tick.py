@@ -326,6 +326,7 @@ class TestUpdateStatusActiveLine:
             mock_cts.build_subagent_label = MagicMock()
             await _update_status(bot, 1, "@0", thread_id=100, _window=w)
             mock_enqueue.assert_called_once()
+            assert mock_enqueue.call_args.kwargs["transient"] is True
             mock_emoji.assert_called()
             mock_cts.set_last_status.assert_called_once()
 

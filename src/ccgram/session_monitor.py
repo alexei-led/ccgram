@@ -37,9 +37,14 @@ from .delivery_contract import (
 )
 from .event_reader import read_new_events
 from .idle_tracker import IdleTracker
-from .monitor_state import BacklogSkipIntent, MonitorState
+from .monitor_state import BacklogSkipIntent, MonitorState, TrackedSession
 from .providers import get_provider_for_window, registry  # noqa: F401 (used by test patches)
-from .session_map import parse_session_map, read_session_map_raw, session_map_prefix
+from .session_map import (
+    acknowledge_replay_from_start,
+    parse_session_map,
+    read_session_map_raw,
+    session_map_prefix,
+)
 from .session_lifecycle import session_lifecycle
 from .multiplexer import multiplexer as tmux_manager
 from .multiplexer.reconciliation import list_windows_for_reconciliation
@@ -443,6 +448,28 @@ class SessionMonitor:
             else:
                 self._delivery_receipts.pop(session_id, None)
 
+    def _reserve_replay_start(
+        self, window_id: str, session_id: str, path: Path
+    ) -> bool:
+        """Persist offset zero before consuming a session-map replay marker."""
+        tracked = self.state.get_session(session_id)
+        if tracked is None or tracked.file_path != str(path):
+            self.state.update_session(
+                TrackedSession(
+                    session_id=session_id,
+                    file_path=str(path),
+                    last_byte_offset=0,
+                )
+            )
+        if not self.state.save_if_dirty():
+            return False
+        if not acknowledge_replay_from_start(window_id, session_id):
+            logger.warning(
+                "Could not consume replay-from-start marker for session %s",
+                session_id,
+            )
+        return True
+
     async def check_for_updates(self, current_map: dict) -> list[NewMessage]:
         """Check all sessions for new assistant messages.
 
@@ -456,13 +483,23 @@ class SessionMonitor:
         direct_sessions: list[tuple[str, Path]] = []
         fallback_session_ids: set[str] = set()
 
-        for details in current_map.values():
+        for window_id, details in current_map.items():
             session_id = details["session_id"]
             transcript_path = details.get("transcript_path", "")
             if transcript_path:
                 path = Path(transcript_path)
+                replay_from_start = details.get("replay_from_start") is True
+                if replay_from_start and not self._reserve_replay_start(
+                    window_id, session_id, path
+                ):
+                    continue
                 if path.exists():
                     direct_sessions.append((session_id, path))
+                    continue
+                if replay_from_start:
+                    # The explicit hook path is authoritative. Scanning can
+                    # find a different generation and seed it at EOF before
+                    # this file is created.
                     continue
             fallback_session_ids.add(session_id)
 
@@ -786,6 +823,9 @@ class SessionMonitor:
         error_streak = 0
         while self._running:
             try:
+                # The same long-lived task handles every cycle. Do not attach a
+                # prior message's session_id to reconciliation and hook logs.
+                structlog.contextvars.clear_contextvars()
                 raw_session_map = await read_session_map_raw()
 
                 # A fresh listing owns identity convergence. It must precede

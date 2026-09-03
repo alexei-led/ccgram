@@ -304,11 +304,12 @@ def _parse_live_record(record: Mapping[str, object]) -> HerdrLiveRecord | None:
     if composite is None:
         agent = _session_field(record.get("agent"))
         terminal_id = locators["terminal_id"]
-        if agent not in {"claude", "pi", "codex", "gemini"} or terminal_id is None:
+        if agent not in {"claude", "codex", "gemini"} or terminal_id is None:
             return None
-        # Herdr versions without agent_session still expose a unique terminal
-        # identity. It is intentionally short-lived: a Herdr restart can mint
-        # a new terminal id, so the next listing may require a new topic.
+        # Providers that may remain sessionless still expose a unique terminal
+        # identity. Pi is excluded: Herdr publishes its durable session shortly
+        # after startup, and creating a terminal topic in that gap would create
+        # a second topic when the durable identity arrives.
         composite = HerdrSessionComposite("herdr", agent, "terminal", terminal_id)
     target_id = herdr_session_target_id(composite)
     # ``cwd`` is the agent's own working directory; ``foreground_cwd`` follows
@@ -579,17 +580,37 @@ class HerdrManager:
         return safe
 
     def target_id_for_live_record(self, record: Mapping[str, object]) -> str | None:
-        """Return a guarded opaque target for one ``agent.list`` record.
-
-        Hook-side discovery uses this parser after it has established a unique
-        live locator match. Malformed, non-agent, or incomplete records do not
-        yield an identity.
-        """
+        """Return an opaque target for one structurally valid live record."""
         try:
             live = _parse_live_record(record)
         except HerdrMalformedRecordError:
             return None
         return live.target_id if live is not None else None
+
+    def target_id_for_live_snapshot(
+        self,
+        record: Mapping[str, object],
+        snapshot: Sequence[object],
+    ) -> str | None:
+        """Return a target only when the full snapshot is unambiguous."""
+        try:
+            selected = _parse_live_record(record)
+        except HerdrMalformedRecordError:
+            return None
+        if selected is None:
+            return None
+        records, malformed = _parse_agent_records(snapshot)
+        safe, duplicate_targets, duplicate_panes = _quarantine_ambiguous_records(
+            records
+        )
+        if malformed or duplicate_targets or duplicate_panes:
+            logger.warning(
+                "quarantining unsafe Herdr hook snapshot",
+                malformed_record_count=malformed,
+                duplicate_target_count=duplicate_targets,
+                duplicate_pane_count=duplicate_panes,
+            )
+        return selected.target_id if selected in safe else None
 
     async def guard_session_target(self, target_id: str) -> HerdrLiveRecord:
         """Resolve one exact target against one fresh live session record."""
@@ -677,7 +698,11 @@ class HerdrManager:
                     refs.append(
                         self._live_ref(
                             record,
-                            f"Herdr ▸ {record.target_id[-12:]}",
+                            format_agent_topic_prefix(
+                                "Herdr",
+                                record.target_id[-12:],
+                                provider=record.composite.agent,
+                            ),
                         )
                     )
                 continue
@@ -691,7 +716,12 @@ class HerdrManager:
             refs.append(
                 self._live_ref(
                     record,
-                    format_agent_topic_prefix(workspace_label, tab_label, pane),
+                    format_agent_topic_prefix(
+                        workspace_label,
+                        tab_label,
+                        pane,
+                        provider=record.composite.agent,
+                    ),
                 )
             )
         return refs

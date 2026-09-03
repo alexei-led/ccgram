@@ -202,6 +202,13 @@ class TestParseSessionMapEntry:
             entry.transcript_path,
             entry.provider_name,
         ) == ("", "", "", "")
+        assert entry.replay_from_start is False
+
+    def test_replay_from_start_must_be_boolean(self) -> None:
+        with pytest.raises(
+            StateFileValidationError, match="replay_from_start must be a boolean"
+        ):
+            parse_session_map_entry(_entry(replay_from_start="true"))
 
 
 class TestSerializeSessionMapEntry:
@@ -217,7 +224,15 @@ class TestSerializeSessionMapEntry:
         }
 
     def test_round_trip(self) -> None:
-        d = serialize_session_map_entry("s2", "/x", "x", "/x.jsonl", "gemini")
+        d = serialize_session_map_entry(
+            "s2",
+            "/x",
+            "x",
+            "/x.jsonl",
+            "gemini",
+            replay_from_start=True,
+        )
+        assert d["replay_from_start"] is True
         assert parse_session_map_entry(d) == SessionMapEntry(
             schema_version=1,
             session_id="s2",
@@ -225,4 +240,5 @@ class TestSerializeSessionMapEntry:
             window_name="x",
             transcript_path="/x.jsonl",
             provider_name="gemini",
+            replay_from_start=True,
         )

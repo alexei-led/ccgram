@@ -49,6 +49,9 @@ class StatusUpdateTask:
     window_id: str
     text: str | None
     thread_id: int | None = None
+    # Poll refreshes are replaceable. Hook notices are durable and must not be
+    # discarded merely because Telegram temporarily rate-limits the chat.
+    transient: bool = False
 
 
 @dataclass(frozen=True, slots=True)

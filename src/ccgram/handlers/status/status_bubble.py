@@ -22,6 +22,7 @@ from ...config import config
 from ...session_state_ports.live_session_state import get_task_snapshot, get_wait_header
 from ...expandable_quote import format_expandable_quote
 from ...telegram_client import TelegramClient
+from ...telegram_rate_limiter import NO_RETRY_RATE_LIMIT_ARGS
 from ...thread_router import thread_router
 from ...window_state_ports.pane_state import PaneProjection, list_pane_projections
 
@@ -178,6 +179,8 @@ def format_backlog_status(
         snapshot.pending_count >= SEVERE_BACKLOG_COUNT
         or snapshot.oldest_age_seconds >= SEVERE_BACKLOG_AGE_SECONDS
     )
+    if not severe:
+        return "", False
     key = (user_id, thread_id_or_0, window_id)
     now = time.monotonic()
     cached = _backlog_status_cache.get(key)
@@ -385,7 +388,12 @@ async def send_status_text(
             return
         if stored_wid == window_id:
             success = await edit_with_fallback(
-                client, stored_chat_id, msg_id, text, reply_markup=keyboard
+                client,
+                stored_chat_id,
+                msg_id,
+                text,
+                reply_markup=keyboard,
+                rate_limit_args=NO_RETRY_RATE_LIMIT_ARGS,
             )
             if success:
                 _status_msg_info[skey] = (msg_id, window_id, text, stored_chat_id)
@@ -404,6 +412,7 @@ async def send_status_text(
         text,
         message_thread_id=thread_id,
         reply_markup=keyboard,
+        rate_limit_args=NO_RETRY_RATE_LIMIT_ARGS,
     )
     if msg is not None:
         _status_msg_info[skey] = (msg.message_id, window_id, text, chat_id)
@@ -483,7 +492,7 @@ async def process_status_update(
         user_id,
         tkey,
         task.window_id,
-        f"{status_text}\n{backlog_line}",
+        f"{status_text}\n{backlog_line}" if backlog_line else status_text,
         backlog_severe=severe,
     )
 
@@ -504,7 +513,7 @@ async def process_status_clear(
             user_id,
             tkey,
             window_id,
-            f"{status_text}\n{backlog_line}",
+            f"{status_text}\n{backlog_line}" if backlog_line else status_text,
             backlog_severe=severe,
         )
         return

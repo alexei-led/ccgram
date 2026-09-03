@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+import structlog
 
 from ccgram.monitor_state import BacklogSkipIntent, TrackedSession
 from ccgram.multiplexer.base import MultiplexerCapabilities, WindowRef
@@ -101,6 +102,62 @@ class TestMonitorLoop:
 
         mock_sync.prune_session_map.assert_not_called()
         check_for_updates.assert_awaited_once_with(current_map)
+
+    async def test_each_cycle_clears_prior_message_log_context(
+        self, monitor: SessionMonitor
+    ) -> None:
+        current_map = {HERDR_TARGETS["a"]: {"session_id": "session-a"}}
+        contexts: list[dict[str, object]] = []
+        cycles = 0
+        monitor.set_message_callback(AsyncMock())
+
+        async def inspect_hook_context() -> None:
+            contexts.append(structlog.contextvars.get_contextvars())
+
+        async def sleep_until_two_cycles(_delay: float) -> None:
+            nonlocal cycles
+            cycles += 1
+            if cycles == 2:
+                monitor._running = False
+
+        with (
+            patch.object(monitor, "_cleanup_all_stale_sessions", AsyncMock()),
+            patch.object(
+                monitor, "_load_current_session_map", AsyncMock(return_value={})
+            ),
+            patch.object(
+                monitor,
+                "_detect_and_cleanup_changes",
+                AsyncMock(return_value=current_map),
+            ),
+            patch.object(
+                monitor,
+                "check_for_updates",
+                AsyncMock(
+                    side_effect=[
+                        [NewMessage("session-a", "first", True)],
+                        [],
+                    ]
+                ),
+            ),
+            patch.object(monitor, "_read_hook_events", inspect_hook_context),
+            patch(
+                "ccgram.session_monitor.read_session_map_raw",
+                AsyncMock(return_value={}),
+            ),
+            patch("ccgram.session_map.session_map_sync") as mock_sync,
+            patch(
+                "ccgram.session_monitor.list_windows_for_reconciliation",
+                AsyncMock(return_value=None),
+            ),
+            patch("ccgram.session_monitor.asyncio.sleep", sleep_until_two_cycles),
+        ):
+            mock_sync.load_session_map = AsyncMock()
+            structlog.contextvars.clear_contextvars()
+            monitor._running = True
+            await monitor._monitor_loop()
+
+        assert contexts == [{}, {}]
 
     async def test_reliable_listing_monitors_only_live_windows(
         self, monitor: SessionMonitor
@@ -1224,6 +1281,105 @@ class TestCheckForUpdates:
         assert tracked is not None
         # New sessions seed the delivered watermark directly at EOF.
         assert tracked.last_byte_offset == session_file.stat().st_size
+
+    async def test_pending_direct_session_preserves_first_reply(self, tmp_path) -> None:
+        """A hook can publish Pi's exact path before Pi creates the file."""
+        session_file = tmp_path / "future-pi.jsonl"
+        monitor = SessionMonitor(
+            projects_path=tmp_path / "projects",
+            state_file=tmp_path / "ms.json",
+        )
+        current_map = {
+            "@0": {
+                "session_id": "sess-pi",
+                "cwd": "/proj",
+                "window_name": "proj",
+                "transcript_path": str(session_file),
+                "replay_from_start": True,
+            },
+        }
+
+        with patch(
+            "ccgram.session_monitor.acknowledge_replay_from_start",
+            return_value=True,
+        ) as acknowledge:
+            assert await monitor.check_for_updates(current_map) == []
+        acknowledge.assert_called_once_with("@0", "sess-pi")
+        current_map["@0"].pop("replay_from_start")
+        tracked = monitor.state.get_session("sess-pi")
+        assert tracked is not None
+        assert tracked.last_byte_offset == 0
+        assert tracked.file_path == str(session_file)
+
+        session_file.write_text(
+            json.dumps(
+                {
+                    "type": "message",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "first reply"}],
+                    },
+                }
+            )
+            + "\n"
+        )
+        from ccgram.providers.pi import PiProvider
+
+        with patch(
+            "ccgram.transcript_reader.get_provider_for_window",
+            return_value=PiProvider(),
+        ):
+            messages = await monitor.check_for_updates(current_map)
+
+        assert [message.text for message in messages] == ["first reply"]
+
+    async def test_replay_marker_reads_existing_pi_file_from_start(
+        self, tmp_path
+    ) -> None:
+        session_file = tmp_path / "pi.jsonl"
+        session_file.write_text(
+            json.dumps(
+                {
+                    "type": "message",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "fast first reply"}],
+                    },
+                }
+            )
+            + "\n"
+        )
+        monitor = SessionMonitor(
+            projects_path=tmp_path / "projects",
+            state_file=tmp_path / "ms.json",
+        )
+        current_map = {
+            "@0": {
+                "session_id": "sess-pi",
+                "cwd": "/proj",
+                "window_name": "proj",
+                "transcript_path": str(session_file),
+                "replay_from_start": True,
+            },
+        }
+        from ccgram.providers.pi import PiProvider
+
+        with (
+            patch(
+                "ccgram.transcript_reader.get_provider_for_window",
+                return_value=PiProvider(),
+            ),
+            patch(
+                "ccgram.session_monitor.acknowledge_replay_from_start",
+                return_value=True,
+            ) as acknowledge,
+        ):
+            messages = await monitor.check_for_updates(current_map)
+
+        acknowledge.assert_called_once_with("@0", "sess-pi")
+        assert [message.text for message in messages] == ["fast first reply"]
+        saved = json.loads((tmp_path / "ms.json").read_text())
+        assert saved["tracked_sessions"]["sess-pi"]["last_byte_offset"] == 0
 
     async def test_unchanged_mtime_skips_read(self, tmp_path) -> None:
         projects_path = tmp_path / "projects"

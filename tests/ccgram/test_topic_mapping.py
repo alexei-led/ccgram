@@ -116,6 +116,12 @@ class TestFormatAgentTopicPrefix:
     ) -> None:
         assert format_agent_topic_prefix(workspace, tab) == expected
 
+    def test_provider_prefix_is_searchable(self) -> None:
+        assert (
+            format_agent_topic_prefix("ccgram", "1", "p3", provider="pi")
+            == "Pi ▸ ccgram ▸ 1 ▸ p3"
+        )
+
 
 @pytest.fixture
 def mgr(monkeypatch) -> SessionManager:
