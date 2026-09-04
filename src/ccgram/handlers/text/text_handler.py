@@ -50,6 +50,7 @@ from ..messaging_pipeline.message_sender import (
     safe_reply,
 )
 from ..recovery.recovery_banner import RecoveryBanner, render_banner
+from ..recovery.transcript_discovery import discover_and_register_transcript
 from ..polling.polling_state import lifecycle_strategy
 from ..telegram_origin import (
     agent_origin_returned_to_shell,
@@ -68,7 +69,7 @@ from ..user_state import (
 )
 from ... import window_query
 from ...thread_router import thread_router
-from ...providers import get_provider_for_window
+from ...providers import detect_provider_from_pane, get_provider_for_window
 from ...multiplexer import multiplexer as tmux_manager
 from ...utils import handle_general_topic_message, is_general_topic, task_done_callback
 
@@ -370,24 +371,31 @@ async def _handle_dead_window(
         w is not None
         and not returned_to_shell
         and lifecycle_strategy.is_dead_notified(user_id, thread_id, window_id)
-        and not w.pane_current_command
     ):
-        # Present, marked dead, and nothing says an agent holds the pane. An
-        # empty foreground command is agterm's "unknown", not proof of an
-        # agent: it reports none for a shell holding the pane, an unreadable
-        # process group and a failed lookup alike, and detection maps all three
-        # to "". Clearing the marker here would forward the next message, and
-        # the shared send guard types it into the pane with Return, so a
-        # session restored under the same UUID as a plain shell runs it as a
-        # command. Change nothing, keep the marker and the binding, and return
-        # before the stale-cwd unbind below.
-        await safe_reply(
-            message,
-            "\u26a0 That session is marked as ended and nothing confirms an "
-            "agent is running in it. Send that again in a moment, or use "
-            "/restore to start one.",
+        bound_provider = window_query.get_window_provider(window_id)
+        detected_provider = (
+            await detect_provider_from_pane(
+                w.pane_current_command,
+                window_id=window_id,
+            )
+            if w.pane_current_command
+            else ""
         )
-        return True
+        if not detected_provider or (
+            detected_provider == "shell" and bound_provider != "shell"
+        ):
+            # A present pane is safe only when it runs a recognized agent or
+            # belongs to an explicitly shell-bound topic. Keep the marker so
+            # Telegram text cannot reach an unrelated foreground process.
+            await safe_reply(
+                message,
+                "\u26a0 That session is marked as ended and nothing confirms an "
+                "agent is running in it. Send that again in a moment, or use "
+                "/restore to start one.",
+            )
+            return True
+
+        returned_to_shell = await discover_and_register_transcript(window_id, _window=w)
 
     if w is not None and not returned_to_shell:
         lifecycle_strategy.clear_dead_notification(user_id, thread_id)

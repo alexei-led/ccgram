@@ -852,8 +852,38 @@ class SessionMapSync:
             return False
         return True
 
+    def _preserve_destination_provider_entry(
+        self, window_id: str, info: dict[str, Any]
+    ) -> bool:
+        """Load and retain a valid entry written by the destination provider."""
+        try:
+            entry = parse_session_map_entry(info)
+        except StateFileValidationError:
+            return False
+
+        # The provider-switch callback runs after the destination provider is
+        # stored. If SessionStart won the file-lock race, keep and load its
+        # fresh entry instead of deleting the new association.
+        # Lazy: session_map and window_state_store are mutually wired at startup.
+        from .window_state_store import window_store
+
+        state = window_store.window_states.get(window_id)
+        destination = state.provider_name.lower() if state else ""
+        if not destination or entry.provider_name.lower() != destination:
+            return False
+        if self._sync_window_from_session_map(
+            window_id, info, prefer_existing_primary=False
+        ):
+            self._schedule_save()
+        logger.debug(
+            "Preserved fresh session_map entry for %s provider %s",
+            window_id,
+            destination,
+        )
+        return True
+
     def clear_session_map_entry(self, window_id: str) -> None:
-        """Remove a window's entry from session_map.json if present."""
+        """Clear a stale entry, preserving one written by the new provider."""
         if not config.session_map_file.exists():
             return
         lock_path = config.session_map_file.with_suffix(".lock")
@@ -862,7 +892,14 @@ class SessionMapSync:
                 fcntl.flock(lock_f, fcntl.LOCK_EX)
                 try:
                     raw = json.loads(config.session_map_file.read_text())
+                    if not isinstance(raw, dict):
+                        return
                     key = f"{session_map_prefix()}{window_id}"
+                    info = raw.get(key)
+                    if isinstance(
+                        info, dict
+                    ) and self._preserve_destination_provider_entry(window_id, info):
+                        return
                     if key in raw:
                         del raw[key]
                         atomic_write_json(config.session_map_file, raw)
@@ -885,6 +922,8 @@ class SessionMapSync:
         self,
         window_id: str,
         info: dict[str, Any],
+        *,
+        prefer_existing_primary: bool = True,
     ) -> bool:
         """Sync a single window's state from session_map entry.
 
@@ -896,7 +935,11 @@ class SessionMapSync:
         # Lazy: window_state_store / thread_router proxies wired by SessionManager constructor
         from .window_state_store import window_store
 
-        effective = effective_session_map_info(window_id, info)
+        effective = (
+            effective_session_map_info(window_id, info)
+            if prefer_existing_primary
+            else info
+        )
         new_sid = effective["session_id"]
         if not new_sid:
             return False

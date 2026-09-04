@@ -665,6 +665,7 @@ class TestStaleDeadMarkerDoesNotOutliveTheWindow:
         ):
             mock_tm.list_windows_for_reconciliation = AsyncMock(return_value=[window])
             mock_query.is_legacy_herdr.return_value = False
+            mock_query.get_window_provider.return_value = "claude"
             # Stale cached cwd: the shape that otherwise reaches the unbind.
             mock_query.view_window.return_value = MagicMock(cwd="/nonexistent")
 
@@ -721,7 +722,9 @@ class TestUnknownAgentStateDoesNotClearTheMarker:
     """
 
     @staticmethod
-    async def _run(pane_command: str) -> tuple[bool, AsyncMock, AsyncMock]:
+    async def _run(
+        pane_command: str, *, bound_provider: str = "claude"
+    ) -> tuple[bool, AsyncMock, AsyncMock, AsyncMock]:
         lifecycle_strategy.mark_dead_notified(100, 42, "@0")
         window = WindowRef(
             window_id="@0",
@@ -739,29 +742,112 @@ class TestUnknownAgentStateDoesNotClearTheMarker:
                 new_callable=AsyncMock,
                 return_value=False,
             ),
+            patch(
+                f"{_TH}.discover_and_register_transcript",
+                new_callable=AsyncMock,
+                return_value=False,
+            ) as mock_sync_provider,
             patch(f"{_TH}.safe_reply", new_callable=AsyncMock) as mock_reply,
         ):
             mock_tm.list_windows_for_reconciliation = AsyncMock(return_value=[window])
             mock_query.is_legacy_herdr.return_value = False
+            mock_query.get_window_provider.return_value = bound_provider
             # Stale cached cwd: the shape that reaches the unbind.
             mock_query.view_window.return_value = MagicMock(cwd="/nonexistent")
             result = await _handle_dead_window("@0", 100, 42, "hi", {}, message)
-        return result, mock_router, mock_reply
+        return result, mock_router, mock_reply, mock_sync_provider
 
-    async def test_an_unknown_foreground_keeps_the_marker_and_forwards_nothing(
-        self,
+    @pytest.mark.parametrize("pane_command", ["", "vim", "less", "top", "bash"])
+    async def test_a_non_agent_foreground_keeps_the_marker_and_forwards_nothing(
+        self, pane_command: str
     ) -> None:
-        handled, mock_router, mock_reply = await self._run("")
+        handled, mock_router, mock_reply, mock_sync_provider = await self._run(
+            pane_command
+        )
 
         assert handled is True, "the message must not be forwarded to the pane"
         assert lifecycle_strategy.is_dead_notified(100, 42, "@0")
         mock_router.unbind_thread.assert_not_called()
+        mock_sync_provider.assert_not_awaited()
         assert "nothing confirms an agent" in mock_reply.await_args[0][1]
 
-    async def test_a_named_agent_still_clears_the_marker(self) -> None:
-        """The other side: a confirmed agent is why the clearing exists."""
-        handled, mock_router, _ = await self._run("claude")
+    @pytest.mark.parametrize("pane_command", ["claude", "codex"])
+    async def test_a_named_agent_still_clears_the_marker(
+        self, pane_command: str
+    ) -> None:
+        """Any confirmed agent is enough to resume forwarding safely."""
+        handled, mock_router, _, mock_sync_provider = await self._run(pane_command)
 
         assert handled is False, "a live agent's topic keeps forwarding"
         assert not lifecycle_strategy.is_dead_notified(100, 42, "@0")
         mock_router.unbind_thread.assert_not_called()
+        mock_sync_provider.assert_awaited_once()
+
+    async def test_an_agent_exit_during_provider_sync_enters_recovery(self) -> None:
+        lifecycle_strategy.mark_dead_notified(100, 42, "@0")
+        user_data: dict = {}
+        window = WindowRef(
+            window_id="@0",
+            window_name="project",
+            cwd="/tmp/project",
+            pane_current_command="claude",
+        )
+        message = AsyncMock()
+        message.chat.id = -100
+        with (
+            patch(f"{_TH}.tmux_manager") as mock_tm,
+            patch(f"{_TH}.window_query") as mock_query,
+            patch(f"{_TH}.thread_router") as mock_router,
+            patch(
+                f"{_TH}.agent_origin_returned_to_shell",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                f"{_TH}.discover_and_register_transcript",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(f"{_TH}.render_banner", return_value=("recovery", MagicMock())),
+            patch(f"{_TH}.safe_reply", new_callable=AsyncMock) as mock_reply,
+            patch(f"{_TH}.Path") as mock_path,
+        ):
+            mock_tm.list_windows_for_reconciliation = AsyncMock(return_value=[window])
+            mock_query.is_legacy_herdr.return_value = False
+            mock_query.get_window_provider.return_value = "claude"
+            mock_query.view_window.return_value = MagicMock(
+                cwd="/tmp/project", provider_name="claude"
+            )
+            mock_router.get_display_name.return_value = "project"
+            mock_path.return_value.is_dir.return_value = True
+
+            handled = await _handle_dead_window(
+                "@0", 100, 42, "keep this prompt", user_data, message
+            )
+
+        assert handled is True
+        assert lifecycle_strategy.is_dead_notified(100, 42, "@0")
+        assert user_data[PENDING_THREAD_TEXT] == "keep this prompt"
+        assert user_data[RECOVERY_WINDOW_ID] == "@0"
+        mock_router.unbind_thread.assert_not_called()
+        mock_reply.assert_awaited_once()
+
+    async def test_a_shell_bound_topic_accepts_a_shell_foreground(self) -> None:
+        handled, mock_router, _, mock_sync_provider = await self._run(
+            "bash", bound_provider="shell"
+        )
+
+        assert handled is False
+        assert not lifecycle_strategy.is_dead_notified(100, 42, "@0")
+        mock_router.unbind_thread.assert_not_called()
+        mock_sync_provider.assert_awaited_once()
+
+    async def test_a_shell_bound_topic_syncs_a_detected_agent(self) -> None:
+        handled, mock_router, _, mock_sync_provider = await self._run(
+            "codex", bound_provider="shell"
+        )
+
+        assert handled is False
+        assert not lifecycle_strategy.is_dead_notified(100, 42, "@0")
+        mock_router.unbind_thread.assert_not_called()
+        mock_sync_provider.assert_awaited_once()

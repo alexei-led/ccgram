@@ -8,8 +8,10 @@ from unittest.mock import patch
 import pytest
 
 from ccgram.hook import (
+    _current_hook_command,
     _encode_pi_cwd_dirname,
     _install_hook,
+    _install_json_hooks,
     _resolve_pi_transcript_path,
     hook_main,
 )
@@ -764,6 +766,39 @@ def test_hook_detects_claude_with_custom_config_dir(
     event = json.loads((tmp_path / "state" / "events.jsonl").read_text())
     assert event["event"] == event_name
     assert event["data"]["provider_name"] == "claude"
+
+
+def test_json_hook_install_rewrites_stale_command(tmp_path: Path) -> None:
+    hooks_file = tmp_path / "hooks.json"
+    hooks_file.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    event_type: [
+                        {
+                            "hooks": [
+                                {
+                                    "name": "ccgram-session-tracker",
+                                    "type": "command",
+                                    "command": "ccgram hook --provider codex",
+                                    "timeout": 5,
+                                }
+                            ]
+                        }
+                    ]
+                    for event_type in ("SessionStart", "Stop")
+                }
+            }
+        )
+    )
+
+    assert _install_json_hooks(hooks_file, "codex", ("SessionStart", "Stop"), 5) == 0
+
+    settings = json.loads(hooks_file.read_text())
+    for event_type in ("SessionStart", "Stop"):
+        installed = settings["hooks"][event_type][0]["hooks"]
+        assert len(installed) == 1
+        assert installed[0]["command"] == _current_hook_command("codex")
 
 
 def test_gemini_install_adds_provider_specific_hooks(

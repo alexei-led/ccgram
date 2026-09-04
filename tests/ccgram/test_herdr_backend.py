@@ -1941,6 +1941,23 @@ async def test_a_recognised_sessionless_agent_keeps_the_listing_complete() -> No
     assert [w.window_id for w in windows] == [_sessionless_target("term-b")]
 
 
+@pytest.mark.parametrize("agent", [None, "", 7, {"name": "claude"}])
+async def test_a_malformed_sessionless_agent_marks_the_listing_unknown(agent) -> None:
+    malformed = {
+        "terminal_id": "term-x",
+        "pane_id": "w9:p9",
+        "tab_id": "w9:t9",
+        "workspace_id": "w9",
+        "agent": agent,
+    }
+    bound = _agent(pane_id="w2:p1", tab_id="w2:t1", value="session-a")
+
+    assert (
+        await _manager(_live_fake(malformed, bound)).list_windows_for_reconciliation()
+        is None
+    )
+
+
 async def test_an_unrecognised_sessionless_agent_does_not_blank_the_listing() -> None:
     """Antigravity is the live case, and it is not a transient.
 

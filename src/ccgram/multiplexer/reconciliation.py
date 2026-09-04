@@ -55,6 +55,15 @@ def _resolve_backend(backend: object | None) -> object:
     return backend
 
 
+def _targeted_presence_probe(backend: object) -> _TargetedPresenceProbe | None:
+    """Return the backend's authoritative targeted probe, when it has one."""
+    if inspect.iscoroutinefunction(
+        inspect.getattr_static(type(backend), "window_exists", None)
+    ):
+        return cast("_TargetedPresenceProbe", backend)
+    return None
+
+
 async def window_snapshot(
     window_id: str, backend: object | None = None
 ) -> tuple[bool, WindowRef | None]:
@@ -68,10 +77,22 @@ async def window_snapshot(
     instead of a presence check followed by ``find_window_by_id``: that second
     lookup is a second chance to fail, and its ``None`` is ambiguous again.
     """
+    backend = _resolve_backend(backend)
+    prober = _targeted_presence_probe(backend)
+    if prober is not None:
+        present = await prober.window_exists(window_id)
+        if not isinstance(present, bool):
+            return False, None
+        if not present:
+            return True, None
+
     windows = await list_windows_for_reconciliation(backend)
     if windows is None:
         return False, None
-    return True, next((w for w in windows if w.matches(window_id)), None)
+    window = next((w for w in windows if w.matches(window_id)), None)
+    if prober is not None and window is None:
+        return False, None
+    return True, window
 
 
 async def window_presence(window_id: str, backend: object | None = None) -> bool | None:
@@ -101,10 +122,8 @@ async def window_presence(window_id: str, backend: object | None = None) -> bool
     # plain getattr is satisfied by any test double that generates attributes
     # on demand, which would route real backends through a probe that answers
     # nothing.
-    if inspect.iscoroutinefunction(
-        inspect.getattr_static(type(backend), "window_exists", None)
-    ):
-        prober = cast("_TargetedPresenceProbe", backend)
+    prober = _targeted_presence_probe(backend)
+    if prober is not None:
         answer = await prober.window_exists(window_id)
         return answer if isinstance(answer, bool) else None
 

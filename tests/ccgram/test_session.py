@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from ccgram.session import SessionManager
-from ccgram.hooks.state_files import pending_pi_replay_key
+from ccgram.hooks.state_files import pending_pi_replay_key, serialize_session_map_entry
 from ccgram.session_map import acknowledge_replay_from_start, session_map_sync
 from ccgram.session_resolver import session_resolver
 from ccgram.thread_router import thread_router
@@ -666,6 +666,70 @@ class TestSessionMapEntryMayExist:
         monkeypatch.setattr("ccgram.session_map.config.tmux_session_name", "ccgram")
 
         assert await session_map_sync.session_map_entry_may_exist("@1") is True
+
+
+class TestProviderSwitchSessionMapRace:
+    def test_fresh_destination_entry_survives_provider_switch(
+        self, mgr: SessionManager, tmp_path, monkeypatch
+    ) -> None:
+        session_map_file = tmp_path / "session_map.json"
+        old_transcript = tmp_path / ".claude" / "projects" / "repo" / "old.jsonl"
+        old_transcript.parent.mkdir(parents=True)
+        old_transcript.write_text("")
+        new_transcript = tmp_path / ".pi" / "agent" / "sessions" / "new.jsonl"
+        new_transcript.parent.mkdir(parents=True)
+        new_transcript.write_text("")
+        fresh_entry = serialize_session_map_entry(
+            "new-pi-session",
+            "/repo",
+            "agent",
+            str(new_transcript),
+            "pi",
+        )
+        session_map_file.write_text(json.dumps({"ccgram:@1": fresh_entry}))
+        monkeypatch.setattr(
+            "ccgram.session_map.config.session_map_file", session_map_file
+        )
+        monkeypatch.setattr("ccgram.session_map.config.tmux_session_name", "ccgram")
+
+        state = window_store.get_window_state("@1")
+        state.provider_name = "claude"
+        state.session_id = "old-claude-session"
+        state.transcript_path = str(old_transcript)
+
+        mgr.set_window_provider("@1", "pi", cwd="/repo")
+
+        assert json.loads(session_map_file.read_text()) == {"ccgram:@1": fresh_entry}
+        assert state.provider_name == "pi"
+        assert state.session_id == "new-pi-session"
+        assert state.transcript_path == str(new_transcript)
+
+    def test_previous_provider_entry_is_still_cleared(
+        self, mgr: SessionManager, tmp_path, monkeypatch
+    ) -> None:
+        session_map_file = tmp_path / "session_map.json"
+        session_map_file.write_text(
+            json.dumps(
+                {
+                    "ccgram:@1": serialize_session_map_entry(
+                        "old-claude-session",
+                        "/repo",
+                        "agent",
+                        "/home/user/.claude/projects/repo/old.jsonl",
+                        "claude",
+                    )
+                }
+            )
+        )
+        monkeypatch.setattr(
+            "ccgram.session_map.config.session_map_file", session_map_file
+        )
+        monkeypatch.setattr("ccgram.session_map.config.tmux_session_name", "ccgram")
+        window_store.get_window_state("@1").provider_name = "claude"
+
+        mgr.set_window_provider("@1", "pi", cwd="/repo")
+
+        assert json.loads(session_map_file.read_text()) == {}
 
 
 class TestAcknowledgeReplayFromStart:

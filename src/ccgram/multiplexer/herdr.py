@@ -303,7 +303,13 @@ def _parse_live_record(record: Mapping[str, object]) -> HerdrLiveRecord | None:
             "agent.list contains an incomplete live locator"
         )
     if composite is None:
-        agent = _session_field(record.get("agent"))
+        if "agent" not in record:
+            return None
+        agent = record["agent"]
+        if not isinstance(agent, str) or not agent:
+            raise HerdrMalformedRecordError(
+                "agent.list contains a malformed sessionless agent"
+            )
         terminal_id = locators["terminal_id"]
         if agent not in {"claude", "codex", "gemini"} or terminal_id is None:
             return None
