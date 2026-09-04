@@ -395,7 +395,7 @@ async def _handle_dead_window(
             )
             return True
 
-        await discover_and_register_transcript(window_id, _window=w)
+        returned_to_shell = await discover_and_register_transcript(window_id, _window=w)
 
     if w is not None and not returned_to_shell:
         lifecycle_strategy.clear_dead_notification(user_id, thread_id)
