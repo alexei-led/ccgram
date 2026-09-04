@@ -1631,6 +1631,27 @@ class TestResolveStaleIdsHerdrRestart:
         assert target in mgr.window_states
         assert thread_router.get_window_for_thread(100, 7) == target
 
+    async def test_agterm_stable_uuid_survives_startup_reconciliation(
+        self, mgr: SessionManager, monkeypatch
+    ) -> None:
+        window_id = "9F1C2D3E-4A5B-4C6D-8E7F-0A1B2C3D4E5F"
+        thread_router.bind_thread(100, 7, window_id, window_name="project")
+        mgr.window_states[window_id] = WindowState(session_id="S1", cwd="/repo")
+        user_preferences.user_window_offsets[100] = {window_id: 42}
+        self.map_file.write_text("{}")
+        live = [SimpleNamespace(window_id=window_id, window_name="project")]
+        monkeypatch.setattr("ccgram.session.config.multiplexer_name", "agterm")
+        monkeypatch.setattr(
+            "ccgram.session.tmux_manager",
+            _FakeMux(ids_stable=True, windows=live),
+        )
+
+        await mgr.resolve_stale_ids()
+
+        assert window_id in mgr.window_states
+        assert thread_router.get_window_for_thread(100, 7) == window_id
+        assert user_preferences.user_window_offsets[100][window_id] == 42
+
     async def test_tmux_path_is_noop_for_stable_ids(
         self, mgr: SessionManager, monkeypatch
     ) -> None:

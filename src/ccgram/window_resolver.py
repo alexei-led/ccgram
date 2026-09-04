@@ -10,6 +10,7 @@ handler modules (no intra-package imports — safe from circular dependencies):
     that identifies the same window now.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import structlog
@@ -349,12 +350,13 @@ def _resolve_window_states(
     window_display_names: dict,
     live_by_name: dict[str, str],
     live_ids: set[str],
+    window_id_predicate: Callable[[str], bool],
 ) -> bool:
     """Re-resolve window_states dict in-place. Returns True if changed."""
     changed = False
     new_states: dict = {}
     for key, ws in window_states.items():
-        if is_window_id(key):
+        if window_id_predicate(key):
             if key in live_ids:
                 new_states[key] = ws
             else:
@@ -394,13 +396,14 @@ def _resolve_thread_bindings(
     display_lookup: dict,
     live_by_name: dict[str, str],
     live_ids: set[str],
+    window_id_predicate: Callable[[str], bool],
 ) -> bool:
     """Re-resolve thread_bindings dict in-place. Returns True if changed."""
     changed = False
     for uid, bindings in thread_bindings.items():
         new_bindings: dict[int, str] = {}
         for tid, val in bindings.items():
-            if is_window_id(val):
+            if window_id_predicate(val):
                 if val in live_ids:
                     new_bindings[tid] = val
                 elif new_id := live_by_name.get(display_lookup.get(val, val)):
@@ -438,13 +441,14 @@ def _resolve_offsets(
     display_lookup: dict,
     live_by_name: dict[str, str],
     live_ids: set[str],
+    window_id_predicate: Callable[[str], bool],
 ) -> bool:
     """Re-resolve user_window_offsets dict in-place. Returns True if changed."""
     changed = False
     for _uid, offsets in user_window_offsets.items():
         new_offsets: dict[str, int] = {}
         for key, offset in offsets.items():
-            if is_window_id(key):
+            if window_id_predicate(key):
                 if key in live_ids:
                     new_offsets[key] = offset
                 elif new_id := live_by_name.get(display_lookup.get(key, key)):
@@ -470,6 +474,7 @@ def resolve_stale_ids(
     window_display_names: dict,
     *,
     ids_stable: bool = True,
+    window_id_predicate: Callable[[str], bool] = is_window_id,
 ) -> bool:
     """Re-resolve persisted window IDs against live multiplexer windows.
 
@@ -478,8 +483,8 @@ def resolve_stale_ids(
     ``ids_stable`` gates the strategy on the backend capability
     ``ids_stable_across_restart`` (never the backend name):
 
-    - True (tmux): window IDs survive a restart, so re-resolution matches a
-      stale ID's display name against a live window. Handles two cases —
+    - True (tmux and agterm): window IDs survive a restart, so re-resolution
+      matches a stale ID's display name against a live window. Handles two cases —
       old-format migration (window_name keys -> window_id keys) and stale IDs
       (window_id gone but display name matches a live window).
     - False: bindings are durable opaque targets. A missing target can be
@@ -498,7 +503,11 @@ def resolve_stale_ids(
     display_lookup = dict(window_display_names)
 
     changed = _resolve_window_states(
-        window_states, window_display_names, live_by_name, live_ids
+        window_states,
+        window_display_names,
+        live_by_name,
+        live_ids,
+        window_id_predicate,
     )
     changed |= _resolve_thread_bindings(
         thread_bindings,
@@ -506,8 +515,13 @@ def resolve_stale_ids(
         display_lookup,
         live_by_name,
         live_ids,
+        window_id_predicate,
     )
     changed |= _resolve_offsets(
-        user_window_offsets, display_lookup, live_by_name, live_ids
+        user_window_offsets,
+        display_lookup,
+        live_by_name,
+        live_ids,
+        window_id_predicate,
     )
     return changed

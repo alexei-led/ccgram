@@ -381,6 +381,7 @@ class SessionManager:
             user_preferences.user_window_offsets,
             thread_router.window_display_names,
             ids_stable=caps.ids_stable_across_restart,
+            window_id_predicate=self._is_window_id,
         )
 
         if changed:
