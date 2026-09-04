@@ -602,25 +602,21 @@ class ThreadRouter:
     def has_window(self, window_id: str) -> bool:
         """Check if any user has a binding to this window_id."""
         wanted = canonical_window_id(window_id)
-        return (
-            any(canonical_window_id(wid) == wanted for (_, wid) in self._window_to_thread)
-            or any(
-                canonical_window_id(wid) == wanted
-                for wid in self.chat_thread_bindings.values()
-            )
+        return any(
+            canonical_window_id(wid) == wanted for (_, wid) in self._window_to_thread
+        ) or any(
+            canonical_window_id(wid) == wanted
+            for wid in self.chat_thread_bindings.values()
         )
 
     def has_window_for_user(self, user_id: int, window_id: str) -> bool:
         wanted = canonical_window_id(window_id)
-        return (
-            any(
-                uid == user_id and canonical_window_id(wid) == wanted
-                for (uid, _chat, _thread), wid in self.chat_thread_bindings.items()
-            )
-            or any(
-                uid == user_id and canonical_window_id(wid) == wanted
-                for (uid, wid) in self._window_to_thread
-            )
+        return any(
+            uid == user_id and canonical_window_id(wid) == wanted
+            for (uid, _chat, _thread), wid in self.chat_thread_bindings.items()
+        ) or any(
+            uid == user_id and canonical_window_id(wid) == wanted
+            for (uid, wid) in self._window_to_thread
         )
 
     def iter_thread_bindings_with_chat(

@@ -29,7 +29,8 @@ def note_live_windows(
     """
     global _live_window_ids
     live_ids = {
-        canonical_window_id(resolve_window_alias(window.window_id)) for window in windows
+        canonical_window_id(resolve_window_alias(window.window_id))
+        for window in windows
     }
     _known_window_ids.update(live_ids)
     _known_window_ids.update(
