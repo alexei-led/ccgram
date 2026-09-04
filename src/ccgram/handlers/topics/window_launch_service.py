@@ -47,6 +47,8 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger()
 
+_YOLO_CREATION_GUARD_GRACE_S = 10.0
+
 __all__ = [
     "WindowLaunchRequest",
     "WindowLaunchResult",
@@ -305,7 +307,15 @@ async def launch_window(  # noqa: PLR0912, PLR0915, C901
             context,
         )
         if success:
-            topic_orchestration.register_pending_creation(created_wid)
+            if approval_mode == "yolo":
+                topic_orchestration.register_pending_creation(
+                    created_wid,
+                    ttl_s=(
+                        config.yolo_confirmation_timeout + _YOLO_CREATION_GUARD_GRACE_S
+                    ),
+                )
+            else:
+                topic_orchestration.register_pending_creation(created_wid)
 
     if not success:
         await _abort_topic_creation(query, message, context)

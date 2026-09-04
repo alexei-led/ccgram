@@ -330,6 +330,27 @@ class TestLaunchWindowSuccess:
         m.edit.assert_awaited_once()
         assert "✅" in m.edit.call_args[0][1]
 
+    @patch(f"{_MODULE}_accept_yolo_confirmation", new_callable=AsyncMock)
+    async def test_yolo_creation_guard_outlives_configured_confirmation(
+        self, mock_accept: AsyncMock, tmp_path, monkeypatch
+    ) -> None:
+        mock_accept.return_value = True
+        monkeypatch.setattr(
+            "ccgram.handlers.topics.window_launch_service.config.yolo_confirmation_timeout",
+            45.0,
+        )
+
+        with _launch_env(has_yolo_confirmation=True) as m:
+            await launch_window(
+                _make_query(),
+                _make_context({PENDING_THREAD_ID: 42}),
+                _request(cwd=str(tmp_path), mode="yolo"),
+            )
+
+        m.orchestration.register_pending_creation.assert_called_once_with(
+            "@5", ttl_s=55.0
+        )
+
     async def test_no_thread_success_releases_pending_creation_guard(
         self, tmp_path
     ) -> None:

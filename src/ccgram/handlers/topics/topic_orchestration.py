@@ -138,8 +138,8 @@ def _is_window_already_bound(window_id: str) -> bool:
 #
 # The pending set lets handle_new_window detect "this window is owned by a
 # directory flow that's about to bind, do not create a duplicate topic." A
-# 30s TTL is the safety net in case directory_callbacks crashes before
-# clearing the entry — handle_new_window will eventually reclaim the window.
+# The default 30s TTL is the safety net if directory_callbacks crashes before
+# clearing the entry. Slow launch paths may extend it to cover their full wait.
 _pending_user_creations: dict[str, float] = {}
 _pending_creation_transactions: set[object] = set()
 _PENDING_CREATION_TTL_S = 30.0
@@ -156,7 +156,7 @@ def pending_creation_transaction() -> Iterator[None]:
         _pending_creation_transactions.discard(token)
 
 
-def register_pending_creation(window_id: str) -> None:
+def register_pending_creation(window_id: str, *, ttl_s: float | None = None) -> None:
     """Mark a tmux window as owned by an in-flight directory-flow bind.
 
     Call BEFORE any `await` between tmux window creation and
@@ -165,7 +165,11 @@ def register_pending_creation(window_id: str) -> None:
     """
     if not window_id:
         return
-    _pending_user_creations[window_id] = time.monotonic() + _PENDING_CREATION_TTL_S
+    ttl_s = max(_PENDING_CREATION_TTL_S, ttl_s or 0.0)
+    expires_at = time.monotonic() + ttl_s
+    _pending_user_creations[window_id] = max(
+        expires_at, _pending_user_creations.get(window_id, 0.0)
+    )
 
 
 def clear_pending_creation(window_id: str) -> None:
