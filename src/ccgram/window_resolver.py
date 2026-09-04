@@ -474,7 +474,7 @@ def resolve_stale_ids(
     window_display_names: dict,
     *,
     ids_stable: bool = True,
-    window_id_predicate: Callable[[str], bool] = is_window_id,
+    window_id_predicate: Callable[[str], bool],
 ) -> bool:
     """Re-resolve persisted window IDs against live multiplexer windows.
 
