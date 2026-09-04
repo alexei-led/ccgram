@@ -1478,6 +1478,18 @@ class TestAuditState:
         drift = [i for i in result.issues if i.category == "display_name_drift"]
         assert len(drift) == 1
 
+    def test_exact_display_name_spelling_takes_priority(
+        self, mgr: SessionManager
+    ) -> None:
+        thread_router.window_display_names["abc-def"] = "stale-variant"
+        thread_router.window_display_names["ABC-DEF"] = "current"
+
+        result = mgr.audit_state(
+            live_window_ids={"ABC-DEF"}, live_windows=[("ABC-DEF", "current")]
+        )
+
+        assert not any(i.category == "display_name_drift" for i in result.issues)
+
 
 class TestPruneStaleOffsets:
     def test_removes_unknown_windows(self, mgr: SessionManager) -> None:
