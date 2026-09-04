@@ -66,8 +66,7 @@ class SessionLifecycle:
         """Return the session_id for window_id from the last known session_map."""
         wanted = canonical_window_id(window_id)
         for wid, details in self._last_session_map.items():
-            candidate = wid.rsplit(":", 1)[-1]
-            if canonical_window_id(candidate) == wanted:
+            if canonical_window_id(wid) == wanted:
                 return details.get("session_id")
         return None
 
@@ -83,13 +82,10 @@ class SessionLifecycle:
         clean up its own per-session state dicts.
         """
         old_by_canonical = {
-            canonical_window_id(wid.rsplit(":", 1)[-1]): wid
-            for wid in self._last_session_map
+            canonical_window_id(wid): wid for wid in self._last_session_map
         }
         converged_map = {
-            old_by_canonical.get(
-                canonical_window_id(wid.rsplit(":", 1)[-1]), wid
-            ): details
+            old_by_canonical.get(canonical_window_id(wid), wid): details
             for wid, details in current_map.items()
         }
         result = ReconcileResult(current_map=converged_map)
