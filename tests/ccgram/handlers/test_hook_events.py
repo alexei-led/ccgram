@@ -75,6 +75,16 @@ class TestResolveUsersForWindowKey:
             (111, 42, "opaque:target:id")
         ]
 
+    def test_case_variant_window_key_routes_to_bound_spelling(
+        self, bindings, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(config, "multiplexer_name", "agterm")
+        bindings((111, 42, "abc-def"))
+
+        assert _resolve_users_for_window_key("agterm:ABC-DEF") == [
+            (111, 42, "abc-def")
+        ]
+
     @pytest.mark.parametrize(
         "window_key",
         [

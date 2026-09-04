@@ -33,11 +33,11 @@ from typing import Any, cast
 
 import aiofiles
 
-from .multiplexer.base import canonical_window_id
 from .config import config
 from .herdr_targets import is_herdr_session_target
 from .hooks.state_files import StateFileValidationError, parse_session_map_entry
 from .utils import atomic_write_json, log_throttle_reset, log_throttled
+from .multiplexer.base import canonical_window_id
 from .window_resolver import is_window_id, session_map_prefix_for
 
 logger = structlog.get_logger()
@@ -153,6 +153,28 @@ def is_backend_window_id(window_id: str) -> bool:
     if config.multiplexer_name == "herdr":
         return is_herdr_session_target(window_id)
     return bool(window_id)
+
+
+def _resolve_existing_window_id(window_id: str) -> str:
+    """Reuse the persisted spelling for a case-insensitive window identity."""
+    from .thread_router import thread_router
+    from .window_state_store import is_window_store_wired, window_store
+
+    try:
+        candidates = [
+            wid
+            for _, _, wid in thread_router.iter_thread_bindings()
+            if wid and canonical_window_id(wid) == canonical_window_id(window_id)
+        ]
+    except RuntimeError:
+        candidates = []
+    if is_window_store_wired():
+        candidates.extend(
+            wid
+            for wid in window_store.iter_window_ids()
+            if canonical_window_id(wid) == canonical_window_id(window_id)
+        )
+    return candidates[0] if candidates else window_id
 
 
 def _transcript_mtime(transcript_path: str) -> float | None:
@@ -280,9 +302,10 @@ def parse_session_map(raw: dict[str, Any], prefix: str) -> dict[str, dict[str, A
         except StateFileValidationError as exc:
             logger.debug("Skipping invalid session_map entry %s: %s", key, exc)
             continue
-        effective = effective_session_map_info(window_name, info)
+        resolved_name = _resolve_existing_window_id(window_name)
+        effective = effective_session_map_info(resolved_name, info)
         if effective["session_id"]:
-            result[window_name] = effective
+            result[resolved_name] = effective
     return result
 
 
@@ -455,6 +478,7 @@ class SessionMapSync:
             # whether the entry passes schema validation.  Validation failures
             # are forward-compat / corruption guards; they must not delete
             # in-memory state for a window that is present in the file.
+            window_id = _resolve_existing_window_id(window_id)
             valid_wids.add(window_id)
             try:
                 # Validation gate — see the identical pattern in parse_session_map()
@@ -492,13 +516,15 @@ class SessionMapSync:
         # leaves this guard dead — sweeping the state of every bound window
         # whose provider has no hook to keep it in the session map.
         bound_wids = {wid for wid in thread_router.all_bound_window_ids() if wid}
+        valid_lookup = {canonical_window_id(wid) for wid in valid_wids}
+        bound_lookup = {canonical_window_id(wid) for wid in bound_wids}
         stale_wids = [
             w
             for w in window_store.iter_window_ids()
             if (
                 w
-                and w not in valid_wids
-                and w not in bound_wids
+                and canonical_window_id(w) not in valid_lookup
+                and canonical_window_id(w) not in bound_lookup
                 and window_store.get_session_id_for_window(w) not in old_format_sids
                 and not window_store.is_archived_legacy_herdr(w)
                 # A window being created is neither in the session map (its
