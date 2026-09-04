@@ -81,9 +81,7 @@ class TestResolveUsersForWindowKey:
         monkeypatch.setattr(config, "multiplexer_name", "agterm")
         bindings((111, 42, "abc-def"))
 
-        assert _resolve_users_for_window_key("agterm:ABC-DEF") == [
-            (111, 42, "abc-def")
-        ]
+        assert _resolve_users_for_window_key("agterm:ABC-DEF") == [(111, 42, "abc-def")]
 
     @pytest.mark.parametrize(
         "window_key",

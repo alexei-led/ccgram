@@ -159,6 +159,7 @@ def _resolve_existing_window_id(window_id: str) -> str:
     """Reuse the persisted spelling for a case-insensitive window identity."""
     # Lazy: session_map and thread_router/store are mutually wired at startup.
     from .thread_router import thread_router
+
     # Lazy: window_state_store is wired by SessionManager construction.
     from .window_state_store import is_window_store_wired, window_store
 
