@@ -28,7 +28,6 @@ _BACKOFF_MIN = 2.0
 _BACKOFF_MAX = 30.0
 
 _LoopError = (TelegramError, OSError, RuntimeError, ValueError)
-# ── Per-iteration tick helper ─────────────────────────────────────────────
 
 
 async def _tick_bound_windows(
