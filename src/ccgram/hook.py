@@ -250,6 +250,7 @@ def _install_json_hooks(
     installed_count = 0
     already_count = 0
     predicate = _json_hook_command_predicate(provider_name)
+    hook_command = _current_hook_command(provider_name)
     for event_type in events:
         event_hooks = hooks.setdefault(event_type, [])
         if not isinstance(event_hooks, list):
@@ -259,6 +260,7 @@ def _install_json_hooks(
             )
             return 1
         if _has_matching_hook(settings, event_type, predicate):
+            _replace_hook_commands(settings, event_type, predicate, hook_command)
             already_count += 1
             continue
         event_hooks.append({"hooks": [_hook_entry(provider_name, timeout_value)]})
