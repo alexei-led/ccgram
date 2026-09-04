@@ -1022,6 +1022,19 @@ class TestPruneStaleState:
         assert changed is False
         assert "@2" in thread_router.window_display_names
 
+    def test_keeps_case_variant_display_name_and_offset_in_use(
+        self, mgr: SessionManager
+    ) -> None:
+        thread_router.window_display_names["abc-def"] = "bound-proj"
+        thread_router.bind_thread(100, 1, "ABC-DEF")
+        user_preferences.user_window_offsets[100] = {"abc-def": 42}
+
+        changed = mgr.prune_stale_state(live_window_ids=set())
+
+        assert changed is False
+        assert thread_router.window_display_names["abc-def"] == "bound-proj"
+        assert user_preferences.user_window_offsets[100]["abc-def"] == 42
+
     def test_keeps_display_name_if_has_window_state(self, mgr: SessionManager) -> None:
         thread_router.window_display_names["@3"] = "with-state"
         mgr.window_states["@3"] = WindowState(session_id="sid")
@@ -1417,6 +1430,56 @@ class TestAuditState:
         assert len(stale) == 1
         assert stale[0].fixable
 
+    def test_case_variant_state_is_in_use_by_binding_and_session_map(
+        self, mgr: SessionManager, tmp_path, monkeypatch
+    ) -> None:
+        session_map_file = tmp_path / "session_map.json"
+        session_map_file.write_text(
+            json.dumps(
+                {
+                    "agterm:ABC-DEF": {
+                        "session_id": "sid",
+                        "cwd": "/tmp",
+                        "schema_version": 1,
+                    }
+                }
+            )
+        )
+        monkeypatch.setattr(
+            "ccgram.session.config.session_map_file", session_map_file
+        )
+        monkeypatch.setattr("ccgram.session.config.multiplexer_name", "agterm")
+        mgr.window_states["abc-def"] = WindowState(session_id="sid", cwd="/tmp")
+        thread_router.bind_thread(100, 1, "ABC-DEF")
+
+        result = mgr.audit_state(live_window_ids=set(), live_windows=[])
+
+        assert not any(i.category == "stale_window_state" for i in result.issues)
+
+    def test_case_variant_display_and_offset_are_known(
+        self, mgr: SessionManager
+    ) -> None:
+        mgr.window_states["ABC-DEF"] = WindowState(session_id="sid", cwd="/tmp")
+        thread_router.window_display_names["abc-def"] = "project"
+        user_preferences.user_window_offsets[100] = {"abc-def": 42}
+
+        result = mgr.audit_state(live_window_ids=set(), live_windows=[])
+
+        assert not any(i.category == "orphaned_display_name" for i in result.issues)
+        assert not any(i.category == "stale_offset" for i in result.issues)
+
+    def test_case_variant_display_name_drift_is_reported(
+        self, mgr: SessionManager
+    ) -> None:
+        thread_router.window_display_names["abc-def"] = "old-name"
+
+        result = mgr.audit_state(
+            live_window_ids={"ABC-DEF"}, live_windows=[("ABC-DEF", "new-name")]
+        )
+
+        drift = [i for i in result.issues if i.category == "display_name_drift"]
+        assert len(drift) == 1
+
 
 class TestPruneStaleOffsets:
     def test_removes_unknown_windows(self, mgr: SessionManager) -> None:
@@ -1458,6 +1521,41 @@ class TestPruneStaleWindowStates:
         changed = mgr.prune_stale_window_states(live_window_ids=set())
         assert not changed
         assert "@1" in mgr.window_states
+
+    def test_keeps_state_for_case_variant_binding(self, mgr: SessionManager) -> None:
+        mgr.window_states["abc-def"] = WindowState(session_id="s1", cwd="/tmp")
+        thread_router.bind_thread(100, 1, "ABC-DEF")
+
+        changed = mgr.prune_stale_window_states(live_window_ids=set())
+
+        assert not changed
+        assert "abc-def" in mgr.window_states
+
+    def test_keeps_state_for_case_variant_session_map(
+        self, mgr: SessionManager, tmp_path, monkeypatch
+    ) -> None:
+        session_map_file = tmp_path / "session_map.json"
+        session_map_file.write_text(
+            json.dumps(
+                {
+                    "agterm:ABC-DEF": {
+                        "session_id": "sid",
+                        "cwd": "/tmp",
+                        "schema_version": 1,
+                    }
+                }
+            )
+        )
+        monkeypatch.setattr(
+            "ccgram.session.config.session_map_file", session_map_file
+        )
+        monkeypatch.setattr("ccgram.session.config.multiplexer_name", "agterm")
+        mgr.window_states["abc-def"] = WindowState(session_id="sid", cwd="/tmp")
+
+        changed = mgr.prune_stale_window_states(live_window_ids=set())
+
+        assert not changed
+        assert "abc-def" in mgr.window_states
 
     def test_keeps_live_states(self, mgr: SessionManager) -> None:
         mgr.window_states["@1"] = WindowState(session_id="s1", cwd="/tmp")
