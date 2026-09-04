@@ -163,21 +163,29 @@ def _resolve_existing_window_id(window_id: str) -> str:
     # Lazy: window_state_store is wired by SessionManager construction.
     from .window_state_store import is_window_store_wired, window_store
 
-    try:
-        candidates = [
-            wid
-            for _, _, wid in thread_router.iter_thread_bindings()
-            if wid and canonical_window_id(wid) == canonical_window_id(window_id)
-        ]
-    except RuntimeError:
-        candidates = []
+    key = canonical_window_id(window_id)
     if is_window_store_wired():
-        candidates.extend(
-            wid
-            for wid in window_store.iter_window_ids()
-            if canonical_window_id(wid) == canonical_window_id(window_id)
+        state_id = next(
+            (
+                wid
+                for wid in window_store.iter_window_ids()
+                if canonical_window_id(wid) == key
+            ),
+            None,
         )
-    return candidates[0] if candidates else window_id
+        if state_id is not None:
+            return state_id
+    try:
+        return next(
+            (
+                wid
+                for _, _, wid in thread_router.iter_thread_bindings()
+                if wid and canonical_window_id(wid) == key
+            ),
+            window_id,
+        )
+    except RuntimeError:
+        return window_id
 
 
 def _transcript_mtime(transcript_path: str) -> float | None:
