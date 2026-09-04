@@ -504,3 +504,22 @@ class TestAcceptYoloConfirmation:
 
         assert await _accept_yolo_confirmation("@5", timeout=5.0) is True
         assert mock_tmux.capture_pane.await_count == 3
+
+    @patch("ccgram.handlers.topics.window_launch_service.asyncio.get_running_loop")
+    @patch("ccgram.handlers.topics.window_launch_service.tmux_manager")
+    async def test_configured_timeout_allows_slow_cold_start(
+        self, mock_tmux: MagicMock, mock_get_loop: MagicMock, monkeypatch
+    ) -> None:
+        mock_get_loop.return_value.time.side_effect = [0.0, 0.0, 9.0, 9.0]
+        mock_tmux.capture_pane = AsyncMock(
+            side_effect=["Loading...", "Bypass Permissions mode\n❯ 1. No, exit"]
+        )
+        mock_tmux.send_keys = AsyncMock(return_value=True)
+        monkeypatch.setattr(
+            "ccgram.handlers.topics.window_launch_service.config.yolo_confirmation_timeout",
+            30.0,
+            raising=False,
+        )
+
+        assert await _accept_yolo_confirmation("@5") is True
+        assert mock_tmux.capture_pane.await_count == 2

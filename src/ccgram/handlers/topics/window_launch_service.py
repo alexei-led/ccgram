@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 import structlog
 from telegram.error import TelegramError
 
+from ...config import config
 from ...providers import registry as provider_registry
 from ...session import session_manager
 from ...session_map import session_map_sync
@@ -206,7 +207,9 @@ async def _wait_for_shell_ready(window_id: str, *, attempts: int = 5) -> None:
         await asyncio.sleep(0.2)
 
 
-async def _accept_yolo_confirmation(window_id: str, *, timeout: float = 8.0) -> bool:
+async def _accept_yolo_confirmation(
+    window_id: str, *, timeout: float | None = None
+) -> bool:
     """Detect and accept Claude Code's bypass permissions confirmation prompt.
 
     When launched with --dangerously-skip-permissions, Claude Code shows a
@@ -214,6 +217,7 @@ async def _accept_yolo_confirmation(window_id: str, *, timeout: float = 8.0) -> 
     Down+Enter to select the "Yes" option so the session can start.
     """
     loop = asyncio.get_running_loop()
+    timeout = config.yolo_confirmation_timeout if timeout is None else timeout
     deadline = loop.time() + timeout
     while loop.time() < deadline:
         text = await tmux_manager.capture_pane(window_id)

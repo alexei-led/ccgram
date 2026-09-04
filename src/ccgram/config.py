@@ -99,8 +99,9 @@ class Config:
         self.monitor_poll_interval = max(
             0.5, float(os.getenv("MONITOR_POLL_INTERVAL", "1.0"))
         )
-        self.status_poll_interval = max(
-            0.5, float(os.getenv("CCGRAM_STATUS_POLL_INTERVAL", "1.0"))
+        self.status_poll_interval, self.yolo_confirmation_timeout = (
+            max(0.5, float(os.getenv("CCGRAM_STATUS_POLL_INTERVAL", "1.0"))),
+            max(1.0, float(os.getenv("CCGRAM_YOLO_CONFIRMATION_TIMEOUT", "30.0"))),
         )
 
         # Multi-instance support
