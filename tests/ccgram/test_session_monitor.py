@@ -2059,6 +2059,19 @@ class TestActiveCwdsUseTheCompleteListing:
 
         assert await self._reader()._get_active_cwds() == {"/repo"}
 
+    async def test_ignores_empty_window_cwd(self, monkeypatch) -> None:
+        from ccgram.multiplexer.base import WindowRef
+
+        async def _complete():
+            return [WindowRef(window_id="@4", window_name="unknown", cwd="")]
+
+        monkeypatch.setattr(
+            "ccgram.multiplexer.reconciliation.list_windows_for_reconciliation",
+            _complete,
+        )
+
+        assert await self._reader()._get_active_cwds() == set()
+
     async def test_unconfirmed_listing_yields_no_cwds(self, monkeypatch) -> None:
         async def _unavailable():
             return None
