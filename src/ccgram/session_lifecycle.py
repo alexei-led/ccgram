@@ -32,6 +32,15 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger()
 
+_SESSION_MAP_PREFIXES = frozenset({"agterm", "ccgram", "herdr", "tmux"})
+
+
+def _canonical_session_map_window_id(window_id: str) -> str:
+    prefix, separator, target = window_id.partition(":")
+    if separator and prefix in _SESSION_MAP_PREFIXES:
+        window_id = target
+    return canonical_window_id(window_id)
+
 
 def _same_transcript_path(
     old_details: dict[str, Any],
@@ -64,9 +73,9 @@ class SessionLifecycle:
 
     def resolve_session_id(self, window_id: str) -> str | None:
         """Return the session_id for window_id from the last known session_map."""
-        wanted = canonical_window_id(window_id)
+        wanted = _canonical_session_map_window_id(window_id)
         for wid, details in self._last_session_map.items():
-            if canonical_window_id(wid) == wanted:
+            if _canonical_session_map_window_id(wid) == wanted:
                 return details.get("session_id")
         return None
 
@@ -82,10 +91,10 @@ class SessionLifecycle:
         clean up its own per-session state dicts.
         """
         old_by_canonical = {
-            canonical_window_id(wid): wid for wid in self._last_session_map
+            _canonical_session_map_window_id(wid): wid for wid in self._last_session_map
         }
         converged_map = {
-            old_by_canonical.get(canonical_window_id(wid), wid): details
+            old_by_canonical.get(_canonical_session_map_window_id(wid), wid): details
             for wid, details in current_map.items()
         }
         result = ReconcileResult(current_map=converged_map)
