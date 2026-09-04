@@ -563,9 +563,7 @@ class SessionManager:
                 live_binding_count += 1
 
         session_map_wids = self._get_session_map_window_ids()
-        session_map_lookup = {
-            canonical_window_id(wid) for wid in session_map_wids
-        }
+        session_map_lookup = {canonical_window_id(wid) for wid in session_map_wids}
         bound_lookup = {canonical_window_id(wid) for wid in bound_window_ids}
 
         # 1. Legacy Herdr bindings are retained for archive/rollback but never

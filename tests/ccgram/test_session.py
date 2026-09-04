@@ -1445,9 +1445,7 @@ class TestAuditState:
                 }
             )
         )
-        monkeypatch.setattr(
-            "ccgram.session.config.session_map_file", session_map_file
-        )
+        monkeypatch.setattr("ccgram.session.config.session_map_file", session_map_file)
         monkeypatch.setattr("ccgram.session.config.multiplexer_name", "agterm")
         mgr.window_states["abc-def"] = WindowState(session_id="sid", cwd="/tmp")
         thread_router.bind_thread(100, 1, "ABC-DEF")
@@ -1546,9 +1544,7 @@ class TestPruneStaleWindowStates:
                 }
             )
         )
-        monkeypatch.setattr(
-            "ccgram.session.config.session_map_file", session_map_file
-        )
+        monkeypatch.setattr("ccgram.session.config.session_map_file", session_map_file)
         monkeypatch.setattr("ccgram.session.config.multiplexer_name", "agterm")
         mgr.window_states["abc-def"] = WindowState(session_id="sid", cwd="/tmp")
 
