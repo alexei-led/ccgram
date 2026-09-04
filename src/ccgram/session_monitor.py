@@ -744,10 +744,12 @@ class SessionMonitor:
 
         caps = tmux_manager.capabilities
         bound_window_ids = {wid for _, _, wid in thread_router.iter_thread_bindings()}
+        known_lookup = _adoption_lookup(known_window_ids)
+        bound_lookup = _adoption_lookup(bound_window_ids)
         for window in all_windows:
-            if window.window_id in known_window_ids:
+            if canonical_window_id(window.window_id) in known_lookup:
                 continue
-            if window.window_id in bound_window_ids:
+            if canonical_window_id(window.window_id) in bound_lookup:
                 continue
             if not is_agent_topic_window(window, caps):
                 continue
@@ -792,11 +794,12 @@ class SessionMonitor:
         from .thread_router import thread_router
 
         bound_window_ids = {wid for _, _, wid in thread_router.iter_thread_bindings()}
+        bound_lookup = _adoption_lookup(bound_window_ids)
         adoptable_lookup = _adoption_lookup(adoptable_window_ids)
         for window_id, details in current_map.items():
             if canonical_window_id(window_id) not in adoptable_lookup:
                 continue  # dead, or the backend says it may not be adopted
-            if window_id in bound_window_ids:
+            if canonical_window_id(window_id) in bound_lookup:
                 continue  # already has a topic
             event = NewWindowEvent(
                 window_id=window_id,

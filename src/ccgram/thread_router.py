@@ -30,6 +30,8 @@ import structlog
 from collections.abc import Callable, Iterator
 from typing import Any, cast
 
+from .multiplexer.base import canonical_window_id
+
 logger = structlog.get_logger()
 
 _RETIRED_TOPIC_LIMIT = 100
@@ -599,18 +601,26 @@ class ThreadRouter:
 
     def has_window(self, window_id: str) -> bool:
         """Check if any user has a binding to this window_id."""
+        wanted = canonical_window_id(window_id)
         return (
-            any(wid == window_id for (_, wid) in self._window_to_thread)
-            or window_id in self.chat_thread_bindings.values()
+            any(canonical_window_id(wid) == wanted for (_, wid) in self._window_to_thread)
+            or any(
+                canonical_window_id(wid) == wanted
+                for wid in self.chat_thread_bindings.values()
+            )
         )
 
     def has_window_for_user(self, user_id: int, window_id: str) -> bool:
+        wanted = canonical_window_id(window_id)
         return (
             any(
-                uid == user_id and wid == window_id
+                uid == user_id and canonical_window_id(wid) == wanted
                 for (uid, _chat, _thread), wid in self.chat_thread_bindings.items()
             )
-            or self._window_to_thread.get((user_id, window_id)) is not None
+            or any(
+                uid == user_id and canonical_window_id(wid) == wanted
+                for (uid, wid) in self._window_to_thread
+            )
         )
 
     def iter_thread_bindings_with_chat(

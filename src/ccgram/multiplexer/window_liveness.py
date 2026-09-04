@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 
-from .base import WindowRef
+from .base import WindowRef, canonical_window_id
 from ..window_resolver import resolve_window_alias
 
 
@@ -28,10 +28,14 @@ def note_live_windows(
     not seen by this listing remain unknown until the next reconciliation pass.
     """
     global _live_window_ids
-    live_ids = {resolve_window_alias(window.window_id) for window in windows}
+    live_ids = {
+        canonical_window_id(resolve_window_alias(window.window_id)) for window in windows
+    }
     _known_window_ids.update(live_ids)
     _known_window_ids.update(
-        resolve_window_alias(window_id) for window_id in tracked_window_ids if window_id
+        canonical_window_id(resolve_window_alias(window_id))
+        for window_id in tracked_window_ids
+        if window_id
     )
     _live_window_ids = live_ids
 
@@ -40,7 +44,7 @@ def is_window_live(window_id: str) -> bool:
     """Return whether *window_id* is live, failing open when its state is unknown."""
     if not window_id or _live_window_ids is None:
         return True
-    canonical_id = resolve_window_alias(window_id)
+    canonical_id = canonical_window_id(resolve_window_alias(window_id))
     return canonical_id not in _known_window_ids or canonical_id in _live_window_ids
 
 
