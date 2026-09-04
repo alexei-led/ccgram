@@ -871,7 +871,9 @@ class SessionMapSync:
         destination = state.provider_name.lower() if state else ""
         if not destination or entry.provider_name.lower() != destination:
             return False
-        if self._sync_window_from_session_map(window_id, info):
+        if self._sync_window_from_session_map(
+            window_id, info, prefer_existing_primary=False
+        ):
             self._schedule_save()
         logger.debug(
             "Preserved fresh session_map entry for %s provider %s",
@@ -920,6 +922,8 @@ class SessionMapSync:
         self,
         window_id: str,
         info: dict[str, Any],
+        *,
+        prefer_existing_primary: bool = True,
     ) -> bool:
         """Sync a single window's state from session_map entry.
 
@@ -931,7 +935,11 @@ class SessionMapSync:
         # Lazy: window_state_store / thread_router proxies wired by SessionManager constructor
         from .window_state_store import window_store
 
-        effective = effective_session_map_info(window_id, info)
+        effective = (
+            effective_session_map_info(window_id, info)
+            if prefer_existing_primary
+            else info
+        )
         new_sid = effective["session_id"]
         if not new_sid:
             return False

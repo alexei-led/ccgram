@@ -673,11 +673,17 @@ class TestProviderSwitchSessionMapRace:
         self, mgr: SessionManager, tmp_path, monkeypatch
     ) -> None:
         session_map_file = tmp_path / "session_map.json"
+        old_transcript = tmp_path / ".claude" / "projects" / "repo" / "old.jsonl"
+        old_transcript.parent.mkdir(parents=True)
+        old_transcript.write_text("")
+        new_transcript = tmp_path / ".pi" / "agent" / "sessions" / "new.jsonl"
+        new_transcript.parent.mkdir(parents=True)
+        new_transcript.write_text("")
         fresh_entry = serialize_session_map_entry(
             "new-pi-session",
             "/repo",
             "agent",
-            "/home/user/.pi/agent/sessions/new.jsonl",
+            str(new_transcript),
             "pi",
         )
         session_map_file.write_text(json.dumps({"ccgram:@1": fresh_entry}))
@@ -689,14 +695,14 @@ class TestProviderSwitchSessionMapRace:
         state = window_store.get_window_state("@1")
         state.provider_name = "claude"
         state.session_id = "old-claude-session"
-        state.transcript_path = "/home/user/.claude/projects/repo/old.jsonl"
+        state.transcript_path = str(old_transcript)
 
         mgr.set_window_provider("@1", "pi", cwd="/repo")
 
         assert json.loads(session_map_file.read_text()) == {"ccgram:@1": fresh_entry}
         assert state.provider_name == "pi"
         assert state.session_id == "new-pi-session"
-        assert state.transcript_path == "/home/user/.pi/agent/sessions/new.jsonl"
+        assert state.transcript_path == str(new_transcript)
 
     def test_previous_provider_entry_is_still_cleared(
         self, mgr: SessionManager, tmp_path, monkeypatch
