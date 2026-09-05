@@ -743,11 +743,15 @@ class SessionMonitor:
         from .thread_router import thread_router
 
         caps = tmux_manager.capabilities
-        bound_window_ids = {wid for _, _, wid in thread_router.iter_thread_bindings()}
+        known_lookup = _adoption_lookup(known_window_ids)
+        bound_lookup = _adoption_lookup(
+            {wid for _, _, wid in thread_router.iter_thread_bindings()}
+        )
         for window in all_windows:
-            if window.window_id in known_window_ids:
+            window_key = canonical_window_id(window.window_id)
+            if window_key in known_lookup:
                 continue
-            if window.window_id in bound_window_ids:
+            if window_key in bound_lookup:
                 continue
             if not is_agent_topic_window(window, caps):
                 continue
