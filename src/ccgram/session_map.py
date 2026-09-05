@@ -412,15 +412,19 @@ def _remove_dead_session_map_entries(
     # longer exists" while the directory was sitting there (#176). The dead
     # entry still goes; the state a live topic still points at stays until the
     # topic unbinds and ``_remove_stale_window_states`` reclaims it.
-    bound_wids = thread_router.all_bound_window_ids()
+    bound_lookup = {
+        canonical_window_id(wid) for wid in thread_router.all_bound_window_ids() if wid
+    }
     changed_state = False
     for key, window_id in dead_entries:
         logger.info("Pruning dead session_map entry: %s (window %s)", key, window_id)
         del raw[key]
         log_throttle_reset(f"preserve-primary:{window_id}")
-        if window_id not in bound_wids and window_store.has_window(window_id):
-            window_store.remove_window(window_id)
-            changed_state = True
+        if canonical_window_id(window_id) not in bound_lookup:
+            state_window_id = _resolve_existing_window_id(window_id)
+            if window_store.has_window(state_window_id):
+                window_store.remove_window(state_window_id)
+                changed_state = True
     return changed_state
 
 

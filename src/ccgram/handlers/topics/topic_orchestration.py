@@ -408,11 +408,19 @@ async def create_topic_in_chat(
             retry_after_seconds,
         )
         return False
-    except TelegramError:
+    except TimedOut, NetworkError:
         clear_pending_creation(window_id)
         _topic_create_retry_until[chat_id] = (
             time.monotonic() + _TOPIC_CREATE_FAILURE_BACKOFF_S
         )
+        logger.exception(
+            "Failed to create topic for window %s in chat %d",
+            window_id,
+            chat_id,
+        )
+        return False
+    except TelegramError:
+        clear_pending_creation(window_id)
         logger.exception(
             "Failed to create topic for window %s in chat %d",
             window_id,

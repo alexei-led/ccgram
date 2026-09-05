@@ -35,6 +35,30 @@ def test_existing_state_spelling_precedes_case_variant_binding() -> None:
         thread_router.unbind_thread(100, 7)
 
 
+def test_dead_entry_does_not_remove_state_for_case_variant_binding() -> None:
+    from types import SimpleNamespace
+    from unittest.mock import Mock, patch
+
+    from ccgram.session_map import _remove_dead_session_map_entries
+
+    remove_window = Mock()
+    store = SimpleNamespace(
+        has_window=lambda _window_id: True, remove_window=remove_window
+    )
+    with (
+        patch(
+            "ccgram.thread_router.thread_router.all_bound_window_ids",
+            return_value={"ABC-DEF"},
+        ),
+        patch("ccgram.session_map.log_throttle_reset"),
+    ):
+        _remove_dead_session_map_entries(
+            {"agterm:abc-def": {}}, [("agterm:abc-def", "abc-def")], store
+        )
+
+    assert remove_window.call_count == 0
+
+
 async def test_session_map_read_and_clear_match_case_variant_key(
     tmp_path, monkeypatch
 ) -> None:
