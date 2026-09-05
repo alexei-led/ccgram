@@ -792,11 +792,12 @@ class SessionMonitor:
         from .thread_router import thread_router
 
         bound_window_ids = {wid for _, _, wid in thread_router.iter_thread_bindings()}
+        bound_lookup = _adoption_lookup(bound_window_ids)
         adoptable_lookup = _adoption_lookup(adoptable_window_ids)
         for window_id, details in current_map.items():
             if canonical_window_id(window_id) not in adoptable_lookup:
                 continue  # dead, or the backend says it may not be adopted
-            if window_id in bound_window_ids:
+            if canonical_window_id(window_id) in bound_lookup:
                 continue  # already has a topic
             event = NewWindowEvent(
                 window_id=window_id,
@@ -919,7 +920,9 @@ class SessionMonitor:
 
                 monitored_map = current_map
                 if all_windows is not None:
-                    live_window_ids = {w.window_id for w in all_windows}
+                    live_window_ids = {
+                        canonical_window_id(w.window_id) for w in all_windows
+                    }
                     session_map_sync.prune_session_map(live_window_ids)
                     # Pruning needs every live window; adoption needs only the
                     # ones the backend says may be adopted. The listing is
@@ -934,7 +937,7 @@ class SessionMonitor:
                     monitored_map = {
                         window_id: details
                         for window_id, details in current_map.items()
-                        if window_id in live_window_ids
+                        if canonical_window_id(window_id) in live_window_ids
                     }
 
                 # A persisted barrier must be noticed before its source is read

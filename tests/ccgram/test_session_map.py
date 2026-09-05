@@ -33,3 +33,21 @@ def test_existing_state_spelling_precedes_case_variant_binding() -> None:
     finally:
         session_manager.window_states.pop("abc-def", None)
         thread_router.unbind_thread(100, 7)
+
+
+async def test_session_map_read_and_clear_match_case_variant_key(
+    tmp_path, monkeypatch
+) -> None:
+    import json
+
+    from ccgram.session_map import SessionMapSync, config
+
+    path = tmp_path / "session-map.json"
+    path.write_text(json.dumps({"agterm:ABC-DEF": {"session_id": "new-session"}}))
+    monkeypatch.setattr(config, "session_map_file", path)
+    monkeypatch.setattr(config, "multiplexer_name", "agterm")
+    sync = SessionMapSync(schedule_save=lambda: None)
+
+    assert await sync.session_map_entry_may_exist("abc-def")
+    sync.clear_session_map_entry("abc-def")
+    assert json.loads(path.read_text()) == {}

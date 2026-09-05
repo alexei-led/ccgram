@@ -27,7 +27,7 @@ import os
 import shutil
 import time
 import structlog
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, cast
 
@@ -186,6 +186,19 @@ def _resolve_existing_window_id(window_id: str) -> str:
         )
     except RuntimeError:
         return window_id
+
+
+def _find_session_map_key(raw: Mapping[str, object], window_id: str) -> str | None:
+    prefix = session_map_prefix()
+    expected = f"{prefix}{window_id}"
+    if expected in raw:
+        return expected
+    wanted = canonical_window_id(window_id)
+    for key in raw:
+        candidate = strip_session_map_prefix(key, prefix)
+        if candidate is not None and canonical_window_id(candidate) == wanted:
+            return key
+    return None
 
 
 def _transcript_mtime(transcript_path: str) -> float | None:
@@ -875,9 +888,10 @@ class SessionMapSync:
         raw = await read_session_map_raw()
         if raw is None:
             return True
-        info = raw.get(f"{session_map_prefix()}{window_id}")
-        if info is None:
+        key = _find_session_map_key(raw, window_id)
+        if key is None:
             return False
+        info = raw[key]
         try:
             # The premise is that the monitor will rebuild state from this
             # entry, which only holds for entries load_session_map accepts. One
@@ -931,7 +945,9 @@ class SessionMapSync:
                     raw = json.loads(config.session_map_file.read_text())
                     if not isinstance(raw, dict):
                         return
-                    key = f"{session_map_prefix()}{window_id}"
+                    key = _find_session_map_key(raw, window_id)
+                    if key is None:
+                        return
                     info = raw.get(key)
                     if isinstance(
                         info, dict
