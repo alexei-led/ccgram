@@ -862,6 +862,23 @@ class TestEmitUnboundWindowEvents:
         surfaced = {c.args[0].window_id for c in cb.call_args_list}
         assert surfaced == {HERDR_TARGETS["new"]}
 
+    async def test_case_variant_bound_window_is_not_rediscovered(
+        self, monitor: SessionMonitor, wired, monkeypatch
+    ) -> None:
+        thread_router.bind_thread(100, 42, "abc-def")
+        cb = AsyncMock(spec=lambda event: None)
+        monitor.set_new_window_callback(cb)
+        monkeypatch.setattr(
+            "ccgram.session_monitor.tmux_manager",
+            SimpleNamespace(capabilities=_HERDR_CAPS),
+        )
+
+        await monitor._emit_unbound_window_events(
+            [_winref("ABC-DEF", "claude")], known_window_ids=set()
+        )
+
+        cb.assert_not_awaited()
+
 
 class TestEmitKnownUnboundWindowEvents:
     """Steady-state self-heal: session_map windows not bound to a topic retry on each poll."""
@@ -913,6 +930,25 @@ class TestEmitKnownUnboundWindowEvents:
         live_window_ids = {"w1:t1"}
 
         await monitor._emit_known_unbound_window_events(current_map, live_window_ids)
+
+        cb.assert_not_called()
+
+    async def test_case_variant_bound_window_not_re_fired(
+        self, monitor: SessionMonitor, wired
+    ) -> None:
+        thread_router.bind_thread(100, 42, "abc-def")
+        cb = AsyncMock(spec=lambda event: None)
+        monitor.set_new_window_callback(cb)
+
+        current_map = {
+            "ABC-DEF": {
+                "session_id": "S1",
+                "cwd": "/repo",
+                "window_name": "agent",
+            }
+        }
+
+        await monitor._emit_known_unbound_window_events(current_map, {"abc-def"})
 
         cb.assert_not_called()
 
@@ -2058,6 +2094,19 @@ class TestActiveCwdsUseTheCompleteListing:
         )
 
         assert await self._reader()._get_active_cwds() == {"/repo"}
+
+    async def test_ignores_empty_window_cwd(self, monkeypatch) -> None:
+        from ccgram.multiplexer.base import WindowRef
+
+        async def _complete():
+            return [WindowRef(window_id="@4", window_name="unknown", cwd="")]
+
+        monkeypatch.setattr(
+            "ccgram.multiplexer.reconciliation.list_windows_for_reconciliation",
+            _complete,
+        )
+
+        assert await self._reader()._get_active_cwds() == set()
 
     async def test_unconfirmed_listing_yields_no_cwds(self, monkeypatch) -> None:
         async def _unavailable():

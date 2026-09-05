@@ -67,6 +67,7 @@ docs/presentaions/.slidev/
 # ai artificats to skip
 .brainstorming/
 .archfit-cache/
+.revmux/tasks/
 AGENTS.md
 
 # Blog posts and social media drafts

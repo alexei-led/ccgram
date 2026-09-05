@@ -24,12 +24,22 @@ from .claude_task_state import (
     claude_task_state,
     remove_subagent,
 )
+from .multiplexer.base import canonical_window_id
 from .window_state_store import window_store
 
 if TYPE_CHECKING:
     from .idle_tracker import IdleTracker
 
 logger = structlog.get_logger()
+
+_SESSION_MAP_PREFIXES = frozenset({"agterm", "ccgram", "herdr", "tmux"})
+
+
+def _canonical_session_map_window_id(window_id: str) -> str:
+    prefix, separator, target = window_id.partition(":")
+    if separator and prefix in _SESSION_MAP_PREFIXES:
+        window_id = target
+    return canonical_window_id(window_id)
 
 
 def _same_transcript_path(
@@ -63,8 +73,9 @@ class SessionLifecycle:
 
     def resolve_session_id(self, window_id: str) -> str | None:
         """Return the session_id for window_id from the last known session_map."""
+        wanted = _canonical_session_map_window_id(window_id)
         for wid, details in self._last_session_map.items():
-            if wid.endswith(f":{window_id}") or wid == window_id:
+            if _canonical_session_map_window_id(wid) == wanted:
                 return details.get("session_id")
         return None
 
@@ -79,14 +90,21 @@ class SessionLifecycle:
         Returns sessions to remove and new windows so the coordinator can
         clean up its own per-session state dicts.
         """
-        result = ReconcileResult(current_map=current_map)
+        old_by_canonical = {
+            _canonical_session_map_window_id(wid): wid for wid in self._last_session_map
+        }
+        converged_map = {
+            old_by_canonical.get(_canonical_session_map_window_id(wid), wid): details
+            for wid, details in current_map.items()
+        }
+        result = ReconcileResult(current_map=converged_map)
 
         old_windows = set(self._last_session_map.keys())
-        current_windows = set(current_map.keys())
+        current_windows = set(converged_map.keys())
 
         # Session changed: window in both maps but session_id differs
         for window_id, old_details in self._last_session_map.items():
-            new_details = current_map.get(window_id)
+            new_details = converged_map.get(window_id)
             if new_details and new_details["session_id"] != old_details["session_id"]:
                 if _same_transcript_path(old_details, new_details):
                     logger.debug(
@@ -121,9 +139,9 @@ class SessionLifecycle:
 
         # New windows
         for window_id in current_windows - old_windows:
-            result.new_windows[window_id] = current_map[window_id]
+            result.new_windows[window_id] = converged_map[window_id]
 
-        self._last_session_map = current_map
+        self._last_session_map = converged_map
         return result
 
     def handle_subagent_start(self, window_id: str, subagent_id: str, name: str) -> int:

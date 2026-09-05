@@ -270,6 +270,9 @@ class MultiplexerCapabilities:
     supports_display_name_rebind: bool = True
     """True when a stale topic may be recovered by matching its display name."""
 
+    recovers_stale_ids_by_name: bool = False
+    """True when startup may remap a missing ID by its display name (tmux)."""
+
     supports_workspace_selection: bool = False
     """True when callers can select the workspace for a new target."""
 

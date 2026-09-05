@@ -381,6 +381,10 @@ class SessionManager:
             user_preferences.user_window_offsets,
             thread_router.window_display_names,
             ids_stable=caps.ids_stable_across_restart,
+            window_id_predicate=self._is_window_id,
+            recover_stale_ids_by_name=getattr(
+                caps, "recovers_stale_ids_by_name", False
+            ),
         )
 
         if changed:
@@ -440,12 +444,14 @@ class SessionManager:
         # Collect window_ids that are "in use" (bound or have window_states)
         in_use = set(self.window_states.keys())
         in_use.update(thread_router.all_bound_window_ids())
+        in_use_lookup = {canonical_window_id(wid) for wid in in_use}
 
         # Prune window_display_names for dead windows not in use and not live
         stale_display = [
             wid
             for wid in thread_router.window_display_names
-            if canonical_window_id(wid) not in live_lookup and wid not in in_use
+            if canonical_window_id(wid) not in live_lookup
+            and canonical_window_id(wid) not in in_use_lookup
         ]
 
         # Collect all bound thread keys "user_id:thread_id"
@@ -561,6 +567,8 @@ class SessionManager:
                 live_binding_count += 1
 
         session_map_wids = self._get_session_map_window_ids()
+        session_map_lookup = {canonical_window_id(wid) for wid in session_map_wids}
+        bound_lookup = {canonical_window_id(wid) for wid in bound_window_ids}
 
         # 1. Legacy Herdr bindings are retained for archive/rollback but never
         # actioned or implicitly remapped. Report their explicit rebind path
@@ -596,8 +604,12 @@ class SessionManager:
 
         # 3. Orphaned display names
         in_use = set(self.window_states.keys()) | bound_window_ids
+        in_use_lookup = {canonical_window_id(wid) for wid in in_use}
         for wid in thread_router.window_display_names:
-            if canonical_window_id(wid) not in live_lookup and wid not in in_use:
+            if (
+                canonical_window_id(wid) not in live_lookup
+                and canonical_window_id(wid) not in in_use_lookup
+            ):
                 name = thread_router.get_display_name(wid)
                 issues.append(
                     AuditIssue(
@@ -624,10 +636,11 @@ class SessionManager:
 
         # 4. Stale window_states (not in session_map, not bound, not live)
         for wid in self.window_states:
+            key = canonical_window_id(wid)
             if (
-                wid not in session_map_wids
-                and wid not in bound_window_ids
-                and canonical_window_id(wid) not in live_lookup
+                key not in session_map_lookup
+                and key not in bound_lookup
+                and key not in live_lookup
             ):
                 display = self.window_states[wid].window_name or wid
                 issues.append(
@@ -639,10 +652,15 @@ class SessionManager:
                 )
 
         # 5. Stale user_window_offsets
-        known_wids = live_window_ids | bound_window_ids | set(self.window_states.keys())
+        known_lookup = {
+            canonical_window_id(wid)
+            for wid in live_window_ids
+            | bound_window_ids
+            | set(self.window_states.keys())
+        }
         for uid, offsets in user_preferences.user_window_offsets.items():
             for wid in offsets:
-                if wid not in known_wids:
+                if canonical_window_id(wid) not in known_lookup:
                     issues.append(
                         AuditIssue(
                             category="stale_offset",
@@ -652,8 +670,19 @@ class SessionManager:
                     )
 
         # 6. Display name drift (stored != tmux)
+        stored_names = sorted(thread_router.window_display_names.items())
         for wid, tmux_name in live_windows:
             stored_name = thread_router.window_display_names.get(wid)
+            if stored_name is None:
+                key = canonical_window_id(wid)
+                stored_name = next(
+                    (
+                        name
+                        for stored_wid, name in stored_names
+                        if canonical_window_id(stored_wid) == key
+                    ),
+                    None,
+                )
             if stored_name and stored_name != tmux_name:
                 issues.append(
                     AuditIssue(
@@ -671,7 +700,6 @@ class SessionManager:
             canonical_window_id(wid)
             for wid in session_map_wids | set(self.window_states.keys())
         }
-        bound_lookup = {canonical_window_id(wid) for wid in bound_window_ids}
         for wid in adoptable_window_ids:
             key = canonical_window_id(wid)
             if key not in bound_lookup and key in known_lookup:
@@ -696,15 +724,19 @@ class SessionManager:
         Returns True if any changes were made.
         """
         live_lookup = {canonical_window_id(w) for w in live_window_ids}
-        session_map_wids = self._get_session_map_window_ids()
-        bound_window_ids = thread_router.all_bound_window_ids()
+        session_map_lookup = {
+            canonical_window_id(wid) for wid in self._get_session_map_window_ids()
+        }
+        bound_lookup = {
+            canonical_window_id(wid) for wid in thread_router.all_bound_window_ids()
+        }
 
         stale = [
             wid
             for wid in self.window_states
             if (
-                wid not in session_map_wids
-                and wid not in bound_window_ids
+                canonical_window_id(wid) not in session_map_lookup
+                and canonical_window_id(wid) not in bound_lookup
                 and canonical_window_id(wid) not in live_lookup
                 and not window_store.is_archived_legacy_herdr(wid)
             )

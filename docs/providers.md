@@ -102,7 +102,7 @@ Claude task state is derived from the transcript, not from terminal footer scrap
 
 ## Codex CLI
 
-Codex CLI supports feature-flagged hooks. Install ccgram's lifecycle hooks with `ccgram hook --provider codex --install`; ccgram writes user-level `~/.codex/hooks.json` entries for `SessionStart` and `Stop` and enables `[features].codex_hooks = true` in `~/.codex/config.toml`. Transcript discovery remains as fallback and as the source of message truth.
+Codex CLI supports feature-flagged hooks. Install ccgram's lifecycle hooks with `ccgram hook --provider codex --install`; ccgram writes user-level `~/.codex/hooks.json` entries for `SessionStart` and `Stop` and enables `[features].hooks = true` in `~/.codex/config.toml`. Transcript discovery remains as fallback and as the source of message truth.
 
 ### Interactive Prompts
 

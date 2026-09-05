@@ -8,6 +8,7 @@ from telegram.error import TelegramError
 
 from ...thread_router import chat_scope, thread_router
 from ...multiplexer import multiplexer as tmux_manager
+from ...multiplexer.base import canonical_window_id
 from ...multiplexer.reconciliation import list_windows_for_reconciliation
 from ...multiplexer.window_liveness import note_live_windows
 from ...utils import log_throttled
@@ -27,7 +28,6 @@ _BACKOFF_MIN = 2.0
 _BACKOFF_MAX = 30.0
 
 _LoopError = (TelegramError, OSError, RuntimeError, ValueError)
-# ── Per-iteration tick helper ─────────────────────────────────────────────
 
 
 async def _tick_bound_windows(
@@ -51,7 +51,7 @@ async def _tick_bound_windows(
         structlog.contextvars.bind_contextvars(window_id=wid)
         try:
             with chat_scope(chat_id):
-                w = window_lookup.get(wid)
+                w = window_lookup.get(canonical_window_id(wid))
                 await window_tick.tick_window(
                     bot, user_id, thread_id, wid, w, runtime=runtime
                 )
@@ -97,7 +97,7 @@ async def status_poll_loop(bot: "Bot") -> None:
                 await asyncio.sleep(poll_interval)
                 continue
             note_live_windows(all_windows, thread_router.all_bound_window_ids())
-            window_lookup = {w.window_id: w for w in all_windows}
+            window_lookup = {canonical_window_id(w.window_id): w for w in all_windows}
 
             await run_periodic_tasks(client, all_windows, timers)
             await _tick_bound_windows(bot, window_lookup)

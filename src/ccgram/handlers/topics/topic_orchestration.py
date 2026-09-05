@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 
 import structlog
-from telegram.error import NetworkError, RetryAfter, TelegramError, TimedOut
+from telegram.error import BadRequest, NetworkError, RetryAfter, TelegramError, TimedOut
 
 from ... import window_query
 from ...config import config
@@ -33,6 +33,7 @@ from ...session_monitor import NewWindowEvent
 from ...telegram_client import TelegramClient
 from ...thread_router import thread_router
 from ...multiplexer import multiplexer as tmux_manager
+from ...multiplexer.base import canonical_window_id
 from ..status.topic_emoji import strip_emoji_prefix
 from .topic_probe import probe_topic_exists
 
@@ -48,6 +49,7 @@ _TOPIC_CREATE_RETRY_BUFFER_SECONDS = 1
 # longer outages are caught by the existing flood-control backoff.
 _TOPIC_CREATE_TRANSIENT_RETRIES = 1
 _TOPIC_CREATE_TRANSIENT_BACKOFF_S = 1.0
+_TOPIC_CREATE_FAILURE_BACKOFF_S = 30.0
 
 
 # Serializes every auto-create/rebind attempt for one window. Session-monitor,
@@ -156,7 +158,12 @@ def pending_creation_transaction() -> Iterator[None]:
         _pending_creation_transactions.discard(token)
 
 
-def register_pending_creation(window_id: str, *, ttl_s: float | None = None) -> None:
+def register_pending_creation(
+    window_id: str,
+    *,
+    ttl_s: float | None = None,
+    now: float | None = None,
+) -> None:
     """Mark a tmux window as owned by an in-flight directory-flow bind.
 
     Call BEFORE any `await` between tmux window creation and
@@ -165,25 +172,27 @@ def register_pending_creation(window_id: str, *, ttl_s: float | None = None) -> 
     """
     if not window_id:
         return
+    key = canonical_window_id(window_id)
     ttl_s = max(_PENDING_CREATION_TTL_S, ttl_s or 0.0)
-    expires_at = time.monotonic() + ttl_s
-    _pending_user_creations[window_id] = max(
-        expires_at, _pending_user_creations.get(window_id, 0.0)
+    expires_at = (time.monotonic() if now is None else now) + ttl_s
+    _pending_user_creations[key] = max(
+        expires_at, _pending_user_creations.get(key, 0.0)
     )
 
 
 def clear_pending_creation(window_id: str) -> None:
     """Remove a window's pending-creation marker (idempotent)."""
-    _pending_user_creations.pop(window_id, None)
+    _pending_user_creations.pop(canonical_window_id(window_id), None)
 
 
 def _is_registered_pending_creation(window_id: str) -> bool:
     """Return whether a concrete window target is owned by a creation flow."""
-    expires_at = _pending_user_creations.get(window_id)
+    key = canonical_window_id(window_id)
+    expires_at = _pending_user_creations.get(key)
     if expires_at is None:
         return False
     if time.monotonic() >= expires_at:
-        _pending_user_creations.pop(window_id, None)
+        _pending_user_creations.pop(key, None)
         return False
     return True
 
@@ -372,6 +381,7 @@ async def create_topic_in_chat(
         )
         return False
 
+    register_pending_creation(window_id, now=now)
     try:
         topic = await _create_forum_topic_with_retry(client, chat_id, topic_name)
         _topic_create_retry_until.pop(chat_id, None)
@@ -385,6 +395,7 @@ async def create_topic_in_chat(
         _bind_topic_to_user(
             owner_id, topic.message_thread_id, window_id, chat_id, topic_name
         )
+        clear_pending_creation(window_id)
         return True
     except RetryAfter as e:
         retry_after_seconds = (
@@ -396,6 +407,7 @@ async def create_topic_in_chat(
         _topic_create_retry_until[chat_id] = (
             time.monotonic() + retry_after_seconds + _TOPIC_CREATE_RETRY_BUFFER_SECONDS
         )
+        clear_pending_creation(window_id)
         logger.warning(
             "Flood control creating topic for window %s in chat %d, backing off %ss",
             window_id,
@@ -403,7 +415,12 @@ async def create_topic_in_chat(
             retry_after_seconds,
         )
         return False
-    except TelegramError:
+    except TelegramError as exc:
+        clear_pending_creation(window_id)
+        if isinstance(exc, NetworkError) and not isinstance(exc, BadRequest):
+            _topic_create_retry_until[chat_id] = (
+                time.monotonic() + _TOPIC_CREATE_FAILURE_BACKOFF_S
+            )
         logger.exception(
             "Failed to create topic for window %s in chat %d",
             window_id,
@@ -524,7 +541,7 @@ async def handle_new_window(
     target_chat_id: int | None = None,
 ) -> bool:
     """Ensure a new window has a topic, returning whether it is bound."""
-    async with _window_topic_lock(event.window_id):
+    async with _window_topic_lock(canonical_window_id(event.window_id)):
         return await _handle_new_window_locked(
             event,
             client,

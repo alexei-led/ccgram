@@ -26,6 +26,7 @@ from telegram import (
 )
 from telegram.error import BadRequest, TelegramError
 from .. import window_query
+from ..multiplexer.base import canonical_window_id
 from ..config import config
 from ..session import AuditIssue, AuditResult, session_manager
 from ..session_map import session_map_sync
@@ -132,9 +133,10 @@ async def _sync_live_topic_names(
         all_windows = await tmux_manager.list_windows()
         live_ids = {w.window_id for w in all_windows}
 
+    live_lookup = {canonical_window_id(wid) for wid in live_ids}
     bindings: list[tuple[int, int, str]] = []
     for user_id, thread_id, window_id in thread_router.iter_thread_bindings():
-        if window_id not in live_ids:
+        if canonical_window_id(window_id) not in live_lookup:
             continue
         chat_id = thread_router.resolve_chat_id(user_id, thread_id)
         bindings.append((chat_id, thread_id, window_id))
