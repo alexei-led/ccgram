@@ -1671,8 +1671,9 @@ class TestResolveStaleIdsHerdrRestart:
 
         await mgr.resolve_stale_ids()
 
+        assert old_id in mgr.window_states
         assert new_id not in mgr.window_states
-        assert thread_router.get_window_for_thread(100, 7) != new_id
+        assert thread_router.get_window_for_thread(100, 7) == old_id
 
     async def test_agterm_live_uuid_comparison_is_case_insensitive(
         self, mgr: SessionManager, monkeypatch

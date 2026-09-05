@@ -377,6 +377,9 @@ def _resolve_window_states(
                 else:
                     # Keep dead window state — recovery needs cwd/provider
                     new_states[key] = ws
+            else:
+                # Stable IDs never rebind by name, but recovery still needs state.
+                new_states[key] = ws
         else:
             new_id = live_by_name.get(key)
             if new_id:
