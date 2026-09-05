@@ -10,6 +10,7 @@ from telegram.error import BadRequest, RetryAfter, TelegramError, TimedOut
 from ccgram.multiplexer.base import WindowRef
 from ccgram.handlers.topics.topic_orchestration import (
     collect_target_chats,
+    _is_pending_user_creation,
     _is_window_already_bound,
     _topic_create_retry_until,
     _pending_user_creations,
@@ -707,6 +708,7 @@ class TestCreateForumTopicTransientRetry:
 
         # Original attempt + 1 retry = 2 calls
         assert bot.create_forum_topic.call_count == 2
+        assert not _is_pending_user_creation(event.window_id)
 
 
 class TestAdoptUnboundWindows:

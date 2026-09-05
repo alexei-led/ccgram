@@ -408,6 +408,7 @@ async def create_topic_in_chat(
         )
         return False
     except TelegramError:
+        clear_pending_creation(window_id)
         logger.exception(
             "Failed to create topic for window %s in chat %d",
             window_id,
