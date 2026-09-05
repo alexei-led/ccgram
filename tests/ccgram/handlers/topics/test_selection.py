@@ -459,9 +459,8 @@ class TestAcceptYoloConfirmation:
             "WARNING: Claude Code running in Bypass Permissions mode\n"
             "  ❯ 1. No, exit\n"
             "    2. Yes, I accept all responsibility",
-            "BYPASS PERMISSIONS mode warning",
         ],
-        ids=["full_prompt", "uppercase"],
+        ids=["full_prompt"],
     )
     @patch("ccgram.handlers.topics.window_launch_service.tmux_manager")
     async def test_detected_prompt_is_answered_with_down_then_enter(
@@ -490,6 +489,15 @@ class TestAcceptYoloConfirmation:
 
         assert await _accept_yolo_confirmation("@5", timeout=0.1) is False
         mock_tmux.send_keys.assert_not_awaited()
+
+    @patch("ccgram.handlers.topics.window_launch_service.tmux_manager")
+    async def test_ignores_bypass_permissions_footer_without_dialog(
+        self, mock_tmux: MagicMock
+    ) -> None:
+        mock_tmux.capture_pane = AsyncMock(return_value="⏵⏵ bypass permissions")
+
+        assert await _accept_yolo_confirmation("@5", timeout=0.1) is False
+        mock_tmux.send_keys.assert_not_called()
 
     @patch("ccgram.handlers.topics.window_launch_service.tmux_manager")
     async def test_polls_until_prompt_appears(self, mock_tmux: MagicMock) -> None:

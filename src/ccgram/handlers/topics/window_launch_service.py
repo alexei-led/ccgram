@@ -223,7 +223,10 @@ async def _accept_yolo_confirmation(
     deadline = loop.time() + timeout
     while loop.time() < deadline:
         text = await tmux_manager.capture_pane(window_id)
-        if text and "bypass permissions" in text.lower():
+        lower = text.lower() if text else ""
+        if "bypass permissions" in lower and (
+            "no, exit" in lower or "i accept" in lower
+        ):
             await asyncio.sleep(0.3)
             await tmux_manager.send_keys(window_id, "Down", enter=False, literal=False)
             await asyncio.sleep(0.15)

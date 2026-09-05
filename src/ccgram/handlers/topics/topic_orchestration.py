@@ -137,7 +137,7 @@ def _is_window_already_bound(window_id: str) -> bool:
 #      unbound forever ("Will deliver once the agent starts")
 #
 # The pending set lets handle_new_window detect "this window is owned by a
-# directory flow that's about to bind, do not create a duplicate topic." A
+# directory flow that's about to bind, do not create a duplicate topic."
 # The default 30s TTL is the safety net if directory_callbacks crashes before
 # clearing the entry. Slow launch paths may extend it to cover their full wait.
 _pending_user_creations: dict[str, float] = {}
