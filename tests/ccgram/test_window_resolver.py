@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -17,9 +18,18 @@ from ccgram.window_resolver import (
     is_window_id,
     migrate_window_aliases,
     reset_alias_redirects,
-    resolve_stale_ids,
+    resolve_stale_ids as _resolve_stale_ids,
     resolve_window_alias,
 )
+
+
+def resolve_stale_ids(*args: Any, **kwargs: Any) -> bool:
+    return _resolve_stale_ids(
+        *args,
+        window_id_predicate=is_window_id,
+        recover_stale_ids_by_name=True,
+        **kwargs,
+    )
 
 
 @pytest.fixture(autouse=True)

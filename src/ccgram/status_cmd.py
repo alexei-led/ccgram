@@ -26,6 +26,7 @@ import sys
 from pathlib import Path
 
 from .utils import ccgram_dir, load_ccgram_env, tmux_session_name
+from .multiplexer.base import canonical_window_id
 from .window_resolver import session_map_prefix_for
 
 _TMUX_FORMAT_PARTS = 2
@@ -198,10 +199,17 @@ def status_main() -> None:
     # Build binding index: window_id -> (thread_id, user_id)
     thread_bindings = state.get("thread_bindings", {})
     display_names = state.get("window_display_names", {})
-    bound_windows: dict[str, tuple[int, int]] = {}
+    bound_windows: dict[str, tuple[int, int, str]] = {}
     for user_id_str, bindings in thread_bindings.items():
         for thread_id_str, window_id in bindings.items():
-            bound_windows[window_id] = (int(thread_id_str), int(user_id_str))
+            bound_windows[canonical_window_id(window_id)] = (
+                int(thread_id_str),
+                int(user_id_str),
+                window_id,
+            )
+    display_names_by_id = {
+        canonical_window_id(wid): name for wid, name in display_names.items()
+    }
 
     # Count monitored sessions (backend-aware prefix)
     prefix = session_map_prefix_for(mux_name, session_name)
@@ -222,11 +230,12 @@ def status_main() -> None:
     shown_ids: set[str] = set()
     for w in live_windows or []:
         wid = w["id"]
-        name = display_names.get(wid, w["name"])
-        shown_ids.add(wid)
+        key = canonical_window_id(wid)
+        name = display_names_by_id.get(key, w["name"])
+        shown_ids.add(key)
 
-        if wid in bound_windows:
-            thread_id, user_id = bound_windows[wid]
+        if key in bound_windows:
+            thread_id, user_id, _bound_wid = bound_windows[key]
             print(
                 f"  {wid:<5} {name:<16} -> topic {thread_id} (user {user_id})   alive"
             )
@@ -236,9 +245,9 @@ def status_main() -> None:
     # Bound but not in the live listing. Only a confirmed listing makes that
     # "dead"; an unconfirmed one makes it unknown, and /sync Fix acts on dead.
     verdict = "unknown" if live_windows is None else "dead"
-    for wid, (thread_id, user_id) in bound_windows.items():
-        if wid not in shown_ids:
-            name = display_names.get(wid, wid)
+    for key, (thread_id, user_id, wid) in bound_windows.items():
+        if key not in shown_ids:
+            name = display_names_by_id.get(key, wid)
             print(
                 f"  {wid:<5} {name:<16} -> topic {thread_id} "
                 f"(user {user_id})   {verdict}"

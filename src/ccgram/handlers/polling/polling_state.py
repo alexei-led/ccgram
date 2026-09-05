@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from ...multiplexer.base import canonical_window_id
 from ...providers.base import StatusUpdate
 from ...topic_state_registry import topic_state
 from .polling_types import (
@@ -297,9 +298,12 @@ class TerminalPollState:
 
     def clear_unbound_timers(self, bound_ids: set[str], live_ids: set[str]) -> None:
         """Clear unbound timers for windows that are now bound or gone."""
+        bound_lookup = {canonical_window_id(wid) for wid in bound_ids}
+        live_lookup = {canonical_window_id(wid) for wid in live_ids}
         for wid, ws in list(self._states.items()):
+            key = canonical_window_id(wid)
             if ws.unbound_timer is not None and (
-                wid in bound_ids or wid not in live_ids
+                key in bound_lookup or key not in live_lookup
             ):
                 ws.unbound_timer = None
 
@@ -315,8 +319,13 @@ class TerminalPollState:
         self, live_ids: set[str], bound_ids: set[str]
     ) -> list[str]:
         """Return window IDs that are neither live nor bound."""
+        live_lookup = {canonical_window_id(wid) for wid in live_ids}
+        bound_lookup = {canonical_window_id(wid) for wid in bound_ids}
         return [
-            wid for wid in self._states if wid not in live_ids and wid not in bound_ids
+            wid
+            for wid in self._states
+            if canonical_window_id(wid) not in live_lookup
+            and canonical_window_id(wid) not in bound_lookup
         ]
 
     def reset_probe_failures(self, window_id: str) -> None:

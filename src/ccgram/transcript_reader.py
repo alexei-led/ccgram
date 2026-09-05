@@ -819,6 +819,8 @@ class TranscriptReader:
         cwds: set[str] = set()
         windows = await list_windows_for_reconciliation()
         for w in windows or []:
+            if not w.cwd:
+                continue
             try:
                 cwds.add(str(Path(w.cwd).resolve()))
             except _PathResolveError:

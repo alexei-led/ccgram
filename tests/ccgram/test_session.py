@@ -1022,6 +1022,19 @@ class TestPruneStaleState:
         assert changed is False
         assert "@2" in thread_router.window_display_names
 
+    def test_keeps_case_variant_display_name_and_offset_in_use(
+        self, mgr: SessionManager
+    ) -> None:
+        thread_router.window_display_names["abc-def"] = "bound-proj"
+        thread_router.bind_thread(100, 1, "ABC-DEF")
+        user_preferences.user_window_offsets[100] = {"abc-def": 42}
+
+        changed = mgr.prune_stale_state(live_window_ids=set())
+
+        assert changed is False
+        assert thread_router.window_display_names["abc-def"] == "bound-proj"
+        assert user_preferences.user_window_offsets[100]["abc-def"] == 42
+
     def test_keeps_display_name_if_has_window_state(self, mgr: SessionManager) -> None:
         thread_router.window_display_names["@3"] = "with-state"
         mgr.window_states["@3"] = WindowState(session_id="sid")
@@ -1417,6 +1430,66 @@ class TestAuditState:
         assert len(stale) == 1
         assert stale[0].fixable
 
+    def test_case_variant_state_is_in_use_by_binding_and_session_map(
+        self, mgr: SessionManager, tmp_path, monkeypatch
+    ) -> None:
+        session_map_file = tmp_path / "session_map.json"
+        session_map_file.write_text(
+            json.dumps(
+                {
+                    "agterm:ABC-DEF": {
+                        "session_id": "sid",
+                        "cwd": "/tmp",
+                        "schema_version": 1,
+                    }
+                }
+            )
+        )
+        monkeypatch.setattr("ccgram.session.config.session_map_file", session_map_file)
+        monkeypatch.setattr("ccgram.session.config.multiplexer_name", "agterm")
+        mgr.window_states["abc-def"] = WindowState(session_id="sid", cwd="/tmp")
+        thread_router.bind_thread(100, 1, "ABC-DEF")
+
+        result = mgr.audit_state(live_window_ids=set(), live_windows=[])
+
+        assert not any(i.category == "stale_window_state" for i in result.issues)
+
+    def test_case_variant_display_and_offset_are_known(
+        self, mgr: SessionManager
+    ) -> None:
+        mgr.window_states["ABC-DEF"] = WindowState(session_id="sid", cwd="/tmp")
+        thread_router.window_display_names["abc-def"] = "project"
+        user_preferences.user_window_offsets[100] = {"abc-def": 42}
+
+        result = mgr.audit_state(live_window_ids=set(), live_windows=[])
+
+        assert not any(i.category == "orphaned_display_name" for i in result.issues)
+        assert not any(i.category == "stale_offset" for i in result.issues)
+
+    def test_case_variant_display_name_drift_is_reported(
+        self, mgr: SessionManager
+    ) -> None:
+        thread_router.window_display_names["abc-def"] = "old-name"
+
+        result = mgr.audit_state(
+            live_window_ids={"ABC-DEF"}, live_windows=[("ABC-DEF", "new-name")]
+        )
+
+        drift = [i for i in result.issues if i.category == "display_name_drift"]
+        assert len(drift) == 1
+
+    def test_exact_display_name_spelling_takes_priority(
+        self, mgr: SessionManager
+    ) -> None:
+        thread_router.window_display_names["abc-def"] = "stale-variant"
+        thread_router.window_display_names["ABC-DEF"] = "current"
+
+        result = mgr.audit_state(
+            live_window_ids={"ABC-DEF"}, live_windows=[("ABC-DEF", "current")]
+        )
+
+        assert not any(i.category == "display_name_drift" for i in result.issues)
+
 
 class TestPruneStaleOffsets:
     def test_removes_unknown_windows(self, mgr: SessionManager) -> None:
@@ -1458,6 +1531,39 @@ class TestPruneStaleWindowStates:
         changed = mgr.prune_stale_window_states(live_window_ids=set())
         assert not changed
         assert "@1" in mgr.window_states
+
+    def test_keeps_state_for_case_variant_binding(self, mgr: SessionManager) -> None:
+        mgr.window_states["abc-def"] = WindowState(session_id="s1", cwd="/tmp")
+        thread_router.bind_thread(100, 1, "ABC-DEF")
+
+        changed = mgr.prune_stale_window_states(live_window_ids=set())
+
+        assert not changed
+        assert "abc-def" in mgr.window_states
+
+    def test_keeps_state_for_case_variant_session_map(
+        self, mgr: SessionManager, tmp_path, monkeypatch
+    ) -> None:
+        session_map_file = tmp_path / "session_map.json"
+        session_map_file.write_text(
+            json.dumps(
+                {
+                    "agterm:ABC-DEF": {
+                        "session_id": "sid",
+                        "cwd": "/tmp",
+                        "schema_version": 1,
+                    }
+                }
+            )
+        )
+        monkeypatch.setattr("ccgram.session.config.session_map_file", session_map_file)
+        monkeypatch.setattr("ccgram.session.config.multiplexer_name", "agterm")
+        mgr.window_states["abc-def"] = WindowState(session_id="sid", cwd="/tmp")
+
+        changed = mgr.prune_stale_window_states(live_window_ids=set())
+
+        assert not changed
+        assert "abc-def" in mgr.window_states
 
     def test_keeps_live_states(self, mgr: SessionManager) -> None:
         mgr.window_states["@1"] = WindowState(session_id="s1", cwd="/tmp")
@@ -1630,6 +1736,74 @@ class TestResolveStaleIdsHerdrRestart:
 
         assert target in mgr.window_states
         assert thread_router.get_window_for_thread(100, 7) == target
+
+    async def test_agterm_stable_uuid_survives_startup_reconciliation(
+        self, mgr: SessionManager, monkeypatch
+    ) -> None:
+        window_id = "9F1C2D3E-4A5B-4C6D-8E7F-0A1B2C3D4E5F"
+        thread_router.bind_thread(100, 7, window_id, window_name="project")
+        mgr.window_states[window_id] = WindowState(session_id="S1", cwd="/repo")
+        user_preferences.user_window_offsets[100] = {window_id: 42}
+        self.map_file.write_text("{}")
+        live = [SimpleNamespace(window_id=window_id, window_name="project")]
+        monkeypatch.setattr("ccgram.session.config.multiplexer_name", "agterm")
+        monkeypatch.setattr(
+            "ccgram.session.tmux_manager",
+            _FakeMux(ids_stable=True, windows=live),
+        )
+
+        await mgr.resolve_stale_ids()
+
+        assert window_id in mgr.window_states
+        assert thread_router.get_window_for_thread(100, 7) == window_id
+        assert user_preferences.user_window_offsets[100][window_id] == 42
+
+    async def test_agterm_missing_uuid_does_not_rebind_by_display_name(
+        self, mgr: SessionManager, monkeypatch
+    ) -> None:
+        old_id = "11111111-1111-1111-1111-111111111111"
+        new_id = "22222222-2222-2222-2222-222222222222"
+        thread_router.bind_thread(100, 7, old_id, window_name="project")
+        mgr.window_states[old_id] = WindowState(session_id="old", cwd="/repo")
+        self.map_file.write_text("{}")
+        monkeypatch.setattr("ccgram.session.config.multiplexer_name", "agterm")
+        monkeypatch.setattr(
+            "ccgram.session.tmux_manager",
+            _FakeMux(
+                ids_stable=True,
+                windows=[SimpleNamespace(window_id=new_id, window_name="project")],
+            ),
+        )
+
+        await mgr.resolve_stale_ids()
+
+        assert old_id in mgr.window_states
+        assert new_id not in mgr.window_states
+        assert thread_router.get_window_for_thread(100, 7) == old_id
+
+    async def test_agterm_live_uuid_comparison_is_case_insensitive(
+        self, mgr: SessionManager, monkeypatch
+    ) -> None:
+        stored_id = "abcdef12-3456-7890-abcd-ef1234567890"
+        live_id = stored_id.upper()
+        thread_router.bind_thread(100, 7, stored_id, window_name="project")
+        mgr.window_states[stored_id] = WindowState(session_id="S1", cwd="/repo")
+        user_preferences.user_window_offsets[100] = {stored_id: 42}
+        self.map_file.write_text("{}")
+        monkeypatch.setattr("ccgram.session.config.multiplexer_name", "agterm")
+        monkeypatch.setattr(
+            "ccgram.session.tmux_manager",
+            _FakeMux(
+                ids_stable=True,
+                windows=[SimpleNamespace(window_id=live_id, window_name="project")],
+            ),
+        )
+
+        await mgr.resolve_stale_ids()
+
+        assert stored_id in mgr.window_states
+        assert thread_router.get_window_for_thread(100, 7) == stored_id
+        assert user_preferences.user_window_offsets[100][stored_id] == 42
 
     async def test_tmux_path_is_noop_for_stable_ids(
         self, mgr: SessionManager, monkeypatch

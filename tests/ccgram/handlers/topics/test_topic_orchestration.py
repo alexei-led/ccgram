@@ -12,6 +12,7 @@ from ccgram.handlers.topics.topic_orchestration import (
     collect_target_chats,
     _is_window_already_bound,
     _topic_create_retry_until,
+    _pending_user_creations,
     _window_topic_locks,
     adopt_unbound_windows,
     handle_new_window,
@@ -22,9 +23,11 @@ from ccgram.session_monitor import NewWindowEvent
 @pytest.fixture(autouse=True)
 def _clear_retry_state():
     _topic_create_retry_until.clear()
+    _pending_user_creations.clear()
     _window_topic_locks.clear()
     yield
     _topic_create_retry_until.clear()
+    _pending_user_creations.clear()
     _window_topic_locks.clear()
 
 

@@ -157,7 +157,7 @@ def pending_creation_transaction() -> Iterator[None]:
         _pending_creation_transactions.discard(token)
 
 
-def register_pending_creation(window_id: str) -> None:
+def register_pending_creation(window_id: str, *, now: float | None = None) -> None:
     """Mark a tmux window as owned by an in-flight directory-flow bind.
 
     Call BEFORE any `await` between tmux window creation and
@@ -167,7 +167,9 @@ def register_pending_creation(window_id: str) -> None:
     if not window_id:
         return
     key = canonical_window_id(window_id)
-    _pending_user_creations[key] = time.monotonic() + _PENDING_CREATION_TTL_S
+    _pending_user_creations[key] = (
+        time.monotonic() if now is None else now
+    ) + _PENDING_CREATION_TTL_S
 
 
 def clear_pending_creation(window_id: str) -> None:
@@ -371,6 +373,7 @@ async def create_topic_in_chat(
         )
         return False
 
+    register_pending_creation(window_id, now=now)
     try:
         topic = await _create_forum_topic_with_retry(client, chat_id, topic_name)
         _topic_create_retry_until.pop(chat_id, None)
@@ -384,6 +387,7 @@ async def create_topic_in_chat(
         _bind_topic_to_user(
             owner_id, topic.message_thread_id, window_id, chat_id, topic_name
         )
+        clear_pending_creation(window_id)
         return True
     except RetryAfter as e:
         retry_after_seconds = (
@@ -395,6 +399,7 @@ async def create_topic_in_chat(
         _topic_create_retry_until[chat_id] = (
             time.monotonic() + retry_after_seconds + _TOPIC_CREATE_RETRY_BUFFER_SECONDS
         )
+        clear_pending_creation(window_id)
         logger.warning(
             "Flood control creating topic for window %s in chat %d, backing off %ss",
             window_id,
