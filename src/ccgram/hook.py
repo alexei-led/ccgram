@@ -285,7 +285,7 @@ def _install_json_hooks(
 
 _CODEX_HOOKS_KEY_RE = re.compile(r"^\s*(hooks|codex_hooks)\s*=\s*([^,\s#]+)")
 _TOML_TABLE_HEADER_RE = re.compile(
-    r"^\s*(\[\[[^\]\r\n]+\]\]|\[[^\]\r\n]+\])(?:\s*#.*)?(?:\r?\n)?$"
+    r"^\s*(\[\[[^\]\r\n]+\]\]|\[[^\]\r\n]+\])\s*(?:#.*)?(?:\r?\n)?$"
 )
 
 

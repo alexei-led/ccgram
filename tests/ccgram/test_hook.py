@@ -80,6 +80,12 @@ class TestCodexFeatureFlag:
                 0,
                 id="stop-at-array-table",
             ),
+            pytest.param(
+                "[features]  \nunified_exec = true\n",
+                "[features]  \nhooks = true\nunified_exec = true\n",
+                0,
+                id="allow-trailing-header-whitespace",
+            ),
         ],
     )
     def test_ensures_current_top_level_flag(
