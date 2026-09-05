@@ -10,6 +10,7 @@ import pytest
 from ccgram.hook import (
     _claude_settings_file,
     _closest_claude_ancestor,
+    _ensure_codex_feature_flag,
     _foreground_pgid_on_tty,
     _hook_status,
     _install_hook,
@@ -31,6 +32,77 @@ def _is_hook_installed(settings: dict) -> bool:
 
 def _expected_module_command() -> str:
     return f"{shlex.quote(sys.executable)} -m ccgram.main hook"
+
+
+class TestCodexFeatureFlag:
+    @pytest.mark.parametrize(
+        ("existing", "expected", "result"),
+        [
+            pytest.param(
+                "[features]\nhooks = true\n",
+                "[features]\nhooks = true\n",
+                0,
+                id="current-enabled",
+            ),
+            pytest.param(
+                "[features]\ncodex_hooks = true\n",
+                "[features]\nhooks = true\n",
+                0,
+                id="migrate-enabled",
+            ),
+            pytest.param(
+                "[features]\ncodex_hooks = true\nhooks = true\n",
+                "[features]\nhooks = true\n",
+                0,
+                id="remove-duplicate-legacy-key",
+            ),
+            pytest.param(
+                "[features]\nhooks = false\n",
+                "[features]\nhooks = false\n",
+                1,
+                id="current-disabled",
+            ),
+            pytest.param(
+                "[features]\ncodex_hooks = false\n",
+                "[features]\nhooks = false\n",
+                1,
+                id="migrate-disabled",
+            ),
+            pytest.param(
+                "[profiles.work.features]\nhooks = false\n",
+                "[profiles.work.features]\nhooks = false\n\n[features]\nhooks = true\n",
+                0,
+                id="ignore-profile-features",
+            ),
+            pytest.param(
+                "[features]\nunified_exec = true\n\n[[plugins]]\nhooks = false\n",
+                "[features]\nhooks = true\nunified_exec = true\n\n[[plugins]]\nhooks = false\n",
+                0,
+                id="stop-at-array-table",
+            ),
+        ],
+    )
+    def test_ensures_current_top_level_flag(
+        self,
+        tmp_path,
+        monkeypatch,
+        existing: str,
+        expected: str,
+        result: int,
+    ) -> None:
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(existing)
+        monkeypatch.setattr("ccgram.hook._codex_config_file", lambda: config_file)
+
+        assert _ensure_codex_feature_flag() == result
+        assert config_file.read_text() == expected
+
+    def test_creates_config_with_current_flag(self, tmp_path, monkeypatch) -> None:
+        config_file = tmp_path / "config.toml"
+        monkeypatch.setattr("ccgram.hook._codex_config_file", lambda: config_file)
+
+        assert _ensure_codex_feature_flag() == 0
+        assert config_file.read_text() == "[features]\nhooks = true\n"
 
 
 class TestInstallHook:

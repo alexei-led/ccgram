@@ -283,21 +283,81 @@ def _install_json_hooks(
     return 0
 
 
-_CODEX_HOOKS_KEY_RE = re.compile(r"^\s*codex_hooks\s*=\s*(\S+)", re.MULTILINE)
+_CODEX_HOOKS_KEY_RE = re.compile(r"^\s*(hooks|codex_hooks)\s*=\s*([^,\s#]+)")
+_TOML_TABLE_HEADER_RE = re.compile(
+    r"^\s*(\[\[[^\]\r\n]+\]\]|\[[^\]\r\n]+\])(?:\s*#.*)?(?:\r?\n)?$"
+)
+
+
+def _find_codex_hook_feature_entries(
+    lines: list[str],
+) -> tuple[int | None, tuple[int, str] | None, list[tuple[int, str]]]:
+    features_header_index: int | None = None
+    current_entry: tuple[int, str] | None = None
+    legacy_entries: list[tuple[int, str]] = []
+    in_top_level_features = False
+
+    for index, line in enumerate(lines):
+        header_match = _TOML_TABLE_HEADER_RE.match(line)
+        if header_match:
+            in_top_level_features = header_match.group(1) == "[features]"
+            if in_top_level_features and features_header_index is None:
+                features_header_index = index
+            continue
+        if not in_top_level_features:
+            continue
+        key_match = _CODEX_HOOKS_KEY_RE.match(line)
+        if not key_match:
+            continue
+        entry = (index, key_match.group(2))
+        if key_match.group(1) == "hooks" and current_entry is None:
+            current_entry = entry
+        elif key_match.group(1) == "codex_hooks":
+            legacy_entries.append(entry)
+
+    return features_header_index, current_entry, legacy_entries
+
+
+def _codex_config_with_hooks(text: str) -> tuple[str, str]:
+    lines = text.splitlines(keepends=True)
+    features_header_index, current_entry, legacy_entries = (
+        _find_codex_hook_feature_entries(lines)
+    )
+
+    if current_entry:
+        value = current_entry[1]
+        remove_indexes = [index for index, _ in legacy_entries]
+    elif legacy_entries:
+        legacy_index, value = legacy_entries[0]
+        lines[legacy_index] = re.sub(
+            r"^(\s*)codex_hooks(\s*=)", r"\1hooks\2", lines[legacy_index], count=1
+        )
+        remove_indexes = [index for index, _ in legacy_entries[1:]]
+    else:
+        value = "true"
+        remove_indexes = []
+        newline = "\r\n" if "\r\n" in text else "\n"
+        if features_header_index is not None:
+            if not lines[features_header_index].endswith(("\n", "\r")):
+                lines[features_header_index] += newline
+            lines.insert(features_header_index + 1, f"hooks = true{newline}")
+        else:
+            prefix = text.rstrip("\r\n")
+            separator = newline * 2 if prefix else ""
+            lines = [f"{prefix}{separator}[features]{newline}hooks = true{newline}"]
+
+    for index in reversed(remove_indexes):
+        lines.pop(index)
+    return "".join(lines), value
 
 
 def _ensure_codex_feature_flag() -> int:
-    """Ensure user Codex config enables the hooks feature flag.
-
-    Detects any existing ``codex_hooks =`` line (spacing-tolerant). If it's
-    already truthy, no-op. If it's explicitly false, warn and refuse to
-    overwrite — the user opted out. Otherwise insert under ``[features]``.
-    """
+    """Enable Codex hooks and migrate the deprecated feature key."""
     config_file = _codex_config_file()
     if not config_file.exists():
         try:
             config_file.parent.mkdir(parents=True, exist_ok=True)
-            config_file.write_text("[features]\ncodex_hooks = true\n")
+            config_file.write_text("[features]\nhooks = true\n")
         except OSError as e:
             print(f"Error creating {config_file}: {e}", file=sys.stderr)
             return 1
@@ -307,26 +367,22 @@ def _ensure_codex_feature_flag() -> int:
     except OSError as e:
         print(f"Error reading {config_file}: {e}", file=sys.stderr)
         return 1
-    match = _CODEX_HOOKS_KEY_RE.search(text)
-    if match:
-        value = match.group(1).rstrip(",")
-        if value == "true":
-            return 0
-        print(
-            f"{config_file} has codex_hooks = {value}; set it to true and rerun.",
-            file=sys.stderr,
-        )
-        return 1
-    if "[features]" in text:
-        text = text.replace("[features]", "[features]\ncodex_hooks = true", 1)
-    else:
-        text = text.rstrip() + "\n\n[features]\ncodex_hooks = true\n"
-    try:
-        config_file.write_text(text)
-    except OSError as e:
-        print(f"Error writing {config_file}: {e}", file=sys.stderr)
-        return 1
-    return 0
+
+    updated_text, value = _codex_config_with_hooks(text)
+    if updated_text != text:
+        try:
+            config_file.write_text(updated_text)
+        except OSError as e:
+            print(f"Error writing {config_file}: {e}", file=sys.stderr)
+            return 1
+
+    if value == "true":
+        return 0
+    print(
+        f"{config_file} has hooks = {value}; set it to true and rerun.",
+        file=sys.stderr,
+    )
+    return 1
 
 
 _CODEX_HOOK_TIMEOUT_SECONDS = 5
