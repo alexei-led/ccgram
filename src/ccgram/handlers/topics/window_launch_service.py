@@ -233,6 +233,8 @@ async def _accept_yolo_confirmation(
             await tmux_manager.send_keys(window_id, "Enter", enter=False, literal=False)
             logger.info("Accepted bypass permissions prompt for window %s", window_id)
             return True
+        if "⏵⏵ bypass permissions" in lower:
+            return False
         await asyncio.sleep(0.5)
     logger.warning(
         "Bypass permissions prompt not detected within %.0fs for window %s",
