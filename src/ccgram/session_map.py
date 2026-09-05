@@ -618,7 +618,6 @@ class SessionMapSync:
         while loop.time() < deadline:
             if resolve_window_id is not None:
                 current_id = resolve_window_id(window_id)
-            key = f"{session_map_prefix()}{current_id}"
             try:
                 if config.session_map_file.exists():
                     async with aiofiles.open(config.session_map_file, "r") as f:
@@ -626,7 +625,8 @@ class SessionMapSync:
                     session_map = json.loads(content)
                     if not isinstance(session_map, dict):
                         raise ValueError("session_map root is not an object")
-                    info = session_map.get(key)
+                    key = _find_session_map_key(session_map, current_id)
+                    info = session_map.get(key) if key is not None else None
                     if isinstance(info, dict):
                         parse_session_map_entry(info)
                         logger.debug(
