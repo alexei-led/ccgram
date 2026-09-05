@@ -743,13 +743,15 @@ class SessionMonitor:
         from .thread_router import thread_router
 
         caps = tmux_manager.capabilities
-        bound_window_ids = {wid for _, _, wid in thread_router.iter_thread_bindings()}
         known_lookup = _adoption_lookup(known_window_ids)
-        bound_lookup = _adoption_lookup(bound_window_ids)
+        bound_lookup = _adoption_lookup(
+            {wid for _, _, wid in thread_router.iter_thread_bindings()}
+        )
         for window in all_windows:
-            if canonical_window_id(window.window_id) in known_lookup:
+            window_key = canonical_window_id(window.window_id)
+            if window_key in known_lookup:
                 continue
-            if canonical_window_id(window.window_id) in bound_lookup:
+            if window_key in bound_lookup:
                 continue
             if not is_agent_topic_window(window, caps):
                 continue
@@ -922,7 +924,9 @@ class SessionMonitor:
 
                 monitored_map = current_map
                 if all_windows is not None:
-                    live_window_ids = {w.window_id for w in all_windows}
+                    live_window_ids = {
+                        canonical_window_id(w.window_id) for w in all_windows
+                    }
                     session_map_sync.prune_session_map(live_window_ids)
                     # Pruning needs every live window; adoption needs only the
                     # ones the backend says may be adopted. The listing is
@@ -937,7 +941,7 @@ class SessionMonitor:
                     monitored_map = {
                         window_id: details
                         for window_id, details in current_map.items()
-                        if window_id in live_window_ids
+                        if canonical_window_id(window_id) in live_window_ids
                     }
 
                 # A persisted barrier must be noticed before its source is read

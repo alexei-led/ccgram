@@ -15,6 +15,7 @@ import structlog
 from ..claude_task_state import classify_wait_message, claude_task_state
 from ..providers.base import HookEvent
 from ..session_lifecycle import session_lifecycle
+from ..multiplexer.base import canonical_window_id
 from ..session_map import session_map_prefix, strip_session_map_prefix
 from ..session_state_ports.live_session_state import has_task_snapshot
 from ..telegram_client import TelegramClient
@@ -48,9 +49,10 @@ def _resolve_users_for_window_key(
         return []
 
     results: list[tuple[int, int, str]] = []
+    wanted = canonical_window_id(window_id)
     for user_id, thread_id, bound_wid in thread_router.iter_thread_bindings():
-        if bound_wid == window_id:
-            results.append((user_id, thread_id, window_id))
+        if canonical_window_id(bound_wid) == wanted:
+            results.append((user_id, thread_id, bound_wid))
     return results
 
 
@@ -61,20 +63,21 @@ def _resolve_user_chats_for_window_key(
     window_id = strip_session_map_prefix(window_key, session_map_prefix())
     if window_id is None:
         return []
+    wanted = canonical_window_id(window_id)
     targets = [
-        (user_id, thread_id, window_id, chat_id)
+        (user_id, thread_id, bound_wid, chat_id)
         for user_id, chat_id, thread_id, bound_wid in (
             thread_router.iter_thread_bindings_with_chat()
         )
-        if bound_wid == window_id
+        if canonical_window_id(bound_wid) == wanted
     ]
     if targets:
         return targets
     # Keep compatibility with lightweight routers used by integrations.
     return [
-        (user_id, thread_id, window_id, None)
+        (user_id, thread_id, bound_wid, None)
         for user_id, thread_id, bound_wid in thread_router.iter_thread_bindings()
-        if bound_wid == window_id
+        if canonical_window_id(bound_wid) == wanted
     ]
 
 

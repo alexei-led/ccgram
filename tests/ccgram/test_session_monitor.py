@@ -865,7 +865,7 @@ class TestEmitUnboundWindowEvents:
     async def test_case_variant_bound_window_is_not_rediscovered(
         self, monitor: SessionMonitor, wired, monkeypatch
     ) -> None:
-        thread_router.bind_thread(100, 1, "abc-def")
+        thread_router.bind_thread(100, 42, "abc-def")
         cb = AsyncMock(spec=lambda event: None)
         monitor.set_new_window_callback(cb)
         monkeypatch.setattr(
@@ -930,6 +930,25 @@ class TestEmitKnownUnboundWindowEvents:
         live_window_ids = {"w1:t1"}
 
         await monitor._emit_known_unbound_window_events(current_map, live_window_ids)
+
+        cb.assert_not_called()
+
+    async def test_case_variant_bound_window_not_re_fired(
+        self, monitor: SessionMonitor, wired
+    ) -> None:
+        thread_router.bind_thread(100, 42, "abc-def")
+        cb = AsyncMock(spec=lambda event: None)
+        monitor.set_new_window_callback(cb)
+
+        current_map = {
+            "ABC-DEF": {
+                "session_id": "S1",
+                "cwd": "/repo",
+                "window_name": "agent",
+            }
+        }
+
+        await monitor._emit_known_unbound_window_events(current_map, {"abc-def"})
 
         cb.assert_not_called()
 
