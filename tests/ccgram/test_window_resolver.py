@@ -24,7 +24,12 @@ from ccgram.window_resolver import (
 
 
 def resolve_stale_ids(*args: Any, **kwargs: Any) -> bool:
-    return _resolve_stale_ids(*args, window_id_predicate=is_window_id, **kwargs)
+    return _resolve_stale_ids(
+        *args,
+        window_id_predicate=is_window_id,
+        recover_stale_ids_by_name=True,
+        **kwargs,
+    )
 
 
 @pytest.fixture(autouse=True)

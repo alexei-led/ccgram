@@ -1652,6 +1652,52 @@ class TestResolveStaleIdsHerdrRestart:
         assert thread_router.get_window_for_thread(100, 7) == window_id
         assert user_preferences.user_window_offsets[100][window_id] == 42
 
+    async def test_agterm_missing_uuid_does_not_rebind_by_display_name(
+        self, mgr: SessionManager, monkeypatch
+    ) -> None:
+        old_id = "11111111-1111-1111-1111-111111111111"
+        new_id = "22222222-2222-2222-2222-222222222222"
+        thread_router.bind_thread(100, 7, old_id, window_name="project")
+        mgr.window_states[old_id] = WindowState(session_id="old", cwd="/repo")
+        self.map_file.write_text("{}")
+        monkeypatch.setattr("ccgram.session.config.multiplexer_name", "agterm")
+        monkeypatch.setattr(
+            "ccgram.session.tmux_manager",
+            _FakeMux(
+                ids_stable=True,
+                windows=[SimpleNamespace(window_id=new_id, window_name="project")],
+            ),
+        )
+
+        await mgr.resolve_stale_ids()
+
+        assert new_id not in mgr.window_states
+        assert thread_router.get_window_for_thread(100, 7) != new_id
+
+    async def test_agterm_live_uuid_comparison_is_case_insensitive(
+        self, mgr: SessionManager, monkeypatch
+    ) -> None:
+        stored_id = "abcdef12-3456-7890-abcd-ef1234567890"
+        live_id = stored_id.upper()
+        thread_router.bind_thread(100, 7, stored_id, window_name="project")
+        mgr.window_states[stored_id] = WindowState(session_id="S1", cwd="/repo")
+        user_preferences.user_window_offsets[100] = {stored_id: 42}
+        self.map_file.write_text("{}")
+        monkeypatch.setattr("ccgram.session.config.multiplexer_name", "agterm")
+        monkeypatch.setattr(
+            "ccgram.session.tmux_manager",
+            _FakeMux(
+                ids_stable=True,
+                windows=[SimpleNamespace(window_id=live_id, window_name="project")],
+            ),
+        )
+
+        await mgr.resolve_stale_ids()
+
+        assert stored_id in mgr.window_states
+        assert thread_router.get_window_for_thread(100, 7) == stored_id
+        assert user_preferences.user_window_offsets[100][stored_id] == 42
+
     async def test_tmux_path_is_noop_for_stable_ids(
         self, mgr: SessionManager, monkeypatch
     ) -> None:

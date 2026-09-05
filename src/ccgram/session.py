@@ -382,6 +382,9 @@ class SessionManager:
             thread_router.window_display_names,
             ids_stable=caps.ids_stable_across_restart,
             window_id_predicate=self._is_window_id,
+            recover_stale_ids_by_name=getattr(
+                caps, "recovers_stale_ids_by_name", False
+            ),
         )
 
         if changed:
