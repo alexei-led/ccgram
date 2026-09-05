@@ -71,6 +71,7 @@ from ... import window_query
 from ...thread_router import thread_router
 from ...providers import detect_provider_from_pane, get_provider_for_window
 from ...multiplexer import multiplexer as tmux_manager
+from ...multiplexer.base import canonical_window_id
 from ...utils import handle_general_topic_message, is_general_topic, task_done_callback
 
 if TYPE_CHECKING:
@@ -275,10 +276,11 @@ async def _handle_unbound_topic(
 
     all_windows = await tmux_manager.list_windows()
     bound_ids = {bound_wid for _, _, bound_wid in thread_router.iter_thread_bindings()}
+    bound_lookup = {canonical_window_id(wid) for wid in bound_ids}
     unbound = [
         (w.window_id, w.window_name, w.cwd)
         for w in all_windows
-        if w.window_id not in bound_ids
+        if canonical_window_id(w.window_id) not in bound_lookup
     ]
     logger.debug(
         "Window picker check: all=%s, bound=%s, unbound=%s",

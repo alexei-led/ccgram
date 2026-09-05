@@ -30,6 +30,16 @@ def test_unseen_window_fails_open_until_it_is_tracked() -> None:
     assert is_window_live("newly-created")
 
 
+def test_case_variant_ids_share_liveness() -> None:
+    note_live_windows(
+        [WindowRef(window_id="ABC-DEF", window_name="live", cwd="/tmp")],
+        tracked_window_ids=["abc-def"],
+    )
+
+    assert is_window_live("abc-def")
+    assert is_window_live("ABC-DEF")
+
+
 def test_reset_returns_to_unknown_fail_open_state() -> None:
     note_live_windows([], tracked_window_ids=["closed"])
     reset_window_liveness()

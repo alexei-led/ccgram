@@ -21,6 +21,7 @@ from ...session_map import session_map_prefix
 from ...telegram_client import PTBTelegramClient, TelegramClient
 from ...thread_router import thread_router
 from ...multiplexer import multiplexer as tmux_manager
+from ...multiplexer.base import canonical_window_id
 from ...utils import log_throttled
 from ...window_state_ports import legacy_state
 from ...window_state_store import CCGRAM_CREATED_WINDOW_ORIGIN
@@ -171,12 +172,14 @@ async def check_unbound_window_ttl(
     if live_windows is None:
         live_windows = await tmux_manager.list_windows()
     live_ids = {w.window_id for w in live_windows}
+    bound_lookup = {canonical_window_id(wid) for wid in bound_ids}
+    live_lookup = {canonical_window_id(wid) for wid in live_ids}
 
     terminal_poll_state.clear_unbound_timers(bound_ids, live_ids)
 
     now = time.monotonic()
     for w in live_windows:
-        if w.window_id in bound_ids:
+        if canonical_window_id(w.window_id) in bound_lookup:
             continue
         view = window_query.view_window(w.window_id)
         if view is None or view.origin != CCGRAM_CREATED_WINDOW_ORIGIN:
@@ -187,7 +190,7 @@ async def check_unbound_window_ttl(
             terminal_poll_state.set_unbound_timer(w.window_id, now)
 
     await _kill_expired_unbound(now, timeout)
-    _prune_orphaned_poll_state(live_ids, bound_ids)
+    _prune_orphaned_poll_state(live_lookup, bound_lookup)
 
 
 async def _kill_expired_unbound(now: float, timeout: float) -> None:
@@ -212,7 +215,10 @@ async def _kill_expired_unbound(now: float, timeout: float) -> None:
 
 def _prune_orphaned_poll_state(live_ids: set[str], bound_ids: set[str]) -> None:
     """Remove poll state for windows that are neither live nor bound."""
-    for wid in terminal_poll_state.get_orphaned_window_ids(live_ids, bound_ids):
+    for wid in terminal_poll_state.get_orphaned_window_ids(
+        {canonical_window_id(wid) for wid in live_ids},
+        {canonical_window_id(wid) for wid in bound_ids},
+    ):
         terminal_poll_state.clear_state(wid)
 
 
@@ -221,7 +227,7 @@ def _prune_orphaned_poll_state(live_ids: set[str], bound_ids: set[str]) -> None:
 
 async def prune_stale_state(live_windows: "list[TmuxWindow]") -> None:
     """Sync display names and prune orphaned state entries."""
-    live_ids = {w.window_id for w in live_windows}
+    live_ids = {canonical_window_id(w.window_id) for w in live_windows}
     live_pairs = [(w.window_id, w.window_name) for w in live_windows]
     session_manager.sync_display_names(live_pairs)
     session_manager.prune_stale_state(live_ids)
