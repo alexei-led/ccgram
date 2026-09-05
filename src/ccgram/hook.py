@@ -283,7 +283,10 @@ def _install_json_hooks(
     return 0
 
 
-_CODEX_HOOKS_KEY_RE = re.compile(r"^\s*(hooks|codex_hooks)\s*=\s*([^,\s#]+)")
+_CODEX_HOOKS_KEY_RE = re.compile(
+    r"^\s*(?P<key>\"(?:hooks|codex_hooks)\"|'(?:hooks|codex_hooks)'|hooks|codex_hooks)"
+    r"\s*=\s*(?P<value>[^,\s#]+)"
+)
 _TOML_TABLE_HEADER_RE = re.compile(
     r"^\s*(\[\[[^\]\r\n]+\]\]|\[[^\]\r\n]+\])\s*(?:#.*)?(?:\r?\n)?$"
 )
@@ -309,10 +312,11 @@ def _find_codex_hook_feature_entries(
         key_match = _CODEX_HOOKS_KEY_RE.match(line)
         if not key_match:
             continue
-        entry = (index, key_match.group(2))
-        if key_match.group(1) == "hooks" and current_entry is None:
+        key = key_match.group("key").strip("\"'")
+        entry = (index, key_match.group("value"))
+        if key == "hooks" and current_entry is None:
             current_entry = entry
-        elif key_match.group(1) == "codex_hooks":
+        elif key == "codex_hooks":
             legacy_entries.append(entry)
 
     return features_header_index, current_entry, legacy_entries
@@ -330,7 +334,13 @@ def _codex_config_with_hooks(text: str) -> tuple[str, str]:
     elif legacy_entries:
         legacy_index, value = legacy_entries[0]
         lines[legacy_index] = re.sub(
-            r"^(\s*)codex_hooks(\s*=)", r"\1hooks\2", lines[legacy_index], count=1
+            r"^(?P<indent>\s*)(?P<quote>[\"']?)codex_hooks(?P=quote)(?P<equals>\s*=)",
+            lambda match: (
+                f"{match.group('indent')}{match.group('quote')}hooks"
+                f"{match.group('quote')}{match.group('equals')}"
+            ),
+            lines[legacy_index],
+            count=1,
         )
         remove_indexes = [index for index, _ in legacy_entries[1:]]
     else:

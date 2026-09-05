@@ -86,6 +86,18 @@ class TestCodexFeatureFlag:
                 0,
                 id="allow-trailing-header-whitespace",
             ),
+            pytest.param(
+                '[features]\n"hooks" = true\n',
+                '[features]\n"hooks" = true\n',
+                0,
+                id="preserve-quoted-current-key",
+            ),
+            pytest.param(
+                '[features]\n"codex_hooks" = true\n',
+                '[features]\n"hooks" = true\n',
+                0,
+                id="migrate-quoted-legacy-key",
+            ),
         ],
     )
     def test_ensures_current_top_level_flag(
