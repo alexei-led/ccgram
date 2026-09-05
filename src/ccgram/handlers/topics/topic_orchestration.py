@@ -49,6 +49,7 @@ _TOPIC_CREATE_RETRY_BUFFER_SECONDS = 1
 # longer outages are caught by the existing flood-control backoff.
 _TOPIC_CREATE_TRANSIENT_RETRIES = 1
 _TOPIC_CREATE_TRANSIENT_BACKOFF_S = 1.0
+_TOPIC_CREATE_FAILURE_BACKOFF_S = 30.0
 
 
 # Serializes every auto-create/rebind attempt for one window. Session-monitor,
@@ -409,6 +410,9 @@ async def create_topic_in_chat(
         return False
     except TelegramError:
         clear_pending_creation(window_id)
+        _topic_create_retry_until[chat_id] = (
+            time.monotonic() + _TOPIC_CREATE_FAILURE_BACKOFF_S
+        )
         logger.exception(
             "Failed to create topic for window %s in chat %d",
             window_id,
