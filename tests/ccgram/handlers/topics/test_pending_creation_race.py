@@ -73,6 +73,16 @@ def test_pending_creation_expires_after_ttl(monkeypatch):
     assert "@42" not in _pending_user_creations
 
 
+def test_pending_creation_can_outlive_slow_launch(monkeypatch):
+    base = time.monotonic()
+    monkeypatch.setattr(topic_orchestration.time, "monotonic", lambda: base)
+    register_pending_creation("@42", ttl_s=55.0)
+    monkeypatch.setattr(topic_orchestration.time, "monotonic", lambda: base + 40.0)
+    assert _is_pending_user_creation("@42")
+    monkeypatch.setattr(topic_orchestration.time, "monotonic", lambda: base + 56.0)
+    assert not _is_pending_user_creation("@42")
+
+
 def test_clear_pending_creation_ignores_unknown_window():
     register_pending_creation("@42")
     clear_pending_creation("@nonexistent")

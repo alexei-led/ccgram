@@ -203,7 +203,7 @@ async def test_accept_yolo_confirmation_detects_prompt(tmux, tmp_path) -> None:
 
     await tmux.send_keys(
         window_id,
-        'echo "WARNING: Claude Code running in Bypass Permissions mode"',
+        "printf 'WARNING: Claude Code running in Bypass Permissions mode\\n  ❯ 1. No, exit\\n    2. Yes, I accept all responsibility'",
     )
     await asyncio.sleep(0.5)
 

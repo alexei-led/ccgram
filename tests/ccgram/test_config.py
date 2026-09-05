@@ -29,6 +29,15 @@ class TestConfigValid:
         cfg = Config()
         assert cfg.monitor_poll_interval == 5.0
 
+    def test_yolo_confirmation_timeout_default_and_override(self, monkeypatch):
+        assert Config().yolo_confirmation_timeout == 30.0
+        monkeypatch.setenv("CCGRAM_YOLO_CONFIRMATION_TIMEOUT", "45.5")
+        assert Config().yolo_confirmation_timeout == 45.5
+
+    def test_yolo_confirmation_timeout_clamps_to_one(self, monkeypatch):
+        monkeypatch.setenv("CCGRAM_YOLO_CONFIRMATION_TIMEOUT", "0")
+        assert Config().yolo_confirmation_timeout == 1.0
+
     def test_is_user_allowed_true(self):
         cfg = Config()
         assert cfg.is_user_allowed(12345) is True

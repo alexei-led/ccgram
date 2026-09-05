@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 import structlog
 from telegram.error import TelegramError
 
+from ...config import config
 from ...providers import registry as provider_registry
 from ...session import session_manager
 from ...session_map import session_map_sync
@@ -46,6 +47,8 @@ if TYPE_CHECKING:
     from telegram.ext import ContextTypes
 
 logger = structlog.get_logger()
+
+_YOLO_CREATION_GUARD_GRACE_S = 10.0
 
 __all__ = [
     "WindowLaunchRequest",
@@ -207,7 +210,9 @@ async def _wait_for_shell_ready(window_id: str, *, attempts: int = 5) -> None:
         await asyncio.sleep(0.2)
 
 
-async def _accept_yolo_confirmation(window_id: str, *, timeout: float = 8.0) -> bool:
+async def _accept_yolo_confirmation(
+    window_id: str, *, timeout: float | None = None
+) -> bool:
     """Detect and accept Claude Code's bypass permissions confirmation prompt.
 
     When launched with --dangerously-skip-permissions, Claude Code shows a
@@ -215,16 +220,22 @@ async def _accept_yolo_confirmation(window_id: str, *, timeout: float = 8.0) -> 
     Down+Enter to select the "Yes" option so the session can start.
     """
     loop = asyncio.get_running_loop()
+    timeout = config.yolo_confirmation_timeout if timeout is None else timeout
     deadline = loop.time() + timeout
     while loop.time() < deadline:
         text = await tmux_manager.capture_pane(window_id)
-        if text and "bypass permissions" in text.lower():
+        lower = text.lower() if text else ""
+        if "bypass permissions" in lower and (
+            "no, exit" in lower or "i accept" in lower
+        ):
             await asyncio.sleep(0.3)
             await tmux_manager.send_keys(window_id, "Down", enter=False, literal=False)
             await asyncio.sleep(0.15)
             await tmux_manager.send_keys(window_id, "Enter", enter=False, literal=False)
             logger.info("Accepted bypass permissions prompt for window %s", window_id)
             return True
+        if "⏵⏵ bypass permissions" in lower:
+            return False
         await asyncio.sleep(0.5)
     logger.warning(
         "Bypass permissions prompt not detected within %.0fs for window %s",
@@ -304,7 +315,15 @@ async def launch_window(  # noqa: PLR0912, PLR0915, C901
             context,
         )
         if success:
-            topic_orchestration.register_pending_creation(created_wid)
+            if approval_mode == "yolo":
+                topic_orchestration.register_pending_creation(
+                    created_wid,
+                    ttl_s=(
+                        config.yolo_confirmation_timeout + _YOLO_CREATION_GUARD_GRACE_S
+                    ),
+                )
+            else:
+                topic_orchestration.register_pending_creation(created_wid)
 
     if not success:
         await _abort_topic_creation(query, message, context)
