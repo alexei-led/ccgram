@@ -166,21 +166,23 @@ def register_pending_creation(window_id: str) -> None:
     """
     if not window_id:
         return
-    _pending_user_creations[window_id] = time.monotonic() + _PENDING_CREATION_TTL_S
+    key = canonical_window_id(window_id)
+    _pending_user_creations[key] = time.monotonic() + _PENDING_CREATION_TTL_S
 
 
 def clear_pending_creation(window_id: str) -> None:
     """Remove a window's pending-creation marker (idempotent)."""
-    _pending_user_creations.pop(window_id, None)
+    _pending_user_creations.pop(canonical_window_id(window_id), None)
 
 
 def _is_registered_pending_creation(window_id: str) -> bool:
     """Return whether a concrete window target is owned by a creation flow."""
-    expires_at = _pending_user_creations.get(window_id)
+    key = canonical_window_id(window_id)
+    expires_at = _pending_user_creations.get(key)
     if expires_at is None:
         return False
     if time.monotonic() >= expires_at:
-        _pending_user_creations.pop(window_id, None)
+        _pending_user_creations.pop(key, None)
         return False
     return True
 
