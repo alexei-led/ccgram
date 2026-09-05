@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 
 import structlog
-from telegram.error import NetworkError, RetryAfter, TelegramError, TimedOut
+from telegram.error import BadRequest, NetworkError, RetryAfter, TelegramError, TimedOut
 
 from ... import window_query
 from ...config import config
@@ -408,19 +408,12 @@ async def create_topic_in_chat(
             retry_after_seconds,
         )
         return False
-    except TimedOut, NetworkError:
+    except TelegramError as exc:
         clear_pending_creation(window_id)
-        _topic_create_retry_until[chat_id] = (
-            time.monotonic() + _TOPIC_CREATE_FAILURE_BACKOFF_S
-        )
-        logger.exception(
-            "Failed to create topic for window %s in chat %d",
-            window_id,
-            chat_id,
-        )
-        return False
-    except TelegramError:
-        clear_pending_creation(window_id)
+        if isinstance(exc, NetworkError) and not isinstance(exc, BadRequest):
+            _topic_create_retry_until[chat_id] = (
+                time.monotonic() + _TOPIC_CREATE_FAILURE_BACKOFF_S
+            )
         logger.exception(
             "Failed to create topic for window %s in chat %d",
             window_id,

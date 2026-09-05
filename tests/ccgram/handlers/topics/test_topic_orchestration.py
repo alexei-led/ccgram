@@ -709,6 +709,7 @@ class TestCreateForumTopicTransientRetry:
         # Original attempt + 1 retry = 2 calls
         assert bot.create_forum_topic.call_count == 2
         assert not _is_pending_user_creation(event.window_id)
+        assert -100500 in _topic_create_retry_until
 
 
 class TestAdoptUnboundWindows:
