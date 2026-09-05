@@ -23,6 +23,7 @@ from ...session import session_manager
 from ...session_map import session_map_sync
 from ...thread_router import thread_router
 from ...multiplexer import multiplexer as tmux_manager
+from ...multiplexer.base import canonical_window_id
 from ..telegram_origin import send_telegram_to_window
 from ...user_preferences import user_preferences
 from ... import window_query
@@ -249,6 +250,8 @@ def _follow_supersession(window_id: str) -> str:
     current = window_query.resolve_window_alias(window_id)
     if current == window_id:
         return window_id
+    if canonical_window_id(current) == canonical_window_id(window_id):
+        return current
     topic_orchestration.register_pending_creation(current)
     topic_orchestration.clear_pending_creation(window_id)
     logger.info("Creation target superseded: %s -> %s", window_id, current)

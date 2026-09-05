@@ -121,6 +121,17 @@ class TestFollowSupersession:
         mock_orch.register_pending_creation.assert_not_called()
         mock_orch.clear_pending_creation.assert_not_called()
 
+    def test_case_only_supersession_keeps_the_existing_guard(self) -> None:
+        with (
+            patch(f"{_MODULE}window_query") as mock_wq,
+            patch(f"{_MODULE}topic_orchestration") as mock_orch,
+        ):
+            mock_wq.resolve_window_alias.return_value = "ABC-DEF"
+            assert _follow_supersession("abc-def") == "ABC-DEF"
+
+        mock_orch.register_pending_creation.assert_not_called()
+        mock_orch.clear_pending_creation.assert_not_called()
+
     def test_superseded_id_carries_the_creation_guard_forward(self) -> None:
         """Herdr re-keys a target mid-creation; the guard must move with it."""
         with (
