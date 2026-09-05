@@ -496,7 +496,8 @@ class TestAcceptYoloConfirmation:
     ) -> None:
         mock_tmux.capture_pane = AsyncMock(return_value="⏵⏵ bypass permissions")
 
-        assert await _accept_yolo_confirmation("@5", timeout=0.1) is False
+        assert await _accept_yolo_confirmation("@5", timeout=5.0) is False
+        assert mock_tmux.capture_pane.await_count == 1
         mock_tmux.send_keys.assert_not_called()
 
     @patch("ccgram.handlers.topics.window_launch_service.tmux_manager")
