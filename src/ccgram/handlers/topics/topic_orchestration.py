@@ -33,6 +33,7 @@ from ...session_monitor import NewWindowEvent
 from ...telegram_client import TelegramClient
 from ...thread_router import thread_router
 from ...multiplexer import multiplexer as tmux_manager
+from ...multiplexer.base import canonical_window_id
 from ..status.topic_emoji import strip_emoji_prefix
 from .topic_probe import probe_topic_exists
 
@@ -520,7 +521,7 @@ async def handle_new_window(
     target_chat_id: int | None = None,
 ) -> bool:
     """Ensure a new window has a topic, returning whether it is bound."""
-    async with _window_topic_lock(event.window_id):
+    async with _window_topic_lock(canonical_window_id(event.window_id)):
         return await _handle_new_window_locked(
             event,
             client,
