@@ -176,7 +176,7 @@ def test_reconciliation_keeps_windows_list_windows_hides(
     ineligible so discovery still refuses it.
     """
     window = TmuxManager._window_ref_for_reconciliation(  # type: ignore[arg-type]
-        _FakeWindow(window_id, window_name)
+        _FakeWindow(window_id, window_name)  # pyright: ignore[reportArgumentType]
     )
 
     assert window.window_id == window_id
@@ -186,7 +186,7 @@ def test_reconciliation_keeps_windows_list_windows_hides(
 def test_reconciliation_keeps_ccgram_own_window() -> None:
     with patch.object(config, "own_window_id", "@9"):
         window = TmuxManager._window_ref_for_reconciliation(  # type: ignore[arg-type]
-            _FakeWindow("@9", "ccgram")
+            _FakeWindow("@9", "ccgram")  # pyright: ignore[reportArgumentType]
         )
 
     assert window.window_id == "@9"
@@ -195,7 +195,7 @@ def test_reconciliation_keeps_ccgram_own_window() -> None:
 
 def test_reconciliation_marks_an_ordinary_window_adoptable() -> None:
     window = TmuxManager._window_ref_for_reconciliation(  # type: ignore[arg-type]
-        _FakeWindow("@5", "my-project")
+        _FakeWindow("@5", "my-project")  # pyright: ignore[reportArgumentType]
     )
 
     assert window.topic_eligible is True
