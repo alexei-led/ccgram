@@ -31,6 +31,7 @@ from .session_map import (
     is_backend_window_id,
     session_map_prefix,
     session_map_sync,
+    parse_session_map,
 )
 from .state_persistence import StatePersistence
 from .multiplexer import multiplexer as tmux_manager
@@ -271,6 +272,46 @@ class SessionManager:
             return False
         return True
 
+    def _durable_session_aliases(self, live_ids: set[str]) -> dict[str, str]:
+        """Supersessions the persisted session_map attests on its own.
+
+        The herdr lineage is in-memory only; across a bridge restart it
+        is empty, and an agent that re-keyed its session in the window
+        between re-key and reconcile would have its bound topic swept
+        as stale (TASK-28). session_map.json is hook-written and
+        durable. A re-key changes BOTH the digest and the session_id,
+        so the durable link is the workspace: a dead digest whose
+        (cwd, provider) matches exactly one LIVE digest is a
+        supersession the file attests by itself. Ambiguous workspaces
+        (several live windows on the same cwd) are never folded.
+        """
+        try:
+            raw = json.loads(config.session_map_file.read_text())
+        except OSError, ValueError:
+            return {}
+        entries = parse_session_map(raw, session_map_prefix())
+
+        def _key(info: dict) -> tuple:
+            return (info.get("cwd", ""), info.get("provider_name", ""))
+
+        live_by_workspace: dict[tuple, str] = {}
+        ambiguous: set[tuple] = set()
+        for window_id, info in entries.items():
+            if window_id in live_ids:
+                key = _key(info)
+                if key in live_by_workspace:
+                    ambiguous.add(key)
+                live_by_workspace.setdefault(key, window_id)
+        aliases: dict[str, str] = {}
+        for window_id, info in entries.items():
+            if window_id in live_ids:
+                continue
+            key = _key(info)
+            target = live_by_workspace.get(key)
+            if target and target != window_id and key not in ambiguous:
+                aliases[window_id] = target
+        return aliases
+
     def reconcile_window_aliases(self, windows: Sequence[Any]) -> None:
         """Converge uniquely-attested aliases through the single fold owner.
 
@@ -289,6 +330,9 @@ class SessionManager:
         aliases = self._unique_window_aliases(windows, "alias_window_ids")
         legacy_aliases = self._unique_window_aliases(windows, "legacy_alias_window_ids")
         aliases.update(legacy_aliases)
+        # Durable supersession from the persisted hook file: survives the
+        # bridge restarts that empty the in-memory lineage (TASK-28).
+        aliases.update(self._durable_session_aliases({w.window_id for w in windows}))
         if not aliases:
             return
 

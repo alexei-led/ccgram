@@ -1719,7 +1719,7 @@ class TestResolveStaleIdsHerdrRestart:
     async def test_herdr_missing_target_does_not_reattach_bound_topic(
         self, mgr: SessionManager, monkeypatch
     ) -> None:
-        target = "herdr-session-v1-old"
+        target = "herdr-session-v1-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         thread_router.bind_thread(100, 7, target, window_name="ccgram")
         mgr.window_states[target] = WindowState(
             session_id="S1", cwd="/repo", provider_name="claude"
@@ -1729,14 +1729,19 @@ class TestResolveStaleIdsHerdrRestart:
         self.map_file.write_text(
             json.dumps(
                 {
-                    "herdr:herdr-session-v1-new": {
+                    "herdr:herdr-session-v1-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": {
                         "session_id": "S1",
                         "cwd": "/repo",
                     }
                 }
             )
         )
-        live = [SimpleNamespace(window_id="herdr-session-v1-new", window_name="ccgram")]
+        live = [
+            SimpleNamespace(
+                window_id="herdr-session-v1-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                window_name="ccgram",
+            )
+        ]
         monkeypatch.setattr(
             "ccgram.session.tmux_manager",
             _FakeMux(ids_stable=False, windows=live),
@@ -1860,3 +1865,156 @@ class TestCaseFoldedIdentityInTheAudit:
 
         ghosts = [i for i in audit.issues if i.category == "ghost_binding"]
         assert ghosts == [], "a live window spelled in another case is not a ghost"
+
+
+class TestDurableSessionAliases:
+    def _manager(self):
+        from ccgram.session import SessionManager
+
+        return SessionManager.__new__(SessionManager)
+
+    def test_dead_digest_folds_to_unique_live_digest(self, tmp_path, monkeypatch):
+        import json as _json
+
+        from ccgram import session as session_mod
+
+        sm = tmp_path / "session_map.json"
+        sm.write_text(
+            _json.dumps(
+                {
+                    "herdr:herdr-session-v1-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {
+                        "schema_version": 1,
+                        "session_id": "sid-dead",
+                        "cwd": "/a",
+                        "window_name": "",
+                        "transcript_path": "",
+                        "provider_name": "claude",
+                    },
+                    "herdr:herdr-session-v1-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": {
+                        "schema_version": 1,
+                        "session_id": "sid-live",
+                        "cwd": "/a",
+                        "window_name": "",
+                        "transcript_path": "",
+                        "provider_name": "claude",
+                    },
+                    "herdr:herdr-session-v1-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc": {
+                        "schema_version": 1,
+                        "session_id": "sid-2",
+                        "cwd": "/b",
+                        "window_name": "",
+                        "transcript_path": "",
+                        "provider_name": "claude",
+                    },
+                }
+            )
+        )
+        monkeypatch.setattr(session_mod.config, "session_map_file", sm)
+
+        def fake_parse(raw, prefix):
+            # The unit under test is the builder, not the herdr-aware
+            # parse (test env runs the tmux backend and would reject
+            # herdr digests); strip the backend prefix generically.
+            return {k.split(":", 1)[1]: v for k, v in raw.items()}
+
+        monkeypatch.setattr(session_mod, "parse_session_map", fake_parse)
+        mgr = self._manager()
+        aliases = mgr._durable_session_aliases(
+            {
+                "herdr-session-v1-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "herdr-session-v1-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            }
+        )
+        assert aliases == {
+            "herdr-session-v1-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "herdr-session-v1-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+
+    def test_ambiguous_or_missing_map_yield_nothing(self, tmp_path, monkeypatch):
+
+        from ccgram import session as session_mod
+
+        sm = tmp_path / "session_map.json"
+        sm.write_text("{}")
+        monkeypatch.setattr(session_mod.config, "session_map_file", sm)
+
+        def fake_parse(raw, prefix):
+            # The unit under test is the builder, not the herdr-aware
+            # parse (test env runs the tmux backend and would reject
+            # herdr digests); strip the backend prefix generically.
+            return {k.split(":", 1)[1]: v for k, v in raw.items()}
+
+        monkeypatch.setattr(session_mod, "parse_session_map", fake_parse)
+        mgr = self._manager()
+        assert mgr._durable_session_aliases(set()) == {}
+
+    def test_two_live_windows_same_workspace_never_fold(self, tmp_path, monkeypatch):
+        import json as _json
+
+        from ccgram import session as session_mod
+
+        sm = tmp_path / "session_map.json"
+
+        def digest(c):
+            return "herdr:herdr-session-v1-" + c * 64
+
+        sm.write_text(
+            _json.dumps(
+                {
+                    digest("a"): {
+                        "schema_version": 1,
+                        "session_id": "s1",
+                        "cwd": "/a",
+                        "window_name": "",
+                        "transcript_path": "",
+                        "provider_name": "claude",
+                    },
+                    digest("b"): {
+                        "schema_version": 1,
+                        "session_id": "s2",
+                        "cwd": "/a",
+                        "window_name": "",
+                        "transcript_path": "",
+                        "provider_name": "claude",
+                    },
+                    digest("d"): {
+                        "schema_version": 1,
+                        "session_id": "s3",
+                        "cwd": "/a",
+                        "window_name": "",
+                        "transcript_path": "",
+                        "provider_name": "claude",
+                    },
+                }
+            )
+        )
+        monkeypatch.setattr(session_mod.config, "session_map_file", sm)
+
+        def fake_parse(raw, prefix):
+            return {k.split(":", 1)[1]: v for k, v in raw.items()}
+
+        monkeypatch.setattr(session_mod, "parse_session_map", fake_parse)
+        mgr = self._manager()
+        # d is dead, but b and a are two LIVE windows on /a: ambiguous.
+        assert (
+            mgr._durable_session_aliases(
+                {"herdr-session-v1-" + "a" * 64, "herdr-session-v1-" + "b" * 64}
+            )
+            == {}
+        )
+
+    def test_unreadable_map_is_silent(self, tmp_path, monkeypatch):
+        from ccgram import session as session_mod
+
+        sm = tmp_path / "session_map.json"
+        sm.write_text("{not json")
+        monkeypatch.setattr(session_mod.config, "session_map_file", sm)
+
+        def fake_parse(raw, prefix):
+            # The unit under test is the builder, not the herdr-aware
+            # parse (test env runs the tmux backend and would reject
+            # herdr digests); strip the backend prefix generically.
+            return {k.split(":", 1)[1]: v for k, v in raw.items()}
+
+        monkeypatch.setattr(session_mod, "parse_session_map", fake_parse)
+        mgr = self._manager()
+        assert mgr._durable_session_aliases({"any"}) == {}
