@@ -86,6 +86,9 @@ async def test_reset_server_reconnects(tmux, tmp_path) -> None:
 
 async def test_stamped_pane_title_reads_back(tmux, tmp_path) -> None:
     """stamp_pane_title is how a window advertises its provider to re-detection."""
+    session = tmux.get_session()
+    assert session is not None
+    session.set_option("default-shell", "/bin/sh")
     ok, _msg, _name, window_id = await tmux.create_window(
         str(tmp_path), window_name="title-test", start_agent=False
     )
