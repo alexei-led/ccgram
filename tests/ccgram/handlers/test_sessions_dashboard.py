@@ -16,6 +16,7 @@ from ccgram.handlers.callback_data import (
 from ccgram.handlers.callback_tokens import resolve_callback_data
 from ccgram.handlers.sessions_dashboard import (
     _build_dashboard,
+    handle_sessions_kill_confirm,
     handle_sessions_refresh,
     sessions_command,
 )
@@ -292,6 +293,37 @@ class TestSessionsRefresh:
         mock_edit.assert_called_once()
         assert mock_edit.call_args[0][0] is query
         assert "No active sessions" in mock_edit.call_args[0][1]
+
+
+class TestDashboardKillCleanup:
+    async def test_kill_flushes_and_deletes_retired_topics(
+        self, deps: SimpleNamespace
+    ) -> None:
+        deps.router.iter_thread_bindings.return_value = [(100, 42, "@0")]
+        deps.mux.kill_window = AsyncMock()
+        query = AsyncMock()
+        client = MagicMock()
+
+        with (
+            patch(
+                "ccgram.handlers.sessions_dashboard.window_presence",
+                new=AsyncMock(return_value=False),
+            ),
+            patch(
+                "ccgram.handlers.sessions_dashboard.clear_topic_state",
+                new_callable=AsyncMock,
+            ),
+            patch("ccgram.handlers.sessions_dashboard.session_manager") as session,
+            patch(
+                "ccgram.handlers.sessions_dashboard.cleanup_retired_topics",
+                new_callable=AsyncMock,
+            ) as cleanup,
+            patch("ccgram.handlers.sessions_dashboard.safe_edit"),
+        ):
+            await handle_sessions_kill_confirm(query, 100, "@0", client)
+
+        session.flush_state.assert_called_once()
+        cleanup.assert_awaited_once_with(client, router=deps.router)
 
 
 class TestDashboardIdentityFoldsCase:

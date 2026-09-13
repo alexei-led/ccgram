@@ -117,13 +117,18 @@ class TestAutocloseTimers:
             mock_time.monotonic.return_value = elapsed
             mock_tr.resolve_chat_id.return_value = -100
             await check_autoclose_timers(bot)
-        bot.close_forum_topic.assert_called_once_with(
-            chat_id=-100, message_thread_id=42
-        )
-        bot.delete_forum_topic.assert_not_called()
-        mock_tr.unbind_thread.assert_called_once_with(
-            1, 42, retirement_reason="remote_closed"
-        )
+        if state == "done":
+            bot.close_forum_topic.assert_called_once_with(
+                chat_id=-100, message_thread_id=42
+            )
+            bot.delete_forum_topic.assert_not_called()
+            mock_tr.unbind_thread.assert_called_once_with(
+                1, 42, retirement_reason="remote_closed"
+            )
+        else:
+            bot.close_forum_topic.assert_not_called()
+            bot.delete_forum_topic.assert_not_called()
+            mock_tr.unbind_thread.assert_not_called()
         assert not _has_autoclose(1, 42)
 
     async def test_check_not_expired_yet(self) -> None:

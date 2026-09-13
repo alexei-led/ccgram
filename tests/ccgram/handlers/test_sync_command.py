@@ -16,14 +16,17 @@ from ccgram.handlers.sync_command import (
     _format_report,
     _probe_dead_topics,
     _recreate_dead_topics,
+    _retired_topic_issues,
     _sync_live_topic_names,
     _dispatch,
     handle_sync_dismiss,
     handle_sync_fix,
     sync_command,
 )
+from ccgram.handlers.topics.topic_deletion import cleanup_retired_topics
 from ccgram.session import AuditIssue, AuditResult
-from ccgram.thread_router import RetiredTopic
+from ccgram.telegram_rate_limiter import NO_RETRY_RATE_LIMIT_ARGS
+from ccgram.thread_router import RetiredTopic, ThreadRouter
 
 
 @pytest.fixture(autouse=True)
@@ -48,6 +51,8 @@ def _patch_deps():
             issues=[], total_bindings=0, live_binding_count=0
         )
         mock_tr.iter_thread_bindings.return_value = []
+        mock_tr.has_active_topic.return_value = False
+        mock_tr.begin_topic_deletion.return_value = True
         mock_sm.window_states = {}
         mock_tm.list_windows = AsyncMock(return_value=[])
         mock_tm.list_windows_for_reconciliation = mock_listing
@@ -166,9 +171,9 @@ class TestFormatReport:
         )
 
         assert "Deleted 1 known retired topic" in text
-        assert "Closed 2 known retired topic" in text
+        assert "Closed; deletion pending for 2 known retired topic" in text
         assert "Already gone 3 known retired topic" in text
-        assert "Could not remove 4 known retired topic" in text
+        assert "Could not delete; will retry 4 known retired topic" in text
 
     def test_fix_button_counts_every_issue(self) -> None:
         _text, keyboard = _format_report(
@@ -256,7 +261,9 @@ class TestRetiredTopicCleanup:
         outcomes = await _cleanup_retired_topics(client)
 
         assert outcomes == {"deleted": 1}
-        client.delete_forum_topic.assert_awaited_once_with(-999, 42)
+        client.delete_forum_topic.assert_awaited_once_with(
+            -999, 42, rate_limit_args=NO_RETRY_RATE_LIMIT_ARGS
+        )
         client.close_forum_topic.assert_not_awaited()
         mock_tr.discard_retired_topic.assert_called_once_with(topic)
 
@@ -271,8 +278,15 @@ class TestRetiredTopicCleanup:
         outcomes = await _cleanup_retired_topics(client)
 
         assert outcomes == {"closed": 1}
-        client.close_forum_topic.assert_awaited_once_with(-999, 42)
-        mock_tr.discard_retired_topic.assert_called_once_with(topic)
+        client.close_forum_topic.assert_awaited_once_with(
+            -999, 42, rate_limit_args=NO_RETRY_RATE_LIMIT_ARGS
+        )
+        update_call = mock_tr.update_retired_topic.call_args
+        assert update_call.args == (topic,)
+        assert update_call.kwargs["retry_at"] > 0
+        assert update_call.kwargs["closed"] is True
+        assert update_call.kwargs["cleanup_eligible"] is True
+        mock_tr.discard_retired_topic.assert_not_called()
 
     async def test_already_gone_is_terminal_not_a_failed_delete(
         self, _patch_deps
@@ -304,6 +318,11 @@ class TestRetiredTopicCleanup:
         outcomes = await _cleanup_retired_topics(client)
 
         assert outcomes == {"failed": 1}
+        update_call = mock_tr.update_retired_topic.call_args
+        assert update_call.args == (topic,)
+        assert update_call.kwargs["retry_at"] > 0
+        assert update_call.kwargs["closed"] is False
+        assert update_call.kwargs["cleanup_eligible"] is True
         mock_tr.discard_retired_topic.assert_not_called()
 
     async def test_active_or_rebound_topic_is_protected_before_api_call(
@@ -313,7 +332,7 @@ class TestRetiredTopicCleanup:
         topic = self._topic()
         mock_tr.iter_retired_topics.return_value = [topic]
         # Simulates a rebind after the Fix snapshot but before its API call.
-        mock_tr.get_window_for_chat_thread.return_value = "@rebound"
+        mock_tr.has_active_topic.return_value = True
         client = AsyncMock()
 
         outcomes = await _cleanup_retired_topics(client)
@@ -322,6 +341,94 @@ class TestRetiredTopicCleanup:
         client.delete_forum_topic.assert_not_awaited()
         client.close_forum_topic.assert_not_awaited()
         mock_tr.discard_retired_topic.assert_not_called()
+
+    async def test_close_fallback_stays_pending_until_later_delete(
+        self, _patch_deps
+    ) -> None:
+        router = ThreadRouter(
+            schedule_save=lambda: None,
+            has_window_state=lambda _window_id: False,
+        )
+        router.bind_thread(100, 42, "@42", chat_id=-999)
+        router.unbind_thread(
+            100,
+            42,
+            chat_id=-999,
+            retirement_reason="system_replacement",
+            cleanup_eligible=True,
+        )
+        first_client = AsyncMock()
+        first_client.delete_forum_topic.side_effect = TelegramError("denied")
+
+        with (
+            patch("ccgram.handlers.sync_command.thread_router", router),
+            patch("ccgram.handlers.topics.topic_deletion.session_manager"),
+            patch("ccgram.handlers.topics.topic_deletion.time.time", return_value=1000),
+        ):
+            assert await _cleanup_retired_topics(first_client) == {"closed": 1}
+
+        pending = next(router.iter_retired_topics())
+        assert pending.closed is True
+        assert pending.cleanup_eligible is True
+        assert pending.retry_at == 1060
+        first_client.close_forum_topic.assert_awaited_once_with(
+            -999, 42, rate_limit_args=NO_RETRY_RATE_LIMIT_ARGS
+        )
+        router.update_retired_topic(pending, retry_at=0, closed=True)
+
+        retry_client = AsyncMock()
+        with (
+            patch("ccgram.handlers.sync_command.thread_router", router),
+            patch("ccgram.handlers.topics.topic_deletion.session_manager"),
+            patch("ccgram.handlers.topics.topic_deletion.time.time", return_value=1000),
+        ):
+            assert await _cleanup_retired_topics(retry_client) == {"deleted": 1}
+
+        retry_client.delete_forum_topic.assert_awaited_once_with(
+            -999, 42, rate_limit_args=NO_RETRY_RATE_LIMIT_ARGS
+        )
+        retry_client.close_forum_topic.assert_not_awaited()
+        assert list(router.iter_retired_topics()) == []
+
+    async def test_old_closed_topics_are_sync_candidates_and_explicit_only(
+        self, _patch_deps
+    ) -> None:
+        router = ThreadRouter(
+            schedule_save=lambda: None,
+            has_window_state=lambda _window_id: False,
+        )
+        for thread_id, reason in ((42, "remote_closed"), (43, "remote_removed")):
+            router.bind_thread(100, thread_id, f"@{thread_id}", chat_id=-999)
+            router.unbind_thread(
+                100,
+                thread_id,
+                chat_id=-999,
+                retirement_reason=reason,
+            )
+        router.bind_thread(100, 44, "@44", chat_id=-999)
+        router.unbind_thread(100, 44, chat_id=-999, retirement_reason="keep_remote")
+
+        with patch("ccgram.handlers.sync_command.thread_router", router):
+            issues = _retired_topic_issues()
+
+        assert {issue.detail for issue in issues} == {
+            "reason:remote_closed",
+            "reason:remote_removed",
+        }
+
+        automatic_client = AsyncMock()
+        assert await cleanup_retired_topics(automatic_client, router=router) == {}
+        automatic_client.delete_forum_topic.assert_not_awaited()
+
+        explicit_client = AsyncMock()
+        with (
+            patch("ccgram.handlers.sync_command.thread_router", router),
+            patch("ccgram.handlers.topics.topic_deletion.session_manager"),
+        ):
+            assert await _cleanup_retired_topics(explicit_client) == {"deleted": 2}
+
+        assert [topic.thread_id for topic in router.iter_retired_topics()] == [44]
+        assert explicit_client.delete_forum_topic.await_count == 2
 
 
 class TestSyncDismiss:
@@ -678,8 +785,7 @@ class TestSyncFix:
             ),
             AuditResult(issues=[], total_bindings=0, live_binding_count=0),
         ]
-        mock_tr.resolve_chat_id.return_value = -999
-        mock_tr.get_window_for_thread.return_value = "w2:t1"
+        mock_tr.iter_thread_bindings_with_chat.return_value = [(100, -999, 42, "w2:t1")]
 
         query = MagicMock()
         mock_bot = AsyncMock()
@@ -688,19 +794,21 @@ class TestSyncFix:
         with (
             patch("ccgram.handlers.sync_command.safe_edit") as mock_edit,
             patch("ccgram.handlers.sync_command.clear_topic_state") as mock_cleanup,
+            patch(
+                "ccgram.handlers.sync_command.retire_topic_binding",
+                new_callable=AsyncMock,
+                return_value="deleted",
+            ) as mock_retire,
         ):
             await handle_sync_fix(query)
-            mock_bot.delete_forum_topic.assert_called_once_with(
-                chat_id=-999, message_thread_id=42
-            )
-            mock_cleanup.assert_called_once()
-            cleanup_args = mock_cleanup.call_args
-            assert cleanup_args.args[:2] == (100, 42)
-            assert cleanup_args.kwargs["window_id"] == "w2:t1"
-            assert cleanup_args.kwargs["client"].bot is mock_bot
-            mock_tr.unbind_thread.assert_called_once_with(
-                100, 42, retirement_reason="remote_removed"
-            )
+            mock_retire.assert_awaited_once()
+            retire_args = mock_retire.call_args
+            assert retire_args.args[1:] == (100, 42, "w2:t1")
+            assert retire_args.args[0].bot is mock_bot
+            assert retire_args.kwargs["router"] is mock_tr
+            assert retire_args.kwargs["chat_id"] == -999
+            assert callable(retire_args.kwargs["before_delete"])
+            mock_cleanup.assert_not_called()
             report_text = mock_edit.call_args[0][1]
             assert "Removed 1 stale topic" in report_text
 
@@ -730,8 +838,7 @@ class TestSyncFix:
                 live_binding_count=0,
             ),
         ]
-        mock_tr.resolve_chat_id.return_value = -999
-        mock_tr.get_window_for_thread.return_value = "w2:t1"
+        mock_tr.iter_thread_bindings_with_chat.return_value = [(100, -999, 42, "w2:t1")]
 
         query = MagicMock()
         mock_bot = AsyncMock()
@@ -742,16 +849,24 @@ class TestSyncFix:
         with (
             patch("ccgram.handlers.sync_command.safe_edit") as mock_edit,
             patch("ccgram.handlers.sync_command.clear_topic_state") as mock_cleanup,
+            patch(
+                "ccgram.handlers.sync_command.retire_topic_binding",
+                new_callable=AsyncMock,
+                return_value="failed",
+            ) as mock_retire,
         ):
             await handle_sync_fix(query)
-            mock_bot.delete_forum_topic.assert_called_once()
-            mock_bot.close_forum_topic.assert_called_once()
+            mock_retire.assert_awaited_once()
+            retire_args = mock_retire.call_args
+            assert retire_args.args[1:] == (100, 42, "w2:t1")
+            assert retire_args.kwargs["router"] is mock_tr
+            assert retire_args.kwargs["chat_id"] == -999
             mock_cleanup.assert_not_called()
             mock_tr.unbind_thread.assert_not_called()
             report_text = mock_edit.call_args[0][1]
-            assert "safe to close manually" in report_text
+            assert "cleanup retained for retry" in report_text
 
-    async def test_fix_skips_close_when_no_group_chat(self, _patch_deps) -> None:
+    async def test_fix_deletes_private_ghost_topic(self, _patch_deps) -> None:
         mock_sm, _, _, mock_tr, _, _ = _patch_deps
         mock_sm.audit_state.side_effect = [
             AuditResult(
@@ -767,8 +882,7 @@ class TestSyncFix:
             ),
             AuditResult(issues=[], total_bindings=0, live_binding_count=0),
         ]
-        mock_tr.resolve_chat_id.return_value = 100
-        mock_tr.get_window_for_thread.return_value = "@7"
+        mock_tr.iter_thread_bindings_with_chat.return_value = [(100, 100, 42, "@7")]
 
         query = MagicMock()
         mock_bot = AsyncMock()
@@ -777,17 +891,22 @@ class TestSyncFix:
         with (
             patch("ccgram.handlers.sync_command.safe_edit"),
             patch("ccgram.handlers.sync_command.clear_topic_state") as mock_cleanup,
+            patch(
+                "ccgram.handlers.sync_command.retire_topic_binding",
+                new_callable=AsyncMock,
+                return_value="deleted",
+            ) as mock_retire,
         ):
             await handle_sync_fix(query)
             mock_bot.close_forum_topic.assert_not_called()
-            mock_cleanup.assert_called_once()
-            cleanup_args = mock_cleanup.call_args
-            assert cleanup_args.args[:2] == (100, 42)
-            assert cleanup_args.kwargs["window_id"] == "@7"
-            assert cleanup_args.kwargs["client"].bot is mock_bot
-            mock_tr.unbind_thread.assert_called_once_with(
-                100, 42, retirement_reason="remote_removed"
-            )
+            mock_retire.assert_awaited_once()
+            retire_args = mock_retire.call_args
+            assert retire_args.args[1:] == (100, 42, "@7")
+            assert retire_args.args[0].bot is mock_bot
+            assert retire_args.kwargs["router"] is mock_tr
+            assert retire_args.kwargs["chat_id"] == 100
+            assert callable(retire_args.kwargs["before_delete"])
+            mock_cleanup.assert_not_called()
 
     @staticmethod
     def _listing(mock_tm, *refs) -> None:
@@ -1049,26 +1168,39 @@ class TestDeadTopicDetection:
 
 
 class TestPrivateTopicSyncLifecycle:
-    async def test_closes_and_unbinds_private_ghost_topic(self, _patch_deps) -> None:
-        _, _, _, mock_tr, _, _ = _patch_deps
-        mock_tr.get_window_for_thread.return_value = "@2"
-        mock_tr.resolve_chat_id.return_value = 100
+    async def test_deletes_and_unbinds_private_ghost_topic(self, _patch_deps) -> None:
+        router = ThreadRouter(
+            schedule_save=lambda: None,
+            has_window_state=lambda _window_id: False,
+        )
+        router.bind_thread(100, 42, "@2", chat_id=100)
         issue = AuditIssue(
             "ghost_binding", "user:100 thread:42 window:@2 (private)", fixable=True
         )
         client = AsyncMock()
 
-        with patch(
-            "ccgram.handlers.sync_command.clear_topic_state", new_callable=AsyncMock
-        ) as clear_state:
+        with (
+            patch("ccgram.handlers.sync_command.thread_router", router),
+            patch(
+                "ccgram.handlers.sync_command.clear_topic_state",
+                new_callable=AsyncMock,
+            ) as clear_state,
+            patch("ccgram.handlers.topics.topic_deletion.session_manager"),
+        ):
             closed, manual_close = await _close_ghost_topics(client, [issue])
 
         assert (closed, manual_close) == (1, 0)
-        client.delete_forum_topic.assert_awaited_once_with(100, 42)
-        clear_state.assert_awaited_once_with(100, 42, client=client, window_id="@2")
-        mock_tr.unbind_thread.assert_called_once_with(
-            100, 42, retirement_reason="remote_removed"
+        client.delete_forum_topic.assert_awaited_once_with(
+            100,
+            42,
+            rate_limit_args=NO_RETRY_RATE_LIMIT_ARGS,
         )
+        clear_state.assert_awaited_once_with(
+            100, 42, client=client, window_id="@2", chat_id=100
+        )
+        client.close_forum_topic.assert_not_awaited()
+        assert router.get_window_for_chat_thread(100, 42) is None
+        assert list(router.iter_retired_topics()) == []
 
 
 class TestDeadTopicRecreation:
@@ -1291,49 +1423,165 @@ class TestSyncFixRereadsBeforeDestroying:
 
         return WindowRef(window_id=window_id, window_name="proj", cwd="/tmp")
 
+    @staticmethod
+    def _router() -> ThreadRouter:
+        return ThreadRouter(
+            schedule_save=lambda: None,
+            has_window_state=lambda _window_id: False,
+        )
+
     async def test_ghost_topic_is_kept_when_the_window_is_back(
         self, _patch_deps
     ) -> None:
-        _, _, _, mock_tr, mock_tm, _ = _patch_deps
-        mock_tr.get_window_for_thread.return_value = "@2"
-        mock_tr.resolve_chat_id.return_value = -999
+        _, _, _, _, mock_tm, _ = _patch_deps
+        router = self._router()
+        router.bind_thread(100, 42, "@2", chat_id=-999)
         mock_tm.list_windows_for_reconciliation.return_value = [self._live("@2")]
 
         client = AsyncMock()
-        closed, manual = await _close_ghost_topics(client, [self._ghost_issue()])
+        with patch("ccgram.handlers.sync_command.thread_router", router):
+            closed, manual = await _close_ghost_topics(client, [self._ghost_issue()])
 
         assert (closed, manual) == (0, 0)
-        client.delete_forum_topic.assert_not_called()
-        client.close_forum_topic.assert_not_called()
+        client.delete_forum_topic.assert_not_awaited()
+        client.close_forum_topic.assert_not_awaited()
+        assert router.get_window_for_chat_thread(-999, 42) == "@2"
 
     async def test_ghost_topic_is_kept_when_liveness_is_unknown(
         self, _patch_deps
     ) -> None:
-        _, _, _, mock_tr, mock_tm, _ = _patch_deps
-        mock_tr.get_window_for_thread.return_value = "@2"
-        mock_tr.resolve_chat_id.return_value = -999
+        _, _, _, _, mock_tm, _ = _patch_deps
+        router = self._router()
+        router.bind_thread(100, 42, "@2", chat_id=-999)
         mock_tm.list_windows_for_reconciliation.return_value = None
 
         client = AsyncMock()
-        closed, manual = await _close_ghost_topics(client, [self._ghost_issue()])
+        with patch("ccgram.handlers.sync_command.thread_router", router):
+            closed, manual = await _close_ghost_topics(client, [self._ghost_issue()])
 
         assert (closed, manual) == (0, 0)
-        client.delete_forum_topic.assert_not_called()
-        client.close_forum_topic.assert_not_called()
+        client.delete_forum_topic.assert_not_awaited()
+        client.close_forum_topic.assert_not_awaited()
+        assert router.get_window_for_chat_thread(-999, 42) == "@2"
 
     async def test_ghost_topic_is_removed_when_confirmed_gone(
         self, _patch_deps
     ) -> None:
         """The other side of the rule, so the guard cannot pass by refusing all."""
-        _, _, _, mock_tr, mock_tm, _ = _patch_deps
-        mock_tr.get_window_for_thread.return_value = "@2"
-        mock_tr.resolve_chat_id.return_value = -999
+        _, _, _, _, mock_tm, _ = _patch_deps
+        router = self._router()
+        router.bind_thread(100, 42, "@2", chat_id=-999)
         mock_tm.list_windows_for_reconciliation.return_value = []
 
         client = AsyncMock()
-        closed, _manual = await _close_ghost_topics(client, [self._ghost_issue()])
+        with (
+            patch("ccgram.handlers.sync_command.thread_router", router),
+            patch(
+                "ccgram.handlers.sync_command.clear_topic_state", new_callable=AsyncMock
+            ),
+            patch("ccgram.handlers.topics.topic_deletion.session_manager"),
+        ):
+            closed, _manual = await _close_ghost_topics(client, [self._ghost_issue()])
 
         assert closed == 1
+        client.delete_forum_topic.assert_awaited_once_with(
+            -999, 42, rate_limit_args=NO_RETRY_RATE_LIMIT_ARGS
+        )
+        assert router.get_window_for_chat_thread(-999, 42) is None
+        assert list(router.iter_retired_topics()) == []
+
+    async def test_ghost_binding_change_during_presence_check_prevents_delete(
+        self, _patch_deps
+    ) -> None:
+        router = self._router()
+        router.bind_thread(100, 42, "@2", chat_id=-999)
+
+        async def _presence(_window_id, _backend):
+            router.bind_thread(100, 42, "@new", chat_id=-999)
+            return False
+
+        client = AsyncMock()
+        with (
+            patch(
+                "ccgram.multiplexer.reconciliation.window_presence",
+                new=AsyncMock(side_effect=_presence),
+            ),
+            patch("ccgram.handlers.sync_command.thread_router", router),
+        ):
+            closed, manual = await _close_ghost_topics(client, [self._ghost_issue()])
+
+        assert (closed, manual) == (0, 0)
+        client.delete_forum_topic.assert_not_awaited()
+        client.close_forum_topic.assert_not_awaited()
+        assert router.get_window_for_chat_thread(-999, 42) == "@new"
+
+    async def test_explicit_false_delete_keeps_retired_ghost_record(
+        self, _patch_deps
+    ) -> None:
+        _, _, _, _, mock_tm, _ = _patch_deps
+        router = self._router()
+        router.bind_thread(100, 42, "@2", chat_id=-999)
+        mock_tm.list_windows_for_reconciliation.return_value = []
+        client = AsyncMock()
+        client.delete_forum_topic.return_value = False
+        client.close_forum_topic.return_value = False
+
+        with (
+            patch("ccgram.handlers.sync_command.thread_router", router),
+            patch(
+                "ccgram.handlers.sync_command.clear_topic_state", new_callable=AsyncMock
+            ),
+            patch("ccgram.handlers.topics.topic_deletion.session_manager"),
+        ):
+            closed, manual = await _close_ghost_topics(client, [self._ghost_issue()])
+
+        assert (closed, manual) == (0, 1)
+        client.delete_forum_topic.assert_awaited_once_with(
+            -999, 42, rate_limit_args=NO_RETRY_RATE_LIMIT_ARGS
+        )
+        client.close_forum_topic.assert_awaited_once_with(
+            -999, 42, rate_limit_args=NO_RETRY_RATE_LIMIT_ARGS
+        )
+        assert router.get_window_for_chat_thread(-999, 42) is None
+        pending = next(router.iter_retired_topics())
+        assert pending.reason == "session_closed"
+        assert pending.cleanup_eligible is True
+        assert pending.closed is False
+
+    async def test_multichat_same_thread_cleanup_uses_exact_window_chat(
+        self, _patch_deps
+    ) -> None:
+        _, _, _, _, mock_tm, _ = _patch_deps
+        router = self._router()
+        router.bind_thread(100, 42, "@one", chat_id=-100)
+        router.bind_thread(100, 42, "@two", chat_id=-200)
+        mock_tm.list_windows_for_reconciliation.return_value = []
+        client = AsyncMock()
+
+        with (
+            patch("ccgram.handlers.sync_command.thread_router", router),
+            patch(
+                "ccgram.handlers.sync_command.clear_topic_state", new_callable=AsyncMock
+            ),
+            patch("ccgram.handlers.topics.topic_deletion.session_manager"),
+        ):
+            closed, manual = await _close_ghost_topics(
+                client,
+                [
+                    AuditIssue(
+                        "ghost_binding",
+                        "user:100 thread:42 window:@one (proj)",
+                        fixable=True,
+                    )
+                ],
+            )
+
+        assert (closed, manual) == (1, 0)
+        client.delete_forum_topic.assert_awaited_once_with(
+            -100, 42, rate_limit_args=NO_RETRY_RATE_LIMIT_ARGS
+        )
+        assert router.get_window_for_chat_thread(-100, 42) is None
+        assert router.get_window_for_chat_thread(-200, 42) == "@two"
 
     async def test_dead_topic_is_not_recreated_when_the_window_went_away(
         self, _patch_deps
