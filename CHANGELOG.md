@@ -1083,7 +1083,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Remove unnecessary **future** annotations import
+- Remove unnecessary `__future__` annotations import
 
 ### Documentation
 
