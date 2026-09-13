@@ -357,10 +357,8 @@ async def _create_and_bind_window(
         thread_id,
         created_wid,
         window_name=created_wname,
-        chat_id=chat.id if chat and chat.type in ("group", "supergroup") else None,
+        chat_id=chat.id if chat else None,
     )
-    if chat and chat.type in ("group", "supergroup"):
-        thread_router.set_group_chat_id(user_id, thread_id, chat.id)
 
     client = PTBTelegramClient(context.bot)
     try:

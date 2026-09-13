@@ -149,6 +149,10 @@ async def _retire_dead_topic(
     chat_id: int | None,
 ) -> None:
     """Retire a dead session and delete its exact recorded topic."""
+    if chat_id is None:
+        # A legacy thread number alone cannot identify a topic across chats.
+        lifecycle_strategy.clear_autoclose_timer(user_id, thread_id)
+        return
     if window_id is None:
         return
     present = await window_presence(window_id, tmux_manager)
@@ -161,9 +165,6 @@ async def _retire_dead_topic(
         )
         return
     if present:
-        lifecycle_strategy.clear_autoclose_timer(user_id, thread_id)
-        return
-    if chat_id is None:
         lifecycle_strategy.clear_autoclose_timer(user_id, thread_id)
         return
 

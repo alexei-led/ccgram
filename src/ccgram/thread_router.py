@@ -810,16 +810,18 @@ class ThreadRouter:
         yield from sorted(self.private_topic_chats)
 
     def set_group_chat_id(self, user_id: int, thread_id: int, chat_id: int) -> None:
-        """Store a chat ID, promoting an existing legacy binding when present."""
+        """Record chat metadata without guessing a legacy topic's identity."""
+        key = f"{user_id}:{thread_id}"
         bindings = self.thread_bindings.get(user_id)
         if bindings and thread_id in bindings:
+            if self.group_chat_ids.get(key) != chat_id:
+                return
             window_id = bindings.pop(thread_id)
             self._window_to_thread.pop((user_id, window_id), None)
             if not bindings:
                 self.thread_bindings.pop(user_id, None)
             self.bind_thread(user_id, thread_id, window_id, chat_id=chat_id)
             return
-        key = f"{user_id}:{thread_id}"
         if self.group_chat_ids.get(key) != chat_id:
             self.group_chat_ids[key] = chat_id
             self._schedule_save()

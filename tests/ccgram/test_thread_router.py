@@ -3,6 +3,31 @@ import pytest
 from ccgram.thread_router import RetiredTopic, _RETIRED_TOPIC_LIMIT, ThreadRouter
 
 
+def test_observed_chat_cannot_claim_an_unknown_legacy_topic(router):
+    router.bind_thread(100, 42, "@old")
+    before = router.to_dict()
+    router.set_group_chat_id(100, 42, -999)
+    assert router.to_dict() == before
+    assert list(router.iter_thread_bindings_with_chat()) == [(100, None, 42, "@old")]
+
+
+def test_observed_chat_cannot_replace_recorded_legacy_chat(router):
+    router.bind_thread(100, 42, "@old")
+    router.group_chat_ids["100:42"] = -111
+    before = router.to_dict()
+    router.set_group_chat_id(100, 42, -999)
+    assert router.to_dict() == before
+    assert list(router.iter_thread_bindings_with_chat()) == [(100, -111, 42, "@old")]
+
+
+def test_matching_recorded_chat_can_promote_legacy_binding(router):
+    router.bind_thread(100, 42, "@old")
+    router.group_chat_ids["100:42"] = -999
+    router.set_group_chat_id(100, 42, -999)
+    assert router.get_window_for_thread(100, 42, -999) == "@old"
+    assert router.thread_bindings == {}
+
+
 @pytest.fixture
 def router() -> ThreadRouter:
     return ThreadRouter(
@@ -478,8 +503,7 @@ class TestResolveChatId:
 
 class TestGetWindowForChatThread:
     def test_resolves_window(self, router: ThreadRouter) -> None:
-        router.bind_thread(100, 1, "@1")
-        router.set_group_chat_id(100, 1, -999)
+        router.bind_thread(100, 1, "@1", chat_id=-999)
         assert router.get_window_for_chat_thread(-999, 1) == "@1"
 
     def test_no_match(self, router: ThreadRouter) -> None:
@@ -516,9 +540,8 @@ class TestDisplayNames:
 
 class TestToDictRoundtrip:
     def test_roundtrip(self, router: ThreadRouter) -> None:
-        router.bind_thread(100, 1, "@1", window_name="proj")
+        router.bind_thread(100, 1, "@1", window_name="proj", chat_id=-999)
         router.bind_thread(200, 2, "@2")
-        router.set_group_chat_id(100, 1, -999)
 
         data = router.to_dict()
         new_router = ThreadRouter(

@@ -56,6 +56,7 @@ def _make_callback_update(
     chat_id: int = -100999,
     user_id: int = 100,
     thread_id: int = 42,
+    chat_type: str = "supergroup",
     data: str = "",
 ) -> MagicMock:
     update = MagicMock()
@@ -64,7 +65,7 @@ def _make_callback_update(
     query = AsyncMock()
     query.data = data
     query.message = MagicMock()
-    query.message.chat.type = "supergroup"
+    query.message.chat.type = chat_type
     query.message.chat.id = chat_id
     query.message.message_thread_id = thread_id
     query.message.chat.is_forum = True
@@ -817,8 +818,17 @@ def pick_env():
         yield SimpleNamespace(tmux=tmux, router=router, sync=sync, edit=edit, path=path)
 
 
-async def _pick(index: int, sessions: list[dict], ctx: MagicMock) -> AsyncMock:
-    update = _make_callback_update(data=f"{CB_RESUME_PICK}{index}")
+async def _pick(
+    index: int,
+    sessions: list[dict],
+    ctx: MagicMock,
+    *,
+    chat_id: int = -100999,
+    chat_type: str = "supergroup",
+) -> AsyncMock:
+    update = _make_callback_update(
+        data=f"{CB_RESUME_PICK}{index}", chat_id=chat_id, chat_type=chat_type
+    )
     ctx.user_data[RESUME_SESSIONS] = sessions
     query = update.callback_query
     await handle_resume_command_callback(query, 100, query.data, update, ctx)
@@ -852,7 +862,7 @@ class TestResumePickCallback:
             "@5", timeout=5.0, resolve_window_id=resolve_alias
         )
         pick_env.router.bind_thread.assert_called_once_with(
-            100, 42, "@canonical", window_name="project"
+            100, 42, "@canonical", window_name="project", chat_id=-100999
         )
 
     async def test_pick_unbinds_the_dead_window_first(self, pick_env) -> None:
@@ -867,10 +877,21 @@ class TestResumePickCallback:
             cleanup_eligible=True,
         )
 
-    async def test_pick_sets_group_chat_id(self, pick_env) -> None:
+    async def test_pick_binds_private_chat_scope(self, pick_env) -> None:
+        await _pick(0, [_session()], _make_context(), chat_id=100, chat_type="private")
+
+        pick_env.router.bind_thread.assert_called_once_with(
+            100, 42, "@5", window_name="project", chat_id=100
+        )
+        pick_env.router.set_group_chat_id.assert_not_called()
+
+    async def test_pick_binds_group_chat_scope(self, pick_env) -> None:
         await _pick(0, [_session()], _make_context())
 
-        pick_env.router.set_group_chat_id.assert_called_once_with(100, 42, -100999)
+        pick_env.router.bind_thread.assert_called_once_with(
+            100, 42, "@5", window_name="project", chat_id=-100999
+        )
+        pick_env.router.set_group_chat_id.assert_not_called()
 
     async def test_pick_clears_resume_state_on_success(self, pick_env) -> None:
         ctx = _make_context()

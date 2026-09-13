@@ -462,14 +462,14 @@ async def _handle_pick(
         await query.answer("Couldn't create window")
         return
 
-    thread_router.bind_thread(
-        user_id, thread_id, created_wid, window_name=created_wname
-    )
-
-    # Store group chat_id for routing
     chat = query.message.chat if query.message else None
-    if chat and chat.type in ("group", "supergroup"):
-        thread_router.set_group_chat_id(user_id, thread_id, chat.id)
+    thread_router.bind_thread(
+        user_id,
+        thread_id,
+        created_wid,
+        window_name=created_wname,
+        chat_id=chat.id if chat else None,
+    )
 
     # Rename topic to match the window
     client = PTBTelegramClient(context.bot)
