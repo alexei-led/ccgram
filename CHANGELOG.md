@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## [4.10.4] - 2026-09-13
+
+### Fixed
+- Key `session_map` entries under CCGram's session for grouped tmux sessions ([#243](https://github.com/alexei-led/ccgram/pull/243))
+- Clean up Pyright errors in the text handler and tmux tests ([#239](https://github.com/alexei-led/ccgram/pull/239))
+
+### Thanks
+- Thank [Paolo Antinori](https://github.com/paoloantinori) for the Pyright cleanup and test fixes.
+- Thank [moqaa](https://github.com/moqaa) for diagnosing and fixing grouped tmux session bindings.
+
 ## [4.10.3] - 2026-09-05
 
 ### Documentation
