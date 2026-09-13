@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Delete topics for closed terminal sessions
+- Retain cleanup timers until legacy chat identity is restored
 
 ## [4.10.4] - 2026-09-13
 

@@ -129,7 +129,7 @@ class TestAutocloseTimers:
             bot.close_forum_topic.assert_not_called()
             bot.delete_forum_topic.assert_not_called()
             mock_tr.unbind_thread.assert_not_called()
-        assert not _has_autoclose(1, 42)
+        assert _has_autoclose(1, 42) is (state == "dead")
 
     async def test_check_not_expired_yet(self) -> None:
         _start_autoclose_timer(1, 42, "done", 0.0)

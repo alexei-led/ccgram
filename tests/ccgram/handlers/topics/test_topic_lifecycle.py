@@ -121,7 +121,7 @@ class TestCheckAutocloseTimers:
             mock_router.get_window_for_thread.return_value = "@0"
             mock_tmux.find_window_by_id = AsyncMock(return_value=MagicMock())
             mock_tmux.list_windows_for_reconciliation = AsyncMock(
-                return_value=[WindowRef(window_id="@1", window_name="p", cwd="/p")]
+                return_value=[WindowRef(window_id="@0", window_name="p", cwd="/p")]
             )
             await check_autoclose_timers(bot)
         bot.delete_forum_topic.assert_not_called()
@@ -614,3 +614,35 @@ async def test_done_timer_does_not_choose_between_ambiguous_chats():
     client.close_forum_topic.assert_not_awaited()
     client.delete_forum_topic.assert_not_awaited()
     assert len(list(router.iter_thread_bindings())) == 2
+
+
+async def test_dead_timer_retries_after_legacy_chat_identity_is_restored():
+    router = _lifecycle_router()
+    router.bind_thread(100, 42, "@dead")
+    entered_at = time.monotonic() - 3600
+    lifecycle_strategy.start_autoclose_timer(100, 42, "dead", entered_at)
+    client = AsyncMock(spec=Bot)
+
+    with (
+        patch("ccgram.handlers.topics.topic_lifecycle.thread_router", router),
+        patch(
+            "ccgram.handlers.topics.topic_lifecycle.window_presence",
+            AsyncMock(return_value=False),
+        ),
+        patch("ccgram.handlers.topics.topic_lifecycle.clear_topic_state", AsyncMock()),
+        patch("ccgram.handlers.topics.topic_deletion.session_manager"),
+        patch(
+            "ccgram.handlers.topics.topic_lifecycle.config.autoclose_dead_minutes", 1
+        ),
+    ):
+        await check_autoclose_timers(client)
+        assert lifecycle_strategy.get_state(100, 42).autoclose == ("dead", entered_at)
+        assert router.get_window_for_thread(100, 42) == "@dead"
+        client.delete_forum_topic.assert_not_awaited()
+
+        router.set_group_chat_id(100, 42, -100200)
+        await check_autoclose_timers(client)
+
+    client.delete_forum_topic.assert_awaited_once()
+    assert list(router.iter_thread_bindings()) == []
+    assert lifecycle_strategy.get_state(100, 42).autoclose is None

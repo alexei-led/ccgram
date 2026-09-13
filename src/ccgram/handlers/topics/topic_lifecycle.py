@@ -164,7 +164,6 @@ async def _retire_dead_topic(
         lifecycle_strategy.clear_autoclose_timer(user_id, thread_id)
         return
     if chat_id is None:
-        lifecycle_strategy.clear_autoclose_timer(user_id, thread_id)
         return
 
     async def clear_state_before_delete() -> None:
