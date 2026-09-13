@@ -828,10 +828,13 @@ def _resolve_window_id(pane_id: str) -> tuple[str, str, str, str] | None:
 
     tmux_session_name, window_id, window_name = parts[0], parts[1], parts[2]
     pane_tty = parts[3] if len(parts) >= _TMUX_FORMAT_PARTS_WITH_TTY else ""
-    linked = parts[4] if len(parts) >= _TMUX_FORMAT_PARTS_WITH_LINKS else ""
-    key_session = tmux_session_name
-    if linked not in ("", "0", "1"):
-        key_session = _session_map_session_for(window_id, tmux_session_name)
+    # ``window_linked_sessions`` is not the signal for "needs remapping": a
+    # session *grouped* with ccgram's (``tmux new-session -t <session>``) shares
+    # its window list without linking the windows, so tmux reports 1 while the
+    # pane's session name still differs. ``_session_map_session_for``
+    # early-returns when the pane already sits in ccgram's session, so the tmux
+    # probe this once guarded is only paid when it is actually needed.
+    key_session = _session_map_session_for(window_id, tmux_session_name)
     session_window_key = f"{key_session}:{window_id}"
     return session_window_key, window_id, window_name, pane_tty
 
