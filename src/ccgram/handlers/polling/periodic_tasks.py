@@ -17,6 +17,7 @@ from ...config import config
 from ...telegram_client import TelegramClient
 from ...utils import log_throttle_sweep
 from ..live.live_view import tick_live_views
+from ..topics.topic_deletion import cleanup_retired_topics
 from ..topics.topic_lifecycle import (
     check_autoclose_timers,
     check_unbound_window_ttl,
@@ -53,6 +54,7 @@ async def run_periodic_tasks(
         timers["topic_check"] = now
         await prune_stale_state(all_windows)
         await probe_topic_existence(client)
+        await cleanup_retired_topics(client)
         log_throttle_sweep()
 
 

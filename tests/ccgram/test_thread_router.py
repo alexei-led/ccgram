@@ -1,6 +1,6 @@
 import pytest
 
-from ccgram.thread_router import _RETIRED_TOPIC_LIMIT, ThreadRouter
+from ccgram.thread_router import RetiredTopic, _RETIRED_TOPIC_LIMIT, ThreadRouter
 
 
 @pytest.fixture
@@ -84,6 +84,56 @@ class TestRetiredTopics:
         assert retired[0].thread_id == 42
         assert retired[0].reason == "system_replacement"
         assert retired[0].cleanup_eligible is True
+        assert retired[0].retry_at == 0.0
+        assert retired[0].closed is False
+
+    def test_updates_retry_state_and_round_trips(self, router: ThreadRouter) -> None:
+        router.bind_thread(100, 42, "@1", chat_id=-999)
+        router.unbind_thread(
+            100,
+            42,
+            chat_id=-999,
+            retirement_reason="system_replacement",
+            cleanup_eligible=True,
+        )
+        topic = next(router.iter_retired_topics())
+
+        updated = router.update_retired_topic(
+            topic,
+            retry_at=123.5,
+            closed=True,
+        )
+
+        assert updated is not None
+        assert updated.retry_at == 123.5
+        assert updated.closed is True
+        assert updated.cleanup_eligible is True
+
+        restored = ThreadRouter(
+            schedule_save=lambda: None,
+            has_window_state=lambda _wid: False,
+        )
+        restored.from_dict(router.to_dict())
+
+        assert list(restored.iter_retired_topics()) == [updated]
+
+    def test_stale_update_after_rebind_is_discarded(self, router: ThreadRouter) -> None:
+        router.bind_thread(100, 42, "@1", chat_id=-999)
+        router.unbind_thread(
+            100,
+            42,
+            chat_id=-999,
+            retirement_reason="system_replacement",
+            cleanup_eligible=True,
+        )
+        topic = next(router.iter_retired_topics())
+        router.bind_thread(100, 42, "@2", chat_id=-999)
+
+        saves: list[int] = []
+        router._schedule_save = lambda: saves.append(1)
+        assert router.update_retired_topic(topic, retry_at=123.5, closed=True) is None
+        assert list(router.iter_retired_topics()) == []
+        assert saves == []
 
     def test_restart_discards_record_for_an_active_rebound_topic(
         self, router: ThreadRouter
@@ -140,14 +190,96 @@ class TestRetiredTopics:
                 100,
                 thread_id,
                 chat_id=-999,
-                retirement_reason="system_replacement",
-                cleanup_eligible=True,
+                retirement_reason="keep_remote",
             )
 
         retired = list(router.iter_retired_topics())
         assert len(retired) == _RETIRED_TOPIC_LIMIT
         assert retired[0].thread_id == 3
         assert retired[-1].thread_id == _RETIRED_TOPIC_LIMIT + 2
+
+    def test_pending_topics_survive_insertion_and_serialization(
+        self, router: ThreadRouter
+    ) -> None:
+        for thread_id in range(1, _RETIRED_TOPIC_LIMIT + 6):
+            router.bind_thread(100, thread_id, f"@{thread_id}", chat_id=-999)
+            router.unbind_thread(
+                100,
+                thread_id,
+                chat_id=-999,
+                retirement_reason="system_replacement",
+                cleanup_eligible=True,
+            )
+
+        restored = ThreadRouter(
+            schedule_save=lambda: None,
+            has_window_state=lambda _wid: False,
+        )
+        restored.from_dict(router.to_dict())
+
+        retired = list(restored.iter_retired_topics())
+        assert len(retired) == _RETIRED_TOPIC_LIMIT + 5
+        assert [topic.thread_id for topic in retired] == list(
+            range(1, _RETIRED_TOPIC_LIMIT + 6)
+        )
+
+    def test_load_retains_pending_topics_and_newest_history(
+        self, router: ThreadRouter
+    ) -> None:
+        raw_topics = [
+            {
+                "user_id": 100,
+                "chat_id": -999,
+                "thread_id": thread_id,
+                "reason": "keep_remote",
+                "cleanup_eligible": thread_id % 2 == 0,
+                "sequence": thread_id,
+            }
+            for thread_id in range(1, 2 * _RETIRED_TOPIC_LIMIT + 6)
+        ]
+
+        router.from_dict({"retired_topics": raw_topics})
+
+        retired = list(router.iter_retired_topics())
+        assert [topic.thread_id for topic in retired] == [
+            thread_id
+            for thread_id in range(1, 2 * _RETIRED_TOPIC_LIMIT + 6)
+            if thread_id % 2 == 0 or thread_id >= 7
+        ]
+
+    def test_load_rejects_invalid_retry_and_closed_values(
+        self, router: ThreadRouter
+    ) -> None:
+        def raw_topic(**overrides: object) -> dict[str, object]:
+            topic: dict[str, object] = {
+                "user_id": 100,
+                "chat_id": -999,
+                "thread_id": 42,
+                "reason": "system_replacement",
+                "cleanup_eligible": True,
+                "sequence": 1,
+                "retry_at": 0.0,
+                "closed": False,
+            }
+            topic.update(overrides)
+            return topic
+
+        router.from_dict(
+            {
+                "retired_topics": [
+                    raw_topic(retry_at=-1.0),
+                    raw_topic(retry_at=float("inf"), sequence=2),
+                    raw_topic(retry_at=float("nan"), sequence=3),
+                    raw_topic(closed=1, sequence=4),
+                    raw_topic(sequence=5),
+                ]
+            }
+        )
+
+        retired = list(router.iter_retired_topics())
+        assert [
+            (topic.sequence, topic.retry_at, topic.closed) for topic in retired
+        ] == [(5, 0.0, False)]
 
     def test_chatless_binding_is_not_treated_as_a_known_forum_topic(
         self, router: ThreadRouter
@@ -156,6 +288,92 @@ class TestRetiredTopics:
         router.unbind_thread(100, 42, cleanup_eligible=True)
 
         assert list(router.iter_retired_topics()) == []
+
+
+class TestTopicDeletionClaims:
+    @staticmethod
+    def _retire(router: ThreadRouter) -> RetiredTopic:
+        router.bind_thread(100, 42, "@old", chat_id=-999)
+        router.unbind_thread(
+            100,
+            42,
+            chat_id=-999,
+            retirement_reason="system_replacement",
+            cleanup_eligible=True,
+        )
+        return next(router.iter_retired_topics())
+
+    def test_has_active_topic_checks_all_users(self, router: ThreadRouter) -> None:
+        router.bind_thread(100, 42, "@1", chat_id=-999)
+        router.bind_thread(200, 42, "@2", chat_id=-999)
+
+        assert router.has_active_topic(-999, 42) is True
+        assert router.has_active_topic(-998, 42) is False
+
+    def test_has_active_topic_resolves_legacy_chat_metadata(
+        self, router: ThreadRouter
+    ) -> None:
+        router.bind_thread(100, 42, "@1")
+        router.group_chat_ids["100:42"] = -999
+
+        assert router.has_active_topic(-999, 42) is True
+
+    def test_begin_claim_rejects_bind_without_mutating_route(
+        self, router: ThreadRouter
+    ) -> None:
+        topic = self._retire(router)
+        assert router.begin_topic_deletion(topic) is True
+
+        with pytest.raises(
+            ValueError,
+            match="Topic deletion is in progress; retry with a new topic",
+        ):
+            router.bind_thread(200, 42, "@new", chat_id=-999)
+
+        assert router.get_window_for_chat_thread(-999, 42) is None
+        assert list(router.iter_retired_topics()) == [topic]
+
+    def test_duplicate_claim_is_rejected_and_release_allows_bind(
+        self, router: ThreadRouter
+    ) -> None:
+        topic = self._retire(router)
+        assert router.begin_topic_deletion(topic) is True
+        assert router.begin_topic_deletion(topic) is False
+
+        router.end_topic_deletion(topic)
+        router.bind_thread(100, 42, "@new", chat_id=-999)
+
+        assert router.get_window_for_chat_thread(-999, 42) == "@new"
+
+    def test_stale_record_cannot_be_claimed_after_rebind(
+        self, router: ThreadRouter
+    ) -> None:
+        topic = self._retire(router)
+        router.bind_thread(100, 42, "@new", chat_id=-999)
+
+        assert router.begin_topic_deletion(topic) is False
+
+    def test_reset_releases_topic_deletion_claim(self, router: ThreadRouter) -> None:
+        topic = self._retire(router)
+        assert router.begin_topic_deletion(topic) is True
+
+        router.reset()
+        router.from_dict(
+            {
+                "retired_topics": [
+                    {
+                        "user_id": topic.user_id,
+                        "chat_id": topic.chat_id,
+                        "thread_id": topic.thread_id,
+                        "reason": topic.reason,
+                        "cleanup_eligible": topic.cleanup_eligible,
+                        "sequence": topic.sequence,
+                    }
+                ]
+            }
+        )
+
+        assert router.begin_topic_deletion(topic) is True
 
 
 class TestPrivateTopicChats:

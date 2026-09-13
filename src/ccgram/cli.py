@@ -160,7 +160,7 @@ def apply_args_to_env(**kwargs: object) -> None:
     default=None,
     callback=_validate_non_negative_int,
     envvar="AUTOCLOSE_DEAD_MINUTES",
-    help="Auto-close dead sessions after N minutes (default: 10, 0=disabled).",
+    help="Delete topics for closed sessions after N minutes (default: 10, 0=disabled).",
 )
 @click.option(
     "--provider",

@@ -25,7 +25,8 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import math
 import structlog
 from collections.abc import Callable, Iterator
 from typing import Any, cast
@@ -52,6 +53,8 @@ class RetiredTopic:
     reason: str
     cleanup_eligible: bool
     sequence: int
+    retry_at: float = 0.0
+    closed: bool = False
 
 
 _active_chat_id: contextvars.ContextVar[int | None] = contextvars.ContextVar(
@@ -105,6 +108,7 @@ class ThreadRouter:
         self._window_to_thread: dict[tuple[int, str], int] = {}
         self._chat_window_to_thread: dict[tuple[int, int, str], int] = {}
         self._retired_topics: list[RetiredTopic] = []
+        self._topic_deletion_claims: set[tuple[int, int]] = set()
         self._next_retired_sequence = 1
         self._schedule_save: Callable[[], None] = schedule_save
         self._has_window_state: Callable[[str], bool] = has_window_state
@@ -119,6 +123,7 @@ class ThreadRouter:
         self._window_to_thread.clear()
         self._chat_window_to_thread.clear()
         self._retired_topics.clear()
+        self._topic_deletion_claims.clear()
         self._next_retired_sequence = 1
 
     # ------------------------------------------------------------------
@@ -250,6 +255,8 @@ class ThreadRouter:
                     "reason": topic.reason,
                     "cleanup_eligible": topic.cleanup_eligible,
                     "sequence": topic.sequence,
+                    "retry_at": topic.retry_at,
+                    "closed": topic.closed,
                 }
                 for topic in self._retired_topics
             ],
@@ -306,12 +313,19 @@ class ThreadRouter:
         if not isinstance(raw_topics, list):
             return []
         loaded: list[RetiredTopic] = []
-        for raw in raw_topics[-_RETIRED_TOPIC_LIMIT:]:
+        for raw in raw_topics:
             if not isinstance(raw, dict):
                 continue
             try:
                 reason = raw["reason"]
                 cleanup_eligible = raw["cleanup_eligible"]
+                raw_retry_at = raw.get("retry_at", 0.0)
+                closed = raw.get("closed", False)
+                if isinstance(raw_retry_at, bool) or not isinstance(
+                    raw_retry_at, (int, float)
+                ):
+                    continue
+                retry_at = float(raw_retry_at)
                 topic = RetiredTopic(
                     user_id=int(raw["user_id"]),
                     chat_id=int(raw["chat_id"]),
@@ -319,13 +333,18 @@ class ThreadRouter:
                     reason=reason,
                     cleanup_eligible=cleanup_eligible,
                     sequence=int(raw["sequence"]),
+                    retry_at=retry_at,
+                    closed=closed,
                 )
-            except KeyError, TypeError, ValueError:
+            except KeyError, OverflowError, TypeError, ValueError:
                 continue
             if (
                 not isinstance(reason, str)
                 or not reason
                 or not isinstance(cleanup_eligible, bool)
+                or not math.isfinite(topic.retry_at)
+                or topic.retry_at < 0
+                or not isinstance(topic.closed, bool)
                 or topic.thread_id <= 0
                 or topic.sequence <= 0
             ):
@@ -337,7 +356,25 @@ class ThreadRouter:
                 != (topic.chat_id, topic.thread_id)
             ]
             loaded.append(topic)
-        return loaded
+        return ThreadRouter._retain_retired_topics(loaded)
+
+    @staticmethod
+    def _retain_retired_topics(topics: list[RetiredTopic]) -> list[RetiredTopic]:
+        """Keep all pending cleanup records and the newest history records."""
+        noneligible_to_drop = max(
+            0,
+            sum(not topic.cleanup_eligible for topic in topics) - _RETIRED_TOPIC_LIMIT,
+        )
+        if noneligible_to_drop == 0:
+            return topics
+
+        retained: list[RetiredTopic] = []
+        for topic in topics:
+            if not topic.cleanup_eligible and noneligible_to_drop:
+                noneligible_to_drop -= 1
+                continue
+            retained.append(topic)
+        return retained
 
     # ------------------------------------------------------------------
     # Retired topic registry
@@ -355,6 +392,72 @@ class ThreadRouter:
             return False
         self._schedule_save()
         return True
+
+    def update_retired_topic(
+        self,
+        topic: RetiredTopic,
+        *,
+        retry_at: float,
+        closed: bool,
+        cleanup_eligible: bool | None = None,
+    ) -> RetiredTopic | None:
+        """Update a retired record if its exact previous value is still present."""
+        try:
+            index = self._retired_topics.index(topic)
+        except ValueError:
+            return None
+
+        if isinstance(retry_at, bool) or not isinstance(retry_at, (int, float)):
+            raise TypeError("retry_at must be a number")
+        retry_at_value = float(retry_at)
+        if not math.isfinite(retry_at_value) or retry_at_value < 0:
+            raise ValueError("retry_at must be finite and nonnegative")
+        if not isinstance(closed, bool):
+            raise TypeError("closed must be a bool")
+        if cleanup_eligible is not None and not isinstance(cleanup_eligible, bool):
+            raise TypeError("cleanup_eligible must be a bool or None")
+
+        current = self._retired_topics[index]
+        updated = replace(
+            current,
+            retry_at=retry_at_value,
+            closed=closed,
+            cleanup_eligible=(
+                current.cleanup_eligible
+                if cleanup_eligible is None
+                else cleanup_eligible
+            ),
+        )
+        self._retired_topics[index] = updated
+        self._schedule_save()
+        return updated
+
+    def has_active_topic(self, chat_id: int, thread_id: int) -> bool:
+        """Return whether any user currently owns this chat/thread pair."""
+        if any(
+            bound_chat == chat_id and bound_thread == thread_id
+            for (_user_id, bound_chat, bound_thread) in self.chat_thread_bindings
+        ):
+            return True
+        return any(
+            thread_id in bindings
+            and self.resolve_chat_id(user_id, thread_id) == chat_id
+            for user_id, bindings in self.thread_bindings.items()
+        )
+
+    def begin_topic_deletion(self, topic: RetiredTopic) -> bool:
+        """Claim an exact retired topic for one in-flight deletion attempt."""
+        key = (topic.chat_id, topic.thread_id)
+        if key in self._topic_deletion_claims:
+            return False
+        if topic not in self._retired_topics or self.has_active_topic(*key):
+            return False
+        self._topic_deletion_claims.add(key)
+        return True
+
+    def end_topic_deletion(self, topic: RetiredTopic) -> None:
+        """Release an in-flight deletion claim for a retired topic."""
+        self._topic_deletion_claims.discard((topic.chat_id, topic.thread_id))
 
     def _retire_topic(
         self,
@@ -384,7 +487,7 @@ class ThreadRouter:
             )
         )
         self._next_retired_sequence += 1
-        self._retired_topics = self._retired_topics[-_RETIRED_TOPIC_LIMIT:]
+        self._retired_topics = self._retain_retired_topics(self._retired_topics)
 
     def _restore_active_topic(self, chat_id: int | None, thread_id: int) -> None:
         """Forget a retired record when the same chat/topic is bound again."""
@@ -399,6 +502,38 @@ class ThreadRouter:
     # ------------------------------------------------------------------
     # Thread binding operations
     # ------------------------------------------------------------------
+
+    def _is_topic_deletion_claimed(
+        self, user_id: int, thread_id: int, chat_id: int | None
+    ) -> bool:
+        """Check whether a bind would race with an in-flight deletion."""
+        if chat_id is not None:
+            return (chat_id, thread_id) in self._topic_deletion_claims
+
+        matching_claims = {
+            claimed_chat
+            for claimed_chat, claimed_thread in self._topic_deletion_claims
+            if claimed_thread == thread_id
+        }
+        if not matching_claims:
+            return False
+
+        metadata_key = f"{user_id}:{thread_id}"
+        scoped_chats = {
+            bound_chat
+            for (bound_user, bound_chat, bound_thread) in self.chat_thread_bindings
+            if bound_user == user_id and bound_thread == thread_id
+        }
+        has_resolved_chat = (
+            metadata_key in self.group_chat_ids
+            or len(scoped_chats) == 1
+            or self.default_group_id is not None
+        )
+        if has_resolved_chat:
+            resolved_chat_id = self.resolve_chat_id(user_id, thread_id)
+            return (resolved_chat_id, thread_id) in self._topic_deletion_claims
+
+        return True
 
     def _bind_chat_scoped(
         self, user_id: int, chat_id: int, thread_id: int, window_id: str
@@ -438,6 +573,8 @@ class ThreadRouter:
         chat_id: int | None = None,
     ) -> None:
         """Bind a topic, using chat-scoped identity when ``chat_id`` is known."""
+        if self._is_topic_deletion_claimed(user_id, thread_id, chat_id):
+            raise ValueError("Topic deletion is in progress; retry with a new topic")
         if chat_id is not None:
             self._bind_chat_scoped(user_id, chat_id, thread_id, window_id)
         else:

@@ -13,6 +13,7 @@ Key functions:
 from __future__ import annotations
 
 from collections import Counter
+from functools import partial
 from typing import TYPE_CHECKING
 import asyncio
 import re
@@ -24,23 +25,28 @@ from telegram import (
     InlineKeyboardMarkup,
     Update,
 )
-from telegram.error import BadRequest, TelegramError
+from telegram.error import TelegramError
 from .. import window_query
 from ..multiplexer.base import canonical_window_id
 from ..config import config
 from ..session import AuditIssue, AuditResult, session_manager
 from ..session_map import session_map_sync
 from ..telegram_client import PTBTelegramClient, TelegramClient
-from ..thread_router import RetiredTopic, thread_router
+from ..thread_router import thread_router
 from ..multiplexer import multiplexer as tmux_manager
 from ..multiplexer.reconciliation import list_windows_for_reconciliation
 from ..user_preferences import user_preferences
 from .callback_data import CB_SYNC_DISMISS, CB_SYNC_FIX
 from .callback_registry import register
 from .cleanup import clear_topic_state
-from .messaging_pipeline.message_sender import is_thread_gone, safe_edit, safe_reply
+from .messaging_pipeline.message_sender import safe_edit, safe_reply
 from .status.topic_emoji import sync_topic_name
 from .topics.topic_probe import probe_topic_exists
+from .topics.topic_deletion import (
+    cleanup_retired_topics,
+    is_cleanup_candidate,
+    retire_topic_binding,
+)
 
 if TYPE_CHECKING:
     from telegram.ext import ContextTypes
@@ -67,10 +73,13 @@ _CATEGORY_LABELS: dict[str, str] = {
 
 _RETIRED_OUTCOME_LABELS = {
     "deleted": "Deleted",
-    "closed": "Closed",
+    "closed": "Closed; deletion pending for",
     "already_gone": "Already gone",
-    "failed": "Could not remove",
+    "failed": "Could not delete; will retry",
     "protected_active": "Protected active or rebound",
+    "protected_general": "Protected General",
+    "deferred": "Waiting to retry deletion of",
+    "rate_limited": "Rate limited; deletion pending for",
 }
 
 
@@ -201,8 +210,8 @@ def _format_report(
     if manual_close_count > 0:
         topic_word = "topic" if manual_close_count == 1 else "topics"
         lines.append(
-            f"⚠ {manual_close_count} {topic_word} could not be closed automatically; "
-            "safe to close manually"
+            f"⚠ {manual_close_count} {topic_word} could not be deleted; "
+            "cleanup retained for retry. Check Delete Messages permission."
         )
 
     lines.extend(_retired_outcome_lines(retired_outcomes))
@@ -259,86 +268,21 @@ def _retired_topic_issues() -> list[AuditIssue]:
             fixable=True,
         )
         for topic in thread_router.iter_retired_topics()
-        if topic.cleanup_eligible
+        if is_cleanup_candidate(topic, include_closed=True)
     ]
 
 
-async def _remove_topic(client: TelegramClient, chat_id: int, thread_id: int) -> bool:
-    """Try to delete a topic, fall back to close. Returns True on success.
-
-    Only "topic not found" BadRequest is treated as success; other BadRequest
-    errors (e.g. insufficient rights) fall through to the close fallback.
-    """
-    try:
-        await client.delete_forum_topic(chat_id, thread_id)
-        return True
-    except BadRequest as e:
-        if is_thread_gone(e):
-            return True
-    except TelegramError:
-        pass
-    try:
-        await client.close_forum_topic(chat_id, thread_id)
-        return True
-    except TelegramError:
-        return False
-
-
-async def _delete_retired_topic(client: TelegramClient, topic: RetiredTopic) -> str:
-    """Delete a known topic, returning a terminal result or close fallback."""
-    chat_id = topic.chat_id
-    thread_id = topic.thread_id
-    try:
-        deleted = await client.delete_forum_topic(chat_id, thread_id)
-    except BadRequest as exc:
-        return "already_gone" if is_thread_gone(exc) else "failed"
-    except TelegramError:
-        return "failed"
-    return "deleted" if deleted is not False else "failed"
-
-
-async def _close_retired_topic(client: TelegramClient, topic: RetiredTopic) -> str:
-    """Close a known topic when deletion is unavailable."""
-    try:
-        closed = await client.close_forum_topic(topic.chat_id, topic.thread_id)
-    except TelegramError as exc:
-        return "already_gone" if is_thread_gone(exc) else "failed"
-    return "closed" if closed is not False else "failed"
-
-
 async def _cleanup_retired_topics(client: TelegramClient) -> dict[str, int]:
-    """Remove only locally known, eligible retired topics.
-
-    A binding is rechecked immediately before the Telegram request. This does
-    not discover remote topics: it operates solely on the bounded registry.
-    """
-    outcomes: Counter[str] = Counter()
-    terminal_outcomes = {"deleted", "closed", "already_gone"}
-    for topic in tuple(thread_router.iter_retired_topics()):
-        if not topic.cleanup_eligible:
-            continue
-        if thread_router.get_window_for_chat_thread(topic.chat_id, topic.thread_id):
-            outcomes["protected_active"] += 1
-            continue
-        outcome = await _delete_retired_topic(client, topic)
-        if outcome == "failed":
-            outcome = await _close_retired_topic(client, topic)
-        outcomes[outcome] += 1
-        if outcome in terminal_outcomes:
-            thread_router.discard_retired_topic(topic)
-    return dict(outcomes)
+    """Explicit Fix also includes locally recorded topics previously closed."""
+    return await cleanup_retired_topics(
+        client, router=thread_router, include_closed=True, limit=100
+    )
 
 
 async def _close_ghost_topics(
     client: TelegramClient, issues: list[AuditIssue]
 ) -> tuple[int, int]:
-    """Delete (or close) Telegram topics for ghost bindings.
-
-    Tries ``delete_forum_topic`` first to fully remove the dead topic from the
-    sidebar.  Falls back to ``close_forum_topic`` if deletion fails (e.g.
-    missing ``can_manage_topics`` or General topic).  Returns
-    ``(closed_count, manual_close_count)``.
-    """
+    """Retire confirmed ghost bindings and delete their exact chat topics."""
     # Lazy: importing the reconciliation seam at module load forms a cycle.
     from ..multiplexer.reconciliation import window_presence
 
@@ -353,9 +297,6 @@ async def _close_ghost_topics(
         user_id = int(match.group(1))
         thread_id = int(match.group(2))
         window_id = match.group(3)
-        current_window_id = thread_router.get_window_for_thread(user_id, thread_id)
-        if current_window_id != window_id:
-            continue
         # Per candidate, and the strictest of the three: this removes the
         # user's topic. The audit's listing predates several network round
         # trips, so re-confirm the window is really gone — present means the
@@ -366,32 +307,38 @@ async def _close_ghost_topics(
                 window_id=window_id,
             )
             continue
-        chat_id = thread_router.resolve_chat_id(user_id, thread_id)
-        topic_removed = await _remove_topic(client, chat_id, thread_id)
-        if not topic_removed:
-            logger.warning(
-                "Failed to delete/close ghost topic thread=%d window=%s",
-                thread_id,
-                window_id,
-            )
-            manual_close_count += 1
-            continue
-        try:
-            await clear_topic_state(
-                user_id, thread_id, client=client, window_id=window_id
-            )
-            thread_router.unbind_thread(
+        bindings = [
+            (chat, wid)
+            for uid, chat, tid, wid in thread_router.iter_thread_bindings_with_chat()
+            if uid == user_id
+            and tid == thread_id
+            and canonical_window_id(wid) == canonical_window_id(window_id)
+            and chat is not None
+        ]
+        for chat_id, exact_window in bindings:
+            outcome = await retire_topic_binding(
+                client,
                 user_id,
                 thread_id,
-                retirement_reason="remote_removed",
+                exact_window,
+                router=thread_router,
+                chat_id=chat_id,
+                before_delete=partial(
+                    clear_topic_state,
+                    user_id,
+                    thread_id,
+                    client=client,
+                    window_id=exact_window,
+                    chat_id=chat_id,
+                ),
             )
-            closed_count += 1
-        except OSError, TelegramError:
-            logger.exception(
-                "Failed to clean up ghost binding thread=%d window=%s",
-                thread_id,
-                window_id,
-            )
+            closed_count += outcome in {"deleted", "already_gone"}
+            manual_close_count += outcome in {
+                "failed",
+                "closed",
+                "deferred",
+                "rate_limited",
+            }
     return closed_count, manual_close_count
 
 

@@ -76,7 +76,7 @@ Each Telegram topic maps to one tmux window. With Herdr, it maps instead to one 
 
 CCGram losslessly combines only eligible consecutive transcript text deliveries for the same chat, topic, window, role, and source session. It preserves each item's formatting and keeps tool updates, media, status updates, and other boundaries separate. The status bubble shows queue progress; at a severe backlog (100 pending items or an oldest item aged 5 minutes), its inline **Jump to live** action requires confirmation and posts a skipped-range notice. The raw provider transcript is never deleted. Delivery is at-least-once, so a Telegram failure or restart before acknowledgement can repeat a transcript message rather than silently losing it.
 
-`/sync` can clean up only locally recorded, eligible retired topics. It never discovers or enumerates arbitrary Telegram topics; an active or rebound topic is protected before any cleanup request. See the [delivery, backlog, and Sync guide](docs/guides.md#delivery-backlog-and-jump-to-live) for boundaries, safety guarantees, and Telegram admin permissions.
+Topics for confirmed closed terminal sessions are deleted after the dead-session timer (10 minutes by default). Failed deletions survive restarts and are retried automatically. `/sync` also offers bulk cleanup of locally recorded closed topics; active or rebound topics are protected. It cannot discover topics whose IDs CCGram no longer knows. See the [Sync cleanup guide](docs/guides.md#sync-and-retired-topic-cleanup) for timing and Telegram admin permissions.
 
 ---
 

@@ -22,11 +22,13 @@ from ...telegram_client import PTBTelegramClient, TelegramClient
 from ...thread_router import thread_router
 from ...multiplexer import multiplexer as tmux_manager
 from ...multiplexer.base import canonical_window_id
+from ...multiplexer.reconciliation import window_presence
 from ...utils import log_throttled
 from ...window_state_ports import legacy_state
 from ...window_state_store import CCGRAM_CREATED_WINDOW_ORIGIN
 from ..callback_tokens import revoke_window_tokens
 from ..cleanup import clear_topic_state
+from .topic_deletion import retire_topic_binding
 from ...telegram_rate_limiter import NO_RETRY_RATE_LIMIT_ARGS, retry_after_seconds
 from ..messaging_pipeline.message_sender import is_thread_gone
 from ..polling.polling_state import (
@@ -89,46 +91,34 @@ async def _close_expired_topic(
     client: TelegramClient, user_id: int, thread_id: int, state: str
 ) -> None:
     """Attempt to close/delete an expired topic and clean up state."""
-    # Pick chat_id from bindings if exactly one candidate exists.
     candidates = [
-        (chat_id, wid)
-        for uid, chat_id, tid, wid in thread_router.iter_thread_bindings_with_chat()
-        if uid == user_id and tid == thread_id
+        (chat_id, window_id)
+        for bound_user, chat_id, bound_thread, window_id in thread_router.iter_thread_bindings_with_chat()
+        if bound_user == user_id and bound_thread == thread_id
     ]
-    scoped_chat_id = candidates[0][0] if len(candidates) == 1 else None
+    known_binding = candidates[0] if len(candidates) == 1 else None
     window_id = (
-        thread_router.get_window_for_thread(user_id, thread_id, scoped_chat_id)
-        if scoped_chat_id is not None
+        known_binding[1]
+        if known_binding is not None
         else thread_router.get_window_for_thread(user_id, thread_id)
     )
-    if state == "dead" and window_id is not None:
-        # Tri-state, read here instead of through find_window_by_id: that
-        # answers None both for a window that is gone and for a backend that
-        # could not be reached, and this path closes the user's topic. Present
-        # clears the stale timer, unknown defers to the next expiry.
-        # Lazy: importing the reconciliation seam at module load forms a cycle.
-        from ...multiplexer.reconciliation import window_presence
+    if state == "dead":
+        await _retire_dead_topic(
+            client,
+            user_id,
+            thread_id,
+            window_id,
+            known_binding[0] if known_binding is not None else None,
+        )
+        return
+    if len(candidates) > 1:
+        return
 
-        present = await window_presence(window_id, tmux_manager)
-        if present is None:
-            logger.warning(
-                "stale_dead_autoclose_deferred",
-                thread_id=thread_id,
-                user_id=user_id,
-                window_id=window_id,
-            )
-            return
-        if present:
-            lifecycle_strategy.clear_autoclose_timer(user_id, thread_id)
-            logger.info(
-                "stale_dead_autoclose_cleared",
-                thread_id=thread_id,
-                user_id=user_id,
-                window_id=window_id,
-            )
-            return
-
-    chat_id = scoped_chat_id or thread_router.resolve_chat_id(user_id, thread_id)
+    chat_id = (
+        known_binding[0]
+        if known_binding is not None and known_binding[0] is not None
+        else thread_router.resolve_chat_id(user_id, thread_id)
+    )
     removed = False
     try:
         await client.close_forum_topic(chat_id=chat_id, message_thread_id=thread_id)
@@ -143,15 +133,86 @@ async def _close_expired_topic(
         logger.info(
             "auto_closed_topic", chat_id=chat_id, thread_id=thread_id, user_id=user_id
         )
-        cleanup_kwargs: dict = {"window_id": window_id, "window_dead": True}
-        if scoped_chat_id is not None:
-            cleanup_kwargs["chat_id"] = scoped_chat_id
-        await clear_topic_state(user_id, thread_id, client=client, **cleanup_kwargs)
+        await _clear_expired_topic_state(user_id, thread_id, client, window_id, chat_id)
         thread_router.unbind_thread(
             user_id,
             thread_id,
             retirement_reason="remote_closed",
         )
+
+
+async def _retire_dead_topic(
+    client: TelegramClient,
+    user_id: int,
+    thread_id: int,
+    window_id: str | None,
+    chat_id: int | None,
+) -> None:
+    """Retire a dead session and delete its exact recorded topic."""
+    if window_id is None:
+        return
+    present = await window_presence(window_id, tmux_manager)
+    if present is None:
+        logger.warning(
+            "stale_dead_autoclose_deferred",
+            thread_id=thread_id,
+            user_id=user_id,
+            window_id=window_id,
+        )
+        return
+    if present:
+        lifecycle_strategy.clear_autoclose_timer(user_id, thread_id)
+        return
+    if chat_id is None:
+        lifecycle_strategy.clear_autoclose_timer(user_id, thread_id)
+        return
+
+    async def clear_state_before_delete() -> None:
+        await _clear_expired_topic_state(user_id, thread_id, client, window_id, chat_id)
+
+    outcome = await retire_topic_binding(
+        client,
+        user_id,
+        thread_id,
+        window_id,
+        router=thread_router,
+        chat_id=chat_id,
+        before_delete=clear_state_before_delete,
+    )
+    lifecycle_strategy.clear_autoclose_timer(user_id, thread_id)
+    logger.info(
+        "stale_dead_autoclose_retired_topic_cleanup",
+        thread_id=thread_id,
+        user_id=user_id,
+        outcome=outcome,
+    )
+
+
+async def _clear_expired_topic_state(
+    user_id: int,
+    thread_id: int,
+    client: TelegramClient,
+    window_id: str | None,
+    chat_id: int | None,
+) -> None:
+    """Clear state while retaining chat-scoped identity when known."""
+    if chat_id is None:
+        await clear_topic_state(
+            user_id,
+            thread_id,
+            client=client,
+            window_id=window_id,
+            window_dead=True,
+        )
+        return
+    await clear_topic_state(
+        user_id,
+        thread_id,
+        client=client,
+        window_id=window_id,
+        window_dead=True,
+        chat_id=chat_id,
+    )
 
 
 # ── Unbound window TTL ────────────────────────────────────────────────────

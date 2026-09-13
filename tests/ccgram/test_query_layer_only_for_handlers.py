@@ -59,6 +59,7 @@ ALLOWED_SESSION_MANAGER_ATTRS: frozenset[str] = frozenset(
         "prune_stale_state",
         "prune_stale_window_states",
         "audit_state",
+        "flush_state",
     }
 )
 

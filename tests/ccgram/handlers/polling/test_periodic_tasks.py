@@ -27,6 +27,7 @@ def _tasks(now: float):
         patch(_MODULE + "probe_topic_existence", new_callable=AsyncMock) as probe,
         patch(_MODULE + "check_autoclose_timers", new_callable=AsyncMock) as autoclose,
         patch(_MODULE + "check_unbound_window_ttl", new_callable=AsyncMock) as unbound,
+        patch(_MODULE + "cleanup_retired_topics", new_callable=AsyncMock) as cleanup,
         patch(_MODULE + "log_throttle_sweep") as sweep,
     ):
         mock_time.monotonic.return_value = now
@@ -37,6 +38,7 @@ def _tasks(now: float):
             probe=probe,
             autoclose=autoclose,
             unbound=unbound,
+            cleanup=cleanup,
             sweep=sweep,
         )
 
@@ -73,6 +75,7 @@ class TestRunPeriodicTasks:
 
         assert tasks.prune.await_count == (1 if expected else 0)
         assert tasks.probe.await_count == (1 if expected else 0)
+        assert tasks.cleanup.await_count == (1 if expected else 0)
         assert tasks.sweep.call_count == (1 if expected else 0)
         assert timers["topic_check"] == (elapsed if expected else 0.0)
 
@@ -85,6 +88,7 @@ class TestRunPeriodicTasks:
 
         tasks.prune.assert_awaited_once_with(windows)
         tasks.probe.assert_awaited_once_with(client)
+        tasks.cleanup.assert_awaited_once_with(client)
 
 
 class TestRunLifecycleTasks:
