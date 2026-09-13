@@ -184,6 +184,7 @@ class TestStaleSweepRespectsChatScopedBindings:
 
         # First bind via thread_bindings, then promote to chat scope.
         thread_router.thread_bindings[1] = {100: "@42"}
+        thread_router.group_chat_ids["1:100"] = 999
         thread_router.set_group_chat_id(1, 100, 999)
 
         # Demonstrate the old-code blindness: thread_bindings is now empty.

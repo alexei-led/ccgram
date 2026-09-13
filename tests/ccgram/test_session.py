@@ -956,13 +956,11 @@ class TestApprovalMode:
 
 class TestGetWindowForChatThread:
     def test_resolves_bound_window_for_group_topic(self, mgr: SessionManager) -> None:
-        thread_router.bind_thread(100, 42, "@9")
-        thread_router.set_group_chat_id(100, 42, -100123)
+        thread_router.bind_thread(100, 42, "@9", chat_id=-100123)
         assert thread_router.get_window_for_chat_thread(-100123, 42) == "@9"
 
     def test_returns_none_when_chat_mismatch(self, mgr: SessionManager) -> None:
-        thread_router.bind_thread(100, 42, "@9")
-        thread_router.set_group_chat_id(100, 42, -100123)
+        thread_router.bind_thread(100, 42, "@9", chat_id=-100123)
         assert thread_router.get_window_for_chat_thread(-100999, 42) is None
 
 

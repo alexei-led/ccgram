@@ -424,7 +424,7 @@ For a retired topic, cleanup calls `deleteForumTopic`. Deletion is irreversible 
 
 The bot must be a group administrator with **Delete Messages** (`can_delete_messages`) to delete topics, and **Manage Topics** (`can_manage_topics`) to close them. See [BotFather Setup](#botfather-setup) and Telegram's [deleteForumTopic documentation](https://core.telegram.org/bots/api#deleteforumtopic). Fix reports deleted, already gone, closed with deletion pending, deferred, and protected outcomes. General/control topics are protected.
 
-The Bot API cannot enumerate arbitrary topics. If an old topic's ID was already discarded from local state, `/sync` cannot discover it. Recovery requires an explicit list of topic IDs or a separate user-authorized Telegram client: MTProto's [messages.getForumTopics](https://core.telegram.org/method/messages.getForumTopics) can enumerate topics but is user-only. CCGram never guesses ownership from names or closed icons.
+The Bot API cannot enumerate arbitrary topics. If an old topic's ID was already discarded from local state, `/sync` cannot discover it. Legacy bindings without a recorded chat ID are also left untouched: the same thread number in another incoming chat is not proof of ownership. Restore a known mapping or explicitly rebind before cleanup. Recovery of unknown topics requires an explicit list of topic IDs or a separate user-authorized Telegram client: MTProto's [messages.getForumTopics](https://core.telegram.org/method/messages.getForumTopics) can enumerate topics but is user-only. CCGram never guesses ownership from names or closed icons.
 
 ## Auto-Close Behavior
 

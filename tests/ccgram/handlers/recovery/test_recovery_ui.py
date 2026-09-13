@@ -93,6 +93,7 @@ def _make_callback_update(
     chat_id: int = -100999,
     user_id: int = 100,
     thread_id: int = 42,
+    chat_type: str = "supergroup",
     data: str = "",
 ) -> MagicMock:
     update = MagicMock()
@@ -101,7 +102,7 @@ def _make_callback_update(
     query = AsyncMock()
     query.data = data
     query.message = MagicMock()
-    query.message.chat.type = "supergroup"
+    query.message.chat.type = chat_type
     query.message.chat.id = chat_id
     query.message.message_thread_id = thread_id
     query.message.chat.is_forum = True
@@ -130,9 +131,18 @@ def _recovery_user_data(
     }
 
 
-async def _tap(data: str, ctx: MagicMock, *, thread_id: int = 42) -> AsyncMock:
+async def _tap(
+    data: str,
+    ctx: MagicMock,
+    *,
+    chat_id: int = -100999,
+    thread_id: int = 42,
+    chat_type: str = "supergroup",
+) -> AsyncMock:
     """Dispatch one recovery button tap and return its CallbackQuery."""
-    update = _make_callback_update(data=data, thread_id=thread_id)
+    update = _make_callback_update(
+        data=data, chat_id=chat_id, thread_id=thread_id, chat_type=chat_type
+    )
     query = update.callback_query
     await handle_recovery_callback(query, 100, query.data, update, ctx)
     return query
@@ -477,7 +487,19 @@ class TestRecoveryFreshCallback:
         recovery_env.router.bind_thread.assert_called_once_with(
             100, 42, "@canonical", window_name="project", chat_id=-100999
         )
-        recovery_env.router.set_group_chat_id.assert_called_once_with(100, 42, -100999)
+
+    async def test_fresh_binds_private_chat_scope(self, recovery_env) -> None:
+        await _tap(
+            f"{CB_RECOVERY_FRESH}@0",
+            _make_context(_recovery_user_data()),
+            chat_id=100,
+            chat_type="private",
+        )
+
+        recovery_env.router.bind_thread.assert_called_once_with(
+            100, 42, "@5", window_name="project", chat_id=100
+        )
+        recovery_env.router.set_group_chat_id.assert_not_called()
 
     async def test_fresh_forwards_pending_message_and_clears_state(
         self, recovery_env
