@@ -605,6 +605,31 @@ class TestTopicProvisioning:
         )
         assert router.iter_topic_provisionings() == []
 
+    def test_confirmed_absent_topic_unbinds_only_exact_binding(
+        self, router: ThreadRouter
+    ) -> None:
+        router.bind_thread(100, 42, "dead", chat_id=-999)
+        router.bind_thread(100, 43, "keep", chat_id=-999)
+        claim = router.begin_topic_provisioning(
+            100,
+            -999,
+            thread_id=42,
+            target_id="replacement",
+            kind="replacement",
+        )
+
+        assert (
+            router.abort_topic_provisioning(
+                claim.claim_id,
+                target_confirmed_absent=False,
+                topic_confirmed_absent=True,
+            )
+            == claim
+        )
+        assert router.get_window_for_chat_thread(-999, 42) is None
+        assert router.get_window_for_chat_thread(-999, 43) == "keep"
+        assert list(router.iter_retired_topics()) == []
+
     def test_multi_chat_claims_and_restart_have_no_ttl(
         self, router: ThreadRouter
     ) -> None:

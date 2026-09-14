@@ -128,6 +128,297 @@ async def test_creation_changed_during_probe_is_not_deleted():
     client.delete_forum_topic.assert_not_awaited()
 
 
+async def test_deleted_topic_is_unbound_and_recreated_for_live_target():
+    router, _claim = _restored_claim(previous_target_id="@dead")
+    client = AsyncMock()
+
+    async def recreate(
+        _client,
+        chat_id,
+        target_id,
+        topic_name,
+        *,
+        user_id,
+        propagate_retry_after,
+    ):
+        fresh = router.begin_topic_provisioning(
+            user_id,
+            chat_id,
+            target_id=target_id,
+            kind="topic_for_target",
+        )
+        router.attach_provisioning_topic(fresh.claim_id, 77)
+        return router.commit_topic_provisioning(fresh.claim_id, window_name=topic_name)
+
+    with (
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.window_presence",
+            new_callable=AsyncMock,
+            side_effect=[True, True],
+        ),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.probe_topic_exists",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.create_topic_in_chat",
+            side_effect=recreate,
+        ) as create,
+    ):
+        assert await recover_topic_provisioning(client, router=router) == {
+            "recreated": 1
+        }
+
+    assert router.get_window_for_chat_thread(-100, 42) is None
+    assert router.get_window_for_chat_thread(-100, 77) == "@2"
+    assert not router.iter_topic_provisionings()
+    assert not list(router.iter_retired_topics())
+    create.assert_awaited_once_with(
+        client,
+        -100,
+        "@2",
+        "@2",
+        user_id=1,
+        propagate_retry_after=True,
+    )
+
+
+async def test_deleted_topic_recreation_uses_cached_window_name():
+    router, _claim = _restored_claim(previous_target_id="@dead")
+    router.window_display_names["@2"] = "cached-project"
+    client = AsyncMock()
+
+    async def recreate(
+        _client,
+        _chat_id,
+        _target_id,
+        _topic_name,
+        *,
+        user_id,
+        propagate_retry_after,
+    ):
+        return True
+
+    with (
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.window_presence",
+            new_callable=AsyncMock,
+            side_effect=[True, True],
+        ),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.probe_topic_exists",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.create_topic_in_chat",
+            side_effect=recreate,
+        ) as create,
+    ):
+        assert await recover_topic_provisioning(client, router=router) == {
+            "recreated": 1
+        }
+
+    create.assert_awaited_once_with(
+        client,
+        -100,
+        "@2",
+        "cached-project",
+        user_id=1,
+        propagate_retry_after=True,
+    )
+
+
+async def test_deleted_topic_preserves_existing_target_binding():
+    router, _claim = _restored_claim()
+    router.bind_thread(1, 77, "@2", chat_id=-100)
+    client = AsyncMock()
+    with (
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.window_presence",
+            new_callable=AsyncMock,
+            side_effect=[True, True],
+        ),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.probe_topic_exists",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.create_topic_in_chat",
+            new_callable=AsyncMock,
+        ) as create,
+    ):
+        assert await recover_topic_provisioning(client, router=router) == {
+            "released": 1
+        }
+
+    assert router.get_window_for_chat_thread(-100, 42) is None
+    assert router.get_window_for_chat_thread(-100, 77) == "@2"
+    create.assert_not_awaited()
+
+
+async def test_existing_target_binding_blocks_commit_of_present_topic():
+    router, claim = _restored_claim()
+    router.bind_thread(1, 77, "@2", chat_id=-100)
+    client = AsyncMock()
+    with (
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.window_presence",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.probe_topic_exists",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+    ):
+        assert await recover_topic_provisioning(client, router=router) == {
+            "unresolved": 1
+        }
+
+    assert router.iter_topic_provisionings() == [claim]
+    assert router.get_window_for_chat_thread(-100, 77) == "@2"
+    assert router.get_window_for_chat_thread(-100, 42) is None
+
+
+async def test_unknown_topic_probe_retains_claim():
+    router, claim = _restored_claim()
+    client = AsyncMock()
+    with (
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.window_presence",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.probe_topic_exists",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.create_topic_in_chat",
+            new_callable=AsyncMock,
+        ) as create,
+    ):
+        assert await recover_topic_provisioning(client, router=router) == {
+            "unresolved": 1
+        }
+
+    assert router.iter_topic_provisionings() == [claim]
+    create.assert_not_awaited()
+
+
+async def test_claim_changed_during_topic_probe_is_protected():
+    router, claim = _restored_claim()
+    client = AsyncMock()
+
+    async def probe(*_args, **_kwargs):
+        router.attach_provisioning_target(claim.claim_id, "@3")
+        return False
+
+    with (
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.window_presence",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.probe_topic_exists",
+            side_effect=probe,
+        ),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.create_topic_in_chat",
+            new_callable=AsyncMock,
+        ) as create,
+    ):
+        assert await recover_topic_provisioning(client, router=router) == {"changed": 1}
+
+    assert router.iter_topic_provisionings()[0].target_id == "@3"
+    create.assert_not_awaited()
+
+
+async def test_retry_after_stops_recovery_batch_without_settling_claims():
+    router, first = _restored_claim()
+    second = router.begin_topic_provisioning(
+        1, -100, thread_id=43, target_id="@3", kind="target_for_topic"
+    )
+    router.mark_provisioning_uncertain(second.claim_id)
+    client = AsyncMock()
+    with (
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.window_presence",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as presence,
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.probe_topic_exists",
+            new_callable=AsyncMock,
+            side_effect=RetryAfter(60),
+        ),
+    ):
+        assert await recover_topic_provisioning(client, router=router) == {
+            "rate_limited": 1
+        }
+
+    presence.assert_awaited_once_with("@2", None)
+    assert [item.claim_id for item in router.iter_topic_provisionings()] == [
+        first.claim_id,
+        second.claim_id,
+    ]
+
+
+async def test_retry_after_during_real_recreation_stops_recovery_batch():
+    router, _first = _restored_claim()
+    second = router.begin_topic_provisioning(
+        1, -100, thread_id=43, target_id="@3", kind="target_for_topic"
+    )
+    router.mark_provisioning_uncertain(second.claim_id)
+    client = AsyncMock()
+    client.create_forum_topic.side_effect = RetryAfter(60)
+
+    with (
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.window_presence",
+            new_callable=AsyncMock,
+            side_effect=[True, True],
+        ),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.probe_topic_exists",
+            new_callable=AsyncMock,
+            return_value=False,
+        ) as probe,
+        patch(
+            "ccgram.handlers.topics.topic_orchestration.thread_router",
+            router,
+        ),
+        patch("ccgram.handlers.topics.topic_orchestration.session_manager"),
+        patch(
+            "ccgram.handlers.topics.topic_orchestration._topic_create_retry_until",
+            {},
+        ) as retry_until,
+        patch(
+            "ccgram.handlers.topics.topic_orchestration.time.monotonic",
+            return_value=100.0,
+        ),
+    ):
+        assert await recover_topic_provisioning(client, router=router) == {
+            "rate_limited": 1
+        }
+
+    probe.assert_awaited_once()
+    client.create_forum_topic.assert_awaited_once_with(
+        chat_id=-100,
+        name="@2",
+    )
+    assert [item.claim_id for item in router.iter_topic_provisionings()] == [
+        second.claim_id,
+    ]
+    assert retry_until[-100] > 100.0
+
+
 async def test_failed_replacement_preserves_previous_binding():
     router, _claim = _restored_claim(previous_target_id="@1")
     client = AsyncMock()

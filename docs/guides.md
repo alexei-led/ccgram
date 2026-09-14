@@ -392,6 +392,8 @@ CCGram accepts Herdr protocols 14–22 without warnings. Regular operations and 
 
 Readiness is checked with public `ping`. Unknown future protocol numbers warn but do not prevent compatible operations, and extra response fields are ignored. Missing identities, malformed responses, unavailable methods, and transport errors remain failures, never evidence that a session ended. Requests have bounded timeouts and frame sizes; mutation requests are not automatically replayed after a failure. A stopped or unreachable server still prevents startup. The Herdr CLI itself may still require a matching server for commands issued outside CCGram.
 
+Hooks that invoke a bare `ccgram` use the executable on the agent's `PATH`, even when the bot runs from a development checkout. Upgrade that installation too (`uv tool upgrade ccgram` for a uv tool install). An old hook executable can create no session mapping while the newer bot still shows terminal status, leaving a topic without transcript messages. To bind Codex hooks to the checkout's interpreter instead, run `uv run ccgram hook --install --provider codex` from the checkout.
+
 ### Differences from tmux
 
 herdr advertises its own capabilities through the seam; the behavioral consequences a user sees:

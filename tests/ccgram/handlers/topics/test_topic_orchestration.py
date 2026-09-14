@@ -463,6 +463,46 @@ class TestHandleNewWindow:
             chat_id=-100500, name="my-project"
         )
 
+    async def test_retry_after_can_propagate_after_cleanup(self) -> None:
+        router = ThreadRouter(
+            schedule_save=lambda: None,
+            has_window_state=lambda _window_id: False,
+        )
+        bot = AsyncMock()
+        bot.create_forum_topic = AsyncMock(side_effect=RetryAfter(27))
+        session = MagicMock()
+
+        with (
+            patch("ccgram.handlers.topics.topic_orchestration.thread_router", router),
+            patch(
+                "ccgram.handlers.topics.topic_orchestration.session_manager", session
+            ),
+            patch(
+                "ccgram.handlers.topics.topic_orchestration._topic_create_retry_until",
+                {},
+            ) as retry_until,
+            patch(
+                "ccgram.handlers.topics.topic_orchestration.time.monotonic",
+                return_value=100.0,
+            ),
+            pytest.raises(RetryAfter),
+        ):
+            await create_topic_in_chat(
+                bot,
+                -100500,
+                "@propagate",
+                "project",
+                user_id=100,
+                propagate_retry_after=True,
+            )
+
+        bot.create_forum_topic.assert_awaited_once_with(
+            chat_id=-100500,
+            name="project",
+        )
+        assert router.iter_topic_provisionings() == []
+        assert retry_until[-100500] > 100.0
+
     async def test_retries_after_backoff_expires(self) -> None:
         event = _make_event()
         bot = AsyncMock()

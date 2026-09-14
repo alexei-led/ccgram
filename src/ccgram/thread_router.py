@@ -827,6 +827,40 @@ class ThreadRouter:
         self._schedule_save()
         return True
 
+    def _discard_confirmed_absent_topic(self, claim: TopicProvisioning) -> None:
+        """Remove only the exact local binding for a proven-dead topic."""
+        assert claim.thread_id is not None
+        scoped_key = (claim.user_id, claim.chat_id, claim.thread_id)
+        if scoped_key in self.chat_thread_bindings:
+            self.unbind_thread(
+                claim.user_id,
+                claim.thread_id,
+                chat_id=claim.chat_id,
+                retirement_reason="remote_deleted",
+            )
+        elif (
+            self.thread_bindings.get(claim.user_id, {}).get(claim.thread_id) is not None
+            and self.group_chat_ids.get(f"{claim.user_id}:{claim.thread_id}")
+            == claim.chat_id
+        ):
+            self.unbind_thread(
+                claim.user_id,
+                claim.thread_id,
+                retirement_reason="remote_deleted",
+            )
+        self.group_chat_ids.pop(
+            f"{claim.user_id}:{claim.thread_id}:{claim.chat_id}", None
+        )
+        short_key = f"{claim.user_id}:{claim.thread_id}"
+        if self.group_chat_ids.get(short_key) == claim.chat_id:
+            self.group_chat_ids.pop(short_key, None)
+        for retired in tuple(self._retired_topics):
+            if (
+                retired.chat_id == claim.chat_id
+                and retired.thread_id == claim.thread_id
+            ):
+                self.discard_retired_topic(retired)
+
     def abort_topic_provisioning(
         self,
         claim_id: str,
@@ -838,9 +872,12 @@ class ThreadRouter:
 
         A no-topic ``topic_for_target`` failure can release with explicit proof
         that no forum topic was created, even when its terminal target remains
-        alive.  Any ambiguous outcome remains durable and is marked uncertain;
-        the current owner stays attached until it explicitly calls
-        ``mark_provisioning_uncertain`` after stopping the flow.
+        alive.  A claim with an attached thread can also release when that
+        exact Telegram topic is proven absent; its exact binding and retired
+        cleanup record are removed. Any ambiguous outcome remains durable and
+        is marked uncertain; the current owner stays attached until it
+        explicitly calls ``mark_provisioning_uncertain`` after stopping the
+        flow.
         """
         try:
             canonical_claim_id = self._validate_provisioning_claim_id(claim_id)
@@ -854,10 +891,17 @@ class ThreadRouter:
         if not isinstance(topic_confirmed_absent, bool):
             raise TypeError("topic_confirmed_absent must be a bool")
 
-        can_release = target_confirmed_absent or (
-            topic_confirmed_absent
-            and claim.thread_id is None
-            and claim.kind == "topic_for_target"
+        topic_was_confirmed_absent = (
+            topic_confirmed_absent and claim.thread_id is not None
+        )
+        can_release = (
+            target_confirmed_absent
+            or topic_was_confirmed_absent
+            or (
+                topic_confirmed_absent
+                and claim.thread_id is None
+                and claim.kind == "topic_for_target"
+            )
         )
         if not can_release:
             if claim.uncertain:
@@ -874,7 +918,9 @@ class ThreadRouter:
         )
         self._topic_provisionings.pop(claim.claim_id, None)
         self._owned_provisioning_claims.discard(claim.claim_id)
-        if claim.thread_id is not None and active_window is None:
+        if topic_was_confirmed_absent:
+            self._discard_confirmed_absent_topic(claim)
+        elif claim.thread_id is not None and active_window is None:
             self._retire_topic(
                 claim.user_id,
                 claim.chat_id,

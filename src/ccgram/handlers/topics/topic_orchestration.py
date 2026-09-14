@@ -652,8 +652,13 @@ async def create_topic_in_chat(  # noqa: C901
     topic_name: str,
     *,
     user_id: int | None = None,
+    propagate_retry_after: bool = False,
 ) -> bool:
-    """Create and bind one topic, returning whether it succeeded."""
+    """Create and bind one topic, returning whether it succeeded.
+
+    Recovery callers may propagate flood-control responses after the normal
+    claim cleanup and chat backoff have been recorded.
+    """
     if chat_id > 0:
         try:
             bot_user = await client.get_me()
@@ -734,6 +739,8 @@ async def create_topic_in_chat(  # noqa: C901
         raise
     except Exception as exc:  # noqa: BLE001
         _handle_topic_creation_error(claim_id, chat_id, window_id, exc)
+        if propagate_retry_after and isinstance(exc, RetryAfter):
+            raise
         return False
 
     return _commit_topic_provisioning(
