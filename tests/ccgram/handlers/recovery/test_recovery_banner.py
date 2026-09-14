@@ -1,3 +1,5 @@
+import asyncio
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -11,9 +13,11 @@ from ccgram.handlers.callback_data import (
     CB_RECOVERY_FRESH,
     CB_RECOVERY_RESUME,
 )
+from ccgram.thread_router import ThreadRouter
 from ccgram.handlers.recovery.recovery_banner import (
     RecoveryBanner,
     RecoveryMode,
+    _create_and_bind_window,
     _recovery_cwd_or_report,
     render_banner,
 )
@@ -239,3 +243,180 @@ class TestStaleRecoveryOffer:
         from ccgram.handlers.recovery.recovery_banner import _stale_recovery_offer
 
         assert await _stale_recovery_offer("") is None
+
+
+@pytest.fixture()
+def create_env():
+    with (
+        patch(f"{_RC}.tmux_manager") as tmux,
+        patch(f"{_RC}.thread_router") as router,
+        patch(f"{_RC}.session_manager") as session,
+        patch(f"{_RC}.safe_edit", new_callable=AsyncMock) as edit,
+        patch(f"{_RC}.get_provider") as get_provider,
+        patch(f"{_RC}.resolve_launch_command", return_value="claude"),
+        patch(
+            f"{_RC}._stale_recovery_offer", new_callable=AsyncMock, return_value=None
+        ),
+        patch(f"{_RC}.PTBTelegramClient") as client_factory,
+    ):
+        provider = get_provider.return_value
+        provider.capabilities.name = "claude"
+        provider.capabilities.supports_hook = False
+        router.resolve_chat_id.return_value = -100
+        router.begin_topic_provisioning.return_value = SimpleNamespace(
+            claim_id="claim-1"
+        )
+        router.commit_topic_provisioning.return_value = True
+        tmux.create_window = AsyncMock(return_value=(True, "created", "project", "@5"))
+        tmux.kill_window = AsyncMock(return_value=True)
+        client_factory.return_value.edit_forum_topic = AsyncMock()
+        yield SimpleNamespace(
+            tmux=tmux,
+            router=router,
+            session=session,
+            edit=edit,
+            provider=provider,
+            client=client_factory.return_value,
+        )
+
+
+def _create_query() -> tuple[AsyncMock, MagicMock]:
+    query = AsyncMock()
+    query.message = MagicMock()
+    query.message.chat.id = -100
+    query.message.chat.type = "supergroup"
+    context = MagicMock()
+    context.user_data = {}
+    context.bot = AsyncMock()
+    return query, context
+
+
+class TestRecoveryProvisioning:
+    async def test_replacement_keeps_old_binding_until_commit(self, create_env) -> None:
+        query, context = _create_query()
+
+        await _create_and_bind_window(
+            query,
+            100,
+            42,
+            "/tmp/project",
+            context,
+            old_window_id="@0",
+        )
+
+        create_env.router.begin_topic_provisioning.assert_called_once_with(
+            100,
+            -100,
+            thread_id=42,
+            previous_target_id="@0",
+            kind="replacement",
+        )
+        create_env.router.unbind_thread.assert_not_called()
+        create_env.router.commit_topic_provisioning.assert_called_once_with(
+            "claim-1", window_name="project"
+        )
+
+
+class TestRecoveryProbeCancellation:
+    async def test_cancelled_stale_offer_releases_claim_preserves_old_binding_and_allows_retry(
+        self,
+    ) -> None:
+        router = ThreadRouter(
+            schedule_save=lambda: None,
+            has_window_state=lambda _window_id: True,
+        )
+        router.bind_thread(100, 42, "@0", chat_id=-100)
+        query, context = _create_query()
+
+        with (
+            patch(f"{_RC}.thread_router", router),
+            patch(f"{_RC}.session_manager") as session,
+            patch(f"{_RC}.tmux_manager") as tmux,
+            patch(
+                f"{_RC}._stale_recovery_offer",
+                new_callable=AsyncMock,
+                side_effect=asyncio.CancelledError,
+            ),
+        ):
+            tmux.create_window = AsyncMock()
+            with pytest.raises(asyncio.CancelledError):
+                await _create_and_bind_window(
+                    query,
+                    100,
+                    42,
+                    "/tmp/project",
+                    context,
+                    old_window_id="@0",
+                )
+
+        assert router.get_window_for_chat_thread(-100, 42) == "@0"
+        assert router.iter_topic_provisionings() == []
+        tmux.create_window.assert_not_awaited()
+
+        retry = router.begin_topic_provisioning(
+            100,
+            -100,
+            thread_id=42,
+            previous_target_id="@0",
+            kind="replacement",
+        )
+        assert retry.claim_id
+        router.abort_topic_provisioning(retry.claim_id, target_confirmed_absent=True)
+        assert session.flush_state.call_count == 2
+
+    async def test_failed_replacement_preserves_old_binding(self, create_env) -> None:
+        query, context = _create_query()
+        create_env.tmux.create_window = AsyncMock(
+            return_value=(False, "Directory does not exist: /gone", "", "")
+        )
+
+        result = await _create_and_bind_window(
+            query,
+            100,
+            42,
+            "/gone",
+            context,
+            old_window_id="@0",
+        )
+
+        assert result is False
+        create_env.router.unbind_thread.assert_not_called()
+        create_env.router.abort_topic_provisioning.assert_called_once_with(
+            "claim-1", target_confirmed_absent=True
+        )
+
+    async def test_cancellation_cleans_completed_replacement_target(
+        self, create_env
+    ) -> None:
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def create_window(*_args, **_kwargs):
+            started.set()
+            await release.wait()
+            return True, "created", "project", "@5"
+
+        create_env.tmux.create_window = AsyncMock(side_effect=create_window)
+        query, context = _create_query()
+        task = asyncio.create_task(
+            _create_and_bind_window(
+                query,
+                100,
+                42,
+                "/tmp/project",
+                context,
+                old_window_id="@0",
+            )
+        )
+        await started.wait()
+        task.cancel()
+        release.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        create_env.tmux.kill_window.assert_awaited_once_with("@5")
+        create_env.router.abort_topic_provisioning.assert_called_once_with(
+            "claim-1", target_confirmed_absent=True
+        )
+        create_env.router.unbind_thread.assert_not_called()

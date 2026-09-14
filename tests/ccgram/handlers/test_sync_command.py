@@ -1,9 +1,10 @@
 import contextlib
 import asyncio
+from collections.abc import Callable
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from telegram.error import BadRequest, TelegramError
+from telegram.error import BadRequest, RetryAfter, TelegramError
 
 from ccgram.multiplexer.base import WindowRef
 from ccgram.session import SessionManager
@@ -12,6 +13,7 @@ from ccgram.handlers.sync_command import _run_audit
 from ccgram.handlers.callback_data import CB_SYNC_DISMISS, CB_SYNC_FIX
 from ccgram.handlers.sync_command import (
     _cleanup_retired_topics,
+    _cleanup_stale_topics,
     _close_ghost_topics,
     _format_report,
     _probe_dead_topics,
@@ -25,6 +27,7 @@ from ccgram.handlers.sync_command import (
 )
 from ccgram.handlers.topics.topic_deletion import cleanup_retired_topics
 from ccgram.session import AuditIssue, AuditResult
+from ccgram.telegram_client import FakeTelegramClient
 from ccgram.telegram_rate_limiter import NO_RETRY_RATE_LIMIT_ARGS
 from ccgram.thread_router import RetiredTopic, ThreadRouter
 
@@ -52,6 +55,9 @@ def _patch_deps():
         )
         mock_tr.iter_thread_bindings.return_value = []
         mock_tr.has_active_topic.return_value = False
+        mock_tr.has_topic_provisioning.return_value = False
+        mock_tr.has_target_provisioning.return_value = False
+        mock_tr.iter_topic_provisionings.return_value = []
         mock_tr.begin_topic_deletion.return_value = True
         mock_sm.window_states = {}
         mock_tm.list_windows = AsyncMock(return_value=[])
@@ -66,6 +72,25 @@ def _audit(*issues: AuditIssue, total: int = 3, live: int = 3) -> AuditResult:
     return AuditResult(
         issues=list(issues), total_bindings=total, live_binding_count=live
     )
+
+
+class _FakeReconciliationBackend:
+    def __init__(
+        self,
+        listings: list[list[WindowRef] | None],
+        on_call: Callable[[int], None] | None = None,
+    ) -> None:
+        self._listings = listings
+        self._on_call = on_call
+        self._call_count = 0
+
+    async def list_windows_for_reconciliation(self) -> list[WindowRef] | None:
+        self._call_count += 1
+        if self._on_call is not None:
+            self._on_call(self._call_count)
+        if len(self._listings) > 1:
+            return self._listings.pop(0)
+        return self._listings[0]
 
 
 class TestFormatReport:
@@ -605,9 +630,9 @@ class TestSyncCommand:
         ):
             await sync_command(update, MagicMock())
             mock_reply.assert_awaited_once_with(update.message, "🔍 State audit…")
-            mock_sm.audit_state.assert_called_once()
-            mock_edit.assert_awaited_once()
-            assert "2 topics bound" in mock_edit.call_args.args[1]
+            assert mock_sm.audit_state.call_count == 2
+            assert mock_edit.await_count == 2
+            assert "2 topics bound" in mock_edit.call_args_list[-1].args[1]
 
         assert mock_logger.info.call_args_list[0].args == (
             "State audit command started",
@@ -659,8 +684,8 @@ class TestSyncCommand:
         ):
             await sync_command(update, MagicMock())
 
-        mock_edit.assert_awaited_once()
-        assert "Telegram topic check incomplete" in mock_edit.call_args.args[1]
+        assert mock_edit.await_count == 2
+        assert "Telegram topic check incomplete" in mock_edit.call_args_list[-1].args[1]
 
     async def test_audit_does_not_mutate_live_topic_names(self, _patch_deps) -> None:
         mock_sm, _, _, mock_tr, mock_tm, _ = _patch_deps
@@ -691,6 +716,273 @@ class TestSyncCommand:
             await sync_command(update, MagicMock())
 
         mock_sync_topic_name.assert_not_awaited()
+
+
+class TestSyncAutomaticCleanup:
+    @staticmethod
+    def _router() -> ThreadRouter:
+        return ThreadRouter(
+            schedule_save=lambda: None,
+            has_window_state=lambda _window_id: False,
+        )
+
+    @staticmethod
+    def _ghost_issue(window_id: str = "@gone") -> AuditIssue:
+        return AuditIssue(
+            "ghost_binding",
+            f"user:100 thread:42 window:{window_id} (proj)",
+            fixable=True,
+        )
+
+    async def _run_sync(
+        self,
+        router: ThreadRouter,
+        backend: _FakeReconciliationBackend,
+        audits: list[AuditResult],
+        client: FakeTelegramClient,
+    ) -> AsyncMock:
+        session = MagicMock()
+        session.audit_state.side_effect = audits
+        update = MagicMock()
+        update.effective_user = MagicMock(id=100)
+        update.message = MagicMock()
+        update.message.chat.id = -999
+        update.message.message_thread_id = None
+        update.get_bot.return_value = client
+
+        async def listing(_backend: object) -> list[WindowRef] | None:
+            return await backend.list_windows_for_reconciliation()
+
+        with (
+            patch("ccgram.handlers.sync_command.session_manager", session),
+            patch("ccgram.handlers.sync_command.thread_router", router),
+            patch("ccgram.handlers.sync_command.tmux_manager", backend),
+            patch(
+                "ccgram.handlers.sync_command.list_windows_for_reconciliation",
+                new=listing,
+            ),
+            patch("ccgram.handlers.topics.topic_deletion.session_manager"),
+            patch(
+                "ccgram.handlers.sync_command.clear_topic_state",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "ccgram.handlers.sync_command.safe_reply",
+                new_callable=AsyncMock,
+                return_value=MagicMock(),
+            ),
+            patch(
+                "ccgram.handlers.sync_command.safe_edit",
+                new_callable=AsyncMock,
+            ) as edit,
+        ):
+            await sync_command(update, MagicMock())
+        return edit
+
+    async def test_sync_deletes_confirmed_ghost_before_final_report(self) -> None:
+        router = self._router()
+        router.bind_thread(100, 42, "@gone", chat_id=-999)
+        backend = _FakeReconciliationBackend([[], [], []])
+        client = FakeTelegramClient()
+        audits = [
+            _audit(self._ghost_issue(), total=1, live=0),
+            _audit(total=0, live=0),
+        ]
+
+        edit = await self._run_sync(router, backend, audits, client)
+
+        assert client.call_count("delete_forum_topic") == 1
+        assert router.get_window_for_chat_thread(-999, 42) is None
+        assert list(router.iter_retired_topics()) == []
+        assert edit.call_args_list[0].args[1] == "🧹 Cleaning up stale topics…"
+        assert "Removed 1 stale topic" in edit.call_args_list[-1].args[1]
+        assert "Fixed 1 issue" in edit.call_args_list[-1].args[1]
+
+    async def test_sync_keeps_alive_ghost_binding(self) -> None:
+        router = self._router()
+        router.bind_thread(100, 42, "@alive", chat_id=-999)
+        backend = _FakeReconciliationBackend(
+            [[WindowRef(window_id="@alive", window_name="proj", cwd="/tmp")]]
+        )
+        client = FakeTelegramClient()
+        client.returns["send_message"] = MagicMock(message_id=1000)
+        issue = self._ghost_issue("@alive")
+        audits = [_audit(issue, total=1, live=0), _audit(issue, total=1, live=0)]
+
+        edit = await self._run_sync(router, backend, audits, client)
+
+        assert client.call_count("delete_forum_topic") == 0
+        assert router.get_window_for_chat_thread(-999, 42) == "@alive"
+        assert "ghost binding" in edit.call_args_list[-1].args[1]
+
+    async def test_sync_keeps_rebound_ghost_binding(self) -> None:
+        router = self._router()
+        router.bind_thread(100, 42, "@gone", chat_id=-999)
+
+        def rebind_on_presence(call_number: int) -> None:
+            if call_number == 2:
+                router.bind_thread(100, 42, "@rebound", chat_id=-999)
+
+        backend = _FakeReconciliationBackend([[], [], []], rebind_on_presence)
+        client = FakeTelegramClient()
+        client.returns["send_message"] = MagicMock(message_id=1000)
+        replacement = self._ghost_issue("@rebound")
+        audits = [
+            _audit(self._ghost_issue(), total=1, live=0),
+            _audit(replacement, total=1, live=0),
+        ]
+
+        edit = await self._run_sync(router, backend, audits, client)
+
+        assert client.call_count("delete_forum_topic") == 0
+        assert router.get_window_for_chat_thread(-999, 42) == "@rebound"
+        assert "ghost binding" in edit.call_args_list[-1].args[1]
+
+    async def test_sync_does_nothing_when_backend_listing_is_unknown(self) -> None:
+        router = self._router()
+        router.bind_thread(100, 42, "@unknown", chat_id=-999)
+        backend = _FakeReconciliationBackend([None])
+        client = FakeTelegramClient()
+
+        edit = await self._run_sync(
+            router,
+            backend,
+            [_audit(self._ghost_issue("@unknown"), total=1, live=0)],
+            client,
+        )
+
+        assert client.call_count("delete_forum_topic") == 0
+        assert router.get_window_for_chat_thread(-999, 42) == "@unknown"
+        assert "Multiplexer unavailable" in edit.call_args_list[-1].args[1]
+
+    async def test_sync_notfound_is_idempotent_on_repeat(self) -> None:
+        router = self._router()
+        router.bind_thread(100, 42, "@gone", chat_id=-999)
+        backend = _FakeReconciliationBackend([[]])
+        client = FakeTelegramClient()
+        client.set_side_effect(
+            "delete_forum_topic", [BadRequest("Message thread not found")]
+        )
+
+        await self._run_sync(
+            router,
+            backend,
+            [_audit(self._ghost_issue(), total=1, live=0), _audit(total=0, live=0)],
+            client,
+        )
+        await self._run_sync(
+            router,
+            backend,
+            [_audit(total=0, live=0), _audit(total=0, live=0)],
+            client,
+        )
+
+        assert client.call_count("delete_forum_topic") == 1
+        assert list(router.iter_retired_topics()) == []
+
+    async def test_sync_keeps_failed_delete_pending_for_retry(self) -> None:
+        router = self._router()
+        router.bind_thread(100, 42, "@pending", chat_id=-999)
+        backend = _FakeReconciliationBackend([[]])
+        client = FakeTelegramClient()
+        client.set_side_effect("delete_forum_topic", [TelegramError("denied")])
+        client.set_side_effect("close_forum_topic", [TelegramError("denied")])
+        issue = self._ghost_issue("@pending")
+
+        await self._run_sync(
+            router,
+            backend,
+            [_audit(issue, total=1, live=0), _audit(total=0, live=0)],
+            client,
+        )
+        await self._run_sync(
+            router,
+            backend,
+            [_audit(total=0, live=0), _audit(total=0, live=0)],
+            client,
+        )
+
+        assert client.call_count("delete_forum_topic") == 1
+        assert client.call_count("close_forum_topic") == 1
+        pending = list(router.iter_retired_topics())
+        assert len(pending) == 1
+        assert pending[0].cleanup_eligible is True
+
+    async def test_rate_limit_stops_ghost_batch_and_preserves_remainder(
+        self, _patch_deps
+    ) -> None:
+        _, _, _, mock_tr, mock_tm, _ = _patch_deps
+        router = self._router()
+        router.bind_thread(100, 42, "@first", chat_id=-999)
+        router.bind_thread(100, 43, "@second", chat_id=-999)
+        mock_tm.list_windows_for_reconciliation.return_value = []
+        client = FakeTelegramClient()
+        client.set_side_effect("delete_forum_topic", [RetryAfter(10)])
+        issues = [
+            self._ghost_issue("@first"),
+            AuditIssue(
+                "ghost_binding",
+                "user:100 thread:43 window:@second (proj)",
+                fixable=True,
+            ),
+        ]
+
+        with (
+            patch("ccgram.handlers.sync_command.thread_router", router),
+            patch(
+                "ccgram.handlers.sync_command.clear_topic_state",
+                new_callable=AsyncMock,
+            ),
+            patch("ccgram.handlers.topics.topic_deletion.session_manager"),
+        ):
+            closed, manual, stopped = await _close_ghost_topics(client, issues)
+
+        assert (closed, manual, stopped) == (0, 1, True)
+        assert client.call_count("delete_forum_topic") == 1
+        assert router.get_window_for_chat_thread(-999, 42) is None
+        assert router.get_window_for_chat_thread(-999, 43) == "@second"
+        assert len(list(router.iter_retired_topics())) == 1
+        mock_tr.assert_not_called()
+
+    async def test_rate_limit_skips_retired_sweep_after_ghost_failure(
+        self, _patch_deps
+    ) -> None:
+        _, _, _, _, mock_tm, _ = _patch_deps
+        router = self._router()
+        router.bind_thread(100, 42, "@first", chat_id=-999)
+        router.bind_thread(100, 43, "@retired", chat_id=-999)
+        router.unbind_thread(
+            100,
+            43,
+            chat_id=-999,
+            retirement_reason="system_replacement",
+            cleanup_eligible=True,
+        )
+        mock_tm.list_windows_for_reconciliation.return_value = []
+        client = FakeTelegramClient()
+        client.set_side_effect("delete_forum_topic", [RetryAfter(10)])
+        issues = [
+            self._ghost_issue("@first"),
+            AuditIssue("retired_topic", "reason:system_replacement", fixable=True),
+        ]
+
+        with (
+            patch("ccgram.handlers.sync_command.thread_router", router),
+            patch(
+                "ccgram.handlers.sync_command.clear_topic_state",
+                new_callable=AsyncMock,
+            ),
+            patch("ccgram.handlers.topics.topic_deletion.session_manager"),
+        ):
+            closed, manual, retired_outcomes = await _cleanup_stale_topics(
+                client, issues
+            )
+
+        assert (closed, manual) == (0, 1)
+        assert retired_outcomes == {}
+        assert client.call_count("delete_forum_topic") == 1
+        assert router.get_window_for_chat_thread(-999, 42) is None
+        assert [topic.thread_id for topic in router.iter_retired_topics()] == [43, 42]
 
 
 class TestSyncFix:
@@ -1187,9 +1479,9 @@ class TestPrivateTopicSyncLifecycle:
             ) as clear_state,
             patch("ccgram.handlers.topics.topic_deletion.session_manager"),
         ):
-            closed, manual_close = await _close_ghost_topics(client, [issue])
+            closed, manual_close, stopped = await _close_ghost_topics(client, [issue])
 
-        assert (closed, manual_close) == (1, 0)
+        assert (closed, manual_close, stopped) == (1, 0, False)
         client.delete_forum_topic.assert_awaited_once_with(
             100,
             42,
@@ -1251,11 +1543,12 @@ class TestDeadTopicRecreation:
             new_callable=AsyncMock,
         ) as mock_handle:
             recreated = await _recreate_dead_topics(bot, issues)
-            closed, manual_close = await _close_ghost_topics(bot, issues)
+            closed, manual_close, stopped = await _close_ghost_topics(bot, issues)
 
         assert recreated == 0
         assert closed == 0
         assert manual_close == 0
+        assert stopped is False
         mock_handle.assert_not_called()
         mock_tr.unbind_thread.assert_not_called()
         bot.delete_forum_topic.assert_not_called()
@@ -1440,9 +1733,11 @@ class TestSyncFixRereadsBeforeDestroying:
 
         client = AsyncMock()
         with patch("ccgram.handlers.sync_command.thread_router", router):
-            closed, manual = await _close_ghost_topics(client, [self._ghost_issue()])
+            closed, manual, stopped = await _close_ghost_topics(
+                client, [self._ghost_issue()]
+            )
 
-        assert (closed, manual) == (0, 0)
+        assert (closed, manual, stopped) == (0, 0, False)
         client.delete_forum_topic.assert_not_awaited()
         client.close_forum_topic.assert_not_awaited()
         assert router.get_window_for_chat_thread(-999, 42) == "@2"
@@ -1457,12 +1752,61 @@ class TestSyncFixRereadsBeforeDestroying:
 
         client = AsyncMock()
         with patch("ccgram.handlers.sync_command.thread_router", router):
-            closed, manual = await _close_ghost_topics(client, [self._ghost_issue()])
+            closed, manual, stopped = await _close_ghost_topics(
+                client, [self._ghost_issue()]
+            )
 
-        assert (closed, manual) == (0, 0)
+        assert (closed, manual, stopped) == (0, 0, False)
         client.delete_forum_topic.assert_not_awaited()
         client.close_forum_topic.assert_not_awaited()
         assert router.get_window_for_chat_thread(-999, 42) == "@2"
+
+    @pytest.mark.parametrize("begin_during_probe", [False, True])
+    async def test_pending_creation_defers_sync_deletion(
+        self, _patch_deps, begin_during_probe
+    ):
+        from ccgram.handlers.topics.topic_orchestration import (
+            clear_pending_creation,
+            register_pending_creation,
+        )
+
+        router = self._router()
+        router.bind_thread(100, 42, "@2", chat_id=-999)
+        client = AsyncMock()
+        staged = False
+
+        async def probe(*_args):
+            nonlocal staged
+            if begin_during_probe and not staged:
+                register_pending_creation("@2", ttl_s=300)
+                staged = True
+            return False
+
+        if not begin_during_probe:
+            register_pending_creation("@2", ttl_s=300)
+        try:
+            with (
+                patch("ccgram.handlers.sync_command.thread_router", router),
+                patch(
+                    "ccgram.multiplexer.reconciliation.window_presence",
+                    side_effect=probe,
+                ),
+                patch(
+                    "ccgram.handlers.sync_command.clear_topic_state",
+                    new_callable=AsyncMock,
+                ),
+                patch("ccgram.handlers.topics.topic_deletion.session_manager"),
+            ):
+                outcome = await _close_ghost_topics(client, [self._ghost_issue()])
+                assert outcome == (0, 0, False)
+                client.delete_forum_topic.assert_not_awaited()
+                assert router.get_window_for_chat_thread(-999, 42) == "@2"
+                clear_pending_creation("@2")
+                outcome = await _close_ghost_topics(client, [self._ghost_issue()])
+                assert outcome == (1, 0, False)
+                client.delete_forum_topic.assert_awaited_once()
+        finally:
+            clear_pending_creation("@2")
 
     async def test_ghost_topic_is_removed_when_confirmed_gone(
         self, _patch_deps
@@ -1481,9 +1825,12 @@ class TestSyncFixRereadsBeforeDestroying:
             ),
             patch("ccgram.handlers.topics.topic_deletion.session_manager"),
         ):
-            closed, _manual = await _close_ghost_topics(client, [self._ghost_issue()])
+            closed, _manual, stopped = await _close_ghost_topics(
+                client, [self._ghost_issue()]
+            )
 
         assert closed == 1
+        assert stopped is False
         client.delete_forum_topic.assert_awaited_once_with(
             -999, 42, rate_limit_args=NO_RETRY_RATE_LIMIT_ARGS
         )
@@ -1508,9 +1855,11 @@ class TestSyncFixRereadsBeforeDestroying:
             ),
             patch("ccgram.handlers.sync_command.thread_router", router),
         ):
-            closed, manual = await _close_ghost_topics(client, [self._ghost_issue()])
+            closed, manual, stopped = await _close_ghost_topics(
+                client, [self._ghost_issue()]
+            )
 
-        assert (closed, manual) == (0, 0)
+        assert (closed, manual, stopped) == (0, 0, False)
         client.delete_forum_topic.assert_not_awaited()
         client.close_forum_topic.assert_not_awaited()
         assert router.get_window_for_chat_thread(-999, 42) == "@new"
@@ -1533,9 +1882,11 @@ class TestSyncFixRereadsBeforeDestroying:
             ),
             patch("ccgram.handlers.topics.topic_deletion.session_manager"),
         ):
-            closed, manual = await _close_ghost_topics(client, [self._ghost_issue()])
+            closed, manual, stopped = await _close_ghost_topics(
+                client, [self._ghost_issue()]
+            )
 
-        assert (closed, manual) == (0, 1)
+        assert (closed, manual, stopped) == (0, 1, False)
         client.delete_forum_topic.assert_awaited_once_with(
             -999, 42, rate_limit_args=NO_RETRY_RATE_LIMIT_ARGS
         )
@@ -1565,7 +1916,7 @@ class TestSyncFixRereadsBeforeDestroying:
             ),
             patch("ccgram.handlers.topics.topic_deletion.session_manager"),
         ):
-            closed, manual = await _close_ghost_topics(
+            closed, manual, stopped = await _close_ghost_topics(
                 client,
                 [
                     AuditIssue(
@@ -1576,7 +1927,7 @@ class TestSyncFixRereadsBeforeDestroying:
                 ],
             )
 
-        assert (closed, manual) == (1, 0)
+        assert (closed, manual, stopped) == (1, 0, False)
         client.delete_forum_topic.assert_awaited_once_with(
             -100, 42, rate_limit_args=NO_RETRY_RATE_LIMIT_ARGS
         )

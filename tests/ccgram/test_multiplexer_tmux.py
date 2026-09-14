@@ -11,6 +11,7 @@ Covers:
 from __future__ import annotations
 
 from dataclasses import asdict
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -24,6 +25,7 @@ from ccgram.multiplexer.base import (
 )
 from ccgram.config import config
 from ccgram.multiplexer.tmux import TmuxManager
+from ccgram.window_resolver import LiveWindow, is_window_id, resolve_stale_ids
 
 
 @pytest.fixture
@@ -48,10 +50,37 @@ def test_capabilities_full_snapshot(mgr: TmuxManager) -> None:
         "supports_event_stream": False,
         "native_worktrees": False,
         "supports_display_name_rebind": True,
-        "recovers_stale_ids_by_name": True,
+        "recovers_stale_ids_by_name": False,
         "supports_workspace_selection": False,
         "native_topic_targets": False,
     }
+
+
+def test_tmux_does_not_rebind_a_missing_id_by_display_name(
+    mgr: TmuxManager,
+) -> None:
+    old_id = "@0"
+    new_id = "@1"
+    state = SimpleNamespace(window_name="project")
+    window_states = {old_id: state}
+    thread_bindings = {100: {42: old_id}}
+    display_names = {old_id: "project"}
+
+    changed = resolve_stale_ids(
+        [LiveWindow(new_id, "project")],
+        window_states,
+        thread_bindings,
+        {},
+        display_names,
+        ids_stable=mgr.capabilities.ids_stable_across_restart,
+        window_id_predicate=is_window_id,
+        recover_stale_ids_by_name=mgr.capabilities.recovers_stale_ids_by_name,
+    )
+
+    assert changed is False
+    assert window_states == {old_id: state}
+    assert thread_bindings == {100: {42: old_id}}
+    assert display_names == {old_id: "project"}
 
 
 class _FakeWindow:

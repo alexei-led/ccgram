@@ -76,7 +76,9 @@ Each Telegram topic maps to one tmux window. With Herdr, it maps instead to one 
 
 CCGram losslessly combines only eligible consecutive transcript text deliveries for the same chat, topic, window, role, and source session. It preserves each item's formatting and keeps tool updates, media, status updates, and other boundaries separate. The status bubble shows queue progress; at a severe backlog (100 pending items or an oldest item aged 5 minutes), its inline **Jump to live** action requires confirmation and posts a skipped-range notice. The raw provider transcript is never deleted. Delivery is at-least-once, so a Telegram failure or restart before acknowledgement can repeat a transcript message rather than silently losing it.
 
-Topics for confirmed closed terminal sessions are deleted after the dead-session timer (10 minutes by default). Failed deletions survive restarts and are retried automatically. `/sync` also offers bulk cleanup of locally recorded closed topics; active or rebound topics are protected. It cannot discover topics whose IDs CCGram no longer knows. See the [Sync cleanup guide](docs/guides.md#sync-and-retired-topic-cleanup) for timing and Telegram admin permissions.
+Topics and their history are deleted as soon as CCGram confirms that the terminal session has closed. Failed deletions survive restarts and are retried automatically. `/sync` immediately cleans up locally known stale and retired topics; active or rebound topics are protected. It cannot discover topics whose IDs CCGram no longer knows. See the [Sync cleanup guide](docs/guides.md#sync-and-retired-topic-cleanup) for retries and Telegram admin permissions.
+
+Topics remain protected while their sessions are being created, including slow startup and recovery flows. Creation ownership is saved before remote operations; after a restart, CCGram checks the recorded target before binding or deleting its topic. An unavailable backend or an unresolved creation outcome never counts as a closed session.
 
 ---
 
@@ -118,7 +120,7 @@ Open the configured group or private bot chat. Create a topic and send a message
 
 ### Herdr setup
 
-CCGram supports Herdr socket protocols **14–20**. Later and otherwise unknown protocol versions are attempted with a warning for forward compatibility; individual command failures still surface if the protocol is not usable. Telegram rate limiting uses a protected PTB adapter seam and is therefore tested against and constrained to `python-telegram-bot>=22.6,<22.7`. Install Herdr's integration before launching an agent that needs a native session identity:
+CCGram supports Herdr protocols **14–22** and uses the public socket API for operations, so a newer CLI can coexist with an older running server. Set `HERDR_SOCKET_PATH` for an explicit endpoint; otherwise `herdr status --json` discovers it. Future protocol numbers are attempted with a warning, extra response fields are tolerated, and required session identities remain strictly validated. Telegram rate limiting uses a protected PTB adapter seam and is therefore tested against and constrained to `python-telegram-bot>=22.6,<22.7`. Install Herdr's integration before launching an agent that needs a native session identity:
 
 ```bash
 herdr integration install pi

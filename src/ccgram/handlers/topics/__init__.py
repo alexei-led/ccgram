@@ -2,7 +2,7 @@
 
 Bundles the modules that drive Telegram-topic ↔ tmux-window binding:
 ``topic_orchestration`` (new-window/new-topic flow, retries),
-``topic_lifecycle`` (autoclose timers, unbound TTL, topic close/edit
+``topic_lifecycle`` (unbound TTL, topic close/edit
 handlers), ``directory_browser`` (directory + window picker UI),
 ``directory_callbacks`` (browser callback dispatcher), and
 ``window_callbacks`` (window picker callback dispatcher).
@@ -34,7 +34,6 @@ from .directory_browser import (
 from .directory_callbacks import handle_directory_callback
 from .new_command import new_command
 from .topic_lifecycle import (
-    check_autoclose_timers,
     check_unbound_window_ttl,
     probe_topic_existence,
     prune_stale_state,
@@ -67,7 +66,6 @@ __all__ = [
     "build_window_picker",
     "build_worktree_confirm",
     "build_worktree_picker",
-    "check_autoclose_timers",
     "check_unbound_window_ttl",
     "clear_browse_state",
     "clear_worktree_state",

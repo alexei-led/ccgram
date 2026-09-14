@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 
 import structlog
-from telegram.error import BadRequest, NetworkError, RetryAfter, TelegramError, TimedOut
+from telegram.error import NetworkError, RetryAfter, TelegramError, TimedOut
 
 from ... import window_query
 from ...config import config
@@ -34,8 +34,6 @@ from ...telegram_client import TelegramClient
 from ...thread_router import thread_router
 from ...multiplexer import multiplexer as tmux_manager
 from ...multiplexer.base import canonical_window_id
-from ..status.topic_emoji import strip_emoji_prefix
-from .topic_probe import probe_topic_exists
 
 logger = structlog.get_logger()
 
@@ -52,7 +50,7 @@ _TOPIC_CREATE_TRANSIENT_BACKOFF_S = 1.0
 _TOPIC_CREATE_FAILURE_BACKOFF_S = 30.0
 
 
-# Serializes every auto-create/rebind attempt for one window. Session-monitor,
+# Serializes every auto-create attempt for one window. Session-monitor,
 # startup adoption, and /sync can otherwise create duplicate topics concurrently.
 @dataclass(slots=True)
 class _WindowTopicLock:
@@ -197,20 +195,58 @@ def _is_registered_pending_creation(window_id: str) -> bool:
     return True
 
 
+def _has_durable_target_provisioning(window_id: str) -> bool:
+    """Return whether durable state protects this exact backend target."""
+    if thread_router.has_target_provisioning(window_id) is True:
+        return True
+
+    resolved_window_id = window_query.resolve_window_alias(window_id)
+    if thread_router.has_target_provisioning(resolved_window_id) is True:
+        return True
+
+    try:
+        claims = iter(thread_router.iter_topic_provisionings())
+    except AttributeError, TypeError:
+        return False
+    wanted_ids = {
+        canonical_window_id(window_id),
+        canonical_window_id(resolved_window_id),
+    }
+    for claim in claims:
+        for candidate in (
+            getattr(claim, "target_id", None),
+            getattr(claim, "previous_target_id", None),
+        ):
+            if not isinstance(candidate, str) or not candidate:
+                continue
+            if canonical_window_id(candidate) in wanted_ids:
+                return True
+            if (
+                canonical_window_id(window_query.resolve_window_alias(candidate))
+                in wanted_ids
+            ):
+                return True
+    return False
+
+
 def _is_pending_user_creation(window_id: str) -> bool:
     """Return True iff auto-adoption must wait for a directory flow.
 
     A transaction covers the short interval before a backend returns a target
     ID. Once the ID exists, the per-window marker owns it until binding ends.
     """
-    return bool(_pending_creation_transactions) or _is_registered_pending_creation(
-        window_id
+    return (
+        bool(_pending_creation_transactions)
+        or _is_registered_pending_creation(window_id)
+        or _has_durable_target_provisioning(window_id)
     )
 
 
 def is_pending_creation(window_id: str) -> bool:
     """Return whether this exact window is protected from stale-state cleanup."""
-    return _is_registered_pending_creation(window_id)
+    return _is_registered_pending_creation(
+        window_id
+    ) or _has_durable_target_provisioning(window_id)
 
 
 async def _auto_detect_provider(window_id: str) -> None:
@@ -331,7 +367,285 @@ def _bind_topic_to_user(
     thread_router.set_group_chat_id(user_id, thread_id, chat_id)
 
 
-async def create_topic_in_chat(
+def _flush_provisioning_state() -> None:
+    """Persist provisioning evidence before another async boundary."""
+    session_manager.flush_state()
+
+
+def _claim_id(claim: object) -> str | None:
+    claim_id = getattr(claim, "claim_id", None)
+    return claim_id if isinstance(claim_id, str) else None
+
+
+def _begin_topic_provisioning(
+    owner_id: int, chat_id: int, window_id: str
+) -> str | None:
+    """Claim a target before asking Telegram to create its topic."""
+    try:
+        claim = thread_router.begin_topic_provisioning(
+            owner_id,
+            chat_id,
+            target_id=window_id,
+            kind="topic_for_target",
+        )
+    except (TypeError, ValueError) as exc:
+        logger.info(
+            "Skipping topic creation for window %s in chat %d: %s",
+            window_id,
+            chat_id,
+            exc,
+        )
+        return None
+
+    claim_id = _claim_id(claim)
+    if claim_id is None:
+        logger.error(
+            "Topic provisioning returned an invalid claim for window %s in chat %d",
+            window_id,
+            chat_id,
+        )
+        return None
+    try:
+        _flush_provisioning_state()
+    except Exception:  # noqa: BLE001
+        try:
+            thread_router.abort_topic_provisioning(
+                claim_id,
+                target_confirmed_absent=False,
+                topic_confirmed_absent=True,
+            )
+        except KeyError, TypeError, ValueError:
+            logger.exception(
+                "Could not unwind topic provisioning claim %s after checkpoint failure",
+                claim_id,
+            )
+        try:
+            _flush_provisioning_state()
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Could not persist topic provisioning abort for claim %s",
+                claim_id,
+            )
+        clear_pending_creation(window_id)
+        raise
+    return claim_id
+
+
+def _mark_topic_provisioning_uncertain(claim_id: str) -> None:
+    """Keep a claim durable when the Telegram outcome is ambiguous."""
+    try:
+        thread_router.mark_provisioning_uncertain(claim_id)
+    except KeyError:
+        logger.info("Topic provisioning claim %s was already settled", claim_id)
+    except TypeError, ValueError:
+        logger.exception("Could not mark topic provisioning %s uncertain", claim_id)
+    else:
+        try:
+            _flush_provisioning_state()
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Could not persist uncertain topic provisioning claim %s",
+                claim_id,
+            )
+
+
+def _abort_topic_provisioning(claim_id: str) -> None:
+    """Release a claim after a definitive no-topic creation failure."""
+    try:
+        thread_router.abort_topic_provisioning(
+            claim_id,
+            target_confirmed_absent=False,
+            topic_confirmed_absent=True,
+        )
+    except KeyError:
+        logger.info("Topic provisioning claim %s was already settled", claim_id)
+    except TypeError, ValueError:
+        logger.exception("Could not abort topic provisioning %s", claim_id)
+    else:
+        try:
+            _flush_provisioning_state()
+        except Exception:  # noqa: BLE001
+            logger.exception("Could not persist topic provisioning abort %s", claim_id)
+
+
+def _commit_topic_provisioning(
+    claim_id: str,
+    chat_id: int,
+    window_id: str,
+    topic_name: str,
+    topic: object,
+) -> bool:
+    """Attach the exact Telegram topic and atomically bind the target."""
+    thread_id = getattr(topic, "message_thread_id", None)
+    if not isinstance(thread_id, int) or isinstance(thread_id, bool) or thread_id <= 0:
+        _mark_topic_provisioning_uncertain(claim_id)
+        clear_pending_creation(window_id)
+        logger.error(
+            "Telegram returned an invalid topic for window %s in chat %d",
+            window_id,
+            chat_id,
+        )
+        return False
+
+    try:
+        thread_router.attach_provisioning_topic(claim_id, thread_id)
+    except KeyError, TypeError, ValueError:
+        _mark_topic_provisioning_uncertain(claim_id)
+        clear_pending_creation(window_id)
+        logger.exception(
+            "Could not commit topic provisioning for window %s in chat %d",
+            window_id,
+            chat_id,
+        )
+        return False
+
+    try:
+        _flush_provisioning_state()
+    except Exception:  # noqa: BLE001
+        _mark_topic_provisioning_uncertain(claim_id)
+        clear_pending_creation(window_id)
+        logger.exception(
+            "Could not persist exact topic for window %s in chat %d",
+            window_id,
+            chat_id,
+        )
+        raise
+
+    try:
+        committed = thread_router.commit_topic_provisioning(
+            claim_id,
+            window_name=topic_name,
+        )
+    except KeyError, TypeError, ValueError:
+        _mark_topic_provisioning_uncertain(claim_id)
+        clear_pending_creation(window_id)
+        logger.exception(
+            "Could not commit topic provisioning for window %s in chat %d",
+            window_id,
+            chat_id,
+        )
+        return False
+
+    try:
+        _flush_provisioning_state()
+    except Exception:  # noqa: BLE001
+        _mark_topic_provisioning_uncertain(claim_id)
+        clear_pending_creation(window_id)
+        logger.exception(
+            "Could not persist committed topic for window %s in chat %d",
+            window_id,
+            chat_id,
+        )
+        raise
+
+    if not committed:
+        _mark_topic_provisioning_uncertain(claim_id)
+        clear_pending_creation(window_id)
+        logger.warning(
+            "Topic provisioning for window %s in chat %d is incomplete",
+            window_id,
+            chat_id,
+        )
+        return False
+
+    _topic_create_retry_until.pop(chat_id, None)
+    clear_pending_creation(window_id)
+    logger.info(
+        "Auto-created topic '%s' (thread=%d) in chat %d for window %s",
+        topic_name,
+        thread_id,
+        chat_id,
+        window_id,
+    )
+    return True
+
+
+def _handle_topic_creation_error(
+    claim_id: str,
+    chat_id: int,
+    window_id: str,
+    exc: BaseException,
+) -> None:
+    """Persist a definitive or ambiguous Telegram creation outcome."""
+    if isinstance(exc, (TimedOut, NetworkError)):
+        _topic_create_retry_until[chat_id] = (
+            time.monotonic() + _TOPIC_CREATE_FAILURE_BACKOFF_S
+        )
+        _mark_topic_provisioning_uncertain(claim_id)
+        logger.warning(
+            "Topic creation outcome is uncertain for window %s in chat %d: %s",
+            window_id,
+            chat_id,
+            exc,
+        )
+    elif isinstance(exc, RetryAfter):
+        retry_after_seconds = (
+            exc.retry_after
+            if isinstance(exc.retry_after, int)
+            else int(exc.retry_after.total_seconds())
+        )
+        retry_after_seconds = max(1, retry_after_seconds)
+        _topic_create_retry_until[chat_id] = (
+            time.monotonic() + retry_after_seconds + _TOPIC_CREATE_RETRY_BUFFER_SECONDS
+        )
+        _abort_topic_provisioning(claim_id)
+        logger.warning(
+            "Flood control creating topic for window %s in chat %d, backing off %ss",
+            window_id,
+            chat_id,
+            retry_after_seconds,
+        )
+    elif isinstance(exc, TelegramError):
+        _abort_topic_provisioning(claim_id)
+        logger.exception(
+            "Failed to create topic for window %s in chat %d",
+            window_id,
+            chat_id,
+        )
+    else:
+        _mark_topic_provisioning_uncertain(claim_id)
+        logger.exception(
+            "Unexpected topic creation failure for window %s in chat %d",
+            window_id,
+            chat_id,
+        )
+    clear_pending_creation(window_id)
+
+
+def _settle_topic_creation_task(
+    task: asyncio.Task[object],
+    claim_id: str,
+    chat_id: int,
+    window_id: str,
+    topic_name: str,
+) -> bool:
+    """Settle a completed shielded Telegram request, including callbacks."""
+    try:
+        topic = task.result()
+    except asyncio.CancelledError as exc:
+        _handle_topic_creation_error(claim_id, chat_id, window_id, exc)
+        return False
+    except Exception as exc:  # noqa: BLE001
+        _handle_topic_creation_error(claim_id, chat_id, window_id, exc)
+        return False
+    try:
+        return _commit_topic_provisioning(
+            claim_id,
+            chat_id,
+            window_id,
+            topic_name,
+            topic,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "Could not settle late topic creation for window %s in chat %d",
+            window_id,
+            chat_id,
+        )
+        return False
+
+
+async def create_topic_in_chat(  # noqa: C901
     client: TelegramClient,
     chat_id: int,
     window_id: str,
@@ -383,154 +697,52 @@ async def create_topic_in_chat(
 
     register_pending_creation(window_id, now=now)
     try:
-        topic = await _create_forum_topic_with_retry(client, chat_id, topic_name)
-        _topic_create_retry_until.pop(chat_id, None)
-        logger.info(
-            "Auto-created topic '%s' (thread=%d) in chat %d for window %s",
-            topic_name,
-            topic.message_thread_id,
-            chat_id,
-            window_id,
-        )
-        _bind_topic_to_user(
-            owner_id, topic.message_thread_id, window_id, chat_id, topic_name
-        )
+        claim_id = _begin_topic_provisioning(owner_id, chat_id, window_id)
+    except Exception:  # noqa: BLE001
         clear_pending_creation(window_id)
-        return True
-    except RetryAfter as e:
-        retry_after_seconds = (
-            e.retry_after
-            if isinstance(e.retry_after, int)
-            else int(e.retry_after.total_seconds())
-        )
-        retry_after_seconds = max(1, retry_after_seconds)
-        _topic_create_retry_until[chat_id] = (
-            time.monotonic() + retry_after_seconds + _TOPIC_CREATE_RETRY_BUFFER_SECONDS
-        )
+        raise
+    if claim_id is None:
         clear_pending_creation(window_id)
-        logger.warning(
-            "Flood control creating topic for window %s in chat %d, backing off %ss",
-            window_id,
-            chat_id,
-            retry_after_seconds,
-        )
-        return False
-    except TelegramError as exc:
-        clear_pending_creation(window_id)
-        if isinstance(exc, NetworkError) and not isinstance(exc, BadRequest):
-            _topic_create_retry_until[chat_id] = (
-                time.monotonic() + _TOPIC_CREATE_FAILURE_BACKOFF_S
-            )
-        logger.exception(
-            "Failed to create topic for window %s in chat %d",
-            window_id,
-            chat_id,
-        )
         return False
 
-
-async def _stale_same_name_bindings(
-    event: NewWindowEvent, clean_topic_name: str
-) -> list[tuple[int, int, str, int]] | None:
-    """Bindings with this topic name whose window is confirmed gone.
-
-    ``None`` when any candidate's liveness could not be confirmed: the caller
-    would hand that topic to a different window, and find_window_by_id answers
-    None both for a window that is gone and for a backend that could not be
-    reached. There is no rush to rebind, so unknown abandons the decision.
-    """
-    # Lazy: importing the reconciliation seam at module load forms a cycle.
-    from ...multiplexer.reconciliation import window_presence
-
-    matches: list[tuple[int, int, str, int]] = []
-    for user_id, thread_id, old_window_id in list(thread_router.iter_thread_bindings()):
-        if old_window_id == event.window_id:
-            continue
-        display_name = strip_emoji_prefix(thread_router.get_display_name(old_window_id))
-        if display_name != clean_topic_name:
-            continue
-        present = await window_presence(old_window_id, tmux_manager)
-        if present is None:
-            logger.warning(
-                "Cannot confirm window %s is gone; not rebinding %s",
-                old_window_id,
-                event.window_id,
-            )
-            return None
-        if present:
-            continue
-        chat_id = thread_router.resolve_chat_id(user_id, thread_id)
-        matches.append((user_id, thread_id, old_window_id, chat_id))
-    return matches
-
-
-async def _rebind_existing_topic_by_name(
-    event: NewWindowEvent, client: TelegramClient, topic_name: str
-) -> bool:
-    """Bind a stale same-name topic to a newly discovered manual window."""
-    clean_topic_name = strip_emoji_prefix(topic_name)
-    matches = await _stale_same_name_bindings(event, clean_topic_name)
-    if matches is None:
-        return False
-
-    if len(matches) != 1:
-        if len(matches) > 1:
-            logger.warning(
-                "Multiple stale same-name topics for window %s (%s); not rebinding",
-                event.window_id,
-                clean_topic_name,
-            )
-        return False
-
-    user_id, thread_id, old_window_id, chat_id = matches[0]
-    exists = await probe_topic_exists(client, chat_id, thread_id)
-    if exists is False:
-        thread_router.unbind_thread(user_id, thread_id)
-        logger.info(
-            "Dropped dead same-name topic thread %d for stale window %s",
-            thread_id,
-            old_window_id,
-        )
-        return False
-    if exists is None:
-        logger.info(
-            "Could not probe same-name topic thread %d for stale window %s; not rebinding",
-            thread_id,
-            old_window_id,
-        )
-        return False
-
-    # The topic probe above is a Telegram round trip, and the old window was
-    # judged gone before it. If it came back in that window, this bind would
-    # take its live topic away, so the verdict is re-read immediately before
-    # the write. Unknown refuses too: there is no rush to rebind.
-    # Lazy: importing the reconciliation seam at module load forms a cycle.
-    from ...multiplexer.reconciliation import window_presence
-
-    if await window_presence(old_window_id, tmux_manager) is not False:
-        logger.info(
-            "Old window %s is no longer confirmed gone; not rebinding %s",
-            old_window_id,
-            event.window_id,
-        )
-        return False
-
-    thread_router.bind_thread(
-        user_id,
-        thread_id,
-        event.window_id,
-        window_name=topic_name,
-        chat_id=chat_id,
+    creation_task: asyncio.Task[object] = asyncio.create_task(
+        _create_forum_topic_with_retry(client, chat_id, topic_name)
     )
-    thread_router.set_group_chat_id(user_id, thread_id, chat_id)
-    logger.info(
-        "Rebound existing topic thread %d from stale window %s to new window %s (%s)",
-        thread_id,
-        old_window_id,
-        event.window_id,
-        clean_topic_name,
+    try:
+        topic = await asyncio.shield(creation_task)
+    except asyncio.CancelledError:
+        if creation_task.done():
+            _settle_topic_creation_task(
+                creation_task,
+                claim_id,
+                chat_id,
+                window_id,
+                topic_name,
+            )
+        else:
+            _mark_topic_provisioning_uncertain(claim_id)
+            creation_task.add_done_callback(
+                lambda task: _settle_topic_creation_task(
+                    task,
+                    claim_id,
+                    chat_id,
+                    window_id,
+                    topic_name,
+                )
+            )
+            clear_pending_creation(window_id)
+        raise
+    except Exception as exc:  # noqa: BLE001
+        _handle_topic_creation_error(claim_id, chat_id, window_id, exc)
+        return False
+
+    return _commit_topic_provisioning(
+        claim_id,
+        chat_id,
+        window_id,
+        topic_name,
+        topic,
     )
-    return True
 
 
 async def handle_new_window(
@@ -575,13 +787,6 @@ async def _handle_new_window_locked(
     await _auto_detect_provider(event.window_id)
 
     topic_name = event.window_name or Path(event.cwd).name or event.window_id
-    if (
-        target_user_id is None
-        and tmux_manager.capabilities.supports_display_name_rebind
-        and await _rebind_existing_topic_by_name(event, client, topic_name)
-    ):
-        return True
-
     seen_chats = (
         {target_chat_id}
         if target_chat_id is not None
@@ -590,16 +795,19 @@ async def _handle_new_window_locked(
     if not seen_chats:
         return False
 
-    results = [
-        await create_topic_in_chat(
-            client,
-            chat_id,
-            event.window_id,
-            topic_name,
-            user_id=target_user_id,
+    results: list[bool] = []
+    for chat_id in seen_chats:
+        if results and _is_pending_user_creation(event.window_id):
+            break
+        results.append(
+            await create_topic_in_chat(
+                client,
+                chat_id,
+                event.window_id,
+                topic_name,
+                user_id=target_user_id,
+            )
         )
-        for chat_id in seen_chats
-    ]
     return any(results)
 
 

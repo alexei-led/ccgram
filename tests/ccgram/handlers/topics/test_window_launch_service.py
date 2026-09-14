@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from collections.abc import Iterator
 from dataclasses import dataclass
+from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
@@ -294,6 +296,10 @@ def _launch_env(
         mux.capabilities.native_topic_targets = True
         router.get_window_for_thread.return_value = None
         router.resolve_chat_id.return_value = -100999
+        router.begin_topic_provisioning.return_value = SimpleNamespace(
+            claim_id="claim-1"
+        )
+        router.commit_topic_provisioning.return_value = True
         session_map.wait_for_session_map_entry = AsyncMock(return_value=True)
         registry.get.return_value.capabilities = MagicMock(
             supports_hook=supports_hook,
@@ -334,7 +340,13 @@ class TestLaunchWindowSuccess:
             await launch_window(query, context, _request(cwd=str(tmp_path)))
 
         m.mux.create_topic_target.assert_awaited_once()
-        m.router.bind_thread.assert_called_once()
+        m.router.begin_topic_provisioning.assert_called_once_with(
+            100, -100999, thread_id=42, kind="target_for_topic"
+        )
+        m.router.attach_provisioning_target.assert_called_once_with("claim-1", "@5")
+        m.router.commit_topic_provisioning.assert_called_once_with(
+            "claim-1", window_name="my-win"
+        )
         m.orchestration.pending_creation_transaction.assert_called_once_with()
         m.orchestration.register_pending_creation.assert_called_once_with("@5")
         m.orchestration.clear_pending_creation.assert_called_once_with("@5")
@@ -427,6 +439,95 @@ class TestLaunchWindowFailure:
         assert PENDING_THREAD_ID not in user_data
         assert PENDING_THREAD_TEXT not in user_data
 
+    async def test_create_failure_from_backend_rpc_is_quarantined(
+        self, tmp_path
+    ) -> None:
+        with _launch_env() as m:
+            m.mux.create_topic_target = AsyncMock(
+                side_effect=RuntimeError("multiplexer socket unavailable")
+            )
+            result = await launch_window(
+                _make_query(),
+                _make_context({PENDING_THREAD_ID: 42}),
+                _request(cwd=str(tmp_path)),
+            )
+
+        assert result.success is False
+        m.router.abort_topic_provisioning.assert_not_called()
+        m.router.mark_provisioning_uncertain.assert_called_once_with("claim-1")
+
+    async def test_initial_checkpoint_failure_does_not_start_backend(
+        self, tmp_path
+    ) -> None:
+        with _launch_env() as m:
+            m.session.flush_state.side_effect = RuntimeError("state disk unavailable")
+            with pytest.raises(RuntimeError, match="state disk unavailable"):
+                await launch_window(
+                    _make_query(),
+                    _make_context({PENDING_THREAD_ID: 42}),
+                    _request(cwd=str(tmp_path)),
+                )
+
+        m.mux.create_topic_target.assert_not_awaited()
+        m.router.abort_topic_provisioning.assert_called_once_with(
+            "claim-1", target_confirmed_absent=True
+        )
+
+    async def test_attach_checkpoint_failure_keeps_completed_target_quarantined(
+        self, tmp_path
+    ) -> None:
+        flush_calls = 0
+
+        def flush_state() -> None:
+            nonlocal flush_calls
+            flush_calls += 1
+            if flush_calls == 2:
+                raise RuntimeError("attach checkpoint failed")
+
+        with _launch_env() as m:
+            m.session.flush_state.side_effect = flush_state
+            with pytest.raises(RuntimeError, match="attach checkpoint failed"):
+                await launch_window(
+                    _make_query(),
+                    _make_context({PENDING_THREAD_ID: 42}),
+                    _request(cwd=str(tmp_path)),
+                )
+
+        m.mux.kill_window.assert_not_awaited()
+        m.router.abort_topic_provisioning.assert_not_called()
+        m.router.mark_provisioning_uncertain.assert_called_once_with("claim-1")
+
+    async def test_cancellation_settles_completed_creation_and_cleans_target(
+        self, tmp_path
+    ) -> None:
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def create_target(*_args, **_kwargs):
+            started.set()
+            await release.wait()
+            return TopicTargetResult("@5", "my-win", "@5")
+
+        with _launch_env() as m:
+            m.mux.create_topic_target = AsyncMock(side_effect=create_target)
+            task = asyncio.create_task(
+                launch_window(
+                    _make_query(),
+                    _make_context({PENDING_THREAD_ID: 42}),
+                    _request(cwd=str(tmp_path)),
+                )
+            )
+            await started.wait()
+            task.cancel()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        m.mux.kill_window.assert_awaited_once_with("@5")
+        m.router.abort_topic_provisioning.assert_called_once_with(
+            "claim-1", target_confirmed_absent=True
+        )
+
     async def test_post_create_stamp_error_closes_target_before_reraising(
         self, tmp_path
     ) -> None:
@@ -441,11 +542,8 @@ class TestLaunchWindowFailure:
 
         m.mux.kill_window.assert_awaited_once_with("@5")
         m.orchestration.clear_pending_creation.assert_called_once_with("@5")
-        m.router.unbind_thread.assert_called_once_with(
-            100,
-            42,
-            retirement_reason="system_replacement",
-            cleanup_eligible=True,
+        m.router.abort_topic_provisioning.assert_called_once_with(
+            "claim-1", target_confirmed_absent=True
         )
 
     async def test_session_map_timeout_closes_target_before_unbinding_late_hook(
@@ -454,7 +552,14 @@ class TestLaunchWindowFailure:
         """A late hook cannot orphan the just-created target after timeout."""
         cleanup_order: list[str] = []
 
-        with _launch_env(supports_hook=True) as m:
+        with (
+            _launch_env(supports_hook=True) as m,
+            patch(
+                "ccgram.multiplexer.reconciliation.window_presence",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+        ):
             m.mux.kill_window = AsyncMock(
                 side_effect=lambda target_id: (
                     cleanup_order.append(f"close:{target_id}") or True
@@ -475,34 +580,62 @@ class TestLaunchWindowFailure:
             )
 
         assert result.success is False
-        m.mux.kill_window.assert_awaited_once_with("@5")
-        m.router.unbind_thread.assert_called_once_with(
-            100,
-            42,
-            retirement_reason="system_replacement",
-            cleanup_eligible=True,
+        m.mux.kill_window.assert_not_awaited()
+        m.router.abort_topic_provisioning.assert_called_once_with(
+            "claim-1", target_confirmed_absent=True
         )
-        # The target is closed before the pending guard and binding are removed,
-        # so a late hook cannot adopt it into an orphan topic.
-        assert cleanup_order == ["close:@5", "clear-pending", "unbind"]
+        assert cleanup_order == ["clear-pending"]
         assert "❌" in m.edit.call_args.args[1]
 
-    async def test_session_map_timeout_keeps_guard_and_binding_when_close_fails(
-        self, tmp_path
+    @pytest.mark.parametrize("presence", [True, None], ids=["live", "unknown"])
+    async def test_session_map_timeout_quarantines_target_without_killing(
+        self, presence, tmp_path
     ) -> None:
-        with _launch_env(supports_hook=True) as m:
-            m.mux.kill_window = AsyncMock(return_value=False)
+        user_data = {PENDING_THREAD_ID: 42, PENDING_THREAD_TEXT: "hi"}
+        with (
+            _launch_env(supports_hook=True) as m,
+            patch(
+                "ccgram.multiplexer.reconciliation.window_presence",
+                new_callable=AsyncMock,
+                return_value=presence,
+            ),
+        ):
             m.session_map.wait_for_session_map_entry = AsyncMock(return_value=False)
 
             result = await launch_window(
                 _make_query(),
-                _make_context({PENDING_THREAD_ID: 42}),
+                _make_context(user_data),
                 _request(cwd=str(tmp_path)),
             )
 
-        assert not result.success and "cleanup failed" in (result.error_message or "")
-        m.orchestration.clear_pending_creation.assert_not_called()
-        m.router.unbind_thread.assert_not_called()
+        assert not result.success and "still starting" in (result.error_message or "")
+        m.mux.kill_window.assert_not_awaited()
+        m.router.abort_topic_provisioning.assert_not_called()
+        m.router.mark_provisioning_uncertain.assert_called_once_with("claim-1")
+        m.orchestration.clear_pending_creation.assert_called_once_with("@5")
+        assert user_data[PENDING_THREAD_ID] == 42
+        assert user_data[PENDING_THREAD_TEXT] == "hi"
+
+    async def test_session_map_timeout_does_not_clear_pending_text_when_presence_unknown(
+        self, tmp_path
+    ) -> None:
+        with _launch_env(supports_hook=True) as m:
+            m.session_map.wait_for_session_map_entry = AsyncMock(return_value=False)
+
+            with patch(
+                "ccgram.multiplexer.reconciliation.window_presence",
+                new_callable=AsyncMock,
+                return_value=None,
+            ):
+                result = await launch_window(
+                    _make_query(),
+                    _make_context({PENDING_THREAD_ID: 42}),
+                    _request(cwd=str(tmp_path)),
+                )
+
+        assert not result.success
+        m.mux.kill_window.assert_not_awaited()
+        m.router.mark_provisioning_uncertain.assert_called_once_with("claim-1")
 
     async def test_pending_text_send_failure_reports_back_to_the_topic(
         self, tmp_path

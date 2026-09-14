@@ -498,8 +498,8 @@ def resolve_stale_ids(
 
     - True (tmux and agterm): window IDs survive a ccgram restart. Old-format
       window-name keys are migrated. Missing IDs are remapped by display name
-      only when ``recover_stale_ids_by_name`` is true (tmux); stable agterm UUIDs
-      are never redirected to a different same-named session.
+      only when ``recover_stale_ids_by_name`` is true. The bundled backends do
+      not opt in, so a new same-named session cannot inherit a missing ID.
     - False: bindings are durable opaque targets. A missing target can be
       temporarily unresolved and multiple live records can be ambiguous, so it
       is intentionally retained without any name, locator, or session-map

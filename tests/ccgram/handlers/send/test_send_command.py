@@ -300,8 +300,11 @@ class TestBuildFileBrowser:
                 if isinstance(cb, str) and cb.startswith(CB_SEND_FILE)
             }
 
-        assert _file_buttons(0)
-        assert _file_buttons(0).isdisjoint(_file_buttons(1))
+        with patch(
+            "ccgram.handlers.send.send_security.is_gitignored", return_value=False
+        ):
+            assert _file_buttons(0)
+            assert _file_buttons(0).isdisjoint(_file_buttons(1))
 
     def test_pagination_controls_only_when_multipage(self, tmp_path: Path) -> None:
         _make_file(tmp_path / "only.txt")

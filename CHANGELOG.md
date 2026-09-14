@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.11.0] - 2026-09-14
+
+### Added
+
+- Persist topic creation ownership and recover interrupted creation after restart without deleting sessions that are still starting.
+- Automatically delete known stale and retired topics through `/sync`, with persistent retries and Telegram rate-limit handling.
+
+### Changed
+
+- Delete topics and their history immediately after confirmed terminal-session closure in Herdr, tmux, and agterm.
+- Keep completed agents' topics open while their terminal sessions remain alive, and create fresh topics for new sessions instead of reusing topics by name.
+- Replace done/dead topic timers with the separate `--unbound-window-ttl` / `UNBOUND_WINDOW_TTL_MINUTES` setting for inactive unbound terminal windows.
+
+### Fixed
+
+- Use Herdr's public JSON socket API for terminal operations and hook identity reads, supporting protocol 22 and tolerating compatible future extensions.
+- Fix unavailable Herdr window listings, `/sync` failures, and the command-mapping startup exception.
+- Protect active, rebound, newly creating, and foreign-backend targets during cleanup.
+- Stop remote creation and deletion when a critical state checkpoint cannot be saved.
+
 ## [4.10.5] - 2026-09-13
 
 ### Fixed

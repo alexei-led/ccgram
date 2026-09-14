@@ -151,8 +151,8 @@ class SessionManager:
         self._persistence.schedule_save()
 
     def flush_state(self) -> None:
-        """Force immediate save. Call on shutdown."""
-        self._persistence.flush()
+        """Force a strict immediate save so checkpoint errors reach callers."""
+        self._persistence.flush(strict=True)
 
     def _is_window_id(self, key: str) -> bool:
         """Check if a key looks like a window ID for the active backend.

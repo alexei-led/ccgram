@@ -83,7 +83,6 @@ class WindowPollState:
 class TopicPollState:
     """Per-topic polling state, keyed by (user_id, thread_id)."""
 
-    autoclose: tuple[str, float] | None = None
     last_typing_sent: float | None = None
 
 

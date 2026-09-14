@@ -236,11 +236,8 @@ class Config:
         self.send_max_results: int = _parse_int_env("CCGRAM_SEND_MAX_RESULTS", 50)
 
     def _init_lifecycle(self) -> None:
-        self.autoclose_done_minutes: int = int(
-            os.getenv("AUTOCLOSE_DONE_MINUTES", "30")
-        )
-        self.autoclose_dead_minutes: int = int(
-            os.getenv("AUTOCLOSE_DEAD_MINUTES", "10")
+        self.unbound_window_ttl_minutes: int = int(
+            os.getenv("UNBOUND_WINDOW_TTL_MINUTES", "30")
         )
         self.pane_lifecycle_notify: bool = os.getenv(
             "CCGRAM_PANE_LIFECYCLE_NOTIFY", ""

@@ -289,7 +289,15 @@ class TestHandleModeSelect:
         mock_tmux.stamp_pane_title.assert_awaited_once_with("@5", "codex")
         mock_sm.set_window_provider.assert_called_once_with("@5", "codex")
         mock_sm.set_window_approval_mode.assert_called_once_with("@5", "yolo")
-        mock_tr.set_group_chat_id.assert_called_once_with(100, 42, -100999)
+        mock_tr.begin_topic_provisioning.assert_called_once_with(
+            100, -100999, thread_id=42, kind="target_for_topic"
+        )
+        mock_tr.attach_provisioning_target.assert_any_call(
+            mock_tr.begin_topic_provisioning.return_value.claim_id, "@5"
+        )
+        mock_tr.commit_topic_provisioning.assert_called_once_with(
+            mock_tr.begin_topic_provisioning.return_value.claim_id, window_name="proj"
+        )
 
     @patch(
         "ccgram.handlers.topics.window_launch_service._accept_yolo_confirmation",

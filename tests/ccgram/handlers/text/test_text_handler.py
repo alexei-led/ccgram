@@ -162,21 +162,6 @@ class TestHandleDeadWindow:
 
         assert result is False
 
-    @patch(f"{_TH}.tmux_manager")
-    async def test_alive_window_clears_stale_autoclose_timer(
-        self, mock_tm: MagicMock
-    ) -> None:
-        lifecycle_strategy.start_autoclose_timer(100, 42, "dead", 100.0)
-        mock_tm.list_windows_for_reconciliation = AsyncMock(
-            return_value=[WindowRef(window_id="@0", window_name="p", cwd="/p")]
-        )
-        message = AsyncMock()
-
-        result = await _handle_dead_window("@0", 100, 42, "hello", {}, message)
-
-        assert result is False
-        assert lifecycle_strategy.get_state(100, 42).autoclose is None
-
     async def test_live_shell_after_agent_exit_shows_recovery(self) -> None:
         # A real ref, not a MagicMock: WindowRef.matches compares ids, and a
         # mock would fail to match and route this through the window-is-gone

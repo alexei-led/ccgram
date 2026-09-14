@@ -1,5 +1,5 @@
 """Tests for polling strategy classes: state management, RC debounce,
-autoclose timers, pane alerts, probe failures, and content-hash caching."""
+pane alerts, probe failures, and content-hash caching."""
 
 import time
 from unittest.mock import patch
@@ -361,38 +361,11 @@ class TestTopicLifecycleStrategy:
     def test_get_state_creates_new(self):
         ts = self.strategy.get_state(1, 42)
         assert isinstance(ts, TopicPollState)
-        assert ts.autoclose is None
 
     def test_clear_state(self):
         self.strategy.get_state(1, 42)
         self.strategy.clear_state(1, 42)
         assert (1, 42) not in self.strategy._states
-
-    def test_start_autoclose_timer(self):
-        self.strategy.start_autoclose_timer(1, 42, "done", 100.0)
-        ts = self.strategy.get_state(1, 42)
-        assert ts.autoclose == ("done", 100.0)
-
-    def test_start_autoclose_timer_does_not_overwrite_same_state(self):
-        self.strategy.start_autoclose_timer(1, 42, "done", 100.0)
-        self.strategy.start_autoclose_timer(1, 42, "done", 200.0)
-        ts = self.strategy.get_state(1, 42)
-        assert ts.autoclose == ("done", 100.0)
-
-    def test_start_autoclose_timer_overwrites_different_state(self):
-        self.strategy.start_autoclose_timer(1, 42, "done", 100.0)
-        self.strategy.start_autoclose_timer(1, 42, "dead", 200.0)
-        ts = self.strategy.get_state(1, 42)
-        assert ts.autoclose == ("dead", 200.0)
-
-    def test_clear_autoclose_timer_when_active(self):
-        self.strategy.start_autoclose_timer(1, 42, "done", 100.0)
-        self.strategy.clear_autoclose_timer(1, 42)
-        ts = self.strategy.get_state(1, 42)
-        assert ts.autoclose is None
-
-    def test_clear_autoclose_timer_nonexistent(self):
-        self.strategy.clear_autoclose_timer(1, 42)
 
     def test_clear_dead_notification(self):
         self.strategy._dead_notified.add((1, 42, "@0"))
@@ -432,16 +405,6 @@ class TestTopicLifecycleStrategy:
         ts.last_typing_sent = 123.0
         self.strategy.clear_typing_state(1, 42)
         assert ts.last_typing_sent is None
-
-    def test_reset_autoclose_state_clears_all(self):
-        self.strategy.start_autoclose_timer(1, 42, "done", 100.0)
-        self.strategy.start_autoclose_timer(2, 43, "dead", 200.0)
-        ws = self.poll_state.get_state("@0")
-        ws.unbound_timer = 50.0
-        self.strategy.reset_autoclose_state()
-        for ts in self.strategy._states.values():
-            assert ts.autoclose is None
-        assert ws.unbound_timer is None
 
     def test_is_typing_throttled_true(self):
         ts = self.strategy.get_state(1, 42)

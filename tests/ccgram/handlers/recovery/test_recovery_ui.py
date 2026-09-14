@@ -472,11 +472,9 @@ class TestRecoveryFreshCallback:
 
         await _tap(f"{CB_RECOVERY_FRESH}@0", _make_context(_recovery_user_data()))
 
-        recovery_env.router.unbind_thread.assert_called_once_with(
-            100,
-            42,
-            retirement_reason="system_replacement",
-            cleanup_eligible=True,
+        recovery_env.router.unbind_thread.assert_not_called()
+        recovery_env.router.begin_topic_provisioning.assert_called_once_with(
+            100, -100999, thread_id=42, kind="replacement", previous_target_id="@0"
         )
         recovery_env.tmux.create_window.assert_called_once_with(
             "/tmp/project", agent_args="", launch_command="claude"
@@ -484,8 +482,11 @@ class TestRecoveryFreshCallback:
         recovery_env.sync.wait_for_session_map_entry.assert_awaited_once_with(
             "@5", timeout=5.0, resolve_window_id=recovery_env.wq.resolve_window_alias
         )
-        recovery_env.router.bind_thread.assert_called_once_with(
-            100, 42, "@canonical", window_name="project", chat_id=-100999
+        recovery_env.router.attach_provisioning_target.assert_any_call(
+            ANY, "@canonical"
+        )
+        recovery_env.router.commit_topic_provisioning.assert_called_once_with(
+            ANY, window_name="project"
         )
 
     async def test_fresh_binds_private_chat_scope(self, recovery_env) -> None:
@@ -496,8 +497,12 @@ class TestRecoveryFreshCallback:
             chat_type="private",
         )
 
-        recovery_env.router.bind_thread.assert_called_once_with(
-            100, 42, "@5", window_name="project", chat_id=100
+        recovery_env.router.begin_topic_provisioning.assert_called_once_with(
+            100, 100, thread_id=42, kind="replacement", previous_target_id="@0"
+        )
+        recovery_env.router.attach_provisioning_target.assert_any_call(ANY, "@5")
+        recovery_env.router.commit_topic_provisioning.assert_called_once_with(
+            ANY, window_name="project"
         )
         recovery_env.router.set_group_chat_id.assert_not_called()
 
@@ -565,8 +570,9 @@ class TestRecoveryContinueCallback:
         recovery_env.tmux.create_window.assert_called_once_with(
             "/tmp/project", agent_args="--continue", launch_command="claude"
         )
-        recovery_env.router.bind_thread.assert_called_once_with(
-            100, 42, "@5", window_name="project", chat_id=-100999
+        recovery_env.router.attach_provisioning_target.assert_any_call(ANY, "@5")
+        recovery_env.router.commit_topic_provisioning.assert_called_once_with(
+            ANY, window_name="project"
         )
 
     @patch(f"{_RC}.scan_sessions_for_cwd", return_value=[_SessionEntry("s1", "x")])
@@ -677,7 +683,10 @@ class TestRecoveryResumePickCallback:
             agent_args=f"--resume {expected_id}",
             launch_command="claude",
         )
-        recovery_env.router.bind_thread.assert_called_once()
+        recovery_env.router.attach_provisioning_target.assert_any_call(ANY, "@5")
+        recovery_env.router.commit_topic_provisioning.assert_called_once_with(
+            ANY, window_name="project"
+        )
 
     @pytest.mark.parametrize(
         ("data", "sessions", "expected_toast"),

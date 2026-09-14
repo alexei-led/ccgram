@@ -476,9 +476,9 @@ class InteractiveUIStrategy:
 
 
 class TopicLifecycleStrategy:
-    """Autoclose timers, dead notification tracking, probe failure state.
+    """Dead notification tracking, typing state, and probe failure state.
 
-    Async lifecycle functions (check_autoclose_timers, probe_topic_existence) live in
+    Async lifecycle functions (probe_topic_existence) live in
     topic_lifecycle.py; handle_dead_window_notification lives in window_tick.py.
     Both access state through this strategy.
     """
@@ -502,34 +502,9 @@ class TopicLifecycleStrategy:
         """Record that a dead notification was sent."""
         self._dead_notified.add((user_id, thread_id, window_id))
 
-    def iter_topic_states(self) -> list[tuple[int, int, TopicPollState]]:
-        """Return list of (user_id, thread_id, state) for all tracked topics."""
-        return [(uid, tid, ts) for (uid, tid), ts in self._states.items()]
-
     def clear_state(self, user_id: int, thread_id: int) -> None:
         """Remove all polling state for a topic."""
         self._states.pop((user_id, thread_id), None)
-
-    def start_autoclose_timer(
-        self, user_id: int, thread_id: int, state: str, now: float
-    ) -> None:
-        """Start or maintain an autoclose timer for done/dead state."""
-        ts = self.get_state(user_id, thread_id)
-        existing = ts.autoclose
-        if existing is None or existing[0] != state:
-            ts.autoclose = (state, now)
-
-    def clear_autoclose_timer(self, user_id: int, thread_id: int) -> None:
-        """Clear autoclose timer for a topic (on cleanup or when active)."""
-        ts = self._states.get((user_id, thread_id))
-        if ts:
-            ts.autoclose = None
-
-    def reset_autoclose_state(self) -> None:
-        """Reset all autoclose tracking (for testing)."""
-        for ts in self._states.values():
-            ts.autoclose = None
-        self._poll_state.reset_all_unbound_timers()
 
     def clear_dead_notification(self, user_id: int, thread_id: int) -> None:
         """Remove dead notification tracking for a topic."""
