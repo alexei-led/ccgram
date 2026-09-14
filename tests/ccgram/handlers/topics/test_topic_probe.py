@@ -44,13 +44,27 @@ async def test_probe_can_propagate_retry_after_from_send() -> None:
         await probe_topic_exists(client, -100, 42, propagate_retry_after=True)
 
 
-async def test_probe_can_propagate_retry_after_from_cleanup() -> None:
+@pytest.mark.parametrize("propagate", [False, True])
+async def test_probe_cleanup_retry_preserves_positive_result(propagate: bool) -> None:
     client = AsyncMock()
     client.send_message.return_value = MagicMock(message_id=99)
-    client.delete_message.side_effect = RetryAfter(60)
+    error = RetryAfter(60)
+    client.delete_message.side_effect = error
+    cleanup_errors: list[RetryAfter] = []
 
-    with pytest.raises(RetryAfter):
-        await probe_topic_exists(client, -100, 42, propagate_retry_after=True)
+    assert (
+        await probe_topic_exists(
+            client,
+            -100,
+            42,
+            propagate_retry_after=propagate,
+            on_cleanup_retry_after=cleanup_errors.append,
+        )
+        is True
+    )
+    assert cleanup_errors == [error]
+    client.send_message.assert_awaited_once()
+    client.delete_message.assert_awaited_once()
 
 
 async def test_probe_logs_cleanup_failure_but_keeps_exists_result() -> None:

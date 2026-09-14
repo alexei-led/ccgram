@@ -77,7 +77,9 @@ class TopicProvisioning:
 
     A record remains present until the caller can prove that creation either
     committed or failed safely.  ``created_at`` is diagnostic metadata only;
-    it must never be used as an expiry or deletion decision.
+    it must never be used as an expiry or deletion decision. A replacement
+    keeps its deleted topic in ``retry_thread_id`` while its new topic is being
+    created or retried.
     """
 
     claim_id: str
@@ -89,6 +91,8 @@ class TopicProvisioning:
     kind: TopicProvisioningKind
     uncertain: bool = False
     created_at: float = field(default_factory=time.time)
+    retry_thread_id: int | None = None
+    retry_at: float = 0.0
 
 
 _active_chat_id: contextvars.ContextVar[int | None] = contextvars.ContextVar(
@@ -315,6 +319,8 @@ class ThreadRouter:
                     "kind": claim.kind,
                     "uncertain": claim.uncertain,
                     "created_at": claim.created_at,
+                    "retry_thread_id": claim.retry_thread_id,
+                    "retry_at": claim.retry_at,
                 }
                 for claim in self._topic_provisionings.values()
             ],
@@ -399,6 +405,8 @@ class ThreadRouter:
                 kind = raw["kind"]
                 uncertain = raw.get("uncertain", False)
                 created_at = raw.get("created_at", 0.0)
+                retry_thread_id = raw.get("retry_thread_id")
+                retry_at = raw.get("retry_at", 0.0)
             except KeyError, AttributeError, TypeError, ValueError:
                 continue
 
@@ -422,11 +430,23 @@ class ThreadRouter:
                 or not isinstance(uncertain, bool)
                 or isinstance(created_at, bool)
                 or not isinstance(created_at, (int, float))
+                or (
+                    retry_thread_id is not None and not isinstance(retry_thread_id, int)
+                )
+                or isinstance(retry_thread_id, bool)
+                or (isinstance(retry_thread_id, int) and retry_thread_id <= 0)
+                or isinstance(retry_at, bool)
+                or not isinstance(retry_at, (int, float))
             ):
                 continue
 
             created_at_value = float(created_at)
-            if not math.isfinite(created_at_value):
+            retry_at_value = float(retry_at)
+            if (
+                not math.isfinite(created_at_value)
+                or not math.isfinite(retry_at_value)
+                or retry_at_value < 0
+            ):
                 continue
             loaded[claim_id] = TopicProvisioning(
                 claim_id=claim_id,
@@ -438,6 +458,8 @@ class ThreadRouter:
                 kind=cast(TopicProvisioningKind, kind),
                 uncertain=uncertain,
                 created_at=created_at_value,
+                retry_thread_id=retry_thread_id,
+                retry_at=retry_at_value,
             )
         return list(loaded.values())
 
@@ -611,6 +633,15 @@ class ThreadRouter:
         return target_id
 
     @staticmethod
+    def _validate_provisioning_retry_at(retry_at: float) -> float:
+        if isinstance(retry_at, bool) or not isinstance(retry_at, (int, float)):
+            raise TypeError("retry_at must be a number")
+        retry_at_value = float(retry_at)
+        if not math.isfinite(retry_at_value) or retry_at_value < 0:
+            raise ValueError("retry_at must be finite and nonnegative")
+        return retry_at_value
+
+    @staticmethod
     def _validate_provisioning_claim_id(claim_id: str) -> str:
         if not isinstance(claim_id, str):
             raise TypeError("claim_id must be a UUID string")
@@ -625,6 +656,14 @@ class ThreadRouter:
         if claim is None:
             raise KeyError(f"Unknown topic provisioning claim: {claim_id}")
         return claim
+
+    def get_topic_provisioning(self, claim_id: str) -> TopicProvisioning | None:
+        """Return one durable provisioning claim after validating its ID."""
+        try:
+            canonical_claim_id = self._validate_provisioning_claim_id(claim_id)
+        except TypeError, ValueError:
+            return None
+        return self._topic_provisionings.get(canonical_claim_id)
 
     @staticmethod
     def _provisioning_targets(claim: TopicProvisioning) -> tuple[str, ...]:
@@ -802,6 +841,53 @@ class ThreadRouter:
         self._schedule_save()
         return updated
 
+    def prepare_topic_recreation(self, claim_id: str) -> TopicProvisioning:
+        """Move a confirmed-dead topic claim into durable replacement creation."""
+        claim = self._require_topic_provisioning(claim_id)
+        if claim.target_id is None:
+            raise ValueError("topic recreation needs a target_id")
+        if claim.thread_id is not None:
+            retry_thread_id = claim.thread_id
+            self._discard_confirmed_absent_topic(claim)
+        elif claim.retry_thread_id is not None:
+            retry_thread_id = claim.retry_thread_id
+        else:
+            raise ValueError("topic recreation needs a prior thread_id")
+        updated = replace(
+            claim,
+            thread_id=None,
+            retry_thread_id=retry_thread_id,
+            retry_at=0.0,
+            uncertain=True,
+        )
+        self._topic_provisionings[claim.claim_id] = updated
+        self._owned_provisioning_claims.add(claim.claim_id)
+        self._schedule_save()
+        return updated
+
+    def defer_topic_recreation(
+        self,
+        claim_id: str,
+        *,
+        retry_at: float,
+        uncertain: bool = False,
+    ) -> TopicProvisioning:
+        """Release runtime ownership while retaining a replacement claim."""
+        claim = self._require_topic_provisioning(claim_id)
+        if claim.thread_id is not None or claim.retry_thread_id is None:
+            raise ValueError("claim is not a topic recreation")
+        if not isinstance(uncertain, bool):
+            raise TypeError("uncertain must be a bool")
+        updated = replace(
+            claim,
+            retry_at=self._validate_provisioning_retry_at(retry_at),
+            uncertain=uncertain,
+        )
+        self._topic_provisionings[claim.claim_id] = updated
+        self._owned_provisioning_claims.discard(claim.claim_id)
+        self._schedule_save()
+        return updated
+
     def commit_topic_provisioning(
         self, claim_id: str, *, window_name: str = ""
     ) -> bool:
@@ -874,10 +960,11 @@ class ThreadRouter:
         that no forum topic was created, even when its terminal target remains
         alive.  A claim with an attached thread can also release when that
         exact Telegram topic is proven absent; its exact binding and retired
-        cleanup record are removed. Any ambiguous outcome remains durable and
-        is marked uncertain; the current owner stays attached until it
-        explicitly calls ``mark_provisioning_uncertain`` after stopping the
-        flow.
+        cleanup record are removed. A prepared replacement retains its prior
+        thread identity and can release on the same proof. Any ambiguous
+        outcome remains durable and is marked uncertain; the current owner
+        stays attached until it explicitly calls
+        ``mark_provisioning_uncertain`` after stopping the flow.
         """
         try:
             canonical_claim_id = self._validate_provisioning_claim_id(claim_id)
@@ -891,17 +978,15 @@ class ThreadRouter:
         if not isinstance(topic_confirmed_absent, bool):
             raise TypeError("topic_confirmed_absent must be a bool")
 
-        topic_was_confirmed_absent = (
-            topic_confirmed_absent and claim.thread_id is not None
+        topic_was_confirmed_absent = topic_confirmed_absent and (
+            claim.thread_id is not None or claim.retry_thread_id is not None
         )
         can_release = (
             target_confirmed_absent
             or topic_was_confirmed_absent
-            or (
-                topic_confirmed_absent
-                and claim.thread_id is None
-                and claim.kind == "topic_for_target"
-            )
+            or topic_confirmed_absent
+            and claim.thread_id is None
+            and (claim.kind == "topic_for_target" or claim.retry_thread_id is not None)
         )
         if not can_release:
             if claim.uncertain:
@@ -918,7 +1003,7 @@ class ThreadRouter:
         )
         self._topic_provisionings.pop(claim.claim_id, None)
         self._owned_provisioning_claims.discard(claim.claim_id)
-        if topic_was_confirmed_absent:
+        if topic_was_confirmed_absent and claim.thread_id is not None:
             self._discard_confirmed_absent_topic(claim)
         elif claim.thread_id is not None and active_window is None:
             self._retire_topic(
@@ -932,10 +1017,15 @@ class ThreadRouter:
         self._schedule_save()
         return claim
 
-    def mark_provisioning_uncertain(self, claim_id: str) -> TopicProvisioning:
+    def mark_provisioning_uncertain(
+        self, claim_id: str, *, release_owner: bool = True
+    ) -> TopicProvisioning:
         """Retain a claim for recovery after its owner has stopped."""
         claim = self._require_topic_provisioning(claim_id)
-        self._owned_provisioning_claims.discard(claim.claim_id)
+        if not isinstance(release_owner, bool):
+            raise TypeError("release_owner must be a bool")
+        if release_owner:
+            self._owned_provisioning_claims.discard(claim.claim_id)
         if claim.uncertain:
             return claim
         updated = replace(claim, uncertain=True)

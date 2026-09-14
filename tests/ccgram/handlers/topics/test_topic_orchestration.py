@@ -5,7 +5,7 @@ import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from telegram.error import RetryAfter, TelegramError, TimedOut
+from telegram.error import BadRequest, NetworkError, RetryAfter, TelegramError, TimedOut
 
 from ccgram.multiplexer.base import WindowRef
 from ccgram.thread_router import ThreadRouter
@@ -772,6 +772,100 @@ class TestCreateForumTopicTransientRetry:
 
 
 class TestDurableTopicProvisioning:
+    async def test_retry_claim_is_requeued_after_definitive_failure(self) -> None:
+        router = ThreadRouter(
+            schedule_save=lambda: None,
+            has_window_state=lambda _window_id: False,
+        )
+        claim = router.begin_topic_provisioning(
+            100,
+            -100500,
+            thread_id=42,
+            target_id="@retry",
+            kind="replacement",
+        )
+        prepared = router.prepare_topic_recreation(claim.claim_id)
+        bot = AsyncMock()
+        bot.create_forum_topic = AsyncMock(side_effect=BadRequest("denied"))
+        session = MagicMock()
+
+        with (
+            patch("ccgram.handlers.topics.topic_orchestration.thread_router", router),
+            patch(
+                "ccgram.handlers.topics.topic_orchestration.session_manager", session
+            ),
+            patch(
+                "ccgram.handlers.topics.topic_orchestration._topic_create_retry_until",
+                {},
+            ),
+        ):
+            assert (
+                await create_topic_in_chat(
+                    bot,
+                    -100500,
+                    "@retry",
+                    "project",
+                    user_id=100,
+                    claim_id=prepared.claim_id,
+                )
+                is False
+            )
+
+        current = router.get_topic_provisioning(claim.claim_id)
+        assert current is not None
+        assert current.thread_id is None
+        assert current.retry_thread_id == 42
+        assert current.retry_at > 0
+        assert current.uncertain is False
+        assert router.owns_topic_provisioning(claim.claim_id) is False
+
+    async def test_retry_claim_stays_uncertain_after_network_failure(self) -> None:
+        router = ThreadRouter(
+            schedule_save=lambda: None,
+            has_window_state=lambda _window_id: False,
+        )
+        claim = router.begin_topic_provisioning(
+            100,
+            -100500,
+            thread_id=42,
+            target_id="@uncertain",
+            kind="replacement",
+        )
+        prepared = router.prepare_topic_recreation(claim.claim_id)
+        bot = AsyncMock()
+        bot.create_forum_topic = AsyncMock(side_effect=NetworkError("offline"))
+        session = MagicMock()
+
+        with (
+            patch("ccgram.handlers.topics.topic_orchestration.thread_router", router),
+            patch(
+                "ccgram.handlers.topics.topic_orchestration.session_manager", session
+            ),
+            patch(
+                "ccgram.handlers.topics.topic_orchestration._topic_create_retry_until",
+                {},
+            ),
+        ):
+            assert (
+                await create_topic_in_chat(
+                    bot,
+                    -100500,
+                    "@uncertain",
+                    "project",
+                    user_id=100,
+                    claim_id=prepared.claim_id,
+                )
+                is False
+            )
+
+        current = router.get_topic_provisioning(claim.claim_id)
+        assert current is not None
+        assert current.thread_id is None
+        assert current.retry_thread_id == 42
+        assert current.retry_at == 0.0
+        assert current.uncertain is True
+        assert router.owns_topic_provisioning(claim.claim_id) is False
+
     async def test_checkpoint_failure_aborts_before_remote_creation(self) -> None:
         router = ThreadRouter(
             schedule_save=lambda: None,

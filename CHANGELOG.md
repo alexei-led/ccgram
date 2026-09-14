@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fix unavailable Herdr window listings, `/sync` failures, and the command-mapping startup exception.
 - Protect active, rebound, newly creating, and foreign-backend targets during cleanup.
 - Stop remote creation and deletion when a critical state checkpoint cannot be saved.
+- Preserve retry ownership when recovery must recreate a deleted Telegram topic, including rate limits, cancellation, and state-write failures.
 
 ## [4.10.5] - 2026-09-13
 

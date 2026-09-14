@@ -1,5 +1,7 @@
 """Non-destructive forum-topic existence probe shared by repair flows."""
 
+from collections.abc import Callable
+
 import structlog
 from telegram.error import RetryAfter, TelegramError
 
@@ -17,11 +19,12 @@ async def probe_topic_exists(
     thread_id: int,
     *,
     propagate_retry_after: bool = False,
+    on_cleanup_retry_after: Callable[[RetryAfter], None] | None = None,
 ) -> bool | None:
     """Return True when a topic exists, False when deleted, and None on uncertainty.
 
-    Recovery callers may propagate Telegram flood-control responses so a whole
-    batch can stop without treating them as an unknown topic result.
+    Send failures may propagate flood control. Cleanup never revokes a positive
+    result; callers can observe its flood response without repeating the probe.
     """
     try:
         message = await client.send_message(
@@ -41,9 +44,9 @@ async def probe_topic_exists(
 
     try:
         await client.delete_message(chat_id, message.message_id)
-    except RetryAfter:
-        if propagate_retry_after:
-            raise
+    except RetryAfter as exc:
+        if on_cleanup_retry_after is not None:
+            on_cleanup_retry_after(exc)
         logger.warning(
             "Failed to delete topic probe message",
             chat_id=chat_id,

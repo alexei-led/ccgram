@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 
 import structlog
-from telegram.error import NetworkError, RetryAfter, TelegramError, TimedOut
+from telegram.error import BadRequest, NetworkError, RetryAfter, TelegramError, TimedOut
 
 from ... import window_query
 from ...config import config
@@ -31,7 +31,7 @@ from ...providers import (
 from ...session import session_manager
 from ...session_monitor import NewWindowEvent
 from ...telegram_client import TelegramClient
-from ...thread_router import thread_router
+from ...thread_router import TopicProvisioning, thread_router
 from ...multiplexer import multiplexer as tmux_manager
 from ...multiplexer.base import canonical_window_id
 
@@ -431,10 +431,15 @@ def _begin_topic_provisioning(
     return claim_id
 
 
-def _mark_topic_provisioning_uncertain(claim_id: str) -> None:
+def _mark_topic_provisioning_uncertain(
+    claim_id: str, *, keep_owner: bool = False
+) -> None:
     """Keep a claim durable when the Telegram outcome is ambiguous."""
     try:
-        thread_router.mark_provisioning_uncertain(claim_id)
+        thread_router.mark_provisioning_uncertain(
+            claim_id,
+            release_owner=not keep_owner,
+        )
     except KeyError:
         logger.info("Topic provisioning claim %s was already settled", claim_id)
     except TypeError, ValueError:
@@ -560,14 +565,82 @@ def _commit_topic_provisioning(
     return True
 
 
+def _defer_retry_claim(claim_id: str, *, retry_at: float) -> None:
+    """Keep a replacement claim durable while releasing runtime ownership."""
+    try:
+        thread_router.defer_topic_recreation(
+            claim_id,
+            retry_at=retry_at,
+            uncertain=False,
+        )
+    except KeyError, TypeError, ValueError:
+        _mark_topic_provisioning_uncertain(claim_id)
+        return
+    try:
+        _flush_provisioning_state()
+    except Exception:  # noqa: BLE001
+        logger.exception("Could not persist topic recreation retry %s", claim_id)
+
+
+def _validated_retry_claim(
+    claim_id: str | None,
+    chat_id: int,
+    window_id: str,
+    user_id: int | None,
+) -> TopicProvisioning | None:
+    """Validate a runtime-owned replacement claim for one target/chat."""
+    if claim_id is None:
+        return None
+    claim = thread_router.get_topic_provisioning(claim_id)
+    if claim is None or not thread_router.owns_topic_provisioning(claim.claim_id):
+        return None
+    if (
+        claim.chat_id != chat_id
+        or claim.thread_id is not None
+        or claim.retry_thread_id is None
+        or claim.target_id is None
+        or canonical_window_id(claim.target_id) != canonical_window_id(window_id)
+        or (user_id is not None and claim.user_id != user_id)
+    ):
+        return None
+    return claim
+
+
+def _release_retry_claim(
+    claim: TopicProvisioning | None, *, retry_at: float | None = None
+) -> None:
+    """Release a retry claim when no creation request was sent."""
+    if claim is None:
+        return
+    _defer_retry_claim(
+        claim.claim_id,
+        retry_at=claim.retry_at if retry_at is None else retry_at,
+    )
+
+
 def _handle_topic_creation_error(
     claim_id: str,
     chat_id: int,
     window_id: str,
     exc: BaseException,
+    *,
+    preserve_claim: bool = False,
 ) -> None:
     """Persist a definitive or ambiguous Telegram creation outcome."""
-    if isinstance(exc, (TimedOut, NetworkError)):
+    if isinstance(exc, BadRequest):
+        if preserve_claim:
+            _defer_retry_claim(
+                claim_id,
+                retry_at=time.time() + _TOPIC_CREATE_FAILURE_BACKOFF_S,
+            )
+        else:
+            _abort_topic_provisioning(claim_id)
+        logger.exception(
+            "Failed to create topic for window %s in chat %d",
+            window_id,
+            chat_id,
+        )
+    elif isinstance(exc, (TimedOut, NetworkError)):
         _topic_create_retry_until[chat_id] = (
             time.monotonic() + _TOPIC_CREATE_FAILURE_BACKOFF_S
         )
@@ -588,7 +661,17 @@ def _handle_topic_creation_error(
         _topic_create_retry_until[chat_id] = (
             time.monotonic() + retry_after_seconds + _TOPIC_CREATE_RETRY_BUFFER_SECONDS
         )
-        _abort_topic_provisioning(claim_id)
+        if preserve_claim:
+            _defer_retry_claim(
+                claim_id,
+                retry_at=(
+                    time.time()
+                    + retry_after_seconds
+                    + _TOPIC_CREATE_RETRY_BUFFER_SECONDS
+                ),
+            )
+        else:
+            _abort_topic_provisioning(claim_id)
         logger.warning(
             "Flood control creating topic for window %s in chat %d, backing off %ss",
             window_id,
@@ -596,7 +679,13 @@ def _handle_topic_creation_error(
             retry_after_seconds,
         )
     elif isinstance(exc, TelegramError):
-        _abort_topic_provisioning(claim_id)
+        if preserve_claim:
+            _defer_retry_claim(
+                claim_id,
+                retry_at=time.time() + _TOPIC_CREATE_FAILURE_BACKOFF_S,
+            )
+        else:
+            _abort_topic_provisioning(claim_id)
         logger.exception(
             "Failed to create topic for window %s in chat %d",
             window_id,
@@ -618,15 +707,28 @@ def _settle_topic_creation_task(
     chat_id: int,
     window_id: str,
     topic_name: str,
+    preserve_claim: bool = False,
 ) -> bool:
     """Settle a completed shielded Telegram request, including callbacks."""
     try:
         topic = task.result()
     except asyncio.CancelledError as exc:
-        _handle_topic_creation_error(claim_id, chat_id, window_id, exc)
+        _handle_topic_creation_error(
+            claim_id,
+            chat_id,
+            window_id,
+            exc,
+            preserve_claim=preserve_claim,
+        )
         return False
     except Exception as exc:  # noqa: BLE001
-        _handle_topic_creation_error(claim_id, chat_id, window_id, exc)
+        _handle_topic_creation_error(
+            claim_id,
+            chat_id,
+            window_id,
+            exc,
+            preserve_claim=preserve_claim,
+        )
         return False
     try:
         return _commit_topic_provisioning(
@@ -652,6 +754,7 @@ async def create_topic_in_chat(  # noqa: C901
     topic_name: str,
     *,
     user_id: int | None = None,
+    claim_id: str | None = None,
     propagate_retry_after: bool = False,
 ) -> bool:
     """Create and bind one topic, returning whether it succeeded.
@@ -659,10 +762,14 @@ async def create_topic_in_chat(  # noqa: C901
     Recovery callers may propagate flood-control responses after the normal
     claim cleanup and chat backoff have been recorded.
     """
+    existing_claim = _validated_retry_claim(claim_id, chat_id, window_id, user_id)
+    if claim_id is not None and existing_claim is None:
+        return False
     if chat_id > 0:
         try:
             bot_user = await client.get_me()
         except TelegramError:
+            _release_retry_claim(existing_claim)
             logger.warning(
                 "Skipping private topic creation for window %s in chat %d: "
                 "could not observe bot topic capability",
@@ -671,6 +778,7 @@ async def create_topic_in_chat(  # noqa: C901
             )
             return False
         if getattr(bot_user, "has_topics_enabled", None) is not True:
+            _release_retry_claim(existing_claim)
             logger.info(
                 "Skipping private topic creation for window %s in chat %d: "
                 "bot topics are not enabled",
@@ -679,8 +787,13 @@ async def create_topic_in_chat(  # noqa: C901
             )
             return False
 
-    owner_id = _find_topic_owner(chat_id, window_id, user_id)
+    owner_id = (
+        existing_claim.user_id
+        if existing_claim is not None
+        else _find_topic_owner(chat_id, window_id, user_id)
+    )
     if owner_id is None:
+        _release_retry_claim(existing_claim)
         logger.warning(
             "Skipping topic creation for window %s in chat %d: no bindable user",
             window_id,
@@ -690,6 +803,17 @@ async def create_topic_in_chat(  # noqa: C901
     retry_until = _topic_create_retry_until.get(chat_id, 0.0)
     now = time.monotonic()
     if now < retry_until:
+        _release_retry_claim(
+            existing_claim,
+            retry_at=(
+                max(
+                    existing_claim.retry_at,
+                    time.time() + retry_until - now,
+                )
+                if existing_claim is not None
+                else None
+            ),
+        )
         wait_seconds = max(1, int(retry_until - now))
         logger.debug(
             "Skipping auto-topic creation for chat %d (window %s), "
@@ -701,14 +825,19 @@ async def create_topic_in_chat(  # noqa: C901
         return False
 
     register_pending_creation(window_id, now=now)
-    try:
-        claim_id = _begin_topic_provisioning(owner_id, chat_id, window_id)
-    except Exception:  # noqa: BLE001
-        clear_pending_creation(window_id)
-        raise
-    if claim_id is None:
-        clear_pending_creation(window_id)
-        return False
+    provisioning_claim_id = existing_claim.claim_id if existing_claim else None
+    if provisioning_claim_id is None:
+        try:
+            provisioning_claim_id = _begin_topic_provisioning(
+                owner_id, chat_id, window_id
+            )
+        except Exception:  # noqa: BLE001
+            clear_pending_creation(window_id)
+            raise
+        if provisioning_claim_id is None:
+            clear_pending_creation(window_id)
+            return False
+    preserve_claim = existing_claim is not None
 
     creation_task: asyncio.Task[object] = asyncio.create_task(
         _create_forum_topic_with_retry(client, chat_id, topic_name)
@@ -719,32 +848,43 @@ async def create_topic_in_chat(  # noqa: C901
         if creation_task.done():
             _settle_topic_creation_task(
                 creation_task,
-                claim_id,
+                provisioning_claim_id,
                 chat_id,
                 window_id,
                 topic_name,
+                preserve_claim=preserve_claim,
             )
         else:
-            _mark_topic_provisioning_uncertain(claim_id)
+            _mark_topic_provisioning_uncertain(
+                provisioning_claim_id,
+                keep_owner=preserve_claim,
+            )
             creation_task.add_done_callback(
                 lambda task: _settle_topic_creation_task(
                     task,
-                    claim_id,
+                    provisioning_claim_id,
                     chat_id,
                     window_id,
                     topic_name,
+                    preserve_claim=preserve_claim,
                 )
             )
             clear_pending_creation(window_id)
         raise
     except Exception as exc:  # noqa: BLE001
-        _handle_topic_creation_error(claim_id, chat_id, window_id, exc)
+        _handle_topic_creation_error(
+            provisioning_claim_id,
+            chat_id,
+            window_id,
+            exc,
+            preserve_claim=preserve_claim,
+        )
         if propagate_retry_after and isinstance(exc, RetryAfter):
             raise
         return False
 
     return _commit_topic_provisioning(
-        claim_id,
+        provisioning_claim_id,
         chat_id,
         window_id,
         topic_name,

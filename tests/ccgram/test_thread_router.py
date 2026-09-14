@@ -427,6 +427,8 @@ class TestTopicProvisioning:
                 "kind": "topic_for_target",
                 "uncertain": False,
                 "created_at": claim.created_at,
+                "retry_thread_id": None,
+                "retry_at": 0.0,
             }
         ]
 
@@ -629,6 +631,45 @@ class TestTopicProvisioning:
         assert router.get_window_for_chat_thread(-999, 42) is None
         assert router.get_window_for_chat_thread(-999, 43) == "keep"
         assert list(router.iter_retired_topics()) == []
+
+    def test_prepare_and_defer_recreation_round_trip(
+        self, router: ThreadRouter
+    ) -> None:
+        router.bind_thread(100, 42, "dead", chat_id=-999)
+        claim = router.begin_topic_provisioning(
+            100,
+            -999,
+            thread_id=42,
+            target_id="live",
+            kind="replacement",
+        )
+
+        prepared = router.prepare_topic_recreation(claim.claim_id)
+        assert prepared.thread_id is None
+        assert prepared.retry_thread_id == 42
+        assert prepared.retry_at == 0.0
+        assert prepared.uncertain is True
+        assert router.owns_topic_provisioning(claim.claim_id) is True
+        assert router.get_window_for_chat_thread(-999, 42) is None
+        assert list(router.iter_retired_topics()) == []
+
+        deferred = router.defer_topic_recreation(
+            claim.claim_id,
+            retry_at=123.5,
+        )
+        assert deferred.retry_thread_id == 42
+        assert deferred.retry_at == 123.5
+        assert deferred.uncertain is False
+        assert router.owns_topic_provisioning(claim.claim_id) is False
+
+        restored = ThreadRouter(
+            schedule_save=lambda: None,
+            has_window_state=lambda _wid: False,
+        )
+        restored.from_dict(router.to_dict())
+        loaded = restored.get_topic_provisioning(claim.claim_id)
+        assert loaded == deferred
+        assert restored.owns_topic_provisioning(claim.claim_id) is False
 
     def test_multi_chat_claims_and_restart_have_no_ttl(
         self, router: ThreadRouter
