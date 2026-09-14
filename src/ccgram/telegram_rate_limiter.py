@@ -22,7 +22,7 @@ _RETRY_JITTER_MAX_SECONDS = 1.0
 
 
 def retry_after_seconds(exc: RetryAfter) -> float:
-    """Return PTB 22.6's normalized delay without its deprecated public shim."""
+    """Return PTB's normalized delay without its deprecated public shim."""
     return exc._retry_after.total_seconds()  # pyright: ignore[reportPrivateUsage]
 
 

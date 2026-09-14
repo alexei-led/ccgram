@@ -8,6 +8,15 @@ pipx upgrade ccgram                   # pipx
 brew upgrade ccgram                   # Homebrew
 ```
 
+Restart the running bot after upgrading, and check `ccgram --version`. If the bot runs from a development checkout, also upgrade the global executable used by agent hooks. A hook that invokes bare `ccgram` uses the agent's `PATH`, independently of the bot's installation; see [protocol compatibility](#protocol-version-pinning).
+
+### Upgrading from 4.10 to 4.11
+
+- Remove `--autoclose-done`, `--autoclose-dead`, `AUTOCLOSE_DONE_MINUTES`, and `AUTOCLOSE_DEAD_MINUTES` from launch commands and configuration. Confirmed terminal-session closure now triggers topic and history deletion without a grace timer.
+- Keep **Delete Messages** enabled for the bot administrator. **Manage Topics** alone only permits closing a topic, which leaves it visible.
+- Run `/sync` to retry cleanup of locally known old topics. Topics whose IDs are no longer recorded cannot be discovered through the Bot API.
+- Use `--unbound-window-ttl` / `UNBOUND_WINDOW_TTL_MINUTES` only for inactive terminal windows without a topic binding; it does not delay topic deletion.
+
 ## CLI Reference
 
 ```text
@@ -423,7 +432,9 @@ Creating sessions from the terminal on herdr is covered in [Creating Sessions fr
 
 Before each removal, CCGram rechecks the exact chat/topic binding. A topic that is active or was rebound in the meantime is protected from deletion. A new binding for the same chat/topic also removes the old retired record. If the multiplexer cannot provide an authoritative listing, `/sync` performs no cleanup.
 
-Session creation also owns an exact topic record, saved before the first remote request. That ownership protects the topic throughout slow startup and replacement; it does not expire while the creation task is running. Startup, periodic cleanup, and `/sync` recover abandoned creation records from current session presence. A known live target is bound, a confirmed absent target can be cleaned up, and an unknown target or missing remote ID remains protected and appears as creation awaiting confirmation. Targets belonging to a different backend are unverified, never treated as absent by the selected backend.
+Session creation also owns an exact topic record, saved before the first remote request. That ownership protects the topic throughout slow startup and replacement; it does not expire while the creation task is running. Startup, periodic cleanup, and `/sync` recover abandoned creation records from current session presence and verify the recorded Telegram topic before restoring its binding. If that topic was deleted while its target remains alive, recovery creates a fresh topic without replacing another current binding for the target. Failed recreation attempts with a known outcome remain queued across restarts and respect Telegram rate limits.
+
+A confirmed absent target can have its known topic cleaned up. An unknown target or an uncertain creation result without a new topic ID remains protected and appears as creation awaiting confirmation; CCGram does not guess whether the remote creation succeeded or repeat an ambiguous request. Targets belonging to a different backend are unverified, never treated as absent by the selected backend.
 
 For a retired topic, cleanup calls `deleteForumTopic`. Deletion is irreversible and removes the topic history. If deletion fails, cleanup may close the topic as a fallback, but **closing leaves the topic visible and deletion pending**. Only successful deletion or a definitive already-gone response completes cleanup. Background cleanup retries up to 20 pending topics each minute; failures wait at least one minute and respect longer Telegram rate-limit delays. Ghost bindings are retired into pending cleanup before deletion, so failed requests remain recoverable.
 
@@ -436,7 +447,8 @@ The Bot API cannot enumerate arbitrary topics. If an old topic's ID was already 
 CCGram distinguishes an idle agent from a closed terminal session:
 
 - **Done agents with a live terminal** — The topic stays open and bound to its session. Finishing a task alone does not trigger deletion.
-- **Closed terminal sessions** — CCGram rechecks that the terminal session is gone, then immediately attempts to delete its topic and history. There is no grace timer or recovery banner. This applies to tmux windows and Herdr session targets. An unavailable backend or a live session prevents deletion.
+- **New terminal sessions** — CCGram creates a fresh topic instead of automatically reusing one from a previous session with the same name.
+- **Closed terminal sessions** — CCGram rechecks that the terminal session is gone, then immediately attempts to delete its topic and history. There is no grace timer or recovery banner. This applies to tmux windows, Herdr session targets, and agterm sessions. An unavailable backend or a live session prevents deletion.
 - **Sessions killed from the dashboard** — CCGram attempts topic deletion after the session is killed, with failed requests retained for retry.
 
 Inactive terminal windows without a topic binding have a separate 30-minute cleanup timer. Disable that window cleanup with:
