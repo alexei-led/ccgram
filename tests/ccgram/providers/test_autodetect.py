@@ -12,6 +12,7 @@ from ccgram.providers import (
 )
 from ccgram.providers.process_detection import _pgid_cache
 from ccgram.session_monitor import SessionMonitor
+from ccgram.thread_router import thread_router
 
 
 class TestDetectProviderFromPane:
@@ -227,10 +228,12 @@ def new_window():
             return_value="",
         ) as detect,
     ):
+        thread_router.reset()
         config.group_id = None
         session_manager.iter_thread_bindings.return_value = []
         session_manager.view_window.return_value = MagicMock(provider_name="")
         yield _NewWindowHarness(detect, session_manager, mux)
+    thread_router.reset()
 
 
 class TestHandleNewWindowAutoDetection:

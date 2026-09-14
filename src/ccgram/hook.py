@@ -32,6 +32,7 @@ from ccgram.hooks.adapters import (
 )
 from ccgram.hooks.model import HookAdapter, NormalizedHookEvent, ProviderName
 from ccgram.multiplexer import get_multiplexer
+from ccgram.multiplexer import herdr_socket
 from ccgram.multiplexer.self_identify import resolve_self_identity
 
 logger = structlog.get_logger()
@@ -728,18 +729,9 @@ def _resolve_herdr_target_id(
     ``(workspace_id, pane_id)`` pair. Hooks from a nested agent are rejected
     when their provider differs from the live agent occupying that pane.
     """
-    try:
-        result = subprocess.run(
-            ["herdr", "agent", "list"], capture_output=True, text=True, timeout=5
-        )
-    except (subprocess.TimeoutExpired, OSError) as exc:
-        logger.warning("herdr agent list failed for pane %s: %s", pane_id, exc)
-        return None
-    if result.returncode != 0:
-        return None
-    try:
-        agents = json.loads(result.stdout).get("result", {}).get("agents", [])
-    except json.JSONDecodeError, AttributeError:
+    agents = _herdr_agent_list_snapshot()
+    if agents is None:
+        logger.warning("herdr agent list failed for pane %s", pane_id)
         return None
     matches: list[dict[str, object]] = []
     for record in agents if isinstance(agents, list) else []:
@@ -789,6 +781,78 @@ def _target_id_from_herdr_snapshot(
         target_for_record = getattr(manager, "target_id_for_live_record", None)
         target_id = target_for_record(record) if callable(target_for_record) else None
     return target_id if isinstance(target_id, str) else None
+
+
+_HERDR_HOOK_TIMEOUT_SECONDS = 5.0
+
+
+def _herdr_socket_path_for_hook() -> str | None:
+    """Return the Herdr socket path, discovering it through the safe CLI status.
+
+    The ``agent.list`` hook path must use the public socket API. The installed
+    CLI may speak a different private protocol than the running server, so it
+    is only used for the documented ``status --json`` socket discovery when
+    ``HERDR_SOCKET_PATH`` is not already available.
+    """
+    socket_path = os.environ.get("HERDR_SOCKET_PATH")
+    if socket_path:
+        return socket_path
+    try:
+        status = subprocess.run(
+            ["herdr", "status", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=_HERDR_HOOK_TIMEOUT_SECONDS,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        logger.warning("herdr socket discovery failed: %s", exc)
+        return None
+    if status.returncode != 0:
+        logger.warning(
+            "herdr socket discovery failed with exit code %s", status.returncode
+        )
+        return None
+    try:
+        payload = json.loads(status.stdout)
+    except json.JSONDecodeError:
+        logger.warning("herdr status returned invalid JSON during socket discovery")
+        return None
+    if not isinstance(payload, dict):
+        return None
+    server = payload.get("server")
+    socket_path = server.get("socket") if isinstance(server, dict) else None
+    return socket_path if isinstance(socket_path, str) and socket_path else None
+
+
+def _herdr_agent_list_snapshot() -> list[object] | None:
+    """Read one Herdr ``agent.list`` snapshot over the public socket.
+
+    ``None`` means transport, discovery, or response-shape failure. An empty
+    list is a valid snapshot and remains distinct so callers can preserve
+    their existing zero-match and quarantine behavior.
+    """
+    socket_path = _herdr_socket_path_for_hook()
+    if socket_path is None:
+        return None
+    try:
+        envelope = herdr_socket.request_sync(
+            socket_path,
+            "agent.list",
+            {},
+            timeout=_HERDR_HOOK_TIMEOUT_SECONDS,
+        )
+    except (herdr_socket.HerdrSocketError, OSError, TimeoutError) as exc:
+        logger.warning("herdr agent list request failed: %s", exc)
+        return None
+    result = envelope.get("result")
+    if not isinstance(result, dict):
+        logger.warning("herdr agent list returned an invalid result")
+        return None
+    agents = result.get("agents")
+    if not isinstance(agents, list):
+        logger.warning("herdr agent list returned no agents list")
+        return None
+    return agents
 
 
 def _resolve_window_id(pane_id: str) -> tuple[str, str, str, str] | None:
@@ -1389,28 +1453,33 @@ def _locate_primary_window(
 
 
 def _provider_from_herdr_pane() -> tuple[ProviderName | None, str, str | None]:
+    """Infer provider, Pi transcript, and target from one Herdr snapshot."""
+    provider, transcript_path, target_id, _unavailable = (
+        _provider_from_herdr_pane_details()
+    )
+    return provider, transcript_path, target_id
+
+
+def _provider_from_herdr_pane_details() -> tuple[
+    ProviderName | None, str, str | None, bool
+]:
     """Infer provider, Pi transcript, and target from one Herdr snapshot.
 
     Pi's hook-runner emits the common CC hook envelope without provider or
     transcript metadata. Herdr is authoritative for the exact pane and can
     publish the future transcript path before Pi creates the file.
+
+    The final flag distinguishes an unavailable snapshot from a valid snapshot
+    with no matching or sessionful record. The former can safely defer a Pi
+    binding; the latter must retain the existing fail-closed behavior.
     """
     workspace_id = os.environ.get("HERDR_WORKSPACE_ID")
     pane_id = os.environ.get("HERDR_PANE_ID")
     if not workspace_id or not pane_id:
-        return None, "", None
-    try:
-        result = subprocess.run(
-            ["herdr", "agent", "list"], capture_output=True, text=True, timeout=5
-        )
-    except subprocess.TimeoutExpired, OSError:
-        return None, "", None
-    if result.returncode != 0:
-        return None, "", None
-    try:
-        records = json.loads(result.stdout).get("result", {}).get("agents", [])
-    except json.JSONDecodeError, AttributeError:
-        return None, "", None
+        return None, "", None, False
+    records = _herdr_agent_list_snapshot()
+    if records is None:
+        return None, "", None, True
     matches = [
         record
         for record in records
@@ -1419,7 +1488,7 @@ def _provider_from_herdr_pane() -> tuple[ProviderName | None, str, str | None]:
         and record.get("pane_id") == pane_id
     ]
     if len(matches) != 1:
-        return None, "", None
+        return None, "", None, False
     record = matches[0]
     session = record.get("agent_session")
     session_agent = session.get("agent") if isinstance(session, dict) else None
@@ -1435,7 +1504,45 @@ def _provider_from_herdr_pane() -> tuple[ProviderName | None, str, str | None]:
     ):
         transcript_path = session["value"]
     target_id = _target_id_from_herdr_snapshot(record, records)
-    return provider, transcript_path, target_id
+    return provider, transcript_path, target_id, False
+
+
+def _herdr_hook_context(
+    payload: dict[str, object], detected_provider: str | None
+) -> tuple[str | None, ProviderName | None, str, str | None, bool, bool]:
+    """Resolve Herdr context needed by a hook and report snapshot failure."""
+    if payload.get("transcript_path") or detected_provider not in {None, "pi"}:
+        return detected_provider, None, "", None, False, False
+
+    use_herdr_snapshot = bool(
+        os.environ.get("HERDR_WORKSPACE_ID") and os.environ.get("HERDR_PANE_ID")
+    )
+    if not use_herdr_snapshot:
+        return detected_provider, None, "", None, False, False
+    (
+        herdr_provider,
+        transcript_path,
+        target_id,
+        snapshot_unavailable,
+    ) = _provider_from_herdr_pane_details()
+    if detected_provider is None:
+        detected_provider = herdr_provider
+    herdr_transcript_path = (
+        transcript_path if detected_provider == "pi" and herdr_provider == "pi" else ""
+    )
+    if detected_provider is None and snapshot_unavailable:
+        # An unannotated hook with Herdr context is the Pi hook shape. Keep it
+        # on the Pi adapter so a failed identity read can persist recovery
+        # intent instead of binding it as an implicit Claude hook.
+        detected_provider = "pi"
+    return (
+        detected_provider,
+        herdr_provider,
+        herdr_transcript_path,
+        target_id,
+        True,
+        snapshot_unavailable,
+    )
 
 
 def _hook_adapter_for_context(
@@ -1481,6 +1588,20 @@ def _hook_event_is_actionable(
     return True
 
 
+def _defer_unavailable_herdr_snapshot(
+    normalized: NormalizedHookEvent, snapshot_unavailable: bool
+) -> bool:
+    """Persist Pi recovery intent when Herdr identity was temporarily unavailable."""
+    if not snapshot_unavailable:
+        return False
+    _record_pending_pi_replay(normalized.session_id)
+    logger.debug(
+        "Deferring Pi hook until Herdr agent.list is available: %s",
+        normalized.session_id,
+    )
+    return True
+
+
 def _process_hook_stdin(
     provider_name: str | None = None,
 ) -> NormalizedHookEvent | None:
@@ -1509,18 +1630,18 @@ def _process_hook_stdin(
     herdr_transcript_path = ""
     herdr_target_id: str | None = None
     use_herdr_snapshot = False
+    herdr_snapshot_unavailable = False
     # Pi's hook-runner omits provider metadata and transcript_path. Do not use
     # the live Herdr provider to reinterpret a nested Claude hook that carries
     # its own Claude transcript path.
-    if not payload.get("transcript_path") and detected_provider in {None, "pi"}:
-        use_herdr_snapshot = bool(
-            os.environ.get("HERDR_WORKSPACE_ID") and os.environ.get("HERDR_PANE_ID")
-        )
-        herdr_provider, candidate_path, herdr_target_id = _provider_from_herdr_pane()
-        if detected_provider is None:
-            detected_provider = herdr_provider
-        if detected_provider == "pi" and herdr_provider == "pi":
-            herdr_transcript_path = candidate_path
+    (
+        detected_provider,
+        herdr_provider,
+        herdr_transcript_path,
+        herdr_target_id,
+        use_herdr_snapshot,
+        herdr_snapshot_unavailable,
+    ) = _herdr_hook_context(payload, detected_provider)
     if detected_provider is None:
         identity = resolve_self_identity(os.environ, tmux_query=_resolve_window_id)
         if identity:
@@ -1538,7 +1659,9 @@ def _process_hook_stdin(
         )
         return None
 
-    if not _hook_event_is_actionable(normalized, herdr_transcript_path):
+    if not _hook_event_is_actionable(
+        normalized, herdr_transcript_path
+    ) or _defer_unavailable_herdr_snapshot(normalized, herdr_snapshot_unavailable):
         return None
     event = normalized.canonical_event_name
 

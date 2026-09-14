@@ -245,7 +245,7 @@ async def _accept_yolo_confirmation(
     return False
 
 
-def _follow_supersession(window_id: str) -> str:
+def _follow_supersession(window_id: str, *, claim_id: str | None = None) -> str:
     """Re-point creation at the id its window answers to now.
 
     Reconciliation runs on the monitor cycle, so a backend that firms up
@@ -263,16 +263,193 @@ def _follow_supersession(window_id: str) -> str:
         return window_id
     if canonical_window_id(current) == canonical_window_id(window_id):
         return current
+    if claim_id is not None:
+        try:
+            thread_router.attach_provisioning_target(claim_id, current)
+            session_manager.flush_state()
+        except BaseException:  # noqa: BLE001
+            _mark_provisioning_uncertain(claim_id)
+            raise
     topic_orchestration.register_pending_creation(current)
     topic_orchestration.clear_pending_creation(window_id)
     logger.info("Creation target superseded: %s -> %s", window_id, current)
     return current
 
 
+def _is_definitive_create_failure(message: str) -> bool:
+    """Return whether a failed create response proves no target exists."""
+    normalized = message.casefold()
+    return any(
+        marker in normalized
+        for marker in (
+            "directory does not exist",
+            "not a directory",
+            "selected workspace cannot create",
+            "selected herdr workspace no longer exists",
+            "requires a sessionful agent",
+            "does not create worktrees natively",
+            "does not create worktrees",
+        )
+    )
+
+
+async def _await_creation_result(creation):  # noqa: ANN001
+    """Wait for creation while retaining a result delivered with cancellation."""
+    task = asyncio.create_task(creation)
+    try:
+        return await asyncio.shield(task), False
+    except asyncio.CancelledError:
+        # ``shield`` keeps the backend request alive.  Await it so a target
+        # created just before cancellation is still available for cleanup.
+        return await task, True
+
+
+def _mark_provisioning_uncertain(claim_id: str | None) -> None:
+    """Release runtime ownership while retaining durable recovery evidence."""
+    if claim_id is None:
+        return
+    try:
+        thread_router.mark_provisioning_uncertain(claim_id)
+    except KeyError:
+        logger.warning("Provisioning claim disappeared while marking uncertain")
+        return
+    try:
+        session_manager.flush_state()
+    except BaseException:  # noqa: BLE001
+        logger.warning("Could not persist uncertain provisioning claim")
+
+
+def _abort_provisioning_claim(claim_id: str | None) -> None:
+    """Release a claim whose backend operation definitely never started."""
+    if claim_id is None:
+        return
+    try:
+        thread_router.abort_topic_provisioning(
+            claim_id,
+            target_confirmed_absent=True,
+        )
+    except KeyError:
+        logger.warning("Provisioning claim disappeared while aborting")
+        return
+    try:
+        session_manager.flush_state()
+    except BaseException:  # noqa: BLE001
+        logger.warning("Could not persist aborted provisioning claim")
+
+
+async def _cleanup_failed_topic(
+    user_id: int,
+    thread_id: int | None,
+    chat_id: int | None,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """Delete a failed exact topic after its target is confirmed absent."""
+    if thread_id is None or chat_id is None:
+        return
+
+    # The storage abort records an unbound exact topic as a retired cleanup
+    # candidate. Use the shared deletion flow so state is cleared before the
+    # Telegram delete and failed deletes remain retryable.
+    # Lazy: cleanup → shell/polling → topics cycle.
+    from ...telegram_client import PTBTelegramClient
+
+    # Lazy: cleanup → shell/polling → topics cycle.
+    from ..cleanup import clear_topic_state
+
+    # Lazy: topic deletion imports cleanup and polling state.
+    from .topic_deletion import cleanup_retired_topic
+
+    retired = next(
+        (
+            topic
+            for topic in thread_router.iter_retired_topics()
+            if topic.user_id == user_id
+            and topic.chat_id == chat_id
+            and topic.thread_id == thread_id
+        ),
+        None,
+    )
+    if retired is None:
+        return
+
+    client = PTBTelegramClient(context.bot)
+
+    async def clear_state_before_delete() -> None:
+        await clear_topic_state(
+            user_id,
+            thread_id,
+            client,
+            context.user_data,
+            window_id=retired.target_id,
+            chat_id=chat_id,
+            window_dead=True,
+        )
+
+    await cleanup_retired_topic(
+        client,
+        retired,
+        router=thread_router,
+        before_delete=clear_state_before_delete,
+    )
+
+
+async def _finish_failed_provisioning(  # noqa: C901
+    *,
+    claim_id: str | None,
+    target_id: str | None,
+    user_id: int,
+    thread_id: int | None,
+    chat_id: int | None,
+    context: ContextTypes.DEFAULT_TYPE,
+    failure_message: str = "",
+    target_already_absent: bool = False,
+) -> bool:
+    """Abort a proven-absent target or quarantine an uncertain target."""
+    if claim_id is None:
+        if target_id is None:
+            return False
+        if target_already_absent:
+            topic_orchestration.clear_pending_creation(target_id)
+            return True
+        try:
+            target_confirmed_absent = await tmux_manager.kill_window(target_id)
+        except BaseException:  # noqa: BLE001
+            return False
+        if target_confirmed_absent:
+            topic_orchestration.clear_pending_creation(target_id)
+        return bool(target_confirmed_absent)
+
+    if target_id is None and not _is_definitive_create_failure(failure_message):
+        _mark_provisioning_uncertain(claim_id)
+        return False
+
+    target_confirmed_absent = target_id is None or target_already_absent
+    if target_id is not None and not target_already_absent:
+        try:
+            target_confirmed_absent = await tmux_manager.kill_window(target_id)
+        except BaseException:  # noqa: BLE001
+            _mark_provisioning_uncertain(claim_id)
+            return False
+
+    if target_confirmed_absent:
+        _abort_provisioning_claim(claim_id)
+        if target_id is not None:
+            topic_orchestration.clear_pending_creation(target_id)
+        await _cleanup_failed_topic(user_id, thread_id, chat_id, context)
+        return True
+
+    _mark_provisioning_uncertain(claim_id)
+    if target_id is not None:
+        topic_orchestration.clear_pending_creation(target_id)
+    if failure_message:
+        logger.warning("Provisioned target remains quarantined: %s", failure_message)
+    return False
+
+
 # ── main entry point ──────────────────────────────────────────────────────────
 
 
-async def launch_window(  # noqa: PLR0912, PLR0915, C901
+async def launch_window(  # noqa: C901, PLR0911, PLR0912, PLR0915
     query: CallbackQuery,
     context: ContextTypes.DEFAULT_TYPE,
     request: WindowLaunchRequest,
@@ -298,23 +475,66 @@ async def launch_window(  # noqa: PLR0912, PLR0915, C901
 
     launch_command = resolve_launch_command(provider_name, approval_mode=approval_mode)
 
+    query_message = query.message
+    chat = query_message.chat if query_message else None
+    raw_chat_id = (
+        request.chat_id if request.chat_id is not None else getattr(chat, "id", None)
+    )
+    chat_id = raw_chat_id if isinstance(raw_chat_id, int) else None
+
+    claim_id: str | None = None
+    if pending_thread_id is not None and chat_id is not None:
+        try:
+            claim = thread_router.begin_topic_provisioning(
+                user_id,
+                chat_id,
+                thread_id=pending_thread_id,
+                kind="target_for_topic",
+            )
+        except (TypeError, ValueError) as exc:
+            message = str(exc)
+            await _abort_topic_creation(query, message, context)
+            return WindowLaunchResult(success=False, error_message=message)
+        claim_id = claim.claim_id
+        # The exact topic claim must reach disk before the first backend await.
+        try:
+            session_manager.flush_state()
+        except BaseException:  # noqa: BLE001
+            _abort_provisioning_claim(claim_id)
+            raise
+
     chosen_workspace_id: str | None = (
         context.user_data.get(PENDING_WORKSPACE_ID) if context.user_data else None
     ) or None
 
+    creation_was_cancelled = False
     with topic_orchestration.pending_creation_transaction():
-        (
-            success,
-            message,
-            created_wname,
-            created_wid,
-        ) = await _create_topic_window(
-            selected_path,
-            launch_command,
-            chosen_workspace_id,
-            context,
-        )
+        try:
+            creation, creation_was_cancelled = await _await_creation_result(
+                _create_topic_window(
+                    selected_path,
+                    launch_command,
+                    chosen_workspace_id,
+                    context,
+                )
+            )
+        except BaseException:  # noqa: BLE001
+            _mark_provisioning_uncertain(claim_id)
+            raise
+
+        success, message, created_wname, created_wid = creation
+        if success and not created_wid:
+            success = False
+            message = "Backend returned no target ID"
+
         if success:
+            if claim_id is not None:
+                try:
+                    thread_router.attach_provisioning_target(claim_id, created_wid)
+                    session_manager.flush_state()
+                except BaseException:  # noqa: BLE001
+                    _mark_provisioning_uncertain(claim_id)
+                    raise
             if approval_mode == "yolo":
                 topic_orchestration.register_pending_creation(
                     created_wid,
@@ -324,6 +544,55 @@ async def launch_window(  # noqa: PLR0912, PLR0915, C901
                 )
             else:
                 topic_orchestration.register_pending_creation(created_wid)
+
+        if not success:
+            if created_wid:
+                try:
+                    if claim_id is not None:
+                        thread_router.attach_provisioning_target(claim_id, created_wid)
+                        session_manager.flush_state()
+                    topic_orchestration.register_pending_creation(created_wid)
+                except BaseException:  # noqa: BLE001
+                    _mark_provisioning_uncertain(claim_id)
+                    raise
+                await _finish_failed_provisioning(
+                    claim_id=claim_id,
+                    target_id=created_wid,
+                    user_id=user_id,
+                    thread_id=pending_thread_id,
+                    chat_id=chat_id,
+                    context=context,
+                    failure_message=message,
+                )
+            elif claim_id is not None:
+                if _is_definitive_create_failure(message):
+                    await _finish_failed_provisioning(
+                        claim_id=claim_id,
+                        target_id=None,
+                        user_id=user_id,
+                        thread_id=pending_thread_id,
+                        chat_id=chat_id,
+                        context=context,
+                        failure_message=message,
+                    )
+                else:
+                    _mark_provisioning_uncertain(claim_id)
+            await _abort_topic_creation(query, message, context)
+            if creation_was_cancelled:
+                raise asyncio.CancelledError
+            return WindowLaunchResult(success=False, error_message=message)
+
+        if creation_was_cancelled:
+            await _finish_failed_provisioning(
+                claim_id=claim_id,
+                target_id=created_wid,
+                user_id=user_id,
+                thread_id=pending_thread_id,
+                chat_id=chat_id,
+                context=context,
+                failure_message="creation cancelled",
+            )
+            raise asyncio.CancelledError
 
     if not success:
         await _abort_topic_creation(query, message, context)
@@ -347,23 +616,19 @@ async def launch_window(  # noqa: PLR0912, PLR0915, C901
     )
     try:
         await tmux_manager.stamp_pane_title(created_wid, provider_name)
-    except BaseException:
-        # The target exists but launch wiring did not finish. Best-effort close
-        # it before propagating cancellation/errors; if close fails, retain the
-        # pending guard so the monitor cannot adopt it as an orphan.
-        if await tmux_manager.kill_window(created_wid):
-            topic_orchestration.clear_pending_creation(created_wid)
-            if pending_thread_id is not None:
-                thread_router.unbind_thread(
-                    user_id,
-                    pending_thread_id,
-                    retirement_reason="system_replacement",
-                    cleanup_eligible=True,
-                )
+    except BaseException as exc:  # noqa: BLE001
+        created_wid = _follow_supersession(created_wid, claim_id=claim_id)
+        await _finish_failed_provisioning(
+            claim_id=claim_id,
+            target_id=created_wid,
+            user_id=user_id,
+            thread_id=pending_thread_id,
+            chat_id=chat_id,
+            context=context,
+            failure_message=str(exc),
+        )
         raise
 
-    query_message = query.message
-    chat = query_message.chat if query_message else None
     provider_caps = provider_registry.get(provider_name).capabilities
     if provider_caps.chat_first_command_path:
         # Lazy: shell ↔ topics cycle via window_callbacks adoption flow.
@@ -372,28 +637,18 @@ async def launch_window(  # noqa: PLR0912, PLR0915, C901
         try:
             await _wait_for_shell_ready(created_wid)
             await ensure_setup(created_wid, "auto")
-        except BaseException:
-            if await tmux_manager.kill_window(created_wid):
-                topic_orchestration.clear_pending_creation(created_wid)
-                if pending_thread_id is not None:
-                    thread_router.unbind_thread(
-                        user_id,
-                        pending_thread_id,
-                        retirement_reason="system_replacement",
-                        cleanup_eligible=True,
-                    )
+        except BaseException as exc:  # noqa: BLE001
+            created_wid = _follow_supersession(created_wid, claim_id=claim_id)
+            await _finish_failed_provisioning(
+                claim_id=claim_id,
+                target_id=created_wid,
+                user_id=user_id,
+                thread_id=pending_thread_id,
+                chat_id=chat_id,
+                context=context,
+                failure_message=str(exc),
+            )
             raise
-
-    if pending_thread_id is not None:
-        thread_router.bind_thread(
-            user_id,
-            pending_thread_id,
-            created_wid,
-            window_name=created_wname,
-            chat_id=chat.id if chat else None,
-        )
-        if chat and chat.type in ("group", "supergroup"):
-            thread_router.set_group_chat_id(user_id, pending_thread_id, chat.id)
 
     provider = provider_registry.get(provider_name)
     try:
@@ -407,43 +662,97 @@ async def launch_window(  # noqa: PLR0912, PLR0915, C901
             if provider.capabilities.supports_hook
             else True
         )
-    except BaseException:
-        created_wid = _follow_supersession(created_wid)
-        if await tmux_manager.kill_window(created_wid):
-            topic_orchestration.clear_pending_creation(created_wid)
-            if pending_thread_id is not None:
-                thread_router.unbind_thread(
-                    user_id,
-                    pending_thread_id,
-                    retirement_reason="system_replacement",
-                    cleanup_eligible=True,
-                )
+    except BaseException as exc:  # noqa: BLE001
+        created_wid = _follow_supersession(created_wid, claim_id=claim_id)
+        await _finish_failed_provisioning(
+            claim_id=claim_id,
+            target_id=created_wid,
+            user_id=user_id,
+            thread_id=pending_thread_id,
+            chat_id=chat_id,
+            context=context,
+            failure_message=str(exc),
+        )
         raise
 
-    created_wid = _follow_supersession(created_wid)
+    created_wid = _follow_supersession(created_wid, claim_id=claim_id)
 
     if not map_entry_found:
-        # Do not release the guard or binding unless the target is actually
-        # gone. A late hook could otherwise adopt a still-live target into
-        # an orphan topic. Herdr's neutral close only affects its guarded
-        # target pane, never a sibling session in the shared tab.
-        if await tmux_manager.kill_window(created_wid):
-            topic_orchestration.clear_pending_creation(created_wid)
-            if pending_thread_id is not None:
-                thread_router.unbind_thread(
-                    user_id,
-                    pending_thread_id,
-                    retirement_reason="system_replacement",
-                    cleanup_eligible=True,
-                )
-            message = "Session did not register with ccgram in time"
-        else:
+        # A hook-registration timeout does not prove that the new terminal is
+        # dead. Re-read presence before deciding whether the target may be
+        # aborted; live or unknown targets remain quarantined for recovery.
+        # Lazy: reconciliation imports the active multiplexer backend.
+        from ...multiplexer.reconciliation import window_presence
+
+        try:
+            presence = await window_presence(created_wid, tmux_manager)
+        except BaseException as exc:  # noqa: BLE001
+            _mark_provisioning_uncertain(claim_id)
+            if claim_id is not None:
+                topic_orchestration.clear_pending_creation(created_wid)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
             message = (
-                "Session did not register with ccgram in time and cleanup "
-                "failed; the topic remains quarantined for safe recovery"
+                "Could not verify the new session; ccgram kept it quarantined "
+                "for recovery."
             )
-        await _abort_topic_creation(query, message, context)
+            await safe_edit(query, f"⚠ {message}")
+            return WindowLaunchResult(success=False, error_message=message)
+        if presence is False:
+            await _finish_failed_provisioning(
+                claim_id=claim_id,
+                target_id=created_wid,
+                user_id=user_id,
+                thread_id=pending_thread_id,
+                chat_id=chat_id,
+                context=context,
+                failure_message="session target is gone",
+                target_already_absent=True,
+            )
+            message = "Session did not register with ccgram and is gone"
+            await _abort_topic_creation(query, message, context)
+            return WindowLaunchResult(success=False, error_message=message)
+
+        _mark_provisioning_uncertain(claim_id)
+        if claim_id is not None:
+            topic_orchestration.clear_pending_creation(created_wid)
+        message = (
+            "Session is still starting; ccgram kept it quarantined for recovery. "
+            "Try again after it finishes registering."
+        )
+        # Keep pending thread/text state so the recovery flow can finish the
+        # exact topic once the late hook registration becomes observable.
+        await safe_edit(query, f"⚠ {message}")
         return WindowLaunchResult(success=False, error_message=message)
+
+    if claim_id is not None and pending_thread_id is not None:
+        try:
+            committed = thread_router.commit_topic_provisioning(
+                claim_id,
+                window_name=created_wname,
+            )
+            session_manager.flush_state()
+        except BaseException:  # noqa: BLE001
+            _mark_provisioning_uncertain(claim_id)
+            topic_orchestration.clear_pending_creation(created_wid)
+            raise
+        if not committed:
+            _mark_provisioning_uncertain(claim_id)
+            topic_orchestration.clear_pending_creation(created_wid)
+            message = "Session could not be bound to this topic"
+            await _abort_topic_creation(query, message, context)
+            return WindowLaunchResult(success=False, error_message=message)
+    elif pending_thread_id is not None:
+        # A malformed callback without an observable chat cannot carry a
+        # durable exact-topic claim; retain the legacy synchronous fallback.
+        thread_router.bind_thread(
+            user_id,
+            pending_thread_id,
+            created_wid,
+            window_name=created_wname,
+            chat_id=chat_id,
+        )
+        session_manager.flush_state()
 
     # The target either has a hook record or never needed one. This also clears
     # the no-thread path, which otherwise has no topic bind to release the guard.

@@ -20,8 +20,7 @@ import pytest
 # The CCGRAM_ prefix is scrubbed, plus the non-prefixed vars Config reads directly.
 _CONFIG_ENV_PREFIXES = ("CCGRAM_",)
 _NON_PREFIXED_CONFIG_ENV = (
-    "AUTOCLOSE_DEAD_MINUTES",
-    "AUTOCLOSE_DONE_MINUTES",
+    "UNBOUND_WINDOW_TTL_MINUTES",
     "CLAUDE_CONFIG_DIR",
     "MONITOR_POLL_INTERVAL",
     "TMUX_SESSION_NAME",

@@ -318,3 +318,89 @@ async def test_concurrent_cleanup_and_cancellation_release_claim(router):
             await first
     client.delete_forum_topic.side_effect = None
     assert await cleanup_retired_topic(client, topic, router=router) == "deleted"
+
+
+async def test_retire_topic_binding_protects_active_provisioning_claim(router):
+    router.bind_thread(100, 42, "@old", chat_id=-999)
+    router.begin_topic_provisioning(
+        100,
+        -999,
+        thread_id=42,
+        target_id="@new",
+        kind="replacement",
+    )
+    client = AsyncMock()
+
+    assert (
+        await retire_topic_binding(client, 100, 42, "@old", router=router)
+        == "protected_provisioning"
+    )
+    assert router.get_window_for_chat_thread(-999, 42) == "@old"
+    client.delete_forum_topic.assert_not_awaited()
+
+
+async def test_target_provisioning_protects_matching_window_before_unbind(router):
+    router.bind_thread(100, 42, "durable", chat_id=-999)
+    router.begin_topic_provisioning(
+        100,
+        -999,
+        target_id="durable",
+        kind="topic_for_target",
+    )
+    client = AsyncMock()
+
+    assert (
+        await retire_topic_binding(client, 100, 42, "durable", router=router)
+        == "protected_provisioning"
+    )
+    assert router.get_window_for_chat_thread(-999, 42) == "durable"
+    client.delete_forum_topic.assert_not_awaited()
+
+
+async def test_cleanup_and_deletion_claim_exclude_provisioned_topic(router):
+    topic = _retire(router)
+    router.begin_topic_provisioning(
+        100,
+        -999,
+        thread_id=42,
+        target_id="new-target",
+        kind="target_for_topic",
+    )
+    client = AsyncMock()
+
+    assert await cleanup_retired_topic(client, topic, router=router) == (
+        "protected_provisioning"
+    )
+    assert router.begin_topic_deletion(topic) is False
+    client.delete_forum_topic.assert_not_awaited()
+
+
+async def test_flush_failure_releases_topic_and_target_deletion_claims(router):
+    topic = _retire(router)
+    client = AsyncMock()
+
+    with (
+        patch(
+            "ccgram.handlers.topics.topic_deletion.session_manager.flush_state",
+            side_effect=OSError("state write failed"),
+        ),
+        pytest.raises(OSError, match="state write failed"),
+    ):
+        await cleanup_retired_topic(client, topic, router=router)
+
+    assert list(router.iter_retired_topics()) == [topic]
+    assert router.begin_topic_deletion(topic) is True
+    router.end_topic_deletion(topic)
+    claim = router.begin_topic_provisioning(
+        100,
+        -999,
+        target_id=topic.target_id,
+        kind="topic_for_target",
+    )
+    router.abort_topic_provisioning(
+        claim.claim_id,
+        target_confirmed_absent=False,
+        topic_confirmed_absent=True,
+    )
+    client.delete_forum_topic.assert_not_awaited()
+    client.close_forum_topic.assert_not_awaited()

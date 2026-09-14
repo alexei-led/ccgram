@@ -1589,11 +1589,11 @@ async def test_subprocess_run_maps_timeout(monkeypatch: pytest.MonkeyPatch) -> N
     )
 
 
-@pytest.mark.parametrize("protocol", range(14, 21))
+@pytest.mark.parametrize("protocol", range(14, 23))
 async def test_ensure_session_accepts_supported_protocol_without_warning(
     protocol: int,
 ) -> None:
-    assert frozenset(range(14, 21)) == HERDR_SUPPORTED_PROTOCOLS
+    assert frozenset(range(14, 23)) == HERDR_SUPPORTED_PROTOCOLS
     status = json.dumps(
         {
             "server": {

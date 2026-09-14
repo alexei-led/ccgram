@@ -6,19 +6,15 @@ import pytest
 from telegram import Bot
 from telegram.error import BadRequest, RetryAfter
 
-from ccgram.multiplexer.base import WindowRef
 from ccgram.window_view import WindowView
-from ccgram.thread_router import ThreadRouter
 
 from ccgram.handlers.topics.topic_lifecycle import (
     PROBE_MAX_PER_CYCLE,
-    check_autoclose_timers,
     check_unbound_window_ttl,
     probe_topic_existence,
     prune_stale_state,
     reset_probe_schedule,
     rollback_legacy_herdr_binding,
-    _close_expired_topic,
 )
 from ccgram.handlers.polling.polling_state import (
     lifecycle_strategy,
@@ -58,77 +54,6 @@ class TestLegacyHerdrMigration:
         ) as legacy_state:
             legacy_state.rollback_legacy_herdr_archive.return_value = False
             assert rollback_legacy_herdr_binding(1, 100, "w2:t1") is False
-
-
-class TestCheckAutocloseTimers:
-    async def test_no_topics_is_noop(self):
-        bot = AsyncMock(spec=Bot)
-        await check_autoclose_timers(bot)
-        bot.close_forum_topic.assert_not_called()
-        bot.delete_forum_topic.assert_not_called()
-
-    async def test_expired_done_topic_is_closed_not_deleted(self):
-        """Autoclose closes the topic; it never deletes (irreversible data loss)."""
-        bot = AsyncMock(spec=Bot)
-        user_id, thread_id = 1, 100
-        lifecycle_strategy.start_autoclose_timer(
-            user_id, thread_id, "done", time.monotonic() - 99999
-        )
-        with (
-            patch("ccgram.handlers.topics.topic_lifecycle.config") as mock_config,
-            patch(
-                "ccgram.handlers.topics.topic_lifecycle.thread_router"
-            ) as mock_router,
-            patch(
-                "ccgram.handlers.topics.topic_lifecycle.clear_topic_state",
-                new_callable=AsyncMock,
-            ),
-        ):
-            mock_config.autoclose_done_minutes = 1
-            mock_router.resolve_chat_id.return_value = 42
-            mock_router.get_window_for_thread.return_value = "@0"
-            await check_autoclose_timers(bot)
-        bot.close_forum_topic.assert_called_once()
-        bot.delete_forum_topic.assert_not_called()
-
-    async def test_not_yet_expired_topic_stays(self):
-        bot = AsyncMock(spec=Bot)
-        user_id, thread_id = 1, 100
-        lifecycle_strategy.start_autoclose_timer(
-            user_id, thread_id, "done", time.monotonic()
-        )
-        with patch("ccgram.handlers.topics.topic_lifecycle.config") as mock_config:
-            mock_config.autoclose_done_minutes = 60
-            await check_autoclose_timers(bot)
-        bot.close_forum_topic.assert_not_called()
-        bot.delete_forum_topic.assert_not_called()
-
-    async def test_expired_dead_topic_stays_when_window_is_live(self):
-        bot = AsyncMock(spec=Bot)
-        user_id, thread_id = 1, 100
-        lifecycle_strategy.start_autoclose_timer(
-            user_id, thread_id, "dead", time.monotonic() - 99999
-        )
-        with (
-            patch("ccgram.handlers.topics.topic_lifecycle.config") as mock_config,
-            patch(
-                "ccgram.handlers.topics.topic_lifecycle.thread_router"
-            ) as mock_router,
-            patch("ccgram.handlers.topics.topic_lifecycle.tmux_manager") as mock_tmux,
-        ):
-            mock_config.autoclose_done_minutes = 30
-            mock_config.autoclose_dead_minutes = 10
-            mock_router.get_window_for_thread.return_value = "@0"
-            mock_router.iter_thread_bindings_with_chat.return_value = [
-                (1, -100200, 100, "@0")
-            ]
-            mock_tmux.find_window_by_id = AsyncMock(return_value=MagicMock())
-            mock_tmux.list_windows_for_reconciliation = AsyncMock(
-                return_value=[WindowRef(window_id="@0", window_name="p", cwd="/p")]
-            )
-            await check_autoclose_timers(bot)
-        bot.delete_forum_topic.assert_not_called()
-        assert lifecycle_strategy.get_state(user_id, thread_id).autoclose is None
 
 
 HERDR_TARGET = "herdr-session-v1-" + "a" * 64
@@ -174,7 +99,7 @@ async def _sweep_expired_unbound_window(
         patch("ccgram.handlers.topics.topic_lifecycle.tmux_manager") as mock_tmux,
         patch("ccgram.handlers.topics.topic_lifecycle.revoke_window_tokens") as revoke,
     ):
-        mock_config.autoclose_done_minutes = 1
+        mock_config.unbound_window_ttl_minutes = 1
         mock_router.iter_thread_bindings.return_value = bindings or []
         mock_wq.view_window.return_value = _window_view(origin, window_id)
         mock_tmux.kill_window = AsyncMock(return_value=kill_ok)
@@ -189,7 +114,7 @@ async def _sweep_expired_unbound_window(
 class TestCheckUnboundWindowTtl:
     async def test_no_timeout_is_noop(self):
         with patch("ccgram.handlers.topics.topic_lifecycle.config") as mock_config:
-            mock_config.autoclose_done_minutes = 0
+            mock_config.unbound_window_ttl_minutes = 0
             await check_unbound_window_ttl([])
 
     async def test_bound_window_timer_cleared(self):
@@ -490,176 +415,3 @@ class TestProbeTopicExistence:
                 bot.unpin_all_forum_topic_messages.assert_not_called()
         finally:
             tl._probe_pin_disabled.discard(wid)
-
-
-class TestAutocloseNeedsConfirmedDeath:
-    """An unreachable backend must not close the user's topic.
-
-    find_window_by_id answers None for a window that is gone and for a backend
-    that could not be reached, and this path closes a forum topic on that
-    answer. Unknown defers to the next expiry.
-    """
-
-    async def test_unreachable_backend_defers_the_close(self) -> None:
-        from ccgram.handlers.topics.topic_lifecycle import _close_expired_topic
-
-        client = AsyncMock()
-        with (
-            patch("ccgram.handlers.topics.topic_lifecycle.tmux_manager") as mock_tmux,
-            patch("ccgram.handlers.topics.topic_lifecycle.thread_router") as mock_tr,
-            patch(
-                "ccgram.handlers.topics.topic_lifecycle.lifecycle_strategy"
-            ) as strategy,
-            patch("ccgram.handlers.topics.topic_lifecycle.window_query") as wq,
-        ):
-            mock_tr.iter_thread_bindings_with_chat.return_value = [
-                (100, -100200, 42, "@1")
-            ]
-            mock_tr.get_window_for_thread.return_value = "@1"
-            wq.view_window.return_value = MagicMock(state="dead")
-            mock_tmux.find_window_by_id = AsyncMock(return_value=None)
-            mock_tmux.list_windows_for_reconciliation = AsyncMock(return_value=None)
-
-            await _close_expired_topic(client, 100, 42, "dead")
-
-        client.close_forum_topic.assert_not_called()
-        strategy.clear_autoclose_timer.assert_not_called()
-
-
-def _lifecycle_router() -> ThreadRouter:
-    return ThreadRouter(
-        schedule_save=lambda: None,
-        has_window_state=lambda _window_id: False,
-        default_group_id=-100200,
-    )
-
-
-class TestExpiredDeadTopicRetirement:
-    @pytest.mark.parametrize("window_id", ["@dead", HERDR_TARGET])
-    async def test_confirmed_disappearance_retires_and_deletes_exact_binding(
-        self, window_id
-    ):
-        router = _lifecycle_router()
-        router.bind_thread(100, 42, window_id, chat_id=-100200)
-        client = AsyncMock(spec=Bot)
-
-        with (
-            patch("ccgram.handlers.topics.topic_lifecycle.thread_router", router),
-            patch(
-                "ccgram.handlers.topics.topic_lifecycle.window_presence",
-                new=AsyncMock(return_value=False),
-            ),
-            patch(
-                "ccgram.handlers.topics.topic_lifecycle.clear_topic_state",
-                new_callable=AsyncMock,
-            ) as clear,
-            patch("ccgram.handlers.topics.topic_deletion.session_manager") as session,
-        ):
-            await _close_expired_topic(client, 100, 42, "dead")
-
-        client.delete_forum_topic.assert_awaited_once()
-        client.close_forum_topic.assert_not_awaited()
-        clear.assert_awaited_once_with(
-            100,
-            42,
-            client=client,
-            window_id=window_id,
-            window_dead=True,
-            chat_id=-100200,
-        )
-        session.flush_state.assert_called()
-        assert list(router.iter_thread_bindings()) == []
-        assert list(router.iter_retired_topics()) == []
-
-    async def test_unknown_disappearance_keeps_exact_binding(self):
-        router = _lifecycle_router()
-        router.bind_thread(100, 42, "@dead", chat_id=-100200)
-        client = AsyncMock(spec=Bot)
-
-        with (
-            patch("ccgram.handlers.topics.topic_lifecycle.thread_router", router),
-            patch(
-                "ccgram.handlers.topics.topic_lifecycle.window_presence",
-                new=AsyncMock(return_value=None),
-            ),
-        ):
-            await _close_expired_topic(client, 100, 42, "dead")
-
-        client.delete_forum_topic.assert_not_awaited()
-        client.close_forum_topic.assert_not_awaited()
-        assert router.get_window_for_thread(100, 42, -100200) == "@dead"
-
-
-async def test_done_timer_closes_a_normal_scoped_binding_without_deleting():
-    router = _lifecycle_router()
-    router.bind_thread(100, 42, "@live", chat_id=-100200)
-    client = AsyncMock(spec=Bot)
-    with (
-        patch("ccgram.handlers.topics.topic_lifecycle.thread_router", router),
-        patch("ccgram.handlers.topics.topic_lifecycle.clear_topic_state", AsyncMock()),
-    ):
-        await _close_expired_topic(client, 100, 42, "done")
-    client.close_forum_topic.assert_awaited_once_with(
-        chat_id=-100200, message_thread_id=42
-    )
-    client.delete_forum_topic.assert_not_awaited()
-    assert list(router.iter_thread_bindings()) == []
-    assert next(router.iter_retired_topics()).cleanup_eligible is False
-
-
-async def test_done_timer_does_not_choose_between_ambiguous_chats():
-    router = _lifecycle_router()
-    router.bind_thread(100, 42, "@one", chat_id=-100200)
-    router.bind_thread(100, 42, "@two", chat_id=-100300)
-    client = AsyncMock(spec=Bot)
-    with patch("ccgram.handlers.topics.topic_lifecycle.thread_router", router):
-        await _close_expired_topic(client, 100, 42, "done")
-    client.close_forum_topic.assert_not_awaited()
-    client.delete_forum_topic.assert_not_awaited()
-    assert len(list(router.iter_thread_bindings())) == 2
-
-
-async def test_dead_timer_retries_after_legacy_chat_identity_is_restored():
-    router = _lifecycle_router()
-    router.bind_thread(100, 42, "@dead")
-    entered_at = time.monotonic() - 3600
-    lifecycle_strategy.start_autoclose_timer(100, 42, "dead", entered_at)
-    client = AsyncMock(spec=Bot)
-
-    with (
-        patch("ccgram.handlers.topics.topic_lifecycle.thread_router", router),
-        patch(
-            "ccgram.handlers.topics.topic_lifecycle.window_presence",
-            AsyncMock(return_value=False),
-        ) as presence,
-        patch("ccgram.handlers.topics.topic_lifecycle.clear_topic_state", AsyncMock()),
-        patch("ccgram.handlers.topics.topic_deletion.session_manager"),
-        patch(
-            "ccgram.handlers.topics.topic_lifecycle.config.autoclose_dead_minutes", 1
-        ),
-    ):
-        await check_autoclose_timers(client)
-        assert lifecycle_strategy.get_state(100, 42).autoclose is None
-        assert router.get_window_for_thread(100, 42) == "@dead"
-        client.delete_forum_topic.assert_not_awaited()
-
-        router.set_group_chat_id(100, 42, -100300)
-        await check_autoclose_timers(client)
-        presence.assert_not_awaited()
-        client.delete_forum_topic.assert_not_awaited()
-        assert list(router.iter_thread_bindings_with_chat()) == [
-            (100, None, 42, "@dead")
-        ]
-
-        router.from_dict(
-            {
-                "thread_bindings": {"100": {"42": "@dead"}},
-                "group_chat_ids": {"100:42": -100200},
-            }
-        )
-        lifecycle_strategy.start_autoclose_timer(100, 42, "dead", entered_at)
-        await check_autoclose_timers(client)
-
-    client.delete_forum_topic.assert_awaited_once()
-    assert list(router.iter_thread_bindings()) == []
-    assert lifecycle_strategy.get_state(100, 42).autoclose is None

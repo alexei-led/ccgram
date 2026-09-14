@@ -67,8 +67,7 @@ _FLAG_TO_ENV: list[tuple[str, str]] = [
     ("tmux_session", "TMUX_SESSION_NAME"),
     ("monitor_interval", "MONITOR_POLL_INTERVAL"),
     ("group_id", "CCGRAM_GROUP_ID"),
-    ("autoclose_done", "AUTOCLOSE_DONE_MINUTES"),
-    ("autoclose_dead", "AUTOCLOSE_DEAD_MINUTES"),
+    ("unbound_window_ttl", "UNBOUND_WINDOW_TTL_MINUTES"),
     ("provider", "CCGRAM_PROVIDER"),
     ("show_hidden_dirs", "CCGRAM_SHOW_HIDDEN_DIRS"),
     ("claude_config_dir", "CLAUDE_CONFIG_DIR"),
@@ -147,20 +146,12 @@ def apply_args_to_env(**kwargs: object) -> None:
     help="Restrict to one Telegram group.",
 )
 @click.option(
-    "--autoclose-done",
+    "--unbound-window-ttl",
     type=int,
     default=None,
     callback=_validate_non_negative_int,
-    envvar="AUTOCLOSE_DONE_MINUTES",
-    help="Auto-close done topics after N minutes (default: 30, 0=disabled).",
-)
-@click.option(
-    "--autoclose-dead",
-    type=int,
-    default=None,
-    callback=_validate_non_negative_int,
-    envvar="AUTOCLOSE_DEAD_MINUTES",
-    help="Delete topics for closed sessions after N minutes (default: 10, 0=disabled).",
+    envvar="UNBOUND_WINDOW_TTL_MINUTES",
+    help="Kill unbound windows after N minutes (default: 30, 0=disabled).",
 )
 @click.option(
     "--provider",

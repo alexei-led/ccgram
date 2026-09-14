@@ -31,6 +31,18 @@ async def retire_topic_binding(
     before_delete: Callable[[], Awaitable[None]] | None = None,
 ) -> str:
     """Retire an exact confirmed-dead binding before any asynchronous cleanup."""
+    if router.has_target_provisioning(window_id) is True:
+        return "protected_provisioning"
+    if (
+        chat_id is not None
+        and router.has_topic_provisioning(chat_id, thread_id) is True
+    ):
+        return "protected_provisioning"
+    if chat_id is None and any(
+        claim.user_id == user_id and claim.thread_id == thread_id
+        for claim in router.iter_topic_provisionings()
+    ):
+        return "protected_provisioning"
     candidates = [
         (chat, wid)
         for uid, chat, tid, wid in router.iter_thread_bindings_with_chat()
@@ -77,8 +89,23 @@ def is_cleanup_candidate(topic: RetiredTopic, *, include_closed: bool = False) -
 
 
 def _still_retired(topic: RetiredTopic, router: ThreadRouter) -> bool:
-    return topic in router.iter_retired_topics() and not (
+    retained = any(
+        (
+            current.user_id,
+            current.chat_id,
+            current.thread_id,
+            current.sequence,
+        )
+        == (topic.user_id, topic.chat_id, topic.thread_id, topic.sequence)
+        for current in router.iter_retired_topics()
+    )
+    return retained and not (
         router.has_active_topic(topic.chat_id, topic.thread_id)
+        or router.has_topic_provisioning(topic.chat_id, topic.thread_id) is True
+        or (
+            topic.target_id is not None
+            and router.has_target_provisioning(topic.target_id) is True
+        )
     )
 
 
@@ -101,6 +128,13 @@ def _save_retry(
 async def _close_fallback(
     client: TelegramClient, topic: RetiredTopic, router: ThreadRouter
 ) -> str:
+    if router.has_topic_provisioning(topic.chat_id, topic.thread_id) is True:
+        return "protected_provisioning"
+    if (
+        topic.target_id is not None
+        and router.has_target_provisioning(topic.target_id) is True
+    ):
+        return "protected_provisioning"
     if not _still_retired(topic, router):
         return "protected_active"
     closed = topic.closed
@@ -129,7 +163,7 @@ async def _close_fallback(
     return "closed" if closed else "failed"
 
 
-async def cleanup_retired_topic(
+async def cleanup_retired_topic(  # noqa: C901, PLR0911
     client: TelegramClient,
     topic: RetiredTopic,
     *,
@@ -137,11 +171,22 @@ async def cleanup_retired_topic(
     before_delete: Callable[[], Awaitable[None]] | None = None,
 ) -> str:
     """Attempt one exact retired record; close is never completed deletion."""
+    if router.has_topic_provisioning(topic.chat_id, topic.thread_id) is True:
+        return "protected_provisioning"
+    if (
+        topic.target_id is not None
+        and router.has_target_provisioning(topic.target_id) is True
+    ):
+        return "protected_provisioning"
     if topic.thread_id == 1:
         return "protected_general"
     if not _still_retired(topic, router):
         return "protected_active"
-    if topic.retry_at > time.time() or not router.begin_topic_deletion(topic):
+    if topic.retry_at > time.time():
+        return "deferred"
+    if not router.begin_topic_deletion(topic):
+        if router.has_topic_provisioning(topic.chat_id, topic.thread_id) is True:
+            return "protected_provisioning"
         return "deferred"
     try:
         session_manager.flush_state()
@@ -199,7 +244,12 @@ async def cleanup_retired_topics(
             break
         outcome = await cleanup_retired_topic(client, topic, router=router)
         outcomes[outcome] += 1
-        if outcome not in {"deferred", "protected_active", "protected_general"}:
+        if outcome not in {
+            "deferred",
+            "protected_active",
+            "protected_general",
+            "protected_provisioning",
+        }:
             attempts += 1
         if outcome == "rate_limited":
             break

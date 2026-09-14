@@ -162,6 +162,12 @@ class TestBootstrapApplication:
             ),
             patch("ccgram.bootstrap.session_manager") as sm,
             patch(
+                "ccgram.bootstrap.recover_topic_provisioning",
+                new=AsyncMock(
+                    side_effect=lambda _bot: order.append("recover_creation")
+                ),
+            ),
+            patch(
                 "ccgram.bootstrap._adopt_unbound_windows",
                 new=AsyncMock(side_effect=lambda _bot: order.append("adopt")),
             ),
@@ -195,10 +201,11 @@ class TestBootstrapApplication:
             "exc_handler",
             "ensure_session",
             "commands",
+            "wire",
             "stale_ids",
+            "recover_creation",
             "adopt",
             "hooks",
-            "wire",
             "monitor",
             "polling",
             "miniapp",

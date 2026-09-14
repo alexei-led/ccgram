@@ -34,6 +34,19 @@ def _expected_module_command() -> str:
     return f"{shlex.quote(sys.executable)} -m ccgram.main hook"
 
 
+@pytest.fixture(autouse=True)
+def _clear_ambient_multiplexer_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep hook tests independent of the terminal running pytest."""
+    for key in (
+        "HERDR_SOCKET_PATH",
+        "HERDR_WORKSPACE_ID",
+        "HERDR_PANE_ID",
+        "HERDR_TAB_ID",
+        "TMUX_PANE",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
 class TestCodexFeatureFlag:
     @pytest.mark.parametrize(
         ("existing", "expected", "result"),

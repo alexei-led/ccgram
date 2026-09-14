@@ -401,7 +401,6 @@ async def _handle_dead_window(
 
     if w is not None and not returned_to_shell:
         lifecycle_strategy.clear_dead_notification(user_id, thread_id)
-        lifecycle_strategy.clear_autoclose_timer(user_id, thread_id)
         return False
 
     logically_dead = (
@@ -409,7 +408,6 @@ async def _handle_dead_window(
         or returned_to_shell
     )
     if w and not logically_dead:
-        lifecycle_strategy.clear_autoclose_timer(user_id, thread_id)
         return False
 
     display = thread_router.get_display_name(window_id)

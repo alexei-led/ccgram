@@ -46,6 +46,7 @@ from .handlers.topics.topic_orchestration import (
     is_pending_creation as _is_pending_creation,
 )
 from .session_map import register_in_flight_window_predicate
+from .handlers.topics.topic_provisioning_recovery import recover_topic_provisioning
 from .multiplexer import get_multiplexer, install_multiplexer, multiplexer
 from .providers import get_provider
 from .session import session_manager
@@ -351,10 +352,11 @@ async def bootstrap_application(application: Application) -> None:
     wire_multiplexer()
     await ensure_multiplexer_session()
     await register_provider_commands(application)
+    wire_runtime_callbacks()
     await session_manager.resolve_stale_ids()
+    await recover_topic_provisioning(PTBTelegramClient(application.bot))
     await _adopt_unbound_windows(PTBTelegramClient(application.bot))
     verify_hooks_installed()
-    wire_runtime_callbacks()
     await start_session_monitor(application)
     start_status_polling(application)
     start_event_stream(application)

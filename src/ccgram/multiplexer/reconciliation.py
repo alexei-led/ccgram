@@ -3,9 +3,25 @@
 from __future__ import annotations
 
 import inspect
+import re
+from collections.abc import Callable
 from typing import Protocol, cast
 
+from ..herdr_targets import is_herdr_session_target
+from ..window_resolver import is_window_id
 from .base import WindowRef
+from .base import canonical_window_id
+
+
+_AGTERM_WINDOW_ID_RE = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z")
+_BACKEND_WINDOW_ID_VALIDATORS: dict[str, Callable[[str], bool]] = {
+    "tmux": is_window_id,
+    "herdr": is_herdr_session_target,
+    "agterm": lambda value: bool(
+        _AGTERM_WINDOW_ID_RE.fullmatch(canonical_window_id(value))
+    ),
+}
+_MISSING = object()
 
 
 class _ReconciliationWindowLister(Protocol):
@@ -16,6 +32,33 @@ class _ReconciliationWindowLister(Protocol):
 class _TargetedPresenceProbe(Protocol):
     async def window_exists(self, window_id: str) -> bool | None:
         """True, False, or None when the backend could not answer."""
+
+
+def _window_id_is_in_backend_namespace(backend: object, window_id: str) -> bool | None:
+    """Return True only when a production backend recognizes *window_id*.
+
+    A concrete backend's capability declaration is the namespace authority.
+    An ID outside that namespace may belong to another backend or to a future
+    ID scheme, so it is unknown and must never become proof of absence. Older
+    seam fakes without a capability declaration keep their listing semantics.
+    """
+    descriptor = inspect.getattr_static(type(backend), "capabilities", _MISSING)
+    if descriptor is _MISSING:
+        try:
+            capabilities = vars(backend).get("capabilities", _MISSING)
+        except TypeError:
+            capabilities = _MISSING
+        if capabilities is _MISSING:
+            return True
+    else:
+        capabilities = getattr(backend, "capabilities", None)
+    name = getattr(capabilities, "name", None)
+    validator = (
+        _BACKEND_WINDOW_ID_VALIDATORS.get(name) if isinstance(name, str) else None
+    )
+    if validator is None:
+        return None
+    return True if validator(window_id) else None
 
 
 async def list_windows_for_reconciliation(
@@ -78,6 +121,9 @@ async def window_snapshot(
     lookup is a second chance to fail, and its ``None`` is ambiguous again.
     """
     backend = _resolve_backend(backend)
+    if _window_id_is_in_backend_namespace(backend, window_id) is not True:
+        return False, None
+
     prober = _targeted_presence_probe(backend)
     if prober is not None:
         present = await prober.window_exists(window_id)
@@ -109,6 +155,8 @@ async def window_presence(window_id: str, backend: object | None = None) -> bool
     item.
     """
     backend = _resolve_backend(backend)
+    if _window_id_is_in_backend_namespace(backend, window_id) is not True:
+        return None
 
     # A backend that can answer about one window directly is authoritative, and
     # once it declares that, its answer is the only one taken. agterm is such a

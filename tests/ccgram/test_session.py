@@ -1,6 +1,6 @@
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -44,6 +44,17 @@ class TestRoutingLoadRepair:
         assert thread_router.get_window_for_thread(100, 2, -1001) is None
         assert thread_router.get_window_for_thread(200, 142, -1001) == "@5"
         assert manager.group_chat_ids == {}
+
+
+class TestFlushState:
+    def test_uses_strict_persistence_checkpoint(self) -> None:
+        manager = object.__new__(SessionManager)
+        persistence = Mock()
+        manager._persistence = persistence
+
+        assert manager.flush_state() is None
+
+        persistence.flush.assert_called_once_with(strict=True)
 
 
 class TestLegacyHerdrMigration:

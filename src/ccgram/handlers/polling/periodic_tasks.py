@@ -5,7 +5,7 @@ live view ticking, and state pruning.
 
 Key components:
   - run_periodic_tasks: time-gated live view tick and topic check
-  - run_lifecycle_tasks: per-tick autoclose and unbound window management
+  - run_lifecycle_tasks: per-tick unbound window management
 """
 
 import time
@@ -18,8 +18,8 @@ from ...telegram_client import TelegramClient
 from ...utils import log_throttle_sweep
 from ..live.live_view import tick_live_views
 from ..topics.topic_deletion import cleanup_retired_topics
+from ..topics.topic_provisioning_recovery import recover_topic_provisioning
 from ..topics.topic_lifecycle import (
-    check_autoclose_timers,
     check_unbound_window_ttl,
     probe_topic_existence,
     prune_stale_state,
@@ -52,15 +52,16 @@ async def run_periodic_tasks(
 
     if now - timers["topic_check"] >= TOPIC_CHECK_INTERVAL:
         timers["topic_check"] = now
+        recovery = await recover_topic_provisioning(client)
         await prune_stale_state(all_windows)
-        await probe_topic_existence(client)
-        await cleanup_retired_topics(client)
+        if not recovery.get("rate_limited"):
+            await probe_topic_existence(client)
+            await cleanup_retired_topics(client)
         log_throttle_sweep()
 
 
 async def run_lifecycle_tasks(
-    client: TelegramClient, all_windows: list["TmuxWindow"]
+    _client: TelegramClient, all_windows: list["TmuxWindow"]
 ) -> None:
-    """Run per-tick lifecycle tasks (autoclose timers, unbound window TTL)."""
-    await check_autoclose_timers(client)
+    """Run per-tick unbound window TTL management."""
     await check_unbound_window_ttl(all_windows)

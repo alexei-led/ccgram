@@ -18,6 +18,7 @@ class TestConfigValid:
         cfg = Config()
         assert cfg.telegram_bot_token == "test:token"
         assert cfg.allowed_users == {12345}
+        assert cfg.unbound_window_ttl_minutes == 30
 
     def test_custom_tmux_session_name(self, monkeypatch):
         monkeypatch.setenv("TMUX_SESSION_NAME", "mysession")

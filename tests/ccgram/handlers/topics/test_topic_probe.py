@@ -1,6 +1,8 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from telegram.error import BadRequest, TelegramError
+from telegram.error import RetryAfter
 
 from ccgram.handlers.topics.topic_probe import probe_topic_exists
 
@@ -32,6 +34,37 @@ async def test_probe_reports_unknown_transport_error() -> None:
     client.send_message.side_effect = TelegramError("network")
 
     assert await probe_topic_exists(client, -100, 42) is None
+
+
+async def test_probe_can_propagate_retry_after_from_send() -> None:
+    client = AsyncMock()
+    client.send_message.side_effect = RetryAfter(60)
+
+    with pytest.raises(RetryAfter):
+        await probe_topic_exists(client, -100, 42, propagate_retry_after=True)
+
+
+@pytest.mark.parametrize("propagate", [False, True])
+async def test_probe_cleanup_retry_preserves_positive_result(propagate: bool) -> None:
+    client = AsyncMock()
+    client.send_message.return_value = MagicMock(message_id=99)
+    error = RetryAfter(60)
+    client.delete_message.side_effect = error
+    cleanup_errors: list[RetryAfter] = []
+
+    assert (
+        await probe_topic_exists(
+            client,
+            -100,
+            42,
+            propagate_retry_after=propagate,
+            on_cleanup_retry_after=cleanup_errors.append,
+        )
+        is True
+    )
+    assert cleanup_errors == [error]
+    client.send_message.assert_awaited_once()
+    client.delete_message.assert_awaited_once()
 
 
 async def test_probe_logs_cleanup_failure_but_keeps_exists_result() -> None:

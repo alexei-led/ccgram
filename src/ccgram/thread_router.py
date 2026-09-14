@@ -25,17 +25,30 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 import math
 import structlog
+import time
 from collections.abc import Callable, Iterator
-from typing import Any, cast
+from typing import Any, Literal, cast
+import uuid
 
 from .multiplexer.base import canonical_window_id
 
 logger = structlog.get_logger()
 
 _RETIRED_TOPIC_LIMIT = 100
+_TOPIC_PROVISIONING_KINDS = {
+    "topic_for_target",
+    "target_for_topic",
+    "replacement",
+}
+
+TopicProvisioningKind = Literal[
+    "topic_for_target",
+    "target_for_topic",
+    "replacement",
+]
 
 
 @dataclass(frozen=True)
@@ -55,6 +68,31 @@ class RetiredTopic:
     sequence: int
     retry_at: float = 0.0
     closed: bool = False
+    target_id: str | None = None
+
+
+@dataclass(frozen=True)
+class TopicProvisioning:
+    """Durable evidence for one topic/target creation transaction.
+
+    A record remains present until the caller can prove that creation either
+    committed or failed safely.  ``created_at`` is diagnostic metadata only;
+    it must never be used as an expiry or deletion decision. A replacement
+    keeps its deleted topic in ``retry_thread_id`` while its new topic is being
+    created or retried.
+    """
+
+    claim_id: str
+    user_id: int
+    chat_id: int
+    thread_id: int | None
+    target_id: str | None
+    previous_target_id: str | None
+    kind: TopicProvisioningKind
+    uncertain: bool = False
+    created_at: float = field(default_factory=time.time)
+    retry_thread_id: int | None = None
+    retry_at: float = 0.0
 
 
 _active_chat_id: contextvars.ContextVar[int | None] = contextvars.ContextVar(
@@ -109,6 +147,12 @@ class ThreadRouter:
         self._chat_window_to_thread: dict[tuple[int, int, str], int] = {}
         self._retired_topics: list[RetiredTopic] = []
         self._topic_deletion_claims: set[tuple[int, int]] = set()
+        self._topic_deletion_targets: dict[tuple[int, int], str | None] = {}
+        self._topic_provisionings: dict[str, TopicProvisioning] = {}
+        # Ownership is intentionally process-local.  The durable records above
+        # survive restart so recovery can resolve an interrupted flow, while
+        # this set identifies claims still owned by the current flow.
+        self._owned_provisioning_claims: set[str] = set()
         self._next_retired_sequence = 1
         self._schedule_save: Callable[[], None] = schedule_save
         self._has_window_state: Callable[[str], bool] = has_window_state
@@ -124,6 +168,9 @@ class ThreadRouter:
         self._chat_window_to_thread.clear()
         self._retired_topics.clear()
         self._topic_deletion_claims.clear()
+        self._topic_deletion_targets.clear()
+        self._topic_provisionings.clear()
+        self._owned_provisioning_claims.clear()
         self._next_retired_sequence = 1
 
     # ------------------------------------------------------------------
@@ -257,8 +304,25 @@ class ThreadRouter:
                     "sequence": topic.sequence,
                     "retry_at": topic.retry_at,
                     "closed": topic.closed,
+                    "target_id": topic.target_id,
                 }
                 for topic in self._retired_topics
+            ],
+            "topic_provisioning": [
+                {
+                    "claim_id": claim.claim_id,
+                    "user_id": claim.user_id,
+                    "chat_id": claim.chat_id,
+                    "thread_id": claim.thread_id,
+                    "target_id": claim.target_id,
+                    "previous_target_id": claim.previous_target_id,
+                    "kind": claim.kind,
+                    "uncertain": claim.uncertain,
+                    "created_at": claim.created_at,
+                    "retry_thread_id": claim.retry_thread_id,
+                    "retry_at": claim.retry_at,
+                }
+                for claim in self._topic_provisionings.values()
             ],
         }
 
@@ -292,11 +356,24 @@ class ThreadRouter:
             self.private_topic_chats.add(chat_id)
         self.window_display_names = data.get("window_display_names", {})
         self._retired_topics = self._load_retired_topics(data.get("retired_topics", []))
+        raw_provisioning = data.get("topic_provisioning", [])
+        loaded_provisioning = self._load_topic_provisionings(raw_provisioning)
+        self._topic_provisionings = {
+            claim.claim_id: claim for claim in loaded_provisioning
+        }
+        # A restart cannot safely claim that an old flow is still running.
+        # Keep its durable record for reconciliation, but clear process-local
+        # ownership so recovery can handle it explicitly.
+        self._owned_provisioning_claims.clear()
         self._next_retired_sequence = (
             max((topic.sequence for topic in self._retired_topics), default=0) + 1
         )
         repaired = self._normalize_group_backed_bindings()
         repaired = self._dedup_thread_bindings() or repaired
+        if isinstance(raw_provisioning, list):
+            repaired = len(loaded_provisioning) != len(raw_provisioning) or repaired
+        elif raw_provisioning:
+            repaired = True
         self._rebuild_reverse_index()
         for (
             _user_id,
@@ -306,6 +383,85 @@ class ThreadRouter:
         ) in self.iter_thread_bindings_with_chat():
             self._restore_active_topic(chat_id, thread_id)
         return repaired
+
+    @staticmethod
+    def _load_topic_provisionings(raw_claims: Any) -> list[TopicProvisioning]:
+        """Load validated provisioning records without age-based truncation."""
+        if not isinstance(raw_claims, list):
+            return []
+
+        loaded: dict[str, TopicProvisioning] = {}
+        for raw in raw_claims:
+            if not isinstance(raw, dict):
+                continue
+            try:
+                raw_claim_id = raw["claim_id"]
+                claim_id = str(uuid.UUID(raw_claim_id))
+                user_id = raw["user_id"]
+                chat_id = raw["chat_id"]
+                thread_id = raw.get("thread_id")
+                target_id = raw.get("target_id")
+                previous_target_id = raw.get("previous_target_id")
+                kind = raw["kind"]
+                uncertain = raw.get("uncertain", False)
+                created_at = raw.get("created_at", 0.0)
+                retry_thread_id = raw.get("retry_thread_id")
+                retry_at = raw.get("retry_at", 0.0)
+            except KeyError, AttributeError, TypeError, ValueError:
+                continue
+
+            if (
+                not isinstance(user_id, int)
+                or isinstance(user_id, bool)
+                or not isinstance(chat_id, int)
+                or isinstance(chat_id, bool)
+                or (thread_id is not None and not isinstance(thread_id, int))
+                or isinstance(thread_id, bool)
+                or (isinstance(thread_id, int) and thread_id <= 0)
+                or (target_id is not None and not isinstance(target_id, str))
+                or (isinstance(target_id, str) and not target_id)
+                or (
+                    previous_target_id is not None
+                    and not isinstance(previous_target_id, str)
+                )
+                or (isinstance(previous_target_id, str) and not previous_target_id)
+                or not isinstance(kind, str)
+                or kind not in _TOPIC_PROVISIONING_KINDS
+                or not isinstance(uncertain, bool)
+                or isinstance(created_at, bool)
+                or not isinstance(created_at, (int, float))
+                or (
+                    retry_thread_id is not None and not isinstance(retry_thread_id, int)
+                )
+                or isinstance(retry_thread_id, bool)
+                or (isinstance(retry_thread_id, int) and retry_thread_id <= 0)
+                or isinstance(retry_at, bool)
+                or not isinstance(retry_at, (int, float))
+            ):
+                continue
+
+            created_at_value = float(created_at)
+            retry_at_value = float(retry_at)
+            if (
+                not math.isfinite(created_at_value)
+                or not math.isfinite(retry_at_value)
+                or retry_at_value < 0
+            ):
+                continue
+            loaded[claim_id] = TopicProvisioning(
+                claim_id=claim_id,
+                user_id=user_id,
+                chat_id=chat_id,
+                thread_id=thread_id,
+                target_id=target_id,
+                previous_target_id=previous_target_id,
+                kind=cast(TopicProvisioningKind, kind),
+                uncertain=uncertain,
+                created_at=created_at_value,
+                retry_thread_id=retry_thread_id,
+                retry_at=retry_at_value,
+            )
+        return list(loaded.values())
 
     @staticmethod
     def _load_retired_topics(raw_topics: Any) -> list[RetiredTopic]:
@@ -321,8 +477,13 @@ class ThreadRouter:
                 cleanup_eligible = raw["cleanup_eligible"]
                 raw_retry_at = raw.get("retry_at", 0.0)
                 closed = raw.get("closed", False)
+                raw_target_id = raw.get("target_id")
                 if isinstance(raw_retry_at, bool) or not isinstance(
                     raw_retry_at, (int, float)
+                ):
+                    continue
+                if raw_target_id is not None and (
+                    not isinstance(raw_target_id, str) or not raw_target_id
                 ):
                     continue
                 retry_at = float(raw_retry_at)
@@ -335,6 +496,11 @@ class ThreadRouter:
                     sequence=int(raw["sequence"]),
                     retry_at=retry_at,
                     closed=closed,
+                    target_id=(
+                        canonical_window_id(raw_target_id)
+                        if raw_target_id is not None
+                        else None
+                    ),
                 )
             except KeyError, OverflowError, TypeError, ValueError:
                 continue
@@ -384,12 +550,29 @@ class ThreadRouter:
         """Yield locally known retired topics in oldest-first retention order."""
         return iter(tuple(self._retired_topics))
 
+    def _retired_topic_index(self, topic: RetiredTopic) -> int | None:
+        """Find a retired record by its stable chat/thread/sequence identity."""
+        for index, current in enumerate(self._retired_topics):
+            if (
+                current.user_id,
+                current.chat_id,
+                current.thread_id,
+                current.sequence,
+            ) == (
+                topic.user_id,
+                topic.chat_id,
+                topic.thread_id,
+                topic.sequence,
+            ):
+                return index
+        return None
+
     def discard_retired_topic(self, topic: RetiredTopic) -> bool:
         """Remove exactly *topic* after a terminal Telegram API outcome."""
-        try:
-            self._retired_topics.remove(topic)
-        except ValueError:
+        index = self._retired_topic_index(topic)
+        if index is None:
             return False
+        self._retired_topics.pop(index)
         self._schedule_save()
         return True
 
@@ -402,9 +585,8 @@ class ThreadRouter:
         cleanup_eligible: bool | None = None,
     ) -> RetiredTopic | None:
         """Update a retired record if its exact previous value is still present."""
-        try:
-            index = self._retired_topics.index(topic)
-        except ValueError:
+        index = self._retired_topic_index(topic)
+        if index is None:
             return None
 
         if isinstance(retry_at, bool) or not isinstance(retry_at, (int, float)):
@@ -432,6 +614,446 @@ class ThreadRouter:
         self._schedule_save()
         return updated
 
+    @staticmethod
+    def _validate_provisioning_thread_id(thread_id: int | None) -> int | None:
+        if thread_id is not None and (
+            not isinstance(thread_id, int)
+            or isinstance(thread_id, bool)
+            or thread_id <= 0
+        ):
+            raise ValueError("thread_id must be a positive integer or None")
+        return thread_id
+
+    @staticmethod
+    def _validate_provisioning_target_id(
+        target_id: str | None, *, field_name: str = "target_id"
+    ) -> str | None:
+        if target_id is not None and (not isinstance(target_id, str) or not target_id):
+            raise ValueError(f"{field_name} must be a non-empty string or None")
+        return target_id
+
+    @staticmethod
+    def _validate_provisioning_retry_at(retry_at: float) -> float:
+        if isinstance(retry_at, bool) or not isinstance(retry_at, (int, float)):
+            raise TypeError("retry_at must be a number")
+        retry_at_value = float(retry_at)
+        if not math.isfinite(retry_at_value) or retry_at_value < 0:
+            raise ValueError("retry_at must be finite and nonnegative")
+        return retry_at_value
+
+    @staticmethod
+    def _validate_provisioning_claim_id(claim_id: str) -> str:
+        if not isinstance(claim_id, str):
+            raise TypeError("claim_id must be a UUID string")
+        try:
+            return str(uuid.UUID(claim_id))
+        except AttributeError, ValueError:
+            raise ValueError("claim_id must be a UUID string") from None
+
+    def _require_topic_provisioning(self, claim_id: str) -> TopicProvisioning:
+        canonical_claim_id = self._validate_provisioning_claim_id(claim_id)
+        claim = self._topic_provisionings.get(canonical_claim_id)
+        if claim is None:
+            raise KeyError(f"Unknown topic provisioning claim: {claim_id}")
+        return claim
+
+    def get_topic_provisioning(self, claim_id: str) -> TopicProvisioning | None:
+        """Return one durable provisioning claim after validating its ID."""
+        try:
+            canonical_claim_id = self._validate_provisioning_claim_id(claim_id)
+        except TypeError, ValueError:
+            return None
+        return self._topic_provisionings.get(canonical_claim_id)
+
+    @staticmethod
+    def _provisioning_targets(claim: TopicProvisioning) -> tuple[str, ...]:
+        return tuple(
+            target
+            for target in (claim.target_id, claim.previous_target_id)
+            if target is not None
+        )
+
+    def _has_provisioning_target(
+        self, target_id: str, *, except_claim_id: str | None = None
+    ) -> bool:
+        wanted = canonical_window_id(target_id)
+        return any(
+            claim.claim_id != except_claim_id
+            and any(
+                canonical_window_id(candidate) == wanted
+                for candidate in self._provisioning_targets(claim)
+            )
+            for claim in self._topic_provisionings.values()
+        )
+
+    def _has_provisioning_topic(
+        self,
+        _user_id: int,
+        chat_id: int,
+        thread_id: int,
+        *,
+        except_claim_id: str | None = None,
+    ) -> bool:
+        return any(
+            claim.claim_id != except_claim_id
+            and claim.chat_id == chat_id
+            and claim.thread_id == thread_id
+            for claim in self._topic_provisionings.values()
+        )
+
+    def _target_deletion_claimed(self, _chat_id: int, target_id: str) -> bool:
+        wanted = canonical_window_id(target_id)
+        for key in self._topic_deletion_claims:
+            claimed_target = self._topic_deletion_targets.get(key)
+            if (
+                claimed_target is not None
+                and canonical_window_id(claimed_target) == wanted
+            ):
+                return True
+            for topic in self._retired_topics:
+                if (topic.chat_id, topic.thread_id) != key:
+                    continue
+                if (
+                    topic.target_id is not None
+                    and canonical_window_id(topic.target_id) == wanted
+                ):
+                    return True
+        return False
+
+    def begin_topic_provisioning(  # noqa: C901
+        self,
+        user_id: int,
+        chat_id: int,
+        *,
+        thread_id: int | None = None,
+        target_id: str | None = None,
+        previous_target_id: str | None = None,
+        kind: TopicProvisioningKind,
+    ) -> TopicProvisioning:
+        """Durably claim a topic/target pair before starting creation."""
+        if (
+            not isinstance(user_id, int)
+            or isinstance(user_id, bool)
+            or not isinstance(chat_id, int)
+            or isinstance(chat_id, bool)
+        ):
+            raise TypeError("user_id and chat_id must be integers")
+        thread_id = self._validate_provisioning_thread_id(thread_id)
+        target_id = self._validate_provisioning_target_id(target_id)
+        previous_target_id = self._validate_provisioning_target_id(
+            previous_target_id, field_name="previous_target_id"
+        )
+        if not isinstance(kind, str) or kind not in _TOPIC_PROVISIONING_KINDS:
+            raise ValueError(f"Unknown topic provisioning kind: {kind!r}")
+        if thread_id is None and target_id is None:
+            raise ValueError("topic provisioning needs a thread_id or target_id")
+        if thread_id is not None:
+            if self._is_topic_deletion_claimed(user_id, thread_id, chat_id):
+                raise ValueError(
+                    "Topic deletion is in progress; retry with a new topic"
+                )
+            if self._has_provisioning_topic(user_id, chat_id, thread_id):
+                raise ValueError(
+                    "Topic provisioning is in progress; retry with a new topic"
+                )
+        for candidate in (target_id, previous_target_id):
+            if candidate is None:
+                continue
+            if self._has_provisioning_target(candidate):
+                raise ValueError(
+                    "Target provisioning is in progress; retry with a new target"
+                )
+            if self._target_deletion_claimed(chat_id, candidate):
+                raise ValueError(
+                    "Topic deletion is in progress; retry with a new target"
+                )
+
+        claim_id = str(uuid.uuid4())
+        while claim_id in self._topic_provisionings:
+            claim_id = str(uuid.uuid4())
+        claim = TopicProvisioning(
+            claim_id=claim_id,
+            user_id=user_id,
+            chat_id=chat_id,
+            thread_id=thread_id,
+            target_id=target_id,
+            previous_target_id=previous_target_id,
+            kind=cast(TopicProvisioningKind, kind),
+        )
+        self._topic_provisionings[claim_id] = claim
+        self._owned_provisioning_claims.add(claim_id)
+        self._schedule_save()
+        return claim
+
+    def attach_provisioning_topic(
+        self, claim_id: str, thread_id: int
+    ) -> TopicProvisioning:
+        """Attach the Telegram topic ID returned by a creation request."""
+        claim = self._require_topic_provisioning(claim_id)
+        validated_thread_id = self._validate_provisioning_thread_id(thread_id)
+        if validated_thread_id is None:
+            raise ValueError("thread_id must be a positive integer")
+        if (claim.chat_id, validated_thread_id) in self._topic_deletion_claims:
+            raise ValueError("Topic deletion is in progress; retry with a new topic")
+        if claim.thread_id == validated_thread_id:
+            return claim
+        if self._has_provisioning_topic(
+            claim.user_id,
+            claim.chat_id,
+            validated_thread_id,
+            except_claim_id=claim.claim_id,
+        ):
+            raise ValueError(
+                "Topic provisioning is in progress; retry with a new topic"
+            )
+        updated = replace(claim, thread_id=validated_thread_id)
+        self._topic_provisionings[claim.claim_id] = updated
+        self._schedule_save()
+        return updated
+
+    def attach_provisioning_target(
+        self, claim_id: str, target_id: str
+    ) -> TopicProvisioning:
+        """Attach or supersede the durable target returned by a backend."""
+        claim = self._require_topic_provisioning(claim_id)
+        validated_target_id = self._validate_provisioning_target_id(target_id)
+        if validated_target_id is None:
+            raise ValueError("target_id must be a non-empty string")
+        if self._target_deletion_claimed(claim.chat_id, validated_target_id):
+            raise ValueError("Topic deletion is in progress; retry with a new target")
+        if claim.target_id == validated_target_id:
+            return claim
+        if self._has_provisioning_target(
+            validated_target_id, except_claim_id=claim.claim_id
+        ):
+            raise ValueError(
+                "Target provisioning is in progress; retry with a new target"
+            )
+        previous_target_id = claim.previous_target_id
+        if claim.target_id is not None:
+            previous_target_id = claim.target_id
+        updated = replace(
+            claim,
+            target_id=validated_target_id,
+            previous_target_id=previous_target_id,
+        )
+        self._topic_provisionings[claim.claim_id] = updated
+        self._schedule_save()
+        return updated
+
+    def prepare_topic_recreation(self, claim_id: str) -> TopicProvisioning:
+        """Move a confirmed-dead topic claim into durable replacement creation."""
+        claim = self._require_topic_provisioning(claim_id)
+        if claim.target_id is None:
+            raise ValueError("topic recreation needs a target_id")
+        if claim.thread_id is not None:
+            retry_thread_id = claim.thread_id
+            self._discard_confirmed_absent_topic(claim)
+        elif claim.retry_thread_id is not None:
+            retry_thread_id = claim.retry_thread_id
+        else:
+            raise ValueError("topic recreation needs a prior thread_id")
+        updated = replace(
+            claim,
+            thread_id=None,
+            retry_thread_id=retry_thread_id,
+            retry_at=0.0,
+            uncertain=True,
+        )
+        self._topic_provisionings[claim.claim_id] = updated
+        self._owned_provisioning_claims.add(claim.claim_id)
+        self._schedule_save()
+        return updated
+
+    def defer_topic_recreation(
+        self,
+        claim_id: str,
+        *,
+        retry_at: float,
+        uncertain: bool = False,
+    ) -> TopicProvisioning:
+        """Release runtime ownership while retaining a replacement claim."""
+        claim = self._require_topic_provisioning(claim_id)
+        if claim.thread_id is not None or claim.retry_thread_id is None:
+            raise ValueError("claim is not a topic recreation")
+        if not isinstance(uncertain, bool):
+            raise TypeError("uncertain must be a bool")
+        updated = replace(
+            claim,
+            retry_at=self._validate_provisioning_retry_at(retry_at),
+            uncertain=uncertain,
+        )
+        self._topic_provisionings[claim.claim_id] = updated
+        self._owned_provisioning_claims.discard(claim.claim_id)
+        self._schedule_save()
+        return updated
+
+    def commit_topic_provisioning(
+        self, claim_id: str, *, window_name: str = ""
+    ) -> bool:
+        """Bind both sides of a complete claim and release it atomically."""
+        claim = self._require_topic_provisioning(claim_id)
+        thread_id = claim.thread_id
+        target_id = claim.target_id
+        if thread_id is None or target_id is None:
+            return False
+        if self._target_deletion_claimed(claim.chat_id, target_id):
+            raise ValueError("Topic deletion is in progress; retry with a new target")
+        self._bind_thread(
+            claim.user_id,
+            thread_id,
+            target_id,
+            window_name=window_name,
+            chat_id=claim.chat_id,
+            provisioning_claim_id=claim.claim_id,
+            schedule_save=False,
+        )
+        self._topic_provisionings.pop(claim.claim_id, None)
+        self._owned_provisioning_claims.discard(claim.claim_id)
+        self._schedule_save()
+        return True
+
+    def _discard_confirmed_absent_topic(self, claim: TopicProvisioning) -> None:
+        """Remove only the exact local binding for a proven-dead topic."""
+        assert claim.thread_id is not None
+        scoped_key = (claim.user_id, claim.chat_id, claim.thread_id)
+        if scoped_key in self.chat_thread_bindings:
+            self.unbind_thread(
+                claim.user_id,
+                claim.thread_id,
+                chat_id=claim.chat_id,
+                retirement_reason="remote_deleted",
+            )
+        elif (
+            self.thread_bindings.get(claim.user_id, {}).get(claim.thread_id) is not None
+            and self.group_chat_ids.get(f"{claim.user_id}:{claim.thread_id}")
+            == claim.chat_id
+        ):
+            self.unbind_thread(
+                claim.user_id,
+                claim.thread_id,
+                retirement_reason="remote_deleted",
+            )
+        self.group_chat_ids.pop(
+            f"{claim.user_id}:{claim.thread_id}:{claim.chat_id}", None
+        )
+        short_key = f"{claim.user_id}:{claim.thread_id}"
+        if self.group_chat_ids.get(short_key) == claim.chat_id:
+            self.group_chat_ids.pop(short_key, None)
+        for retired in tuple(self._retired_topics):
+            if (
+                retired.chat_id == claim.chat_id
+                and retired.thread_id == claim.thread_id
+            ):
+                self.discard_retired_topic(retired)
+
+    def abort_topic_provisioning(
+        self,
+        claim_id: str,
+        *,
+        target_confirmed_absent: bool,
+        topic_confirmed_absent: bool = False,
+    ) -> TopicProvisioning | None:
+        """Release a failed claim only after its remote outcome is known.
+
+        A no-topic ``topic_for_target`` failure can release with explicit proof
+        that no forum topic was created, even when its terminal target remains
+        alive.  A claim with an attached thread can also release when that
+        exact Telegram topic is proven absent; its exact binding and retired
+        cleanup record are removed. A prepared replacement retains its prior
+        thread identity and can release on the same proof. Any ambiguous
+        outcome remains durable and is marked uncertain; the current owner
+        stays attached until it explicitly calls
+        ``mark_provisioning_uncertain`` after stopping the flow.
+        """
+        try:
+            canonical_claim_id = self._validate_provisioning_claim_id(claim_id)
+        except TypeError, ValueError:
+            return None
+        claim = self._topic_provisionings.get(canonical_claim_id)
+        if claim is None:
+            return None
+        if not isinstance(target_confirmed_absent, bool):
+            raise TypeError("target_confirmed_absent must be a bool")
+        if not isinstance(topic_confirmed_absent, bool):
+            raise TypeError("topic_confirmed_absent must be a bool")
+
+        topic_was_confirmed_absent = topic_confirmed_absent and (
+            claim.thread_id is not None or claim.retry_thread_id is not None
+        )
+        can_release = (
+            target_confirmed_absent
+            or topic_was_confirmed_absent
+            or topic_confirmed_absent
+            and claim.thread_id is None
+            and (claim.kind == "topic_for_target" or claim.retry_thread_id is not None)
+        )
+        if not can_release:
+            if claim.uncertain:
+                return claim
+            updated = replace(claim, uncertain=True)
+            self._topic_provisionings[claim.claim_id] = updated
+            self._schedule_save()
+            return updated
+
+        active_window = (
+            self.get_window_for_chat_thread(claim.chat_id, claim.thread_id)
+            if claim.thread_id is not None
+            else None
+        )
+        self._topic_provisionings.pop(claim.claim_id, None)
+        self._owned_provisioning_claims.discard(claim.claim_id)
+        if topic_was_confirmed_absent and claim.thread_id is not None:
+            self._discard_confirmed_absent_topic(claim)
+        elif claim.thread_id is not None and active_window is None:
+            self._retire_topic(
+                claim.user_id,
+                claim.chat_id,
+                claim.thread_id,
+                reason="creation_failed",
+                cleanup_eligible=True,
+                target_id=claim.target_id,
+            )
+        self._schedule_save()
+        return claim
+
+    def mark_provisioning_uncertain(
+        self, claim_id: str, *, release_owner: bool = True
+    ) -> TopicProvisioning:
+        """Retain a claim for recovery after its owner has stopped."""
+        claim = self._require_topic_provisioning(claim_id)
+        if not isinstance(release_owner, bool):
+            raise TypeError("release_owner must be a bool")
+        if release_owner:
+            self._owned_provisioning_claims.discard(claim.claim_id)
+        if claim.uncertain:
+            return claim
+        updated = replace(claim, uncertain=True)
+        self._topic_provisionings[claim.claim_id] = updated
+        self._schedule_save()
+        return updated
+
+    def has_topic_provisioning(self, chat_id: int, thread_id: int) -> bool:
+        """Return whether any durable claim protects this exact topic."""
+        return any(
+            claim.chat_id == chat_id and claim.thread_id == thread_id
+            for claim in self._topic_provisionings.values()
+        )
+
+    def has_target_provisioning(self, target_id: str) -> bool:
+        """Return whether a durable claim protects this target or its alias."""
+        if not isinstance(target_id, str):
+            return False
+        return self._has_provisioning_target(target_id)
+
+    def iter_topic_provisionings(self) -> list[TopicProvisioning]:
+        """Return a snapshot of all durable provisioning claims."""
+        return list(self._topic_provisionings.values())
+
+    def owns_topic_provisioning(self, claim_id: str) -> bool:
+        """Return whether this process still owns the claim."""
+        return isinstance(claim_id, str) and claim_id in self._owned_provisioning_claims
+
     def has_active_topic(self, chat_id: int, thread_id: int) -> bool:
         """Return whether any user currently owns this chat/thread pair."""
         if any(
@@ -450,14 +1072,31 @@ class ThreadRouter:
         key = (topic.chat_id, topic.thread_id)
         if key in self._topic_deletion_claims:
             return False
-        if topic not in self._retired_topics or self.has_active_topic(*key):
+        current_index = self._retired_topic_index(topic)
+        if (
+            current_index is None
+            or self.has_active_topic(*key)
+            or self.has_topic_provisioning(*key)
+        ):
+            return False
+        current_topic = self._retired_topics[current_index]
+        if current_topic.target_id is not None and self.has_target_provisioning(
+            current_topic.target_id
+        ):
             return False
         self._topic_deletion_claims.add(key)
+        self._topic_deletion_targets[key] = (
+            canonical_window_id(current_topic.target_id)
+            if current_topic.target_id is not None
+            else None
+        )
         return True
 
     def end_topic_deletion(self, topic: RetiredTopic) -> None:
         """Release an in-flight deletion claim for a retired topic."""
-        self._topic_deletion_claims.discard((topic.chat_id, topic.thread_id))
+        key = (topic.chat_id, topic.thread_id)
+        self._topic_deletion_claims.discard(key)
+        self._topic_deletion_targets.pop(key, None)
 
     def _retire_topic(
         self,
@@ -467,10 +1106,13 @@ class ThreadRouter:
         *,
         reason: str,
         cleanup_eligible: bool,
+        target_id: str | None = None,
     ) -> None:
         """Remember a known local topic, never an inferred Telegram topic."""
         if chat_id is None:
             return
+        if target_id is not None:
+            target_id = canonical_window_id(target_id)
         self._retired_topics = [
             topic
             for topic in self._retired_topics
@@ -484,6 +1126,7 @@ class ThreadRouter:
                 reason=reason,
                 cleanup_eligible=cleanup_eligible,
                 sequence=self._next_retired_sequence,
+                target_id=target_id,
             )
         )
         self._next_retired_sequence += 1
@@ -535,6 +1178,33 @@ class ThreadRouter:
 
         return True
 
+    def _is_topic_provisioning_claimed(
+        self, _user_id: int, thread_id: int, chat_id: int | None
+    ) -> bool:
+        """Check whether a bind would race with topic/target provisioning."""
+        return any(
+            claim.thread_id == thread_id
+            and (chat_id is None or claim.chat_id == chat_id)
+            for claim in self._topic_provisionings.values()
+        )
+
+    def _can_bind_for_provisioning(
+        self,
+        claim_id: str | None,
+        user_id: int,
+        chat_id: int | None,
+        thread_id: int,
+    ) -> bool:
+        if claim_id is None or chat_id is None:
+            return False
+        claim = self._topic_provisionings.get(claim_id)
+        return (
+            claim is not None
+            and claim.user_id == user_id
+            and claim.chat_id == chat_id
+            and claim.thread_id == thread_id
+        )
+
     def _bind_chat_scoped(
         self, user_id: int, chat_id: int, thread_id: int, window_id: str
     ) -> None:
@@ -564,17 +1234,28 @@ class ThreadRouter:
         self._chat_window_to_thread[(user_id, chat_id, window_id)] = thread_id
         self._remove_group_routing_metadata(user_id, thread_id)
 
-    def bind_thread(
+    def _bind_thread(
         self,
         user_id: int,
         thread_id: int,
         window_id: str,
+        *,
         window_name: str = "",
         chat_id: int | None = None,
+        provisioning_claim_id: str | None = None,
+        schedule_save: bool = True,
     ) -> None:
-        """Bind a topic, using chat-scoped identity when ``chat_id`` is known."""
+        """Bind a topic, optionally from its owning atomic provisioning claim."""
         if self._is_topic_deletion_claimed(user_id, thread_id, chat_id):
             raise ValueError("Topic deletion is in progress; retry with a new topic")
+        if self._is_topic_provisioning_claimed(user_id, thread_id, chat_id) and not (
+            self._can_bind_for_provisioning(
+                provisioning_claim_id, user_id, chat_id, thread_id
+            )
+        ):
+            raise ValueError(
+                "Topic provisioning is in progress; retry with a new topic"
+            )
         if chat_id is not None:
             self._bind_chat_scoped(user_id, chat_id, thread_id, window_id)
         else:
@@ -595,7 +1276,25 @@ class ThreadRouter:
         if window_name:
             self.window_display_names[window_id] = window_name
         self._restore_active_topic(chat_id, thread_id)
-        self._schedule_save()
+        if schedule_save:
+            self._schedule_save()
+
+    def bind_thread(
+        self,
+        user_id: int,
+        thread_id: int,
+        window_id: str,
+        window_name: str = "",
+        chat_id: int | None = None,
+    ) -> None:
+        """Bind a topic, using chat-scoped identity when ``chat_id`` is known."""
+        self._bind_thread(
+            user_id,
+            thread_id,
+            window_id,
+            window_name=window_name,
+            chat_id=chat_id,
+        )
 
     def unbind_thread(
         self,
@@ -661,6 +1360,7 @@ class ThreadRouter:
             thread_id,
             reason=retirement_reason,
             cleanup_eligible=cleanup_eligible,
+            target_id=window_id,
         )
 
         # Clean up group_chat_id for the unbound thread
@@ -811,6 +1511,10 @@ class ThreadRouter:
 
     def set_group_chat_id(self, user_id: int, thread_id: int, chat_id: int) -> None:
         """Record chat metadata without guessing a legacy topic's identity."""
+        if self._is_topic_provisioning_claimed(user_id, thread_id, chat_id):
+            raise ValueError(
+                "Topic provisioning is in progress; retry with a new topic"
+            )
         key = f"{user_id}:{thread_id}"
         bindings = self.thread_bindings.get(user_id)
         if bindings and thread_id in bindings:

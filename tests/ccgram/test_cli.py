@@ -87,8 +87,7 @@ class TestRunValidation:
         [
             ("--monitor-interval", "0", "must be positive"),
             ("--monitor-interval", "-1", "must be positive"),
-            ("--autoclose-done", "-5", "must be non-negative"),
-            ("--autoclose-dead", "-1", "must be non-negative"),
+            ("--unbound-window-ttl", "-5", "must be non-negative"),
         ],
     )
     def test_out_of_range_values_rejected(self, runner, flag, value, message):
@@ -147,21 +146,18 @@ class TestApplyArgsToEnv:
             tmux_session="s",
             monitor_interval=3.0,
             group_id=99,
-            autoclose_done=10,
-            autoclose_dead=5,
+            unbound_window_ttl=10,
         )
 
         assert os.environ["ALLOWED_USERS"] == "1,2"
         assert os.environ["TMUX_SESSION_NAME"] == "s"
         assert os.environ["MONITOR_POLL_INTERVAL"] == "3.0"
         assert os.environ["CCGRAM_GROUP_ID"] == "99"
-        assert os.environ["AUTOCLOSE_DONE_MINUTES"] == "10"
-        assert os.environ["AUTOCLOSE_DEAD_MINUTES"] == "5"
+        assert os.environ["UNBOUND_WINDOW_TTL_MINUTES"] == "10"
 
-    def test_autoclose_zero_accepted(self):
-        apply_args_to_env(autoclose_done=0, autoclose_dead=0)
-        assert os.environ["AUTOCLOSE_DONE_MINUTES"] == "0"
-        assert os.environ["AUTOCLOSE_DEAD_MINUTES"] == "0"
+    def test_unbound_window_ttl_zero_accepted(self):
+        apply_args_to_env(unbound_window_ttl=0)
+        assert os.environ["UNBOUND_WINDOW_TTL_MINUTES"] == "0"
 
     def test_hide_thinking(self):
         apply_args_to_env(hide_thinking=True)

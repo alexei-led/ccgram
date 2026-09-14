@@ -12,6 +12,7 @@ a backend can't silently drop a flag callers gate on.
 from __future__ import annotations
 
 import inspect
+from collections.abc import Sequence
 
 import pytest
 
@@ -224,3 +225,98 @@ async def test_window_presence_is_none_when_the_backend_cannot_answer() -> None:
             return None
 
     assert await window_presence("@5", _Backend()) is None
+
+
+_HERDR_WINDOW_ID = "herdr-session-v1-" + "a" * 64
+_AGTERM_WINDOW_ID = "157B4C8C-EFAE-40C2-BA54-9A5D7FD8B5E4"
+
+
+class _NeverCallAgtermRunner:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def __call__(
+        self, args: Sequence[str], stdin_text: str | None = None
+    ) -> tuple[int, str, str]:
+        self.calls += 1
+        raise AssertionError(f"foreign window reached agterm runner: {list(args)}")
+
+
+class _NeverCallHerdrRunner:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def __call__(self, args: Sequence[str]) -> tuple[int, str, str]:
+        self.calls += 1
+        raise AssertionError(f"foreign window reached Herdr runner: {list(args)}")
+
+
+@pytest.mark.parametrize(
+    "window_id",
+    [
+        pytest.param(_HERDR_WINDOW_ID, id="herdr"),
+        pytest.param("@42", id="tmux"),
+        pytest.param("agterm-session-v2-unknown", id="future"),
+    ],
+)
+async def test_agterm_does_not_prove_foreign_ids_absent(window_id: str) -> None:
+    from ccgram.multiplexer.agterm import AgtermManager
+    from ccgram.multiplexer.reconciliation import window_presence, window_snapshot
+
+    runner = _NeverCallAgtermRunner()
+    backend = AgtermManager(
+        socket_path="/tmp/agterm.sock",
+        runner=runner,
+        own_session_id="",
+        workspaces=None,
+    )
+
+    assert await window_presence(window_id, backend) is None
+    assert await window_snapshot(window_id, backend) == (False, None)
+    assert runner.calls == 0
+
+
+@pytest.mark.parametrize(
+    "window_id",
+    [
+        pytest.param("@42", id="tmux"),
+        pytest.param(_AGTERM_WINDOW_ID, id="agterm"),
+        pytest.param("w2:t1", id="herdr-legacy-locator"),
+        pytest.param("herdr-session-v2-unknown", id="future"),
+    ],
+)
+async def test_herdr_does_not_prove_foreign_ids_absent(window_id: str) -> None:
+    from ccgram.multiplexer.herdr import HerdrManager
+    from ccgram.multiplexer.reconciliation import window_presence, window_snapshot
+
+    runner = _NeverCallHerdrRunner()
+    backend = HerdrManager(socket_path="/tmp/herdr.sock", runner=runner)
+
+    assert await window_presence(window_id, backend) is None
+    assert await window_snapshot(window_id, backend) == (False, None)
+    assert runner.calls == 0
+
+
+@pytest.mark.parametrize(
+    "window_id",
+    [
+        pytest.param(_HERDR_WINDOW_ID, id="herdr"),
+        pytest.param(_AGTERM_WINDOW_ID, id="agterm"),
+        pytest.param("tmux-window-v2-unknown", id="future"),
+    ],
+)
+async def test_tmux_does_not_prove_foreign_ids_absent(
+    window_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ccgram.multiplexer.reconciliation import window_presence, window_snapshot
+    from ccgram.multiplexer.tmux import TmuxManager
+
+    backend = TmuxManager(session_name="ccgram-namespace-test")
+
+    async def unexpected_listing() -> list[object]:
+        raise AssertionError("foreign window reached tmux listing")
+
+    monkeypatch.setattr(backend, "list_windows_for_reconciliation", unexpected_listing)
+
+    assert await window_presence(window_id, backend) is None
+    assert await window_snapshot(window_id, backend) == (False, None)

@@ -5,18 +5,22 @@ import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from telegram.error import BadRequest, RetryAfter, TelegramError, TimedOut
+from telegram.error import BadRequest, NetworkError, RetryAfter, TelegramError, TimedOut
 
 from ccgram.multiplexer.base import WindowRef
+from ccgram.thread_router import ThreadRouter
 from ccgram.handlers.topics.topic_orchestration import (
     collect_target_chats,
+    create_topic_in_chat,
     _is_pending_user_creation,
     _is_window_already_bound,
     _topic_create_retry_until,
     _pending_user_creations,
     _window_topic_locks,
     adopt_unbound_windows,
+    clear_pending_creation,
     handle_new_window,
+    is_pending_creation,
 )
 from ccgram.session_monitor import NewWindowEvent
 
@@ -39,7 +43,7 @@ def _mock_tmux():
     with patch("ccgram.handlers.topics.topic_orchestration.tmux_manager") as mock_tmux:
         mock_tmux.find_window_by_id = AsyncMock(return_value=mock_window)
         # still_present reads this listing, and a confirmed empty one means
-        # "that window is gone" — the default the rebind tests below want. A
+        # "that window is gone" — the default the topic lifecycle tests below want. A
         # test that needs the old window alive supplies it explicitly.
         mock_tmux.list_windows_for_reconciliation = AsyncMock(return_value=[])
         yield mock_tmux
@@ -63,6 +67,13 @@ def _make_topic(thread_id: int = 999) -> MagicMock:
     topic = MagicMock()
     topic.message_thread_id = thread_id
     return topic
+
+
+def _configure_provisioning(mock_router: MagicMock) -> None:
+    claim = MagicMock()
+    claim.claim_id = "claim-1"
+    mock_router.begin_topic_provisioning.return_value = claim
+    mock_router.commit_topic_provisioning.return_value = True
 
 
 class TestIsWindowAlreadyBound:
@@ -189,6 +200,7 @@ class TestHandleNewWindow:
             patch("ccgram.handlers.topics.topic_orchestration.config") as mock_config,
         ):
             mock_tr.has_window.return_value = True
+            _configure_provisioning(mock_tr)
             mock_tr.iter_thread_bindings.return_value = iter([(200, 2, "@2")])
             mock_config.allowed_users = {100, 200}
             created = await handle_new_window(
@@ -199,10 +211,10 @@ class TestHandleNewWindow:
             )
 
         assert created is True
-        mock_tr.bind_thread.assert_called_once_with(
-            100, 77, "@2", window_name="proj", chat_id=-100100
+        mock_tr.attach_provisioning_topic.assert_called_once_with("claim-1", 77)
+        mock_tr.commit_topic_provisioning.assert_called_once_with(
+            "claim-1", window_name="proj"
         )
-        mock_tr.set_group_chat_id.assert_called_once_with(100, 77, -100100)
 
     async def test_private_topic_creation_requires_enabled_bot_capability(self) -> None:
         event = _make_event()
@@ -215,6 +227,7 @@ class TestHandleNewWindow:
                 "ccgram.handlers.topics.topic_orchestration.thread_router"
             ) as mock_tr,
         ):
+            _configure_provisioning(mock_tr)
             created = await handle_new_window(
                 event, bot, target_user_id=100, target_chat_id=100
             )
@@ -236,6 +249,7 @@ class TestHandleNewWindow:
                 "ccgram.handlers.topics.topic_orchestration.thread_router"
             ) as mock_tr,
         ):
+            _configure_provisioning(mock_tr)
             created = await handle_new_window(
                 event, bot, target_user_id=100, target_chat_id=100
             )
@@ -243,8 +257,9 @@ class TestHandleNewWindow:
         assert created is True
         bot.get_me.assert_awaited_once_with()
         bot.create_forum_topic.assert_awaited_once_with(chat_id=100, name="my-project")
-        mock_tr.bind_thread.assert_called_once_with(
-            100, 42, "@10", window_name="my-project", chat_id=100
+        mock_tr.attach_provisioning_topic.assert_called_once_with("claim-1", 42)
+        mock_tr.commit_topic_provisioning.assert_called_once_with(
+            "claim-1", window_name="my-project"
         )
 
     async def test_skips_already_bound(self):
@@ -258,44 +273,6 @@ class TestHandleNewWindow:
         ):
             await handle_new_window(event, bot)
         bot.create_forum_topic.assert_not_called()
-
-    async def test_rebinds_terminal_fallback_topic_when_session_target_appears(
-        self, _mock_tmux: MagicMock
-    ) -> None:
-        fallback_target = "herdr-session-v1-terminal-fallback"
-        session_target = "herdr-session-v1-stable-session"
-        event = _make_event(window_id=session_target, window_name="project")
-        client = AsyncMock()
-
-        with (
-            patch("ccgram.handlers.topics.topic_orchestration.thread_router") as router,
-            patch(
-                "ccgram.handlers.topics.topic_orchestration._auto_detect_provider",
-                new_callable=AsyncMock,
-            ),
-            patch(
-                "ccgram.handlers.topics.topic_orchestration.probe_topic_exists",
-                new_callable=AsyncMock,
-                return_value=True,
-            ),
-        ):
-            router.has_window.return_value = False
-            router.iter_thread_bindings.return_value = [(7, 70, fallback_target)]
-            router.get_display_name.return_value = "project"
-            router.resolve_chat_id.return_value = -1007
-            _mock_tmux.find_window_by_id.return_value = None
-
-            rebound = await handle_new_window(event, client)
-
-        assert rebound is True
-        router.bind_thread.assert_called_once_with(
-            7,
-            70,
-            session_target,
-            window_name="project",
-            chat_id=-1007,
-        )
-        client.create_forum_topic.assert_not_called()
 
     async def test_skips_when_no_chats(self):
         event = NewWindowEvent(
@@ -361,6 +338,7 @@ class TestHandleNewWindow:
             patch("ccgram.handlers.topics.topic_orchestration.config") as mock_config,
         ):
             mock_tr.has_window.return_value = False
+            _configure_provisioning(mock_tr)
             mock_tr.iter_thread_bindings.return_value = iter([])
             mock_tr.resolve_chat_id.return_value = 12345
             mock_config.group_id = -100500
@@ -371,10 +349,10 @@ class TestHandleNewWindow:
         bot.create_forum_topic.assert_called_once_with(
             chat_id=-100500, name="my-project"
         )
-        mock_tr.bind_thread.assert_called_once_with(
-            12345, 42, "@10", window_name="my-project", chat_id=-100500
+        mock_tr.attach_provisioning_topic.assert_called_once_with("claim-1", 42)
+        mock_tr.commit_topic_provisioning.assert_called_once_with(
+            "claim-1", window_name="my-project"
         )
-        mock_tr.set_group_chat_id.assert_called_once_with(12345, 42, -100500)
 
     async def test_existing_binding_supplies_chat_and_owner(self) -> None:
         event = _make_event()
@@ -390,6 +368,7 @@ class TestHandleNewWindow:
         ):
             bindings = [(100, 5, "@1")]
             mock_tr.has_window.return_value = False
+            _configure_provisioning(mock_tr)
             mock_tr.iter_thread_bindings.side_effect = [
                 iter(bindings),
                 iter(bindings),
@@ -402,10 +381,10 @@ class TestHandleNewWindow:
         bot.create_forum_topic.assert_called_once_with(
             chat_id=-100200, name="my-project"
         )
-        mock_tr.bind_thread.assert_called_once_with(
-            100, 77, "@10", window_name="my-project", chat_id=-100200
+        mock_tr.attach_provisioning_topic.assert_called_once_with("claim-1", 77)
+        mock_tr.commit_topic_provisioning.assert_called_once_with(
+            "claim-1", window_name="my-project"
         )
-        mock_tr.set_group_chat_id.assert_called_once_with(100, 77, -100200)
 
     async def test_topic_name_falls_back_to_cwd_dirname(self) -> None:
         event = _make_event(window_name="", cwd="/home/user/cool-project")
@@ -420,6 +399,7 @@ class TestHandleNewWindow:
             patch("ccgram.handlers.topics.topic_orchestration.config") as mock_config,
         ):
             mock_tr.has_window.return_value = False
+            _configure_provisioning(mock_tr)
             mock_tr.iter_thread_bindings.return_value = iter([])
             mock_config.group_id = -100500
             mock_config.allowed_users = {12345}
@@ -443,6 +423,7 @@ class TestHandleNewWindow:
             patch("ccgram.handlers.topics.topic_orchestration.config") as mock_config,
         ):
             mock_tr.has_window.return_value = False
+            _configure_provisioning(mock_tr)
             mock_tr.iter_thread_bindings.return_value = iter([])
             mock_config.group_id = -100500
             mock_config.allowed_users = {12345}
@@ -466,10 +447,11 @@ class TestHandleNewWindow:
             ),
             patch(
                 "ccgram.handlers.topics.topic_orchestration.time.monotonic",
-                side_effect=[100.0, 100.0, 101.0],
+                side_effect=lambda: 100.0,
             ),
         ):
             mock_tr.has_window.return_value = False
+            _configure_provisioning(mock_tr)
             mock_tr.iter_thread_bindings.side_effect = [iter([]) for _ in range(6)]
             mock_config.group_id = -100500
             mock_config.allowed_users = {12345}
@@ -481,12 +463,53 @@ class TestHandleNewWindow:
             chat_id=-100500, name="my-project"
         )
 
+    async def test_retry_after_can_propagate_after_cleanup(self) -> None:
+        router = ThreadRouter(
+            schedule_save=lambda: None,
+            has_window_state=lambda _window_id: False,
+        )
+        bot = AsyncMock()
+        bot.create_forum_topic = AsyncMock(side_effect=RetryAfter(27))
+        session = MagicMock()
+
+        with (
+            patch("ccgram.handlers.topics.topic_orchestration.thread_router", router),
+            patch(
+                "ccgram.handlers.topics.topic_orchestration.session_manager", session
+            ),
+            patch(
+                "ccgram.handlers.topics.topic_orchestration._topic_create_retry_until",
+                {},
+            ) as retry_until,
+            patch(
+                "ccgram.handlers.topics.topic_orchestration.time.monotonic",
+                return_value=100.0,
+            ),
+            pytest.raises(RetryAfter),
+        ):
+            await create_topic_in_chat(
+                bot,
+                -100500,
+                "@propagate",
+                "project",
+                user_id=100,
+                propagate_retry_after=True,
+            )
+
+        bot.create_forum_topic.assert_awaited_once_with(
+            chat_id=-100500,
+            name="project",
+        )
+        assert router.iter_topic_provisionings() == []
+        assert retry_until[-100500] > 100.0
+
     async def test_retries_after_backoff_expires(self) -> None:
         event = _make_event()
         bot = AsyncMock()
         bot.create_forum_topic = AsyncMock(
             side_effect=[RetryAfter(3), _make_topic(thread_id=42)]
         )
+        clock = [100.0]
 
         with (
             patch("ccgram.handlers.topics.topic_orchestration.session_manager"),
@@ -500,21 +523,24 @@ class TestHandleNewWindow:
             ),
             patch(
                 "ccgram.handlers.topics.topic_orchestration.time.monotonic",
-                side_effect=[100.0, 100.0, 106.0],
+                side_effect=lambda: clock[0],
             ),
         ):
             mock_tr.has_window.return_value = False
+            _configure_provisioning(mock_tr)
             mock_tr.iter_thread_bindings.side_effect = [iter([]) for _ in range(6)]
             mock_tr.resolve_chat_id.return_value = 12345
             mock_config.group_id = -100500
             mock_config.allowed_users = {12345}
 
             await handle_new_window(event, bot)
+            clock[0] = 106.0
             await handle_new_window(event, bot)
 
         assert bot.create_forum_topic.call_count == 2
-        mock_tr.bind_thread.assert_called_once_with(
-            12345, 42, "@10", window_name="my-project", chat_id=-100500
+        mock_tr.attach_provisioning_topic.assert_called_once_with("claim-1", 42)
+        mock_tr.commit_topic_provisioning.assert_called_once_with(
+            "claim-1", window_name="my-project"
         )
 
     async def test_uses_group_chat_ids_when_no_bindings(self) -> None:
@@ -530,6 +556,7 @@ class TestHandleNewWindow:
             patch("ccgram.handlers.topics.topic_orchestration.config") as mock_config,
         ):
             mock_tr.has_window.return_value = False
+            _configure_provisioning(mock_tr)
             mock_tr.iter_thread_bindings.return_value = iter([])
             mock_tr.group_chat_ids = {"100:5": -100200}
             mock_config.group_id = None
@@ -541,13 +568,10 @@ class TestHandleNewWindow:
             chat_id=-100200, name="my-project"
         )
 
-    async def test_rebinds_existing_same_name_topic_for_dead_old_window(self) -> None:
+    async def test_same_name_window_gets_a_fresh_topic(self) -> None:
         event = _make_event(window_id="@3", window_name="reflex-gh")
         bot = AsyncMock()
-        probe_msg = MagicMock()
-        probe_msg.message_id = 555
-        bot.send_message = AsyncMock(return_value=probe_msg)
-        bot.delete_message = AsyncMock()
+        bot.create_forum_topic = AsyncMock(return_value=_make_topic(thread_id=501))
 
         with (
             patch("ccgram.handlers.topics.topic_orchestration.session_manager"),
@@ -559,8 +583,8 @@ class TestHandleNewWindow:
             ) as mock_tmux,
         ):
             mock_tr.has_window.return_value = False
+            _configure_provisioning(mock_tr)
             mock_tr.iter_thread_bindings.return_value = iter([(100, 120014, "@1")])
-            mock_tr.get_display_name.return_value = "🟡 reflex-gh"
             mock_tr.resolve_chat_id.return_value = -100200
             mock_tmux.find_window_by_id = AsyncMock(return_value=None)
             # Confirmed empty: the old window really is gone, not unreachable.
@@ -568,20 +592,44 @@ class TestHandleNewWindow:
 
             await handle_new_window(event, bot)
 
-        mock_tr.bind_thread.assert_called_once_with(
-            100, 120014, "@3", window_name="reflex-gh", chat_id=-100200
+        bot.create_forum_topic.assert_awaited_once_with(
+            chat_id=-100200,
+            name="reflex-gh",
         )
-        mock_tr.set_group_chat_id.assert_called_once_with(100, 120014, -100200)
-        bot.send_message.assert_awaited_once_with(
-            -100200,
-            ".",
-            message_thread_id=120014,
-            disable_notification=True,
+        mock_tr.unbind_thread.assert_not_called()
+        mock_tr.attach_provisioning_topic.assert_called_once_with("claim-1", 501)
+        mock_tr.commit_topic_provisioning.assert_called_once_with(
+            "claim-1", window_name="reflex-gh"
         )
-        bot.delete_message.assert_awaited_once_with(-100200, 555)
-        bot.create_forum_topic.assert_not_called()
 
-    async def test_herdr_does_not_rebind_stale_topic_by_display_name(self) -> None:
+    async def test_same_name_fresh_topic_preserves_old_binding(self) -> None:
+        router = ThreadRouter(
+            schedule_save=lambda: None,
+            has_window_state=lambda _window_id: False,
+        )
+        router.bind_thread(100, 42, "@old", window_name="reflex-gh", chat_id=-100200)
+        bot = AsyncMock()
+        bot.create_forum_topic.return_value = _make_topic(thread_id=504)
+        session = MagicMock()
+
+        with (
+            patch("ccgram.handlers.topics.topic_orchestration.thread_router", router),
+            patch(
+                "ccgram.handlers.topics.topic_orchestration.session_manager", session
+            ),
+        ):
+            assert await handle_new_window(
+                _make_event(window_id="@new", window_name="reflex-gh"), bot
+            )
+
+        assert router.get_window_for_chat_thread(-100200, 42) == "@old"
+        assert router.get_window_for_chat_thread(-100200, 504) == "@new"
+        bot.create_forum_topic.assert_awaited_once_with(
+            chat_id=-100200,
+            name="reflex-gh",
+        )
+
+    async def test_herdr_same_name_window_gets_a_fresh_topic(self) -> None:
         event = _make_event(window_id="herdr-session-v1-new", window_name="reflex-gh")
         bot = AsyncMock()
         bot.create_forum_topic = AsyncMock(return_value=_make_topic(thread_id=78))
@@ -596,13 +644,13 @@ class TestHandleNewWindow:
             ) as mock_tmux,
             patch("ccgram.handlers.topics.topic_orchestration.config") as mock_config,
         ):
-            mock_tmux.capabilities.supports_display_name_rebind = False
             mock_tmux.find_window_by_id = AsyncMock(return_value=None)
             # Confirmed empty: the old window really is gone, not unreachable.
             mock_tmux.list_windows_for_reconciliation = AsyncMock(return_value=[])
             # Confirmed empty: the old window really is gone, not unreachable.
             mock_tmux.list_windows_for_reconciliation = AsyncMock(return_value=[])
             mock_tr.has_window.return_value = False
+            _configure_provisioning(mock_tr)
             mock_tr.iter_thread_bindings.return_value = iter([(100, 120014, "old")])
             mock_tr.resolve_chat_id.return_value = -100200
             mock_tr.get_display_name.return_value = "reflex-gh"
@@ -614,12 +662,16 @@ class TestHandleNewWindow:
         bot.create_forum_topic.assert_awaited_once_with(
             chat_id=-100200, name="reflex-gh"
         )
-        mock_tr.bind_thread.assert_called_once()
+        mock_tr.attach_provisioning_topic.assert_called_once_with("claim-1", 78)
+        mock_tr.commit_topic_provisioning.assert_called_once_with(
+            "claim-1", window_name="reflex-gh"
+        )
 
-    async def test_dead_same_name_topic_is_unbound_then_new_topic_created(self) -> None:
+    async def test_dead_same_name_topic_stays_bound_when_new_topic_is_created(
+        self,
+    ) -> None:
         event = _make_event(window_id="@3", window_name="reflex-gh")
         bot = AsyncMock()
-        bot.send_message = AsyncMock(side_effect=BadRequest("Topic_id_invalid"))
         bot.create_forum_topic = AsyncMock(return_value=_make_topic(thread_id=77))
 
         with (
@@ -633,6 +685,7 @@ class TestHandleNewWindow:
             patch("ccgram.handlers.topics.topic_orchestration.config") as mock_config,
         ):
             mock_tr.has_window.return_value = False
+            _configure_provisioning(mock_tr)
             mock_tr.iter_thread_bindings.side_effect = [
                 iter([(100, 120014, "@1")]),
                 iter([]),
@@ -649,9 +702,13 @@ class TestHandleNewWindow:
 
             await handle_new_window(event, bot)
 
-        mock_tr.unbind_thread.assert_called_once_with(100, 120014)
+        mock_tr.unbind_thread.assert_not_called()
         bot.create_forum_topic.assert_called_once_with(
             chat_id=-100200, name="reflex-gh"
+        )
+        mock_tr.attach_provisioning_topic.assert_called_once_with("claim-1", 77)
+        mock_tr.commit_topic_provisioning.assert_called_once_with(
+            "claim-1", window_name="reflex-gh"
         )
 
 
@@ -675,6 +732,7 @@ class TestCreateForumTopicTransientRetry:
             ),
         ):
             mock_tr.has_window.return_value = False
+            _configure_provisioning(mock_tr)
             mock_tr.iter_thread_bindings.return_value = iter([])
             mock_config.group_id = -100500
             mock_config.allowed_users = {12345}
@@ -700,6 +758,7 @@ class TestCreateForumTopicTransientRetry:
             ),
         ):
             mock_tr.has_window.return_value = False
+            _configure_provisioning(mock_tr)
             mock_tr.iter_thread_bindings.return_value = iter([])
             mock_config.group_id = -100500
             mock_config.allowed_users = {12345}
@@ -710,6 +769,295 @@ class TestCreateForumTopicTransientRetry:
         assert bot.create_forum_topic.call_count == 2
         assert not _is_pending_user_creation(event.window_id)
         assert -100500 in _topic_create_retry_until
+
+
+class TestDurableTopicProvisioning:
+    async def test_retry_claim_is_requeued_after_definitive_failure(self) -> None:
+        router = ThreadRouter(
+            schedule_save=lambda: None,
+            has_window_state=lambda _window_id: False,
+        )
+        claim = router.begin_topic_provisioning(
+            100,
+            -100500,
+            thread_id=42,
+            target_id="@retry",
+            kind="replacement",
+        )
+        prepared = router.prepare_topic_recreation(claim.claim_id)
+        bot = AsyncMock()
+        bot.create_forum_topic = AsyncMock(side_effect=BadRequest("denied"))
+        session = MagicMock()
+
+        with (
+            patch("ccgram.handlers.topics.topic_orchestration.thread_router", router),
+            patch(
+                "ccgram.handlers.topics.topic_orchestration.session_manager", session
+            ),
+            patch(
+                "ccgram.handlers.topics.topic_orchestration._topic_create_retry_until",
+                {},
+            ),
+        ):
+            assert (
+                await create_topic_in_chat(
+                    bot,
+                    -100500,
+                    "@retry",
+                    "project",
+                    user_id=100,
+                    claim_id=prepared.claim_id,
+                )
+                is False
+            )
+
+        current = router.get_topic_provisioning(claim.claim_id)
+        assert current is not None
+        assert current.thread_id is None
+        assert current.retry_thread_id == 42
+        assert current.retry_at > 0
+        assert current.uncertain is False
+        assert router.owns_topic_provisioning(claim.claim_id) is False
+
+    async def test_retry_claim_stays_uncertain_after_network_failure(self) -> None:
+        router = ThreadRouter(
+            schedule_save=lambda: None,
+            has_window_state=lambda _window_id: False,
+        )
+        claim = router.begin_topic_provisioning(
+            100,
+            -100500,
+            thread_id=42,
+            target_id="@uncertain",
+            kind="replacement",
+        )
+        prepared = router.prepare_topic_recreation(claim.claim_id)
+        bot = AsyncMock()
+        bot.create_forum_topic = AsyncMock(side_effect=NetworkError("offline"))
+        session = MagicMock()
+
+        with (
+            patch("ccgram.handlers.topics.topic_orchestration.thread_router", router),
+            patch(
+                "ccgram.handlers.topics.topic_orchestration.session_manager", session
+            ),
+            patch(
+                "ccgram.handlers.topics.topic_orchestration._topic_create_retry_until",
+                {},
+            ),
+        ):
+            assert (
+                await create_topic_in_chat(
+                    bot,
+                    -100500,
+                    "@uncertain",
+                    "project",
+                    user_id=100,
+                    claim_id=prepared.claim_id,
+                )
+                is False
+            )
+
+        current = router.get_topic_provisioning(claim.claim_id)
+        assert current is not None
+        assert current.thread_id is None
+        assert current.retry_thread_id == 42
+        assert current.retry_at == 0.0
+        assert current.uncertain is True
+        assert router.owns_topic_provisioning(claim.claim_id) is False
+
+    async def test_checkpoint_failure_aborts_before_remote_creation(self) -> None:
+        router = ThreadRouter(
+            schedule_save=lambda: None,
+            has_window_state=lambda _window_id: False,
+        )
+        bot = AsyncMock()
+        session = MagicMock()
+        session.flush_state.side_effect = OSError("disk full")
+
+        with (
+            patch("ccgram.handlers.topics.topic_orchestration.thread_router", router),
+            patch(
+                "ccgram.handlers.topics.topic_orchestration.session_manager", session
+            ),
+        ):
+            with pytest.raises(OSError, match="disk full"):
+                await create_topic_in_chat(
+                    bot,
+                    -100500,
+                    "@checkpoint",
+                    "project",
+                    user_id=100,
+                )
+
+            bot.create_forum_topic.assert_not_awaited()
+            assert router.iter_topic_provisionings() == []
+            assert router.owns_topic_provisioning("not-a-claim") is False
+
+            session.flush_state.side_effect = None
+            bot.create_forum_topic.return_value = _make_topic(thread_id=502)
+            assert await create_topic_in_chat(
+                bot,
+                -100500,
+                "@checkpoint",
+                "project",
+                user_id=100,
+            )
+
+        bot.create_forum_topic.assert_awaited_once_with(
+            chat_id=-100500,
+            name="project",
+        )
+
+    async def test_response_checkpoint_failure_retains_exact_uncertain_claim(
+        self,
+    ) -> None:
+        router = ThreadRouter(
+            schedule_save=lambda: None,
+            has_window_state=lambda _window_id: False,
+        )
+        bot = AsyncMock()
+        bot.create_forum_topic.return_value = _make_topic(thread_id=503)
+        session = MagicMock()
+        session.flush_state.side_effect = [
+            None,
+            OSError("disk full"),
+            OSError("disk full"),
+        ]
+
+        with (
+            patch("ccgram.handlers.topics.topic_orchestration.thread_router", router),
+            patch(
+                "ccgram.handlers.topics.topic_orchestration.session_manager", session
+            ),
+        ):
+            with pytest.raises(OSError, match="disk full"):
+                await create_topic_in_chat(
+                    bot,
+                    -100500,
+                    "@response-checkpoint",
+                    "project",
+                    user_id=100,
+                )
+
+            claims = router.iter_topic_provisionings()
+            assert len(claims) == 1
+            assert claims[0].thread_id == 503
+            assert claims[0].uncertain is True
+            assert is_pending_creation("@response-checkpoint")
+
+            assert (
+                await create_topic_in_chat(
+                    bot,
+                    -100500,
+                    "@response-checkpoint",
+                    "project",
+                    user_id=100,
+                )
+                is False
+            )
+
+        bot.create_forum_topic.assert_awaited_once_with(
+            chat_id=-100500,
+            name="project",
+        )
+
+    async def test_cancellation_binds_late_topic_response(self) -> None:
+        router = ThreadRouter(
+            schedule_save=lambda: None,
+            has_window_state=lambda _window_id: False,
+        )
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def create_topic(**_kwargs: object) -> MagicMock:
+            started.set()
+            await release.wait()
+            return _make_topic(thread_id=501)
+
+        bot = AsyncMock()
+        bot.create_forum_topic.side_effect = create_topic
+        session = MagicMock()
+
+        with (
+            patch("ccgram.handlers.topics.topic_orchestration.thread_router", router),
+            patch(
+                "ccgram.handlers.topics.topic_orchestration.session_manager", session
+            ),
+        ):
+            creation = asyncio.create_task(
+                create_topic_in_chat(
+                    bot,
+                    -100500,
+                    "@cancelled",
+                    "project",
+                    user_id=100,
+                )
+            )
+            await started.wait()
+            creation.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await creation
+
+            claims = router.iter_topic_provisionings()
+            assert len(claims) == 1
+            assert claims[0].uncertain is True
+            assert is_pending_creation("@cancelled")
+
+            release.set()
+            for _ in range(3):
+                await asyncio.sleep(0)
+
+            assert router.iter_topic_provisionings() == []
+            assert router.get_window_for_chat_thread(-100500, 501) == "@cancelled"
+
+    async def test_lost_response_stays_pending_after_marker_expiry(self) -> None:
+        router = ThreadRouter(
+            schedule_save=lambda: None,
+            has_window_state=lambda _window_id: False,
+        )
+        started = asyncio.Event()
+        stop = asyncio.Event()
+
+        async def create_topic(**_kwargs: object) -> MagicMock:
+            started.set()
+            await stop.wait()
+            raise asyncio.CancelledError
+
+        bot = AsyncMock()
+        bot.create_forum_topic.side_effect = create_topic
+        session = MagicMock()
+
+        with (
+            patch("ccgram.handlers.topics.topic_orchestration.thread_router", router),
+            patch(
+                "ccgram.handlers.topics.topic_orchestration.session_manager", session
+            ),
+        ):
+            creation = asyncio.create_task(
+                create_topic_in_chat(
+                    bot,
+                    -100500,
+                    "@lost-response",
+                    "project",
+                    user_id=100,
+                )
+            )
+            await started.wait()
+            creation.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await creation
+
+            clear_pending_creation("@lost-response")
+            assert is_pending_creation("@lost-response")
+            assert router.iter_topic_provisionings()[0].uncertain is True
+
+            stop.set()
+            for _ in range(3):
+                await asyncio.sleep(0)
+
+            assert len(router.iter_topic_provisionings()) == 1
+            assert router.iter_topic_provisionings()[0].uncertain is True
 
 
 class TestAdoptUnboundWindows:
@@ -879,71 +1227,6 @@ class TestStillAdoptable:
 
     async def test_unconfirmed_listing_is_refused(self):
         assert await self._verdict(None) is False
-
-
-class TestSameNameRebindNeedsConfirmedDeath:
-    """Rebinding hands a live Telegram topic to a different window.
-
-    The old window is judged gone, then the topic is probed over the network,
-    and only then is the binding overwritten. Both reads must be confirmed:
-    find_window_by_id answers None for a window that is gone and for a backend
-    that could not be reached alike.
-    """
-
-    @staticmethod
-    def _ref(window_id: str):
-        return WindowRef(window_id=window_id, window_name="reflex-gh", cwd="/p")
-
-    async def _run(self, listings):
-        from ccgram.handlers.topics.topic_orchestration import (
-            _rebind_existing_topic_by_name,
-        )
-
-        event = _make_event(window_id="@new", window_name="reflex-gh")
-        with (
-            patch(
-                "ccgram.handlers.topics.topic_orchestration.thread_router"
-            ) as mock_tr,
-            patch("ccgram.handlers.topics.topic_orchestration.tmux_manager") as mock_tm,
-            patch(
-                "ccgram.handlers.topics.topic_orchestration.probe_topic_exists",
-                new_callable=AsyncMock,
-                return_value=True,
-            ),
-        ):
-            mock_tr.iter_thread_bindings.return_value = [(100, 42, "@old")]
-            mock_tr.get_display_name.return_value = "reflex-gh"
-            mock_tr.resolve_chat_id.return_value = -100200
-            mock_tm.list_windows_for_reconciliation = AsyncMock(side_effect=listings)
-
-            result = await _rebind_existing_topic_by_name(
-                event, AsyncMock(), "reflex-gh"
-            )
-        return result, mock_tr
-
-    async def test_unavailable_listing_does_not_rebind(self) -> None:
-        result, mock_tr = await self._run([None, None])
-
-        assert result is False
-        mock_tr.bind_thread.assert_not_called()
-        mock_tr.unbind_thread.assert_not_called()
-
-    async def test_old_window_reappearing_during_the_probe_does_not_rebind(
-        self,
-    ) -> None:
-        """Gone when the candidate was chosen, back by the time of the write."""
-        result, mock_tr = await self._run([[], [self._ref("@old")]])
-
-        assert result is False
-        mock_tr.bind_thread.assert_not_called()
-        mock_tr.unbind_thread.assert_not_called()
-
-    async def test_confirmed_dead_old_window_still_rebinds(self) -> None:
-        """The other side, so the guard cannot pass by refusing everything."""
-        result, mock_tr = await self._run([[], []])
-
-        assert result is True
-        mock_tr.bind_thread.assert_called_once()
 
 
 class TestAdoptionIdentityFoldsCase:

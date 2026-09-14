@@ -810,6 +810,10 @@ def pick_env():
     ):
         router.get_window_for_thread.return_value = None
         router.resolve_chat_id.return_value = -100999
+        router.begin_topic_provisioning.return_value = SimpleNamespace(
+            claim_id="claim-1"
+        )
+        router.commit_topic_provisioning.return_value = True
         tmux.create_window = AsyncMock(
             return_value=(True, "Window created", "project", "@5")
         )
@@ -861,35 +865,55 @@ class TestResumePickCallback:
         pick_env.sync.wait_for_session_map_entry.assert_awaited_once_with(
             "@5", timeout=5.0, resolve_window_id=resolve_alias
         )
-        pick_env.router.bind_thread.assert_called_once_with(
-            100, 42, "@canonical", window_name="project", chat_id=-100999
+        pick_env.router.begin_topic_provisioning.assert_called_once_with(
+            100,
+            -100999,
+            thread_id=42,
+            kind="target_for_topic",
+        )
+        assert pick_env.router.attach_provisioning_target.call_args_list == [
+            (("claim-1", "@5"), {}),
+            (("claim-1", "@canonical"), {}),
+        ]
+        pick_env.router.commit_topic_provisioning.assert_called_once_with(
+            "claim-1", window_name="project"
         )
 
-    async def test_pick_unbinds_the_dead_window_first(self, pick_env) -> None:
+    async def test_pick_keeps_the_old_binding_until_replacement_commits(
+        self, pick_env
+    ) -> None:
         pick_env.router.get_window_for_thread.return_value = "@0"
 
         await _pick(0, [_session()], _make_context())
 
-        pick_env.router.unbind_thread.assert_called_once_with(
+        pick_env.router.begin_topic_provisioning.assert_called_once_with(
             100,
-            42,
-            retirement_reason="system_replacement",
-            cleanup_eligible=True,
+            -100999,
+            thread_id=42,
+            previous_target_id="@0",
+            kind="replacement",
         )
+        pick_env.router.unbind_thread.assert_not_called()
 
     async def test_pick_binds_private_chat_scope(self, pick_env) -> None:
         await _pick(0, [_session()], _make_context(), chat_id=100, chat_type="private")
 
-        pick_env.router.bind_thread.assert_called_once_with(
-            100, 42, "@5", window_name="project", chat_id=100
+        pick_env.router.begin_topic_provisioning.assert_called_once_with(
+            100, 100, thread_id=42, kind="target_for_topic"
+        )
+        pick_env.router.commit_topic_provisioning.assert_called_once_with(
+            "claim-1", window_name="project"
         )
         pick_env.router.set_group_chat_id.assert_not_called()
 
     async def test_pick_binds_group_chat_scope(self, pick_env) -> None:
         await _pick(0, [_session()], _make_context())
 
-        pick_env.router.bind_thread.assert_called_once_with(
-            100, 42, "@5", window_name="project", chat_id=-100999
+        pick_env.router.begin_topic_provisioning.assert_called_once_with(
+            100, -100999, thread_id=42, kind="target_for_topic"
+        )
+        pick_env.router.commit_topic_provisioning.assert_called_once_with(
+            "claim-1", window_name="project"
         )
         pick_env.router.set_group_chat_id.assert_not_called()
 
@@ -922,6 +946,44 @@ class TestResumePickCallback:
 
         assert "Tmux error" in pick_env.edit.call_args.args[1]
         assert RESUME_SESSIONS not in ctx.user_data
+        assert _toast(query) == "Couldn't create window"
+
+    async def test_failed_replacement_keeps_old_binding(self, pick_env) -> None:
+        pick_env.router.get_window_for_thread.return_value = "@0"
+        pick_env.tmux.create_window = AsyncMock(
+            return_value=(False, "Directory does not exist: /gone", "", "")
+        )
+
+        query = await _pick(0, [_session()], _make_context())
+
+        pick_env.router.unbind_thread.assert_not_called()
+        pick_env.router.abort_topic_provisioning.assert_called_once_with(
+            "claim-1", target_confirmed_absent=True
+        )
+        assert "Directory does not exist" in pick_env.edit.call_args.args[1]
+        assert _toast(query) == "Couldn't create window"
+
+    async def test_hook_timeout_keeps_live_target_quarantined(self, pick_env) -> None:
+        provider = MagicMock()
+        provider.capabilities.name = "claude"
+        provider.capabilities.supports_hook = True
+        provider.make_launch_args.return_value = "--resume sess-1"
+        with (
+            patch(f"{_RC}.get_provider", return_value=provider),
+            patch(f"{_RC}.window_query.resolve_window_alias", return_value="@5"),
+            patch(
+                "ccgram.multiplexer.reconciliation.window_presence",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+        ):
+            pick_env.sync.wait_for_session_map_entry = AsyncMock(return_value=False)
+            query = await _pick(0, [_session()], _make_context())
+
+        pick_env.tmux.kill_window.assert_not_called()
+        pick_env.router.mark_provisioning_uncertain.assert_called_once_with("claim-1")
+        pick_env.router.unbind_thread.assert_not_called()
+        assert "still starting" in pick_env.edit.call_args.args[1]
         assert _toast(query) == "Couldn't create window"
 
     async def test_pick_invalid_cwd_fails(self, pick_env) -> None:

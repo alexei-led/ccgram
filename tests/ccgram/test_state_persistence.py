@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
+import ccgram.state_persistence as state_persistence
 from ccgram.state_persistence import StatePersistence
 
 
@@ -94,6 +96,33 @@ class TestDoSaveErrorHandling:
         sp._do_save()
         assert sp._dirty
 
+    async def test_debounced_save_error_is_logged_and_keeps_dirty(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        path = tmp_path / "state.json"
+        sp = StatePersistence(path, lambda: {"key": "value"})
+        loop = asyncio.get_running_loop()
+        original_call_later = loop.call_later
+        monkeypatch.setattr(
+            loop,
+            "call_later",
+            lambda _delay, fn, *a, **k: original_call_later(0, fn, *a, **k),
+        )
+        monkeypatch.setattr(
+            state_persistence,
+            "atomic_write_json",
+            Mock(side_effect=OSError("disk full")),
+        )
+        log_exception = Mock()
+        monkeypatch.setattr(state_persistence.logger, "exception", log_exception)
+
+        sp.schedule_save()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        log_exception.assert_called_once_with("Failed to save state")
+        assert sp._dirty
+
 
 class TestFlush:
     def test_flush_saves_when_dirty(self, tmp_path: Path) -> None:
@@ -116,6 +145,67 @@ class TestFlush:
         sp = StatePersistence(path, counting_serializer)
         sp.flush()
         assert call_count == 0
+
+    def test_strict_flush_writes_when_not_dirty(self, tmp_path: Path) -> None:
+        path = tmp_path / "state.json"
+        sp = StatePersistence(path, lambda: {"checkpoint": True})
+
+        sp.flush(strict=True)
+
+        assert json.loads(path.read_text()) == {"checkpoint": True}
+        assert not sp._dirty
+
+    def test_strict_flush_propagates_os_error_and_preserves_previous_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        path = tmp_path / "state.json"
+        path.write_text(json.dumps({"previous": True}))
+        sp = StatePersistence(path, lambda: {"current": True})
+        monkeypatch.setattr(
+            state_persistence,
+            "atomic_write_json",
+            Mock(side_effect=OSError("disk full")),
+        )
+
+        with pytest.raises(OSError, match="disk full"):
+            sp.flush(strict=True)
+
+        assert json.loads(path.read_text()) == {"previous": True}
+
+    def test_strict_flush_propagates_serialization_error_and_preserves_previous_file(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "state.json"
+        path.write_text(json.dumps({"previous": True}))
+
+        def bad_serializer() -> dict:
+            raise TypeError("not serializable")
+
+        sp = StatePersistence(path, bad_serializer)
+
+        with pytest.raises(TypeError, match="not serializable"):
+            sp.flush(strict=True)
+
+        assert json.loads(path.read_text()) == {"previous": True}
+
+    def test_strict_flush_can_retry_after_canceled_timer_save_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        path = tmp_path / "state.json"
+        sp = StatePersistence(path, lambda: {"retried": True})
+        sp._dirty = True
+        atomic_write = Mock(side_effect=[OSError("disk full"), None])
+        monkeypatch.setattr(state_persistence, "atomic_write_json", atomic_write)
+
+        with pytest.raises(OSError, match="disk full"):
+            sp.flush(strict=True)
+        assert sp._save_timer is None
+        assert sp._dirty
+
+        sp.flush(strict=True)
+
+        assert atomic_write.call_count == 2
+        assert not sp._dirty
 
     async def test_flush_cancels_pending_timer(self, tmp_path: Path) -> None:
         path = tmp_path / "state.json"

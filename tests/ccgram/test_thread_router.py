@@ -1,3 +1,5 @@
+import uuid
+
 import pytest
 
 from ccgram.thread_router import RetiredTopic, _RETIRED_TOPIC_LIMIT, ThreadRouter
@@ -399,6 +401,316 @@ class TestTopicDeletionClaims:
         )
 
         assert router.begin_topic_deletion(topic) is True
+
+
+class TestTopicProvisioning:
+    def test_begin_is_durable_and_owned(self, router: ThreadRouter) -> None:
+        claim = router.begin_topic_provisioning(
+            100,
+            -999,
+            target_id="target-1",
+            kind="topic_for_target",
+        )
+
+        assert claim.thread_id is None
+        assert claim.target_id == "target-1"
+        assert router.iter_topic_provisionings() == [claim]
+        assert router.owns_topic_provisioning(claim.claim_id) is True
+        assert router.to_dict()["topic_provisioning"] == [
+            {
+                "claim_id": claim.claim_id,
+                "user_id": 100,
+                "chat_id": -999,
+                "thread_id": None,
+                "target_id": "target-1",
+                "previous_target_id": None,
+                "kind": "topic_for_target",
+                "uncertain": False,
+                "created_at": claim.created_at,
+                "retry_thread_id": None,
+                "retry_at": 0.0,
+            }
+        ]
+
+    def test_attach_supersedes_target_and_commit_binds_atomically(
+        self, router: ThreadRouter
+    ) -> None:
+        claim = router.begin_topic_provisioning(
+            100,
+            -999,
+            target_id="provisional",
+            kind="replacement",
+        )
+        claim = router.attach_provisioning_target(claim.claim_id, "durable")
+        claim = router.attach_provisioning_topic(claim.claim_id, 42)
+
+        assert claim.previous_target_id == "provisional"
+        assert router.commit_topic_provisioning(claim.claim_id, window_name="proj")
+        assert router.get_window_for_chat_thread(-999, 42) == "durable"
+        assert router.get_display_name("durable") == "proj"
+        assert router.iter_topic_provisionings() == []
+        assert router.owns_topic_provisioning(claim.claim_id) is False
+
+    def test_regular_bind_is_rejected_until_commit(self, router: ThreadRouter) -> None:
+        claim = router.begin_topic_provisioning(
+            100,
+            -999,
+            thread_id=42,
+            target_id="durable",
+            kind="target_for_topic",
+        )
+
+        with pytest.raises(ValueError, match="provisioning is in progress"):
+            router.bind_thread(100, 42, "other", chat_id=-999)
+
+        assert router.commit_topic_provisioning(claim.claim_id) is True
+        assert router.get_window_for_chat_thread(-999, 42) == "durable"
+
+    def test_other_user_cannot_bind_claimed_topic(self, router: ThreadRouter) -> None:
+        router.begin_topic_provisioning(
+            100,
+            -999,
+            thread_id=42,
+            target_id="durable",
+            kind="target_for_topic",
+        )
+
+        with pytest.raises(ValueError, match="provisioning is in progress"):
+            router.bind_thread(200, 42, "other", chat_id=-999)
+
+    def test_abort_retires_only_an_unbound_topic(self, router: ThreadRouter) -> None:
+        claim = router.begin_topic_provisioning(
+            100,
+            -999,
+            thread_id=42,
+            target_id="durable",
+            kind="target_for_topic",
+        )
+        aborted = router.abort_topic_provisioning(
+            claim.claim_id, target_confirmed_absent=True
+        )
+
+        assert aborted == claim
+        assert router.iter_topic_provisionings() == []
+        retired = list(router.iter_retired_topics())
+        assert len(retired) == 1
+        assert retired[0].reason == "creation_failed"
+        assert retired[0].cleanup_eligible is True
+
+    def test_retired_topic_keeps_target_for_deletion_race(
+        self, router: ThreadRouter
+    ) -> None:
+        router.bind_thread(100, 42, "durable", chat_id=-999)
+        router.unbind_thread(
+            100,
+            42,
+            chat_id=-999,
+            retirement_reason="system_replacement",
+            cleanup_eligible=True,
+        )
+        topic = next(router.iter_retired_topics())
+
+        assert topic.target_id == "durable"
+        assert router.begin_topic_deletion(topic) is True
+        with pytest.raises(ValueError, match="deletion is in progress"):
+            router.begin_topic_provisioning(
+                100,
+                -999,
+                target_id="durable",
+                kind="topic_for_target",
+            )
+
+        router.end_topic_deletion(topic)
+        claim = router.begin_topic_provisioning(
+            100,
+            -999,
+            target_id="durable",
+            kind="topic_for_target",
+        )
+        router.abort_topic_provisioning(
+            claim.claim_id,
+            target_confirmed_absent=False,
+            topic_confirmed_absent=True,
+        )
+
+    def test_attach_and_commit_reject_target_or_topic_under_deletion(
+        self, router: ThreadRouter
+    ) -> None:
+        router.bind_thread(100, 42, "durable", chat_id=-999)
+        router.unbind_thread(
+            100,
+            42,
+            chat_id=-999,
+            retirement_reason="system_replacement",
+            cleanup_eligible=True,
+        )
+        topic = next(router.iter_retired_topics())
+        assert router.begin_topic_deletion(topic) is True
+        claim = router.begin_topic_provisioning(
+            100,
+            -999,
+            target_id="new-target",
+            kind="replacement",
+        )
+
+        with pytest.raises(ValueError, match="deletion is in progress"):
+            router.attach_provisioning_target(claim.claim_id, "durable")
+        with pytest.raises(ValueError, match="deletion is in progress"):
+            router.attach_provisioning_topic(claim.claim_id, 42)
+
+        router.end_topic_deletion(topic)
+        router.attach_provisioning_target(claim.claim_id, "durable")
+        router.attach_provisioning_topic(claim.claim_id, 42)
+        assert router.commit_topic_provisioning(claim.claim_id) is True
+
+    def test_abort_preserves_old_binding_and_ambiguous_claim(
+        self, router: ThreadRouter
+    ) -> None:
+        router.bind_thread(100, 42, "old", chat_id=-999)
+        claim = router.begin_topic_provisioning(
+            100,
+            -999,
+            thread_id=42,
+            target_id="new",
+            kind="replacement",
+        )
+
+        uncertain = router.abort_topic_provisioning(
+            claim.claim_id, target_confirmed_absent=False
+        )
+
+        assert uncertain is not None and uncertain.uncertain is True
+        assert router.owns_topic_provisioning(claim.claim_id) is True
+        assert router.get_window_for_chat_thread(-999, 42) == "old"
+        assert list(router.iter_retired_topics()) == []
+
+        router.mark_provisioning_uncertain(claim.claim_id)
+        assert router.owns_topic_provisioning(claim.claim_id) is False
+
+    def test_no_topic_failure_can_release_with_topic_absence_proof(
+        self, router: ThreadRouter
+    ) -> None:
+        claim = router.begin_topic_provisioning(
+            100,
+            -999,
+            target_id="live-target",
+            kind="topic_for_target",
+        )
+
+        assert (
+            router.abort_topic_provisioning(
+                claim.claim_id,
+                target_confirmed_absent=False,
+                topic_confirmed_absent=True,
+            )
+            == claim
+        )
+        assert router.iter_topic_provisionings() == []
+
+    def test_confirmed_absent_topic_unbinds_only_exact_binding(
+        self, router: ThreadRouter
+    ) -> None:
+        router.bind_thread(100, 42, "dead", chat_id=-999)
+        router.bind_thread(100, 43, "keep", chat_id=-999)
+        claim = router.begin_topic_provisioning(
+            100,
+            -999,
+            thread_id=42,
+            target_id="replacement",
+            kind="replacement",
+        )
+
+        assert (
+            router.abort_topic_provisioning(
+                claim.claim_id,
+                target_confirmed_absent=False,
+                topic_confirmed_absent=True,
+            )
+            == claim
+        )
+        assert router.get_window_for_chat_thread(-999, 42) is None
+        assert router.get_window_for_chat_thread(-999, 43) == "keep"
+        assert list(router.iter_retired_topics()) == []
+
+    def test_prepare_and_defer_recreation_round_trip(
+        self, router: ThreadRouter
+    ) -> None:
+        router.bind_thread(100, 42, "dead", chat_id=-999)
+        claim = router.begin_topic_provisioning(
+            100,
+            -999,
+            thread_id=42,
+            target_id="live",
+            kind="replacement",
+        )
+
+        prepared = router.prepare_topic_recreation(claim.claim_id)
+        assert prepared.thread_id is None
+        assert prepared.retry_thread_id == 42
+        assert prepared.retry_at == 0.0
+        assert prepared.uncertain is True
+        assert router.owns_topic_provisioning(claim.claim_id) is True
+        assert router.get_window_for_chat_thread(-999, 42) is None
+        assert list(router.iter_retired_topics()) == []
+
+        deferred = router.defer_topic_recreation(
+            claim.claim_id,
+            retry_at=123.5,
+        )
+        assert deferred.retry_thread_id == 42
+        assert deferred.retry_at == 123.5
+        assert deferred.uncertain is False
+        assert router.owns_topic_provisioning(claim.claim_id) is False
+
+        restored = ThreadRouter(
+            schedule_save=lambda: None,
+            has_window_state=lambda _wid: False,
+        )
+        restored.from_dict(router.to_dict())
+        loaded = restored.get_topic_provisioning(claim.claim_id)
+        assert loaded == deferred
+        assert restored.owns_topic_provisioning(claim.claim_id) is False
+
+    def test_multi_chat_claims_and_restart_have_no_ttl(
+        self, router: ThreadRouter
+    ) -> None:
+        first = router.begin_topic_provisioning(
+            100,
+            -1001,
+            thread_id=42,
+            target_id="target-a",
+            kind="target_for_topic",
+        )
+        second = router.begin_topic_provisioning(
+            100,
+            -1002,
+            thread_id=42,
+            target_id="target-b",
+            kind="target_for_topic",
+        )
+        raw = router.to_dict()
+        raw["topic_provisioning"].extend(
+            {
+                **entry,
+                "claim_id": str(uuid.uuid4()),
+                "thread_id": 1000 + index,
+                "target_id": f"old-{index}",
+                "created_at": 1.0,
+            }
+            for index, entry in enumerate(raw["topic_provisioning"] * 60)
+        )
+
+        restored = ThreadRouter(
+            schedule_save=lambda: None,
+            has_window_state=lambda _wid: False,
+        )
+        restored.from_dict(raw)
+
+        assert restored.has_topic_provisioning(-1001, 42) is True
+        assert restored.has_topic_provisioning(-1002, 42) is True
+        assert len(restored.iter_topic_provisionings()) == 122
+        assert restored.owns_topic_provisioning(first.claim_id) is False
+        assert restored.owns_topic_provisioning(second.claim_id) is False
 
 
 class TestPrivateTopicChats:

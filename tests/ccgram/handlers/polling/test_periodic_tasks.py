@@ -25,9 +25,13 @@ def _tasks(now: float):
         patch(_MODULE + "tick_live_views", new_callable=AsyncMock) as live,
         patch(_MODULE + "prune_stale_state", new_callable=AsyncMock) as prune,
         patch(_MODULE + "probe_topic_existence", new_callable=AsyncMock) as probe,
-        patch(_MODULE + "check_autoclose_timers", new_callable=AsyncMock) as autoclose,
         patch(_MODULE + "check_unbound_window_ttl", new_callable=AsyncMock) as unbound,
         patch(_MODULE + "cleanup_retired_topics", new_callable=AsyncMock) as cleanup,
+        patch(
+            _MODULE + "recover_topic_provisioning",
+            new_callable=AsyncMock,
+            return_value={},
+        ) as recover,
         patch(_MODULE + "log_throttle_sweep") as sweep,
     ):
         mock_time.monotonic.return_value = now
@@ -36,9 +40,9 @@ def _tasks(now: float):
             live=live,
             prune=prune,
             probe=probe,
-            autoclose=autoclose,
             unbound=unbound,
             cleanup=cleanup,
+            recover=recover,
             sweep=sweep,
         )
 
@@ -74,6 +78,7 @@ class TestRunPeriodicTasks:
             await run_periodic_tasks(MagicMock(), windows, timers)
 
         assert tasks.prune.await_count == (1 if expected else 0)
+        assert tasks.recover.await_count == (1 if expected else 0)
         assert tasks.probe.await_count == (1 if expected else 0)
         assert tasks.cleanup.await_count == (1 if expected else 0)
         assert tasks.sweep.call_count == (1 if expected else 0)
@@ -89,6 +94,16 @@ class TestRunPeriodicTasks:
         tasks.prune.assert_awaited_once_with(windows)
         tasks.probe.assert_awaited_once_with(client)
         tasks.cleanup.assert_awaited_once_with(client)
+        tasks.recover.assert_awaited_once_with(client)
+
+    async def test_recovery_rate_limit_defers_other_telegram_maintenance(self):
+        timers = {"live_view": 1e9, "topic_check": 0.0}
+        with _tasks(now=TOPIC_CHECK_INTERVAL) as tasks:
+            tasks.recover.return_value = {"rate_limited": 1}
+            await run_periodic_tasks(MagicMock(), [], timers)
+        tasks.prune.assert_awaited_once()
+        tasks.probe.assert_not_awaited()
+        tasks.cleanup.assert_not_awaited()
 
 
 class TestRunLifecycleTasks:
@@ -98,5 +113,4 @@ class TestRunLifecycleTasks:
         with _tasks(now=0.0) as tasks:
             await run_lifecycle_tasks(client, windows)
 
-        tasks.autoclose.assert_awaited_once_with(client)
         tasks.unbound.assert_awaited_once_with(windows)

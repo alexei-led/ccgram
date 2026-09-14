@@ -1,11 +1,11 @@
 """herdr push-event stream — the only long-lived unix-socket reader in ccgram.
 
-``HerdrManager`` is otherwise strictly request/response (one ``herdr`` subprocess
+``HerdrManager`` is otherwise strictly request/response (one socket connection
 per call). The push event stream (``events.subscribe``) needs a persistent
 connection, so the socket I/O lives here, separate from the manager, and is
 injected into ``HerdrManager`` for unit tests (canned event lines, no socket).
 
-Wire protocol (verified live against herdr 0.7.1): newline-delimited JSON over
+Wire protocol (verified live against Herdr protocols 20 and 22): newline-delimited JSON over
 the unix socket. ``events.subscribe`` returns one ack line (``{"result": …}``)
 then keeps the connection open, pushing one event per line as
 ``{"data": {…}, "event": "<name>"}``. herdr is inconsistent about the ``event``
