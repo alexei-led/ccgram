@@ -13,14 +13,14 @@ Authoritative architecture lives in `docs/architecture.md` and `/.claude/rules/a
 
 `ccgram` bridges Telegram topics to terminal multiplexer windows running AI coding agents.
 
-- 1 Telegram topic = 1 multiplexer window/tab = 1 provider session.
+- 1 Telegram topic = 1 terminal-session target: a tmux window, a guarded Herdr agent session, or an agterm session UUID. A shared Herdr tab can contain multiple targets.
 - Internal identity is `window_id`, not a display name.
 - Message parsing preserves full content; splitting only at Telegram send.
 - Provider behavior is per-window and capability-driven.
 
 ## Non-Negotiable Rules
 
-- Topic-centric routing; one topic ↔ one window/tab.
+- Topic-centric routing; one topic ↔ one terminal-session target. Herdr tab and pane IDs are locators, never persisted identity.
 - Use `window_id` for identity; never key by display name.
 - No parse-layer truncation.
 - Per-window provider via `WindowState.provider_name` + `ProviderCapabilities`.

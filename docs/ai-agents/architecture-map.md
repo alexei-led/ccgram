@@ -50,11 +50,12 @@ Live view (terminal → auto-refresh screenshots):
 4. Each tick captures the pane via `tmux_manager.py` (viewport only — unchanged from pre-scrollback), hashes content, edits via `editMessageMedia` only when changed.
 5. Auto-stops after `config.live_view_timeout` or when user taps Stop.
 
-Recovery (dead/missing session):
+Terminal closure and topic cleanup:
 
-1. `handlers/polling/polling_coordinator.py` detects stale/dead bindings via `handlers/polling/window_tick/`.
-2. Recovery UI callbacks → `handlers/recovery/recovery_callbacks.py` (thin dispatcher) → `recovery_banner.py` (dead-window banner) or `resume_picker.py` (resume picker + transcript scan).
-3. State updated in `session.py` and persisted to `state.json`.
+1. `handlers/polling/window_tick/apply.py` rechecks target presence and pending creation before retiring a dead binding.
+2. `handlers/topics/topic_deletion.py` persists cleanup ownership and attempts immediate topic/history deletion. Failed deletion remains queued; `/sync` and periodic maintenance retry it. Unknown presence never proves closure.
+3. `handlers/topics/topic_provisioning_recovery.py` recovers persisted creation records, verifies saved topics before binding, and retains recreation retries or unresolved remote outcomes. Active creation ownership has no age-based expiry.
+4. Explicit recovery/resume UI remains in `handlers/recovery/`; automatic terminal closure deletes the topic instead of showing a recovery banner. New sessions never automatically reuse old topics by name.
 
 Commands menu (`/commands`):
 
