@@ -1097,5 +1097,26 @@ class TestProviderFromPaneTty:
         with patch("ccgram.hook.subprocess.run", return_value=result):
             assert _provider_from_pane_tty("/dev/ttys012") == provider
 
+    def test_unrelated_path_mentioning_another_agent_is_not_the_provider(
+        self,
+    ) -> None:
+        """A provider name buried in a *path* is not a running agent.
+
+        claude-mem's helper carries ``~/.codex/plugins/cache/claude-mem-local``
+        on its command line, so a substring scan of the whole tty process list
+        reports ``codex`` for every Claude pane that has claude-mem loaded.
+        """
+        ps_text = (
+            "-zsh\n"
+            "claude --dangerously-skip-permissions\n"
+            'node -e const h=o.homedir();L(p.join(h,".codex/plugins/cache/'
+            'claude-mem-local/claude-mem"))\n'
+        )
+        result = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=ps_text, stderr=""
+        )
+        with patch("ccgram.hook.subprocess.run", return_value=result):
+            assert _provider_from_pane_tty("/dev/ttys003") == "claude"
+
     def test_empty_tty_returns_none(self) -> None:
         assert _provider_from_pane_tty("") is None
