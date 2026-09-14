@@ -15,6 +15,7 @@ from ccgram.handlers.polling.polling_state import (
 )
 from ccgram.handlers.polling.polling_types import (
     MAX_PROBE_FAILURES,
+    PROBE_SUSPENSION_SECONDS,
     RC_DEBOUNCE_SECONDS,
     STARTUP_TIMEOUT,
     TYPING_INTERVAL,
@@ -230,8 +231,10 @@ class TestTerminalPollState:
     def test_reset_probe_failures(self):
         ws = self.strategy.get_state("@0")
         ws.probe_failures = 5
+        ws.probe_suspended_at = 123.0
         self.strategy.reset_probe_failures("@0")
         assert ws.probe_failures == 0
+        assert ws.probe_suspended_at is None
 
     def test_clear_seen_status(self):
         ws = self.strategy.get_state("@0")
@@ -254,10 +257,14 @@ class TestTerminalPollState:
 
     def test_reset_all_probe_failures(self):
         self.strategy.get_state("@0").probe_failures = 3
+        self.strategy.get_state("@0").probe_suspended_at = 100.0
         self.strategy.get_state("@1").probe_failures = 7
+        self.strategy.get_state("@1").probe_suspended_at = 200.0
         self.strategy.reset_all_probe_failures()
         assert self.strategy.get_state("@0").probe_failures == 0
+        assert self.strategy.get_state("@0").probe_suspended_at is None
         assert self.strategy.get_state("@1").probe_failures == 0
+        assert self.strategy.get_state("@1").probe_suspended_at is None
 
     def test_reset_all_seen_status(self):
         self.strategy.get_state("@0").has_seen_status = True
@@ -384,8 +391,10 @@ class TestTopicLifecycleStrategy:
     def test_clear_probe_failures(self):
         ws = self.poll_state.get_state("@0")
         ws.probe_failures = 5
+        ws.probe_suspended_at = 123.0
         self.strategy.clear_probe_failures("@0")
         assert ws.probe_failures == 0
+        assert ws.probe_suspended_at is None
 
     def test_record_probe_failure_increments(self):
         count = self.strategy.record_probe_failure("@0")
@@ -399,6 +408,54 @@ class TestTopicLifecycleStrategy:
         with patch("ccgram.handlers.polling.polling_state.logger") as mock_logger:
             self.strategy.record_probe_failure("@0")
             mock_logger.info.assert_called_once()
+
+    def test_probe_suspension_expires_at_interval(self):
+        ws = self.poll_state.get_state("@0")
+        with patch(
+            "ccgram.handlers.polling.polling_state.time.monotonic", return_value=100.0
+        ):
+            for _ in range(MAX_PROBE_FAILURES):
+                self.strategy.record_probe_failure("@0")
+
+        assert ws.probe_suspended_at == 100.0
+        with patch(
+            "ccgram.handlers.polling.polling_state.time.monotonic",
+            return_value=100.0 + PROBE_SUSPENSION_SECONDS - 0.1,
+        ):
+            assert self.strategy.should_skip_probe("@0")
+
+        with patch(
+            "ccgram.handlers.polling.polling_state.time.monotonic",
+            return_value=100.0 + PROBE_SUSPENSION_SECONDS,
+        ):
+            assert not self.strategy.should_skip_probe("@0")
+
+        assert ws.probe_failures == 0
+        assert ws.probe_suspended_at is None
+
+    def test_probe_suspension_can_recur_after_expiry(self):
+        ws = self.poll_state.get_state("@0")
+        with patch(
+            "ccgram.handlers.polling.polling_state.time.monotonic", return_value=100.0
+        ):
+            for _ in range(MAX_PROBE_FAILURES):
+                self.strategy.record_probe_failure("@0")
+        with patch(
+            "ccgram.handlers.polling.polling_state.time.monotonic",
+            return_value=100.0 + PROBE_SUSPENSION_SECONDS,
+        ):
+            assert not self.strategy.should_skip_probe("@0")
+        with patch(
+            "ccgram.handlers.polling.polling_state.time.monotonic", return_value=2000.0
+        ):
+            for _ in range(MAX_PROBE_FAILURES):
+                self.strategy.record_probe_failure("@0")
+
+        assert ws.probe_suspended_at == 2000.0
+        with patch(
+            "ccgram.handlers.polling.polling_state.time.monotonic", return_value=2000.0
+        ):
+            assert self.strategy.should_skip_probe("@0")
 
     def test_clear_typing_state(self):
         ts = self.strategy.get_state(1, 42)

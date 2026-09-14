@@ -38,6 +38,9 @@ RC_DEBOUNCE_SECONDS = 3.0
 # Consecutive topic probe failure threshold.
 MAX_PROBE_FAILURES = 3
 
+# Time to suspend topic probing after repeated failures (seconds).
+PROBE_SUSPENSION_SECONDS = 30.0 * 60.0
+
 # Typing indicator throttle interval (seconds).
 TYPING_INTERVAL = 4.0
 
@@ -68,6 +71,7 @@ class WindowPollState:
     startup_quietly_settled: bool = False
     idle_status_announced: bool = False
     probe_failures: int = 0
+    probe_suspended_at: float | None = None
     screen_buffer: ScreenBuffer | None = field(default=None, repr=False)
     pane_count_cache: tuple[int, float] | None = None
     unbound_timer: float | None = None

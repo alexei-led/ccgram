@@ -29,7 +29,11 @@ from ccgram.handlers.polling.polling_state import (
     terminal_poll_state,
     terminal_screen_buffer,
 )
-from ccgram.handlers.polling.polling_types import MAX_PROBE_FAILURES, TickContext
+from ccgram.handlers.polling.polling_types import (
+    MAX_PROBE_FAILURES,
+    PROBE_SUSPENSION_SECONDS,
+    TickContext,
+)
 from ccgram.providers.base import StatusUpdate
 from ccgram.telegram_client import PTBTelegramClient
 from ccgram.telegram_rate_limiter import NO_RETRY_RATE_LIMIT_ARGS
@@ -587,6 +591,55 @@ class TestProbeFailures:
             mock_tr.iter_thread_bindings.return_value = [(1, 42, "@5")]
             await probe_topic_existence(bot)
         bot.unpin_all_forum_topic_messages.assert_not_called()
+
+    async def test_probe_retries_after_suspension_expires(self) -> None:
+        from ccgram.handlers.topics import topic_lifecycle as tl
+
+        ws = terminal_poll_state.get_state("@5")
+        ws.probe_failures = MAX_PROBE_FAILURES
+        ws.probe_suspended_at = 100.0
+        bot = AsyncMock(spec=Bot)
+        with (
+            patch.object(tl, "thread_router") as mock_tr,
+            patch.object(
+                tl.time,
+                "monotonic",
+                return_value=100.0 + PROBE_SUSPENSION_SECONDS - 0.1,
+            ),
+            patch(
+                "ccgram.handlers.polling.polling_state.time.monotonic",
+                return_value=100.0 + PROBE_SUSPENSION_SECONDS - 0.1,
+            ),
+        ):
+            mock_tr.iter_thread_bindings.return_value = [(1, 42, "@5")]
+            mock_tr.resolve_chat_id.return_value = -100
+            await probe_topic_existence(bot)
+
+        bot.unpin_all_forum_topic_messages.assert_not_called()
+
+        with (
+            patch.object(tl, "thread_router") as mock_tr,
+            patch.object(
+                tl.time,
+                "monotonic",
+                return_value=100.0 + PROBE_SUSPENSION_SECONDS,
+            ),
+            patch(
+                "ccgram.handlers.polling.polling_state.time.monotonic",
+                return_value=100.0 + PROBE_SUSPENSION_SECONDS,
+            ),
+        ):
+            mock_tr.iter_thread_bindings.return_value = [(1, 42, "@5")]
+            mock_tr.resolve_chat_id.return_value = -100
+            await probe_topic_existence(bot)
+
+        bot.unpin_all_forum_topic_messages.assert_awaited_once_with(
+            chat_id=-100,
+            message_thread_id=42,
+            rate_limit_args=NO_RETRY_RATE_LIMIT_ARGS,
+        )
+        assert ws.probe_failures == 0
+        assert ws.probe_suspended_at is None
 
     async def test_probe_success_resets_counter(self) -> None:
         terminal_poll_state.get_state("@5").probe_failures = 2

@@ -32,6 +32,7 @@ from ...topic_state_registry import topic_state
 from .polling_types import (
     MAX_PROBE_FAILURES,
     PANE_COUNT_TTL,
+    PROBE_SUSPENSION_SECONDS,
     RC_DEBOUNCE_SECONDS,
     STARTUP_TIMEOUT,
     TYPING_INTERVAL,
@@ -333,6 +334,7 @@ class TerminalPollState:
         ws = self._states.get(window_id)
         if ws:
             ws.probe_failures = 0
+            ws.probe_suspended_at = None
 
     def clear_seen_status(self, window_id: str) -> None:
         """Clear all startup-settlement tracking for a single window."""
@@ -358,6 +360,7 @@ class TerminalPollState:
         """Reset probe failure counters for all windows."""
         for ws in self._states.values():
             ws.probe_failures = 0
+            ws.probe_suspended_at = None
 
     def reset_all_seen_status(self) -> None:
         """Reset all startup-settlement tracking for every window."""
@@ -543,15 +546,27 @@ class TopicLifecycleStrategy:
         return (time.monotonic() - ts.last_typing_sent) < TYPING_INTERVAL
 
     def should_skip_probe(self, window_id: str) -> bool:
-        """Check if a window has exceeded the probe failure threshold."""
+        """Check whether a window is still suspended after probe failures."""
         ws = self._poll_state.get_state(window_id)
-        return ws.probe_failures >= MAX_PROBE_FAILURES
+        if ws.probe_failures < MAX_PROBE_FAILURES:
+            return False
+
+        now = time.monotonic()
+        if ws.probe_suspended_at is None:
+            ws.probe_suspended_at = now
+        if now - ws.probe_suspended_at < PROBE_SUSPENSION_SECONDS:
+            return True
+
+        self._poll_state.reset_probe_failures(window_id)
+        return False
 
     def record_probe_failure(self, window_id: str) -> int:
         """Increment probe failure counter; log once when threshold is reached."""
         ws = self._poll_state.get_state(window_id)
         ws.probe_failures += 1
         count = ws.probe_failures
+        if count >= MAX_PROBE_FAILURES and ws.probe_suspended_at is None:
+            ws.probe_suspended_at = time.monotonic()
         if count == MAX_PROBE_FAILURES:
             logger.info(
                 "Suspending topic probe for %s after %d consecutive failures",
