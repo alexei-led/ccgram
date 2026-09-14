@@ -1,7 +1,7 @@
 """Herdr backend for the Multiplexer contract, via the herdr CLI/socket.
 
-Anti-corruption layer over `herdr <https://github.com/ogulcancelik/herdr>`_'s
-Unix-socket JSON-RPC CLI. Every herdr JSON shape (``pane_info`` / ``pane_list``
+Anti-corruption layer over `herdr <https://github.com/herdrdev/herdr>`_'s
+public Unix-socket JSON API. Every herdr JSON shape (``pane_info`` / ``pane_list``
 / ``pane_process_info`` / ``pane_layout`` / ``tab_created`` …) and every
 ``wN:pN``/``wN:tN`` id string stays **private** to this module; callers see
 only the neutral value types from ``multiplexer.base`` (design "Module map":
@@ -14,12 +14,10 @@ current terminal identity as a short-lived fallback so hooks and reconciliation
 can still agree on a live target. Raw locators are used only after a fresh guard
 authorizes one action; they are never persisted as aliases.
 
-The backend shells out to the ``herdr`` CLI (which the design explicitly allows
-as an alternative to talking the socket directly); the socket path is passed
-through ``$HERDR_SOCKET_PATH``. The command runner is injectable so unit tests
-feed JSON fixtures without a live socket and the constructor stays I/O-free
-(the proxy/registry can build the backend before bootstrap; the socket is only
-touched on the first real call).
+Ordinary operations use the public socket API, independently of the CLI's
+private protocol version. ``HERDR_SOCKET_PATH`` selects the endpoint; when
+unset, ``herdr status --json`` discovers it. The command-shaped runner remains
+injectable for tests, and construction stays I/O-free.
 
 Capabilities (design "MultiplexerCapabilities"): ``ids_stable_across_restart``
 is False (a herdr *server* restart re-mints ids, and nothing re-resolves a
@@ -69,6 +67,8 @@ from .herdr_events import (
     open_socket_stream,
     translate_event,
 )
+from .herdr_commands import command_request
+from .herdr_socket import HerdrSocketError, request as socket_request
 from .topic_mapping import format_agent_topic_prefix
 
 __all__ = [
@@ -90,9 +90,9 @@ __all__ = [
 logger = structlog.get_logger()
 
 # Supported herdr socket protocols (``herdr status`` → ``server.protocol``).
-# 14–20 are supported. Other versions are attempted with a warning so ccgram
-# remains usable across Herdr upgrades and downgrades.
-HERDR_SUPPORTED_PROTOCOLS = frozenset(range(14, 21))
+# Version numbers are diagnostic; operation and identity schemas remain checked
+# even when a future server adds a new private protocol version.
+HERDR_SUPPORTED_PROTOCOLS = frozenset(range(14, 23))
 HERDR_PROTOCOL_VERSION = max(HERDR_SUPPORTED_PROTOCOLS)
 
 # Static capability declaration for the herdr backend (design Task 7).
@@ -407,7 +407,7 @@ class HerdrManager:
 
         Args:
             socket_path: herdr socket; defaults to ``$HERDR_SOCKET_PATH``.
-            binary: the ``herdr`` executable name/path.
+            binary: CLI used only to discover the socket when none is configured.
             runner: async ``(args) -> (rc, stdout, stderr)`` override for tests.
             stream_opener: event-stream opener override for tests; defaults to
                 the live unix-socket reader (``open_socket_stream``).
@@ -418,19 +418,71 @@ class HerdrManager:
         # subprocess.Popen._execute_child). Bare names force fork_exec, which
         # triggers macOS ``MallocStackLogging`` spam from long-lived parents.
         self._binary = shutil.which(binary) or binary
-        self._run: HerdrRunner = runner or self._subprocess_run
+        self._run: HerdrRunner = runner or self._socket_run
         self._open_stream: HerdrStreamOpener = stream_opener or self._default_stream
 
-    def _default_stream(
+    async def _default_stream(
         self, subscriptions: Sequence[Mapping[str, object]]
     ) -> AsyncGenerator[dict, None]:
-        """Open the live herdr socket and subscribe (default stream opener)."""
-        return open_socket_stream(self._socket_path, subscriptions)
+        """Subscribe on the same resolved socket used by ordinary requests."""
+        socket_path = await self._resolve_socket_path()
+        async for event in open_socket_stream(socket_path, subscriptions):
+            yield event
 
-    # ── CLI plumbing (private) ─────────────────────────────────────────
+    async def _resolve_socket_path(self) -> str:
+        if self._socket_path:
+            return self._socket_path
+        rc, out, _err = await self._subprocess_run(["status", "--json"])
+        if rc == 0:
+            try:
+                status = json.loads(out)
+            except ValueError:
+                status = None
+            server = status.get("server") if isinstance(status, dict) else None
+            path = server.get("socket") if isinstance(server, dict) else None
+            if isinstance(path, str) and path:
+                self._socket_path = path
+                return path
+        raise HerdrError(
+            "Cannot discover the Herdr socket; set HERDR_SOCKET_PATH to the running server"
+        )
+
+    async def _socket_run(self, args: Sequence[str]) -> tuple[int, str, str]:
+        """Adapt internal command arguments without executing the CLI."""
+        try:
+            method, params = command_request(args)
+            path = await self._resolve_socket_path()
+            payload = await socket_request(
+                path, method, params, timeout=_CALL_TIMEOUT_SECONDS
+            )
+            result = payload["result"]
+            if args[0] == "status":
+                if result.get("type") != "pong":
+                    raise HerdrSocketError("herdr ping returned no pong")
+                status = {
+                    "server": {
+                        "running": True,
+                        "version": result.get("version"),
+                        "protocol": result.get("protocol"),
+                        "capabilities": result.get("capabilities", {}),
+                        "socket": path,
+                    }
+                }
+                return 0, json.dumps(status), ""
+            if tuple(args[:2]) == ("pane", "read"):
+                read = result.get("read")
+                text = read.get("text") if isinstance(read, dict) else None
+                if not isinstance(text, str):
+                    raise HerdrSocketError("herdr pane.read returned no text")
+                return 0, text, ""
+            return 0, json.dumps(payload), ""
+        except (HerdrSocketError, HerdrError, ValueError) as exc:
+            return 1, "", str(exc)
+
+    # ── Command runner compatibility seam (private) ────────────────────
 
     async def _subprocess_run(self, args: Sequence[str]) -> tuple[int, str, str]:
-        """Default runner: exec ``herdr <args>`` with the socket env, time-boxed."""
+        """Run the CLI for socket discovery only, with a bounded wait."""
         env = dict(os.environ)
         if self._socket_path:
             env["HERDR_SOCKET_PATH"] = self._socket_path
@@ -526,9 +578,9 @@ class HerdrManager:
         """Verify Herdr is reachable; warn but do not gate on compatibility.
 
         ``HERDR_SUPPORTED_PROTOCOLS`` are accepted without a warning. Other
-        protocol versions and a false CLI compatibility flag are best-effort:
-        ccgram logs a warning and continues so CLI-backed operations can try
-        the current command surface after a Herdr change. Individual commands
+        protocol versions and an injected runner's false compatibility flag are
+        best-effort: the public API is independent of the CLI's private wire
+        protocol. Individual commands
         still report their own transport or schema failures.
 
         Raises:
@@ -1606,7 +1658,7 @@ class HerdrManager:
                         if pending_event is not None:
                             pending_event.cancel()
                             await asyncio.gather(pending_event, return_exceptions=True)
-            except OSError as exc:
+            except (OSError, HerdrError) as exc:
                 logger.debug("herdr event stream error: %s", exc)
             if refresh_subscriptions:
                 # A mapping change is a healthy re-subscription, not a transport

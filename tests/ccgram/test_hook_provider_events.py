@@ -18,11 +18,28 @@ from ccgram.hook import (
 from ccgram.hooks.adapters import detect_provider_from_payload, get_hook_adapter
 from ccgram.hooks.state_files import pending_pi_replay_key
 from ccgram.multiplexer.herdr import HerdrManager
+from ccgram.multiplexer.herdr_socket import HerdrSocketError
 
 
 def _tmux_result() -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(
         args=[], returncode=0, stdout="ccgram\t@0\tproject\n", stderr=""
+    )
+
+
+def _herdr_agent_list_response(records: list[dict[str, object]]) -> dict[str, object]:
+    return {
+        "id": "hook-test-request",
+        "result": {"agents": records, "future_result_field": True},
+        "future_envelope_field": {"accepted": True},
+    }
+
+
+def _patch_herdr_agent_list(monkeypatch, records: list[dict[str, object]]):
+    monkeypatch.setenv("HERDR_SOCKET_PATH", "/tmp/herdr-hook-test.sock")
+    return patch(
+        "ccgram.hook.herdr_socket.request_sync",
+        return_value=_herdr_agent_list_response(records),
     )
 
 
@@ -46,6 +63,12 @@ def _write_session_map(state_dir: Path, entry: dict[str, str]) -> Path:
 
 def _run_hook(monkeypatch, payload: dict[str, object], provider_name: str) -> None:
     monkeypatch.setenv("TMUX_PANE", "%0")
+    for variable in (
+        "HERDR_SOCKET_PATH",
+        "HERDR_WORKSPACE_ID",
+        "HERDR_PANE_ID",
+    ):
+        monkeypatch.delenv(variable, raising=False)
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
     with patch("ccgram.hook.subprocess.run", return_value=_tmux_result()):
         hook_main(provider_name=provider_name)
@@ -107,14 +130,7 @@ def test_herdr_nested_claude_hook_does_not_overwrite_live_pi_session(
             )
         ),
     )
-    agent_list = subprocess.CompletedProcess(
-        args=[],
-        returncode=0,
-        stdout=json.dumps({"result": {"agents": [live_record]}}),
-        stderr="",
-    )
-
-    with patch("ccgram.hook.subprocess.run", return_value=agent_list):
+    with _patch_herdr_agent_list(monkeypatch, [live_record]):
         hook_main(provider_name="claude")
 
     assert session_map_path.read_text() == original
@@ -175,14 +191,7 @@ def test_herdr_nested_pi_hook_does_not_overwrite_live_claude_session(
             )
         ),
     )
-    agent_list = subprocess.CompletedProcess(
-        args=[],
-        returncode=0,
-        stdout=json.dumps({"result": {"agents": [live_record]}}),
-        stderr="",
-    )
-
-    with patch("ccgram.hook.subprocess.run", return_value=agent_list) as agent_list_run:
+    with _patch_herdr_agent_list(monkeypatch, [live_record]) as agent_list_run:
         hook_main(provider_name="pi")
 
     agent_list_run.assert_called_once()
@@ -224,12 +233,6 @@ def test_herdr_pi_hook_without_provider_metadata_uses_live_agent(
             "value": str(transcript),
         },
     }
-    agent_list = subprocess.CompletedProcess(
-        args=[],
-        returncode=0,
-        stdout=json.dumps({"result": {"agents": [live_record]}}),
-        stderr="",
-    )
     monkeypatch.setattr(
         sys,
         "stdin",
@@ -245,7 +248,7 @@ def test_herdr_pi_hook_without_provider_metadata_uses_live_agent(
         ),
     )
 
-    with patch("ccgram.hook.subprocess.run", return_value=agent_list) as agent_list_run:
+    with _patch_herdr_agent_list(monkeypatch, [live_record]) as agent_list_run:
         hook_main()
 
     agent_list_run.assert_called_once()
@@ -293,12 +296,6 @@ def test_herdr_pi_hook_quarantines_duplicate_canonical_targets(
         }
         for pane_id, terminal_id in (("w2:p1", "term-1"), ("w2:p2", "term-2"))
     ]
-    agent_list = subprocess.CompletedProcess(
-        args=[],
-        returncode=0,
-        stdout=json.dumps({"result": {"agents": records}}),
-        stderr="",
-    )
     monkeypatch.setattr(
         sys,
         "stdin",
@@ -313,7 +310,7 @@ def test_herdr_pi_hook_quarantines_duplicate_canonical_targets(
         ),
     )
 
-    with patch("ccgram.hook.subprocess.run", return_value=agent_list) as agent_list_run:
+    with _patch_herdr_agent_list(monkeypatch, records) as agent_list_run:
         hook_main()
 
     agent_list_run.assert_called_once()
@@ -351,12 +348,6 @@ def test_herdr_pi_hook_defers_stale_live_session_identity(
             "value": str(stale_transcript),
         },
     }
-    agent_list = subprocess.CompletedProcess(
-        args=[],
-        returncode=0,
-        stdout=json.dumps({"result": {"agents": [live_record]}}),
-        stderr="",
-    )
     monkeypatch.setattr(
         sys,
         "stdin",
@@ -372,7 +363,7 @@ def test_herdr_pi_hook_defers_stale_live_session_identity(
         ),
     )
 
-    with patch("ccgram.hook.subprocess.run", return_value=agent_list):
+    with _patch_herdr_agent_list(monkeypatch, [live_record]):
         hook_main()
 
     deferred = json.loads((state_dir / "session_map.json").read_text())
@@ -392,12 +383,6 @@ def test_herdr_pi_hook_defers_stale_live_session_identity(
             "value": str(matching_transcript),
         },
     }
-    matching_agent_list = subprocess.CompletedProcess(
-        args=[],
-        returncode=0,
-        stdout=json.dumps({"result": {"agents": [matching_record]}}),
-        stderr="",
-    )
     monkeypatch.setattr(
         sys,
         "stdin",
@@ -413,9 +398,7 @@ def test_herdr_pi_hook_defers_stale_live_session_identity(
         ),
     )
 
-    with patch(
-        "ccgram.hook.subprocess.run", return_value=matching_agent_list
-    ) as agent_list_run:
+    with _patch_herdr_agent_list(monkeypatch, [matching_record]) as agent_list_run:
         hook_main()
 
     agent_list_run.assert_called_once()
@@ -425,6 +408,107 @@ def test_herdr_pi_hook_defers_stale_live_session_identity(
     assert recovered["session_id"] == _PI_SESSION_ID
     assert recovered["transcript_path"] == str(matching_transcript)
     assert recovered["replay_from_start"] is True
+
+
+def test_herdr_hook_known_socket_avoids_cli_for_identity_reads(
+    tmp_path: Path, monkeypatch
+) -> None:
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("CCGRAM_DIR", str(state_dir))
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    monkeypatch.setenv("HERDR_WORKSPACE_ID", "w2")
+    monkeypatch.setenv("HERDR_PANE_ID", "w2:p1")
+    record = {
+        "agent": "pi",
+        "workspace_id": "w2",
+        "pane_id": "w2:p1",
+        "tab_id": "w2:t1",
+        "terminal_id": "term-1",
+        "agent_session": {
+            "source": "herdr:pi",
+            "agent": "pi",
+            "kind": "path",
+            "value": str(tmp_path / "session.jsonl"),
+        },
+    }
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.StringIO(
+            json.dumps(
+                {
+                    "session_id": _PI_SESSION_ID,
+                    "cwd": str(tmp_path / "proj"),
+                    "hook_event_name": "SessionStart",
+                }
+            )
+        ),
+    )
+
+    def fail_cli(*_args, **_kwargs):
+        raise AssertionError("Herdr CLI must not run when socket path is known")
+
+    monkeypatch.setattr("ccgram.hook.subprocess.run", fail_cli)
+    with _patch_herdr_agent_list(monkeypatch, [record]) as request:
+        hook_main(provider_name="pi")
+
+    request.assert_called_once_with(
+        "/tmp/herdr-hook-test.sock",
+        "agent.list",
+        {},
+        timeout=5.0,
+    )
+    assert (state_dir / "session_map.json").exists()
+
+
+def test_herdr_agent_list_method_failure_defers_pi_binding(
+    tmp_path: Path, monkeypatch
+) -> None:
+    state_dir = tmp_path / "state"
+    existing = _write_session_map(
+        state_dir,
+        {
+            "session_id": _PI_SESSION_ID,
+            "cwd": str(tmp_path / "proj"),
+            "window_name": "project",
+            "transcript_path": "",
+            "provider_name": "pi",
+        },
+    )
+    monkeypatch.setenv("CCGRAM_DIR", str(state_dir))
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    monkeypatch.setenv("HERDR_WORKSPACE_ID", "w2")
+    monkeypatch.setenv("HERDR_PANE_ID", "w2:p1")
+    monkeypatch.setenv("HERDR_SOCKET_PATH", "/tmp/herdr-hook-test.sock")
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.StringIO(
+            json.dumps(
+                {
+                    "session_id": _PI_SESSION_ID,
+                    "cwd": str(tmp_path / "proj"),
+                    "hook_event_name": "SessionStart",
+                }
+            )
+        ),
+    )
+
+    def fail_cli(*_args, **_kwargs):
+        raise AssertionError("agent.list failure must not retry through the CLI")
+
+    monkeypatch.setattr("ccgram.hook.subprocess.run", fail_cli)
+    with patch(
+        "ccgram.hook.herdr_socket.request_sync",
+        side_effect=HerdrSocketError("unsupported method"),
+    ):
+        hook_main(provider_name="pi")
+
+    session_map = json.loads(existing.read_text())
+    assert "ccgram:@0" in session_map
+    pending = pending_pi_replay_key(_PI_SESSION_ID)
+    assert session_map[pending]["replay_from_start"] is True
+    assert not (state_dir / "events.jsonl").exists()
 
 
 def test_pi_transcript_resolution_does_not_select_another_session(
