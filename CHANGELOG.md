@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.11.1] - 2026-09-14
+
+### Changed
+
+- Update runtime, optional, development, and build dependencies to the latest stable releases, including python-telegram-bot 22.8, aiohttp 3.14.3, libtmux 0.62.0, and Pillow 12.3.0.
+- Refresh the dependency lockfile and exclude prereleases from uv resolution.
+- Clarify 4.11 upgrade steps, hook executable updates, topic recovery and deletion, and Herdr/agterm session identity in the documentation.
+
 ## [4.11.0] - 2026-09-14
 
 ### Added

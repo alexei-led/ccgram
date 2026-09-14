@@ -120,7 +120,7 @@ Open the configured group or private bot chat. Create a topic and send a message
 
 ### Herdr setup
 
-CCGram supports Herdr protocols **14–22** and uses the public socket API for operations, so a newer CLI can coexist with an older running server. Set `HERDR_SOCKET_PATH` for an explicit endpoint; otherwise `herdr status --json` discovers it. Future protocol numbers are attempted with a warning, extra response fields are tolerated, and required session identities remain strictly validated. Telegram rate limiting uses a protected PTB adapter seam and is therefore tested against and constrained to `python-telegram-bot>=22.6,<22.7`. Install Herdr's integration before launching an agent that needs a native session identity:
+CCGram supports Herdr protocols **14–22** and uses the public socket API for operations, so a newer CLI can coexist with an older running server. Set `HERDR_SOCKET_PATH` for an explicit endpoint; otherwise `herdr status --json` discovers it. Future protocol numbers are attempted with a warning, extra response fields are tolerated, and required session identities remain strictly validated. Telegram rate limiting uses a protected PTB adapter seam and is therefore tested against and constrained to `python-telegram-bot>=22.8,<22.9`. Install Herdr's integration before launching an agent that needs a native session identity:
 
 ```bash
 herdr integration install pi

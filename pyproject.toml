@@ -19,18 +19,18 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "python-telegram-bot[socks,rate-limiter]>=22.6,<22.7",
-    "python-dotenv>=1.0.0",
-    "httpx>=0.27.0",
-    "libtmux>=0.50.0",
-    "Pillow>=10.0.0",
-    "telegramify-markdown>=1.0.0",
-    "aiofiles>=24.0.0",
-    "structlog>=24.0.0",
-    "click>=8.1.0",
+    "python-telegram-bot[socks,rate-limiter]>=22.8,<22.9",
+    "python-dotenv>=1.2.3",
+    "httpx>=0.28.1",
+    "libtmux>=0.62.0,<0.63",
+    "Pillow>=12.3.0",
+    "telegramify-markdown>=1.2.0",
+    "aiofiles>=25.1.0",
+    "structlog>=26.1.0",
+    "click>=8.5.0",
     "pyte>=0.8.2",
-    "pathspec>=0.12",
-    "aiohttp>=3.10",
+    "pathspec>=1.1.1",
+    "aiohttp>=3.14.3",
 ]
 
 [project.urls]
@@ -47,18 +47,18 @@ tts = [
     "edge-tts>=7.2.8",
 ]
 dev = [
-    "deptry>=0.23.0",
-    "pyright>=1.1.0",
-    "pytest>=8.0",
-    "pytest-asyncio>=0.24.0",
-    "pytest-cov>=6.0",
-    "pytest-timeout>=2.3",
-    "ruff>=0.8.0",
-    "hypothesis>=6.0",
+    "deptry>=0.25.1",
+    "pyright>=1.1.414",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "pytest-cov>=7.1.0",
+    "pytest-timeout>=2.4.0",
+    "ruff>=0.16.7",
+    "hypothesis>=6.168.0",
 ]
 
 [build-system]
-requires = ["hatchling", "hatch-vcs"]
+requires = ["hatchling>=1.32.0", "hatch-vcs>=0.5.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.version]
@@ -72,6 +72,9 @@ version-file = "src/ccgram/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ccgram"]
+
+[tool.uv]
+prerelease = "disallow"
 
 [tool.ruff]
 target-version = "py314"
