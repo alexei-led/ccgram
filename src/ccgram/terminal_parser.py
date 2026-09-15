@@ -187,7 +187,22 @@ def _try_extract(lines: list[str], pattern: UIPattern) -> InteractiveUIContent |
     top_idx: int | None = None
     bottom_idx: int | None = None
 
-    for i, line in enumerate(lines):
+    # Codex uses the same cursor glyph for old chat prompts and the active
+    # selected option. Anchor on the final cursor, not transcript history.
+    start = (
+        max(
+            (
+                i
+                for i, line in enumerate(lines)
+                if any(p.search(line) for p in pattern.top)
+            ),
+            default=0,
+        )
+        if pattern.name == "SelectionUI"
+        else 0
+    )
+    for i in range(start, len(lines)):
+        line = lines[i]
         if top_idx is None:
             if any(p.search(line) for p in pattern.top):
                 top_idx = i
