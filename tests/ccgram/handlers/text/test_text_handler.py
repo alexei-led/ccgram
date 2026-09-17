@@ -476,7 +476,6 @@ class TestForwardMessage:
         dummy_task.cancel.assert_called_once()
         assert (100, 42) not in _bash_capture_tasks
 
-    @patch(f"{_TH}.handle_interactive_ui", new_callable=AsyncMock)
     @patch(f"{_TH}.get_interactive_window", return_value="@0")
     @patch(
         f"{_TH}.send_telegram_to_window",
@@ -484,21 +483,53 @@ class TestForwardMessage:
         return_value=(True, "ok"),
     )
     @patch(f"{_TH}.window_query")
-    async def test_refreshes_interactive_ui(
+    async def test_sends_escape_and_clears_interactive_mode(
         self,
         mock_sm: MagicMock,
         _mock_send: AsyncMock,
         _mock_get_iw: MagicMock,
-        mock_handle_ui: AsyncMock,
+        monkeypatch,
     ) -> None:
+        """Interactive mode: text triggers Escape (dismiss the modal)
+        then clears interactive mode, NOT a UI refresh."""
+        from types import SimpleNamespace
+
         bot = AsyncMock()
         message = AsyncMock()
+        message.chat.id = -100
+
+        sent_keys = []
+
+        async def fake_send_keys(wid, key, **kw):
+            sent_keys.append((wid, key))
+            return True
+
+        import ccgram.multiplexer as _mux_mod
+
+        monkeypatch.setattr(
+            _mux_mod,
+            "multiplexer",
+            SimpleNamespace(send_keys=fake_send_keys),
+        )
+
+        cleared = []
+        import ccgram.handlers.interactive as _int_mod
+
+        monkeypatch.setattr(
+            _int_mod,
+            "clear_interactive_mode",
+            lambda *a, **kw: cleared.append(a),
+        )
 
         await _forward_message("@0", 100, 42, "hello", bot, message)
 
-        mock_handle_ui.assert_called_once()
-        assert mock_handle_ui.call_args.args[0] is bot
-        assert mock_handle_ui.call_args.args[1:] == (100, "@0", 42)
+        # Escape was sent to dismiss the modal
+        assert any(k == "Escape" for _, k in sent_keys)
+        # Interactive mode was cleared (not refreshed)
+        assert cleared, "clear_interactive_mode should have been called"
+        # The text never reached the pane: no modal can treat it as an
+        # answer and no stale mode can hand it to the agent
+        assert _mock_send.await_count == 0, "text must not be forwarded"
 
     @patch(
         f"{_TH}.send_telegram_to_window",

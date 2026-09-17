@@ -596,6 +596,7 @@ async def _update_status(
         if status is not None and status.is_interactive:
             return
         await clear_interactive_msg(user_id, client, thread_id)
+        clear_interactive_mode(user_id, thread_id)
         should_check_new_ui = False
     elif interactive_window is not None:
         await clear_interactive_msg(user_id, client, thread_id)

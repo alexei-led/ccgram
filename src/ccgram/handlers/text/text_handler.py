@@ -40,7 +40,7 @@ from ..topics.worktree import (
     validate_branch_name,
     worktree_path_for,
 )
-from ..interactive import get_interactive_window, handle_interactive_ui
+from ..interactive import get_interactive_window
 from ..messaging_pipeline.message_queue import enqueue_status_update
 from ..live.pane_callbacks import apply_pane_rename
 from ..messaging_pipeline.message_sender import (
@@ -491,6 +491,36 @@ async def _forward_message(
 
     lifecycle_strategy.clear_probe_failures(window_id)
 
+    # If in interactive mode, the terminal likely has a modal prompt
+    # (AskUserQuestion / ExitPlanMode) that swallows plain text. Dismiss
+    # it with Escape and STOP: the text must never reach the pane, where
+    # a live modal would treat it as an answer and a stale one would
+    # hand it to the agent as a command, derailing the conversation.
+    # The user types again once the prompt is gone. This check runs
+    # BEFORE send_telegram_to_window on purpose.
+    interactive_window = get_interactive_window(
+        user_id, thread_id, chat_id=message.chat.id
+    )
+    if interactive_window and interactive_window == window_id:
+        try:
+            # Lazy: text_handler ↔ polling cycle
+            from ...multiplexer import multiplexer as _mux
+
+            await _mux.send_keys(window_id, "Escape", literal=True)
+            await asyncio.sleep(0.3)
+        except Exception:  # noqa: BLE001  # never block on Esc failure
+            pass
+        # Lazy: interactive imports pull PTB types
+        from ..interactive import clear_interactive_mode
+
+        clear_interactive_mode(user_id, thread_id, chat_id=message.chat.id)
+        await safe_reply(
+            message,
+            "⚡ Interactive prompt dismissed (Escape sent). Your text was "
+            "not forwarded. Type again to message the agent.",
+        )
+        return
+
     success, err_message = await send_telegram_to_window(
         user_id, window_id, thread_id, text, message.chat.id
     )
@@ -513,16 +543,6 @@ async def _forward_message(
         )
         task.add_done_callback(task_done_callback)
         _bash_capture_tasks[(user_id, thread_id)] = task
-
-    # If in interactive mode, refresh the UI after sending text
-    interactive_window = get_interactive_window(
-        user_id, thread_id, chat_id=message.chat.id
-    )
-    if interactive_window and interactive_window == window_id:
-        await asyncio.sleep(0.2)
-        await handle_interactive_ui(
-            client, user_id, window_id, thread_id, chat_id=message.chat.id
-        )
 
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
