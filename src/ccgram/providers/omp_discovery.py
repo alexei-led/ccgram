@@ -111,6 +111,10 @@ def _omp_roots(base_dir: str) -> DiscoveryRoots:
         extensions=tuple(extensions),
         hooks=tuple(hooks),
         commands=tuple(commands),
+        # omp registers every skill as a ``/skill:<name>`` command (the
+        # ``skills.enableSkillCommands`` surface), so the name ccgram offers
+        # must carry that prefix to be recognised.
+        skill_prefix="skill",
     )
 
 

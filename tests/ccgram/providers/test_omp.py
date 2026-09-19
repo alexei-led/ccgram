@@ -397,8 +397,11 @@ class TestDiscoverCommands:
 
         assert {"/new", "/clear", "/delete", "/followup"} <= set(by_name)
         assert "/resume" not in by_name
-        assert by_name["brave-search"].source == "skill"
-        assert by_name["brave-search"].description == "Search the web"
+        # omp registers skill commands as ``/skill:<name>``, so the advertised
+        # name carries the prefix the CLI actually accepts.
+        assert by_name["skill:brave-search"].source == "skill"
+        assert by_name["skill:brave-search"].description == "Search the web"
+        assert "brave-search" not in by_name
         assert by_name["review"].source == "command"
         assert by_name["review"].description == "<PR> — Review staged changes"
         assert by_name["deploy"].source == "command"
@@ -434,7 +437,9 @@ class TestDiscoverCommands:
     ) -> None:
         home = tmp_path / "home"
         agent = home / ".omp" / "agent"
-        # alpha: skill + prompt + extension — the skill must win.
+        # ``alpha`` exists as a skill, a prompt, and an extension command. The
+        # skill is namespaced (``skill:alpha``), so it no longer competes for
+        # the bare name the other two share: the prompt must win that one.
         (agent / "skills" / "alpha").mkdir(parents=True)
         (agent / "skills" / "alpha" / "SKILL.md").write_text(
             "---\nname: alpha\ndescription: Skill alpha\n---\n"
@@ -459,8 +464,9 @@ class TestDiscoverCommands:
         by_name = {c.name: c for c in cmds}
 
         assert [c.name for c in cmds].count("alpha") == 1
-        assert by_name["alpha"].source == "skill"
-        assert by_name["alpha"].description == "Skill alpha"
+        assert by_name["alpha"].source == "command"
+        assert by_name["alpha"].description == "Prompt alpha"
+        assert by_name["skill:alpha"].source == "skill"
         assert [c.name for c in cmds].count("beta") == 1
         assert by_name["beta"].source == "command"
         assert by_name["beta"].description == "Prompt beta"

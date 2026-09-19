@@ -30,6 +30,10 @@ class DiscoveryRoots:
     extensions: tuple[Path, ...]
     hooks: tuple[Path, ...] = ()
     commands: tuple[Path, ...] = ()
+    # Namespace the agent requires ahead of a skill name. omp registers skill
+    # commands as ``/skill:<name>``, so ccgram must offer that exact name; pi's
+    # skill commands are bare, so its prefix stays empty.
+    skill_prefix: str = ""
 
 
 def ancestor_dirs(base_dir: str) -> list[Path]:
@@ -82,22 +86,32 @@ def _command_description(path: Path, *, fallback: str) -> str:
     return body or fallback
 
 
-def _skill_command(path: Path) -> DiscoveredCommand | None:
+def _qualified(name: str, prefix: str) -> str:
+    """Qualify *name* with the agent's namespace, when it has one.
+
+    A name ccgram offers must be the name the agent accepts: forwarding is
+    verbatim, so an unqualified skill command is never recognised by an agent
+    that registers ``/skill:<name>``.
+    """
+    return f"{prefix}:{name}" if prefix else name
+
+
+def _skill_command(path: Path, *, prefix: str = "") -> DiscoveredCommand | None:
     if path.name == "SKILL.md":
         skill_dir = path.parent
-        name = parse_frontmatter(path).get("name", skill_dir.name)
+        name = _qualified(parse_frontmatter(path).get("name", skill_dir.name), prefix)
         description = _command_description(path, fallback=f"/{name}")
         return DiscoveredCommand(name=name, description=description, source="skill")
 
     if path.suffix.lower() != ".md" or path.name.startswith("."):
         return None
 
-    name = parse_frontmatter(path).get("name", path.stem)
+    name = _qualified(parse_frontmatter(path).get("name", path.stem), prefix)
     description = _command_description(path, fallback=f"/{name}")
     return DiscoveredCommand(name=name, description=description, source="skill")
 
 
-def _scan_skill_root(root: Path) -> list[DiscoveredCommand]:
+def _scan_skill_root(root: Path, *, prefix: str = "") -> list[DiscoveredCommand]:
     """Scan a single skill root directory for commands."""
     if not root.is_dir():
         return []
@@ -117,7 +131,7 @@ def _scan_skill_root(root: Path) -> list[DiscoveredCommand]:
         if entry.name.startswith("."):
             continue
         if entry.is_file() and allow_root_markdown and entry.suffix.lower() == ".md":
-            cmd = _skill_command(entry)
+            cmd = _skill_command(entry, prefix=prefix)
             if cmd:
                 found.append(cmd)
             continue
@@ -125,7 +139,7 @@ def _scan_skill_root(root: Path) -> list[DiscoveredCommand]:
             continue
         skill_md = entry / "SKILL.md"
         if skill_md.is_file():
-            cmd = _skill_command(skill_md)
+            cmd = _skill_command(skill_md, prefix=prefix)
             if cmd:
                 found.append(cmd)
     return found
@@ -235,7 +249,7 @@ def discover_commands(
         for name, desc in builtins.items()
     ]
     for root in roots.skills:
-        commands.extend(_scan_skill_root(root))
+        commands.extend(_scan_skill_root(root, prefix=roots.skill_prefix))
     commands.extend(_discover_prompt_templates(roots.prompts))
     commands.extend(_discover_prompt_templates(roots.commands))
     commands.extend(_discover_script_commands(roots.extensions))
