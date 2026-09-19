@@ -719,6 +719,40 @@ class TestDiscoverCommands:
         assert "skip" not in names
         assert "noop" not in names
 
+    def test_ignores_hidden_extension_directories(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Hidden trees are never scanned, at any depth.
+
+        Both agents discover extension modules with ``hidden: false``, so a
+        ``.disabled/`` or ``.cache/`` tree must not leak commands into the
+        Telegram menu.
+        """
+        home = tmp_path / "home"
+        ext_dir = home / ".pi" / "agent" / "extensions"
+        (ext_dir / ".disabled").mkdir(parents=True)
+        (ext_dir / ".disabled" / "ghost.ts").write_text(
+            'export default function (pi) { pi.registerCommand("ghost", '
+            "{ handler: async () => {} }); }\n"
+        )
+        (ext_dir / "pkg" / ".cache").mkdir(parents=True)
+        (ext_dir / "pkg" / ".cache" / "stale.ts").write_text(
+            'export default function (pi) { pi.registerCommand("stale", '
+            "{ handler: async () => {} }); }\n"
+        )
+        (ext_dir / "pkg" / "real.ts").write_text(
+            'export default function (pi) { pi.registerCommand("real", '
+            "{ handler: async () => {} }); }\n"
+        )
+        monkeypatch.setattr(Path, "home", lambda: home)
+
+        names = {
+            cmd.name for cmd in PiProvider().discover_commands(str(tmp_path / "proj"))
+        }
+        assert "real" in names
+        assert "ghost" not in names
+        assert "stale" not in names
+
 
 class TestIntegrationWithCandidateTranscripts:
     def test_sorts_newest_first(

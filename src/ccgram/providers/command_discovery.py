@@ -169,6 +169,9 @@ def _extension_candidates(entry: Path) -> list[Path]:
 
     ``os.walk`` is used instead of ``rglob`` so skip dirs are pruned before
     descent — avoids walking ``node_modules``, ``dist``, etc. on large trees.
+    Hidden directories are pruned too: every agent's own discovery ignores
+    hidden paths (`hidden: false`), so a ``.disabled`` or ``.cache`` tree must
+    not surface commands in the Telegram menu.
     """
     if entry.is_file() and entry.suffix.lower() in _EXTENSION_SUFFIXES:
         return [entry]
@@ -177,7 +180,11 @@ def _extension_candidates(entry: Path) -> list[Path]:
     candidates: list[Path] = []
     try:
         for dirpath, dirnames, filenames in os.walk(entry):
-            dirnames[:] = [d for d in dirnames if d not in _EXTENSION_SKIP_DIRS]
+            dirnames[:] = [
+                name
+                for name in dirnames
+                if name not in _EXTENSION_SKIP_DIRS and not name.startswith(".")
+            ]
             dir_path = Path(dirpath)
             for name in filenames:
                 if name.startswith("."):
