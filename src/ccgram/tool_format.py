@@ -1,9 +1,9 @@
 """Shared tool-call formatting — unified emoji map and compact line renderer.
 
 Provides a single source of truth for tool-call display across all providers
-(Claude, Pi, Codex, Gemini).  Every provider should build its tool-use summary
-by calling ``format_tool_line``; direct emoji/bold/backtick assembly in
-individual providers is replaced by this module.
+(Claude, Pi, Oh My Pi, Codex, Gemini).  Every provider should build its
+tool-use summary by calling ``format_tool_line``; direct emoji/bold/backtick
+assembly in individual providers is replaced by this module.
 """
 
 from __future__ import annotations

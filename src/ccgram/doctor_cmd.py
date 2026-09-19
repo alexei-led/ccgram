@@ -264,6 +264,12 @@ def _check_hooks(provider_name: str = "claude") -> tuple[str, str, dict[str, boo
     """
     if provider_name == "pi":
         return _PASS, "Pi hooks are managed by hook-runner extension", {}
+    if provider_name == "omp":
+        return (
+            _PASS,
+            "Oh My Pi needs no ccgram hook; session tracking uses transcript discovery",
+            {},
+        )
 
     resolved = _resolve_hook_check_config(provider_name)
     if resolved is None:

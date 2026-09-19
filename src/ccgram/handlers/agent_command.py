@@ -51,6 +51,7 @@ _PROVIDERS: tuple[tuple[str, str], ...] = (
     ("claude", "Claude"),
     ("codex", "Codex"),
     ("gemini", "Gemini"),
+    ("omp", "Oh My Pi"),
     ("pi", "Pi"),
     ("shell", "Shell"),
 )
