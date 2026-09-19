@@ -63,8 +63,15 @@ async def send_to_window(
         return False, f"Timed out sending keys to {display}"
 
 
-async def send_followup_to_window(window_id: str, text: str) -> tuple[bool, str]:
-    """Send text to a Pi window as an Alt+Enter follow-up message."""
+async def send_followup_to_window(
+    window_id: str, text: str, *, followup_key: str
+) -> tuple[bool, str]:
+    """Send text to a window as a follow-up message, then press ``followup_key``.
+
+    ``followup_key`` is the provider's follow-up keybinding (pi: ``M-Enter``,
+    omp: ``C-q``), supplied by the caller from the provider capabilities — this
+    helper stays provider-agnostic.
+    """
     display = thread_router.get_display_name(window_id)
     logger.debug(
         "send_followup_to_window: window_id=%s (%s), text_len=%d",
@@ -81,7 +88,7 @@ async def send_followup_to_window(window_id: str, text: str) -> tuple[bool, str]
         return False, "Failed to send follow-up text"
     await asyncio.sleep(0.5)
     if await multiplexer.send_keys(
-        window.window_id, "M-Enter", enter=False, literal=False
+        window.window_id, followup_key, enter=False, literal=False
     ):
         return True, f"Follow-up queued for {display}"
     return False, "Failed to send follow-up key"

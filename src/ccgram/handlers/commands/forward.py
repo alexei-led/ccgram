@@ -12,7 +12,9 @@ Pipeline:
   4. send via tmux — any /<token> is forwarded as-is; unknown commands
      are surfaced reactively by the failure probe, not pre-rejected
   5. spawn the failure probe + status snapshot fallbacks
-  6. handle /clear post-send cleanup (clear session, reset polling)
+  6. handle provider session-reset post-send cleanup (clear session, reset
+     polling) — see ``_SESSION_RESET_COMMANDS`` for which commands count
+     per provider
 """
 
 from __future__ import annotations
@@ -62,9 +64,17 @@ logger = structlog.get_logger()
 
 
 _NAV_KEYS = ("up", "down", "enter", "esc")
-_PI_CLEAR_ALIAS_COMMAND = "clear"
-_PI_FOLLOWUP_COMMAND = "followup"
-_PI_NEW_COMMAND = "new"
+_CLEAR_COMMAND = "clear"
+_FOLLOWUP_COMMAND = "followup"
+_NEW_COMMAND = "new"
+
+# Provider commands (without the leading "/") that start a *fresh* provider
+# session, keyed by provider name. pi aliases /clear to /new, so both reset.
+# Unlisted providers keep the historical /clear behaviour.
+_SESSION_RESET_COMMANDS: dict[str, frozenset[str]] = {
+    "pi": frozenset({_CLEAR_COMMAND, _NEW_COMMAND}),
+}
+_DEFAULT_SESSION_RESET_COMMANDS: frozenset[str] = frozenset({_CLEAR_COMMAND})
 
 
 def _picker_hint(provider_name: str) -> str:
@@ -97,9 +107,13 @@ def _default_command_args(cc_name: str, args: str, display: str) -> str:
 
 
 def _provider_command_name(provider_name: str, cc_name: str) -> str:
-    """Apply provider-specific compatibility aliases before forwarding."""
-    if provider_name == "pi" and cc_name.lower() == _PI_CLEAR_ALIAS_COMMAND:
-        return _PI_NEW_COMMAND
+    """Apply provider-specific compatibility aliases before forwarding.
+
+    Only pi aliases /clear to /new; every other provider — including omp,
+    whose /clear is a real command — is forwarded verbatim.
+    """
+    if provider_name == "pi" and cc_name.lower() == _CLEAR_COMMAND:
+        return _NEW_COMMAND
     return cc_name
 
 
@@ -109,12 +123,11 @@ def _is_session_reset_command(provider_name: str, cc_slash: str) -> bool:
     command = parts[0].lstrip("/").lower()
     if len(parts) > 1:
         return False
-    return command == _PI_CLEAR_ALIAS_COMMAND or (
-        provider_name == "pi" and command == _PI_NEW_COMMAND
-    )
+    resets = _SESSION_RESET_COMMANDS.get(provider_name, _DEFAULT_SESSION_RESET_COMMANDS)
+    return command in resets
 
 
-async def _handle_pi_followup_command(
+async def _handle_followup_command(
     message: Message,
     user_id: int,
     window_id: str,
@@ -122,19 +135,31 @@ async def _handle_pi_followup_command(
     args: str,
     cc_slash: str,
     thread_id: int | None,
+    provider_name: str,
+    followup_key: str,
 ) -> None:
-    """Queue a Pi follow-up message via Alt+Enter."""
+    """Queue a follow-up message via the provider's configured follow-up key."""
     if not args:
         await safe_reply(message, "Usage: `/followup <message>`")
         return
-    logger.info("Forwarding Pi follow-up to window %s (user=%d)", display, user_id)
+    logger.info(
+        "Forwarding %s follow-up to window %s (user=%d)",
+        provider_name,
+        display,
+        user_id,
+    )
     await message.get_bot().send_chat_action(
         chat_id=message.chat.id,
         message_thread_id=thread_id,
         action=ChatAction.TYPING,
     )
     success, error_msg = await send_telegram_followup_to_window(
-        user_id, window_id, thread_id, args, message.chat.id
+        user_id,
+        window_id,
+        thread_id,
+        args,
+        message.chat.id,
+        followup_key=followup_key,
     )
     if not success:
         await safe_reply(message, f"❌ {error_msg}")
@@ -283,9 +308,17 @@ async def forward_command_handler(
     cc_slash = f"/{cc_name} {args}".rstrip() if args else f"/{cc_name}"
     status_like = cc_name.lower() in {"status", "stats"}
 
-    if provider_name == "pi" and cc_name.lower() == _PI_FOLLOWUP_COMMAND:
-        await _handle_pi_followup_command(
-            update.message, user.id, window_id, display, args, cc_slash, thread_id
+    if provider.capabilities.followup_key and cc_name.lower() == _FOLLOWUP_COMMAND:
+        await _handle_followup_command(
+            update.message,
+            user.id,
+            window_id,
+            display,
+            args,
+            cc_slash,
+            thread_id,
+            provider_name,
+            provider.capabilities.followup_key,
         )
         return
 

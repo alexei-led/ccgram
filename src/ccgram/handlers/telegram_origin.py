@@ -132,17 +132,21 @@ async def send_telegram_followup_to_window(
     thread_id: int | None,
     text: str,
     chat_id: int | None = None,
+    *,
+    followup_key: str,
 ) -> tuple[bool, str]:
     if await agent_origin_returned_to_shell(window_id):
         return False, _AGENT_EXITED_MESSAGE
     if thread_id is None:
-        return await send_followup_to_window(window_id, text)
+        return await send_followup_to_window(window_id, text, followup_key=followup_key)
     injection = remember_telegram_injection(
         user_id, window_id, thread_id, text, chat_id
     )
     success = False
     try:
-        success, message = await send_followup_to_window(window_id, text)
+        success, message = await send_followup_to_window(
+            window_id, text, followup_key=followup_key
+        )
         return success, message
     finally:
         if not success:

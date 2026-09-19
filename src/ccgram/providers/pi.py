@@ -117,6 +117,8 @@ class PiProvider(JsonlProvider):
         tui_picker_commands=frozenset(
             {"model", "login", "fork", "clone", "scoped-models", "settings"}
         ),
+        # Pi queues a follow-up message with Alt+Enter (app.message.followUp).
+        followup_key="M-Enter",
     )
 
     _BUILTINS = _PI_TELEGRAM_BUILTINS

@@ -74,6 +74,9 @@ class TestForwardCommandResolution:
                 supports_incremental_read=True,
                 supports_status_snapshot=False,
                 tui_picker_commands=frozenset(),
+                # Claude has no follow-up keybinding: /followup is forwarded as
+                # an ordinary command rather than queued.
+                followup_key="",
             )
         )
         self.mock_probe_ctx = AsyncMock(return_value=(None, None, None))
@@ -175,11 +178,12 @@ class TestForwardCommandResolution:
 
     async def test_pi_followup_queues_followup_message(self) -> None:
         self.mock_provider.capabilities.name = "pi"
+        self.mock_provider.capabilities.followup_key = "M-Enter"
         update = _make_update(text="/followup run tests")
         await forward_command_handler(update, _make_context())
 
         self.mock_send_followup_to_window.assert_called_once_with(
-            100, "@1", 42, "run tests", -100999
+            100, "@1", 42, "run tests", -100999, followup_key="M-Enter"
         )
         self.mock_send_to_window.assert_not_called()
         reply_text = update.message.reply_text.call_args[0][0]
@@ -187,6 +191,7 @@ class TestForwardCommandResolution:
 
     async def test_pi_followup_requires_message(self) -> None:
         self.mock_provider.capabilities.name = "pi"
+        self.mock_provider.capabilities.followup_key = "M-Enter"
         update = _make_update(text="/followup")
         await forward_command_handler(update, _make_context())
 
@@ -346,6 +351,7 @@ class TestForwardCommandResolution:
                 supports_incremental_read=True,
                 supports_status_snapshot=True,
                 tui_picker_commands=frozenset(),
+                followup_key="",
             ),
             build_status_snapshot=MagicMock(return_value="Status snapshot body"),
             has_output_since=MagicMock(return_value=False),
@@ -380,6 +386,7 @@ class TestForwardCommandResolution:
                 supports_incremental_read=True,
                 supports_status_snapshot=False,
                 tui_picker_commands=frozenset(),
+                followup_key="",
             ),
             build_status_snapshot=MagicMock(return_value=None),
         )
@@ -418,6 +425,7 @@ class TestForwardCommandResolution:
                 supports_incremental_read=True,
                 supports_status_snapshot=True,
                 tui_picker_commands=frozenset(),
+                followup_key="",
             ),
             build_status_snapshot=MagicMock(return_value=None),
             has_output_since=MagicMock(return_value=True),
@@ -569,7 +577,9 @@ class TestForwardWithRealProvider:
         assert "drive the picker" in reply_text
         assert "/toolbar" in reply_text
 
-    @pytest.mark.parametrize("provider_name", ["claude", "codex", "gemini", "pi"])
+    @pytest.mark.parametrize(
+        "provider_name", ["claude", "codex", "gemini", "pi"]
+    )
     async def test_non_picker_command_no_hint(self, provider_name: str) -> None:
         self._mock_get_provider.return_value = _real_provider(provider_name)
         update = _make_update(text="/clear")
@@ -579,7 +589,9 @@ class TestForwardWithRealProvider:
         assert "/toolbar" not in reply_text
         assert "drive the picker" not in reply_text
 
-    @pytest.mark.parametrize("provider_name", ["claude", "codex", "gemini", "pi"])
+    @pytest.mark.parametrize(
+        "provider_name", ["claude", "codex", "gemini", "pi"]
+    )
     async def test_picker_command_with_args_no_hint(self, provider_name: str) -> None:
         self._mock_get_provider.return_value = _real_provider(provider_name)
         update = _make_update(text="/model some-value")
@@ -589,7 +601,9 @@ class TestForwardWithRealProvider:
         assert "/toolbar" not in reply_text
         assert "drive the picker" not in reply_text
 
-    @pytest.mark.parametrize("provider_name", ["claude", "codex", "gemini", "pi"])
+    @pytest.mark.parametrize(
+        "provider_name", ["claude", "codex", "gemini", "pi"]
+    )
     async def test_uppercase_picker_command_still_fires_hint(
         self, provider_name: str
     ) -> None:

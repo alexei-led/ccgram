@@ -77,50 +77,48 @@ class TestSendToWindow:
 
 
 class TestSendFollowupToWindow:
-    async def test_sends_text_then_alt_enter(
-        self, mux: MagicMock, no_sleep: AsyncMock
+    @pytest.mark.parametrize("followup_key", ["M-Enter", "C-q"])
+    async def test_sends_text_then_the_provider_followup_key(
+        self, mux: MagicMock, no_sleep: AsyncMock, followup_key: str
     ) -> None:
-        assert await send_followup_to_window("@1", "run tests") == (
-            True,
-            "Follow-up queued for project",
-        )
+        assert await send_followup_to_window(
+            "@1", "run tests", followup_key=followup_key
+        ) == (True, "Follow-up queued for project")
         no_sleep.assert_awaited_once_with(0.5)
         mux.send_keys.assert_has_awaits(
             [
                 call("@1", "run tests", enter=False, literal=True),
-                call("@1", "M-Enter", enter=False, literal=False),
+                call("@1", followup_key, enter=False, literal=False),
             ]
         )
 
     async def test_reports_missing_window(self, mux: MagicMock) -> None:
         mux.find_window_by_id = AsyncMock(return_value=None)
 
-        assert await send_followup_to_window("@missing", "run tests") == (
-            False,
-            "Window not found (may have been closed)",
-        )
+        assert await send_followup_to_window(
+            "@missing", "run tests", followup_key="M-Enter"
+        ) == (False, "Window not found (may have been closed)")
         mux.send_keys.assert_not_called()
 
-    async def test_rejected_text_send_never_queues_the_alt_enter(
+    async def test_rejected_text_send_never_queues_the_followup_key(
         self, mux: MagicMock, no_sleep: AsyncMock
     ) -> None:
         mux.send_keys = AsyncMock(return_value=False)
 
-        assert await send_followup_to_window("@1", "run tests") == (
-            False,
-            "Failed to send follow-up text",
-        )
+        assert await send_followup_to_window(
+            "@1", "run tests", followup_key="M-Enter"
+        ) == (False, "Failed to send follow-up text")
         mux.send_keys.assert_awaited_once_with(
             "@1", "run tests", enter=False, literal=True
         )
         no_sleep.assert_not_awaited()
 
-    async def test_rejected_alt_enter_is_reported(
+    async def test_rejected_followup_key_is_reported(
         self, mux: MagicMock, no_sleep: AsyncMock
     ) -> None:
         mux.send_keys = AsyncMock(side_effect=[True, False])
 
-        assert await send_followup_to_window("@1", "run tests") == (
+        assert await send_followup_to_window("@1", "run tests", followup_key="C-q") == (
             False,
             "Failed to send follow-up key",
         )

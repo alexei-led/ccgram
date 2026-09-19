@@ -156,6 +156,9 @@ class ProviderCapabilities:
     # pointing at /toolbar so users know how to drive the picker from
     # Telegram. Empty for providers without modal pickers.
     tui_picker_commands: frozenset[str] = frozenset()
+    # tmux key name that submits the text as a queued follow-up while the
+    # agent is streaming. Empty means the provider has no follow-up contract.
+    followup_key: str = ""
 
 
 # ── Provider protocol ────────────────────────────────────────────────────
