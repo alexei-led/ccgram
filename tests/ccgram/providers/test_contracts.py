@@ -1,5 +1,6 @@
 import json
 from dataclasses import FrozenInstanceError
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -16,6 +17,7 @@ from ccgram.providers._jsonl import JsonlProvider
 from ccgram.providers.claude import ClaudeProvider
 from ccgram.providers.codex import CodexProvider
 from ccgram.providers.gemini import GeminiProvider
+from ccgram.providers.omp import OmpProvider
 from ccgram.providers.pi import PiProvider
 from ccgram.providers.shell import ShellProvider
 
@@ -51,13 +53,20 @@ PROVIDER_FIXTURES: list[type] = [
     ClaudeProvider,
     CodexProvider,
     GeminiProvider,
+    OmpProvider,
     PiProvider,
     ShellProvider,
 ]
 
 
 @pytest.fixture(params=PROVIDER_FIXTURES, ids=lambda cls: cls.__name__)
-def provider(request: pytest.FixtureRequest) -> AgentProvider:
+def provider(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> AgentProvider:
+    if request.param is OmpProvider:
+        # omp's discovery reads ``~/.omp``; never touch the developer's real
+        # agent dir from the contract suite.
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     return request.param()
 
 
@@ -175,7 +184,7 @@ def _make_tool_use_entry(provider: AgentProvider) -> dict[str, Any]:
             "source": "MODEL",
             "tool_calls": [{"id": "t1", "name": "Read"}],
         }
-    if name == "pi":
+    if name in ("pi", "omp"):
         return {
             "type": "assistant",
             "message": {
@@ -217,7 +226,7 @@ def _make_tool_result_entry(provider: AgentProvider) -> dict[str, Any]:
             "tool_call_id": "t1",
             "content": "ok",
         }
-    if name == "pi":
+    if name in ("pi", "omp"):
         return {
             "type": "toolResult",
             "message": {

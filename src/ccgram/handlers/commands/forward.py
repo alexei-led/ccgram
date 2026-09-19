@@ -65,14 +65,19 @@ logger = structlog.get_logger()
 
 _NAV_KEYS = ("up", "down", "enter", "esc")
 _CLEAR_COMMAND = "clear"
+_DELETE_COMMAND = "delete"
 _FOLLOWUP_COMMAND = "followup"
 _NEW_COMMAND = "new"
 
 # Provider commands (without the leading "/") that start a *fresh* provider
-# session, keyed by provider name. pi aliases /clear to /new, so both reset.
-# Unlisted providers keep the historical /clear behaviour.
+# session, keyed by provider name. pi aliases /clear to /new, so both reset;
+# omp's /new and /delete start a fresh session file while /clear only drops
+# context in place — same session — so /clear must not unbind. Tree/branch and
+# in-place commands (/handoff, /fork, /branch, /tree, /restart) are not resets
+# for either provider. Unlisted providers keep the historical /clear behaviour.
 _SESSION_RESET_COMMANDS: dict[str, frozenset[str]] = {
     "pi": frozenset({_CLEAR_COMMAND, _NEW_COMMAND}),
+    "omp": frozenset({_DELETE_COMMAND, _NEW_COMMAND}),
 }
 _DEFAULT_SESSION_RESET_COMMANDS: frozenset[str] = frozenset({_CLEAR_COMMAND})
 

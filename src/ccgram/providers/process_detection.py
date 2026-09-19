@@ -1,8 +1,10 @@
 """Provider classification from a pane's foreground process.
 
-All supported CLIs (claude, codex, gemini, pi) are Node.js scripts — the
-multiplexer's ``pane_current_command`` shows ``bun`` or ``node`` instead of
-the CLI name.  This module classifies the *foreground* process — resolved by
+Most supported CLIs (claude, codex, gemini, pi) are Node.js scripts, so the
+multiplexer's ``pane_current_command`` shows ``bun`` or ``node`` instead of the
+CLI name; omp is a Bun-compiled native binary and reports ``omp`` directly, but
+takes the same classification path so nothing here special-cases it.  This
+module classifies the *foreground* process — resolved by
 the multiplexer seam via ``Multiplexer.foreground(window_id)`` — to reliably
 identify which provider is running.
 
@@ -49,6 +51,7 @@ _PROVIDER_BASENAMES: tuple[tuple[frozenset[str], str], ...] = (
     (frozenset({"claude", "ce", "cc-mirror", "zai"}), "claude"),
     (frozenset({"codex"}), "codex"),
     (frozenset({"gemini"}), "gemini"),
+    (frozenset({"omp"}), "omp"),
     (frozenset({"pi"}), "pi"),
 )
 
@@ -59,6 +62,7 @@ _PROVIDER_PATH_MARKERS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("claude-code", "cc-team"), "claude"),
     (("@openai/codex", "/codex/", "/codex-"), "codex"),
     (("gemini-cli",), "gemini"),
+    (("@oh-my-pi/", "/oh-my-pi/"), "omp"),
     (("@mariozechner/pi-coding-agent", "/pi-coding-agent/"), "pi"),
 )
 
@@ -92,8 +96,8 @@ def classify_provider_from_argv(argv: Sequence[str]) -> str:
 
     Skips wrapper tokens (``node``, ``bun``, ``sudo``, …) and matches the
     first meaningful token against known provider names or path markers.
-    Returns provider name (``"claude"``, ``"codex"``, ``"gemini"``, ``"pi"``,
-    ``"shell"``) or empty string if unrecognised.
+    Returns provider name (``"claude"``, ``"codex"``, ``"gemini"``, ``"omp"``,
+    ``"pi"``, ``"shell"``) or empty string if unrecognised.
     """
     for token in argv:
         cleaned = os.path.basename(token).lower().lstrip("-")

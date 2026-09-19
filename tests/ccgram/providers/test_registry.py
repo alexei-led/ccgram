@@ -256,7 +256,7 @@ class TestRegistryIsValid:
 class TestEnsureRegistered:
     @pytest.mark.parametrize(
         "name",
-        ["antigravity", "claude", "codex", "gemini", "pi", "shell"],
+        ["antigravity", "claude", "codex", "gemini", "omp", "pi", "shell"],
     )
     def test_all_providers_registered(self, name: str) -> None:
         from ccgram.providers import _ensure_registered, registry

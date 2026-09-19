@@ -107,6 +107,7 @@ class TestDetectProviderFromCommand:
             pytest.param("claude", "claude", id="bare-claude"),
             pytest.param("codex", "codex", id="bare-codex"),
             pytest.param("gemini", "gemini", id="bare-gemini"),
+            pytest.param("omp", "omp", id="bare-omp"),
             pytest.param("pi", "pi", id="bare-pi"),
             pytest.param("/usr/local/bin/claude", "claude", id="full-path-claude"),
             pytest.param("/opt/bin/codex --resume", "codex", id="codex-with-args"),

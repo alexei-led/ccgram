@@ -36,6 +36,8 @@ class TestClassifyProviderFromArgs:
             ("bun /Users/x/.bun/bin/gemini", "gemini"),
             ("node /path/to/gemini-cli/dist/index.js", "gemini"),
             ("gemini", "gemini"),
+            ("omp", "omp"),
+            ("node /Users/x/.bun/install/global/node_modules/@oh-my-pi/cli.js", "omp"),
             ("-fish", "shell"),
             ("-bash", "shell"),
             ("bash ./scripts/restart.sh run", "shell"),
@@ -76,6 +78,11 @@ class TestClassifyProviderFromArgv:
         [
             (["bun", "/Users/x/.bun/bin/claude"], "claude"),
             (["sudo", "env", "bun", "/Users/x/.bun/bin/codex"], "codex"),
+            (["omp"], "omp"),
+            (
+                ["bun", "/Users/x/.bun/install/global/node_modules/@oh-my-pi/cli.js"],
+                "omp",
+            ),
             (["-bash"], "shell"),
             (["bash", "./scripts/restart.sh", "run"], "shell"),
             (["vim", "/path/to/claude"], ""),

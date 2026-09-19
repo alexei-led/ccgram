@@ -189,6 +189,17 @@ class TestForwardCommandResolution:
         reply_text = update.message.reply_text.call_args[0][0]
         assert reply_text == "⏭️ [project] Follow-up queued."
 
+    async def test_omp_followup_queues_with_ctrl_q(self) -> None:
+        self.mock_provider.capabilities.name = "omp"
+        self.mock_provider.capabilities.followup_key = "C-q"
+        update = _make_update(text="/followup run tests")
+        await forward_command_handler(update, _make_context())
+
+        self.mock_send_followup_to_window.assert_called_once_with(
+            100, "@1", 42, "run tests", -100999, followup_key="C-q"
+        )
+        self.mock_send_to_window.assert_not_called()
+
     async def test_pi_followup_requires_message(self) -> None:
         self.mock_provider.capabilities.name = "pi"
         self.mock_provider.capabilities.followup_key = "M-Enter"
@@ -217,6 +228,28 @@ class TestForwardCommandResolution:
         self.mock_ws.clear_window_session.assert_called_once_with("@1")
         reply_text = update.message.reply_text.call_args[0][0]
         assert "Sent: /new" in reply_text
+
+    async def test_omp_new_starts_a_session_reset(self) -> None:
+        self.mock_provider.capabilities.name = "omp"
+        update = _make_update(text="/new")
+        await forward_command_handler(update, _make_context())
+
+        self.mock_send_to_window.assert_called_once_with(100, "@1", 42, "/new", -100999)
+        self.mock_ws.clear_window_session.assert_called_once_with("@1")
+
+    async def test_omp_clear_keeps_the_session(self) -> None:
+        """omp's /clear only drops context in place — the session file survives."""
+        self.mock_provider.capabilities.name = "omp"
+        update = _make_update(text="/clear")
+        await forward_command_handler(update, _make_context())
+
+        self.mock_send_to_window.assert_called_once_with(
+            100, "@1", 42, "/clear", -100999
+        )
+        self.mock_ws.clear_window_session.assert_not_called()
+        self.mock_probe_ctx.assert_called_once()
+        reply_text = update.message.reply_text.call_args[0][0]
+        assert "Sent: /clear" in reply_text
 
     async def test_pi_scoped_models_telegram_name_resolves_to_native_command(
         self,
@@ -490,6 +523,10 @@ def _real_provider(name: str):
         from ccgram.providers.gemini import GeminiProvider
 
         return GeminiProvider()
+    if name == "omp":
+        from ccgram.providers.omp import OmpProvider
+
+        return OmpProvider()
     if name == "pi":
         from ccgram.providers.pi import PiProvider
 
@@ -558,6 +595,7 @@ class TestForwardWithRealProvider:
             ("claude", "model"),
             ("codex", "model"),
             ("gemini", "model"),
+            ("omp", "model"),
             ("pi", "model"),
             ("claude", "effort"),
             ("codex", "personality"),
@@ -578,7 +616,7 @@ class TestForwardWithRealProvider:
         assert "/toolbar" in reply_text
 
     @pytest.mark.parametrize(
-        "provider_name", ["claude", "codex", "gemini", "pi"]
+        "provider_name", ["claude", "codex", "gemini", "omp", "pi"]
     )
     async def test_non_picker_command_no_hint(self, provider_name: str) -> None:
         self._mock_get_provider.return_value = _real_provider(provider_name)
@@ -590,7 +628,7 @@ class TestForwardWithRealProvider:
         assert "drive the picker" not in reply_text
 
     @pytest.mark.parametrize(
-        "provider_name", ["claude", "codex", "gemini", "pi"]
+        "provider_name", ["claude", "codex", "gemini", "omp", "pi"]
     )
     async def test_picker_command_with_args_no_hint(self, provider_name: str) -> None:
         self._mock_get_provider.return_value = _real_provider(provider_name)
@@ -602,7 +640,7 @@ class TestForwardWithRealProvider:
         assert "drive the picker" not in reply_text
 
     @pytest.mark.parametrize(
-        "provider_name", ["claude", "codex", "gemini", "pi"]
+        "provider_name", ["claude", "codex", "gemini", "omp", "pi"]
     )
     async def test_uppercase_picker_command_still_fires_hint(
         self, provider_name: str
