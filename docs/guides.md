@@ -168,7 +168,7 @@ End-to-end tests exercise the full lifecycle: inject fake Telegram updates → r
 **Prerequisites:**
 
 - tmux installed and in PATH
-- One or more agent CLIs installed and authenticated: `claude`, `codex`, `gemini`, `pi`
+- One or more agent CLIs installed and authenticated: `claude`, `codex`, `gemini`, `pi`, `omp`
 
 **Test coverage per provider:**
 
@@ -178,6 +178,7 @@ End-to-end tests exercise the full lifecycle: inject fake Telegram updates → r
 | Codex    | 3     | Lifecycle, command forwarding, recovery                                                                                                                      |
 | Gemini   | 3     | Lifecycle, command forwarding, recovery                                                                                                                      |
 | Pi       | —     | Unit + contract coverage only; no e2e lifecycle suite yet                                                                                                    |
+| Oh My Pi | —     | Unit + contract coverage only; no e2e lifecycle suite yet                                                                                                    |
 
 **How it works:** The Bot API HTTP layer is mocked — fake `Update` objects are injected via `app.process_update()` and all outgoing API calls are intercepted and recorded for assertions. The tests drive through the full topic binding flow (directory browser → optional worktree picker → provider picker → mode select → window creation) and verify agent processes launch, messages are forwarded, and responses are delivered.
 
@@ -189,6 +190,7 @@ uv run pytest tests/e2e/test_claude_lifecycle.py -v   # Claude only
 uv run pytest tests/e2e/test_codex_lifecycle.py -v    # Codex only
 uv run pytest tests/e2e/test_gemini_lifecycle.py -v   # Gemini only
 # Pi: covered by unit + contract tests in tests/ccgram/providers/test_pi.py
+# Oh My Pi: covered by unit + contract tests in tests/ccgram/providers/
 ```
 
 The tests create an isolated `ccgram-e2e` tmux session that does not interfere with a running `ccgram` instance. Safe to run from a tmux window.
@@ -208,7 +210,7 @@ All settings accept both CLI flags and environment variables. CLI flags take pre
 | `TMUX_SESSION_NAME` / `--tmux-session`                | `ccgram`                       | tmux session name                                                                                    |
 | `CCGRAM_MULTIPLEXER`                                  | `tmux`                         | Terminal multiplexer backend: `tmux` (default), `herdr` or `agterm`                                  |
 | `CCGRAM_AGTERM_WORKSPACES`                            | `ccgram`                       | agterm only: workspaces ccgram may adopt sessions from (comma-separated; `*` for all)                |
-| `CCGRAM_PROVIDER` / `--provider`                      | `claude`                       | Default agent provider (`claude`, `codex`, `gemini`, `pi`, `shell`)                                  |
+| `CCGRAM_PROVIDER` / `--provider`                      | `claude`                       | Default agent provider (`claude`, `codex`, `gemini`, `pi`, `omp`, `shell`)                           |
 | `CCGRAM_<NAME>_COMMAND`                               | _(from provider)_              | Per-provider launch command (env only, see below)                                                    |
 | `CCGRAM_GROUP_ID` / `--group-id`                      | _(all groups)_                 | Restrict to one Telegram group                                                                       |
 | `CCGRAM_INSTANCE_NAME` / `--instance-name`            | hostname                       | Display label for this instance                                                                      |
@@ -386,7 +388,7 @@ ccgram talks to the terminal multiplexer through a backend-neutral seam. tmux is
 1. **Install herdr** and make sure the `herdr` binary is in `PATH`. Start its server so the control socket exists.
 2. **Select the backend:** set `CCGRAM_MULTIPLEXER=herdr` (env var or `.env`). The default is `tmux`.
 3. **Socket path (optional):** ccgram reads `$HERDR_SOCKET_PATH` to find the server. Leave it unset to use herdr's default socket; set it to target a specific server.
-4. **Install integrations and the ccgram hook:** for Pi, run `herdr integration install pi`, then start new Pi agents or restart existing ones so they load the integration and publish `agent_session`. Install the ccgram hook as usual with `ccgram hook --install`. The same Claude Code hook works on both backends — it resolves which window fired from `$HERDR_PANE_ID` (tmux uses `$TMUX_PANE`), so no herdr-specific hook step is required.
+4. **Install integrations and the ccgram hook:** for Pi, run `herdr integration install pi`, and for Oh My Pi, run `herdr integration install omp`. Then start new agents or restart existing ones so they load the integration and publish `agent_session`. Install the ccgram hook as usual with `ccgram hook --install`. The same Claude Code hook works on both backends — it resolves which window fired from `$HERDR_PANE_ID` (tmux uses `$TMUX_PANE`), so no herdr-specific hook step is required.
 5. **Verify:** `ccgram doctor`. When `CCGRAM_MULTIPLEXER=herdr`, doctor checks the `herdr` binary, socket reachability, reported protocol version, and that ccgram's and herdr's own Claude hooks coexist in `settings.json` (instead of the tmux checks).
 
 ```bash
@@ -512,7 +514,7 @@ tmux attach -t ccgram
 tmux new-window -n myproject -c ~/Code/myproject
 
 # Start any supported agent CLI
-claude     # or: codex, gemini, pi
+claude     # or: codex, gemini, pi, omp
 ```
 
 The window must be in the ccgram tmux session (configurable via `TMUX_SESSION_NAME`).
@@ -523,7 +525,7 @@ Open a new herdr tab in the appropriate workspace, then start any supported agen
 
 ### Multiplexer backends
 
-For Claude, the SessionStart hook registers the session automatically. For Codex, Gemini, and Pi, CCGram auto-detects the provider from the running process name and discovers the session from transcript files on disk. In all cases, the bot creates a matching Telegram topic.
+For Claude, the SessionStart hook registers the session automatically. For Codex, Gemini, Pi, and Oh My Pi, CCGram auto-detects the provider from the running process name and discovers the session from transcript files on disk. In all cases, the bot creates a matching Telegram topic.
 
 With agterm, open the session in the `ccgram` workspace (or a workspace listed in `CCGRAM_AGTERM_WORKSPACES`) and start a supported agent CLI. agterm reports the foreground command for active sessions; an idle shell has no foreground argv, so bare shell panes are not surfaced as topics.
 
@@ -537,7 +539,7 @@ When an agent session exits or crashes, the bot detects the dead window and offe
 - **Continue** — Resume the last conversation (all providers support this)
 - **Resume** — Browse and select a past session to resume from
 
-The buttons shown adapt to each provider's capabilities. Claude and Antigravity support Fresh, Continue, and the CCGram Resume picker. Codex, Gemini, and Pi support Fresh and Continue; their CLIs can resume known session IDs, but CCGram does not yet enumerate those providers' sessions. Shell supports Fresh only because shell sessions are ephemeral.
+The buttons shown adapt to each provider's capabilities. Claude and Antigravity support Fresh, Continue, and the CCGram Resume picker. Codex, Gemini, Oh My Pi, and Pi support Fresh and Continue; their CLIs can resume known session IDs, but CCGram does not yet enumerate those providers' sessions. Shell supports Fresh only because shell sessions are ephemeral.
 
 ## Manual Provider Override (`/agent`)
 
@@ -548,7 +550,7 @@ Forms:
 ```text
 /agent              # show picker (current marked ✓, with (manual override) badge if set)
 /agent shell        # switch to shell
-/agent claude       # switch to Claude (also: codex, gemini, pi)
+/agent claude       # switch to Claude (also: codex, gemini, pi, omp)
 /agent auto         # clear manual override and re-run auto-detection
 ```
 
@@ -587,7 +589,7 @@ Live view (auto-refreshing) uses the same viewport capture at a smaller font siz
 
 `/last` (or the 📄 **Last** toolbar button) resends the most recent assistant reply to the current topic:
 
-- **AI providers** (Claude, Codex, Gemini, Pi) — extracts contiguous assistant text blocks after the last user message from the session transcript. Falls back to the most recent assistant text if no turn boundary is found.
+- **AI providers** (Claude, Codex, Gemini, Pi, Oh My Pi) — extracts contiguous assistant text blocks after the last user message from the session transcript. Falls back to the most recent assistant text if no turn boundary is found.
 - **Shell** — captures scrollback and extracts the last command+output block between prompt markers.
 
 Responses longer than 4096 characters are sent as a `.txt` document attachment instead of a text message.
@@ -617,7 +619,7 @@ Tunables: `CCGRAM_SEND_SEARCH_DEPTH` (default 5), `CCGRAM_SEND_MAX_RESULTS` (def
 
 ## Action Toolbar (`/toolbar`)
 
-`/toolbar` opens an inline keyboard of provider-specific tmux key actions. Row 1 is universal: `[📷 Screen, ⏹ Ctrl-C, 📺 Live]`. Row 2 varies per provider: Antigravity (Esc, Tab, Model), Claude (Mode, Think, Esc), Codex (Esc, Tab, Mode), Gemini (Mode, YOLO, Esc), Pi (Esc, Tab, π Model), Shell (Enter, EOF, Suspend). Antigravity/Claude/Codex/Gemini/Pi add a navigation row (Up, Enter, Down). The final row is `[📄 Last, Get File, Close]`; Shell folds Esc in: `[📄 Last, Get File, Esc, Close]`.
+`/toolbar` opens an inline keyboard of provider-specific tmux key actions. Row 1 is universal: `[📷 Screen, ⏹ Ctrl-C, 📺 Live]`. Row 2 varies per provider: Antigravity (Esc, Tab, Model), Claude (Mode, Think, Esc), Codex (Esc, Tab, Mode), Gemini (Mode, YOLO, Esc), Pi (Esc, Tab, π Model), Oh My Pi (Esc, Tab, π Model), Shell (Enter, EOF, Suspend). Antigravity/Claude/Codex/Gemini/Pi/Oh My Pi add a navigation row (Up, Enter, Down). The final row is `[📄 Last, Get File, Close]`; Shell folds Esc in: `[📄 Last, Get File, Esc, Close]`.
 
 Toggle actions (Mode = Shift+Tab, Think = Tab, YOLO = Ctrl+Y) capture the pane ~250 ms after the key press and report the resulting mode-line in the toast (e.g., `auto-accept edits on`).
 
@@ -651,7 +653,7 @@ Action names must be ≤24 chars (callback_data budget). Providers absent from t
 
 ### Picker Hints
 
-When you forward a slash command that opens a modal in-TUI picker (e.g. Claude `/model`, `/login`, `/theme`; Codex/Gemini `/model`; Pi `/model`), the topic reply adds a hint pointing at `/toolbar` to drive the picker with arrow keys. The hint adapts to your toolbar — if you removed Up/Down/Enter/Esc keys, the hint degrades to "Open /toolbar to drive the picker."
+When you forward a slash command that opens a modal in-TUI picker (e.g. Claude `/model`, `/login`, `/theme`; Codex/Gemini `/model`; Pi/Oh My Pi `/model`), the topic reply adds a hint pointing at `/toolbar` to drive the picker with arrow keys. The hint adapts to your toolbar — if you removed Up/Down/Enter/Esc keys, the hint degrades to "Open /toolbar to drive the picker."
 
 ## Git Worktree Topics
 
@@ -674,7 +676,7 @@ The LLM is the same backend used for shell command generation (`CCGRAM_LLM_PROVI
 
 ## Providers
 
-CCGram supports Claude Code, Codex CLI, Gemini CLI, Pi, and Shell. Each topic can use a different provider. See **[docs/providers.md](providers.md)** for full details on each provider, session modes, custom launch commands, LLM configuration, and provider-specific behavior.
+CCGram supports Claude Code, Codex CLI, Gemini CLI, Pi, Oh My Pi, and Shell. Each topic can use a different provider. See **[docs/providers.md](providers.md)** for full details on each provider, session modes, custom launch commands, LLM configuration, and provider-specific behavior.
 
 ## Data Storage
 
@@ -687,7 +689,7 @@ All state files live in `$CCGRAM_DIR` (`~/.ccgram/` by default):
 | `events.jsonl`       | Append-only hook event log (read incrementally by monitor)        |
 | `monitor_state.json` | Delivered transcript watermarks and pending Jump-to-live barriers |
 
-Session transcripts are read from provider-specific locations (read-only): `~/.claude/projects/` (Claude), `~/.codex/sessions/` (Codex), `~/.gemini/tmp/` (Gemini), `~/.pi/agent/sessions/` (Pi). Shell has no transcript — output is captured directly from the tmux pane. The bot never writes to agent data directories; the delivered watermark records relay progress, not a mutation of the raw transcript.
+Session transcripts are read from provider-specific locations (read-only): `~/.claude/projects/` (Claude), `~/.codex/sessions/` (Codex), `~/.gemini/tmp/` (Gemini), `~/.pi/agent/sessions/` (Pi), `~/.omp/agent/sessions/` (Oh My Pi). Shell has no transcript — output is captured directly from the tmux pane. The bot never writes to agent data directories; the delivered watermark records relay progress, not a mutation of the raw transcript.
 
 ## Running as a Service
 

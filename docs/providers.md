@@ -10,10 +10,11 @@ CCGram supports multiple agent CLI backends. Each Telegram topic can use a diffe
 | Codex CLI   | `codex`     | Yes         | Yes    | Yes      | JSONL      | Hook Stop + pyte VT100 interactive UI + transcript activity heuristic |
 | Gemini CLI  | `gemini`    | Yes         | Yes    | Yes      | JSONL      | Hook AfterAgent + pane title + interactive UI + `/status` snapshot    |
 | Pi          | `pi`        | Yes         | Yes    | Yes      | JSONL (v3) | Hook-runner Stop + transcript activity heuristic                      |
+| Oh My Pi    | `omp`       | No          | Yes    | Yes      | JSONL (v3) | Transcript activity heuristic + herdr native agent status             |
 | Antigravity | `agy`       | No          | Yes    | Yes      | JSONL      | Transcript activity heuristic + `/status` snapshot                    |
 | Shell       | `bash`      | No          | No     | No       | None       | Shell prompt idle detection                                           |
 
-`Resume` in this table means the CLI accepts a known session ID. CCGram's Telegram Resume picker can enumerate sessions for Claude and Antigravity. Codex, Gemini, and Pi currently expose Fresh and Continue recovery actions only.
+`Resume` in this table means the CLI accepts a known session ID. CCGram's Telegram Resume picker can enumerate sessions for Claude and Antigravity. Codex, Gemini, Oh My Pi, and Pi currently expose Fresh and Continue recovery actions only.
 
 ## Transcript Delivery Guarantees
 
@@ -23,14 +24,14 @@ Delivery is at-least-once. CCGram persists a transcript's delivered watermark on
 
 ## Choosing a Provider
 
-**From Telegram**: When you create a new topic and select a directory, then — if the directory is an eligible git repo — choose whether to use the current branch or create a new worktree on a new branch (non-git directories skip this step), a provider picker appears with Claude (default), Codex, Gemini, Pi, Antigravity, and Shell options. After provider selection, CCGram asks for session mode:
+**From Telegram**: When you create a new topic and select a directory, then — if the directory is an eligible git repo — choose whether to use the current branch or create a new worktree on a new branch (non-git directories skip this step), a provider picker appears with Claude (default), Codex, Gemini, Pi, Oh My Pi, Antigravity, and Shell options. After provider selection, CCGram asks for session mode:
 
 - `✅ Standard` (normal approvals)
 - `🚀 YOLO` (provider-specific permissive mode)
 
 **From the terminal**: If you create a window manually and start an agent CLI, CCGram auto-detects the provider from the running process name. When the pane command is a JS runtime wrapper (node, bun), it inspects the pane's foreground process to reliably identify the actual CLI. How the foreground process is read is owned by the multiplexer backend — tmux uses `ps -t <tty>`, herdr reads `pane process-info` (no tty needed), and agterm reports foreground argv (no tty or process-group ID) — so detection works through the same seam on all three. The shell provider uses the same seam to classify a bare shell pane, except on agterm: its foreground argv is absent at an idle shell prompt, so the Shell provider is unavailable there. As a last resort, Gemini pane-title symbols (`✦`, `✋`, `◇`) are checked.
 
-**Default provider**: Set `CCGRAM_PROVIDER=codex` (or `gemini`, `pi`, `antigravity`, `shell`) to change the default. Claude is the default if unset.
+**Default provider**: Set `CCGRAM_PROVIDER=codex` (or `gemini`, `pi`, `omp`, `antigravity`, `shell`) to change the default. Claude is the default if unset.
 
 ## Session Mode (Standard vs YOLO)
 
@@ -54,10 +55,11 @@ CCGRAM_CLAUDE_COMMAND=ce --current
 CCGRAM_CODEX_COMMAND=my-codex-wrapper
 CCGRAM_GEMINI_COMMAND=/opt/gemini/run
 CCGRAM_PI_COMMAND=pi --model sonnet
+CCGRAM_OMP_COMMAND=omp --profile work
 CCGRAM_ANTIGRAVITY_COMMAND=agy --effort high
 ```
 
-`<NAME>` is uppercase: `CLAUDE`, `CODEX`, `GEMINI`, `PI`, `ANTIGRAVITY`. Defaults to the provider's built-in command (`claude`, `codex`, `gemini`, `pi`, `agy`) when unset. New providers automatically support `CCGRAM_<NAME>_COMMAND` without code changes.
+`<NAME>` is uppercase: `CLAUDE`, `CODEX`, `GEMINI`, `PI`, `OMP`, `ANTIGRAVITY`. Defaults to the provider's built-in command (`claude`, `codex`, `gemini`, `pi`, `omp`, `agy`) when unset. New providers automatically support `CCGRAM_<NAME>_COMMAND` without code changes.
 
 You can use this for a global "today" setup (all new sessions), for example:
 
@@ -76,6 +78,7 @@ Each provider exposes its own slash commands to the Telegram menu. Examples:
 - **Codex**: `/model`, `/mode`, `/status`, `/diff`, `/compact`, `/mcp`...
 - **Gemini**: `/chat`, `/clear`, `/compress`, `/model`, `/memory`, `/vim`...
 - **Pi**: `/new`, `/compact`, `/followup`, `/scoped_models`, `/export`, `/name`, `/reload`, `/session`, `/share`, `/changelog`... (plus discovered skills/prompts/extensions)
+- **Oh My Pi**: `/new`, `/clear`, `/compact`, `/followup`, `/model`, `/session`, `/settings`, `/switch`, `/tree`, `/usage`... (plus discovered skills/prompts/extensions)
 - **Antigravity**: `/agents`, `/chat`, `/clear`, `/docs`, `/help`, `/mcp`, `/model`, `/plan`, `/skills`, `/theme`, `/tools`...
 
 ---
@@ -197,9 +200,58 @@ Pi's default toolbar omits Mode/Think/YOLO (pi has no mode cycling) and adds a d
 
 - Row 1: `📷 Screen, ⏹ Ctrl-C, 📺 Live`
 - Row 2: `⎋ Esc, ⇥ Tab, π Model`
-- Row 3: `🔼 Up, ⏎ Enter, 🔽 Down, 📤 Send, ✖ Close`
+- Row 3: `🔼 Up, ⏎ Enter, 🔽 Down`
+- Row 4: `📄 Last, 📥 Get File, ✖ Close`
 
 Override with a `[providers.pi]` block in `~/.ccgram/toolbar.toml`.
+
+## Oh My Pi
+
+[Oh My Pi](https://github.com/can1357/oh-my-pi) is a fork of [Pi](https://pi.dev) with the same JSONL v3 transcript family. CCGram installs no hooks for Oh My Pi and the CLI needs none, so session tracking always scans `~/.omp/agent/sessions/` for the newest transcript whose header `cwd` matches the window working directory. With Herdr installed, `herdr integration install omp` publishes the agent session and its working, blocked, or idle state, and the Herdr backend reads that state directly.
+
+### Launch
+
+The default command is `omp`. Override via `CCGRAM_OMP_COMMAND` to change profiles, models, flags, or wrappers.
+
+### Resume
+
+Resume always uses `--session <path-or-uuid>`, which is an alias of Oh My Pi's `--resume`. `--resume` with no value opens an interactive picker ccgram can't drive over `send_keys`, so ccgram always passes the resolved transcript path (or UUID prefix) directly. Oh My Pi's own `--continue` is used for the Continue recovery button.
+
+### Oh My Pi Transcript
+
+Oh My Pi transcripts are JSONL files (v3 format) under `~/.omp/agent/sessions/<bucket>/<timestamp>_<uuid>.jsonl`. The bucket encodes the working directory, and the encoding differs from Pi:
+
+- A cwd under the home directory uses `-` plus the home-relative path with each separator replaced by `-` (for example `/Users/you/Code/app` becomes `-Code-app`).
+- A cwd under the temporary root uses `-tmp-` plus the temp-relative path.
+- Every other cwd uses `--` plus the absolute path with the leading `/` removed, wrapped in `--`.
+
+The canonical session id lives in the session header line (`{"type":"session","id":"<uuid>","cwd":"...","version":3}`) — the filename prefix is just a timestamp. Unlike Pi, an Oh My Pi transcript starts with a `title` entry, so the session header is the second line of the file. Transcripts are read incrementally via byte offsets.
+
+### Commands
+
+Oh My Pi exposes a Telegram-safe command list built from its own command registry: `/agents`, `/append`, `/branch`, `/changelog`, `/clear`, `/compact`, `/context`, `/copy`, `/delete`, `/dirs`, `/dump`, `/export`, `/followup`, `/fork`, `/git`, `/handoff`, `/hotkeys`, `/jobs`, `/login`, `/logout`, `/mcp`, `/model`, `/new`, `/open`, `/plan`, `/queue`, `/quit`, `/restart`, `/session`, `/settings`, `/shake`, `/share`, `/stats`, `/switch`, `/todo`, `/tools`, `/tree`, and `/usage`. `/followup <message>` is ccgram's bridge to Oh My Pi's Ctrl+Q behavior: it queues the message after the current turn finishes instead of steering the active turn. `/new` and `/delete` start a fresh session, so ccgram clears the window's session binding after either one. `/clear` is a real Oh My Pi command that drops context in place and keeps the same session file, so it is forwarded as-is and does not reset ccgram's session tracking. `/resume` is not advertised because it collides with ccgram's bot-native session picker. Dynamic discovery surfaces four more sources:
+
+- **Skills** — `SKILL.md` under `~/.omp/agent/skills/<name>/`, `~/.agents/skills/<name>/`, `<project>/.omp/skills/<name>/`, or `<project>/.agents/skills/<name>/`. Loose `.md` files at the root of `~/.omp/agent/skills/` or `<project>/.omp/skills/` are also picked up.
+- **Prompt templates** — `.md` files under `~/.omp/agent/prompts/` or `<project>/.omp/prompts/`. Oh My Pi itself uses only the current directory, but ccgram walks the project ancestors up to the first `.git` ancestor, exactly as it does for Pi.
+- **Custom commands** — `.md` files under `~/.omp/agent/commands/` or `<project>/.omp/commands/`. Pi has no equivalent directory, so this source is Oh My Pi only.
+- **Extension and hook commands** — TypeScript/JavaScript files (`.ts`, `.js`, `.mjs`, `.cjs`) under `~/.omp/agent/extensions/`, `~/.omp/agent/hooks/pre/`, `~/.omp/agent/hooks/post/`, or the matching `<project>/.omp/` directories, scanned for `pi.registerCommand("name", ...)` calls. Oh My Pi extension factories receive the same legacy `pi` object as Pi, so one scan covers both. The walker prunes `node_modules`, `dist`, `build`, and `.git` before descent.
+
+Names collide-dedupe with first-source wins (builtins > skills > prompts > commands > extensions and hooks).
+
+### Status Detection
+
+CCGram installs no hooks for Oh My Pi. Status is inferred from transcript activity — idle when the latest assistant message has no pending tool calls, working when there are unreturned tool uses. With `herdr integration install omp`, the Herdr backend reports the native agent status instead.
+
+### Toolbar
+
+Oh My Pi's default toolbar omits Mode/Think/YOLO (Oh My Pi has no mode cycling) and adds a dedicated nav row for driving Oh My Pi's `/model` and `/session` pickers:
+
+- Row 1: `📷 Screen, ⏹ Ctrl-C, 📺 Live`
+- Row 2: `⎋ Esc, ⇥ Tab, π Model`
+- Row 3: `🔼 Up, ⏎ Enter, 🔽 Down`
+- Row 4: `📄 Last, 📥 Get File, ✖ Close`
+
+Override with a `[providers.omp]` block in `~/.ccgram/toolbar.toml`.
 
 ## Shell
 

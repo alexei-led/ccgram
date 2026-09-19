@@ -29,6 +29,7 @@ graph LR
     T3["💬 data — Gemini"]
     T4["💬 ops — Shell"]
     T5["💬 lab — Pi"]
+    T6["💬 gen — Oh My Pi"]
   end
 
   subgraph bridge["⚡ CCGram"]
@@ -45,6 +46,7 @@ graph LR
     W3["window @2 · gemini"]
     W4["window @3 · bash"]
     W5["window @4 · pi"]
+    W6["window @5 · omp"]
   end
 
   phone -- "messages / voice" --> bridge
@@ -56,14 +58,14 @@ graph LR
   style machine fill:#f0faf0,stroke:#2ea44f,stroke-width:2px,color:#333
 ```
 
-Each Telegram topic maps to one tmux window. With Herdr, it maps instead to one guarded agent session: `agent.list` is the sole identity source and CCGram persists only an opaque `herdr-session-v1-…` target, never a tab, pane, or terminal ID. Every Herdr agent topic is provider-prefixed and pane-qualified as `<Provider> ▸ <workspace> ▸ <tab> ▸ <pane>`, so Pi, Claude, Codex, and Gemini topics are easy to find while their labels remain stable when siblings join or leave the tab. Every action reads a fresh `agent.list` record and fails closed for missing, malformed, sessionless, or legacy bindings. Duplicate canonical targets are quarantined while unrelated sessions remain operational. Legacy locator bindings require explicit rebind and are never inferred from names. A session can still change after that guard and before Herdr dispatches, so delivery is not atomic and may be indeterminate after this post-guard race. With agterm, each topic maps to one durable agterm session UUID.
+Each Telegram topic maps to one tmux window. With Herdr, it maps instead to one guarded agent session: `agent.list` is the sole identity source and CCGram persists only an opaque `herdr-session-v1-…` target, never a tab, pane, or terminal ID. Every Herdr agent topic is provider-prefixed and pane-qualified as `<Provider> ▸ <workspace> ▸ <tab> ▸ <pane>`, so Oh My Pi, Pi, Claude, Codex, and Gemini topics are easy to find while their labels remain stable when siblings join or leave the tab. Every action reads a fresh `agent.list` record and fails closed for missing, malformed, sessionless, or legacy bindings. Duplicate canonical targets are quarantined while unrelated sessions remain operational. Legacy locator bindings require explicit rebind and are never inferred from names. A session can still change after that guard and before Herdr dispatches, so delivery is not atomic and may be indeterminate after this post-guard race. With agterm, each topic maps to one durable agterm session UUID.
 
 ---
 
 ## What You Can Do
 
 - **Bind agents to topics** — one agent per group or private-chat topic; create via directory browser
-- **Auto-detect providers** — Supports Claude Code, Codex, Gemini, Pi, and Shell simultaneously
+- **Auto-detect providers** — Supports Claude Code, Codex, Gemini, Oh My Pi, Pi, and Shell simultaneously
 - **Monitor live** — Terminal screenshots on demand or auto-refresh every 5 seconds
 - **Send commands** — Slash commands, voice messages (transcribed via Whisper), or raw shell input
 - **Run multiple agents in parallel** — each topic independent; run different agents at once
@@ -114,7 +116,7 @@ Get your user ID from [@userinfobot](https://t.me/userinfobot). For a group, get
 ccgram
 ```
 
-Open the configured group or private bot chat. Create a topic and send a message. The directory browser appears. Pick a project directory and an agent (Claude, Codex, Gemini, Pi, or Shell).
+Open the configured group or private bot chat. Create a topic and send a message. The directory browser appears. Pick a project directory and an agent (Claude, Codex, Gemini, Oh My Pi, Pi, or Shell).
 
 **Prerequisites:** Python 3.14+, [tmux](https://github.com/tmux/tmux), [herdr](https://github.com/ogulcancelik/herdr), or [agterm](https://github.com/umputun/agterm), and one agent CLI. CCGram does not modify agent SDKs.
 
@@ -124,10 +126,11 @@ CCGram supports Herdr protocols **14–22** and uses the public socket API for o
 
 ```bash
 herdr integration install pi
+herdr integration install omp
 herdr integration install antigravity-cli
 ```
 
-Restart an already-running agent after installation. Antigravity receives a native Herdr session identity after its first prompt creates a conversation.
+Restart an already-running agent after installation. Antigravity receives a native Herdr session identity after its first prompt creates a conversation. Herdr's Oh My Pi integration publishes the agent session and its working, blocked, or idle state, so Herdr's `agent.list` reports `agent: "omp"`.
 
 Start new agents, or restart already-running agents, after installing the integration so they publish their `agent_session` identity. Then set `CCGRAM_MULTIPLEXER=herdr` and run `ccgram hook --install` as usual.
 
@@ -150,7 +153,7 @@ Native Windows does not provide the Unix file locking, signal handling, and term
 ## Documentation
 
 - **[Guides](docs/guides.md)** — CLI reference, configuration, delivery/backlog safety, `/sync`, voice transcription, multi-instance setup, session recovery, testing
-- **[Providers](docs/providers.md)** — Claude Code, Codex, Gemini, Pi, Shell; transcript delivery, session modes, LLM config, custom commands, git worktrees
+- **[Providers](docs/providers.md)** — Claude Code, Codex, Gemini, Oh My Pi, Pi, Shell; transcript delivery, session modes, LLM config, custom commands, git worktrees
 - **[Architecture](docs/architecture.md)** — delivery queue, transcript watermark, and provider/three-backend multiplexer design
 
 ---

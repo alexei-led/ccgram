@@ -4,7 +4,7 @@ Generated from code state 2026-08-31.
 
 ## Herdr compatibility
 
-The Herdr adapter accepts socket protocols 14–22 without warnings and attempts compatible operations with a warning for other versions. Terminal operations and hook identity reads use the public JSON socket API; the CLI is used for socket discovery when no endpoint is configured. Pi requires `herdr integration install pi`; Antigravity requires `herdr integration install antigravity-cli`. Agents must be started or restarted after installation to load the integration and publish their `agent_session` identity. Sessionless detections fail closed and do not receive persistent topics. Antigravity reports its identity after the first prompt creates a conversation.
+The Herdr adapter accepts socket protocols 14–22 without warnings and attempts compatible operations with a warning for other versions. Terminal operations and hook identity reads use the public JSON socket API; the CLI is used for socket discovery when no endpoint is configured. Pi requires `herdr integration install pi`; Oh My Pi requires `herdr integration install omp`; Antigravity requires `herdr integration install antigravity-cli`. Agents must be started or restarted after installation to load the integration and publish their `agent_session` identity. Sessionless detections fail closed and do not receive persistent topics. Antigravity reports its identity after the first prompt creates a conversation.
 
 ## agterm compatibility
 
@@ -12,7 +12,7 @@ The Herdr adapter accepts socket protocols 14–22 without warnings and attempts
 
 ## System Overview
 
-ccgram maps each Telegram Forum topic to one terminal-multiplexer target running one agent CLI (Claude Code, Codex, Gemini, Pi, Antigravity, or Shell). Tmux routing remains keyed by window ID (`@0`, `@12`). Herdr routing is keyed only by opaque `herdr-session-v1-…` targets derived from `agent.list`; tab, pane, terminal, workspace, display, and focus values are short-lived locators inside a fresh guarded action, never persisted identity. Every Herdr session displays one pane-qualified topic, independent of sibling count. Missing, malformed, sessionless, and legacy targets fail closed; duplicate canonical targets are quarantined without disabling unrelated sessions; raw locator aliases and display-name recovery are never implicit. A target can change after the guard and before Herdr dispatches, so the adapter records a possible post-guard race rather than claiming atomic delivery. agterm routing is keyed by its durable session UUID. Multiplexer access goes through the `multiplexer/` seam (`Multiplexer` Protocol); tmux is the default backend, while herdr and agterm are selectable with `CCGRAM_MULTIPLEXER=herdr` and `CCGRAM_MULTIPLEXER=agterm`, respectively.
+ccgram maps each Telegram Forum topic to one terminal-multiplexer target running one agent CLI (Claude Code, Codex, Gemini, Pi, Oh My Pi, Antigravity, or Shell). Tmux routing remains keyed by window ID (`@0`, `@12`). Herdr routing is keyed only by opaque `herdr-session-v1-…` targets derived from `agent.list`; tab, pane, terminal, workspace, display, and focus values are short-lived locators inside a fresh guarded action, never persisted identity. Every Herdr session displays one pane-qualified topic, independent of sibling count. Missing, malformed, sessionless, and legacy targets fail closed; duplicate canonical targets are quarantined without disabling unrelated sessions; raw locator aliases and display-name recovery are never implicit. A target can change after the guard and before Herdr dispatches, so the adapter records a possible post-guard race rather than claiming atomic delivery. agterm routing is keyed by its durable session UUID. Multiplexer access goes through the `multiplexer/` seam (`Multiplexer` Protocol); tmux is the default backend, while herdr and agterm are selectable with `CCGRAM_MULTIPLEXER=herdr` and `CCGRAM_MULTIPLEXER=agterm`, respectively.
 
 ```mermaid
 graph TB
@@ -23,7 +23,7 @@ graph TB
     TC["telegram_client.py<br>TelegramClient Protocol<br>+ PTBTelegramClient adapter"]
     Handlers["handlers/<br>14 feature subpackages"]
     TmuxMgr["multiplexer/ seam <br> Multiplexer Protocol <br> (tmux default, herdr, agterm)"]
-    Windows["multiplexer windows <br> (Claude, Codex, Gemini, Pi, Antigravity, Shell)"]
+    Windows["multiplexer windows <br> (Claude, Codex, Gemini, Pi, Oh My Pi, Antigravity, Shell)"]
     Hook["hook.py<br>Claude Code hooks"]
     Monitor["session_monitor.py<br>poll loop"]
     State["State files<br>~/.ccgram/"]
@@ -100,7 +100,8 @@ graph TD
     subgraph providers["Provider Abstraction"]
         Base["providers/base.py<br>AgentProvider protocol<br>ProviderCapabilities"]
         Claude["providers/claude.py"]
-        Jsonl["providers/_jsonl.py<br>(Codex + Gemini + Pi + Antigravity base)"]
+        Jsonl["providers/_jsonl.py<br>(Codex + Gemini + Pi + Oh My Pi + Antigravity base)"]
+        Omp["providers/omp.py<br>(pi fork: omp session bucket + commands)"]
         Shell["providers/shell.py"]
     end
 
@@ -211,6 +212,7 @@ classDiagram
     class CodexProvider
     class GeminiProvider
     class PiProvider
+    class OmpProvider
     class AntigravityProvider
     class ShellProvider
 
@@ -219,6 +221,7 @@ classDiagram
     JsonlProvider <|-- CodexProvider
     JsonlProvider <|-- GeminiProvider
     JsonlProvider <|-- PiProvider
+    PiProvider <|-- OmpProvider
     JsonlProvider <|-- AntigravityProvider
     JsonlProvider <|-- ShellProvider
 ```
@@ -328,6 +331,7 @@ graph TB
 | Status-mode color schemes                         | `CCGRAM_STATUS_MODE` selects `system` (green = working) or `user` (green = ready) — only emoji rendering changes, not internal state names                                                                                                                                                                                                                                                                                                            |
 | Gemini JSONL incremental reads                    | Gemini CLI v0.40+ uses append-only JSONL; provider inherits `JsonlProvider` byte-offset reader, dedupes by message id and pending tool_use                                                                                                                                                                                                                                                                                                            |
 | Viewport screenshots                              | `/screenshot` and 📷 capture the current viewport with ANSI color; live view uses the same viewport capture at a smaller font size. `/last` (📄 Last toolbar button) delivers the last assistant reply text (AI providers, from transcript) or last command+output block (shell) as a message or `.txt` attachment for overflow                                                                                                                       |
+| Oh My Pi session buckets and header               | A pi fork with its own layout: buckets are `-<home-relative-path>` or `-tmp-<temp-relative>`, never pi's `--<encoded-cwd>--` form, and a `title` entry precedes the session header, so the header is the second line. `OmpProvider` subclasses `PiProvider`, overriding only the launch name, capabilities, bucket encoding, header scan, and command roots. It is hookless: status comes from transcript activity, or Herdr's native agent status.   |
 | Picker hints                                      | `ProviderCapabilities.tui_picker_commands` lists modal-opening slash commands; `forward._picker_hint()` adds a hint pointing at `/toolbar` when one is forwarded, with the hint text adapted to the resolved `ToolbarLayout`                                                                                                                                                                                                                          |
 | `handlers/` feature subpackages                   | Handlers are grouped into 14 feature subpackages; each `__init__.py` re-exports the public surface                                                                                                                                                                                                                                                                                                                                                    |
 | Constructor DI for stores                         | `SessionManager` constructs `WindowStateStore`/`ThreadRouter`/`UserPreferences`/`SessionMapSync` with explicit `schedule_save` callbacks; no `_wire_singletons` and no silent unwired defaults — `register_*_callback` fails loud                                                                                                                                                                                                                     |
