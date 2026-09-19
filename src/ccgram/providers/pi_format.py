@@ -13,11 +13,16 @@ an assistant message are ``text``, ``thinking`` (with ``thinkingSignature``),
 Parsers return ``(messages, pending)`` tuples so callers can chain pending-tool
 state across batches exactly like the Claude/Codex providers.  ``pending``
 maps ``toolCallId -> (raw_name, display_name)``.
+
+omp (Oh My Pi) writes the same v3 envelope, so this module parses its
+transcripts too; the only difference is that an omp file opens with a
+``type: title`` entry, which ``read_session_header`` scans past.
 """
 
 from __future__ import annotations
 
 import json
+from itertools import islice
 from typing import Any
 
 from ccgram.expandable_quote import format_expandable_quote
@@ -43,6 +48,10 @@ _TOOL_NAME_ALIASES: dict[str, str] = {
 
 _TOOL_RESULT_QUOTE_THRESHOLD = 3
 _PENDING_TUPLE_LEN = 2
+
+# How many leading lines to inspect for the session header. pi puts it first;
+# omp prepends a ``type:title`` entry, so neither can rely on line 1 alone.
+_HEADER_SCAN_LINES = 4
 
 # Pending value: (raw_name, display_name).
 Pending = dict[str, tuple[str, str]]
@@ -128,21 +137,28 @@ def parse_session_header(entry: dict[str, Any]) -> dict[str, str] | None:
 
 
 def read_session_header(file_path: str) -> dict[str, str] | None:
-    """Open a pi transcript file and parse its first line as a session header."""
+    """Open a transcript file and parse its session header entry.
+
+    The header is not always the first physical line: pi writes ``type:session``
+    first, while omp writes a ``type:title`` entry ahead of it, so the scan
+    walks ``_HEADER_SCAN_LINES`` lines and returns the first session entry.
+    """
     try:
         with open(file_path, encoding="utf-8") as fh:
-            first = fh.readline()
+            lines = list(islice(fh, _HEADER_SCAN_LINES))
     except OSError:
         return None
-    if not first:
-        return None
-    try:
-        data = json.loads(first)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(data, dict):
-        return None
-    return parse_session_header(data)
+    for line in lines:
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(data, dict):
+            continue
+        header = parse_session_header(data)
+        if header is not None:
+            return header
+    return None
 
 
 def _tool_call_block_to_message(

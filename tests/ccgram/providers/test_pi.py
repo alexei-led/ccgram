@@ -142,6 +142,30 @@ class TestReadSessionHeader:
         )
         assert read_session_header(str(path)) == {"id": "abc-123", "cwd": "/x"}
 
+    def test_reads_omp_header_behind_the_title_line(self, tmp_path: Path) -> None:
+        """omp opens a transcript with ``type:title`` before the header."""
+        path = tmp_path / "omp.jsonl"
+        path.write_text(
+            '{"type":"title","v":1,"title":"Fix the parser","source":"auto"}\n'
+            '{"type":"session","version":3,"id":"omp-123","cwd":"/work/app"}\n'
+            '{"type":"message","id":"m1"}\n'
+        )
+        assert read_session_header(str(path)) == {"id": "omp-123", "cwd": "/work/app"}
+
+    def test_session_entry_outside_the_scan_window_is_not_found(
+        self, tmp_path: Path
+    ) -> None:
+        """The scan is bounded: four leading non-session lines hide the header."""
+        path = tmp_path / "buried.jsonl"
+        path.write_text(
+            '{"type":"title","v":1,"title":"t"}\n'
+            '{"type":"model_change","model":"m"}\n'
+            '{"type":"thinking_level_change","level":"high"}\n'
+            '{"type":"message","id":"m1"}\n'
+            '{"type":"session","version":3,"id":"abc-123","cwd":"/x"}\n'
+        )
+        assert read_session_header(str(path)) is None
+
     def test_missing_file(self, tmp_path: Path) -> None:
         assert read_session_header(str(tmp_path / "nope.jsonl")) is None
 

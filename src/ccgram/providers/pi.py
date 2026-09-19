@@ -22,7 +22,6 @@ everything through it after ``shlex.quote`` for safety.
 from __future__ import annotations
 
 import shlex
-import time
 from pathlib import Path
 from typing import Any
 
@@ -42,7 +41,10 @@ from ccgram.providers.pi_format import (
     parse_bash_execution,
     parse_tool_result,
     parse_user,
-    read_session_header,
+)
+from ccgram.providers.session_scan import (
+    candidate_transcripts,
+    newest_matching_transcript,
 )
 
 
@@ -74,22 +76,7 @@ def encode_cwd_dirname(cwd: str) -> str:
 
 def _candidate_transcripts(cwd: str) -> list[tuple[float, Path]]:
     """Return ``(mtime, path)`` tuples for this cwd's sessions, newest first."""
-    session_dir = _pi_sessions_dir() / encode_cwd_dirname(cwd)
-    if not session_dir.is_dir():
-        return []
-    results: list[tuple[float, Path]] = []
-    try:
-        for entry in session_dir.iterdir():
-            if entry.suffix == ".jsonl" and entry.is_file():
-                try:
-                    mtime = entry.stat().st_mtime
-                except OSError:
-                    continue
-                results.append((mtime, entry))
-    except OSError:
-        return []
-    results.sort(key=lambda pair: pair[0], reverse=True)
-    return results
+    return candidate_transcripts(_pi_sessions_dir() / encode_cwd_dirname(cwd))
 
 
 def _parse_message_entry(
@@ -252,37 +239,16 @@ class PiProvider(JsonlProvider):
         max_age: float | None = None,
     ) -> SessionStartEvent | None:
         """Return the newest pi transcript whose header cwd matches."""
-        if not cwd:
-            return None
-
         age_limit = (
             _STALE_TRANSCRIPT_MAX_AGE_SECS if max_age is None else float(max_age)
         )
-        now = time.time()
-        try:
-            resolved_target = str(Path(cwd).resolve())
-        except OSError:
-            return None
-
-        for mtime, path in _candidate_transcripts(cwd)[:_DISCOVERY_SCAN_LIMIT]:
-            if age_limit > 0 and now - mtime > age_limit:
-                break
-            header = read_session_header(str(path))
-            if not header:
-                continue
-            try:
-                header_cwd = str(Path(header["cwd"]).resolve())
-            except OSError:
-                continue
-            if header_cwd != resolved_target:
-                continue
-            return SessionStartEvent(
-                session_id=header["id"],
-                cwd=header["cwd"],
-                transcript_path=str(path),
-                window_key=window_key,
-            )
-        return None
+        return newest_matching_transcript(
+            _pi_sessions_dir() / encode_cwd_dirname(cwd),
+            cwd,
+            window_key=window_key,
+            max_age=age_limit,
+            scan_limit=_DISCOVERY_SCAN_LIMIT,
+        )
 
     # ── Commands ─────────────────────────────────────────────────────────
 
