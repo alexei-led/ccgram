@@ -68,6 +68,10 @@ class BacklogSkipIntent:
     range_start: int
     skipped_count: int = 0
     purge_complete: bool = False
+    # Wall clock at barrier creation (0 = legacy record, stamped on first
+    # sight). Aged barriers are force-completed so an undeliverable notice
+    # cannot pause a source forever.
+    created_at: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -84,6 +88,7 @@ class BacklogSkipIntent:
             range_start=int(data.get("range_start", 0)),
             skipped_count=int(data.get("skipped_count", 0)),
             purge_complete=bool(data.get("purge_complete", False)),
+            created_at=float(data.get("created_at", 0.0)),
         )
 
 
@@ -198,6 +203,18 @@ class MonitorState:
         """Persist a skip barrier before any queued source work is retired."""
         self.pending_skips[intent.session_id] = intent
         self._dirty = True
+
+    def stamp_skip_clock(self, session_id: str, created_at: float) -> None:
+        """Persist an aging stamp for a legacy barrier record.
+
+        Direct attribute mutation would not mark the state dirty, so a
+        process restarting faster than the deadline would never age the
+        barrier out. One extra write ever, on first sight.
+        """
+        intent = self.pending_skips.get(session_id)
+        if intent is not None and not intent.created_at:
+            intent.created_at = created_at
+            self._dirty = True
 
     def update_skip_count(self, session_id: str, skipped_count: int) -> None:
         """Record the exact queued items retired for a pending skip."""
