@@ -284,7 +284,26 @@ def load_topic_emoji_config(path: str | Path | None = None) -> TopicEmojiConfig:
             legacy_dead=legacy_dead,
         )
 
-    raw = _read_toml(Path(path).expanduser())
+    # ``Path.expanduser`` raises ``RuntimeError`` (or ``KeyError`` on
+    # some platforms / older Python) when the leading ``~user`` cannot
+    # be resolved. The loader contract is "never raises", so catch and
+    # fall back to defaults with a warning instead of letting the
+    # raise escape into the status poll cycle.
+    try:
+        expanded_path = Path(path).expanduser()
+    except (RuntimeError, KeyError) as exc:
+        logger.warning(
+            "Topic emoji config path %s cannot be expanded (%s) — using defaults",
+            path,
+            exc,
+        )
+        return TopicEmojiConfig(
+            system_emoji=system_emoji,
+            user_emoji=user_emoji,
+            legacy_dead=legacy_dead,
+        )
+
+    raw = _read_toml(expanded_path)
     if raw is None:
         return TopicEmojiConfig(
             system_emoji=system_emoji,

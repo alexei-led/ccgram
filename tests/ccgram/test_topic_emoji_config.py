@@ -458,3 +458,16 @@ class TestRejectWhitespaceInEmoji:
             assert strip_emoji_prefix("A B C project") == "A B C project"
         finally:
             reload_topic_emoji_config()
+
+
+class TestExpandUserFailureFallback:
+    """Greptile PR #269 finding 2: ``Path(path).expanduser()`` raises
+    ``RuntimeError`` (or ``KeyError`` on some platforms) when the
+    ``~user`` prefix cannot be resolved. The loader contract says it
+    must never raise; verify we fall back to defaults with a warning."""
+
+    def test_unknown_user_falls_back_to_defaults(self) -> None:
+        cfg = load_topic_emoji_config("~nobody_xyz_abc_9999/topic_emoji.toml")
+        assert cfg.system_emoji == DEFAULT_SYSTEM_EMOJI
+        assert cfg.user_emoji == DEFAULT_USER_EMOJI
+        assert cfg.legacy_dead == LEGACY_DEAD_EMOJI
