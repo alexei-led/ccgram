@@ -501,7 +501,7 @@ class TestForwardMessage:
         sent_keys = []
 
         async def fake_send_keys(wid, key, **kw):
-            sent_keys.append((wid, key))
+            sent_keys.append((wid, key, kw))
             return True
 
         import ccgram.multiplexer as _mux_mod
@@ -523,8 +523,13 @@ class TestForwardMessage:
 
         await _forward_message("@0", 100, 42, "hello", bot, message)
 
-        # Escape was sent to dismiss the modal
-        assert any(k == "Escape" for _, k in sent_keys)
+        # Escape was sent as the KEY, not the literal word
+        escape_calls = [(k, kw) for _, k, kw in sent_keys if k == "Escape"]
+        assert escape_calls, "an Escape keypress was sent"
+        assert all(
+            kw.get("literal") is False and kw.get("enter") is False
+            for _, kw in escape_calls
+        ), "literal=True would type the word Escape into the modal"
         # Interactive mode was cleared (not refreshed)
         assert cleared, "clear_interactive_mode should have been called"
         # The text never reached the pane: no modal can treat it as an

@@ -506,7 +506,7 @@ async def _forward_message(
             # Lazy: text_handler ↔ polling cycle
             from ...multiplexer import multiplexer as _mux
 
-            await _mux.send_keys(window_id, "Escape", literal=True)
+            await _mux.send_keys(window_id, "Escape", enter=False, literal=False)
             await asyncio.sleep(0.3)
         except Exception:  # noqa: BLE001  # never block on Esc failure
             pass
