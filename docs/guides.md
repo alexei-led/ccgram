@@ -239,6 +239,7 @@ All settings accept both CLI flags and environment variables. CLI flags take pre
 | `CCGRAM_SEND_SEARCH_DEPTH`                            | `5`                            | Max directory depth for `/send` file search                                                          |
 | `CCGRAM_SEND_MAX_RESULTS`                             | `50`                           | Max file results returned by `/send` search                                                          |
 | `CCGRAM_TOOLBAR_CONFIG`                               | `~/.ccgram/toolbar.toml`       | Path to custom toolbar TOML; falls back to built-in defaults if missing                              |
+| `CCGRAM_TOPIC_EMOJI_CONFIG`                           | `~/.ccgram/topic_emoji.toml`   | Path to custom topic-emoji TOML; falls back to built-in defaults if missing                          |
 | `CCGRAM_STATUS_POLL_INTERVAL`                         | `1.0`                          | Status polling interval in seconds (min 0.5)                                                         |
 | `CCGRAM_YOLO_CONFIRMATION_TIMEOUT`                    | `30.0`                         | Seconds to wait for the YOLO confirmation prompt (min 1.0)                                           |
 | `CCGRAM_MINIAPP_BASE_URL`                             | _(disabled)_                   | Externally reachable HTTPS URL for the Mini App dashboard                                            |
@@ -261,6 +262,28 @@ Topic emojis change color to reflect agent status. The mapping between color and
 | `user`             | agent is idle / ready for input | agent is working | "does anything need my attention?" |
 
 Set globally via `CCGRAM_STATUS_MODE=user` or `--status-mode user`. Invalid values fall back to `system`.
+
+### Customizing the Glyphs
+
+The four state glyphs (`active`, `idle`, `done`, `dead`) can be replaced per mode via a TOML file at `~/.ccgram/topic_emoji.toml` (auto-detected) or at `$CCGRAM_TOPIC_EMOJI_CONFIG`. See [`docs/examples/topic_emoji.toml`](examples/topic_emoji.toml) for a fully annotated example.
+
+```toml
+[topic_emoji.system]
+active = "🚀"
+idle   = "💤"
+done   = "✅"
+dead   = "💥"
+
+[topic_emoji.user]
+active = "💤"
+idle   = "🚀"
+done   = "✅"
+dead   = "💥"
+```
+
+Missing keys fall back to the built-in default for that state; `done` and `dead` glyphs are shared between modes unless you override both tables. Malformed entries are logged and skipped — the loader never raises. The full default scheme is in `src/ccgram/topic_emoji_config.py`.
+
+Legacy dead-emoji cleanup (`strip_emoji_prefix` for titles left by older versions) can be extended via `[topic_emoji.legacy_dead].emojis = [...]`. The platform defaults are always preserved; user entries are appended.
 
 ## Status Bubble Visibility
 

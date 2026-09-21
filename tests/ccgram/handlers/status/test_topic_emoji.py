@@ -43,11 +43,14 @@ def _debounce_for(state: str) -> float:
 @pytest.fixture(autouse=True)
 def _reset():
     from ccgram.handlers.polling.polling_state import terminal_poll_state
+    from ccgram.handlers.status.topic_emoji import reload_topic_emoji_config
 
     reset_all_state()
     terminal_poll_state.reset_all_seen_status()
+    reload_topic_emoji_config()
     yield
     reset_all_state()
+    reload_topic_emoji_config()
     terminal_poll_state.reset_all_seen_status()
 
 
@@ -602,6 +605,89 @@ class TestStatusMode:
             chat_id=-100,
             message_thread_id=42,
             name=f"{EMOJI_GREEN_CIRCLE} myproject",
+        )
+
+
+class TestCustomTopicEmoji:
+    """End-to-end checks that a TOML override flows through to the
+    Telegram API call and to ``strip_emoji_prefix``."""
+
+    @pytest.fixture
+    def _custom_config(self, monkeypatch, tmp_path):
+        """Point the config at a TOML with a custom system.active glyph."""
+        from ccgram.config import config
+        from ccgram.handlers.status.topic_emoji import (
+            reload_topic_emoji_config,
+        )
+
+        f = tmp_path / "topic_emoji.toml"
+        f.write_text(
+            """
+            [topic_emoji.system]
+            active = "🚀"
+            idle = "💤"
+            done = "✅"
+            dead = "💥"
+
+            [topic_emoji.user]
+            active = "💤"
+            idle = "🚀"
+            done = "✅"
+            dead = "💥"
+            """
+        )
+        monkeypatch.setattr(config, "topic_emoji_config_path", str(f))
+        reload_topic_emoji_config()
+        yield
+        reload_topic_emoji_config()
+
+    async def test_custom_active_emoji_reaches_telegram(self, _custom_config) -> None:
+        bot = AsyncMock()
+        await _debounced_update(bot, -100, 42, "active", "myproject")
+        bot.edit_forum_topic.assert_called_once_with(
+            chat_id=-100,
+            message_thread_id=42,
+            name="🚀 myproject",
+        )
+
+    async def test_custom_idle_emoji_reaches_telegram(self, _custom_config) -> None:
+        bot = AsyncMock()
+        await _debounced_update(bot, -100, 42, "idle", "myproject")
+        bot.edit_forum_topic.assert_called_once_with(
+            chat_id=-100,
+            message_thread_id=42,
+            name="💤 myproject",
+        )
+
+    async def test_custom_done_emoji_reaches_telegram(self, _custom_config) -> None:
+        bot = AsyncMock()
+        await _debounced_update(bot, -100, 42, "done", "myproject")
+        bot.edit_forum_topic.assert_called_once_with(
+            chat_id=-100,
+            message_thread_id=42,
+            name="✅ myproject",
+        )
+
+    def test_strip_emoji_prefix_uses_custom_glyph(self, _custom_config) -> None:
+        """A name produced by a custom scheme must strip correctly on
+        the next rename cycle, otherwise names accumulate prefixes."""
+        from ccgram.handlers.status.topic_emoji import strip_emoji_prefix
+
+        assert strip_emoji_prefix("🚀 myproject") == "myproject"
+        assert strip_emoji_prefix("💤 myproject") == "myproject"
+
+    async def test_custom_emoji_with_user_mode(
+        self, _custom_config, monkeypatch
+    ) -> None:
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "status_mode", "user")
+        bot = AsyncMock()
+        await _debounced_update(bot, -100, 42, "active", "myproject")
+        bot.edit_forum_topic.assert_called_once_with(
+            chat_id=-100,
+            message_thread_id=42,
+            name="💤 myproject",
         )
 
 

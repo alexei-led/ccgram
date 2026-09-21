@@ -45,6 +45,21 @@ def _resolve_toolbar_path() -> str:
     return str(fallback) if fallback.exists() else ""
 
 
+def _resolve_topic_emoji_path() -> str:
+    """Resolve the topic-emoji TOML config path: env var → ~/.ccgram → empty.
+
+    Order:
+      1. ``$CCGRAM_TOPIC_EMOJI_CONFIG`` if set (used as-is, even if missing)
+      2. ``~/.ccgram/topic_emoji.toml`` if it exists
+      3. ``""`` (use built-in defaults)
+    """
+    env = os.getenv("CCGRAM_TOPIC_EMOJI_CONFIG", "").strip()
+    if env:
+        return env
+    fallback = ccgram_dir() / "topic_emoji.toml"
+    return str(fallback) if fallback.exists() else ""
+
+
 class Config:
     """Application configuration loaded from environment variables."""
 
@@ -218,6 +233,7 @@ class Config:
         self.prompt_mode = os.getenv("CCGRAM_PROMPT_MODE", "wrap")
         self.prompt_marker = os.getenv("CCGRAM_PROMPT_MARKER", "ccgram")
         self.toolbar_config_path: str = _resolve_toolbar_path()
+        self.topic_emoji_config_path: str = _resolve_topic_emoji_path()
         self.llm_provider: str = os.getenv("CCGRAM_LLM_PROVIDER", "")
         self.llm_api_key: str = os.getenv("CCGRAM_LLM_API_KEY", "")
         self.llm_base_url: str = os.getenv("CCGRAM_LLM_BASE_URL", "")

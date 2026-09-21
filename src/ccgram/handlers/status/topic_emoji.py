@@ -29,6 +29,16 @@ from ...config import config
 from ...telegram_client import TelegramClient
 from ...telegram_rate_limiter import retry_after_seconds
 from ...thread_router import thread_router
+from ...topic_emoji_config import (
+    EMOJI_DEAD,
+    EMOJI_DONE,
+    EMOJI_GREEN_CIRCLE,
+    EMOJI_RC,
+    EMOJI_YELLOW_CIRCLE,
+    EMOJI_YOLO,
+    TopicEmojiConfig,
+    load_topic_emoji_config,
+)
 from ...topic_state_registry import topic_state
 from ...window_query import get_approval_mode
 
@@ -38,41 +48,60 @@ logger = structlog.get_logger()
 # Which color maps to which state depends on ``config.status_mode`` (see
 # ``_state_emoji_map``). The constants are color-named (not state-named) so
 # that ``strip_emoji_prefix`` and tests work regardless of mode.
-EMOJI_GREEN_CIRCLE = "\U0001f7e2"
-EMOJI_YELLOW_CIRCLE = "\U0001f7e1"
-EMOJI_DONE = "\u2705"  # Check mark (agent exited normally)
-EMOJI_DEAD = "\U0001f4a5"  # Collision / crash
-EMOJI_YOLO = "\U0001f3b2"  # Dice (risk/gamble — auto-approve mode)
-EMOJI_RC = "\U0001f4e1"  # Satellite dish (Remote Control active)
-_EMOJI_DEAD_OLD = (
-    "\u26ab",
-    "\u274c",
-)  # Legacy dead emoji (black circle pre-2026-02, cross mark pre-2026-03)
+# The actual default values live in ``topic_emoji_config.py`` and may be
+# overridden by the user's TOML (see ``load_topic_emoji_config``).
 
 # Backward-compatible aliases — original (system-mode) defaults.
 EMOJI_ACTIVE = EMOJI_GREEN_CIRCLE
 EMOJI_IDLE = EMOJI_YELLOW_CIRCLE
 
-# State → emoji mapping.
-#   system mode (default): green=active (working), yellow=idle (paused).
-#   user mode:             green=idle (waiting for me), yellow=active (busy).
-_STATE_EMOJI_SYSTEM: dict[str, str] = {
-    "active": EMOJI_GREEN_CIRCLE,
-    "idle": EMOJI_YELLOW_CIRCLE,
-    "done": EMOJI_DONE,
-    "dead": EMOJI_DEAD,
-}
-_STATE_EMOJI_USER: dict[str, str] = {
-    "active": EMOJI_YELLOW_CIRCLE,
-    "idle": EMOJI_GREEN_CIRCLE,
-    "done": EMOJI_DONE,
-    "dead": EMOJI_DEAD,
-}
+
+# ──────────────────────────────────────────────────────────────────────
+# Loaded config (lazy singleton)
+# ──────────────────────────────────────────────────────────────────────
+
+_topic_emoji_cfg: TopicEmojiConfig | None = None
+
+
+def get_topic_emoji_config() -> TopicEmojiConfig:
+    """Return the loaded ``TopicEmojiConfig``, lazy-loading on first access.
+
+    The config is read once from ``config.topic_emoji_config_path``
+    (resolved in ``config.py`` from ``CCGRAM_TOPIC_EMOJI_CONFIG`` →
+    ``~/.ccgram/topic_emoji.toml`` → built-in defaults). Subsequent
+    calls reuse the cached instance. Use ``reload_topic_emoji_config()``
+    in tests to force a re-read after mutating the path.
+    """
+    global _topic_emoji_cfg  # noqa: PLW0603
+    if _topic_emoji_cfg is None:
+        _topic_emoji_cfg = load_topic_emoji_config(config.topic_emoji_config_path)
+    return _topic_emoji_cfg
+
+
+def reload_topic_emoji_config() -> None:
+    """Force-reload of the topic-emoji config. Used by tests."""
+    global _topic_emoji_cfg  # noqa: PLW0603
+    _topic_emoji_cfg = None
 
 
 def _state_emoji_map() -> dict[str, str]:
-    """Return the active state→emoji table for the configured status mode."""
-    return _STATE_EMOJI_USER if config.status_mode == "user" else _STATE_EMOJI_SYSTEM
+    """Return the active state→emoji table for the configured status mode.
+
+    Reads from the user-customizable config (TOML overrides + built-in
+    defaults). The mapping is mode-specific: ``system`` mode (default)
+    emits green for active / yellow for idle; ``user`` mode swaps them.
+    ``done`` and ``dead`` are shared across modes.
+    """
+    return get_topic_emoji_config().for_mode(config.status_mode)
+
+
+def _legacy_dead_emoji() -> tuple[str, ...]:
+    """Return the legacy dead-emoji strip list.
+
+    The loader appends user-provided entries to the built-in set so
+    platform defaults are never silently lost.
+    """
+    return get_topic_emoji_config().legacy_dead
 
 
 # Debounce: state must be stable for this many seconds before updating topic name.
@@ -468,8 +497,26 @@ async def update_topic_emoji(
 
 
 def strip_emoji_prefix(name: str) -> str:
-    """Remove known emoji prefix from a topic name."""
-    for emoji in (EMOJI_ACTIVE, EMOJI_IDLE, EMOJI_DONE, EMOJI_DEAD, *_EMOJI_DEAD_OLD):
+    """Remove known emoji prefix from a topic name.
+
+    The state prefix is read from the user-customizable config so that
+    names produced by a customized scheme strip correctly. The legacy
+    dead-emoji list is also config-driven; ``_legacy_dead_emoji`` always
+    includes the platform defaults.
+    """
+    state_table = _state_emoji_map()
+    legacy = _legacy_dead_emoji()
+    # Build the candidate list in a single pass: current active/idle/done/dead
+    # plus any legacy dead emoji the loader knows about. Order is
+    # deterministic so two calls with the same config see the same list.
+    state_prefixes = (
+        state_table.get("active", EMOJI_ACTIVE),
+        state_table.get("idle", EMOJI_IDLE),
+        state_table.get("done", EMOJI_DONE),
+        state_table.get("dead", EMOJI_DEAD),
+        *legacy,
+    )
+    for emoji in state_prefixes:
         prefix = f"{emoji} "
         if name.startswith(prefix):
             name = name[len(prefix) :]

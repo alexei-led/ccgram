@@ -1,0 +1,78 @@
+# ccgram topic-emoji configuration — example
+#
+# Save this file as ~/.ccgram/topic_emoji.toml (auto-detected) or set
+# CCGRAM_TOPIC_EMOJI_CONFIG=/path/to/topic_emoji.toml to override the path.
+#
+# Telegram forum-topic titles are prefixed with a status glyph. The four
+# states are:
+#
+#   active  — the agent is currently working (running a tool, thinking, etc.)
+#   idle    — the agent has paused and is waiting for input
+#   done    — the agent exited normally (Claude Stop event, shell prompt)
+#   dead    — the terminal session closed unexpectedly (window gone)
+#
+# Two preset color schemes are available via CCGRAM_STATUS_MODE:
+#
+#   "system" (default) — green=active, yellow=idle ("system POV: green=working")
+#   "user"             — green=idle,   yellow=active ("user POV: green=ready for me")
+#
+# You can override any state's glyph for either mode below. Missing keys
+# fall back to the built-in default for that state. Malformed entries are
+# logged as warnings and skipped — the loader never raises.
+#
+# The full default scheme is:
+#   system: active=🟢 idle=🟡 done=✅ dead=💥
+#   user:   active=🟡 idle=🟢 done=✅ dead=💥
+#
+# Built-in defaults are defined in src/ccgram/topic_emoji_config.py.
+
+
+# ──────────────────────────────────────────────────────────────────────
+# System mode (default) — green=active, yellow=idle
+# ──────────────────────────────────────────────────────────────────────
+
+[topic_emoji.system]
+# active = "🟢"   # default
+# idle   = "🟡"   # default
+# done   = "✅"   # default
+# dead   = "💥"   # default
+
+# Example: prefer hearts and arrows over the default color circles.
+# active = "🚀"
+# idle   = "💤"
+# done   = "🎉"
+# dead   = "🪦"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# User mode — green=idle, yellow=active
+#
+# These glyphs are only used when CCGRAM_STATUS_MODE=user (or
+# --status-mode user). Override them independently of system mode.
+# ──────────────────────────────────────────────────────────────────────
+
+[topic_emoji.user]
+# active = "🟡"   # default
+# idle   = "🟢"   # default
+# done   = "✅"   # default
+# dead   = "💥"   # default
+
+# Example: invert the system mode glyphs to fire-themed colors.
+# active = "🔥"
+# idle   = "❄️"
+# done   = "✅"
+# dead   = "💥"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Legacy dead-emoji strip list (advanced)
+#
+# ``strip_emoji_prefix`` consults this list to clean up titles left by
+# older versions of ccgram. The platform defaults (⚫ pre-2026-02,
+# ❌ pre-2026-03) are always included; entries here are APPENDED, never
+# replacing the defaults. Use this if you have a stale Telegram name
+# from a custom scheme you used to run.
+# ──────────────────────────────────────────────────────────────────────
+
+# [topic_emoji.legacy_dead]
+# emojis = ["🪦", "⛔"]
