@@ -471,3 +471,29 @@ class TestExpandUserFailureFallback:
         assert cfg.system_emoji == DEFAULT_SYSTEM_EMOJI
         assert cfg.user_emoji == DEFAULT_USER_EMOJI
         assert cfg.legacy_dead == LEGACY_DEAD_EMOJI
+
+
+class TestRejectFalseyTopicEmojiSection:
+    """Greptile PR #269 finding 3: ``raw.get(\"topic_emoji\") or {}``
+    silently coerced falsey TOML values (``false``, ``0``, ``\"\"``,
+    ``[]``) into an empty dict, hiding misconfiguration. Use the
+    default-only fallback form so a supplied non-dict is warned about."""
+
+    @pytest.mark.parametrize("value", ["false", "0", '""', "[]"])
+    def test_falsey_section_value_falls_back_to_defaults(
+        self, tmp_path: Path, value: str
+    ) -> None:
+        f = tmp_path / "topic_emoji.toml"
+        f.write_text(f"topic_emoji = {value}\n")
+        cfg = load_topic_emoji_config(f)
+        assert cfg.system_emoji == DEFAULT_SYSTEM_EMOJI
+        assert cfg.user_emoji == DEFAULT_USER_EMOJI
+
+    def test_missing_section_still_returns_defaults(self, tmp_path: Path) -> None:
+        """No ``[topic_emoji]`` section at all must still produce
+        defaults — the fix is about distinguishing missing from falsey."""
+        f = tmp_path / "topic_emoji.toml"
+        f.write_text("# empty file\n")
+        cfg = load_topic_emoji_config(f)
+        assert cfg.system_emoji == DEFAULT_SYSTEM_EMOJI
+        assert cfg.user_emoji == DEFAULT_USER_EMOJI

@@ -311,7 +311,12 @@ def load_topic_emoji_config(path: str | Path | None = None) -> TopicEmojiConfig:
             legacy_dead=legacy_dead,
         )
 
-    section = raw.get("topic_emoji") or {}
+    # Use ``raw.get("topic_emoji", {})`` rather than ``raw.get("topic_emoji") or {}``
+    # so an explicit ``topic_emoji = false`` / ``0`` / ``""`` / ``[]`` is
+    # detected as a type error and warned about. The ``or {}`` form would
+    # silently treat every falsey value as "missing" and apply defaults
+    # without logging, masking a real misconfiguration.
+    section = raw.get("topic_emoji", {})
     if not isinstance(section, dict):
         logger.warning(
             "Topic emoji config: [topic_emoji] must be a table — using defaults"
