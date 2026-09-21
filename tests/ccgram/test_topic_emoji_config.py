@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from ccgram.topic_emoji_config import (
     DEFAULT_SYSTEM_EMOJI,
     DEFAULT_USER_EMOJI,
@@ -392,3 +394,67 @@ class TestSingleton:
         reload_topic_emoji_config()
         second = get_topic_emoji_config()
         assert second.system_emoji["active"] == "🐢"
+
+
+# ── Greptile PR review regressions ──────────────────────────────────────
+
+
+class TestRejectWhitespaceInEmoji:
+    """Greptile PR #269 finding 1: a whitespace-containing emoji value
+    would let ``strip_emoji_prefix`` match a non-prefix and corrupt the
+    cached clean name (e.g. ``active="A B"`` vs ``idle="A B C"``).
+    Loader must reject any ASCII-whitespace character and keep the
+    default for that state."""
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "A B",  # single space
+            "A  B",  # multiple spaces
+            "A\tB",  # tab
+            "A\nB",  # newline
+        ],
+    )
+    def test_internal_whitespace_value_is_rejected(
+        self, tmp_path: Path, value: str
+    ) -> None:
+        f = tmp_path / "topic_emoji.toml"
+        toml_value = value.replace("\n", "\\n").replace("\t", "\\t")
+        f.write_text(
+            f'''
+            [topic_emoji.system]
+            active = "{toml_value}"
+            '''
+        )
+        cfg = load_topic_emoji_config(f)
+        assert cfg.system_emoji["active"] == DEFAULT_SYSTEM_EMOJI["active"]
+
+    def test_strip_does_not_corrupt_name_after_rejection(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """End-to-end: with ``active="A B"`` rejected at load time,
+        ``strip_emoji_prefix`` cannot pick up a partial-match prefix
+        because ``A B`` is never in the candidate list."""
+        from ccgram.config import config
+        from ccgram.handlers.status.topic_emoji import (
+            reload_topic_emoji_config,
+            strip_emoji_prefix,
+        )
+
+        f = tmp_path / "topic_emoji.toml"
+        f.write_text(
+            """
+            [topic_emoji.system]
+            active = "A B"
+            idle = "A B C"
+            """
+        )
+        monkeypatch.setattr(config, "topic_emoji_config_path", str(f))
+        reload_topic_emoji_config()
+        try:
+            # Idle title — must not match anything that strips to a
+            # corrupted clean name. With the rejection in place, only
+            # the legitimate defaults are candidates.
+            assert strip_emoji_prefix("A B C project") == "A B C project"
+        finally:
+            reload_topic_emoji_config()

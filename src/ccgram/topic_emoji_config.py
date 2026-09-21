@@ -146,7 +146,13 @@ def _coerce_emoji(raw: object, *, context: str) -> str | None:
     ``context`` is a short label for log messages — e.g. ``"system.active"``.
     Accepts strings only; numbers, lists, and other TOML scalars are
     rejected. Empty / whitespace-only strings are rejected (the loader
-    must not silently drop a glyph).
+    must not silently drop a glyph). Strings containing ASCII whitespace
+    in the middle are also rejected — the prefix strip in
+    ``strip_emoji_prefix`` uses ``f"{emoji} "`` as the match key, so an
+    emoji with an internal space would match a prefix that isn't really
+    a prefix and corrupt the cached clean name (e.g. ``active="A B"``
+    vs ``idle="A B C"`` strips ``"A B "`` from an idle title and leaves
+    ``"C project"``).
     """
     if not isinstance(raw, str):
         logger.warning(
@@ -159,6 +165,12 @@ def _coerce_emoji(raw: object, *, context: str) -> str | None:
     if not stripped:
         logger.warning(
             "Topic emoji config: %s is empty, ignoring (use the default)",
+            context,
+        )
+        return None
+    if any(char.isspace() for char in stripped):
+        logger.warning(
+            "Topic emoji config: %s must not contain whitespace, ignoring",
             context,
         )
         return None
