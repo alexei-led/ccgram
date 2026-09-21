@@ -30,8 +30,8 @@ from ...telegram_client import TelegramClient
 from ...telegram_rate_limiter import retry_after_seconds
 from ...thread_router import thread_router
 from ...topic_emoji_config import (
-    EMOJI_DEAD,
-    EMOJI_DONE,
+    EMOJI_DEAD,  # noqa: F401 — re-exported for back-compat with test imports
+    EMOJI_DONE,  # noqa: F401 — re-exported for back-compat with test imports
     EMOJI_GREEN_CIRCLE,
     EMOJI_RC,
     EMOJI_YELLOW_CIRCLE,
@@ -499,23 +499,29 @@ async def update_topic_emoji(
 def strip_emoji_prefix(name: str) -> str:
     """Remove known emoji prefix from a topic name.
 
-    The state prefix is read from the user-customizable config so that
-    names produced by a customized scheme strip correctly. The legacy
-    dead-emoji list is also config-driven; ``_legacy_dead_emoji`` always
-    includes the platform defaults.
+    The candidate list is the **union** of both modes' state tables so
+    that a glyph customized under only ``[topic_emoji.system]`` (or
+    only ``[topic_emoji.user]``) is still recognized as a strip target
+    after a mode switch via ``CCGRAM_STATUS_MODE``. Without this, the
+    inactive mode's custom prefix would survive ``strip_emoji_prefix``
+    and accumulate on every rename cycle.
+
+    Legacy dead emoji (configurable via
+    ``[topic_emoji.legacy_dead].emojis``) are appended so titles left by
+    older ccgram installs strip cleanly.
     """
-    state_table = _state_emoji_map()
-    legacy = _legacy_dead_emoji()
-    # Build the candidate list in a single pass: current active/idle/done/dead
-    # plus any legacy dead emoji the loader knows about. Order is
-    # deterministic so two calls with the same config see the same list.
-    state_prefixes = (
-        state_table.get("active", EMOJI_ACTIVE),
-        state_table.get("idle", EMOJI_IDLE),
-        state_table.get("done", EMOJI_DONE),
-        state_table.get("dead", EMOJI_DEAD),
-        *legacy,
-    )
+    cfg = get_topic_emoji_config()
+    # Union both modes' state glyphs — see class docstring for the
+    # reasoning. Insertion order is preserved by ``dict.fromkeys`` so
+    # the strip list stays deterministic across calls with the same
+    # config (the strip itself picks the first match, so order only
+    # matters if two candidates share a prefix — which a set can't).
+    candidates: list[str] = []
+    for table in (cfg.system_emoji, cfg.user_emoji):
+        for state in ("active", "idle", "done", "dead"):
+            candidates.append(table.get(state, ""))
+    candidates.extend(cfg.legacy_dead)
+    state_prefixes = tuple(dict.fromkeys(c for c in candidates if c))
     for emoji in state_prefixes:
         prefix = f"{emoji} "
         if name.startswith(prefix):

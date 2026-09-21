@@ -691,6 +691,84 @@ class TestCustomTopicEmoji:
         )
 
 
+class TestStripAcrossModeSwitch:
+    """Regression: a glyph customized under only one mode must remain
+    a strip target after switching to the other mode, otherwise the
+    prefix accumulates on every rename cycle."""
+
+    @pytest.fixture
+    def _system_only_rocket(self, monkeypatch, tmp_path):
+        """Set ``[topic_emoji.system].active = "🚀"``; user mode keeps
+        its built-in defaults so 🚀 is unique to system mode."""
+        from ccgram.config import config
+        from ccgram.handlers.status.topic_emoji import reload_topic_emoji_config
+
+        f = tmp_path / "topic_emoji.toml"
+        f.write_text(
+            """
+            [topic_emoji.system]
+            active = "🚀"
+            """
+        )
+        monkeypatch.setattr(config, "topic_emoji_config_path", str(f))
+        reload_topic_emoji_config()
+        yield
+        reload_topic_emoji_config()
+
+    def test_strips_rocket_in_system_mode(self, _system_only_rocket) -> None:
+        from ccgram.handlers.status.topic_emoji import strip_emoji_prefix
+
+        assert strip_emoji_prefix("🚀 myproject") == "myproject"
+
+    def test_strips_rocket_in_user_mode(self, _system_only_rocket, monkeypatch) -> None:
+        """Switching to user mode must not break the strip — 🚀 is not
+        in user mode's table but is a state glyph we once wrote, so it
+        still appears at the start of names left by the previous mode."""
+        from ccgram.config import config
+        from ccgram.handlers.status.topic_emoji import strip_emoji_prefix
+
+        monkeypatch.setattr(config, "status_mode", "user")
+        assert strip_emoji_prefix("🚀 myproject") == "myproject"
+
+    async def test_rename_cycle_does_not_accumulate_after_mode_switch(
+        self, _system_only_rocket, monkeypatch
+    ) -> None:
+        """End-to-end: a clean name carried over from system mode must
+        not pick up a stale 🚀 prefix on every user-mode rename cycle.
+
+        Uses a state transition (active → idle) in the second cycle so
+        the rename actually fires through the debounce — a same-state
+        rename is correctly suppressed by the no-op detection logic.
+        """
+        from ccgram.config import config
+
+        bot = AsyncMock()
+        # System-mode cycle establishes the topic with 🚀 prefix.
+        monkeypatch.setattr(config, "status_mode", "system")
+        await _debounced_update(bot, -100, 42, "active", "myproject")
+        bot.edit_forum_topic.assert_called_once_with(
+            chat_id=-100,
+            message_thread_id=42,
+            name="🚀 myproject",
+        )
+        bot.edit_forum_topic.reset_mock()
+
+        # Now switch to user mode. Telegram still has "🚀 myproject" as
+        # the topic title; ccgram's poller reads it back and passes it
+        # as ``display_name``. State transitions to idle so the rename
+        # actually fires (same-state renames are correctly suppressed).
+        # If 🚀 is NOT in the strip candidate list for user mode, the
+        # cached clean name accumulates the stale prefix and the new
+        # compose produces "🟢 🚀 myproject" instead of "🟢 myproject".
+        monkeypatch.setattr(config, "status_mode", "user")
+        await _debounced_update(bot, -100, 42, "idle", "🚀 myproject")
+        bot.edit_forum_topic.assert_called_once_with(
+            chat_id=-100,
+            message_thread_id=42,
+            name="🟢 myproject",
+        )
+
+
 MOD = "ccgram.handlers.status.topic_emoji"
 
 
