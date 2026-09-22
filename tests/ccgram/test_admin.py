@@ -32,8 +32,11 @@ def _admin_env(tmp_path, monkeypatch):
     thread_router.reset()
 
 
+_RECORD_SEQ = iter(range(1000))
+
+
 def _record(command: str, **args) -> dict:
-    return {"id": "cmd-1", "command": command, "args": args}
+    return {"id": f"cmd-{next(_RECORD_SEQ)}", "command": command, "args": args}
 
 
 class TestSubmitAndRead:
@@ -221,7 +224,9 @@ class TestOwnershipAndTruncation:
         assert not result["ok"]
         assert "another user" in result["detail"]
 
-    def test_truncation_skips_to_eof_instead_of_replaying(self, tmp_path) -> None:
+    def test_truncation_rereads_retained_but_dedup_skips_executed(
+        self, tmp_path
+    ) -> None:
         import json as _json
 
         path = tmp_path / "admin_commands.jsonl"
@@ -233,11 +238,20 @@ class TestOwnershipAndTruncation:
         first, offset = read_new_commands(path, 0)
         assert len(first) == 5
 
-        # Rotated to a smaller retained history: no replay, jump to EOF.
-        path.write_text("".join(records[:2]))
+        # Rotated to a smaller retained history PLUS one new command: the
+        # re-read returns the retained lines, and the consumer's id dedup
+        # must skip them while still executing the new one.
+        new_cmd = _json.dumps(_record("sync")) + "\n"
+        path.write_text("".join(records[:2]) + new_cmd)
         again, offset2 = read_new_commands(path, offset)
-        assert again == []
-        assert offset2 == path.stat().st_size
+        assert [r["command"] for r in again] == [
+            "unbind",
+            "unbind",
+            "sync",
+        ]
+        admin_mod._EXECUTED_COMMAND_IDS.update(r["id"] for r in first)
+        fresh = [r for r in again if r["id"] not in admin_mod._EXECUTED_COMMAND_IDS]
+        assert [r["command"] for r in fresh] == ["sync"]
 
 
 class TestWaitForResult:

@@ -87,13 +87,16 @@ def read_new_commands(path: Path, offset: int) -> tuple[list[dict], int]:
         size = path.stat().st_size
     except OSError:
         return [], offset
+    start = offset
     if size < offset:
-        # Truncated or rotated: retained lines already executed once;
-        # replaying them would re-run real mutations. Skip to EOF.
-        return [], size
+        # Truncated or rotated: re-read the retained lines from the start;
+        # the consumer's id dedup skips the ones already executed, so a
+        # command appended into the shorter file before the next poll is
+        # still picked up instead of being lost past the stale offset.
+        start = 0
     try:
         with open(path) as commands_f:
-            commands_f.seek(offset)
+            commands_f.seek(start)
             lines = commands_f.read().splitlines()
             new_offset = commands_f.tell()
     except OSError, UnicodeDecodeError:
@@ -412,10 +415,21 @@ async def _cmd_sync(command_id: str, client: Any) -> dict:
     )
 
 
+# Executed-command ids, in-memory: the restart EOF-skip covers history,
+# and this set makes a post-truncation re-read of retained lines a no-op.
+_EXECUTED_COMMAND_IDS: set[str] = set()
+_EXECUTED_COMMAND_IDS_CAP = 4096
+
+
 async def consume_admin_commands(client: Any, offset: int = 0) -> int:
     """One pass: execute every pending command, append every result."""
     records, new_offset = read_new_commands(_commands_path(), offset)
+    fresh = [r for r in records if r["id"] not in _EXECUTED_COMMAND_IDS]
+    if len(_EXECUTED_COMMAND_IDS) > _EXECUTED_COMMAND_IDS_CAP:
+        _EXECUTED_COMMAND_IDS.clear()
     for record in records:
+        _EXECUTED_COMMAND_IDS.add(record["id"])
+    for record in fresh:
         result = await execute_admin_command(record, client)
         try:
             append_admin_result(result)
