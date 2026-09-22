@@ -353,6 +353,7 @@ async def _handle_dead_window_notification(
     # paths both call this for the same window and could otherwise both pass the
     # guard above before either marks, sending two notifications.
     lc.mark_dead_notified(user_id, thread_id, wid)
+    retained = False
     try:
         chat_ids = _exact_dead_topic_chat_ids(user_id, thread_id, wid)
         if chat_ids is None:
@@ -372,9 +373,12 @@ async def _handle_dead_window_notification(
                 thread_id=thread_id,
                 window_id=wid,
             )
-            # Keep the marker sticky: the retained binding keeps this
-            # topic in the tick set, and a cleared marker would re-run
-            # the presence probe and this log line every poll cycle.
+            # Keep the marker sticky ONLY for this confirmed-dead retain:
+            # the retained binding keeps this topic in the tick set, and a
+            # cleared marker would re-run the presence probe and this log
+            # line every poll cycle. Not-dead exits below clear it, so a
+            # live or unverifiable window keeps its retry semantics.
+            retained = True
             return
         for chat_id in chat_ids:
             if is_pending_creation(wid):
@@ -385,7 +389,7 @@ async def _handle_dead_window_notification(
             if outcome == "rate_limited":
                 break
     finally:
-        if _AUTODELETE_DEAD_TOPICS:
+        if not retained:
             lc.clear_dead_notification(user_id, thread_id)
 
 

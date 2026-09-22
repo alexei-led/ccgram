@@ -24,7 +24,6 @@ from ..topics.topic_lifecycle import (
     probe_topic_existence,
     prune_stale_state,
 )
-from .window_tick.apply import _AUTODELETE_DEAD_TOPICS
 
 if TYPE_CHECKING:
     from ...multiplexer.base import WindowRef as TmuxWindow
@@ -57,12 +56,12 @@ async def run_periodic_tasks(
         await prune_stale_state(all_windows)
         if not recovery.get("rate_limited"):
             await probe_topic_existence(client)
-            # Retired-topic records only exist when deletion ran; with
-            # autodelete off the drain would still delete records left
-            # over from before the flag flipped, against the operator's
-            # intent, so it stays off with the knob.
-            if _AUTODELETE_DEAD_TOPICS:
-                await cleanup_retired_topics(client)
+            # The drain retries failed deletions from ANY retire path
+            # (explicit unbind --delete, failed provisioning, system
+            # replacement), not only dead-session retention; it is not
+            # gated on the autodelete knob, which governs only the
+            # automatic dead-session deletion itself.
+            await cleanup_retired_topics(client)
         log_throttle_sweep()
 
 
