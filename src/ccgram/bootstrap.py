@@ -330,15 +330,23 @@ def start_admin_consumer(application: Application) -> asyncio.Task[None]:
     """
     global _admin_consumer_task
 
+    # Capture the starting offset SYNCHRONOUSLY: a command appended after
+    # create_task but before the loop first runs must not be skipped as
+    # pre-start history.
+    # Lazy: admin imports the handler stack on execution paths only.
+    from .admin import current_command_offset
+
+    start_offset = current_command_offset()
+
     async def _admin_loop() -> None:
         # Lazy: admin imports the handler stack on execution paths only.
-        from .admin import consume_admin_commands, current_command_offset
+        from .admin import consume_admin_commands
 
         client = PTBTelegramClient(application.bot)
         # Start at EOF: commands from before this process started have no
         # requester waiting (their CLI timed out long ago), and replaying
         # them would re-run real deletions on every restart.
-        offset = current_command_offset()
+        offset = start_offset
         while True:
             try:
                 offset = await consume_admin_commands(client, offset)

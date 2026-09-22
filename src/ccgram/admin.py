@@ -88,7 +88,9 @@ def read_new_commands(path: Path, offset: int) -> tuple[list[dict], int]:
     except OSError:
         return [], offset
     if size < offset:
-        offset = 0  # truncated or rotated: start over
+        # Truncated or rotated: retained lines already executed once;
+        # replaying them would re-run real mutations. Skip to EOF.
+        return [], size
     try:
         with open(path) as commands_f:
             commands_f.seek(offset)
@@ -171,6 +173,26 @@ async def execute_admin_command(record: dict, client: Any) -> dict:
         return _result(command_id, str(command), False, f"error: {exc}")
 
 
+def _binding_owner_mismatch(user_id: int, chat_id: int, thread_id: int) -> bool:
+    """True when the (chat, thread) binding exists but belongs to another user.
+
+    The chat-scoped lookup ignores the owner, so a mistyped user id must
+    not mutate someone else's binding.
+    """
+    # Lazy: keeps the CLI import path free of the runtime stack
+    from .thread_router import thread_router
+
+    for (
+        owner,
+        bound_chat,
+        bound_thread,
+        _wid,
+    ) in thread_router.iter_thread_bindings_with_chat():
+        if bound_chat == chat_id and bound_thread == thread_id:
+            return owner != user_id
+    return False
+
+
 def _required_ints(args: dict, names: list[str]) -> tuple[dict, str | None]:
     """Return the named integer arguments, or an error message."""
     values: dict[str, int] = {}
@@ -201,12 +223,17 @@ async def _cmd_bind(command_id: str, args: dict) -> dict:
     from .thread_router import thread_router
 
     presence = await window_presence(window_id, multiplexer)
-    if presence is False:
+    if presence is not True:
+        # Confirmed dead OR unknown (backend unreachable, or an id outside
+        # this backend's namespace, which is how a truncated id looks):
+        # refuse. An explicit-request bind must still name a window the
+        # backend actually attests (2026-09-22: a truncated digest bound
+        # through the previous unknown-passes hole).
         return _result(
             command_id,
             "bind",
             False,
-            f"window {window_id} is not live",
+            f"window {window_id} is not confirmed live (presence: {presence})",
         )
     previous = thread_router.get_window_for_chat_thread(
         values["chat_id"], values["thread_id"]
@@ -246,6 +273,15 @@ async def _cmd_unbind(command_id: str, args: dict, client: Any) -> dict:
             False,
             f"topic {values['thread_id']} is not bound",
         )
+    if _binding_owner_mismatch(
+        values["user_id"], values["chat_id"], values["thread_id"]
+    ):
+        return _result(
+            command_id,
+            "unbind",
+            False,
+            f"topic {values['thread_id']} belongs to another user",
+        )
     delete_topic = bool(args.get("delete_topic", False))
     if delete_topic:
         # Lazy: topic_deletion pulls PTB types.
@@ -260,7 +296,7 @@ async def _cmd_unbind(command_id: str, args: dict, client: Any) -> dict:
         )
         # Only an actual close (or the topic already being gone) counts
         # as success; protected, failed, and retryable outcomes surface.
-        ok = outcome in {"closed", "already_gone"}
+        ok = outcome in {"closed", "already_gone", "deleted"}
         return _result(
             command_id,
             "unbind",
@@ -303,6 +339,13 @@ async def _cmd_rethread(command_id: str, args: dict) -> dict:
     if thread_router.get_window_for_chat_thread(chat_id, to_thread):
         return _result(
             command_id, "rethread", False, f"topic {to_thread} is already bound"
+        )
+    if _binding_owner_mismatch(values["user_id"], chat_id, from_thread):
+        return _result(
+            command_id,
+            "rethread",
+            False,
+            f"topic {from_thread} belongs to another user",
         )
     thread_router.bind_thread(values["user_id"], to_thread, window_id, chat_id=chat_id)
     thread_router.unbind_thread(
