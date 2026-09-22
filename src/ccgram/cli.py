@@ -283,3 +283,10 @@ def doctor_cmd(fix: bool) -> None:
     from .doctor_cmd import doctor_main
 
     doctor_main(fix=fix)
+
+
+# --- admin command group (TASK-128) ----------------------------------------
+
+from .admin_cmd import admin_cli  # noqa: E402
+
+cli.add_command(admin_cli)

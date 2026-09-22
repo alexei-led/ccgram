@@ -70,6 +70,7 @@ logger = structlog.get_logger()
 
 session_monitor: SessionMonitor | None = None
 _status_poll_task: asyncio.Task[None] | None = None
+_admin_consumer_task: asyncio.Task[None] | None = None
 _callbacks_wired = False
 
 
@@ -321,6 +322,36 @@ def start_status_polling(application: Application) -> asyncio.Task[None]:
     return _status_poll_task
 
 
+def start_admin_consumer(application: Application) -> asyncio.Task[None]:
+    """Spawn the host-side admin command consumer (TASK-128).
+
+    Reads admin_commands.jsonl on a 1s loop and executes each command
+    through the real lifecycle code paths. Never touches getUpdates.
+    """
+    global _admin_consumer_task
+
+    async def _admin_loop() -> None:
+        # Lazy: admin imports the handler stack on execution paths only.
+        from .admin import consume_admin_commands, current_command_offset
+
+        client = PTBTelegramClient(application.bot)
+        # Start at EOF: commands from before this process started have no
+        # requester waiting (their CLI timed out long ago), and replaying
+        # them would re-run real deletions on every restart.
+        offset = current_command_offset()
+        while True:
+            try:
+                offset = await consume_admin_commands(client, offset)
+            except Exception:  # noqa: BLE001  # the consumer must survive
+                logger.exception("admin consumer pass failed; continuing")
+            await asyncio.sleep(1.0)
+
+    _admin_consumer_task = asyncio.create_task(_admin_loop())
+    _admin_consumer_task.add_done_callback(task_done_callback)
+    logger.info("Admin command consumer started")
+    return _admin_consumer_task
+
+
 def start_event_stream(application: Application) -> object | None:
     """Start the push event-stream consumer on event-stream backends (herdr).
 
@@ -359,6 +390,7 @@ async def bootstrap_application(application: Application) -> None:
     verify_hooks_installed()
     await start_session_monitor(application)
     start_status_polling(application)
+    start_admin_consumer(application)
     start_event_stream(application)
 
     # Lazy: main imports bot at top, bot imports bootstrap; hoisting forms
@@ -377,7 +409,7 @@ async def stop_delivery_runtime() -> None:
     can actually deliver parsed-but-unsent messages (TASK-5/6). Must run
     before any consumer that could enqueue new work is gone.
     """
-    global _status_poll_task, session_monitor
+    global _status_poll_task, _admin_consumer_task, session_monitor
 
     if _status_poll_task is not None:
         _status_poll_task.cancel()
@@ -385,6 +417,13 @@ async def stop_delivery_runtime() -> None:
             await _status_poll_task
         _status_poll_task = None
         logger.info("Status polling stopped")
+
+    if _admin_consumer_task is not None:
+        _admin_consumer_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await _admin_consumer_task
+        _admin_consumer_task = None
+        logger.info("Admin command consumer stopped")
 
     monitor_to_commit = session_monitor
     if monitor_to_commit is not None:
@@ -432,7 +471,7 @@ def reset_for_testing() -> None:
     loud on double registration, and bootstrap caches its own
     ``_callbacks_wired`` flag too.
     """
-    global _callbacks_wired, session_monitor, _status_poll_task
+    global _callbacks_wired, session_monitor, _status_poll_task, _admin_consumer_task
 
     # Lazy: each module's _reset_*_for_testing hook is only needed by the
     # test harness; production callers never reach reset_for_testing().
@@ -458,6 +497,7 @@ def reset_for_testing() -> None:
 
     clear_pending_telegram_injections()
     _status_poll_task = None
+    _admin_consumer_task = None
     clear_active_monitor()
 
     # Stop any event-stream consumer this run started and clear its caches so the
