@@ -76,6 +76,13 @@ _SKIP_RETRY_BASE_SECONDS = 2.0
 _SKIP_RETRY_MAX_SECONDS = 60.0
 _MSG_PREVIEW_LENGTH = 80
 
+# Adoption stability window: a fresh herdr pane can report a transient
+# session identity for a few seconds before settling on the real one;
+# adopting on first sight minted a Telegram topic for a window id that
+# died within seconds. An unbound window becomes adoptable only after
+# its id survives this many seconds of consecutive listings.
+_ADOPT_AFTER_STABLE_S = 15.0
+
 logger = structlog.get_logger()
 
 
@@ -136,6 +143,10 @@ class SessionMonitor:
         # Receipts are grouped by transcript session so one failed send only
         # freezes its own watermark.
         self._delivery_receipts: dict[str, list[DeliveryReceipt]] = {}
+        # Adoption debounce: see _ADOPT_AFTER_STABLE_S. First-sighting time
+        # per unbound window id; ids absent from a listing are pruned so a
+        # flapping identity restarts its clock.
+        self._unbound_first_seen: dict[str, float] = {}
         # Backlog skips cross the monitor/queue boundary through injected
         # adapters, preserving this module's handler independence.
         self._skip_purge_callback: (
@@ -747,6 +758,9 @@ class SessionMonitor:
         bound_lookup = _adoption_lookup(
             {wid for _, _, wid in thread_router.iter_thread_bindings()}
         )
+        now = time.monotonic()
+        first_seen = self._unbound_first_seen
+        seen_this_cycle: set[str] = set()
         for window in all_windows:
             window_key = canonical_window_id(window.window_id)
             if window_key in known_lookup:
@@ -754,6 +768,13 @@ class SessionMonitor:
             if window_key in bound_lookup:
                 continue
             if not is_agent_topic_window(window, caps):
+                continue
+            seen_this_cycle.add(window_key)
+            first_seen.setdefault(window_key, now)
+            if now - first_seen[window_key] < _ADOPT_AFTER_STABLE_S:
+                # A transient composite at agent start (herdr) or a
+                # short-lived window (any backend) must not mint a topic
+                # for an id that dies seconds later. Survive first.
                 continue
             event = NewWindowEvent(
                 window_id=window.window_id,
@@ -768,6 +789,11 @@ class SessionMonitor:
                     "New window callback error (unbound window path) for %s",
                     window.window_id,
                 )
+        # Ids absent from this listing restart their clock on return, so a
+        # flapping identity never accumulates toward the threshold.
+        for key in list(first_seen):
+            if key not in seen_this_cycle:
+                first_seen.pop(key, None)
 
     async def _emit_known_unbound_window_events(
         self,
