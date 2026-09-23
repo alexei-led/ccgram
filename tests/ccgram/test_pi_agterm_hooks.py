@@ -32,6 +32,9 @@ def hook_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("CCGRAM_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("AGTERM_SESSION_ID", _WINDOW_ID)
     monkeypatch.setenv("PI_CODING_AGENT", "true")
+    monkeypatch.setattr(
+        "ccgram.hook._agterm_hook_target", lambda target, *_args: (target, "")
+    )
     return tmp_path
 
 

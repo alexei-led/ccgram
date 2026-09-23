@@ -6,10 +6,10 @@ JSON shape (``tree`` / ``workspaces[]`` / ``sessions[]`` / ``surfaces[]``) and
 every ``surface:<uuid>:<role>`` locator stays **private** to this module;
 callers see only the neutral value types from ``multiplexer.base``.
 
-Identity: an agterm *session* is the unit that carries one agent, so its UUID is
-the neutral ``window_id``. agterm persists that UUID in its per-window state file
-and restores it, so unlike herdr the id survives a restart and no alias
-reconciliation is needed (``ids_stable_across_restart`` is True).
+Identity: the primary pane retains the session UUID as its ``window_id``.
+A split peer gets a separate guarded target derived from its foreground argv.
+Hidden splits are included. The peer target is refused after closure, promotion
+or a change to its argv; it never falls back to the primary pane.
 
 The backend shells out to ``agtermctl`` (the seam explicitly allows a CLI in
 place of speaking the socket directly); the socket path is passed through
@@ -22,12 +22,13 @@ Two agterm behaviours drive the shape of this adapter:
   ``--pane`` reads the visible or focused pane, while ``session type`` with no
   ``--pane`` injects into the main pane. Every capture and injection below
   therefore passes an explicit role and never relies on a default. The agent
-  ccgram drives lives in the main pane, so that role is ``left`` throughout.
-* **A split pane has no durable handle.** agterm promotes the split survivor
-  into the main pane when the primary exits, so the ``right`` role is not a
-  stable identity. ``split_window`` returns None and ``list_panes`` returns [],
-  exactly as the Protocol prescribes for a backend that cannot expose a safe
-  sibling handle.
+  target carries the explicit role for both reads and writes.
+* **A split pane has no atomically guarded input API.** Split targets are
+  checked against live argv before each operation, including the separate
+  Return injection. A topology change between that check and the RPC remains
+  a race; native token-addressed input is the upgrade path. An identical argv
+  restart is the same target. Split targets cannot close or rename the shared
+  session. ``split_window`` and raw sibling handles remain unsupported.
 
 Capabilities: agterm reports native agent status and supports workspace selection.
 It does not use the guarded topic-target flow because its session UUID is already
@@ -49,6 +50,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 
 import structlog
 
+from .agterm_panes import pane_sessions, split_session_id
 from .base import (
     AgentStatus,
     CaptureResult,
@@ -349,6 +351,19 @@ class AgtermManager:
         envelope exists. So a parsed refusal naming this session is proof of
         absence, and everything else is unknown.
         """
+        owner = split_session_id(window_id)
+        if owner is not None:
+            tree = await self._tree()
+            if tree is None:
+                return None
+            for _workspace, session in self._sessions(tree):
+                if str(session["id"]).casefold() == owner.casefold():
+                    return any(
+                        str(pane["id"]).casefold() == window_id.casefold()
+                        for pane in pane_sessions(session)
+                    )
+            # A sweep miss alone is not authoritative absence of the session.
+            return False if await self.window_exists(owner) is False else None
         rc, out, _err = await self._run(
             self._with_socket(
                 ["session", "text", "--pane", _AGENT_PANE, "--target", window_id]
@@ -504,8 +519,9 @@ class AgtermManager:
             return None
         wanted = window_id.casefold()
         for _workspace, session in self._sessions(tree):
-            if str(session.get("id", "")).casefold() == wanted:
-                return session
+            for pane in pane_sessions(session):
+                if str(pane["id"]).casefold() == wanted:
+                    return pane
         return None
 
     def _in_scope(self, workspace: dict) -> bool:
@@ -535,7 +551,13 @@ class AgtermManager:
         included, and starts typing into terminals nobody pointed it at.
         """
         own = self._own_session_id
-        if own and str(session.get("id", "")).casefold() == own:
+        if (
+            own
+            and str(
+                session.get("_agterm_session_id") or session.get("id", "")
+            ).casefold()
+            == own
+        ):
             return False
         return not str(session.get("name") or "").startswith("_")
 
@@ -567,9 +589,10 @@ class AgtermManager:
         if tree is None:
             return []
         return [
-            self._to_window(session, workspace)
+            self._to_window(pane, workspace)
             for workspace, session in self._sessions(tree)
             if self._in_scope(workspace) and self._is_adoptable(session)
+            for pane in pane_sessions(session)
         ]
 
     async def list_windows_for_reconciliation(self) -> list[WindowRef] | None:
@@ -589,8 +612,9 @@ class AgtermManager:
         if tree is None:
             return None
         return [
-            self._to_window(session, workspace)
+            self._to_window(pane, workspace)
             for workspace, session in self._sessions(tree)
+            for pane in pane_sessions(session)
         ]
 
     async def list_workspaces(self) -> list[WorkspaceRef]:
@@ -630,7 +654,17 @@ class AgtermManager:
         target, so a probe would double every call on the polling path and
         still leave a window between the check and the read.
         """
-        args = ["session", "text", "--pane", _AGENT_PANE, "--target", window_id]
+        owner = split_session_id(window_id)
+        if owner is not None and await self._find_session(window_id) is None:
+            return None
+        args = [
+            "session",
+            "text",
+            "--pane",
+            "right" if owner else _AGENT_PANE,
+            "--target",
+            owner or window_id,
+        ]
         if lines is not None and lines > 0:
             args += ["--lines", str(lines)]
         result = await self._call(args)
@@ -691,15 +725,18 @@ class AgtermManager:
         ``--stdin`` keeps arbitrary control bytes out of argv, where the
         argument parser could mangle them.
         """
+        owner = split_session_id(window_id)
+        if owner is not None and await self._find_session(window_id) is None:
+            return False
         return await self._call_ok(
             [
                 "session",
                 "type",
                 "--stdin",
                 "--pane",
-                _AGENT_PANE,
+                "right" if owner else _AGENT_PANE,
                 "--target",
-                window_id,
+                owner or window_id,
             ],
             payload,
         )
@@ -811,10 +848,14 @@ class AgtermManager:
 
     async def kill_window(self, window_id: str) -> bool:
         """Close the session. True on success."""
+        if split_session_id(window_id) is not None:
+            return False
         return await self._call_ok(["session", "close", "--target", window_id])
 
     async def rename_window(self, window_id: str, new_name: str) -> bool:
         """Rename the session's sidebar label. True on success."""
+        if split_session_id(window_id) is not None:
+            return False
         return await self._call_ok(
             ["session", "rename", new_name, "--target", window_id]
         )

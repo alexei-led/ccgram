@@ -267,6 +267,9 @@ class TestLocatePrimaryWindowThroughResolver:
         monkeypatch.delenv("TMUX_PANE", raising=False)
         monkeypatch.delenv("HERDR_PANE_ID", raising=False)
         monkeypatch.setenv("AGTERM_SESSION_ID", "157B4C8C-EFAE-40C2-BA54-9A5D7FD8B5E4")
+        monkeypatch.setattr(
+            "ccgram.hook._agterm_hook_target", lambda target, *_args: (target, "")
+        )
         from ccgram.hook import _locate_primary_window
 
         located = _locate_primary_window("sid", "Stop", "claude")

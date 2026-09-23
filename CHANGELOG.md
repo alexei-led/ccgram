@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## [4.12.2] - 2026-09-23
+
+### Fixed
+- Discover agterm split peers as separate Telegram topics, including hidden splits, with pane-specific provider, cwd, status and terminal I/O.
+- Resolve agterm hooks against the live agent and explicit CLI session ID so Pi and Claude peer-chat sessions cannot overwrite each other's transcript bindings. Recover already-running agents on a later hook without restarting them.
+- Recognize Pi hook-runner's environment marker when the bash-only Pi marker is absent.
+- Reject stale split targets after peer closure, promotion or command changes; prevent split topics from closing or renaming the shared session. Input uses a non-atomic foreground guard; identical-command restarts reuse the target.
+
 ## [4.12.1] - 2026-09-23
 
 ### Fixed

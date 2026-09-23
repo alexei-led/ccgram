@@ -33,6 +33,7 @@ from ccgram.hooks.adapters import (
 from ccgram.hooks.model import HookAdapter, NormalizedHookEvent, ProviderName
 from ccgram.multiplexer import get_multiplexer
 from ccgram.multiplexer import herdr_socket
+from ccgram.multiplexer.agterm_panes import hook_pane
 from ccgram.multiplexer.self_identify import resolve_self_identity
 
 logger = structlog.get_logger()
@@ -1309,8 +1310,10 @@ def _refresh_session_map_if_stale(
     window_name: str,
     payload_cwd: str,
     payload_transcript_path: str,
+    *,
+    recover_missing: bool = False,
 ) -> None:
-    """Refresh stale entries and recover a dropped Pi ``SessionStart``.
+    """Refresh stale entries and recover a dropped or newly pane-qualified start.
 
     A stale Herdr snapshot can make the one-shot Pi SessionStart unsafe to
     bind. A later matching Pi hook may therefore create the missing entry once
@@ -1318,7 +1321,7 @@ def _refresh_session_map_if_stale(
     reserve offset zero before consuming the marker.
     """
     existing = _read_session_map_entry(session_window_key)
-    if not existing and provider_name != "pi":
+    if not existing and provider_name != "pi" and not recover_missing:
         return
     cwd = payload_cwd or existing.get("cwd", "")
     transcript_path = _resolve_transcript_path(
@@ -1335,10 +1338,13 @@ def _refresh_session_map_if_stale(
         )
     ):
         return
-    replay_from_start = provider_name == "pi" and (
-        not existing
-        or existing.get("session_id") != session_id
-        or not existing.get("transcript_path")
+    replay_from_start = (recover_missing and not existing) or (
+        provider_name == "pi"
+        and (
+            not existing
+            or existing.get("session_id") != session_id
+            or not existing.get("transcript_path")
+        )
     )
     # Split only the backend prefix; Herdr target IDs may contain colons.
     tmux_session_name = session_window_key.split(":", 1)[0]
@@ -1354,7 +1360,8 @@ def _refresh_session_map_if_stale(
     )
     if not existing:
         logger.info(
-            "Recovered Pi session_map from later hook for %s: %s",
+            "Recovered %s session_map from later hook for %s: %s",
+            provider_name,
             session_window_key,
             session_id[:8],
         )
@@ -1402,6 +1409,49 @@ def _provider_from_pane_tty(pane_tty: str) -> ProviderName | None:
     return None
 
 
+def _agterm_hook_target(
+    agterm_session: str, provider_name: str, agent_session_id: str
+) -> tuple[str, str] | None:
+    """Resolve the hook's agent against one live agterm window snapshot."""
+    if os.environ.get("AGTERM_PANE", "left") not in {"left", "right"}:
+        return None
+    args = ["agtermctl", "tree", "--json"]
+    for env_key, option in (
+        ("AGTERM_SOCKET", "--socket"),
+        ("AGTERM_WINDOW_ID", "--window"),
+    ):
+        if value := os.environ.get(env_key):
+            args.extend([option, value])
+    try:
+        result = subprocess.run(
+            args, capture_output=True, text=True, timeout=3, check=False
+        )
+        payload = json.loads(result.stdout)
+        if result.returncode or not payload.get("ok"):
+            return None
+        tree = payload["result"]["tree"]
+        sessions = [
+            session
+            for workspace in tree["workspaces"]
+            for session in workspace.get("sessions", [])
+            if str(session.get("id", "")).casefold() == agterm_session.casefold()
+        ]
+        if len(sessions) != 1:
+            return None
+        pane = hook_pane(sessions[0], provider_name, agent_session_id)
+        return (str(pane["id"]), str(pane.get("name") or "")) if pane else None
+    except (
+        OSError,
+        subprocess.TimeoutExpired,
+        ValueError,
+        KeyError,
+        TypeError,
+        AttributeError,
+    ):
+        logger.debug("Could not resolve agterm hook pane", exc_info=True)
+        return None
+
+
 def _locate_primary_window(
     session_id: str,
     event: str,
@@ -1421,7 +1471,8 @@ def _locate_primary_window(
     panes resolve through ``_resolve_window_id`` (``display-message``), herdr
     panes resolve their exact workspace/pane locator to a session target, so
     the session_map key becomes ``herdr:<opaque-target-id>``, and an agterm
-    session is its own identity, keyed ``agterm:<session-uuid>``.
+    primary retains ``agterm:<session-uuid>`` while split peers resolve to their
+    own guarded target from the live argv snapshot.
     """
     identity = resolve_self_identity(
         os.environ,
@@ -1430,6 +1481,11 @@ def _locate_primary_window(
             herdr_target_id
             if use_herdr_snapshot
             else _resolve_herdr_target_id(workspace_id, pane_id, provider_name)
+        ),
+        agterm_query=(
+            lambda agterm_session: _agterm_hook_target(
+                agterm_session, provider_name, session_id
+            )
         ),
     )
     if identity is None:
@@ -1668,9 +1724,12 @@ def _process_hook_stdin(
     if (
         detected_provider is None
         and not payload.get("transcript_path")
-        and os.environ.get("PI_CODING_AGENT") == "true"
+        and (
+            os.environ.get("PI_CODING_AGENT") == "true"
+            or os.environ.get("PI_HOOK_TIMEOUT_SEC")
+        )
     ):
-        # Pi's hook-runner omits provider/transcript metadata; agterm has no TTY.
+        # The hook-runner sets PI_HOOK_TIMEOUT_SEC, not the bash-only PI_CODING_AGENT.
         detected_provider = "pi"
     if detected_provider is None:
         identity = resolve_self_identity(os.environ, tmux_query=_resolve_window_id)
@@ -1753,6 +1812,7 @@ def _process_hook_stdin(
             if normalized.transcript_path
             else herdr_transcript_path
         ),
+        recover_missing=session_window_key.startswith("agterm:"),
     )
     _write_event(event, normalized.session_id, session_window_key, normalized.data)
     return normalized

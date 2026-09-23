@@ -14,7 +14,7 @@ This means:
 
 - **Desktop to phone, mid-conversation** — walk away and keep monitoring from Telegram
 - **Phone back to desktop, anytime** — attach to your terminal and you're back with full scrollback
-- **Multiple sessions in parallel** — each Telegram topic maps to a separate tmux window, guarded Herdr agent session, or agterm session
+- **Multiple sessions in parallel** — each Telegram topic maps to a separate tmux window, guarded Herdr agent session, or agterm agent pane
 
 ---
 
@@ -56,7 +56,7 @@ graph LR
   style machine fill:#f0faf0,stroke:#2ea44f,stroke-width:2px,color:#333
 ```
 
-Each Telegram topic maps to one tmux window. With Herdr, it maps instead to one guarded agent session: `agent.list` is the sole identity source and CCGram persists only an opaque `herdr-session-v1-…` target, never a tab, pane, or terminal ID. Every Herdr agent topic is provider-prefixed and pane-qualified as `<Provider> ▸ <workspace> ▸ <tab> ▸ <pane>`, so Pi, Claude, Codex, and Gemini topics are easy to find while their labels remain stable when siblings join or leave the tab. Every action reads a fresh `agent.list` record and fails closed for missing, malformed, sessionless, or legacy bindings. Duplicate canonical targets are quarantined while unrelated sessions remain operational. Legacy locator bindings require explicit rebind and are never inferred from names. A session can still change after that guard and before Herdr dispatches, so delivery is not atomic and may be indeterminate after this post-guard race. With agterm, each topic maps to one durable agterm session UUID.
+Each Telegram topic maps to one tmux window. With Herdr, it maps instead to one guarded agent session: `agent.list` is the sole identity source and CCGram persists only an opaque `herdr-session-v1-…` target, never a tab, pane, or terminal ID. Every Herdr agent topic is provider-prefixed and pane-qualified as `<Provider> ▸ <workspace> ▸ <tab> ▸ <pane>`, so Pi, Claude, Codex, and Gemini topics are easy to find while their labels remain stable when siblings join or leave the tab. Every action reads a fresh `agent.list` record and fails closed for missing, malformed, sessionless, or legacy bindings. Duplicate canonical targets are quarantined while unrelated sessions remain operational. Legacy locator bindings require explicit rebind and are never inferred from names. A session can still change after that guard and before Herdr dispatches, so delivery is not atomic and may be indeterminate after this post-guard race. With agterm, the primary topic retains the session UUID; split peers get separate foreground-guarded targets.
 
 ---
 
@@ -136,6 +136,8 @@ Start new agents, or restart already-running agents, after installing the integr
 agterm is macOS-native. Install [agterm](https://github.com/umputun/agterm), then use **Help > Install Command Line Tool** to put `agtermctl` on `PATH`. Start agterm and confirm that `agtermctl` can reach its control socket. Set `AGTERM_SOCKET` only when the default socket is not the one to use.
 
 Set `CCGRAM_MULTIPLEXER=agterm`. CCGram adopts sessions from the `ccgram` workspace by default; set `CCGRAM_AGTERM_WORKSPACES` to a comma-separated list of workspace names, or `*` for all workspaces. Run `ccgram doctor` to verify the CLI and control socket.
+
+Primary and split agents get separate topics, including hidden splits. Split reads and input validate the peer's foreground command before addressing the right pane; a closed, promoted, or changed peer is refused rather than redirected to the primary. Split topics cannot close or rename the shared session. The guard is not atomic with input, and restarting an identical command reuses the target. Avoid rearranging panes during a Telegram send. Hooks require a unique live provider/session match; ambiguous same-provider panes without explicit CLI session IDs are not bound.
 
 ## Platform Support
 

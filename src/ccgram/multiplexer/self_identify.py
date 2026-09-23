@@ -37,7 +37,8 @@ class SelfIdentity:
 
     ``session_window_key`` is the ``session_map.json`` key (``<session>:<id>``
     for tmux, ``herdr:<opaque-target-id>`` for herdr, ``agterm:<session-uuid>``
-    for agterm). ``pane_tty`` is tmux-only
+    for an agterm primary, or ``agterm:<guarded-split-target>`` for its peer).
+    ``pane_tty`` is tmux-only
     (herdr does not expose a tty).
     """
 
@@ -53,6 +54,7 @@ def resolve_self_identity(
     *,
     tmux_query: TmuxQuery,
     herdr_query: HerdrQuery | None = None,
+    agterm_query: Callable[[str], tuple[str, str] | None] | None = None,
 ) -> SelfIdentity | None:
     """Resolve the firing window's identity from ``env``.
 
@@ -109,15 +111,22 @@ def resolve_self_identity(
     # agterm is checked last on purpose. ``AGTERM_SESSION_ID`` belongs to the
     # outer terminal and every shell it spawns inherits it, including one
     # running a nested tmux or herdr session, so an earlier check would claim
-    # panes that belong to the inner multiplexer. No probe is needed: the
-    # session UUID is the identity, and agterm persists it across a restart.
+    # panes that belong to the inner multiplexer. Modern hooks inject a live
+    # agent probe to distinguish the split peer; legacy callers retain the UUID.
     agterm_session = env.get("AGTERM_SESSION_ID", "")
     if agterm_session:
+        if agterm_query is not None:
+            resolved = agterm_query(agterm_session)
+            if resolved is None:
+                return None
+            target_id, name = resolved
+        else:
+            target_id, name = agterm_session, ""
         return SelfIdentity(
             mux="agterm",
-            session_window_key=f"agterm:{agterm_session}",
-            window_id=agterm_session,
-            window_name="",
+            session_window_key=f"agterm:{target_id}",
+            window_id=target_id,
+            window_name=name,
         )
 
     return None

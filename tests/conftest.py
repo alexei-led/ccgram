@@ -43,7 +43,10 @@ os.environ["CCGRAM_MULTIPLEXER"] = "tmux"
 def _clean_pi_hook_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep hooks independent of the Pi process launching pytest."""
     monkeypatch.delenv("PI_CODING_AGENT", raising=False)
+    monkeypatch.delenv("PI_HOOK_TIMEOUT_SEC", raising=False)
     monkeypatch.delenv("PI_SUBAGENT_CHILD", raising=False)
+    monkeypatch.delenv("AGTERM_PANE", raising=False)
+    monkeypatch.delenv("AGTERM_PANE_ID", raising=False)
 
 
 @pytest.fixture(autouse=True)
