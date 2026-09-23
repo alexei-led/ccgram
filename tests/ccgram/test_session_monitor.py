@@ -5,7 +5,7 @@ import json
 import os
 import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 import structlog
@@ -567,7 +567,7 @@ class TestSettledPrefixWatermarkCommit:
         intent.created_at = time.time() - 10_000.0
         intent.purge_complete = True
 
-        with patch.object(monitor, "_skip_rebind_verdict", return_value=True):
+        with patch.object(monitor, "_skip_is_current", return_value=True):
             monitor._expire_aged_skip_barriers()
 
         assert self._offset(monitor, "s1") == 500
@@ -585,7 +585,7 @@ class TestSettledPrefixWatermarkCommit:
         intent.created_at = time.time() - 10_000.0
         intent.purge_complete = True
 
-        with patch.object(monitor, "_skip_rebind_verdict", return_value=False):
+        with patch.object(monitor, "_skip_is_current", return_value=False):
             monitor._expire_aged_skip_barriers()
 
         assert self._offset(monitor, "s1") == 0
@@ -602,7 +602,7 @@ class TestSettledPrefixWatermarkCommit:
         intent.created_at = time.time() - 10_000.0
         assert intent.purge_complete is False
 
-        with patch.object(monitor, "_skip_rebind_verdict", return_value=True):
+        with patch.object(monitor, "_skip_is_current", return_value=True):
             monitor._expire_aged_skip_barriers()
 
         assert self._offset(monitor, "s1") == 0
@@ -612,17 +612,47 @@ class TestSettledPrefixWatermarkCommit:
         self, monitor: SessionMonitor
     ) -> None:
         # A validator exception is not a rebind: decide nothing this pass.
+        # Exercised through the real set_skip_callbacks wiring so the
+        # exception path runs through the actual registered validator,
+        # not a patched private helper.
         self._track(monitor, "s1", [self._ready(100)])
         self._begin_skip(monitor)
         intent = monitor.state.pending_skips["s1"]
         intent.created_at = time.time() - 10_000.0
         intent.purge_complete = True
 
-        with patch.object(monitor, "_skip_rebind_verdict", return_value=None):
-            monitor._expire_aged_skip_barriers()
+        validate = Mock(side_effect=RuntimeError("boom"))
+        monitor.set_skip_callbacks(
+            purge=AsyncMock(), notice=AsyncMock(), validate=validate
+        )
 
+        monitor._expire_aged_skip_barriers()
+
+        validate.assert_called_once_with(intent)
         assert self._offset(monitor, "s1") == 0
         assert "s1" in monitor.state.pending_skips
+
+    def test_aged_barrier_deadline_read_from_config_at_call_time(
+        self, monitor: SessionMonitor, monkeypatch
+    ) -> None:
+        # The deadline must be read live, not frozen into a module constant
+        # at import time, so tests (and runtime config reloads) can patch it.
+        self._track(monitor, "s1", [self._ready(100)])
+        self._begin_skip(monitor)
+        intent = monitor.state.pending_skips["s1"]
+        intent.created_at = time.time() - 120.0
+        intent.purge_complete = True
+        monitor.set_skip_callbacks(
+            purge=AsyncMock(), notice=AsyncMock(), validate=lambda _intent: True
+        )
+        monkeypatch.setattr(
+            "ccgram.session_monitor.config.skip_barrier_deadline_s", 60.0
+        )
+
+        monitor._expire_aged_skip_barriers()
+
+        assert self._offset(monitor, "s1") == 500
+        assert "s1" not in monitor.state.pending_skips
 
     def test_legacy_barrier_without_stamp_gets_clock_started(
         self, monitor: SessionMonitor

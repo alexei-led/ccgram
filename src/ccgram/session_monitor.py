@@ -76,10 +76,6 @@ _SKIP_RETRY_BASE_SECONDS = 2.0
 _SKIP_RETRY_MAX_SECONDS = 60.0
 _MSG_PREVIEW_LENGTH = 80
 
-# A skip barrier whose notice cannot be delivered (topic rebind, dead
-# topic, sustained flood control) must not pause its source forever.
-_SKIP_BARRIER_DEADLINE_S = config.skip_barrier_deadline_s
-
 logger = structlog.get_logger()
 
 
@@ -259,17 +255,26 @@ class SessionMonitor:
             return None
         return intent
 
-    def _skip_is_current(self, intent: BacklogSkipIntent) -> bool:
+    def _skip_is_current(
+        self, intent: BacklogSkipIntent, *, strict: bool = False
+    ) -> bool | None:
+        """True when the barrier is current, per the registered validator.
+
+        ``strict=False`` (default) collapses a missing or erroring validator
+        to False, for callers that only need a "still valid" gate.
+        ``strict=True`` surfaces that failure as None instead, so a caller
+        that must not act on an unknown verdict can defer to a later pass.
+        """
         callback = self._skip_validate_callback
         if callback is None:
-            return False
+            return None if strict else False
         try:
             return callback(intent)
         except Exception:
             logger.exception(
                 "Failed to validate backlog skip for %s", intent.session_id
             )
-            return False
+            return None if strict else False
 
     def _skip_retry_due(self, session_id: str) -> bool:
         return time.monotonic() >= self._skip_retry_at.get(session_id, 0.0)
@@ -364,23 +369,6 @@ class SessionMonitor:
         self._skip_notice_receipts[intent.session_id] = receipt
         return True
 
-    def _skip_rebind_verdict(self, intent: BacklogSkipIntent) -> bool | None:
-        """True when the barrier is current, False on a definitive rebind.
-
-        None means the validator itself failed; the caller must decide
-        nothing on that verdict and retry on a later pass.
-        """
-        callback = self._skip_validate_callback
-        if callback is None:
-            return None
-        try:
-            return callback(intent)
-        except Exception:
-            logger.exception(
-                "Failed to validate backlog skip for %s", intent.session_id
-            )
-            return None
-
     def _expire_aged_skip_barriers(self) -> None:
         """Complete barriers whose notice never delivered.
 
@@ -399,9 +387,9 @@ class SessionMonitor:
                 # through the mutator so the stamp actually persists.
                 self.state.stamp_skip_clock(session_id, now)
                 continue
-            if now - intent.created_at <= _SKIP_BARRIER_DEADLINE_S:
+            if now - intent.created_at <= config.skip_barrier_deadline_s:
                 continue
-            current = self._skip_rebind_verdict(intent)
+            current = self._skip_is_current(intent, strict=True)
             if current is None:
                 # Validator unavailable: decide nothing this pass.
                 continue
