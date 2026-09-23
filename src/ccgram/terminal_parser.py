@@ -522,13 +522,19 @@ def _collect_status_progress_lines(
 
 
 # Claude Code right-aligns footer notices ("✔ Update installed · Restart to
-# update") above the separator; the spinner line starts at column 0.
-_FOOTER_NOTICE_MIN_INDENT = 16
+# update") above the separator; the spinner line starts at column 0. The
+# threshold is low so narrow panes still count; known spinners never do.
+_FOOTER_NOTICE_MIN_INDENT = 4
 
 
 def _is_footer_notice(line: str) -> bool:
     stripped = line.lstrip()
-    return bool(stripped) and len(line) - len(stripped) >= _FOOTER_NOTICE_MIN_INDENT
+    if not stripped or len(line) - len(stripped) < _FOOTER_NOTICE_MIN_INDENT:
+        return False
+    first = stripped[0]
+    return first not in STATUS_SPINNERS and not (
+        _BRAILLE_START <= ord(first) <= _BRAILLE_END
+    )
 
 
 def _find_status_line_index(lines: list[str], scan_start: int) -> int | None:
