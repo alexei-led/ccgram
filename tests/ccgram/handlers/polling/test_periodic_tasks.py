@@ -93,7 +93,7 @@ class TestRunPeriodicTasks:
 
         tasks.prune.assert_awaited_once_with(windows)
         tasks.probe.assert_awaited_once_with(client)
-        tasks.cleanup.assert_awaited_once_with(client)
+        tasks.cleanup.assert_awaited_once_with(client, exclude_reasons=None)
         tasks.recover.assert_awaited_once_with(client)
 
     async def test_recovery_rate_limit_defers_other_telegram_maintenance(self):

@@ -10,6 +10,7 @@ notifications, multi-pane scans, passive shell relay.
 from __future__ import annotations
 
 import contextlib
+import os
 import time
 from typing import TYPE_CHECKING
 
@@ -69,6 +70,14 @@ if TYPE_CHECKING:
     from ..polling_runtime import PollingRuntime
 
 logger = structlog.get_logger()
+
+# Topics are the session list. Deleting a dead session's topic also
+# destroys the binding a later reconciliation could fold onto a re-keyed
+# successor digest, so operators may keep dead topics and close them by
+# hand (the recovery banner still answers the next message there).
+_AUTODELETE_DEAD_TOPICS = os.getenv(
+    "CCGRAM_AUTODELETE_DEAD_TOPICS", "true"
+).strip().lower() not in ("0", "false", "no", "off")
 
 
 def _get_provider(window_id: str) -> "AgentProvider":
@@ -344,6 +353,7 @@ async def _handle_dead_window_notification(
     # paths both call this for the same window and could otherwise both pass the
     # guard above before either marks, sending two notifications.
     lc.mark_dead_notified(user_id, thread_id, wid)
+    retained = False
     try:
         chat_ids = _exact_dead_topic_chat_ids(user_id, thread_id, wid)
         if chat_ids is None:
@@ -356,6 +366,20 @@ async def _handle_dead_window_notification(
         agent_status_cache.clear(wid)
         ps.clear_seen_status(wid)
         clear_tool_msg_ids_for_topic(user_id, thread_id)
+        if not _AUTODELETE_DEAD_TOPICS:
+            logger.info(
+                "dead_session_topic_retained",
+                user_id=user_id,
+                thread_id=thread_id,
+                window_id=wid,
+            )
+            # Keep the marker sticky ONLY for this confirmed-dead retain:
+            # the retained binding keeps this topic in the tick set, and a
+            # cleared marker would re-run the presence probe and this log
+            # line every poll cycle. Not-dead exits below clear it, so a
+            # live or unverifiable window keeps its retry semantics.
+            retained = True
+            return
         for chat_id in chat_ids:
             if is_pending_creation(wid):
                 break
@@ -365,7 +389,8 @@ async def _handle_dead_window_notification(
             if outcome == "rate_limited":
                 break
     finally:
-        lc.clear_dead_notification(user_id, thread_id)
+        if not retained:
+            lc.clear_dead_notification(user_id, thread_id)
 
 
 def _exact_dead_topic_chat_ids(
@@ -416,6 +441,7 @@ async def _delete_dead_topic_immediately(
         router=thread_router,
         chat_id=chat_id,
         before_delete=clear_state_before_delete,
+        retirement_reason="dead_session",
     )
     logger.info(
         "dead_session_topic_cleanup",

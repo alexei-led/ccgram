@@ -589,6 +589,47 @@ class TestDeadWindowTopicDeleted:
         update_emoji.assert_not_awaited()
         bot.unpin_all_forum_topic_messages.assert_not_awaited()
 
+    @pytest.mark.parametrize("autodelete", [False, True], ids=["off", "on"])
+    async def test_autodelete_knob_gates_dead_topic_deletion(self, autodelete):
+        bot = AsyncMock(spec=Bot)
+
+        router = ThreadRouter(
+            schedule_save=lambda: None,
+            has_window_state=lambda _window_id: False,
+        )
+        router.bind_thread(1, 100, "@0", chat_id=42)
+
+        with (
+            patch("ccgram.handlers.polling.window_tick.apply.thread_router", router),
+            patch(
+                "ccgram.handlers.polling.window_tick.apply.window_presence",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "ccgram.handlers.polling.window_tick.apply.clear_tool_msg_ids_for_topic"
+            ),
+            patch(
+                "ccgram.handlers.polling.window_tick.apply.clear_topic_state",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "ccgram.handlers.polling.window_tick.apply._AUTODELETE_DEAD_TOPICS",
+                autodelete,
+            ),
+            patch("ccgram.handlers.topics.topic_deletion.session_manager"),
+        ):
+            await _handle_dead_window_notification(bot, 1, 100, "@0")
+
+        if autodelete:
+            bot.delete_forum_topic.assert_awaited_once()
+            assert router.get_window_for_chat_thread(42, 100) is None
+        else:
+            # The topic stays and so does its binding: a later
+            # reconciliation can still fold it onto a re-keyed digest.
+            bot.delete_forum_topic.assert_not_awaited()
+            assert router.get_window_for_chat_thread(42, 100) == "@0"
+
     @pytest.mark.parametrize("presence_value", [True, None], ids=["present", "unknown"])
     async def test_unconfirmed_presence_clears_marker_without_deletion(
         self, presence_value

@@ -29,6 +29,7 @@ async def retire_topic_binding(
     router: ThreadRouter = thread_router,
     chat_id: int | None = None,
     before_delete: Callable[[], Awaitable[None]] | None = None,
+    retirement_reason: str = "session_closed",
 ) -> str:
     """Retire an exact confirmed-dead binding before any asynchronous cleanup."""
     if router.has_target_provisioning(window_id) is True:
@@ -64,7 +65,7 @@ async def retire_topic_binding(
         user_id,
         thread_id,
         chat_id=binding_chat,
-        retirement_reason="session_closed",
+        retirement_reason=retirement_reason,
         cleanup_eligible=True,
     )
     session_manager.flush_state()
@@ -230,6 +231,7 @@ async def cleanup_retired_topics(
     router: ThreadRouter = thread_router,
     include_closed: bool = False,
     limit: int = 20,
+    exclude_reasons: frozenset[str] | None = None,
 ) -> dict[str, int]:
     """Drain a bounded batch; automatic sweeps never adopt retained history."""
     outcomes: Counter[str] = Counter()
@@ -238,6 +240,8 @@ async def cleanup_retired_topics(
         router.iter_retired_topics(), key=lambda topic: (topic.retry_at, topic.sequence)
     )
     for topic in topics:
+        if exclude_reasons and topic.reason in exclude_reasons:
+            continue
         if not is_cleanup_candidate(topic, include_closed=include_closed):
             continue
         if attempts >= limit:

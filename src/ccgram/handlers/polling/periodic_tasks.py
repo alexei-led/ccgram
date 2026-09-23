@@ -24,6 +24,7 @@ from ..topics.topic_lifecycle import (
     probe_topic_existence,
     prune_stale_state,
 )
+from .window_tick.apply import _AUTODELETE_DEAD_TOPICS
 
 if TYPE_CHECKING:
     from ...multiplexer.base import WindowRef as TmuxWindow
@@ -56,7 +57,18 @@ async def run_periodic_tasks(
         await prune_stale_state(all_windows)
         if not recovery.get("rate_limited"):
             await probe_topic_existence(client)
-            await cleanup_retired_topics(client)
+            # The drain retries failed deletions from ANY retire path
+            # (explicit unbind --delete, failed provisioning, system
+            # replacement), not only dead-session retention. With the
+            # knob off it still skips records the AUTOMATIC dead-session
+            # path left behind (reason dead_session): the operator
+            # turned that deletion off, and those topics stay.
+            await cleanup_retired_topics(
+                client,
+                exclude_reasons=(
+                    None if _AUTODELETE_DEAD_TOPICS else frozenset({"dead_session"})
+                ),
+            )
         log_throttle_sweep()
 
 
