@@ -36,6 +36,7 @@ def _tasks(now: float):
     ):
         mock_time.monotonic.return_value = now
         mock_config.live_view_interval = _LIVE_VIEW_INTERVAL
+        mock_config.autodelete_dead_topics = True
         yield MagicMock(
             live=live,
             prune=prune,
@@ -44,6 +45,7 @@ def _tasks(now: float):
             cleanup=cleanup,
             recover=recover,
             sweep=sweep,
+            config=mock_config,
         )
 
 
@@ -95,6 +97,17 @@ class TestRunPeriodicTasks:
         tasks.probe.assert_awaited_once_with(client)
         tasks.cleanup.assert_awaited_once_with(client, exclude_reasons=None)
         tasks.recover.assert_awaited_once_with(client)
+
+    async def test_autodelete_off_excludes_dead_session_retirements(self):
+        timers = {"live_view": 1e9, "topic_check": 0.0}
+        client = MagicMock()
+        with _tasks(now=TOPIC_CHECK_INTERVAL) as tasks:
+            tasks.config.autodelete_dead_topics = False
+            await run_periodic_tasks(client, [], timers)
+
+        tasks.cleanup.assert_awaited_once_with(
+            client, exclude_reasons=frozenset({"dead_session"})
+        )
 
     async def test_recovery_rate_limit_defers_other_telegram_maintenance(self):
         timers = {"live_view": 1e9, "topic_check": 0.0}

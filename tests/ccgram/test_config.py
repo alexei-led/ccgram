@@ -122,6 +122,26 @@ class TestShowHiddenDirs:
 
 
 @pytest.mark.usefixtures("_base_env")
+class TestAutodeleteDeadTopics:
+    def test_autodelete_dead_topics_default_true(self, monkeypatch):
+        monkeypatch.delenv("CCGRAM_AUTODELETE_DEAD_TOPICS", raising=False)
+        cfg = Config()
+        assert cfg.autodelete_dead_topics is True
+
+    @pytest.mark.parametrize("value", ["0", "false", "no", "off", "False", "OFF"])
+    def test_autodelete_dead_topics_disabled(self, monkeypatch, value):
+        monkeypatch.setenv("CCGRAM_AUTODELETE_DEAD_TOPICS", value)
+        cfg = Config()
+        assert cfg.autodelete_dead_topics is False
+
+    @pytest.mark.parametrize("value", ["1", "true", "yes", "True", "anything-else"])
+    def test_autodelete_dead_topics_enabled(self, monkeypatch, value):
+        monkeypatch.setenv("CCGRAM_AUTODELETE_DEAD_TOPICS", value)
+        cfg = Config()
+        assert cfg.autodelete_dead_topics is True
+
+
+@pytest.mark.usefixtures("_base_env")
 class TestHideToolCalls:
     def test_hide_tool_calls_default_false(self, monkeypatch):
         monkeypatch.delenv("CCGRAM_HIDE_TOOL_CALLS", raising=False)

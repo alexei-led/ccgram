@@ -81,6 +81,40 @@ class TestPersistence:
         assert not state_file.exists()
 
 
+class TestBacklogSkipIntentPersistence:
+    def test_stamped_clock_on_legacy_barrier_survives_reload(self, state, state_file):
+        # Simulate a barrier persisted before the created_at stamp existed.
+        state_file.write_text(
+            json.dumps(
+                {
+                    "tracked_sessions": {},
+                    "events_offset": 0,
+                    "pending_skips": {
+                        "s1": {
+                            "session_id": "s1",
+                            "window_id": "@0",
+                            "user_id": 1,
+                            "thread_id": 2,
+                            "chat_id": -100,
+                            "snapshot_offset": 500,
+                            "range_start": 0,
+                        }
+                    },
+                }
+            )
+        )
+        state.load()
+        assert state.pending_skips["s1"].created_at == 0.0
+
+        state.stamp_skip_clock("s1", 1234.5)
+        assert state.save_if_dirty()
+
+        restored = MonitorState(state_file=state_file)
+        restored.load()
+
+        assert restored.pending_skips["s1"].created_at == 1234.5
+
+
 class TestSessionRegistry:
     def test_get_session_returns_the_tracked_instance(self, state):
         session = TrackedSession(session_id="s1", file_path="/a.jsonl")

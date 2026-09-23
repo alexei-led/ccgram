@@ -33,12 +33,12 @@ logger = structlog.get_logger()
 _MIN_THINKING_LENGTH = 20
 
 # This handler runs inline in the monitor's sequential dispatch, so an
-# unbounded queue.join() here freezes delivery for every session. The
-# wait is bounded by a total budget sized for healthy flood-control
-# drains (two 30s retry windows plus margin): queue counts cannot
-# distinguish a send backing off from a wedged one, so time is the only
-# honest bound. An interactive UI may reorder against pending messages
-# after the budget, but dispatch always continues.
+# unbounded queue.join() here freezes delivery for every session. Queue
+# counts cannot distinguish a send backing off from a wedged one (a single
+# queued item can retry for up to the 300s flood-control budget in
+# message_queue.py), so time is the only honest bound. Past this timeout we
+# accept a possible reorder of the interactive UI relative to queued
+# content, rather than stall monitor dispatch for every other session.
 _INTERACTIVE_QUEUE_JOIN_TIMEOUT_S = 90.0
 
 # One draft per session/topic. Provider updates are cumulative snapshots, not deltas.
@@ -198,8 +198,9 @@ async def handle_new_message(msg: NewMessage, client: TelegramClient) -> None:  
 
         if msg.tool_name in INTERACTIVE_TOOL_NAMES and msg.content_type == "tool_use":
             set_interactive_mode(user_id, window_id, thread_id, chat_id=chat_id)
-            # The creating getter also respawns a dead queue worker, the one
-            # wedge a plain get would leave join() waiting on forever.
+            # get_or_create_queue also creates the worker if missing. The
+            # worker catches every exception and always calls task_done, so
+            # in practice it only exits via cancellation (e.g. shutdown).
             queue = get_or_create_queue(client, user_id)
             try:
                 await asyncio.wait_for(queue.join(), _INTERACTIVE_QUEUE_JOIN_TIMEOUT_S)

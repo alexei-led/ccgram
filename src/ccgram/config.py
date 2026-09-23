@@ -139,6 +139,15 @@ class Config:
             "CCGRAM_SHOW_HIDDEN_DIRS", ""
         ).lower() in ("1", "true", "yes")
 
+        # Dead-session topic retention. Topics are the session list. Deleting a
+        # dead session's topic also destroys the binding a later reconciliation
+        # could fold onto a re-keyed successor digest, so operators may keep
+        # dead topics and close them by hand (the recovery banner still
+        # answers the next message there). Default true = delete, as before.
+        self.autodelete_dead_topics: bool = os.getenv(
+            "CCGRAM_AUTODELETE_DEAD_TOPICS", "true"
+        ).strip().lower() not in ("0", "false", "no", "off")
+
         # Ack reaction: react to forwarded messages with an emoji (empty = disabled)
         self.ack_reaction: str = os.getenv("CCGRAM_ACK_REACTION", "")
 

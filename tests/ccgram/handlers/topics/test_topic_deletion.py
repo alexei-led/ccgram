@@ -274,6 +274,20 @@ async def test_sweep_limits_api_work_without_forgetting_remaining_topics(router)
     assert len(list(router.iter_retired_topics())) == 28
 
 
+async def test_exclude_reasons_skips_dead_session_retirements(router):
+    dead = _retire(router, reason="dead_session")
+    other = _retire(router, 43, reason="session_closed")
+    client = AsyncMock()
+
+    outcomes = await cleanup_retired_topics(
+        client, router=router, exclude_reasons=frozenset({"dead_session"})
+    )
+
+    assert outcomes == {"deleted": 1}
+    assert list(router.iter_retired_topics()) == [dead]
+    assert other not in router.iter_retired_topics()
+
+
 async def test_old_closed_topics_require_explicit_sync_cleanup(router):
     _retire(router, eligible=False, reason="remote_closed")
     keep = _retire(router, 43, eligible=False, reason="keep_remote")

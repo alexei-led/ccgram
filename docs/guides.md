@@ -235,12 +235,14 @@ All settings accept both CLI flags and environment variables. CLI flags take pre
 | `CCGRAM_PROMPT_MODE` / `--prompt-mode`                | `wrap`                         | Shell prompt marker: `wrap` (append `⌘N⌘`) or `replace` (legacy `{prefix}:N❯`)                       |
 | `CCGRAM_PROMPT_MARKER`                                | `ccgram`                       | Marker prefix used only by `replace` mode                                                            |
 | `CCGRAM_PANE_LIFECYCLE_NOTIFY`                        | `false`                        | Default for per-window pane create/close notifications (toggle via `/panes`)                         |
+| `CCGRAM_AUTODELETE_DEAD_TOPICS`                       | `true`                         | Set `false` to keep a dead session's topic and binding instead of deleting it                        |
 | `CCGRAM_SHOW_HIDDEN_DIRS` / `--show-hidden-dirs`      | `false`                        | Show dot-directories in the directory browser                                                        |
 | `CCGRAM_SEND_SEARCH_DEPTH`                            | `5`                            | Max directory depth for `/send` file search                                                          |
 | `CCGRAM_SEND_MAX_RESULTS`                             | `50`                           | Max file results returned by `/send` search                                                          |
 | `CCGRAM_TOOLBAR_CONFIG`                               | `~/.ccgram/toolbar.toml`       | Path to custom toolbar TOML; falls back to built-in defaults if missing                              |
 | `CCGRAM_STATUS_POLL_INTERVAL`                         | `1.0`                          | Status polling interval in seconds (min 0.5)                                                         |
 | `CCGRAM_YOLO_CONFIRMATION_TIMEOUT`                    | `30.0`                         | Seconds to wait for the YOLO confirmation prompt (min 1.0)                                           |
+| `CCGRAM_SKIP_BARRIER_DEADLINE_S`                      | `600`                          | Seconds a pending backlog-skip barrier waits for its notice before force-completion (min 60)         |
 | `CCGRAM_MINIAPP_BASE_URL`                             | _(disabled)_                   | Externally reachable HTTPS URL for the Mini App dashboard                                            |
 | `CCGRAM_MINIAPP_HOST`                                 | `127.0.0.1`                    | Local bind host for the Mini App aiohttp server                                                      |
 | `CCGRAM_MINIAPP_PORT`                                 | `8765`                         | Local bind port for the Mini App aiohttp server                                                      |
@@ -431,6 +433,8 @@ Creating sessions from the terminal on herdr is covered in [Creating Sessions fr
 `/sync` immediately deletes locally known topics whose terminal sessions are confirmed gone, retries pending deletions, and includes locally recorded topics that earlier versions closed without deleting. No extra **Fix** click is needed for this cleanup. It then reports the result and offers **Fix** for other repairable items. Each cleanup batch attempts up to 100 retired topics. Pending deletion records survive restarts and are never dropped by the separate 100-entry retained-history limit.
 
 Before each removal, CCGram rechecks the exact chat/topic binding. A topic that is active or was rebound in the meantime is protected from deletion. A new binding for the same chat/topic also removes the old retired record. If the multiplexer cannot provide an authoritative listing, `/sync` performs no cleanup.
+
+`CCGRAM_AUTODELETE_DEAD_TOPICS=false` only gates the automatic per-tick dead-session deletion. A topic kept that way is still a binding pointing at a confirmed-dead window, so it surfaces as a `ghost_binding` audit issue; `/sync` (run directly or via its **Fix** button) closes and deletes it like any other ghost topic, regardless of the knob.
 
 Session creation also owns an exact topic record, saved before the first remote request. That ownership protects the topic throughout slow startup and replacement; it does not expire while the creation task is running. Startup, periodic cleanup, and `/sync` recover abandoned creation records from current session presence and verify the recorded Telegram topic before restoring its binding. If that topic was deleted while its target remains alive, recovery creates a fresh topic without replacing another current binding for the target. Failed recreation attempts with a known outcome remain queued across restarts and respect Telegram rate limits.
 
