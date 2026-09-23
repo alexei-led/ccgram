@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## [4.12.0] - 2026-09-23
+
+### Added
+- CCGRAM_AUTODELETE_DEAD_TOPICS keeps dead topics and their bindings ([#273](https://github.com/alexei-led/ccgram/pull/273))
+
+
+### Fixed
+- Bound the interactive queue join so monitor dispatch never freezes ([#263](https://github.com/alexei-led/ccgram/pull/263))
+- Expire backlog skip barriers whose notice never delivers ([#265](https://github.com/alexei-led/ccgram/pull/265))
+- Retain Codex approval choices after earlier chat prompts ([#254](https://github.com/alexei-led/ccgram/pull/254))
+
 ## [4.11.4] - 2026-09-23
 
 ### Fixed
