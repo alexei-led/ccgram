@@ -441,6 +441,7 @@ async def _delete_dead_topic_immediately(
         router=thread_router,
         chat_id=chat_id,
         before_delete=clear_state_before_delete,
+        retirement_reason="dead_session",
     )
     logger.info(
         "dead_session_topic_cleanup",

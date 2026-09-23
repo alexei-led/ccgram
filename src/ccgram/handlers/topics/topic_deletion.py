@@ -29,6 +29,7 @@ async def retire_topic_binding(
     router: ThreadRouter = thread_router,
     chat_id: int | None = None,
     before_delete: Callable[[], Awaitable[None]] | None = None,
+    retirement_reason: str = "session_closed",
 ) -> str:
     """Retire an exact confirmed-dead binding before any asynchronous cleanup."""
     if router.has_target_provisioning(window_id) is True:
@@ -64,7 +65,7 @@ async def retire_topic_binding(
         user_id,
         thread_id,
         chat_id=binding_chat,
-        retirement_reason="session_closed",
+        retirement_reason=retirement_reason,
         cleanup_eligible=True,
     )
     session_manager.flush_state()
