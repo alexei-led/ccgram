@@ -86,6 +86,28 @@ def get_multiplexer(name: str) -> Multiplexer:
     return instance
 
 
+def detect_multiplexer_name(env: dict[str, str]) -> str:
+    """Detect the active multiplexer backend from environment variables.
+
+    Checks backend-specific env vars in priority order and returns the first
+    match. Precedence: herdr > tmux > agterm. Falls back to ``"tmux"`` when
+    none of the backend-specific vars are set.
+
+    This is intentionally I/O-free: it only inspects the provided mapping,
+    never spawns a subprocess or touches a socket.
+
+    Used by ``config.Config._init_multiplexer`` when
+    ``CCGRAM_MULTIPLEXER=auto`` (the default).
+    """
+    if env.get("HERDR_PANE_ID"):
+        return "herdr"
+    if env.get("TMUX_PANE"):
+        return "tmux"
+    if env.get("AGTERM_SESSION_ID"):
+        return "agterm"
+    return "tmux"
+
+
 def _reset_multiplexer_cache_for_testing() -> None:
     """Drop cached backend instances so tests build fresh backends."""
     _instances.clear()

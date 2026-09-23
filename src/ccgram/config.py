@@ -202,9 +202,25 @@ class Config:
         )
 
     def _init_multiplexer(self) -> None:
-        """Select the terminal-multiplexer backend."""
-        # tmux default; herdr and agterm opt-in.
-        self.multiplexer_name: str = os.getenv("CCGRAM_MULTIPLEXER", "tmux")
+        """Select the terminal-multiplexer backend.
+
+        ``CCGRAM_MULTIPLEXER`` accepts a concrete backend name (``tmux``,
+        ``herdr``, ``agterm``) or the special value ``auto`` (the default).
+        In auto mode the backend is detected from environment variables:
+        ``HERDR_PANE_ID`` → herdr, ``TMUX_PANE`` → tmux,
+        ``AGTERM_SESSION_ID`` → agterm; falls back to ``tmux`` when none match.
+        """
+        raw = os.getenv("CCGRAM_MULTIPLEXER", "auto")
+        if raw == "auto":
+            # Lazy: avoid pulling in multiplexer.registry (and libtmux) at
+            # config import time; detect_multiplexer_name is pure env-var logic.
+            from ccgram.multiplexer.registry import (
+                detect_multiplexer_name,
+            )  # Lazy: env-only, no I/O
+
+            self.multiplexer_name: str = detect_multiplexer_name(dict(os.environ))
+        else:
+            self.multiplexer_name: str = raw
 
     def _init_live_view(self) -> None:
         self.live_view_interval: int = max(

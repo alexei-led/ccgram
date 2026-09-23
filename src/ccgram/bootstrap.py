@@ -155,9 +155,11 @@ def verify_hooks_installed() -> None:
 def wire_multiplexer() -> None:
     """Install the configured multiplexer backend as the module-level proxy.
 
-    Selects the backend from ``config.multiplexer_name`` (``CCGRAM_MULTIPLEXER``,
-    default tmux). Must run before the session monitor / status polling start so
-    callers that use the ``multiplexer`` proxy forward to a wired backend.
+    Selects the backend from ``config.multiplexer_name``, which is resolved
+    from ``CCGRAM_MULTIPLEXER`` (default ``auto`` — detects from env vars at
+    startup; see ``config.Config._init_multiplexer``). Must run before the
+    session monitor / status polling start so callers that use the
+    ``multiplexer`` proxy forward to a wired backend.
     Idempotent — re-installs the same cached backend on repeat calls.
     """
     backend = get_multiplexer(config.multiplexer_name)
