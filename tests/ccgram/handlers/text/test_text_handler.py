@@ -520,6 +520,28 @@ class TestForwardMessage:
 
         message.chat.send_action.assert_awaited_once_with(ChatAction.TYPING)
 
+    @patch(
+        f"{_TH}.send_telegram_to_window",
+        new_callable=AsyncMock,
+        return_value=(True, "ok"),
+    )
+    @patch(f"{_TH}.window_query")
+    async def test_typing_failure_still_forwards_text(
+        self, _mock_sm: MagicMock, mock_send: AsyncMock
+    ) -> None:
+        """Regression #257: a timed-out typing action must not drop the text."""
+        from telegram.error import TimedOut
+
+        bot = AsyncMock()
+        message = AsyncMock()
+        message.chat.send_action = AsyncMock(side_effect=TimedOut())
+
+        with patch(f"{_TH}.get_interactive_window", return_value=None):
+            await _forward_message("@0", 100, 42, "hello", bot, message)
+
+        mock_send.assert_awaited_once()
+        assert mock_send.call_args.args[3] == "hello"
+
 
 class TestBashCaptureCleanup:
     @pytest.fixture(autouse=True)

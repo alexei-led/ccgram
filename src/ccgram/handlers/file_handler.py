@@ -12,6 +12,7 @@ Key handlers:
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+import contextlib
 import structlog
 import re
 import unicodedata
@@ -223,7 +224,9 @@ async def _upload_and_notify(
         await safe_reply(message, f"\u274c {error}")
         return
 
-    await message.chat.send_action(ChatAction.TYPING)
+    # Best-effort: a network error here must not drop the upload (#257).
+    with contextlib.suppress(TelegramError):
+        await message.chat.send_action(ChatAction.TYPING)
 
     saved_name = await _download_and_save(
         message, upload_path, filename, file_id, file_size, size_label

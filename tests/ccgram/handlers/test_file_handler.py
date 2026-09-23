@@ -3,9 +3,12 @@
 import re
 import unicodedata
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from telegram.error import TimedOut
 
+from ccgram.handlers import file_handler
 from ccgram.handlers.file_handler import (
     _generate_photo_filename,
     _sanitize_caption,
@@ -188,3 +191,39 @@ class TestGeneratePhotoFilename:
     def test_format(self) -> None:
         result = _generate_photo_filename("ABCDEFGHIJKLMNOP")
         assert re.match(r"^photo_\d{8}_\d{6}_ABCDEFGH\.jpg$", result)
+
+
+class TestUploadTypingFailure:
+    async def test_typing_failure_still_notifies_agent(self, tmp_path: Path) -> None:
+        """Regression #257: a timed-out typing action must not drop the upload."""
+        message = MagicMock()
+        message.caption = None
+        message.chat.id = -100
+        message.chat.send_action = AsyncMock(side_effect=TimedOut())
+
+        with (
+            patch.object(
+                file_handler,
+                "_resolve_upload_dir",
+                return_value=("@0", tmp_path, None),
+            ),
+            patch.object(
+                file_handler,
+                "_download_and_save",
+                new_callable=AsyncMock,
+                return_value="a.txt",
+            ),
+            patch.object(
+                file_handler,
+                "send_telegram_to_window",
+                new_callable=AsyncMock,
+                return_value=(True, "ok"),
+            ) as mock_send,
+            patch.object(file_handler, "ack_reaction", new_callable=AsyncMock),
+            patch.object(file_handler, "safe_reply", new_callable=AsyncMock),
+        ):
+            await file_handler._upload_and_notify(
+                message, 1, 42, "a.txt", "fid", 10, "File", "see {path}", "📎"
+            )
+
+        mock_send.assert_awaited_once()

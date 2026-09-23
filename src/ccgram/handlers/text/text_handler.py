@@ -11,11 +11,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 import asyncio
+import contextlib
 from pathlib import Path
 
 import structlog
 from telegram import Message, Update
 from telegram.constants import ChatAction
+from telegram.error import TelegramError
 from ...config import config
 from ...telegram_client import PTBTelegramClient, TelegramClient
 from ..callback_helpers import get_thread_id as _get_thread_id
@@ -481,7 +483,9 @@ async def _forward_message(
     message: Message,
 ) -> None:
     """Forward a text message to the bound tmux window."""
-    await message.chat.send_action(ChatAction.TYPING)  # type: ignore[union-attr]
+    # Best-effort: a network error here must not drop the user's text (#257).
+    with contextlib.suppress(TelegramError):
+        await message.chat.send_action(ChatAction.TYPING)  # type: ignore[union-attr]
     # Enqueue a status clear to actually delete the Telegram message
     # (clear_status_msg_info only clears the tracking dict, leaving a ghost)
     await enqueue_status_update(client, user_id, window_id, None, thread_id)
