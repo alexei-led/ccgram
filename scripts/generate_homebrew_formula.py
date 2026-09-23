@@ -3,7 +3,8 @@
 
 Usage: python scripts/generate_homebrew_formula.py <version>
 
-Requires: uv (used for dependency resolution and PyPI queries).
+Requires: uv (used for dependency resolution). Run from a checkout of the
+released tag: dependencies come from its pyproject.toml.
 For local development, prefer: brew update-python-resources alexei-led/tap/ccgram
 """
 
@@ -19,9 +20,13 @@ import urllib.request
 from pathlib import Path
 
 PYPI_URL = "https://pypi.org/pypi/{name}/{version}/json"
+PYPI_PROJECT_URL = "https://pypi.org/pypi/{name}/json"
 POLL_INTERVAL = 15
 PYPI_API_TIMEOUT = 600
-UV_INDEX_TIMEOUT = 600
+TRANSIENT_RETRIES = 3
+HTTP_SERVER_ERROR = 500
+# Release CI checks out the tag, so its pyproject.toml is the released one.
+PYPROJECT = Path(__file__).resolve().parent.parent / "pyproject.toml"
 
 FORMULA_TEMPLATE = """\
 class Ccgram < Formula
@@ -64,10 +69,35 @@ end
 """
 
 
+def _get_json(url: str) -> dict:
+    """GET a PyPI JSON URL, retrying transient errors (5xx, network)."""
+    for attempt in range(TRANSIENT_RETRIES):
+        try:
+            with urllib.request.urlopen(url, timeout=30) as r:
+                return json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            if e.code < HTTP_SERVER_ERROR or attempt == TRANSIENT_RETRIES - 1:
+                raise
+        except urllib.error.URLError, TimeoutError:
+            if attempt == TRANSIENT_RETRIES - 1:
+                raise
+        time.sleep(POLL_INTERVAL)
+    raise AssertionError("unreachable")
+
+
 def pypi_json(name: str, version: str) -> dict:
-    url = PYPI_URL.format(name=name, version=version)
-    with urllib.request.urlopen(url) as r:
-        return json.loads(r.read())
+    """Return release metadata with the release's files under ``urls``."""
+    try:
+        return _get_json(PYPI_URL.format(name=name, version=version))
+    except urllib.error.HTTPError as e:
+        if e.code < HTTP_SERVER_ERROR:
+            raise
+        # The per-version endpoint can fail on its own (seen: libtmux 0.62.0
+        # 503 while the project endpoint served); the project one lists files.
+        files = _get_json(PYPI_PROJECT_URL.format(name=name))["releases"].get(version)
+        if not files:
+            raise
+        return {"urls": files}
 
 
 def sdist_info(name: str, version: str) -> tuple[str, str]:
@@ -91,18 +121,21 @@ def wait_for_sdist(version: str) -> tuple[str, str]:
             time.sleep(POLL_INTERVAL)
 
 
-def _compile_deps(version: str) -> list[tuple[str, str]]:
-    """Run 'uv pip compile' and parse output into (name, version) pairs."""
+def resolve_deps() -> list[tuple[str, str]]:
+    """Resolve ccgram's runtime deps from the checked-out pyproject.toml.
+
+    Resolving ``ccgram==<version>`` from the index instead waited on the
+    index to list the fresh release, which stalled past the timeout even
+    after PyPI served it (v4.11.4).
+    """
     with tempfile.TemporaryDirectory() as tmp:
-        reqs_in = Path(tmp) / "in.txt"
         reqs_out = Path(tmp) / "out.txt"
-        reqs_in.write_text(f"ccgram=={version}\n")
         subprocess.check_call(
             [
                 "uv",
                 "pip",
                 "compile",
-                str(reqs_in),
+                str(PYPROJECT),
                 "-o",
                 str(reqs_out),
                 "--no-header",
@@ -117,22 +150,8 @@ def _compile_deps(version: str) -> list[tuple[str, str]]:
             line = line.split("#")[0].strip()
             if "==" in line:
                 name, ver = line.split("==", 1)
-                if name.strip().lower() != "ccgram":
-                    deps.append((name.strip(), ver.strip()))
+                deps.append((name.strip(), ver.split(";")[0].strip()))
     return sorted(deps, key=lambda x: x[0].lower())
-
-
-def resolve_deps(version: str) -> list[tuple[str, str]]:
-    """Resolve deps with retries (uv index may lag behind PyPI API)."""
-    deadline = time.monotonic() + UV_INDEX_TIMEOUT
-    while True:
-        try:
-            return _compile_deps(version)
-        except subprocess.CalledProcessError:
-            if time.monotonic() >= deadline:
-                raise
-            print("Waiting for uv index to catch up...", file=sys.stderr)
-            time.sleep(POLL_INTERVAL)
 
 
 def resource_blocks(deps: list[tuple[str, str]]) -> str:
@@ -155,7 +174,7 @@ def main() -> None:
     version = sys.argv[1]
     print(f"Resolving ccgram {version}...", file=sys.stderr)
     sdist_url, sha256 = wait_for_sdist(version)
-    deps = resolve_deps(version)
+    deps = resolve_deps()
     print(f"Found {len(deps)} dependencies", file=sys.stderr)
 
     print(
