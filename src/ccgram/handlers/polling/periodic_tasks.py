@@ -24,7 +24,6 @@ from ..topics.topic_lifecycle import (
     probe_topic_existence,
     prune_stale_state,
 )
-from .window_tick.apply import _AUTODELETE_DEAD_TOPICS
 
 if TYPE_CHECKING:
     from ...multiplexer.base import WindowRef as TmuxWindow
@@ -66,7 +65,9 @@ async def run_periodic_tasks(
             await cleanup_retired_topics(
                 client,
                 exclude_reasons=(
-                    None if _AUTODELETE_DEAD_TOPICS else frozenset({"dead_session"})
+                    None
+                    if config.autodelete_dead_topics
+                    else frozenset({"dead_session"})
                 ),
             )
         log_throttle_sweep()

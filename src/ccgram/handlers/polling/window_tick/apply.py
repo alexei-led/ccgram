@@ -10,7 +10,6 @@ notifications, multi-pane scans, passive shell relay.
 from __future__ import annotations
 
 import contextlib
-import os
 import time
 from typing import TYPE_CHECKING
 
@@ -70,14 +69,6 @@ if TYPE_CHECKING:
     from ..polling_runtime import PollingRuntime
 
 logger = structlog.get_logger()
-
-# Topics are the session list. Deleting a dead session's topic also
-# destroys the binding a later reconciliation could fold onto a re-keyed
-# successor digest, so operators may keep dead topics and close them by
-# hand (the recovery banner still answers the next message there).
-_AUTODELETE_DEAD_TOPICS = os.getenv(
-    "CCGRAM_AUTODELETE_DEAD_TOPICS", "true"
-).strip().lower() not in ("0", "false", "no", "off")
 
 
 def _get_provider(window_id: str) -> "AgentProvider":
@@ -366,7 +357,7 @@ async def _handle_dead_window_notification(
         agent_status_cache.clear(wid)
         ps.clear_seen_status(wid)
         clear_tool_msg_ids_for_topic(user_id, thread_id)
-        if not _AUTODELETE_DEAD_TOPICS:
+        if not config.autodelete_dead_topics:
             logger.info(
                 "dead_session_topic_retained",
                 user_id=user_id,
