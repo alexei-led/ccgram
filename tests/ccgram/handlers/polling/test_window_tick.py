@@ -613,10 +613,12 @@ class TestDeadWindowTopicDeleted:
                 "ccgram.handlers.polling.window_tick.apply.clear_topic_state",
                 new_callable=AsyncMock,
             ),
-            patch(
-                "ccgram.handlers.polling.window_tick.apply._AUTODELETE_DEAD_TOPICS",
-                autodelete,
+            patch.object(
+                window_tick.apply,
+                "config",
+                MagicMock(autodelete_dead_topics=autodelete),
             ),
+            patch("ccgram.handlers.polling.window_tick.apply.logger") as mock_logger,
             patch("ccgram.handlers.topics.topic_deletion.session_manager"),
         ):
             await _handle_dead_window_notification(bot, 1, 100, "@0")
@@ -624,11 +626,55 @@ class TestDeadWindowTopicDeleted:
         if autodelete:
             bot.delete_forum_topic.assert_awaited_once()
             assert router.get_window_for_chat_thread(42, 100) is None
+            # The autodelete path retires and clears the sticky marker.
+            assert (1, 100, "@0") not in lifecycle_strategy._dead_notified
         else:
             # The topic stays and so does its binding: a later
             # reconciliation can still fold it onto a re-keyed digest.
             bot.delete_forum_topic.assert_not_awaited()
             assert router.get_window_for_chat_thread(42, 100) == "@0"
+            # The retained path stamps a log entry and keeps the dead
+            # marker sticky so the poll loop doesn't re-probe every tick.
+            mock_logger.info.assert_called_once_with(
+                "dead_session_topic_retained",
+                user_id=1,
+                thread_id=100,
+                window_id="@0",
+            )
+            assert (1, 100, "@0") in lifecycle_strategy._dead_notified
+
+    async def test_autodelete_on_stamps_dead_session_reason(self):
+        """Even with the knob on, a failed delete leaves a pending retired
+        record — the exact record the knob-off sweep filters out by reason."""
+        bot = AsyncMock(spec=Bot)
+        bot.delete_forum_topic.side_effect = TelegramError("no rights")
+
+        router = ThreadRouter(
+            schedule_save=lambda: None,
+            has_window_state=lambda _window_id: False,
+        )
+        router.bind_thread(1, 100, "@0", chat_id=42)
+
+        with (
+            patch("ccgram.handlers.polling.window_tick.apply.thread_router", router),
+            patch(
+                "ccgram.handlers.polling.window_tick.apply.window_presence",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "ccgram.handlers.polling.window_tick.apply.clear_tool_msg_ids_for_topic"
+            ),
+            patch(
+                "ccgram.handlers.polling.window_tick.apply.clear_topic_state",
+                new_callable=AsyncMock,
+            ),
+            patch("ccgram.handlers.topics.topic_deletion.session_manager"),
+        ):
+            await _handle_dead_window_notification(bot, 1, 100, "@0")
+
+        retired = next(router.iter_retired_topics())
+        assert retired.reason == "dead_session"
 
     @pytest.mark.parametrize("presence_value", [True, None], ids=["present", "unknown"])
     async def test_unconfirmed_presence_clears_marker_without_deletion(
