@@ -171,6 +171,41 @@ class TestParseStatusLine:
         )
         assert parse_status_line(pane) == "Working hard"
 
+    _UPDATE_NOTICE = " " * 40 + "✔ Update installed · Restart to update"
+
+    def test_skips_right_aligned_update_notice(self):
+        """Regression #255: the footer notice must not win over the spinner."""
+        pane = (
+            "output\n"
+            "✽ Discombobulating… (16s · ↓ 151 tokens · still thinking)\n"
+            f"{self._UPDATE_NOTICE}\n"
+            f"{_SEPARATOR}\n"
+            "❯\n"
+            f"{_SEPARATOR}\n"
+            "  ⬆ /gsd-update │ Fable 5.1 │ playground\n"
+        )
+        assert (
+            parse_status_line(pane)
+            == "Discombobulating… (16s · ↓ 151 tokens · still thinking)"
+        )
+
+    def test_idle_update_notice_is_not_status(self):
+        pane = f"output\n{self._UPDATE_NOTICE}\n{_SEPARATOR}\n❯\n{_SEPARATOR}\n"
+        assert parse_status_line(pane) is None
+
+    def test_skips_update_notice_on_narrow_pane(self):
+        pane = (
+            "output\n"
+            "✻ Reading file\n"
+            "      ✔ Update installed · Restart to update\n"
+            f"{_SEPARATOR}\n"
+        )
+        assert parse_status_line(pane) == "Reading file"
+
+    def test_indented_known_spinner_is_still_status(self):
+        pane = f"output\n      ⠋ Loading modules\n{_SEPARATOR}\n"
+        assert parse_status_line(pane) == "Loading modules"
+
     def test_uses_fixture(self, sample_pane_status_line: str):
         assert parse_status_line(sample_pane_status_line) == "Reading file src/main.py"
 

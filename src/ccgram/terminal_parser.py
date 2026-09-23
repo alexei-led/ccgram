@@ -521,20 +521,44 @@ def _collect_status_progress_lines(
     return progress_lines
 
 
+# Claude Code right-aligns footer notices ("✔ Update installed · Restart to
+# update") above the separator; the spinner line starts at column 0. The
+# threshold is low so narrow panes still count; known spinners never do.
+_FOOTER_NOTICE_MIN_INDENT = 4
+
+
+def _is_footer_notice(line: str) -> bool:
+    stripped = line.lstrip()
+    if not stripped or len(line) - len(stripped) < _FOOTER_NOTICE_MIN_INDENT:
+        return False
+    first = stripped[0]
+    return first not in STATUS_SPINNERS and not (
+        _BRAILLE_START <= ord(first) <= _BRAILLE_END
+    )
+
+
 def _find_status_line_index(lines: list[str], scan_start: int) -> int | None:
-    """Locate the Claude spinner status line above the footer separators."""
+    """Locate the Claude spinner status line above the footer separators.
+
+    Checks the two lines above each separator. Right-aligned footer notices
+    are skipped without using up that window.
+    """
     for i in range(len(lines) - 1, scan_start - 1, -1):
         if not _is_separator(lines[i]):
             continue
-        for offset in (1, 2):
-            j = i - offset
-            if j < scan_start:
-                break
-            candidate = lines[j].strip()
+        j = i - 1
+        remaining = 2
+        while remaining and j >= scan_start:
+            line = lines[j]
+            j -= 1
+            if _is_footer_notice(line):
+                continue
+            remaining -= 1
+            candidate = line.strip()
             if not candidate:
                 continue
             if is_likely_spinner(candidate[0]):
-                return j
+                return j + 1
             break
     return None
 
