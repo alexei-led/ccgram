@@ -78,7 +78,7 @@ def _get_json(url: str) -> dict:
         except urllib.error.HTTPError as e:
             if e.code < HTTP_SERVER_ERROR or attempt == TRANSIENT_RETRIES - 1:
                 raise
-        except urllib.error.URLError:
+        except urllib.error.URLError, TimeoutError:
             if attempt == TRANSIENT_RETRIES - 1:
                 raise
         time.sleep(POLL_INTERVAL)
