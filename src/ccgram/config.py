@@ -8,6 +8,7 @@ The module-level `config` instance is imported by nearly every other module.
 Key class: Config (singleton instantiated as `config`).
 """
 
+import math
 import structlog
 import os
 from pathlib import Path
@@ -45,10 +46,23 @@ def _resolve_toolbar_path() -> str:
     return str(fallback) if fallback.exists() else ""
 
 
+def _skip_barrier_deadline_s() -> float:
+    """Backlog-skip barrier aging, floored so no value expires barriers
+    near-instantly and tolerant of empty, non-numeric, or non-finite
+    input (inf would disable expiry outright)."""
+    try:
+        value = float(os.getenv("CCGRAM_SKIP_BARRIER_DEADLINE_S") or 600.0)
+    except ValueError:
+        return 600.0
+    if not math.isfinite(value):
+        return 600.0
+    return max(60.0, value)
+
+
 class Config:
     """Application configuration loaded from environment variables."""
 
-    def __init__(self) -> None:
+    def __init__(self) -> None:  # noqa: PLR0915
         self.config_dir = ccgram_dir()
         self.config_dir.mkdir(parents=True, exist_ok=True)
 
@@ -103,6 +117,7 @@ class Config:
             max(0.5, float(os.getenv("CCGRAM_STATUS_POLL_INTERVAL", "1.0"))),
             max(1.0, float(os.getenv("CCGRAM_YOLO_CONFIRMATION_TIMEOUT", "30.0"))),
         )
+        self.skip_barrier_deadline_s = _skip_barrier_deadline_s()
 
         # Multi-instance support
         group_id_str = os.getenv("CCGRAM_GROUP_ID")

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -557,6 +558,84 @@ class TestSettledPrefixWatermarkCommit:
 
         assert self._offset(monitor, "s1") == 0
         assert monitor._delivery_receipts["s1"] == [ready]
+
+    def test_aged_skip_barrier_force_completes(self, monitor: SessionMonitor) -> None:
+        # An undeliverable notice must not pause the source forever.
+        self._track(monitor, "s1", [self._ready(100)])
+        self._begin_skip(monitor)
+        intent = monitor.state.pending_skips["s1"]
+        intent.created_at = time.time() - 10_000.0
+        intent.purge_complete = True
+
+        with patch.object(monitor, "_skip_rebind_verdict", return_value=True):
+            monitor._expire_aged_skip_barriers()
+
+        assert self._offset(monitor, "s1") == 500
+        assert "s1" not in monitor.state.pending_skips
+        assert "s1" not in monitor._skip_notice_receipts
+
+    def test_aged_skip_barrier_on_rebound_topic_cancels(
+        self, monitor: SessionMonitor
+    ) -> None:
+        # A rebound topic never advances the old watermark; the range
+        # stays replayable under the new binding.
+        self._track(monitor, "s1", [self._ready(100)])
+        self._begin_skip(monitor)
+        intent = monitor.state.pending_skips["s1"]
+        intent.created_at = time.time() - 10_000.0
+        intent.purge_complete = True
+
+        with patch.object(monitor, "_skip_rebind_verdict", return_value=False):
+            monitor._expire_aged_skip_barriers()
+
+        assert self._offset(monitor, "s1") == 0
+        assert "s1" not in monitor.state.pending_skips
+
+    def test_aged_barrier_with_incomplete_purge_replays(
+        self, monitor: SessionMonitor
+    ) -> None:
+        # A barrier whose queued range was never retired must not skip
+        # those bytes silently: cancel so they replay.
+        self._track(monitor, "s1", [self._ready(100)])
+        self._begin_skip(monitor)
+        intent = monitor.state.pending_skips["s1"]
+        intent.created_at = time.time() - 10_000.0
+        assert intent.purge_complete is False
+
+        with patch.object(monitor, "_skip_rebind_verdict", return_value=True):
+            monitor._expire_aged_skip_barriers()
+
+        assert self._offset(monitor, "s1") == 0
+        assert "s1" not in monitor.state.pending_skips
+
+    def test_aged_barrier_survives_validator_failure(
+        self, monitor: SessionMonitor
+    ) -> None:
+        # A validator exception is not a rebind: decide nothing this pass.
+        self._track(monitor, "s1", [self._ready(100)])
+        self._begin_skip(monitor)
+        intent = monitor.state.pending_skips["s1"]
+        intent.created_at = time.time() - 10_000.0
+        intent.purge_complete = True
+
+        with patch.object(monitor, "_skip_rebind_verdict", return_value=None):
+            monitor._expire_aged_skip_barriers()
+
+        assert self._offset(monitor, "s1") == 0
+        assert "s1" in monitor.state.pending_skips
+
+    def test_legacy_barrier_without_stamp_gets_clock_started(
+        self, monitor: SessionMonitor
+    ) -> None:
+        # Barriers persisted before the stamp are aged from first sight,
+        # not force-completed on the first cycle.
+        self._begin_skip(monitor)
+        assert monitor.state.pending_skips["s1"].created_at == 0.0
+
+        monitor._expire_aged_skip_barriers()
+
+        assert monitor.state.pending_skips["s1"].created_at > 0.0
+        assert "s1" in monitor.state.pending_skips
 
     def test_delivered_skip_wins_and_discards_ordinary_receipts(
         self, monitor: SessionMonitor

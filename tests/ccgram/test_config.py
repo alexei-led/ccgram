@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from ccgram.config import Config
+from ccgram.config import Config, _skip_barrier_deadline_s
 
 
 @pytest.fixture
@@ -281,3 +281,22 @@ class TestPollingConfig:
         assert getattr(Config(), attr) == expected
         monkeypatch.setenv(env_var, clamp_str)
         assert getattr(Config(), attr) == clamped
+
+
+class TestSkipBarrierDeadline:
+    def test_default_when_unset(self, monkeypatch) -> None:
+        monkeypatch.delenv("CCGRAM_SKIP_BARRIER_DEADLINE_S", raising=False)
+        assert _skip_barrier_deadline_s() == 600.0
+
+    def test_override_honored_above_floor(self, monkeypatch) -> None:
+        monkeypatch.setenv("CCGRAM_SKIP_BARRIER_DEADLINE_S", "1200")
+        assert _skip_barrier_deadline_s() == 1200.0
+
+    @pytest.mark.parametrize("raw", ["", "abc", "10m", "inf", "-inf", "nan"])
+    def test_invalid_values_fall_back(self, monkeypatch, raw) -> None:
+        monkeypatch.setenv("CCGRAM_SKIP_BARRIER_DEADLINE_S", raw)
+        assert _skip_barrier_deadline_s() == 600.0
+
+    def test_below_floor_clamped(self, monkeypatch) -> None:
+        monkeypatch.setenv("CCGRAM_SKIP_BARRIER_DEADLINE_S", "5")
+        assert _skip_barrier_deadline_s() == 60.0

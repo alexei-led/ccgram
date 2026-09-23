@@ -76,6 +76,10 @@ _SKIP_RETRY_BASE_SECONDS = 2.0
 _SKIP_RETRY_MAX_SECONDS = 60.0
 _MSG_PREVIEW_LENGTH = 80
 
+# A skip barrier whose notice cannot be delivered (topic rebind, dead
+# topic, sustained flood control) must not pause its source forever.
+_SKIP_BARRIER_DEADLINE_S = config.skip_barrier_deadline_s
+
 logger = structlog.get_logger()
 
 
@@ -241,6 +245,7 @@ class SessionMonitor:
             chat_id=chat_id,
             snapshot_offset=snapshot_offset,
             range_start=session.last_byte_offset,
+            created_at=time.time(),
         )
         # The durable barrier is written before destructive queue retirement.
         self.state.begin_skip(intent)
@@ -358,6 +363,88 @@ class SessionMonitor:
         self._clear_skip_retry(intent.session_id)
         self._skip_notice_receipts[intent.session_id] = receipt
         return True
+
+    def _skip_rebind_verdict(self, intent: BacklogSkipIntent) -> bool | None:
+        """True when the barrier is current, False on a definitive rebind.
+
+        None means the validator itself failed; the caller must decide
+        nothing on that verdict and retry on a later pass.
+        """
+        callback = self._skip_validate_callback
+        if callback is None:
+            return None
+        try:
+            return callback(intent)
+        except Exception:
+            logger.exception(
+                "Failed to validate backlog skip for %s", intent.session_id
+            )
+            return None
+
+    def _expire_aged_skip_barriers(self) -> None:
+        """Complete barriers whose notice never delivered.
+
+        A skip sacrifices history for liveness. When the visible notice
+        cannot be delivered (rebound topic, dead topic, sustained flood
+        control), the barrier inverts that into permanent source silence.
+        Past the deadline the barrier retires; the skip notice is dropped,
+        not retried.
+        """
+        if not self.state.pending_skips:
+            return
+        now = time.time()
+        for session_id, intent in tuple(self.state.pending_skips.items()):
+            if not intent.created_at:
+                # Legacy record predating the stamp: start its clock now,
+                # through the mutator so the stamp actually persists.
+                self.state.stamp_skip_clock(session_id, now)
+                continue
+            if now - intent.created_at <= _SKIP_BARRIER_DEADLINE_S:
+                continue
+            current = self._skip_rebind_verdict(intent)
+            if current is None:
+                # Validator unavailable: decide nothing this pass.
+                continue
+            if not current:
+                # Never advance the old source watermark across a rebind:
+                # cancel so the range stays replayable under the new topic.
+                logger.warning(
+                    "Backlog skip barrier expired on a rebound topic; cancelling",
+                    session_id=session_id,
+                )
+                self.state.cancel_skip(session_id)
+            elif not intent.purge_complete:
+                # The queued range was never retired: prefer replay over
+                # silently skipping bytes the queue may still deliver.
+                logger.warning(
+                    "Backlog skip barrier expired with its purge incomplete; "
+                    "cancelling so the range replays",
+                    session_id=session_id,
+                )
+                self.state.cancel_skip(session_id)
+            else:
+                logger.warning(
+                    "Backlog skip barrier expired without a delivered notice; "
+                    "advancing the watermark to unblock the source",
+                    session_id=session_id,
+                    barrier_age_seconds=round(now - intent.created_at, 1),
+                )
+                if not self.state.complete_skip(session_id):
+                    self.state.cancel_skip(session_id)
+            self._discard_session_delivery_state(session_id)
+        # One batched write for any stamps and retirements this pass made.
+        self.state.save_if_dirty()
+
+    async def _advance_skip_barriers(self) -> None:
+        """Resume attempts, then expire aged barriers, then commit delivery.
+
+        Resume runs before expiry so a process that slept past the deadline
+        still gets one notice delivery attempt; expiry then retires aged
+        barriers; commits advance what actually reached Telegram.
+        """
+        await self._resume_pending_skip_notices()
+        self._expire_aged_skip_barriers()
+        self._commit_pending_skips()
 
     async def _resume_pending_skip_notices(self) -> None:
         """Resume persisted skip barriers before reading any skipped bytes."""
@@ -946,8 +1033,7 @@ class SessionMonitor:
 
                 # A persisted barrier must be noticed before its source is read
                 # again; this preserves the exact EOF snapshot across restarts.
-                await self._resume_pending_skip_notices()
-                self._commit_pending_skips()
+                await self._advance_skip_barriers()
                 new_messages = await self.check_for_updates(monitored_map)
                 # Register every parsed message before the next await. A
                 # shutdown cancellation between parse and dispatch must leave
