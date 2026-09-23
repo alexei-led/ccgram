@@ -46,6 +46,10 @@ class UIPattern:
     non-blank lines above the top marker.  This lets structural patterns
     (e.g. matching ``❯`` as top) still display the question/description that
     precedes the selection area.
+
+    When ``anchor_last`` is set, the scan for ``top`` starts at the *last*
+    matching line instead of the first, so stale earlier matches in
+    scrollback don't anchor the extraction.
     """
 
     name: str  # Descriptive label (not used programmatically)
@@ -53,6 +57,7 @@ class UIPattern:
     bottom: tuple[re.Pattern[str], ...]
     min_gap: int = 2  # minimum lines between top and bottom (inclusive)
     context_above: int = 0  # extra lines above top marker to include in content
+    anchor_last: bool = False  # start at the last top match, not the first
 
 
 # ── UI pattern definitions (order matters — first match wins) ────────────
@@ -134,6 +139,7 @@ UI_PATTERNS: list[UIPattern] = [
         ),
         min_gap=1,
         context_above=10,
+        anchor_last=True,
     ),
 ]
 
@@ -187,8 +193,9 @@ def _try_extract(lines: list[str], pattern: UIPattern) -> InteractiveUIContent |
     top_idx: int | None = None
     bottom_idx: int | None = None
 
-    # Codex uses the same cursor glyph for old chat prompts and the active
-    # selected option. Anchor on the final cursor, not transcript history.
+    # Codex and Claude both reuse the same cursor glyph (❯/›) for old chat
+    # prompts and the active selected option. Anchor on the final cursor,
+    # not transcript history.
     start = (
         max(
             (
@@ -198,7 +205,7 @@ def _try_extract(lines: list[str], pattern: UIPattern) -> InteractiveUIContent |
             ),
             default=0,
         )
-        if pattern.name == "SelectionUI"
+        if pattern.anchor_last
         else 0
     )
     for i in range(start, len(lines)):

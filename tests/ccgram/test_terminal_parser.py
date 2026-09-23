@@ -5,6 +5,7 @@ import pytest
 if TYPE_CHECKING:
     from ccgram.screen_buffer import ScreenBuffer
 
+from ccgram.providers.codex import CodexProvider
 from ccgram.terminal_parser import (
     extract_bash_output,
     extract_interactive_content,
@@ -474,6 +475,114 @@ class TestExtractInteractiveContent:
     def test_min_gap_too_small_returns_none(self):
         pane = "  Do you want to proceed?\n  Esc to cancel\n"
         assert extract_interactive_content(pane) is None
+
+
+class TestSelectionUIAnchorLast:
+    """SelectionUI (the ❯/› structural catch-all) anchors on the last top
+    match, not the first, so stale earlier matches in scrollback don't
+    anchor the extraction (UIPattern.anchor_last).
+    """
+
+    @pytest.mark.parametrize("selected", [1, 2])
+    def test_codex_approval_retains_both_choices_after_prior_chat_prompts(
+        self, selected: int
+    ):
+        lines = [
+            "› Earlier user request",
+            "• Earlier response",
+            "",
+            "› Inspect the counter",
+            "• Calling approval_probe.inspect_probe({})",
+            "",
+            "  Field 1/1",
+            '  Allow the approval_probe MCP server to run tool "inspect_probe"?',
+            ("  › " if selected == 1 else "    ")
+            + "1. Allow   Run the tool and continue.",
+            ("  › " if selected == 2 else "    ") + "2. Cancel  Cancel this tool call",
+            "",
+            "  enter to submit | esc to cancel",
+        ]
+        status = CodexProvider().parse_terminal_status("\n".join(lines))
+        assert status is not None and status.is_interactive
+        assert "1. Allow" in status.raw_text
+        assert "2. Cancel" in status.raw_text
+        assert f"› {selected}." in status.raw_text
+
+    @pytest.mark.parametrize("selected", [1, 2])
+    def test_claude_approval_retains_both_choices_after_prior_chat_prompts(
+        self, selected: int
+    ):
+        """Same case as Codex's, but with Claude's ❯ cursor glyph — the
+        catch-all pattern matches both, so this affects Claude too.
+        """
+        lines = [
+            "❯ Earlier user request",
+            "• Earlier response",
+            "",
+            "❯ Inspect the counter",
+            "• Calling approval_probe.inspect_probe({})",
+            "",
+            "  Field 1/1",
+            '  Allow the approval_probe MCP server to run tool "inspect_probe"?',
+            ("  ❯ " if selected == 1 else "    ")
+            + "1. Allow   Run the tool and continue.",
+            ("  ❯ " if selected == 2 else "    ") + "2. Cancel  Cancel this tool call",
+            "",
+            "  enter to submit | esc to cancel",
+        ]
+        result = extract_interactive_content("\n".join(lines))
+        assert result is not None
+        assert result.name == "SelectionUI"
+        assert "1. Allow" in result.content
+        assert "2. Cancel" in result.content
+        assert f"❯ {selected}." in result.content
+
+    def test_fresh_menu_extracted_after_stale_menu_far_in_scrollback(self):
+        """A stale menu (with its own footer) followed, well past the
+        context_above window, by a fresh menu: only the fresh one comes
+        back.
+        """
+        lines = [
+            "❯ 1. Old option A",
+            "  2. Old option B",
+            "",
+            "  Enter to select · Esc to cancel",
+            *(f"  unrelated output line {i}" for i in range(15)),
+            "",
+            "  Fresh question here",
+            "❯ 1. New option A",
+            "  2. New option B",
+            "",
+            "  Enter to select · Esc to cancel",
+        ]
+        result = extract_interactive_content("\n".join(lines))
+        assert result is not None
+        assert result.name == "SelectionUI"
+        assert "New option A" in result.content
+        assert "New option B" in result.content
+        assert "Old option" not in result.content
+
+    def test_menu_without_footer_before_composer_line_returns_none(self):
+        """Documents current (surprising) behavior: a composer prompt line
+        with typed text (``› echo hi``) matches the same top pattern as the
+        menu cursor, so anchor_last locks onto the composer line instead of
+        the menu above it. With no bottom match after the composer line,
+        extraction returns None — even though a valid unselected-item menu
+        is visible just above it. Not fixed here; flagged as a known gap.
+
+        (A bare composer line with only trailing whitespace does *not*
+        reproduce this: ``str.strip()`` on the whole pane text removes that
+        trailing whitespace, so the composer line no longer matches the top
+        pattern and the menu above is extracted correctly instead.)
+        """
+        lines = [
+            "  Pick one:",
+            "❯ 1. Option A",
+            "  2. Option B",
+            "",
+            "› echo hi",
+        ]
+        assert extract_interactive_content("\n".join(lines)) is None
 
 
 class TestExtractInteractiveContentBoolean:

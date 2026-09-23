@@ -130,6 +130,7 @@ GEMINI_UI_PATTERNS: list[UIPattern] = [
             re.compile(rf"^{_GEMINI_BOX_PREFIX}\(Press Enter to (confirm|select)\)"),
         ),
         min_gap=1,
+        anchor_last=True,
     ),
     UIPattern(
         name="PermissionPrompt",
