@@ -916,11 +916,12 @@ def _session_map_session_for(window_id: str, pane_session: str) -> str:
     Falls back to the pane's own session whenever the window is not linked into
     ccgram's session, which is the single-session case and today's behaviour.
     """
-    # Lazy: config reads the environment at import time; the hook path should
-    # not pay that cost, nor fail, when the window cannot be resolved at all.
-    from .config import config
+    # Lazy: utils brings in subprocess + structlog at import time. Never import
+    # config here: it loads the project's .env (the hook's cwd) and raises on an
+    # empty TELEGRAM_BOT_TOKEN, which would kill the hook (#252).
+    from .utils import tmux_session_name
 
-    target = getattr(config, "tmux_session_name", "")
+    target = tmux_session_name()
     if not target or target == pane_session:
         return pane_session
     try:
