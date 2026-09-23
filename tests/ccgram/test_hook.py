@@ -812,6 +812,25 @@ class TestSessionMapKeyForLinkedWindow:
         monkeypatch.setattr(subprocess, "run", self._run("@34\n"))
         assert _session_map_session_for("@34", "agentdeck_foo_1234") == "ccgram"
 
+    def test_session_name_from_ccgram_env_file(self, monkeypatch, tmp_path) -> None:
+        """TMUX_SESSION_NAME set only in $CCGRAM_DIR/.env must match readers."""
+        (tmp_path / ".env").write_text("TMUX_SESSION_NAME=bots\n")
+        monkeypatch.setenv("CCGRAM_DIR", str(tmp_path))
+        monkeypatch.delenv("TMUX_SESSION_NAME", raising=False)
+        monkeypatch.setattr(subprocess, "run", self._run("@34\n"))
+        assert _session_map_session_for("@34", "agentdeck_foo_1234") == "bots"
+
+    def test_project_env_file_is_ignored(self, monkeypatch, tmp_path) -> None:
+        """The hook's cwd is the agent's project; its .env must not apply."""
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".env").write_text("TMUX_SESSION_NAME=other\nTELEGRAM_BOT_TOKEN=\n")
+        monkeypatch.chdir(project)
+        monkeypatch.setenv("CCGRAM_DIR", str(tmp_path / "ccgram"))
+        monkeypatch.delenv("TMUX_SESSION_NAME", raising=False)
+        monkeypatch.setattr(subprocess, "run", self._run("@34\n"))
+        assert _session_map_session_for("@34", "agentdeck_foo_1234") == "ccgram"
+
 
 class TestNestedSessionDetection:
     """Hook fired by a nested claude (e.g. claude-mem observer) must not

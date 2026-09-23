@@ -903,6 +903,29 @@ def _resolve_window_id(pane_id: str) -> tuple[str, str, str, str] | None:
     return session_window_key, window_id, window_name, pane_tty
 
 
+def _ccgram_tmux_session_name() -> str:
+    """Return ``TMUX_SESSION_NAME`` as the bot resolves it, without ``Config``.
+
+    ``Config`` loads the cwd ``.env`` first, and the hook's cwd is the agent's
+    project: an empty ``TELEGRAM_BOT_TOKEN=`` there made it raise and kill the
+    hook (#252). Read only the exported env and ``$CCGRAM_DIR/.env``.
+    """
+    # Lazy: utils brings in subprocess + structlog at import time; dotenv is
+    # only needed when the name is not exported.
+    from .utils import ccgram_dir, tmux_session_name
+
+    if "TMUX_SESSION_NAME" not in os.environ:
+        env_file = ccgram_dir() / ".env"
+        if env_file.is_file():
+            # Lazy: see above.
+            from dotenv import dotenv_values
+
+            value = dotenv_values(env_file).get("TMUX_SESSION_NAME")
+            if value:
+                return value
+    return tmux_session_name()
+
+
 def _session_map_session_for(window_id: str, pane_session: str) -> str:
     """Return the tmux session ``session_map`` should be keyed under.
 
@@ -916,12 +939,7 @@ def _session_map_session_for(window_id: str, pane_session: str) -> str:
     Falls back to the pane's own session whenever the window is not linked into
     ccgram's session, which is the single-session case and today's behaviour.
     """
-    # Lazy: utils brings in subprocess + structlog at import time. Never import
-    # config here: it loads the project's .env (the hook's cwd) and raises on an
-    # empty TELEGRAM_BOT_TOKEN, which would kill the hook (#252).
-    from .utils import tmux_session_name
-
-    target = tmux_session_name()
+    target = _ccgram_tmux_session_name()
     if not target or target == pane_session:
         return pane_session
     try:
