@@ -22,6 +22,7 @@ import json
 import os
 import time
 import uuid
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -415,20 +416,33 @@ async def _cmd_sync(command_id: str, client: Any) -> dict:
     )
 
 
-# Executed-command ids, in-memory: the restart EOF-skip covers history,
-# and this set makes a post-truncation re-read of retained lines a no-op.
-_EXECUTED_COMMAND_IDS: set[str] = set()
+# Executed-command ids, in-memory with FIFO eviction: the restart
+# EOF-skip covers history, and this set makes a post-truncation re-read
+# of retained lines a no-op. Eviction (never a clear) keeps the guard
+# dense; the started-at filter below is the replay backstop.
+_EXECUTED_COMMAND_IDS: OrderedDict[str, None] = OrderedDict()
 _EXECUTED_COMMAND_IDS_CAP = 4096
+# Wall-clock start of this consumer: commands submitted before it are
+# pre-process history by definition and are never executed, even when a
+# truncation re-reads their retained lines and the id cap has evicted
+# their dedup entry. Same-host local timestamps (CLI and bridge).
+_CONSUMER_STARTED_AT = time.strftime("%Y-%m-%dT%H:%M:%S")
 
 
 async def consume_admin_commands(client: Any, offset: int = 0) -> int:
     """One pass: execute every pending command, append every result."""
     records, new_offset = read_new_commands(_commands_path(), offset)
-    fresh = [r for r in records if r["id"] not in _EXECUTED_COMMAND_IDS]
-    if len(_EXECUTED_COMMAND_IDS) > _EXECUTED_COMMAND_IDS_CAP:
-        _EXECUTED_COMMAND_IDS.clear()
+    fresh = [
+        r
+        for r in records
+        if r["id"] not in _EXECUTED_COMMAND_IDS
+        and str(r.get("submitted_at", "")) >= _CONSUMER_STARTED_AT
+    ]
     for record in records:
-        _EXECUTED_COMMAND_IDS.add(record["id"])
+        _EXECUTED_COMMAND_IDS[record["id"]] = None
+        _EXECUTED_COMMAND_IDS.move_to_end(record["id"])
+    while len(_EXECUTED_COMMAND_IDS) > _EXECUTED_COMMAND_IDS_CAP:
+        _EXECUTED_COMMAND_IDS.popitem(last=False)
     for record in fresh:
         result = await execute_admin_command(record, client)
         try:

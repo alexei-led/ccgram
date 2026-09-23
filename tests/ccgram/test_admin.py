@@ -249,9 +249,38 @@ class TestOwnershipAndTruncation:
             "unbind",
             "sync",
         ]
-        admin_mod._EXECUTED_COMMAND_IDS.update(r["id"] for r in first)
+        for r in first:
+            admin_mod._EXECUTED_COMMAND_IDS[r["id"]] = None
         fresh = [r for r in again if r["id"] not in admin_mod._EXECUTED_COMMAND_IDS]
         assert [r["command"] for r in fresh] == ["sync"]
+
+    def test_truncation_never_replays_pre_start_history(self, tmp_path) -> None:
+        """Even with the dedup fully evicted, commands submitted before
+        the consumer started are history and must not execute."""
+        import json as _json
+
+        path = tmp_path / "admin_commands.jsonl"
+        old = _json.dumps(
+            {
+                "id": "ancient",
+                "command": "sync",
+                "args": {},
+                "submitted_at": "2020-01-01T00:00:00",
+            }
+        )
+        path.write_text(old + "\n")
+        admin_mod._EXECUTED_COMMAND_IDS.clear()
+        # Simulate cap eviction: the dedup is empty, only the time
+        # filter stands between the retained line and execution.
+        records, offset = read_new_commands(path, path.stat().st_size + 10)
+        fresh = [
+            r
+            for r in records
+            if r["id"] not in admin_mod._EXECUTED_COMMAND_IDS
+            and str(r.get("submitted_at", "")) >= admin_mod._CONSUMER_STARTED_AT
+        ]
+        assert [r["command"] for r in records] == ["sync"]
+        assert fresh == []
 
 
 class TestWaitForResult:
