@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## [4.12.1] - 2026-09-23
+
+### Fixed
+- Recognize Pi hook-runner events without provider metadata in agterm, restoring transcript registration and message forwarding.
+- Ignore background Pi subagent hooks so they cannot replace the parent session's topic binding or publish lifecycle events into it.
+- Honor an explicit `hook --provider claude` even when the hook inherits a Pi environment.
+
 ## [4.12.0] - 2026-09-23
 
 ### Added

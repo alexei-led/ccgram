@@ -241,10 +241,12 @@ def run_cmd(**kwargs: object) -> None:
     type=click.Choice(
         ["claude", "pi", "codex", "gemini", "antigravity"], case_sensitive=False
     ),
-    default="claude",
-    help="Agent provider hook contract to use.",
+    default=None,
+    help="Agent provider hook contract (default: auto-detect; claude for setup).",
 )
-def hook_cmd(install: bool, uninstall: bool, status: bool, provider_name: str) -> None:
+def hook_cmd(
+    install: bool, uninstall: bool, status: bool, provider_name: str | None
+) -> None:
     """Agent session tracking hook."""
     # Lazy: defer subcommand import until that command is invoked, keeping `ccgram --help` fast
     from .hook import hook_main
@@ -253,7 +255,7 @@ def hook_cmd(install: bool, uninstall: bool, status: bool, provider_name: str) -
         install=install,
         uninstall=uninstall,
         status=status,
-        provider_name=provider_name.lower(),
+        provider_name=provider_name.lower() if provider_name else None,
     )
 
 

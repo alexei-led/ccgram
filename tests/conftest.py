@@ -40,6 +40,13 @@ os.environ["CCGRAM_MULTIPLEXER"] = "tmux"
 
 
 @pytest.fixture(autouse=True)
+def _clean_pi_hook_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep hooks independent of the Pi process launching pytest."""
+    monkeypatch.delenv("PI_CODING_AGENT", raising=False)
+    monkeypatch.delenv("PI_SUBAGENT_CHILD", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _clear_window_store():
     from ccgram.claude_task_state import claude_task_state
     from ccgram.window_state_store import get_window_store

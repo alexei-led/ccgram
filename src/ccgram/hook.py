@@ -1568,7 +1568,11 @@ def _hook_adapter_for_context(
     provider_name: str,
     herdr_provider: ProviderName | None,
 ) -> HookAdapter | None:
-    """Return an adapter only when the live Herdr identity matches this hook."""
+    """Return an adapter only for a primary agent matching the live identity."""
+    # Background Pi children inherit the parent's multiplexer identity.
+    if os.environ.get("PI_SUBAGENT_CHILD") == "1":
+        logger.debug("Ignoring hook from background Pi subagent")
+        return None
     if herdr_provider is not None and herdr_provider != provider_name:
         logger.info(
             "Skipping %s hook from nested agent in Herdr pane; live agent is %s",
@@ -1661,6 +1665,13 @@ def _process_hook_stdin(
         use_herdr_snapshot,
         herdr_snapshot_unavailable,
     ) = _herdr_hook_context(payload, detected_provider)
+    if (
+        detected_provider is None
+        and not payload.get("transcript_path")
+        and os.environ.get("PI_CODING_AGENT") == "true"
+    ):
+        # Pi's hook-runner omits provider/transcript metadata; agterm has no TTY.
+        detected_provider = "pi"
     if detected_provider is None:
         identity = resolve_self_identity(os.environ, tmux_query=_resolve_window_id)
         if identity:
@@ -1772,29 +1783,22 @@ def hook_main(
     install: bool = False,
     uninstall: bool = False,
     status: bool = False,
-    provider_name: str = "claude",
+    provider_name: str | None = None,
 ) -> None:
-    """Process a Claude Code hook event from stdin, or manage hook installation."""
+    """Process an agent hook event from stdin, or manage hook installation."""
     _configure_hook_logging()
 
     if install:
         logger.info("Hook install requested")
-        sys.exit(_install_hook(provider_name))
+        sys.exit(_install_hook(provider_name or "claude"))
 
     if uninstall:
-        sys.exit(_uninstall_hook(provider_name))
+        sys.exit(_uninstall_hook(provider_name or "claude"))
 
     if status:
-        sys.exit(_hook_status(provider_name))
+        sys.exit(_hook_status(provider_name or "claude"))
 
-    # Pass None for the implicit Claude default so detect_provider_from_payload
-    # gets first say (an explicit `--provider claude` invocation deliberately
-    # keeps the explicit flag to surface the mismatch warning when payload
-    # heuristics disagree). The CLI default also resolves to "claude", so the
-    # None path covers the common case of an unannotated hook command.
-    normalized = _process_hook_stdin(
-        provider_name if provider_name != "claude" else None
-    )
+    normalized = _process_hook_stdin(provider_name)
     if (
         normalized
         and normalized.provider_name == "codex"
