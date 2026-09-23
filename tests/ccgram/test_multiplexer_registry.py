@@ -120,8 +120,49 @@ def _base_env(monkeypatch, tmp_path):
 
 @pytest.mark.usefixtures("_base_env")
 class TestConfigSwitch:
-    def test_default_is_tmux(self, monkeypatch) -> None:
+    def test_default_falls_back_to_tmux_when_no_mux_vars(self, monkeypatch) -> None:
+        """With no CCGRAM_MULTIPLEXER and no backend-specific vars, auto → tmux."""
         monkeypatch.delenv("CCGRAM_MULTIPLEXER", raising=False)
+        monkeypatch.delenv("HERDR_PANE_ID", raising=False)
+        monkeypatch.delenv("TMUX_PANE", raising=False)
+        monkeypatch.delenv("AGTERM_SESSION_ID", raising=False)
+        assert Config().multiplexer_name == "tmux"
+
+    def test_auto_detects_herdr(self, monkeypatch) -> None:
+        monkeypatch.delenv("CCGRAM_MULTIPLEXER", raising=False)
+        monkeypatch.setenv("HERDR_PANE_ID", "w1:p1")
+        monkeypatch.delenv("TMUX_PANE", raising=False)
+        monkeypatch.delenv("AGTERM_SESSION_ID", raising=False)
+        assert Config().multiplexer_name == "herdr"
+
+    def test_auto_detects_tmux(self, monkeypatch) -> None:
+        monkeypatch.delenv("CCGRAM_MULTIPLEXER", raising=False)
+        monkeypatch.delenv("HERDR_PANE_ID", raising=False)
+        monkeypatch.setenv("TMUX_PANE", "%0")
+        monkeypatch.delenv("AGTERM_SESSION_ID", raising=False)
+        assert Config().multiplexer_name == "tmux"
+
+    def test_auto_detects_agterm(self, monkeypatch) -> None:
+        monkeypatch.delenv("CCGRAM_MULTIPLEXER", raising=False)
+        monkeypatch.delenv("HERDR_PANE_ID", raising=False)
+        monkeypatch.delenv("TMUX_PANE", raising=False)
+        monkeypatch.setenv("AGTERM_SESSION_ID", "abc-uuid")
+        assert Config().multiplexer_name == "agterm"
+
+    def test_herdr_wins_over_tmux(self, monkeypatch) -> None:
+        """herdr has higher precedence than tmux when both vars are present."""
+        monkeypatch.delenv("CCGRAM_MULTIPLEXER", raising=False)
+        monkeypatch.setenv("HERDR_PANE_ID", "w1:p1")
+        monkeypatch.setenv("TMUX_PANE", "%0")
+        monkeypatch.delenv("AGTERM_SESSION_ID", raising=False)
+        assert Config().multiplexer_name == "herdr"
+
+    def test_explicit_auto_value(self, monkeypatch) -> None:
+        """CCGRAM_MULTIPLEXER=auto triggers detection (same as unset)."""
+        monkeypatch.setenv("CCGRAM_MULTIPLEXER", "auto")
+        monkeypatch.delenv("HERDR_PANE_ID", raising=False)
+        monkeypatch.delenv("TMUX_PANE", raising=False)
+        monkeypatch.delenv("AGTERM_SESSION_ID", raising=False)
         assert Config().multiplexer_name == "tmux"
 
     def test_env_override(self, monkeypatch) -> None:
