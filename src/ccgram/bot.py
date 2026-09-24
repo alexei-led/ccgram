@@ -14,7 +14,10 @@ Responsibilities kept here:
     by the message handler registry
 """
 
+import os
 import signal
+import sys
+import threading
 import time
 
 import structlog
@@ -71,6 +74,17 @@ logger = structlog.get_logger()
 
 _CONFLICT_GRACE_PERIOD_S = 90.0
 _GET_UPDATES_READ_TIMEOUT_S = 20.0
+# If the shutdown sequence wedges (any cause: conflict stop, SIGTERM,
+# /upgrade), the process lives on with a torn-down HTTP client while the
+# monitor keeps producing sends that all fail ("This HTTPXRequest is not
+# initialized"), mute but healthy-looking to any process check. post_stop
+# arms a hard-exit watchdog and post_shutdown cancels it on completion.
+# Generous window: a HEALTHY teardown can legitimately take 150-210s
+# (unbounded update-queue join plus a rate-limited goodbye send) and a
+# deep backlog under flood control can need more, so the watchdog sits
+# well above that; a wedged drain is dead, not slow.
+_SHUTDOWN_EXIT_WATCHDOG_S = 600.0
+_shutdown_exit_timer: threading.Timer | None = None
 
 
 class _PollingConflictState:
@@ -111,6 +125,24 @@ def polling_conflict_requires_restart() -> bool:
 
 def _record_successful_poll() -> None:
     _polling_conflict_state.record_success()
+
+
+def _hard_exit_if_shutdown_wedged(monitor: object | None) -> None:
+    logger.critical(
+        "Shutdown did not complete within %.0fs; forcing exit so the "
+        "service supervisor restarts ccgram",
+        _SHUTDOWN_EXIT_WATCHDOG_S,
+    )
+    try:
+        # Best-effort watermark save with the monitor captured at post_stop
+        # entry, before bootstrap clears the active-monitor registry.
+        # Unsent bytes replay, settled bytes do not.
+        if monitor is not None:
+            monitor.state.save()  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001, the forced exit must proceed regardless
+        logger.exception("State save before forced exit failed")
+    sys.stdout.flush()
+    os._exit(1)
 
 
 def is_user_allowed(user_id: int | None) -> bool:
@@ -169,14 +201,35 @@ async def post_stop(application: Application) -> None:
 
     PTB runs post_stop before Application.shutdown (HTTPXRequest teardown),
     so this is the only place where queued Telegram sends can still succeed.
+    Every shutdown path (conflict stop, signal, /upgrade) funnels through
+    here, so this is where the wedged-shutdown watchdog is armed; the
+    monitor is captured before bootstrap clears the active registry.
+    post_shutdown cancels the timer once teardown completes.
     """
+    global _shutdown_exit_timer
+    from .session_monitor import get_active_monitor
+
+    monitor = get_active_monitor()
+    # A thread timer, not a loop timer: the wedges this guards include the
+    # event loop itself blocked in a synchronous send or fsync.
+    _shutdown_exit_timer = threading.Timer(
+        _SHUTDOWN_EXIT_WATCHDOG_S, _hard_exit_if_shutdown_wedged, args=(monitor,)
+    )
+    _shutdown_exit_timer.daemon = True
+    _shutdown_exit_timer.start()
     await bootstrap.stop_delivery_runtime()
     await _send_shutdown_notification(application)
 
 
 async def post_shutdown(_application: Application) -> None:
-    """Tear down runtime state — see ``bootstrap.shutdown_runtime``."""
-    await bootstrap.shutdown_runtime()
+    """Tear down runtime state; see ``bootstrap.shutdown_runtime``."""
+    global _shutdown_exit_timer
+    try:
+        await bootstrap.shutdown_runtime()
+    finally:
+        if _shutdown_exit_timer is not None:
+            _shutdown_exit_timer.cancel()
+            _shutdown_exit_timer = None
 
 
 async def _error_handler(_update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
