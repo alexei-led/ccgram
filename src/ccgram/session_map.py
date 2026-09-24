@@ -29,7 +29,7 @@ import time
 import structlog
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import aiofiles
 
@@ -284,6 +284,19 @@ def effective_session_map_info(
     return effective
 
 
+def observed_provider(info: dict[str, Any]) -> str:
+    """Prefer transcript evidence to a possibly stale provider claim."""
+    # Lazy: the provider registry imports session state during initialization.
+    from .providers import detect_provider_from_transcript_path
+
+    path = info.get("transcript_path")
+    inferred = (
+        detect_provider_from_transcript_path(path) if isinstance(path, str) else None
+    )
+    provider = info.get("provider_name")
+    return inferred or (provider.lower() if isinstance(provider, str) else "")
+
+
 def parse_session_map(raw: dict[str, Any], prefix: str) -> dict[str, dict[str, Any]]:
     """Parse session_map.json entries matching a backend prefix.
 
@@ -297,6 +310,9 @@ def parse_session_map(raw: dict[str, Any], prefix: str) -> dict[str, dict[str, A
     reflects the raw session_map rather than a wiring crash. When wired,
     the result also incorporates the in-memory primary-session preference.
     """
+    # Lazy: identity ports need the SessionManager-installed window store.
+    from .window_state_ports import identity_state
+
     if not isinstance(raw, dict):
         return {}
     result: dict[str, dict[str, Any]] = {}
@@ -327,7 +343,15 @@ def parse_session_map(raw: dict[str, Any], prefix: str) -> dict[str, dict[str, A
             logger.debug("Skipping invalid session_map entry %s: %s", key, exc)
             continue
         resolved_name = _resolve_existing_window_id(window_name)
+        provider_name = observed_provider(info)
+        if not identity_state.accepts_provider_observation(
+            resolved_name, provider_name
+        ):
+            continue
         effective = effective_session_map_info(resolved_name, info)
+        effective_provider = observed_provider(effective)
+        if effective_provider:
+            effective["provider_name"] = effective_provider
         if effective["session_id"]:
             result[resolved_name] = effective
     return result
@@ -441,6 +465,11 @@ class SessionMapSync:
 
     def __init__(self, *, schedule_save: Callable[[], None]) -> None:
         self._schedule_save: Callable[[], None] = schedule_save
+        self.selection_revision = 0
+
+    def invalidate_selection_snapshots(self) -> None:
+        """Invalidate reads started before an in-process provider selection."""
+        self.selection_revision += 1
 
     # ------------------------------------------------------------------
     # Public: async read/sync methods
@@ -516,7 +545,9 @@ class SessionMapSync:
             except StateFileValidationError as exc:
                 logger.debug("Skipping invalid session_map entry %s: %s", key, exc)
                 continue
-            if self._sync_window_from_session_map(window_id, info):
+            if self._sync_window_from_session_map(
+                window_id, info, prefer_existing_primary=True
+            ):
                 changed = True
 
         return valid_wids, old_format_sids, old_format_keys, changed
@@ -912,7 +943,7 @@ class SessionMapSync:
     ) -> bool:
         """Load and retain a valid entry written by the destination provider."""
         try:
-            entry = parse_session_map_entry(info)
+            parse_session_map_entry(info)
         except StateFileValidationError:
             return False
 
@@ -923,11 +954,25 @@ class SessionMapSync:
         from .window_state_store import window_store
 
         state = window_store.window_states.get(window_id)
-        destination = state.provider_name.lower() if state else ""
-        if not destination or entry.provider_name.lower() != destination:
+        destination = state.provider_name.casefold() if state else ""
+        provider = observed_provider(info)
+        if not destination or provider.casefold() != destination:
             return False
+        existing_provider = (
+            observed_provider(
+                {
+                    "provider_name": state.provider_name,
+                    "transcript_path": state.transcript_path,
+                }
+            )
+            if state
+            else ""
+        )
+        prefer_existing_primary = bool(
+            state and state.session_id and existing_provider == destination
+        )
         if self._sync_window_from_session_map(
-            window_id, info, prefer_existing_primary=False
+            window_id, info, prefer_existing_primary=prefer_existing_primary
         ):
             self._schedule_save()
         logger.debug(
@@ -937,39 +982,55 @@ class SessionMapSync:
         )
         return True
 
-    def clear_session_map_entry(self, window_id: str) -> None:
-        """Clear a stale entry, preserving one written by the new provider."""
-        if not config.session_map_file.exists():
-            return
+    def clear_session_map_entry(
+        self, window_id: str
+    ) -> Literal["cleared", "preserved"] | None:
+        """Reconcile the destination entry; None means storage is unconfirmed."""
+        self.invalidate_selection_snapshots()
+        try:
+            config.session_map_file.stat()
+        except FileNotFoundError:
+            return "cleared"
+        except OSError:
+            return None
         lock_path = config.session_map_file.with_suffix(".lock")
         try:
             with open(lock_path, "w") as lock_f:
                 fcntl.flock(lock_f, fcntl.LOCK_EX)
                 try:
-                    raw = json.loads(config.session_map_file.read_text())
-                    if not isinstance(raw, dict):
-                        return
-                    key = _find_session_map_key(raw, window_id)
-                    if key is None:
-                        return
-                    info = raw.get(key)
-                    if isinstance(
-                        info, dict
-                    ) and self._preserve_destination_provider_entry(window_id, info):
-                        return
-                    if key in raw:
-                        del raw[key]
-                        atomic_write_json(config.session_map_file, raw)
-                        logger.debug("Cleared session_map entry for %s", window_id)
-                except (json.JSONDecodeError, OSError):  # fmt: skip
-                    return
+                    content = config.session_map_file.read_text()
+                except FileNotFoundError:
+                    return "cleared"
+                try:
+                    return self._reconcile_destination_entry(
+                        window_id, json.loads(content)
+                    )
                 finally:
                     fcntl.flock(lock_f, fcntl.LOCK_UN)
-        except OSError as exc:
-            # Lock failure means the entry clear was lost — surface it.
+        except json.JSONDecodeError, OSError:
             logger.warning(
-                "Failed to lock session_map for clearing %s: %s", window_id, exc
+                "Could not reconcile session_map for %s", window_id, exc_info=True
             )
+            return None
+
+    def _reconcile_destination_entry(
+        self, window_id: str, raw: Any
+    ) -> Literal["cleared", "preserved"] | None:
+        """Caller holds the session-map file lock throughout this operation."""
+        if not isinstance(raw, dict):
+            return None
+        key = _find_session_map_key(raw, window_id)
+        if key is None:
+            return "cleared"
+        info = raw.get(key)
+        if isinstance(info, dict) and self._preserve_destination_provider_entry(
+            window_id, info
+        ):
+            return "preserved"
+        del raw[key]
+        atomic_write_json(config.session_map_file, raw)
+        logger.debug("Cleared session_map entry for %s", window_id)
+        return "cleared"
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -997,6 +1058,13 @@ class SessionMapSync:
             if prefer_existing_primary
             else info
         )
+        # Lazy: identity ports depend on the installed SessionManager store.
+        from .window_state_ports import identity_state
+
+        if not identity_state.accepts_provider_observation(
+            window_id, observed_provider(effective)
+        ):
+            return False
         new_sid = effective["session_id"]
         if not new_sid:
             return False

@@ -160,6 +160,52 @@ class TestMonitorLoop:
 
         assert contexts == [{}, {}]
 
+    async def test_map_snapshot_is_refreshed_after_awaited_hook_callback(
+        self, monitor: SessionMonitor
+    ) -> None:
+        window_id = HERDR_TARGETS["a"]
+        stale = {window_id: {"session_id": "old-agent"}}
+        current = {window_id: {"session_id": "shell-session"}}
+        contents = stale
+        loaded: list[dict | None] = []
+
+        async def read_map():
+            return dict(contents)
+
+        async def process_hooks():
+            nonlocal contents
+            contents = current
+
+        async def load_map(raw=None):
+            loaded.append(raw)
+
+        async def stop_after_cycle(_delay: float) -> None:
+            monitor._running = False
+
+        with (
+            patch.object(monitor, "_cleanup_all_stale_sessions", AsyncMock()),
+            patch.object(
+                monitor, "_load_current_session_map", AsyncMock(return_value={})
+            ),
+            patch.object(
+                monitor, "_detect_and_cleanup_changes", AsyncMock(return_value=current)
+            ),
+            patch.object(monitor, "check_for_updates", AsyncMock(return_value=[])),
+            patch("ccgram.session_monitor.read_session_map_raw", read_map),
+            patch.object(monitor, "_read_hook_events", process_hooks),
+            patch("ccgram.session_map.session_map_sync") as sync,
+            patch(
+                "ccgram.session_monitor.list_windows_for_reconciliation",
+                AsyncMock(return_value=None),
+            ),
+            patch("ccgram.session_monitor.asyncio.sleep", stop_after_cycle),
+        ):
+            sync.load_session_map = load_map
+            monitor._running = True
+            await monitor._monitor_loop()
+
+        assert loaded == [current]
+
     async def test_reliable_listing_monitors_only_live_windows(
         self, monitor: SessionMonitor
     ) -> None:

@@ -93,6 +93,66 @@ class TestOpenAICompleterRequest:
             url = mock_post.call_args[0][0]
             assert url.endswith("/chat/completions")
 
+    async def test_retries_once_without_temperature_when_model_rejects_it(
+        self, completer: OpenAICompatCompleter
+    ) -> None:
+        rejected = MagicMock()
+        rejected.status_code = 400
+        rejected.json.return_value = {
+            "error": {
+                "type": "invalid_request_error",
+                "code": "unsupported_value",
+                "param": "temperature",
+                "message": "temperature unsupported for this model",
+            }
+        }
+        rejected.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "400", request=MagicMock(), response=rejected
+        )
+        accepted = _mock_http_response({"choices": [{"message": {"content": "OK"}}]})
+        mock_post = AsyncMock(side_effect=[rejected, accepted])
+
+        with _patch_httpx_client(mock_post):
+            result = await completer.complete("system", "synthetic request")
+
+        assert result == "OK"
+        assert mock_post.await_count == 2
+        first = mock_post.await_args_list[0].kwargs["json"]
+        retry = mock_post.await_args_list[1].kwargs["json"]
+        assert first["temperature"] == completer.temperature
+        assert "temperature" not in retry
+        assert retry["messages"] == first["messages"]
+        assert retry["model"] == first["model"]
+
+    async def test_http_error_exposes_safe_provider_error_fields(
+        self, completer: OpenAICompatCompleter
+    ) -> None:
+        rejected = MagicMock()
+        rejected.status_code = 400
+        rejected.json.return_value = {
+            "error": {
+                "type": "invalid_request_error",
+                "code": "model_not_found",
+                "param": "model",
+                "message": "private provider detail",
+            }
+        }
+        rejected.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "400", request=MagicMock(), response=rejected
+        )
+        mock_post = AsyncMock(return_value=rejected)
+        with (
+            _patch_httpx_client(mock_post),
+            pytest.raises(
+                RuntimeError, match="code=model_not_found, param=model"
+            ) as exc,
+        ):
+            await completer.complete("system", "synthetic request")
+
+        assert mock_post.await_count == 1
+        assert "private provider detail" not in str(exc.value)
+        assert "sk-test" not in str(exc.value)
+
     async def test_returns_parsed_command(
         self, completer: OpenAICompatCompleter
     ) -> None:
@@ -175,6 +235,32 @@ class TestAnthropicCompleterRequest:
 
 
 class TestCompleterErrors:
+    @pytest.mark.parametrize("status", [401, 429, 500])
+    async def test_temperature_retry_does_not_mask_other_statuses(self, status):
+        response = httpx.Response(
+            status,
+            request=httpx.Request("POST", "https://example.com/chat/completions"),
+            json={"error": {"param": "temperature", "code": "unsupported_value"}},
+        )
+        post = AsyncMock(return_value=response)
+        with _patch_httpx_client(post), pytest.raises(RuntimeError):
+            await OpenAICompatCompleter("sk-test", "model").complete("system", "test")
+        assert post.await_count == 1
+
+    async def test_temperature_retry_is_bounded_to_one_attempt(self):
+        response = httpx.Response(
+            400,
+            request=httpx.Request("POST", "https://example.com/chat/completions"),
+            json={"error": {"param": "temperature", "code": "unsupported_value"}},
+        )
+        post = AsyncMock(return_value=response)
+        with (
+            _patch_httpx_client(post),
+            pytest.raises(RuntimeError, match="param=temperature"),
+        ):
+            await OpenAICompatCompleter("sk-test", "model").complete("system", "test")
+        assert post.await_count == 2
+
     @pytest.mark.parametrize(
         ("cls", "api_key"),
         [

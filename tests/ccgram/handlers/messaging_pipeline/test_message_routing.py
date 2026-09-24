@@ -23,6 +23,7 @@ def _make_msg(
     role: str = "assistant",
     is_complete: bool = True,
     session_id: str = "sess-1",
+    provider_name: str = "",
 ) -> NewMessage:
     return NewMessage(
         session_id=session_id,
@@ -33,6 +34,7 @@ def _make_msg(
         tool_use_id=tool_use_id,
         role=role,
         is_complete=is_complete,
+        provider_name=provider_name,
     )
 
 
@@ -193,13 +195,16 @@ async def test_pending_interactive_msg_is_cleared(bot, mock_deps):
 
 
 async def test_complete_message_enqueues_content(bot, mock_deps):
-    await handle_new_message(_make_msg(text="done", is_complete=True), bot)
+    await handle_new_message(
+        _make_msg(text="done", is_complete=True, provider_name="pi"), bot
+    )
     mock_deps["eq"].assert_called_once()
     kwargs = mock_deps["eq"].call_args.kwargs
     assert kwargs["user_id"] == 100
     assert kwargs["window_id"] == "@5"
     assert kwargs["thread_id"] == 42
     assert kwargs["chat_id"] == -100
+    assert kwargs["source_provider_name"] == "pi"
 
 
 async def test_incomplete_assistant_text_updates_and_finalizes_draft(bot, mock_deps):

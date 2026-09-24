@@ -279,6 +279,9 @@ class MultiplexerCapabilities:
     native_topic_targets: bool = False
     """True when creation must use the backend's guarded topic-target flow."""
 
+    supports_shell_prompt_markers: bool = False
+    """True when the backend can safely install the shell prompt marker."""
+
 
 # ── Protocol ───────────────────────────────────────────────────────────
 

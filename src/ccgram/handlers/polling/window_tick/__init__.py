@@ -20,10 +20,12 @@ from typing import TYPE_CHECKING
 
 from ....multiplexer import multiplexer as tmux_manager
 from ....telegram_client import PTBTelegramClient
+from ....session_query import resolve_chat_id
 from ....window_state_ports import lifecycle_state
 from ....window_state_store import CCGRAM_CREATED_WINDOW_ORIGIN
 from ...messaging_pipeline.message_queue import get_message_queue
 from ...recovery.transcript_discovery import discover_and_register_transcript
+from ...status.provider_switch import observe_provider_switch
 from ..polling_runtime import PollingRuntime, get_default_runtime
 from ..polling_state import (
     lifecycle_strategy,
@@ -98,6 +100,13 @@ async def tick_window(
             await tmux_manager.kill_window(window_id)
         return
 
+    await observe_provider_switch(
+        PTBTelegramClient(bot),
+        resolve_chat_id(user_id, thread_id),
+        thread_id,
+        window_id,
+        window.window_name,
+    )
     queue = get_message_queue(user_id)
     if queue and not queue.empty():
         await _check_interactive_only(

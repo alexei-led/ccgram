@@ -101,6 +101,7 @@ _TMUX_CAPABILITIES = MultiplexerCapabilities(
     recovers_stale_ids_by_name=False,
     supports_workspace_selection=False,
     native_topic_targets=False,
+    supports_shell_prompt_markers=True,
 )
 
 

@@ -573,16 +573,17 @@ class WindowStateStore:
         *,
         cwd: str | None = None,
         new_provider_supports_hook: bool = True,
+        preserve_session_map: bool = False,
     ) -> None:
         """Set the provider for a window. Empty string resets to config default.
 
         Always saves state unconditionally. When *cwd* is provided, persists it
         in the same write so provider/cwd updates stay atomic.
 
-        On any real provider switch, invokes the ``_on_hookless_provider_switch``
-        callback so the caller can clear the stale session_map.json entry without
-        a circular import. For hookless providers (e.g. shell), also zeroes
-        session_id and transcript_path since those won't be refreshed by a hook.
+        On a real provider switch, invokes ``_on_hookless_provider_switch`` to
+        clear stale session-map data. A manual override may preserve that entry
+        so Auto can re-admit the exact live hook session later. For hookless
+        providers (e.g. shell), session identity fields are always zeroed.
 
         ``new_provider_supports_hook`` must be resolved by the caller (e.g.
         via ``registry.get(provider_name).capabilities.supports_hook``) so
@@ -598,17 +599,17 @@ class WindowStateStore:
 
         # Guards: (1) only on real provider change, (2) only when non-empty
         # (empty string is a reset-to-default and must NOT trigger cleanup).
-        # Always clear the stale session_map.json entry on any provider switch
-        # so the poll loop doesn't fight a lingering entry from the old
-        # provider (e.g. claude → pi both support hooks, so the old path was
-        # never cleaned, causing repeated "Corrected provider" spam).
+        # Clear stale session_map.json data on provider changes unless the
+        # caller holds a manual-provider filter while re-admitting a matching
+        # destination entry.
         # Session fields are additionally zeroed only for hookless providers
         # since hook-based providers update them via their own hooks.
         if old_provider != provider_name and provider_name:
             if not new_provider_supports_hook and state.session_id:
                 state.session_id = ""
                 state.transcript_path = ""
-            self._on_hookless_provider_switch(window_id)
+            if not preserve_session_map:
+                self._on_hookless_provider_switch(window_id)
 
         self._schedule_save()
 

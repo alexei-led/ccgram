@@ -39,6 +39,7 @@ _TOOL_NAME_ALIASES: dict[str, str] = {
     "web_fetch": "WebFetch",
     "websearch": "WebSearch",
     "web_search": "WebSearch",
+    "ask_user_question": "AskUserQuestion",
 }
 
 _TOOL_RESULT_QUOTE_THRESHOLD = 3

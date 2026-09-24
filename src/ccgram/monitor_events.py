@@ -35,6 +35,7 @@ class NewMessage:
     tool_use_id: str | None = None
     role: str = "assistant"  # "user" or "assistant"
     tool_name: str | None = None  # For tool_use messages, the tool name
+    provider_name: str = ""  # Transcript provider for queue provenance
 
 
 @dataclass

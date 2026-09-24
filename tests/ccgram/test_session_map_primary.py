@@ -109,6 +109,68 @@ async def test_load_session_map_preserves_primary_window_state(
     assert state.transcript_path == str(parent)
 
 
+async def test_destination_provider_readmission_preserves_nested_same_provider_primary(
+    tmp_path: Path, monkeypatch
+) -> None:
+    parent = tmp_path / "parent.jsonl"
+    nested = tmp_path / "nested.jsonl"
+    _write_transcript(parent, 2)
+    _write_transcript(nested, 0)
+    session_map_file = tmp_path / "session_map.json"
+    session_map_file.write_text(json.dumps({"ccgram:@7": _info("nested", nested)}))
+    monkeypatch.setattr("ccgram.session_map.config.session_map_file", session_map_file)
+    monkeypatch.setattr("ccgram.session_map.config.multiplexer_name", "tmux")
+    monkeypatch.setattr("ccgram.session_map.config.tmux_session_name", "ccgram")
+    monkeypatch.setattr(session_map_sync, "_schedule_save", lambda: None)
+    window_store.window_states["@7"] = WindowState(
+        session_id="parent",
+        cwd="/repo",
+        provider_name="claude",
+        transcript_path=str(parent),
+    )
+
+    assert session_map_sync.clear_session_map_entry("@7") == "preserved"
+
+    state = window_store.window_states["@7"]
+    assert state.session_id == "parent"
+    assert state.transcript_path == str(parent)
+
+
+async def test_destination_readmission_preserves_same_provider_nested_session_primary(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from ccgram.session import session_manager  # noqa: F401 — wire identity stores
+
+    parent = tmp_path / "parent.jsonl"
+    nested = tmp_path / "nested.jsonl"
+    _write_transcript(parent, 2)
+    _write_transcript(nested, 0)
+    window_id = "@nested-primary"
+    session_map_file = tmp_path / "session_map.json"
+    session_map_file.write_text(
+        json.dumps({f"ccgram:{window_id}": _info("nested", nested)})
+    )
+    monkeypatch.setattr("ccgram.session_map.config.session_map_file", session_map_file)
+    monkeypatch.setattr("ccgram.session_map.config.multiplexer_name", "tmux")
+    monkeypatch.setattr("ccgram.session_map.config.tmux_session_name", "ccgram")
+    monkeypatch.setattr(session_map_sync, "_schedule_save", lambda: None)
+    window_store.window_states[window_id] = WindowState(
+        session_id="primary",
+        cwd="/repo",
+        provider_name="claude",
+        transcript_path=str(parent),
+    )
+
+    assert session_map_sync.clear_session_map_entry(window_id) == "preserved"
+    state = window_store.window_states[window_id]
+    assert state.session_id == "primary"
+    assert state.transcript_path == str(parent)
+    assert (
+        json.loads(session_map_file.read_text())[f"ccgram:{window_id}"]["session_id"]
+        == "nested"
+    )
+
+
 async def test_unreadable_session_map_is_not_reconciled_as_empty(
     tmp_path: Path, monkeypatch
 ) -> None:

@@ -72,6 +72,12 @@ Each Telegram topic maps to one tmux window. With Herdr, it maps instead to one 
 - **Action toolbar** — Provider-specific buttons for common actions (Screenshot, Mode, Esc, Enter, etc.)
 - **Direct choices** — Answer supported numbered and yes/no agent prompts with one tap
 
+## Provider Switching
+
+Topic titles retain their status icon and show a short provider prefix: `Pi · task`, `Claude · task`, or `Term · workspace`. A confirmed automatic switch produces one silent notice; startup, repeated polling, and short-lived intermediate providers do not. Manual changes use the `/agent` reply instead of a second notice.
+
+`/agent` shows the topic name, selected provider, and **Auto** or **Manual** mode. A manual choice is accepted only when it matches the live foreground process; it cannot launch, stop, or redirect an agent. **Auto** follows detection again. Manual selection filters out hooks from other providers. A switch reconciles the existing session-map entry against the live destination: matching entries are retained, mismatches removed, and later matching hooks are admitted while pinned. **Auto** rechecks and cleans the entry before releasing the pin. Manual mode excludes queued transcript replies from other providers, but keeps tail replies across `/new` or `/clear` within the selected provider; an already in-flight send may finish. An exited agent keeps its recovery flow rather than silently turning ordinary chat into shell commands.
+
 ## Delivery and Sync Safety
 
 CCGram losslessly combines only eligible consecutive transcript text deliveries for the same chat, topic, window, role, and source session. It preserves each item's formatting and keeps tool updates, media, status updates, and other boundaries separate. The status bubble shows queue progress; at a severe backlog (100 pending items or an oldest item aged 5 minutes), its inline **Jump to live** action requires confirmation and posts a skipped-range notice. The raw provider transcript is never deleted. Delivery is at-least-once, so a Telegram failure or restart before acknowledgement can repeat a transcript message rather than silently losing it.

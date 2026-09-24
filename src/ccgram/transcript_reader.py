@@ -14,6 +14,7 @@ Key class: TranscriptReader.
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 import hashlib
 import json
 from pathlib import Path
@@ -23,6 +24,7 @@ import aiofiles
 import structlog
 
 from .monitor_events import NewMessage, SessionInfo
+from .window_state_ports import identity_state
 from .monitor_state import MonitorState, TrackedSession
 from .providers import (
     detect_provider_from_transcript_path,
@@ -85,16 +87,9 @@ def _tail_marker(file_path: Path, offset: int) -> bytes:
 def _resolve_provider_for_file(window_id: str, file_path: Path) -> Any:
     """Prefer transcript-path provider hints when a hookful state goes stale."""
     provider_name: str | None = None
-    try:
-        # Lazy: window_state_ports.identity_state imports the kernel which
-        # may not yet be wired during early transcript-discovery paths.
-        # RuntimeError comes from the unwired _WindowStoreProxy;
-        # ImportError guards against an unfinished port package on disk.
-        from .window_state_ports import identity_state
-
+    # The identity store is not wired during early transcript discovery.
+    with suppress(RuntimeError):
         provider_name = identity_state.get_provider_name(window_id)
-    except ImportError, RuntimeError:
-        pass
     provider = get_provider_for_window(window_id, provider_name=provider_name)
     inferred = detect_provider_from_transcript_path(str(file_path))
     current = provider.capabilities.name
@@ -517,6 +512,67 @@ class TranscriptReader:
             else session.last_byte_offset
         )
 
+    async def _start_tracking_session(
+        self,
+        session_id: str,
+        file_path: Path,
+        provider: Any,
+        window_id: str,
+        provider_name: str,
+    ) -> None:
+        try:
+            st = file_path.stat()
+            file_size, current_mtime = st.st_size, st.st_mtime
+        except OSError:
+            file_size, current_mtime, st = 0, 0.0, None
+        initial_offset = file_size
+        if not provider.capabilities.supports_incremental_read:
+            _, initial_offset = await asyncio.to_thread(
+                provider.read_transcript_file, str(file_path), 0
+            )
+        tracked = TrackedSession(
+            session_id=session_id,
+            file_path=str(file_path),
+            last_byte_offset=initial_offset,
+        )
+        self._file_mtimes[session_id] = current_mtime
+        if st is not None:
+            self._file_generations[session_id] = (st.st_dev, st.st_ino)
+            self._file_ctimes[session_id] = st.st_ctime_ns
+            self._file_sizes[session_id] = st.st_size
+            self._file_prefixes[session_id] = (
+                st.st_size,
+                await asyncio.to_thread(_prefix_digest, file_path, st.st_size),
+            )
+        try:
+            marker = await asyncio.to_thread(
+                _tail_marker, file_path, tracked.last_byte_offset
+            )
+        except OSError:
+            pass
+        else:
+            self._file_markers[session_id] = (tracked.last_byte_offset, marker)
+        if not identity_state.accepts_provider_observation(window_id, provider_name):
+            return
+        self._state.update_session(tracked)
+        if provider.capabilities.supports_task_tracking and window_id:
+            await provider.seed_task_state(window_id, session_id, str(file_path))
+        logger.debug("Started tracking session: %s", session_id)
+
+    def _admit_read(
+        self,
+        window_id: str,
+        provider_name: str,
+        tracked: TrackedSession,
+        previous_offset: int,
+    ) -> bool:
+        """Roll back speculative progress if selection changed during file I/O."""
+        if identity_state.accepts_provider_observation(window_id, provider_name):
+            return True
+        tracked.parsed_offset = previous_offset
+        self._file_mtimes.pop(tracked.session_id, None)
+        return False
+
     async def _process_session_file(
         self,
         session_id: str,
@@ -528,58 +584,20 @@ class TranscriptReader:
         """Process a single session file for new messages."""
         tracked = self._state.get_session(session_id)
         provider = _resolve_provider_for_file(window_id, file_path)
+        provider_name = (
+            detect_provider_from_transcript_path(str(file_path))
+            or provider.capabilities.name
+        )
+        if not identity_state.accepts_provider_observation(window_id, provider_name):
+            return
 
         if tracked is None:
             tracked = self._adopt_tracking_for_file(session_id, file_path)
 
         if tracked is None:
-            try:
-                st = file_path.stat()
-                file_size, current_mtime = st.st_size, st.st_mtime
-            except OSError:
-                file_size = 0
-                current_mtime = 0.0
-                st = None
-                generation = None
-            else:
-                generation = (st.st_dev, st.st_ino)
-
-            if provider.capabilities.supports_incremental_read:
-                initial_offset = file_size
-            else:
-                _, initial_offset = await asyncio.to_thread(
-                    provider.read_transcript_file, str(file_path), 0
-                )
-
-            tracked = TrackedSession(
-                session_id=session_id,
-                file_path=str(file_path),
-                last_byte_offset=initial_offset,
+            await self._start_tracking_session(
+                session_id, file_path, provider, window_id, provider_name
             )
-            self._state.update_session(tracked)
-            self._file_mtimes[session_id] = current_mtime
-            if generation is not None and st is not None:
-                self._file_generations[session_id] = generation
-                self._file_ctimes[session_id] = st.st_ctime_ns
-                self._file_sizes[session_id] = st.st_size
-                self._file_prefixes[session_id] = (
-                    st.st_size,
-                    await asyncio.to_thread(_prefix_digest, file_path, st.st_size),
-                )
-            try:
-                marker = await asyncio.to_thread(
-                    _tail_marker, file_path, tracked.last_byte_offset
-                )
-            except OSError:
-                pass
-            else:
-                self._file_markers[session_id] = (
-                    tracked.last_byte_offset,
-                    marker,
-                )
-            if provider.capabilities.supports_task_tracking and window_id:
-                await provider.seed_task_state(window_id, session_id, str(file_path))
-            logger.debug("Started tracking session: %s", session_id)
             return
 
         try:
@@ -588,6 +606,8 @@ class TranscriptReader:
         except OSError:
             return
 
+        probe_offset = tracked.parsed_offset
+        probe_boundary = self._startup_file_boundaries.get(session_id)
         generation_changed, consumed_intact = await self._prepare_observed_generation(
             session_id,
             tracked,
@@ -595,6 +615,12 @@ class TranscriptReader:
             st,
             check_marker=provider.capabilities.supports_incremental_read,
         )
+        if not identity_state.accepts_provider_observation(window_id, provider_name):
+            tracked.parsed_offset = probe_offset
+            if probe_boundary is not None:
+                self._startup_file_boundaries[session_id] = probe_boundary
+            return
+        previous_parsed_offset = tracked.parsed_offset
         last_mtime = self._file_mtimes.get(session_id, 0.0)
         if provider.capabilities.supports_incremental_read:
             if (
@@ -623,11 +649,22 @@ class TranscriptReader:
             window_id,
             check_marker=provider.capabilities.supports_incremental_read,
         )
-        if stable_read is None:
+        if (
+            not self._admit_read(
+                window_id, provider_name, tracked, previous_parsed_offset
+            )
+            or stable_read is None
+        ):
             return
         new_entries, _, reset_during_read = stable_read
-        if not await self._commit_stable_read(
+        committed = await self._commit_stable_read(
             session_id, tracked, file_path, stable_read
+        )
+        if (
+            not self._admit_read(
+                window_id, provider_name, tracked, previous_parsed_offset
+            )
+            or not committed
         ):
             return
         if reset_during_read:
@@ -663,6 +700,10 @@ class TranscriptReader:
         window_id: str,
         new_messages: list[NewMessage],
     ) -> None:
+        if window_id and not identity_state.accepts_provider_observation(
+            window_id, provider.capabilities.name
+        ):
+            return
         if provider.capabilities.supports_task_tracking and window_id:
             provider.apply_task_entries(window_id, session_id, new_entries)
         session_cwd = next(
@@ -692,6 +733,7 @@ class TranscriptReader:
                 tool_use_id=entry.tool_use_id,
                 role=entry.role,
                 tool_name=entry.tool_name,
+                provider_name=provider.capabilities.name,
             )
             for entry in agent_messages
             if entry.text

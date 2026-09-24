@@ -353,17 +353,7 @@ class AgtermManager:
         """
         owner = split_session_id(window_id)
         if owner is not None:
-            tree = await self._tree()
-            if tree is None:
-                return None
-            for _workspace, session in self._sessions(tree):
-                if str(session["id"]).casefold() == owner.casefold():
-                    return any(
-                        str(pane["id"]).casefold() == window_id.casefold()
-                        for pane in pane_sessions(session)
-                    )
-            # A sweep miss alone is not authoritative absence of the session.
-            return False if await self.window_exists(owner) is False else None
+            return await self._split_window_presence(window_id, owner)
         rc, out, _err = await self._run(
             self._with_socket(
                 ["session", "text", "--pane", _AGENT_PANE, "--target", window_id]
@@ -398,6 +388,26 @@ class AgtermManager:
             "agterm refused an existence probe", window_id=window_id, error=error, rc=rc
         )
         return None
+
+    async def _split_window_presence(self, window_id: str, owner: str) -> bool | None:
+        tree = await self._tree()
+        if tree is None:
+            return None
+        for _workspace, session in self._sessions(tree):
+            if str(session["id"]).casefold() != owner.casefold():
+                continue
+            panes = pane_sessions(session)
+            if any(
+                str(pane["id"]).casefold() == window_id.casefold() for pane in panes
+            ):
+                return True
+            foreground = session.get("splitForeground")
+            if len(panes) > 1 and (not isinstance(foreground, list) or not foreground):
+                # A protected process may hide argv without closing the pane.
+                return None
+            return False
+        # A sweep miss alone is not authoritative absence of the session.
+        return False if await self.window_exists(owner) is False else None
 
     async def _call_ok(
         self, args: Sequence[str], stdin_text: str | None = None
@@ -489,6 +499,12 @@ class AgtermManager:
         command = ""
         if isinstance(foreground, list) and foreground:
             command = str(foreground[0])
+        elif isinstance(shell := session.get("foregroundShell"), str):
+            # Lazy: the providers registry imports the multiplexer during setup.
+            from ..providers.shell_infra import KNOWN_SHELLS
+
+            if shell in KNOWN_SHELLS:
+                command = shell
         return WindowRef(
             window_id=str(session.get("id", "")),
             window_name=str(session.get("name") or ""),
@@ -1034,13 +1050,12 @@ class AgtermManager:
         prompt" (confirmed by agterm's author, umputun/agterm#508; their godoc
         named only the shell case and has been corrected).
 
-        The shell provider does not work on this backend, and a shell name
-        would not fix it. agterm 0.25 adds ``foregroundShell`` for the case
-        where a recognised shell holds the pane, but a shell builtin such as
-        ``read`` or ``vared``, and a shell loop, run inside the shell process,
-        so argv stays the shell's: a pane blocked on input is indistinguishable
-        from one at a prompt and both report the same name. Installing a prompt
-        marker on that signal would type into a running ``read``.
+        ``_to_window`` exposes ``foregroundShell`` for provider classification,
+        but this method must not fabricate argv from that hint. A shell builtin
+        such as ``read`` or ``vared``, and a shell loop, run inside the shell
+        process: a pane blocked on input is indistinguishable from one at a
+        prompt. Synthetic bare-shell argv would let prompt setup send C-c and
+        inject commands into that running builtin.
 
         The provider detector classifies this argv directly because agterm cannot
         provide a process-group ID. This preserves provider detection behind

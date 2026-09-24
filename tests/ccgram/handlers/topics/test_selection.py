@@ -45,7 +45,7 @@ class TestBuildProviderPicker:
             ("codex", "Codex"),
             ("gemini", "Gemini"),
             ("pi", "Pi"),
-            ("shell", "Shell"),
+            ("shell", "Term"),
         ],
     )
     def test_offers_every_provider(self, provider: str, label: str) -> None:

@@ -73,5 +73,27 @@ async def test_session_map_read_and_clear_match_case_variant_key(
     sync = SessionMapSync(schedule_save=lambda: None)
 
     assert await sync.session_map_entry_may_exist("abc-def")
-    sync.clear_session_map_entry("abc-def")
+    assert sync.clear_session_map_entry("abc-def") == "cleared"
     assert json.loads(path.read_text()) == {}
+
+
+async def test_session_map_clear_reports_unreadable_entry_as_uncertain(
+    tmp_path, monkeypatch
+) -> None:
+    import json
+
+    from ccgram.session_map import SessionMapSync, config
+
+    path = tmp_path / "session-map.json"
+    path.write_text(json.dumps({"agterm:abc-def": {"session_id": "old"}}))
+    monkeypatch.setattr(config, "session_map_file", path)
+    sync = SessionMapSync(schedule_save=lambda: None)
+    original_read_text = type(path).read_text
+
+    def fail_map_read(candidate, *args, **kwargs):
+        if candidate == path:
+            raise OSError("injected unreadable map")
+        return original_read_text(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(type(path), "read_text", fail_map_read)
+    assert sync.clear_session_map_entry("abc-def") is None

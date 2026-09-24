@@ -238,6 +238,7 @@ async def test_whole_file_rewrite_bypasses_unchanged_mtime(tmp_path) -> None:
     reader = TranscriptReader(state, IdleTracker())
     provider = SimpleNamespace(
         capabilities=SimpleNamespace(
+            name="gemini",
             supports_incremental_read=False,
             supports_task_tracking=False,
         )
@@ -277,6 +278,7 @@ async def test_whole_file_replacement_bypasses_unchanged_mtime(tmp_path) -> None
     reader = TranscriptReader(state, IdleTracker())
     provider = SimpleNamespace(
         capabilities=SimpleNamespace(
+            name="gemini",
             supports_incremental_read=False,
             supports_task_tracking=False,
         )

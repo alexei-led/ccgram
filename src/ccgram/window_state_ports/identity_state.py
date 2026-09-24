@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..multiplexer.base import canonical_window_id
 from ..window_state_store import (
     APPROVAL_MODES,
     DEFAULT_APPROVAL_MODE,
@@ -118,9 +119,41 @@ def is_provider_manually_overridden(window_id: str) -> bool:
     return state is not None and state.provider_manual_override is True
 
 
+def _resolve_state_window_id(window_id: str) -> str:
+    if window_id in window_store.window_states:
+        return window_id
+    wanted = canonical_window_id(window_id)
+    return next(
+        (
+            stored
+            for stored in window_store.window_states
+            if canonical_window_id(stored) == wanted
+        ),
+        window_id,
+    )
+
+
+def accepts_provider_observation(window_id: str, provider_name: str) -> bool:
+    """Keep a manual choice authoritative across hooks and transcript reads."""
+    try:
+        window_id = _resolve_state_window_id(window_id)
+        if not is_provider_manually_overridden(window_id):
+            return True
+        chosen = get_provider_name(window_id)
+    except RuntimeError:
+        # Standalone session-map parsing has no installed state or manual choice.
+        return True
+    return bool(provider_name and provider_name.casefold() == (chosen or "").casefold())
+
+
 def set_provider_manual_override(window_id: str, *, value: bool) -> None:
     """Mark or clear the provider manual-override flag."""
     window_store.set_provider_manual_override(window_id, value=value)
+
+
+def clear_session_identity(window_id: str) -> None:
+    """Retire the old session and transcript when routing changes providers."""
+    window_store.clear_window_session(window_id)
 
 
 def clear_transcript_path(window_id: str) -> None:
@@ -136,6 +169,8 @@ def clear_transcript_path(window_id: str) -> None:
 
 __all__ = [
     "IdentityProjection",
+    "accepts_provider_observation",
+    "clear_session_identity",
     "clear_transcript_path",
     "get_approval_mode",
     "get_cwd",

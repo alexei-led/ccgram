@@ -9,11 +9,14 @@ from typing import Protocol, cast
 
 from ..herdr_targets import is_herdr_session_target
 from ..window_resolver import is_window_id
-from .base import WindowRef
-from .base import canonical_window_id
+from .base import WindowRef, canonical_window_id
 
 
-_AGTERM_WINDOW_ID_RE = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z")
+_AGTERM_WINDOW_ID_RE = re.compile(
+    r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}(?::split-[0-9a-f]{20})?\Z"
+)
+
+
 _BACKEND_WINDOW_ID_VALIDATORS: dict[str, Callable[[str], bool]] = {
     "tmux": is_window_id,
     "herdr": is_herdr_session_target,

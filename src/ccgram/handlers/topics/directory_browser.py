@@ -42,6 +42,7 @@ from ..callback_data import (
     CB_WS_SELECT,
     CB_WS_SKIP,
 )
+from ..provider_display import provider_label
 from ..user_state import (
     AWAITING_WORKTREE_BRANCH_NAME,
     PENDING_WORKSPACE_ID,
@@ -312,13 +313,13 @@ def build_directory_browser(
 
 
 # Provider display metadata: (label, icon)
-_PROVIDER_META: dict[str, tuple[str, str]] = {
-    "antigravity": ("Antigravity", "\U0001f30c"),
-    "claude": ("Claude", "\U0001f7e0"),
-    "codex": ("Codex", "\U0001f9e9"),
-    "gemini": ("Gemini", "\u264a"),
-    "pi": ("Pi", "\U0001f916"),
-    "shell": ("Shell", "\U0001f41a"),
+_PROVIDER_ICONS: dict[str, str] = {
+    "antigravity": "\U0001f30c",
+    "claude": "\U0001f7e0",
+    "codex": "\U0001f9e9",
+    "gemini": "\u264a",
+    "pi": "\U0001f916",
+    "shell": "\U0001f41a",
 }
 
 
@@ -332,12 +333,12 @@ def build_provider_picker(selected_path: str) -> tuple[str, InlineKeyboardMarkup
         f"*Select Provider*\n\nDirectory: `{display_path}`\n\nWhich agent CLI to use?"
     )
     buttons: list[list[InlineKeyboardButton]] = []
-    for name, (label, icon) in _PROVIDER_META.items():
+    for name, icon in _PROVIDER_ICONS.items():
         suffix = " (default)" if name == "claude" else ""
         buttons.append(
             [
                 InlineKeyboardButton(
-                    f"{icon} {label}{suffix}",
+                    f"{icon} {provider_label(name)}{suffix}",
                     callback_data=f"{CB_PROV_SELECT}{name}",
                 )
             ]
@@ -354,13 +355,12 @@ def build_mode_picker(
     Returns: (text, keyboard).
     """
     display_path = selected_path.replace(str(Path.home()), "~")
-    provider_label, provider_icon = _PROVIDER_META.get(
-        provider_name, (provider_name.title(), "🤖")
-    )
+    label = provider_label(provider_name)
+    provider_icon = _PROVIDER_ICONS.get(provider_name, "🤖")
     text = (
         "*Select Session Mode*\n\n"
         f"Directory: `{display_path}`\n"
-        f"Provider: {provider_icon} {provider_label}\n\n"
+        f"Provider: {provider_icon} {label}\n\n"
         "Choose how many approvals you want for this session."
     )
     buttons = [

@@ -7,6 +7,8 @@ Key functions:
   resolve_session_for_window: find ClaudeSession for a tmux window
   find_users_for_session: find users bound to a session
   get_recent_messages: read paginated message history
+  resolve_chat_id: resolve the delivery chat for a polling topic without a
+      direct handler import of the thread-router singleton
 
 Each wrapper imports ``session_resolver`` lazily on purpose: handlers
 that only need read-only resolution (the whole point of this module)
@@ -22,6 +24,14 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .session_resolver import ClaudeSession
+
+
+def resolve_chat_id(user_id: int, thread_id: int | None = None) -> int:
+    """Resolve a topic's delivery chat for handlers subject to the layering audit."""
+    # Lazy: the router is installed by SessionManager during bootstrap.
+    from .thread_router import thread_router
+
+    return thread_router.resolve_chat_id(user_id, thread_id)
 
 
 async def resolve_session_for_window(window_id: str) -> "ClaudeSession | None":

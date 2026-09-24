@@ -164,6 +164,9 @@ async def _cancel_stuck_input(window_id: str) -> None:
     LLM-generated malformed commands that leave the shell in multi-line
     input mode (e.g. unclosed ``begin`` block in fish).
     """
+    if not tmux_manager.capabilities.supports_shell_prompt_markers:
+        return
+
     # Lazy: providers.shell pulls in shell_infra (prompt-marker
     # machinery); load only when we actually need to inspect a prompt.
     # Lazy: providers.shell imports KNOWN_SHELLS late to avoid the providers package bootstrap

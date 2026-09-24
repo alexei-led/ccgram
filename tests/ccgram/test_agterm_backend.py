@@ -157,6 +157,7 @@ def test_capability_values() -> None:
     assert caps.native_worktrees is False
     assert caps.supports_workspace_selection is True
     assert caps.native_topic_targets is False
+    assert caps.supports_shell_prompt_markers is False
     assert caps.native_agent_status is True
 
 

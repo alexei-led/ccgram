@@ -272,6 +272,15 @@ async def setup_shell_prompt(
     tests — default to ``tmux_manager.capture_pane`` and
     ``tmux_manager.send_keys`` so production callers need no changes.
     """
+    # Lazy: backend capability controls whether prompt setup is supported.
+    from ccgram.multiplexer import get_active_multiplexer
+
+    try:
+        if not get_active_multiplexer().capabilities.supports_shell_prompt_markers:
+            return
+    except RuntimeError:
+        return
+
     # Lazy: config singleton resolved at call time
     from ccgram.config import config
 

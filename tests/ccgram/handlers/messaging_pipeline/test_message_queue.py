@@ -52,6 +52,7 @@ def _content_task(
     thread_id: int | None = 42,
     tool_use_id: str | None = None,
     chat_id: int | None = -1001,
+    source_provider_name: str | None = None,
 ) -> ContentTask:
     return ContentTask(
         window_id=window_id,
@@ -60,6 +61,7 @@ def _content_task(
         thread_id=thread_id,
         tool_use_id=tool_use_id,
         chat_id=chat_id,
+        source_provider_name=source_provider_name,
     )
 
 
@@ -158,6 +160,11 @@ class TestCanMergeTasks:
     def test_tool_candidate_blocks_merge(self, candidate_type: ContentType):
         candidate = _content_task("world", content_type=candidate_type)
         assert not _can_merge_tasks(_content_task("hello"), candidate)
+
+    def test_source_provider_boundary_blocks_merge(self):
+        base = _content_task("hello", source_provider_name="pi")
+        candidate = _content_task("world", source_provider_name="claude")
+        assert not _can_merge_tasks(base, candidate)
 
     def test_different_window_blocks_merge(self):
         a = _content_task("hello", window_id="@0")
@@ -1344,7 +1351,11 @@ class TestMessageQueueWorker:
         )
         worker = asyncio.create_task(mq._message_queue_worker(bot, user_id))
         try:
-            await asyncio.wait_for(mq._message_queues[user_id].join(), timeout=1)
+            with patch(
+                "ccgram.handlers.messaging_pipeline.message_sender.rate_limit_send",
+                new_callable=AsyncMock,
+            ):
+                await asyncio.wait_for(mq._message_queues[user_id].join(), timeout=1)
 
             assert bot.call_count("send_message") == 2
             assert all(receipt.failed for receipt in receipts)

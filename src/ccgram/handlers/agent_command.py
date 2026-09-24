@@ -1,13 +1,14 @@
 """/agent — manually override the auto-detected provider for a topic's window.
 
-Lets the user fix mis-tagged windows when auto-detection picks the wrong
-provider (e.g. a custom wrapper binary in the foreground that the
-basename/JS-runtime fallback cannot classify).
+Manual provider selections pin routing only when the live foreground is
+recognized as that provider. Unknown processes and mismatches fail closed;
+this command does not start or redirect a process in the terminal.
 
 Bare command shows an inline-keyboard picker; one-arg form skips the
-picker (``/agent shell``). Setting a provider clears the stale session
-bookkeeping (transcript_path on WindowState, the session_map.json entry)
-so SessionMonitor stops polling the wrong transcript. The
+picker (``/agent shell``). Manual selections must match the live foreground
+provider; they cannot start, stop, or redirect an agent in the terminal. A
+manual override reconciles the map against the live destination, retaining
+only a matching entry and filtering later hooks from other providers. The
 ``provider_manual_override`` flag on WindowState blocks the periodic
 ``_detect_and_apply_provider`` from overwriting the choice on the next
 poll. ``/agent auto`` clears the flag and re-runs detection.
@@ -37,6 +38,9 @@ from .callback_helpers import get_thread_id, user_owns_window
 from .callback_tokens import compact_callback_data, resolve_callback_data
 from .callback_registry import register
 from .messaging_pipeline.message_sender import safe_edit, safe_reply
+from .provider_display import provider_label
+from .status.provider_switch import remember_provider_selection
+from .status.topic_emoji import sync_topic_name
 
 if TYPE_CHECKING:
     from telegram.ext import ContextTypes
@@ -45,16 +49,9 @@ logger = structlog.get_logger()
 
 _BUTTONS_PER_ROW = 3
 
-# Stable order — also defines what shows in the picker.
-_PROVIDERS: tuple[tuple[str, str], ...] = (
-    ("antigravity", "Antigravity"),
-    ("claude", "Claude"),
-    ("codex", "Codex"),
-    ("gemini", "Gemini"),
-    ("pi", "Pi"),
-    ("shell", "Shell"),
-)
-_VALID_NAMES = frozenset(name for name, _ in _PROVIDERS) | {"auto"}
+# Stable order also defines the provider-button layout; labels stay in one place.
+_PROVIDER_ORDER = ("antigravity", "claude", "codex", "gemini", "pi", "shell")
+_VALID_NAMES = frozenset(_PROVIDER_ORDER) | {"auto"}
 
 
 def _resolve_window(update: Update) -> tuple[int, int, str] | None:
@@ -79,11 +76,11 @@ def _resolve_window(update: Update) -> tuple[int, int, str] | None:
 def _build_keyboard(window_id: str, current: str) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     row: list[InlineKeyboardButton] = []
-    for name, label in _PROVIDERS:
+    for name in _PROVIDER_ORDER:
         prefix = "✓ " if name == current else ""
         row.append(
             InlineKeyboardButton(
-                f"{prefix}{label}",
+                f"{prefix}{provider_label(name)}",
                 callback_data=compact_callback_data(
                     CB_AGENT_SET, f"{CB_AGENT_SET}{window_id}:{name}", window_id
                 ),
@@ -114,12 +111,20 @@ def _build_keyboard(window_id: str, current: str) -> InlineKeyboardMarkup:
 
 
 def _picker_text(window_id: str) -> str:
-    current = identity_state.get_provider_name(window_id) or "(unknown)"
-    override = identity_state.is_provider_manually_overridden(window_id)
-    badge = " (manual override)" if override else ""
+    current = identity_state.get_provider_name(window_id) or "unknown"
+    name = identity_state.get_window_name(window_id) or thread_router.get_display_name(
+        window_id
+    )
+    if not name or name == window_id:
+        name = "This topic"
+    mode = (
+        "Manual"
+        if identity_state.is_provider_manually_overridden(window_id)
+        else "Auto"
+    )
     return (
-        f"Current agent for `{window_id}`: **{current}**{badge}\n\n"
-        "Pick a provider, or **Auto** to re-detect."
+        f"{name}\nProvider: **{provider_label(current)}** · {mode}\n\n"
+        "Choose a provider, or **Auto** to follow the running agent."
     )
 
 
@@ -138,26 +143,29 @@ async def _apply_switch(
     of silently mutating PS1.
     """
     current = identity_state.get_provider_name(window_id) or ""
-    if chosen == "auto":
-        detected = await _redetect_provider(window_id)
-        if detected is None:
-            return current or "unknown", (
-                "\u26a0 Could not reach the multiplexer, so the agent was left "
-                "as it is. Try again in a moment."
-            )
-        target = detected
-        manual = False
-        reply_intro = f"Auto-detected: **{target}**."
-    else:
-        target = chosen
-        manual = True
-        reply_intro = (
-            f"Agent set to **{target}** (manual override)."
-            if target != "shell"
-            else "Agent set to **shell**."
-        )
+    was_manual = identity_state.is_provider_manually_overridden(window_id)
+    target, manual, reply_intro = await _resolve_provider_selection(window_id, chosen)
+    if target is None:
+        return current or "unknown", reply_intro
 
-    _commit_switch(window_id, target, current, manual=manual)
+    hold_manual_filter = manual or (chosen == "auto" and was_manual)
+    _commit_switch(
+        window_id,
+        target,
+        current,
+        manual=hold_manual_filter,
+        preserve_session_map=hold_manual_filter,
+    )
+    if hold_manual_filter:
+        reply_intro += _readmit_destination_entry(
+            window_id, target, release_manual=chosen == "auto" and was_manual
+        )
+    if client is not None and chat_id and thread_id:
+        remember_provider_selection(chat_id, thread_id, window_id, target)
+        if current != target:
+            await sync_topic_name(
+                client, chat_id, thread_id, thread_router.get_display_name(window_id)
+            )
 
     if target == "shell":
         # Always offer prompt-marker setup on a shell-target switch —
@@ -175,27 +183,98 @@ async def _apply_switch(
             chat_id=chat_id,
             thread_id=thread_id,
         )
-        reply = f"{reply_intro} Prompt markers will install on next prompt."
-    elif chosen == "auto":
-        reply = reply_intro
+        reply = f"{reply_intro} Text routes to shell commands. Use `!command` for a direct command."
     else:
-        reply = (
-            f"{reply_intro}\n"
-            "Launch the agent CLI in this pane; next SessionStart hook will track it."
-        )
+        reply = reply_intro
     return target, reply
 
 
-async def _redetect_provider(window_id: str) -> str | None:
-    """Re-run auto-detection for ``/agent auto``; return resolved provider.
+def _readmit_destination_entry(
+    window_id: str, target: str, *, release_manual: bool
+) -> str:
+    # Lazy: session_map imports provider/identity wiring used by bootstrap.
+    from ..session_map import session_map_sync
 
-    ``None`` when the multiplexer could not be reached: a lookup failure is
-    indistinguishable from a window that is gone, and the caller persists the
-    result and clears transcript bookkeeping, so an outage would otherwise
-    rewrite a working session to ``shell``.
+    result = session_map_sync.clear_session_map_entry(window_id)
+    if release_manual:
+        identity_state.set_provider_manual_override(window_id, value=result is None)
+    if result is None:
+        return " Stale session mapping could not be cleared; provider remains pinned."
+    if target == "shell":
+        return ""
+    if result == "preserved":
+        return " Existing session restored."
+    return _tracking_wait_message(target)
+
+
+def _tracking_wait_message(provider_name: str) -> str:
+    # Lazy: provider registry loads concrete providers and their capabilities.
+    from ..providers.registry import UnknownProviderError, registry
+
+    try:
+        supports_hook = registry.get(provider_name).capabilities.supports_hook
+    except UnknownProviderError:
+        supports_hook = False
+    if supports_hook:
+        return " Waiting for the next session hook to resume tracking."
+    return " Waiting for transcript discovery to resume tracking."
+
+
+async def _resolve_provider_selection(
+    window_id: str, chosen: str
+) -> tuple[str | None, bool, str]:
+    if chosen == "auto":
+        detected = await _redetect_provider(window_id)
+        if detected is None:
+            return (
+                None,
+                False,
+                (
+                    "⚠ Could not reach the multiplexer, so the agent was left "
+                    "as it is. Try again in a moment."
+                ),
+            )
+        return detected, False, f"Auto-detected: **{provider_label(detected)}**."
+
+    live_provider = await _redetect_provider(window_id, allow_shell_fallback=False)
+    if live_provider is None:
+        return (
+            None,
+            False,
+            (
+                "⚠ Could not verify the live process, so the provider was left "
+                "unchanged. Try again in a moment."
+            ),
+        )
+    if live_provider != chosen:
+        return (
+            None,
+            False,
+            (
+                f"⚠ {provider_label(live_provider)} is running in this pane. "
+                "Exit it or start the desired agent first; then use **Auto**. "
+                "Provider unchanged."
+            ),
+        )
+    intro = (
+        f"Selected **{provider_label(chosen)}** (manual)."
+        if chosen != "shell"
+        else "Selected **Terminal** (manual)."
+    )
+    return chosen, True, intro
+
+
+async def _redetect_provider(
+    window_id: str, *, allow_shell_fallback: bool = True
+) -> str | None:
+    """Read the pane provider; shell fallback is enabled only for Auto.
+
+    Manual selections fail closed when the process is unknown or the
+    multiplexer is unavailable, because a guessed provider can route input to
+    the wrong foreground application.
     """
     # Lazy: detect_provider_from_pane pulls the providers package — only
-    # needed when the user actually requests re-detection via /agent auto.
+    # needed for /agent selection verification or Auto re-detection.
     from ..providers import detect_provider_from_pane
 
     # Lazy: tmux_manager imports providers; same cycle-break as above.
@@ -213,33 +292,46 @@ async def _redetect_provider(window_id: str) -> str | None:
         # neither is a confirmed "not an agent", and the caller persists what
         # comes back. Report unknown instead of resolving to shell.
         return None
-    detected = ""
-    if w.pane_current_command:
-        detected = await detect_provider_from_pane(
-            w.pane_current_command, window_id=window_id
-        )
-    return detected or "shell"
+    if not w.pane_current_command:
+        return "shell" if allow_shell_fallback else None
+    detected = await detect_provider_from_pane(
+        w.pane_current_command, window_id=window_id
+    )
+    return detected or ("shell" if allow_shell_fallback else None)
 
 
-def _commit_switch(window_id: str, chosen: str, current: str, *, manual: bool) -> None:
-    """Switch provider and clear stale transcript bookkeeping atomically.
+def _commit_switch(
+    window_id: str,
+    chosen: str,
+    current: str,
+    *,
+    manual: bool,
+    preserve_session_map: bool = False,
+) -> None:
+    """Switch routing state and retire the old live transcript identity.
 
-    When ``chosen == current`` the provider doesn't change; we still toggle
-    the manual-override flag (the user may be locking in the current pick),
-    but skip the destructive session_map clear and the shell-state teardown
-    — both are appropriate only for an actual provider transition.
+    The caller reconciles any retained map entry against the live destination
+    before releasing a temporary manual filter. Same-provider selections keep
+    the primary identity and toggle the manual-override flag.
     """
+    # Lazy: session_map shares the SessionManager bootstrap wiring.
+    from ..session_map import session_map_sync
+
+    session_map_sync.invalidate_selection_snapshots()
     same_provider = current == chosen
-    session_manager.set_window_provider(window_id, chosen)
+    session_manager.set_window_provider(
+        window_id, chosen, preserve_session_map=preserve_session_map
+    )
     if not same_provider:
-        identity_state.clear_transcript_path(window_id)
+        identity_state.clear_session_identity(window_id)
     identity_state.set_provider_manual_override(window_id, value=manual)
     if same_provider:
+        # Re-admit the map with primary preference, while retaining session
+        # and transcript state for the current same-provider topic.
         return
     if chosen != "shell":
-        # session_map entry is now cleared unconditionally by
-        # set_window_provider via _on_hookless_provider_switch for any real
-        # provider switch — no explicit call needed here.
+        # The caller's map reconciliation keeps only a matching destination
+        # entry before any temporary manual filter is released.
         return
     # Leaving a hookful provider for shell: drop monitor/orchestrator state.
     # Lazy: shell subpackage pulls shell_infra; only needed on the shell-switch branch.

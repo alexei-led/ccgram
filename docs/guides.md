@@ -545,18 +545,18 @@ The buttons shown adapt to each provider's capabilities. Claude and Antigravity 
 
 ## Manual Provider Override (`/agent`)
 
-`/agent` (alias `/provider`) fixes a mis-tagged window. Auto-detection (`detect_provider_from_command` + JS-runtime foreground-process fallback via the multiplexer seam) returns empty for custom wrappers like `ralphex`, so the window can keep its prior provider tag — SessionMonitor then polls a stale transcript, `/last` returns old text, and tool calls/replies stop showing up.
+`/agent` (alias `/provider`) shows the topic name, provider, and Auto/Manual mode. A manual choice is accepted only when the recognized live foreground process matches that provider; unknown or mismatched processes leave routing unchanged. `/agent` does not start, stop, or redirect a process in the terminal.
 
 Forms:
 
 ```text
-/agent              # show picker (current marked ✓, with (manual override) badge if set)
-/agent shell        # switch to shell
-/agent claude       # switch to Claude (also: codex, gemini, pi)
+/agent              # show picker (current marked ✓, with Auto/Manual mode)
+/agent shell        # select Terminal only when a shell is running in the pane
+/agent claude       # select Claude only when Claude is running (also: codex, gemini, pi)
 /agent auto         # clear manual override and re-run auto-detection
 ```
 
-On switch, the bot clears `WindowState.transcript_path`, drops the previous `session_map.json` entry (so SessionMonitor stops reading the wrong transcript), and for shell triggers prompt-marker setup via `shell_prompt_orchestrator.ensure_setup`. The next `SessionStart` hook from the new provider repopulates `session_map`.
+A manual selection first checks that the live foreground matches the provider. It then reconciles the session-map entry against that destination: a matching entry is retained, a mismatched entry is dropped, and subsequent hooks from other providers are filtered. `/agent auto` checks and cleans the entry again before releasing the pin; if storage cannot be confirmed, it remains pinned. Old queued transcript content from another provider is discarded. Prompt-marker setup is offered only by backends that declare support; agterm does not because a shell builtin can be mistaken for a prompt.
 
 Manual overrides set `WindowState.provider_manual_override=True`. The periodic auto-detection in `_detect_and_apply_provider` skips overridden windows until `/agent auto` clears the flag.
 

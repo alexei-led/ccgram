@@ -782,6 +782,7 @@ class SessionManager:
         provider_name: str,
         *,
         cwd: str | None = None,
+        preserve_session_map: bool = False,
     ) -> None:
         """Set the provider for a window.
 
@@ -803,6 +804,7 @@ class SessionManager:
             provider_name,
             cwd=cwd,
             new_provider_supports_hook=supports_hook,
+            preserve_session_map=preserve_session_map,
         )
 
     def _clear_session_map_entry(self, window_id: str) -> None:

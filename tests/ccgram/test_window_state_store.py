@@ -586,6 +586,24 @@ class TestSetWindowProvider:
         assert store.window_states["@1"].session_id == ""
         assert store.window_states["@1"].transcript_path == ""
 
+    def test_manual_override_can_preserve_exact_hook_session_map(
+        self, store: WindowStateStore
+    ) -> None:
+        called: list[str] = []
+        store._on_hookless_provider_switch = called.append
+        state = store.get_window_state("@1")
+        state.provider_name = "pi"
+        state.session_id = "live-pi-session"
+        state.transcript_path = "/pi/live.jsonl"
+
+        store.set_window_provider(
+            "@1", "shell", new_provider_supports_hook=False, preserve_session_map=True
+        )
+
+        assert state.session_id == ""
+        assert state.transcript_path == ""
+        assert called == []
+
     def test_hookless_switch_invokes_callback(self, store: WindowStateStore) -> None:
         called: list[str] = []
         store._on_hookless_provider_switch = called.append

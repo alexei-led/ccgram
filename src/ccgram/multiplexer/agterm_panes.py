@@ -35,6 +35,7 @@ def pane_sessions(session: dict) -> list[dict]:
         name=f"{session.get('name') or 'agterm'} · split",
         cwd=session.get("splitCwd") or "",
         foreground=foreground,
+        foregroundShell=session.get("splitForegroundShell"),
         title="",
         _agterm_session_id=session["id"],
     )

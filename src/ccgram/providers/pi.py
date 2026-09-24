@@ -21,6 +21,7 @@ everything through it after ``shlex.quote`` for safety.
 
 from __future__ import annotations
 
+import re
 import shlex
 import time
 from pathlib import Path
@@ -32,6 +33,7 @@ from ccgram.providers.base import (
     DiscoveredCommand,
     ProviderCapabilities,
     SessionStartEvent,
+    StatusUpdate,
 )
 from ccgram.providers.pi_discovery import _PI_TELEGRAM_BUILTINS, discover_pi_commands
 from ccgram.providers.pi_format import (
@@ -44,6 +46,8 @@ from ccgram.providers.pi_format import (
     parse_user,
     read_session_header,
 )
+
+PI_QUESTION_FOOTER = "↑↓ navigate • Enter select • Esc cancel • number quick-select"
 
 
 def _pi_sessions_dir() -> Path:
@@ -241,6 +245,40 @@ class PiProvider(JsonlProvider):
 
     # `parse_transcript_line` flattens Pi envelopes for monitor reads; raw
     # session resolution still uses the overrides above.
+
+    def parse_terminal_status(
+        self,
+        pane_text: str,
+        *,
+        pane_title: str = "",  # noqa: ARG002 — protocol signature
+    ) -> StatusUpdate | None:
+        """Recognize the verified cc-thingz single-select question UI only."""
+        lines = re.sub(r"\x1b\[[0-9;]*m", "", pane_text).splitlines()
+        footer = next(
+            (
+                i
+                for i in range(len(lines) - 1, -1, -1)
+                if lines[i].strip() == PI_QUESTION_FOOTER
+            ),
+            None,
+        )
+        if footer is None:
+            return None
+        start = next(
+            (i for i in range(footer - 1, -1, -1) if set(lines[i].strip()) == {"─"}),
+            None,
+        )
+        if start is None:
+            return None
+        body = lines[start + 1 : footer + 1]
+        if not any(re.match(r"^\s*→\s+\d+\.\s", line) for line in body):
+            return None
+        return StatusUpdate(
+            raw_text="\n".join(body).strip(),
+            display_label="AskUserQuestion",
+            is_interactive=True,
+            ui_type="AskUserQuestion",
+        )
 
     # ── Discovery ────────────────────────────────────────────────────────
 

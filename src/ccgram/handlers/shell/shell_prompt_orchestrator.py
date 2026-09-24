@@ -51,6 +51,16 @@ def _get_state(window_id: str) -> _OrchestratorState:
     return _state.setdefault(window_id, _OrchestratorState())
 
 
+def _supports_prompt_markers() -> bool:
+    # Lazy: multiplexer setup imports providers, which import shell infrastructure.
+    from ...multiplexer import get_active_multiplexer
+
+    try:
+        return get_active_multiplexer().capabilities.supports_shell_prompt_markers
+    except RuntimeError:
+        return False
+
+
 async def ensure_setup(
     window_id: str,
     trigger: Trigger,
@@ -62,6 +72,9 @@ async def ensure_setup(
     """Apply prompt-marker setup policy for the given trigger type."""
     # Lazy: shell_infra runs `ps` subprocess detection on import-relevant
     # paths; only loaded when an orchestrator trigger fires.
+    if not _supports_prompt_markers():
+        return
+
     # Lazy: provider infra reaches back through shell pkg
     from ...providers.shell_infra import has_prompt_marker, setup_shell_prompt
 
@@ -91,6 +104,8 @@ async def ensure_setup(
 
 async def accept_offer(window_id: str) -> None:
     """User chose 'Set up' -- run setup and record the offer."""
+    if not _supports_prompt_markers():
+        return
     # Lazy: same shell_infra rationale as ensure_setup.
     from ...providers.shell_infra import setup_shell_prompt
 

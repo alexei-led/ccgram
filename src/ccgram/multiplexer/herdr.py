@@ -108,6 +108,7 @@ _HERDR_CAPABILITIES = MultiplexerCapabilities(
     supports_display_name_rebind=False,
     supports_workspace_selection=True,
     native_topic_targets=True,
+    supports_shell_prompt_markers=True,
 )
 
 # Filter for self-hosted / internal workspaces and tabs (e.g. ``__main__``).

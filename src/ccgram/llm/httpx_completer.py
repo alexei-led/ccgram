@@ -155,6 +155,41 @@ def _parse_command_result(text: str) -> CommandResult:
     )
 
 
+def _rejects_temperature(response: httpx.Response) -> bool:
+    if response.status_code != httpx.codes.BAD_REQUEST:
+        return False
+    try:
+        body = response.json()
+    except ValueError, TypeError:
+        return False
+    error = body.get("error") if isinstance(body, dict) else None
+    if not isinstance(error, dict) or error.get("param") != "temperature":
+        return False
+    code = error.get("code")
+    return isinstance(code, str) and code in {
+        "unsupported_value",
+        "unsupported_parameter",
+    }
+
+
+def _http_error_message(response: httpx.Response) -> str:
+    details: list[str] = []
+    try:
+        body = response.json()
+    except ValueError, TypeError:
+        body = None
+    error = body.get("error") if isinstance(body, dict) else None
+    if isinstance(error, dict):
+        for field in ("type", "code", "param"):
+            value = error.get(field)
+            if isinstance(value, str) and re.fullmatch(
+                r"[a-zA-Z0-9_.\[\]-]{1,96}", value
+            ):
+                details.append(f"{field}={value}")
+    suffix = f" ({', '.join(details)})" if details else ""
+    return f"LLM request failed: {response.status_code}{suffix}"
+
+
 class _BaseCompleter(abc.ABC):
     """Shared base for LLM command generators using httpx.
 
@@ -209,8 +244,10 @@ class _BaseCompleter(abc.ABC):
         headers: dict[str, str],
         payload: dict[str, Any],
         extract: Callable[[dict[str, Any]], str],
+        *,
+        retry_unsupported_temperature: bool = False,
     ) -> str:
-        """Post to LLM API and extract response text with shared error handling."""
+        """Post to an LLM API, retrying once if temperature is rejected."""
         async with httpx.AsyncClient() as client:
             try:
                 response = await client.post(
@@ -219,10 +256,26 @@ class _BaseCompleter(abc.ABC):
                     json=payload,
                     timeout=30.0,
                 )
-                response.raise_for_status()
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    if not (
+                        retry_unsupported_temperature
+                        and "temperature" in payload
+                        and _rejects_temperature(exc.response)
+                    ):
+                        raise
+                    retry_payload = dict(payload)
+                    retry_payload.pop("temperature")
+                    response = await client.post(
+                        url,
+                        headers=headers,
+                        json=retry_payload,
+                        timeout=30.0,
+                    )
+                    response.raise_for_status()
             except httpx.HTTPStatusError as exc:
-                msg = f"LLM request failed: {exc.response.status_code}"
-                raise RuntimeError(msg) from exc
+                raise RuntimeError(_http_error_message(exc.response)) from exc
             except httpx.HTTPError as exc:
                 msg = f"LLM request failed: {exc}"
                 raise RuntimeError(msg) from exc
@@ -266,6 +319,7 @@ class OpenAICompatCompleter(_BaseCompleter):
             },
             payload,
             lambda data: data["choices"][0]["message"]["content"],
+            retry_unsupported_temperature=True,
         )
 
 

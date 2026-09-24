@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -24,8 +25,14 @@ WINDOW = "@99"
 
 
 @pytest.fixture(autouse=True)
-def _clean_state() -> Iterator[None]:
+def _clean_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     _state.clear()
+    monkeypatch.setattr(
+        "ccgram.multiplexer.get_active_multiplexer",
+        lambda: SimpleNamespace(
+            capabilities=SimpleNamespace(supports_shell_prompt_markers=True)
+        ),
+    )
     yield
     _state.clear()
 

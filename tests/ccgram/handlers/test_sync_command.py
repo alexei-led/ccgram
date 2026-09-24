@@ -1,6 +1,8 @@
 import contextlib
 import asyncio
+import json
 from collections.abc import Callable
+from typing import Protocol
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -72,6 +74,10 @@ def _audit(*issues: AuditIssue, total: int = 3, live: int = 3) -> AuditResult:
     return AuditResult(
         issues=list(issues), total_bindings=total, live_binding_count=live
     )
+
+
+class _ReconciliationBackend(Protocol):
+    async def list_windows_for_reconciliation(self) -> list[WindowRef] | None: ...
 
 
 class _FakeReconciliationBackend:
@@ -737,7 +743,7 @@ class TestSyncAutomaticCleanup:
     async def _run_sync(
         self,
         router: ThreadRouter,
-        backend: _FakeReconciliationBackend,
+        backend: _ReconciliationBackend,
         audits: list[AuditResult],
         client: FakeTelegramClient,
     ) -> AsyncMock:
@@ -797,6 +803,82 @@ class TestSyncAutomaticCleanup:
         assert edit.call_args_list[0].args[1] == "🧹 Cleaning up stale topics…"
         assert "Removed 1 stale topic" in edit.call_args_list[-1].args[1]
         assert "Fixed 1 issue" in edit.call_args_list[-1].args[1]
+
+    async def test_sync_deletes_confirmed_missing_agterm_split_topic(self) -> None:
+        from ccgram.multiplexer.agterm import AgtermManager
+
+        router = self._router()
+        owner = "157B4C8C-EFAE-40C2-BA54-9A5D7FD8B5E4"
+        split_id = f"{owner}:split-" + "a" * 20
+        router.bind_thread(100, 42, split_id, chat_id=-999)
+
+        async def runner(args, stdin=None):
+            if list(args[:2]) == ["window", "list"]:
+                result = {"windows": [{"id": "window", "open": True}]}
+            else:
+                assert args[0] == "tree"
+                result = {
+                    "tree": {
+                        "workspaces": [
+                            {
+                                "name": "code",
+                                "sessions": [
+                                    {"id": owner, "name": "repo", "cwd": "/repo"}
+                                ],
+                            }
+                        ]
+                    }
+                }
+            return 0, json.dumps({"ok": True, "result": result}), ""
+
+        backend = AgtermManager(runner=runner, own_session_id="", workspaces=None)
+        client = FakeTelegramClient()
+        audits = [
+            _audit(self._ghost_issue(split_id), total=1, live=0),
+            _audit(total=0, live=0),
+        ]
+
+        edit = await self._run_sync(router, backend, audits, client)
+
+        assert client.call_count("delete_forum_topic") == 1
+        assert router.get_window_for_chat_thread(-999, 42) is None
+        assert "Removed 1 stale topic" in edit.call_args_list[-1].args[1]
+
+    async def test_unavailable_agterm_does_not_delete_split_topic(self) -> None:
+        from ccgram.multiplexer.agterm import AgtermManager
+
+        router = self._router()
+        owner = "157B4C8C-EFAE-40C2-BA54-9A5D7FD8B5E4"
+        split_id = f"{owner}:split-" + "b" * 20
+        router.bind_thread(100, 42, split_id, chat_id=-999)
+
+        async def runner(args, stdin=None):
+            if list(args[:2]) == ["window", "list"]:
+                return (
+                    0,
+                    json.dumps(
+                        {
+                            "ok": True,
+                            "result": {"windows": [{"id": "window", "open": True}]},
+                        }
+                    ),
+                    "",
+                )
+            return 1, "", "agterm unavailable"
+
+        backend = AgtermManager(runner=runner, own_session_id="", workspaces=None)
+        client = FakeTelegramClient()
+        with (
+            patch("ccgram.handlers.sync_command.thread_router", router),
+            patch("ccgram.handlers.sync_command.tmux_manager", backend),
+        ):
+            removed, manual, stopped = await _close_ghost_topics(
+                client, [self._ghost_issue(split_id)]
+            )
+
+        assert (removed, manual, stopped) == (0, 0, False)
+        assert client.call_count("delete_forum_topic") == 0
+        assert router.get_window_for_chat_thread(-999, 42) == split_id
 
     async def test_sync_keeps_alive_ghost_binding(self) -> None:
         router = self._router()

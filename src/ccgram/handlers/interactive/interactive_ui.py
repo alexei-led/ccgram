@@ -26,6 +26,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telegram.error import BadRequest, NetworkError, RetryAfter, TelegramError, TimedOut
 
 from ...providers import get_provider_for_window
+from ...providers.pi import PI_QUESTION_FOOTER
 from ...telegram_client import TelegramClient
 from ...window_query import get_window_provider
 from ...thread_router import thread_router
@@ -220,6 +221,8 @@ def get_interactive_msg_id(
 
 def _numbered_menu_blocks(
     lines: list[str],
+    *,
+    allow_descriptions: bool = False,
 ) -> list[tuple[int, int, tuple[tuple[str, str], ...]]]:
     """Find contiguous sequential numbered menu blocks and their line ranges."""
     blocks: list[tuple[int, int, tuple[tuple[str, str], ...]]] = []
@@ -234,6 +237,14 @@ def _numbered_menu_blocks(
         choices: list[tuple[str, str]] = []
         expected = 1
         while index < len(lines):
+            # Pi indents descriptions past the option number, including numbered prose.
+            if (
+                allow_descriptions
+                and lines[index].strip()
+                and lines[index].startswith(" " * (first.start(1) + 1))
+            ):
+                index += 1
+                continue
             option = _NUMBERED_OPTION_RE.fullmatch(lines[index])
             if option is None:
                 break
@@ -264,7 +275,10 @@ def parse_direct_choices(content: str) -> tuple[tuple[str, str], ...]:
         return ()
 
     lines = content.splitlines()
-    blocks = _numbered_menu_blocks(lines)
+    blocks = _numbered_menu_blocks(
+        lines,
+        allow_descriptions=any(line.strip() == PI_QUESTION_FOOTER for line in lines),
+    )
     anchors = [
         index
         for index, line in enumerate(lines)

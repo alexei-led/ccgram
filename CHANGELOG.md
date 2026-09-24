@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [4.12.3] - 2026-09-24
+
+### Fixed
+- Reconcile guarded agterm split IDs during liveness checks so `/sync` can retire confirmed-closed split topics while preserving topics when the backend is unavailable or the pane state is unknown.
+- Preserve primary sessions across same-provider hooks, defer session-map snapshots invalidated by provider selection, and keep queued transcript tails for same-provider `/new` or `/clear` while rejecting other-provider content.
+- Avoid sending Ctrl+C to agterm shells when prompt markers are unsupported and the shell may be running a builtin or waiting for input.
+- Retry OpenAI-compatible requests once without `temperature` only when the API explicitly rejects that parameter; include safe error type, code, and parameter details otherwise.
+- Resolve Pi `AskUserQuestion` menus into Telegram choices and recognize agterm foreground shell metadata without offering unsupported prompt setup.
+
+### Improved
+- Show compact provider labels in Telegram topics and the `/agent` picker, with one quiet notice after a stable automatic provider change.
+
 ## [4.12.2] - 2026-09-23
 
 ### Fixed
