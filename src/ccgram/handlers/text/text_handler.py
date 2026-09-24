@@ -11,11 +11,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 import asyncio
+import contextlib
 from pathlib import Path
 
 import structlog
 from telegram import Message, Update
 from telegram.constants import ChatAction
+from telegram.error import TelegramError
 from ...config import config
 from ...telegram_client import PTBTelegramClient, TelegramClient
 from ..callback_helpers import get_thread_id as _get_thread_id
@@ -481,7 +483,9 @@ async def _forward_message(
     message: Message,
 ) -> None:
     """Forward a text message to the bound tmux window."""
-    await message.chat.send_action(ChatAction.TYPING)  # type: ignore[union-attr]
+    # Best-effort: a network error here must not drop the user's text (#257).
+    with contextlib.suppress(TelegramError):
+        await message.chat.send_action(ChatAction.TYPING)  # type: ignore[union-attr]
     # Enqueue a status clear to actually delete the Telegram message
     # (clear_status_msg_info only clears the tracking dict, leaving a ghost)
     await enqueue_status_update(client, user_id, window_id, None, thread_id)
@@ -492,34 +496,32 @@ async def _forward_message(
     lifecycle_strategy.clear_probe_failures(window_id)
 
     # If in interactive mode, the terminal likely has a modal prompt
-    # (AskUserQuestion / ExitPlanMode) that swallows plain text. Dismiss
-    # it with Escape and STOP: the text must never reach the pane, where
-    # a live modal would treat it as an answer and a stale one would
-    # hand it to the agent as a command, derailing the conversation.
-    # The user types again once the prompt is gone. This check runs
-    # BEFORE send_telegram_to_window on purpose.
+    # (AskUserQuestion / ExitPlanMode) that would swallow plain text or
+    # treat it as an answer. Dismiss it with Escape FIRST, then deliver
+    # the text to the agent's input line: the operator's words must
+    # reach the agent either way, never be discarded (2026-09-24: the
+    # discard variant trapped voice-transcript users in a dismissal
+    # loop while their agent sat on an unanswered question).
     interactive_window = get_interactive_window(
         user_id, thread_id, chat_id=message.chat.id
     )
+    interactive_dismissed = False
     if interactive_window and interactive_window == window_id:
         try:
             # Lazy: text_handler ↔ polling cycle
             from ...multiplexer import multiplexer as _mux
 
             await _mux.send_keys(window_id, "Escape", enter=False, literal=False)
-            await asyncio.sleep(0.3)
+            # Modal teardown is asynchronous: give the TUI a beat to
+            # return to its input line before the text lands.
+            await asyncio.sleep(0.8)
         except Exception:  # noqa: BLE001  # never block on Esc failure
             pass
         # Lazy: interactive imports pull PTB types
         from ..interactive import clear_interactive_mode
 
         clear_interactive_mode(user_id, thread_id, chat_id=message.chat.id)
-        await safe_reply(
-            message,
-            "⚡ Interactive prompt dismissed (Escape sent). Your text was "
-            "not forwarded. Type again to message the agent.",
-        )
-        return
+        interactive_dismissed = True
 
     success, err_message = await send_telegram_to_window(
         user_id, window_id, thread_id, text, message.chat.id
@@ -527,6 +529,13 @@ async def _forward_message(
     if not success:
         await safe_reply(message, f"\u274c {err_message}")
         return
+
+    if interactive_dismissed:
+        await safe_reply(
+            message,
+            "\u26a1 Interactive prompt dismissed (Escape sent). Your message "
+            "was delivered to the agent.",
+        )
 
     await ack_reaction(client, message.chat.id, message.message_id)
 
