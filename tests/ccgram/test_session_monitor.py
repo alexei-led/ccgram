@@ -15,6 +15,7 @@ from ccgram.multiplexer.base import MultiplexerCapabilities, WindowRef
 from ccgram.providers.claude import ClaudeProvider
 from ccgram.providers.codex import CodexProvider
 from ccgram.session import SessionManager
+import ccgram.session_monitor as ccgram_session_monitor
 from ccgram.session_monitor import NewMessage, NewWindowEvent, SessionMonitor
 from ccgram.thread_router import thread_router
 from ccgram.telegram_client import FakeTelegramClient
@@ -955,6 +956,9 @@ class TestEmitUnboundWindowEvents:
         window_store.window_states.clear()
         monkeypatch.setattr(SessionManager, "_load_state", lambda self: None)
         monkeypatch.setattr(SessionManager, "_save_state", lambda self: None)
+        # These tests probe eligibility, not the adoption debounce: a zero
+        # window keeps the fire-on-first-sight behavior.
+        monkeypatch.setattr("ccgram.session_monitor._ADOPT_AFTER_STABLE_S", 0.0)
         SessionManager()
 
     async def test_tmux_surfaces_every_unbound_window(
@@ -1031,6 +1035,80 @@ class TestEmitUnboundWindowEvents:
         await monitor._emit_unbound_window_events(
             [_winref("ABC-DEF", "claude")], known_window_ids=set()
         )
+
+        cb.assert_not_awaited()
+
+
+class TestAdoptionDebounce:
+    """An unbound window is adoptable only after its id survives the
+    stability window (a transient session identity at agent start minted
+    a topic for a window that died in seconds)."""
+
+    @pytest.fixture
+    def wired(self, monkeypatch) -> None:
+        thread_router.reset()
+        window_store.window_states.clear()
+        monkeypatch.setattr(SessionManager, "_load_state", lambda self: None)
+        monkeypatch.setattr(SessionManager, "_save_state", lambda self: None)
+        SessionManager()
+
+    async def test_young_window_is_not_adopted(
+        self, monitor: SessionMonitor, wired, monkeypatch
+    ) -> None:
+        cb = AsyncMock(spec=lambda event: None)
+        monitor.set_new_window_callback(cb)
+        monkeypatch.setattr(
+            "ccgram.session_monitor.tmux_manager",
+            SimpleNamespace(capabilities=_HERDR_CAPS),
+        )
+
+        # The transient identity: alive in one listing, seconds old.
+        await monitor._emit_unbound_window_events(
+            [_winref(HERDR_TARGETS["new"], "claude")], known_window_ids=set()
+        )
+
+        cb.assert_not_awaited()
+
+    async def test_survivor_is_adopted(
+        self, monitor: SessionMonitor, wired, monkeypatch
+    ) -> None:
+        cb = AsyncMock(spec=lambda event: None)
+        monitor.set_new_window_callback(cb)
+        monkeypatch.setattr(
+            "ccgram.session_monitor.tmux_manager",
+            SimpleNamespace(capabilities=_HERDR_CAPS),
+        )
+        wid = HERDR_TARGETS["new"]
+
+        await monitor._emit_unbound_window_events([_winref(wid, "claude")], set())
+        # Age the sighting past the stability window and list it again.
+        monitor._unbound_first_seen[wid] -= (
+            ccgram_session_monitor._ADOPT_AFTER_STABLE_S + 1.0
+        )
+        await monitor._emit_unbound_window_events([_winref(wid, "claude")], set())
+
+        surfaced = {c.args[0].window_id for c in cb.call_args_list}
+        assert surfaced == {wid}
+
+    async def test_flap_restarts_the_clock(
+        self, monitor: SessionMonitor, wired, monkeypatch
+    ) -> None:
+        cb = AsyncMock(spec=lambda event: None)
+        monitor.set_new_window_callback(cb)
+        monkeypatch.setattr(
+            "ccgram.session_monitor.tmux_manager",
+            SimpleNamespace(capabilities=_HERDR_CAPS),
+        )
+        wid = HERDR_TARGETS["new"]
+
+        # Seen, then absent from a listing: the transient died. When the
+        # id reappears it must start over, not inherit the old clock.
+        await monitor._emit_unbound_window_events([_winref(wid, "claude")], set())
+        monitor._unbound_first_seen[wid] -= (
+            ccgram_session_monitor._ADOPT_AFTER_STABLE_S + 1.0
+        )
+        await monitor._emit_unbound_window_events([], set())
+        await monitor._emit_unbound_window_events([_winref(wid, "claude")], set())
 
         cb.assert_not_awaited()
 
