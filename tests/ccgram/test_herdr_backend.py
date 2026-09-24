@@ -1981,3 +1981,271 @@ async def test_an_unrecognised_sessionless_agent_does_not_blank_the_listing() ->
 
     assert windows is not None, "an unaddressable agent is not an unaccountable gap"
     assert [w.window_id for w in windows] == [_target("session-a")]
+
+
+async def _hang_forever() -> None:
+    await asyncio.Event().wait()
+
+
+def _count_agent_status(mux: HerdrManager) -> dict[str, int]:
+    """Count agent_status calls on the manager (reprime forking)."""
+    calls = {"n": 0}
+    orig = mux.agent_status
+
+    async def counting(window_id: str):
+        calls["n"] += 1
+        return await orig(window_id)
+
+    mux.agent_status = counting
+    return calls
+
+
+async def test_watch_events_skips_reprime_after_idle_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """TASK-13: a quiet interval with an unchanged mapping keeps the stream
+    open (no reconnect, no per-pane agent_status re-prime; measured ~2.6
+    herdr calls/s before this). The pushed event arriving on the SAME stream
+    after several idle intervals is the proof the subscription survived."""
+    monkeypatch.setattr(herdr_module, "_STREAM_REPRIME_INTERVAL", 0.05)
+    record = _agent(pane_id="w7:p4", tab_id="w7:t3")
+    mux = _manager(
+        _live_fake(record).on(
+            "pane", "get", out=_result(pane={"agent_status": "working"})
+        )
+    )
+    calls = _count_agent_status(mux)
+
+    connects = {"n": 0}
+
+    async def stream(_subs: Sequence[Mapping[str, object]]):
+        connects["n"] += 1
+        yield {"__subscribed__": True}
+        await asyncio.sleep(0.15)  # quiet: spans several patched intervals
+        yield {
+            "event": "pane.agent_status_changed",
+            "data": {"pane_id": "w7:p4", "agent_status": "idle"},
+        }
+        await _hang_forever()
+
+    mux._open_stream = stream
+    watcher = mux.watch_events([_target()])
+    try:
+        first = await asyncio.wait_for(anext(watcher), 1)
+        assert first.kind == "agent_status"  # first connect reprimes
+        second = await asyncio.wait_for(anext(watcher), 2)
+        assert second.status is not None and second.status.state == "idle"
+        assert second.pane_id == "w7:p4"
+    finally:
+        await watcher.aclose()
+    assert connects["n"] == 1
+    assert calls["n"] == 1
+
+
+async def test_watch_events_reprimes_after_transport_drop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """TASK-13: a transport failure loses coverage; the reconnect must
+    re-prime every pane so a stale cached status cannot outlive the drop."""
+    monkeypatch.setattr(herdr_module, "_STREAM_BACKOFF_BASE", 0.01)
+    record = _agent(pane_id="w7:p4", tab_id="w7:t3")
+    mux = _manager(
+        _live_fake(record).on(
+            "pane", "get", out=_result(pane={"agent_status": "working"})
+        )
+    )
+    calls = _count_agent_status(mux)
+
+    connects = {"n": 0}
+
+    async def stream(_subs: Sequence[Mapping[str, object]]):
+        connects["n"] += 1
+        yield {"__subscribed__": True}
+        if connects["n"] == 1:
+            raise OSError(22, "Invalid argument")
+        await _hang_forever()
+
+    mux._open_stream = stream
+    watcher = mux.watch_events([_target()])
+    try:
+        first = await asyncio.wait_for(anext(watcher), 1)
+        assert first.kind == "agent_status"  # first connect reprimes
+        second = await asyncio.wait_for(anext(watcher), 2)
+        assert second.kind == "agent_status"  # post-drop reconnect reprimes
+    finally:
+        await watcher.aclose()
+    assert connects["n"] == 2
+    assert calls["n"] == 2
+
+
+async def test_watch_events_server_eof_backs_off_without_runtime_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A server EOF must take the graceful backoff path: a bare anext on
+    the exhausted inner stream raises StopAsyncIteration, which PEP 479
+    converts to RuntimeError inside the async generator (found while
+    testing the TASK-13 reprime change)."""
+    monkeypatch.setattr(herdr_module, "_STREAM_BACKOFF_BASE", 0.01)
+    record = _agent(pane_id="w7:p4", tab_id="w7:t3")
+    mux = _manager(
+        _live_fake(record).on(
+            "pane", "get", out=_result(pane={"agent_status": "working"})
+        )
+    )
+    connects = {"n": 0}
+
+    async def stream(_subs: Sequence[Mapping[str, object]]):
+        connects["n"] += 1
+        yield {"__subscribed__": True}
+        if connects["n"] == 1:
+            yield {
+                "event": "pane.agent_status_changed",
+                "data": {"pane_id": "w7:p4", "agent_status": "working"},
+            }
+            return  # server closes the stream right after the event
+
+    mux._open_stream = stream
+    watcher = mux.watch_events([_target()])
+    try:
+        first = await asyncio.wait_for(anext(watcher), 1)
+        assert first.kind == "agent_status"  # first-connect reprime
+        second = await asyncio.wait_for(anext(watcher), 1)
+        assert second.status is not None and second.status.state == "working"
+        # EOF -> backoff -> reconnect: the next yield is the post-drop
+        # reprime, not a RuntimeError.
+        third = await asyncio.wait_for(anext(watcher), 2)
+        assert third.kind == "agent_status"
+    finally:
+        await watcher.aclose()
+    assert connects["n"] == 2
+
+
+class _MovingPaneRunner(FakeHerdr):
+    """Serve the agent on one pane for the first reads, then on another."""
+
+    def __init__(self, before: Mapping, after: Mapping, switch_after: int):
+        super().__init__()
+        self.agent_reads = 0
+        self._before = before
+        self._after = after
+        self._switch_after = switch_after
+
+    async def __call__(self, args: Sequence[str]) -> tuple[int, str, str]:
+        if args == ["agent", "list"]:
+            self.agent_reads += 1
+            record = (
+                self._before if self.agent_reads <= self._switch_after else self._after
+            )
+            return 0, _agents(record), ""
+        if args[:2] == ["pane", "get"]:
+            return 0, _result(pane={"agent_status": "working"}), ""
+        return await super().__call__(args)
+
+
+async def test_idle_refresh_reprimes_when_mapping_changed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """TASK-13 review: silence proves nothing about a target that moved to
+    another pane; the refresh must detect the move and re-prime."""
+    monkeypatch.setattr(herdr_module, "_STREAM_REPRIME_INTERVAL", 0.05)
+    before = _agent(pane_id="w7:p4", tab_id="w7:t3")
+    after = _agent(pane_id="w7:p5", tab_id="w7:t3")
+    fake = _MovingPaneRunner(before, after, switch_after=1)
+    mux = _manager(fake)
+    calls = _count_agent_status(mux)
+    connects = {"n": 0}
+
+    async def stream(_subs: Sequence[Mapping[str, object]]):
+        connects["n"] += 1
+        yield {"__subscribed__": True}
+        await _hang_forever()
+
+    mux._open_stream = stream
+    watcher = mux.watch_events([_target()])
+    try:
+        first = await asyncio.wait_for(anext(watcher), 1)
+        assert first.kind == "agent_status"  # first-connect reprime
+        # Idle fires; the resolve in the timeout branch sees the moved pane,
+        # so the second connect reprimes too.
+        second = await asyncio.wait_for(anext(watcher), 2)
+        assert second.kind == "agent_status"
+    finally:
+        await watcher.aclose()
+    assert connects["n"] == 2
+    assert calls["n"] == 2
+
+
+async def test_mapping_change_refresh_delivers_triggering_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """TASK-13 review: the event that reveals a move is delivered under the
+    pre-refresh mapping (the terminal-event guard), and the reconnect
+    re-primes the newly subscribed pane."""
+    monkeypatch.setattr(herdr_module, "_STREAM_BACKOFF_BASE", 0.01)
+    before = _agent(pane_id="w7:p4", tab_id="w7:t3")
+    after = _agent(pane_id="w7:p5", tab_id="w7:t3")
+    # Cycle-top resolve sees the old pane; the per-event resolve sees the
+    # move.
+    fake = _MovingPaneRunner(before, after, switch_after=1)
+    mux = _manager(fake)
+    calls = _count_agent_status(mux)
+    connects = {"n": 0}
+
+    async def stream(_subs: Sequence[Mapping[str, object]]):
+        connects["n"] += 1
+        yield {"__subscribed__": True}
+        if connects["n"] == 1:
+            yield {
+                "event": "pane.agent_status_changed",
+                "data": {"pane_id": "w7:p4", "agent_status": "idle"},
+            }
+            await _hang_forever()
+
+    mux._open_stream = stream
+    watcher = mux.watch_events([_target()])
+    try:
+        first = await asyncio.wait_for(anext(watcher), 1)
+        assert first.kind == "agent_status"  # first-connect reprime
+        second = await asyncio.wait_for(anext(watcher), 2)
+        assert second.status is not None and second.status.state == "idle"
+        assert second.pane_id == "w7:p4"  # pre-refresh mapping
+        third = await asyncio.wait_for(anext(watcher), 2)
+        assert third.kind == "agent_status"  # post-move reconnect reprime
+    finally:
+        await watcher.aclose()
+    assert connects["n"] == 2
+    assert calls["n"] == 2
+
+
+async def test_hung_ack_refreshes_on_ack_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A socket that accepts but never acks must refresh on the short ack
+    timeout, not on the idle interval (TASK-13 review)."""
+    monkeypatch.setattr(herdr_module, "_STREAM_ACK_TIMEOUT", 0.05)
+    monkeypatch.setattr(herdr_module, "_STREAM_BACKOFF_BASE", 0.01)
+    record = _agent(pane_id="w7:p4", tab_id="w7:t3")
+    mux = _manager(
+        _live_fake(record).on(
+            "pane", "get", out=_result(pane={"agent_status": "working"})
+        )
+    )
+    connects = {"n": 0}
+
+    async def stream(_subs: Sequence[Mapping[str, object]]):
+        connects["n"] += 1
+        if connects["n"] == 1:
+            await _hang_forever()  # accepted, never acks
+        yield {"__subscribed__": True}
+        await _hang_forever()
+
+    mux._open_stream = stream
+    watcher = mux.watch_events([_target()])
+    try:
+        # The ack timeout refreshes within the wait bound; with the interval
+        # bound (30s) this wait_for would time out instead.
+        event = await asyncio.wait_for(anext(watcher), 2)
+        assert event.kind == "agent_status"  # second connect reprimes
+    finally:
+        await watcher.aclose()
+    assert connects["n"] == 2

@@ -12,6 +12,7 @@ import pytest
 
 from ccgram.multiplexer import herdr as herdr_module
 from ccgram.multiplexer.herdr import (
+    HerdrError,
     HerdrManager,
     HerdrSessionComposite,
     herdr_session_target_id,
@@ -315,7 +316,7 @@ async def test_empty_socket_path_discovers_once_then_uses_public_socket(
     ]
 
 
-async def test_watch_events_retries_socket_discovery_failure(
+async def test_watch_events_surfaces_socket_discovery_failure(
     herdr_server, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("HERDR_SOCKET_PATH", raising=False)
@@ -330,8 +331,11 @@ async def test_watch_events_retries_socket_discovery_failure(
     monkeypatch.setattr(manager, "_subprocess_run", discover)
     stream = manager.watch_events([])
     try:
-        with pytest.raises(TimeoutError):
-            await asyncio.wait_for(anext(stream), 0.05)
+        # A failed discovery is deterministic, not transient: the stream
+        # surfaces HerdrError instead of retrying forever inside the
+        # generator, so the monitor's supervisor owns the restart cadence.
+        with pytest.raises(HerdrError, match="Cannot discover"):
+            await asyncio.wait_for(anext(stream), 1.0)
     finally:
         await stream.aclose()
 
