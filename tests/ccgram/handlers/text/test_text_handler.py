@@ -483,15 +483,14 @@ class TestForwardMessage:
         return_value=(True, "ok"),
     )
     @patch(f"{_TH}.window_query")
-    async def test_sends_escape_and_clears_interactive_mode(
+    async def test_sends_escape_verifies_then_delivers(
         self,
         mock_sm: MagicMock,
         _mock_send: AsyncMock,
         _mock_get_iw: MagicMock,
         monkeypatch,
     ) -> None:
-        """Interactive mode: text triggers Escape (dismiss the modal)
-        then clears interactive mode, NOT a UI refresh."""
+        """Interactive mode: Escape, verified dismissal, then delivery."""
         from types import SimpleNamespace
 
         bot = AsyncMock()
@@ -504,6 +503,9 @@ class TestForwardMessage:
             sent_keys.append((wid, key, kw))
             return True
 
+        async def no_prompt(wid, pane_id=None):
+            return False
+
         import ccgram.multiplexer as _mux_mod
 
         monkeypatch.setattr(
@@ -515,6 +517,8 @@ class TestForwardMessage:
         cleared = []
         import ccgram.handlers.interactive as _int_mod
 
+        monkeypatch.setattr(_int_mod, "pane_has_interactive_prompt", no_prompt)
+
         monkeypatch.setattr(
             _int_mod,
             "clear_interactive_mode",
@@ -523,19 +527,178 @@ class TestForwardMessage:
 
         await _forward_message("@0", 100, 42, "hello", bot, message)
 
-        # Escape was sent as the KEY, not the literal word
         escape_calls = [(k, kw) for _, k, kw in sent_keys if k == "Escape"]
         assert escape_calls, "an Escape keypress was sent"
         assert all(
             kw.get("literal") is False and kw.get("enter") is False
             for _, kw in escape_calls
         ), "literal=True would type the word Escape into the modal"
-        # Interactive mode was cleared (not refreshed)
         assert cleared, "clear_interactive_mode should have been called"
-        # The text is DELIVERED after the modal dismissal: the operator's
-        # words must reach the agent either way (2026-09-24 dismissal-loop
-        # incident: discarding them trapped voice-transcript users).
         assert _mock_send.await_count == 1, "text must be forwarded after Escape"
+
+
+class TestDismissalFailurePaths:
+    """Review 2026-09-25: a failed or unconfirmed dismissal must never
+    forward the text, must keep the tracking, and must echo the text."""
+
+    def _wire(self, monkeypatch, *, escape_result, prompt_still_shown):
+        from types import SimpleNamespace
+
+        sent_keys = []
+
+        async def fake_send_keys(wid, key, **kw):
+            sent_keys.append((wid, key, kw))
+            if isinstance(escape_result, Exception):
+                raise escape_result
+            return escape_result
+
+        async def fake_send_keys_to_pane(pane, key, **kw):
+            sent_keys.append((f"pane:{pane}", key, kw))
+            if isinstance(escape_result, Exception):
+                raise escape_result
+            return escape_result
+
+        async def fake_prompt(wid, pane_id=None):
+            return prompt_still_shown
+
+        import ccgram.multiplexer as _mux_mod
+
+        monkeypatch.setattr(
+            _mux_mod,
+            "multiplexer",
+            SimpleNamespace(
+                send_keys=fake_send_keys,
+                send_keys_to_pane=fake_send_keys_to_pane,
+            ),
+        )
+        import ccgram.handlers.interactive as _int_mod
+
+        monkeypatch.setattr(_int_mod, "pane_has_interactive_prompt", fake_prompt)
+        return sent_keys
+
+    @patch(f"{_TH}.get_interactive_window", return_value="@0")
+    @patch(f"{_TH}.send_telegram_to_window", new_callable=AsyncMock)
+    @patch(f"{_TH}.window_query")
+    async def test_escape_returns_false_keeps_state_and_text(
+        self, _wq, _mock_send, _get_iw, monkeypatch
+    ) -> None:
+        message = AsyncMock()
+        message.chat.id = -100
+        self._wire(monkeypatch, escape_result=False, prompt_still_shown=False)
+
+        cleared = []
+        import ccgram.handlers.interactive as _int_mod
+
+        monkeypatch.setattr(
+            _int_mod, "clear_interactive_mode", lambda *a, **kw: cleared.append(a)
+        )
+
+        await _forward_message("@0", 100, 42, "precious words", AsyncMock(), message)
+
+        assert _mock_send.await_count == 0, "no forward on failed Escape"
+        assert cleared == [], "tracking must be retained"
+        text = (
+            message.reply_text.call_args.args[-1]
+            if message.reply_text.call_args
+            else ""
+        )
+        assert "precious words" in str(text), "the notice must echo the text"
+
+    @patch(f"{_TH}.get_interactive_window", return_value="@0")
+    @patch(f"{_TH}.send_telegram_to_window", new_callable=AsyncMock)
+    @patch(f"{_TH}.window_query")
+    async def test_escape_raises_keeps_state_and_text(
+        self, _wq, _mock_send, _get_iw, monkeypatch
+    ) -> None:
+        message = AsyncMock()
+        message.chat.id = -100
+        self._wire(
+            monkeypatch,
+            escape_result=RuntimeError("mux down"),
+            prompt_still_shown=False,
+        )
+
+        cleared = []
+        import ccgram.handlers.interactive as _int_mod
+
+        monkeypatch.setattr(
+            _int_mod, "clear_interactive_mode", lambda *a, **kw: cleared.append(a)
+        )
+
+        await _forward_message("@0", 100, 42, "precious words", AsyncMock(), message)
+
+        assert _mock_send.await_count == 0, "no forward on Escape exception"
+        assert cleared == []
+
+    @patch(f"{_TH}.get_interactive_window", return_value="@0")
+    @patch(f"{_TH}.send_telegram_to_window", new_callable=AsyncMock)
+    @patch(f"{_TH}.window_query")
+    async def test_dismissal_never_confirms_keeps_state_and_text(
+        self, _wq, _mock_send, _get_iw, monkeypatch
+    ) -> None:
+        """Escape sends fine, but the prompt never goes away: the bounded
+        loop exhausts, nothing is forwarded, tracking stays."""
+        message = AsyncMock()
+        message.chat.id = -100
+        self._wire(monkeypatch, escape_result=True, prompt_still_shown=True)
+
+        cleared = []
+        import ccgram.handlers.interactive as _int_mod
+
+        monkeypatch.setattr(
+            _int_mod, "clear_interactive_mode", lambda *a, **kw: cleared.append(a)
+        )
+        import ccgram.handlers.text.text_handler as _th_mod
+
+        monkeypatch.setattr(_th_mod, "_DISMISS_CONFIRM_ATTEMPTS", 2)
+        monkeypatch.setattr(_th_mod, "_DISMISS_CONFIRM_INTERVAL_S", 0.0)
+
+        await _forward_message("@0", 100, 42, "precious words", AsyncMock(), message)
+
+        assert _mock_send.await_count == 0, "no forward without confirmation"
+        assert cleared == []
+        notice = str(message.reply_text.call_args.args[-1])
+        assert "precious words" in notice
+
+    @patch(f"{_TH}.get_interactive_window", return_value="@0")
+    @patch(
+        f"{_TH}.send_telegram_to_window",
+        new_callable=AsyncMock,
+        return_value=(True, "ok"),
+    )
+    @patch(f"{_TH}.window_query")
+    async def test_sibling_pane_prompt_targets_owning_pane(
+        self, _wq, _mock_send, _get_iw, monkeypatch
+    ) -> None:
+        """A prompt owned by a NON-active sibling pane gets its Escape sent
+        to that pane, never window-level (which hits the active pane)."""
+        message = AsyncMock()
+        message.chat.id = -100
+        sent_keys = self._wire(
+            monkeypatch, escape_result=True, prompt_still_shown=False
+        )
+
+        import ccgram.handlers.interactive as _int_mod
+
+        monkeypatch.setattr(_int_mod, "get_interactive_pane", lambda *a, **kw: "%7")
+        monkeypatch.setattr(_int_mod, "clear_interactive_mode", lambda *a, **kw: None)
+
+        await _forward_message("@0", 100, 42, "hello", AsyncMock(), message)
+
+        pane_escapes = [
+            (t, k, kw)
+            for t, k, kw in sent_keys
+            if k == "Escape" and str(t).startswith("pane:")
+        ]
+        assert pane_escapes, "Escape must go through send_keys_to_pane"
+        assert all(t == "pane:%7" for t, _, _ in pane_escapes)
+        window_escapes = [
+            (t, k)
+            for t, k, _ in sent_keys
+            if k == "Escape" and not str(t).startswith("pane:")
+        ]
+        assert window_escapes == [], "no window-level Escape for a pane-owned prompt"
+        assert _mock_send.await_count == 1
 
     @patch(
         f"{_TH}.send_telegram_to_window",
