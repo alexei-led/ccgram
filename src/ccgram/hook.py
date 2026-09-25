@@ -60,6 +60,10 @@ _PATH_HOOK_MARKER = "ccgram hook"
 _TMUX_FORMAT_PARTS = 3
 _TMUX_FORMAT_PARTS_WITH_TTY = 4
 _TMUX_FORMAT_PARTS_WITH_LINKS = 5
+# Providers detectable by executable name on a tty, in precedence order. ``pi``
+# is matched separately: it is short enough to collide (pip, pipenv) and so is
+# only ever accepted as an exact basename.
+_TTY_PROVIDERS: tuple[ProviderName, ...] = ("gemini", "codex", "claude")
 
 # ps -A output is split into 5 fields: pid, ppid, pgid, stat, command.
 _PS_SNAPSHOT_FIELDS = 5
@@ -1398,12 +1402,24 @@ def _provider_from_pane_tty(pane_tty: str) -> ProviderName | None:
     except subprocess.TimeoutExpired, OSError:
         return None
     text = result.stdout.lower()
-    if "gemini" in text:
-        return "gemini"
-    if "codex" in text:
-        return "codex"
-    if "claude" in text:
-        return "claude"
+    # Prefer the executable actually running on the tty. A provider name can
+    # also appear in an unrelated *path* on some other process's command line
+    # (claude-mem's helper carries ``~/.codex/plugins/cache/claude-mem-local``
+    # on every Claude pane), and a whole-text substring scan reads that as the
+    # running agent. Basenames are checked first for that reason; the scan is
+    # kept as a fallback so wrapper launches (``node .../claude/cli.js``) that
+    # expose no provider basename still resolve as they did before.
+    executables = {
+        line.split()[0].rsplit("/", 1)[-1] for line in text.splitlines() if line.split()
+    }
+    for name in _TTY_PROVIDERS:
+        if name in executables:
+            return name
+    if "pi" in executables:
+        return "pi"
+    for name in _TTY_PROVIDERS:
+        if name in text:
+            return name
     if any(tok == "pi" or tok.endswith("/pi") for tok in text.split()):
         return "pi"
     return None
