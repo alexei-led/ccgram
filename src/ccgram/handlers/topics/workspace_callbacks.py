@@ -14,7 +14,7 @@ import structlog
 from ...multiplexer import multiplexer as tmux_manager
 from ..callback_data import CB_WS_SELECT, CB_WS_SKIP
 
-from ..messaging_pipeline.message_sender import safe_edit
+from ..messaging_pipeline.message_sender import interactive_edit as safe_edit
 from .directory_browser import (
     build_provider_picker,
     build_workspace_picker,

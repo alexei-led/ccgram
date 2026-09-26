@@ -299,6 +299,23 @@ async def safe_edit(target: Message | CallbackQuery, text: str, **kwargs: Any) -
     await _with_entity_fallback(_edit, text, "edit message", **kwargs)
 
 
+async def interactive_edit(
+    target: Message | CallbackQuery, text: str, **kwargs: Any
+) -> None:
+    """``safe_edit`` for user-tap UI: served with interactive priority.
+
+    Same edit semantics as :func:`safe_edit`; the only difference is
+    that requests made inside run through the group scheduler's
+    interactive lane, so a navigation tap is not queued behind
+    background topic traffic within the shared group flood budget.
+    """
+    # Lazy: rate limiter marker, no PTB types
+    from ...telegram_rate_limiter import interactive_priority
+
+    with interactive_priority():
+        await safe_edit(target, text, **kwargs)
+
+
 async def safe_send(
     client: TelegramClient,
     chat_id: int,
