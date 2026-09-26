@@ -575,6 +575,10 @@ async def _send_interactive_with_retry(
     return None
 
 
+class PromptStateError(Exception):
+    """The pane could not be read; no dismissal verdict is possible."""
+
+
 async def pane_has_interactive_prompt(
     window_id: str,
     pane_id: str | None = None,
@@ -582,10 +586,29 @@ async def pane_has_interactive_prompt(
     """Whether the pane still shows an interactive prompt right now.
 
     Used by the dismissal path to CONFIRM the Escape landed: capture the
-    owning pane and run the same detector the poller uses. None means
-    the detector saw no prompt, which is the confirmation.
+    owning pane and run the same detector the poller uses. Raises
+    PromptStateError when the capture itself fails: an unreadable pane
+    proves nothing, and a failed capture must never count as "prompt
+    gone" (a modal may still be open and would eat the forwarded text
+    as an answer).
     """
-    return (await _capture_interactive_content(window_id, pane_id=pane_id)) is not None
+    if pane_id:
+        pane_text = await tmux_manager.capture_pane_by_id(pane_id, window_id=window_id)
+    else:
+        w = await tmux_manager.find_window_by_id(window_id)
+        if not w:
+            raise PromptStateError(f"window {window_id} not found")
+        pane_text = await tmux_manager.capture_pane(w.window_id)
+    if not pane_text:
+        raise PromptStateError(f"no pane text captured for {window_id} pane {pane_id}")
+    provider = get_provider_for_window(
+        window_id, provider_name=get_window_provider(window_id)
+    )
+    pane_title = ""
+    if provider.capabilities.uses_pane_title and not pane_id:
+        pane_title = await tmux_manager.get_pane_title(window_id)
+    status = provider.parse_terminal_status(pane_text, pane_title=pane_title)
+    return status is not None and status.is_interactive
 
 
 async def handle_interactive_ui(

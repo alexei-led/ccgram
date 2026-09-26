@@ -526,9 +526,26 @@ async def _dismiss_interactive_prompt(
         escape_sent = False
 
     if escape_sent:
+        # The forwarded text lands on the ACTIVE pane (window-level send),
+        # so confirmation must cover BOTH panes: the one that owned the
+        # prompt we just dismissed and the active one, which may hold a
+        # second prompt the sibling scan surfaced earlier. An unreadable
+        # pane (PromptStateError) proves nothing and never confirms.
+        # Lazy: interactive imports pull PTB types
+        from ..interactive.interactive_ui import PromptStateError
+
         for _ in range(_DISMISS_CONFIRM_ATTEMPTS):
             await asyncio.sleep(_DISMISS_CONFIRM_INTERVAL_S)
-            if not await pane_has_interactive_prompt(window_id, pane_id):
+            try:
+                owner_clear = not await pane_has_interactive_prompt(window_id, pane_id)
+                active_clear = (
+                    owner_clear
+                    if pane_id is None
+                    else not await pane_has_interactive_prompt(window_id, None)
+                )
+            except PromptStateError:
+                continue
+            if owner_clear and active_clear:
                 clear_interactive_mode(user_id, thread_id, chat_id=chat_id)
                 return True
 
