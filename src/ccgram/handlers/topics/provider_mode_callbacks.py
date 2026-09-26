@@ -16,7 +16,7 @@ from ...providers import registry as provider_registry
 from ...thread_router import thread_router
 from ..callback_data import CB_MODE_SELECT, CB_PROV_SELECT
 from ..callback_helpers import get_thread_id
-from ..messaging_pipeline.message_sender import safe_edit
+from ..messaging_pipeline.message_sender import interactive_edit as safe_edit
 from .directory_browser import (
     build_mode_picker,
     clear_browse_state,
