@@ -70,6 +70,11 @@ _interactive_msgs: dict[InteractiveKey, int] = {}
 
 # Track interactive mode: (user_id, chat_id, thread_id_or_0) -> window_id
 _interactive_mode: dict[InteractiveKey, str] = {}
+# Which pane owns the shown prompt (None = active-pane/window-level).
+# A window-level Escape lands on the ACTIVE pane, which in a
+# multi-pane window can be a different agent than the one showing
+# the prompt, so dismissal must target the owning pane when known.
+_interactive_panes: dict[InteractiveKey, str | None] = {}
 
 # The chat/message that owns the currently rendered keyboard. Direct choices
 # are accepted only from this exact Telegram prompt, not a copied callback.
@@ -171,14 +176,29 @@ def get_interactive_window(
     return _interactive_mode.get(_interactive_key(user_id, thread_id, chat_id))
 
 
+def get_interactive_pane(
+    user_id: int,
+    thread_id: int | None = None,
+    chat_id: int | None = None,
+) -> str | None:
+    """The pane owning the current interactive prompt, when pane-scoped."""
+    return _interactive_panes.get(_interactive_key(user_id, thread_id, chat_id))
+
+
 def set_interactive_mode(
     user_id: int,
     window_id: str,
     thread_id: int | None = None,
     *,
     chat_id: int | None = None,
+    pane_id: str | None = None,
 ) -> None:
-    """Set interactive mode for a user's chat/topic."""
+    """Set interactive mode for a user's chat/topic.
+
+    ``pane_id`` records which pane owns the prompt (None for the
+    active-pane/window-level prompt), so a later dismissal can target
+    the owning pane instead of whichever pane happens to be active.
+    """
     logger.debug(
         "Set interactive mode: user=%d, window_id=%s, thread=%s, chat=%s",
         user_id,
@@ -186,7 +206,9 @@ def set_interactive_mode(
         thread_id,
         chat_id,
     )
-    _interactive_mode[_interactive_key(user_id, thread_id, chat_id)] = window_id
+    ikey = _interactive_key(user_id, thread_id, chat_id)
+    _interactive_mode[ikey] = window_id
+    _interactive_panes[ikey] = pane_id
 
 
 def clear_interactive_mode(
@@ -204,6 +226,7 @@ def clear_interactive_mode(
     )
     ikey = _interactive_key(user_id, thread_id, chat_id)
     _interactive_mode.pop(ikey, None)
+    _interactive_panes.pop(ikey, None)
     _interactive_contexts.pop(ikey, None)
     _interactive_sequences.pop(ikey, None)
     _interactive_contents.pop(ikey, None)
@@ -566,6 +589,42 @@ async def _send_interactive_with_retry(
     return None
 
 
+class PromptStateError(Exception):
+    """The pane could not be read; no dismissal verdict is possible."""
+
+
+async def pane_has_interactive_prompt(
+    window_id: str,
+    pane_id: str | None = None,
+) -> bool:
+    """Whether the pane still shows an interactive prompt right now.
+
+    Used by the dismissal path to CONFIRM the Escape landed: capture the
+    owning pane and run the same detector the poller uses. Raises
+    PromptStateError when the capture itself fails: an unreadable pane
+    proves nothing, and a failed capture must never count as "prompt
+    gone" (a modal may still be open and would eat the forwarded text
+    as an answer).
+    """
+    if pane_id:
+        pane_text = await tmux_manager.capture_pane_by_id(pane_id, window_id=window_id)
+    else:
+        w = await tmux_manager.find_window_by_id(window_id)
+        if not w:
+            raise PromptStateError(f"window {window_id} not found")
+        pane_text = await tmux_manager.capture_pane(w.window_id)
+    if not pane_text:
+        raise PromptStateError(f"no pane text captured for {window_id} pane {pane_id}")
+    provider = get_provider_for_window(
+        window_id, provider_name=get_window_provider(window_id)
+    )
+    pane_title = ""
+    if provider.capabilities.uses_pane_title and not pane_id:
+        pane_title = await tmux_manager.get_pane_title(window_id)
+    status = provider.parse_terminal_status(pane_text, pane_title=pane_title)
+    return status is not None and status.is_interactive
+
+
 async def handle_interactive_ui(
     client: TelegramClient,
     user_id: int,
@@ -615,6 +674,7 @@ async def handle_interactive_ui(
         )
         if edited:
             _interactive_contexts[ikey] = (resolved_chat_id, existing_msg_id)
+            _interactive_panes[ikey] = pane_id
         return edited or False
 
     # Cooldown: prevent rapid retries when sends fail
@@ -647,6 +707,7 @@ async def handle_interactive_ui(
     )
     if sent:
         _interactive_msgs[ikey] = sent.message_id
+        _interactive_panes[ikey] = pane_id
         _interactive_contexts[ikey] = (resolved_chat_id, sent.message_id)
         _interactive_mode[ikey] = window_id
         _send_cooldowns.pop(ikey, None)
@@ -669,6 +730,7 @@ async def clear_interactive_msg(
     ikey = _interactive_key(user_id, thread_id, resolved_chat_id)
     msg_id = _interactive_msgs.pop(ikey, None)
     _interactive_mode.pop(ikey, None)
+    _interactive_panes.pop(ikey, None)
     _interactive_contexts.pop(ikey, None)
     _interactive_sequences.pop(ikey, None)
     _interactive_contents.pop(ikey, None)
