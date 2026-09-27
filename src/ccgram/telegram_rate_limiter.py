@@ -94,25 +94,30 @@ class _PriorityGroupScheduler:
         while self._interactive or self._background:
             await self._limiter.acquire()
             queue = self._interactive if self._interactive else self._background
+            if not queue:
+                # Every waiter cancelled itself while this token was
+                # being waited for; spend it and re-check the loop.
+                continue
             waiter = queue.popleft()
+            # A cancelled waiter can still be here under a lost race with
+            # acquire()'s removal; spend the token rather than corrupt state.
             if not waiter.done():
                 waiter.set_result(None)
-            else:
-                # A cancelled waiter consumed this token; give it back to
-                # the next in line by re-acquiring immediately is not
-                # possible with aiolimiter, so the slot is simply spent.
-                continue
 
     async def acquire(self, *, interactive: bool) -> None:
         self._ensure_pump()
         waiter = asyncio.get_running_loop().create_future()
-        (self._interactive if interactive else self._background).append(waiter)
+        queue = self._interactive if interactive else self._background
+        queue.append(waiter)
         try:
             await waiter
         except asyncio.CancelledError:
-            if not waiter.done():
-                # The pump never saw us; nothing to clean.
-                pass
+            # Remove the corpse: a cancelled future left in the deque makes
+            # the pump spend one token per corpse (3s each under flood
+            # saturation), silently stalling every later background waiter
+            # while the interactive lane keeps flowing (2026-09-26 wedge).
+            with contextlib.suppress(ValueError):
+                queue.remove(waiter)
             raise
 
 

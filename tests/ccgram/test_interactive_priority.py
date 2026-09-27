@@ -65,6 +65,30 @@ class TestPriorityGroupScheduler:
         done = asyncio.create_task(_bg(sched))
         await asyncio.wait_for(done, timeout=1.0)
 
+    async def test_cancelled_waiter_burst_leaves_no_corpses(self) -> None:
+        # 2026-09-26 wedge: cancelled futures left in the deque made the
+        # pump spend one token per corpse, freezing the background lane
+        # while the interactive lane flowed. Cancellation must remove the
+        # waiter, so later background service waits ~one interval, not
+        # one interval per cancelled waiter.
+        interval = 0.05
+        sched = _PriorityGroupScheduler(_FakeLimiter(interval=interval))
+        parked = [asyncio.create_task(_bg(sched)) for _ in range(40)]
+        await asyncio.sleep(0.01)
+        for t in parked:
+            t.cancel()
+        await asyncio.gather(*parked, return_exceptions=True)
+        assert not sched._background and not sched._interactive
+        # Total cancellation while the pump awaits its token must let the
+        # pump exit cleanly, not die on popleft of an emptied deque.
+        await asyncio.sleep(interval * 3)
+        if sched._pump is not None and sched._pump.done():
+            assert sched._pump.exception() is None
+        fresh = asyncio.create_task(_bg(sched))
+        # Old code: 40 corpses x 0.05s = 2s drain before `fresh`. New
+        # code: roughly one interval; 1.0s leaves ample CI slack.
+        await asyncio.wait_for(fresh, timeout=1.0)
+
 
 async def _bg(sched: _PriorityGroupScheduler) -> None:
     await sched.acquire(interactive=False)
