@@ -480,7 +480,7 @@ class TestRecoveryFreshCallback:
             "/tmp/project", agent_args="", launch_command="claude"
         )
         recovery_env.sync.wait_for_session_map_entry.assert_awaited_once_with(
-            "@5", timeout=5.0, resolve_window_id=recovery_env.wq.resolve_window_alias
+            "@5", resolve_window_id=recovery_env.wq.resolve_window_alias
         )
         recovery_env.router.attach_provisioning_target.assert_any_call(
             ANY, "@canonical"

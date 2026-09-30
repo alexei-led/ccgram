@@ -650,7 +650,6 @@ async def _create_and_bind_window(  # noqa: C901, PLR0912, PLR0915
         try:
             map_entry_found = await session_map_sync.wait_for_session_map_entry(
                 created_wid,
-                timeout=5.0,
                 resolve_window_id=window_query.resolve_window_alias,
             )
         except BaseException as exc:  # noqa: BLE001

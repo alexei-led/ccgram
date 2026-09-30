@@ -863,7 +863,7 @@ class TestResumePickCallback:
             launch_command="claude",
         )
         pick_env.sync.wait_for_session_map_entry.assert_awaited_once_with(
-            "@5", timeout=5.0, resolve_window_id=resolve_alias
+            "@5", resolve_window_id=resolve_alias
         )
         pick_env.router.begin_topic_provisioning.assert_called_once_with(
             100,
