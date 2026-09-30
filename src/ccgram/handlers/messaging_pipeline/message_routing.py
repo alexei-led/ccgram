@@ -47,6 +47,28 @@ _active_drafts: dict[tuple[int, str, int | None, int], DraftStream] = {}
 _draft_expiry_tasks: dict[tuple[int, str, int | None, int], asyncio.Task[None]] = {}
 
 
+def _handle_unroutable_message(msg: NewMessage) -> None:
+    """Warn about a complete message that found no routed topic.
+
+    The window-session link can lag reality right after a restart or an
+    adoption: a bound, tracked session can resolve empty, and complete
+    assistant messages were dropped with only a DEBUG line (invisible in
+    the journal). The warning makes the class visible; non-deliverable
+    content stays at DEBUG.
+    """
+    deliverable = (
+        msg.is_complete and msg.role == "assistant" and msg.content_type == "text"
+    )
+    if not deliverable:
+        logger.debug("No active users for session %s", msg.session_id)
+        return
+    logger.warning(
+        "Complete assistant message has no routed topic; dropped",
+        session_id=msg.session_id,
+        text_len=len(msg.text),
+    )
+
+
 async def _update_window_offset(user_id: int, window_id: str) -> None:
     """Advance transcript offset after a complete message is handled."""
     session = await session_query.resolve_session_for_window(window_id)
@@ -172,7 +194,7 @@ async def handle_new_message(msg: NewMessage, client: TelegramClient) -> None:  
     active_users = session_query.find_users_for_session(msg.session_id)
 
     if not active_users:
-        logger.debug("No active users for session %s", msg.session_id)
+        _handle_unroutable_message(msg)
         return
 
     for user_id, window_id, thread_id, chat_id in active_users:

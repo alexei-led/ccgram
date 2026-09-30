@@ -112,7 +112,16 @@ def mock_deps():
         }
 
 
-async def test_no_active_users_returns_early(bot, mock_deps):
+async def test_no_active_users_non_deliverable_returns_early(bot, mock_deps):
+    mock_deps["sq"].find_users_for_session.return_value = []
+    await handle_new_message(_make_msg(content_type="thinking"), bot)
+    mock_deps["eq"].assert_not_called()
+
+
+async def test_unroutable_complete_message_drops_without_enqueue(
+    bot, mock_deps
+):
+    """A complete unroutable message warns and enqueues nothing."""
     mock_deps["sq"].find_users_for_session.return_value = []
     await handle_new_message(_make_msg(), bot)
     mock_deps["eq"].assert_not_called()
