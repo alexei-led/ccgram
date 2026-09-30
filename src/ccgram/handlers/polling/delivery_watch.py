@@ -58,6 +58,8 @@ class _WindowWatch:
     last_offset: int | None = None
     stuck_since: float | None = None
     alerted: bool = False
+    transcript_path: str = ""
+    size_at_stuck: int = 0
 
 
 @dataclass
@@ -74,9 +76,25 @@ class DeliveryGapWatch:
     stuck_grace_s: float = STUCK_GRACE_S
     _windows: dict[str, _WindowWatch] = field(default_factory=dict)
 
-    def observe(self, window_id: str, offset: int, size: int, now: float) -> bool:
+    def observe(
+        self,
+        window_id: str,
+        offset: int,
+        size: int,
+        now: float,
+        *,
+        transcript_path: str = "",
+    ) -> bool:
         """Record one observation; True when the alarm should fire now."""
-        state = self._windows.setdefault(window_id, _WindowWatch(last_offset=offset))
+        state = self._windows.setdefault(
+            window_id,
+            _WindowWatch(last_offset=offset, transcript_path=transcript_path),
+        )
+        if transcript_path and state.transcript_path != transcript_path:
+            # Same window, new session transcript: the old incident's
+            # timers and latch describe a different file.
+            state = _WindowWatch(last_offset=offset, transcript_path=transcript_path)
+            self._windows[window_id] = state
 
         gap = max(size - offset, 0)
         if gap < self.gap_threshold or offset != state.last_offset:
@@ -84,14 +102,19 @@ class DeliveryGapWatch:
             # previous incident (if any) is over.
             state.last_offset = offset
             state.stuck_since = None
+            state.size_at_stuck = size
             state.alerted = False
             return False
 
         if state.stuck_since is None:
             state.stuck_since = now
+            state.size_at_stuck = size
             return False
         stuck = now - state.stuck_since
-        if stuck >= self.stuck_grace_s and not state.alerted:
+        # The incident signature is a FROZEN watermark under a GROWING
+        # transcript; a static transcript is quiet time, not a stall.
+        grew = size > state.size_at_stuck
+        if stuck >= self.stuck_grace_s and grew and not state.alerted:
             state.alerted = True
             return True
         return False
@@ -107,6 +130,12 @@ class DeliveryGapWatch:
         state = self._windows.get(window_id)
         if state is not None:
             state.alerted = False
+
+    def pause(self, window_id: str) -> None:
+        """Stop the stall clock without ending any incident."""
+        state = self._windows.get(window_id)
+        if state is not None:
+            state.stuck_since = None
 
 
 _watch = DeliveryGapWatch()
@@ -137,13 +166,21 @@ async def check_delivery_wedges(client: TelegramClient) -> None:
             continue
         if delivery.fenced:
             # Backlog-skip barrier or pending-tools fence: the monitor
-            # freezes commits on purpose; that is not a wedge.
+            # freezes commits on purpose; that is not a wedge, and fence
+            # time must not count toward the stall grace.
+            _watch.pause(window_id)
             continue
         try:
             size = Path(delivery.transcript_path).stat().st_size
         except OSError:
             continue
-        if not _watch.observe(window_id, delivery.watermark, size, now):
+        if not _watch.observe(
+            window_id,
+            delivery.watermark,
+            size,
+            now,
+            transcript_path=delivery.transcript_path,
+        ):
             continue
         gap = max(size - delivery.watermark, 0)
         logger.warning(
@@ -158,9 +195,8 @@ async def check_delivery_wedges(client: TelegramClient) -> None:
             # mapping; retry once the router knows the topic's chat.
             _watch.disarm(window_id)
             continue
-        # Direct interactive-path send, decoupled from the poll loop:
-        # the delivery queue is the thing under suspicion and must not
-        # carry its own alarm, and the cycle must not wait on Telegram.
+        # Fire-and-forget send, decoupled from the poll loop: the cycle
+        # must not wait on Telegram.
         task = asyncio.create_task(
             _send_alert(client, chat_id, thread_id, gap, window_id)
         )
@@ -177,13 +213,17 @@ async def _send_alert(
 ) -> None:
     try:
         # Direct send, never the delivery queue: the queue is the thing
-        # under suspicion and must not carry its own alarm.
-        await safe_send(
+        # under suspicion and must not carry its own alarm. safe_send
+        # returns None on non-rate-limit Telegram failures (only
+        # RetryAfter raises), so a None answer is also a failed alert.
+        sent = await safe_send(
             client,
             chat_id,
             ALERT_TEXT.format(gap_kb=gap / 1024, stuck=_watch.stuck_grace_s),
             message_thread_id=thread_id,
         )
+        if sent is None:
+            raise RuntimeError("alert send returned None")
     except Exception:
         # RetryAfter propagates from safe_send once the limiter's budget
         # is spent, and a wedged system often has Telegram degraded too;

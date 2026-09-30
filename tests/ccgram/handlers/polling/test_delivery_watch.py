@@ -20,8 +20,13 @@ async def _flush_alert_tasks() -> None:
         )
 
 
-def _wire(monkeypatch, tmp_path, topics, deliveries) -> FakeTelegramClient:
-    """Point the watch at synthetic bindings and delivery projections."""
+def _wire(monkeypatch, tmp_path, topics, deliveries):
+    """Point the watch at synthetic bindings and delivery projections.
+
+    Returns (client, transcript); tests GROW the transcript between
+    passes (the incident signature is a frozen watermark under a
+    growing transcript).
+    """
     transcript = tmp_path / "session.jsonl"
     transcript.write_bytes(b"x" * 4096)
     watch = DeliveryGapWatch(gap_threshold=1024, stuck_grace_s=300.0)
@@ -40,7 +45,7 @@ def _wire(monkeypatch, tmp_path, topics, deliveries) -> FakeTelegramClient:
         )
 
     monkeypatch.setattr(delivery_watch, "get_delivery_watermark", projection)
-    return FakeTelegramClient()
+    return FakeTelegramClient(), transcript
 
 
 class TestDeliveryGapWatch:
@@ -58,21 +63,22 @@ class TestDeliveryGapWatch:
         assert not w.observe("@1", offset=0, size=2000, now=299.0)
         assert w.observe("@1", offset=0, size=2100, now=301.0)
         assert not w.observe("@1", offset=0, size=2200, now=602.0)
+        assert not w.observe("@1", offset=0, size=2200, now=903.0)  # static again
 
     def test_offset_advance_rearms(self) -> None:
         w = self.watch()
         w.observe("@1", offset=0, size=2000, now=0.0)
-        assert w.observe("@1", offset=0, size=2000, now=301.0)
+        assert w.observe("@1", offset=0, size=2100, now=301.0)
         assert not w.observe("@1", offset=2000, size=2100, now=400.0)
         # New incident: first stuck observation starts the clock, the
         # next one past the grace fires again.
         assert not w.observe("@1", offset=2000, size=4000, now=701.0)
-        assert w.observe("@1", offset=2000, size=4000, now=1002.0)
+        assert w.observe("@1", offset=2000, size=4100, now=1002.0)
 
     def test_gap_shrink_below_threshold_rearms(self) -> None:
         w = self.watch()
         w.observe("@1", offset=0, size=2000, now=0.0)
-        assert w.observe("@1", offset=0, size=2000, now=301.0)
+        assert w.observe("@1", offset=0, size=2100, now=301.0)
         # Delivery catches up: gap small again, watch quiet.
         assert not w.observe("@1", offset=1900, size=2000, now=400.0)
         assert not w.observe("@1", offset=1900, size=2000, now=900.0)
@@ -80,9 +86,37 @@ class TestDeliveryGapWatch:
     def test_disarm_rearms_the_one_shot(self) -> None:
         w = self.watch()
         w.observe("@1", offset=0, size=2000, now=0.0)
-        assert w.observe("@1", offset=0, size=2000, now=301.0)
+        assert w.observe("@1", offset=0, size=2100, now=301.0)
         w.disarm("@1")
-        assert w.observe("@1", offset=0, size=2000, now=361.0)
+        assert w.observe("@1", offset=0, size=2200, now=361.0)
+
+    def test_static_transcript_is_quiet_time(self) -> None:
+        w = self.watch()
+        w.observe("@1", offset=0, size=2000, now=0.0)
+        assert not w.observe("@1", offset=0, size=2000, now=1000.0)
+        # Growth resumes: the stall clock has been running, alert fires.
+        assert w.observe("@1", offset=0, size=2400, now=1001.0)
+
+    def test_transcript_switch_resets_state(self) -> None:
+        w = self.watch()
+        w.observe("@1", offset=0, size=2000, now=0.0, transcript_path="/a")
+        # Same window id, new transcript: the old timers must not fire.
+        assert not w.observe(
+            "@1", offset=0, size=9000, now=5000.0, transcript_path="/b"
+        )
+        assert not w.observe(
+            "@1", offset=0, size=9100, now=5001.0, transcript_path="/b"
+        )
+
+    def test_pause_stops_the_clock(self) -> None:
+        w = self.watch()
+        w.observe("@1", offset=0, size=2000, now=0.0)
+        w.pause("@1")
+        # Fenced time does not count; the clock restarts on the next
+        # observation and the grace applies from there.
+        assert not w.observe("@1", offset=0, size=2100, now=400.0)
+        assert not w.observe("@1", offset=0, size=2200, now=500.0)
+        assert w.observe("@1", offset=0, size=2300, now=801.0)
 
     def test_forget_prunes_unbound_windows(self) -> None:
         w = self.watch()
@@ -96,7 +130,7 @@ class TestCheckDeliveryWedges:
     async def test_stalled_window_alerts_once_via_direct_send(
         self, monkeypatch, tmp_path
     ) -> None:
-        client = _wire(
+        client, transcript = _wire(
             monkeypatch,
             tmp_path,
             topics=[(7, -100200, 42, "@1")],
@@ -109,7 +143,8 @@ class TestCheckDeliveryWedges:
         await _flush_alert_tasks()
         assert client.call_count("send_message") == 0
 
-        # Same watermark 301s later: one alert, direct (never queued).
+        # Same watermark, transcript grown, 301s later: one alert.
+        transcript.write_bytes(b"x" * 8192)
         monkeypatch.setattr(delivery_watch.time, "monotonic", lambda: 301.0)
         await check_delivery_wedges(client)
         await _flush_alert_tasks()
@@ -126,7 +161,7 @@ class TestCheckDeliveryWedges:
         assert client.call_count("send_message") == 1
 
     async def test_fenced_freeze_is_not_a_wedge(self, monkeypatch, tmp_path) -> None:
-        client = _wire(
+        client, _ = _wire(
             monkeypatch,
             tmp_path,
             topics=[(7, -100200, 42, "@1")],
@@ -142,7 +177,7 @@ class TestCheckDeliveryWedges:
     async def test_failed_alert_send_retries_next_pass(
         self, monkeypatch, tmp_path
     ) -> None:
-        client = _wire(
+        client, transcript = _wire(
             monkeypatch,
             tmp_path,
             topics=[(7, -100200, 42, "@1")],
@@ -159,6 +194,7 @@ class TestCheckDeliveryWedges:
         client.returns["send_message"] = flaky
         monkeypatch.setattr(delivery_watch.time, "monotonic", lambda: 0.0)
         await check_delivery_wedges(client)
+        transcript.write_bytes(b"x" * 8192)
         monkeypatch.setattr(delivery_watch.time, "monotonic", lambda: 301.0)
         await check_delivery_wedges(client)
         await _flush_alert_tasks()
@@ -172,7 +208,7 @@ class TestCheckDeliveryWedges:
         self, monkeypatch, tmp_path
     ) -> None:
         topics: list[tuple[int, int | None, int, str]] = [(7, None, 42, "@1")]
-        client = _wire(
+        client, transcript = _wire(
             monkeypatch,
             tmp_path,
             topics=topics,
@@ -180,6 +216,7 @@ class TestCheckDeliveryWedges:
         )
         monkeypatch.setattr(delivery_watch.time, "monotonic", lambda: 0.0)
         await check_delivery_wedges(client)
+        transcript.write_bytes(b"x" * 8192)
         monkeypatch.setattr(delivery_watch.time, "monotonic", lambda: 301.0)
         await check_delivery_wedges(client)
         await _flush_alert_tasks()
@@ -192,7 +229,7 @@ class TestCheckDeliveryWedges:
         assert client.call_count("send_message") == 1
 
     async def test_unmeasurable_windows_skip(self, monkeypatch, tmp_path) -> None:
-        client = _wire(
+        client, _ = _wire(
             monkeypatch,
             tmp_path,
             topics=[(7, -100200, 42, "@1")],
