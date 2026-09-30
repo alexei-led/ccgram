@@ -1348,6 +1348,7 @@ class HerdrManager:
         tab_id: str,
         pane_id: str,
         workspace_id: str | None,
+        terminal_id: str | None = None,
     ) -> HerdrLiveRecord:
         """Wait for the pane's stable, session-backed identity.
 
@@ -1366,7 +1367,6 @@ class HerdrManager:
         # (compaction), so a slow boot whose pane moved mid-wait would
         # never re-match on locators and the transaction would roll back
         # a healthy pane. The terminal id survives renumbering.
-        terminal_id: str | None = None
         while True:
             records = await self._agent_list_snapshot()
             if terminal_id is None:
@@ -1460,6 +1460,9 @@ class HerdrManager:
             root = (result or {}).get("root_pane") or {}
             tab_id = tab.get("tab_id") if isinstance(tab, Mapping) else None
             pane_id = root.get("pane_id") if isinstance(root, Mapping) else None
+            created_terminal_id = (
+                root.get("terminal_id") if isinstance(root, Mapping) else None
+            )
             label = tab.get("label") if isinstance(tab, Mapping) else None
             if not isinstance(tab_id, str) or not tab_id:
                 raise HerdrError("herdr tab creation returned no tab id")
@@ -1477,6 +1480,9 @@ class HerdrManager:
                 tab_id=tab_id,
                 pane_id=pane_id,
                 workspace_id=workspace_id,
+                terminal_id=created_terminal_id
+                if isinstance(created_terminal_id, str)
+                else None,
             )
             refs = await self._project_live_refs([record])
             if len(refs) != 1:
@@ -1545,6 +1551,7 @@ class HerdrManager:
         if not tab_id:
             tab_id = workspace.get("active_tab_id", "")
         pane_id = root_pane.get("pane_id")
+        created_terminal_id = root_pane.get("terminal_id")
         if not isinstance(tab_id, str) or not tab_id:
             return False, "herdr worktree created without a tab id", "", ""
         if not isinstance(pane_id, str) or not pane_id:
@@ -1571,6 +1578,9 @@ class HerdrManager:
                 tab_id=tab_id,
                 pane_id=pane_id,
                 workspace_id=workspace_id,
+                terminal_id=created_terminal_id
+                if isinstance(created_terminal_id, str)
+                else None,
             )
         except BaseException as exc:
             await self._call_ok(["tab", "close", tab_id])

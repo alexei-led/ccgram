@@ -958,7 +958,8 @@ def _workspace(workspace_id: str, cwd: Path) -> str:
 
 def _created(tab_id: str = "w9:t1", pane_id: str = "w9:p1") -> str:
     return _result(
-        tab={"tab_id": tab_id, "label": "new"}, root_pane={"pane_id": pane_id}
+        tab={"tab_id": tab_id, "label": "new"},
+        root_pane={"pane_id": pane_id, "terminal_id": "term-a"},
     )
 
 
