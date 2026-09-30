@@ -1367,8 +1367,18 @@ class HerdrManager:
         # (compaction), so a slow boot whose pane moved mid-wait would
         # never re-match on locators and the transaction would roll back
         # a healthy pane. The terminal id survives renumbering.
+        pinned_seen = False
         while True:
             records = await self._agent_list_snapshot()
+            if terminal_id is not None and not pinned_seen:
+                # Confirmation for a pre-pinned identity: any record (a
+                # terminal fallback counts) at the creation locators
+                # proves the created pane lives at this terminal id.
+                pinned_seen = any(
+                    record.terminal_id == terminal_id
+                    and (record.tab_id == tab_id or record.pane_id == pane_id)
+                    for record in records
+                )
             if terminal_id is None:
                 pinned = [
                     record
@@ -1379,6 +1389,7 @@ class HerdrManager:
                 ]
                 if len(pinned) == 1:
                     terminal_id = pinned[0].terminal_id
+                    pinned_seen = True
                 elif len(pinned) > 1:
                     raise HerdrAmbiguousTargetError(
                         "new Herdr pane reported duplicate sessions"
@@ -1391,6 +1402,20 @@ class HerdrManager:
                     if record.terminal_id == terminal_id
                     and record.composite.kind != _TERMINAL_FALLBACK_KIND
                 ]
+                if len(matches) == 1 and not pinned_seen:
+                    # Guard the pre-pinned identity: before any poll has
+                    # confirmed the created pane at this terminal (a
+                    # sibling agent cannot share a terminal id with it,
+                    # but a stale or misattributed record could sit there),
+                    # the match must also carry one of the creation
+                    # locators. Once the first poll confirms the pane,
+                    # renumbering may change both locators, so later
+                    # polls trust the terminal id alone.
+                    first = matches[0]
+                    if first.tab_id == tab_id or first.pane_id == pane_id:
+                        pinned_seen = True
+                    else:
+                        matches = []
             if len(matches) == 1:
                 return matches[0]
             if len(matches) > 1:
