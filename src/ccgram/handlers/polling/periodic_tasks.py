@@ -17,6 +17,7 @@ from ...config import config
 from ...telegram_client import TelegramClient
 from ...utils import log_throttle_sweep
 from ..live.live_view import tick_live_views
+from .delivery_watch import check_delivery_wedges
 from ..topics.topic_deletion import cleanup_retired_topics
 from ..topics.topic_provisioning_recovery import recover_topic_provisioning
 from ..topics.topic_lifecycle import (
@@ -71,6 +72,8 @@ async def run_periodic_tasks(
                 ),
             )
         log_throttle_sweep()
+        # Last in the block so a raise here cannot skip the peers.
+        await check_delivery_wedges(client)
 
 
 async def run_lifecycle_tasks(

@@ -26,6 +26,14 @@ if TYPE_CHECKING:
     from .session_resolver import ClaudeSession
 
 
+def iter_bound_topics() -> list[tuple[int, int | None, int, str]]:
+    """(user_id, chat_id, thread_id, window_id) for every bound topic."""
+    # Lazy: the router is installed by SessionManager during bootstrap.
+    from .thread_router import thread_router
+
+    return list(thread_router.iter_thread_bindings_with_chat())
+
+
 def resolve_chat_id(user_id: int, thread_id: int | None = None) -> int:
     """Resolve a topic's delivery chat for handlers subject to the layering audit."""
     # Lazy: the router is installed by SessionManager during bootstrap.
