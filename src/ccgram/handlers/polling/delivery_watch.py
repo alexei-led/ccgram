@@ -110,11 +110,16 @@ class DeliveryGapWatch:
             state.stuck_since = now
             state.size_at_stuck = size
             return False
-        stuck = now - state.stuck_since
         # The incident signature is a FROZEN watermark under a GROWING
         # transcript; a static transcript is quiet time, not a stall.
-        grew = size > state.size_at_stuck
-        if stuck >= self.stuck_grace_s and grew and not state.alerted:
+        # Quiet time also restarts the grace clock, so a brief burst
+        # after a long quiet stretch cannot fire a premature notice.
+        if size <= state.size_at_stuck:
+            state.stuck_since = now
+            state.size_at_stuck = size
+            return False
+        stuck = now - state.stuck_since
+        if stuck >= self.stuck_grace_s and not state.alerted:
             state.alerted = True
             return True
         return False

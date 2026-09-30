@@ -60,10 +60,11 @@ class TestDeliveryGapWatch:
     def test_alert_fires_once_after_grace(self) -> None:
         w = self.watch()
         assert not w.observe("@1", offset=0, size=2000, now=0.0)
-        assert not w.observe("@1", offset=0, size=2000, now=299.0)
+        assert not w.observe("@1", offset=0, size=2050, now=299.0)
         assert w.observe("@1", offset=0, size=2100, now=301.0)
         assert not w.observe("@1", offset=0, size=2200, now=602.0)
-        assert not w.observe("@1", offset=0, size=2200, now=903.0)  # static again
+        # Static again after the alert: quiet, no repeat either way.
+        assert not w.observe("@1", offset=0, size=2200, now=903.0)
 
     def test_offset_advance_rearms(self) -> None:
         w = self.watch()
@@ -94,8 +95,10 @@ class TestDeliveryGapWatch:
         w = self.watch()
         w.observe("@1", offset=0, size=2000, now=0.0)
         assert not w.observe("@1", offset=0, size=2000, now=1000.0)
-        # Growth resumes: the stall clock has been running, alert fires.
-        assert w.observe("@1", offset=0, size=2400, now=1001.0)
+        # Growth resumes after quiet time: the grace clock restarted at
+        # the last quiet observation, so the burst alone cannot fire.
+        assert not w.observe("@1", offset=0, size=2400, now=1001.0)
+        assert w.observe("@1", offset=0, size=2500, now=1302.0)
 
     def test_transcript_switch_resets_state(self) -> None:
         w = self.watch()
