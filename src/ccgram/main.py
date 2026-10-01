@@ -52,7 +52,9 @@ def _on_signal(signum: int) -> None:
     # before raising: a wedge after this point must not outlive the timeout.
     from .bot import arm_shutdown_watchdog
 
-    arm_shutdown_watchdog()
+    # 128 + signum matches the re-raise path below, so a supervisor that
+    # distinguishes a stop request from a crash sees the same code either way.
+    arm_shutdown_watchdog(exit_code=128 + signum)
     sig_name = signal.Signals(signum).name
     sys.stderr.write(f"\n[ccgram] {sig_name} received (pid={os.getpid()})\n")
     sys.stderr.flush()

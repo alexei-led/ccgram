@@ -219,7 +219,7 @@ class TestSignalDiagnostics:
                 main._on_signal(signal.SIGINT)
             assert main._shutdown_signal == signal.SIGINT
 
-        arm_watchdog.assert_called_once_with()
+        arm_watchdog.assert_called_once_with(exit_code=128 + signal.SIGINT)
 
         output = stderr_capture.getvalue()
         assert "SIGINT" in output

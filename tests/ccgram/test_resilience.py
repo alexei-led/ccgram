@@ -9,6 +9,7 @@ lifecycle.
 import asyncio
 import contextlib
 import json
+import time
 from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -425,8 +426,41 @@ class TestShutdownNotificationLifecycle:
         with (
             patch("ccgram.bot.logging.shutdown", side_effect=RuntimeError("flush")),
             patch("ccgram.bot.os._exit") as mock_exit,
-            pytest.raises(RuntimeError),
         ):
+            _force_exit_after_wedged_shutdown()
+
+        mock_exit.assert_called_once_with(1)
+
+    def test_watchdog_uses_the_armed_exit_code(self):
+        from ccgram.bot import arm_shutdown_watchdog
+
+        timers: list[_FakeWatchdogTimer] = []
+        with (
+            patch(
+                "ccgram.bot.threading.Timer",
+                side_effect=lambda interval, fn: _record_timer(timers, interval, fn),
+            ),
+            patch("ccgram.bot.logging.shutdown"),
+            patch("ccgram.bot.os._exit") as mock_exit,
+        ):
+            arm_shutdown_watchdog(exit_code=143)
+            timers[0].function()
+
+        mock_exit.assert_called_once_with(143)
+
+    def test_watchdog_does_not_wait_for_a_blocked_flush(self):
+        from ccgram.bot import _force_exit_after_wedged_shutdown
+
+        def _blocked_flush() -> None:
+            time.sleep(5.0)
+
+        with (
+            patch("ccgram.bot._WATCHDOG_FLUSH_SECONDS", 0.05),
+            patch("ccgram.bot.logging.shutdown", side_effect=_blocked_flush),
+            patch("ccgram.bot.os._exit") as mock_exit,
+        ):
+            # Must return well before the blocked flush; the bound, not the
+            # flush, decides when the process goes.
             _force_exit_after_wedged_shutdown()
 
         mock_exit.assert_called_once_with(1)
