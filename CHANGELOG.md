@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.13.0] - 2026-10-01
+
+### Added
+- Interactive UI edits get a priority lane inside the group flood budget: they are served before queued background deliveries without spending extra tokens, and a burst of taps cannot starve background messages ([#282](https://github.com/alexei-led/ccgram/pull/282))
+- Warn once per affected topic when the delivered watermark stays frozen while the transcript keeps growing; `CCGRAM_DELIVERY_WATCH_GAP_KB` tunes the gap (default 256 KB, `0` disables the watch) ([#287](https://github.com/alexei-led/ccgram/pull/287))
+- Force exit when graceful shutdown wedges: a watchdog armed on signals and on the polling-conflict and `/upgrade` stop paths exits with the stop's own code after 600 seconds ([#294](https://github.com/alexei-led/ccgram/pull/294))
+
+### Fixed
+- Stop herdr topic creation from minting a target out of the rotating terminal-fallback id; fallback records are excluded from adoption and the created pane is pinned by the terminal id from the create response ([#286](https://github.com/alexei-led/ccgram/pull/286))
+- Stop killing a new hookless window before its CLI starts: the launch waits for the pane to leave its shell, and a timed-out wait quarantines the target instead of binding it ([#285](https://github.com/alexei-led/ccgram/pull/285))
+- Dismiss a stuck prompt on its owning pane and forward the user's text only after the dismissal is confirmed, so it can no longer be swallowed by the modal ([#266](https://github.com/alexei-led/ccgram/pull/266))
+- Read provider evidence from the executable basename and, for wrapper commands, the script argument only; helper data paths, `-e` code strings, and flag values no longer misreport the provider ([#294](https://github.com/alexei-led/ccgram/pull/294))
+- Keep a hookless claim quarantined while its pane still runs the launch shell, bounded by a 180-second grace before the normal commit lets the window lifecycle settle a CLI that never started ([#294](https://github.com/alexei-led/ccgram/pull/294))
+- Report a complete assistant message that finds no routed topic as a warning instead of dropping it at debug level ([#288](https://github.com/alexei-led/ccgram/pull/288))
+
+### Improved
+- `wait_for_session_map_entry` allows up to 15 seconds for a slow SessionStart hook write before giving up, covering slow boots after creation already found the session-backed record ([#286](https://github.com/alexei-led/ccgram/pull/286))
+- Document `CCGRAM_DELIVERY_WATCH_GAP_KB` in `.env.example` and `docs/guides.md`.
+
 ## [4.12.3] - 2026-09-24
 
 ### Fixed

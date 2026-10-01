@@ -724,6 +724,10 @@ occur after a network reconnect. Persistent conflicts stop with a non-zero exit
 so `Restart=on-failure` restarts the service. Check for another bot process that
 uses the same token if the conflict returns.
 
+A graceful shutdown that wedges (for example a stuck update queue) is
+exit-forced after 600 seconds with the stop's own exit code, so
+`Restart=on-failure` cannot be blocked forever by a half-stopped process.
+
 On macOS, you can use a launchd plist or simply run in a detached tmux session:
 
 ```bash
