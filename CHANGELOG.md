@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.14.0] - 2026-10-01
+
+### Fixed
+- Stop treating structural selection guesses as blocking prompts: the keyboard is still shown and its taps still work, but only a named pattern or a transcript `tool_use` detection latches blocking mode, and a numbered list far above the pane tail is no longer mistaken for a live selection footer ([#293](https://github.com/alexei-led/ccgram/pull/293))
+
 ## [4.13.0] - 2026-10-01
 
 ### Added
