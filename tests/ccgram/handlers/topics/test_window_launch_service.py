@@ -18,6 +18,7 @@ from ccgram.handlers.topics.window_launch_service import (
     _cwd_within,
     _follow_supersession,
     _persist_worktree_state,
+    agent_process_started,
     launch_window,
 )
 from ccgram.handlers.user_state import (
@@ -29,6 +30,30 @@ from ccgram.handlers.user_state import (
 )
 
 _MODULE = "ccgram.handlers.topics.window_launch_service."
+
+
+# ── agent_process_started ────────────────────────────────────────────────────
+
+
+class TestAgentProcessStarted:
+    async def test_unknown_when_the_window_is_missing(self) -> None:
+        with patch(f"{_MODULE}tmux_manager") as mock_mux:
+            mock_mux.find_window_by_id = AsyncMock(return_value=None)
+            assert await agent_process_started("@7") is None
+
+    async def test_shell_is_not_started(self) -> None:
+        with patch(f"{_MODULE}tmux_manager") as mock_mux:
+            mock_mux.find_window_by_id = AsyncMock(
+                return_value=SimpleNamespace(pane_current_command="-zsh")
+            )
+            assert await agent_process_started("@7") is False
+
+    async def test_agent_command_is_started(self) -> None:
+        with patch(f"{_MODULE}tmux_manager") as mock_mux:
+            mock_mux.find_window_by_id = AsyncMock(
+                return_value=SimpleNamespace(pane_current_command="agy")
+            )
+            assert await agent_process_started("@7") is True
 
 
 # ── _cwd_within ──────────────────────────────────────────────────────────────

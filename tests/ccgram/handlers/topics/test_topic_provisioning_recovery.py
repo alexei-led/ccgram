@@ -34,7 +34,9 @@ def _restored_claim(*, target_id="@2", thread_id=42, previous_target_id=None):
 @pytest.fixture(autouse=True)
 def _isolate_persistence():
     with (
-        patch("ccgram.handlers.topics.topic_provisioning_recovery.session_manager"),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.session_manager"
+        ) as sessions,
         patch("ccgram.handlers.topics.topic_deletion.session_manager"),
         patch(
             "ccgram.handlers.topics.topic_provisioning_recovery.clear_topic_state",
@@ -45,6 +47,9 @@ def _isolate_persistence():
             side_effect=lambda wid: wid,
         ),
     ):
+        # No window view by default: the hookless-agent guard stays off unless
+        # a test opts in with its own view.
+        sessions.view_window.return_value = None
         yield
 
 
@@ -299,6 +304,114 @@ async def test_existing_target_binding_blocks_commit_of_present_topic():
     assert router.iter_topic_provisionings() == [claim]
     assert router.get_window_for_chat_thread(-100, 77) == "@2"
     assert router.get_window_for_chat_thread(-100, 42) is None
+
+
+async def test_hookless_agent_in_shell_keeps_present_topic_quarantined():
+    """A pane still running its launch shell must not be committed.
+
+    Committing would bind the topic and the next poll would read that shell
+    as an exited agent and kill a window whose CLI was merely slow to start.
+    """
+    router, claim = _restored_claim()
+    client = AsyncMock()
+    provider = MagicMock()
+    provider.capabilities.supports_hook = False
+    provider.capabilities.chat_first_command_path = False
+    with (
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.window_presence",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.probe_topic_exists",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.session_manager.view_window",
+            return_value=MagicMock(provider_name="antigravity"),
+        ),
+        patch("ccgram.providers.registry.registry.get", return_value=provider),
+        patch(
+            "ccgram.handlers.topics.window_launch_service.agent_process_started",
+            new_callable=AsyncMock,
+            return_value=False,
+        ) as started,
+    ):
+        assert await recover_topic_provisioning(client, router=router) == {
+            "unresolved": 1
+        }
+
+    started.assert_awaited_once_with("@2")
+    assert router.iter_topic_provisionings() == [claim]
+    assert router.get_window_for_chat_thread(-100, 42) is None
+
+
+async def test_hookless_agent_in_shell_commits_once_the_cli_took_over():
+    router, _claim = _restored_claim()
+    client = AsyncMock()
+    provider = MagicMock()
+    provider.capabilities.supports_hook = False
+    provider.capabilities.chat_first_command_path = False
+    with (
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.window_presence",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.probe_topic_exists",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.session_manager.view_window",
+            return_value=MagicMock(provider_name="antigravity"),
+        ),
+        patch("ccgram.providers.registry.registry.get", return_value=provider),
+        patch(
+            "ccgram.handlers.topics.window_launch_service.agent_process_started",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+    ):
+        assert await recover_topic_provisioning(client, router=router) == {"bound": 1}
+
+    assert router.get_window_for_chat_thread(-100, 42) == "@2"
+
+
+async def test_hook_provider_skips_the_pane_probe():
+    router, _claim = _restored_claim()
+    client = AsyncMock()
+    provider = MagicMock()
+    provider.capabilities.supports_hook = True
+    provider.capabilities.chat_first_command_path = False
+    with (
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.window_presence",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.probe_topic_exists",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.session_manager.view_window",
+            return_value=MagicMock(provider_name="claude"),
+        ),
+        patch("ccgram.providers.registry.registry.get", return_value=provider),
+        patch(
+            "ccgram.handlers.topics.window_launch_service.agent_process_started",
+            new_callable=AsyncMock,
+        ) as started,
+    ):
+        assert await recover_topic_provisioning(client, router=router) == {"bound": 1}
+
+    started.assert_not_awaited()
+    assert router.get_window_for_chat_thread(-100, 42) == "@2"
 
 
 async def test_unknown_topic_probe_retains_claim():

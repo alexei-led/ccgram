@@ -257,6 +257,30 @@ async def _commit_present_topic(router: ThreadRouter, claim: TopicProvisioning) 
         return "bound" if committed else "changed"
 
 
+async def _hookless_agent_has_not_started(claim: TopicProvisioning) -> bool:
+    """True when a hookless agent's pane still runs its launch shell.
+
+    Committing here binds the topic while the pane still runs the shell the
+    launch typed into, and the next poll reads that shell as an exited agent
+    and kills a window whose CLI was merely slow to start. Leaving the claim
+    quarantined lets a later cycle commit once the CLI takes over.
+    """
+    assert claim.target_id is not None
+    view = session_manager.view_window(claim.target_id)
+    if view is None or not view.provider_name:
+        return False
+    # Lazy: the provider registry pulls every provider implementation
+    from ...providers import registry as provider_registry
+
+    caps = provider_registry.get(view.provider_name).capabilities
+    if caps.supports_hook or caps.chat_first_command_path:
+        return False
+    # Lazy: window_launch_service imports this module for recovery callbacks
+    from .window_launch_service import agent_process_started
+
+    return await agent_process_started(claim.target_id) is False
+
+
 async def _recover_present_topic(
     client: TelegramClient,
     router: ThreadRouter,
@@ -285,6 +309,8 @@ async def _recover_present_topic(
     if topic_exists is None:
         return "unresolved"
     if topic_exists:
+        if await _hookless_agent_has_not_started(claim):
+            return "unresolved"
         outcome = await _commit_present_topic(router, claim)
         return "rate_limited" if cleanup_rate_limited else outcome
 
