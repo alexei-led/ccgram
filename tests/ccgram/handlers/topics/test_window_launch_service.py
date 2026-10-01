@@ -290,6 +290,9 @@ def _launch_env(
             return_value=TopicTargetResult("@5", "my-win", "@5")
         )
         mux.stamp_pane_title = AsyncMock()
+        mux.find_window_by_id = AsyncMock(
+            return_value=SimpleNamespace(pane_current_command=launch_command)
+        )
         mux.kill_window = AsyncMock(return_value=True)
         mux.capabilities.native_worktrees = False
         mux.capabilities.native_agent_status = True
@@ -415,6 +418,82 @@ class TestLaunchWindowSuccess:
         )
         mock_send.assert_awaited_once_with(100, "@5", 42, "hello agent", ANY)
         assert PENDING_THREAD_TEXT not in user_data
+
+    @patch(f"{_MODULE}asyncio.sleep", new_callable=AsyncMock)
+    async def test_hookless_launch_waits_for_agent_before_binding(
+        self, mock_sleep: AsyncMock, tmp_path
+    ) -> None:
+        """The pane still runs the launch shell until the agent CLI starts.
+
+        Binding before then lets the first poll mistake the shell for an agent
+        exit and kill the window, so the bind must wait for the agent process.
+        """
+        order: list[str] = []
+        panes = iter(["zsh", "zsh", "agy"])
+
+        async def find_window(_window_id: str) -> SimpleNamespace:
+            command = next(panes)
+            order.append(command)
+            return SimpleNamespace(pane_current_command=command)
+
+        with _launch_env(launch_command="agy") as m:
+            m.mux.find_window_by_id = AsyncMock(side_effect=find_window)
+            m.router.commit_topic_provisioning.side_effect = lambda *_a, **_k: (
+                order.append("bind") or True
+            )
+            await launch_window(
+                _make_query(),
+                _make_context({PENDING_THREAD_ID: 42}),
+                _request(provider_name="antigravity", cwd=str(tmp_path)),
+            )
+
+        assert order == ["zsh", "zsh", "agy", "bind"]
+        assert mock_sleep.await_count == 2
+
+    @patch(f"{_MODULE}asyncio.sleep", new_callable=AsyncMock)
+    async def test_hookless_agent_timeout_quarantines_without_binding(
+        self, mock_sleep: AsyncMock, tmp_path
+    ) -> None:
+        """A pane that never leaves its launch shell must not be bound.
+
+        Binding would report success while the next poll reads the shell as an
+        exited agent and kills the window.
+        """
+        user_data = {PENDING_THREAD_ID: 42, PENDING_THREAD_TEXT: "hi"}
+        with (
+            _launch_env(launch_command="agy") as m,
+            patch(
+                "ccgram.multiplexer.reconciliation.window_presence",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+        ):
+            m.mux.find_window_by_id = AsyncMock(
+                return_value=SimpleNamespace(pane_current_command="zsh")
+            )
+            result = await launch_window(
+                _make_query(),
+                _make_context(user_data),
+                _request(provider_name="antigravity", cwd=str(tmp_path)),
+            )
+
+        assert not result.success and "still starting" in (result.error_message or "")
+        assert mock_sleep.await_count == 50
+        m.router.commit_topic_provisioning.assert_not_called()
+        m.router.bind_thread.assert_not_called()
+        m.mux.kill_window.assert_not_awaited()
+        assert user_data[PENDING_THREAD_ID] == 42
+
+    async def test_hook_provider_does_not_poll_pane_process(self, tmp_path) -> None:
+        with _launch_env(supports_hook=True) as m:
+            await launch_window(
+                _make_query(),
+                _make_context({PENDING_THREAD_ID: 42}),
+                _request(cwd=str(tmp_path)),
+            )
+
+        m.session_map.wait_for_session_map_entry.assert_awaited_once()
+        m.mux.find_window_by_id.assert_not_awaited()
 
 
 class TestLaunchWindowFailure:
