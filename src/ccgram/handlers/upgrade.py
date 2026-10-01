@@ -101,6 +101,8 @@ async def upgrade_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # since this module is imported during bot.create_bot().
     # Lazy: defer __version__ / main lookup until /upgrade actually runs
     from .. import main as main_module
+
+    # Lazy: bot is fully imported by the time /upgrade runs; hoisting cycles
     from ..bot import arm_shutdown_watchdog
 
     main_module._restart_requested = True
