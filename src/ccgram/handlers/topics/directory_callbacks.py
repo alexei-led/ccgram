@@ -54,7 +54,7 @@ from ..callback_data import (
 )
 from ..callback_helpers import get_thread_id
 from ..callback_registry import register
-from ..messaging_pipeline.message_sender import safe_edit
+from ..messaging_pipeline.message_sender import interactive_edit as safe_edit
 from ..user_state import (
     AWAITING_WORKTREE_BRANCH_NAME,
     PENDING_THREAD_ID,

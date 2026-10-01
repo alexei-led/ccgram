@@ -1,8 +1,17 @@
-"""Telegram rate limiting with quiet, incremental RetryAfter backoff."""
+"""Telegram rate limiting with quiet, incremental RetryAfter backoff.
+
+Interactive priority: a per-group scheduler serves user-tap UI requests
+ahead of background traffic WITHIN the same flood budget. The scheduler
+wraps one aiolimiter token bucket per group at the unchanged group rate
+and only reorders waiters, so no additional request is ever sent and no
+Telegram limit is bypassed.
+"""
 
 import asyncio
 import contextlib
+import contextvars
 import random
+from collections import deque
 from collections.abc import Callable, Coroutine
 from typing import Any
 
@@ -16,14 +25,122 @@ logger = structlog.get_logger()
 # A negative truthy sentinel survives ExtBot transport and is intercepted here.
 NO_RETRY_RATE_LIMIT_ARGS = -1
 
+_interactive_request: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "ccgram_interactive_request", default=False
+)
+
+
+@contextlib.contextmanager
+def interactive_priority() -> Any:
+    """Mark Telegram requests made inside this block as user-interactive.
+
+    Latency-sensitive UI work (a tap on the directory browser, a picker
+    page turn) runs inside this context; the group scheduler then serves
+    those requests ahead of queued background sends. The flood budget,
+    the group ceiling, and RetryAfter handling are unchanged: priority
+    changes the order of service, never the rate.
+    """
+    token = _interactive_request.set(True)
+    try:
+        yield
+    finally:
+        _interactive_request.reset(token)
+
+
 _RETRY_BACKOFF_BASE_SECONDS = 1.0
 _MAX_RETRY_BACKOFF_SECONDS = 8.0
 _RETRY_JITTER_MAX_SECONDS = 1.0
+# Interactive waiters are served first, but a sustained burst cannot starve
+# background delivery: every fourth release in a row serves one background
+# waiter. At the 20/min group ceiling that bounds background delay to about
+# 12 seconds while a picker stays responsive.
+_INTERACTIVE_BURST_LIMIT = 4
 
 
 def retry_after_seconds(exc: RetryAfter) -> float:
     """Return PTB's normalized delay without its deprecated public shim."""
     return exc._retry_after.total_seconds()  # pyright: ignore[reportPrivateUsage]
+
+
+class _PriorityGroupScheduler:
+    """Serve waiters at the wrapped bucket's rate, interactive ones first.
+
+    Wraps one aiolimiter ``AsyncLimiter`` (the group's token bucket,
+    unchanged ceiling): a pump task acquires each token THROUGH that
+    limiter and then resolves the first interactive waiter, falling
+    back to the FIFO background queue. A sustained interactive burst is
+    capped at ``_INTERACTIVE_BURST_LIMIT`` consecutive releases so
+    background delivery cannot starve. Because every release still
+    consumes exactly one underlying token, the flood budget is
+    untouched; only the order of service changes. Cancellation-safe:
+    a waiter that went away is skipped without extra token cost beyond
+    the one already spent.
+    """
+
+    def __init__(self, limiter: Any) -> None:
+        self._limiter = limiter
+        self._interactive: deque[Any] = deque()
+        self._background: deque[Any] = deque()
+        self._interactive_streak = 0
+        self._pump: asyncio.Task[None] | None = None
+
+    # aiolimiter-compatible surface so PTB's pruning logic (which reads
+    # has_capacity/max_rate) keeps working if this object is stored in
+    # the inherited registry.
+    @property
+    def max_rate(self) -> float:
+        return self._limiter.max_rate
+
+    def has_capacity(self, *args: Any) -> bool:
+        return self._limiter.has_capacity(*args)
+
+    def _ensure_pump(self) -> None:
+        if self._pump is None or self._pump.done():
+            self._pump = asyncio.create_task(self._run())
+
+    async def _run(self) -> None:
+        while self._interactive or self._background:
+            await self._limiter.acquire()
+            queue = self._next_queue()
+            if not queue:
+                # Every waiter cancelled itself while this token was
+                # being waited for; spend it and re-check the loop.
+                continue
+            if queue is self._background:
+                self._interactive_streak = 0
+            else:
+                self._interactive_streak += 1
+            waiter = queue.popleft()
+            # A cancelled waiter can still be here under a lost race with
+            # acquire()'s removal; spend the token rather than corrupt state.
+            if not waiter.done():
+                waiter.set_result(None)
+
+    def _next_queue(self) -> deque[Any]:
+        """Pick the queue for the next token, bounding interactive bursts."""
+        if not self._interactive:
+            return self._background
+        if not self._background:
+            return self._interactive
+        if self._interactive_streak >= _INTERACTIVE_BURST_LIMIT:
+            return self._background
+        return self._interactive
+
+    async def acquire(self, *, interactive: bool) -> None:
+        self._ensure_pump()
+        waiter = asyncio.get_running_loop().create_future()
+        queue = self._interactive if interactive else self._background
+        queue.append(waiter)
+        try:
+            await waiter
+        except asyncio.CancelledError:
+            # Remove the corpse: a cancelled future left in the deque makes
+            # the pump spend one token per corpse (3s each under flood
+            # saturation), silently stalling every later background waiter
+            # while the interactive lane keeps flowing (2026-09-26 wedge).
+            with contextlib.suppress(ValueError):
+                queue.remove(waiter)
+            raise
 
 
 class CCGramAIORateLimiter(AIORateLimiter):
@@ -43,6 +160,56 @@ class CCGramAIORateLimiter(AIORateLimiter):
     probes with endpoint-specific backoff do not stall all Telegram requests.
     """
 
+    _priority_schedulers: dict[int | str, _PriorityGroupScheduler]
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._priority_schedulers = {}
+
+    def _interactive_group_acquire(self, group: int | str) -> Any:
+        """Priority-aware group gate, replacing the base FIFO limiter.
+
+        The wrapped bucket is created with the base class's exact
+        parameters (same max_rate, same time_period), so the group
+        ceiling is preserved bit for bit; only waiter order changes.
+        """
+        scheduler = self._priority_schedulers.get(group)
+        if scheduler is None:
+            # Lazy: aiolimiter only needed when a group first appears
+            from aiolimiter import AsyncLimiter
+
+            scheduler = _PriorityGroupScheduler(
+                AsyncLimiter(
+                    max_rate=self._group_max_rate,
+                    time_period=self._group_time_period,
+                )
+            )
+            self._priority_schedulers[group] = scheduler
+        return scheduler
+
+    async def _run_request(
+        self,
+        chat: bool,
+        group: int | str | bool,
+        allow_paid_broadcast: bool,  # noqa: ARG002  # base-class signature
+        callback: Callable[..., Coroutine[Any, Any, Any]],
+        args: Any,
+        kwargs: dict[str, Any],
+        *,
+        interactive: bool = False,
+    ) -> Any:
+        # Same gate order as the base class (group, then overall), with
+        # the group side served by the priority scheduler. The overall
+        # gate is the base class's own configured limiter, so a custom
+        # overall rate (or a disabled one) is honored exactly.
+        if group and self._group_max_rate and self._group_time_period:
+            scheduler = self._interactive_group_acquire(group)  # type: ignore[arg-type]
+            await scheduler.acquire(interactive=interactive)
+        if not chat or self._base_limiter is None:
+            return await callback(*args, **kwargs)
+        async with self._base_limiter:
+            return await callback(*args, **kwargs)
+
     async def process_request(
         self,
         callback: Callable[..., Coroutine[Any, Any, Any]],
@@ -60,6 +227,8 @@ class CCGramAIORateLimiter(AIORateLimiter):
         if (isinstance(chat_id, int) and chat_id < 0) or isinstance(chat_id, str):
             group = chat_id
 
+        interactive = _interactive_request.get()
+
         async def run_request() -> Any:
             return await self._run_request(
                 chat=chat_id is not None,
@@ -68,6 +237,7 @@ class CCGramAIORateLimiter(AIORateLimiter):
                 callback=callback,
                 args=args,
                 kwargs=kwargs,
+                interactive=interactive,
             )
 
         if rate_limit_args is not None and rate_limit_args <= 0:

@@ -130,6 +130,7 @@ source = { editable = "." }
 dependencies = [
     { name = "aiofiles" },
     { name = "aiohttp" },
+    { name = "aiolimiter" },
     { name = "click" },
     { name = "httpx" },
     { name = "libtmux" },
@@ -166,6 +167,7 @@ dev = [
 requires-dist = [
     { name = "aiofiles", specifier = ">=25.1.0" },
     { name = "aiohttp", specifier = ">=3.14.3" },
+    { name = "aiolimiter", specifier = ">=1.2.1" },
     { name = "click", specifier = ">=8.5.0" },
     { name = "deptry", marker = "extra == 'dev'", specifier = ">=0.25.1" },
     { name = "edge-tts", marker = "extra == 'tts'", specifier = ">=7.2.8" },
