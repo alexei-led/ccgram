@@ -34,9 +34,7 @@ def _restored_claim(*, target_id="@2", thread_id=42, previous_target_id=None):
 @pytest.fixture(autouse=True)
 def _isolate_persistence():
     with (
-        patch(
-            "ccgram.handlers.topics.topic_provisioning_recovery.session_manager"
-        ) as sessions,
+        patch("ccgram.handlers.topics.topic_provisioning_recovery.session_manager"),
         patch("ccgram.handlers.topics.topic_deletion.session_manager"),
         patch(
             "ccgram.handlers.topics.topic_provisioning_recovery.clear_topic_state",
@@ -47,9 +45,6 @@ def _isolate_persistence():
             side_effect=lambda wid: wid,
         ),
     ):
-        # No window view by default: the hookless-agent guard stays off unless
-        # a test opts in with its own view.
-        sessions.view_window.return_value = None
         yield
 
 
@@ -329,8 +324,8 @@ async def test_hookless_agent_in_shell_keeps_present_topic_quarantined():
             return_value=True,
         ),
         patch(
-            "ccgram.handlers.topics.topic_provisioning_recovery.session_manager.view_window",
-            return_value=MagicMock(provider_name="antigravity"),
+            "ccgram.handlers.topics.topic_provisioning_recovery.window_query.get_window_provider",
+            return_value="antigravity",
         ),
         patch("ccgram.providers.registry.registry.get", return_value=provider),
         patch(
@@ -366,8 +361,8 @@ async def test_hookless_agent_in_shell_commits_once_the_cli_took_over():
             return_value=True,
         ),
         patch(
-            "ccgram.handlers.topics.topic_provisioning_recovery.session_manager.view_window",
-            return_value=MagicMock(provider_name="antigravity"),
+            "ccgram.handlers.topics.topic_provisioning_recovery.window_query.get_window_provider",
+            return_value="antigravity",
         ),
         patch("ccgram.providers.registry.registry.get", return_value=provider),
         patch(
@@ -399,8 +394,8 @@ async def test_hook_provider_skips_the_pane_probe():
             return_value=True,
         ),
         patch(
-            "ccgram.handlers.topics.topic_provisioning_recovery.session_manager.view_window",
-            return_value=MagicMock(provider_name="claude"),
+            "ccgram.handlers.topics.topic_provisioning_recovery.window_query.get_window_provider",
+            return_value="claude",
         ),
         patch("ccgram.providers.registry.registry.get", return_value=provider),
         patch(

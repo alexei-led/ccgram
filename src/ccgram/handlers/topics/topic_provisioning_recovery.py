@@ -266,13 +266,13 @@ async def _hookless_agent_has_not_started(claim: TopicProvisioning) -> bool:
     quarantined lets a later cycle commit once the CLI takes over.
     """
     assert claim.target_id is not None
-    view = session_manager.view_window(claim.target_id)
-    if view is None or not view.provider_name:
+    provider_name = window_query.get_window_provider(claim.target_id)
+    if not provider_name:
         return False
     # Lazy: the provider registry pulls every provider implementation
     from ...providers import registry as provider_registry
 
-    caps = provider_registry.get(view.provider_name).capabilities
+    caps = provider_registry.get(provider_name).capabilities
     if caps.supports_hook or caps.chat_first_command_path:
         return False
     # Lazy: window_launch_service imports this module for recovery callbacks
