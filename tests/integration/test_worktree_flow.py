@@ -156,6 +156,9 @@ async def test_new_worktree_creates_and_persists_to_window_state(
         mock_tmux.create_window = AsyncMock(
             return_value=(True, "Created window 'repo'", "repo", "@7")
         )
+        mock_tmux.find_window_by_id = AsyncMock(
+            return_value=SimpleNamespace(pane_current_command="claude")
+        )
         mock_tmux.stamp_pane_title = AsyncMock()
         mock_registry.is_valid.return_value = True
         mock_registry.get.return_value = _agent_provider()
@@ -246,6 +249,9 @@ async def test_herdr_delegates_worktree_creation(
         mock_tmux.capabilities.native_worktrees = True
         mock_tmux.create_worktree_window = AsyncMock(
             return_value=(True, "Created herdr worktree", "ccg-feature", "w5:t1")
+        )
+        mock_tmux.find_window_by_id = AsyncMock(
+            return_value=SimpleNamespace(pane_current_command="claude")
         )
         mock_tmux.stamp_pane_title = AsyncMock()
         mock_registry.is_valid.return_value = True

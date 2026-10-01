@@ -264,6 +264,9 @@ class TestHandleModeSelect:
             return_value=(True, "Created window 'proj'", "proj", "@5")
         )
         mock_tmux.stamp_pane_title = AsyncMock()
+        mock_tmux.find_window_by_id = AsyncMock(
+            return_value=MagicMock(pane_current_command="codex")
+        )
         mock_tmux.capabilities.native_worktrees = False
         mock_tmux.capabilities.native_agent_status = False
         mock_tr.get_window_for_thread.return_value = None
@@ -338,6 +341,9 @@ class TestHandleModeSelect:
             return_value=(True, "Created window 'proj'", "proj", "@5")
         )
         mock_tmux.stamp_pane_title = AsyncMock()
+        mock_tmux.find_window_by_id = AsyncMock(
+            return_value=MagicMock(pane_current_command="codex")
+        )
         mock_tmux.capabilities.native_worktrees = False
         mock_tmux.capabilities.native_agent_status = False
         mock_tr.get_window_for_thread.return_value = None
@@ -430,6 +436,9 @@ class TestHandleModeSelect:
             return_value=(True, "Created window 'proj'", "proj", "@1")
         )
         mock_tmux.stamp_pane_title = AsyncMock()
+        mock_tmux.find_window_by_id = AsyncMock(
+            return_value=MagicMock(pane_current_command="claude")
+        )
         mock_tmux.capabilities.native_worktrees = False
         mock_tmux.capabilities.native_agent_status = False
         mock_tr.get_window_for_thread.return_value = None

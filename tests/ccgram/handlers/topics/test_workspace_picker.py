@@ -310,6 +310,9 @@ class TestWorkspaceIdThreaded:
                 return_value=(True, "ok", "my-tab", "w1:t1")
             )
             mock_mux.stamp_pane_title = AsyncMock()
+            mock_mux.find_window_by_id = AsyncMock(
+                return_value=MagicMock(pane_current_command="claude")
+            )
             mock_mux.capabilities.native_worktrees = False
             mock_mux.capabilities.native_agent_status = False
             mock_tr.get_window_for_thread.return_value = None

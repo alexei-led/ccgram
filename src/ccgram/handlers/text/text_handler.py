@@ -42,7 +42,7 @@ from ..topics.worktree import (
     validate_branch_name,
     worktree_path_for,
 )
-from ..interactive import get_interactive_window, handle_interactive_ui
+from ..interactive import get_interactive_window
 from ..messaging_pipeline.message_queue import enqueue_status_update
 from ..live.pane_callbacks import apply_pane_rename
 from ..messaging_pipeline.message_sender import (
@@ -83,6 +83,11 @@ logger = structlog.get_logger()
 
 # Maximum characters for bash output before truncation (fits Telegram 4096-char limit)
 _BASH_OUTPUT_LIMIT = 3800
+
+# Dismissal confirmation: attempts and interval for re-reading the
+# owning pane after an Escape, before concluding the prompt stayed.
+_DISMISS_CONFIRM_ATTEMPTS = 3
+_DISMISS_CONFIRM_INTERVAL_S = 0.3
 
 PENDING_DELIVERY_NOTICE = "\U0001f4ac Will deliver once the agent starts."
 
@@ -474,6 +479,85 @@ async def _handle_dead_window(
     return True
 
 
+async def _dismiss_interactive_prompt(
+    user_id: int,
+    thread_id: int | None,
+    window_id: str,
+    chat_id: int,
+    text: str,
+    message: Message,
+) -> bool:
+    """Dismiss the topic's interactive prompt; True when safe to forward.
+
+    Sends Escape to the pane that OWNS the prompt (window-level keys hit
+    the active pane, which in a multi-pane window can be a different
+    agent), confirms the dismissal by re-reading that pane with the
+    poller's own detector (a fixed sleep is not confirmation), and only
+    then clears the tracking. On a failed send, an exception, or a
+    prompt that never goes away, the tracking stays, nothing is
+    forwarded, and the notice echoes the text so it is never lost.
+    """
+    # Lazy: interactive imports pull PTB types
+    from ..interactive import (
+        clear_interactive_mode,
+        get_interactive_pane,
+        pane_has_interactive_prompt,
+    )
+
+    # Lazy: text_handler ↔ polling cycle
+    from ...multiplexer import multiplexer as _mux
+
+    pane_id = get_interactive_pane(user_id, thread_id, chat_id=chat_id)
+    escape_sent = False
+    try:
+        if pane_id:
+            escape_sent = await _mux.send_keys_to_pane(
+                pane_id,
+                "Escape",
+                enter=False,
+                literal=False,
+                window_id=window_id,
+            )
+        else:
+            escape_sent = await _mux.send_keys(
+                window_id, "Escape", enter=False, literal=False
+            )
+    except Exception:  # noqa: BLE001  # escape failure is handled below
+        escape_sent = False
+
+    if escape_sent:
+        # The forwarded text lands on the ACTIVE pane (window-level send),
+        # so confirmation must cover BOTH panes: the one that owned the
+        # prompt we just dismissed and the active one, which may hold a
+        # second prompt the sibling scan surfaced earlier. An unreadable
+        # pane (PromptStateError) proves nothing and never confirms.
+        # Lazy: interactive imports pull PTB types
+        from ..interactive.interactive_ui import PromptStateError
+
+        for _ in range(_DISMISS_CONFIRM_ATTEMPTS):
+            await asyncio.sleep(_DISMISS_CONFIRM_INTERVAL_S)
+            try:
+                owner_clear = not await pane_has_interactive_prompt(window_id, pane_id)
+                active_clear = (
+                    owner_clear
+                    if pane_id is None
+                    else not await pane_has_interactive_prompt(window_id, None)
+                )
+            except PromptStateError:
+                continue
+            if owner_clear and active_clear:
+                clear_interactive_mode(user_id, thread_id, chat_id=chat_id)
+                return True
+
+    await safe_reply(
+        message,
+        "\u26a0\ufe0f Could not dismiss the interactive prompt, so your "
+        f"text was NOT forwarded: {text}\nRetry in a moment, or answer "
+        "the prompt's buttons directly.",
+    )
+    return False
+
+
 async def _forward_message(
     window_id: str,
     user_id: int,
@@ -495,12 +579,42 @@ async def _forward_message(
 
     lifecycle_strategy.clear_probe_failures(window_id)
 
+    # If in interactive mode, the terminal likely has a modal prompt
+    # (AskUserQuestion / ExitPlanMode) that would swallow plain text or
+    # treat it as an answer. Dismiss it, CONFIRM the dismissal by
+    # re-reading the owning pane with the poller's own detector, and
+    # only then deliver the text. A fixed sleep is not confirmation:
+    # on a failed Escape send, an exception, or a prompt that never
+    # goes away, the interactive tracking stays, the text is NOT
+    # forwarded, and the notice echoes the text back so it is never
+    # lost (2026-09-24: silently discarding trapped voice-transcript
+    # users in a dismissal loop; 2026-09-25 review: silently
+    # FORWARDING after an unconfirmed dismissal is the same bug
+    # mirrored).
+    interactive_window = get_interactive_window(
+        user_id, thread_id, chat_id=message.chat.id
+    )
+    interactive_dismissed = False
+    if interactive_window and interactive_window == window_id:
+        if not await _dismiss_interactive_prompt(
+            user_id, thread_id, window_id, message.chat.id, text, message
+        ):
+            return
+        interactive_dismissed = True
+
     success, err_message = await send_telegram_to_window(
         user_id, window_id, thread_id, text, message.chat.id
     )
     if not success:
         await safe_reply(message, f"\u274c {err_message}")
         return
+
+    if interactive_dismissed:
+        await safe_reply(
+            message,
+            "\u26a1 Interactive prompt dismissed (verified). Your message "
+            "was delivered to the agent.",
+        )
 
     await ack_reaction(client, message.chat.id, message.message_id)
 
@@ -517,16 +631,6 @@ async def _forward_message(
         )
         task.add_done_callback(task_done_callback)
         _bash_capture_tasks[(user_id, thread_id)] = task
-
-    # If in interactive mode, refresh the UI after sending text
-    interactive_window = get_interactive_window(
-        user_id, thread_id, chat_id=message.chat.id
-    )
-    if interactive_window and interactive_window == window_id:
-        await asyncio.sleep(0.2)
-        await handle_interactive_ui(
-            client, user_id, window_id, thread_id, chat_id=message.chat.id
-        )
 
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
