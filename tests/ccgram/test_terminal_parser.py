@@ -1144,3 +1144,62 @@ class TestDetectRemoteControl:
         from ccgram.terminal_parser import detect_remote_control
 
         assert detect_remote_control([]) is False
+
+
+class TestScrollbackGuard:
+    """A user-message echo above an unrelated numbered list is not a
+    selection (2026-10-01 anti-vocale incident: the echo glyph renders
+    like a selection cursor and the agent's numbered reply matched the
+    footer, latching a false prompt that rejected all text)."""
+
+    def test_echo_above_numbered_list_in_scrollback_is_rejected(self):
+        filler = [f"  transcript line {i}" for i in range(20)]
+        pane = (
+            ["  ⏺ Bash(git fetch origin)"]
+            + ["  done"]
+            + ["❯ Ricordami cosa ti serve da me"]
+            + [""]
+            + [
+                "  1. Una nota vocale WhatsApp (30 secondi).",
+                "  2. Uno sguardo alla console Firebase.",
+            ]
+            + filler
+            + ["❯", "  ⏵⏵ auto mode on"]
+        )
+        assert extract_interactive_content(pane) is None
+
+    def test_near_bottom_numbered_selection_still_matches(self):
+        pane = [
+            "Remote Control",
+            "",
+            "   Remote Control lets you access this CLI session.",
+            "",
+            "   ❯ 1. Enable Remote Control for this session",
+            "     2. Never mind",
+        ]
+        result = extract_interactive_content(pane)
+        assert result is not None and result.name == "SelectionUI"
+
+    def test_action_hint_footer_matches_from_any_distance(self):
+        pane = (
+            [
+                "❯ Option A",
+                "  1. whatever",
+            ]
+            + [f"  more scrollback {i}" for i in range(20)]
+            + [
+                "  Esc to cancel",
+            ]
+        )
+        result = extract_interactive_content(pane)
+        assert result is not None
+
+
+class TestScrollbackGuardLongList:
+    def test_long_live_selection_list_is_not_rejected(self):
+        """A genuine selection whose numbered options continue well past
+        12 lines is a live list, not scrollback (review finding)."""
+        options = [f"  {i}. Option {i}" for i in range(1, 20)]
+        pane = ["Pick a task:"] + ["❯ " + options[0][2:]] + options[1:]
+        result = extract_interactive_content(pane)
+        assert result is not None and result.name == "SelectionUI"

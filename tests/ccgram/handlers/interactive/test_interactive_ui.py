@@ -47,7 +47,7 @@ def _interactive_env(bot: AsyncMock):
         patch(
             f"{_UI}._capture_interactive_content",
             new_callable=AsyncMock,
-            return_value=("AskUserQuestion", "Pick one:"),
+            return_value=("AskUserQuestion", "Pick one:", False),
         ),
         patch(f"{_UI}.thread_router") as mock_router,
         patch(f"{_UI}.rate_limit_send", new_callable=AsyncMock),

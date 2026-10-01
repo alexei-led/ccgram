@@ -333,9 +333,17 @@ def is_current_interactive_prompt(
     if chat_id is None or message_id is None:
         return False
     ikey = _interactive_key(user_id, thread_id, chat_id)
+    if _interactive_msgs.get(ikey) != message_id:
+        return False
+    # The currently shown keyboard is answerable even when advisory (a
+    # true-positive structural guess such as /remote-control): blocking
+    # mode gates text forwarding, not taps.
+    if _interactive_mode.get(ikey) == window_id:
+        blocking_prompt = True
+    else:
+        blocking_prompt = _interactive_mode.get(ikey) is None
     return (
-        _interactive_mode.get(ikey) == window_id
-        and _interactive_msgs.get(ikey) == message_id
+        blocking_prompt
         and _interactive_contexts.get(ikey) == (chat_id, message_id)
         and _interactive_sequences.get(ikey) == sequence
     )
@@ -431,8 +439,6 @@ async def _edit_interactive_msg(
     msg_id: int,
     text: str,
     keyboard: InlineKeyboardMarkup,
-    ikey: InteractiveKey,
-    window_id: str,
 ) -> bool | None:
     """Try to edit an existing interactive message.
 
@@ -446,7 +452,6 @@ async def _edit_interactive_msg(
             reply_markup=keyboard,
             link_preview_options=NO_LINK_PREVIEW,
         )
-        _interactive_mode[ikey] = window_id
         return True
     except BadRequest as e:
         if "Message is not modified" in e.message:
@@ -463,7 +468,7 @@ async def _edit_interactive_msg(
 async def _capture_interactive_content(
     window_id: str,
     pane_id: str | None = None,
-) -> tuple[str, str] | None:
+) -> tuple[str, str, bool] | None:
     """Capture pane and extract interactive UI content.
 
     When *pane_id* is given, captures that specific pane (by stable ``%N`` ID)
@@ -503,7 +508,7 @@ async def _capture_interactive_content(
         )
         return None
 
-    return status.ui_type, status.raw_text
+    return status.ui_type, status.raw_text, status.ui_advisory
 
 
 def _lookup_pane_name(window_id: str, pane_id: str) -> str | None:
@@ -589,7 +594,12 @@ async def handle_interactive_ui(
     if not captured:
         return False
 
-    ui_name, content = captured
+    ui_name, content, advisory = captured
+    # Advisory detections (structural guesses) show the keyboard but
+    # never latch blocking interactive mode: only a named pattern or a
+    # transcript tool_use may block. Advisory sends also retire any
+    # stale blocking latch from an earlier prompt.
+    blocking = not advisory
     pane_name = _lookup_pane_name(window_id, pane_id) if pane_id else None
     text = format_interactive_message(content, pane_id=pane_id, pane_name=pane_name)
     resolved_chat_id = (
@@ -611,8 +621,10 @@ async def handle_interactive_ui(
     existing_msg_id = _interactive_msgs.get(ikey)
     if existing_msg_id:
         edited = await _edit_interactive_msg(
-            client, resolved_chat_id, existing_msg_id, text, keyboard, ikey, window_id
+            client, resolved_chat_id, existing_msg_id, text, keyboard
         )
+        if edited and not blocking:
+            _interactive_mode.pop(ikey, None)
         if edited:
             _interactive_contexts[ikey] = (resolved_chat_id, existing_msg_id)
         return edited or False

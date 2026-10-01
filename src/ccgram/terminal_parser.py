@@ -28,6 +28,7 @@ class InteractiveUIContent:
 
     content: str  # The extracted display content
     name: str = ""  # Pattern name that matched (e.g. "AskUserQuestion")
+    advisory: bool = False  # structural guess, not a named pattern
 
 
 @dataclass(frozen=True)
@@ -58,7 +59,27 @@ class UIPattern:
     min_gap: int = 2  # minimum lines between top and bottom (inclusive)
     context_above: int = 0  # extra lines above top marker to include in content
     anchor_last: bool = False  # start at the last top match, not the first
+    # When True, a numbered-item bottom (no action-hint footer) only
+    # counts near the pane bottom: a real selection cursor sits right
+    # above its footer, while transcript echoes (user messages render
+    # with the same glyph) sit mid-scrollback above unrelated numbered
+    # lists.
+    scrollback_guard: bool = False
+    # Structural guess, not a named pattern: consumers show the keyboard
+    # but must not latch blocking interactive mode.
+    advisory: bool = False
 
+
+# Shared bottoms for the structural selection catch-all: the action-hint
+# footer table is reused by the scrollback guard so the two cannot drift.
+_SELECTION_HINT_BOTTOMS = (
+    re.compile(r"^\s*Esc to (cancel|exit)"),
+    re.compile(r"^\s*Enter to (select|confirm|continue)"),
+    re.compile(r"^\s*ctrl-g to edit"),
+    re.compile(r"(?i)^\s*Press enter to (confirm|select|continue|submit)"),
+    re.compile(r"(?i)^\s*enter to (submit|confirm|select)"),
+)
+_SELECTION_NUMBERED_BOTTOM = re.compile(r"^\s+\d+\.\s")
 
 # ── UI pattern definitions (order matters — first match wins) ────────────
 
@@ -127,19 +148,13 @@ UI_PATTERNS: list[UIPattern] = [
     # cursor.  min_gap=1 for compact prompts.
     UIPattern(
         name="SelectionUI",
-        top=(re.compile(r"^\s*[❯›]\s"),),
-        bottom=(
-            re.compile(r"^\s*Esc to (cancel|exit)"),
-            re.compile(r"^\s*Enter to (select|confirm|continue)"),
-            re.compile(r"^\s*ctrl-g to edit"),
-            re.compile(r"(?i)^\s*Press enter to (confirm|select|continue|submit)"),
-            re.compile(r"(?i)^\s*enter to (submit|confirm|select)"),
-            # Non-selected list items (e.g. /remote-control has no footer)
-            re.compile(r"^\s+\d+\.\s"),
-        ),
+        top=(re.compile(r"^\s*[❯›]\s+\S"),),
+        bottom=(*_SELECTION_HINT_BOTTOMS, _SELECTION_NUMBERED_BOTTOM),
         min_gap=1,
         context_above=10,
         anchor_last=True,
+        scrollback_guard=True,
+        advisory=True,
     ),
 ]
 
@@ -183,6 +198,42 @@ def _context_start(lines: list[str], top_idx: int, context_above: int) -> int:
     return top_idx
 
 
+# How far a numbered-item bottom may sit from the pane's last non-empty
+# line and still count as a selection footer (scrollback guard).
+_SCROLLBACK_GUARD_DISTANCE = 12
+
+
+def _last_nonempty_from(lines: list[str], top_idx: int) -> int | None:
+    """The last non-empty line after *top_idx* (open-bottom boundary)."""
+    for i in range(len(lines) - 1, top_idx, -1):
+        if lines[i].strip():
+            return i
+    return None
+
+
+def _rejects_scrollback_footer(lines: list[str], bottom_idx: int) -> bool:
+    """A numbered-item bottom with no action-hint footer, far from the
+    pane's last non-empty line, is scrollback (a user-message echo above
+    an unrelated numbered list), not a live selection footer. Consecutive
+    numbered items extend the footer: a live list of any length ends at
+    its own tail, so long real selections are not rejected."""
+    if any(p.search(lines[bottom_idx]) for p in _SELECTION_HINT_BOTTOMS):
+        return False
+    last = bottom_idx
+    for i in range(bottom_idx, len(lines)):
+        line = lines[i]
+        if not line.strip():
+            continue
+        if _SELECTION_NUMBERED_BOTTOM.search(line):
+            last = i
+        else:
+            break
+    tail = _last_nonempty_from(lines, last)
+    if tail is None:
+        return False
+    return tail - last > _SCROLLBACK_GUARD_DISTANCE
+
+
 def _try_extract(lines: list[str], pattern: UIPattern) -> InteractiveUIContent | None:
     """Try to extract content matching a single UI pattern.
 
@@ -220,19 +271,22 @@ def _try_extract(lines: list[str], pattern: UIPattern) -> InteractiveUIContent |
     if top_idx is None:
         return None
 
-    # No bottom patterns → use last non-empty line as boundary
     if not pattern.bottom:
-        for i in range(len(lines) - 1, top_idx, -1):
-            if lines[i].strip():
-                bottom_idx = i
-                break
+        bottom_idx = _last_nonempty_from(lines, top_idx)
 
     if bottom_idx is None or bottom_idx - top_idx < pattern.min_gap:
         return None
 
+    if pattern.scrollback_guard and _rejects_scrollback_footer(lines, bottom_idx):
+        return None
+
     display_start = _context_start(lines, top_idx, pattern.context_above)
     content = "\n".join(lines[display_start : bottom_idx + 1]).rstrip()
-    return InteractiveUIContent(content=_shorten_separators(content), name=pattern.name)
+    return InteractiveUIContent(
+        content=_shorten_separators(content),
+        name=pattern.name,
+        advisory=pattern.advisory,
+    )
 
 
 # ── Bottom-up fallback ───────────────────────────────────────────────────

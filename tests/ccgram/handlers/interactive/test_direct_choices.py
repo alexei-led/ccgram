@@ -115,6 +115,7 @@ class TestDirectChoiceKeyboard:
                 return_value=(
                     "AskUserQuestion",
                     "Pick one:\n  1. Alpha\n  2. Beta\n  Enter to select",
+                    False,
                 ),
             ),
             patch(

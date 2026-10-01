@@ -246,6 +246,7 @@ class TerminalScreenBuffer:
                 display_label=interactive.name,
                 is_interactive=True,
                 ui_type=interactive.name,
+                ui_advisory=interactive.advisory,
             )
             ws.last_pane_hash = content_hash
             ws.last_pyte_result = result
