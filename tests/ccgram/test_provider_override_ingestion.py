@@ -1,6 +1,5 @@
 """Manual routing choices must survive independent hook ingestion paths."""
 
-import asyncio
 import json
 from unittest.mock import AsyncMock
 
@@ -203,11 +202,20 @@ async def test_manual_switch_during_file_read_preserves_offset(
     )
     monitor.state.update_session(tracked)
     output = []
-    reading = asyncio.create_task(
-        monitor._process_session_file("hook-session", path, output, window_id=WINDOW)
-    )
-    asyncio.get_running_loop().call_soon(setattr, selected, "provider_name", "shell")
-    await reading
+
+    # Deterministic mid-read switch: flip the provider once the new lines
+    # are read but before they are delivered, which is the moment this
+    # test exists to exercise. The original call_soon raced the read.
+    reader = monitor._transcript_reader
+    real_read = reader._read_session_entries
+
+    async def read_then_switch(*args, **kwargs):
+        result = await real_read(*args, **kwargs)
+        selected.provider_name = "shell"
+        return result
+
+    monkeypatch.setattr(reader, "_read_session_entries", read_then_switch)
+    await monitor._process_session_file("hook-session", path, output, window_id=WINDOW)
     assert output == []
     assert tracked.parsed_offset == -1
 
@@ -237,11 +245,22 @@ async def test_manual_switch_during_generation_probe_restores_offset_and_boundar
     boundary = _StartupBoundary(size=old_size, device=stat.st_dev, inode=stat.st_ino)
     reader._startup_file_boundaries["hook-session"] = boundary
     output = []
-    reading = asyncio.create_task(
-        monitor._process_session_file("hook-session", path, output, window_id=WINDOW)
-    )
-    asyncio.get_running_loop().call_soon(setattr, selected, "provider_name", "shell")
-    await reading
+
+    # Deterministic mid-read switch: flip the provider exactly when the
+    # generation probe completes, i.e. between the entry check and the
+    # post-probe check this test exists to exercise. The original
+    # call_soon raced the read: a fast probe completed both checks in
+    # one task step, the flip landed after the read, and the offset
+    # advanced (flaky ~2/3 of runs in isolation).
+    real_prepare = reader._prepare_observed_generation
+
+    async def prepare_then_switch(*args, **kwargs):
+        result = await real_prepare(*args, **kwargs)
+        selected.provider_name = "shell"
+        return result
+
+    monkeypatch.setattr(reader, "_prepare_observed_generation", prepare_then_switch)
+    await monitor._process_session_file("hook-session", path, output, window_id=WINDOW)
     assert output == []
     assert tracked.parsed_offset == old_size
     assert reader._startup_file_boundaries["hook-session"] == boundary
