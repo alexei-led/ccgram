@@ -184,6 +184,23 @@ def get_interactive_pane(
     return _interactive_panes.get(_interactive_key(user_id, thread_id, chat_id))
 
 
+def _record_interactive_pane(ikey: InteractiveKey, pane_id: str | None) -> None:
+    """Remember the pane owning the topic's live prompt.
+
+    A window-level detection (``None``) means the active pane, which is
+    also where forwarded text lands, so it must not be replaced by a
+    sibling pane's prompt: dismissal would then target the sibling while
+    the text reaches the still-interactive active pane. A later
+    window-level detection does replace a sibling owner.
+    """
+    if (
+        pane_id is None
+        or ikey not in _interactive_panes
+        or _interactive_panes[ikey] is not None
+    ):
+        _interactive_panes[ikey] = pane_id
+
+
 def set_interactive_mode(
     user_id: int,
     window_id: str,
@@ -207,7 +224,7 @@ def set_interactive_mode(
     )
     ikey = _interactive_key(user_id, thread_id, chat_id)
     _interactive_mode[ikey] = window_id
-    _interactive_panes[ikey] = pane_id
+    _record_interactive_pane(ikey, pane_id)
 
 
 def clear_interactive_mode(
@@ -660,7 +677,7 @@ async def handle_interactive_ui(
         )
         if edited:
             _interactive_contexts[ikey] = (resolved_chat_id, existing_msg_id)
-            _interactive_panes[ikey] = pane_id
+            _record_interactive_pane(ikey, pane_id)
         return edited or False
 
     # Cooldown: prevent rapid retries when sends fail
@@ -693,7 +710,7 @@ async def handle_interactive_ui(
     )
     if sent:
         _interactive_msgs[ikey] = sent.message_id
-        _interactive_panes[ikey] = pane_id
+        _record_interactive_pane(ikey, pane_id)
         _interactive_contexts[ikey] = (resolved_chat_id, sent.message_id)
         _interactive_mode[ikey] = window_id
         _send_cooldowns.pop(ikey, None)
