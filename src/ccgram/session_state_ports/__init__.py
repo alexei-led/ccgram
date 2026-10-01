@@ -14,7 +14,9 @@ Write authority stays exclusively in the owning modules:
 from __future__ import annotations
 
 from .live_session_state import (
+    DeliveryWatermark,
     LiveSessionSnapshot,
+    get_delivery_watermark,
     get_last_activity_ts,
     get_live_session_snapshot,
     get_session_id,
@@ -24,6 +26,8 @@ from .live_session_state import (
 )
 
 __all__ = [
+    "DeliveryWatermark",
+    "get_delivery_watermark",
     "LiveSessionSnapshot",
     "get_last_activity_ts",
     "get_live_session_snapshot",
