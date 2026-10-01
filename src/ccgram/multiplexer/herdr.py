@@ -140,8 +140,21 @@ _CALL_TIMEOUT_SECONDS = 8.0
 
 # New Pi sessions have been observed to publish their agent_session in ~2.7s.
 # Keep creation discovery bounded, while allowing slow hook/integration startup.
-_CREATED_SESSION_DISCOVERY_TIMEOUT_SECONDS = 5.0
-_CREATED_SESSION_POLL_INTERVAL_SECONDS = 0.1
+# A freshly launched agent must publish its session within this budget
+# for topic creation to commit. Boot under load has been measured past 5s
+# (2026-09-29 incident), and creation waits for the stable session-backed
+# identity, not the terminal fallback, so the budget has to cover real
+# boot time. The poll interval stays a coarse 0.5s: each poll is a full
+# agent.list subprocess, and a 20s window at 0.1s would spawn it ~200
+# times per slow launch.
+_CREATED_SESSION_DISCOVERY_TIMEOUT_SECONDS = 20.0
+_CREATED_SESSION_POLL_INTERVAL_SECONDS = 0.5
+
+# The terminal-derived identity published for a recognized agent whose
+# session has not been reported yet. It rotates to the session identity
+# the moment the agent publishes, so it must never become a topic target
+# or an adoption candidate.
+_TERMINAL_FALLBACK_KIND = "terminal"
 
 # Agent TUIs (Claude Code, Codex, Pi) read a submit key that arrives in the
 # same input batch as the prompt text as a literal newline, so the prompt is
@@ -318,7 +331,9 @@ def _parse_live_record(record: Mapping[str, object]) -> HerdrLiveRecord | None:
         # identity. Pi is excluded: Herdr publishes its durable session shortly
         # after startup, and creating a terminal topic in that gap would create
         # a second topic when the durable identity arrives.
-        composite = HerdrSessionComposite("herdr", agent, "terminal", terminal_id)
+        composite = HerdrSessionComposite(
+            "herdr", agent, _TERMINAL_FALLBACK_KIND, terminal_id
+        )
     target_id = herdr_session_target_id(composite)
     # ``cwd`` is the agent's own working directory; ``foreground_cwd`` follows
     # whatever the agent currently shells into (a worktree, a plugin cache) and
@@ -743,6 +758,7 @@ class HerdrManager:
             cwd=record.cwd,
             pane_current_command=record.composite.agent,
             topic_eligible=adoptable
+            and record.composite.kind != _TERMINAL_FALLBACK_KIND
             and is_herdr_session_target(record.target_id)
             and bool(record.composite.agent.strip()),
         )
@@ -1332,28 +1348,109 @@ class HerdrManager:
         tab_id: str,
         pane_id: str,
         workspace_id: str | None,
+        terminal_id: str | None = None,
     ) -> HerdrLiveRecord:
-        """Wait for exactly one session reported for a newly-created pane."""
+        """Wait for the pane's stable, session-backed identity.
+
+        Only a complete session composite counts. A terminal-fallback
+        record (the pane's agent has started but not yet published its
+        session) is deliberately skipped: its derived target rotates the
+        moment the real session appears, and a target minted from it
+        goes stale during hook registration, which reads as "session
+        did not register and is gone" while the pane boots on.
+        """
         loop = asyncio.get_running_loop()
         deadline = loop.time() + _CREATED_SESSION_DISCOVERY_TIMEOUT_SECONDS
+        # The first poll pins the pane by the locators the creation
+        # transaction owns; every later poll follows the TERMINAL identity
+        # instead. Pane and tab ids are renumbered on structural changes
+        # (compaction), so a slow boot whose pane moved mid-wait would
+        # never re-match on locators and the transaction would roll back
+        # a healthy pane. The terminal id survives renumbering.
+        pinned_seen = False
         while True:
-            matches = [
-                record
-                for record in await self._agent_list_snapshot()
-                if record.tab_id == tab_id
-                and record.pane_id == pane_id
-                and (workspace_id is None or record.workspace_id == workspace_id)
-            ]
-            if len(matches) == 1:
-                return matches[0]
+            records = await self._agent_list_snapshot()
+            terminal_id, pinned_seen = self._advance_created_session_pin(
+                records,
+                tab_id=tab_id,
+                pane_id=pane_id,
+                workspace_id=workspace_id,
+                terminal_id=terminal_id,
+                pinned_seen=pinned_seen,
+            )
+            matches = self._session_backed_matches(records, terminal_id)
             if len(matches) > 1:
                 raise HerdrAmbiguousTargetError(
                     "new Herdr pane reported duplicate sessions"
                 )
+            if len(matches) == 1:
+                first = matches[0]
+                # Guard the pre-pinned identity: before any poll has
+                # confirmed the created pane at this terminal (a sibling
+                # agent cannot share a terminal id with it, but a stale or
+                # misattributed record could sit there), the match must
+                # also carry one of the creation locators. Once the first
+                # poll confirms the pane, renumbering may change both
+                # locators, so later polls trust the terminal id alone.
+                if pinned_seen or first.tab_id == tab_id or first.pane_id == pane_id:
+                    return first
             if loop.time() >= deadline:
                 break
             await asyncio.sleep(_CREATED_SESSION_POLL_INTERVAL_SECONDS)
         raise HerdrUnresolvedTargetError("new Herdr pane did not report a session")
+
+    @staticmethod
+    def _advance_created_session_pin(
+        records: Sequence[HerdrLiveRecord],
+        *,
+        tab_id: str,
+        pane_id: str,
+        workspace_id: str | None,
+        terminal_id: str | None,
+        pinned_seen: bool,
+    ) -> tuple[str | None, bool]:
+        """Advance the created-pane pin one poll; returns (terminal, pinned).
+
+        A pre-pinned terminal is confirmed by any record (a terminal
+        fallback counts) at the creation locators. Without one, the first
+        unique record at the creation locators supplies the terminal id.
+        """
+        if terminal_id is not None:
+            if pinned_seen:
+                return terminal_id, True
+            return terminal_id, any(
+                record.terminal_id == terminal_id
+                and (record.tab_id == tab_id or record.pane_id == pane_id)
+                for record in records
+            )
+        pinned = [
+            record
+            for record in records
+            if record.tab_id == tab_id
+            and record.pane_id == pane_id
+            and (workspace_id is None or record.workspace_id == workspace_id)
+        ]
+        if len(pinned) > 1:
+            raise HerdrAmbiguousTargetError(
+                "new Herdr pane reported duplicate sessions"
+            )
+        if len(pinned) == 1:
+            return pinned[0].terminal_id, True
+        return None, False
+
+    @staticmethod
+    def _session_backed_matches(
+        records: Sequence[HerdrLiveRecord], terminal_id: str | None
+    ) -> list[HerdrLiveRecord]:
+        """Session-published records at one terminal, fallbacks excluded."""
+        if terminal_id is None:
+            return []
+        return [
+            record
+            for record in records
+            if record.terminal_id == terminal_id
+            and record.composite.kind != _TERMINAL_FALLBACK_KIND
+        ]
 
     async def create_topic_target(  # noqa: C901
         self,
@@ -1413,6 +1510,9 @@ class HerdrManager:
             root = (result or {}).get("root_pane") or {}
             tab_id = tab.get("tab_id") if isinstance(tab, Mapping) else None
             pane_id = root.get("pane_id") if isinstance(root, Mapping) else None
+            created_terminal_id = (
+                root.get("terminal_id") if isinstance(root, Mapping) else None
+            )
             label = tab.get("label") if isinstance(tab, Mapping) else None
             if not isinstance(tab_id, str) or not tab_id:
                 raise HerdrError("herdr tab creation returned no tab id")
@@ -1430,6 +1530,9 @@ class HerdrManager:
                 tab_id=tab_id,
                 pane_id=pane_id,
                 workspace_id=workspace_id,
+                terminal_id=created_terminal_id
+                if isinstance(created_terminal_id, str)
+                else None,
             )
             refs = await self._project_live_refs([record])
             if len(refs) != 1:
@@ -1498,6 +1601,7 @@ class HerdrManager:
         if not tab_id:
             tab_id = workspace.get("active_tab_id", "")
         pane_id = root_pane.get("pane_id")
+        created_terminal_id = root_pane.get("terminal_id")
         if not isinstance(tab_id, str) or not tab_id:
             return False, "herdr worktree created without a tab id", "", ""
         if not isinstance(pane_id, str) or not pane_id:
@@ -1524,6 +1628,9 @@ class HerdrManager:
                 tab_id=tab_id,
                 pane_id=pane_id,
                 workspace_id=workspace_id,
+                terminal_id=created_terminal_id
+                if isinstance(created_terminal_id, str)
+                else None,
             )
         except BaseException as exc:
             await self._call_ok(["tab", "close", tab_id])

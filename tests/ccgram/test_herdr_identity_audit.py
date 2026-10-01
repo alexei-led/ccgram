@@ -35,7 +35,8 @@ def test_record_assembler_uses_guarded_terminal_fallback() -> None:
     ]
     assert "if composite is None:" in section
     assert 'agent not in {"claude", "codex", "gemini"}' in section
-    assert 'HerdrSessionComposite("herdr", agent, "terminal", terminal_id)' in section
+    assert "HerdrSessionComposite(" in section
+    assert "_TERMINAL_FALLBACK_KIND, terminal_id" in section
 
 
 def test_persisted_target_predicate_uses_the_shared_exact_validator() -> None:
