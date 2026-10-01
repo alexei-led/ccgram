@@ -84,6 +84,11 @@ class StatusUpdate:
     display_label: str
     is_interactive: bool = False
     ui_type: str | None = None  # "AskUserQuestion", "ExitPlanMode", etc.
+    # True when the detection is a structural guess (the catch-all
+    # selection shape) rather than a named pattern or action-hint
+    # anchor: the keyboard may be shown, but it must not latch the
+    # blocking interactive mode.
+    ui_advisory: bool = False
 
 
 @dataclass(frozen=True, slots=True)
