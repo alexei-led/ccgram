@@ -102,5 +102,11 @@ async def upgrade_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # Lazy: defer __version__ / main lookup until /upgrade actually runs
     from .. import main as main_module
 
+    # Lazy: bot is fully imported by the time /upgrade runs; hoisting cycles
+    from ..bot import arm_shutdown_watchdog
+
     main_module._restart_requested = True
+    # This stop path never reaches the signal handler; arm before stop() so a
+    # wedge there still exits and the supervisor can restart.
+    arm_shutdown_watchdog()
     context.application.stop_running()

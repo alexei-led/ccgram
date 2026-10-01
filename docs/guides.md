@@ -243,6 +243,7 @@ All settings accept both CLI flags and environment variables. CLI flags take pre
 | `CCGRAM_STATUS_POLL_INTERVAL`                         | `1.0`                          | Status polling interval in seconds (min 0.5)                                                         |
 | `CCGRAM_YOLO_CONFIRMATION_TIMEOUT`                    | `30.0`                         | Seconds to wait for the YOLO confirmation prompt (min 1.0)                                           |
 | `CCGRAM_SKIP_BARRIER_DEADLINE_S`                      | `600`                          | Seconds a pending backlog-skip barrier waits for its notice before force-completion (min 60)         |
+| `CCGRAM_DELIVERY_WATCH_GAP_KB`                        | `256`                          | KB of undelivered transcript output before the delivery-wedge watch alerts; `0` disables it          |
 | `CCGRAM_MINIAPP_BASE_URL`                             | _(disabled)_                   | Externally reachable HTTPS URL for the Mini App dashboard                                            |
 | `CCGRAM_MINIAPP_HOST`                                 | `127.0.0.1`                    | Local bind host for the Mini App aiohttp server                                                      |
 | `CCGRAM_MINIAPP_PORT`                                 | `8765`                         | Local bind port for the Mini App aiohttp server                                                      |

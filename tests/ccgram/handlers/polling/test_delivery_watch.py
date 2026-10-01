@@ -164,14 +164,16 @@ class TestCheckDeliveryWedges:
         assert client.call_count("send_message") == 1
 
     async def test_fenced_freeze_is_not_a_wedge(self, monkeypatch, tmp_path) -> None:
-        client, _ = _wire(
+        client, transcript = _wire(
             monkeypatch,
             tmp_path,
             topics=[(7, -100200, 42, "@1")],
             deliveries={"@1": (0, True)},
         )
-        monkeypatch.setattr(delivery_watch.time, "monotonic", lambda: 0.0)
+        # Grow the transcript every pass: the quiet-time reset must not be
+        # what keeps the fenced freeze from alerting.
         for now in (0.0, 301.0, 602.0):
+            transcript.write_bytes(b"x" * (4096 + int(now)))
             monkeypatch.setattr(delivery_watch.time, "monotonic", lambda n=now: n)
             await check_delivery_wedges(client)
         await _flush_alert_tasks()

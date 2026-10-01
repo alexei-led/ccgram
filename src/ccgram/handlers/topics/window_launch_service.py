@@ -210,6 +210,26 @@ async def _wait_for_shell_ready(window_id: str, *, attempts: int = 5) -> None:
         await asyncio.sleep(0.2)
 
 
+async def agent_process_started(window_id: str) -> bool | None:
+    """Whether a non-shell process owns the pane right now; None if unknown.
+
+    One probe, no waiting: callers decide whether to retry (launch) or leave
+    the claim quarantined (recovery). ``None`` means the backend could not
+    answer, not that the agent is gone.
+    """
+    # Lazy: only needed for hookless providers
+    import os
+
+    # Lazy: providers package heavy bootstrap
+    from ccgram.providers.shell import KNOWN_SHELLS
+
+    w = await tmux_manager.find_window_by_id(window_id)
+    if w is None or not w.pane_current_command:
+        return None
+    cmd = os.path.basename(w.pane_current_command.split()[0]).lstrip("-")
+    return cmd not in KNOWN_SHELLS
+
+
 async def _wait_for_agent_process(window_id: str, *, attempts: int = 50) -> bool:
     """Wait for a hookless agent CLI to replace the shell as the pane's process.
 
@@ -219,18 +239,9 @@ async def _wait_for_agent_process(window_id: str, *, attempts: int = 50) -> bool
     shows a launch shell after the whole budget, so the caller must not bind
     the topic as if the agent had started.
     """
-    # Lazy: only needed for hookless providers
-    import os
-
-    # Lazy: providers package heavy bootstrap
-    from ccgram.providers.shell import KNOWN_SHELLS
-
     for _ in range(attempts):
-        w = await tmux_manager.find_window_by_id(window_id)
-        if w and w.pane_current_command:
-            cmd = os.path.basename(w.pane_current_command.split()[0]).lstrip("-")
-            if cmd not in KNOWN_SHELLS:
-                return True
+        if await agent_process_started(window_id):
+            return True
         await asyncio.sleep(0.2)
     return False
 

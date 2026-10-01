@@ -14,7 +14,10 @@ Responsibilities kept here:
     by the message handler registry
 """
 
+import logging
+import os
 import signal
+import threading
 import time
 
 import structlog
@@ -68,6 +71,71 @@ __all__ = [
 ]
 
 logger = structlog.get_logger()
+
+# A graceful shutdown that never completes leaves the supervisor waiting on a
+# live process forever. This watchdog is a plain thread on purpose: the very
+# failure it guards against is a wedged event loop, so it must not be scheduled
+# on that loop, and its callback may only do thread-safe teardown before
+# forcing the exit. One watchdog per process; the first arm wins.
+_SHUTDOWN_WATCHDOG_SECONDS = 600.0
+# Cap on the best-effort log flush: shutdown may have wedged on a blocked log
+# stream, and the escape hatch must not wait on the same write lock.
+_WATCHDOG_FLUSH_SECONDS = 2.0
+_shutdown_watchdog: threading.Timer | None = None
+_shutdown_watchdog_lock = threading.Lock()
+_shutdown_exit_code = 1
+
+
+def _force_exit_after_wedged_shutdown() -> None:
+    """Force the process out when graceful shutdown never completes.
+
+    The flush runs in its own daemon thread with a bounded join: structlog's
+    per-file lock lives in the main thread when shutdown wedged on a blocked
+    log stream, and waiting on it here would defeat the watchdog.
+    """
+
+    def _best_effort_flush() -> None:
+        try:
+            os.write(2, b"ccgram: shutdown did not finish; forcing exit\n")
+            logging.shutdown()
+        except Exception:  # noqa: BLE001 - the process is about to die
+            pass
+
+    flusher = threading.Thread(target=_best_effort_flush, daemon=True)
+    flusher.start()
+    flusher.join(timeout=_WATCHDOG_FLUSH_SECONDS)
+    os._exit(_shutdown_exit_code)
+
+
+def arm_shutdown_watchdog(
+    timeout: float = _SHUTDOWN_WATCHDOG_SECONDS, *, exit_code: int = 1
+) -> None:
+    """Arm the single shutdown watchdog. Idempotent: the first arm wins.
+
+    ``exit_code`` is what the forced exit reports: signal-driven shutdowns
+    pass ``128 + signum`` so a supervisor that distinguishes a stop request
+    (SIGQUIT/131) does not read a wedged stop as a crash and restart.
+    """
+    global _shutdown_exit_code, _shutdown_watchdog
+    with _shutdown_watchdog_lock:
+        if _shutdown_watchdog is not None:
+            return
+        _shutdown_exit_code = exit_code
+        timer = threading.Timer(timeout, _force_exit_after_wedged_shutdown)
+        timer.daemon = True
+        timer.start()
+        _shutdown_watchdog = timer
+
+
+def cancel_shutdown_watchdog() -> None:
+    """Disarm the watchdog after shutdown completed normally."""
+    global _shutdown_exit_code, _shutdown_watchdog
+    with _shutdown_watchdog_lock:
+        timer, _shutdown_watchdog = _shutdown_watchdog, None
+        _shutdown_exit_code = 1
+    if timer is not None:
+        timer.cancel()
+
 
 _CONFLICT_GRACE_PERIOD_S = 90.0
 _GET_UPDATES_READ_TIMEOUT_S = 20.0
@@ -169,14 +237,21 @@ async def post_stop(application: Application) -> None:
 
     PTB runs post_stop before Application.shutdown (HTTPXRequest teardown),
     so this is the only place where queued Telegram sends can still succeed.
+    Arms the shutdown watchdog first: a wedged drain must not keep the
+    process alive forever, and this also covers shutdown paths that do not
+    go through the signal handler.
     """
+    arm_shutdown_watchdog()
     await bootstrap.stop_delivery_runtime()
     await _send_shutdown_notification(application)
 
 
 async def post_shutdown(_application: Application) -> None:
     """Tear down runtime state — see ``bootstrap.shutdown_runtime``."""
-    await bootstrap.shutdown_runtime()
+    try:
+        await bootstrap.shutdown_runtime()
+    finally:
+        cancel_shutdown_watchdog()
 
 
 async def _error_handler(_update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -188,6 +263,10 @@ async def _error_handler(_update: object, context: ContextTypes.DEFAULT_TYPE) ->
                 "service supervisor can restart ccgram. Check for another bot instance.",
                 _CONFLICT_GRACE_PERIOD_S,
             )
+            # This stop path never reaches the signal handler, so arm here or
+            # a wedge in stop() leaves the process alive and the supervisor
+            # waiting on a conflict that was supposed to trigger a restart.
+            arm_shutdown_watchdog()
             context.application.stop_running()
         else:
             logger.warning(

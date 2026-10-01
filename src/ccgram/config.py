@@ -59,6 +59,23 @@ def _skip_barrier_deadline_s() -> float:
     return max(60.0, value)
 
 
+def _delivery_watch_gap_bytes() -> int:
+    """Delivery-wedge gap threshold in bytes, floored at 0 (disable) and
+    tolerant of empty or non-numeric input so a bad env value cannot break
+    startup."""
+    try:
+        value = float(os.getenv("CCGRAM_DELIVERY_WATCH_GAP_KB") or 256.0)
+    except ValueError:
+        return 256 * 1024
+    if not math.isfinite(value):
+        return 256 * 1024
+    try:
+        return max(0, int(value * 1024))
+    except OverflowError, ValueError:
+        # Finite but too large for an int; treat like any other bad value.
+        return 256 * 1024
+
+
 class Config:
     """Application configuration loaded from environment variables."""
 
@@ -118,6 +135,7 @@ class Config:
             max(1.0, float(os.getenv("CCGRAM_YOLO_CONFIRMATION_TIMEOUT", "30.0"))),
         )
         self.skip_barrier_deadline_s = _skip_barrier_deadline_s()
+        self.delivery_watch_gap_bytes = _delivery_watch_gap_bytes()
 
         # Multi-instance support
         group_id_str = os.getenv("CCGRAM_GROUP_ID")

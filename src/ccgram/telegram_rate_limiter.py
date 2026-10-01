@@ -51,9 +51,10 @@ _RETRY_BACKOFF_BASE_SECONDS = 1.0
 _MAX_RETRY_BACKOFF_SECONDS = 8.0
 _RETRY_JITTER_MAX_SECONDS = 1.0
 # Interactive waiters are served first, but a sustained burst cannot starve
-# background delivery: every fourth release in a row serves one background
-# waiter. At the 20/min group ceiling that bounds background delay to about
-# 12 seconds while a picker stays responsive.
+# background delivery: once four interactive releases in a row have been
+# served, the next release serves one waiting background request. At the
+# 20/min group ceiling that bounds a background waiter's delay to about
+# 15 seconds while a picker stays responsive.
 _INTERACTIVE_BURST_LIMIT = 4
 
 
