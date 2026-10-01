@@ -1125,3 +1125,54 @@ class TestProviderFromPaneTty:
 
     def test_empty_tty_returns_none(self) -> None:
         assert _provider_from_pane_tty("") is None
+
+    @pytest.mark.parametrize(
+        ("foreground_commands", "provider"),
+        [
+            pytest.param(
+                "node /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js\n"
+                'node -e L("~/.codex/plugins/cache/claude-mem-local")\n',
+                "claude",
+                id="claude-npm-wrapper-with-codex-named-helper",
+            ),
+            pytest.param(
+                "node /usr/lib/node_modules/@openai/codex/bin/codex.js\n"
+                "claude -p hello\n",
+                "codex",
+                id="codex-wrapper-wins-over-child-claude",
+            ),
+            pytest.param(
+                "npx @openai/codex --version\n",
+                "codex",
+                id="npx-wrapper",
+            ),
+            pytest.param(
+                "vim ~/.codex/config.toml\n",
+                None,
+                id="editor-on-codex-config-never-detects",
+            ),
+            pytest.param(
+                "python3 -c 'import codex'\n",
+                None,
+                id="code-string-is-not-a-script",
+            ),
+            pytest.param(
+                "node --require /opt/codex-hooks/register.js app.js\n",
+                None,
+                id="require-value-is-not-a-script",
+            ),
+            pytest.param(
+                "node /srv/app/main.js\nnode /srv/gemini-cli/index.js\n",
+                "gemini",
+                id="gemini-script-argument",
+            ),
+        ],
+    )
+    def test_provider_evidence_is_executable_and_script_only(
+        self, foreground_commands: str, provider: str | None
+    ) -> None:
+        result = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=foreground_commands, stderr=""
+        )
+        with patch("ccgram.hook.subprocess.run", return_value=result):
+            assert _provider_from_pane_tty("/dev/ttys012") == provider

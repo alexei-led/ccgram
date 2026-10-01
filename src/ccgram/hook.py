@@ -1376,14 +1376,62 @@ def _refresh_session_map_if_stale(
     )
 
 
+_PROVIDER_NAME_ORDER: tuple[ProviderName, ...] = ("gemini", "codex", "claude")
+
+# Runtimes that commonly wrap a provider CLI (npm-installed packages run as
+# ``node .../codex.js``), and flags whose value is not a script path.
+_PROVIDER_RUNTIMES = frozenset(
+    {"node", "nodejs", "bun", "deno", "python", "python3", "npx", "bunx"}
+)
+_RUNTIME_CODE_FLAGS = frozenset(
+    {"-e", "--eval", "-c", "--command", "-p", "--print", "-m", "--module"}
+)
+_RUNTIME_VALUE_FLAGS = frozenset(
+    {"-r", "--require", "--import", "--loader", "--experimental-loader"}
+)
+
+
+def _runtime_script_argument(tokens: list[str]) -> str | None:
+    """The script path an interpreter wraps, or None for flags and code strings."""
+    skip_next = False
+    for token in tokens[1:]:
+        if skip_next:
+            skip_next = False
+            continue
+        if token in _RUNTIME_CODE_FLAGS:
+            return None
+        if token in _RUNTIME_VALUE_FLAGS:
+            skip_next = True
+            continue
+        if token.startswith("-"):
+            continue
+        return token
+    return None
+
+
+def _path_names_provider(path: str, provider: str) -> bool:
+    """Whether a script path's segments name one provider package."""
+    for segment in path.replace("\\", "/").casefold().split("/"):
+        if (
+            segment == provider
+            or segment.startswith(f"{provider}-")
+            or segment.startswith(f"{provider}.")
+        ):
+            return True
+    return False
+
+
 def _provider_from_pane_tty(pane_tty: str) -> ProviderName | None:
     """Best-effort provider detection from foreground tty process commands.
 
     This is a last-resort fallback; the primary paths are the explicit
     ``provider_name`` field and the ``/.provider/`` transcript path prefix
-    checked in ``detect_provider_from_payload``.  JS-wrapped Pi (e.g.
-    ``node ~/.pi/agent/cli.js``) is not matched here — it is caught by the
-    ``/.pi/`` transcript path check instead.
+    checked in ``detect_provider_from_payload``.  Only the executable
+    basename and, for interpreter wrappers, the script argument count as
+    evidence: a helper's data path or an ``-e`` code string must never name
+    the provider (a claude-mem helper carrying ``~/.codex`` used to beat the
+    running claude).  JS-wrapped Pi (e.g. ``node ~/.pi/agent/cli.js``) is
+    not matched here — it is caught by the ``/.pi/`` transcript path check.
     """
     if not pane_tty:
         return None
@@ -1398,12 +1446,26 @@ def _provider_from_pane_tty(pane_tty: str) -> ProviderName | None:
     except subprocess.TimeoutExpired, OSError:
         return None
     text = result.stdout.lower()
-    if "gemini" in text:
-        return "gemini"
-    if "codex" in text:
-        return "codex"
-    if "claude" in text:
-        return "claude"
+    executables: set[str] = set()
+    scripts: list[str] = []
+    for line in result.stdout.splitlines():
+        try:
+            tokens = shlex.split(line)
+        except ValueError:
+            continue
+        if not tokens:
+            continue
+        executable = os.path.basename(tokens[0]).casefold()
+        executables.add(executable)
+        if executable in _PROVIDER_RUNTIMES:
+            script = _runtime_script_argument(tokens)
+            if script is not None:
+                scripts.append(script)
+    for provider in _PROVIDER_NAME_ORDER:
+        if provider in executables or any(
+            _path_names_provider(script, provider) for script in scripts
+        ):
+            return provider
     if any(tok == "pi" or tok.endswith("/pi") for tok in text.split()):
         return "pi"
     return None
