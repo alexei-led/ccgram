@@ -14,7 +14,10 @@ Responsibilities kept here:
     by the message handler registry
 """
 
+import logging
+import os
 import signal
+import threading
 import time
 
 import structlog
@@ -68,6 +71,49 @@ __all__ = [
 ]
 
 logger = structlog.get_logger()
+
+# A graceful shutdown that never completes leaves the supervisor waiting on a
+# live process forever. This watchdog is a plain thread on purpose: the very
+# failure it guards against is a wedged event loop, so it must not be scheduled
+# on that loop, and its callback may only do thread-safe teardown (log flush)
+# before forcing the exit. One watchdog per process; the first arm wins.
+_SHUTDOWN_WATCHDOG_SECONDS = 600.0
+_shutdown_watchdog: threading.Timer | None = None
+_shutdown_watchdog_lock = threading.Lock()
+
+
+def _force_exit_after_wedged_shutdown() -> None:
+    """Force the process out when graceful shutdown never completes."""
+    try:
+        logger.error(
+            "Shutdown did not finish; forcing exit",
+            timeout_seconds=_SHUTDOWN_WATCHDOG_SECONDS,
+        )
+        logging.shutdown()
+    finally:
+        os._exit(1)
+
+
+def arm_shutdown_watchdog(timeout: float = _SHUTDOWN_WATCHDOG_SECONDS) -> None:
+    """Arm the single shutdown watchdog. Idempotent: the first arm wins."""
+    global _shutdown_watchdog
+    with _shutdown_watchdog_lock:
+        if _shutdown_watchdog is not None:
+            return
+        timer = threading.Timer(timeout, _force_exit_after_wedged_shutdown)
+        timer.daemon = True
+        timer.start()
+        _shutdown_watchdog = timer
+
+
+def cancel_shutdown_watchdog() -> None:
+    """Disarm the watchdog after shutdown completed normally."""
+    global _shutdown_watchdog
+    with _shutdown_watchdog_lock:
+        timer, _shutdown_watchdog = _shutdown_watchdog, None
+    if timer is not None:
+        timer.cancel()
+
 
 _CONFLICT_GRACE_PERIOD_S = 90.0
 _GET_UPDATES_READ_TIMEOUT_S = 20.0
@@ -169,14 +215,21 @@ async def post_stop(application: Application) -> None:
 
     PTB runs post_stop before Application.shutdown (HTTPXRequest teardown),
     so this is the only place where queued Telegram sends can still succeed.
+    Arms the shutdown watchdog first: a wedged drain must not keep the
+    process alive forever, and this also covers shutdown paths that do not
+    go through the signal handler.
     """
+    arm_shutdown_watchdog()
     await bootstrap.stop_delivery_runtime()
     await _send_shutdown_notification(application)
 
 
 async def post_shutdown(_application: Application) -> None:
     """Tear down runtime state — see ``bootstrap.shutdown_runtime``."""
-    await bootstrap.shutdown_runtime()
+    try:
+        await bootstrap.shutdown_runtime()
+    finally:
+        cancel_shutdown_watchdog()
 
 
 async def _error_handler(_update: object, context: ContextTypes.DEFAULT_TYPE) -> None:

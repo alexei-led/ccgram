@@ -212,11 +212,14 @@ class TestSignalDiagnostics:
         stderr_capture = io.StringIO()
         with (
             patch.object(main, "_shutdown_signal", 0),
+            patch("ccgram.bot.arm_shutdown_watchdog") as arm_watchdog,
             patch("sys.stderr", stderr_capture),
         ):
             with contextlib.suppress(SystemExit):
                 main._on_signal(signal.SIGINT)
             assert main._shutdown_signal == signal.SIGINT
+
+        arm_watchdog.assert_called_once_with()
 
         output = stderr_capture.getvalue()
         assert "SIGINT" in output

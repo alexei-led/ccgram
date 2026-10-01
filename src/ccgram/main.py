@@ -47,6 +47,12 @@ def _on_signal(signum: int) -> None:
     """
     global _shutdown_signal
     _shutdown_signal = signum
+    # Lazy: bot imports main's shutdown signal for its notification text, so
+    # the watchdog cannot be imported at module scope without a cycle. Arm it
+    # before raising: a wedge after this point must not outlive the timeout.
+    from .bot import arm_shutdown_watchdog
+
+    arm_shutdown_watchdog()
     sig_name = signal.Signals(signum).name
     sys.stderr.write(f"\n[ccgram] {sig_name} received (pid={os.getpid()})\n")
     sys.stderr.flush()

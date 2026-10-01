@@ -9,10 +9,37 @@ lifecycle.
 import asyncio
 import contextlib
 import json
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from telegram.error import TelegramError
+
+
+class _FakeWatchdogTimer:
+    """Threading.Timer stand-in: records arm/cancel without a real thread."""
+
+    def __init__(self, interval: float, function: Callable[[], None]) -> None:
+        self.interval = interval
+        self.function = function
+        self.daemon = False
+        self.started = False
+        self.cancelled = False
+
+    def start(self) -> None:
+        self.started = True
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+
+def _record_timer(
+    timers: list[_FakeWatchdogTimer], interval: float, function: Callable[[], None]
+) -> _FakeWatchdogTimer:
+    timer = _FakeWatchdogTimer(interval, function)
+    timers.append(timer)
+    return timer
 
 
 class TestScreenBufferResilience:
@@ -289,6 +316,14 @@ class TestGlobalExceptionHandler:
 
 
 class TestShutdownNotificationLifecycle:
+    @pytest.fixture(autouse=True)
+    def _disarm_shutdown_watchdog(self):
+        from ccgram.bot import cancel_shutdown_watchdog
+
+        cancel_shutdown_watchdog()
+        yield
+        cancel_shutdown_watchdog()
+
     async def test_post_stop_sends_notification(self):
         from ccgram.bot import post_stop
 
@@ -303,6 +338,98 @@ class TestShutdownNotificationLifecycle:
             await post_stop(application)
 
         mock_send.assert_awaited_once_with(application)
+
+    async def test_post_stop_arms_the_shutdown_watchdog(self):
+        from ccgram.bot import (
+            _SHUTDOWN_WATCHDOG_SECONDS,
+            _force_exit_after_wedged_shutdown,
+            post_stop,
+        )
+
+        application = MagicMock()
+        application.bot = AsyncMock()
+        timers: list[_FakeWatchdogTimer] = []
+
+        with (
+            patch("ccgram.bot._send_shutdown_notification", new_callable=AsyncMock),
+            patch(
+                "ccgram.bot.threading.Timer",
+                side_effect=lambda interval, fn: _record_timer(timers, interval, fn),
+            ),
+        ):
+            await post_stop(application)
+
+        assert len(timers) == 1
+        timer = timers[0]
+        assert timer.interval == _SHUTDOWN_WATCHDOG_SECONDS
+        assert timer.started and timer.daemon and not timer.cancelled
+        assert timer.function is _force_exit_after_wedged_shutdown
+
+    async def test_post_stop_keeps_the_first_watchdog(self):
+        from ccgram.bot import post_stop
+
+        application = MagicMock()
+        application.bot = AsyncMock()
+        timers: list[_FakeWatchdogTimer] = []
+
+        with (
+            patch("ccgram.bot._send_shutdown_notification", new_callable=AsyncMock),
+            patch(
+                "ccgram.bot.threading.Timer",
+                side_effect=lambda interval, fn: _record_timer(timers, interval, fn),
+            ),
+        ):
+            await post_stop(application)
+            await post_stop(application)
+
+        assert len(timers) == 1
+
+    async def test_post_shutdown_cancels_the_watchdog(self):
+        from ccgram.bot import post_shutdown, post_stop
+
+        application = MagicMock()
+        application.bot = AsyncMock()
+        timers: list[_FakeWatchdogTimer] = []
+
+        with (
+            patch("ccgram.bot._send_shutdown_notification", new_callable=AsyncMock),
+            patch(
+                "ccgram.bot.threading.Timer",
+                side_effect=lambda interval, fn: _record_timer(timers, interval, fn),
+            ),
+            patch("ccgram.bootstrap._status_poll_task", None),
+            patch("ccgram.bootstrap.session_monitor", None),
+            patch("ccgram.bootstrap.session_manager"),
+            patch("ccgram.bootstrap.shutdown_workers", new_callable=AsyncMock),
+        ):
+            await post_stop(application)
+            await post_shutdown(application)
+
+        assert len(timers) == 1 and timers[0].cancelled
+
+    def test_watchdog_flushes_logs_then_forces_exit(self):
+        from ccgram.bot import _force_exit_after_wedged_shutdown
+
+        with (
+            patch("ccgram.bot.logging.shutdown") as mock_flush,
+            patch("ccgram.bot.os._exit") as mock_exit,
+        ):
+            _force_exit_after_wedged_shutdown()
+
+        mock_flush.assert_called_once_with()
+        mock_exit.assert_called_once_with(1)
+
+    def test_watchdog_forces_exit_even_when_flush_fails(self):
+        from ccgram.bot import _force_exit_after_wedged_shutdown
+
+        with (
+            patch("ccgram.bot.logging.shutdown", side_effect=RuntimeError("flush")),
+            patch("ccgram.bot.os._exit") as mock_exit,
+            pytest.raises(RuntimeError),
+        ):
+            _force_exit_after_wedged_shutdown()
+
+        mock_exit.assert_called_once_with(1)
 
     async def test_post_shutdown_does_not_send_notification(self):
         from ccgram.bot import post_shutdown
