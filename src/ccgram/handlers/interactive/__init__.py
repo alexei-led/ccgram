@@ -25,8 +25,10 @@ from .interactive_ui import (
     clear_send_cooldowns,
     format_interactive_message,
     get_interactive_msg_id,
+    get_interactive_pane as get_interactive_pane,
     get_interactive_window,
     handle_interactive_ui,
+    pane_has_interactive_prompt as pane_has_interactive_prompt,
     set_interactive_mode,
 )
 
