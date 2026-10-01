@@ -26,6 +26,7 @@ dependencies = [
     "Pillow>=12.3.0",
     "telegramify-markdown>=1.2.0",
     "aiofiles>=25.1.0",
+    "aiolimiter>=1.2.1",
     "structlog>=26.1.0",
     "click>=8.5.0",
     "pyte>=0.8.2",

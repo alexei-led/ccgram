@@ -49,11 +49,36 @@ class TestPriorityGroupScheduler:
     async def test_every_release_consumes_one_underlying_token(self) -> None:
         limiter = _FakeLimiter(interval=0.01)
         sched = _PriorityGroupScheduler(limiter)
-        for i in range(7):
-            asyncio.create_task(_bg(sched))
-        asyncio.create_task(_interactive(sched, []))
-        await asyncio.sleep(0.5)
-        assert limiter.acquires >= 8
+        tasks = [asyncio.create_task(_bg(sched)) for _ in range(7)]
+        tasks.append(asyncio.create_task(_interactive(sched, [])))
+        await asyncio.gather(*tasks)
+        # Every request released exactly one acquired token: no token-free
+        # releases and no double spending.
+        assert limiter.acquires == 8
+
+    async def test_interactive_burst_cannot_starve_background(self) -> None:
+        from ccgram.telegram_rate_limiter import _INTERACTIVE_BURST_LIMIT
+
+        sched = _PriorityGroupScheduler(_FakeLimiter(interval=0.01))
+        order: list[str] = []
+
+        async def background() -> None:
+            await sched.acquire(interactive=False)
+            order.append("bg")
+
+        bg = asyncio.create_task(background())
+        await asyncio.sleep(0)
+        taps = [
+            asyncio.create_task(_interactive(sched, order))
+            for _ in range(_INTERACTIVE_BURST_LIMIT + 3)
+        ]
+        await asyncio.gather(bg, *taps)
+        # Background was queued first, then a tap flood arrived: it is
+        # served after one full interactive burst, not after every tap.
+        assert (
+            order
+            == ["interactive"] * _INTERACTIVE_BURST_LIMIT + ["bg"] + ["interactive"] * 3
+        )
 
     async def test_cancelled_waiter_does_not_deadlock(self) -> None:
         sched = _PriorityGroupScheduler(_FakeLimiter(interval=0.01))
@@ -124,6 +149,40 @@ class TestLimiterIntegration:
         with interactive_priority():
             await lim.process_request(callback, (), {}, "editMessageText", data, None)
         assert calls == [False, True]
+
+    async def test_configured_overall_limiter_is_honored(self) -> None:
+        lim = CCGramAIORateLimiter(max_retries=0)
+        entered: list[str] = []
+
+        class _SpyGate:
+            async def __aenter__(self) -> None:
+                entered.append("enter")
+
+            async def __aexit__(self, *exc: object) -> None:
+                entered.append("exit")
+
+        lim._base_limiter = _SpyGate()  # type: ignore[assignment]
+
+        async def callback() -> str:
+            return "ok"
+
+        result = await lim.process_request(
+            callback, (), {}, "sendMessage", {"chat_id": 123}, None
+        )
+        assert result == "ok"
+        assert entered == ["enter", "exit"]
+
+    async def test_disabled_overall_limiter_stays_disabled(self) -> None:
+        lim = CCGramAIORateLimiter(overall_max_rate=0, max_retries=0)
+        assert lim._base_limiter is None
+
+        async def callback() -> str:
+            return "ok"
+
+        result = await lim.process_request(
+            callback, (), {}, "sendMessage", {"chat_id": 123}, None
+        )
+        assert result == "ok"
 
 
 class _SpyScheduler:

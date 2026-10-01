@@ -50,6 +50,11 @@ def interactive_priority() -> Any:
 _RETRY_BACKOFF_BASE_SECONDS = 1.0
 _MAX_RETRY_BACKOFF_SECONDS = 8.0
 _RETRY_JITTER_MAX_SECONDS = 1.0
+# Interactive waiters are served first, but a sustained burst cannot starve
+# background delivery: every fourth release in a row serves one background
+# waiter. At the 20/min group ceiling that bounds background delay to about
+# 12 seconds while a picker stays responsive.
+_INTERACTIVE_BURST_LIMIT = 4
 
 
 def retry_after_seconds(exc: RetryAfter) -> float:
@@ -63,7 +68,9 @@ class _PriorityGroupScheduler:
     Wraps one aiolimiter ``AsyncLimiter`` (the group's token bucket,
     unchanged ceiling): a pump task acquires each token THROUGH that
     limiter and then resolves the first interactive waiter, falling
-    back to the FIFO background queue. Because every release still
+    back to the FIFO background queue. A sustained interactive burst is
+    capped at ``_INTERACTIVE_BURST_LIMIT`` consecutive releases so
+    background delivery cannot starve. Because every release still
     consumes exactly one underlying token, the flood budget is
     untouched; only the order of service changes. Cancellation-safe:
     a waiter that went away is skipped without extra token cost beyond
@@ -74,6 +81,7 @@ class _PriorityGroupScheduler:
         self._limiter = limiter
         self._interactive: deque[Any] = deque()
         self._background: deque[Any] = deque()
+        self._interactive_streak = 0
         self._pump: asyncio.Task[None] | None = None
 
     # aiolimiter-compatible surface so PTB's pruning logic (which reads
@@ -93,16 +101,30 @@ class _PriorityGroupScheduler:
     async def _run(self) -> None:
         while self._interactive or self._background:
             await self._limiter.acquire()
-            queue = self._interactive if self._interactive else self._background
+            queue = self._next_queue()
             if not queue:
                 # Every waiter cancelled itself while this token was
                 # being waited for; spend it and re-check the loop.
                 continue
+            if queue is self._background:
+                self._interactive_streak = 0
+            else:
+                self._interactive_streak += 1
             waiter = queue.popleft()
             # A cancelled waiter can still be here under a lost race with
             # acquire()'s removal; spend the token rather than corrupt state.
             if not waiter.done():
                 waiter.set_result(None)
+
+    def _next_queue(self) -> deque[Any]:
+        """Pick the queue for the next token, bounding interactive bursts."""
+        if not self._interactive:
+            return self._background
+        if not self._background:
+            return self._interactive
+        if self._interactive_streak >= _INTERACTIVE_BURST_LIMIT:
+            return self._background
+        return self._interactive
 
     async def acquire(self, *, interactive: bool) -> None:
         self._ensure_pump()
@@ -143,12 +165,6 @@ class CCGramAIORateLimiter(AIORateLimiter):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._priority_schedulers = {}
-        # Own overall gate, decoupled from PTB privates: same default
-        # ceiling (30/s) the base class applies.
-        # Lazy: aiolimiter import kept local for parity with the group gate
-        from aiolimiter import AsyncLimiter
-
-        self._overall_gate = AsyncLimiter(max_rate=30, time_period=1)
 
     def _interactive_group_acquire(self, group: int | str) -> Any:
         """Priority-aware group gate, replacing the base FIFO limiter.
@@ -183,14 +199,16 @@ class CCGramAIORateLimiter(AIORateLimiter):
         interactive: bool = False,
     ) -> Any:
         # Same gate order as the base class (group, then overall), with
-        # the group side served by the priority scheduler.
+        # the group side served by the priority scheduler. The overall
+        # gate is the base class's own configured limiter, so a custom
+        # overall rate (or a disabled one) is honored exactly.
         if group and self._group_max_rate and self._group_time_period:
             scheduler = self._interactive_group_acquire(group)  # type: ignore[arg-type]
             await scheduler.acquire(interactive=interactive)
-        if chat:
-            async with self._overall_gate:
-                return await callback(*args, **kwargs)
-        return await callback(*args, **kwargs)
+        if not chat or self._base_limiter is None:
+            return await callback(*args, **kwargs)
+        async with self._base_limiter:
+            return await callback(*args, **kwargs)
 
     async def process_request(
         self,
