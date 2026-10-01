@@ -1162,6 +1162,16 @@ class TestProviderFromPaneTty:
                 id="require-value-is-not-a-script",
             ),
             pytest.param(
+                "gemini what's up\n",
+                "gemini",
+                id="unmatched-quote-line-still-counts",
+            ),
+            pytest.param(
+                "vim ~/notes/pi\n",
+                None,
+                id="path-mentioning-pi-is-not-pi",
+            ),
+            pytest.param(
                 "node /srv/app/main.js\nnode /srv/gemini-cli/index.js\n",
                 "gemini",
                 id="gemini-script-argument",

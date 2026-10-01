@@ -1445,14 +1445,16 @@ def _provider_from_pane_tty(pane_tty: str) -> ProviderName | None:
         )
     except subprocess.TimeoutExpired, OSError:
         return None
-    text = result.stdout.lower()
     executables: set[str] = set()
     scripts: list[str] = []
     for line in result.stdout.splitlines():
         try:
             tokens = shlex.split(line)
         except ValueError:
-            continue
+            # ``ps -o command=`` joins argv without quoting, so an argument
+            # with an unmatched quote (``codex what's failing``) makes shlex
+            # raise; the executable is still worth recording.
+            tokens = line.split()
         if not tokens:
             continue
         executable = os.path.basename(tokens[0]).casefold()
@@ -1466,7 +1468,7 @@ def _provider_from_pane_tty(pane_tty: str) -> ProviderName | None:
             _path_names_provider(script, provider) for script in scripts
         ):
             return provider
-    if any(tok == "pi" or tok.endswith("/pi") for tok in text.split()):
+    if "pi" in executables:
         return "pi"
     return None
 
