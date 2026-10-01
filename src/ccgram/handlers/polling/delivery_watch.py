@@ -18,13 +18,13 @@ because receipts stop settling.
 """
 
 import asyncio
-import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import structlog
 
+from ...config import config
 from ...session_query import iter_bound_topics
 from ...session_state_ports import get_delivery_watermark
 from ...telegram_client import TelegramClient
@@ -36,11 +36,9 @@ logger = structlog.get_logger()
 # wedge candidate; below this a stalled watermark is normal quiet time.
 # Generous on purpose: a long streaming thinking block grows the
 # transcript without any complete message settling a receipt, and that
-# benign burst must not page the operator. CCGRAM_DELIVERY_WATCH_GAP_KB=0
-# disables the watch (same knob shape as CCGRAM_REPLAY_CAP_MB).
-GAP_THRESHOLD_BYTES = max(
-    0, int(float(os.getenv("CCGRAM_DELIVERY_WATCH_GAP_KB", "256") or 0) * 1024)
-)
+# benign burst must not page the operator. Sourced from
+# CCGRAM_DELIVERY_WATCH_GAP_KB, where 0 disables the watch.
+GAP_THRESHOLD_BYTES = config.delivery_watch_gap_bytes
 # How long a qualifying gap must stay frozen before the alarm fires.
 # The check rides the 60s periodic gate, so this is five to six
 # observations, not a timer.

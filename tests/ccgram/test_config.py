@@ -2,7 +2,11 @@ from pathlib import Path
 
 import pytest
 
-from ccgram.config import Config, _skip_barrier_deadline_s
+from ccgram.config import (
+    Config,
+    _delivery_watch_gap_bytes,
+    _skip_barrier_deadline_s,
+)
 
 
 @pytest.fixture
@@ -320,3 +324,22 @@ class TestSkipBarrierDeadline:
     def test_below_floor_clamped(self, monkeypatch) -> None:
         monkeypatch.setenv("CCGRAM_SKIP_BARRIER_DEADLINE_S", "5")
         assert _skip_barrier_deadline_s() == 60.0
+
+
+class TestDeliveryWatchGap:
+    def test_default_when_unset(self, monkeypatch) -> None:
+        monkeypatch.delenv("CCGRAM_DELIVERY_WATCH_GAP_KB", raising=False)
+        assert _delivery_watch_gap_bytes() == 256 * 1024
+
+    def test_override_honored(self, monkeypatch) -> None:
+        monkeypatch.setenv("CCGRAM_DELIVERY_WATCH_GAP_KB", "64")
+        assert _delivery_watch_gap_bytes() == 64 * 1024
+
+    def test_zero_disables(self, monkeypatch) -> None:
+        monkeypatch.setenv("CCGRAM_DELIVERY_WATCH_GAP_KB", "0")
+        assert _delivery_watch_gap_bytes() == 0
+
+    @pytest.mark.parametrize("raw", ["", "abc", "10mb", "inf", "nan"])
+    def test_invalid_values_fall_back(self, monkeypatch, raw) -> None:
+        monkeypatch.setenv("CCGRAM_DELIVERY_WATCH_GAP_KB", raw)
+        assert _delivery_watch_gap_bytes() == 256 * 1024
