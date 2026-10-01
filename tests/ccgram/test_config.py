@@ -339,7 +339,7 @@ class TestDeliveryWatchGap:
         monkeypatch.setenv("CCGRAM_DELIVERY_WATCH_GAP_KB", "0")
         assert _delivery_watch_gap_bytes() == 0
 
-    @pytest.mark.parametrize("raw", ["", "abc", "10mb", "inf", "nan"])
+    @pytest.mark.parametrize("raw", ["", "abc", "10mb", "inf", "nan", "1e308"])
     def test_invalid_values_fall_back(self, monkeypatch, raw) -> None:
         monkeypatch.setenv("CCGRAM_DELIVERY_WATCH_GAP_KB", raw)
         assert _delivery_watch_gap_bytes() == 256 * 1024

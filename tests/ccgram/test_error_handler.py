@@ -109,12 +109,14 @@ class TestErrorHandlerStaleCallback:
 
         with (
             patch("ccgram.bot.logger") as mock_logger,
+            patch("ccgram.bot.arm_shutdown_watchdog") as arm_watchdog,
             patch("ccgram.bot.time.monotonic", side_effect=[100.0, 190.0]),
         ):
             await _error_handler(None, ctx)
             await _error_handler(None, ctx)
 
         ctx.application.stop_running.assert_called_once()
+        arm_watchdog.assert_called_once_with()
         assert polling_conflict_requires_restart() is True
         mock_logger.critical.assert_called_once()
 

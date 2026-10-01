@@ -12,6 +12,7 @@ from telegram.error import RetryAfter
 from ... import window_query
 from ...multiplexer.base import canonical_window_id
 from ...multiplexer.reconciliation import window_presence
+from ...providers import registry as provider_registry
 from ...session import session_manager
 from ...telegram_client import TelegramClient
 from ...thread_router import ThreadRouter, TopicProvisioning, thread_router
@@ -19,8 +20,14 @@ from ..cleanup import clear_topic_state
 from .topic_deletion import cleanup_retired_topic
 from .topic_orchestration import _window_topic_lock, create_topic_in_chat
 from .topic_probe import probe_topic_exists
+from .window_launch_service import agent_process_started
 
 logger = structlog.get_logger()
+
+# How long recovery holds a claim for a hookless agent whose pane has not
+# taken over from its launch shell. Long enough for a slow CLI to appear,
+# short enough that a CLI that never starts still releases the topic.
+HOOKLESS_START_GRACE_S = 180.0
 
 
 def _target_bound_in_chat(
@@ -258,27 +265,26 @@ async def _commit_present_topic(router: ThreadRouter, claim: TopicProvisioning) 
 
 
 async def _hookless_agent_has_not_started(claim: TopicProvisioning) -> bool:
-    """True when a hookless agent's pane still runs its launch shell.
+    """True while a hookless agent's pane has not taken over from its shell.
 
     Committing here binds the topic while the pane still runs the shell the
     launch typed into, and the next poll reads that shell as an exited agent
-    and kills a window whose CLI was merely slow to start. Leaving the claim
-    quarantined lets a later cycle commit once the CLI takes over.
+    and kills a window whose CLI was merely slow to start. Holding the claim
+    lets a later cycle commit once the CLI takes over; the caller stops
+    holding after ``HOOKLESS_START_GRACE_S`` so a CLI that never starts still
+    settles instead of leaking the window forever.
     """
     assert claim.target_id is not None
     provider_name = window_query.get_window_provider(claim.target_id)
     if not provider_name:
         return False
-    # Lazy: the provider registry pulls every provider implementation
-    from ...providers import registry as provider_registry
-
     caps = provider_registry.get(provider_name).capabilities
     if caps.supports_hook or caps.chat_first_command_path:
         return False
-    # Lazy: window_launch_service imports this module for recovery callbacks
-    from .window_launch_service import agent_process_started
-
-    return await agent_process_started(claim.target_id) is False
+    # An unanswerable probe (backend outage, no pane command) also holds:
+    # committing on a guess is what the guard exists to prevent, and the
+    # grace bound keeps a persistent outage from quarantining forever.
+    return await agent_process_started(claim.target_id) is not True
 
 
 async def _recover_present_topic(
@@ -309,8 +315,14 @@ async def _recover_present_topic(
     if topic_exists is None:
         return "unresolved"
     if topic_exists:
-        if await _hookless_agent_has_not_started(claim):
-            return "unresolved"
+        if (
+            await _hookless_agent_has_not_started(claim)
+            and time.time() - claim.created_at < HOOKLESS_START_GRACE_S
+        ):
+            return "rate_limited" if cleanup_rate_limited else "unresolved"
+        # Past the grace the CLI never came up: fall through to the normal
+        # commit so the window lifecycle cleans the dead pane up instead of
+        # leaving a claim that can never settle.
         outcome = await _commit_present_topic(router, claim)
         return "rate_limited" if cleanup_rate_limited else outcome
 

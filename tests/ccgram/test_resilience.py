@@ -459,10 +459,12 @@ class TestShutdownNotificationLifecycle:
             patch("ccgram.bot.logging.shutdown", side_effect=_blocked_flush),
             patch("ccgram.bot.os._exit") as mock_exit,
         ):
-            # Must return well before the blocked flush; the bound, not the
-            # flush, decides when the process goes.
+            started = time.monotonic()
             _force_exit_after_wedged_shutdown()
+            elapsed = time.monotonic() - started
 
+        # Returns on the bound, not on the 5s flush.
+        assert elapsed < 2.0
         mock_exit.assert_called_once_with(1)
 
     async def test_post_shutdown_does_not_send_notification(self):

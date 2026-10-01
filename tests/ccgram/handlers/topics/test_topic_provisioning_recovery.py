@@ -329,7 +329,7 @@ async def test_hookless_agent_in_shell_keeps_present_topic_quarantined():
         ),
         patch("ccgram.providers.registry.registry.get", return_value=provider),
         patch(
-            "ccgram.handlers.topics.window_launch_service.agent_process_started",
+            "ccgram.handlers.topics.topic_provisioning_recovery.agent_process_started",
             new_callable=AsyncMock,
             return_value=False,
         ) as started,
@@ -341,6 +341,80 @@ async def test_hookless_agent_in_shell_keeps_present_topic_quarantined():
     started.assert_awaited_once_with("@2")
     assert router.iter_topic_provisionings() == [claim]
     assert router.get_window_for_chat_thread(-100, 42) is None
+
+
+async def test_hookless_agent_unknown_probe_also_holds_the_claim():
+    """An unanswerable probe must not commit on a guess."""
+    router, claim = _restored_claim()
+    client = AsyncMock()
+    provider = MagicMock()
+    provider.capabilities.supports_hook = False
+    provider.capabilities.chat_first_command_path = False
+    with (
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.window_presence",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.probe_topic_exists",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.window_query.get_window_provider",
+            return_value="antigravity",
+        ),
+        patch("ccgram.providers.registry.registry.get", return_value=provider),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.agent_process_started",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+    ):
+        assert await recover_topic_provisioning(client, router=router) == {
+            "unresolved": 1
+        }
+
+    assert router.iter_topic_provisionings() == [claim]
+
+
+async def test_hookless_agent_past_the_grace_settles_instead_of_leaking():
+    """A CLI that never starts must not quarantine the claim forever."""
+    router, claim = _restored_claim()
+    client = AsyncMock()
+    provider = MagicMock()
+    provider.capabilities.supports_hook = False
+    provider.capabilities.chat_first_command_path = False
+    with (
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.window_presence",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.probe_topic_exists",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.window_query.get_window_provider",
+            return_value="antigravity",
+        ),
+        patch("ccgram.providers.registry.registry.get", return_value=provider),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.agent_process_started",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.time.time",
+            return_value=claim.created_at + 181.0,
+        ),
+    ):
+        assert await recover_topic_provisioning(client, router=router) == {"bound": 1}
+
+    assert router.get_window_for_chat_thread(-100, 42) == "@2"
 
 
 async def test_hookless_agent_in_shell_commits_once_the_cli_took_over():
@@ -366,7 +440,7 @@ async def test_hookless_agent_in_shell_commits_once_the_cli_took_over():
         ),
         patch("ccgram.providers.registry.registry.get", return_value=provider),
         patch(
-            "ccgram.handlers.topics.window_launch_service.agent_process_started",
+            "ccgram.handlers.topics.topic_provisioning_recovery.agent_process_started",
             new_callable=AsyncMock,
             return_value=True,
         ),
@@ -399,7 +473,7 @@ async def test_hook_provider_skips_the_pane_probe():
         ),
         patch("ccgram.providers.registry.registry.get", return_value=provider),
         patch(
-            "ccgram.handlers.topics.window_launch_service.agent_process_started",
+            "ccgram.handlers.topics.topic_provisioning_recovery.agent_process_started",
             new_callable=AsyncMock,
         ) as started,
     ):

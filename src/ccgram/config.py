@@ -69,7 +69,11 @@ def _delivery_watch_gap_bytes() -> int:
         return 256 * 1024
     if not math.isfinite(value):
         return 256 * 1024
-    return max(0, int(value * 1024))
+    try:
+        return max(0, int(value * 1024))
+    except OverflowError, ValueError:
+        # Finite but too large for an int; treat like any other bad value.
+        return 256 * 1024
 
 
 class Config:
