@@ -1370,62 +1370,87 @@ class HerdrManager:
         pinned_seen = False
         while True:
             records = await self._agent_list_snapshot()
-            if terminal_id is not None and not pinned_seen:
-                # Confirmation for a pre-pinned identity: any record (a
-                # terminal fallback counts) at the creation locators
-                # proves the created pane lives at this terminal id.
-                pinned_seen = any(
-                    record.terminal_id == terminal_id
-                    and (record.tab_id == tab_id or record.pane_id == pane_id)
-                    for record in records
-                )
-            if terminal_id is None:
-                pinned = [
-                    record
-                    for record in records
-                    if record.tab_id == tab_id
-                    and record.pane_id == pane_id
-                    and (workspace_id is None or record.workspace_id == workspace_id)
-                ]
-                if len(pinned) == 1:
-                    terminal_id = pinned[0].terminal_id
-                    pinned_seen = True
-                elif len(pinned) > 1:
-                    raise HerdrAmbiguousTargetError(
-                        "new Herdr pane reported duplicate sessions"
-                    )
-            matches: list[HerdrLiveRecord] = []
-            if terminal_id is not None:
-                matches = [
-                    record
-                    for record in records
-                    if record.terminal_id == terminal_id
-                    and record.composite.kind != _TERMINAL_FALLBACK_KIND
-                ]
-                if len(matches) == 1 and not pinned_seen:
-                    # Guard the pre-pinned identity: before any poll has
-                    # confirmed the created pane at this terminal (a
-                    # sibling agent cannot share a terminal id with it,
-                    # but a stale or misattributed record could sit there),
-                    # the match must also carry one of the creation
-                    # locators. Once the first poll confirms the pane,
-                    # renumbering may change both locators, so later
-                    # polls trust the terminal id alone.
-                    first = matches[0]
-                    if first.tab_id == tab_id or first.pane_id == pane_id:
-                        pinned_seen = True
-                    else:
-                        matches = []
-            if len(matches) == 1:
-                return matches[0]
+            terminal_id, pinned_seen = self._advance_created_session_pin(
+                records,
+                tab_id=tab_id,
+                pane_id=pane_id,
+                workspace_id=workspace_id,
+                terminal_id=terminal_id,
+                pinned_seen=pinned_seen,
+            )
+            matches = self._session_backed_matches(records, terminal_id)
             if len(matches) > 1:
                 raise HerdrAmbiguousTargetError(
                     "new Herdr pane reported duplicate sessions"
                 )
+            if len(matches) == 1:
+                first = matches[0]
+                # Guard the pre-pinned identity: before any poll has
+                # confirmed the created pane at this terminal (a sibling
+                # agent cannot share a terminal id with it, but a stale or
+                # misattributed record could sit there), the match must
+                # also carry one of the creation locators. Once the first
+                # poll confirms the pane, renumbering may change both
+                # locators, so later polls trust the terminal id alone.
+                if pinned_seen or first.tab_id == tab_id or first.pane_id == pane_id:
+                    return first
             if loop.time() >= deadline:
                 break
             await asyncio.sleep(_CREATED_SESSION_POLL_INTERVAL_SECONDS)
         raise HerdrUnresolvedTargetError("new Herdr pane did not report a session")
+
+    @staticmethod
+    def _advance_created_session_pin(
+        records: Sequence[HerdrLiveRecord],
+        *,
+        tab_id: str,
+        pane_id: str,
+        workspace_id: str | None,
+        terminal_id: str | None,
+        pinned_seen: bool,
+    ) -> tuple[str | None, bool]:
+        """Advance the created-pane pin one poll; returns (terminal, pinned).
+
+        A pre-pinned terminal is confirmed by any record (a terminal
+        fallback counts) at the creation locators. Without one, the first
+        unique record at the creation locators supplies the terminal id.
+        """
+        if terminal_id is not None:
+            if pinned_seen:
+                return terminal_id, True
+            return terminal_id, any(
+                record.terminal_id == terminal_id
+                and (record.tab_id == tab_id or record.pane_id == pane_id)
+                for record in records
+            )
+        pinned = [
+            record
+            for record in records
+            if record.tab_id == tab_id
+            and record.pane_id == pane_id
+            and (workspace_id is None or record.workspace_id == workspace_id)
+        ]
+        if len(pinned) > 1:
+            raise HerdrAmbiguousTargetError(
+                "new Herdr pane reported duplicate sessions"
+            )
+        if len(pinned) == 1:
+            return pinned[0].terminal_id, True
+        return None, False
+
+    @staticmethod
+    def _session_backed_matches(
+        records: Sequence[HerdrLiveRecord], terminal_id: str | None
+    ) -> list[HerdrLiveRecord]:
+        """Session-published records at one terminal, fallbacks excluded."""
+        if terminal_id is None:
+            return []
+        return [
+            record
+            for record in records
+            if record.terminal_id == terminal_id
+            and record.composite.kind != _TERMINAL_FALLBACK_KIND
+        ]
 
     async def create_topic_target(  # noqa: C901
         self,
