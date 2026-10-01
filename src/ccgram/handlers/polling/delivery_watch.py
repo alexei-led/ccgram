@@ -221,6 +221,9 @@ async def _send_alert(
         # under suspicion and must not carry its own alarm. safe_send
         # returns None on non-rate-limit Telegram failures (only
         # RetryAfter raises), so a None answer is also a failed alert.
+        # An alert that times out after delivery is retried and can be
+        # posted twice: the duplicate is the accepted side of the
+        # retry-on-any-unconfirmed-send trade-off.
         sent = await safe_send(
             client,
             chat_id,
