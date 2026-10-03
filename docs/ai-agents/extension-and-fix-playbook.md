@@ -36,7 +36,7 @@ Add a new slash command (agent-side, e.g. for Claude):
 
 Add file upload handling:
 
-- `handlers/file_handler.py` handles photos/documents. Saved to `.ccgram-uploads/` under the config dir. Agent notified via tmux keys with the path. Extend `file_handler.py` for new media types or post-processing.
+- `handlers/file_handler.py` handles photos/documents. Saved to `.ccgram-uploads/` in the session's cwd. Agent notified via tmux keys with the absolute path; the Telegram reply keeps the relative form. Extend `file_handler.py` for new media types or post-processing.
 
 Add a new LLM provider (shell command generation):
 

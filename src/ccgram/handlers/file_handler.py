@@ -1,7 +1,7 @@
 """Photo and document message handlers for forwarding files to Claude Code.
 
 Saves uploaded files to `.ccgram-uploads/` in the session's cwd, then sends
-Claude a natural-language message with the relative path so it can read the
+Claude a natural-language message with the absolute path so it can read the
 file via its Read tool.
 
 Key handlers:
@@ -145,7 +145,19 @@ def _resolve_upload_dir(
     if view is None or not view.cwd:
         return window_id, None, "Session has no working directory."
 
+    # The cwd arrives as an unvalidated passthrough (hook payload, persisted
+    # state), so enforce the absolute-path invariant here: every consumer of
+    # upload_path, the save location and the agent notification, depends on it.
+    # A tilde form is deliberately rejected rather than expanded: expansion
+    # would resolve against the bridge process's home, not the session owner's.
     upload_path = Path(view.cwd) / _UPLOAD_DIR
+    if not upload_path.is_absolute():
+        return window_id, None, "Session working directory is not absolute."
+    if not str(upload_path).isprintable():
+        # A control character in the cwd would split the literal tmux send.
+        # Stricter than _CONTROL_CHAR_RE above: captions keep \n and \t
+        # after collapsing, a path used in a literal send admits neither.
+        return window_id, None, "Session working directory is not usable."
     return window_id, upload_path, None
 
 
@@ -236,7 +248,10 @@ async def _upload_and_notify(
 
     rel_path = f"{_UPLOAD_DIR}/{saved_name}"
     caption = message.caption or ""
-    claude_msg = claude_msg_tpl.format(name=saved_name, path=rel_path)
+    # Absolute path in the agent message: an agent resolves a relative one
+    # against an arbitrary base (its home rather than the session cwd), and
+    # the failed read then looks like the upload never happened.
+    claude_msg = claude_msg_tpl.format(name=saved_name, path=upload_path / saved_name)
     if caption:
         claude_msg += f"\n\nUser note: {_sanitize_caption(caption)}"
 
