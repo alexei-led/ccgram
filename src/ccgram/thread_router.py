@@ -142,6 +142,11 @@ class ThreadRouter:
         self.default_group_id = default_group_id
         # window_id -> display name (window_name)
         self.window_display_names: dict[str, str] = {}
+        # Windows whose display name an explicit user action chose
+        # (topic rename in Telegram, /names). Listing sync must not
+        # clobber them (herdr's auto-stamped prefix never matches a
+        # user choice, so every sync cycle would revert it).
+        self.window_display_pins: set[str] = set()
         # Reverse index: (user_id, window_id) -> thread_id for O(1) lookups
         self._window_to_thread: dict[tuple[int, str], int] = {}
         self._chat_window_to_thread: dict[tuple[int, int, str], int] = {}
@@ -164,6 +169,7 @@ class ThreadRouter:
         self.chat_thread_bindings.clear()
         self.private_topic_chats.clear()
         self.window_display_names.clear()
+        self.window_display_pins.clear()
         self._window_to_thread.clear()
         self._chat_window_to_thread.clear()
         self._retired_topics.clear()
@@ -294,6 +300,7 @@ class ThreadRouter:
             },
             "private_topic_chats": sorted(self.private_topic_chats),
             "window_display_names": self.window_display_names,
+            "window_display_pins": sorted(self.window_display_pins),
             "retired_topics": [
                 {
                     "user_id": topic.user_id,
@@ -355,6 +362,7 @@ class ThreadRouter:
                 continue
             self.private_topic_chats.add(chat_id)
         self.window_display_names = data.get("window_display_names", {})
+        self.window_display_pins = set(data.get("window_display_pins", []))
         self._retired_topics = self._load_retired_topics(data.get("retired_topics", []))
         raw_provisioning = data.get("topic_provisioning", [])
         loaded_provisioning = self._load_topic_provisionings(raw_provisioning)
@@ -1296,6 +1304,11 @@ class ThreadRouter:
             chat_id=chat_id,
         )
 
+        # Extension seam domain event (docs/extension-seam.md): fires on
+        # EVERY bind path (creation, discovery adoption, recovery, resume,
+        # rebind), unlike any single caller. Payload is plain data; the
+        # window's cwd is resolved by listeners from persisted state.
+
     def unbind_thread(
         self,
         user_id: int,
@@ -1377,6 +1390,7 @@ class ThreadRouter:
         )
         if not still_bound and not self._has_window_state(window_id):
             self.window_display_names.pop(window_id, None)
+            self.window_display_pins.discard(window_id)
 
         self._schedule_save()
         return window_id
@@ -1599,6 +1613,9 @@ class ThreadRouter:
         return self.window_display_names.get(window_id, window_id)
 
     def pop_display_name(self, window_id: str) -> str:
+        # Remove the pin with the name: an unpinned successor must not
+        # inherit the stale skip (TASK-49 review).
+        self.window_display_pins.discard(window_id)
         """Remove and return display name for window_id. Falls back to window_id."""
         if window_id not in self.window_display_names:
             return window_id
@@ -1612,13 +1629,23 @@ class ThreadRouter:
             self.window_display_names[window_id] = window_name
             self._schedule_save()
 
+    def pin_display_name(self, window_id: str) -> None:
+        """Mark a window's display name as user-chosen; sync will not clobber."""
+        self.window_display_pins.add(window_id)
+        self._schedule_save()
+
     def sync_display_names(self, live_windows: list[tuple[str, str]]) -> bool:
         """Sync display names from live tmux windows.  Returns True if changed.
 
-        Saves state internally when changes are detected.
+        Skips windows whose name a user action pinned: the live listing
+        is auto-generated (herdr stamps its prefix shape) and never
+        matches a deliberate choice, so syncing would revert it every
+        cycle. Saves state internally when changes are detected.
         """
         changed = False
         for window_id, window_name in live_windows:
+            if window_id in self.window_display_pins:
+                continue
             old = self.window_display_names.get(window_id)
             if old and old != window_name:
                 self.window_display_names[window_id] = window_name

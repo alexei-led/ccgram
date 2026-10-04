@@ -1148,3 +1148,26 @@ class TestScheduleSave:
         router._schedule_save = lambda: calls.append(1)
         router.set_display_name("@1", "proj")
         assert len(calls) == 1
+
+
+class TestDisplayNamePins:
+    def test_pinned_name_survives_listing_sync(self, router: ThreadRouter) -> None:
+        router.set_display_name("@1", "user choice")
+        router.pin_display_name("@1")
+        changed = router.sync_display_names([("@1", "auto prefix name")])
+        assert not changed
+        assert router.get_display_name("@1") == "user choice"
+
+    def test_unpinned_name_syncs_as_before(self, router: ThreadRouter) -> None:
+        router.set_display_name("@1", "old")
+        changed = router.sync_display_names([("@1", "listing name")])
+        assert changed
+        assert router.get_display_name("@1") == "listing name"
+
+    def test_pin_pruned_with_the_name(self, router: ThreadRouter) -> None:
+        router.bind_thread(1, 42, "@1")
+        router.set_display_name("@1", "user choice")
+        router.pin_display_name("@1")
+        router.unbind_thread(1, 42)  # unbound + no state: prunes name and pin
+        assert "@1" not in router.window_display_names
+        assert "@1" not in router.window_display_pins
