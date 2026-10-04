@@ -19,6 +19,7 @@ from ....providers import get_provider_for_window
 from ....providers.base import StatusUpdate
 from ....session_monitor import get_active_monitor
 from ....multiplexer import agent_status_cache
+from ....multiplexer.agent_status_cache import resolve_agent_working
 from ....multiplexer import multiplexer as tmux_manager
 from ....multiplexer.vim_state import has_insert_indicator, notify_vim_insert_seen
 from ..polling_state import terminal_poll_state, terminal_screen_buffer
@@ -91,14 +92,23 @@ async def _resolve_status(
         parse_claude_chrome=provider.capabilities.uses_pyte_status_parsing,
         runtime=runtime,
     )
-    if status is not None:
+    if status is not None and not (
+        status.is_interactive and await resolve_agent_working(window_id)
+    ):
         return status
     clean_text = sb.get_rendered_text(window_id, pane_text)
     pane_title = ""
     if provider.capabilities.uses_pane_title:
         pane_title = await tmux_manager.get_pane_title(w.window_id)
     status = provider.parse_terminal_status(clean_text, pane_title=pane_title)
-    if status is not None:
+    if status is not None and not (
+        status.is_interactive and await resolve_agent_working(window_id)
+    ):
+        # TASK-47: a selection-shaped region on a WORKING pane is Claude
+        # Code's queued-input block (messages typed mid-turn), not a
+        # prompt; fall through to the native working status instead of
+        # latching a false interactive state (which also blocked the
+        # user's text via the dismissal-confirmation loop).
         return status
     # Gap-fill: backends with native agent status (herdr) report a busy state
     # for non-Claude agents whose terminal chrome the scrapers can't read.
@@ -115,13 +125,10 @@ async def _native_agent_status(window_id: str) -> StatusUpdate | None:
     """
     if not tmux_manager.capabilities.native_agent_status:
         return None
-    # Push-primary: read the event-stream cache (no subprocess). On a cold cache
-    # (just-bound, before the first push — or a backend without an event stream)
-    # fall back to one ``agent_status`` subprocess call. On event-stream backends
-    # the push keeps the cache warm, so the per-tick subprocess is skipped.
-    native = agent_status_cache.get_status(window_id)
-    if native is None:
-        native = await tmux_manager.agent_status(window_id)
+    # One freshness policy with the TASK-47 gates: TTL-fresh push entry,
+    # else one ``agent_status`` probe whose result is written back (a
+    # silent stream drop must not synthesize busy state from frozen data).
+    native = await agent_status_cache.resolve_agent_status(window_id)
     if native is None:
         return None
     if native.state == "working":

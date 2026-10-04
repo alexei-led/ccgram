@@ -15,7 +15,7 @@ async def test_dispatch_agent_status_updates_cache() -> None:
     monitor = EventStreamMonitor(MagicMock(), set)
     status = AgentStatus("working", "codex", "compiling")
     await monitor._dispatch(MuxEvent("agent_status", "w2:t1", "w2:p1", status))
-    assert agent_status_cache.get_status("w2:t1") == status
+    assert agent_status_cache._fresh_status("w2:t1") == status
 
 
 async def test_dispatch_window_died_clears_cache_and_notifies_bound_users() -> None:
@@ -39,7 +39,7 @@ async def test_dispatch_window_died_clears_cache_and_notifies_bound_users() -> N
     ):
         await monitor._dispatch(MuxEvent("window_died", "w2:t1"))
 
-    assert agent_status_cache.get_status("w2:t1") is None
+    assert agent_status_cache._fresh_status("w2:t1") is None
     notify.assert_awaited_once_with("BOT", 7, 42, "w2:t1")
 
 
