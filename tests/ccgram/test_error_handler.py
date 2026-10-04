@@ -153,6 +153,69 @@ class TestErrorHandlerStaleCallback:
         assert polling_conflict_requires_restart() is True
 
 
+class TestShutdownExitWatchdog:
+    async def test_post_stop_arms_and_post_shutdown_cancels(self) -> None:
+        # The v4.13 watchdog is armed via arm_shutdown_watchdog() from
+        # post_stop (the common funnel) and disarmed in post_shutdown.
+        from ccgram import bot
+        from ccgram.bot import post_shutdown, post_stop
+
+        bot._shutdown_watchdog = None
+        timer = MagicMock()
+        app = MagicMock()
+        with (
+            patch("ccgram.bot.threading.Timer", return_value=timer) as timer_cls,
+            patch("ccgram.bot.bootstrap.stop_delivery_runtime", new=AsyncMock()),
+            patch("ccgram.bot._send_shutdown_notification", new=AsyncMock()) as goodbye,
+            patch("ccgram.bot.bootstrap.shutdown_runtime", new=AsyncMock()),
+        ):
+            await post_stop(app)
+            timer_cls.assert_called_once_with(
+                bot._SHUTDOWN_WATCHDOG_SECONDS,
+                bot._force_exit_after_wedged_shutdown,
+            )
+            assert timer.daemon is True
+            timer.start.assert_called_once()
+            goodbye.assert_awaited_once()
+            assert bot._shutdown_watchdog is timer
+
+            await post_shutdown(app)
+        timer.cancel.assert_called_once()
+        assert bot._shutdown_watchdog is None
+
+    async def test_forced_exit_runs_bounded_flush_and_exits(self) -> None:
+        from ccgram.bot import _force_exit_after_wedged_shutdown
+
+        with (
+            patch("ccgram.bot.os._exit") as exit_mock,
+            patch("ccgram.bot.threading.Thread") as thread_cls,
+        ):
+            _force_exit_after_wedged_shutdown()
+        exit_mock.assert_called_once_with(1)
+        from ccgram.bot import _WATCHDOG_FLUSH_SECONDS
+
+        thread_cls.assert_called_once_with(
+            target=thread_cls.call_args.kwargs["target"], daemon=True
+        )
+        flusher = thread_cls.return_value
+        flusher.start.assert_called_once()
+        flusher.join.assert_called_once_with(timeout=_WATCHDOG_FLUSH_SECONDS)
+
+    async def test_conflict_stop_arms_the_watchdog_too(self) -> None:
+        # The conflict stop path never reaches the signal handler, so
+        # the watchdog is armed right there (b0f01ed0): a wedge in
+        # stop() must not leave the supervisor waiting.
+        ctx = _make_context(Conflict("409 Conflict"))
+        with (
+            patch("ccgram.bot.threading.Timer") as timer_cls,
+            patch("ccgram.bot.time.monotonic", side_effect=[100.0, 190.0]),
+        ):
+            await _error_handler(None, ctx)
+            await _error_handler(None, ctx)
+        ctx.application.stop_running.assert_called_once()
+        timer_cls.assert_called_once()
+
+
 class TestShutdownNotification:
     async def test_sends_to_general_topic(self) -> None:
         app = MagicMock()
