@@ -1203,3 +1203,69 @@ class TestScrollbackGuardLongList:
         pane = ["Pick a task:"] + ["❯ " + options[0][2:]] + options[1:]
         result = extract_interactive_content(pane)
         assert result is not None and result.name == "SelectionUI"
+
+
+class TestNumberedAnchorGuard:
+    """A numbered-item bottom requires the cursor ON the first numbered
+    option; a user-message echo above an unrelated numbered reply is
+    scrollback (2026-10-03 anti-vocale incident: the agent's Tasker
+    instruction steps rendered as quick-pick buttons)."""
+
+    def test_numbered_echo_above_numbered_reply_is_rejected(self):
+        """A user enumeration echoes with a number; still scrollback."""
+        pane = [
+            "\u276f 1. Verifica il deploy e manda il report",
+            "",
+            "\u25a3 Fatto. Prossimi passi:",
+            "",
+            "  1. Chiudi l'app.",
+            "  2. Rilancia il test.",
+            "",
+            "\u276f",
+            "  \u23b5\u23b5 auto mode on",
+        ]
+        assert extract_interactive_content(pane) is None
+
+    def test_plain_cursor_with_contiguous_numbered_item_matches(self):
+        """Cursor on a non-numbered option directly above numbered items
+        is a live menu (accepted before the guard; kept by contiguity)."""
+        pane = [
+            "Pick an action:",
+            "",
+            "  \u276f Accept    Reject",
+            "  1. details of accept",
+        ]
+        result = extract_interactive_content(pane)
+        assert result is not None and result.name == "SelectionUI"
+
+    def test_stale_numbered_echo_above_fresh_reply_is_rejected(self):
+        """A picked-option echo far in scrollback above a fresh numbered
+        reply that ends the pane is still scrollback (review probe)."""
+        pane = (
+            [
+                "\u276f 1. Enable Remote Control for this session",
+            ]
+            + [f"  filler line {i}" for i in range(20)]
+            + [
+                "  1. Fresh agent step one.",
+                "\u276f",
+            ]
+        )
+        assert extract_interactive_content(pane) is None
+
+    def test_prose_echo_above_numbered_reply_is_rejected(self):
+        pane = [
+            "  1. Apri Tasker e vai sulla scheda TASKS.",
+            "  2. Tieni premuto il dito sul titolo.",
+            "",
+            "❯ Questa volta ho importato",
+            "",
+            "▢ Perfetto. Ora gli ultimi due passi, quando vuoi:",
+            "",
+            "  1. Chiudi Anti-Vocale dalle app recenti.",
+            "  2. In Tasker, scheda TASKS, tocca AV Background Test.",
+            "",
+            "❯",
+            "  ⏵⏵ auto mode on",
+        ]
+        assert extract_interactive_content(pane) is None
