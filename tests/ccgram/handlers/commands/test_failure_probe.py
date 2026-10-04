@@ -193,3 +193,59 @@ class TestMaybeSendCommandFailureMessage:
             )
 
         mock_reply.assert_not_called()
+
+
+class TestStaleErrorFilter:
+    def test_error_line_for_a_different_command_is_ignored(self):
+        from ccgram.handlers.commands.failure_probe import _extract_probe_error_line
+
+        delta = "● Unknown command: /names. Did you mean /name?"
+        assert _extract_probe_error_line(delta, "/pa:research") is None
+
+    def test_error_line_naming_the_command_is_returned(self):
+        from ccgram.handlers.commands.failure_probe import _extract_probe_error_line
+
+        delta = "● Unknown command: /pa:search. Did you mean /pa:research?"
+        assert (
+            _extract_probe_error_line(delta, "/pa:search")
+            == "● Unknown command: /pa:search. Did you mean /pa:research?"
+        )
+
+    def test_prefix_command_is_not_matched_inside_a_longer_one(self):
+        from ccgram.handlers.commands.failure_probe import (
+            _extract_probe_error_line,
+        )
+
+        delta = "● Unknown command: /names"
+        assert _extract_probe_error_line(delta, "/name") is None
+
+    def test_suggestion_line_cannot_fail_the_suggested_command(self):
+        from ccgram.handlers.commands.failure_probe import _extract_probe_error_line
+
+        delta = "● Unknown command: /pa:search. Did you mean /pa:research?"
+        assert _extract_probe_error_line(delta, "/pa:research") is None
+        assert _extract_probe_error_line(delta, "/pa:search") is not None
+
+    def test_unrecognized_quoted_phrasing_matches(self):
+        from ccgram.handlers.commands.failure_probe import _extract_probe_error_line
+
+        delta = "unrecognized command '/cost'"
+        assert _extract_probe_error_line(delta, "/cost") is not None
+
+    def test_command_not_found_phrasing_matches(self):
+        from ccgram.handlers.commands.failure_probe import _extract_probe_error_line
+
+        delta = "ERROR: command not found: /deploy"
+        assert _extract_probe_error_line(delta, "/deploy") is not None
+
+    def test_shorter_command_vs_namespaced_longer(self):
+        from ccgram.handlers.commands.failure_probe import _extract_probe_error_line
+
+        delta = "● Unknown command: /spec:work"
+        assert _extract_probe_error_line(delta, "/spec") is None
+        assert _extract_probe_error_line(delta, "/spec:work") is not None
+
+    def test_no_command_context_keeps_legacy_behavior(self):
+        from ccgram.handlers.commands.failure_probe import _extract_probe_error_line
+
+        assert _extract_probe_error_line("Error: command not found: git") is not None
