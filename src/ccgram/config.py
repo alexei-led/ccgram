@@ -175,6 +175,10 @@ class Config:
         self.whisper_base_url: str = os.getenv("CCGRAM_WHISPER_BASE_URL", "")
         self.whisper_model: str = os.getenv("CCGRAM_WHISPER_MODEL", "")
         self.whisper_language: str = os.getenv("CCGRAM_WHISPER_LANGUAGE", "")
+        # Seconds before the transcription POST gives up. Local backends
+        # (omnivoice) can spend minutes on the first ASR cold load.
+        self.whisper_timeout: float = float(
+            os.getenv("CCGRAM_WHISPER_TIMEOUT", "240"))
 
         # Voice replies (text-to-speech)
         # CCGRAM_TTS_PROVIDER: empty = disabled; "edge" = edge-tts; "openai" = OpenAI TTS

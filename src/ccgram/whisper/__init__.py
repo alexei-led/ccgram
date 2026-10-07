@@ -53,4 +53,5 @@ def get_transcriber() -> WhisperTranscriber | None:
         model=model,
         base_url=base_url,
         language=language,
+        timeout=config.whisper_timeout,
     )

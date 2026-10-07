@@ -21,11 +21,16 @@ class OpenAICompatTranscriber:
         model: str,
         base_url: str | None = None,
         language: str | None = None,
+        timeout: float = 240.0,
     ) -> None:
         self.model = model
         self.language = language
         self._api_key = api_key
         self._base_url = (base_url or _OPENAI_BASE_URL).rstrip("/")
+        # 240s default: a local backend (omnivoice) pays a >60s model cold
+        # load on the first request after idle eviction; 60s turned that
+        # into a silent "Transcription failed:" (timeout str() is empty).
+        self._timeout = timeout
 
     async def transcribe(
         self, audio_bytes: bytes, filename: str
@@ -59,7 +64,7 @@ class OpenAICompatTranscriber:
                     headers={"Authorization": f"Bearer {self._api_key}"},
                     files={"file": (filename, audio_bytes)},
                     data=data,
-                    timeout=60.0,
+                    timeout=self._timeout,
                 )
                 response.raise_for_status()
             except httpx.HTTPStatusError as exc:
