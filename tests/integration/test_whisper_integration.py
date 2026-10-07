@@ -53,6 +53,7 @@ def whisper_config(monkeypatch):
         base_url: str = "",
         model: str = "",
         language: str = "",
+        timeout: float = 60.0,
     ) -> None:
         for field, value in (
             ("whisper_provider", provider),
@@ -60,6 +61,7 @@ def whisper_config(monkeypatch):
             ("whisper_base_url", base_url),
             ("whisper_model", model),
             ("whisper_language", language),
+            ("whisper_timeout", timeout),
         ):
             monkeypatch.setattr(f"ccgram.config.config.{field}", value)
 
@@ -94,8 +96,27 @@ class TestWhisperConfigIntegration:
                 "custom-override-key",
                 id="api-key-from-env",
             ),
+            pytest.param(
+                {"CCGRAM_WHISPER_TIMEOUT": "30.5"},
+                "whisper_timeout",
+                30.5,
+                id="timeout-from-env",
+            ),
             pytest.param({}, "whisper_provider", "", id="provider-disabled-by-default"),
             pytest.param({}, "whisper_language", "", id="language-empty-by-default"),
+            pytest.param({}, "whisper_timeout", 60.0, id="timeout-default-60"),
+            pytest.param(
+                {"CCGRAM_WHISPER_TIMEOUT": "nan"},
+                "whisper_timeout",
+                60.0,
+                id="timeout-nan-falls-back",
+            ),
+            pytest.param(
+                {"CCGRAM_WHISPER_TIMEOUT": ""},
+                "whisper_timeout",
+                60.0,
+                id="timeout-empty-falls-back",
+            ),
         ],
     )
     def test_whisper_field_resolution(
@@ -175,6 +196,7 @@ class TestGetTranscriberIntegration:
             pytest.param(
                 {"api_key": "custom-key"}, "_api_key", "custom-key", id="api-key"
             ),
+            pytest.param({"timeout": 240.0}, "_timeout", 240.0, id="timeout"),
         ],
     )
     def test_config_overrides_beat_provider_defaults(
