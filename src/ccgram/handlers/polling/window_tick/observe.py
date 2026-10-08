@@ -119,10 +119,10 @@ async def _native_agent_status(window_id: str) -> StatusUpdate | None:
     # (just-bound, before the first push — or a backend without an event stream)
     # fall back to one ``agent_status`` subprocess call. On event-stream backends
     # the push keeps the cache warm, so the per-tick subprocess is skipped.
-    # Fail soft: the gap-fill is optional enrichment, and a backend probe
-    # error (a dead socket raising RuntimeError, for instance) must not
-    # escape into the poll loop, whose per-window catch only handles
-    # (TelegramError, OSError).
+    # Fail soft: the gap-fill is optional enrichment, so a probe error
+    # degrades to no native status. The per-window catch handles only
+    # (TelegramError, OSError), so letting it through would abort the
+    # whole iteration for every window and apply the loop's backoff.
     try:
         if tmux_manager.capabilities.supports_event_stream:
             native = await agent_status_cache.get_status_or_probe(
@@ -132,7 +132,7 @@ async def _native_agent_status(window_id: str) -> StatusUpdate | None:
             # Probe-only backends have no push stream to refresh cached
             # transitions.
             native = await tmux_manager.agent_status(window_id)
-    except Exception:  # noqa: BLE001  # a failed probe must not break ticks
+    except Exception:  # noqa: BLE001  # degrade, never break the tick
         return None
     if native is None:
         return None
