@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.16.0] - 2026-10-08
+
+### Added
+- Add a topic-scoped `/dashboard` command and panel action that send a signed Mini App link privately; use `/start` first if the bot has not started a private chat ([#320](https://github.com/alexei-led/ccgram/pull/320)).
+
+### Fixed
+- Make `CCGRAM_WHISPER_TIMEOUT` configurable while keeping the 60-second default, and report timeout failures clearly ([#303](https://github.com/alexei-led/ccgram/pull/303)).
+- Keep advisory terminal selections usable without blocking ordinary text forwarding ([#313](https://github.com/alexei-led/ccgram/pull/313)).
+- Match provider command errors to the exact dispatched command, including custom names and punctuation, so stale or unrelated errors do not produce false notices ([#316](https://github.com/alexei-led/ccgram/pull/316)).
+- Reject echoed numbered transcript text as a live selection while preserving wrapped live menus ([#317](https://github.com/alexei-led/ccgram/pull/317)).
+- Preserve user-chosen topic names through backend listing refreshes, alias consolidation, and topic rebinding ([#318](https://github.com/alexei-led/ccgram/pull/318)).
+- Keep native agent status fresh for probe-only backends and bound stale cache entries ([#319](https://github.com/alexei-led/ccgram/pull/319)).
+
+### Upgrade
+- No configuration migration is required. To use `/dashboard`, set the existing `CCGRAM_MINIAPP_BASE_URL` and start a private chat with the bot using `/start`. Set `CCGRAM_WHISPER_TIMEOUT` only if you need a different transcription deadline; the default remains 60 seconds.
+
+### Thanks
+- Thanks to [@paoloantinori](https://github.com/paoloantinori) for the Whisper timeout fix, the Mini App entry-point report, and for surfacing several regressions addressed in this release.
+
+[Full Changelog](https://github.com/alexei-led/ccgram/compare/v4.15.1...v4.16.0)
+
 ## [4.15.1] - 2026-10-08
 
 ### Fixed
