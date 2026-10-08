@@ -44,10 +44,7 @@ _COMMAND_ERROR_RE = re.compile(
     r"not recognized"
     r")\b"
 )
-_COMMAND_TOKEN_RE = re.compile(
-    r"(?<![\w/])/[a-z0-9_:-]+(?:\.[a-z0-9_:-]+)*(?![\w:/-]|\.[a-z0-9_:-])",
-    re.IGNORECASE,
-)
+_COMMAND_TOKEN_RE = re.compile(r"(?<![\w/])/[^\s]+")
 _COMMAND_SUGGESTION_RE = re.compile(
     r"(?i)\b(?:did you mean|did you intend|perhaps you meant|maybe you meant|suggestions?|suggested command|try)\b"
 )
@@ -58,6 +55,10 @@ def _matches_dispatched_command(line: str, cc_slash: str) -> bool:
     if not command.startswith("/"):
         return False
 
+    dispatched = re.compile(
+        rf"""(?<![\w/]){re.escape(command)}(?=$|[\s'"`,;!?()]|\.(?=$|[\s'"`,;!?()]))""",
+        re.IGNORECASE,
+    )
     errors = list(_COMMAND_ERROR_RE.finditer(line))
     if not errors:
         generic_error = re.search(r"(?i)\berror\b[^;]*?\bcommand\b", line)
@@ -69,22 +70,15 @@ def _matches_dispatched_command(line: str, cc_slash: str) -> bool:
     for error in errors:
         suggestion = _COMMAND_SUGGESTION_RE.search(masked, error.end())
         end = suggestion.start() if suggestion else len(line)
-        match = _COMMAND_TOKEN_RE.search(line, error.end(), end)
-        if (
-            match
-            and re.fullmatch(r"""[\s:'"`(]*""", line[error.end() : match.start()])
-            and match.group().casefold() == command.casefold()
-        ):
+        match = dispatched.search(line, error.end(), end)
+        if match and re.fullmatch(r"""[\s:'"`(]*""", line[error.end() : match.start()]):
             return True
         if error.group().casefold() == "not recognized":
-            preceding = list(_COMMAND_TOKEN_RE.finditer(line, 0, error.start()))
+            preceding = list(dispatched.finditer(line, 0, error.start()))
             if preceding:
                 match = preceding[-1]
                 gap = line[match.end() : error.start()]
-                if (
-                    re.fullmatch(r"""[\s'"`]*(?:(?:was|is)\s+)?""", gap, re.IGNORECASE)
-                    and match.group().casefold() == command.casefold()
-                ):
+                if re.fullmatch(r"""[\s'"`]*(?:(?:was|is)\s+)?""", gap, re.IGNORECASE):
                     return True
     return False
 

@@ -115,6 +115,26 @@ def test_error_is_attached_to_command_not_other_mentions(
     assert _extract_probe_error_line(line, command) == (line if matches else None)
 
 
+@pytest.mark.parametrize(
+    "command", ["/tools:build+docs", "/tools:résumé", "/部署", "/tools:build[docs]"]
+)
+@pytest.mark.parametrize(
+    "template",
+    [
+        "Unknown command: {}",
+        "Unknown command: '{}'",
+        "The command '{}' was not recognized",
+        "Unknown command: {}.",
+    ],
+)
+def test_complete_custom_command_name_is_matched_literally(
+    command: str, template: str
+) -> None:
+    line = template.format(command)
+
+    assert _extract_probe_error_line(line, command) == line
+
+
 class TestExtractPaneDelta:
     @pytest.mark.parametrize(
         ("before", "after", "expected"),
