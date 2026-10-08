@@ -90,11 +90,6 @@ async def _detect_and_apply_provider(
         )
 
     if detected == "shell" and _is_agent_origin(window_id, identity):
-        logger.info(
-            "Agent exited to shell; keeping provider for recovery",
-            window_id=window_id,
-            provider=identity.provider_name,
-        )
         return True
 
     if detected and detected != identity.provider_name:
