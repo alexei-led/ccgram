@@ -10,7 +10,9 @@ import pytest
 from telegram.ext import CommandHandler, MessageHandler, filters
 
 from ccgram.bot import create_bot
+from ccgram.config import config
 from ccgram.handlers.callback_registry import dispatch as callback_handler
+from ccgram.handlers.dashboard_command import private_start_greeting
 
 
 def _make_update(*, chat_id: int | None = -100999, user_id: int = 100) -> MagicMock:
@@ -58,19 +60,31 @@ class TestGroupFilterRegistration:
     @patch("ccgram.bot.config")
     def test_command_handlers_have_group_filter(self, mock_config: MagicMock) -> None:
         mock_config.telegram_bot_token = "fake:token"
+        mock_config.group_id = -100123
         app = create_bot()
 
+        private_starts = []
         for group_handlers in app.handlers.values():
             for handler in group_handlers:
-                if isinstance(handler, CommandHandler):
-                    assert _has_chat_filter(handler.filters), (
-                        f"CommandHandler {handler.commands} missing group filter"
+                if not isinstance(handler, CommandHandler):
+                    continue
+                if handler.callback is private_start_greeting:
+                    private_starts.append(handler)
+                    expected_private_filter = filters.ChatType.PRIVATE & filters.User(
+                        user_id=config.allowed_users
                     )
+                    assert str(handler.filters) == str(expected_private_filter)
+                    continue
+                assert _has_chat_filter(handler.filters), (
+                    f"CommandHandler {handler.commands} missing group filter"
+                )
+        assert len(private_starts) == 1
 
     @patch("ccgram.bot._group_filter", filters.Chat(chat_id=-100123))
     @patch("ccgram.bot.config")
     def test_message_handlers_have_group_filter(self, mock_config: MagicMock) -> None:
         mock_config.telegram_bot_token = "fake:token"
+        mock_config.group_id = -100123
         app = create_bot()
 
         for group_handlers in app.handlers.values():
@@ -83,7 +97,16 @@ class TestGroupFilterRegistration:
     @patch("ccgram.bot.config")
     def test_no_chat_filter_when_group_id_unset(self, mock_config: MagicMock) -> None:
         mock_config.telegram_bot_token = "fake:token"
+        mock_config.group_id = None
         app = create_bot()
+
+        start_handlers = [
+            handler
+            for group_handlers in app.handlers.values()
+            for handler in group_handlers
+            if isinstance(handler, CommandHandler) and "start" in handler.commands
+        ]
+        assert len(start_handlers) == 1
 
         for group_handlers in app.handlers.values():
             for handler in group_handlers:

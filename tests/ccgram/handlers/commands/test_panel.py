@@ -408,6 +408,26 @@ async def test_global_button_uses_registered_bot_handler(panel_env):
     assert context.args == []
 
 
+async def test_topic_dashboard_action_dispatches_registered_handler(panel_env):
+    env = panel_env
+    msg = message()
+    target, provider = env.panel.resolve_panel_target(msg, 100)
+    _, keyboard = env.panel.build_command_panel(target, provider, group="ccgram")
+    handler = AsyncMock()
+    context = MagicMock(user_data={})
+    context.application.handlers = {0: [CommandHandler("dashboard", handler)]}
+
+    await click(env, msg, keyboard, "Dashboard", context)
+
+    handler.assert_awaited_once()
+    update = handler.call_args.args[0]
+    assert update.message.text == "/dashboard"
+    assert update.effective_user.id == 100
+    assert update.message.chat.id == msg.chat.id
+    assert update.message.message_thread_id == msg.message_thread_id
+    assert context.args == []
+
+
 async def test_agent_command_collision_bypasses_bot_handler(panel_env):
     env = panel_env
     with patch.object(
