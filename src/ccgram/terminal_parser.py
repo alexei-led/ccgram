@@ -211,14 +211,25 @@ def _last_nonempty_from(lines: list[str], top_idx: int) -> int | None:
     return None
 
 
-def _rejects_scrollback_footer(lines: list[str], bottom_idx: int) -> bool:
-    """A numbered-item bottom with no action-hint footer, far from the
-    pane's last non-empty line, is scrollback (a user-message echo above
-    an unrelated numbered list), not a live selection footer. Consecutive
-    numbered items extend the footer: a live list of any length ends at
-    its own tail, so long real selections are not rejected."""
+def _rejects_scrollback_footer(lines: list[str], top_idx: int, bottom_idx: int) -> bool:
+    """Reject detached numbered echoes as well as distant numbered bottoms.
+
+    A live no-hint menu has a cursor before its next numbered option, with
+    only aligned wrapped text between them. Consecutive numbered items extend
+    the footer. Action-hint footers remain valid without this contiguity.
+    """
     if any(p.search(lines[bottom_idx]) for p in _SELECTION_HINT_BOTTOMS):
         return False
+    if bottom_idx != top_idx + 1:
+        selected = re.match(r"^\s*[❯›]\s+\d+\.\s+", lines[top_idx])
+        if selected is None:
+            return True
+        text_indent = " " * selected.end()
+        if any(
+            not line.strip() or not line.startswith(text_indent)
+            for line in lines[top_idx + 1 : bottom_idx]
+        ):
+            return True
     last = bottom_idx
     for i in range(bottom_idx, len(lines)):
         line = lines[i]
@@ -277,7 +288,9 @@ def _try_extract(lines: list[str], pattern: UIPattern) -> InteractiveUIContent |
     if bottom_idx is None or bottom_idx - top_idx < pattern.min_gap:
         return None
 
-    if pattern.scrollback_guard and _rejects_scrollback_footer(lines, bottom_idx):
+    if pattern.scrollback_guard and _rejects_scrollback_footer(
+        lines, top_idx, bottom_idx
+    ):
         return None
 
     display_start = _context_start(lines, top_idx, pattern.context_above)

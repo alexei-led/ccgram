@@ -325,6 +325,6 @@ def create_bot() -> Application:
     )
 
     application.add_error_handler(_error_handler)
-    register_all(application, _group_filter)
+    register_all(application, _group_filter, group_id=config.group_id)
 
     return application

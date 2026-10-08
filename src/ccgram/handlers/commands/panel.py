@@ -51,6 +51,7 @@ _CONTROL_LABELS = {
     "upgrade": "Update ccgram",
 }
 _SESSION_COMMANDS = (
+    ("dashboard", "Dashboard"),
     ("screenshot", "Screenshot"),
     ("live", "Live terminal"),
     ("panes", "Panes"),

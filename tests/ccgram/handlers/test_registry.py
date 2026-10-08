@@ -9,12 +9,15 @@ from telegram.ext import (
     filters,
 )
 
+from ccgram.config import config
 from ccgram.handlers.registry import (
     COMMAND_NAMES,
     CommandSpec,
     _log_command_update,
     register_all,
 )
+from ccgram.handlers.topics.new_command import new_command
+from ccgram.handlers.dashboard_command import private_start_greeting
 
 
 def _stub_handler():
@@ -45,6 +48,36 @@ def test_register_all_installs_expected_command_names():
 
     assert set(command_names) == set(COMMAND_NAMES)
     assert len(command_names) == len(COMMAND_NAMES)
+
+
+def test_register_all_registers_grouped_private_start_without_changing_group_filters():
+    app = _make_app()
+    group_filter = filters.Chat(chat_id=-100123)
+    register_all(app, group_filter, group_id=-100123)
+
+    start_handlers = [
+        call.args[0]
+        for call in app.add_handler.call_args_list
+        if isinstance(call.args[0], CommandHandler) and "start" in call.args[0].commands
+    ]
+    group_start = next(
+        handler for handler in start_handlers if handler.callback is new_command
+    )
+    private_start = next(
+        handler
+        for handler in start_handlers
+        if handler.callback is private_start_greeting
+    )
+    assert str(group_start.filters) == str(group_filter)
+    expected_private_filter = filters.ChatType.PRIVATE & filters.User(
+        user_id=config.allowed_users
+    )
+    assert str(private_start.filters) == str(expected_private_filter)
+    assert all(
+        str(handler.filters) == str(group_filter)
+        for handler in start_handlers
+        if handler is not private_start
+    )
 
 
 def test_register_all_registers_all_handler_kinds():

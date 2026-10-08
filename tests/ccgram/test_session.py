@@ -6,9 +6,10 @@ import pytest
 
 from ccgram.session import SessionManager
 from ccgram.hooks.state_files import pending_pi_replay_key, serialize_session_map_entry
+from ccgram.multiplexer.base import WindowRef
 from ccgram.session_map import acknowledge_replay_from_start, session_map_sync
 from ccgram.session_resolver import session_resolver
-from ccgram.thread_router import thread_router
+from ccgram.thread_router import ThreadRouter, thread_router
 from ccgram.user_preferences import user_preferences
 from ccgram.window_resolver import resolve_window_alias
 from ccgram.window_state_store import APPROVAL_MODES, WindowState, window_store
@@ -215,6 +216,111 @@ class TestLegacyHerdrAliasConvergence:
         assert alias in window_store.window_states
         assert thread_router.get_window_for_thread(7, 41) == alias
         assert resolve_window_alias(alias) == alias
+
+
+class TestBackendAttestedAliasDisplayNamePins:
+    def test_alias_pin_survives_listing_sync_after_attested_fold(
+        self, mgr: SessionManager, tmp_path, monkeypatch
+    ) -> None:
+        alias = "herdr-session-v1-" + "a" * 64
+        canonical = "herdr-session-v1-" + "b" * 64
+        state_file = tmp_path / "state.json"
+        map_file = tmp_path / "session_map.json"
+        map_file.write_text(
+            json.dumps(
+                {
+                    f"herdr:{alias}": {
+                        "session_id": "sid-1",
+                        "cwd": "/repo",
+                        "window_name": "manual-name",
+                    }
+                }
+            )
+        )
+        monkeypatch.setattr("ccgram.session.config.multiplexer_name", "herdr")
+        monkeypatch.setattr("ccgram.session.config.state_file", state_file)
+        monkeypatch.setattr("ccgram.session.config.session_map_file", map_file)
+        window_store.window_states[alias] = WindowState(
+            session_id="sid-1", cwd="/repo", window_name="manual-name"
+        )
+        window_store.window_states[canonical] = WindowState(
+            session_id="sid-1", cwd="/repo", window_name="stale-name"
+        )
+        mgr.set_display_name(alias, "manual-name")
+
+        # This is the backend's explicit supersession attestation, not an ID
+        # inferred from the cwd, provider, or display name.
+        mgr.reconcile_window_aliases(
+            [
+                WindowRef(
+                    window_id=canonical,
+                    window_name="backend-name",
+                    cwd="/repo",
+                    alias_window_ids=(alias,),
+                )
+            ]
+        )
+        assert alias not in thread_router.window_display_names
+        assert thread_router.get_display_name(canonical) == "manual-name"
+        assert thread_router.pinned_display_names == {canonical}
+        assert window_store.window_states[canonical].window_name == "stale-name"
+        state_backup = json.loads(
+            state_file.with_name("state.json.identity-migration.bak").read_text()
+        )
+        assert state_backup["pinned_display_names"] == [alias]
+
+        # The pin is durable and still protects the adopted display name after
+        # loading a fresh router from state.json's serialized shape.
+        restored_router = ThreadRouter(
+            schedule_save=lambda: None,
+            has_window_state=lambda _wid: False,
+        )
+        restored_router.from_dict(mgr._serialize_state())
+        assert restored_router.pinned_display_names == {canonical}
+        assert (
+            restored_router.sync_display_names([(canonical, "backend-name")]) is False
+        )
+        assert restored_router.get_display_name(canonical) == "manual-name"
+
+        saves: list[str] = []
+        mgr._save_state = lambda: saves.append("saved")
+        assert mgr.sync_display_names([(canonical, "backend-name")]) is True
+
+        assert thread_router.get_display_name(canonical) == "manual-name"
+        assert window_store.window_states[canonical].window_name == "manual-name"
+        view = mgr.view_window(canonical)
+        assert view is not None
+        assert view.window_name == "manual-name"
+        assert saves == ["saved"]
+
+    def test_existing_canonical_name_keeps_its_pin_on_attested_fold(
+        self, mgr: SessionManager, tmp_path, monkeypatch
+    ) -> None:
+        alias = "herdr-session-v1-" + "c" * 64
+        canonical = "herdr-session-v1-" + "d" * 64
+        map_file = tmp_path / "session_map.json"
+        map_file.write_text("{}")
+        monkeypatch.setattr("ccgram.session.config.multiplexer_name", "herdr")
+        monkeypatch.setattr("ccgram.session.config.state_file", tmp_path / "state.json")
+        monkeypatch.setattr("ccgram.session.config.session_map_file", map_file)
+        mgr.set_display_name(alias, "alias-name")
+        mgr.set_display_name(canonical, "canonical-name")
+
+        mgr.reconcile_window_aliases(
+            [
+                WindowRef(
+                    window_id=canonical,
+                    window_name="backend-name",
+                    cwd="/repo",
+                    alias_window_ids=(alias,),
+                )
+            ]
+        )
+
+        assert thread_router.get_display_name(canonical) == "canonical-name"
+        assert thread_router.pinned_display_names == {canonical}
+        assert mgr.sync_display_names([(canonical, "backend-name")]) is False
+        assert thread_router.get_display_name(canonical) == "canonical-name"
 
 
 class TestThreadBindings:
@@ -1352,6 +1458,34 @@ class TestWriteHooklessSessionMap:
         assert session_map_file.exists()
         raw = json.loads(session_map_file.read_text())
         assert "ccgram:@7" in raw
+
+
+@pytest.mark.parametrize(
+    ("stored_id", "live_id"), [("@1", "@1"), ("abc-def", "ABC-DEF")]
+)
+def test_pinned_display_difference_is_not_repairable_drift(
+    mgr: SessionManager, stored_id: str, live_id: str
+) -> None:
+    thread_router.set_display_name(stored_id, "user-name", pin=True)
+
+    result = mgr.audit_state(
+        live_window_ids={live_id}, live_windows=[(live_id, "backend-name")]
+    )
+
+    assert not any(issue.category == "display_name_drift" for issue in result.issues)
+
+
+def test_exact_unpinned_drift_is_not_hidden_by_a_variant_pin(
+    mgr: SessionManager,
+) -> None:
+    thread_router.set_display_name("abc-def", "alias-name", pin=True)
+    thread_router.set_display_name("ABC-DEF", "canonical-name")
+
+    result = mgr.audit_state(
+        live_window_ids={"ABC-DEF"}, live_windows=[("ABC-DEF", "backend-name")]
+    )
+
+    assert any(issue.category == "display_name_drift" for issue in result.issues)
 
 
 class TestAuditState:

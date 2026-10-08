@@ -191,10 +191,12 @@ def _alias_is_referenced(
     chat_thread_bindings: dict,
     user_window_offsets: dict,
     window_display_names: dict,
+    pinned_display_names: set[str],
 ) -> bool:
     return (
         alias_id in window_states
         or alias_id in window_display_names
+        or alias_id in pinned_display_names
         or alias_id in chat_thread_bindings.values()
         or any(alias_id in bindings.values() for bindings in thread_bindings.values())
         or any(alias_id in offsets for offsets in user_window_offsets.values())
@@ -256,6 +258,7 @@ def _repoint_alias_references(
     chat_thread_bindings: dict,
     user_window_offsets: dict,
     window_display_names: dict,
+    pinned_display_names: set[str],
 ) -> None:
     """Point every binding, offset, and display name at the canonical id.
 
@@ -274,8 +277,15 @@ def _repoint_alias_references(
         if offset is not None:
             offsets.setdefault(canonical_id, offset)
     display_name = window_display_names.pop(alias_id, "")
-    if display_name and not window_display_names.get(canonical_id):
+    adopted_display_name = bool(
+        display_name and not window_display_names.get(canonical_id)
+    )
+    if adopted_display_name:
         window_display_names[canonical_id] = display_name
+    alias_name_was_pinned = alias_id in pinned_display_names
+    pinned_display_names.discard(alias_id)
+    if adopted_display_name and alias_name_was_pinned:
+        pinned_display_names.add(canonical_id)
 
 
 def migrate_window_aliases(
@@ -286,6 +296,7 @@ def migrate_window_aliases(
     user_window_offsets: dict,
     window_display_names: dict,
     *,
+    pinned_display_names: set[str] | None = None,
     record_redirects: bool = True,
 ) -> list[AliasMigration]:
     """Fold state persisted under superseded window ids onto the current ones.
@@ -304,9 +315,13 @@ def migrate_window_aliases(
     can mirror them into ``session_map.json`` (whose hook-written entry would
     otherwise recreate the alias state on the next sync). ``record_redirects``
     may be disabled for a pure preflight over cloned maps; redirects then remain
-    unchanged until the persisted migration commits.
+    unchanged until the persisted migration commits. A display-name pin follows
+    an adopted alias name; a canonical name and its pin state win unchanged.
     """
     migrations: list[AliasMigration] = []
+    display_name_pins = (
+        pinned_display_names if pinned_display_names is not None else set()
+    )
     active_aliases = {
         alias_id
         for alias_id, canonical_id in aliases.items()
@@ -328,6 +343,7 @@ def migrate_window_aliases(
             chat_thread_bindings,
             user_window_offsets,
             window_display_names,
+            display_name_pins,
         ):
             continue
 
@@ -339,6 +355,7 @@ def migrate_window_aliases(
             chat_thread_bindings,
             user_window_offsets,
             window_display_names,
+            display_name_pins,
         )
         migrations.append(AliasMigration(alias_id=alias_id, canonical_id=canonical_id))
         logger.info("Reconciled superseded window id %s -> %s", alias_id, canonical_id)
