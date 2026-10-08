@@ -73,6 +73,43 @@ def test_picker_commands_exact_set(cls, expected) -> None:
     assert cls().capabilities.tui_picker_commands == frozenset(expected)
 
 
+class TestClaudeTerminalStatus:
+    def test_preserves_advisory_selection_guess(self) -> None:
+        pane = "Pick an action:\n❯ 1. First\n  2. Second"
+
+        status = ClaudeProvider().parse_terminal_status(pane)
+
+        assert status is not None
+        assert status.is_interactive is True
+        assert status.ui_type == "SelectionUI"
+        assert status.ui_advisory is True
+
+    @pytest.mark.parametrize(
+        ("pane", "expected_ui_type"),
+        [
+            pytest.param(
+                "Do you want to proceed?\n\n❯ Yes\n  No\n\nEsc to cancel\n",
+                "PermissionPrompt",
+                id="permission-prompt",
+            ),
+            pytest.param(
+                "☐ First option\n☐ Second option\nEnter to select\n",
+                "AskUserQuestion",
+                id="question-prompt",
+            ),
+        ],
+    )
+    def test_named_prompts_are_not_advisory(
+        self, pane: str, expected_ui_type: str
+    ) -> None:
+        status = ClaudeProvider().parse_terminal_status(pane)
+
+        assert status is not None
+        assert status.is_interactive is True
+        assert status.ui_type == expected_ui_type
+        assert status.ui_advisory is False
+
+
 class TestScrapeCurrentMode:
     @staticmethod
     def _capture(**kwargs):

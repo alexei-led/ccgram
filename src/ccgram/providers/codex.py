@@ -737,6 +737,7 @@ class CodexProvider(JsonlProvider):
                 display_label=interactive.name,
                 is_interactive=True,
                 ui_type=interactive.name,
+                ui_advisory=interactive.advisory,
             )
         return None
 
