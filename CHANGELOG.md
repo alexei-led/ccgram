@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.15.0] - 2026-10-08
+
+### Added
+- Add topic-aware `/commands` panels with session-specific CCGram actions and provider-native command names. General shows only shared controls; destructive actions require confirmation.
+- Keep `/commands`, `/sessions`, `/sync`, and `/upgrade` in Telegram’s shared slash-command suggestions, with `/commands` opening the current topic’s panel.
+
+### Fixed
+- Forward panel callbacks as the clicking Telegram user so native provider commands reach the bound session.
+- Reuse the topic’s cached panel on `/commands` and restore it after confirming an agent action.
+- Stop logging the same agent-to-shell recovery state on every polling cycle.
+
+### Upgrade
+- Restart ccgram after upgrading to register the shared slash-command menu. No configuration migration is required.
+
 ## [4.14.1] - 2026-10-03
 
 ### Fixed
