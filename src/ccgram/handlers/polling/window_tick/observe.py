@@ -133,6 +133,7 @@ async def _native_agent_status(window_id: str) -> StatusUpdate | None:
             # transitions.
             native = await tmux_manager.agent_status(window_id)
     except Exception:  # noqa: BLE001  # degrade, never break the tick
+        logger.debug("native agent_status probe failed", window_id=window_id)
         return None
     if native is None:
         return None
