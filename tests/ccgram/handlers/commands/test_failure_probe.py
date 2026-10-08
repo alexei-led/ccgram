@@ -135,6 +135,17 @@ def test_complete_custom_command_name_is_matched_literally(
     assert _extract_probe_error_line(line, command) == line
 
 
+@pytest.mark.parametrize("suffix", ["(docs)", ",docs", "!docs", "?docs", ".", ";docs"])
+@pytest.mark.parametrize("quote", ["'", '"', "`"])
+def test_punctuation_inside_quoted_names_is_not_a_command_boundary(
+    suffix: str, quote: str
+) -> None:
+    line = f"Unknown command: {quote}/tools:build{suffix}{quote}"
+
+    assert _extract_probe_error_line(line, "/tools:build") is None
+    assert _extract_probe_error_line(line, f"/tools:build{suffix}") == line
+
+
 class TestExtractPaneDelta:
     @pytest.mark.parametrize(
         ("before", "after", "expected"),

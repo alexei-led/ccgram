@@ -44,10 +44,21 @@ _COMMAND_ERROR_RE = re.compile(
     r"not recognized"
     r")\b"
 )
-_COMMAND_TOKEN_RE = re.compile(r"(?<![\w/])/[^\s]+")
+_COMMAND_TOKEN_RE = re.compile(
+    r"""(?P<quote>['"`])(?P<quoted>/.*?)(?P=quote)|(?<![\w/'"`])(?P<bare>/[^\s]+)"""
+)
 _COMMAND_SUGGESTION_RE = re.compile(
     r"(?i)\b(?:did you mean|did you intend|perhaps you meant|maybe you meant|suggestions?|suggested command|try)\b"
 )
+
+
+def _token_matches_command(match: re.Match[str], command: str) -> bool:
+    quoted = match.group("quoted")
+    token = quoted if quoted is not None else match.group("bare")
+    if token.casefold() == command.casefold():
+        return True
+    # A sentence period is punctuation only outside a quoted command name.
+    return quoted is None and token.removesuffix(".").casefold() == command.casefold()
 
 
 def _matches_dispatched_command(line: str, cc_slash: str) -> bool:
@@ -55,10 +66,6 @@ def _matches_dispatched_command(line: str, cc_slash: str) -> bool:
     if not command.startswith("/"):
         return False
 
-    dispatched = re.compile(
-        rf"""(?<![\w/]){re.escape(command)}(?=$|[\s'"`,;!?()]|\.(?=$|[\s'"`,;!?()]))""",
-        re.IGNORECASE,
-    )
     errors = list(_COMMAND_ERROR_RE.finditer(line))
     if not errors:
         generic_error = re.search(r"(?i)\berror\b[^;]*?\bcommand\b", line)
@@ -70,15 +77,21 @@ def _matches_dispatched_command(line: str, cc_slash: str) -> bool:
     for error in errors:
         suggestion = _COMMAND_SUGGESTION_RE.search(masked, error.end())
         end = suggestion.start() if suggestion else len(line)
-        match = dispatched.search(line, error.end(), end)
-        if match and re.fullmatch(r"""[\s:'"`(]*""", line[error.end() : match.start()]):
+        match = _COMMAND_TOKEN_RE.search(line, error.end(), end)
+        if (
+            match
+            and _token_matches_command(match, command)
+            and re.fullmatch(r"""[\s:'"`(]*""", line[error.end() : match.start()])
+        ):
             return True
         if error.group().casefold() == "not recognized":
-            preceding = list(dispatched.finditer(line, 0, error.start()))
+            preceding = list(_COMMAND_TOKEN_RE.finditer(line, 0, error.start()))
             if preceding:
                 match = preceding[-1]
                 gap = line[match.end() : error.start()]
-                if re.fullmatch(r"""[\s'"`]*(?:(?:was|is)\s+)?""", gap, re.IGNORECASE):
+                if _token_matches_command(match, command) and re.fullmatch(
+                    r"""[\s'"`]*(?:(?:was|is)\s+)?""", gap, re.IGNORECASE
+                ):
                     return True
     return False
 
