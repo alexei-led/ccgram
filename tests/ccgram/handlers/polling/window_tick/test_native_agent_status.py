@@ -137,3 +137,17 @@ async def test_cold_cache_falls_back_to_subprocess() -> None:
     assert status is not None
     assert status.raw_text == "working"
     mux.agent_status.assert_awaited_once()  # cold cache → one subprocess call
+
+
+@pytest.mark.parametrize("event_stream", [True, False])
+async def test_probe_error_fails_soft_without_breaking_the_tick(
+    event_stream: bool,
+) -> None:
+    # A backend transport error (e.g. a dead socket raising RuntimeError)
+    # must degrade to "no native status", never escape into the poll loop,
+    # whose per-window catch only handles (TelegramError, OSError).
+    mux = _fake_mux(native=True, status=None)
+    mux.capabilities.supports_event_stream = event_stream
+    mux.agent_status = AsyncMock(side_effect=RuntimeError("socket died"))
+    with patch("ccgram.handlers.polling.window_tick.observe.tmux_manager", mux):
+        assert await _native_agent_status("w2:t1") is None
