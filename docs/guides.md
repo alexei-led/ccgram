@@ -220,6 +220,7 @@ All settings accept both CLI flags and environment variables. CLI flags take pre
 | `CCGRAM_WHISPER_BASE_URL` / `--whisper-base-url`      | _(provider default)_           | Custom OpenAI-compatible endpoint URL                                                                |
 | `CCGRAM_WHISPER_MODEL` / `--whisper-model`            | _(provider default)_           | Model override (e.g., `whisper-large-v3-turbo`)                                                      |
 | `CCGRAM_WHISPER_LANGUAGE` / `--whisper-language`      | _(auto-detect)_                | Force language code (e.g., `en`, `zh`)                                                               |
+| `CCGRAM_WHISPER_TIMEOUT`                             | `60`                          | Seconds before the transcription POST gives up; raise it for local backends with slow model loads     |
 | `CCGRAM_LLM_PROVIDER`                                 | _(empty = disabled)_           | LLM provider for shell command generation                                                            |
 | `CCGRAM_LLM_API_KEY`                                  | _(empty)_                      | API key for LLM provider (env only)                                                                  |
 | `CCGRAM_LLM_BASE_URL`                                 | _(from provider)_              | Custom LLM API endpoint                                                                              |
@@ -340,6 +341,7 @@ Optional overrides:
 ```ini
 CCGRAM_WHISPER_MODEL=whisper-large-v3-turbo   # default depends on provider
 CCGRAM_WHISPER_LANGUAGE=en                     # omit for auto-detect
+CCGRAM_WHISPER_TIMEOUT=240                     # local backends can take minutes on a cold model load
 ```
 
 ### How It Works

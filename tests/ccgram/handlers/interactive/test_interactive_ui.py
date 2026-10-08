@@ -43,13 +43,18 @@ _UI = "ccgram.handlers.interactive.interactive_ui"
 
 
 @contextmanager
-def _interactive_env(bot: AsyncMock):
+def _interactive_env(
+    bot: AsyncMock,
+    *,
+    advisory: bool = False,
+    ui_name: str = "AskUserQuestion",
+):
     """Patch the terminal capture + routing collaborators of handle_interactive_ui."""
     with (
         patch(
             f"{_UI}._capture_interactive_content",
             new_callable=AsyncMock,
-            return_value=("AskUserQuestion", "Pick one:", False),
+            return_value=(ui_name, "Pick one:", advisory),
         ),
         patch(f"{_UI}.thread_router") as mock_router,
         patch(f"{_UI}.rate_limit_send", new_callable=AsyncMock),
@@ -256,6 +261,63 @@ class TestSendCooldown:
 
         remaining = _send_cooldowns[(100, -999, 42)] - time.monotonic()
         assert remaining <= _SEND_RETRY_INTERVAL
+
+
+class TestAdvisoryInteractiveMode:
+    async def test_first_successful_advisory_send_does_not_latch_blocking_mode(
+        self, _clear_send_state
+    ) -> None:
+        bot = _sending_bot()
+
+        with _interactive_env(bot, advisory=True):
+            assert await handle_interactive_ui(bot, 100, "@2", thread_id=42) is True
+
+        assert get_interactive_window(100, 42, chat_id=-999) is None
+
+    async def test_advisory_send_clears_stale_blocking_latch(
+        self, _clear_send_state
+    ) -> None:
+        set_interactive_mode(100, "@old", thread_id=42, chat_id=-999)
+        bot = _sending_bot()
+
+        with _interactive_env(bot, advisory=True):
+            assert await handle_interactive_ui(bot, 100, "@2", thread_id=42) is True
+
+        assert get_interactive_window(100, 42, chat_id=-999) is None
+
+    async def test_named_permission_prompt_still_latches_blocking_mode(
+        self, _clear_send_state
+    ) -> None:
+        bot = _sending_bot()
+
+        with _interactive_env(bot, ui_name="PermissionPrompt"):
+            assert await handle_interactive_ui(bot, 100, "@2", thread_id=42) is True
+
+        assert get_interactive_window(100, 42, chat_id=-999) == "@2"
+
+    async def test_editing_advisory_message_to_named_prompt_latches_blocking_mode(
+        self, _clear_send_state
+    ) -> None:
+        bot = _sending_bot()
+
+        with (
+            _interactive_env(bot),
+            patch(
+                f"{_UI}._capture_interactive_content",
+                new_callable=AsyncMock,
+                side_effect=[
+                    ("SelectionUI", "Pick an action:", True),
+                    ("PermissionPrompt", "Do you want to proceed?", False),
+                ],
+            ),
+        ):
+            assert await handle_interactive_ui(bot, 100, "@2", thread_id=42) is True
+            assert get_interactive_window(100, 42, chat_id=-999) is None
+            assert await handle_interactive_ui(bot, 100, "@2", thread_id=42) is True
+
+        bot.send_message.assert_awaited_once()
+        bot.edit_message_text.assert_awaited_once()
+        assert get_interactive_window(100, 42, chat_id=-999) == "@2"
 
 
 class TestPaneLabel:
