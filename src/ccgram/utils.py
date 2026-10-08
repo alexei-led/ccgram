@@ -377,17 +377,25 @@ def is_general_topic(message: Message) -> bool:
 async def handle_general_topic_message(
     bot: Bot, message: Message, chat_id: int
 ) -> None:
-    """Handle messages in General topic: pin hint once, then react only.
-
-    On first General-topic message per chat, sends a warning and pins it.
-    Subsequent messages get a silent 🤔 reaction instead.
-    """
+    """Pin the General command panel once; react silently to later messages."""
     # Check cache first to avoid unnecessary API calls
     if not _general_topic_pin_cache.get(chat_id):
         try:
             chat_info = await bot.get_chat(chat_id)
             pinned = chat_info.pinned_message
-            if pinned and pinned.from_user and pinned.from_user.id == bot.id:
+            if (
+                pinned
+                and pinned.from_user
+                and pinned.from_user.id == bot.id
+                and pinned.message_thread_id in (None, 1)
+                and pinned.reply_markup
+                and any(
+                    isinstance(button.callback_data, str)
+                    and button.callback_data.startswith("cmdpanel:")
+                    for row in pinned.reply_markup.inline_keyboard
+                    for button in row
+                )
+            ):
                 _general_topic_pin_cache[chat_id] = True
         except TelegramError:
             pass
@@ -400,9 +408,29 @@ async def handle_general_topic_message(
         # Set cache before attempt to guarantee one-shot behavior even if pin fails
         _general_topic_pin_cache[chat_id] = True
         try:
-            hint = await message.reply_text(
-                "🤖 Please use a named topic. Create a new topic to start a session."
-            )
-            await hint.pin(disable_notification=True)
+            user = message.from_user
+            if user is not None:
+                # Lazy: the panel imports the callback registry and this utility module.
+                from .handlers.commands.panel import send_command_panel
+
+                pinned = None
+                try:
+                    chat_info = await bot.get_chat(chat_id)
+                    pinned = chat_info.pinned_message
+                except TelegramError:
+                    pass
+                replace_message = (
+                    pinned
+                    if pinned
+                    and pinned.from_user
+                    and pinned.from_user.id == bot.id
+                    and "named topic" in (pinned.text or "").lower()
+                    else None
+                )
+                if pinned and pinned.from_user and pinned.from_user.id == bot.id:
+                    _general_topic_pin_cache[chat_id] = True
+                await send_command_panel(
+                    message, user.id, replace_message=replace_message
+                )
         except TelegramError:
             pass

@@ -81,15 +81,22 @@ class TestScopedProviderMenuSync:
             await _sync_scoped_provider_menu(message, _USER_ID, _provider("codex"))
 
         mock_reg.assert_called_once()
-        assert _scoped_provider_menu[(_CHAT_ID, _USER_ID)] == "codex"
+        assert _scoped_provider_menu[(_CHAT_ID, _USER_ID)] == "control"
 
-    async def test_resyncs_when_provider_changes(self, message: AsyncMock) -> None:
+    async def test_provider_changes_do_not_change_shared_control_menu(
+        self, message: AsyncMock
+    ) -> None:
         with patch(f"{_MS}.register_commands", new_callable=AsyncMock) as mock_reg:
             await _sync_scoped_provider_menu(message, _USER_ID, _provider("codex"))
             await _sync_scoped_provider_menu(message, _USER_ID, _provider("claude"))
 
-        assert mock_reg.call_count == 2
-        assert _scoped_provider_menu[(_CHAT_ID, _USER_ID)] == "claude"
+        mock_reg.assert_awaited_once()
+        assert mock_reg.await_args is not None
+        assert mock_reg.await_args.kwargs["include_cc_commands"] is False
+        assert isinstance(
+            mock_reg.await_args.kwargs["scope"], BotCommandScopeChatMember
+        )
+        assert _scoped_provider_menu[(_CHAT_ID, _USER_ID)] == "control"
 
     async def test_register_failure_does_not_update_cache(
         self, message: AsyncMock
@@ -120,8 +127,8 @@ class TestScopedProviderMenuSync:
         assert isinstance(
             mock_reg.call_args_list[1].kwargs["scope"], BotCommandScopeChat
         )
-        assert _chat_scoped_provider_menu[_CHAT_ID] == "codex"
-        assert _scoped_provider_menu[(_CHAT_ID, _USER_ID)] == "codex"
+        assert _chat_scoped_provider_menu[_CHAT_ID] == "control"
+        assert _scoped_provider_menu[(_CHAT_ID, _USER_ID)] == "control"
 
     async def test_falls_back_to_global_when_both_scopes_fail(
         self, message: AsyncMock
@@ -137,7 +144,7 @@ class TestScopedProviderMenuSync:
         assert "scope" in mock_reg.call_args_list[0].kwargs
         assert "scope" in mock_reg.call_args_list[1].kwargs
         assert "scope" not in mock_reg.call_args_list[2].kwargs
-        assert _scoped_provider_menu[(_CHAT_ID, _USER_ID)] == "codex"
+        assert _scoped_provider_menu[(_CHAT_ID, _USER_ID)] == "control"
 
     async def test_scoped_menu_cache_is_bounded(self, message: AsyncMock) -> None:
         with (
@@ -148,6 +155,38 @@ class TestScopedProviderMenuSync:
             await _sync_scoped_provider_menu(message, _USER_ID + 1, _provider("codex"))
 
         assert len(_scoped_provider_menu) == 1
+
+
+async def test_startup_replaces_legacy_global_chat_and_member_menus(monkeypatch):
+    monkeypatch.setattr(menu_sync_mod.config, "allowed_users", {100, 200})
+    monkeypatch.setattr(menu_sync_mod.config, "group_id", -100999)
+    monkeypatch.setattr(
+        menu_sync_mod.thread_router, "group_chat_ids", {"100:42": -100888}
+    )
+    monkeypatch.setattr(
+        menu_sync_mod.thread_router,
+        "iter_thread_bindings_with_chat",
+        lambda: iter([(100, -100888, 42, "@1")]),
+    )
+    monkeypatch.setattr(
+        menu_sync_mod.thread_router, "iter_private_topic_chat_ids", lambda: iter([100])
+    )
+    bot = AsyncMock()
+
+    await menu_sync_mod.register_control_menus(bot)
+
+    scopes = [call.kwargs.get("scope") for call in bot.set_my_commands.call_args_list]
+    assert None in scopes
+    assert BotCommandScopeChat(chat_id=100) in scopes
+    assert BotCommandScopeChat(chat_id=-100999) in scopes
+    assert BotCommandScopeChat(chat_id=-100888) in scopes
+    assert BotCommandScopeChatMember(chat_id=-100888, user_id=100) in scopes
+    assert BotCommandScopeChatMember(chat_id=-100888, user_id=200) in scopes
+    assert all(
+        [item.command for item in entry.args[0]]
+        == ["commands", "sessions", "sync", "upgrade"]
+        for entry in bot.set_my_commands.call_args_list
+    )
 
 
 class TestGlobalProviderMenu:

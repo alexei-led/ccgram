@@ -229,28 +229,36 @@ class TestGetCCName:
         (group_dir / f"{name}.md").write_text("---\ndescription: Test\n---\n")
 
     async def test_builtin_lookup(self, tmp_path: Path) -> None:
-        await register_commands(AsyncMock(), claude_dir=tmp_path)
+        await register_commands(
+            AsyncMock(), claude_dir=tmp_path, include_cc_commands=True
+        )
         assert get_cc_name("clear") == "clear"
 
     async def test_skill_lookup(self, tmp_path: Path) -> None:
         self._make_skill(tmp_path, "committing-code")
-        await register_commands(AsyncMock(), claude_dir=tmp_path)
+        await register_commands(
+            AsyncMock(), claude_dir=tmp_path, include_cc_commands=True
+        )
         assert get_cc_name("committing_code") == "committing-code"
 
     async def test_command_lookup(self, tmp_path: Path) -> None:
         self._make_command(tmp_path, "spec", "work")
-        await register_commands(AsyncMock(), claude_dir=tmp_path)
+        await register_commands(
+            AsyncMock(), claude_dir=tmp_path, include_cc_commands=True
+        )
         assert get_cc_name("spec_work") == "spec:work"
 
     async def test_not_found(self, tmp_path: Path) -> None:
-        await register_commands(AsyncMock(), claude_dir=tmp_path)
+        await register_commands(
+            AsyncMock(), claude_dir=tmp_path, include_cc_commands=True
+        )
         assert get_cc_name("nonexistent") is None
 
 
 class TestRegisterCommands:
     async def test_registers_bot_and_cc_commands(self, tmp_path: Path) -> None:
         bot = AsyncMock()
-        await register_commands(bot, claude_dir=tmp_path)
+        await register_commands(bot, claude_dir=tmp_path, include_cc_commands=True)
 
         bot.delete_my_commands.assert_called_once()
         bot.set_my_commands.assert_called_once()
@@ -288,7 +296,7 @@ class TestRegisterCommands:
         )
 
         bot = AsyncMock()
-        await register_commands(bot, claude_dir=tmp_path)
+        await register_commands(bot, claude_dir=tmp_path, include_cc_commands=True)
 
         registered = bot.set_my_commands.call_args[0][0]
         for cmd in registered:
@@ -303,7 +311,7 @@ class TestRegisterCommands:
             )
 
         bot = AsyncMock()
-        await register_commands(bot, claude_dir=tmp_path)
+        await register_commands(bot, claude_dir=tmp_path, include_cc_commands=True)
 
         registered = bot.set_my_commands.call_args[0][0]
         assert len(registered) <= 100
@@ -320,22 +328,27 @@ class TestRegisterCommands:
         (cmd_dir / "bar.md").write_text("---\ndescription: Dup\n---\n")
 
         bot = AsyncMock()
-        await register_commands(bot, claude_dir=tmp_path)
+        await register_commands(bot, claude_dir=tmp_path, include_cc_commands=True)
 
         registered = bot.set_my_commands.call_args[0][0]
         tg_names = [c.command for c in registered]
         assert tg_names.count("foo_bar") == 1
 
+    async def test_default_menu_has_only_general_controls(self) -> None:
+        bot = AsyncMock()
+        await register_commands(bot)
+
+        assert [
+            command.command for command in bot.set_my_commands.call_args.args[0]
+        ] == ["commands", "sessions", "sync", "upgrade"]
+
     async def test_can_register_bot_commands_only(self, tmp_path: Path) -> None:
         bot = AsyncMock()
-        await register_commands(bot, claude_dir=tmp_path, include_cc_commands=False)
+        await register_commands(bot, claude_dir=tmp_path)
 
         registered = bot.set_my_commands.call_args[0][0]
         names = [c.command for c in registered]
-        assert "start" in names
-        assert "commands" in names
-        assert "new" not in names
-        assert "clear" not in names
+        assert names == ["commands", "sessions", "sync", "upgrade"]
 
     async def test_register_commands_supports_scope(self, tmp_path: Path) -> None:
         bot = AsyncMock()
@@ -343,7 +356,7 @@ class TestRegisterCommands:
         await register_commands(
             bot,
             claude_dir=tmp_path,
-            include_cc_commands=False,
+            include_cc_commands=None,
             scope=scope,  # type: ignore[arg-type]
         )
 
@@ -360,7 +373,7 @@ class TestRegisterCommands:
         )
 
         bot = AsyncMock()
-        await register_commands(bot, claude_dir=tmp_path)
+        await register_commands(bot, claude_dir=tmp_path, include_cc_commands=True)
 
         registered = bot.set_my_commands.call_args[0][0]
         tg_names = [c.command for c in registered]

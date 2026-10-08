@@ -65,12 +65,15 @@ Each Telegram topic maps to one tmux window. With Herdr, it maps instead to one 
 - **Bind agents to topics** — one agent per group or private-chat topic; create via directory browser
 - **Auto-detect providers** — Supports Claude Code, Codex, Gemini, Pi, and Shell simultaneously
 - **Monitor live** — Terminal screenshots on demand or auto-refresh every 5 seconds
+- **Topic-aware command panels** — Four safe General controls; session-specific CCGram actions and original agent command names in each topic
 - **Send commands** — Slash commands, voice messages (transcribed via Whisper), or raw shell input
 - **Run multiple agents in parallel** — each topic independent; run different agents at once
 - **Recover gracefully** — Resume, continue, or start fresh if a session crashes
 - **Send workspace files** — Share files to Telegram via `/send` (glob, path, or substring search)
 - **Action toolbar** — Provider-specific buttons for common actions (Screenshot, Mode, Esc, Enter, etc.)
 - **Direct choices** — Answer supported numbered and yes/no agent prompts with one tap
+
+Telegram shares its native slash-command suggestions across topics. CCGram keeps `/commands`, `/sessions`, `/sync`, and `/upgrade` in that list. `/commands` opens the current topic’s pinned panel with session-specific actions. See [topic command panels](docs/guides.md#topic-command-panels-commands).
 
 ## Provider Switching
 
@@ -165,7 +168,7 @@ Native Windows does not provide the Unix file locking, signal handling, and term
 
 ## Optional Features
 
-**Web Dashboard** — Live terminal (xterm.js), transcript search, multi-pane grid in Telegram. Disabled by default. [Enable here.](docs/guides.md#mini-app-dashboard-optional)
+**Web Dashboard** — Live terminal (xterm.js), transcript search, multi-pane grid in Telegram. Disabled by default. [Configure it.](docs/guides.md#configuration)
 
 ---
 

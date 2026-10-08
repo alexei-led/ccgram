@@ -27,12 +27,15 @@ def _make_context() -> MagicMock:
 
 @pytest.fixture(autouse=True)
 def _allow_user():
-    with patch(f"{_NC}.config.is_user_allowed", return_value=True):
-        yield
+    with (
+        patch(f"{_NC}.config.is_user_allowed", return_value=True),
+        patch(f"{_NC}.commands_command", new_callable=AsyncMock) as panel,
+    ):
+        yield panel
 
 
 class TestNewCommand:
-    async def test_sends_welcome(self) -> None:
+    async def test_sends_welcome(self, _allow_user: AsyncMock) -> None:
         update = _make_update(100)
         ctx = _make_context()
 
@@ -41,6 +44,7 @@ class TestNewCommand:
         update.message.reply_text.assert_called_once()
         text = update.message.reply_text.call_args[0][0]
         assert "CCGram" in text
+        _allow_user.assert_awaited_once_with(update, ctx)
 
     async def test_clears_browse_state(self) -> None:
         update = _make_update(100)

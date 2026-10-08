@@ -19,7 +19,7 @@ Monitor/parsing: `tests/ccgram/test_session_monitor.py`, `tests/ccgram/test_tran
 
 Handlers/UI: `tests/ccgram/handlers/text/test_text_handler.py`, `tests/ccgram/handlers/polling/test_polling_coordinator.py`, `tests/ccgram/handlers/polling/test_polling_strategies.py`, `tests/ccgram/handlers/test_bot_callbacks.py`.
 
-Commands: `tests/ccgram/test_command_catalog.py`, `tests/ccgram/test_commands_command.py`, `tests/ccgram/test_cc_commands.py`, `tests/ccgram/handlers/commands/test_forward.py`, `tests/ccgram/handlers/commands/test_menu_sync.py`, `tests/ccgram/handlers/commands/test_failure_probe.py`, `tests/ccgram/handlers/commands/test_status_snapshot.py`.
+Commands: `tests/ccgram/test_command_catalog.py`, `tests/ccgram/test_commands_command.py`, `tests/ccgram/test_cc_commands.py`, `tests/ccgram/handlers/commands/test_forward.py`, `tests/ccgram/handlers/commands/test_menu_sync.py`, `tests/ccgram/handlers/commands/test_panel.py`, `tests/ccgram/handlers/commands/test_failure_probe.py`, `tests/ccgram/handlers/commands/test_status_snapshot.py`.
 
 Hook/events: `tests/ccgram/test_hook.py`, `tests/ccgram/handlers/test_hook_events.py`, `tests/ccgram/test_session_monitor_events.py`.
 

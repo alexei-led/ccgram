@@ -1,17 +1,8 @@
-"""Provider command menu cache + scoped registration.
+"""Shared control-menu registration and provider-command metadata.
 
-Handles per-user / per-chat / global Telegram command menus for the
-active provider, plus the periodic refresh job. Owns the bounded LRU
-caches that prevent unbounded growth across long-running deployments.
-
-Core responsibilities:
-  - sync_scoped_provider_menu(): keep the visible /-menu in sync with the
-    topic's provider, falling back chat → global on permission errors
-  - sync_scoped_menu_for_text_context(): same but triggered by inbound
-    plain text in a bound topic
-  - setup_menu_refresh_job(): periodic global menu refresh
-  - _build_provider_command_metadata(): translate AgentProvider commands
-    into a Telegram-name → original-name mapping used by forward.py
+Telegram scopes belong to chats/users, not topics. All default and scoped
+menus expose the same four controls; topic panels own session/agent commands.
+The existing bounded caches avoid repeated per-message API calls.
 """
 
 from __future__ import annotations
@@ -30,16 +21,12 @@ from telegram import (
 from telegram.error import TelegramError
 
 from ...cc_commands import discover_provider_commands, register_commands
-from ...providers import (
-    AgentProvider,
-    get_provider,
-    get_provider_for_window,
-)
-from ... import window_query
+from ...config import config
+from ...providers import AgentProvider
 from ...thread_router import thread_router
-from ..callback_helpers import get_thread_id as _get_thread_id
 
 if TYPE_CHECKING:
+    from telegram import Bot, BotCommandScope
     from telegram.ext import Application
     from telegram.ext import ContextTypes
 
@@ -104,21 +91,23 @@ def _build_provider_command_metadata(
 async def sync_scoped_provider_menu(
     message: Message,
     user_id: int,
-    provider: AgentProvider,
+    _provider: AgentProvider | None = None,
 ) -> None:
-    """Update per-user command menu for the current chat/provider context."""
+    """Keep the shared control commands visible in every known chat context."""
     global _global_provider_menu
 
     chat_id = message.chat.id
-    provider_name = provider.capabilities.name
+    provider_name = "control"
     cache_key = (chat_id, user_id)
     if _get_lru_cache_entry(_scoped_provider_menu, cache_key) == provider_name:
         return
 
+    bot = message.get_bot()
     try:
-        member_scope = BotCommandScopeChatMember(chat_id=chat_id, user_id=user_id)
         await register_commands(
-            message.get_bot(), provider=provider, scope=member_scope
+            bot,
+            include_cc_commands=False,
+            scope=BotCommandScopeChatMember(chat_id=chat_id, user_id=user_id),
         )
         _set_bounded_cache_entry(
             _scoped_provider_menu,
@@ -126,26 +115,18 @@ async def sync_scoped_provider_menu(
             provider_name,
             max_entries=_MAX_SCOPED_PROVIDER_MENU_ENTRIES,
         )
-        _set_bounded_cache_entry(
-            _chat_scoped_provider_menu,
-            chat_id,
-            provider_name,
-            max_entries=_MAX_CHAT_PROVIDER_MENU_ENTRIES,
-        )
         return
     except _CommandRefreshError:
         logger.debug(
-            "Failed to update member-scoped command menu (chat=%s user=%s provider=%s)",
-            chat_id,
-            user_id,
-            provider_name,
+            "Failed to update member control menu (chat=%s user=%s)", chat_id, user_id
         )
 
     if _get_lru_cache_entry(_chat_scoped_provider_menu, chat_id) != provider_name:
         try:
-            chat_scope = BotCommandScopeChat(chat_id=chat_id)
             await register_commands(
-                message.get_bot(), provider=provider, scope=chat_scope
+                bot,
+                include_cc_commands=False,
+                scope=BotCommandScopeChat(chat_id=chat_id),
             )
             _set_bounded_cache_entry(
                 _chat_scoped_provider_menu,
@@ -161,11 +142,7 @@ async def sync_scoped_provider_menu(
             )
             return
         except _CommandRefreshError:
-            logger.debug(
-                "Failed to update chat-scoped command menu (chat=%s provider=%s)",
-                chat_id,
-                provider_name,
-            )
+            logger.debug("Failed to update chat control menu (chat=%s)", chat_id)
 
     if _global_provider_menu == provider_name:
         _set_bounded_cache_entry(
@@ -176,7 +153,7 @@ async def sync_scoped_provider_menu(
         )
         return
     try:
-        await register_commands(message.get_bot(), provider=provider)
+        await register_commands(bot, include_cc_commands=False)
         _global_provider_menu = provider_name
         _set_bounded_cache_entry(
             _scoped_provider_menu,
@@ -185,29 +162,15 @@ async def sync_scoped_provider_menu(
             max_entries=_MAX_SCOPED_PROVIDER_MENU_ENTRIES,
         )
     except _CommandRefreshError:
-        logger.debug(
-            "Failed to update global provider command menu (provider=%s)",
-            provider_name,
-        )
+        logger.debug("Failed to update global control menu")
 
 
 async def sync_scoped_menu_for_text_context(update: Update, user_id: int) -> None:
-    """Sync scoped menu when a bound topic receives plain text."""
+    """Keep the same control menu in General, session, and unbound topics."""
     message = update.message
     if not message:
         return
-    thread_id = _get_thread_id(update)
-    if thread_id is None:
-        return
-    window_id = thread_router.resolve_window_for_thread(
-        user_id, thread_id, message.chat.id
-    )
-    if not window_id:
-        return
-    provider = get_provider_for_window(
-        window_id, provider_name=window_query.get_window_provider(window_id)
-    )
-    await sync_scoped_provider_menu(message, user_id, provider)
+    await sync_scoped_provider_menu(message, user_id)
 
 
 def get_global_provider_menu() -> str | None:
@@ -221,20 +184,43 @@ def set_global_provider_menu(provider_name: str) -> None:
     _global_provider_menu = provider_name
 
 
+async def register_control_menus(bot: Bot) -> None:
+    """Overwrite known legacy scopes; changing the default alone cannot hide them."""
+    chats = set(config.allowed_users)
+    chats.update(thread_router.iter_private_topic_chat_ids())
+    chats.update(
+        chat_id for chat_id in thread_router.group_chat_ids.values() if chat_id < 0
+    )
+    chats.update(
+        chat_id
+        for _uid, chat_id, _tid, _wid in thread_router.iter_thread_bindings_with_chat()
+        if chat_id is not None
+    )
+    if config.group_id:
+        chats.add(config.group_id)
+    scopes: list[BotCommandScope | None] = [None]
+    for chat_id in sorted(chats):
+        scopes.append(BotCommandScopeChat(chat_id=chat_id))
+        if chat_id < 0:
+            chat_users = config.allowed_users
+            scopes.extend(
+                BotCommandScopeChatMember(chat_id=chat_id, user_id=user_id)
+                for user_id in sorted(chat_users)
+            )
+    for scope in scopes:
+        try:
+            await register_commands(bot, include_cc_commands=False, scope=scope)
+        except _CommandRefreshError:
+            logger.warning("Failed to refresh control command scope %s", scope)
+
+
 def setup_menu_refresh_job(application: "Application") -> None:
     """Register the periodic command menu refresh job."""
-    global _global_provider_menu
-
-    default_provider = get_provider()
-    _global_provider_menu = default_provider.capabilities.name
 
     async def _refresh_commands(context: ContextTypes.DEFAULT_TYPE) -> None:
-        global _global_provider_menu
         if context.bot:
             try:
-                refreshed_provider = get_provider()
-                await register_commands(context.bot, provider=refreshed_provider)
-                _global_provider_menu = refreshed_provider.capabilities.name
+                await register_control_menus(context.bot)
             except _CommandRefreshError:
                 # Recoverable: the previous menu stays in place, so this is a
                 # warning, not an ERROR-level exception.

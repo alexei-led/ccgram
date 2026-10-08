@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import structlog
@@ -461,83 +462,91 @@ class TestHandleGeneralTopicMessage:
         yield
         _general_topic_pin_cache.clear()
 
-    async def test_first_message_sends_hint_and_pins(self) -> None:
+    async def test_first_message_pins_general_command_panel(self) -> None:
         bot = AsyncMock()
-        chat_info = MagicMock()
-        chat_info.pinned_message = None
-        bot.get_chat = AsyncMock(return_value=chat_info)
-
+        bot.get_chat.return_value.pinned_message = None
         message = AsyncMock()
-        hint_msg = AsyncMock()
-        message.reply_text = AsyncMock(return_value=hint_msg)
+        message.from_user.id = 100
+        with patch(
+            "ccgram.handlers.commands.panel.send_command_panel", new_callable=AsyncMock
+        ) as panel:
+            await handle_general_topic_message(bot, message, chat_id=123)
 
-        await handle_general_topic_message(bot, message, chat_id=123)
-
-        message.reply_text.assert_called_once()
-        assert "named topic" in message.reply_text.call_args.args[0]
-        hint_msg.pin.assert_called_once_with(disable_notification=True)
+        panel.assert_awaited_once_with(message, 100, replace_message=None)
+        message.reply_text.assert_not_called()
         assert _general_topic_pin_cache[123] is True
 
     async def test_subsequent_message_reacts_only(self) -> None:
         _general_topic_pin_cache[123] = True
-
         bot = AsyncMock()
         message = AsyncMock()
-
         await handle_general_topic_message(bot, message, chat_id=123)
-
         message.set_reaction.assert_called_once_with("\U0001f914")
-        message.reply_text.assert_not_called()
+        bot.get_chat.assert_not_called()
 
-    async def test_detects_existing_pinned_bot_message(self) -> None:
+    async def test_existing_bot_panel_is_not_duplicated(self) -> None:
         bot = AsyncMock()
         bot.id = 999
-        pinned = MagicMock()
-        pinned.from_user.id = 999
-        chat_info = MagicMock()
-        chat_info.pinned_message = pinned
-        bot.get_chat = AsyncMock(return_value=chat_info)
-
+        button = MagicMock(callback_data="cmdpanel:control")
+        pinned = MagicMock(
+            from_user=SimpleNamespace(id=999),
+            message_thread_id=None,
+            reply_markup=SimpleNamespace(inline_keyboard=[[button]]),
+        )
+        bot.get_chat.return_value.pinned_message = pinned
         message = AsyncMock()
-
-        await handle_general_topic_message(bot, message, chat_id=456)
-
+        with patch(
+            "ccgram.handlers.commands.panel.send_command_panel", new_callable=AsyncMock
+        ) as panel:
+            await handle_general_topic_message(bot, message, chat_id=456)
+        panel.assert_not_awaited()
         message.set_reaction.assert_called_once_with("\U0001f914")
-        message.reply_text.assert_not_called()
         assert _general_topic_pin_cache[456] is True
 
-    async def test_ignores_pinned_message_from_other_bot(self) -> None:
+    async def test_existing_ccgram_hint_is_replaced_in_place(self) -> None:
         bot = AsyncMock()
         bot.id = 999
-        pinned = MagicMock()
-        pinned.from_user.id = 888  # different bot
-        chat_info = MagicMock()
-        chat_info.pinned_message = pinned
-        bot.get_chat = AsyncMock(return_value=chat_info)
-
+        pinned = MagicMock(
+            from_user=SimpleNamespace(id=999),
+            message_thread_id=None,
+            reply_markup=None,
+            text="Please use a named topic.",
+        )
+        bot.get_chat.return_value.pinned_message = pinned
         message = AsyncMock()
-        hint_msg = AsyncMock()
-        message.reply_text = AsyncMock(return_value=hint_msg)
+        message.from_user.id = 100
+        with patch(
+            "ccgram.handlers.commands.panel.send_command_panel", new_callable=AsyncMock
+        ) as panel:
+            await handle_general_topic_message(bot, message, chat_id=456)
+        panel.assert_awaited_once_with(message, 100, replace_message=pinned)
 
-        await handle_general_topic_message(bot, message, chat_id=456)
+    async def test_other_bot_pin_is_not_replaced(self) -> None:
+        bot = AsyncMock()
+        bot.id = 999
+        pinned = MagicMock(from_user=SimpleNamespace(id=888))
+        bot.get_chat.return_value.pinned_message = pinned
+        message = AsyncMock()
+        message.from_user.id = 100
+        with patch(
+            "ccgram.handlers.commands.panel.send_command_panel", new_callable=AsyncMock
+        ) as panel:
+            await handle_general_topic_message(bot, message, chat_id=456)
+        panel.assert_awaited_once_with(message, 100, replace_message=None)
 
-        message.reply_text.assert_called_once()
-        hint_msg.pin.assert_called_once_with(disable_notification=True)
-
-    async def test_pin_failure_does_not_crash_and_caches(self) -> None:
+    async def test_panel_failure_does_not_crash_and_caches(self) -> None:
         from telegram.error import TelegramError
 
         bot = AsyncMock()
-        chat_info = MagicMock()
-        chat_info.pinned_message = None
-        bot.get_chat = AsyncMock(return_value=chat_info)
-
+        bot.get_chat.return_value.pinned_message = None
         message = AsyncMock()
-        hint_msg = AsyncMock()
-        hint_msg.pin = AsyncMock(side_effect=TelegramError("no rights"))
-        message.reply_text = AsyncMock(return_value=hint_msg)
-
-        await handle_general_topic_message(bot, message, chat_id=789)
+        message.from_user.id = 100
+        with patch(
+            "ccgram.handlers.commands.panel.send_command_panel",
+            new_callable=AsyncMock,
+            side_effect=TelegramError("no rights"),
+        ):
+            await handle_general_topic_message(bot, message, chat_id=789)
         assert _general_topic_pin_cache[789] is True
 
     async def test_react_failure_does_not_crash(self) -> None:
@@ -547,7 +556,6 @@ class TestHandleGeneralTopicMessage:
         bot = AsyncMock()
         message = AsyncMock()
         message.set_reaction = AsyncMock(side_effect=TelegramError("forbidden"))
-
         await handle_general_topic_message(bot, message, chat_id=123)
 
 

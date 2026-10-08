@@ -237,10 +237,27 @@ async def _send_forward_post_probes(
     )
 
 
+def _command_update(update: Update, message: Message, command: str) -> Update:
+    """Adapt the callback to existing handlers without impersonating the bot."""
+    assert update.effective_user is not None
+    data = message.to_dict()
+    data.update({"text": command, "from": update.effective_user.to_dict()})
+    data.pop("entities", None)
+    data.pop("reply_markup", None)
+    adapted = Message.de_json(data, message.get_bot())
+    assert adapted is not None
+    adapted_update = Update(update.update_id, message=adapted)
+    adapted_update.set_bot(message.get_bot())
+    return adapted_update
+
+
 async def forward_command_handler(
-    update: Update, _context: ContextTypes.DEFAULT_TYPE
+    update: Update,
+    _context: ContextTypes.DEFAULT_TYPE,
+    *,
+    native_command: str | None = None,
 ) -> None:
-    """Forward any non-bot command as a slash command to the topic provider session."""
+    """Forward typed aliases or an exact native command selected in a panel."""
     user = update.effective_user
     if not user or not config.is_user_allowed(user.id):
         return
@@ -256,16 +273,36 @@ async def forward_command_handler(
     parts = cmd_text.split(None, 1)
     raw_cmd = parts[0].split("@")[0] if parts else ""
     tg_cmd = raw_cmd.lstrip("/").lower()
+    requested_command = native_command or raw_cmd
+    logger.info(
+        "Provider command request received",
+        command=requested_command,
+        user_id=user.id,
+        chat_id=chat.id,
+        thread_id=thread_id,
+    )
     # args is forwarded verbatim to the provider via tmux send-keys -l (literal mode).
     # Gated by config.is_user_allowed — authorised users can type anything into their own agent.
     args = parts[1] if len(parts) > 1 else ""
     window_id = thread_router.resolve_window_for_thread(user.id, thread_id, chat.id)
     if not window_id:
+        logger.warning(
+            "Provider command has no bound session",
+            command=requested_command,
+            user_id=user.id,
+            chat_id=chat.id,
+            thread_id=thread_id,
+        )
         await safe_reply(update.message, "❌ No session bound to this topic.")
         return
 
     w = await tmux_manager.find_window_by_id(window_id)
     if not w:
+        logger.warning(
+            "Provider command target window is missing",
+            command=requested_command,
+            window_id=window_id,
+        )
         display = thread_router.get_display_name(window_id)
         await safe_reply(update.message, f"❌ Window '{display}' no longer exists.")
         return
@@ -278,7 +315,12 @@ async def forward_command_handler(
     await sync_scoped_provider_menu(update.message, user.id, provider)
     provider_map = _build_provider_command_metadata(provider)
     resolved_name = provider_map.get(tg_cmd, tg_cmd)
-    cc_name = _provider_command_name(provider_name, resolved_name.lstrip("/"))
+    cc_name = _provider_command_name(
+        provider_name,
+        native_command.lstrip("/")
+        if native_command is not None
+        else resolved_name.lstrip("/"),
+    )
     args = _default_command_args(cc_name, args, display)
     cc_slash = f"/{cc_name} {args}".rstrip() if args else f"/{cc_name}"
     status_like = cc_name.lower() in {"status", "stats"}
@@ -309,9 +351,21 @@ async def forward_command_handler(
         user.id, window_id, thread_id, cc_slash, update.message.chat.id
     )
     if not success:
+        logger.warning(
+            "Provider command delivery failed",
+            command=cc_slash,
+            window_id=window_id,
+            error=error_msg,
+        )
         await safe_reply(update.message, f"❌ {error_msg}")
         return
 
+    logger.info(
+        "Provider command delivered to terminal",
+        command=cc_slash,
+        window_id=window_id,
+        user_id=user.id,
+    )
     if thread_id is not None:
         record_command(user.id, thread_id, cc_slash)
     confirmation = f"⚡ [{display}] Sent: {cc_slash}"

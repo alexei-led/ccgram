@@ -68,15 +68,13 @@ CCGRAM_GEMINI_COMMAND=gemini --yolo
 CCGRAM_ANTIGRAVITY_COMMAND=agy --dangerously-skip-permissions
 ```
 
-## Provider-Specific Commands
+## Provider Commands in Telegram
 
-Each provider exposes its own slash commands to the Telegram menu. Examples:
+Each bound topic's pinned `/commands` panel includes the commands discovered for that topic's provider. Agent command buttons preserve provider-native names. For example, a custom Claude command named `spec:work` stays `/spec:work` in the panel and is sent to Claude unchanged. It is not rewritten to a Telegram-friendly spelling.
 
-- **Claude**: `/clear`, `/compact`, `/cost`, `/doctor`, `/permissions`...
-- **Codex**: `/model`, `/mode`, `/status`, `/diff`, `/compact`, `/mcp`...
-- **Gemini**: `/chat`, `/clear`, `/compress`, `/model`, `/memory`, `/vim`...
-- **Pi**: `/new`, `/compact`, `/followup`, `/scoped_models`, `/export`, `/name`, `/reload`, `/session`, `/share`, `/changelog`... (plus discovered skills/prompts/extensions)
-- **Antigravity**: `/agents`, `/chat`, `/clear`, `/docs`, `/help`, `/mcp`, `/model`, `/plan`, `/skills`, `/theme`, `/tools`...
+The same panel includes CCGram actions that fit the attached session. Shell topics omit agent commands and transcript-only actions. Provider command discovery remains available through the existing provider adapters and custom-command sources.
+
+Telegram's native slash suggestion list cannot vary by forum topic. CCGram therefore keeps `/commands`, `/sessions`, `/sync`, and `/upgrade` in the shared `/` menu. Use the topic panel for provider commands. See [Topic Command Panels](guides.md#topic-command-panels-commands) for screenshots and behavior.
 
 ---
 
