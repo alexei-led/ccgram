@@ -83,6 +83,15 @@ async def test_none_native_status_yields_none() -> None:
         assert await _native_agent_status("w2:t1") is None
 
 
+async def test_negative_cache_hit_skips_subsequent_subprocess() -> None:
+    mux = _fake_mux(native=True, status=None)
+    with patch("ccgram.handlers.polling.window_tick.observe.tmux_manager", mux):
+        assert await _native_agent_status("w2:t1") is None
+        assert await _native_agent_status("w2:t1") is None
+
+    mux.agent_status.assert_awaited_once_with("w2:t1")
+
+
 async def test_cache_hit_skips_subprocess() -> None:
     # A warm push cache is read synchronously; the subprocess agent_status()
     # call is skipped (the per-tick subprocess the event stream replaces).
