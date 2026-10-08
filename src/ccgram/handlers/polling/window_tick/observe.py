@@ -124,8 +124,15 @@ async def _native_agent_status(window_id: str) -> StatusUpdate | None:
             window_id, lambda: tmux_manager.agent_status(window_id)
         )
     else:
-        # Probe-only backends have no push stream to refresh cached transitions.
-        native = await tmux_manager.agent_status(window_id)
+        # Probe-only backends have no push stream to refresh cached
+        # transitions, so positive answers pass through uncached (each
+        # transition stays visible); a negative answer is safe to cache
+        # for the short TTL and spares the per-second no-status probe.
+        native = await agent_status_cache.get_status_or_probe(
+            window_id,
+            lambda: tmux_manager.agent_status(window_id),
+            cache_positive=False,
+        )
     if native is None:
         return None
     if native.state == "working":

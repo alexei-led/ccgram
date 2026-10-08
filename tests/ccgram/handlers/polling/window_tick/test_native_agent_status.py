@@ -59,6 +59,19 @@ async def test_probe_only_backend_reads_each_status_transition(
     assert mux.agent_status.await_count == 2
 
 
+async def test_probe_only_backend_caches_negative_results() -> None:
+    # The per-second no-status probe is the common steady state on a
+    # probe-only backend: one answer must be enough until the negative
+    # TTL expires. Positive answers stay uncached (transition visibility).
+    mux = _fake_mux(native=True, status=None)
+    mux.capabilities.supports_event_stream = False
+    with patch("ccgram.handlers.polling.window_tick.observe.tmux_manager", mux):
+        assert await _native_agent_status("agterm-window") is None
+        assert await _native_agent_status("agterm-window") is None
+
+    mux.agent_status.assert_awaited_once_with("agterm-window")
+
+
 async def test_returns_none_when_backend_lacks_native_status() -> None:
     mux = _fake_mux(native=False, status=AgentStatus(state="working"))
     with patch("ccgram.handlers.polling.window_tick.observe.tmux_manager", mux):

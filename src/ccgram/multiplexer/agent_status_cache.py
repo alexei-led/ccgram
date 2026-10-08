@@ -27,6 +27,10 @@ logger = logging.getLogger(__name__)
 
 _NEGATIVE_TTL = 15.0
 _POSITIVE_TTL = 90.0
+# A cache_positive=False caller has no push stream to bypass a stale
+# negative entry, and its whole freshness budget is this TTL, so keep it
+# to a few poll ticks instead of the push-tuned negative TTL.
+_PASS_THROUGH_NEGATIVE_TTL = 5.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +112,18 @@ def _store_entry(window_id: str, entry: _CacheEntry) -> None:
     _cache[window_id] = entry
 
 
+def _entry_for_probe_result(
+    result: AgentStatus | None, cache_positive: bool
+) -> _CacheEntry | None:
+    """The entry a probe result may store, or None for pass-through."""
+    if result is None:
+        ttl = _NEGATIVE_TTL if cache_positive else _PASS_THROUGH_NEGATIVE_TTL
+        return _CacheEntry(None, _clock() + ttl)
+    if cache_positive:
+        return _CacheEntry(result, _clock() + _POSITIVE_TTL)
+    return None
+
+
 def set_status(window_id: str, status: AgentStatus) -> None:
     """Record the latest push-reported agent status for *window_id*."""
     _bump_generation(window_id)
@@ -123,6 +139,8 @@ def get_status(window_id: str) -> AgentStatus | None:
 async def get_status_or_probe(
     window_id: str,
     probe: Callable[[], Awaitable[AgentStatus | None]],
+    *,
+    cache_positive: bool = True,
 ) -> AgentStatus | None:
     """Read a fresh cache entry, probing once on a miss.
 
@@ -131,9 +149,15 @@ async def get_status_or_probe(
     Concurrent callers share a probe. A newer push wins over a probe already
     in flight, and clear/reset invalidates an older probe even when the cache
     was cold at invalidation.
+
+    With ``cache_positive=False`` positive answers pass through uncached
+    and cached positive entries are treated as misses: a caller with no
+    push stream to refresh them must not trust a possibly stale positive.
+    Negative answers are kept for the shorter pass-through TTL, because
+    no push can bypass a stale negative for that caller either.
     """
     hit, status = _get_entry(window_id)
-    if hit:
+    if hit and (status is None or cache_positive):
         return status
 
     state = _retain_generation(window_id)
@@ -181,12 +205,12 @@ async def get_status_or_probe(
             hit, status = _get_entry(window_id)
             return status if hit else None
 
-        if result is None:
-            entry = _CacheEntry(None, _clock() + _NEGATIVE_TTL)
-        else:
-            entry = _CacheEntry(result, _clock() + _POSITIVE_TTL)
-        _store_entry(window_id, entry)
-        _bump_generation(window_id)
+        entry = _entry_for_probe_result(result, cache_positive)
+        if entry is not None:
+            _store_entry(window_id, entry)
+            _bump_generation(window_id)
+        # A pass-through stores nothing and reports no newer event, so
+        # co-waiters on the same probe keep the result they awaited.
         return result
     finally:
         _release_generation(window_id, state)
