@@ -3,6 +3,7 @@
 import contextlib
 import io
 import signal
+from collections.abc import Iterator
 from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -13,6 +14,7 @@ from telegram.request import HTTPXRequest
 from ccgram.bot import (
     _error_handler,
     _record_successful_poll,
+    cancel_shutdown_watchdog,
     _reset_polling_conflict_state,
     _send_shutdown_notification,
     polling_conflict_requires_restart,
@@ -21,8 +23,13 @@ from ccgram.telegram_request import ResilientPollingHTTPXRequest
 
 
 @pytest.fixture(autouse=True)
-def _reset_conflict_state() -> None:
+def _reset_conflict_state() -> Iterator[None]:
+    cancel_shutdown_watchdog()
     _reset_polling_conflict_state()
+    try:
+        yield
+    finally:
+        cancel_shutdown_watchdog()
 
 
 def _make_context(error: BaseException) -> MagicMock:
@@ -138,19 +145,27 @@ class TestErrorHandlerStaleCallback:
             b'{"ok": false, "error_code": 409, "description": "Conflict"}',
         )
         ctx = _make_context(Conflict("placeholder"))
+        watchdog_timer = MagicMock()
 
-        with (
-            patch.object(HTTPXRequest, "do_request", AsyncMock(return_value=response)),
-            patch("ccgram.bot.time.monotonic", side_effect=[100.0, 190.0]),
-        ):
-            for _ in range(2):
-                with pytest.raises(Conflict) as raised:
-                    await request.post("https://example.com")
-                ctx.error = raised.value
-                await _error_handler(None, ctx)
+        try:
+            with (
+                patch.object(
+                    HTTPXRequest, "do_request", AsyncMock(return_value=response)
+                ),
+                patch("ccgram.bot.threading.Timer", return_value=watchdog_timer),
+                patch("ccgram.bot.time.monotonic", side_effect=[100.0, 190.0]),
+            ):
+                for _ in range(2):
+                    with pytest.raises(Conflict) as raised:
+                        await request.post("https://example.com")
+                    ctx.error = raised.value
+                    await _error_handler(None, ctx)
+        finally:
+            cancel_shutdown_watchdog()
 
         ctx.application.stop_running.assert_called_once()
         assert polling_conflict_requires_restart() is True
+        watchdog_timer.cancel.assert_called_once_with()
 
 
 class TestShutdownNotification:
