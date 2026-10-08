@@ -27,6 +27,10 @@ logger = logging.getLogger(__name__)
 
 _NEGATIVE_TTL = 15.0
 _POSITIVE_TTL = 90.0
+# A cache_positive=False caller has no push stream to bypass a stale
+# negative entry, and its whole freshness budget is this TTL, so keep it
+# to a few poll ticks instead of the push-tuned negative TTL.
+_PASS_THROUGH_NEGATIVE_TTL = 5.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,7 +117,8 @@ def _entry_for_probe_result(
 ) -> _CacheEntry | None:
     """The entry a probe result may store, or None for pass-through."""
     if result is None:
-        return _CacheEntry(None, _clock() + _NEGATIVE_TTL)
+        ttl = _NEGATIVE_TTL if cache_positive else _PASS_THROUGH_NEGATIVE_TTL
+        return _CacheEntry(None, _clock() + ttl)
     if cache_positive:
         return _CacheEntry(result, _clock() + _POSITIVE_TTL)
     return None
@@ -148,7 +153,8 @@ async def get_status_or_probe(
     With ``cache_positive=False`` positive answers pass through uncached
     and cached positive entries are treated as misses: a caller with no
     push stream to refresh them must not trust a possibly stale positive.
-    Negative answers keep the short TTL.
+    Negative answers are kept for the shorter pass-through TTL, because
+    no push can bypass a stale negative for that caller either.
     """
     hit, status = _get_entry(window_id)
     if hit and (status is None or cache_positive):
@@ -202,9 +208,9 @@ async def get_status_or_probe(
         entry = _entry_for_probe_result(result, cache_positive)
         if entry is not None:
             _store_entry(window_id, entry)
-        # The bump also retires any concurrent in-flight probe sharing
-        # this resolution when the result passes through uncached.
-        _bump_generation(window_id)
+            _bump_generation(window_id)
+        # A pass-through stores nothing and reports no newer event, so
+        # co-waiters on the same probe keep the result they awaited.
         return result
     finally:
         _release_generation(window_id, state)

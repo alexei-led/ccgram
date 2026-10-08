@@ -336,6 +336,62 @@ async def test_coalesced_waiters_both_receive_push_during_probe() -> None:
     assert window_id not in agent_status_cache._window_generations
 
 
+async def test_cache_positive_false_negative_expires_after_the_short_ttl(
+    monkeypatch,
+) -> None:
+    now = [0.0]
+    monkeypatch.setattr(agent_status_cache, "_clock", lambda: now[0], raising=False)
+    probe_calls = 0
+
+    async def probe() -> AgentStatus | None:
+        nonlocal probe_calls
+        probe_calls += 1
+        return None
+
+    get_status = agent_status_cache.get_status_or_probe
+    assert await get_status("w2:t1", probe, cache_positive=False) is None
+
+    now[0] = 4.999
+    assert await get_status("w2:t1", probe, cache_positive=False) is None
+    assert probe_calls == 1
+
+    now[0] = 5.0
+    assert await get_status("w2:t1", probe, cache_positive=False) is None
+    assert probe_calls == 2
+
+
+async def test_cache_positive_false_coalesced_waiters_share_pass_through_result() -> (
+    None
+):
+    # The pass-through store skip must not signal a newer event: a second
+    # waiter on the same probe receives the probe result, not a cold None.
+    probe_started = asyncio.Event()
+    release_probe = asyncio.Event()
+    second_waiter_started = asyncio.Event()
+    working = AgentStatus("working", "codex")
+    window_id = "coalesced-pass-through"
+
+    async def probe() -> AgentStatus:
+        probe_started.set()
+        await release_probe.wait()
+        return working
+
+    get_status = agent_status_cache.get_status_or_probe
+    first = asyncio.create_task(get_status(window_id, probe, cache_positive=False))
+    await probe_started.wait()
+
+    async def second_waiter() -> AgentStatus | None:
+        second_waiter_started.set()
+        return await get_status(window_id, probe, cache_positive=False)
+
+    second = asyncio.create_task(second_waiter())
+    await second_waiter_started.wait()
+    release_probe.set()
+
+    assert await asyncio.gather(first, second) == [working, working]
+    assert agent_status_cache.get_status(window_id) is None  # nothing stored
+
+
 async def test_coalesced_successful_probes_warm_cache_for_both_waiters() -> None:
     probe_started = asyncio.Event()
     release_probe = asyncio.Event()
