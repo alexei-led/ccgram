@@ -877,6 +877,21 @@ class TestBottomUpFallback:
         assert result is not None
         assert "Pick something" in result.content
 
+    def test_option_details_with_enter_footer_use_bottom_up_fallback(self):
+        pane = (
+            "Pick a deployment:\n"
+            "❯ 1. Staging\n"
+            "    Use the staging environment.\n"
+            "  2. Production\n"
+            "    Use the production environment.\n"
+            "\n"
+            "Enter to select\n"
+        )
+        result = extract_interactive_content(pane)
+        assert result is not None and result.name == "SelectionUI"
+        assert "Use the production environment." in result.content
+        assert "Enter to select" in result.content
+
     def test_section_break_stops_upward_scan(self):
         pane = (
             "Some earlier output\n"
@@ -1168,6 +1183,44 @@ class TestScrollbackGuard:
         )
         assert extract_interactive_content(pane) is None
 
+    def test_stale_contiguous_menu_above_completed_output_is_rejected(self):
+        pane = [
+            "Pick a task:",
+            "❯ 1. First task",
+            "  2. Second task",
+            "",
+            *(f"completed output line {i}" for i in range(20)),
+            "❯",
+        ]
+        assert extract_interactive_content(pane) is None
+
+    def test_tasker_echo_above_numbered_reply_is_rejected(self):
+        pane = [
+            "  1. Apri Tasker e vai sulla scheda TASKS.",
+            "  2. Tieni premuto il dito sul titolo.",
+            "",
+            "❯ Questa volta ho importato",
+            "",
+            "▢ Perfetto. Ora gli ultimi due passi, quando vuoi:",
+            "",
+            "  1. Chiudi Anti-Vocale dalle app recenti.",
+            "  2. In Tasker, scheda TASKS, tocca AV Background Test.",
+            "",
+            "❯",
+            "  ⏵⏵ auto mode on",
+        ]
+        assert extract_interactive_content(pane) is None
+
+    def test_plain_cursor_with_contiguous_numbered_item_matches(self):
+        pane = [
+            "Pick an action:",
+            "",
+            "  ❯ Accept    Reject",
+            "  1. details of accept",
+        ]
+        result = extract_interactive_content(pane)
+        assert result is not None and result.name == "SelectionUI"
+
     def test_near_bottom_numbered_selection_still_matches(self):
         pane = [
             "Remote Control",
@@ -1193,6 +1246,29 @@ class TestScrollbackGuard:
         )
         result = extract_interactive_content(pane)
         assert result is not None
+
+
+@pytest.mark.parametrize("indent", ["", "   "])
+def test_wrapped_remote_control_menu_keeps_selection(indent: str) -> None:
+    pane = [
+        "Remote Control",
+        "",
+        f"{indent}❯ 1. Enable Remote Control",
+        f"{indent}     for this session",
+        f"{indent}  2. Never mind",
+    ]
+
+    result = extract_interactive_content(pane)
+
+    assert result is not None and result.name == "SelectionUI"
+    assert "for this session" in result.content
+
+
+@pytest.mark.parametrize("gap", ["", "  unrelated reply", "     wrapped\n"])
+def test_detached_numbered_option_is_not_a_wrapped_menu(gap: str) -> None:
+    pane = ["❯ 1. Echoed user instruction", *gap.split("\n"), "  2. Reply item"]
+
+    assert extract_interactive_content(pane) is None
 
 
 class TestScrollbackGuardLongList:
