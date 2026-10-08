@@ -61,6 +61,29 @@ def test_reset_empties_the_whole_cache() -> None:
     assert agent_status_cache.get_status("b") is None
 
 
+@pytest.mark.parametrize("source", ["push", "probe-positive", "probe-negative"])
+async def test_writes_sweep_expired_entries_from_unvisited_windows(
+    source: str, monkeypatch
+) -> None:
+    now = [0.0]
+    monkeypatch.setattr(agent_status_cache, "_clock", lambda: now[0])
+    status = None if source == "probe-negative" else AgentStatus("working")
+
+    async def probe() -> AgentStatus | None:
+        return status
+
+    for index in range(6):
+        now[0] = index * 91.0
+        window_id = f"unbound-{index}"
+        if source == "push":
+            agent_status_cache.set_status(window_id, AgentStatus("working"))
+        else:
+            assert (
+                await agent_status_cache.get_status_or_probe(window_id, probe) == status
+            )
+        assert set(agent_status_cache._cache) == {window_id}
+
+
 async def test_generation_metadata_waits_for_all_invalidated_probes() -> None:
     old_started = asyncio.Event()
     new_started = asyncio.Event()
@@ -130,7 +153,9 @@ async def test_successful_probe_warms_cache_for_next_call() -> None:
 
 
 @pytest.mark.parametrize("entry_source", ["push", "probe"])
-async def test_positive_status_expires_after_90_seconds(entry_source: str, monkeypatch) -> None:
+async def test_positive_status_expires_after_90_seconds(
+    entry_source: str, monkeypatch
+) -> None:
     now = [0.0]
     monkeypatch.setattr(agent_status_cache, "_clock", lambda: now[0], raising=False)
     probe_calls = 0
@@ -176,7 +201,9 @@ async def test_each_push_refreshes_positive_ttl(monkeypatch) -> None:
     agent_status_cache.set_status("refreshed-push", working)
 
     now[0] = 90.001
-    assert await agent_status_cache.get_status_or_probe("refreshed-push", probe) == working
+    assert (
+        await agent_status_cache.get_status_or_probe("refreshed-push", probe) == working
+    )
     assert probe_calls == 0
 
     now[0] = 170.0
@@ -351,14 +378,18 @@ async def test_cancelled_probe_failure_is_logged_and_releases_generation(
         ):
             generation_released.set()
 
-    monkeypatch.setattr(agent_status_cache, "_release_generation", signal_generation_release)
+    monkeypatch.setattr(
+        agent_status_cache, "_release_generation", signal_generation_release
+    )
 
     async def probe() -> AgentStatus:
         probe_started.set()
         await release_probe.wait()
         raise RuntimeError("detached probe failed")
 
-    pending = asyncio.create_task(agent_status_cache.get_status_or_probe(window_id, probe))
+    pending = asyncio.create_task(
+        agent_status_cache.get_status_or_probe(window_id, probe)
+    )
     await probe_started.wait()
     pending.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -388,7 +419,9 @@ async def test_active_waiter_receives_probe_failure(caplog) -> None:
         await release_probe.wait()
         raise RuntimeError("active probe failed")
 
-    pending = asyncio.create_task(agent_status_cache.get_status_or_probe(window_id, probe))
+    pending = asyncio.create_task(
+        agent_status_cache.get_status_or_probe(window_id, probe)
+    )
     await probe_started.wait()
     release_probe.set()
 
@@ -402,7 +435,9 @@ async def test_active_waiter_receives_probe_failure(caplog) -> None:
 
 
 @pytest.mark.parametrize("invalidation", ["clear", "reset"])
-async def test_invalidation_during_cold_probe_discards_its_result(invalidation: str) -> None:
+async def test_invalidation_during_cold_probe_discards_its_result(
+    invalidation: str,
+) -> None:
     probe_started = asyncio.Event()
     release_probe = asyncio.Event()
     stale = AgentStatus("working", "codex", "before invalidation")

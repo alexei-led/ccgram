@@ -95,10 +95,23 @@ def _get_entry(window_id: str) -> tuple[bool, AgentStatus | None]:
     return True, entry.status
 
 
+def _store_entry(window_id: str, entry: _CacheEntry) -> None:
+    # Unbound windows are never read again; writes must retire their entries.
+    now = _clock()
+    expired = [
+        key
+        for key, cached in _cache.items()
+        if cached.expires_at is not None and now >= cached.expires_at
+    ]
+    for key in expired:
+        _cache.pop(key)
+    _cache[window_id] = entry
+
+
 def set_status(window_id: str, status: AgentStatus) -> None:
     """Record the latest push-reported agent status for *window_id*."""
     _bump_generation(window_id)
-    _cache[window_id] = _CacheEntry(status, _clock() + _POSITIVE_TTL)
+    _store_entry(window_id, _CacheEntry(status, _clock() + _POSITIVE_TTL))
 
 
 def get_status(window_id: str) -> AgentStatus | None:
@@ -129,6 +142,7 @@ async def get_status_or_probe(
         probe_key = (window_id, *generation)
         in_flight = _inflight_probes.get(probe_key)
         if in_flight is None:
+
             async def run_probe() -> AgentStatus | None:
                 return await probe()
 
@@ -137,7 +151,9 @@ async def get_status_or_probe(
             _inflight_probes[probe_key] = in_flight
             state.references += 1  # Keep state until the shared task is done.
 
-            def remove_finished_probe(completed: asyncio.Task[AgentStatus | None]) -> None:
+            def remove_finished_probe(
+                completed: asyncio.Task[AgentStatus | None],
+            ) -> None:
                 if _inflight_probes.get(probe_key) is in_flight:
                     _inflight_probes.pop(probe_key, None)
                 _release_generation(window_id, state)
@@ -169,7 +185,7 @@ async def get_status_or_probe(
             entry = _CacheEntry(None, _clock() + _NEGATIVE_TTL)
         else:
             entry = _CacheEntry(result, _clock() + _POSITIVE_TTL)
-        _cache[window_id] = entry
+        _store_entry(window_id, entry)
         _bump_generation(window_id)
         return result
     finally:
