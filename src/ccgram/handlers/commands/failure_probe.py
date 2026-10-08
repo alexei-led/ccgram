@@ -44,16 +44,37 @@ _COMMAND_ERROR_RE = re.compile(
     r"not recognized"
     r")\b"
 )
+_COMMAND_TOKEN_RE = re.compile(
+    r"(?<![\w/])/[a-z0-9_:-]+(?:\.[a-z0-9_:-]+)*(?![\w:/-]|\.[a-z0-9_:-])",
+    re.IGNORECASE,
+)
+_COMMAND_SUGGESTION_RE = re.compile(
+    r"(?i)\b(?:did you mean|did you intend|perhaps you meant|maybe you meant|suggestions?|suggested command|try)\b"
+)
 
 
-def _extract_probe_error_line(text: str) -> str | None:
+def _matches_dispatched_command(line: str, cc_slash: str) -> bool:
+    command = cc_slash.split(maxsplit=1)[0]
+    if not command.startswith("/"):
+        return False
+
+    suggestion = _COMMAND_SUGGESTION_RE.search(line)
+    error_text = line[: suggestion.start()] if suggestion else line
+    match = _COMMAND_TOKEN_RE.search(error_text)
+    return bool(match and match.group().casefold() == command.casefold())
+
+
+def _extract_probe_error_line(text: str, cc_slash: str | None = None) -> str | None:
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line:
             continue
-        if _COMMAND_ERROR_RE.search(line):
-            return line
-        if "error" in line.lower() and "command" in line.lower():
+        has_error = _COMMAND_ERROR_RE.search(line) or (
+            "error" in line.lower() and "command" in line.lower()
+        )
+        if has_error and (
+            cc_slash is None or _matches_dispatched_command(line, cc_slash)
+        ):
             return line
     return None
 
@@ -108,6 +129,7 @@ async def _probe_transcript_command_error(
     provider: AgentProvider,
     transcript_path: str | None,
     since_offset: int | None,
+    cc_slash: str | None = None,
 ) -> str | None:
     """Return first command-like error line found in transcript delta."""
     if not transcript_path or since_offset is None:
@@ -143,7 +165,7 @@ async def _probe_transcript_command_error(
     for msg in messages:
         if msg.role != "assistant":
             continue
-        found = _extract_probe_error_line(msg.text)
+        found = _extract_probe_error_line(msg.text, cc_slash)
         if found:
             return found
     return None
@@ -167,11 +189,12 @@ async def _maybe_send_command_failure_message(
         provider,
         transcript_path,
         since_offset,
+        cc_slash,
     )
     if not error_line:
         pane_after = await tmux_manager.capture_pane(window_id)
         pane_delta = _extract_pane_delta(pane_before, pane_after)
-        error_line = _extract_probe_error_line(pane_delta)
+        error_line = _extract_probe_error_line(pane_delta, cc_slash)
     if error_line:
         await safe_reply(
             message,
