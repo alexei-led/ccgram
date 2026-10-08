@@ -800,6 +800,17 @@ class TestCodexToolCallIntegration:
 
 
 class TestCodexTerminalStatus:
+    def test_preserves_advisory_selection_guess(self) -> None:
+        codex = CodexProvider()
+        pane = "Pick an action:\n› 1. First\n  2. Second"
+
+        status = codex.parse_terminal_status(pane)
+
+        assert status is not None
+        assert status.is_interactive is True
+        assert status.ui_type == "SelectionUI"
+        assert status.ui_advisory is True
+
     def test_detects_selection_ui(self) -> None:
         codex = CodexProvider()
         pane = (

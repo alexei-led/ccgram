@@ -214,6 +214,7 @@ class ClaudeProvider:
                 display_label=interactive.name,
                 is_interactive=True,
                 ui_type=interactive.name,
+                ui_advisory=interactive.advisory,
             )
 
         raw_status = parse_status_block(pane_text)
