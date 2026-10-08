@@ -55,10 +55,16 @@ _COMMAND_SUGGESTION_RE = re.compile(
 def _token_matches_command(match: re.Match[str], command: str) -> bool:
     quoted = match.group("quoted")
     token = quoted if quoted is not None else match.group("bare")
-    if token.casefold() == command.casefold():
+    value = token.casefold()
+    expected = command.casefold()
+    if value == expected:
         return True
-    # Sentence punctuation is not part of an unquoted error command.
-    return quoted is None and token.rstrip(".,;!?").casefold() == command.casefold()
+    # Only punctuation after the complete dispatched name is a sentence suffix.
+    return (
+        quoted is None
+        and value.startswith(expected)
+        and all(character in ".,;!?" for character in value[len(expected) :])
+    )
 
 
 def _matches_dispatched_command(line: str, cc_slash: str) -> bool:

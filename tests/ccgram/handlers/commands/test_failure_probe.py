@@ -156,6 +156,17 @@ def test_unquoted_sentence_punctuation_preserves_failure_notice(
     assert _extract_probe_error_line(line, "/deploy") is None
 
 
+@pytest.mark.parametrize("ending", ["!", "?", ".", ";", ","])
+@pytest.mark.parametrize("sentence_suffix", [".", "; did you mean /other?"])
+def test_unquoted_sentence_suffix_preserves_punctuation_in_dispatched_name(
+    ending: str, sentence_suffix: str
+) -> None:
+    command = f"/tools:build{ending}"
+    line = f"Unknown command: {command}{sentence_suffix}"
+
+    assert _extract_probe_error_line(line, command) == line
+
+
 class TestExtractPaneDelta:
     @pytest.mark.parametrize(
         ("before", "after", "expected"),
