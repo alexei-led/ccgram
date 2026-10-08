@@ -267,6 +267,75 @@ async def test_stale_or_foreign_panel_cannot_dispatch(panel_env, change):
     env.forward.assert_not_called()
 
 
+async def test_tokenized_panel_callback_keeps_its_owner_id(panel_env):
+    env = panel_env
+    name = "group:" + "x" * 100
+    with patch.object(
+        env.panel,
+        "discover_provider_commands",
+        return_value=[CCCommand(name, "group_x", "Long command", "command")],
+    ):
+        msg = message()
+        target, provider = env.panel.resolve_panel_target(msg, 100)
+        _, keyboard = env.panel.build_command_panel(target, provider, group="agent")
+
+    callback_data = next(
+        button.callback_data
+        for row in keyboard.inline_keyboard
+        for button in row
+        if button.text == "Command 1"
+    )
+    assert isinstance(callback_data, str)
+    assert callback_data.startswith("cmdpanel:100:~")
+    assert len(callback_data.encode()) <= 64
+
+
+async def test_expired_owned_panel_callback_refreshes_without_dispatch(panel_env):
+    env = panel_env
+    msg = message()
+    query = CallbackQuery(
+        "expired",
+        User(100, "Tester", False),
+        "instance",
+        message=msg,
+        data="cmdpanel:100:~AAAAAAAAAAAA",
+    )
+    query.set_bot(msg.get_bot())
+    update = Update(1, callback_query=query)
+    context = MagicMock(user_data={})
+    with patch.object(env.panel, "resolve_callback_data", return_value=None):
+        await env.panel.handle_command_panel(update, context)
+
+    env.forward.assert_not_called()
+    env.edit.assert_awaited_once()
+    assert "All commands ›" in labels(env.edit.await_args.kwargs["reply_markup"])
+
+
+async def test_expired_legacy_panel_callback_requests_manual_refresh(panel_env):
+    env = panel_env
+    msg = message()
+    query = CallbackQuery(
+        "expired",
+        User(100, "Tester", False),
+        "instance",
+        message=msg,
+        data="cmdpanel:~AAAAAAAAAAAA",
+    )
+    query.set_bot(msg.get_bot())
+    update = Update(1, callback_query=query)
+    with (
+        patch.object(env.panel, "resolve_callback_data", return_value=None),
+        patch.object(type(query), "answer", new_callable=AsyncMock) as answer,
+    ):
+        await env.panel.handle_command_panel(update, MagicMock(user_data={}))
+
+    env.forward.assert_not_called()
+    env.edit.assert_not_awaited()
+    answer.assert_awaited_once_with(
+        "This panel expired. Open /commands again.", show_alert=True
+    )
+
+
 async def test_long_native_command_uses_bounded_callback_without_truncation(panel_env):
     env = panel_env
     name = "group:" + "x" * 100

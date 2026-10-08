@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Stop logging the same agent-to-shell recovery state on every polling cycle.
 
 ### Upgrade
-- Restart ccgram after upgrading to register the shared slash-command menu. No configuration migration is required.
+- Restart ccgram after upgrading to register the shared slash-command menu. Send `/commands` once to refresh panels from an older version if their buttons report expiration. No configuration migration is required.
 
 ## [4.14.1] - 2026-10-03
 

@@ -9,7 +9,13 @@ from dataclasses import dataclass
 import structlog
 from typing import TYPE_CHECKING
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
+from telegram import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+    Update,
+)
 from telegram.error import TelegramError
 from telegram.ext import CommandHandler
 
@@ -106,7 +112,8 @@ def _callback(target: PanelTarget, action: str, value: str = "") -> str:
         separators=(",", ":"),
         ensure_ascii=False,
     )
-    return compact_callback_data(_PANEL_PREFIX, payload, target.window_id)
+    token_prefix = f"{_PANEL_PREFIX}{target.owner_id}:"
+    return compact_callback_data(token_prefix, payload, target.window_id)
 
 
 def _agent_names(provider: AgentProvider | None) -> list[str]:
@@ -412,6 +419,15 @@ async def send_command_panel(
             await sent.pin(disable_notification=True)
 
 
+def _callback_owner(data: str) -> int | None:
+    if not data.startswith(_PANEL_PREFIX):
+        return None
+    owner, separator, token = data[len(_PANEL_PREFIX) :].partition(":")
+    if not separator or not owner.isdecimal() or not token.startswith("~"):
+        return None
+    return int(owner)
+
+
 def _decode(data: str) -> tuple[PanelTarget, str, str] | None:
     if not data.startswith(_PANEL_PREFIX):
         return None
@@ -586,6 +602,29 @@ async def _execute_panel_action(
         )
 
 
+async def _handle_expired_panel_callback(
+    query: CallbackQuery,
+    user_id: int,
+    target: PanelTarget,
+    provider: AgentProvider | None,
+) -> None:
+    owner_id = _callback_owner(query.data or "")
+    if owner_id == user_id and isinstance(query.message, Message):
+        text, keyboard = build_command_panel(target, provider)
+        await query.answer("This panel was refreshed. Tap again.")
+        await interactive_edit(query, text, reply_markup=keyboard)
+        _remember_panel_message(
+            (user_id, target.chat_id, target.thread_id), query.message
+        )
+        return
+    notice = (
+        "This panel expired. Open /commands again."
+        if owner_id is None
+        else "This panel belongs to another user."
+    )
+    await query.answer(notice, show_alert=True)
+
+
 @register(_PANEL_PREFIX)
 async def handle_command_panel(
     update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -609,7 +648,10 @@ async def handle_command_panel(
     data = resolve_callback_data(
         query.data, user.id, lambda _uid, window: window in {"", current.window_id}
     )
-    decoded = _decode(data) if data else None
+    if data is None:
+        await _handle_expired_panel_callback(query, user.id, current, provider)
+        return
+    decoded = _decode(data)
     if decoded is None or decoded[0] != current:
         await query.answer(
             "This panel belongs to another user or the session changed. Open /commands again.",

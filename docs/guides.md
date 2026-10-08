@@ -630,7 +630,9 @@ In an unbound named topic, use **Set up session** to open the existing session p
 
 Agent buttons display and send the provider's original command name. For example, a discovered `spec:work` command appears as `/spec:work`, not `/spec_work`. The panel shows eight agent commands per page when more commands are available. Long command names stay intact in the panel and use a short button label when Telegram's 64-character button limit requires it.
 
-Destructive actions such as `/clear`, `/new`, `/rewind`, `/unbind`, and `/upgrade` ask for confirmation before execution. A panel action is revalidated against its owner, chat, topic, session, and provider before dispatch. Open `/commands` again if a panel is stale.\n\nThese mobile screenshots are rendered from the offline HTML prototype. They illustrate Telegram message and inline-button controls, not live Telegram screens.
+Destructive actions such as `/clear`, `/new`, `/rewind`, `/unbind`, and `/upgrade` ask for confirmation before execution. A panel action is revalidated against its owner, chat, topic, session, and provider before dispatch. Open `/commands` again if a panel is stale.
+
+These mobile screenshots are rendered from the offline HTML prototype. They illustrate Telegram message and inline-button controls, not live Telegram screens.
 
 ![Telegram General topic with its four CCGram controls](assets/command-panels/general-mobile.png)
 
@@ -640,7 +642,9 @@ Destructive actions such as `/clear`, `/new`, `/rewind`, `/unbind`, and `/upgrad
 
 ### Telegram's `/` command list
 
-Telegram does not provide a command-menu scope for individual forum topics. CCGram therefore keeps the native `/` list topic-safe and shared: `/commands`, `/sessions`, `/sync`, and `/upgrade`. Use the pinned panel for topic-specific CCGram and agent commands. Telegram cannot show a different native `/` list immediately when you switch topics.\n\nAfter upgrading CCGram, restart the bot. Send `/commands` in a chat if Telegram still shows an older command list there.
+Telegram does not provide a command-menu scope for individual forum topics. CCGram therefore keeps the native `/` list topic-safe and shared: `/commands`, `/sessions`, `/sync`, and `/upgrade`. Use the pinned panel for topic-specific CCGram and agent commands. Telegram cannot show a different native `/` list immediately when you switch topics.
+
+After upgrading CCGram, restart the bot. Send `/commands` in a chat if Telegram still shows an older command list there.
 
 ## Action Toolbar (`/toolbar`)
 
