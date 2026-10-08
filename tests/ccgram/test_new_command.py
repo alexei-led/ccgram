@@ -109,6 +109,7 @@ class TestCommandRegistration:
         self, mock_config: MagicMock
     ) -> None:
         mock_config.telegram_bot_token = "fake:token"
+        mock_config.group_id = None
         app = create_bot()
 
         handler_commands: list[str] = []
@@ -123,6 +124,7 @@ class TestCommandRegistration:
     @patch("ccgram.bot.config")
     def test_start_uses_welcome_command(self, mock_config: MagicMock) -> None:
         mock_config.telegram_bot_token = "fake:token"
+        mock_config.group_id = None
         app = create_bot()
 
         start_handler = None

@@ -24,11 +24,13 @@ from telegram.ext import (
 )
 from telegram.ext._utils.types import HandlerCallback
 
+from ..config import config
 from .callback_registry import dispatch as _dispatch_callback
 from .callback_registry import load_handlers as _load_callback_handlers
 from .agent_command import agent_command
 from .cleanup import rollback_command, unbind_command
 from .command_history import recall_command
+from .dashboard_command import dashboard_command, private_start_greeting
 from .commands import (
     commands_command,
     forward_command_handler,
@@ -83,6 +85,8 @@ class CommandSpec:
 def register_all(
     application: Application,
     group_filter: filters.BaseFilter,
+    *,
+    group_id: int | None = None,
 ) -> None:
     """Register every command, callback, message and inline-query handler.
 
@@ -95,6 +99,7 @@ def register_all(
         CommandSpec("history", history_command),
         CommandSpec("commands", commands_command),
         CommandSpec("sessions", sessions_command),
+        CommandSpec("dashboard", dashboard_command),
         CommandSpec("resume", resume_command),
         CommandSpec("unbind", unbind_command),
         CommandSpec("rollback", rollback_command),
@@ -118,6 +123,16 @@ def register_all(
     for spec in command_specs:
         application.add_handler(
             CommandHandler(spec.name, spec.handler, filters=group_filter)
+        )
+
+    if group_id:
+        application.add_handler(
+            CommandHandler(
+                "start",
+                private_start_greeting,
+                filters=filters.ChatType.PRIVATE
+                & filters.User(user_id=config.allowed_users),
+            )
         )
 
     application.add_handler(
@@ -175,6 +190,7 @@ COMMAND_NAMES: tuple[str, ...] = (
     "history",
     "commands",
     "sessions",
+    "dashboard",
     "resume",
     "unbind",
     "rollback",

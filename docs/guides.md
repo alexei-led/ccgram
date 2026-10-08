@@ -636,6 +636,8 @@ In General, the panel shows four controls: Commands, Sessions, Audit state, and 
 
 In an unbound named topic, use **Set up session** to open the existing session picker. After a session is bound, the panel shows CCGram actions available for that session and the provider's discovered commands. Shell topics do not show agent commands. Commands that require a transcript appear only for transcript-backed providers.
 
+The bound-topic panel includes **Dashboard**. It sends a fresh signed WebApp button to the authorized user's private chat, never to the group. If Telegram refuses the DM, start the bot privately with `/start`, then retry `/dashboard`. The shared native `/` list remains the four controls above.
+
 Agent buttons display and send the provider's original command name. For example, a discovered `spec:work` command appears as `/spec:work`, not `/spec_work`. The panel shows eight agent commands per page when more commands are available. Long command names stay intact in the panel and use a short button label when Telegram's 64-character button limit requires it.
 
 Destructive actions such as `/clear`, `/new`, `/rewind`, `/unbind`, and `/upgrade` ask for confirmation before execution. A panel action is revalidated against its owner, chat, topic, session, and provider before dispatch. Open `/commands` again if a panel is stale.
