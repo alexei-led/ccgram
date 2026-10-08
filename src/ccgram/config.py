@@ -76,6 +76,20 @@ def _delivery_watch_gap_bytes() -> int:
         return 256 * 1024
 
 
+def _whisper_timeout_s() -> float:
+    """Seconds before the transcription POST gives up, floored at 1s and
+    tolerant of empty, non-numeric, or non-finite input (inf would disable
+    the timeout, nan would crash the event loop). Raise it for local
+    self-hosted backends that pay a model cold load on first request."""
+    try:
+        value = float(os.getenv("CCGRAM_WHISPER_TIMEOUT") or 60.0)
+    except ValueError:
+        return 60.0
+    if not math.isfinite(value):
+        return 60.0
+    return max(1.0, value)
+
+
 class Config:
     """Application configuration loaded from environment variables."""
 
@@ -175,6 +189,7 @@ class Config:
         self.whisper_base_url: str = os.getenv("CCGRAM_WHISPER_BASE_URL", "")
         self.whisper_model: str = os.getenv("CCGRAM_WHISPER_MODEL", "")
         self.whisper_language: str = os.getenv("CCGRAM_WHISPER_LANGUAGE", "")
+        self.whisper_timeout: float = _whisper_timeout_s()
 
         # Voice replies (text-to-speech)
         # CCGRAM_TTS_PROVIDER: empty = disabled; "edge" = edge-tts; "openai" = OpenAI TTS

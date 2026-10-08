@@ -254,6 +254,7 @@ async def test_sessionless_snapshot_uses_terminal_fallback() -> None:
     fallback_window = await _manager(_live_fake(at_hook_time)).find_window_by_id(
         _sessionless_target("term-a")
     )
+    assert fallback_window is not None
     live_window = (await _manager(_live_fake(once_published)).list_windows())[0]
 
     assert fallback_window.window_id == _sessionless_target("term-a")
@@ -367,9 +368,11 @@ async def test_sessionless_agent_is_preserved_by_pane_compaction() -> None:
     before_window = await _manager(_live_fake(before)).find_window_by_id(
         _sessionless_target("term-b")
     )
+    assert before_window is not None
     after_window = await _manager(_live_fake(after)).find_window_by_id(
         _sessionless_target("term-b")
     )
+    assert after_window is not None
 
     assert before_window.window_id == _sessionless_target("term-b")
     assert after_window.window_id == _sessionless_target("term-b")

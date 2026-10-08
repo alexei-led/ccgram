@@ -21,11 +21,13 @@ class OpenAICompatTranscriber:
         model: str,
         base_url: str | None = None,
         language: str | None = None,
+        timeout: float = 60.0,
     ) -> None:
         self.model = model
         self.language = language
         self._api_key = api_key
         self._base_url = (base_url or _OPENAI_BASE_URL).rstrip("/")
+        self._timeout = timeout
 
     async def transcribe(
         self, audio_bytes: bytes, filename: str
@@ -59,11 +61,16 @@ class OpenAICompatTranscriber:
                     headers={"Authorization": f"Bearer {self._api_key}"},
                     files={"file": (filename, audio_bytes)},
                     data=data,
-                    timeout=60.0,
+                    timeout=self._timeout,
                 )
                 response.raise_for_status()
             except httpx.HTTPStatusError as exc:
                 msg = f"Transcription failed: {exc.response.status_code} {exc.response.text}"
+                raise RuntimeError(msg) from exc
+            except httpx.TimeoutException as exc:
+                # httpx timeout exceptions stringify to "", which used to
+                # surface as a bare "Transcription failed:" with no detail.
+                msg = f"Transcription timed out after {self._timeout}s"
                 raise RuntimeError(msg) from exc
             except httpx.HTTPError as exc:
                 msg = f"Transcription failed: {exc}"

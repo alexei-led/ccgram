@@ -43,6 +43,18 @@ class TestTranscribe:
         assert call_kw["data"] == {"model": "whisper-1"}
         assert call_kw["files"] == {"file": ("voice.ogg", b"audio")}
         assert "Bearer k" in call_kw["headers"]["Authorization"]
+        assert call_kw["timeout"] == 60.0
+
+    async def test_timeout_exception_names_the_deadline(
+        self, _mock_httpx: tuple[AsyncMock, MagicMock], monkeypatch
+    ) -> None:
+        import httpx
+
+        mock_client, _ = _mock_httpx
+        mock_client.post.side_effect = httpx.ReadTimeout("too slow")
+        t = OpenAICompatTranscriber(api_key="k", model="whisper-1", timeout=240.0)
+        with pytest.raises(RuntimeError, match="timed out after 240"):
+            await t.transcribe(b"audio", "voice.ogg")
 
     async def test_language_forwarded(
         self, _mock_httpx: tuple[AsyncMock, MagicMock]
