@@ -48,11 +48,12 @@ _FILENAME_PUNCT = frozenset("._-")
 _CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 # Control characters a path may never carry into a literal tmux send
-# (unlike captions, \n and \t are included). Legal nonprinting Unicode
-# such as a no-break space is not a control character and stays allowed,
-# which is why str.isprintable() is the wrong test here: it rejects those
-# legal names too.
-_PATH_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+# (unlike captions, \n and \t are included; C1 controls like U+009B are
+# rejected because terminals execute them on echo). Legal nonprinting
+# Unicode such as a no-break space is not a control character and stays
+# allowed, which is why str.isprintable() is the wrong test here: it
+# rejects those legal names too.
+_PATH_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 _MAX_CAPTION_LEN = 500
 
