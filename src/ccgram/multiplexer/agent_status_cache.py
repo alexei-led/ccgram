@@ -108,6 +108,17 @@ def _store_entry(window_id: str, entry: _CacheEntry) -> None:
     _cache[window_id] = entry
 
 
+def _entry_for_probe_result(
+    result: AgentStatus | None, cache_positive: bool
+) -> _CacheEntry | None:
+    """The entry a probe result may store, or None for pass-through."""
+    if result is None:
+        return _CacheEntry(None, _clock() + _NEGATIVE_TTL)
+    if cache_positive:
+        return _CacheEntry(result, _clock() + _POSITIVE_TTL)
+    return None
+
+
 def set_status(window_id: str, status: AgentStatus) -> None:
     """Record the latest push-reported agent status for *window_id*."""
     _bump_generation(window_id)
@@ -123,6 +134,8 @@ def get_status(window_id: str) -> AgentStatus | None:
 async def get_status_or_probe(
     window_id: str,
     probe: Callable[[], Awaitable[AgentStatus | None]],
+    *,
+    cache_positive: bool = True,
 ) -> AgentStatus | None:
     """Read a fresh cache entry, probing once on a miss.
 
@@ -131,9 +144,14 @@ async def get_status_or_probe(
     Concurrent callers share a probe. A newer push wins over a probe already
     in flight, and clear/reset invalidates an older probe even when the cache
     was cold at invalidation.
+
+    With ``cache_positive=False`` positive answers pass through uncached
+    and cached positive entries are treated as misses: a caller with no
+    push stream to refresh them must not trust a possibly stale positive.
+    Negative answers keep the short TTL.
     """
     hit, status = _get_entry(window_id)
-    if hit:
+    if hit and (status is None or cache_positive):
         return status
 
     state = _retain_generation(window_id)
@@ -181,11 +199,11 @@ async def get_status_or_probe(
             hit, status = _get_entry(window_id)
             return status if hit else None
 
-        if result is None:
-            entry = _CacheEntry(None, _clock() + _NEGATIVE_TTL)
-        else:
-            entry = _CacheEntry(result, _clock() + _POSITIVE_TTL)
-        _store_entry(window_id, entry)
+        entry = _entry_for_probe_result(result, cache_positive)
+        if entry is not None:
+            _store_entry(window_id, entry)
+        # The bump also retires any concurrent in-flight probe sharing
+        # this resolution when the result passes through uncached.
         _bump_generation(window_id)
         return result
     finally:

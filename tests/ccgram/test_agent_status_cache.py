@@ -233,6 +233,52 @@ async def test_negative_probe_result_is_cached_for_15_seconds(monkeypatch) -> No
     assert probe_calls == 2
 
 
+async def test_cache_positive_false_returns_but_never_stores_positives(
+    monkeypatch,
+) -> None:
+    now = [0.0]
+    monkeypatch.setattr(agent_status_cache, "_clock", lambda: now[0], raising=False)
+    probe_calls = 0
+    working = AgentStatus("working", "codex")
+
+    async def probe() -> AgentStatus | None:
+        nonlocal probe_calls
+        probe_calls += 1
+        return working if probe_calls == 1 else None
+
+    get_status = agent_status_cache.get_status_or_probe
+    # A positive probe result is returned but not stored: the next call probes.
+    assert await get_status("w2:t1", probe, cache_positive=False) == working
+    assert await get_status("w2:t1", probe, cache_positive=False) is None
+    assert probe_calls == 2
+
+    # A negative probe result is stored: the next call does not probe.
+    assert await get_status("w2:t1", probe, cache_positive=False) is None
+    assert probe_calls == 2
+
+
+async def test_cache_positive_false_ignores_cached_positive_entries(
+    monkeypatch,
+) -> None:
+    now = [0.0]
+    monkeypatch.setattr(agent_status_cache, "_clock", lambda: now[0], raising=False)
+    probe_calls = 0
+    agent_status_cache.set_status("w2:t1", AgentStatus("working", "codex"))
+
+    async def probe() -> AgentStatus | None:
+        nonlocal probe_calls
+        probe_calls += 1
+        return None
+
+    assert (
+        await agent_status_cache.get_status_or_probe(
+            "w2:t1", probe, cache_positive=False
+        )
+        is None
+    )
+    assert probe_calls == 1  # the fresh positive entry was not served
+
+
 async def test_push_during_probe_wins_for_current_caller() -> None:
     probe_started = asyncio.Event()
     release_probe = asyncio.Event()
