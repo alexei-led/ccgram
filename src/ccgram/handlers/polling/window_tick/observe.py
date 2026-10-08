@@ -119,13 +119,25 @@ async def _native_agent_status(window_id: str) -> StatusUpdate | None:
     # (just-bound, before the first push — or a backend without an event stream)
     # fall back to one ``agent_status`` subprocess call. On event-stream backends
     # the push keeps the cache warm, so the per-tick subprocess is skipped.
-    if tmux_manager.capabilities.supports_event_stream:
-        native = await agent_status_cache.get_status_or_probe(
-            window_id, lambda: tmux_manager.agent_status(window_id)
-        )
-    else:
-        # Probe-only backends have no push stream to refresh cached transitions.
-        native = await tmux_manager.agent_status(window_id)
+    # Fail soft: the gap-fill is optional enrichment, so a probe error
+    # degrades to no native status. The per-window catch handles only
+    # (TelegramError, OSError), so letting it through would abort the
+    # whole iteration for every window and apply the loop's backoff.
+    try:
+        if tmux_manager.capabilities.supports_event_stream:
+            native = await agent_status_cache.get_status_or_probe(
+                window_id, lambda: tmux_manager.agent_status(window_id)
+            )
+        else:
+            # Probe-only backends have no push stream to refresh cached
+            # transitions.
+            native = await tmux_manager.agent_status(window_id)
+    except Exception as exc:  # noqa: BLE001  # degrade, never break the tick
+        # Debug level: both current backends degrade transport failures to
+        # None internally, so this only fires for genuinely raising paths
+        # and must not flood the log at the 1s tick rate.
+        logger.debug("native agent_status probe failed", window_id=window_id, exc=exc)
+        return None
     if native is None:
         return None
     if native.state == "working":
