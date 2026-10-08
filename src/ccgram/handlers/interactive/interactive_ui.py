@@ -699,9 +699,11 @@ async def handle_interactive_ui(
         edited = await _edit_interactive_msg(
             client, resolved_chat_id, existing_msg_id, text, keyboard
         )
-        if edited and not blocking:
-            _interactive_mode.pop(ikey, None)
         if edited:
+            if blocking:
+                _interactive_mode[ikey] = window_id
+            else:
+                _interactive_mode.pop(ikey, None)
             _interactive_contexts[ikey] = (resolved_chat_id, existing_msg_id)
             _record_interactive_pane(ikey, pane_id)
         return edited or False
@@ -738,7 +740,10 @@ async def handle_interactive_ui(
         _interactive_msgs[ikey] = sent.message_id
         _record_interactive_pane(ikey, pane_id)
         _interactive_contexts[ikey] = (resolved_chat_id, sent.message_id)
-        _interactive_mode[ikey] = window_id
+        if blocking:
+            _interactive_mode[ikey] = window_id
+        else:
+            _interactive_mode.pop(ikey, None)
         _send_cooldowns.pop(ikey, None)
     return sent is not None
 
