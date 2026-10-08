@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.15.1] - 2026-10-08
+
+### Fixed
+- Keep `/sync` quiet by removing its scan of every bound Telegram topic; it no longer posts temporary probe messages and still cleans up topics for confirmed-closed sessions.
+- Verify abandoned topic-creation records by editing the recorded topic title instead of posting a probe message. A changed title can generate a Telegram rename notice; status badges may return on a later refresh.
+
 ## [4.15.0] - 2026-10-08
 
 ### Added

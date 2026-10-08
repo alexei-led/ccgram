@@ -91,11 +91,6 @@ async def test_sync_audit_does_not_mutate_live_topic_names(
                 live_binding_count=1,
             ),
         ),
-        patch(
-            f"{_MOD_SYNC}._probe_dead_topics",
-            new_callable=AsyncMock,
-            return_value=[],
-        ),
         patch(f"{_MOD_SYNC}.sync_topic_name", new_callable=AsyncMock) as mock_sync,
         patch(f"{_MOD_SYNC}.safe_reply", new_callable=AsyncMock),
     ):

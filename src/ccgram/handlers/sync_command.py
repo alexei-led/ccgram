@@ -3,7 +3,7 @@
 Audits all state maps against live multiplexer windows and reports issues.
 The command removes confirmed stale topics and re-audits in place. A "Fix"
 button runs the remaining cleanup operations.
-Enforcement: closes ghost topics, recreates dead topics, and adopts orphaned windows.
+Does not probe live Telegram topics. Fix adopts orphaned windows and repairs names.
 
 Key functions:
   - sync_command(): /sync command handler
@@ -42,7 +42,6 @@ from .callback_registry import register
 from .cleanup import clear_topic_state
 from .messaging_pipeline.message_sender import safe_edit, safe_reply
 from .status.topic_emoji import sync_topic_name
-from .topics.topic_probe import probe_topic_exists
 from .topics.topic_orchestration import is_pending_creation
 from .topics.topic_provisioning_recovery import recover_topic_provisioning
 from .topics.topic_deletion import (
@@ -57,14 +56,11 @@ if TYPE_CHECKING:
 logger = structlog.get_logger()
 
 _TELEGRAM_API_CONCURRENCY = 5
-_TELEGRAM_PROBE_TIMEOUT_S = 12.0
 _GHOST_RE = re.compile(r"user:(\d+)\s+thread:(\d+)\s+window:([^\s(]+)")
 _WINDOW_RE = re.compile(r"([^\s(]+)")
 
 _CATEGORY_LABELS: dict[str, str] = {
     "ghost_binding": "ghost binding (dead window)",
-    "dead_topic": "dead topic (window alive, topic deleted)",
-    "topic_probe_incomplete": "Telegram topic check incomplete",
     "provisioning_topic": "session creation awaiting confirmation",
     "orphaned_display_name": "orphaned display name",
     "orphaned_group_chat_id": "orphaned group chat ID",
@@ -122,7 +118,7 @@ def _issue_summary_lines(audit: AuditResult) -> list[str]:
     """Build category summary lines from audit issues."""
     category_counts: dict[str, int] = {}
     for issue in audit.issues:
-        if issue.category in ("ghost_binding", "dead_topic"):
+        if issue.category == "ghost_binding":
             continue  # shown in dedicated report lines
         category_counts[issue.category] = category_counts.get(issue.category, 0) + 1
 
@@ -224,7 +220,6 @@ def _format_report(
     *,
     fixed_count: int = 0,
     closed_topic_count: int = 0,
-    recreated_topic_count: int = 0,
     manual_close_count: int = 0,
     retired_outcomes: dict[str, int] | None = None,
 ) -> tuple[str, InlineKeyboardMarkup | None]:
@@ -235,15 +230,11 @@ def _format_report(
         issue_word = "issue" if fixed_count == 1 else "issues"
         lines.append(f"✅ Fixed {fixed_count} {issue_word}\n")
     else:
-        lines.append("🔍 State audit\n")
+        lines.append("✅ Sync complete\n")
 
     if closed_topic_count > 0:
         topic_word = "topic" if closed_topic_count == 1 else "topics"
         lines.append(f"ℹ Removed {closed_topic_count} stale {topic_word}")
-
-    if recreated_topic_count > 0:
-        topic_word = "topic" if recreated_topic_count == 1 else "topics"
-        lines.append(f"ℹ Recreated {recreated_topic_count} {topic_word}")
 
     if manual_close_count > 0:
         topic_word = "topic" if manual_close_count == 1 else "topics"
@@ -265,12 +256,6 @@ def _format_report(
             f"⚠ {dead} ghost binding(s) "
             f"({audit.live_binding_count}/{audit.total_bindings} alive)"
         )
-
-    # Dead topic summary (window alive, but Telegram topic deleted)
-    dead_topic_count = sum(1 for i in audit.issues if i.category == "dead_topic")
-    if dead_topic_count > 0:
-        topic_word = "topic" if dead_topic_count == 1 else "topics"
-        lines.append(f"⚠ {dead_topic_count} dead {topic_word} (deleted in Telegram)")
 
     lines.extend(_issue_summary_lines(audit))
 
@@ -419,7 +404,7 @@ async def _adopt_orphaned_windows(
     """Create Telegram topics for unbound multiplexer windows.
 
     The verdict on the issues handed in is as old as the listing the audit ran
-    against, and /sync Fix probes every bound topic over the network before
+    against, and /sync Fix reconciles topic titles over the network before
     reaching here — seconds, with many topics. So eligibility is re-read at the
     point of use: a window that has since gone away, or moved out of scope,
     must not get a topic. An unavailable listing adopts nothing; adoption is
@@ -465,164 +450,6 @@ async def _adopt_orphaned_windows(
             await _handle_new_window(event, client)
         except TelegramError, OSError:
             logger.exception("Failed to adopt orphaned window %s", window_id)
-
-
-async def _probe_dead_topics(client: TelegramClient) -> list[AuditIssue]:
-    """Probe Telegram topics for all live bindings, return dead_topic issues.
-
-    Sends a silent dot message to each thread and deletes it immediately.
-    ``send_chat_action`` does NOT validate thread existence —
-    only ``send_message`` reliably throws "thread not found" for deleted topics.
-    """
-    bindings = [
-        (uid, tid, wid, thread_router.resolve_chat_id(uid, tid))
-        for uid, tid, wid in thread_router.iter_thread_bindings()
-    ]
-    if not bindings:
-        return []
-
-    sem = asyncio.Semaphore(_TELEGRAM_API_CONCURRENCY)
-
-    async def _probe_one(
-        user_id: int, thread_id: int, window_id: str, chat_id: int
-    ) -> AuditIssue | None:
-        async with sem:
-            exists = await probe_topic_exists(client, chat_id, thread_id)
-            if exists is False:
-                display = thread_router.get_display_name(window_id)
-                return AuditIssue(
-                    category="dead_topic",
-                    detail=f"user:{user_id} thread:{thread_id} window:{window_id} ({display})",
-                    fixable=True,
-                )
-        return None
-
-    results = await asyncio.gather(
-        *(_probe_one(*b) for b in bindings), return_exceptions=True
-    )
-    issues: list[AuditIssue] = []
-    for r in results:
-        if isinstance(r, AuditIssue):
-            issues.append(r)
-        elif isinstance(r, BaseException):
-            logger.error("Unexpected error probing dead topics", exc_info=r)
-    return issues
-
-
-async def _add_topic_probe_issues(
-    client: TelegramClient, audit: AuditResult
-) -> AuditResult:
-    """Add Telegram existence and locally recorded-retirement findings."""
-    try:
-        async with asyncio.timeout(_TELEGRAM_PROBE_TIMEOUT_S):
-            dead_issues = await _probe_dead_topics(client)
-    except TimeoutError:
-        audit.issues.append(
-            AuditIssue(
-                category="topic_probe_incomplete",
-                detail="Telegram topic existence check timed out",
-                fixable=False,
-            )
-        )
-        logger.warning(
-            "Telegram topic probe timed out",
-            timeout_s=_TELEGRAM_PROBE_TIMEOUT_S,
-        )
-    else:
-        audit.issues.extend(dead_issues)
-        logger.info(
-            "Telegram topic probe completed",
-            dead_topic_count=len(dead_issues),
-        )
-    audit.issues.extend(_retired_topic_issues())
-    return audit
-
-
-async def _recreate_dead_topics(
-    client: TelegramClient, issues: list[AuditIssue]
-) -> int:
-    """Unbind dead topics and recreate them via _handle_new_window.
-
-    Returns count of successfully recreated topics.
-    """
-    # Lazy: same sync_command ↔ topic_orchestration cycle as
-    # _adopt_orphaned_windows.
-    # Lazy: session_monitor / topic_orchestration cycle through window-creation flow
-    from ..session_monitor import NewWindowEvent
-
-    # Lazy: session_monitor / topic_orchestration cycle through window-creation flow
-    from .topics.topic_orchestration import handle_new_window as _handle_new_window
-
-    # Lazy: importing the reconciliation seam at module load forms a cycle.
-    from ..multiplexer.reconciliation import window_presence
-
-    recreated = 0
-    for issue in issues:
-        if issue.category != "dead_topic":
-            continue
-        match = _GHOST_RE.search(issue.detail)
-        if not match:
-            continue
-        user_id = int(match.group(1))
-        thread_id = int(match.group(2))
-        window_id = match.group(3)
-        current_window_id = thread_router.get_window_for_thread(user_id, thread_id)
-        if current_window_id != window_id:
-            continue
-        # Per candidate: the listing this issue came from was taken before the
-        # Telegram probes, the title sync, orphan adoption and ghost cleanup.
-        # Recreating unbinds the thread first, so a window that has since gone
-        # would get a fresh topic pointing at nothing, and an unreachable
-        # backend must change nothing at all.
-        if await window_presence(window_id, tmux_manager) is not True:
-            logger.info(
-                "Skipping dead-topic recreation: window not confirmed present",
-                window_id=window_id,
-            )
-            continue
-
-        view = window_query.view_window(window_id)
-        name = (view.window_name if view else "") or thread_router.get_display_name(
-            window_id
-        )
-        event = NewWindowEvent(
-            window_id=window_id,
-            session_id=view.session_id if view else "",
-            window_name=name,
-            cwd=view.cwd if view else "",
-        )
-
-        # Preserve group_chat_id before unbinding; the targeted repair passes it
-        # directly so another user's binding cannot short-circuit recreation.
-        chat_id = thread_router.resolve_chat_id(user_id, thread_id)
-
-        thread_router.unbind_thread(
-            user_id,
-            thread_id,
-            retirement_reason="remote_deleted",
-        )
-
-        created = False
-        try:
-            created = await _handle_new_window(
-                event,
-                client,
-                target_user_id=user_id,
-                target_chat_id=chat_id,
-            )
-            if created:
-                recreated += 1
-            else:
-                logger.warning("Could not recreate topic for window %s", window_id)
-        except TelegramError, OSError:
-            logger.exception("Failed to recreate topic for window %s", window_id)
-        finally:
-            if not created:
-                thread_router.bind_thread(
-                    user_id, thread_id, window_id, window_name=name, chat_id=chat_id
-                )
-                thread_router.set_group_chat_id(user_id, thread_id, chat_id)
-    return recreated
 
 
 async def sync_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -678,7 +505,7 @@ async def sync_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> N
             await safe_reply(update.message, text, reply_markup=None)
         return
 
-    post_audit = await _add_topic_probe_issues(client, post_audit)
+    post_audit.issues.extend(_retired_topic_issues())
     actual_fixed = (
         audit.fixable_count
         + len([issue for issue in cleanup_issues if issue.category == "retired_topic"])
@@ -725,7 +552,7 @@ async def handle_sync_fix(query: CallbackQuery) -> None:
     # Audit before fixing to count fixable issues
     client = PTBTelegramClient(query.get_bot())
     pre_audit = session_manager.audit_state(live_ids, live_pairs, adoptable_ids)
-    pre_audit = await _add_topic_probe_issues(client, pre_audit)
+    pre_audit.issues.extend(_retired_topic_issues())
 
     # Run state cleanup operations
     try:
@@ -745,15 +572,11 @@ async def handle_sync_fix(query: CallbackQuery) -> None:
 
     # Enforcement: adopt orphans first so stale same-name topics can be rebound.
     await _adopt_orphaned_windows(client, pre_audit.issues)
-    recreated_count = await _recreate_dead_topics(client, pre_audit.issues)
     closed_count, manual_close_count, retired_outcomes = await _cleanup_stale_topics(
         client, pre_audit.issues
     )
 
     # Re-audit and compute actual fixed count (handles partial failures).
-    # No skip_threads here: successful recreations use a new thread_id (old
-    # one is unbound and won't be probed), while failed ones restore the old
-    # binding and must be re-probed to avoid inflating actual_fixed.
     post_audit = await _run_audit()
     if post_audit is None:
         # The repairs already ran; only the after-picture is missing, and
@@ -765,13 +588,12 @@ async def handle_sync_fix(query: CallbackQuery) -> None:
             reply_markup=None,
         )
         return
-    post_audit = await _add_topic_probe_issues(client, post_audit)
+    post_audit.issues.extend(_retired_topic_issues())
     actual_fixed = pre_audit.fixable_count - post_audit.fixable_count
     text, keyboard = _format_report(
         post_audit,
         fixed_count=actual_fixed,
         closed_topic_count=closed_count,
-        recreated_topic_count=recreated_count,
         manual_close_count=manual_close_count,
         retired_outcomes=retired_outcomes,
     )

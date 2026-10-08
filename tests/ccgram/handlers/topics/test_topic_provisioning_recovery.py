@@ -78,11 +78,10 @@ async def test_restored_known_topic_follows_authoritative_presence(presence):
         client.delete_forum_topic.assert_not_awaited()
 
 
-async def test_probe_cleanup_rate_limit_commits_topic_then_stops_batch():
-    router, _claim = _restored_claim()
+async def test_title_repair_rate_limit_retains_claim_then_stops_batch():
+    router, claim = _restored_claim()
     client = AsyncMock()
-    client.send_message.return_value = MagicMock(message_id=99)
-    client.delete_message.side_effect = RetryAfter(60)
+    client.edit_forum_topic.side_effect = RetryAfter(60)
     with patch(
         "ccgram.handlers.topics.topic_provisioning_recovery.window_presence",
         new_callable=AsyncMock,
@@ -92,9 +91,16 @@ async def test_probe_cleanup_rate_limit_commits_topic_then_stops_batch():
             "rate_limited": 1
         }
 
-    assert router.get_window_for_chat_thread(-100, 42) == "@2"
-    assert not router.iter_topic_provisionings()
-    client.delete_message.assert_awaited_once_with(-100, 99)
+    assert router.get_window_for_chat_thread(-100, 42) is None
+    assert router.iter_topic_provisionings() == [claim]
+    client.send_message.assert_not_awaited()
+    client.delete_message.assert_not_awaited()
+    client.edit_forum_topic.assert_awaited_once_with(
+        -100,
+        42,
+        name="@2",
+        rate_limit_args=NO_RETRY_RATE_LIMIT_ARGS,
+    )
 
 
 async def test_active_creation_is_never_reconciled_as_abandoned():
@@ -834,3 +840,26 @@ async def test_rate_limit_preserves_remaining_recovery_claims():
     retired = list(router.iter_retired_topics())
     assert len(retired) == 1
     assert retired[0].retry_at > 0
+
+
+async def test_recovery_restores_recorded_title_without_probe_messages():
+    router, _claim = _restored_claim()
+    router.window_display_names["@2"] = "restored-project"
+    client = AsyncMock()
+    client.edit_forum_topic.side_effect = BadRequest("TOPIC_NOT_MODIFIED")
+    with patch(
+        "ccgram.handlers.topics.topic_provisioning_recovery.window_presence",
+        new_callable=AsyncMock,
+        return_value=True,
+    ):
+        assert await recover_topic_provisioning(client, router=router) == {"bound": 1}
+
+    assert router.get_window_for_chat_thread(-100, 42) == "@2"
+    client.edit_forum_topic.assert_awaited_once_with(
+        -100,
+        42,
+        name="restored-project",
+        rate_limit_args=NO_RETRY_RATE_LIMIT_ARGS,
+    )
+    client.send_message.assert_not_awaited()
+    client.delete_message.assert_not_awaited()

@@ -433,11 +433,19 @@ Creating sessions from the terminal on herdr is covered in [Creating Sessions fr
 
 `/sync` immediately deletes locally known topics whose terminal sessions are confirmed gone, retries pending deletions, and includes locally recorded topics that earlier versions closed without deleting. No extra **Fix** click is needed for this cleanup. It then reports the result and offers **Fix** for other repairable items. Each cleanup batch attempts up to 100 retired topics. Pending deletion records survive restarts and are never dropped by the separate 100-entry retained-history limit.
 
+`/sync` does not scan active Telegram topics or send temporary probe messages. Its audit uses local bindings and authoritative terminal presence, so a successful audit does not prove that every bound topic still exists in Telegram. Deleted-topic detection remains in normal bot operations and lifecycle checks. **Fix** can still repair topic titles and adopt known unbound windows.
+
 Before each removal, CCGram rechecks the exact chat/topic binding. A topic that is active or was rebound in the meantime is protected from deletion. A new binding for the same chat/topic also removes the old retired record. If the multiplexer cannot provide an authoritative listing, `/sync` performs no cleanup.
 
 `CCGRAM_AUTODELETE_DEAD_TOPICS=false` only gates the automatic per-tick dead-session deletion. A topic kept that way is still a binding pointing at a confirmed-dead window, so it surfaces as a `ghost_binding` audit issue; `/sync` (run directly or via its **Fix** button) closes and deletes it like any other ghost topic, regardless of the knob.
 
-Session creation also owns an exact topic record, saved before the first remote request. That ownership protects the topic throughout slow startup and replacement; it does not expire while the creation task is running. Startup, periodic cleanup, and `/sync` recover abandoned creation records from current session presence and verify the recorded Telegram topic before restoring its binding. If that topic was deleted while its target remains alive, recovery creates a fresh topic without replacing another current binding for the target. Failed recreation attempts with a known outcome remain queued across restarts and respect Telegram rate limits.
+Session creation owns an exact topic record, saved before the first remote request. That ownership protects the topic during slow startup and replacement. It does not expire while the creation task is running.
+
+Startup, periodic cleanup, and `/sync` recover abandoned creation records from current session presence. Recovery verifies the recorded Telegram topic by editing its title to the resolved session name before restoring its binding. It checks only abandoned creation records, never scans all active topics, and sends no temporary probe messages. Missing edit permission or transport errors leave the creation record unresolved.
+
+If the title changes, Telegram posts a rename service message. The rename can remove status, provider, and YOLO badges. A later status refresh may restore these badges and produce another rename notice.
+
+If the recorded topic was deleted while its target remains alive, recovery creates a fresh topic without replacing another current binding for the target. Failed recreation attempts with a known outcome remain queued across restarts and respect Telegram rate limits.
 
 A confirmed absent target can have its known topic cleaned up. An unknown target or an uncertain creation result without a new topic ID remains protected and appears as creation awaiting confirmation; CCGram does not guess whether the remote creation succeeded or repeat an ambiguous request. Targets belonging to a different backend are unverified, never treated as absent by the selected backend.
 

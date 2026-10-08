@@ -294,19 +294,13 @@ async def _recover_present_topic(
     claim: TopicProvisioning,
 ) -> str:
     assert claim.target_id is not None and claim.thread_id is not None
-    cleanup_rate_limited = False
-
-    def note_cleanup_retry(_exc: RetryAfter) -> None:
-        nonlocal cleanup_rate_limited
-        cleanup_rate_limited = True
-
     try:
         topic_exists = await probe_topic_exists(
             client,
             claim.chat_id,
             claim.thread_id,
             propagate_retry_after=True,
-            on_cleanup_retry_after=note_cleanup_retry,
+            topic_name=_cached_topic_name(router, claim.target_id),
         )
     except RetryAfter:
         return "rate_limited"
@@ -319,12 +313,11 @@ async def _recover_present_topic(
             await _hookless_agent_has_not_started(claim)
             and time.time() - claim.created_at < HOOKLESS_START_GRACE_S
         ):
-            return "rate_limited" if cleanup_rate_limited else "unresolved"
+            return "unresolved"
         # Past the grace the CLI never came up: fall through to the normal
         # commit so the window lifecycle cleans the dead pane up instead of
         # leaving a claim that can never settle.
-        outcome = await _commit_present_topic(router, claim)
-        return "rate_limited" if cleanup_rate_limited else outcome
+        return await _commit_present_topic(router, claim)
 
     topic_name = _cached_topic_name(router, claim.target_id)
     return await _recreate_deleted_topic(
