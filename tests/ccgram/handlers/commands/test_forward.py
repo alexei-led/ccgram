@@ -164,6 +164,20 @@ class TestForwardCommandResolution:
         )
         self.mock_send_followup_to_window.assert_not_called()
 
+    @pytest.mark.parametrize("native", ["/spec:Work", "/committing-code", "/clear"])
+    async def test_panel_native_name_is_forwarded_unchanged(self, native: str) -> None:
+        await forward_command_handler(
+            _make_update(text=native), _make_context(), native_command=native
+        )
+        self.mock_send_to_window.assert_called_once_with(100, "@1", 42, native, -100999)
+
+    async def test_panel_command_still_uses_provider_native_pi_alias(self) -> None:
+        self.mock_provider.capabilities.name = "pi"
+        await forward_command_handler(
+            _make_update(text="/clear"), _make_context(), native_command="/clear"
+        )
+        self.mock_send_to_window.assert_called_once_with(100, "@1", 42, "/new", -100999)
+
     async def test_confirmation_message_shows_resolved_name(self) -> None:
         update = _make_update(text="/committing_code")
         await forward_command_handler(update, _make_context())

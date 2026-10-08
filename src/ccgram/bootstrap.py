@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING
 import structlog
 from telegram.error import TelegramError
 
-from .cc_commands import register_commands
+from .handlers.commands.menu_sync import register_control_menus
 from .config import config
 from .handlers.commands import setup_menu_refresh_job
 from .handlers.hook_events import dispatch_hook_event
@@ -95,10 +95,9 @@ def _global_exception_handler(
 
 
 async def register_provider_commands(application: Application) -> None:
-    """Register the default provider's BotCommand list and schedule menu refresh."""
-    default_provider = get_provider()
+    """Install shared control menus, including legacy scopes, and schedule refresh."""
     try:
-        await register_commands(application.bot, provider=default_provider)
+        await register_control_menus(application.bot)
     except TelegramError:
         logger.warning("Failed to register bot commands at startup, will retry later")
     setup_menu_refresh_job(application)

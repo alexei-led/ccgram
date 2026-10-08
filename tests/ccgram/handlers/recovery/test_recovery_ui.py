@@ -5,7 +5,6 @@ from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
-import ccgram.handlers.commands.menu_sync as cmd_orch_mod
 from ccgram.handlers.text.text_handler import text_handler
 from ccgram.handlers.recovery.recovery_banner import (
     _recovery_help_text,
@@ -281,6 +280,7 @@ def dead_window(_no_group):
         patch(f"{_TH}.window_query") as wq,
         patch(f"{_TH}.safe_reply", new_callable=AsyncMock) as reply,
         patch(f"{_TH}.build_directory_browser") as browser,
+        patch(f"{_TH}.sync_scoped_menu_for_text_context", new_callable=AsyncMock),
         patch(f"{_TH}.Path") as path,
     ):
         router.get_window_for_thread.return_value = "@0"
@@ -338,87 +338,17 @@ class TestTextHandlerDeadWindow:
 
 class TestBotTextHandlerScopedMenu:
     @patch(f"{_TH}.handle_text_message", new_callable=AsyncMock)
-    @patch(
-        "ccgram.handlers.commands.menu_sync.sync_scoped_provider_menu",
-        new_callable=AsyncMock,
-    )
-    @patch("ccgram.handlers.commands.menu_sync.get_provider_for_window")
-    @patch("ccgram.handlers.commands.menu_sync.thread_router")
-    async def test_syncs_scoped_menu_when_thread_is_bound(
-        self,
-        mock_tr: MagicMock,
-        mock_get_provider: MagicMock,
-        mock_sync_menu: AsyncMock,
-        mock_handle_text: AsyncMock,
-        _no_group: MagicMock,
+    @patch(f"{_TH}.sync_scoped_menu_for_text_context", new_callable=AsyncMock)
+    async def test_syncs_shared_controls_before_any_topic_text(
+        self, sync_menu: AsyncMock, handle_text: AsyncMock, _no_group: MagicMock
     ) -> None:
-        provider = SimpleNamespace(capabilities=SimpleNamespace(name="codex"))
-        mock_get_provider.return_value = provider
-        mock_tr.resolve_window_for_thread.return_value = "@1"
-
         update = _make_update()
-        ctx = _make_context()
+        context = _make_context()
 
-        await text_handler(update, ctx)
+        await text_handler(update, context)
 
-        mock_sync_menu.assert_called_once_with(update.message, 100, provider)
-        mock_handle_text.assert_called_once_with(update, ctx)
-
-    @patch(f"{_TH}.handle_text_message", new_callable=AsyncMock)
-    @patch(
-        "ccgram.handlers.commands.menu_sync.sync_scoped_provider_menu",
-        new_callable=AsyncMock,
-    )
-    @patch("ccgram.handlers.commands.menu_sync.thread_router")
-    async def test_skips_scoped_menu_sync_when_thread_is_unbound(
-        self,
-        mock_tr: MagicMock,
-        mock_sync_menu: AsyncMock,
-        mock_handle_text: AsyncMock,
-        _no_group: MagicMock,
-    ) -> None:
-        mock_tr.resolve_window_for_thread.return_value = None
-
-        update = _make_update()
-        ctx = _make_context()
-
-        await text_handler(update, ctx)
-
-        mock_sync_menu.assert_not_called()
-        mock_handle_text.assert_called_once_with(update, ctx)
-
-    @patch(f"{_TH}.handle_text_message", new_callable=AsyncMock)
-    @patch(
-        "ccgram.handlers.commands.menu_sync.sync_scoped_provider_menu",
-        new_callable=AsyncMock,
-    )
-    @patch("ccgram.handlers.commands.menu_sync.get_provider_for_window")
-    @patch("ccgram.handlers.commands.menu_sync.thread_router")
-    async def test_cached_chat_user_still_resolves_provider_context(
-        self,
-        mock_tr: MagicMock,
-        mock_get_provider: MagicMock,
-        mock_sync_menu: AsyncMock,
-        mock_handle_text: AsyncMock,
-        _no_group: MagicMock,
-    ) -> None:
-        cmd_orch_mod._scoped_provider_menu.clear()
-        try:
-            cmd_orch_mod._scoped_provider_menu[(-100999, 100)] = "codex"
-            provider = SimpleNamespace(capabilities=SimpleNamespace(name="codex"))
-            mock_get_provider.return_value = provider
-            mock_tr.resolve_window_for_thread.return_value = "@1"
-            update = _make_update()
-            update.message.chat.id = -100999
-            ctx = _make_context()
-
-            await text_handler(update, ctx)
-
-            mock_tr.resolve_window_for_thread.assert_called_once_with(100, 42, -100999)
-            mock_sync_menu.assert_called_once_with(update.message, 100, provider)
-            mock_handle_text.assert_called_once_with(update, ctx)
-        finally:
-            cmd_orch_mod._scoped_provider_menu.clear()
+        sync_menu.assert_awaited_once_with(update, 100)
+        handle_text.assert_awaited_once_with(update, context)
 
 
 # ── Recovery button handlers ──────────────────────────────────────────────

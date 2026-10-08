@@ -57,12 +57,13 @@ Terminal closure and topic cleanup:
 3. `handlers/topics/topic_provisioning_recovery.py` recovers persisted creation records, verifies saved topics before binding, and retains recreation retries or unresolved remote outcomes. Active creation ownership has no age-based expiry.
 4. Explicit recovery/resume UI remains in `handlers/recovery/`; automatic terminal closure deletes the topic instead of showing a recovery banner. New sessions never automatically reuse old topics by name.
 
-Commands menu (`/commands`):
+Topic command panel (`/commands`):
 
 1. `handlers/registry.py` dispatches to `handlers/commands/__init__.py:commands_command`.
-2. `command_catalog.py` discovers commands for the window's provider (60s TTL).
-3. `cc_commands.py` renders the scoped menu as inline keyboard.
-4. Selection sends command via `tmux_manager.py`. Failure path: `handlers/commands/failure_probe.py`. Status snapshot: `handlers/commands/status_snapshot.py`. Menu cache: `handlers/commands/menu_sync.py`.
+2. `handlers/commands/panel.py` resolves the current topic binding and renders CCGram and provider actions as inline buttons.
+3. Provider button labels and dispatch preserve the original provider command name. The callback rechecks user, chat, topic, window, and provider before dispatch.
+4. CCGram actions use existing command handlers. Agent commands use `handlers/commands/forward.py`; failure probes and status snapshots remain in their existing modules.
+5. `cc_commands.py` and `handlers/commands/menu_sync.py` keep Telegram's chat-level slash suggestions limited to shared controls. Telegram has no forum-topic command scope.
 
 ## Transcript Sources (read-only)
 

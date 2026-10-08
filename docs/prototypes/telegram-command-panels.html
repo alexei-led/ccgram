@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <title>ccgram · Topic command panels</title>
+  <style>
+    :root {
+      --page: #101319;
+      --surface: #191f29;
+      --line: #303947;
+      --text: #edf2f8;
+      --muted: #a2afc0;
+      --accent: #80baff;
+      --chat: #0e1621;
+      --telegram: #1d2b3b;
+      --bubble: #182637;
+      --button: #23374c;
+      --focus: #b5d6ff;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--page); color: var(--text); font: 15px/1.5 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    button, input { font: inherit; }
+    button { cursor: pointer; }
+    button, a, input { -webkit-tap-highlight-color: transparent; }
+    button:focus-visible, a:focus-visible, input:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+    button { color: inherit; }
+    a { color: var(--accent); }
+    .study { max-width: 1060px; margin: auto; padding: 52px 32px; display: grid; grid-template-columns: minmax(260px, 1fr) 390px; gap: 80px; align-items: start; }
+    .eyebrow { margin: 0 0 20px; color: var(--accent); font-size: 11px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; }
+    h1 { margin: 0; font-size: clamp(30px, 4vw, 44px); line-height: 1.12; letter-spacing: -.045em; font-weight: 650; }
+    .intro { margin: 20px 0 28px; color: var(--muted); max-width: 370px; font-size: 16px; }
+    .scenario-label { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .09em; margin-bottom: 10px; }
+    .scenarios { display: grid; gap: 8px; }
+    .scenario { display: flex; align-items: center; text-align: start; gap: 12px; border: 1px solid var(--line); background: transparent; border-radius: 12px; padding: 12px 14px; min-height: 66px; width: 100%; }
+    .scenario[aria-pressed="true"] { border-color: var(--accent); background: #182638; }
+    .scenario-icon { display: grid; place-items: center; width: 34px; height: 34px; flex: none; background: #283243; border-radius: 10px; font-size: 19px; }
+    .scenario-text { flex: 1; }
+    .scenario strong { display: block; font-size: 14px; font-weight: 600; }
+    .scenario small { color: var(--muted); font-size: 12px; }
+    .scenario-arrow { color: var(--accent); font-size: 20px; }
+    .design-note { border-top: 1px solid var(--line); padding-top: 20px; margin-top: 25px; font-size: 13px; color: var(--muted); }
+    .design-note strong { color: var(--text); display: block; margin-bottom: 8px; }
+    .design-note p { margin: 0 0 12px; }
+    .legend { display: flex; flex-wrap: wrap; gap: 8px; margin: 20px 0; }
+    .legend span { border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; color: var(--muted); font-size: 11px; }
+    .source-links { font-size: 11px; line-height: 1.8; }
+    .preview { min-width: 0; }
+    .preview-caption { margin: 0 0 12px; display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; letter-spacing: .04em; }
+    .phone { width: 390px; height: 812px; border: 1px solid #3a4655; border-radius: 36px; overflow: hidden; background: var(--chat); display: flex; flex-direction: column; box-shadow: 0 24px 80px #0006; position: relative; }
+    .status-bar { height: 38px; flex: none; padding: 10px 24px 0; display: flex; justify-content: space-between; font-size: 12px; font-weight: 650; background: var(--telegram); }
+    .status-symbols { letter-spacing: 2px; font-size: 11px; }
+    .chat-header { height: 62px; flex: none; background: var(--telegram); display: flex; align-items: center; gap: 12px; padding: 6px 16px; }
+    .back-icon { font-size: 28px; line-height: 1; color: var(--accent); }
+    .topic-avatar { width: 40px; height: 40px; border-radius: 13px; background: #4b7ca9; display: grid; place-items: center; font-size: 25px; color: white; flex: none; }
+    .header-copy { flex: 1; min-width: 0; }
+    .header-copy strong { display: block; font-size: 16px; line-height: 1.3; }
+    .header-copy small { color: #9cabbc; font-size: 12px; }
+    .header-dots { font-size: 24px; color: var(--muted); }
+    .pinned { min-height: 48px; flex: none; border: 0; border-top: 1px solid #ffffff06; border-bottom: 1px solid #ffffff09; background: var(--telegram); width: 100%; text-align: start; padding: 7px 16px; display: flex; gap: 10px; align-items: center; }
+    .pin-line { width: 3px; height: 30px; border-radius: 2px; background: var(--accent); flex: none; }
+    .pinned strong { display: block; color: var(--accent); font-size: 12px; line-height: 1.35; }
+    .pinned small { display: block; color: #c5d0dc; font-size: 12px; }
+    .pin-icon { margin-left: auto; color: var(--muted); }
+    .conversation { flex: 1; min-height: 0; overflow-y: auto; padding: 18px 14px 20px; scroll-behavior: smooth; background-image: radial-gradient(#8398b40a 1px, transparent 1px); background-size: 18px 18px; }
+    .date { margin: 0 auto 20px; width: max-content; background: #233246; color: #cad5e3; font-size: 11px; padding: 3px 11px; border-radius: 14px; }
+    .bot-message { max-width: 100%; margin-bottom: 16px; }
+    .message-body { padding: 11px 13px 7px; background: var(--bubble); border-radius: 12px 12px 5px 5px; font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+    .sender { display: flex; gap: 6px; align-items: center; margin-bottom: 7px; color: var(--accent); font-size: 13px; font-weight: 600; }
+    .bot-label { color: #9cabbc; font-weight: 400; font-size: 10px; }
+    .message-body h2 { font-size: 15px; margin: 0 0 6px; }
+    .message-body p { margin: 0 0 8px; }
+    .message-body code { font: 12px ui-monospace, SFMono-Regular, Consolas, monospace; color: #d4e4f7; }
+    .message-body .secondary { color: #a9b9cb; font-size: 13px; }
+    .message-time { color: #7e94ad; text-align: right; font-size: 10px; margin-top: 7px; }
+    .inline-keyboard { display: grid; gap: 4px; margin-top: 4px; }
+    .keyboard-row { display: flex; gap: 4px; }
+    .keyboard-row button { flex: 1; min-width: 0; border: 0; border-radius: 5px; background: var(--button); color: #d0e7ff; min-height: 46px; padding: 9px 6px; font-size: 13px; font-weight: 500; line-height: 1.25; overflow-wrap: anywhere; }
+    .keyboard-row button:hover { background: #2d4761; }
+    .keyboard-row button:active { background: #365675; }
+    .keyboard-row button.danger { color: #ffb5b0; }
+    .user-message { width: max-content; max-width: 85%; margin: 12px 0 16px auto; border-radius: 12px 12px 3px 12px; padding: 9px 13px; background: #284967; font-size: 14px; overflow-wrap: anywhere; }
+    .composer-area { flex: none; background: var(--telegram); border-top: 1px solid #ffffff08; padding: 8px 10px 15px; position: relative; }
+    .composer { display: flex; gap: 8px; align-items: center; }
+    .composer input { min-width: 0; width: 100%; flex: 1; border: 0; background: #111d2b; color: var(--text); padding: 11px 12px; border-radius: 20px; font-size: 14px; }
+    .composer input::placeholder { color: #8b9baf; }
+    .composer button { flex: none; height: 44px; width: 44px; border: 0; border-radius: 50%; background: #2e5072; color: #cce5ff; font-size: 20px; }
+    .composer-emoji { color: #8b9baf; font-size: 26px; width: 28px; text-align: center; flex: none; }
+    .slash-preview { border: 1px solid var(--line); color: var(--accent); background: transparent; border-radius: 8px; padding: 8px 12px; min-height: 44px; margin-top: 8px; }
+    .home-indicator { height: 4px; width: 124px; border-radius: 4px; margin: 13px auto 0; background: #d6dce4; }
+    .slash-menu { position: absolute; bottom: calc(100% + 1px); left: 0; right: 0; background: #1d2b3b; padding: 9px 10px; box-shadow: 0 -8px 20px #0003; border-top: 1px solid #3b4b60; }
+    .slash-menu[hidden] { display: none; }
+    .slash-menu p { font-size: 11px; color: #a9b9cb; margin: 0 10px 6px; }
+    .slash-item { display: flex; gap: 12px; align-items: center; width: 100%; background: transparent; border: 0; border-radius: 8px; padding: 10px; min-height: 46px; text-align: left; }
+    .slash-item:hover { background: #ffffff09; }
+    .slash-item strong { color: var(--accent); font-size: 14px; min-width: 80px; font-weight: 500; }
+    .slash-item span { color: #b4c1d1; font-size: 12px; }
+    .below-phone { margin-top: 12px; color: var(--muted); text-align: center; font-size: 11px; }
+    @media (max-width: 820px) {
+      .study { gap: 32px; padding: 28px 20px; grid-template-columns: minmax(230px, 1fr) 360px; }
+      .phone { width: 360px; height: 780px; }
+    }
+    @media (max-width: 680px) {
+      .study { display: flex; flex-direction: column; padding: 20px 12px; gap: 20px; max-width: 440px; }
+      .overview, .preview { width: 100%; }
+      h1 { font-size: 30px; }
+      .eyebrow { margin-bottom: 10px; }
+      .intro { margin: 12px 0 18px; font-size: 14px; max-width: none; }
+      .scenarios { display: flex; overflow-x: auto; gap: 6px; padding: 4px 4px 8px; scroll-snap-type: x proximity; }
+      .scenario { width: auto; min-width: 112px; min-height: 60px; flex: none; padding: 9px 10px; gap: 8px; scroll-snap-align: start; }
+      .scenario-icon { width: 26px; height: 28px; font-size: 16px; border-radius: 7px; }
+      .scenario-arrow { display: none; }
+      .scenario strong { font-size: 12px; }
+      .scenario small { font-size: 10px; }
+      .design-note, .legend, .source-links { display: none; }
+      .phone { width: 100%; height: min(812px, 100svh); min-height: 570px; border-radius: 22px; box-shadow: none; }
+      .status-bar { padding-inline: 20px; }
+      .preview-caption { margin-bottom: 8px; }
+    }
+    @media (prefers-reduced-motion: reduce) { .conversation { scroll-behavior: auto; } }
+  </style>
+</head>
+<body>
+<main class="study">
+  <section class="overview" aria-labelledby="study-title">
+    <p class="eyebrow">ccgram / Interactive prototype</p>
+    <h1 id="study-title">Right commands.<br>Right topic.</h1>
+    <p class="intro">A pinned command panel that knows what is attached to this topic. No irrelevant actions. No commands to memorize.</p>
+    <div class="scenario-label"><span>Choose a scenario</span><span>Prototype controls</span></div>
+    <nav class="scenarios" aria-label="Preview topic scenarios">
+      <button class="scenario" data-topic="general" aria-pressed="true"><span class="scenario-icon">#</span><span class="scenario-text"><strong>General</strong><small>Control only · 4 actions</small></span><span class="scenario-arrow">›</span></button>
+      <button class="scenario" data-topic="claude" aria-pressed="false"><span class="scenario-icon">✳</span><span class="scenario-text"><strong>Claude</strong><small>Bound agent session</small></span><span class="scenario-arrow">›</span></button>
+      <button class="scenario" data-topic="codex" aria-pressed="false"><span class="scenario-icon">◇</span><span class="scenario-text"><strong>Codex</strong><small>Bound agent session</small></span><span class="scenario-arrow">›</span></button>
+      <button class="scenario" data-topic="shell" aria-pressed="false"><span class="scenario-icon">›_</span><span class="scenario-text"><strong>Terminal</strong><small>Shell · no agent</small></span><span class="scenario-arrow">›</span></button>
+      <button class="scenario" data-topic="unbound" aria-pressed="false"><span class="scenario-icon">+</span><span class="scenario-text"><strong>Unbound</strong><small>Not attached yet</small></span><span class="scenario-arrow">›</span></button>
+    </nav>
+    <div class="design-note">
+      <strong>A Telegram message, not a custom app.</strong>
+      <p>The phone uses plain bot messages, inline keyboard rows, callback navigation, and a pinned message. Category and page buttons edit the same message.</p>
+      <p><strong>The slash menu stays shared.</strong>Type / in any scenario: the same four control commands appear. The preview shortcut below the phone is not a Telegram bot control. Topic-specific commands live in the panel, not in native slash suggestions.</p>
+      <p>Two buttons per row. Frequent actions first. More commands one tap away. Clearing a conversation or updating ccgram needs confirmation.</p>
+      <p>Illustrative commands, not an exhaustive live provider catalog. All responses are simulated; no terminal, bot, or network calls.</p>
+    </div>
+    <div class="legend"><span>44+ px touch targets</span><span>No custom Telegram widgets</span><span>Offline · one HTML file</span></div>
+    <div class="source-links">API basis: <a href="https://core.telegram.org/bots/features#inline-keyboards" target="_blank" rel="noreferrer">Inline keyboards</a> · <a href="https://core.telegram.org/bots/api#botcommandscope" target="_blank" rel="noreferrer">Command scopes</a></div>
+  </section>
+  <section class="preview" aria-label="Telegram phone preview">
+    <p class="preview-caption"><span>TELEGRAM · DARK MODE</span><span>390 × 812 reference</span></p>
+    <div class="phone">
+      <div class="status-bar" aria-hidden="true"><span>9:41</span><span class="status-symbols">▥ ◔ ▰</span></div>
+      <header class="chat-header">
+        <span class="back-icon" aria-hidden="true">‹</span>
+        <span class="topic-avatar" id="topic-avatar" aria-hidden="true">#</span>
+        <div class="header-copy"><strong id="topic-title">General</strong><small>ccgram workspace</small></div>
+        <span class="header-dots" aria-hidden="true">⋮</span>
+      </header>
+      <button class="pinned" id="pinned" aria-label="Open pinned command panel">
+        <span class="pin-line" aria-hidden="true"></span>
+        <span><strong>Pinned message</strong><small id="pin-description">General · control commands</small></span>
+        <span class="pin-icon" aria-hidden="true">⌖</span>
+      </button>
+      <div class="conversation" id="conversation" role="region" aria-label="Topic messages" tabindex="0">
+        <div class="date">Today</div>
+        <article class="bot-message" id="command-panel" aria-label="Topic command panel">
+          <div class="message-body">
+            <div class="sender">ccgram <span class="bot-label">bot</span></div>
+            <div id="panel-copy"></div>
+            <div class="message-time">9:41</div>
+          </div>
+          <div class="inline-keyboard" id="keyboard" aria-label="Command buttons"></div>
+        </article>
+        <div id="responses" aria-live="polite" aria-relevant="additions"></div>
+      </div>
+      <div class="composer-area">
+        <div class="slash-menu" id="slash-menu" hidden>
+          <p>Shared bot commands · same in every topic</p>
+          <button class="slash-item" data-control="commands"><strong>/commands</strong><span>Open this topic’s command panel</span></button>
+          <button class="slash-item" data-control="sessions"><strong>/sessions</strong><span>Manage all sessions</span></button>
+          <button class="slash-item" data-control="sync"><strong>/sync</strong><span>Audit ccgram state</span></button>
+          <button class="slash-item" data-control="upgrade"><strong>/upgrade</strong><span>Update ccgram</span></button>
+        </div>
+        <form class="composer" id="composer">
+          <span class="composer-emoji" aria-hidden="true">☺</span>
+          <input id="message-input" aria-label="Message to this topic" placeholder="Message" autocomplete="off">
+          <button type="submit" aria-label="Send message">↑</button>
+        </form>
+        <div class="home-indicator" aria-hidden="true"></div>
+      </div>
+    </div>
+    <div class="below-phone">Tap a command, open All commands, or try /commands.<br><button type="button" class="slash-preview" id="slash-toggle" aria-label="Show shared slash commands" aria-expanded="false" aria-controls="slash-menu">Preview native / suggestions</button></div>
+  </section>
+</main>
+<script type="module">
+  const topics = {
+    general: { title: "General", icon: "#", pin: "General · control commands", heading: "General controls", description: "No agent or terminal is attached here.", hint: "Manage ccgram and sessions in other topics.", bound: false },
+    claude: { title: "ccgram · Claude", icon: "✳", pin: "Commands · Claude session", heading: "Claude session", description: "Attached to ccgram · ~/workspace/ccgram", hint: "Actions below affect this topic only.", bound: true, agent: "Claude" },
+    codex: { title: "backend · Codex", icon: "◇", pin: "Commands · Codex session", heading: "Codex session", description: "Attached to backend · ~/workspace/backend", hint: "Actions below affect this topic only.", bound: true, agent: "Codex" },
+    shell: { title: "toolbox · Terminal", icon: "›_", pin: "Commands · shell terminal", heading: "Shell terminal", description: "Attached to toolbox · zsh", hint: "No agent commands. Type shell commands in the chat.", bound: true },
+    unbound: { title: "new-project", icon: "+", pin: "Set up this topic", heading: "This topic is not attached", description: "Choose a session before sending work.", hint: "Terminal and agent actions appear after binding.", bound: false }
+  };
+  const control = [
+    ["Commands", "commands"], ["Sessions", "sessions"], ["Audit state", "sync"], ["Update ccgram", "upgrade"]
+  ];
+  const common = [
+    ["Screenshot", "screenshot"], ["Live terminal", "live"], ["History", "history"], ["Recent inputs", "recall"],
+    ["Panes", "panes"], ["Toolbar", "toolbar"], ["Switch agent", "agent"], ["Unbind topic", "unbind"]
+  ];
+  const agents = {
+    claude: ["compact", "context", "cost", "model", "plan", "permissions", "clear", "status", "skills", "mcp", "diff", "review"],
+    codex: ["compact", "status", "diff", "model", "permissions", "mcp"]
+  };
+  const $ = (id) => document.getElementById(id);
+  let topic = "general";
+  let category = "home";
+  let page = 0;
+
+  function element(tag, text, className) {
+    const node = document.createElement(tag);
+    if (text !== undefined) node.textContent = text;
+    if (className) node.className = className;
+    return node;
+  }
+  function setCopy(title, description, hint) {
+    $("panel-copy").replaceChildren(element("h2", title), element("p", description), element("p", hint, "secondary"));
+  }
+  function row(items, target = $("keyboard")) {
+    const container = element("div", undefined, "keyboard-row");
+    for (const [label, action, danger] of items) {
+      const button = element("button", label);
+      button.type = "button";
+      button.dataset.action = action;
+      if (danger) button.classList.add("danger");
+      container.append(button);
+    }
+    target.append(container);
+  }
+  function pairs(items) {
+    for (let index = 0; index < items.length; index += 2) row(items.slice(index, index + 2));
+  }
+  function showHome() {
+    category = "home";
+    page = 0;
+    const context = topics[topic];
+    setCopy(context.heading, context.description, context.hint);
+    $("keyboard").replaceChildren();
+    if (topic === "general") {
+      pairs(control.map(([label, name]) => [label, "run:" + name]));
+    } else if (topic === "unbound") {
+      row([["Choose a session", "run:bind"], ["Start new session", "run:create"]]);
+      row([["Resume past session", "run:resume"]]);
+      row([["Sessions dashboard", "run:sessions"]]);
+    } else {
+      row([["Screenshot", "run:screenshot"], context.agent ? ["History", "run:history"] : ["Live terminal", "run:live"]]);
+      if (context.agent) row([["/" + (topic === "claude" ? "context" : "status"), "run:" + (topic === "claude" ? "context" : "status")], ["/compact", "run:compact"]]);
+      else row([["Panes", "run:panes"], ["Keyboard controls", "run:toolbar"]]);
+      row([["All commands ›", "catalog"]]);
+    }
+  }
+  function showCatalog() {
+    category = "catalog";
+    setCopy("Commands for this topic", topics[topic].description, "Choose a group. The panel updates in place.");
+    $("keyboard").replaceChildren();
+    row([["ccgram actions", "group:common"]]);
+    if (topics[topic].agent) row([[topics[topic].agent + " commands", "group:agent"]]);
+    row([["Global controls", "group:control"]]);
+    row([["‹ Quick actions", "home"]]);
+  }
+  function showGroup(group, nextPage = 0) {
+    category = group;
+    page = nextPage;
+    const actions = group === "agent"
+      ? agents[topic].map((name) => ["/" + name, "run:" + name])
+      : (group === "control" ? control : common.filter(([, name]) => topics[topic].agent || name !== "agent")).map(([label, name]) => [label, "run:" + name]);
+    const perPage = 8;
+    const count = Math.ceil(actions.length / perPage);
+    const title = group === "agent" ? topics[topic].agent + " commands" : group === "control" ? "Global controls" : "ccgram · this session";
+    setCopy(title, group === "control" ? "Manage ccgram, not the attached agent." : topics[topic].description, group === "agent" ? "Sent only to the agent attached to this topic." : "Select an action. Nothing is executed outside this demo.");
+    $("keyboard").replaceChildren();
+    pairs(actions.slice(page * perPage, (page + 1) * perPage));
+    if (count > 1) {
+      const navigation = [];
+      if (page > 0) navigation.push(["‹ Previous", "page:" + (page - 1)]);
+      navigation.push([(page + 1) + " / " + count, "noop"]);
+      if (page + 1 < count) navigation.push(["Next ›", "page:" + (page + 1)]);
+      row(navigation);
+    }
+    row([["‹ Command groups", "catalog"]]);
+  }
+  function respond(title, text, buttons = []) {
+    const article = element("article", undefined, "bot-message");
+    const body = element("div", undefined, "message-body");
+    const sender = element("div", "ccgram ", "sender");
+    sender.append(element("span", "bot", "bot-label"));
+    body.append(sender, element("h2", title), element("p", text), element("div", "9:42 · demo", "message-time"));
+    article.append(body);
+    if (buttons.length) {
+      const keyboard = element("div", undefined, "inline-keyboard");
+      row(buttons, keyboard);
+      article.append(keyboard);
+    }
+    $("responses").append(article);
+    article.scrollIntoView({ block: "nearest" });
+    return article;
+  }
+  function setSlash(open) {
+    $("slash-menu").hidden = !open;
+    $("slash-toggle").setAttribute("aria-expanded", String(open));
+  }
+  function run(command) {
+    setSlash(false);
+    if (command === "commands") {
+      showHome();
+      if (topics[topic].bound) showCatalog();
+      return;
+    }
+    if (command === "upgrade" || command === "clear" || command === "unbind") {
+      const messages = {
+        upgrade: ["Update ccgram?", "This updates and restarts ccgram. All topics may briefly lose their connection."],
+        clear: ["Clear this conversation?", "The current agent conversation will be reset. This does not delete project files."],
+        unbind: ["Unbind this topic?", "This disconnects the topic from its session. The terminal is not closed."]
+      };
+      const [title, message] = messages[command];
+      respond(title, message, [["Cancel", "cancel"], ["Confirm", "confirm:" + command, true]]);
+      return;
+    }
+    if (["model", "permissions", "mcp"].includes(command)) {
+      respond("/" + command + " · " + topics[topic].agent, "This may open an interactive picker in the agent terminal. Use the ccgram keyboard controls to navigate it.", [["Open keyboard controls", "run:toolbar"]]);
+      return;
+    }
+    if (["bind", "create", "resume"].includes(command)) {
+      respond("Choose a provider", "A Telegram inline keyboard starts the setup flow. In this demo, choose which attached topic to preview.", [["Claude", "attach:claude"], ["Codex", "attach:codex"], ["Shell", "attach:shell"]]);
+      return;
+    }
+    if (command === "toolbar") {
+      respond("Terminal keyboard", "Send a key to the terminal attached to this topic.", [["↑", "key:Up"], ["↓", "key:Down"], ["Enter", "key:Enter"], ["Esc", "key:Escape"]]);
+      return;
+    }
+    if (command === "sessions") {
+      respond("Sessions dashboard", "2 agent sessions · 1 shell terminal. Select a session to preview its topic.", [["Claude", "topic:claude"], ["Codex", "topic:codex"], ["Terminal", "topic:shell"]]);
+      return;
+    }
+    const replies = {
+      commands: ["Topic command panel", "General shows controls only. Bound topics show CCGram actions and the exact native commands for their agent."],
+      sync: ["State audit · preview", "3 attached sessions checked. No missing bindings. This is a read-only audit; no changes were applied."],
+      screenshot: ["Terminal screenshot · preview", "The real bot sends a PNG of this session's terminal here. This prototype does not capture a real terminal."],
+      live: ["Live terminal · preview", "The real bot opens an auto-refreshing view of the attached terminal in this topic."],
+      history: ["Session history · preview", "Recent messages from this attached session appear here. General has no session history."],
+      recall: ["Recent inputs · preview", "Recent commands for this session would appear here, with inline actions to reuse them."],
+      panes: ["Panes · preview", "The pane picker lists only panes in the terminal attached to this topic."],
+      agent: ["Switch agent · preview", "Select a provider for this session. Agent-specific commands are refreshed when its binding changes."],
+      compact: ["/compact · " + topics[topic].agent, "The command is forwarded to this topic's agent. Its normal response appears in this topic."],
+      context: ["Context · Claude preview", "The agent reports its current context usage here."],
+      status: ["Status · " + topics[topic].agent + " preview", "The agent reports the status of the session attached to this topic."]
+    };
+    const [title, text] = replies[command] || ["/" + command + " · " + topics[topic].agent, "Forwarded to the attached agent only. This is a simulated response."];
+    respond(title, text);
+  }
+  function changeTopic(next) {
+    if (!Object.hasOwn(topics, next)) return;
+    topic = next;
+    $("responses").replaceChildren();
+    $("message-input").value = "";
+    setSlash(false);
+    const context = topics[topic];
+    $("topic-title").textContent = context.title;
+    $("topic-avatar").textContent = context.icon;
+    $("pin-description").textContent = context.pin;
+    document.querySelectorAll("[data-topic]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.topic === topic)));
+    showHome();
+    $("conversation").scrollTop = 0;
+  }
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest("button");
+    if (!button) return;
+    if (button.dataset.topic) { changeTopic(button.dataset.topic); return; }
+    if (button.dataset.control) { run(button.dataset.control); return; }
+    const action = button.dataset.action;
+    if (!action) return;
+    const [kind, value] = action.split(":");
+    if (kind === "run") run(value);
+    if (kind === "home") showHome();
+    if (kind === "catalog") showCatalog();
+    if (kind === "group") showGroup(value);
+    if (kind === "page") showGroup(category, Number(value));
+    if (kind === "topic" || kind === "attach") changeTopic(value);
+    if (kind === "key") respond("Key sent · preview", value + " → terminal attached to this topic.");
+    if (kind === "cancel" || kind === "confirm") {
+      const keyboard = button.closest(".inline-keyboard");
+      keyboard.replaceChildren();
+      if (kind === "cancel") respond("Cancelled", "Nothing was changed.");
+      else if (value === "unbind") { changeTopic("unbound"); respond("Topic unbound · preview", "The terminal stays open. You can attach this topic again."); }
+      else respond("Confirmed · preview", value === "upgrade" ? "ccgram would now update and restart. No update runs in this prototype." : "The attached agent conversation would now reset. No files were changed.");
+    }
+  });
+  $("pinned").addEventListener("click", () => {
+    showHome();
+    $("command-panel").scrollIntoView({ block: "start" });
+  });
+  $("slash-toggle").addEventListener("click", () => setSlash($("slash-menu").hidden));
+  $("message-input").addEventListener("input", (event) => setSlash(event.target.value === "/"));
+  document.addEventListener("keydown", (event) => { if (event.key === "Escape") setSlash(false); });
+  $("composer").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const text = $("message-input").value.trim();
+    if (!text) return;
+    $("message-input").value = "";
+    setSlash(false);
+    const userMessage = element("div", text, "user-message");
+    $("responses").append(userMessage);
+    if (text === "/commands") {
+      showHome();
+      if (topics[topic].bound) showCatalog();
+      $("command-panel").scrollIntoView({ block: "start" });
+    } else {
+      const command = text.replace(/^\//, "").split(/\s/)[0];
+      const available = new Set(control.map(([, name]) => name));
+      if (topics[topic].bound) {
+        common.forEach(([, name]) => { if (topics[topic].agent || name !== "agent") available.add(name); });
+        (agents[topic] || []).forEach((name) => available.add(name));
+      }
+      if (topic === "unbound") ["bind", "create", "resume"].forEach((name) => available.add(name));
+      if (text.startsWith("/") && available.has(command)) run(command);
+      else if (!topics[topic].bound) respond("No session attached", "This topic cannot run agent or terminal commands. Use the pinned panel to see the available actions.");
+      else if (topic === "shell") respond("Shell input · preview", "This text would be routed to the attached shell through ccgram's normal command handling.");
+      else respond("Message · preview", "This text would be sent to the " + topics[topic].agent + " session attached to this topic.");
+    }
+  });
+  showHome();
+</script>
+</body>
+</html>

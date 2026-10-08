@@ -89,6 +89,13 @@ async def dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             )
 
     data = query.data
+    if data.startswith("cmdpanel:"):
+        logger.info(
+            "Topic command panel callback received",
+            user_id=user.id,
+            chat_id=query.message.chat.id if query.message else None,
+            thread_id=get_thread_id(update),
+        )
 
     if data == "noop":
         await query.answer()
@@ -128,6 +135,9 @@ def load_handlers() -> None:
         sessions_dashboard,
         sync_command,
     )
+
+    # Lazy: command panels register callbacks and import this registry.
+    from .commands import panel  # noqa: F401
 
     # Lazy: handler subpackage modules import callback_registry for the @register_callback decorator; importing them here at module load would cycle
     from .interactive import interactive_callbacks  # noqa: F401

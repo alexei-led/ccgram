@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from telegram import Update
 from ...config import config
 from ..messaging_pipeline.message_sender import safe_reply
+from ..commands import commands_command
 from ..user_state import PENDING_THREAD_ID, PENDING_THREAD_TEXT
 from .directory_browser import (
     clear_browse_state,
@@ -44,5 +45,7 @@ async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await safe_reply(
             update.message,
             "\U0001f916 *CCGram*\n\n"
-            "Each topic is a session. Create a new topic to start.",
+            "General is the control topic. Named topics hold agent or terminal sessions.\n"
+            "Use the pinned command panel; /commands opens it again.",
         )
+        await commands_command(update, context)

@@ -60,8 +60,15 @@ async def _reset_flow_with_new_command(context: MagicMock) -> None:
     update = MagicMock()
     update.effective_user = MagicMock(id=100)
     update.message = AsyncMock()
-    with patch(
-        "ccgram.handlers.topics.new_command.config.is_user_allowed", return_value=True
+    with (
+        patch(
+            "ccgram.handlers.topics.new_command.commands_command",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "ccgram.handlers.topics.new_command.config.is_user_allowed",
+            return_value=True,
+        ),
     ):
         await new_command(update, context)
 

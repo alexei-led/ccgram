@@ -620,6 +620,28 @@ Security (project-scoped, deny-by-default):
 
 Tunables: `CCGRAM_SEND_SEARCH_DEPTH` (default 5), `CCGRAM_SEND_MAX_RESULTS` (default 50).
 
+## Topic Command Panels (`/commands`)
+
+CCGram pins a command panel in General and in each named topic. The panel reads the current topic binding, so it shows only actions that fit that topic.
+
+In General, the panel shows four controls: Commands, Sessions, Audit state, and Update ccgram. General has no agent or terminal session. The first ordinary General message creates and pins the panel. `/commands` opens or refreshes it. `/start` remains available for the welcome message.
+
+In an unbound named topic, use **Set up session** to open the existing session picker. After a session is bound, the panel shows CCGram actions available for that session and the provider's discovered commands. Shell topics do not show agent commands. Commands that require a transcript appear only for transcript-backed providers.
+
+Agent buttons display and send the provider's original command name. For example, a discovered `spec:work` command appears as `/spec:work`, not `/spec_work`. The panel shows eight agent commands per page when more commands are available. Long command names stay intact in the panel and use a short button label when Telegram's 64-character button limit requires it.
+
+Destructive actions such as `/clear`, `/new`, `/rewind`, `/unbind`, and `/upgrade` ask for confirmation before execution. A panel action is revalidated against its owner, chat, topic, session, and provider before dispatch. Open `/commands` again if a panel is stale.\n\nThese mobile screenshots are rendered from the offline HTML prototype. They illustrate Telegram message and inline-button controls, not live Telegram screens.
+
+![Telegram General topic with its four CCGram controls](assets/command-panels/general-mobile.png)
+
+![Telegram Claude topic with native agent command names](assets/command-panels/claude-mobile.png)
+
+![Telegram terminal topic with terminal-only controls](assets/command-panels/terminal-mobile.png)
+
+### Telegram's `/` command list
+
+Telegram does not provide a command-menu scope for individual forum topics. CCGram therefore keeps the native `/` list topic-safe and shared: `/commands`, `/sessions`, `/sync`, and `/upgrade`. Use the pinned panel for topic-specific CCGram and agent commands. Telegram cannot show a different native `/` list immediately when you switch topics.\n\nAfter upgrading CCGram, restart the bot. Send `/commands` in a chat if Telegram still shows an older command list there.
+
 ## Action Toolbar (`/toolbar`)
 
 `/toolbar` opens an inline keyboard of provider-specific tmux key actions. Row 1 is universal: `[📷 Screen, ⏹ Ctrl-C, 📺 Live]`. Row 2 varies per provider: Antigravity (Esc, Tab, Model), Claude (Mode, Think, Esc), Codex (Esc, Tab, Mode), Gemini (Mode, YOLO, Esc), Pi (Esc, Tab, π Model), Shell (Enter, EOF, Suspend). Antigravity/Claude/Codex/Gemini/Pi add a navigation row (Up, Enter, Down). The final row is `[📄 Last, Get File, Close]`; Shell folds Esc in: `[📄 Last, Get File, Esc, Close]`.

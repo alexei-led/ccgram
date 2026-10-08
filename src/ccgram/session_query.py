@@ -76,3 +76,11 @@ async def get_recent_messages(
     return await session_resolver.get_recent_messages(
         window_id, start_byte=start_byte, end_byte=end_byte
     )
+
+
+def resolve_window_for_topic(user_id: int, thread_id: int, chat_id: int) -> str | None:
+    """Resolve an exact user/chat/topic binding through the routing read seam."""
+    # Lazy: the router is installed by SessionManager during bootstrap.
+    from .thread_router import thread_router
+
+    return thread_router.resolve_window_for_thread(user_id, thread_id, chat_id)

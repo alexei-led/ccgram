@@ -44,6 +44,7 @@ _PTB_BOT_ALLOWLIST = frozenset(
         "commands/__init__.py",
         "commands/forward.py",
         "commands/menu_sync.py",
+        "commands/panel.py",  # rebuilds PTB Updates for existing command handlers.
         "file_handler.py",
         "last_reply.py",  # wraps get_bot() in PTBTelegramClient for send_last_reply
         "live/pane_callbacks.py",
@@ -82,6 +83,7 @@ _SINGLETON_ALLOWLIST = frozenset(
         "commands/__init__.py",
         "commands/forward.py",
         "commands/menu_sync.py",
+        "commands/panel.py",  # resolves the owner-scoped topic before dispatch.
         "file_handler.py",
         "hook_events.py",
         "interactive/interactive_ui.py",
