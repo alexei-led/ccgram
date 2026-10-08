@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from telegram import Chat, InlineKeyboardMarkup, Update
-from telegram.error import Forbidden
+from telegram.error import Forbidden, TelegramError
 
 from .. import session_query
 from ..config import config
@@ -55,6 +55,10 @@ async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             message,
             "❌ I can't message you privately yet. Start a private chat with me "
             "using /start, then retry /dashboard.",
+        )
+    except TelegramError:
+        await safe_reply(
+            message, "❌ The dashboard send failed. Please retry /dashboard."
         )
 
 

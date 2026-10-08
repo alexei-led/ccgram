@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import urlencode, urlparse
 
 import pytest
-from telegram.error import Forbidden
+from telegram.error import Forbidden, RetryAfter, TimedOut
 
 import ccgram.handlers.dashboard_command as dashboard_module
 from ccgram import session_query
@@ -176,6 +176,23 @@ async def test_forbidden_dm_gives_start_then_retry_hint(
     response = update.message.reply_text.await_args.args[0].lower()
     assert "/start" in response
     assert "retry" in response
+
+
+@pytest.mark.parametrize("error", [RetryAfter(4), TimedOut()])
+async def test_failed_dashboard_dm_tells_user_to_retry(
+    dashboard_setup: ThreadRouter, error: Exception
+) -> None:
+    dashboard_setup.bind_thread(USER_ID, THREAD_ID, "window-one", chat_id=-1001)
+    context = _make_context()
+    context.bot.send_message.side_effect = error
+    update = _make_update()
+
+    await dashboard_module.dashboard_command(update, context)
+
+    response = update.message.reply_text.await_args.args[0].lower()
+    assert "retry /dashboard" in response
+    assert "/start" not in response
+    context.bot.send_message.assert_awaited_once()
 
 
 async def test_unauthorized_user_does_not_receive_dashboard(
