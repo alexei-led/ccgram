@@ -66,7 +66,9 @@ def dashboard_setup(monkeypatch: pytest.MonkeyPatch) -> ThreadRouter:
     )
     monkeypatch.setattr(dashboard_module.config, "telegram_bot_token", BOT_TOKEN)
     monkeypatch.setattr(
-        dashboard_module.config, "is_user_allowed", lambda user_id: user_id == USER_ID
+        type(dashboard_module.config),
+        "is_user_allowed",
+        lambda _self, user_id: user_id == USER_ID,
     )
     return router
 
@@ -107,7 +109,9 @@ async def test_button_token_is_signed_and_scoped_to_effective_user(
     assert payload.window_id == "window-one"
     assert payload.user_id == USER_ID
 
-    tampered = token[:-1] + ("A" if token[-1] != "A" else "B")
+    body, signature = token.split(".", 1)
+    changed_signature = ("A" if signature[0] != "A" else "B") + signature[1:]
+    tampered = f"{body}.{changed_signature}"
     with pytest.raises(InvalidTokenError, match="signature"):
         verify_token(tampered, bot_token=BOT_TOKEN)
     with pytest.raises(InvalidTokenError, match="user mismatch"):
@@ -122,10 +126,12 @@ async def test_dashboard_button_is_built_for_every_command(
     dashboard_setup: ThreadRouter,
 ) -> None:
     dashboard_setup.bind_thread(USER_ID, THREAD_ID, "window-one", chat_id=-1001)
+    from ccgram.handlers.status import status_bar_actions
+
     with patch.object(
-        dashboard_module,
+        status_bar_actions,
         "build_dashboard_button",
-        wraps=dashboard_module.build_dashboard_button,
+        wraps=status_bar_actions.build_dashboard_button,
     ) as build_button:
         for _ in range(2):
             await dashboard_module.dashboard_command(_make_update(), _make_context())

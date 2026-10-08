@@ -11,7 +11,6 @@ from .. import session_query
 from ..config import config
 from ..telegram_client import PTBTelegramClient
 from .messaging_pipeline.message_sender import safe_reply
-from .status.status_bar_actions import build_dashboard_button
 
 if TYPE_CHECKING:
     from telegram.ext import ContextTypes
@@ -34,6 +33,9 @@ async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if window_id is None:
         await safe_reply(message, "❌ This topic is not bound to any session.")
         return
+
+    # Lazy: importing status actions registers callbacks and topic-state cleanups.
+    from .status.status_bar_actions import build_dashboard_button
 
     button = build_dashboard_button(window_id, user.id)
     if button is None:
