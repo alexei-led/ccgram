@@ -63,6 +63,23 @@ class TestBindThread:
         assert router.get_window_for_thread(100, 1) == "@2"
 
 
+@pytest.mark.parametrize("chat_id", [None, -999])
+def test_rebinding_retained_window_preserves_pinned_name(chat_id: int | None) -> None:
+    router = ThreadRouter(
+        schedule_save=lambda: None, has_window_state=lambda _wid: True
+    )
+    router.bind_thread(100, 1, "@1", window_name="backend-name", chat_id=chat_id)
+    router.set_display_name("@1", "user-name", pin=True)
+
+    assert router.unbind_thread(100, 1, chat_id=chat_id) == "@1"
+    router.bind_thread(100, 2, "@1", window_name="changed-backend", chat_id=chat_id)
+
+    assert router.get_window_for_thread(100, 2, chat_id=chat_id) == "@1"
+    assert router.get_display_name("@1") == "user-name"
+    assert router.pinned_display_names == {"@1"}
+    assert router.sync_display_names([("@1", "changed-backend")]) is False
+
+
 class TestUnbindThread:
     def test_unbind_returns_window_id(self, router: ThreadRouter) -> None:
         router.bind_thread(100, 1, "@1")

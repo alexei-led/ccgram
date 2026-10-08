@@ -679,18 +679,23 @@ class SessionManager:
         # 6. Display name drift (stored != tmux)
         stored_names = sorted(thread_router.window_display_names.items())
         for wid, tmux_name in live_windows:
+            stored_id = wid
             stored_name = thread_router.window_display_names.get(wid)
             if stored_name is None:
                 key = canonical_window_id(wid)
-                stored_name = next(
+                stored_id, stored_name = next(
                     (
-                        name
+                        (stored_wid, name)
                         for stored_wid, name in stored_names
                         if canonical_window_id(stored_wid) == key
                     ),
-                    None,
+                    (wid, None),
                 )
-            if stored_name and stored_name != tmux_name:
+            if (
+                stored_name
+                and stored_id not in thread_router.pinned_display_names
+                and stored_name != tmux_name
+            ):
                 issues.append(
                     AuditIssue(
                         category="display_name_drift",

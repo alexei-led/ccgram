@@ -1287,7 +1287,7 @@ class ThreadRouter:
                 self._window_to_thread.pop((user_id, old_window), None)
             self.thread_bindings[user_id][thread_id] = window_id
             self._window_to_thread[(user_id, window_id)] = thread_id
-        if window_name:
+        if window_name and window_id not in self.pinned_display_names:
             self.window_display_names[window_id] = window_name
         self._restore_active_topic(chat_id, thread_id)
         if schedule_save:

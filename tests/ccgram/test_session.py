@@ -1460,6 +1460,34 @@ class TestWriteHooklessSessionMap:
         assert "ccgram:@7" in raw
 
 
+@pytest.mark.parametrize(
+    ("stored_id", "live_id"), [("@1", "@1"), ("abc-def", "ABC-DEF")]
+)
+def test_pinned_display_difference_is_not_repairable_drift(
+    mgr: SessionManager, stored_id: str, live_id: str
+) -> None:
+    thread_router.set_display_name(stored_id, "user-name", pin=True)
+
+    result = mgr.audit_state(
+        live_window_ids={live_id}, live_windows=[(live_id, "backend-name")]
+    )
+
+    assert not any(issue.category == "display_name_drift" for issue in result.issues)
+
+
+def test_exact_unpinned_drift_is_not_hidden_by_a_variant_pin(
+    mgr: SessionManager,
+) -> None:
+    thread_router.set_display_name("abc-def", "alias-name", pin=True)
+    thread_router.set_display_name("ABC-DEF", "canonical-name")
+
+    result = mgr.audit_state(
+        live_window_ids={"ABC-DEF"}, live_windows=[("ABC-DEF", "backend-name")]
+    )
+
+    assert any(issue.category == "display_name_drift" for issue in result.issues)
+
+
 class TestAuditState:
     def test_clean_state(self, mgr: SessionManager) -> None:
         thread_router.bind_thread(100, 1, "@1")
