@@ -146,6 +146,16 @@ def test_punctuation_inside_quoted_names_is_not_a_command_boundary(
     assert _extract_probe_error_line(line, f"/tools:build{suffix}") == line
 
 
+@pytest.mark.parametrize("punctuation", [".", ";", ",", "!", "?", "..."])
+def test_unquoted_sentence_punctuation_preserves_failure_notice(
+    punctuation: str,
+) -> None:
+    line = f"Unknown command: /other{punctuation} did you mean /deploy?"
+
+    assert _extract_probe_error_line(line, "/other") == line
+    assert _extract_probe_error_line(line, "/deploy") is None
+
+
 class TestExtractPaneDelta:
     @pytest.mark.parametrize(
         ("before", "after", "expected"),

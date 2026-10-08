@@ -57,8 +57,8 @@ def _token_matches_command(match: re.Match[str], command: str) -> bool:
     token = quoted if quoted is not None else match.group("bare")
     if token.casefold() == command.casefold():
         return True
-    # A sentence period is punctuation only outside a quoted command name.
-    return quoted is None and token.removesuffix(".").casefold() == command.casefold()
+    # Sentence punctuation is not part of an unquoted error command.
+    return quoted is None and token.rstrip(".,;!?").casefold() == command.casefold()
 
 
 def _matches_dispatched_command(line: str, cc_slash: str) -> bool:
