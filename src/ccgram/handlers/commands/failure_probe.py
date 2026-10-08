@@ -44,16 +44,75 @@ _COMMAND_ERROR_RE = re.compile(
     r"not recognized"
     r")\b"
 )
+_COMMAND_TOKEN_RE = re.compile(
+    r"""(?P<quote>['"`])(?P<quoted>/.*?)(?P=quote)|(?<![\w/'"`])(?P<bare>/[^\s]+)"""
+)
+_COMMAND_SUGGESTION_RE = re.compile(
+    r"(?i)\b(?:did you mean|did you intend|perhaps you meant|maybe you meant|suggestions?|suggested command|try)\b"
+)
 
 
-def _extract_probe_error_line(text: str) -> str | None:
+def _token_matches_command(match: re.Match[str], command: str) -> bool:
+    quoted = match.group("quoted")
+    token = quoted if quoted is not None else match.group("bare")
+    value = token.casefold()
+    expected = command.casefold()
+    if value == expected:
+        return True
+    # Only punctuation after the complete dispatched name is a sentence suffix.
+    return (
+        quoted is None
+        and value.startswith(expected)
+        and all(character in ".,;!?" for character in value[len(expected) :])
+    )
+
+
+def _matches_dispatched_command(line: str, cc_slash: str) -> bool:
+    command = cc_slash.split(maxsplit=1)[0]
+    if not command.startswith("/"):
+        return False
+
+    errors = list(_COMMAND_ERROR_RE.finditer(line))
+    if not errors:
+        generic_error = re.search(r"(?i)\berror\b[^;]*?\bcommand\b", line)
+        if generic_error:
+            errors.append(generic_error)
+
+    # Suggestion words inside a command name are not suggestion clauses.
+    masked = _COMMAND_TOKEN_RE.sub(lambda match: " " * len(match.group()), line)
+    for error in errors:
+        suggestion = _COMMAND_SUGGESTION_RE.search(masked, error.end())
+        end = suggestion.start() if suggestion else len(line)
+        match = _COMMAND_TOKEN_RE.search(line, error.end(), end)
+        if (
+            match
+            and _token_matches_command(match, command)
+            and re.fullmatch(r"""[\s:'"`(]*""", line[error.end() : match.start()])
+        ):
+            return True
+        if error.group().casefold() == "not recognized":
+            preceding = list(_COMMAND_TOKEN_RE.finditer(line, 0, error.start()))
+            if preceding:
+                match = preceding[-1]
+                gap = line[match.end() : error.start()]
+                if _token_matches_command(match, command) and re.fullmatch(
+                    r"""[\s'"`]*(?:(?:was|is)\s+)?""", gap, re.IGNORECASE
+                ):
+                    return True
+    return False
+
+
+def _extract_probe_error_line(text: str, cc_slash: str | None = None) -> str | None:
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line:
             continue
-        if _COMMAND_ERROR_RE.search(line):
-            return line
-        if "error" in line.lower() and "command" in line.lower():
+        has_error = _COMMAND_ERROR_RE.search(line) or (
+            "error" in line.lower() and "command" in line.lower()
+        )
+        if has_error and (
+            cc_slash is None or _matches_dispatched_command(line, cc_slash)
+        ):
             return line
     return None
 
@@ -108,6 +167,7 @@ async def _probe_transcript_command_error(
     provider: AgentProvider,
     transcript_path: str | None,
     since_offset: int | None,
+    cc_slash: str | None = None,
 ) -> str | None:
     """Return first command-like error line found in transcript delta."""
     if not transcript_path or since_offset is None:
@@ -143,7 +203,7 @@ async def _probe_transcript_command_error(
     for msg in messages:
         if msg.role != "assistant":
             continue
-        found = _extract_probe_error_line(msg.text)
+        found = _extract_probe_error_line(msg.text, cc_slash)
         if found:
             return found
     return None
@@ -167,11 +227,12 @@ async def _maybe_send_command_failure_message(
         provider,
         transcript_path,
         since_offset,
+        cc_slash,
     )
     if not error_line:
         pane_after = await tmux_manager.capture_pane(window_id)
         pane_delta = _extract_pane_delta(pane_before, pane_after)
-        error_line = _extract_probe_error_line(pane_delta)
+        error_line = _extract_probe_error_line(pane_delta, cc_slash)
     if error_line:
         await safe_reply(
             message,
