@@ -96,6 +96,25 @@ class TestExtractProbeErrorLine:
         assert _extract_probe_error_line(line) == line
 
 
+@pytest.mark.parametrize(
+    ("command", "line", "matches"),
+    [
+        ("/try", "Unknown command: /try", True),
+        ("/suggestions", "Unknown command: /suggestions", True),
+        ("/tools:try", "Unknown command: /tools:try", True),
+        ("/deploy", "Use /deploy instead; unknown command: /other", False),
+        ("/deploy", "Use /other instead; unknown command: /deploy", True),
+        ("/deploy", "Use /other; the command /deploy was not recognized", True),
+        ("/deploy", "Use /deploy; the command /other was not recognized", False),
+        ("/deploy", "Use /other; ERROR executing command /deploy", True),
+    ],
+)
+def test_error_is_attached_to_command_not_other_mentions(
+    command: str, line: str, matches: bool
+) -> None:
+    assert _extract_probe_error_line(line, command) == (line if matches else None)
+
+
 class TestExtractPaneDelta:
     @pytest.mark.parametrize(
         ("before", "after", "expected"),

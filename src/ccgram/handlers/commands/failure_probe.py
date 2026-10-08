@@ -58,10 +58,35 @@ def _matches_dispatched_command(line: str, cc_slash: str) -> bool:
     if not command.startswith("/"):
         return False
 
-    suggestion = _COMMAND_SUGGESTION_RE.search(line)
-    error_text = line[: suggestion.start()] if suggestion else line
-    match = _COMMAND_TOKEN_RE.search(error_text)
-    return bool(match and match.group().casefold() == command.casefold())
+    errors = list(_COMMAND_ERROR_RE.finditer(line))
+    if not errors:
+        generic_error = re.search(r"(?i)\berror\b[^;]*?\bcommand\b", line)
+        if generic_error:
+            errors.append(generic_error)
+
+    # Suggestion words inside a command name are not suggestion clauses.
+    masked = _COMMAND_TOKEN_RE.sub(lambda match: " " * len(match.group()), line)
+    for error in errors:
+        suggestion = _COMMAND_SUGGESTION_RE.search(masked, error.end())
+        end = suggestion.start() if suggestion else len(line)
+        match = _COMMAND_TOKEN_RE.search(line, error.end(), end)
+        if (
+            match
+            and re.fullmatch(r"""[\s:'"`(]*""", line[error.end() : match.start()])
+            and match.group().casefold() == command.casefold()
+        ):
+            return True
+        if error.group().casefold() == "not recognized":
+            preceding = list(_COMMAND_TOKEN_RE.finditer(line, 0, error.start()))
+            if preceding:
+                match = preceding[-1]
+                gap = line[match.end() : error.start()]
+                if (
+                    re.fullmatch(r"""[\s'"`]*(?:(?:was|is)\s+)?""", gap, re.IGNORECASE)
+                    and match.group().casefold() == command.casefold()
+                ):
+                    return True
+    return False
 
 
 def _extract_probe_error_line(text: str, cc_slash: str | None = None) -> str | None:
