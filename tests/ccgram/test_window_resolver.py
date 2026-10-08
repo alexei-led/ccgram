@@ -294,6 +294,43 @@ class TestMigrateWindowAliases:
         assert offsets[7] == {"canonical": 12}
         assert display_names == {"canonical": "proj ▸ 1"}
 
+    def test_moves_a_pinned_display_name_when_the_alias_name_is_adopted(self) -> None:
+        display_names = {"alias": "manual-name"}
+        pinned_names = {"alias"}
+
+        migrate_window_aliases(
+            {"alias": "canonical"},
+            {"alias": _ws_full(session_id="sid-1")},
+            {},
+            {},
+            {},
+            display_names,
+            pinned_display_names=pinned_names,
+        )
+
+        assert display_names == {"canonical": "manual-name"}
+        assert pinned_names == {"canonical"}
+
+    def test_canonical_display_name_and_pin_win_over_alias(self) -> None:
+        display_names = {
+            "alias": "alias-name",
+            "canonical": "canonical-name",
+        }
+        pinned_names = {"alias", "canonical"}
+
+        migrate_window_aliases(
+            {"alias": "canonical"},
+            {"alias": _ws_full(session_id="sid-1")},
+            {},
+            {},
+            {},
+            display_names,
+            pinned_display_names=pinned_names,
+        )
+
+        assert display_names == {"canonical": "canonical-name"}
+        assert pinned_names == {"canonical"}
+
     def test_never_overwrites_what_the_live_id_already_resolved(self) -> None:
         window_states = {
             "alias": _ws_full(session_id="stale", cwd="/old", provider_name="claude"),

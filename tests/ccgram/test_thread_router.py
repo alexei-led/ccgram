@@ -834,6 +834,24 @@ class TestDisplayNames:
         router.set_display_name("@1", "myproject")
         assert router.get_display_name("@1") == "myproject"
 
+    def test_non_pinning_set_preserves_pinned_name_equal_to_window_id(
+        self, router: ThreadRouter
+    ) -> None:
+        router.set_display_name("@1", "@1", pin=True)
+
+        router.set_display_name("@1", "backend-name")
+
+        assert router.get_display_name("@1") == "@1"
+        assert router.pinned_display_names == {"@1"}
+
+    def test_pinning_set_can_update_an_existing_pin(self, router: ThreadRouter) -> None:
+        router.set_display_name("@1", "first-name", pin=True)
+
+        router.set_display_name("@1", "second-name", pin=True)
+
+        assert router.get_display_name("@1") == "second-name"
+        assert router.pinned_display_names == {"@1"}
+
     def test_sync_display_names(self, router: ThreadRouter) -> None:
         router.window_display_names["@1"] = "old-name"
         changed = router.sync_display_names([("@1", "new-name")])
@@ -867,6 +885,21 @@ class TestToDictRoundtrip:
         assert new_router.resolve_chat_id(100, 1) == -999
         assert new_router.get_display_name("@1") == "proj"
         assert new_router.get_thread_for_window(100, "@1") == 1
+
+    def test_pinned_display_name_survives_reload_and_listing_sync(
+        self, router: ThreadRouter
+    ) -> None:
+        router.set_display_name("@1", "manual-name", pin=True)
+        restored = ThreadRouter(
+            schedule_save=lambda: None,
+            has_window_state=lambda _wid: False,
+        )
+
+        restored.from_dict(router.to_dict())
+
+        assert restored.pinned_display_names == {"@1"}
+        assert restored.sync_display_names([("@1", "backend-name")]) is False
+        assert restored.get_display_name("@1") == "manual-name"
 
     def test_from_dict_dedup(self, router: ThreadRouter) -> None:
         data = {

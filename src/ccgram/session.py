@@ -300,6 +300,7 @@ class SessionManager:
         cloned_chat_bindings = deepcopy(thread_router.chat_thread_bindings)
         cloned_offsets = deepcopy(user_preferences.user_window_offsets)
         cloned_display_names = deepcopy(thread_router.window_display_names)
+        cloned_display_name_pins = deepcopy(thread_router.pinned_display_names)
         migrations = migrate_window_aliases(
             aliases,
             cloned_states,
@@ -307,6 +308,7 @@ class SessionManager:
             cloned_chat_bindings,
             cloned_offsets,
             cloned_display_names,
+            pinned_display_names=cloned_display_name_pins,
             record_redirects=False,
         )
         if migrations and not self._backup_identity_migration_state():
@@ -325,6 +327,7 @@ class SessionManager:
             thread_router.chat_thread_bindings,
             user_preferences.user_window_offsets,
             thread_router.window_display_names,
+            pinned_display_names=thread_router.pinned_display_names,
         )
         for migration in applied:
             if migration.alias_id not in legacy_aliases:
@@ -406,8 +409,8 @@ class SessionManager:
     # --- Display name management (delegated to thread_router) ---
 
     def set_display_name(self, window_id: str, window_name: str) -> None:
-        """Update display name for a window_id."""
-        thread_router.set_display_name(window_id, window_name)
+        """Set a user-chosen display name for a window_id."""
+        thread_router.set_display_name(window_id, window_name, pin=True)
         # Also update WindowState if it exists
         ws = self.window_states.get(window_id)
         if ws:
@@ -421,6 +424,10 @@ class SessionManager:
         # persisted state.
         ws_changed = False
         for window_id, window_name in live_windows:
+            if window_id in thread_router.pinned_display_names:
+                # Keep WindowState aligned with the pinned value the router
+                # deliberately protects from the backend listing.
+                window_name = thread_router.get_display_name(window_id)
             ws = self.window_states.get(window_id)
             if ws and ws.window_name != window_name:
                 ws.window_name = window_name
