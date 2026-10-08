@@ -1248,6 +1248,29 @@ class TestScrollbackGuard:
         assert result is not None
 
 
+@pytest.mark.parametrize("indent", ["", "   "])
+def test_wrapped_remote_control_menu_keeps_selection(indent: str) -> None:
+    pane = [
+        "Remote Control",
+        "",
+        f"{indent}❯ 1. Enable Remote Control",
+        f"{indent}     for this session",
+        f"{indent}  2. Never mind",
+    ]
+
+    result = extract_interactive_content(pane)
+
+    assert result is not None and result.name == "SelectionUI"
+    assert "for this session" in result.content
+
+
+@pytest.mark.parametrize("gap", ["", "  unrelated reply", "     wrapped\n"])
+def test_detached_numbered_option_is_not_a_wrapped_menu(gap: str) -> None:
+    pane = ["❯ 1. Echoed user instruction", *gap.split("\n"), "  2. Reply item"]
+
+    assert extract_interactive_content(pane) is None
+
+
 class TestScrollbackGuardLongList:
     def test_long_live_selection_list_is_not_rejected(self):
         """A genuine selection whose numbered options continue well past

@@ -214,14 +214,22 @@ def _last_nonempty_from(lines: list[str], top_idx: int) -> int | None:
 def _rejects_scrollback_footer(lines: list[str], top_idx: int, bottom_idx: int) -> bool:
     """Reject detached numbered echoes as well as distant numbered bottoms.
 
-    A live no-hint menu has a cursor immediately before its numbered option.
-    Consecutive numbered items extend the footer, so long real selections are
-    not rejected. Action-hint footers remain valid without this contiguity.
+    A live no-hint menu has a cursor before its next numbered option, with
+    only aligned wrapped text between them. Consecutive numbered items extend
+    the footer. Action-hint footers remain valid without this contiguity.
     """
     if any(p.search(lines[bottom_idx]) for p in _SELECTION_HINT_BOTTOMS):
         return False
     if bottom_idx != top_idx + 1:
-        return True
+        selected = re.match(r"^\s*[❯›]\s+\d+\.\s+", lines[top_idx])
+        if selected is None:
+            return True
+        text_indent = " " * selected.end()
+        if any(
+            not line.strip() or not line.startswith(text_indent)
+            for line in lines[top_idx + 1 : bottom_idx]
+        ):
+            return True
     last = bottom_idx
     for i in range(bottom_idx, len(lines)):
         line = lines[i]
