@@ -289,6 +289,9 @@ class TestResolveUploadDir:
             ("repo", None, "Session working directory is not absolute."),
             # a control character in the cwd would split the literal tmux send
             ("/tmp/re\npo", None, "Session working directory is not usable."),
+            # a nonprinting-but-legal Unicode char (NBSP) is not a control
+            # character: the path is harmless in a literal tmux send
+            ("/tmp/re\xa0po", Path("/tmp/re\xa0po/.ccgram-uploads"), None),
             # the pre-existing empty-cwd branch of the same function
             ("", None, "Session has no working directory."),
         ],

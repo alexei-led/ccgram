@@ -47,6 +47,11 @@ _FILENAME_PUNCT = frozenset("._-")
 # Control characters to strip from captions (keep \n and \t)
 _CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
+# Control characters a path may never carry into a literal tmux send
+# (unlike captions, \n and \t are included). Legal nonprinting Unicode
+# such as a no-break space is not a control character and stays allowed.
+_PATH_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+
 _MAX_CAPTION_LEN = 500
 
 
@@ -153,10 +158,13 @@ def _resolve_upload_dir(
     upload_path = Path(view.cwd) / _UPLOAD_DIR
     if not upload_path.is_absolute():
         return window_id, None, "Session working directory is not absolute."
-    if not str(upload_path).isprintable():
+    if _PATH_CONTROL_RE.search(str(upload_path)):
         # A control character in the cwd would split the literal tmux send.
         # Stricter than _CONTROL_CHAR_RE above: captions keep \n and \t
         # after collapsing, a path used in a literal send admits neither.
+        # str.isprintable() is deliberately not used here: it also rejects
+        # legal nonprinting Unicode (NBSP, ZWJ) that a literal send carries
+        # without any trouble.
         return window_id, None, "Session working directory is not usable."
     return window_id, upload_path, None
 
