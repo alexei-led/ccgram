@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Forward panel callbacks as the clicking Telegram user so native provider commands reach the bound session.
 - Reuse the topic’s cached panel on `/commands` and restore it after confirming an agent action.
+- Refresh owner-validated panels when their callback token expires, without dispatching the stale button.
 - Stop logging the same agent-to-shell recovery state on every polling cycle.
 
 ### Upgrade
