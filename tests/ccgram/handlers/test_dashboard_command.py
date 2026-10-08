@@ -10,6 +10,7 @@ import pytest
 from telegram.error import Forbidden
 
 import ccgram.handlers.dashboard_command as dashboard_module
+from ccgram import session_query
 from ccgram.miniapp.auth import (
     InvalidTokenError,
     authorize_api_request,
@@ -57,7 +58,9 @@ def dashboard_setup(monkeypatch: pytest.MonkeyPatch) -> ThreadRouter:
     router = ThreadRouter(
         schedule_save=lambda: None, has_window_state=lambda _wid: False
     )
-    monkeypatch.setattr(dashboard_module, "thread_router", router)
+    monkeypatch.setattr(
+        session_query, "resolve_window_for_topic", router.resolve_window_for_thread
+    )
     monkeypatch.setattr(
         dashboard_module.config, "miniapp_base_url", "https://example.test"
     )

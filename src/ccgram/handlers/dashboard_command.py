@@ -7,8 +7,9 @@ from typing import TYPE_CHECKING
 from telegram import Chat, InlineKeyboardMarkup, Update
 from telegram.error import Forbidden
 
+from .. import session_query
 from ..config import config
-from ..thread_router import thread_router
+from ..telegram_client import PTBTelegramClient
 from .messaging_pipeline.message_sender import safe_reply
 from .status.status_bar_actions import build_dashboard_button
 
@@ -29,7 +30,7 @@ async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await safe_reply(message, "❌ Use /dashboard inside a bound forum topic.")
         return
 
-    window_id = thread_router.resolve_window_for_thread(user.id, thread_id, chat.id)
+    window_id = session_query.resolve_window_for_topic(user.id, thread_id, chat.id)
     if window_id is None:
         await safe_reply(message, "❌ This topic is not bound to any session.")
         return
@@ -40,8 +41,9 @@ async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
 
     markup = InlineKeyboardMarkup([[button]])
+    client = PTBTelegramClient(context.bot)
     try:
-        await context.bot.send_message(
+        await client.send_message(
             chat_id=user.id,
             text="Open the dashboard for this session:",
             reply_markup=markup,
