@@ -9,10 +9,12 @@
 # - `owner: alexei-led` remains declared on every module for hygiene (single
 #   owner; silences omit-owner warnings) — NOT to influence coupling.
 # - Subdomain/volatility are architect-inferred labels. Current map in docs and
-#   config is aligned to the code/tests: core=session/window-state and handler
-#   orchestration; supporting=provider/multiplexer adapters plus transcript and
-#   miniapp; generic=config, utils, provider detection, protocol facades, and
-#   concrete backends. Confirm labels against churn when design changes.
+#   config is aligned to the code/tests: core=session/window-state, the shared
+#   session protocol, delivery and multiplexer contracts, and handler
+#   orchestration; supporting=provider/multiplexer adapters, transcript, Mini
+#   App/mobile API, Telegram adapters, and Git-worktree helpers; generic=config,
+#   utils, provider detection, and concrete backends.
+#   Confirm labels against churn when design changes.
 # - The pytest audits are the enforced drift gate. `archfit` is the whole-graph
 #   mirror and advisory gate: keep `no-import-cycles` as warn because the repo
 #   intentionally uses lazy imports that runtime tests accept.
@@ -147,6 +149,31 @@ modules:
     owner: alexei-led
     subdomain: core
     volatility: medium
+  # --- Core: transcript-delivery acknowledgement and checkpoint contract ---
+  # A narrow shared contract for transcript producers, queue settlement, and
+  # session-monitor persistence; it owns no Telegram, handler, or monitor code.
+  # Medium volatility is a design hypothesis: delivery/replay semantics are
+  # central and expected to evolve, not a historical churn measurement.
+  delivery_contract:
+    paths:
+      - ccgram.delivery_contract
+    public:
+      - ccgram.delivery_contract
+    layer: core
+    owner: alexei-led
+    subdomain: core
+    volatility: medium
+  # --- Core: shared session protocol and live-session service ---
+  # The source package also contains telegram.py; that concrete in-process
+  # adapter gets a narrower adapter owner below rather than inheriting this core.
+  session_protocol:
+    paths:
+      - ccgram.session_protocol
+      - ccgram.session_protocol.*
+    layer: core
+    owner: alexei-led
+    subdomain: core
+    volatility: high # design hypothesis: session behavior evolves; protocol/v1 preserves wire compatibility
   # --- Core: session and lifecycle management (the live-session core) ---
   # Highest-fan-in volatile target cluster from the review (claude_task_state,
   # session, session_monitor, monitor_state). The 62 residual critical edges
@@ -217,6 +244,7 @@ modules:
       - ccgram.telegram_draft
       - ccgram.telegram_request
       - ccgram.telegram_sender
+      - ccgram.telegram_rate_limiter
       - ccgram.bot
       - ccgram.cc_commands
       - ccgram.entity_formatting
@@ -224,14 +252,43 @@ modules:
     owner: alexei-led
     subdomain: supporting
     volatility: medium
+  # --- Adapter: in-process Telegram facade over the shared session protocol ---
+  # Explicit __all__ plus existing handler callers identify its public surface.
+  # Supporting/medium is a design hypothesis: the Telegram translation follows
+  # UI workflow changes while the shared service contract stays transport-neutral.
+  session_protocol_telegram:
+    paths:
+      - ccgram.session_protocol.telegram
+    public:
+      - ccgram.session_protocol.telegram
+    layer: adapter
+    owner: alexei-led
+    subdomain: supporting
+    volatility: medium
+  # --- Adapter: authenticated ccgram/1 HTTP and WebSocket transport ---
+  # The wire contract lives in protocol/v1; no in-tree caller uses the package
+  # re-exports, so do not label them as a public Python import boundary.
+  # Supporting/medium is a design hypothesis for a separate client transport
+  # whose security and wire evolution do not redefine the session core.
+  api:
+    paths:
+      - ccgram.api
+      - ccgram.api.*
+    layer: adapter
+    owner: alexei-led
+    subdomain: supporting
+    volatility: medium
   # --- Core: multiplexer contract (pure Protocol + value types) ---
   # The backend-neutral seam callers depend on. Generic subdomain; functional
   # volatility low, implementation volatility medium (one backend became two;
-  # herdr is young). The public boundary is this module — callers import
-  # `ccgram.multiplexer` (proxy) / `ccgram.multiplexer.base` and the neutral
-  # helpers, never a concrete backend. `base` importing no backend is the F3
-  # core-purity audit (test_import_no_cycles); the proxy's wiring import of
-  # `registry` is the seam's sanctioned job (F1 exempts `multiplexer/**`).
+  # herdr is young). Public paths name exact module-level contracts supported
+  # by source documentation and cross-component callers; backend-specific
+  # implementations remain private.
+  # Persisted Herdr target validation belongs here as a shared identity
+  # contract, not in adapter implementation code. `base` importing no backend
+  # is the F3 core-purity audit (test_import_no_cycles); the proxy's wiring
+  # import of `registry` is the seam's sanctioned job (F1 exempts
+  # `multiplexer/**`).
   multiplexer:
     paths:
       - ccgram.multiplexer # proxy facade (neutral)
@@ -241,23 +298,37 @@ modules:
       - ccgram.multiplexer.self_identify
       - ccgram.multiplexer.agent_status_cache # backend-neutral push-status cache (mirrors vim_state)
       - ccgram.multiplexer.topic_mapping # backend-neutral window→topic projection helper
+      - ccgram.multiplexer.reconciliation # confirmed/unknown cross-backend presence contract
+      - ccgram.multiplexer.window_liveness # neutral liveness state for queued delivery
+      - ccgram.herdr_targets # persisted target-namespace contract shared with session state
+    public:
+      - ccgram.multiplexer
+      - ccgram.multiplexer.base
+      - ccgram.multiplexer.reconciliation
+      - ccgram.multiplexer.window_liveness
+      - ccgram.herdr_targets
     layer: core
     owner: alexei-led
     subdomain: generic
     volatility: low # functional; implementation medium (two backends)
-  # --- Adapter: concrete multiplexer backends (private internals) ---
-  # tmux/herdr socket + JSON shapes stay quarantined here. No caller may import
-  # these — enforced by the F1 pytest audit (test_multiplexer_boundary) and by
-  # the no-*-to-mux-backends rules below. These backends also own the
-  # foreground/tty internals: the tmux backend is the only sanctioned home for
-  # `pane_tty` reads + `ps -t`, exposed solely through `Multiplexer.foreground()`.
-  # That no-tty boundary is enforced by tests/ccgram/test_no_tty_outside_backend.py.
+  # --- Adapter: concrete multiplexer backends and private support ---
+  # Herdr socket/JSON and tmux/libtmux details stay here. Feature code uses the
+  # neutral proxy/base; the detached hook's direct imports of agterm_panes and
+  # herdr_socket are narrow standalone-hook support. The F1 pytest audit
+  # prohibits direct concrete-backend imports from non-exempt code, and the
+  # forbidden-dependency rules below mirror selected high-risk edges. These
+  # backends also own foreground/tty internals: tmux alone reads `pane_tty` +
+  # `ps -t`, exposed solely through `Multiplexer.foreground()` (see the
+  # `test_no_tty_outside_backend.py` audit).
   multiplexer_backends:
     paths:
       - ccgram.multiplexer.tmux
       - ccgram.multiplexer.herdr
       - ccgram.multiplexer.herdr_events # herdr-only unix-socket event-stream reader
       - ccgram.multiplexer.agterm
+      - ccgram.multiplexer.agterm_panes # private agterm split-pane projections
+      - ccgram.multiplexer.herdr_commands # manager CLI to Herdr JSON-RPC translation
+      - ccgram.multiplexer.herdr_socket # bounded Herdr socket transport
       - ccgram.multiplexer.registry
     layer: adapter
     owner: alexei-led
@@ -285,6 +356,20 @@ modules:
     owner: alexei-led
     subdomain: supporting
     volatility: low
+  # --- Adapter: host Git worktree provisioning ---
+  # Shared API used by the session creation backend and Telegram's directory
+  # flow; the module documents its narrow helper surface and both callers import
+  # it directly. Supporting/medium is a design hypothesis for host-Git plumbing
+  # that can evolve with worktree creation behavior, not a churn measurement.
+  worktrees:
+    paths:
+      - ccgram.worktrees
+    public:
+      - ccgram.worktrees
+    layer: adapter
+    owner: alexei-led
+    subdomain: supporting
+    volatility: medium
   # --- Adapter: application entry points and CLI ---
   app_bootstrap:
     paths:
