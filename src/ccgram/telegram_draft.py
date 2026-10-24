@@ -12,7 +12,7 @@ import asyncio
 import contextlib
 import secrets
 import time
-from typing import Any, Final, Literal
+from typing import Any, Callable, Final, Literal
 
 import structlog
 from telegram import Bot, InlineKeyboardMarkup
@@ -129,6 +129,7 @@ class DraftStream:
         reply_to_message_id: int | None = None,
         reply_markup: InlineKeyboardMarkup | None = None,
         force_legacy: bool = False,
+        admit: Callable[[], bool] | None = None,
     ) -> None:
         self._bot = bot
         self._chat_id = chat_id
@@ -136,6 +137,8 @@ class DraftStream:
         self._reply_to = reply_to_message_id
         self._reply_markup = reply_markup
         self._force_legacy = force_legacy
+        self._admit = admit
+        self._snapshot_admit = admit
         self._draft_id = secrets.randbelow(2_147_483_646) + 1
         self._message_id: int | None = None
         self._buffer = ""
@@ -167,13 +170,24 @@ class DraftStream:
         """Return the text that fits in one Telegram message."""
         return _truncate(self._buffer)
 
-    async def start(self, initial_text: str) -> int | None:
+    def _set_snapshot(self, text: str, admit: Callable[[], bool] | None) -> None:
+        """Keep coalesced content and its current ownership together."""
+        self._buffer = text
+        self._snapshot_admit = self._admit if admit is None else admit
+
+    def _is_admitted(self, admit: Callable[[], bool] | None = None) -> bool:
+        predicate = self._admit if admit is None else admit
+        return predicate is None or predicate()
+
+    async def start(
+        self, initial_text: str, *, admit: Callable[[], bool] | None = None
+    ) -> int | None:
         """Open a stream and send its first snapshot."""
         if self._mode != DRAFT_UNSET:
             raise RuntimeError("DraftStream.start called twice")
-        if not initial_text:
+        if not initial_text or not self._is_admitted(admit):
             return None
-        self._buffer = initial_text
+        self._set_snapshot(initial_text, admit)
 
         try:
             if (
@@ -181,38 +195,46 @@ class DraftStream:
                 or _DRAFT_UNAVAILABLE
                 or is_peer_draft_unsupported(self._chat_id, self._thread_id)
             ):
-                await self._start_legacy()
+                await self._start_legacy(admit=admit)
             else:
-                await self._start_streaming()
+                await self._start_streaming(admit=admit)
         except (TimedOut, NetworkError, RetryAfter, TelegramError) as exc:
             logger.warning("DraftStream.start failed: %s", exc)
             return None
         return self._message_id
 
-    async def append(self, delta: str) -> None:
+    async def append(
+        self, delta: str, *, admit: Callable[[], bool] | None = None
+    ) -> None:
         """Append a delta and publish the cumulative text."""
         self._ensure_open()
-        self._buffer += delta
-        await self._push_update()
+        if not self._is_admitted(admit):
+            return
+        self._set_snapshot(self._buffer + delta, admit)
+        await self._push_update(admit=admit)
 
     async def replace(
         self,
         text: str,
         *,
         reply_markup: InlineKeyboardMarkup | None | Any = _KEEP_MARKUP,
+        admit: Callable[[], bool] | None = None,
     ) -> None:
         """Replace the cumulative text and publish the new snapshot."""
         self._ensure_open()
-        self._buffer = text
+        if not self._is_admitted(admit):
+            return
+        self._set_snapshot(text, admit)
         if reply_markup is not _KEEP_MARKUP:
             self._reply_markup = reply_markup
-        await self._push_update()
+        await self._push_update(admit=admit)
 
     async def replace_confirmed(
         self,
         text: str,
         *,
         reply_markup: InlineKeyboardMarkup | None | Any = _KEEP_MARKUP,
+        admit: Callable[[], bool] | None = None,
     ) -> bool:
         """Replace text only after Telegram confirms the snapshot.
 
@@ -221,13 +243,17 @@ class DraftStream:
         work uses this method and waits for the rate-limit slot itself.
         """
         self._ensure_open()
-        self._buffer = text
+        if not self._is_admitted(admit):
+            return False
+        self._set_snapshot(text, admit)
         if reply_markup is not _KEEP_MARKUP:
             self._reply_markup = reply_markup
         await self._cancel_pending_flush()
+        if not self._is_admitted(admit):
+            return False
 
         if self._mode == DRAFT_LEGACY:
-            await self._push_legacy(raise_on_error=True)
+            await self._push_legacy(raise_on_error=True, admit=admit)
             return True
         if _DRAFT_UNAVAILABLE or is_peer_draft_unsupported(
             self._chat_id, self._thread_id
@@ -236,37 +262,49 @@ class DraftStream:
 
         while True:
             async with self._update_lock:
+                if not self._is_admitted(admit):
+                    return False
                 now = time.monotonic()
                 remaining = max(
                     _MIN_DRAFT_INTERVAL - (now - self._last_draft_at),
                     self._retry_not_before - now,
                 )
                 if remaining <= 0:
-                    await self._send_draft()
+                    await self._send_draft(admit=admit)
                     self._last_draft_at = time.monotonic()
                     self._retry_not_before = 0.0
                     self._stream_failures = 0
                     return True
             await asyncio.sleep(remaining)
+            if not self._is_admitted(admit):
+                return False
 
     async def finalize(
         self,
         final_text: str | None = None,
         *,
         reply_markup: InlineKeyboardMarkup | None | Any = _KEEP_MARKUP,
+        admit: Callable[[], bool] | None = None,
     ) -> None:
         """Persist the final text and close the stream."""
         self._ensure_open()
+        if not self._is_admitted(admit):
+            await self._cancel_pending_flush()
+            self._closed = True
+            return
         if final_text is not None:
-            self._buffer = final_text
+            self._set_snapshot(final_text, admit)
         if reply_markup is not _KEEP_MARKUP:
             self._reply_markup = reply_markup
 
         await self._cancel_pending_flush()
+        if not self._is_admitted(admit):
+            self._closed = True
+            return
         if self._mode == DRAFT_STREAMING:
-            await self._send_final_message()
+            await self._send_final_message(admit=admit)
         else:
-            await self._push_legacy(raise_on_error=True)
+            await self._push_legacy(raise_on_error=True, admit=admit)
         self._closed = True
 
     async def abort(self) -> None:
@@ -309,9 +347,11 @@ class DraftStream:
             kwargs["message_thread_id"] = self._thread_id
         return kwargs
 
-    async def _start_streaming(self) -> None:
+    async def _start_streaming(
+        self, *, admit: Callable[[], bool] | None = None
+    ) -> None:
         try:
-            await self._send_draft()
+            await self._send_draft(admit=admit)
         except BadRequest as exc:
             if _is_unsupported_error(exc):
                 mark_draft_unavailable(f"sendMessageDraft: {exc.message}")
@@ -324,20 +364,25 @@ class DraftStream:
                 )
             else:
                 logger.warning("sendMessageDraft rejected: %s", exc)
-            await self._start_legacy()
+            if self._is_admitted(admit):
+                await self._start_legacy(admit=admit)
             return
         except RetryAfter as exc:
             await asyncio.sleep(retry_after_seconds(exc) + 1)
-            await self._start_legacy()
+            if self._is_admitted(admit):
+                await self._start_legacy(admit=admit)
             return
         except TelegramError as exc:
             logger.warning("sendMessageDraft failed: %s", exc)
-            await self._start_legacy()
+            if self._is_admitted(admit):
+                await self._start_legacy(admit=admit)
             return
         self._last_draft_at = time.monotonic()
         self._mode = DRAFT_STREAMING
 
-    async def _start_legacy(self) -> None:
+    async def _start_legacy(self, *, admit: Callable[[], bool] | None = None) -> None:
+        if not self._is_admitted(admit):
+            return
         message = await self._bot.send_message(
             chat_id=self._chat_id,
             text=self.text,
@@ -346,18 +391,24 @@ class DraftStream:
         self._message_id = message.message_id
         self._mode = DRAFT_LEGACY
 
-    async def _push_update(self) -> None:
+    async def _push_update(self, *, admit: Callable[[], bool] | None = None) -> None:
+        if not self._is_admitted(admit):
+            return
         if self._mode == DRAFT_STREAMING:
-            await self._push_streaming()
+            await self._push_streaming(admit=admit)
         else:
-            await self._push_legacy()
+            await self._push_legacy(admit=admit)
 
-    async def _push_streaming(self) -> None:
+    async def _push_streaming(self, *, admit: Callable[[], bool] | None = None) -> None:
+        if not self._is_admitted(admit):
+            return
         if _DRAFT_UNAVAILABLE or is_peer_draft_unsupported(
             self._chat_id, self._thread_id
         ):
             return
         async with self._update_lock:
+            if not self._is_admitted(admit):
+                return
             now = time.monotonic()
             remaining = max(
                 _MIN_DRAFT_INTERVAL - (now - self._last_draft_at),
@@ -366,11 +417,13 @@ class DraftStream:
             if remaining > 0:
                 self._schedule_pending_flush(remaining)
                 return
-            retry_delay = await self._send_stream_snapshot()
-        if retry_delay is not None:
+            retry_delay = await self._send_stream_snapshot(admit=admit)
+        if retry_delay is not None and self._is_admitted(self._snapshot_admit):
             self._schedule_pending_flush(retry_delay)
 
     def _schedule_pending_flush(self, delay: float) -> None:
+        if not self._is_admitted(self._snapshot_admit):
+            return
         if self._pending_flush is not None and not self._pending_flush.done():
             return
         self._pending_flush = asyncio.create_task(
@@ -382,17 +435,29 @@ class DraftStream:
         retry_delay: float | None = None
         try:
             await asyncio.sleep(delay)
+            if not self._is_admitted(self._snapshot_admit):
+                return
             async with self._update_lock:
-                if self._closed or self._mode != DRAFT_STREAMING:
+                if (
+                    self._closed
+                    or self._mode != DRAFT_STREAMING
+                    or not self._is_admitted(self._snapshot_admit)
+                ):
                     return
-                retry_delay = await self._send_stream_snapshot()
+                retry_delay = await self._send_stream_snapshot(
+                    admit=self._snapshot_admit
+                )
         except asyncio.CancelledError:
             raise
         except TelegramError as exc:
             logger.warning("DraftStream trailing update failed: %s", exc)
         finally:
             self._pending_flush = None
-        if retry_delay is not None and not self._closed:
+        if (
+            retry_delay is not None
+            and not self._closed
+            and self._is_admitted(self._snapshot_admit)
+        ):
             self._schedule_pending_flush(retry_delay)
 
     async def _cancel_pending_flush(self) -> None:
@@ -404,13 +469,17 @@ class DraftStream:
         with contextlib.suppress(asyncio.CancelledError):
             await task
 
-    async def _send_stream_snapshot(self) -> float | None:
+    async def _send_stream_snapshot(
+        self, *, admit: Callable[[], bool] | None = None
+    ) -> float | None:
+        if not self._is_admitted(admit):
+            return None
         if _DRAFT_UNAVAILABLE or is_peer_draft_unsupported(
             self._chat_id, self._thread_id
         ):
             return None
         try:
-            await self._send_draft()
+            await self._send_draft(admit=admit)
             self._last_draft_at = time.monotonic()
             self._retry_not_before = 0.0
             self._stream_failures = 0
@@ -429,16 +498,23 @@ class DraftStream:
             await self._handle_stream_failure(exc)
         return None
 
-    async def _send_draft(self) -> None:
+    async def _send_draft(self, *, admit: Callable[[], bool] | None = None) -> None:
         """Call PTB's typed method, with an escape hatch for older PTB."""
+        if not self._is_admitted(admit):
+            return
         payload = self._draft_kwargs()
         send_draft = getattr(self._bot, "send_message_draft", None)
         if send_draft is not None:
             await send_draft(**payload)
             return
-        await self._bot.do_api_request("sendMessageDraft", api_kwargs=payload)
+        if self._is_admitted(admit):
+            await self._bot.do_api_request("sendMessageDraft", api_kwargs=payload)
 
-    async def _send_final_message(self) -> None:
+    async def _send_final_message(
+        self, *, admit: Callable[[], bool] | None = None
+    ) -> None:
+        if not self._is_admitted(admit):
+            return
         try:
             message = await self._bot.send_message(
                 chat_id=self._chat_id,
@@ -451,9 +527,12 @@ class DraftStream:
         self._message_id = message.message_id
 
     async def _push_legacy(  # noqa: C901
-        self, *, raise_on_error: bool = False
+        self,
+        *,
+        raise_on_error: bool = False,
+        admit: Callable[[], bool] | None = None,
     ) -> None:
-        if self._message_id is None:
+        if self._message_id is None or not self._is_admitted(admit):
             return
         markup = self._reply_markup
         if markup is None:
@@ -473,6 +552,8 @@ class DraftStream:
                 raise
         except RetryAfter as exc:
             await asyncio.sleep(retry_after_seconds(exc) + 1)
+            if not self._is_admitted(admit):
+                return
             try:
                 await self._bot.edit_message_text(
                     chat_id=self._chat_id,

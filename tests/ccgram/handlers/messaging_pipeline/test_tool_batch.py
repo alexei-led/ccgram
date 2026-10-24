@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from telegram.error import TelegramError
 
+from ccgram.delivery_contract import DeliveryReceipt
 from ccgram.handlers.messaging_pipeline.message_task import ContentTask
 from ccgram.handlers.messaging_pipeline.tool_batch import (
     BATCH_MAX_LENGTH,
@@ -151,6 +152,162 @@ class TestDraftStreamIntegration:
         assert batch.draft is not None
         assert batch.draft.mode == DRAFT_LEGACY
         assert batch.telegram_msg_id == 77
+
+    async def test_revocation_after_rate_limit_wait_prevents_tool_batch_send(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from ccgram.handlers.messaging_pipeline import tool_batch
+
+        monkeypatch.setattr(
+            "ccgram.handlers.status.status_bubble.clear_status_message",
+            AsyncMock(return_value=None),
+        )
+        receipt = DeliveryReceipt()
+        receipt.track()
+        receipt.close()
+        bot = self._make_bot()
+
+        async def revoke_after_rate_limit(_chat_id):
+            receipt.revoke()
+
+        monkeypatch.setattr(
+            tool_batch,
+            "_rate_limit_chat",
+            AsyncMock(side_effect=revoke_after_rate_limit),
+        )
+        task = ContentTask(
+            window_id="@0",
+            parts=("Read foo.py",),
+            content_type="tool_use",
+            tool_use_id="t1",
+            thread_id=10,
+            delivery_receipts=(receipt,),
+        )
+
+        result = await process_tool_event(
+            bot, user_id=1, task=task, admit=lambda: not receipt.revoked
+        )
+
+        assert result.outcome is ToolEventOutcome.INTENTIONALLY_DROPPED
+        bot.send_message.assert_not_awaited()
+
+    async def test_current_result_falls_back_when_cached_tool_receipt_is_revoked(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stale_receipt = DeliveryReceipt()
+        stale_receipt.revoke()
+        current_receipt = DeliveryReceipt()
+        batch = ToolBatch(window_id="@0", thread_id=10)
+        batch.entries.append(
+            ToolBatchEntry(
+                tool_use_id="old-tool",
+                tool_use_text="visible old tool",
+                delivery_receipts=(stale_receipt,),
+            )
+        )
+        batch.telegram_msg_id = 77
+        batch.last_sent_text = "visible old tool"
+        _active_batches[(1, 10)] = batch
+        task = ContentTask(
+            window_id="@0",
+            parts=("current result",),
+            content_type="tool_result",
+            tool_use_id="old-tool",
+            thread_id=10,
+            delivery_receipts=(current_receipt,),
+        )
+        bot = self._make_bot()
+
+        result = await process_tool_event(
+            bot, user_id=1, task=task, admit=lambda: not current_receipt.revoked
+        )
+
+        assert result.followup is task
+        assert result.outcome is ToolEventOutcome.DELIVERED
+        assert (1, 10) not in _active_batches
+        assert batch.last_sent_text == "visible old tool"
+        bot.edit_message_text.assert_not_awaited()
+        bot.send_message.assert_not_awaited()
+
+    async def test_current_tool_use_starts_fresh_after_published_stale_batch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stale_receipt = DeliveryReceipt()
+        stale_receipt.revoke()
+        current_receipt = DeliveryReceipt()
+        batch = ToolBatch(window_id="@0", thread_id=10)
+        batch.entries.append(
+            ToolBatchEntry(
+                tool_use_id="old-tool",
+                tool_use_text="visible old tool",
+                delivery_receipts=(stale_receipt,),
+            )
+        )
+        batch.telegram_msg_id = 77
+        batch.last_sent_text = "visible old tool"
+        _active_batches[(1, 10)] = batch
+        task = ContentTask(
+            window_id="@0",
+            parts=("current tool",),
+            content_type="tool_use",
+            tool_use_id="new-tool",
+            thread_id=10,
+            delivery_receipts=(current_receipt,),
+        )
+        bot = self._make_bot()
+
+        result = await process_tool_event(
+            bot, user_id=1, task=task, admit=lambda: not current_receipt.revoked
+        )
+
+        assert result.outcome is ToolEventOutcome.DELIVERED
+        assert batch.last_sent_text == "visible old tool"
+        bot.edit_message_text.assert_not_awaited()
+        bot.send_message.assert_awaited_once()
+        assert bot.send_message.call_args.kwargs["text"] == "current tool"
+        assert _active_batches[(1, 10)] is not batch
+
+    async def test_revoked_batch_entry_does_not_join_current_tool_payload(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "ccgram.handlers.status.status_bubble.clear_status_message",
+            AsyncMock(return_value=None),
+        )
+        bot = self._make_bot()
+        stale_receipt = DeliveryReceipt()
+        stale_receipt.revoke()
+        current_receipt = DeliveryReceipt()
+        batch = ToolBatch(window_id="@0", thread_id=10)
+        batch.entries.extend(
+            [
+                ToolBatchEntry(
+                    tool_use_id="stale",
+                    tool_use_text="stale tool",
+                    delivery_receipts=(stale_receipt,),
+                ),
+                ToolBatchEntry(
+                    tool_use_id="current",
+                    tool_use_text="current tool",
+                    delivery_receipts=(current_receipt,),
+                ),
+            ]
+        )
+
+        delivered = await _send_or_edit_batch(
+            bot,
+            user_id=1,
+            batch=batch,
+            chat_id=42,
+            raw_thread_id=10,
+            thread_id_or_0=10,
+            admit=lambda: not current_receipt.revoked,
+        )
+
+        assert delivered is True
+        sent_text = bot.send_message.call_args.kwargs["text"]
+        assert "stale tool" not in sent_text
+        assert "current tool" in sent_text
 
     async def test_failed_initial_draft_is_not_acknowledged(
         self, monkeypatch: pytest.MonkeyPatch

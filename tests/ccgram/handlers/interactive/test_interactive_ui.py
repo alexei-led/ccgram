@@ -1,5 +1,6 @@
 """Tests for interactive UI rendering."""
 
+import asyncio
 import time
 from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -368,6 +369,67 @@ class TestPaneLabel:
 
 
 class TestTransientRetry:
+    async def test_revocation_during_capture_prevents_first_send(
+        self, _clear_send_state
+    ) -> None:
+        bot = _sending_bot()
+        admitted = True
+        capture_started = asyncio.Event()
+        release_capture = asyncio.Event()
+
+        async def capture(*_args, **_kwargs):
+            capture_started.set()
+            await release_capture.wait()
+            return "AskUserQuestion", "Pick one:", False
+
+        with (
+            _interactive_env(bot),
+            patch(f"{_UI}._capture_interactive_content", side_effect=capture),
+        ):
+            sending = asyncio.create_task(
+                handle_interactive_ui(
+                    bot,
+                    100,
+                    "@2",
+                    thread_id=42,
+                    admit=lambda: admitted,
+                )
+            )
+            await asyncio.wait_for(capture_started.wait(), timeout=1)
+            admitted = False
+            release_capture.set()
+            result = await asyncio.wait_for(sending, timeout=1)
+
+        assert result is False
+        bot.send_message.assert_not_awaited()
+        bot.edit_message_text.assert_not_awaited()
+
+    async def test_revocation_during_retry_delay_stops_next_send(
+        self, _clear_send_state
+    ) -> None:
+        bot = _sending_bot()
+        bot.send_message.side_effect = TimedOut("blip")
+        admitted = True
+
+        async def revoke_during_sleep(_delay):
+            nonlocal admitted
+            admitted = False
+
+        with (
+            _interactive_env(bot),
+            patch(f"{_UI}.asyncio.sleep", side_effect=revoke_during_sleep),
+        ):
+            result = await handle_interactive_ui(
+                bot,
+                100,
+                "@2",
+                thread_id=42,
+                admit=lambda: admitted,
+            )
+
+        assert result is False
+        assert bot.send_message.await_count == 1
+
     async def test_timed_out_retries_then_succeeds(self, _clear_send_state) -> None:
         bot = _sending_bot()
         sent = bot.send_message.return_value
@@ -388,3 +450,35 @@ class TestTransientRetry:
 
         assert ok is False
         assert bot.send_message.call_count == 2
+
+
+async def test_concurrent_interactive_sends_share_the_inflight_cooldown() -> None:
+    bot = _sending_bot()
+    waiting = asyncio.Event()
+    release = asyncio.Event()
+    rate_entries: list[int] = []
+
+    async def wait_for_slot(chat_id):
+        rate_entries.append(chat_id)
+        waiting.set()
+        await release.wait()
+
+    with (
+        _interactive_env(bot),
+        patch(f"{_UI}.rate_limit_send", side_effect=wait_for_slot),
+    ):
+        first = asyncio.create_task(handle_interactive_ui(bot, 91347, "@0", 42))
+        second = None
+        try:
+            await asyncio.wait_for(waiting.wait(), timeout=2)
+            second = asyncio.create_task(handle_interactive_ui(bot, 91347, "@0", 42))
+            turn = asyncio.Event()
+            asyncio.get_running_loop().call_soon(turn.set)
+            await turn.wait()
+        finally:
+            release.set()
+        assert second is not None
+        results = await asyncio.gather(first, second)
+    assert rate_entries == [-999]
+    assert sorted(results) == [False, True]
+    bot.send_message.assert_awaited_once()

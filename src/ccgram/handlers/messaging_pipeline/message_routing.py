@@ -7,11 +7,16 @@ management.
 
 import asyncio
 import contextlib
+from collections.abc import Callable
 from pathlib import Path
 
 import structlog
 
 from ... import session_query
+from ...delivery_contract import (
+    delivery_is_current,
+    get_active_delivery_receipt,
+)
 from ...session_monitor import NewMessage
 from ...telegram_client import TelegramClient, unwrap_bot
 from ...telegram_draft import DRAFT_UNSET, DraftStream
@@ -45,6 +50,12 @@ _INTERACTIVE_QUEUE_JOIN_TIMEOUT_S = 90.0
 _DRAFT_TTL_SECONDS = 25.0
 _active_drafts: dict[tuple[int, str, int | None, int], DraftStream] = {}
 _draft_expiry_tasks: dict[tuple[int, str, int | None, int], asyncio.Task[None]] = {}
+
+
+def _active_delivery_admission() -> Callable[[], bool] | None:
+    """Capture the producer receipt for deferred direct-draft operations."""
+    receipt = get_active_delivery_receipt()
+    return None if receipt is None else lambda: not receipt.revoked
 
 
 def _handle_unroutable_message(msg: NewMessage) -> None:
@@ -125,33 +136,31 @@ async def _handle_assistant_stream(
     user_id: int,
     thread_id: int | None,
     chat_id: int | None,
+    admit: Callable[[], bool] | None = None,
 ) -> bool:
-    """Deliver an assistant text snapshot to its draft, if applicable."""
+    """Deliver a current assistant text snapshot to its draft."""
     if msg.role != "assistant" or msg.content_type != "text" or chat_id is None:
         return False
-
     key = (user_id, msg.session_id, thread_id, chat_id)
     draft = _active_drafts.get(key)
-
     if msg.is_complete:
         if draft is not None:
             _active_drafts.pop(key, None)
             await _cancel_draft_expiry(key)
             await draft.abort()
         return False
-
+    if admit is not None and not admit():
+        return True
     if draft is None:
         draft = DraftStream(
-            unwrap_bot(client),
-            chat_id,
-            message_thread_id=thread_id,
+            unwrap_bot(client), chat_id, message_thread_id=thread_id, admit=admit
         )
         await draft.start(msg.text)
-        if draft.mode == DRAFT_UNSET:
-            return True
-        _active_drafts[key] = draft
     else:
-        await draft.replace(msg.text)
+        await draft.replace(msg.text, admit=admit)
+    if draft.mode == DRAFT_UNSET or (admit is not None and not admit()):
+        return True
+    _active_drafts[key] = draft
     _arm_draft_expiry(key, draft)
     return True
 
@@ -166,8 +175,10 @@ async def enqueue_backlog_skip_notice(client: TelegramClient, intent: object) ->
         user_id=int(getattr(intent, "user_id")),
         window_id=str(getattr(intent, "window_id")),
         parts=[
-            f"⏭ Skipped {count} queued transcript item(s) for live view "
-            f"(bytes {start}–{snapshot}). Raw transcript retained."
+            f"⏭ Skip requested for {count} queued transcript item(s) "
+            f"(bytes {start}–{snapshot}). Raw transcript retained. "
+            "The range is omitted only after this notice is acknowledged and "
+            "the skip is committed. If the skip expires first, the range replays."
         ],
         thread_id=getattr(intent, "thread_id"),
         chat_id=int(getattr(intent, "chat_id")),
@@ -183,6 +194,10 @@ async def handle_new_message(msg: NewMessage, client: TelegramClient) -> None:  
     Messages are queued per-user to ensure status messages always appear last.
     Routes via thread_bindings to deliver to the correct topic.
     """
+    if not delivery_is_current():
+        return
+    admit = _active_delivery_admission()
+
     status = "complete" if msg.is_complete else "streaming"
     logger.debug(
         "handle_new_message [%s]: session=%s, text_len=%d",
@@ -198,6 +213,8 @@ async def handle_new_message(msg: NewMessage, client: TelegramClient) -> None:  
         return
 
     for user_id, window_id, thread_id, chat_id in active_users:
+        if admit is not None and not admit():
+            break
         structlog.contextvars.clear_contextvars()
         structlog.contextvars.bind_contextvars(
             window_id=window_id, session_id=msg.session_id
@@ -233,26 +250,40 @@ async def handle_new_message(msg: NewMessage, client: TelegramClient) -> None:  
                     user_id=user_id,
                     window_id=window_id,
                 )
+            if admit is not None and not admit():
+                break
             await asyncio.sleep(0.3)
+            if admit is not None and not admit():
+                break
             handled = await handle_interactive_ui(
-                client, user_id, window_id, thread_id, chat_id=chat_id
+                client, user_id, window_id, thread_id, chat_id=chat_id, admit=admit
             )
+            if admit is not None and not admit():
+                break
             if handled:
                 await _update_window_offset(user_id, window_id)
                 continue
             else:
                 clear_interactive_mode(user_id, thread_id, chat_id=chat_id)
 
+        if admit is not None and not admit():
+            break
         if get_interactive_msg_id(user_id, thread_id, chat_id=chat_id):
             await clear_interactive_msg(user_id, client, thread_id, chat_id=chat_id)
+        if admit is not None and not admit():
+            break
 
-        if await _handle_assistant_stream(
+        stream_handled = await _handle_assistant_stream(
             msg,
             client,
             user_id,
             thread_id,
             chat_id,
-        ):
+            admit,
+        )
+        if admit is not None and not admit():
+            break
+        if stream_handled:
             continue
 
         parts = build_response_parts(
@@ -263,6 +294,8 @@ async def handle_new_message(msg: NewMessage, client: TelegramClient) -> None:  
         )
 
         if msg.is_complete:
+            if admit is not None and not admit():
+                break
             await enqueue_content_message(
                 client=client,
                 user_id=user_id,
@@ -277,5 +310,7 @@ async def handle_new_message(msg: NewMessage, client: TelegramClient) -> None:  
                 source_session_id=msg.session_id,
                 source_provider_name=msg.provider_name or None,
             )
+            if admit is not None and not admit():
+                break
 
             await _update_window_offset(user_id, window_id)

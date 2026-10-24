@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import asyncio
 from datetime import timedelta
@@ -223,6 +223,48 @@ class TestDraftStreamFallback:
 
 
 class TestDraftStreamLifecycle:
+    async def test_revoked_admission_prevents_direct_start_rpc(self) -> None:
+        bot = _make_bot()
+        stream = DraftStream(bot, chat_id=100, admit=lambda: False)
+
+        assert await stream.start("stale") is None
+        assert stream.mode == "unset"
+        bot.send_message_draft.assert_not_awaited()
+        bot.send_message.assert_not_awaited()
+
+    async def test_revocation_during_start_prevents_legacy_fallback(self) -> None:
+        bot = _make_bot()
+        admitted = True
+        request_started = asyncio.Event()
+        finish_request = asyncio.Event()
+
+        async def reject_draft(**_kwargs):
+            request_started.set()
+            await finish_request.wait()
+            raise BadRequest("method not found")
+
+        bot.send_message_draft.side_effect = reject_draft
+        stream = DraftStream(bot, chat_id=100, admit=lambda: admitted)
+        starting = asyncio.create_task(stream.start("stale"))
+        await asyncio.wait_for(request_started.wait(), timeout=1)
+        admitted = False
+        finish_request.set()
+
+        assert await asyncio.wait_for(starting, timeout=1) is None
+        assert stream.mode == "unset"
+        bot.send_message.assert_not_awaited()
+
+    async def test_revoked_admission_prevents_draft_replace(self) -> None:
+        bot = _make_bot()
+        admitted = True
+        stream = DraftStream(bot, chat_id=100, admit=lambda: admitted)
+
+        await stream.start("first")
+        admitted = False
+        await stream.replace("stale update")
+
+        assert [call.kwargs["text"] for call in _draft_calls(bot)] == ["first"]
+
     async def test_abort_does_not_delete_ephemeral_draft(self) -> None:
         bot = _make_bot()
         stream = DraftStream(bot, chat_id=100)
@@ -306,3 +348,38 @@ class TestModuleStateHelpers:
         reset_draft_state()
         assert is_draft_unavailable() is False
         assert telegram_draft.draft_unavailable_reason() == ""
+
+
+async def test_coalesced_flush_uses_latest_snapshot_ownership() -> None:
+    from ccgram.delivery_contract import DeliveryReceipt
+
+    bot = _make_bot()
+    stream = DraftStream(bot, chat_id=100)
+    await stream.start("initial")
+    old, current = DeliveryReceipt(), DeliveryReceipt()
+    timer_started = asyncio.Event()
+    release_timer = asyncio.Event()
+
+    async def paused_timer(_delay):
+        timer_started.set()
+        await release_timer.wait()
+
+    try:
+        with patch.object(telegram_draft.asyncio, "sleep", side_effect=paused_timer):
+            stream._retry_not_before = telegram_draft.time.monotonic() + 10
+            await stream.replace("queued old", admit=lambda: not old.revoked)
+            pending = stream._pending_flush
+            assert pending is not None
+            await asyncio.wait_for(timer_started.wait(), timeout=2)
+            old.revoke()
+            await stream.replace("current", admit=lambda: not current.revoked)
+            stream._retry_not_before = 0
+            release_timer.set()
+            await pending
+        assert [call.kwargs["text"] for call in _draft_calls(bot)] == [
+            "initial",
+            "current",
+        ]
+    finally:
+        release_timer.set()
+        await stream.abort()

@@ -357,6 +357,8 @@ class TranscriptReader:
         self._protocol_parser_states: dict[str, tuple[str, TranscriptParserState]] = {}
         self._parser_rebuild_pending: set[str] = set()
         self._pending_batches: list[TranscriptBatch] = []
+        self._source_revision_sequence = 0
+        self._source_revisions: dict[str, int] = {}
         self._file_mtimes: dict[str, float] = {}
         self._file_ctimes: dict[str, int] = self._snapshot_file_ctimes()
         self._file_sizes = self._snapshot_file_sizes()
@@ -364,6 +366,33 @@ class TranscriptReader:
         self._file_generations = self._snapshot_file_generations()
         self._file_markers = self._snapshot_file_markers()
         self._startup_file_boundaries = self._snapshot_startup_boundaries()
+
+    def _advance_source_revision(self, session_id: str) -> int:
+        """Invalidate in-flight work for one source without reusing a revision."""
+        self._source_revision_sequence += 1
+        self._source_revisions[session_id] = self._source_revision_sequence
+        return self._source_revision_sequence
+
+    def _source_revision_for(self, session_id: str) -> int:
+        revision = self._source_revisions.get(session_id)
+        return (
+            revision
+            if revision is not None
+            else self._advance_source_revision(session_id)
+        )
+
+    def _source_is_current(
+        self,
+        session_id: str,
+        tracked: TrackedSession,
+        revision: int,
+        *,
+        allow_untracked: bool = False,
+    ) -> bool:
+        if self._source_revisions.get(session_id) != revision:
+            return False
+        current = self._state.get_session(session_id)
+        return current is tracked or (allow_untracked and current is None)
 
     def _snapshot_file_ctimes(self) -> dict[str, int]:
         ctimes: dict[str, int] = {}
@@ -468,7 +497,13 @@ class TranscriptReader:
         )
 
     async def _consumed_prefix_intact(
-        self, session_id: str, consumed: int, file_path: Path, st: Any
+        self,
+        session_id: str,
+        tracked: TrackedSession,
+        revision: int,
+        consumed: int,
+        file_path: Path,
+        st: Any,
     ) -> bool:
         """True when every byte already delivered is still byte-identical on disk.
 
@@ -476,6 +511,8 @@ class TranscriptReader:
         nothing we sent was replaced, so rewinding would replay the whole
         transcript instead of the new content.
         """
+        if not self._source_is_current(session_id, tracked, revision):
+            return False
         if not self._prefix_covers_consumed(session_id, consumed, st):
             return False
         size, digest = self._file_prefixes[session_id]
@@ -483,11 +520,19 @@ class TranscriptReader:
             current = await asyncio.to_thread(_prefix_digest, file_path, size)
         except OSError:
             return False
+        if not self._source_is_current(session_id, tracked, revision):
+            return False
         return current == digest
 
     async def _marker_changed(
-        self, session_id: str, tracked: TrackedSession, file_path: Path
+        self,
+        session_id: str,
+        tracked: TrackedSession,
+        revision: int,
+        file_path: Path,
     ) -> bool:
+        if not self._source_is_current(session_id, tracked, revision):
+            return False
         pos = self._parse_pos(tracked)
         saved = self._file_markers.get(session_id)
         if saved is None or saved[0] != pos:
@@ -495,6 +540,8 @@ class TranscriptReader:
         try:
             current = await asyncio.to_thread(_tail_marker, file_path, pos)
         except OSError:
+            return False
+        if not self._source_is_current(session_id, tracked, revision):
             return False
         return current != saved[1]
 
@@ -506,7 +553,13 @@ class TranscriptReader:
         st: Any,
         *,
         check_marker: bool,
-    ) -> _GenerationCheck:
+        revision: int | None = None,
+    ) -> _GenerationCheck | None:
+        revision = (
+            self._source_revision_for(session_id) if revision is None else revision
+        )
+        if not self._source_is_current(session_id, tracked, revision):
+            return None
         generation = (st.st_dev, st.st_ino)
         previous = self._file_generations.get(session_id)
         previous_ctime = self._file_ctimes.get(session_id)
@@ -517,15 +570,15 @@ class TranscriptReader:
         prefix_verified = False
         if previous_prefix is not None:
             try:
-                prefix_changed = (
-                    await asyncio.to_thread(
-                        _prefix_digest, file_path, previous_prefix[0]
-                    )
-                    != previous_prefix[1]
+                current_prefix = await asyncio.to_thread(
+                    _prefix_digest, file_path, previous_prefix[0]
                 )
             except OSError:
                 prefix_changed = False
             else:
+                if not self._source_is_current(session_id, tracked, revision):
+                    return None
+                prefix_changed = current_prefix != previous_prefix[1]
                 prefix_verified = True
         changed = (
             changed
@@ -540,7 +593,11 @@ class TranscriptReader:
         pos = self._parse_pos(tracked)
         changed = changed or st.st_size < pos
         if not changed and check_marker:
-            changed = await self._marker_changed(session_id, tracked, file_path)
+            changed = await self._marker_changed(
+                session_id, tracked, revision, file_path
+            )
+            if not self._source_is_current(session_id, tracked, revision):
+                return None
         consumed_intact = False
         if changed:
             consumed_intact = (
@@ -555,12 +612,16 @@ class TranscriptReader:
                     session_id,
                 )
             else:
+                if not self._source_is_current(session_id, tracked, revision):
+                    return None
                 # Replaced transcript: jump the parse position to EOF so the
                 # existing bytes are treated as already-notified history
                 # (incident 2026-08-17: never replay), and let the persisted
                 # watermark follow via commit_parsed_offsets().
                 tracked.parsed_offset = st.st_size
                 self._startup_file_boundaries.pop(session_id, None)
+        if not self._source_is_current(session_id, tracked, revision):
+            return None
         return _GenerationCheck(changed and not consumed_intact, consumed_intact)
 
     async def _read_session_entries(
@@ -569,6 +630,7 @@ class TranscriptReader:
         tracked: TrackedSession,
         file_path: Path,
         window_id: str,
+        revision: int,
         *,
         check_marker: bool,
     ) -> _StableRead | None:
@@ -578,7 +640,11 @@ class TranscriptReader:
             try:
                 before = file_path.stat()
                 start_offset = self._parse_pos(tracked)
-                entries = await self._read_new_lines(tracked, file_path, window_id)
+                entries = await self._read_new_lines(
+                    tracked, file_path, window_id, revision=revision
+                )
+                if not self._source_is_current(session_id, tracked, revision):
+                    return None
                 after = file_path.stat()
             except OSError:
                 return None
@@ -596,12 +662,16 @@ class TranscriptReader:
                     )
                 except OSError:
                     return None
+                if not self._source_is_current(session_id, tracked, revision):
+                    return None
                 marker_changed = marker != saved[1]
             if same_generation and not rewritten_in_place and not marker_changed:
                 return _StableRead(entries, after, reset_generation)
             consumed_survived = check_marker and await self._consumed_prefix_intact(
-                session_id, start_offset, file_path, after
+                session_id, tracked, revision, start_offset, file_path, after
             )
+            if not self._source_is_current(session_id, tracked, revision):
+                return None
             if consumed_survived:
                 # Concurrent append or metadata churn, not a replacement: the
                 # bytes already delivered survived, so keep this read.
@@ -617,14 +687,23 @@ class TranscriptReader:
         tracked: TrackedSession,
         file_path: Path,
         stable_read: _StableRead,
+        revision: int,
     ) -> bool:
         """Commit caches only after a stable read and marker capture."""
+        if not self._source_is_current(session_id, tracked, revision):
+            return False
         stable_stat = stable_read.stat
+        byte_checkpoint = self._parse_pos(tracked)
         try:
-            marker = await asyncio.to_thread(
-                _tail_marker, file_path, self._parse_pos(tracked)
-            )
+            marker = await asyncio.to_thread(_tail_marker, file_path, byte_checkpoint)
         except OSError:
+            return False
+        if not self._source_is_current(session_id, tracked, revision):
+            return False
+        prefix_digest = await asyncio.to_thread(
+            _prefix_digest, file_path, stable_stat.st_size
+        )
+        if not self._source_is_current(session_id, tracked, revision):
             return False
         self._file_mtimes[session_id] = stable_stat.st_mtime
         self._file_generations[session_id] = (
@@ -633,37 +712,37 @@ class TranscriptReader:
         )
         self._file_ctimes[session_id] = stable_stat.st_ctime_ns
         self._file_sizes[session_id] = stable_stat.st_size
-        self._file_prefixes[session_id] = (
-            stable_stat.st_size,
-            await asyncio.to_thread(_prefix_digest, file_path, stable_stat.st_size),
-        )
-        self._file_markers[session_id] = (self._parse_pos(tracked), marker)
+        self._file_prefixes[session_id] = (stable_stat.st_size, prefix_digest)
+        self._file_markers[session_id] = (byte_checkpoint, marker)
         return True
 
     async def _rebuild_committed_parser_context(
         self,
         session_id: str,
+        tracked: TrackedSession,
         file_path: Path,
         provider_name: str,
         expected_stat: Any,
+        revision: int,
         *,
         supports_incremental_read: bool,
     ) -> bool:
         """Recreate parser context from a stable, committed JSONL prefix."""
+        if not self._source_is_current(session_id, tracked, revision):
+            return False
         if not supports_incremental_read:
             # Live built-in providers with transcript records use byte-addressed
             # JSONL. Whole-document history snapshots do not have a byte range
             # for each entry, so they cannot be reconstructed from this watermark.
             self.reset_parser_state(session_id)
             return True
-        tracked = self._state.get_session(session_id)
-        if tracked is None:
-            return False
         try:
             before = file_path.stat()
             raw = await asyncio.to_thread(file_path.read_bytes)
             after = file_path.stat()
         except OSError:
+            return False
+        if not self._source_is_current(session_id, tracked, revision):
             return False
         expected_generation = (
             expected_stat.st_dev,
@@ -694,6 +773,8 @@ class TranscriptReader:
             TranscriptParserState(),
             deduplicate_updates=True,
         )
+        if not self._source_is_current(session_id, tracked, revision):
+            return False
         self._protocol_parser_states[session_id] = (provider_name, parser_state)
         self._pending_tools[session_id] = dict(parser_state.pending_tools)
         self.retire_skipped_tool_state(session_id)
@@ -702,6 +783,7 @@ class TranscriptReader:
 
     def clear_session(self, session_id: str) -> None:
         """Remove all per-session state for a cleaned-up session."""
+        self._advance_source_revision(session_id)
         # A skip barrier belongs to the tracked session lifetime. Once that
         # session disappears, cancel it so it cannot block a future replay.
         self._state.cancel_skip(session_id)
@@ -738,6 +820,7 @@ class TranscriptReader:
 
     def replay_from_watermark(self, session_id: str) -> None:
         """Discard uncommitted parse context and resume from durable progress."""
+        self._advance_source_revision(session_id)
         tracked = self._state.get_session(session_id)
         if tracked is None:
             return
@@ -768,13 +851,50 @@ class TranscriptReader:
             if existing != target:
                 continue
 
+            try:
+                target_stat = file_path.stat()
+            except OSError:
+                target_stat = None
+            preserve_retry_floor = bool(
+                old_session.replay_cap_retry_after
+                and target_stat is not None
+                and old_session.replay_cap_retry_device == target_stat.st_dev
+                and old_session.replay_cap_retry_inode == target_stat.st_ino
+                and target_stat.st_size >= old_session.replay_cap_retry_after
+            )
             tracked = TrackedSession(
                 session_id=session_id,
                 file_path=str(file_path),
                 last_byte_offset=old_session.last_byte_offset,
+                replay_cap_retry_after=(
+                    old_session.replay_cap_retry_after if preserve_retry_floor else 0
+                ),
+                replay_cap_retry_device=(
+                    old_session.replay_cap_retry_device
+                    if preserve_retry_floor
+                    else None
+                ),
+                replay_cap_retry_inode=(
+                    old_session.replay_cap_retry_inode if preserve_retry_floor else None
+                ),
+                replay_cap_retry_range_start=(
+                    old_session.replay_cap_retry_range_start
+                    if preserve_retry_floor
+                    else 0
+                ),
+                replay_cap_retry_sha256=(
+                    old_session.replay_cap_retry_sha256 if preserve_retry_floor else ""
+                ),
+                replay_cap_retry_verified=(
+                    old_session.replay_cap_retry_verified
+                    if preserve_retry_floor
+                    else False
+                ),
             )
             # Session IDs can be refreshed for the same transcript. A pending
             # skip is tied to the old identity and must not follow it silently.
+            self._advance_source_revision(old_session_id)
+            self._advance_source_revision(session_id)
             self._state.cancel_skip(old_session_id)
             if self._on_session_retired is not None:
                 self._on_session_retired(old_session_id)
@@ -828,36 +948,53 @@ class TranscriptReader:
         window_id: str,
         provider_name: str,
     ) -> None:
+        revision = self._advance_source_revision(session_id)
         try:
             st = file_path.stat()
             file_size, current_mtime = st.st_size, st.st_mtime
         except OSError:
             file_size, current_mtime, st = 0, 0.0, None
-        initial_offset = file_size
         tracked = TrackedSession(
             session_id=session_id,
             file_path=str(file_path),
-            last_byte_offset=initial_offset,
+            last_byte_offset=file_size,
         )
-        self._file_mtimes[session_id] = current_mtime
+        prefix_data = None
         if st is not None:
-            self._file_generations[session_id] = (st.st_dev, st.st_ino)
-            self._file_ctimes[session_id] = st.st_ctime_ns
-            self._file_sizes[session_id] = st.st_size
-            self._file_prefixes[session_id] = (
-                st.st_size,
-                await asyncio.to_thread(_prefix_digest, file_path, st.st_size),
+            prefix_digest = await asyncio.to_thread(
+                _prefix_digest, file_path, st.st_size
             )
+            if not self._source_is_current(
+                session_id, tracked, revision, allow_untracked=True
+            ):
+                return
+            prefix_data = (st.st_size, prefix_digest)
         try:
             marker = await asyncio.to_thread(
                 _tail_marker, file_path, tracked.last_byte_offset
             )
         except OSError:
-            pass
-        else:
-            self._file_markers[session_id] = (tracked.last_byte_offset, marker)
+            marker = None
+        if not self._source_is_current(
+            session_id, tracked, revision, allow_untracked=True
+        ):
+            return
         if not identity_state.accepts_provider_observation(window_id, provider_name):
             return
+        if not self._source_is_current(
+            session_id, tracked, revision, allow_untracked=True
+        ):
+            return
+
+        self._file_mtimes[session_id] = current_mtime
+        if st is not None:
+            self._file_generations[session_id] = (st.st_dev, st.st_ino)
+            self._file_ctimes[session_id] = st.st_ctime_ns
+            self._file_sizes[session_id] = st.st_size
+            if prefix_data is not None:
+                self._file_prefixes[session_id] = prefix_data
+        if marker is not None:
+            self._file_markers[session_id] = (tracked.last_byte_offset, marker)
         self._state.update_session(tracked)
         if provider.capabilities.supports_task_tracking and window_id:
             await provider.seed_task_state(window_id, session_id, str(file_path))
@@ -868,9 +1005,12 @@ class TranscriptReader:
         window_id: str,
         provider_name: str,
         tracked: TrackedSession,
+        revision: int,
         previous_offset: int,
     ) -> bool:
-        """Roll back speculative progress if selection changed during file I/O."""
+        """Reject stale source work before rolling back provider selection."""
+        if not self._source_is_current(tracked.session_id, tracked, revision):
+            return False
         if identity_state.accepts_provider_observation(window_id, provider_name):
             return True
         tracked.parsed_offset = previous_offset
@@ -904,6 +1044,9 @@ class TranscriptReader:
             )
             return
 
+        revision = self._source_revision_for(session_id)
+        if not self._source_is_current(session_id, tracked, revision):
+            return
         try:
             st = file_path.stat()
             current_mtime, current_size = st.st_mtime, st.st_size
@@ -912,16 +1055,24 @@ class TranscriptReader:
 
         probe_offset = tracked.parsed_offset
         probe_boundary = self._startup_file_boundaries.get(session_id)
-        generation_changed, consumed_intact = await self._prepare_observed_generation(
+        generation = await self._prepare_observed_generation(
             session_id,
             tracked,
             file_path,
             st,
             check_marker=provider.capabilities.supports_incremental_read,
+            revision=revision,
         )
-        if not identity_state.accepts_provider_observation(window_id, provider_name):
-            tracked.parsed_offset = probe_offset
-            if probe_boundary is not None:
+        generation_changed, consumed_intact = generation or _GenerationCheck(
+            False, False
+        )
+        if not self._admit_read(
+            window_id, provider_name, tracked, revision, probe_offset
+        ):
+            if (
+                self._source_is_current(session_id, tracked, revision)
+                and probe_boundary is not None
+            ):
                 self._startup_file_boundaries[session_id] = probe_boundary
             return
         if (
@@ -935,18 +1086,14 @@ class TranscriptReader:
         previous_parsed_offset = tracked.parsed_offset
         rebuild_parser = session_id in self._parser_rebuild_pending
         last_mtime = self._file_mtimes.get(session_id, 0.0)
-        if provider.capabilities.supports_incremental_read:
-            if (
-                not generation_changed
-                and not rebuild_parser
-                and current_mtime <= last_mtime
-                and current_size <= self._parse_pos(tracked)
-            ):
-                return
-        elif (
+        if (
             not generation_changed
             and not rebuild_parser
             and current_mtime <= last_mtime
+            and (
+                not provider.capabilities.supports_incremental_read
+                or current_size <= self._parse_pos(tracked)
+            )
         ):
             return
 
@@ -965,26 +1112,67 @@ class TranscriptReader:
             tracked,
             file_path,
             window_id,
+            revision,
             check_marker=provider.capabilities.supports_incremental_read,
         )
         if (
             not self._admit_read(
-                window_id, provider_name, tracked, previous_parsed_offset
+                window_id, provider_name, tracked, revision, previous_parsed_offset
             )
             or stable_read is None
         ):
             return
         new_entries, _, reset_during_read = stable_read
         committed = await self._commit_stable_read(
-            session_id, tracked, file_path, stable_read
+            session_id, tracked, file_path, stable_read, revision
         )
         if (
             not self._admit_read(
-                window_id, provider_name, tracked, previous_parsed_offset
+                window_id, provider_name, tracked, revision, previous_parsed_offset
             )
             or not committed
         ):
             return
+        await self._finish_session_read(
+            session_id,
+            tracked,
+            file_path,
+            provider,
+            provider_name,
+            current_map,
+            window_id,
+            new_messages,
+            revision,
+            previous_parsed_offset,
+            stable_read,
+            new_entries,
+            generation_changed,
+            reset_during_read,
+            rebuild_parser,
+            startup_boundary,
+            probe_boundary,
+        )
+
+    async def _finish_session_read(
+        self,
+        session_id: str,
+        tracked: TrackedSession,
+        file_path: Path,
+        provider: Any,
+        provider_name: str,
+        current_map: dict[str, dict[str, Any]] | None,
+        window_id: str,
+        new_messages: list[NewMessage],
+        revision: int,
+        previous_parsed_offset: int,
+        stable_read: _StableRead,
+        new_entries: list[SourceEntry],
+        generation_changed: bool,
+        reset_during_read: bool,
+        rebuild_parser: bool,
+        startup_boundary: _StartupBoundary | None,
+        probe_boundary: _StartupBoundary | None,
+    ) -> None:
         if reset_during_read:
             startup_boundary = None
         if generation_changed or reset_during_read:
@@ -994,24 +1182,36 @@ class TranscriptReader:
         elif rebuild_parser:
             rebuilt = await self._rebuild_committed_parser_context(
                 session_id,
+                tracked,
                 file_path,
                 provider_name,
                 stable_read.stat,
+                revision,
                 supports_incremental_read=provider.capabilities.supports_incremental_read,
             )
+            if not self._source_is_current(session_id, tracked, revision):
+                return
             if not rebuilt:
+                if not self._admit_read(
+                    window_id, provider_name, tracked, revision, previous_parsed_offset
+                ):
+                    return
                 tracked.parsed_offset = tracked.last_byte_offset
                 self._file_mtimes.pop(session_id, None)
                 new_entries = []
             elif not self._admit_read(
-                window_id, provider_name, tracked, previous_parsed_offset
+                window_id, provider_name, tracked, revision, previous_parsed_offset
             ):
+                if not self._source_is_current(session_id, tracked, revision):
+                    return
                 self.reset_parser_state(session_id)
                 self._parser_rebuild_pending.add(session_id)
                 if probe_boundary is not None:
                     self._startup_file_boundaries[session_id] = probe_boundary
                 new_entries = []
 
+        if not self._source_is_current(session_id, tracked, revision):
+            return
         # Deliver pre-start unread history, but count activity only when a
         # complete entry advances beyond the startup file-size boundary.
         has_live_entries = startup_boundary is None or (
@@ -1030,10 +1230,13 @@ class TranscriptReader:
             current_map,
             window_id,
             new_messages,
+            tracked=tracked,
+            revision=revision,
             byte_checkpoint=self._parse_pos(tracked),
             emit_checkpoint_if_empty=generation_changed or reset_during_read,
         )
-        self._state.update_session(tracked)
+        if self._source_is_current(session_id, tracked, revision):
+            self._state.update_session(tracked)
 
     def _append_provider_messages(
         self,
@@ -1044,9 +1247,17 @@ class TranscriptReader:
         window_id: str,
         new_messages: list[NewMessage],
         *,
+        tracked: TrackedSession | None = None,
+        revision: int | None = None,
         byte_checkpoint: int = 0,
         emit_checkpoint_if_empty: bool = False,
     ) -> None:
+        if (tracked is not None or revision is not None) and (
+            tracked is None
+            or revision is None
+            or not self._source_is_current(session_id, tracked, revision)
+        ):
+            return
         if window_id and not identity_state.accepts_provider_observation(
             window_id, provider.capabilities.name
         ):
@@ -1118,20 +1329,31 @@ class TranscriptReader:
         file_path: Path,
         window_id: str = "",
         provider: Any = None,
+        *,
+        revision: int | None = None,
     ) -> list[SourceEntry]:
         """Read new lines from a session file using byte offset.
 
         ``provider`` may be passed by callers that already resolved it
         (avoids a second resolution per file per poll cycle).
         """
+        if revision is not None and not self._source_is_current(
+            session.session_id, session, revision
+        ):
+            return []
         if provider is None:
             provider = _resolve_provider_for_file(window_id, file_path)
 
         if provider.capabilities.name == "shell":
-            session.parsed_offset = file_path.stat().st_size
+            if revision is None or self._source_is_current(
+                session.session_id, session, revision
+            ):
+                session.parsed_offset = file_path.stat().st_size
             return []
         if not provider.capabilities.supports_incremental_read:
-            return await self._read_whole_file(session, file_path, provider)
+            return await self._read_whole_file(
+                session, file_path, provider, revision=revision
+            )
 
         new_entries: list[SourceEntry] = []
         try:
@@ -1203,6 +1425,10 @@ class TranscriptReader:
                 # Parsed position advances in memory only; the persisted
                 # last_byte_offset (delivered watermark) is committed by the
                 # monitor once the queues have drained (TASK-5).
+                if revision is not None and not self._source_is_current(
+                    session.session_id, session, revision
+                ):
+                    return []
                 session.parsed_offset = safe_offset
 
         except OSError:
@@ -1215,12 +1441,18 @@ class TranscriptReader:
         session: TrackedSession,
         file_path: Path,
         provider: Any,
+        *,
+        revision: int | None = None,
     ) -> list[SourceEntry]:
         """Read a whole-document transcript through the canonical source reader."""
         try:
             entries = await asyncio.to_thread(
                 read_entries, file_path, provider.capabilities.name
             )
+            if revision is not None and not self._source_is_current(
+                session.session_id, session, revision
+            ):
+                return []
             session.parsed_offset = file_path.stat().st_size
             return entries
         except OSError:

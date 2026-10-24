@@ -602,7 +602,7 @@ class TestHandleContentTask:
             parts=("Hello",),
         )
         await _handle_content_task(bot, 1, task, queue, lock)
-        mock_flush.assert_awaited_once_with(bot, 1, task)
+        mock_flush.assert_awaited_once_with(bot, 1, task, admit=None)
         mock_process.assert_awaited_once()
 
 

@@ -1,11 +1,14 @@
 """Tests for transcript reader offset handling."""
 
+import hashlib
 import os
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from ccgram.idle_tracker import IdleTracker
 from ccgram.monitor_state import BacklogSkipIntent, MonitorState, TrackedSession
+from ccgram.session_monitor import SessionMonitor
 from ccgram.transcript_reader import TranscriptReader, _StableRead
 
 
@@ -58,6 +61,82 @@ async def test_same_transcript_reuses_offset_after_session_map_refresh(
     assert tracked is not None
     assert tracked.parsed_offset == session_file.stat().st_size
     assert "sess-before-rename" not in state.pending_skips
+
+
+def _save_expired_auto_retry_floor(tmp_path, monkeypatch):
+    session_file = tmp_path / "retry-source.jsonl"
+    session_file.write_bytes(b'{"record":"content"}\n' * 10)
+    stat = session_file.stat()
+    state_file = tmp_path / "monitor_state.json"
+    monitor = SessionMonitor(projects_path=tmp_path / "projects", state_file=state_file)
+    tracked = TrackedSession(
+        session_id="sess-before-refresh",
+        file_path=str(session_file),
+        last_byte_offset=10,
+    )
+    monitor.state.update_session(tracked)
+    content = session_file.read_bytes()
+    monitor.state.begin_skip(
+        BacklogSkipIntent(
+            session_id="sess-before-refresh",
+            window_id="@1",
+            user_id=1,
+            thread_id=4,
+            chat_id=99,
+            snapshot_offset=stat.st_size,
+            range_start=10,
+            created_at=time.time() - 61,
+            source_path=str(session_file),
+            source_device=stat.st_dev,
+            source_inode=stat.st_ino,
+            source_range_sha256=hashlib.sha256(content[10:]).hexdigest(),
+            automatic=True,
+        )
+    )
+    monkeypatch.setattr("ccgram.session_monitor.config.skip_barrier_deadline_s", 60.0)
+    monitor._expire_aged_skip_barriers()
+    assert tracked.replay_cap_retry_after == stat.st_size
+    assert monitor.state.save_if_dirty()
+    return session_file, state_file, stat.st_size, stat.st_ino
+
+
+def test_retry_floor_survives_restart_and_same_source_session_refresh(
+    tmp_path, monkeypatch
+) -> None:
+    session_file, state_file, snapshot_offset, original_inode = (
+        _save_expired_auto_retry_floor(tmp_path, monkeypatch)
+    )
+    assert session_file.stat().st_ino == original_inode
+
+    state = MonitorState(state_file=state_file)
+    state.load()
+    reader = TranscriptReader(state, IdleTracker())
+    adopted = reader._adopt_tracking_for_file("sess-after-refresh", session_file)
+
+    assert adopted is not None
+    assert adopted.last_byte_offset == 10
+    assert adopted.replay_cap_retry_after == snapshot_offset
+
+
+def test_retry_floor_resets_for_replaced_source_after_restart(
+    tmp_path, monkeypatch
+) -> None:
+    session_file, state_file, _snapshot_offset, original_inode = (
+        _save_expired_auto_retry_floor(tmp_path, monkeypatch)
+    )
+    replacement = tmp_path / "replacement.jsonl"
+    replacement.write_bytes(b'{"record":"new generation"}\n' * 10)
+    replacement.replace(session_file)
+    assert session_file.stat().st_ino != original_inode
+
+    state = MonitorState(state_file=state_file)
+    state.load()
+    reader = TranscriptReader(state, IdleTracker())
+    adopted = reader._adopt_tracking_for_file("sess-after-refresh", session_file)
+
+    assert adopted is not None
+    assert adopted.last_byte_offset == 10
+    assert adopted.replay_cap_retry_after == 0
 
 
 async def test_catch_up_read_after_restart_is_not_activity(tmp_path) -> None:

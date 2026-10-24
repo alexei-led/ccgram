@@ -2,7 +2,7 @@
 
 Component flow:
 
-- Telegram Bot (`bot.py` + `handlers/`) sends mutations through the in-process session adapter and shared `ActionExecutor`; it receives canonical transcript batches through the durable EventHub consumer. Handler registration in `handlers/registry.py`. Post_init wiring in `bootstrap.py`. Outbound formatting goes through `entity_formatting.py` (MD → plain + `MessageEntity`) and `telegram_sender.py` (`split_message`, 4096 limit). Per-user FIFO queue + worker + rate limiting in `messaging_pipeline/`. Terminal parsing via pyte (`screen_buffer.py`, `terminal_parser.py`).
+- Telegram Bot (`bot.py` + `handlers/`) sends mutations through the in-process session adapter and shared `ActionExecutor`; it receives canonical transcript batches through the durable EventHub consumer. Handler registration in `handlers/registry.py`. Post_init wiring in `bootstrap.py`. Outbound formatting goes through `entity_formatting.py` (MD → plain + `MessageEntity`) and `telegram_sender.py` (`split_message`, 4096 limit). Per-user queue + worker + rate limiting in `messaging_pipeline/`; ordinary tasks stay FIFO, while backlog skip notices pass queued work without preempting an in-flight send. Terminal parsing via pyte (`screen_buffer.py`, `terminal_parser.py`).
 - SessionMonitor (`session_monitor.py`) polls JSONL transcripts (2s, mtime cache, byte-offset incremental reads) and reads `events.jsonl` incrementally for instant hook dispatch.
 - Multiplexer seam (`multiplexer/`) abstracts the terminal multiplexer behind the `Multiplexer` Protocol. tmux is the default backend (`multiplexer/tmux.py`, `TmuxManager`): list/find/create/kill windows, `send`, `capture`, `list_panes`, `send_to_pane`. Callers import the module-level `multiplexer` proxy, never a concrete backend.
 - Canonical transcript parsing (`session_protocol/messages.py`) uses `parse_records` and `build_messages` for provider normalization, tool pairing, and protocol history. `transcript_reader.py` renders those records for Telegram and coordinates delivery checkpoints with SessionMonitor. Do not add provider-specific parser paths.
@@ -151,7 +151,7 @@ Top-level (constants, leaves, top-level commands):
 
 `handlers/messaging_pipeline/` — outbound message queue:
 
-- `message_queue.py` — per-user FIFO + worker; merge, status dedup, tool-use batching. Worker takes `client: TelegramClient`.
+- `message_queue.py` — per-user FIFO + worker with queued backlog-notice priority (FIFO among notices, no in-flight preemption); merge, status dedup, tool-use batching. Worker takes `client: TelegramClient`.
 - `message_routing.py` — routes new assistant messages from SessionMonitor to Telegram topics.
 - `message_sender.py` — `safe_reply`/`safe_edit`/`safe_send`, `rate_limit_send_message`, `edit_with_fallback`. All take `client: TelegramClient`.
 - `message_task.py` — dependency-free sum type (`ContentTask`, `StatusTask`, `ToolResultTask`) shared by queue, tool_batch, status_bubble.
