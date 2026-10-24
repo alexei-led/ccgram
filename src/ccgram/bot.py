@@ -70,6 +70,9 @@ __all__ = [
     "verbose_command",
 ]
 
+# Synchronous, no-argument restart hook supplied by the process runner.
+REQUEST_RESTART_KEY = "request_restart"
+
 logger = structlog.get_logger()
 
 # A graceful shutdown that never completes leaves the supervisor waiting on a

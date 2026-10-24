@@ -25,9 +25,6 @@ import structlog
 if TYPE_CHECKING:
     from aiohttp import web
 
-# Set by the upgrade handler to trigger os.execv() after run_polling() returns
-_restart_requested = False
-
 # Tracks which signal triggered shutdown (0 = none/clean exit)
 _shutdown_signal = 0
 
@@ -314,21 +311,32 @@ def run_bot() -> None:
     dev = "+dev" if "+unknown" in __version__ or ".dev" in __version__ else ""
     logger.info("Starting ccgram %s%s", __version__, dev)
     # Lazy: main runs `ccgram` startup; defer imports until the relevant subcommand executes
-    from .bot import create_bot, polling_conflict_requires_restart
+    from .bot import (
+        REQUEST_RESTART_KEY,
+        create_bot,
+        polling_conflict_requires_restart,
+    )
 
     # Create the loop here so signal handlers can be registered on it before
     # run_polling() blocks. PTB's __run reuses the loop set via set_event_loop.
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
+    restart_requested = False
+
+    def request_restart() -> None:
+        nonlocal restart_requested
+        restart_requested = True
+
     application = create_bot()
+    application.bot_data[REQUEST_RESTART_KEY] = request_restart
     _install_signal_handlers(loop)
     application.run_polling(
         allowed_updates=["message", "callback_query"],
         stop_signals=None,
     )
 
-    if _restart_requested:
+    if restart_requested:
         logger.info("Restarting bot via os.execv(%s)", sys.argv)
         os.execv(sys.argv[0], sys.argv)
 

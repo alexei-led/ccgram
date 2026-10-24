@@ -8,7 +8,7 @@ pipx upgrade ccgram                   # pipx
 brew upgrade ccgram                   # Homebrew
 ```
 
-Restart the running bot after upgrading, and check `ccgram --version`. If the bot runs from a development checkout, also upgrade the global executable used by agent hooks. A hook that invokes bare `ccgram` uses the agent's `PATH`, independently of the bot's installation; see [protocol compatibility](#protocol-version-pinning).
+Restart the running bot after upgrading, and check `ccgram --version`. The Telegram `/upgrade` command requests this restart automatically. If it reports that automatic restart is unavailable, restart the bot manually. If the bot runs from a development checkout, also upgrade the global executable used by agent hooks. A hook that invokes bare `ccgram` uses the agent's `PATH`, independently of the bot's installation; see [protocol compatibility](#protocol-version-pinning).
 
 ### Upgrading from 4.10 to 4.11
 
