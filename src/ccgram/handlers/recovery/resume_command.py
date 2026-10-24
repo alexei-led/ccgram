@@ -39,7 +39,6 @@ from ...providers import (
     picker_capable_providers,
     providers_to_scan,
 )
-from ...providers._resume import index_message_count
 from ... import window_query
 from ...session import session_manager
 from ...session_map import session_map_sync
@@ -231,11 +230,6 @@ class ResumeEntry:
 
 
 _SECONDS_PER_DAY = 86400
-
-
-def _index_msg_count(entry: dict) -> int | None:
-    """Keep the legacy helper name for picker/tests."""
-    return index_message_count(entry)
 
 
 def _relative_time(mtime: float, *, now: float | None = None) -> str:
