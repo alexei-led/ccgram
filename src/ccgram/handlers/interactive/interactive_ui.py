@@ -1,4 +1,4 @@
-"""Interactive UI handling for Claude Code prompts.
+"""Interactive UI handling for terminal agent prompts.
 
 Handles interactive terminal UIs displayed by Claude Code:
   - AskUserQuestion: Multi-choice question prompts
@@ -27,7 +27,6 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telegram.error import BadRequest, NetworkError, RetryAfter, TelegramError, TimedOut
 
 from ...providers import get_provider_for_window
-from ...providers.pi import PI_QUESTION_FOOTER
 from ...telegram_client import TelegramClient
 from ...window_query import get_window_provider
 from ...thread_router import thread_router
@@ -105,11 +104,41 @@ INTERACTIVE_INSTRUCTION_LINE = (
 _TELEGRAM_MAX_TEXT = 4096
 _MAX_DIRECT_CHOICES = 8
 _MIN_NUMBERED_DIRECT_CHOICES = 2
-_CURSOR_MARKER_RE = re.compile(r"^\s*[←→❯>]")
+_MIN_MULTI_SELECT_CHECKBOX_OPTIONS = 2
+_MAX_CODEX_NORMALIZED_OPTION_INDENT = 2
+_CURSOR_PREFIX = r"(?:[←→❯›>]\s*)?"
+# A cursor marker on an option line (the selected entry of a live menu).
+_CURSOR_OPTION_RE = re.compile(r"^\s*[←→❯›>]\s*\d+\.")
+# These line-start hints are a subset of the provider selection footers:
+# "Enter to continue" is excluded because it can follow prose. Pi's "Enter select"
+# wording is embedded mid-line in its status bar; its selected option cursor
+# is the anchor, so generic mid-line footer matches would risk adopting prose.
 _DIRECT_CHOICE_ACTION_RE = re.compile(
-    r"(?i)^\s*(?:Esc to|Enter to|Press enter to|ctrl-g to edit)"
+    r"(?i)^\s*(?:(?:press )?enter to (?:select|confirm|submit)"
+    r"|esc to (?:cancel|exit))"
 )
-_NUMBERED_OPTION_RE = re.compile(r"^\s*(?:[←→❯>]\s*)?(\d+)\.\s+(.+?)\s*$")
+_NUMBERED_OPTION_RE = re.compile(r"^\s*" + _CURSOR_PREFIX + r"(\d+)\.\s+(.+?)\s*$")
+# Numbered checkbox markers are limited to the option slot (before/after the
+# number) or an explicit trailing checkbox. The vocabulary comes from the
+# request guard and terminal-parser checkbox patterns, not a Claude glyph guess.
+_CHECKBOX_MARKER = r"(?:[☐☑☒✔]|\[[ xX]\])"
+_OPTION_CHECKBOX_RE = re.compile(
+    r"(?m)^\s*"
+    + _CURSOR_PREFIX
+    + r"(?:"
+    + _CHECKBOX_MARKER
+    + r"\s*\d+\."
+    + r"|\d+\.\s*"
+    + _CHECKBOX_MARKER
+    + r"(?=\s|$)"
+    + r"|\d+\..*\s(?:[☐☑☒]|\[[ xX]\])\s*$"
+    + r")"
+)
+# Claude's single-select header can contain one decorative checkbox. Two or
+# more checkbox-prefixed rows are explicit unnumbered checkbox options.
+_UNNUMBERED_CHECKBOX_OPTION_RE = re.compile(
+    r"(?m)^\s*" + _CURSOR_PREFIX + _CHECKBOX_MARKER + r"\s+\S"
+)
 _MULTI_SELECT_RE = re.compile(
     r"(?i)\b(?:select|choose|pick)\b[^\n]*(?:all|multiple|more than one)\b"
 )
@@ -262,46 +291,60 @@ def get_interactive_msg_id(
     return _interactive_msgs.get(_interactive_key(user_id, thread_id, chat_id))
 
 
+type _NumberedMenuBlock = tuple[int, int, tuple[tuple[str, str], ...], frozenset[int]]
+
+
 def _numbered_menu_blocks(
     lines: list[str],
-    *,
-    allow_descriptions: bool = False,
-) -> list[tuple[int, int, tuple[tuple[str, str], ...]]]:
-    """Find contiguous sequential numbered menu blocks and their line ranges."""
-    blocks: list[tuple[int, int, tuple[tuple[str, str], ...]]] = []
-    index = 0
-    while index < len(lines):
-        first = _NUMBERED_OPTION_RE.fullmatch(lines[index])
+) -> list[_NumberedMenuBlock]:
+    """Find contiguous sequential numbered menu blocks and their line ranges.
+
+    Lines indented past the option number are normally consumed as its
+    description, including numbered prose inside descriptions: Claude Code
+    and Pi both indent option descriptions this way. The exception is a
+    sequential option indented by at most two spaces after a column-zero first
+    option, matching Codex's inline-option normalization. Unrelated numbered
+    prose elsewhere is kept out by the anchors in ``parse_direct_choices``;
+    ranking only disambiguates between candidate blocks. Every numbered start is
+    considered so a description cannot hide a later, indented live menu.
+    """
+    blocks: list[_NumberedMenuBlock] = []
+    for start, line in enumerate(lines):
+        first = _NUMBERED_OPTION_RE.fullmatch(line)
         if first is None or first.group(1) != "1":
-            index += 1
             continue
 
-        start = index
+        index = start
         choices: list[tuple[str, str]] = []
+        option_lines: set[int] = set()
         expected = 1
         while index < len(lines):
-            # Pi indents descriptions past the option number, including numbered prose.
-            if (
-                allow_descriptions
-                and lines[index].strip()
-                and lines[index].startswith(" " * (first.start(1) + 1))
-            ):
-                index += 1
-                continue
             option = _NUMBERED_OPTION_RE.fullmatch(lines[index])
+            if lines[index].strip() and lines[index].startswith(
+                " " * (first.start(1) + 1)
+            ):
+                indent = len(lines[index]) - len(lines[index].lstrip(" "))
+                is_shallow_sequential_option = (
+                    first.start(1) == 0
+                    and option is not None
+                    and option.group(1) == str(expected)
+                    and indent <= _MAX_CODEX_NORMALIZED_OPTION_INDENT
+                )
+                if not is_shallow_sequential_option:
+                    index += 1
+                    continue
             if option is None:
                 break
             number, label = option.groups()
             if int(number) != expected:
                 break
             choices.append((number, f"{number}. {label}"))
+            option_lines.add(index)
             expected += 1
             index += 1
 
         if len(choices) >= _MIN_NUMBERED_DIRECT_CHOICES:
-            blocks.append((start, index - 1, tuple(choices)))
-        if index == start:
-            index += 1
+            blocks.append((start, index - 1, tuple(choices), frozenset(option_lines)))
     return blocks
 
 
@@ -309,39 +352,72 @@ def parse_direct_choices(content: str) -> tuple[tuple[str, str], ...]:
     """Extract direct choices only from the active single-select menu.
 
     Numbered options must form a contiguous sequential menu with two through
-    eight choices. The candidate nearest a cursor marker or action footer wins;
-    ties are ambiguous and deliberately retain the navigation keyboard. This
+    eight choices. A cursor must belong to the candidate's accepted options;
+    otherwise a unique, non-overlapping candidate nearest the action footer wins.
+    Ambiguity deliberately retains the navigation keyboard. This
     prevents unrelated numbered prose elsewhere in a terminal capture from
     becoming one-tap input. Explicit multi-select prompts never get buttons.
     """
-    if "☐" in content or "☑" in content or _MULTI_SELECT_RE.search(content):
+    if (
+        _OPTION_CHECKBOX_RE.search(content)
+        or len(_UNNUMBERED_CHECKBOX_OPTION_RE.findall(content))
+        >= _MIN_MULTI_SELECT_CHECKBOX_OPTIONS
+        or _MULTI_SELECT_RE.search(content)
+    ):
         return ()
 
     lines = content.splitlines()
-    blocks = _numbered_menu_blocks(
-        lines,
-        allow_descriptions=any(line.strip() == PI_QUESTION_FOOTER for line in lines),
-    )
+    blocks = _numbered_menu_blocks(lines)
+    # A nearby cursor is not evidence for a nested description list: it must
+    # occur on an option the candidate actually accepted.
+    cursor_lines = {
+        index for index, line in enumerate(lines) if _CURSOR_OPTION_RE.match(line)
+    }
+    if cursor_lines:
+        matching = [
+            choices
+            for _, _, choices, option_lines in blocks
+            if option_lines & cursor_lines
+        ]
+        if len(matching) == 1 and len(matching[0]) <= _MAX_DIRECT_CHOICES:
+            return matching[0]
+        return ()
+
     anchors = [
         index
         for index, line in enumerate(lines)
-        if _CURSOR_MARKER_RE.search(line) or _DIRECT_CHOICE_ACTION_RE.search(line)
+        if _DIRECT_CHOICE_ACTION_RE.search(line)
     ]
     if anchors:
         ranked = sorted(
             (
-                min(min(abs(anchor - start), abs(anchor - end)) for anchor in anchors),
-                choices,
-            )
-            for start, end, choices in blocks
+                (
+                    min(
+                        min(abs(anchor - block[0]), abs(anchor - block[1]))
+                        for anchor in anchors
+                    ),
+                    block,
+                )
+                for block in blocks
+            ),
+            key=lambda candidate: candidate[0],
         )
-        if ranked and ranked[0][0] < len(lines):
-            nearest_distance, nearest_choices = ranked[0]
+        if ranked:
+            nearest_distance, nearest = ranked[0]
+            start, end, nearest_choices, _ = nearest
+            # A footer alone cannot prove which overlapping list is the menu.
+            overlapping = any(
+                other_start <= end and start <= other_end
+                for other_start, other_end, _, _ in blocks
+                if other_start != start
+            )
             if (
-                len(nearest_choices) <= _MAX_DIRECT_CHOICES
+                not overlapping
+                and len(nearest_choices) <= _MAX_DIRECT_CHOICES
                 and sum(distance == nearest_distance for distance, _ in ranked) == 1
             ):
                 return nearest_choices
+            return ()
 
     words = re.findall(r"(?m)^\s*(?:[←→❯>]\s*)?(Yes|No)\s*$", content, re.IGNORECASE)
     if {word.lower() for word in words} == {"yes", "no"} and len(
