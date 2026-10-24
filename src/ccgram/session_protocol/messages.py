@@ -262,7 +262,7 @@ def _codex(entry: SourceEntry, state: _CodexState) -> TranscriptRecord | None:
         return _codex_message(data, key, timestamp, state)
     if not isinstance(kind, str):
         return None
-    if kind == "message" and data.get("role") in {"user", "assistant", "system"}:
+    if kind == "message" and data.get("role") in {"user", "assistant"}:
         return _codex_message(data, key, timestamp, state)
     return _codex_other_item(data, key, timestamp, state)
 
@@ -491,7 +491,7 @@ def _chat(entry: SourceEntry, provider: str) -> TranscriptRecord | None:
                 ),
             ),
         )
-    if role not in {"user", "assistant", "system"}:
+    if role not in {"user", "assistant"}:
         return None
     parts, results = _content(msg.get("content"))
     if provider == "pi" and role == "assistant" and msg.get("stopReason") == "error":
