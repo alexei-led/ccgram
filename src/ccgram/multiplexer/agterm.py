@@ -50,6 +50,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 
 import structlog
 
+from ..utils import log_throttled
 from .agterm_panes import pane_sessions, split_session_id
 from .base import (
     AgentStatus,
@@ -465,11 +466,26 @@ class AgtermManager:
         """
         window_ids = await self._open_window_ids()
         if window_ids is None:
+            log_throttled(
+                logger,
+                "agterm-window-list",
+                "agterm window list failed; window listing unconfirmed",
+                cooldown=60.0,
+                level="warning",
+            )
             return None
         workspaces: list[dict] = []
         for window_id in window_ids:
             result = await self._call(["tree", "--window", window_id])
             if result is None:
+                log_throttled(
+                    logger,
+                    f"agterm-tree:{window_id}",
+                    "agterm tree read failed for window %s; window listing unconfirmed",
+                    window_id,
+                    cooldown=60.0,
+                    level="warning",
+                )
                 return None
             tree = result.get("tree")
             if not isinstance(tree, dict):

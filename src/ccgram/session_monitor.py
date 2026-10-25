@@ -58,7 +58,7 @@ from .monitor_events import NewMessage, NewWindowEvent, SessionInfo
 from .transcript_reader import TranscriptReader, render_transcript_batch
 from .session_protocol.events import EventHub
 from .session_protocol.messages import TranscriptBatch
-from .utils import task_done_callback
+from .utils import log_throttled, task_done_callback
 
 import json
 
@@ -1035,8 +1035,13 @@ class SessionMonitor:
                     else {w.window_id for w in all_windows if w.topic_eligible}
                 )
                 if all_windows is None:
-                    logger.warning(
-                        "Multiplexer listing unavailable; skipping window reconciliation"
+                    log_throttled(
+                        logger,
+                        "monitor-window-reconciliation-listing",
+                        "Multiplexer listing unavailable; "
+                        "skipping window reconciliation",
+                        cooldown=60.0,
+                        level="warning",
                     )
                 else:
                     # Before anything keys off these ids, let the backend

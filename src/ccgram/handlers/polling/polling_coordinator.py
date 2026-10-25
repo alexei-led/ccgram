@@ -25,6 +25,7 @@ logger = structlog.get_logger()
 
 _BACKOFF_MIN = 2.0
 _BACKOFF_MAX = 30.0
+_UNAVAILABLE = "Status poll skipped: window listing unavailable"
 
 _LoopError = (TelegramError, OSError, RuntimeError, ValueError)
 
@@ -89,7 +90,7 @@ async def status_poll_loop(bot: "Bot", adapter: "TelegramSessionAdapter") -> Non
         try:
             all_windows = await list_windows_for_reconciliation(tmux_manager)
             if all_windows is None:
-                logger.warning("Status poll skipped: window listing unavailable")
+                log_throttled(logger, "poll-listing", _UNAVAILABLE, level="warning")
                 await asyncio.sleep(poll_interval)
                 continue
             note_live_windows(all_windows, thread_router.all_bound_window_ids())

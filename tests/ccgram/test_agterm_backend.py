@@ -15,11 +15,14 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Sequence
+from unittest.mock import MagicMock
 
 import pytest
 
+from ccgram.multiplexer import agterm as agterm_module
 from ccgram.multiplexer.agterm import AgtermManager, _key_to_bytes
 from ccgram.multiplexer.base import AgentStatus, Multiplexer
+from ccgram.utils import log_throttle_reset
 
 
 class FakeAgtermctl:
@@ -480,6 +483,44 @@ async def test_non_json_output_is_a_failure() -> None:
         .on("tree", out="not json at all")
     )
     assert await _manager(fake).list_windows() == []
+
+
+async def test_a_failed_window_list_names_its_cause_once(monkeypatch) -> None:
+    """The listing failure must say which agterm call failed, and say it once.
+
+    Several pollers ask for this listing every second, so an unreachable
+    backend would otherwise repeat the same line forever.
+    """
+    log_throttle_reset("agterm-")
+    logger = MagicMock()
+    monkeypatch.setattr(agterm_module, "logger", logger)
+    fake = FakeAgtermctl().on("window", "list", rc=1, err="agterm not running")
+
+    manager = _manager(fake)
+    assert await manager.list_windows_for_reconciliation() is None
+    assert await manager.list_windows_for_reconciliation() is None
+
+    assert logger.warning.call_count == 1
+    assert "window list failed" in logger.warning.call_args.args[0]
+
+
+async def test_a_failed_tree_read_names_the_window(monkeypatch) -> None:
+    log_throttle_reset("agterm-")
+    logger = MagicMock()
+    monkeypatch.setattr(agterm_module, "logger", logger)
+    fake = (
+        FakeAgtermctl()
+        .on("window", "list", out=_windows())
+        .on("tree", rc=1, err="window not open")
+    )
+
+    manager = _manager(fake)
+    assert await manager.list_windows_for_reconciliation() is None
+
+    assert logger.warning.call_count == 1
+    message = logger.warning.call_args.args[0] % logger.warning.call_args.args[1:]
+    assert "tree read failed" in message
+    assert WINDOW_A in message
 
 
 async def test_send_to_a_vanished_session_reports_failure() -> None:

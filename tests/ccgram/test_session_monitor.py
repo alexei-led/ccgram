@@ -3650,6 +3650,35 @@ class TestTheLoopPassesTheEligibleSubset:
             "the loop must hand over the eligible subset, not every live window"
         )
 
+    async def test_an_unavailable_listing_goes_through_the_throttle(
+        self, monitor: SessionMonitor, monkeypatch
+    ) -> None:
+        notices: list[tuple[str, str]] = []
+
+        def spy(log, key, msg, *args, **kwargs):
+            notices.append((key, msg))
+
+        async def stop(raw=None, *, adoptable_window_ids):
+            monitor._running = False
+            return {}
+
+        monkeypatch.setattr(
+            "ccgram.session_monitor.list_windows_for_reconciliation",
+            AsyncMock(return_value=None),
+        )
+        monkeypatch.setattr("ccgram.session_monitor.log_throttled", spy)
+        monkeypatch.setattr(
+            "ccgram.session_monitor.read_session_map_raw", AsyncMock(return_value={})
+        )
+        monkeypatch.setattr(monitor, "_read_hook_events", AsyncMock())
+        monkeypatch.setattr(monitor, "_cleanup_all_stale_sessions", AsyncMock())
+        monkeypatch.setattr(monitor, "_detect_and_cleanup_changes", stop)
+        monitor._running = True
+
+        await monitor._monitor_loop()
+
+        assert [key for key, _ in notices] == ["monitor-window-reconciliation-listing"]
+
 
 class TestAdoptionIdentityFoldsCaseInTheMonitor:
     """Session-map keys are written by the hook; the adoption set comes from

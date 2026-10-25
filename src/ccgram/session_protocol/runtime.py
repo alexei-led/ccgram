@@ -57,15 +57,27 @@ class ProtocolRuntime:
             logger.error("Protocol hook queue full; affected approvals require restart")
 
     async def poll(self, prefix: str) -> None:
+        unavailable = False
         while True:
             try:
                 await self.service.refresh()
+                if unavailable:
+                    unavailable = False
+                    logger.info("Session protocol source recovered")
                 while not self.hooks.empty():
                     event, sessions = self.hooks.get_nowait()
                     await self.service.observe_hook(event, prefix)
                     self.service.resolve_hook(sessions)
-            except ProtocolError, OSError:
-                logger.warning("Session protocol source unavailable", exc_info=True)
+            except (ProtocolError, OSError) as exc:
+                # A multiplexer that is briefly unreachable or restarting is
+                # expected, and the next pass retries. Log the incident's start
+                # and end instead of one traceback per second: a sustained
+                # outage buried real errors under thousands of identical stacks.
+                if not unavailable:
+                    unavailable = True
+                    logger.warning(
+                        "Session protocol source unavailable: %s", exc, exc_info=True
+                    )
             await asyncio.sleep(1)
 
     async def close(self) -> None:
