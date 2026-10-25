@@ -793,6 +793,15 @@ class TestStartupReplayBound:
         assert "new" in reader._startup_clamped
 
 
+_CLAUDE_PROVIDER = SimpleNamespace(
+    capabilities=SimpleNamespace(
+        name="claude",
+        supports_incremental_read=True,
+        supports_task_tracking=False,
+    )
+)
+
+
 async def test_consecutive_appends_skip_prefix_digest(tmp_path) -> None:
     """Growing transcripts must not pay a full-file digest every poll cycle."""
     history = (
@@ -813,7 +822,13 @@ async def test_consecutive_appends_skip_prefix_digest(tmp_path) -> None:
     real_digest = transcript_reader._prefix_digest
 
     delivered = []
-    with patch("ccgram.transcript_reader._prefix_digest", wraps=real_digest) as digest:
+    with (
+        patch(
+            "ccgram.transcript_reader._resolve_provider_for_file",
+            return_value=_CLAUDE_PROVIDER,
+        ),
+        patch("ccgram.transcript_reader._prefix_digest", wraps=real_digest) as digest,
+    ):
         for index in range(4):
             line = (
                 '{"type":"assistant","message":{"content":[{"type":"text","text":"m%d"}]}}\n'
@@ -852,13 +867,19 @@ async def test_rewrite_of_tail_marker_window_clamps_without_replay(
         )
     )
     reader = TranscriptReader(state, IdleTracker())
-    await reader._process_session_file("sess", session_file, [], window_id="@1")
+    with patch(
+        "ccgram.transcript_reader._resolve_provider_for_file",
+        return_value=_CLAUDE_PROVIDER,
+    ):
+        await reader._process_session_file("sess", session_file, [], window_id="@1")
 
-    session_file.write_text(history.replace('"h4"', '"h9"'), newline="\n")
-    reader._file_mtimes["sess"] = 0.0
+        session_file.write_text(history.replace('"h4"', '"h9"'), newline="\n")
+        reader._file_mtimes["sess"] = 0.0
 
-    messages = []
-    await reader._process_session_file("sess", session_file, messages, window_id="@1")
+        messages = []
+        await reader._process_session_file(
+            "sess", session_file, messages, window_id="@1"
+        )
 
     assert messages == []
     tracked = state.get_session("sess")
@@ -888,27 +909,33 @@ async def test_prefix_verify_backoff_resets_on_restart_and_generation_change(
         )
     )
     reader = TranscriptReader(state, IdleTracker())
-    await reader._process_session_file("sess", session_file, [], window_id="@1")
-    assert reader._prefix_verify["sess"] == (0, 2)
-
-    for index in range(2):
-        line = (
-            '{"type":"assistant","message":{"content":[{"type":"text","text":"m%d"}]}}\n'
-            % index
-        )
-        with session_file.open("a") as transcript:
-            transcript.write(line)
+    with patch(
+        "ccgram.transcript_reader._resolve_provider_for_file",
+        return_value=_CLAUDE_PROVIDER,
+    ):
         await reader._process_session_file("sess", session_file, [], window_id="@1")
-    assert reader._prefix_verify["sess"] == (2, 2)
+        assert reader._prefix_verify["sess"] == (0, 2)
 
-    replacement = tmp_path / "replacement.jsonl"
-    replacement.write_text(
-        '{"type":"assistant","message":{"content":[{"type":"text","text":"x"}]}}\n',
-        newline="\n",
-    )
-    replacement.replace(session_file)
-    messages = []
-    await reader._process_session_file("sess", session_file, messages, window_id="@1")
+        for index in range(2):
+            line = (
+                '{"type":"assistant","message":{"content":[{"type":"text","text":"m%d"}]}}\n'
+                % index
+            )
+            with session_file.open("a") as transcript:
+                transcript.write(line)
+            await reader._process_session_file("sess", session_file, [], window_id="@1")
+        assert reader._prefix_verify["sess"] == (2, 2)
+
+        replacement = tmp_path / "replacement.jsonl"
+        replacement.write_text(
+            '{"type":"assistant","message":{"content":[{"type":"text","text":"x"}]}}\n',
+            newline="\n",
+        )
+        replacement.replace(session_file)
+        messages = []
+        await reader._process_session_file(
+            "sess", session_file, messages, window_id="@1"
+        )
 
     assert messages == []
     assert reader._prefix_verify["sess"] == (0, 1)
@@ -938,7 +965,13 @@ async def test_idle_due_session_verifies_once_not_every_cycle(tmp_path) -> None:
     reader = TranscriptReader(state, IdleTracker())
     real_digest = transcript_reader._prefix_digest
 
-    with patch("ccgram.transcript_reader._prefix_digest", wraps=real_digest) as digest:
+    with (
+        patch(
+            "ccgram.transcript_reader._resolve_provider_for_file",
+            return_value=_CLAUDE_PROVIDER,
+        ),
+        patch("ccgram.transcript_reader._prefix_digest", wraps=real_digest) as digest,
+    ):
         for index in range(2):
             line = (
                 '{"type":"assistant","message":{"content":[{"type":"text","text":"m%d"}]}}\n'
@@ -954,3 +987,48 @@ async def test_idle_due_session_verifies_once_not_every_cycle(tmp_path) -> None:
         # The first idle cycle verifies the frozen prefix and extends the
         # baseline, then doubles the interval; the rest defer.
         assert digest.call_count == 2
+
+
+async def test_overdue_session_forces_verification_even_while_growing(
+    tmp_path,
+) -> None:
+    """Past the defer cap, growth cycles verify instead of deferring forever."""
+    history = (
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"h0"}]}}\n'
+    )
+    session_file = tmp_path / "transcript.jsonl"
+    session_file.write_text(history, newline="\n")
+
+    state = MonitorState(state_file=tmp_path / "monitor_state.json")
+    state.update_session(
+        TrackedSession(
+            session_id="sess",
+            file_path=str(session_file),
+            last_byte_offset=len(history.encode()),
+        )
+    )
+    reader = TranscriptReader(state, IdleTracker())
+    reader._prefix_verify["sess"] = (
+        transcript_reader._PREFIX_VERIFY_CAP,
+        transcript_reader._PREFIX_VERIFY_CAP,
+    )
+    real_digest = transcript_reader._prefix_digest
+
+    line = '{"type":"assistant","message":{"content":[{"type":"text","text":"m0"}]}}\n'
+    with (
+        patch(
+            "ccgram.transcript_reader._resolve_provider_for_file",
+            return_value=_CLAUDE_PROVIDER,
+        ),
+        patch("ccgram.transcript_reader._prefix_digest", wraps=real_digest) as digest,
+    ):
+        with session_file.open("a") as transcript:
+            transcript.write(line)
+        messages = []
+        await reader._process_session_file(
+            "sess", session_file, messages, window_id="@1"
+        )
+        assert digest.call_count >= 1
+        assert reader._prefix_verify["sess"][0] < transcript_reader._PREFIX_VERIFY_CAP
+
+    assert [msg.text for msg in messages] == ["m0"]

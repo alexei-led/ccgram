@@ -69,7 +69,6 @@ class _StableRead(NamedTuple):
 class _GenerationCheck(NamedTuple):
     changed: bool
     consumed_intact: bool
-    prefix_checked: bool = False
 
 
 @dataclass(slots=True)
@@ -86,6 +85,7 @@ _MARKER_BYTES = 128
 # parse position never rewinds, so no replay can occur: a delayed clamp is
 # the only cost.
 _PREFIX_VERIFY_CAP = 32
+_PREFIX_VERIFY_FRESH = (0, 1)
 
 
 def _transcript_output_text(value: Any) -> str:
@@ -524,12 +524,19 @@ class TranscriptReader:
         state = self._prefix_verify.get(session_id)
         return state is None or state[0] >= state[1]
 
+    def _prefix_verify_overdue(self, session_id: str) -> bool:
+        state = self._prefix_verify.get(session_id)
+        return state is not None and state[0] >= _PREFIX_VERIFY_CAP
+
     def _note_append_cycle(self, session_id: str) -> None:
-        cycles, threshold = self._prefix_verify.get(session_id, (0, 1))
-        self._prefix_verify[session_id] = (cycles + 1, threshold)
+        cycles, threshold = self._prefix_verify.get(session_id, _PREFIX_VERIFY_FRESH)
+        self._prefix_verify[session_id] = (
+            min(cycles + 1, _PREFIX_VERIFY_CAP),
+            threshold,
+        )
 
     def _reset_prefix_verify(self, session_id: str) -> None:
-        self._prefix_verify[session_id] = (0, 1)
+        self._prefix_verify[session_id] = _PREFIX_VERIFY_FRESH
 
     async def _record_prefix_verification(
         self, session_id: str, file_path: Path, st: Any, *, clean: bool
@@ -543,7 +550,7 @@ class TranscriptReader:
                 digest = await asyncio.to_thread(_prefix_digest, file_path, st.st_size)
                 size = st.st_size
             self._file_prefixes[session_id] = (size, digest)
-            threshold = self._prefix_verify.get(session_id, (0, 1))[1]
+            threshold = self._prefix_verify.get(session_id, _PREFIX_VERIFY_FRESH)[1]
             self._prefix_verify[session_id] = (
                 0,
                 min(threshold * 2, _PREFIX_VERIFY_CAP),
@@ -575,15 +582,11 @@ class TranscriptReader:
         )
         pos = self._parse_pos(tracked)
         changed = changed or st.st_size < pos
-        marker_intact: bool | None = None
         marker_changed: bool | None = None
         if check_marker:
             marker_changed = await self._marker_state(session_id, tracked, file_path)
-            if marker_changed is None:
-                marker_intact = None
-            else:
-                marker_intact = not marker_changed
-                changed = changed or marker_changed
+            if marker_changed:
+                changed = True
         prefix_changed = False
         prefix_checked = False
         if previous_prefix is not None and (
@@ -592,8 +595,14 @@ class TranscriptReader:
             or (
                 self._prefix_verify_due(session_id)
                 # Defer the scheduled digest while the marker already verified
-                # this cycle's growth: quiet cycles still verify on schedule.
-                and not (st.st_size > pos and marker_intact is True)
+                # this cycle's growth; once the defer counter hits the cap the
+                # verification is forced even on growth cycles so a
+                # continuously appending session still gets checked.
+                and not (
+                    st.st_size > pos
+                    and marker_changed is False
+                    and not self._prefix_verify_overdue(session_id)
+                )
             )
         ):
             try:
@@ -612,7 +621,7 @@ class TranscriptReader:
         if changed and check_marker:
             if prefix_checked and prefix_changed:
                 consumed_intact = False
-            elif marker_intact and st.st_size >= pos:
+            elif marker_changed is False and st.st_size >= pos:
                 # No digest verdict contradicts the signal (none ran, or the
                 # checked prefix matched while no longer covering consumed):
                 # an intact tail marker rules out a consuming rewrite.
@@ -646,7 +655,7 @@ class TranscriptReader:
             # A clamp or an unresolved replacement signal re-arms immediate
             # verification.
             self._reset_prefix_verify(session_id)
-        return _GenerationCheck(resolved, consumed_intact, prefix_checked)
+        return _GenerationCheck(resolved, consumed_intact)
 
     async def _read_session_entries(
         self,
@@ -676,14 +685,18 @@ class TranscriptReader:
             marker_checked = False
             saved = self._file_markers.get(session_id) if check_marker else None
             # saved[0] may sit before start_offset when a same-cycle clamp in
-            # the generation probe already advanced the parse position; the
-            # saved marker window is still comparable at its own offset.
+            # the generation probe already advanced the parse position. The
+            # stale window still proves the bytes before the old offset
+            # survived, so it can qualify the read as a verified append, but
+            # only a comparison at the current offset is replacement evidence:
+            # treating a stale mismatch as changed would leave the marker
+            # cache forever unmatched and clamp every later append away.
             if saved is not None and saved[0] <= start_offset:
                 try:
                     marker = await asyncio.to_thread(_tail_marker, file_path, saved[0])
                 except OSError:
                     return None
-                marker_changed = marker != saved[1]
+                marker_changed = saved[0] == start_offset and marker != saved[1]
                 marker_checked = True
             if (
                 same_generation
@@ -1122,7 +1135,6 @@ class TranscriptReader:
         (
             generation_changed,
             consumed_intact,
-            _prefix_checked,
         ) = await self._prepare_observed_generation(
             session_id,
             tracked,
