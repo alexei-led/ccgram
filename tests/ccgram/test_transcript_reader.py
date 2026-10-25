@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from ccgram import transcript_reader
 from ccgram.idle_tracker import IdleTracker
 from ccgram.monitor_state import BacklogSkipIntent, MonitorState, TrackedSession
 from ccgram.transcript_reader import TranscriptReader, _StableRead
@@ -790,3 +791,127 @@ class TestStartupReplayBound:
 
         assert messages == []
         assert "new" in reader._startup_clamped
+
+
+async def test_consecutive_appends_skip_prefix_digest(tmp_path) -> None:
+    """Growing transcripts must not pay a full-file digest every poll cycle."""
+    history = (
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"h0"}]}}\n'
+    )
+    session_file = tmp_path / "transcript.jsonl"
+    session_file.write_text(history, newline="\n")
+
+    state = MonitorState(state_file=tmp_path / "monitor_state.json")
+    state.update_session(
+        TrackedSession(
+            session_id="sess",
+            file_path=str(session_file),
+            last_byte_offset=len(history.encode()),
+        )
+    )
+    reader = TranscriptReader(state, IdleTracker())
+    real_digest = transcript_reader._prefix_digest
+
+    delivered = []
+    with patch("ccgram.transcript_reader._prefix_digest", wraps=real_digest) as digest:
+        for index in range(4):
+            line = (
+                '{"type":"assistant","message":{"content":[{"type":"text","text":"m%d"}]}}\n'
+                % index
+            )
+            with session_file.open("a") as transcript:
+                transcript.write(line)
+            messages = []
+            await reader._process_session_file(
+                "sess", session_file, messages, window_id="@1"
+            )
+            delivered.extend(msg.text for msg in messages)
+        assert digest.call_count == 0
+
+    assert delivered == ["m0", "m1", "m2", "m3"]
+
+
+async def test_rewrite_of_tail_marker_window_clamps_without_replay(
+    tmp_path,
+) -> None:
+    """A rewrite inside the tail-marker window must verify and clamp."""
+    history = "".join(
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"h%d"}]}}\n'
+        % index
+        for index in range(5)
+    )
+    session_file = tmp_path / "transcript.jsonl"
+    session_file.write_text(history, newline="\n")
+
+    state = MonitorState(state_file=tmp_path / "monitor_state.json")
+    state.update_session(
+        TrackedSession(
+            session_id="sess",
+            file_path=str(session_file),
+            last_byte_offset=session_file.stat().st_size,
+        )
+    )
+    reader = TranscriptReader(state, IdleTracker())
+    await reader._process_session_file("sess", session_file, [], window_id="@1")
+
+    session_file.write_text(history.replace('"h4"', '"h9"'), newline="\n")
+    reader._file_mtimes["sess"] = 0.0
+
+    messages = []
+    await reader._process_session_file("sess", session_file, messages, window_id="@1")
+
+    assert messages == []
+    tracked = state.get_session("sess")
+    assert tracked is not None
+    assert tracked.parsed_offset == session_file.stat().st_size
+    assert reader._prefix_verify["sess"] == (0, 1)
+
+
+async def test_prefix_verify_backoff_resets_on_restart_and_generation_change(
+    tmp_path,
+) -> None:
+    """The digest backoff re-arms immediately after replacement or restart."""
+    history = "".join(
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"h%d"}]}}\n'
+        % index
+        for index in range(5)
+    )
+    session_file = tmp_path / "transcript.jsonl"
+    session_file.write_text(history, newline="\n")
+
+    state = MonitorState(state_file=tmp_path / "monitor_state.json")
+    state.update_session(
+        TrackedSession(
+            session_id="sess",
+            file_path=str(session_file),
+            last_byte_offset=session_file.stat().st_size,
+        )
+    )
+    reader = TranscriptReader(state, IdleTracker())
+    await reader._process_session_file("sess", session_file, [], window_id="@1")
+    assert reader._prefix_verify["sess"] == (0, 2)
+
+    for index in range(2):
+        line = (
+            '{"type":"assistant","message":{"content":[{"type":"text","text":"m%d"}]}}\n'
+            % index
+        )
+        with session_file.open("a") as transcript:
+            transcript.write(line)
+        await reader._process_session_file("sess", session_file, [], window_id="@1")
+    assert reader._prefix_verify["sess"] == (2, 2)
+
+    replacement = tmp_path / "replacement.jsonl"
+    replacement.write_text(
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"x"}]}}\n',
+        newline="\n",
+    )
+    replacement.replace(session_file)
+    messages = []
+    await reader._process_session_file("sess", session_file, messages, window_id="@1")
+
+    assert messages == []
+    assert reader._prefix_verify["sess"] == (0, 1)
+
+    reader.clear_session("sess")
+    assert "sess" not in reader._prefix_verify
