@@ -64,7 +64,6 @@ class _StableRead(NamedTuple):
     entries: list[SourceEntry]
     stat: Any
     reset_generation: bool
-    verified: bool = False
 
 
 class _GenerationCheck(NamedTuple):
@@ -532,6 +531,26 @@ class TranscriptReader:
     def _reset_prefix_verify(self, session_id: str) -> None:
         self._prefix_verify[session_id] = (0, 1)
 
+    async def _record_prefix_verification(
+        self, session_id: str, file_path: Path, st: Any, *, clean: bool
+    ) -> None:
+        """Close out a verification cycle: extend the baseline and grow or
+        re-arm the schedule. Runs at the verification site (not at commit) so
+        quiet cycles that return at the mtime gate still advance it."""
+        if clean:
+            size, digest = self._file_prefixes.get(session_id, (0, b""))
+            if size != st.st_size:
+                digest = await asyncio.to_thread(_prefix_digest, file_path, st.st_size)
+                size = st.st_size
+            self._file_prefixes[session_id] = (size, digest)
+            threshold = self._prefix_verify.get(session_id, (0, 1))[1]
+            self._prefix_verify[session_id] = (
+                0,
+                min(threshold * 2, _PREFIX_VERIFY_CAP),
+            )
+        else:
+            self._reset_prefix_verify(session_id)
+
     async def _prepare_observed_generation(
         self,
         session_id: str,
@@ -618,13 +637,16 @@ class TranscriptReader:
                 # that survived would bound parser rebuild past the new file and
                 # swallow live answers.
                 self._startup_clamped.pop(session_id, None)
-                self._reset_prefix_verify(session_id)
-        if not prefix_checked and (generation_signal or marker_changed):
-            # An unresolved replacement signal re-arms immediate verification.
+        resolved = changed and not consumed_intact
+        if prefix_checked and not prefix_changed and not resolved:
+            await self._record_prefix_verification(
+                session_id, file_path, st, clean=True
+            )
+        elif resolved or (not prefix_checked and (generation_signal or marker_changed)):
+            # A clamp or an unresolved replacement signal re-arms immediate
+            # verification.
             self._reset_prefix_verify(session_id)
-        return _GenerationCheck(
-            changed and not consumed_intact, consumed_intact, prefix_checked
-        )
+        return _GenerationCheck(resolved, consumed_intact, prefix_checked)
 
     async def _read_session_entries(
         self,
@@ -653,6 +675,9 @@ class TranscriptReader:
             marker_changed = False
             marker_checked = False
             saved = self._file_markers.get(session_id) if check_marker else None
+            # saved[0] may sit before start_offset when a same-cycle clamp in
+            # the generation probe already advanced the parse position; the
+            # saved marker window is still comparable at its own offset.
             if saved is not None and saved[0] <= start_offset:
                 try:
                     marker = await asyncio.to_thread(_tail_marker, file_path, saved[0])
@@ -660,22 +685,21 @@ class TranscriptReader:
                     return None
                 marker_changed = marker != saved[1]
                 marker_checked = True
-            if same_generation and not rewritten_in_place and not marker_changed:
-                if marker_checked and after.st_size > start_offset:
-                    self._note_append_cycle(session_id)
-                return _StableRead(entries, after, reset_generation)
             if (
-                marker_checked
+                same_generation
                 and not marker_changed
-                and same_generation
-                and after.st_size >= before.st_size
+                and (
+                    not rewritten_in_place
+                    or (marker_checked and after.st_size >= before.st_size)
+                )
             ):
-                # Verified append: the marker window before the previously
-                # consumed offset still matches on the same generation and the
-                # file did not shrink, so the ctime churn was a concurrent
-                # append. The parse position only moves forward, so skipping
-                # the O(file) prefix digest cannot replay anything.
-                if after.st_size > start_offset:
+                # Verified append: either nothing changed during the read, or
+                # the marker window before the previously consumed offset
+                # still matches on the same generation and the file did not
+                # shrink, so the ctime churn was a concurrent append. The
+                # parse position only moves forward, so skipping the O(file)
+                # prefix digest cannot replay anything.
+                if marker_checked and after.st_size > start_offset:
                     self._note_append_cycle(session_id)
                 return _StableRead(entries, after, reset_generation)
             consumed_survived = check_marker and await self._consumed_prefix_intact(
@@ -684,7 +708,10 @@ class TranscriptReader:
             if consumed_survived:
                 # Concurrent append or metadata churn, not a replacement: the
                 # bytes already delivered survived, so keep this read.
-                return _StableRead(entries, after, reset_generation, verified=True)
+                await self._record_prefix_verification(
+                    session_id, file_path, after, clean=True
+                )
+                return _StableRead(entries, after, reset_generation)
             tracked.parsed_offset = after.st_size
             self._startup_file_boundaries.pop(session_id, None)
             self._startup_clamped.pop(session_id, None)
@@ -700,7 +727,6 @@ class TranscriptReader:
         stable_read: _StableRead,
         *,
         refresh_prefix: bool,
-        anomaly: bool,
     ) -> bool:
         """Commit caches only after a stable read and marker capture."""
         stable_stat = stable_read.stat
@@ -718,13 +744,10 @@ class TranscriptReader:
         self._file_ctimes[session_id] = stable_stat.st_ctime_ns
         self._file_sizes[session_id] = stable_stat.st_size
         if refresh_prefix:
+            # A clamp moved the parse position: re-baseline at the new EOF.
             self._file_prefixes[session_id] = (
                 stable_stat.st_size,
                 await asyncio.to_thread(_prefix_digest, file_path, stable_stat.st_size),
-            )
-            threshold = self._prefix_verify.get(session_id, (0, 1))[1]
-            self._prefix_verify[session_id] = (
-                (0, 1) if anomaly else (0, min(threshold * 2, _PREFIX_VERIFY_CAP))
             )
         self._file_markers[session_id] = (self._parse_pos(tracked), marker)
         return True
@@ -1099,7 +1122,7 @@ class TranscriptReader:
         (
             generation_changed,
             consumed_intact,
-            prefix_checked,
+            _prefix_checked,
         ) = await self._prepare_observed_generation(
             session_id,
             tracked,
@@ -1162,16 +1185,16 @@ class TranscriptReader:
             or stable_read is None
         ):
             return
-        new_entries, _, reset_during_read, _verified = stable_read
+        new_entries = stable_read.entries
+        reset_during_read = stable_read.reset_generation
         committed = await self._commit_stable_read(
             session_id,
             tracked,
             file_path,
             stable_read,
-            refresh_prefix=(
-                prefix_checked or stable_read.verified or stable_read.reset_generation
-            ),
-            anomaly=generation_changed or reset_during_read,
+            # Clean verifications already re-baselined at their own site; only
+            # a clamp still needs the baseline moved to the new EOF.
+            refresh_prefix=stable_read.reset_generation,
         )
         if (
             not self._admit_read(

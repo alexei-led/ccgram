@@ -915,3 +915,42 @@ async def test_prefix_verify_backoff_resets_on_restart_and_generation_change(
 
     reader.clear_session("sess")
     assert "sess" not in reader._prefix_verify
+
+
+async def test_idle_due_session_verifies_once_not_every_cycle(tmp_path) -> None:
+    """A due session verifies once per interval while idle, not per tick."""
+    history = "".join(
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"h%d"}]}}\n'
+        % index
+        for index in range(5)
+    )
+    session_file = tmp_path / "transcript.jsonl"
+    session_file.write_text(history, newline="\n")
+
+    state = MonitorState(state_file=tmp_path / "monitor_state.json")
+    state.update_session(
+        TrackedSession(
+            session_id="sess",
+            file_path=str(session_file),
+            last_byte_offset=session_file.stat().st_size,
+        )
+    )
+    reader = TranscriptReader(state, IdleTracker())
+    real_digest = transcript_reader._prefix_digest
+
+    with patch("ccgram.transcript_reader._prefix_digest", wraps=real_digest) as digest:
+        for index in range(2):
+            line = (
+                '{"type":"assistant","message":{"content":[{"type":"text","text":"m%d"}]}}\n'
+                % index
+            )
+            with session_file.open("a") as transcript:
+                transcript.write(line)
+            await reader._process_session_file("sess", session_file, [], window_id="@1")
+        assert digest.call_count == 0
+
+        for _ in range(3):
+            await reader._process_session_file("sess", session_file, [], window_id="@1")
+        # The first idle cycle verifies the frozen prefix and extends the
+        # baseline, then doubles the interval; the rest defer.
+        assert digest.call_count == 2
