@@ -846,6 +846,59 @@ async def test_consecutive_appends_skip_prefix_digest(tmp_path) -> None:
     assert delivered == ["m0", "m1", "m2", "m3"]
 
 
+async def test_clamp_cycle_keeps_verify_schedule_at_shortest_interval(
+    tmp_path,
+) -> None:
+    """The cycle after a clamp must verify again, not inherit a doubled interval."""
+    history = "".join(
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"h%d"}]}}\n'
+        % index
+        for index in range(5)
+    )
+    session_file = tmp_path / "transcript.jsonl"
+    session_file.write_text(history, newline="\n")
+
+    state = MonitorState(state_file=tmp_path / "monitor_state.json")
+    state.update_session(
+        TrackedSession(
+            session_id="sess",
+            file_path=str(session_file),
+            last_byte_offset=session_file.stat().st_size,
+        )
+    )
+    reader = TranscriptReader(state, IdleTracker())
+    real_digest = transcript_reader._prefix_digest
+    with patch(
+        "ccgram.transcript_reader._resolve_provider_for_file",
+        return_value=_CLAUDE_PROVIDER,
+    ):
+        await reader._process_session_file("sess", session_file, [], window_id="@1")
+
+        session_file.write_text(history.replace('"h4"', '"h9"'), newline="\n")
+        reader._file_mtimes["sess"] = 0.0
+        await reader._process_session_file("sess", session_file, [], window_id="@1")
+        assert reader._prefix_verify["sess"] == (0, 1)
+
+        # One marker-verified append cycle counts up to (1, 1), so the next
+        # quiet cycle is due and must run the full verification. Had the
+        # clamp cycle's intact read doubled the interval to (0, 2), the state
+        # would sit at (1, 2) here and this cycle's digest would be skipped.
+        with session_file.open("a") as transcript:
+            transcript.write(
+                '{"type":"assistant","message":{"content":[{"type":"text","text":"m0"}]}}\n'
+            )
+        await reader._process_session_file("sess", session_file, [], window_id="@1")
+        assert reader._prefix_verify["sess"] == (1, 1)
+
+        reader._file_mtimes["sess"] = 0.0
+        with patch(
+            "ccgram.transcript_reader._prefix_digest", wraps=real_digest
+        ) as digest:
+            await reader._process_session_file("sess", session_file, [], window_id="@1")
+        assert digest.call_count > 0
+        assert reader._prefix_verify["sess"] == (0, 2)
+
+
 async def test_rewrite_of_tail_marker_window_clamps_without_replay(
     tmp_path,
 ) -> None:
@@ -885,9 +938,9 @@ async def test_rewrite_of_tail_marker_window_clamps_without_replay(
     tracked = state.get_session("sess")
     assert tracked is not None
     assert tracked.parsed_offset == session_file.stat().st_size
-    # The clamp re-baselines, the read then verifies intact, and the clean
-    # verification doubles the interval from the reset threshold.
-    assert reader._prefix_verify["sess"] == (0, 2)
+    # The clamp resets the schedule to the shortest interval, and the same
+    # cycle's intact read must not double the interval away from it.
+    assert reader._prefix_verify["sess"] == (0, 1)
 
 
 async def test_prefix_verify_backoff_resets_on_restart_and_generation_change(

@@ -664,6 +664,7 @@ class TranscriptReader:
         window_id: str,
         *,
         check_marker: bool,
+        clamped: bool = False,
     ) -> _StableRead | None:
         """Read a stable file generation, retrying once after a write race."""
         reset_generation = False
@@ -720,7 +721,14 @@ class TranscriptReader:
             if consumed_survived:
                 # Concurrent append or metadata churn, not a replacement: the
                 # bytes already delivered survived, so keep this read.
-                await self._record_clean_verification(session_id, file_path, after)
+                if clamped:
+                    # The probe already clamped this cycle on replacement
+                    # evidence. Keeping the read is safe, but it is not a
+                    # clean verification: the reset to the shortest interval
+                    # must survive the cycle instead of being doubled away.
+                    self._reset_prefix_verify(session_id)
+                else:
+                    await self._record_clean_verification(session_id, file_path, after)
                 return _StableRead(entries, after, reset_generation)
             tracked.parsed_offset = after.st_size
             self._startup_file_boundaries.pop(session_id, None)
@@ -1186,6 +1194,7 @@ class TranscriptReader:
             file_path,
             window_id,
             check_marker=provider.capabilities.supports_incremental_read,
+            clamped=generation_changed,
         )
         if (
             not self._admit_read(
