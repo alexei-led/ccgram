@@ -2,8 +2,8 @@
 
 Producers create a receipt for one transcript item. Queue workers settle each
 tracked outbound task. Persistence advances over the leading run of receipts
-that closed without a failed task (see ``settled_prefix`` and
-``settled_run_offset``); the first pending, failed, or unclosed receipt, or
+that closed, neither failed nor revoked (see ``settled_prefix`` and
+``settled_run_offset``); the first pending, failed, revoked, or unclosed receipt, or
 one without a checkpoint, fences the rest. This module deliberately knows
 nothing about Telegram, handlers, queues, or session monitoring.
 """
@@ -31,6 +31,7 @@ class DeliveryReceipt:
     _pending: int = 0
     _closed: bool = False
     failed: bool = False
+    revoked: bool = False
 
     def track(self) -> None:
         if self._closed:
@@ -48,12 +49,23 @@ class DeliveryReceipt:
         """Record a producer-side failure that prevented safe enqueueing."""
         self.failed = True
 
+    def revoke(self) -> None:
+        """Withdraw superseded source work without recording a send failure."""
+        self.revoked = True
+
     def close(self) -> None:
         self._closed = True
 
     @property
+    def has_pending_tasks(self) -> bool:
+        """Whether outbound tasks have been queued but not yet settled."""
+        return self._pending > 0
+
+    @property
     def commit_ready(self) -> bool:
-        return self._closed and self._pending == 0 and not self.failed
+        return (
+            self._closed and self._pending == 0 and not self.failed and not self.revoked
+        )
 
 
 _active_receipt: ContextVar[DeliveryReceipt | None] = ContextVar(
@@ -83,6 +95,12 @@ def get_active_delivery_receipt() -> DeliveryReceipt | None:
     return _active_receipt.get()
 
 
+def delivery_is_current() -> bool:
+    """Admit unscoped work or a producer whose receipt was not withdrawn."""
+    receipt = get_active_delivery_receipt()
+    return receipt is None or not receipt.revoked
+
+
 def delivery_receipts_ready(receipts: list[DeliveryReceipt]) -> bool:
     """Whether every receipt is explicitly acknowledged or intentionally dropped."""
     return all(receipt.commit_ready for receipt in receipts)
@@ -95,7 +113,7 @@ def settled_prefix(receipts: list[DeliveryReceipt]) -> list[DeliveryReceipt]:
     commit-ready receipts is durable progress even while later receipts of
     the same session are still in flight (#205): waiting for every receipt
     to close never commits under sustained output, and a restart then
-    replays the whole settled run. The first pending, failed, or unclosed
+    replays the whole settled run. The first pending, failed, revoked, or unclosed
     receipt, or one without a checkpoint, fences the rest; replay resumes
     from the fence, preserving at-least-once delivery.
 

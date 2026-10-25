@@ -5,6 +5,11 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 import pytest
 
 from ccgram import bootstrap
+from ccgram.delivery_contract import (
+    DeliveryReceipt,
+    activate_delivery_receipt,
+    deactivate_delivery_receipt,
+)
 from ccgram.session_protocol.models import ProtocolError
 
 
@@ -21,6 +26,33 @@ def _make_app() -> MagicMock:
     app.bot_data = {}
     app.job_queue = None
     return app
+
+
+@pytest.mark.asyncio
+async def test_telegram_batch_stops_between_messages_after_receipt_revocation() -> None:
+    receipt = DeliveryReceipt()
+    token = activate_delivery_receipt(receipt)
+    client = AsyncMock()
+    delivered: list[object] = []
+
+    async def revoke_after_first(message, _client):
+        delivered.append(message)
+        receipt.revoke()
+
+    try:
+        with (
+            patch(
+                "ccgram.bootstrap.render_transcript_batch", return_value=["one", "two"]
+            ),
+            patch(
+                "ccgram.bootstrap.handle_new_message", side_effect=revoke_after_first
+            ),
+        ):
+            await bootstrap._deliver_telegram_batch(MagicMock(), client)
+    finally:
+        deactivate_delivery_receipt(token)
+
+    assert delivered == ["one"]
 
 
 @pytest.mark.asyncio
@@ -266,6 +298,7 @@ class TestShutdownRuntime:
         bootstrap._status_poll_task = asyncio.create_task(_noop())  # type: ignore[assignment]
         monitor = MagicMock()
         monitor.stop_and_wait = AsyncMock()
+        monitor.commit_delivered_watermarks = AsyncMock()
         bootstrap.session_monitor = monitor
 
         with (
@@ -276,7 +309,7 @@ class TestShutdownRuntime:
             await bootstrap.stop_delivery_runtime()
 
         monitor.stop_and_wait.assert_awaited_once()
-        monitor.commit_delivered_watermarks.assert_called_once()
+        monitor.commit_delivered_watermarks.assert_awaited_once()
         workers.assert_awaited_once()
         assert bootstrap.session_monitor is None
         assert bootstrap._status_poll_task is None
@@ -296,7 +329,9 @@ class TestShutdownRuntime:
         order: list[str] = []
         monitor = MagicMock()
         monitor.stop_and_wait = AsyncMock(side_effect=lambda: order.append("monitor"))
-        monitor.commit_delivered_watermarks.side_effect = lambda: order.append("commit")
+        monitor.commit_delivered_watermarks = AsyncMock(
+            side_effect=lambda: order.append("commit")
+        )
         stream = MagicMock()
         stream.stop_and_wait = AsyncMock(side_effect=lambda: order.append("stream"))
         bootstrap.session_monitor = monitor
@@ -357,6 +392,7 @@ class TestResetForTesting:
 
         monitor = MagicMock()
         monitor.stop_and_wait = AsyncMock()
+        monitor.commit_delivered_watermarks = AsyncMock()
         sm_mod.set_active_monitor(monitor)
         bootstrap.session_monitor = monitor
 

@@ -88,3 +88,60 @@ class TestSettledRunOffset:
     )
     def test_run_offset(self, run, fence, expected) -> None:
         assert settled_run_offset(run, fence) == expected
+
+
+@pytest.mark.parametrize("outcome", list(DeliveryOutcome))
+def test_revoked_receipt_cannot_commit_after_settlement(outcome) -> None:
+    receipt = DeliveryReceipt(checkpoint=10)
+    receipt.track()
+    receipt.revoke()
+    receipt.revoke()
+    assert receipt.revoked
+    assert receipt.failed is False
+    receipt.close()
+    receipt.settle(outcome)
+    assert receipt.failed is (outcome is DeliveryOutcome.FAILED)
+    assert not receipt.commit_ready
+    assert settled_prefix([receipt, _ready(20)]) == []
+
+
+def test_revocation_withdraws_an_already_ready_receipt() -> None:
+    receipt = _ready(10)
+    assert receipt.commit_ready
+    receipt.revoke()
+    assert receipt.revoked
+    assert receipt.failed is False
+    assert not receipt.commit_ready
+
+
+def test_active_delivery_admission_tracks_revocation_without_leaking() -> None:
+    from ccgram.delivery_contract import (
+        activate_delivery_receipt,
+        deactivate_delivery_receipt,
+        delivery_is_current,
+    )
+
+    assert delivery_is_current()
+    receipt = DeliveryReceipt(checkpoint=10)
+    token = activate_delivery_receipt(receipt)
+    try:
+        assert delivery_is_current()
+        receipt.revoke()
+        assert not delivery_is_current()
+    finally:
+        deactivate_delivery_receipt(token)
+    assert delivery_is_current()
+
+
+def test_pending_tasks_distinguish_queue_work_from_unclosed_producers() -> None:
+    receipt = DeliveryReceipt(checkpoint=10)
+    assert not receipt.has_pending_tasks
+    receipt.track()
+    receipt.track()
+    receipt.close()
+    assert receipt.has_pending_tasks
+    receipt.settle(DeliveryOutcome.DELIVERED)
+    assert receipt.has_pending_tasks
+    receipt.settle(DeliveryOutcome.DELIVERED)
+    assert not receipt.has_pending_tasks
+    assert receipt.commit_ready

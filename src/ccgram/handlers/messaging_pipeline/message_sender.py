@@ -130,10 +130,17 @@ def _cap_to_telegram_limit(
     return truncated, kept
 
 
+def _is_admitted(admit: Callable[[], bool] | None) -> bool:
+    """Return whether this send still owns permission to reach Telegram."""
+    return admit is None or admit()
+
+
 async def _with_entity_fallback(
     send_fn: Callable[..., Awaitable[Any]],
     text: str,
     context_label: str,
+    *,
+    admit: Callable[[], bool] | None = None,
     **kwargs: Any,
 ) -> Message | None:
     """Convert to entities, send, fall back to plain text on error.
@@ -161,6 +168,8 @@ async def _with_entity_fallback(
     # Thread-gone errors (deleted topic) short-circuit both phases.
     last_error: TelegramError | None = None
     for phase_entities in (entities, None):
+        if not _is_admitted(admit):
+            return None
         send_kwargs = {**kwargs}
         if phase_entities is not None:
             send_kwargs["entities"] = phase_entities
@@ -183,6 +192,8 @@ async def _send_with_fallback(
     client: TelegramClient,
     chat_id: int,
     text: str,
+    *,
+    admit: Callable[[], bool] | None = None,
     **kwargs: Any,
 ) -> Message | None:
     """Send message with entity formatting, falling back to plain text on failure.
@@ -191,7 +202,7 @@ async def _send_with_fallback(
     """
     plain_text, entities = convert_to_entities(text)
     return await _send_formatted_with_fallback(
-        client, chat_id, plain_text, entities, **kwargs
+        client, chat_id, plain_text, entities, admit=admit, **kwargs
     )
 
 
@@ -200,6 +211,8 @@ async def _send_formatted_with_fallback(
     chat_id: int,
     plain_text: str,
     entities: list[Any],
+    *,
+    admit: Callable[[], bool] | None = None,
     **kwargs: Any,
 ) -> Message | None:
     """Send already-rendered text and entities with the normal plain fallback."""
@@ -217,6 +230,8 @@ async def _send_formatted_with_fallback(
     # markdown opened in one task from changing a later task's formatting.
     last_error: TelegramError | None = None
     for phase_entities in (entities, None):
+        if not _is_admitted(admit):
+            return None
         send_kwargs = {**kwargs}
         if phase_entities is not None:
             send_kwargs["entities"] = phase_entities
@@ -238,6 +253,8 @@ async def rate_limit_send_message(
     client: TelegramClient,
     chat_id: int,
     text: str,
+    *,
+    admit: Callable[[], bool] | None = None,
     **kwargs: Any,
 ) -> Message | None:
     """Rate-limited send with entity formatting fallback.
@@ -246,7 +263,9 @@ async def rate_limit_send_message(
     Returns the sent Message on success, None on failure.
     """
     await rate_limit_send(chat_id)
-    return await _send_with_fallback(client, chat_id, text, **kwargs)
+    if not _is_admitted(admit):
+        return None
+    return await _send_with_fallback(client, chat_id, text, admit=admit, **kwargs)
 
 
 async def rate_limit_send_formatted_message(
@@ -254,12 +273,16 @@ async def rate_limit_send_formatted_message(
     chat_id: int,
     plain_text: str,
     entities: list[Any],
+    *,
+    admit: Callable[[], bool] | None = None,
     **kwargs: Any,
 ) -> Message | None:
     """Rate-limit and send independently rendered text without reparsing it."""
     await rate_limit_send(chat_id)
+    if not _is_admitted(admit):
+        return None
     return await _send_formatted_with_fallback(
-        client, chat_id, plain_text, entities, **kwargs
+        client, chat_id, plain_text, entities, admit=admit, **kwargs
     )
 
 
@@ -321,6 +344,8 @@ async def safe_send(
     chat_id: int,
     text: str,
     message_thread_id: int | None = None,
+    *,
+    admit: Callable[[], bool] | None = None,
     **kwargs: Any,
 ) -> Message | None:
     """Send message with entity formatting, falling back to plain text on failure."""
@@ -332,7 +357,7 @@ async def safe_send(
         return await client.send_message(chat_id=chat_id, text=text, **kw)
 
     return await _with_entity_fallback(
-        _send, text, f"send message to {chat_id}", **kwargs
+        _send, text, f"send message to {chat_id}", admit=admit, **kwargs
     )
 
 
@@ -341,6 +366,8 @@ async def edit_with_fallback(
     chat_id: int,
     message_id: int,
     text: str,
+    *,
+    admit: Callable[[], bool] | None = None,
     **kwargs: Any,
 ) -> bool:
     """Edit a message with entity formatting, falling back to plain text.
@@ -349,6 +376,8 @@ async def edit_with_fallback(
     """
     kwargs.setdefault("link_preview_options", NO_LINK_PREVIEW)
     plain_text, entities = convert_to_entities(text)
+    if not _is_admitted(admit):
+        return False
 
     try:
         await client.edit_message_text(
@@ -367,9 +396,17 @@ async def edit_with_fallback(
         # already has, leaving the message visibly unformatted. Treat as success.
         if "not modified" in str(exc).lower():
             return True
-        return await _retry_edit_plain(client, chat_id, message_id, plain_text, kwargs)
+        if not _is_admitted(admit):
+            return False
+        return await _retry_edit_plain(
+            client, chat_id, message_id, plain_text, kwargs, admit=admit
+        )
     except TelegramError:
-        return await _retry_edit_plain(client, chat_id, message_id, plain_text, kwargs)
+        if not _is_admitted(admit):
+            return False
+        return await _retry_edit_plain(
+            client, chat_id, message_id, plain_text, kwargs, admit=admit
+        )
 
 
 async def _retry_edit_plain(
@@ -378,8 +415,12 @@ async def _retry_edit_plain(
     message_id: int,
     plain_text: str,
     kwargs: dict[str, Any],
+    *,
+    admit: Callable[[], bool] | None = None,
 ) -> bool:
     """Retry edit without entities. Returns True on success, False on failure."""
+    if not _is_admitted(admit):
+        return False
     try:
         await client.edit_message_text(
             chat_id=chat_id,

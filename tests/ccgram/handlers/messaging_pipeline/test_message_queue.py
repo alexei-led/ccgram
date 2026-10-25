@@ -3,7 +3,7 @@ import asyncio
 import contextlib
 from datetime import timedelta
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from telegram.error import RetryAfter, TelegramError
@@ -110,6 +110,7 @@ class TestGetOrCreateQueue:
 
     async def test_creates_queue_and_worker(self, bot):
         user_id = 99990
+        from ccgram.handlers.messaging_pipeline import message_queue as mq
         from ccgram.handlers.messaging_pipeline.message_queue import (
             _message_queues,
             _queue_workers,
@@ -120,7 +121,7 @@ class TestGetOrCreateQueue:
 
         try:
             q = get_or_create_queue(bot, user_id)
-            assert q is not None
+            assert isinstance(q, mq._BacklogNoticeQueue)
             assert user_id in _queue_workers
         finally:
             await shutdown_workers()
@@ -141,6 +142,50 @@ class TestGetOrCreateQueue:
             assert q1 is q2
         finally:
             await shutdown_workers()
+
+    async def test_backlog_notices_overtake_retained_tasks_in_fifo_order(self, bot):
+        from ccgram.handlers.messaging_pipeline import message_queue as mq
+
+        queue = mq._BacklogNoticeQueue()
+        with (
+            patch.object(mq, "get_or_create_queue", return_value=queue),
+            patch.object(mq, "_is_ghost_window_task_at_enqueue", return_value=False),
+            patch.object(mq, "is_window_live", return_value=True),
+        ):
+            for text, is_notice in (
+                ("old one", False),
+                ("old two", False),
+                ("notice one", True),
+                ("new ordinary", False),
+                ("notice two", True),
+            ):
+                assert await mq.enqueue_content_message(
+                    bot,
+                    1,
+                    "@0",
+                    [text],
+                    thread_id=42,
+                    chat_id=-1001,
+                    is_backlog_notice=is_notice,
+                )
+
+        assert getattr(queue, "_unfinished_tasks") == 5
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(queue.join(), timeout=0.01)
+
+        queued = [queue.get_nowait() for _ in range(5)]
+        content_tasks = [task for task in queued if isinstance(task, ContentTask)]
+        assert len(content_tasks) == 5
+        assert [task.parts[0] for task in content_tasks] == [
+            "notice one",
+            "notice two",
+            "old one",
+            "old two",
+            "new ordinary",
+        ]
+        for _ in queued:
+            queue.task_done()
+        await asyncio.wait_for(queue.join(), timeout=1)
 
 
 class TestCanMergeTasks:
@@ -384,7 +429,7 @@ class TestDispatch:
         ct = _content_task("hello")
         extra = await _dispatch(bot, 1, ct, queue, lock)
         assert extra == 0
-        mock_flush.assert_awaited_once_with(bot, 1, ct)
+        mock_flush.assert_awaited_once_with(bot, 1, ct, admit=None)
         mock_process.assert_awaited_once()
 
     @patch(
@@ -413,7 +458,7 @@ class TestDispatch:
             result = await _dispatch(bot, 1, ct, queue, lock)
         assert result == 0
         assert result.outcome.value == "delivered"
-        mock_tool_event.assert_awaited_once_with(bot, 1, ct)
+        mock_tool_event.assert_awaited_once_with(bot, 1, ct, admit=None)
         mock_process.assert_not_awaited()
 
     @patch(
@@ -585,6 +630,165 @@ class TestNoBackEdgeImports:
 
 
 class TestMessageQueueWorker:
+    async def test_failed_receipt_drops_only_backlog_notice_before_send(self, bot):
+        from ccgram.handlers.messaging_pipeline import message_queue as mq
+
+        user_id = 88401
+        queue = mq._BacklogNoticeQueue()
+        mq._message_queues[user_id] = queue
+        mq._queue_locks[user_id] = asyncio.Lock()
+        notice_receipt = mq.DeliveryReceipt()
+        notice_receipt.track()
+        notice_receipt.close()
+        notice_receipt.fail()
+        ordinary_receipt = mq.DeliveryReceipt()
+        ordinary_receipt.track()
+        ordinary_receipt.close()
+        ordinary_receipt.fail()
+        queue.put_nowait(
+            ContentTask(
+                window_id="@0",
+                parts=("obsolete notice",),
+                thread_id=42,
+                chat_id=-1001,
+                delivery_receipts=(notice_receipt,),
+                is_backlog_notice=True,
+            )
+        )
+        queue.put_nowait(
+            ContentTask(
+                window_id="@0",
+                parts=("ordinary transcript",),
+                thread_id=42,
+                chat_id=-1001,
+                delivery_receipts=(ordinary_receipt,),
+            )
+        )
+        outcomes = []
+        dispatch = mq._dispatch_with_retry
+
+        async def capture_outcome(*args, **kwargs):
+            outcome = await dispatch(*args, **kwargs)
+            outcomes.append(outcome)
+            return outcome
+
+        worker = asyncio.create_task(mq._message_queue_worker(bot, user_id))
+        try:
+            with (
+                patch.object(mq, "_is_stale_task", return_value=False),
+                patch.object(mq, "is_batch_eligible", return_value=False),
+                patch.object(
+                    mq,
+                    "rate_limit_send_message",
+                    new_callable=AsyncMock,
+                    return_value=MagicMock(message_id=1),
+                ) as send,
+                patch.object(mq, "_dispatch_with_retry", side_effect=capture_outcome),
+            ):
+                await asyncio.wait_for(queue.join(), timeout=1)
+
+            assert outcomes == [
+                mq.DeliveryOutcome.INTENTIONALLY_DROPPED,
+                mq.DeliveryOutcome.DELIVERED,
+            ]
+            send.assert_awaited_once()
+            assert send.await_args is not None
+            assert send.await_args.args[2] == "ordinary transcript"
+            assert notice_receipt.failed is True
+            assert notice_receipt._pending == 0
+            assert ordinary_receipt.failed is True
+            assert ordinary_receipt._pending == 0
+        finally:
+            worker.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await worker
+            mq._message_queues.pop(user_id, None)
+            mq._queue_locks.pop(user_id, None)
+
+    async def test_backlog_notice_does_not_cancel_inflight_send_or_bypass_limiter(
+        self, bot
+    ):
+        from ccgram.handlers.messaging_pipeline import message_queue as mq
+
+        user_id = 88402
+        queue = mq._BacklogNoticeQueue()
+        mq._message_queues[user_id] = queue
+        mq._queue_locks[user_id] = asyncio.Lock()
+        queue.put_nowait(
+            ContentTask(
+                window_id="@0",
+                parts=("in flight",),
+                thread_id=42,
+                chat_id=-1001,
+            )
+        )
+        queue.put_nowait(
+            ContentTask(
+                window_id="@0",
+                parts=("retained ordinary",),
+                role="user",
+                thread_id=42,
+                chat_id=-1001,
+            )
+        )
+        started = asyncio.Event()
+        release = asyncio.Event()
+        sent: list[str] = []
+        cancelled: list[str] = []
+
+        async def rate_limited_send(_client, _chat_id, text, **_kwargs):
+            sent.append(text)
+            if text == "in flight":
+                started.set()
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    cancelled.append(text)
+                    raise
+            return MagicMock(message_id=len(sent))
+
+        worker = asyncio.create_task(mq._message_queue_worker(bot, user_id))
+        try:
+            with (
+                patch.object(mq, "is_window_live", return_value=True),
+                patch.object(mq, "is_batch_eligible", return_value=False),
+                patch.object(mq, "_should_send_tts", return_value=False),
+                patch.object(
+                    mq.thread_router,
+                    "resolve_window_for_thread",
+                    return_value="@0",
+                ),
+                patch.object(
+                    mq,
+                    "rate_limit_send_message",
+                    side_effect=rate_limited_send,
+                ) as send,
+            ):
+                await asyncio.wait_for(started.wait(), timeout=1)
+                queue.put_nowait(
+                    ContentTask(
+                        window_id="@0",
+                        parts=("skip request",),
+                        thread_id=42,
+                        chat_id=-1001,
+                        is_backlog_notice=True,
+                    )
+                )
+                release.set()
+                await asyncio.wait_for(queue.join(), timeout=1)
+
+            assert sent == ["in flight", "skip request", "retained ordinary"]
+            assert cancelled == []
+            assert send.await_count == 3
+            assert all(call.args[1] == -1001 for call in send.await_args_list)
+        finally:
+            release.set()
+            worker.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await worker
+            mq._message_queues.pop(user_id, None)
+            mq._queue_locks.pop(user_id, None)
+
     async def test_confirmed_dead_window_drops_queued_task_without_dispatch(self, bot):
         from ccgram.handlers.messaging_pipeline import message_queue as mq
         from ccgram.multiplexer.base import WindowRef
@@ -1493,7 +1697,7 @@ class TestThinkingGate:
             extra = await _handle_content_task(bot, 1, ct, queue, lock)
 
         assert extra == 0
-        mock_flush.assert_awaited_once_with(bot, 1, ct)
+        mock_flush.assert_awaited_once_with(bot, 1, ct, admit=None)
         mock_process.assert_awaited_once_with(bot, 1, ct)
 
 
@@ -1603,7 +1807,7 @@ class TestToolCallsGate:
         mock_tool_event.return_value = None
         extra = await _handle_content_task(bot, 1, ct, queue, lock)
         assert extra == 0
-        mock_tool_event.assert_awaited_once_with(bot, 1, ct)
+        mock_tool_event.assert_awaited_once_with(bot, 1, ct, admit=None)
 
     @patch(
         "ccgram.handlers.messaging_pipeline.message_queue._process_content_task",
@@ -1634,7 +1838,7 @@ class TestToolCallsGate:
         ct = _content_task("hello", content_type="text")
         extra = await _handle_content_task(bot, 1, ct, queue, lock)
         assert extra == 0
-        mock_flush.assert_awaited_once_with(bot, 1, ct)
+        mock_flush.assert_awaited_once_with(bot, 1, ct, admit=None)
         mock_process.assert_awaited_once()
 
     @patch("ccgram.handlers.messaging_pipeline.message_queue._tool_msg_ids", {})

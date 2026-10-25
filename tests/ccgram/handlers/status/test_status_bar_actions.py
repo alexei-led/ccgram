@@ -4,11 +4,15 @@ import pytest
 
 from ccgram.handlers.callback_data import (
     CB_KEYS_PREFIX,
+    CB_STATUS_BACKLOG_CONFIRM,
     CB_STATUS_ESC,
     CB_STATUS_GET_FILE,
     CB_STATUS_LAST_REPLY,
 )
-from ccgram.handlers.status.status_bar_actions import _handle_status_bar_action
+from ccgram.handlers.status.status_bar_actions import (
+    _handle_backlog_confirm,
+    _handle_status_bar_action,
+)
 
 MOD = "ccgram.handlers.status.status_bar_actions"
 
@@ -19,6 +23,41 @@ def _q() -> AsyncMock:
     q.edit_message_reply_markup = AsyncMock()
     q.get_bot = MagicMock(return_value=AsyncMock())
     return q
+
+
+async def test_shared_backlog_skip_refusal_is_actionable():
+    query = _q()
+    query.message = MagicMock()
+    query.message.chat.id = -100
+    monitor = MagicMock()
+    monitor.request_backlog_skip = AsyncMock(return_value=None)
+    monitor.has_shared_backlog_source.return_value = True
+    update = MagicMock()
+
+    with (
+        patch(f"{MOD}.user_owns_window", return_value=True),
+        patch(f"{MOD}.get_thread_id", return_value=42),
+        patch(
+            f"{MOD}.thread_router.resolve_window_for_thread",
+            return_value="@0",
+        ),
+        patch(
+            "ccgram.handlers.messaging_pipeline.backlog.get_backlog_snapshot",
+            return_value=MagicMock(pending_count=100, oldest_age_seconds=0),
+        ),
+        patch("ccgram.session_monitor.get_active_monitor", return_value=monitor),
+    ):
+        await _handle_backlog_confirm(
+            query, 1, f"{CB_STATUS_BACKLOG_CONFIRM}@0", update
+        )
+
+    monitor.request_backlog_skip.assert_awaited_once_with(1, "@0", 42, -100)
+    query.answer.assert_awaited_once_with(
+        "Jump to live is unavailable while this session is shared by multiple "
+        "topics. Unbind the other topic(s) first.",
+        show_alert=True,
+    )
+    monitor.has_shared_backlog_source.assert_called_once_with("@0")
 
 
 class TestStatusEsc:

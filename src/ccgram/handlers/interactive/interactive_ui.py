@@ -18,6 +18,7 @@ identical topic IDs in separate chats from sharing interactive callbacks.
 import asyncio
 import contextlib
 import hashlib
+from collections.abc import Callable
 import re
 import time
 
@@ -518,11 +519,15 @@ async def _edit_interactive_msg(
     msg_id: int,
     text: str,
     keyboard: InlineKeyboardMarkup,
+    *,
+    admit: Callable[[], bool] | None = None,
 ) -> bool | None:
     """Try to edit an existing interactive message.
 
     Returns True/False on success/failure, or None if no edit was attempted.
     """
+    if admit is not None and not admit():
+        return None
     try:
         await client.edit_message_text(
             chat_id=chat_id,
@@ -611,9 +616,12 @@ async def _send_interactive_with_retry(
     thread_id: int | None,
     window_id: str,
     now: float,
+    admit: Callable[[], bool] | None = None,
 ) -> Message | None:
     """Send interactive UI with one retry on transient transport errors."""
     for attempt in range(_INTERACTIVE_SEND_RETRIES + 1):
+        if admit is not None and not admit():
+            return None
         try:
             return await client.send_message(
                 chat_id=chat_id,
@@ -686,6 +694,17 @@ async def pane_has_interactive_prompt(
     return status is not None and status.is_interactive
 
 
+def _admit_reserved_send(
+    ikey: InteractiveKey, reserved_at: float, admit: Callable[[], bool] | None
+) -> bool:
+    """Release only this attempt's cooldown when its ownership was withdrawn."""
+    if admit is None or admit():
+        return True
+    if _send_cooldowns.get(ikey) == reserved_at:
+        _send_cooldowns.pop(ikey, None)
+    return False
+
+
 async def handle_interactive_ui(
     client: TelegramClient,
     user_id: int,
@@ -694,6 +713,7 @@ async def handle_interactive_ui(
     pane_id: str | None = None,
     *,
     chat_id: int | None = None,
+    admit: Callable[[], bool] | None = None,
 ) -> bool:
     """Capture terminal and send interactive UI content to user.
 
@@ -706,7 +726,7 @@ async def handle_interactive_ui(
     in the message and the keyboard routes responses to that pane.
     """
     captured = await _capture_interactive_content(window_id, pane_id=pane_id)
-    if not captured:
+    if not captured or (admit is not None and not admit()):
         return False
 
     ui_name, content, advisory = captured
@@ -739,7 +759,12 @@ async def handle_interactive_ui(
     existing_msg_id = _interactive_msgs.get(ikey)
     if existing_msg_id:
         edited = await _edit_interactive_msg(
-            client, resolved_chat_id, existing_msg_id, text, keyboard
+            client,
+            resolved_chat_id,
+            existing_msg_id,
+            text,
+            keyboard,
+            admit=admit,
         )
         if edited:
             if blocking:
@@ -764,9 +789,12 @@ async def handle_interactive_ui(
     logger.info(
         "Sending interactive UI to user %d for window_id %s", user_id, window_id
     )
+    # Reserve the cooldown before yielding so competing producers see it.
     _send_cooldowns[ikey] = now
     # Send as plain text — terminal content should not be formatted.
     await rate_limit_send(resolved_chat_id)
+    if not _admit_reserved_send(ikey, now, admit):
+        return False
     sent = await _send_interactive_with_retry(
         client,
         chat_id=resolved_chat_id,
@@ -777,6 +805,7 @@ async def handle_interactive_ui(
         thread_id=thread_id,
         window_id=window_id,
         now=now,
+        admit=admit,
     )
     if sent:
         _interactive_msgs[ikey] = sent.message_id

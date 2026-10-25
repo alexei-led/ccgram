@@ -27,18 +27,29 @@ class TrackedSession:
     drained, so a restart resumes from there and never re-sends them.
     ``parsed_offset`` is the in-memory parse position: entries between the
     watermark and it are parsed and queued but not yet confirmed delivered
-    (TASK-5 at-least-once delivery).
+    (TASK-5 at-least-once delivery). ``replay_cap_retry_after`` is a persisted
+    retry floor, not delivery progress.
     """
 
     session_id: str
     file_path: str  # Path to .jsonl file
     last_byte_offset: int = 0  # Delivered watermark (persisted)
     parsed_offset: int = -1  # In-memory parse position (-1 = follow watermark)
+    # Avoid retrying an expired automatic replay cap against the same EOF.
+    replay_cap_retry_after: int = 0
+    replay_cap_retry_device: int | None = None
+    replay_cap_retry_inode: int | None = None
+    replay_cap_retry_range_start: int = 0
+    replay_cap_retry_sha256: str = ""
+    # Validation is repeated after restart; this flag is only a process-local
+    # optimization once the persisted source-generation digest was checked.
+    replay_cap_retry_verified: bool = field(default=False, repr=False, compare=False)
 
     def to_dict(self) -> dict[str, Any]:
-        """Convert to dict for JSON serialization (delivered watermark only)."""
+        """Serialize durable progress and cap retry state, excluding parse position."""
         d = asdict(self)
         d.pop("parsed_offset", None)
+        d.pop("replay_cap_retry_verified", None)
         return d
 
     @classmethod
@@ -48,12 +59,37 @@ class TrackedSession:
             session_id=data.get("session_id", ""),
             file_path=data.get("file_path", ""),
             last_byte_offset=data.get("last_byte_offset", 0),
+            replay_cap_retry_after=(
+                data.get("replay_cap_retry_after", 0)
+                if isinstance(data.get("replay_cap_retry_after", 0), int)
+                else 0
+            ),
+            replay_cap_retry_device=(
+                data.get("replay_cap_retry_device")
+                if isinstance(data.get("replay_cap_retry_device"), int)
+                else None
+            ),
+            replay_cap_retry_inode=(
+                data.get("replay_cap_retry_inode")
+                if isinstance(data.get("replay_cap_retry_inode"), int)
+                else None
+            ),
+            replay_cap_retry_range_start=(
+                data.get("replay_cap_retry_range_start", 0)
+                if isinstance(data.get("replay_cap_retry_range_start", 0), int)
+                else 0
+            ),
+            replay_cap_retry_sha256=(
+                data.get("replay_cap_retry_sha256", "")
+                if isinstance(data.get("replay_cap_retry_sha256", ""), str)
+                else ""
+            ),
         )
 
 
 @dataclass
 class BacklogSkipIntent:
-    """Durable barrier for a confirmed transcript backlog skip.
+    """Durable barrier for a confirmed or automatic transcript backlog skip.
 
     The transcript remains untouched. Until the notice is acknowledged this
     record prevents replay of the frozen range across a restart.
@@ -69,9 +105,16 @@ class BacklogSkipIntent:
     skipped_count: int = 0
     purge_complete: bool = False
     # Wall clock at barrier creation (0 = legacy record, stamped on first
-    # sight). Aged barriers are force-completed so an undeliverable notice
-    # cannot pause a source forever.
+    # sight). Aged barriers are cancelled and replayed; they never advance the
+    # delivered watermark without an acknowledged notice.
     created_at: float = 0.0
+    # Source identity frozen with the EOF so a replacement/truncation cannot
+    # be acknowledged as though it were the transcript the notice describes.
+    source_path: str = ""
+    source_device: int | None = None
+    source_inode: int | None = None
+    source_range_sha256: str = ""
+    automatic: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -89,6 +132,23 @@ class BacklogSkipIntent:
             skipped_count=int(data.get("skipped_count", 0)),
             purge_complete=bool(data.get("purge_complete", False)),
             created_at=float(data.get("created_at", 0.0)),
+            source_path=str(data.get("source_path", "")),
+            source_device=(
+                data["source_device"]
+                if isinstance(data.get("source_device"), int)
+                else None
+            ),
+            source_inode=(
+                data["source_inode"]
+                if isinstance(data.get("source_inode"), int)
+                else None
+            ),
+            source_range_sha256=(
+                data["source_range_sha256"]
+                if isinstance(data.get("source_range_sha256"), str)
+                else ""
+            ),
+            automatic=bool(data.get("automatic", False)),
         )
 
 

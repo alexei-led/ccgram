@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import threading
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -10,12 +11,22 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 import structlog
 
+from ccgram.delivery_contract import (
+    DeliveryOutcome,
+    get_active_delivery_receipt,
+    new_delivery_receipt,
+)
 from ccgram.monitor_state import BacklogSkipIntent, TrackedSession
 from ccgram.multiplexer.base import MultiplexerCapabilities, WindowRef
 from ccgram.providers.claude import ClaudeProvider
 from ccgram.providers.codex import CodexProvider
 from ccgram.session import SessionManager
-from ccgram.session_monitor import NewMessage, NewWindowEvent, SessionMonitor
+from ccgram.session_monitor import (
+    NewMessage,
+    NewWindowEvent,
+    SessionMonitor,
+    _source_range_sha256,
+)
 from ccgram.transcript_reader import _ToolDeliveryFence
 from ccgram.session_protocol.messages import (
     SourceEntry,
@@ -57,6 +68,12 @@ def _transcript_batch(
         for index in range(record_count)
     )
     return TranscriptBatch(session_id, "claude", records, checkpoint)
+
+
+def _complete_jsonl_record(size: int) -> bytes:
+    prefix = b'{"record":"'
+    suffix = b'"}\n'
+    return prefix + b"x" * (size - len(prefix) - len(suffix)) + suffix
 
 
 @pytest.fixture
@@ -541,7 +558,7 @@ async def test_failed_consumer_fences_batch_checkpoint_for_replay(
         await monitor._dispatch_message_with_receipt(
             pending_batch, receipt, consumer_name
         )
-    monitor.commit_delivered_watermarks()
+    await monitor.commit_delivered_watermarks()
 
     failed, delivered = [receipt for _, _, receipt in pending]
     assert failed.failed is True
@@ -585,21 +602,21 @@ class TestSettledPrefixWatermarkCommit:
         )
         monitor._delivery_receipts[session_id] = receipts
 
-    def test_prefix_commit_advances_past_settled_run(
+    async def test_prefix_commit_advances_past_settled_run(
         self, monitor: SessionMonitor
     ) -> None:
         pending = self._unsettled(300)
         pending.track()
         self._track(monitor, "s1", [self._ready(100), self._ready(200), pending])
 
-        monitor.commit_delivered_watermarks()
+        await monitor.commit_delivered_watermarks()
 
         assert self._offset(monitor, "s1") == 200
         # The unsettled tail survives as receipts: a restart replays from
         # the committed fence (200), not from zero.
         assert monitor._delivery_receipts["s1"] == [pending]
 
-    def test_failed_receipt_fences_prefix(self, monitor: SessionMonitor) -> None:
+    async def test_failed_receipt_fences_prefix(self, monitor: SessionMonitor) -> None:
         from ccgram.delivery_contract import DeliveryOutcome
 
         failed = self._unsettled(200)
@@ -608,29 +625,29 @@ class TestSettledPrefixWatermarkCommit:
         failed.close()
         self._track(monitor, "s1", [self._ready(100), failed, self._ready(300)])
 
-        monitor.commit_delivered_watermarks()
+        await monitor.commit_delivered_watermarks()
 
         # Progress before the failure is durable; the failed receipt and
         # everything after it replay (at-least-once preserved).
         assert self._offset(monitor, "s1") == 100
         assert len(monitor._delivery_receipts["s1"]) == 2
 
-    def test_all_ready_commits_full_run_and_clears(
+    async def test_all_ready_commits_full_run_and_clears(
         self, monitor: SessionMonitor
     ) -> None:
         self._track(monitor, "s1", [self._ready(100), self._ready(200)])
 
-        monitor.commit_delivered_watermarks()
+        await monitor.commit_delivered_watermarks()
 
         assert self._offset(monitor, "s1") == 200
         assert "s1" not in monitor._delivery_receipts
 
-    def test_none_checkpoint_fences_prefix(self, monitor: SessionMonitor) -> None:
+    async def test_none_checkpoint_fences_prefix(self, monitor: SessionMonitor) -> None:
         unplaced = self._ready(0)
         unplaced.checkpoint = None
         self._track(monitor, "s1", [self._ready(100), unplaced, self._ready(300)])
 
-        monitor.commit_delivered_watermarks()
+        await monitor.commit_delivered_watermarks()
 
         # A receipt without a checkpoint cannot be ordered: it blocks the
         # commit conservatively (its bytes may tie the boundary), though
@@ -640,16 +657,16 @@ class TestSettledPrefixWatermarkCommit:
         assert len(remaining) == 2
         assert remaining[0] is unplaced
 
-    def test_pending_tools_skip_session(self, monitor: SessionMonitor) -> None:
+    async def test_pending_tools_skip_session(self, monitor: SessionMonitor) -> None:
         self._track(monitor, "s1", [self._ready(100)])
         monitor._transcript_reader._pending_tools["s1"] = {}
 
-        monitor.commit_delivered_watermarks()
+        await monitor.commit_delivered_watermarks()
 
         assert self._offset(monitor, "s1") == 0
         assert len(monitor._delivery_receipts["s1"]) == 1
 
-    def test_tool_delivery_fence_ignores_receipts_after_result(
+    async def test_tool_delivery_fence_ignores_receipts_after_result(
         self, monitor: SessionMonitor
     ) -> None:
         from ccgram.transcript_reader import _ToolDeliveryFence
@@ -666,7 +683,7 @@ class TestSettledPrefixWatermarkCommit:
             release_checkpoint=200,
         )
 
-        monitor.commit_delivered_watermarks()
+        await monitor.commit_delivered_watermarks()
 
         assert self._offset(monitor, "s1") == 200
         assert monitor._delivery_receipts["s1"] == [pending]
@@ -712,7 +729,7 @@ class TestSettledPrefixWatermarkCommit:
         )
         for batch, consumer_name, receipt in first_pending:
             await first._dispatch_message_with_receipt(batch, receipt, consumer_name)
-        first.commit_delivered_watermarks()
+        await first.commit_delivered_watermarks()
 
         assert first.state.tracked_sessions["s1"].last_byte_offset == 0
         assert first._pending_tools["s1"] == {"tool-1": "Read"}
@@ -749,7 +766,7 @@ class TestSettledPrefixWatermarkCommit:
             await restarted._dispatch_message_with_receipt(
                 batch, receipt, consumer_name
             )
-        restarted.commit_delivered_watermarks()
+        await restarted.commit_delivered_watermarks()
 
         assert restarted._pending_tools == {}
         assert (
@@ -815,7 +832,7 @@ class TestSettledPrefixWatermarkCommit:
         )
         for batch, consumer_name, receipt in call_pending:
             await first._dispatch_message_with_receipt(batch, receipt, consumer_name)
-        first.commit_delivered_watermarks()
+        await first.commit_delivered_watermarks()
         assert first.state.tracked_sessions["s1"].last_byte_offset == 0
 
         with session_file.open("a") as transcript:
@@ -829,7 +846,7 @@ class TestSettledPrefixWatermarkCommit:
             first._transcript_reader.drain_batches()
         )
         assert len(result_pending) == 1
-        first.commit_delivered_watermarks()
+        await first.commit_delivered_watermarks()
         assert first.state.tracked_sessions["s1"].last_byte_offset == 0
 
         failed = SessionMonitor(
@@ -853,7 +870,7 @@ class TestSettledPrefixWatermarkCommit:
         )
         for batch, consumer_name, receipt in failed_pending:
             await failed._dispatch_message_with_receipt(batch, receipt, consumer_name)
-        failed.commit_delivered_watermarks()
+        await failed.commit_delivered_watermarks()
 
         failed_tool_results = [
             message
@@ -884,7 +901,7 @@ class TestSettledPrefixWatermarkCommit:
             await recovered._dispatch_message_with_receipt(
                 batch, receipt, consumer_name
             )
-        recovered.commit_delivered_watermarks()
+        await recovered.commit_delivered_watermarks()
 
         recovered_tool_results = [
             message
@@ -943,7 +960,7 @@ class TestSettledPrefixWatermarkCommit:
                 await first._dispatch_message_with_receipt(
                     batch, receipt, consumer_name
                 )
-        first.commit_delivered_watermarks()
+        await first.commit_delivered_watermarks()
         expected_offset = response_checkpoint if original_receipt_settled else 0
         assert first.state.tracked_sessions["s1"].last_byte_offset == expected_offset
 
@@ -960,7 +977,7 @@ class TestSettledPrefixWatermarkCommit:
         mirror_pending = first._register_delivery_receipts(mirror_batches)
         for batch, consumer_name, receipt in mirror_pending:
             await first._dispatch_message_with_receipt(batch, receipt, consumer_name)
-        first.commit_delivered_watermarks()
+        await first.commit_delivered_watermarks()
         expected_offset = session_file.stat().st_size if original_receipt_settled else 0
         assert first.state.tracked_sessions["s1"].last_byte_offset == expected_offset
 
@@ -988,7 +1005,7 @@ class TestSettledPrefixWatermarkCommit:
             assert [
                 call.args[0].text for call in restarted_delivery.await_args_list
             ] == ["finished"]
-        restarted.commit_delivered_watermarks()
+        await restarted.commit_delivered_watermarks()
         assert (
             restarted.state.tracked_sessions["s1"].last_byte_offset
             == session_file.stat().st_size
@@ -1008,11 +1025,91 @@ class TestSettledPrefixWatermarkCommit:
             )
         )
 
+    async def test_skip_range_identity_survives_restart_and_rejects_rewrite(
+        self, tmp_path
+    ) -> None:
+        transcript = tmp_path / "session.jsonl"
+        transcript.write_bytes(_complete_jsonl_record(80))
+        state_file = tmp_path / "monitor.json"
+        monitor = SessionMonitor(
+            projects_path=tmp_path / "projects", state_file=state_file
+        )
+        tracked = TrackedSession(
+            "s1", str(transcript), last_byte_offset=10, parsed_offset=80
+        )
+        monitor.state.update_session(tracked)
+        bindings = [(1, 99, 4, "@0")]
+        session_map = {"@0": {"session_id": "s1", "transcript_path": str(transcript)}}
+
+        async def purge(_intent) -> int:
+            return 2
+
+        async def notice(_intent) -> None:
+            receipt = get_active_delivery_receipt()
+            assert receipt is not None
+            receipt.track()
+
+        monitor.set_skip_callbacks(
+            purge=purge, notice=notice, validate=lambda _intent: True
+        )
+        with (
+            patch(
+                "ccgram.session_monitor.session_lifecycle.resolve_session_id",
+                side_effect=lambda _window_id: "s1",
+            ),
+            patch(
+                "ccgram.session_monitor.session_lifecycle._last_session_map",
+                session_map,
+            ),
+            patch.object(
+                thread_router,
+                "iter_thread_bindings_with_chat",
+                side_effect=lambda: iter(bindings),
+            ),
+        ):
+            intent = await monitor.request_backlog_skip(1, "@0", 4, 99)
+            assert intent is not None
+            assert monitor.state.save_if_dirty()
+
+        restarted = SessionMonitor(
+            projects_path=tmp_path / "projects", state_file=state_file
+        )
+        persisted_intent = restarted.state.pending_skips["s1"]
+        with transcript.open("r+b") as source:
+            source.write(b"y" * 80)
+        restarted.set_skip_callbacks(
+            purge=purge, notice=notice, validate=lambda _intent: True
+        )
+        restarted._skip_notice_receipts["s1"] = self._ready(80)
+
+        with (
+            patch(
+                "ccgram.session_monitor.session_lifecycle.resolve_session_id",
+                side_effect=lambda _window_id: "s1",
+            ),
+            patch(
+                "ccgram.session_monitor.session_lifecycle._last_session_map",
+                session_map,
+            ),
+            patch.object(
+                thread_router,
+                "iter_thread_bindings_with_chat",
+                side_effect=lambda: iter(bindings),
+            ),
+        ):
+            await restarted._commit_pending_skips()
+
+        restarted_tracked = restarted.state.tracked_sessions["s1"]
+        assert restarted_tracked.last_byte_offset == 10
+        assert restarted_tracked.parsed_offset == 10
+        assert "s1" not in restarted.state.pending_skips
+        assert persisted_intent.source_range_sha256 == intent.source_range_sha256
+
     async def test_initial_skip_persistence_failure_preserves_queued_source_work(
         self, tmp_path
     ) -> None:
         session_file = tmp_path / "session.jsonl"
-        session_file.write_text("queued transcript bytes")
+        session_file.write_text("queued transcript bytes\n")
         monitor = SessionMonitor(
             projects_path=tmp_path / "projects",
             state_file=tmp_path / "monitor-state.json",
@@ -1094,7 +1191,7 @@ class TestSettledPrefixWatermarkCommit:
                 await first._dispatch_message_with_receipt(
                     batch, receipt, consumer_name
                 )
-            first.commit_delivered_watermarks()
+            await first.commit_delivered_watermarks()
         response_offset = session_file.stat().st_size
         assert first.state.tracked_sessions["s1"].last_byte_offset == response_offset
 
@@ -1124,16 +1221,15 @@ class TestSettledPrefixWatermarkCommit:
                 batch, receipt, consumer_name
             )
         assert delivery.await_count == 0
-        restarted.commit_delivered_watermarks()
+        await restarted.commit_delivered_watermarks()
         assert (
             restarted.state.tracked_sessions["s1"].last_byte_offset
             == session_file.stat().st_size
         )
 
-    @pytest.mark.parametrize("completion", ["notice", "deadline"])
     @pytest.mark.parametrize("current", [True, False])
-    def test_completed_skip_retires_tool_fence_with_discarded_receipts(
-        self, monitor: SessionMonitor, completion: str, current: bool
+    async def test_completed_skip_retires_tool_fence_with_discarded_receipts(
+        self, monitor: SessionMonitor, current: bool
     ) -> None:
         self._track(monitor, "s1", [self._ready(100), self._unsettled(200)])
         reader = monitor._transcript_reader
@@ -1175,13 +1271,14 @@ class TestSettledPrefixWatermarkCommit:
         self._begin_skip(monitor)
         intent = monitor.state.pending_skips["s1"]
         intent.purge_complete = True
-        with patch.object(monitor, "_skip_is_current", return_value=current):
-            if completion == "notice":
-                monitor._skip_notice_receipts["s1"] = self._ready(500)
-                monitor.commit_delivered_watermarks()
-            else:
-                intent.created_at = time.time() - 10_000.0
-                monitor._expire_aged_skip_barriers()
+        with patch.object(
+            monitor,
+            "_verify_skip_content",
+            new_callable=AsyncMock,
+            return_value=current,
+        ):
+            monitor._skip_notice_receipts["s1"] = self._ready(500)
+            await monitor.commit_delivered_watermarks()
 
         if not current:
             assert self._offset(monitor, "s1") == 0
@@ -1199,13 +1296,12 @@ class TestSettledPrefixWatermarkCommit:
             )
         )
         monitor._delivery_receipts["s1"] = [self._ready(600)]
-        monitor.commit_delivered_watermarks()
+        await monitor.commit_delivered_watermarks()
         assert self._offset(monitor, "s1") == 600
         assert "s1" not in reader._tool_delivery_fences
 
-    @pytest.mark.parametrize("completion", ["notice", "deadline"])
     async def test_completed_skip_retires_unread_tool_result_context(
-        self, tmp_path, completion: str
+        self, tmp_path
     ) -> None:
         session_file = tmp_path / "claude-session.jsonl"
         state_file = tmp_path / "monitor-state.json"
@@ -1275,13 +1371,11 @@ class TestSettledPrefixWatermarkCommit:
         )
         self._begin_skip(monitor, skipped_offset)
         monitor.state.pending_skips["s1"].purge_complete = True
-        with patch.object(monitor, "_skip_is_current", return_value=True):
-            if completion == "notice":
-                monitor._skip_notice_receipts["s1"] = self._ready(skipped_offset)
-                monitor.commit_delivered_watermarks()
-            else:
-                monitor.state.pending_skips["s1"].created_at = time.time() - 10_000.0
-                monitor._expire_aged_skip_barriers()
+        with patch.object(
+            monitor, "_verify_skip_content", new_callable=AsyncMock, return_value=True
+        ):
+            monitor._skip_notice_receipts["s1"] = self._ready(skipped_offset)
+            await monitor.commit_delivered_watermarks()
 
         assert self._offset(monitor, "s1") == skipped_offset
         assert "s1" not in monitor._pending_tools
@@ -1308,7 +1402,7 @@ class TestSettledPrefixWatermarkCommit:
         pending = monitor._register_delivery_receipts(fresh_batches)
         for batch, consumer_name, receipt in pending:
             await monitor._dispatch_message_with_receipt(batch, receipt, consumer_name)
-        monitor.commit_delivered_watermarks()
+        await monitor.commit_delivered_watermarks()
         assert self._offset(monitor, "s1") == session_file.stat().st_size
 
         restarted = SessionMonitor(
@@ -1322,10 +1416,9 @@ class TestSettledPrefixWatermarkCommit:
             await restarted._process_session_file("s1", session_file, [])
         assert restarted._transcript_reader.drain_batches() == ()
 
-    @pytest.mark.parametrize("completion", ["notice", "deadline"])
     @pytest.mark.parametrize("next_output", ["response_item", "agent_message"])
     async def test_completed_skip_rebuilds_codex_turn_context(
-        self, tmp_path, completion: str, next_output: str
+        self, tmp_path, next_output: str
     ) -> None:
         session_file = tmp_path / "codex-session.jsonl"
         state_file = tmp_path / "monitor-state.json"
@@ -1393,7 +1486,7 @@ class TestSettledPrefixWatermarkCommit:
         prior_pending = monitor._register_delivery_receipts(prior_batches)
         for batch, consumer_name, receipt in prior_pending:
             await monitor._dispatch_message_with_receipt(batch, receipt, consumer_name)
-        monitor.commit_delivered_watermarks()
+        await monitor.commit_delivered_watermarks()
         prior_offset = session_file.stat().st_size
         assert self._offset(monitor, "s1") == prior_offset
         assert [message.text for message in delivered] == ["Done"]
@@ -1413,13 +1506,11 @@ class TestSettledPrefixWatermarkCommit:
             )
         )
         monitor.state.pending_skips["s1"].purge_complete = True
-        with patch.object(monitor, "_skip_is_current", return_value=True):
-            if completion == "notice":
-                monitor._skip_notice_receipts["s1"] = self._ready(skip_offset)
-                monitor.commit_delivered_watermarks()
-            else:
-                monitor.state.pending_skips["s1"].created_at = time.time() - 10_000.0
-                monitor._expire_aged_skip_barriers()
+        with patch.object(
+            monitor, "_verify_skip_content", new_callable=AsyncMock, return_value=True
+        ):
+            monitor._skip_notice_receipts["s1"] = self._ready(skip_offset)
+            await monitor.commit_delivered_watermarks()
         assert self._offset(monitor, "s1") == skip_offset
 
         with session_file.open("a") as transcript:
@@ -1436,7 +1527,7 @@ class TestSettledPrefixWatermarkCommit:
         for batch, consumer_name, receipt in next_pending:
             await monitor._dispatch_message_with_receipt(batch, receipt, consumer_name)
         assert [message.text for message in delivered] == ["Done", "Done"]
-        monitor.commit_delivered_watermarks()
+        await monitor.commit_delivered_watermarks()
         assert self._offset(monitor, "s1") == session_file.stat().st_size
 
     async def test_cancelled_skip_rewinds_and_rebuilds_tool_context(
@@ -1522,7 +1613,7 @@ class TestSettledPrefixWatermarkCommit:
         assert result.tool_name == "Read"
         assert "replayed result" in result.text
 
-    def test_unconfirmed_skip_preserves_tool_context(
+    async def test_unconfirmed_skip_preserves_tool_context(
         self, monitor: SessionMonitor
     ) -> None:
         self._track(monitor, "s1", [])
@@ -1548,7 +1639,7 @@ class TestSettledPrefixWatermarkCommit:
         unconfirmed.track()
         monitor._skip_notice_receipts["s1"] = unconfirmed
 
-        monitor.commit_delivered_watermarks()
+        await monitor.commit_delivered_watermarks()
 
         assert "s1" in monitor.state.pending_skips
         assert monitor._pending_tools["s1"] == {"t1": "Read"}
@@ -1655,7 +1746,7 @@ class TestSettledPrefixWatermarkCommit:
         pending = monitor._register_delivery_receipts(migrated)
         for batch, consumer_name, receipt in pending:
             await monitor._dispatch_message_with_receipt(batch, receipt, consumer_name)
-        monitor.commit_delivered_watermarks()
+        await monitor.commit_delivered_watermarks()
         final_offset = session_file.stat().st_size
         assert monitor.state.tracked_sessions["new-id"].last_byte_offset == final_offset
 
@@ -1746,7 +1837,7 @@ class TestSettledPrefixWatermarkCommit:
         replacement_pending = monitor._register_delivery_receipts(replacement_batches)
         for batch, consumer_name, receipt in replacement_pending:
             await monitor._dispatch_message_with_receipt(batch, receipt, consumer_name)
-        monitor.commit_delivered_watermarks()
+        await monitor.commit_delivered_watermarks()
         assert self._offset(monitor, "s1") == session_file.stat().st_size
 
         restarted = SessionMonitor(
@@ -1789,7 +1880,7 @@ class TestSettledPrefixWatermarkCommit:
             await restarted._dispatch_message_with_receipt(
                 batch, receipt, consumer_name
             )
-        restarted.commit_delivered_watermarks()
+        await restarted.commit_delivered_watermarks()
         assert self._offset(restarted, "s1") == session_file.stat().st_size
 
     async def test_gemini_jsonl_adoption_replays_only_uncommitted_source_range(
@@ -1820,7 +1911,7 @@ class TestSettledPrefixWatermarkCommit:
         first_pending = monitor._register_delivery_receipts(first_batches)
         for batch, consumer_name, receipt in first_pending:
             await monitor._dispatch_message_with_receipt(batch, receipt, consumer_name)
-        monitor.commit_delivered_watermarks()
+        await monitor.commit_delivered_watermarks()
         first_offset = session_file.stat().st_size
         assert monitor.state.tracked_sessions["old-id"].last_byte_offset == first_offset
 
@@ -1851,7 +1942,7 @@ class TestSettledPrefixWatermarkCommit:
         pending = monitor._register_delivery_receipts(adopted_batches)
         for batch, consumer_name, receipt in pending:
             await monitor._dispatch_message_with_receipt(batch, receipt, consumer_name)
-        monitor.commit_delivered_watermarks()
+        await monitor.commit_delivered_watermarks()
         assert (
             monitor.state.tracked_sessions["new-id"].last_byte_offset
             == session_file.stat().st_size
@@ -1904,7 +1995,7 @@ class TestSettledPrefixWatermarkCommit:
         response_pending = monitor._register_delivery_receipts(response_batches)
         for batch, consumer_name, receipt in response_pending:
             await monitor._dispatch_message_with_receipt(batch, receipt, consumer_name)
-        monitor.commit_delivered_watermarks()
+        await monitor.commit_delivered_watermarks()
         response_offset = session_file.stat().st_size
         assert (
             monitor.state.tracked_sessions["old-id"].last_byte_offset == response_offset
@@ -1940,7 +2031,7 @@ class TestSettledPrefixWatermarkCommit:
         pending = monitor._register_delivery_receipts(adopted_batches)
         for batch, consumer_name, receipt in pending:
             await monitor._dispatch_message_with_receipt(batch, receipt, consumer_name)
-        monitor.commit_delivered_watermarks()
+        await monitor.commit_delivered_watermarks()
         assert (
             monitor.state.tracked_sessions["new-id"].last_byte_offset
             == session_file.stat().st_size
@@ -1957,18 +2048,36 @@ class TestSettledPrefixWatermarkCommit:
             await restarted._process_session_file("new-id", session_file, [])
         assert restarted._transcript_reader.drain_batches() == ()
 
-    def test_pending_skip_fences_settled_prefix(self, monitor: SessionMonitor) -> None:
+    async def test_pending_skip_fences_settled_prefix(
+        self, monitor: SessionMonitor
+    ) -> None:
         ready = self._ready(100)
         self._track(monitor, "s1", [ready])
         self._begin_skip(monitor)
 
-        monitor.commit_delivered_watermarks()
+        await monitor.commit_delivered_watermarks()
 
         assert self._offset(monitor, "s1") == 0
         assert monitor._delivery_receipts["s1"] == [ready]
 
-    def test_aged_skip_barrier_force_completes(self, monitor: SessionMonitor) -> None:
-        # An undeliverable notice must not pause the source forever.
+    async def test_legacy_skip_without_source_identity_does_not_commit(
+        self, monitor: SessionMonitor
+    ) -> None:
+        self._track(monitor, "s1", [])
+        self._begin_skip(monitor)
+        monitor.set_skip_callbacks(
+            purge=AsyncMock(), notice=AsyncMock(), validate=lambda _intent: True
+        )
+        monitor._skip_notice_receipts["s1"] = self._ready(500)
+
+        await monitor.commit_delivered_watermarks()
+
+        assert self._offset(monitor, "s1") == 0
+        assert "s1" not in monitor.state.pending_skips
+
+    def test_aged_skip_barrier_cancels_and_replays_without_ack(
+        self, monitor: SessionMonitor
+    ) -> None:
         self._track(monitor, "s1", [self._ready(100)])
         self._begin_skip(monitor)
         intent = monitor.state.pending_skips["s1"]
@@ -1978,7 +2087,8 @@ class TestSettledPrefixWatermarkCommit:
         with patch.object(monitor, "_skip_is_current", return_value=True):
             monitor._expire_aged_skip_barriers()
 
-        assert self._offset(monitor, "s1") == 500
+        assert self._offset(monitor, "s1") == 0
+        assert monitor.state.tracked_sessions["s1"].parsed_offset == 0
         assert "s1" not in monitor.state.pending_skips
         assert "s1" not in monitor._skip_notice_receipts
 
@@ -1999,9 +2109,8 @@ class TestSettledPrefixWatermarkCommit:
         assert self._offset(monitor, "s1") == 0
         assert "s1" not in monitor.state.pending_skips
 
-    @pytest.mark.parametrize("rebind_check", ["prepare", "notice"])
     async def test_rebound_after_failed_skip_notice_replays_purged_source(
-        self, monitor: SessionMonitor, rebind_check: str
+        self, monitor: SessionMonitor
     ) -> None:
         tracked = TrackedSession(
             session_id="s1",
@@ -2019,25 +2128,32 @@ class TestSettledPrefixWatermarkCommit:
         self._begin_skip(monitor, snapshot_offset=500)
         intent = monitor.state.pending_skips["s1"]
 
-        checks = (
-            [True, True, False]
-            if rebind_check == "prepare"
-            else [True, True, True, False]
-        )
-        validate = Mock(side_effect=checks)
+        validate = Mock(side_effect=[True, True, True, False])
         monitor.set_skip_callbacks(
             purge=AsyncMock(return_value=1),
             notice=AsyncMock(side_effect=RuntimeError("notice failed")),
             validate=validate,
         )
 
-        assert await monitor._prepare_pending_skip(intent) is True
-        assert await monitor._enqueue_pending_skip_notice(intent) is False
-        assert intent.purge_complete is True
-        assert "s1" in monitor.state.pending_skips
+        with (
+            patch.object(monitor, "_skip_source_is_current", return_value=True),
+            patch(
+                "ccgram.session_monitor.session_lifecycle.resolve_session_id",
+                return_value="s1",
+            ),
+            patch.object(
+                thread_router,
+                "iter_thread_bindings_with_chat",
+                return_value=[(1, -100, 2, "window-1")],
+            ),
+        ):
+            assert await monitor._prepare_pending_skip(intent) is True
+            assert await monitor._enqueue_pending_skip_notice(intent) is False
+            assert intent.purge_complete is True
+            assert "s1" in monitor.state.pending_skips
 
-        monitor._clear_skip_retry("s1")
-        await monitor._resume_pending_skip_notices()
+            monitor._clear_skip_retry("s1")
+            await monitor._resume_pending_skip_notices()
 
         assert "s1" not in monitor.state.pending_skips
         assert self._offset(monitor, "s1") == 100
@@ -2065,13 +2181,9 @@ class TestSettledPrefixWatermarkCommit:
         assert self._offset(monitor, "s1") == 0
         assert "s1" not in monitor.state.pending_skips
 
-    def test_aged_barrier_survives_validator_failure(
+    def test_aged_barrier_cancels_even_when_validator_fails(
         self, monitor: SessionMonitor
     ) -> None:
-        # A validator exception is not a rebind: decide nothing this pass.
-        # Exercised through the real set_skip_callbacks wiring so the
-        # exception path runs through the actual registered validator,
-        # not a patched private helper.
         self._track(monitor, "s1", [self._ready(100)])
         self._begin_skip(monitor)
         intent = monitor.state.pending_skips["s1"]
@@ -2085,31 +2197,60 @@ class TestSettledPrefixWatermarkCommit:
 
         monitor._expire_aged_skip_barriers()
 
-        validate.assert_called_once_with(intent)
+        validate.assert_not_called()
         assert self._offset(monitor, "s1") == 0
-        assert "s1" in monitor.state.pending_skips
+        assert monitor.state.tracked_sessions["s1"].parsed_offset == 0
+        assert "s1" not in monitor.state.pending_skips
 
-    def test_aged_barrier_deadline_read_from_config_at_call_time(
+    async def test_aged_barrier_deadline_cancels_without_acknowledgement(
         self, monitor: SessionMonitor, monkeypatch
     ) -> None:
-        # The deadline must be read live, not frozen into a module constant
-        # at import time, so tests (and runtime config reloads) can patch it.
         self._track(monitor, "s1", [self._ready(100)])
         self._begin_skip(monitor)
         intent = monitor.state.pending_skips["s1"]
         intent.created_at = time.time() - 120.0
         intent.purge_complete = True
-        monitor.set_skip_callbacks(
-            purge=AsyncMock(), notice=AsyncMock(), validate=lambda _intent: True
-        )
         monkeypatch.setattr(
             "ccgram.session_monitor.config.skip_barrier_deadline_s", 60.0
         )
 
-        monitor._expire_aged_skip_barriers()
+        with patch.object(monitor, "_skip_is_current", return_value=True):
+            await monitor._advance_skip_barriers()
+
+        assert self._offset(monitor, "s1") == 0
+        assert "s1" not in monitor.state.pending_skips
+        assert "s1" not in monitor._skip_notice_receipts
+
+    async def test_acknowledged_skip_commits_once_at_deadline(
+        self, monitor: SessionMonitor, monkeypatch
+    ) -> None:
+        self._track(monitor, "s1", [self._ready(100)])
+        self._begin_skip(monitor, snapshot_offset=500)
+        intent = monitor.state.pending_skips["s1"]
+        intent.created_at = time.time() - 120.0
+        intent.purge_complete = True
+        monitor._skip_notice_receipts["s1"] = self._ready(500)
+        monkeypatch.setattr(
+            "ccgram.session_monitor.config.skip_barrier_deadline_s", 60.0
+        )
+
+        with (
+            patch.object(
+                monitor,
+                "_verify_skip_content",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch.object(
+                monitor.state, "complete_skip", wraps=monitor.state.complete_skip
+            ) as complete_skip,
+        ):
+            await monitor._advance_skip_barriers()
+            await monitor._advance_skip_barriers()
 
         assert self._offset(monitor, "s1") == 500
         assert "s1" not in monitor.state.pending_skips
+        complete_skip.assert_called_once_with("s1")
 
     def test_legacy_barrier_without_stamp_gets_clock_started(
         self, monitor: SessionMonitor
@@ -2124,21 +2265,23 @@ class TestSettledPrefixWatermarkCommit:
         assert monitor.state.pending_skips["s1"].created_at > 0.0
         assert "s1" in monitor.state.pending_skips
 
-    def test_delivered_skip_wins_and_discards_ordinary_receipts(
+    async def test_delivered_skip_wins_and_discards_ordinary_receipts(
         self, monitor: SessionMonitor
     ) -> None:
         self._track(monitor, "s1", [self._ready(100)])
         self._begin_skip(monitor)
         monitor._skip_notice_receipts["s1"] = self._ready(500)
 
-        with patch.object(monitor, "_skip_is_current", return_value=True):
-            monitor.commit_delivered_watermarks()
+        with patch.object(
+            monitor, "_verify_skip_content", new_callable=AsyncMock, return_value=True
+        ):
+            await monitor.commit_delivered_watermarks()
 
         assert self._offset(monitor, "s1") == 500
         assert "s1" not in monitor.state.pending_skips
         assert "s1" not in monitor._delivery_receipts
 
-    def test_shared_batch_checkpoint_defers_commit(
+    async def test_shared_batch_checkpoint_defers_commit(
         self, monitor: SessionMonitor
     ) -> None:
         """Code-review P1 (history/shallow 2026-08-30): receipts of one
@@ -2148,7 +2291,7 @@ class TestSettledPrefixWatermarkCommit:
         sibling.track()
         self._track(monitor, "s1", [self._ready(300), sibling])
 
-        monitor.commit_delivered_watermarks()
+        await monitor.commit_delivered_watermarks()
 
         # No commit past a tie: the unsettled sibling's bytes are below
         # the shared 300. The settled receipt is still consumed; replay
@@ -2156,7 +2299,7 @@ class TestSettledPrefixWatermarkCommit:
         assert self._offset(monitor, "s1") == 0
         assert monitor._delivery_receipts["s1"] == [sibling]
 
-    def test_next_batch_checkpoint_unblocks_tied_commit(
+    async def test_next_batch_checkpoint_unblocks_tied_commit(
         self, monitor: SessionMonitor
     ) -> None:
         self._track(monitor, "s1", [self._ready(300), self._ready(400)])
@@ -2164,14 +2307,14 @@ class TestSettledPrefixWatermarkCommit:
         late.track()
         monitor._delivery_receipts["s1"].append(late)
 
-        monitor.commit_delivered_watermarks()
+        await monitor.commit_delivered_watermarks()
 
         # The first batch (300) is fully settled and the fence sits
         # strictly beyond it: 300 commits, the tied 400s do not.
         assert self._offset(monitor, "s1") == 300
         assert monitor._delivery_receipts["s1"] == [late]
 
-    def test_receiptless_tracked_session_does_not_crash_commit(
+    async def test_receiptless_tracked_session_does_not_crash_commit(
         self, monitor: SessionMonitor
     ) -> None:
         """Code-review P1 (multi-agent 2026-08-30): a tracked session
@@ -2181,7 +2324,7 @@ class TestSettledPrefixWatermarkCommit:
         self._track(monitor, "s2", [])
         monitor._delivery_receipts.pop("s2")
 
-        monitor.commit_delivered_watermarks()
+        await monitor.commit_delivered_watermarks()
 
         assert self._offset(monitor, "s1") == 100
         assert self._offset(monitor, "s2") == 0
@@ -3701,3 +3844,1177 @@ class TestActiveCwdsUseTheCompleteListing:
         )
 
         assert await self._reader()._get_active_cwds() == set()
+
+
+async def test_replay_cap_uses_one_stable_barrier_and_does_not_loop_on_appends(
+    tmp_path, monkeypatch
+) -> None:
+    transcript = tmp_path / "session.jsonl"
+    transcript.write_bytes(_complete_jsonl_record(200))
+    monitor = SessionMonitor(
+        projects_path=tmp_path / "projects", state_file=tmp_path / "monitor.json"
+    )
+    monitor.state.update_session(
+        TrackedSession("s1", str(transcript), last_byte_offset=10, parsed_offset=10)
+    )
+    current_map = {
+        "@0": {
+            "session_id": "s1",
+            "transcript_path": str(transcript),
+            "provider_name": "claude",
+        }
+    }
+    monitor._last_session_map = current_map
+    monkeypatch.setenv("CCGRAM_REPLAY_CAP_MB", "0.0001")
+    purge = AsyncMock(return_value=3)
+    notice_attempts = []
+
+    async def notice(_intent) -> None:
+        notice_attempts.append("s1")
+        receipt = get_active_delivery_receipt()
+        assert receipt is not None
+        receipt.track()
+
+    monitor.set_skip_callbacks(
+        purge=purge, notice=notice, validate=lambda _intent: True
+    )
+    process = AsyncMock()
+    with (
+        patch(
+            "ccgram.session_monitor.identity_state.accepts_provider_observation",
+            return_value=True,
+        ),
+        patch.object(
+            thread_router,
+            "iter_thread_bindings_with_chat",
+            return_value=[(1, 99, 4, "@0")],
+        ),
+        patch.object(monitor, "_process_session_file", process),
+    ):
+        await monitor.check_for_updates(current_map)
+        assert set(monitor.state.pending_skips) == {"s1"}
+        intent = monitor.state.pending_skips["s1"]
+        assert intent.snapshot_offset == 200
+        assert purge.await_count == 1
+        assert notice_attempts == ["s1"]
+        process.assert_not_awaited()
+
+        # Appends after the frozen EOF do not mutate the persisted barrier or
+        # create a second notice while the first notice is still unacknowledged.
+        with transcript.open("ab") as source:
+            source.write(b"y" * 40)
+        await monitor.check_for_updates(current_map)
+        assert monitor.state.pending_skips["s1"].snapshot_offset == 200
+        assert purge.await_count == 1
+        assert notice_attempts == ["s1"]
+        process.assert_not_awaited()
+
+        monitor._skip_notice_receipts["s1"].settle(DeliveryOutcome.DELIVERED)
+        await monitor.commit_delivered_watermarks()
+        assert monitor.state.tracked_sessions["s1"].last_byte_offset == 200
+        assert transcript.read_bytes() == _complete_jsonl_record(200) + b"y" * 40
+
+        # The post-snapshot append is below the cap and resumes normally; the
+        # already acknowledged range cannot trigger another skip.
+        await monitor.check_for_updates(current_map)
+        assert "s1" not in monitor.state.pending_skips
+        assert purge.await_count == 1
+        assert notice_attempts == ["s1"]
+        process.assert_awaited_once()
+
+
+async def test_replay_cap_defers_if_eof_changes_during_source_reconciliation(
+    tmp_path, monkeypatch
+) -> None:
+    transcript = tmp_path / "session.jsonl"
+    transcript.write_bytes(_complete_jsonl_record(200))
+    monitor = SessionMonitor(
+        projects_path=tmp_path / "projects", state_file=tmp_path / "monitor.json"
+    )
+    monitor.state.update_session(
+        TrackedSession("s1", str(transcript), last_byte_offset=10, parsed_offset=10)
+    )
+    current_map = {
+        "@0": {
+            "session_id": "s1",
+            "transcript_path": str(transcript),
+            "provider_name": "claude",
+        }
+    }
+    monitor._last_session_map = current_map
+    monkeypatch.setenv("CCGRAM_REPLAY_CAP_MB", "0.0001")
+    purge = AsyncMock(return_value=3)
+    monitor.set_skip_callbacks(
+        purge=purge, notice=AsyncMock(), validate=lambda _intent: True
+    )
+
+    async def append_during_reconciliation(*_args, **_kwargs):
+        with transcript.open("ab") as source:
+            source.write(_complete_jsonl_record(16))
+        return False, False
+
+    process = AsyncMock()
+    with (
+        patch(
+            "ccgram.session_monitor.identity_state.accepts_provider_observation",
+            return_value=True,
+        ),
+        patch.object(
+            thread_router,
+            "iter_thread_bindings_with_chat",
+            return_value=[(1, 99, 4, "@0")],
+        ),
+        patch.object(
+            monitor._transcript_reader,
+            "_prepare_observed_generation",
+            side_effect=append_during_reconciliation,
+        ),
+        patch.object(monitor, "_process_session_file", process),
+    ):
+        await monitor.check_for_updates(current_map)
+
+    assert not monitor.state.pending_skips
+    purge.assert_not_awaited()
+    process.assert_awaited_once()
+    assert transcript.read_bytes() == _complete_jsonl_record(
+        200
+    ) + _complete_jsonl_record(16)
+
+
+async def test_replay_cap_and_manual_skip_fail_closed_for_shared_recipients(
+    tmp_path, monkeypatch
+) -> None:
+    transcript = tmp_path / "session.jsonl"
+    transcript.write_bytes(_complete_jsonl_record(200))
+    monitor = SessionMonitor(
+        projects_path=tmp_path / "projects", state_file=tmp_path / "monitor.json"
+    )
+    monitor.state.update_session(
+        TrackedSession("s1", str(transcript), last_byte_offset=10, parsed_offset=10)
+    )
+    current_map = {
+        window_id: {
+            "session_id": "s1",
+            "transcript_path": str(transcript),
+            "provider_name": "claude",
+        }
+        for window_id in ("@0", "@1")
+    }
+    monitor._last_session_map = current_map
+    purge = AsyncMock(return_value=3)
+    notice = AsyncMock()
+    monitor.set_skip_callbacks(
+        purge=purge, notice=notice, validate=lambda _intent: True
+    )
+    monkeypatch.setenv("CCGRAM_REPLAY_CAP_MB", "0.0001")
+    process = AsyncMock()
+    with (
+        patch(
+            "ccgram.session_monitor.identity_state.accepts_provider_observation",
+            return_value=True,
+        ),
+        patch.object(
+            thread_router,
+            "iter_thread_bindings_with_chat",
+            return_value=[(1, 99, 4, "@0"), (2, 100, 7, "@1")],
+        ),
+        patch.object(monitor, "_process_session_file", process),
+        # Isolate the request's early shared-recipient refusal from later gates.
+        patch.object(monitor, "_skip_is_current", return_value=True),
+    ):
+        assert await monitor.request_backlog_skip(1, "@0", 4, 99) is None
+        await monitor.check_for_updates(current_map)
+        assert monitor.has_shared_backlog_source("@0")
+
+    assert not monitor.state.pending_skips
+    purge.assert_not_awaited()
+    notice.assert_not_awaited()
+    process.assert_awaited()
+
+    # The automatic recipient guard is distinct from the manual request guard.
+    request = AsyncMock()
+    monitor.request_backlog_skip = request
+    with (
+        patch(
+            "ccgram.session_monitor.identity_state.accepts_provider_observation",
+            return_value=True,
+        ),
+        patch.object(
+            thread_router,
+            "iter_thread_bindings_with_chat",
+            return_value=[(1, 99, 4, "@0"), (2, 100, 7, "@1")],
+        ),
+        patch.object(monitor, "_process_session_file", process),
+    ):
+        await monitor._maybe_skip_replay_cap(
+            "s1", transcript, "@0", current_map["@0"], 1
+        )
+    request.assert_not_awaited()
+
+
+async def test_replay_cap_is_disabled_by_default(tmp_path, monkeypatch) -> None:
+    transcript = tmp_path / "session.jsonl"
+    transcript.write_bytes(_complete_jsonl_record(200))
+    monitor = SessionMonitor(
+        projects_path=tmp_path / "projects", state_file=tmp_path / "monitor.json"
+    )
+    monitor.state.update_session(
+        TrackedSession("s1", str(transcript), last_byte_offset=10, parsed_offset=10)
+    )
+    current_map = {
+        "@0": {
+            "session_id": "s1",
+            "transcript_path": str(transcript),
+            "provider_name": "claude",
+        }
+    }
+    monitor._last_session_map = current_map
+    monkeypatch.delenv("CCGRAM_REPLAY_CAP_MB", raising=False)
+    purge = AsyncMock(return_value=3)
+    monitor.set_skip_callbacks(
+        purge=purge, notice=AsyncMock(), validate=lambda _intent: True
+    )
+    process = AsyncMock()
+    with (
+        patch.object(monitor, "_process_session_file", process),
+        patch.object(
+            monitor, "_maybe_skip_replay_cap", new_callable=AsyncMock
+        ) as maybe_skip,
+    ):
+        await monitor.check_for_updates(current_map)
+
+    assert not monitor.state.pending_skips
+    purge.assert_not_awaited()
+    process.assert_awaited_once()
+    maybe_skip.assert_not_awaited()
+
+
+async def test_expired_auto_skip_waits_for_new_bytes_across_restart(
+    tmp_path, monkeypatch
+) -> None:
+    transcript = tmp_path / "session.jsonl"
+    transcript.write_bytes(_complete_jsonl_record(200))
+    state_file = tmp_path / "monitor.json"
+    monitor = SessionMonitor(projects_path=tmp_path / "projects", state_file=state_file)
+    monitor.state.update_session(
+        TrackedSession("s1", str(transcript), last_byte_offset=10, parsed_offset=10)
+    )
+    current_map = {
+        "@0": {
+            "session_id": "s1",
+            "transcript_path": str(transcript),
+            "provider_name": "claude",
+        }
+    }
+    monitor._last_session_map = current_map
+    monkeypatch.setenv("CCGRAM_REPLAY_CAP_MB", "0.0001")
+    monkeypatch.setattr("ccgram.session_monitor.config.skip_barrier_deadline_s", 60.0)
+    purge = AsyncMock(return_value=3)
+    notice_attempts = []
+
+    async def notice(_intent) -> None:
+        notice_attempts.append("s1")
+        receipt = get_active_delivery_receipt()
+        assert receipt is not None
+        receipt.track()
+
+    monitor.set_skip_callbacks(
+        purge=purge, notice=notice, validate=lambda _intent: True
+    )
+    with (
+        patch(
+            "ccgram.session_monitor.identity_state.accepts_provider_observation",
+            return_value=True,
+        ),
+        patch.object(
+            thread_router,
+            "iter_thread_bindings_with_chat",
+            return_value=[(1, 99, 4, "@0")],
+        ),
+    ):
+        await monitor.check_for_updates(current_map)
+        intent = monitor.state.pending_skips["s1"]
+        assert intent.automatic is True
+        intent.created_at = time.time() - 120.0
+        monitor._expire_aged_skip_barriers()
+        assert monitor.state.tracked_sessions["s1"].replay_cap_retry_after == 200
+
+        # The persisted retry floor prevents an immediate repeat after restart
+        # while the same EOF still exceeds the cap from the delivered watermark.
+        restarted = SessionMonitor(
+            projects_path=tmp_path / "projects", state_file=state_file
+        )
+        restarted._last_session_map = current_map
+        restarted.set_skip_callbacks(
+            purge=purge, notice=notice, validate=lambda _intent: True
+        )
+        process = AsyncMock()
+        with patch.object(restarted, "_process_session_file", process):
+            await restarted.check_for_updates(current_map)
+        assert not restarted.state.pending_skips
+        assert restarted.state.tracked_sessions["s1"].replay_cap_retry_after == 200
+        assert purge.await_count == 1
+        process.assert_awaited_once()
+
+        # A new cap-sized append permits a fresh barrier; repeated polls on
+        # the unchanged snapshot do not create a retry loop.
+        with transcript.open("ab") as source:
+            source.write(_complete_jsonl_record(105))
+        await restarted.check_for_updates(current_map)
+        assert restarted.state.pending_skips["s1"].snapshot_offset == 305
+        assert purge.await_count == 2
+        assert notice_attempts == ["s1", "s1"]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "replacement",
+        "truncation",
+        "truncate-and-regrow",
+        "same-size-overwrite",
+        "append",
+    ],
+)
+async def test_acknowledged_notice_does_not_advance_after_source_changes(
+    tmp_path, mutation: str
+) -> None:
+    transcript = tmp_path / "session.jsonl"
+    transcript.write_bytes(_complete_jsonl_record(80))
+    monitor = SessionMonitor(
+        projects_path=tmp_path / "projects", state_file=tmp_path / "monitor.json"
+    )
+    tracked = TrackedSession(
+        "s1", str(transcript), last_byte_offset=10, parsed_offset=80
+    )
+    monitor.state.update_session(tracked)
+    bindings = [(1, 99, 4, "@0")]
+
+    async def purge(_intent) -> int:
+        return 2
+
+    async def notice(_intent) -> None:
+        receipt = get_active_delivery_receipt()
+        assert receipt is not None
+        receipt.track()
+
+    monitor.set_skip_callbacks(
+        purge=purge, notice=notice, validate=lambda _intent: True
+    )
+    with (
+        patch(
+            "ccgram.session_monitor.session_lifecycle.resolve_session_id",
+            side_effect=lambda _window_id: "s1",
+        ),
+        patch(
+            "ccgram.session_monitor.session_lifecycle._last_session_map",
+            {"@0": {"session_id": "s1", "transcript_path": str(transcript)}},
+        ),
+        patch.object(
+            thread_router,
+            "iter_thread_bindings_with_chat",
+            side_effect=lambda: iter(bindings),
+        ),
+    ):
+        intent = await monitor.request_backlog_skip(1, "@0", 4, 99)
+        assert intent is not None
+        if mutation == "replacement":
+            replacement = tmp_path / "replacement.jsonl"
+            replacement.write_bytes(b"replacement data" * 8)
+            os.replace(replacement, transcript)
+        elif mutation == "truncation":
+            transcript.write_bytes(b"short")
+        elif mutation == "truncate-and-regrow":
+            with transcript.open("r+b") as source:
+                source.truncate(0)
+                source.write(b"y" * 80)
+        elif mutation == "same-size-overwrite":
+            with transcript.open("r+b") as source:
+                source.write(b"y" * 80)
+        else:
+            with transcript.open("ab") as source:
+                source.write(b"z" * 20)
+
+        monitor._skip_notice_receipts["s1"].settle(DeliveryOutcome.DELIVERED)
+        await monitor.commit_delivered_watermarks()
+
+    if mutation == "append":
+        assert tracked.last_byte_offset == 80
+        assert tracked.parsed_offset == 80
+    else:
+        assert tracked.last_byte_offset == 10
+        assert tracked.parsed_offset == 10
+    assert "s1" not in monitor.state.pending_skips
+
+
+@pytest.mark.parametrize("bind_during_purge", [True, False])
+async def test_acknowledged_skip_cancels_when_second_recipient_binds(
+    tmp_path, bind_during_purge: bool
+) -> None:
+    transcript = tmp_path / "session.jsonl"
+    transcript.write_bytes(_complete_jsonl_record(80))
+    monitor = SessionMonitor(
+        projects_path=tmp_path / "projects", state_file=tmp_path / "monitor.json"
+    )
+    tracked = TrackedSession(
+        "s1", str(transcript), last_byte_offset=10, parsed_offset=80
+    )
+    monitor.state.update_session(tracked)
+    source_receipt = new_delivery_receipt(checkpoint=80)
+    source_receipt.track()
+    monitor._delivery_receipts["s1"] = [source_receipt]
+    monitor._transcript_reader._pending_batches.append(_transcript_batch("s1", 80))
+    bindings = [(1, 99, 4, "@0")]
+
+    async def purge(_intent) -> int:
+        if bind_during_purge:
+            bindings.append((2, 100, 7, "@1"))
+        return 2
+
+    notice_attempts = 0
+
+    async def notice(_intent) -> None:
+        nonlocal notice_attempts
+        notice_attempts += 1
+        receipt = get_active_delivery_receipt()
+        assert receipt is not None
+        receipt.track()
+
+    monitor.set_skip_callbacks(
+        purge=purge, notice=notice, validate=lambda _intent: True
+    )
+    with (
+        patch(
+            "ccgram.session_monitor.session_lifecycle.resolve_session_id",
+            side_effect=lambda _window_id: "s1",
+        ),
+        patch(
+            "ccgram.session_monitor.session_lifecycle._last_session_map",
+            {"@0": {"session_id": "s1", "transcript_path": str(transcript)}},
+        ),
+        patch.object(
+            thread_router,
+            "iter_thread_bindings_with_chat",
+            side_effect=lambda: iter(bindings),
+        ),
+    ):
+        intent = await monitor.request_backlog_skip(1, "@0", 4, 99)
+        if bind_during_purge:
+            assert intent is None
+        else:
+            assert intent is not None
+            bindings.append((2, 100, 7, "@1"))
+            monitor._skip_notice_receipts["s1"].settle(DeliveryOutcome.DELIVERED)
+            await monitor.commit_delivered_watermarks()
+
+    assert notice_attempts == (0 if bind_during_purge else 1)
+    assert tracked.last_byte_offset == 10
+    assert tracked.parsed_offset == 10
+    assert "s1" not in monitor.state.pending_skips
+    assert "s1" not in monitor._delivery_receipts
+    assert not any(
+        batch.session_id == "s1"
+        for batch in monitor._transcript_reader._pending_batches
+    )
+
+
+async def test_skip_does_not_freeze_inside_an_incremental_jsonl_record(
+    tmp_path,
+) -> None:
+    first_record = {
+        "type": "assistant",
+        "uuid": "first",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "first"}],
+        },
+    }
+    second_record = {
+        "type": "assistant",
+        "uuid": "second",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "second"}],
+        },
+    }
+    first_line = json.dumps(first_record).encode() + b"\n"
+    second_line = json.dumps(second_record).encode() + b"\n"
+    partial_second = second_line[: len(second_line) // 2]
+    transcript = tmp_path / "session.jsonl"
+    transcript.write_bytes(first_line + partial_second)
+    monitor = SessionMonitor(
+        projects_path=tmp_path / "projects", state_file=tmp_path / "monitor.json"
+    )
+    monitor.state.update_session(
+        TrackedSession("s1", str(transcript), last_byte_offset=0, parsed_offset=0)
+    )
+    monitor._last_session_map = {
+        "@0": {
+            "session_id": "s1",
+            "transcript_path": str(transcript),
+            "provider_name": "claude",
+        }
+    }
+    purge = AsyncMock(return_value=1)
+
+    async def notice(_intent) -> None:
+        receipt = get_active_delivery_receipt()
+        assert receipt is not None
+        receipt.track()
+
+    monitor.set_skip_callbacks(
+        purge=purge, notice=notice, validate=lambda _intent: True
+    )
+    with (
+        patch(
+            "ccgram.transcript_reader.get_provider_for_window",
+            return_value=ClaudeProvider(),
+        ),
+        patch(
+            "ccgram.session_monitor.session_lifecycle.resolve_session_id",
+            return_value="s1",
+        ),
+        patch.object(
+            thread_router,
+            "iter_thread_bindings_with_chat",
+            return_value=[(1, 99, 4, "@0")],
+        ),
+    ):
+        intent = await monitor.request_backlog_skip(1, "@0", 4, 99)
+        if intent is not None:
+            monitor._skip_notice_receipts["s1"].settle(DeliveryOutcome.DELIVERED)
+            await monitor.commit_delivered_watermarks()
+        with transcript.open("ab") as source:
+            source.write(second_line[len(partial_second) :])
+
+    messages: list[NewMessage] = []
+    with (
+        patch(
+            "ccgram.transcript_reader.get_provider_for_window",
+            return_value=ClaudeProvider(),
+        ),
+        patch(
+            "ccgram.transcript_reader.identity_state.accepts_provider_observation",
+            return_value=True,
+        ),
+    ):
+        await monitor._process_session_file("s1", transcript, messages, "@0")
+
+    assert not monitor.state.pending_skips
+    assert any(message.text == "second" for message in messages)
+    if intent is None:
+        purge.assert_not_awaited()
+        assert not monitor._skip_notice_receipts
+
+
+async def test_replay_cap_defers_until_incremental_record_is_complete(
+    tmp_path, monkeypatch
+) -> None:
+    first_record = {
+        "type": "assistant",
+        "uuid": "first",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "first"}],
+        },
+    }
+    second_record = {
+        "type": "assistant",
+        "uuid": "second",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "second"}],
+        },
+    }
+    first_line = json.dumps(first_record).encode() + b"\n"
+    second_line = json.dumps(second_record).encode() + b"\n"
+    partial_second = second_line[: len(second_line) // 2]
+    transcript = tmp_path / "session.jsonl"
+    transcript.write_bytes(first_line + partial_second)
+    monitor = SessionMonitor(
+        projects_path=tmp_path / "projects", state_file=tmp_path / "monitor.json"
+    )
+    monitor.state.update_session(
+        TrackedSession("s1", str(transcript), last_byte_offset=0, parsed_offset=0)
+    )
+    current_map = {
+        "@0": {
+            "session_id": "s1",
+            "transcript_path": str(transcript),
+            "provider_name": "claude",
+        }
+    }
+    monitor._last_session_map = current_map
+    monkeypatch.setenv("CCGRAM_REPLAY_CAP_MB", "0.0001")
+    purge = AsyncMock(return_value=1)
+    notice = AsyncMock()
+    process = AsyncMock()
+    monitor.set_skip_callbacks(
+        purge=purge, notice=notice, validate=lambda _intent: True
+    )
+
+    with (
+        patch(
+            "ccgram.session_monitor.identity_state.accepts_provider_observation",
+            return_value=True,
+        ),
+        patch.object(
+            thread_router,
+            "iter_thread_bindings_with_chat",
+            return_value=[(1, 99, 4, "@0")],
+        ),
+        patch.object(monitor, "_process_session_file", process),
+    ):
+        await monitor.check_for_updates(current_map)
+
+    assert not monitor.state.pending_skips
+    purge.assert_not_awaited()
+    notice.assert_not_awaited()
+    process.assert_awaited_once()
+
+
+async def test_nonincremental_skip_allows_a_source_without_newline(
+    tmp_path,
+) -> None:
+    transcript = tmp_path / "whole-document.json"
+    transcript.write_bytes(b'{"whole":"document"}')
+    monitor = SessionMonitor(
+        projects_path=tmp_path / "projects", state_file=tmp_path / "monitor.json"
+    )
+    monitor.state.update_session(
+        TrackedSession("s1", str(transcript), last_byte_offset=0)
+    )
+    monitor._last_session_map = {
+        "@0": {
+            "session_id": "s1",
+            "transcript_path": str(transcript),
+            "provider_name": "whole",
+        }
+    }
+    provider = SimpleNamespace(
+        capabilities=SimpleNamespace(
+            name="whole", supports_hook=False, supports_incremental_read=False
+        )
+    )
+    purge = AsyncMock(return_value=1)
+
+    async def notice(_intent) -> None:
+        receipt = get_active_delivery_receipt()
+        assert receipt is not None
+        receipt.track()
+
+    monitor.set_skip_callbacks(
+        purge=purge, notice=notice, validate=lambda _intent: True
+    )
+    with (
+        patch(
+            "ccgram.transcript_reader.get_provider_for_window", return_value=provider
+        ),
+        patch(
+            "ccgram.session_monitor.session_lifecycle.resolve_session_id",
+            return_value="s1",
+        ),
+        patch.object(
+            thread_router,
+            "iter_thread_bindings_with_chat",
+            return_value=[(1, 99, 4, "@0")],
+        ),
+    ):
+        intent = await monitor.request_backlog_skip(1, "@0", 4, 99)
+
+    assert intent is not None
+    assert purge.await_count == 1
+
+
+def _ready_skip_fixture(tmp_path):
+    transcript = tmp_path / "source.jsonl"
+    transcript.write_bytes(_complete_jsonl_record(200))
+    source_stat = transcript.stat()
+    monitor = SessionMonitor(
+        projects_path=tmp_path / "projects", state_file=tmp_path / "monitor.json"
+    )
+    tracked = TrackedSession("s1", str(transcript), last_byte_offset=10)
+    monitor.state.update_session(tracked)
+    digest = _source_range_sha256(
+        transcript,
+        10,
+        source_stat.st_size,
+        device=source_stat.st_dev,
+        inode=source_stat.st_ino,
+    )
+    assert digest is not None
+    intent = BacklogSkipIntent(
+        session_id="s1",
+        window_id="@0",
+        user_id=1,
+        thread_id=4,
+        chat_id=99,
+        snapshot_offset=source_stat.st_size,
+        range_start=10,
+        created_at=time.time(),
+        source_path=str(transcript),
+        source_device=source_stat.st_dev,
+        source_inode=source_stat.st_ino,
+        source_range_sha256=digest,
+    )
+    monitor.state.begin_skip(intent)
+    receipt = new_delivery_receipt(checkpoint=source_stat.st_size)
+    receipt.track()
+    receipt.settle(DeliveryOutcome.DELIVERED)
+    receipt.close()
+    monitor._skip_notice_receipts["s1"] = receipt
+    monitor._last_session_map = {
+        "@0": {"session_id": "s1", "transcript_path": str(transcript)}
+    }
+    monitor.set_skip_callbacks(
+        purge=AsyncMock(return_value=0),
+        notice=AsyncMock(),
+        validate=lambda _intent: True,
+    )
+    return monitor, transcript, tracked, intent, receipt
+
+
+async def test_backlog_freeze_hash_runs_off_loop_and_keeps_loop_responsive(
+    tmp_path,
+) -> None:
+    transcript = tmp_path / "source.jsonl"
+    transcript.write_bytes(_complete_jsonl_record(200))
+    source_stat = transcript.stat()
+    monitor = SessionMonitor(
+        projects_path=tmp_path / "projects", state_file=tmp_path / "monitor.json"
+    )
+    monitor.state.update_session(
+        TrackedSession("s1", str(transcript), last_byte_offset=10)
+    )
+    monitor._last_session_map = {
+        "@0": {"session_id": "s1", "transcript_path": str(transcript)}
+    }
+    digest = _source_range_sha256(
+        transcript,
+        10,
+        source_stat.st_size,
+        device=source_stat.st_dev,
+        inode=source_stat.st_ino,
+    )
+    assert digest is not None
+    entered = threading.Event()
+    release = threading.Event()
+    loop_tick = asyncio.Event()
+    main_thread = threading.get_ident()
+    original_hash = _source_range_sha256
+
+    def slow_hash(*args, **kwargs):
+        assert threading.get_ident() != main_thread
+        entered.set()
+        release.wait(timeout=0.5)
+        return original_hash(*args, **kwargs)
+
+    async def purge(_intent) -> int:
+        return 0
+
+    async def notice(_intent) -> None:
+        receipt = get_active_delivery_receipt()
+        assert receipt is not None
+        receipt.track()
+
+    monitor.set_skip_callbacks(
+        purge=purge, notice=notice, validate=lambda _intent: True
+    )
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    entered_while_loop_responsive = False
+    with (
+        patch("ccgram.session_monitor._source_range_sha256", slow_hash),
+        patch(
+            "ccgram.session_monitor.session_lifecycle.resolve_session_id",
+            return_value="s1",
+        ),
+        patch.object(
+            thread_router,
+            "iter_thread_bindings_with_chat",
+            return_value=[(1, 99, 4, "@0")],
+        ),
+    ):
+        task = asyncio.create_task(monitor.request_backlog_skip(1, "@0", 4, 99))
+        loop.call_soon(loop_tick.set)
+        await loop_tick.wait()
+        elapsed = loop.time() - started
+        entered_while_loop_responsive = await asyncio.to_thread(entered.wait, 1)
+        release.set()
+        result = await asyncio.gather(task, return_exceptions=True)
+
+    assert entered_while_loop_responsive
+    assert elapsed < 0.1
+    assert isinstance(result[0], BacklogSkipIntent)
+
+
+async def test_concurrent_freezes_create_only_one_pending_barrier(tmp_path) -> None:
+    transcript = tmp_path / "source.jsonl"
+    transcript.write_bytes(_complete_jsonl_record(200))
+    source_stat = transcript.stat()
+    monitor = SessionMonitor(
+        projects_path=tmp_path / "projects", state_file=tmp_path / "monitor.json"
+    )
+    monitor.state.update_session(
+        TrackedSession("s1", str(transcript), last_byte_offset=10)
+    )
+    monitor._last_session_map = {
+        "@0": {"session_id": "s1", "transcript_path": str(transcript)}
+    }
+    rendezvous = threading.Barrier(2)
+    original_hash = _source_range_sha256
+
+    def concurrent_hash(*args, **kwargs):
+        rendezvous.wait(timeout=0.5)
+        return original_hash(*args, **kwargs)
+
+    async def purge(_intent) -> int:
+        return 0
+
+    async def notice(_intent) -> None:
+        receipt = get_active_delivery_receipt()
+        assert receipt is not None
+        receipt.track()
+
+    monitor.set_skip_callbacks(
+        purge=purge, notice=notice, validate=lambda _intent: True
+    )
+    with (
+        patch("ccgram.session_monitor._source_range_sha256", concurrent_hash),
+        patch(
+            "ccgram.session_monitor.session_lifecycle.resolve_session_id",
+            return_value="s1",
+        ),
+        patch.object(
+            thread_router,
+            "iter_thread_bindings_with_chat",
+            return_value=[(1, 99, 4, "@0")],
+        ),
+    ):
+        results = await asyncio.gather(
+            monitor.request_backlog_skip(1, "@0", 4, 99),
+            monitor.request_backlog_skip(1, "@0", 4, 99),
+            return_exceptions=True,
+        )
+
+    assert sum(isinstance(result, BacklogSkipIntent) for result in results) == 1
+    assert results.count(None) == 1
+    assert set(monitor.state.pending_skips) == {"s1"}
+    assert source_stat.st_size == monitor.state.pending_skips["s1"].snapshot_offset
+
+
+async def test_unknown_commit_digest_defers_then_retries_without_cancelling(
+    tmp_path,
+) -> None:
+    monitor, _transcript, tracked, intent, receipt = _ready_skip_fixture(tmp_path)
+    with (
+        patch(
+            "ccgram.session_monitor._source_range_sha256",
+            side_effect=[None, intent.source_range_sha256],
+        ),
+        patch(
+            "ccgram.session_monitor.session_lifecycle.resolve_session_id",
+            return_value="s1",
+        ),
+        patch.object(
+            thread_router,
+            "iter_thread_bindings_with_chat",
+            return_value=[(1, 99, 4, "@0")],
+        ),
+    ):
+        await monitor.commit_delivered_watermarks()
+        assert monitor.state.pending_skips["s1"] is intent
+        assert monitor._skip_notice_receipts["s1"] is receipt
+        assert receipt.commit_ready
+        assert tracked.last_byte_offset == 10
+
+        monitor._skip_retry_at["s1"] = 0.0
+        await monitor.commit_delivered_watermarks()
+
+    assert "s1" not in monitor.state.pending_skips
+    assert tracked.last_byte_offset == intent.snapshot_offset
+    assert receipt.failed is False
+
+
+async def test_old_async_verifier_cannot_complete_replacement_barrier(tmp_path) -> None:
+    monitor, _transcript, tracked, old_intent, old_receipt = _ready_skip_fixture(
+        tmp_path
+    )
+    entered = threading.Event()
+    release = threading.Event()
+    replacement = BacklogSkipIntent(
+        session_id=old_intent.session_id,
+        window_id=old_intent.window_id,
+        user_id=old_intent.user_id,
+        thread_id=old_intent.thread_id,
+        chat_id=old_intent.chat_id,
+        snapshot_offset=old_intent.snapshot_offset + 1,
+        range_start=old_intent.range_start,
+        created_at=time.time(),
+        source_path=old_intent.source_path,
+        source_device=old_intent.source_device,
+        source_inode=old_intent.source_inode,
+        source_range_sha256=old_intent.source_range_sha256,
+    )
+    newer_receipt = new_delivery_receipt(checkpoint=replacement.snapshot_offset)
+    newer_receipt.track()
+    newer_receipt.settle(DeliveryOutcome.DELIVERED)
+    newer_receipt.close()
+
+    def delayed_hash(*_args, **_kwargs):
+        entered.set()
+        release.wait(timeout=1)
+        return old_intent.source_range_sha256
+
+    with (
+        patch("ccgram.session_monitor._source_range_sha256", delayed_hash),
+        patch(
+            "ccgram.session_monitor.session_lifecycle.resolve_session_id",
+            return_value="s1",
+        ),
+        patch.object(
+            thread_router,
+            "iter_thread_bindings_with_chat",
+            return_value=[(1, 99, 4, "@0")],
+        ),
+    ):
+        task = asyncio.create_task(monitor.commit_delivered_watermarks())
+        try:
+            assert await asyncio.to_thread(entered.wait, 1)
+            monitor.state.pending_skips["s1"] = replacement
+            monitor._skip_notice_receipts["s1"] = newer_receipt
+        finally:
+            release.set()
+        await task
+
+    assert monitor.state.pending_skips["s1"] is replacement
+    assert monitor._skip_notice_receipts["s1"] is newer_receipt
+    assert newer_receipt.failed is False
+    assert tracked.last_byte_offset == 10
+    assert old_receipt.commit_ready
+
+
+@pytest.mark.parametrize("has_receipt", [False, True], ids=["restart", "queued"])
+async def test_expired_skip_does_not_enqueue_notice_and_invalidates_receipt(
+    tmp_path, monkeypatch, has_receipt: bool
+) -> None:
+    monitor, _transcript, tracked, intent, _ready_receipt = _ready_skip_fixture(
+        tmp_path
+    )
+    intent.created_at = time.time() - 61
+    monitor._skip_notice_receipts.clear()
+    receipt = new_delivery_receipt(checkpoint=intent.snapshot_offset)
+    receipt.track()
+    receipt.close()
+    assert not receipt.commit_ready
+    if has_receipt:
+        monitor._skip_notice_receipts["s1"] = receipt
+
+    async def queued_notice(_intent) -> None:
+        queued_receipt = get_active_delivery_receipt()
+        assert queued_receipt is not None
+        queued_receipt.track()
+
+    purge = AsyncMock(return_value=0)
+    notice = AsyncMock(side_effect=queued_notice)
+    monitor.set_skip_callbacks(
+        purge=purge, notice=notice, validate=lambda _intent: True
+    )
+    monkeypatch.setattr("ccgram.session_monitor.config.skip_barrier_deadline_s", 60.0)
+    with (
+        patch(
+            "ccgram.session_monitor.session_lifecycle.resolve_session_id",
+            return_value="s1",
+        ),
+        patch.object(
+            thread_router,
+            "iter_thread_bindings_with_chat",
+            return_value=[(1, 99, 4, "@0")],
+        ),
+    ):
+        assert monitor._skip_is_current(intent, strict=True) is True
+        await monitor._advance_skip_barriers()
+
+    assert "s1" not in monitor.state.pending_skips
+    assert "s1" not in monitor._skip_notice_receipts
+    assert tracked.last_byte_offset == 10
+    if has_receipt:
+        assert receipt.failed
+    purge.assert_not_awaited()
+    notice.assert_not_awaited()
+
+
+def test_source_range_hash_refuses_a_rewrite_during_verification(tmp_path, monkeypatch):
+    transcript = tmp_path / "source.jsonl"
+    transcript.write_bytes(b"original")
+    identity = transcript.stat()
+    original_open = type(transcript).open
+
+    class RewritingReader:
+        def __init__(self, source):
+            self.source = source
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return self.source.__exit__(*args)
+
+        def fileno(self):
+            return self.source.fileno()
+
+        def seek(self, *args):
+            return self.source.seek(*args)
+
+        def read(self, size):
+            data = self.source.read(size)
+            with original_open(transcript, "r+b") as replacement:
+                replacement.write(b"changed!")
+            return data
+
+    def rewrite_on_read(path, mode="r", *args, **kwargs):
+        source = original_open(path, mode, *args, **kwargs)
+        return (
+            RewritingReader(source) if path == transcript and mode == "rb" else source
+        )
+
+    monkeypatch.setattr(type(transcript), "open", rewrite_on_read)
+
+    assert (
+        _source_range_sha256(
+            transcript,
+            0,
+            identity.st_size,
+            device=identity.st_dev,
+            inode=identity.st_ino,
+        )
+        is None
+    )
+
+
+async def test_unknown_source_after_notice_ack_keeps_the_receipt(
+    tmp_path, monkeypatch
+) -> None:
+    monitor, transcript, tracked, intent, _old_receipt = _ready_skip_fixture(tmp_path)
+    monitor._skip_notice_receipts.clear()
+    monitor.state.update_skip_count("s1", 0)
+    original_stat = type(transcript).stat
+    source_unavailable = False
+    receipts = []
+
+    def source_stat(path, *args, **kwargs):
+        if path == transcript and source_unavailable:
+            raise OSError("temporarily unavailable")
+        return original_stat(path, *args, **kwargs)
+
+    async def notice(_intent) -> None:
+        nonlocal source_unavailable
+        receipt = get_active_delivery_receipt()
+        assert receipt is not None
+        receipt.track()
+        receipt.settle(DeliveryOutcome.DELIVERED)
+        receipts.append(receipt)
+        source_unavailable = True
+
+    monitor.set_skip_callbacks(
+        purge=AsyncMock(return_value=0), notice=notice, validate=lambda _intent: True
+    )
+    monkeypatch.setattr(type(transcript), "stat", source_stat)
+    with (
+        patch(
+            "ccgram.session_monitor.session_lifecycle.resolve_session_id",
+            return_value="s1",
+        ),
+        patch.object(
+            thread_router,
+            "iter_thread_bindings_with_chat",
+            return_value=[(1, 99, 4, "@0")],
+        ),
+    ):
+        await monitor._enqueue_pending_skip_notice(intent)
+        assert len(receipts) == 1
+        receipt = receipts[0]
+        assert receipt.failed is False
+        assert receipt.commit_ready
+        assert monitor._skip_notice_receipts["s1"] is receipt
+        assert monitor.state.pending_skips["s1"] is intent
+        assert tracked.last_byte_offset == 10
+
+        source_unavailable = False
+        monitor._skip_retry_at["s1"] = 0.0
+        await monitor.commit_delivered_watermarks()
+
+    assert tracked.last_byte_offset == intent.snapshot_offset
+    assert "s1" not in monitor.state.pending_skips
+    assert len(receipts) == 1
+
+
+@pytest.mark.parametrize("advanced_offset", [100, 200])
+async def test_freeze_pins_range_start_while_delivered_watermark_advances(
+    tmp_path, advanced_offset
+) -> None:
+    transcript = tmp_path / "source.jsonl"
+    transcript.write_bytes(_complete_jsonl_record(100) * 3)
+    monitor = SessionMonitor(
+        projects_path=tmp_path / "projects", state_file=tmp_path / "monitor.json"
+    )
+    tracked = TrackedSession("s1", str(transcript), last_byte_offset=100)
+    monitor.state.update_session(tracked)
+    monitor._last_session_map = {
+        "@0": {"session_id": "s1", "transcript_path": str(transcript)}
+    }
+    entered = threading.Event()
+    release = threading.Event()
+    original_hash = _source_range_sha256
+
+    def delayed_hash(*args, **kwargs):
+        entered.set()
+        assert release.wait(timeout=2)
+        return original_hash(*args, **kwargs)
+
+    async def purge(_intent) -> int:
+        return 0
+
+    async def notice(_intent) -> None:
+        receipt = get_active_delivery_receipt()
+        assert receipt is not None
+        receipt.track()
+        receipt.settle(DeliveryOutcome.DELIVERED)
+
+    monitor.set_skip_callbacks(
+        purge=purge, notice=notice, validate=lambda _intent: True
+    )
+    with (
+        patch("ccgram.session_monitor._source_range_sha256", delayed_hash),
+        patch(
+            "ccgram.session_monitor.session_lifecycle.resolve_session_id",
+            return_value="s1",
+        ),
+        patch.object(
+            thread_router,
+            "iter_thread_bindings_with_chat",
+            return_value=[(1, 99, 4, "@0")],
+        ),
+    ):
+        request = asyncio.create_task(monitor.request_backlog_skip(1, "@0", 4, 99))
+        try:
+            assert await asyncio.to_thread(entered.wait, 2)
+            tracked.last_byte_offset = advanced_offset
+        finally:
+            release.set()
+        intent = await request
+        assert intent is not None
+        assert intent.range_start == 100
+        assert intent.source_device is not None
+        assert intent.source_inode is not None
+        assert intent.source_range_sha256 == original_hash(
+            transcript,
+            intent.range_start,
+            intent.snapshot_offset,
+            device=intent.source_device,
+            inode=intent.source_inode,
+        )
+        await monitor.commit_delivered_watermarks()
+
+    assert "s1" not in monitor.state.pending_skips
+    assert tracked.last_byte_offset == intent.snapshot_offset

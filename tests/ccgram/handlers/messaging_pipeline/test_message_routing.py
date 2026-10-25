@@ -1,9 +1,15 @@
 import asyncio
 from collections.abc import Iterator
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from ccgram.delivery_contract import (
+    DeliveryReceipt,
+    activate_delivery_receipt,
+    deactivate_delivery_receipt,
+)
 from ccgram.handlers.messaging_pipeline import message_routing
 from ccgram.handlers.messaging_pipeline.message_routing import handle_new_message
 from ccgram.handlers.telegram_origin import (
@@ -228,6 +234,68 @@ async def test_complete_message_enqueues_content(bot, mock_deps):
     assert kwargs["source_provider_name"] == "pi"
 
 
+async def test_revocation_while_producer_waits_before_enqueue_stops_delivery(
+    bot, mock_deps
+):
+    receipt = DeliveryReceipt()
+    token = activate_delivery_receipt(receipt)
+    waiting = asyncio.Event()
+    release = asyncio.Event()
+
+    async def suspend_before_enqueue(*_args):
+        waiting.set()
+        await release.wait()
+        return False
+
+    try:
+        with patch.object(
+            message_routing,
+            "_handle_assistant_stream",
+            side_effect=suspend_before_enqueue,
+        ):
+            callback = asyncio.create_task(handle_new_message(_make_msg(), bot))
+            await asyncio.wait_for(waiting.wait(), timeout=1)
+            receipt.revoke()
+            release.set()
+            await asyncio.wait_for(callback, timeout=1)
+    finally:
+        deactivate_delivery_receipt(token)
+
+    mock_deps["eq"].assert_not_awaited()
+
+
+async def test_revocation_during_interactive_queue_join_stops_ui_and_enqueue(
+    bot, mock_deps
+):
+    receipt = DeliveryReceipt()
+    token = activate_delivery_receipt(receipt)
+    queue: asyncio.Queue = asyncio.Queue()
+    queue.put_nowait(object())
+    mock_deps["gmq"].return_value = queue
+
+    try:
+        callback = asyncio.create_task(
+            handle_new_message(
+                _make_msg(
+                    text="?",
+                    content_type="tool_use",
+                    tool_name="AskUserQuestion",
+                ),
+                bot,
+            )
+        )
+        await asyncio.sleep(0)
+        receipt.revoke()
+        queue.get_nowait()
+        queue.task_done()
+        await asyncio.wait_for(callback, timeout=1)
+    finally:
+        deactivate_delivery_receipt(token)
+
+    mock_deps["hui"].assert_not_awaited()
+    mock_deps["eq"].assert_not_awaited()
+
+
 async def test_incomplete_assistant_text_updates_and_finalizes_draft(bot, mock_deps):
     draft = MagicMock(mode="streaming")
     draft.start = AsyncMock(return_value=None)
@@ -245,9 +313,10 @@ async def test_incomplete_assistant_text_updates_and_finalizes_draft(bot, mock_d
         bot,
         -100,
         message_thread_id=42,
+        admit=None,
     )
     draft.start.assert_awaited_once_with("first")
-    draft.replace.assert_awaited_once_with("second")
+    draft.replace.assert_awaited_once_with("second", admit=None)
     draft.abort.assert_awaited_once()
     mock_deps["eq"].assert_called_once()
 
@@ -304,6 +373,33 @@ async def test_terminal_user_message_is_relayed(bot, mock_deps):
     await handle_new_message(_make_msg(text="hello", role="user"), bot)
 
     mock_deps["eq"].assert_called_once()
+
+
+async def test_backlog_skip_notice_is_conditional_and_explains_replay(bot):
+    intent = SimpleNamespace(
+        snapshot_offset=123,
+        range_start=23,
+        skipped_count=4,
+        user_id=100,
+        window_id="@5",
+        thread_id=42,
+        chat_id=-100,
+    )
+    with patch.object(
+        message_routing,
+        "enqueue_content_message",
+        new_callable=AsyncMock,
+        return_value=True,
+    ) as enqueue:
+        await message_routing.enqueue_backlog_skip_notice(bot, intent)
+
+    text = enqueue.call_args.kwargs["parts"][0]
+    assert text == (
+        "⏭ Skip requested for 4 queued transcript item(s) (bytes 23–123). "
+        "Raw transcript retained. The range is omitted only after this notice "
+        "is acknowledged and the skip is committed. If the skip expires first, "
+        "the range replays."
+    )
 
 
 async def test_telegram_echo_is_suppressed_only_for_its_origin_topic(bot, mock_deps):

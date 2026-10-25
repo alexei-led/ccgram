@@ -489,6 +489,15 @@ async def _handle_backlog_confirm(
         return
     intent = await monitor.request_backlog_skip(user_id, window_id, thread_id, chat_id)
     if intent is None:
+        # Shared-recipient refusal cannot be fixed by retrying; the source
+        # must have only one bound topic before the whole-range watermark moves.
+        if monitor.has_shared_backlog_source(window_id):
+            await query.answer(
+                "Jump to live is unavailable while this session is shared by "
+                "multiple topics. Unbind the other topic(s) first.",
+                show_alert=True,
+            )
+            return
         await query.answer("Backlog changed; try again", show_alert=True)
         return
     await query.answer(f"Jumping to live ({intent.skipped_count} queued item(s))")

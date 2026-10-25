@@ -28,6 +28,7 @@ from telegram.error import TelegramError
 
 from .handlers.commands.menu_sync import register_control_menus
 from .config import config
+from .delivery_contract import delivery_is_current
 from .handlers.commands import setup_menu_refresh_job
 from .handlers.hook_events import dispatch_hook_event
 from .handlers.messaging_pipeline.message_queue import shutdown_workers
@@ -114,6 +115,8 @@ async def _deliver_telegram_batch(
     batch: TranscriptBatch, client: PTBTelegramClient
 ) -> None:
     for message in render_transcript_batch(batch):
+        if not delivery_is_current():
+            return
         await handle_new_message(message, client)
 
 
@@ -478,7 +481,7 @@ async def stop_delivery_runtime() -> None:
     if monitor_to_commit is not None:
         # A successful bounded drain can now advance receipts; cancellation or
         # terminal delivery failures leave them unacknowledged for replay.
-        monitor_to_commit.commit_delivered_watermarks()
+        await monitor_to_commit.commit_delivered_watermarks()
 
     # Lazy: tracker is only needed to discard ephemeral input correlations at shutdown.
     from .handlers.telegram_origin import clear_pending_telegram_injections

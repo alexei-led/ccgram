@@ -343,3 +343,21 @@ class TestDeliveryWatchGap:
     def test_invalid_values_fall_back(self, monkeypatch, raw) -> None:
         monkeypatch.setenv("CCGRAM_DELIVERY_WATCH_GAP_KB", raw)
         assert _delivery_watch_gap_bytes() == 256 * 1024
+
+
+@pytest.mark.usefixtures("_base_env")
+class TestReplayCap:
+    def test_disabled_when_unset_or_zero(self, monkeypatch) -> None:
+        monkeypatch.delenv("CCGRAM_REPLAY_CAP_MB", raising=False)
+        assert Config().replay_cap_bytes == 0
+        monkeypatch.setenv("CCGRAM_REPLAY_CAP_MB", "0")
+        assert Config().replay_cap_bytes == 0
+
+    def test_megabytes_convert_to_bytes(self, monkeypatch) -> None:
+        monkeypatch.setenv("CCGRAM_REPLAY_CAP_MB", "1.5")
+        assert Config().replay_cap_bytes == int(1.5 * 1024 * 1024)
+
+    @pytest.mark.parametrize("raw", ["", "abc", "-1", "inf", "nan", "1e308"])
+    def test_invalid_values_disable_cap(self, monkeypatch, raw) -> None:
+        monkeypatch.setenv("CCGRAM_REPLAY_CAP_MB", raw)
+        assert Config().replay_cap_bytes == 0

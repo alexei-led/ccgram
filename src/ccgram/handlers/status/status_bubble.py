@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextlib
 import time
+from collections.abc import Callable
 
 import structlog
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -440,6 +441,8 @@ async def convert_status_to_content(
     thread_id_or_0: int,
     window_id: str,
     content_text: str,
+    *,
+    admit: Callable[[], bool] | None = None,
 ) -> int | None:
     """Convert status message to content message by editing it.
 
@@ -462,6 +465,7 @@ async def convert_status_to_content(
         msg_id,
         content_text,
         reply_markup=None,
+        admit=admit,
     )
     if success:
         return msg_id

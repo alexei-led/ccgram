@@ -10,9 +10,11 @@ import asyncio
 import contextlib
 import random
 import time
+from collections import deque
 from dataclasses import dataclass
+from collections.abc import Callable
 from io import BytesIO
-from typing import assert_never
+from typing import assert_never, cast
 
 import structlog
 from telegram import MessageEntity
@@ -26,6 +28,7 @@ from ...delivery_contract import (
     DeliveryReceipt,
     activate_delivery_receipt,
     deactivate_delivery_receipt,
+    delivery_is_current,
     delivery_receipts_ready,
     get_active_delivery_receipt,
     new_delivery_receipt,
@@ -94,6 +97,24 @@ _QUEUE_RETRY_BACKOFF_MAX_SECONDS = 60.0
 _QUEUE_RETRY_JITTER_MAX_SECONDS = 1.0
 _QUEUE_RETRY_BUDGET_SECONDS = 300.0
 _QUEUE_RATE_LIMIT_LOG_COOLDOWN_SECONDS = 30.0
+
+
+class _BacklogNoticeQueue(asyncio.Queue[MessageTask]):
+    """Prioritize skip notices over queued work while preserving both FIFOs."""
+
+    def _put(self, item: MessageTask) -> None:
+        queue = cast(deque[MessageTask], getattr(self, "_queue"))
+        if isinstance(item, ContentTask) and item.is_backlog_notice:
+            index = 0
+            while index < len(queue):
+                queued = queue[index]
+                if not isinstance(queued, ContentTask) or not queued.is_backlog_notice:
+                    break
+                index += 1
+            queue.insert(index, item)
+            return
+        queue.append(item)
+
 
 # Per-user message queues and worker tasks
 _message_queues: dict[int, asyncio.Queue[MessageTask]] = {}
@@ -270,6 +291,25 @@ def _truncate_caption(text: str) -> str:
     return truncated + "…"
 
 
+def _content_task_is_current(task: ContentTask) -> bool:
+    """Check explicit task ownership without relying on worker contextvars."""
+    return all(not receipt.revoked for receipt in task.delivery_receipts)
+
+
+def _content_task_admission(
+    task: ContentTask,
+) -> Callable[[], bool] | None:
+    """Capture scoped task ownership for direct sender boundaries."""
+    if not task.delivery_receipts:
+        return None
+    return lambda: _content_task_is_current(task)
+
+
+def _is_admitted(admit: Callable[[], bool] | None) -> bool:
+    """Default to the existing behavior for unscoped queue work."""
+    return admit is None or admit()
+
+
 def _should_send_tts(task: ContentTask) -> bool:
     if not config.tts_provider:
         return False
@@ -285,7 +325,10 @@ async def _send_tts_voice(
     text: str,
     *,
     window_id: str,
+    admit: Callable[[], bool] | None = None,
 ) -> bool:
+    if not _is_admitted(admit):
+        return False
     try:
         synthesizer = get_synthesizer()
     except (ValueError, ImportError) as exc:
@@ -299,10 +342,14 @@ async def _send_tts_voice(
         logger.warning("TTS synthesis failed for %s: %s", window_id, exc)
         return False
 
+    if not _is_admitted(admit):
+        return False
     voice_file = BytesIO(audio.data)
     voice_file.name = audio.filename
     caption = _truncate_caption(text)
     await rate_limit_send(chat_id)
+    if not _is_admitted(admit):
+        return False
     try:
         await client.send_voice(
             chat_id=chat_id,
@@ -329,7 +376,7 @@ def get_or_create_queue(
     Also detects dead workers and respawns them so messages are not lost.
     """
     if user_id not in _message_queues:
-        _message_queues[user_id] = asyncio.Queue()
+        _message_queues[user_id] = _BacklogNoticeQueue()
         _queue_locks[user_id] = asyncio.Lock()
 
     # Respawn dead workers (can happen if an uncaught exception killed the task)
@@ -368,6 +415,8 @@ def _can_merge_tasks(base: ContentTask, candidate: MessageTask) -> bool:
     boundaries.
     """
     if not isinstance(candidate, ContentTask):
+        return False
+    if not _content_task_is_current(base) or not _content_task_is_current(candidate):
         return False
     if (
         base.window_id != candidate.window_id
@@ -532,6 +581,26 @@ async def _coalesce_status_updates(
     return selected, dropped
 
 
+async def _handle_batched_content(
+    client: TelegramClient, user_id: int, task: ContentTask
+) -> DispatchResult:
+    """Resolve a tool batch or its normal-content fallback under one admission."""
+    admit = _content_task_admission(task)
+    result = await process_tool_event(client, user_id, task, admit=admit)
+    if not _content_task_is_current(task):
+        return DispatchResult(0, DeliveryOutcome.INTENTIONALLY_DROPPED)
+    if isinstance(result, ToolEventResult):
+        if result.followup is None:
+            return DispatchResult(0, DeliveryOutcome(result.outcome.value))
+        result = result.followup
+    outcome = (
+        DeliveryOutcome.DELIVERED
+        if result is None
+        else await _process_content_task(client, user_id, result)
+    )
+    return DispatchResult(0, outcome)
+
+
 async def _handle_content_task(
     client: TelegramClient,
     user_id: int,
@@ -540,36 +609,24 @@ async def _handle_content_task(
     lock: asyncio.Lock,
     dispatch_state: DispatchState | None = None,
 ) -> DispatchResult:
-    """Route a content task through batching or normal processing."""
+    """Route a current content task through batching or normal processing."""
     if dispatch_state is None:
         dispatch_state = DispatchState()
-    if task.content_type == "thinking" and config.hide_thinking:
-        return DispatchResult(0, DeliveryOutcome.INTENTIONALLY_DROPPED)
-    if task.content_type in ("tool_use", "tool_result") and is_tool_calls_hidden(
-        task.window_id
+    if (
+        not _content_task_is_current(task)
+        or (task.content_type == "thinking" and config.hide_thinking)
+        or (
+            task.content_type in ("tool_use", "tool_result")
+            and is_tool_calls_hidden(task.window_id)
+        )
     ):
         return DispatchResult(0, DeliveryOutcome.INTENTIONALLY_DROPPED)
-
     if is_batch_eligible(task):
-        batch_result = await process_tool_event(client, user_id, task)
-        if isinstance(batch_result, ToolEventResult):
-            if batch_result.followup is not None:
-                outcome = await _process_content_task(
-                    client, user_id, batch_result.followup
-                )
-                return DispatchResult(0, outcome)
-            outcome = DeliveryOutcome(batch_result.outcome.value)
-            return DispatchResult(0, outcome)
+        return await _handle_batched_content(client, user_id, task)
 
-        # Compatibility for callers that still return the former followup-only
-        # contract. Production batching always returns ToolEventResult above.
-        if batch_result is not None:
-            outcome = await _process_content_task(client, user_id, batch_result)
-            return DispatchResult(0, outcome)
-        return DispatchResult(0, DeliveryOutcome.DELIVERED)
-
-    await flush_if_active(client, user_id, task)
-
+    await flush_if_active(client, user_id, task, admit=_content_task_admission(task))
+    if not _content_task_is_current(task):
+        return DispatchResult(0, DeliveryOutcome.INTENTIONALLY_DROPPED)
     merged_task, merge_count = await _merge_content_tasks(queue, task, lock)
     if merge_count > 0:
         logger.debug("Merged %d tasks for user %s", merge_count, user_id)
@@ -577,7 +634,11 @@ async def _handle_content_task(
     dispatch_state.extra_task_done = merge_count
     dispatch_state.merged_receipts = merged_task.delivery_receipts[original_receipts:]
     dispatch_state.retry_task = merged_task
-    outcome = await _process_content_task(client, user_id, merged_task)
+    outcome = (
+        await _process_content_task(client, user_id, merged_task)
+        if _content_task_is_current(merged_task)
+        else DeliveryOutcome.INTENTIONALLY_DROPPED
+    )
     return DispatchResult(merge_count, outcome)
 
 
@@ -691,10 +752,12 @@ def _delivery_receipts_for_settlement(
     merged_receipts: tuple[DeliveryReceipt, ...],
 ) -> list[DeliveryReceipt]:
     receipts = task.delivery_receipts if isinstance(task, ContentTask) else ()
-    unique: dict[int, DeliveryReceipt] = {}
-    for receipt in (*receipts, *merged_receipts):
-        unique[id(receipt)] = receipt
-    return list(unique.values())
+    # A retry payload already contains every original task's receipt reference.
+    # Otherwise the merged suffix is separate; repeated references are tracks,
+    # not duplicates, and each must be settled once.
+    if isinstance(task, ContentTask) and task.is_text_batch:
+        return list(receipts)
+    return [*receipts, *merged_receipts]
 
 
 def _mark_task_inflight(user_id: int, task: MessageTask) -> None:
@@ -760,7 +823,10 @@ async def _dispatch_with_retry(
     retry_started = time.monotonic()
     while True:
         dispatch_state = DispatchState()
-        if _is_stale_task(user_id, state.task):
+        if _is_stale_task(user_id, state.task) or (
+            isinstance(state.task, ContentTask)
+            and not _content_task_is_current(state.task)
+        ):
             return DeliveryOutcome.INTENTIONALLY_DROPPED
         outcome: DeliveryOutcome | None = None
         structlog.contextvars.clear_contextvars()
@@ -779,6 +845,10 @@ async def _dispatch_with_retry(
                 outcome = getattr(result, "outcome", DeliveryOutcome.DELIVERED)
             except RetryAfter as exc:
                 state.task = _retry_task_for_state(dispatch_state, state.task)
+                if isinstance(state.task, ContentTask) and not _content_task_is_current(
+                    state.task
+                ):
+                    return DeliveryOutcome.INTENTIONALLY_DROPPED
                 telegram_delay = retry_after_seconds(exc)
                 if _is_transient_status_task(state.task):
                     _status_suppressed_until[user_id] = max(
@@ -935,17 +1005,25 @@ def _render_text_batch(parts: tuple[str, ...]) -> tuple[str, list[MessageEntity]
 
 
 async def _process_text_batch(
-    client: TelegramClient, chat_id: int, task: ContentTask
+    client: TelegramClient,
+    chat_id: int,
+    task: ContentTask,
+    admit: Callable[[], bool] | None = None,
 ) -> DeliveryOutcome:
     """Deliver a rendered text batch as one Telegram message."""
+    if not _is_admitted(admit):
+        return DeliveryOutcome.INTENTIONALLY_DROPPED
     plain_text, entities = _render_text_batch(task.parts)
     sent = await rate_limit_send_formatted_message(
         client,
         chat_id,
         plain_text,
         entities,
+        admit=admit,
         **send_kwargs(task.thread_id),
     )
+    if not sent and not _is_admitted(admit):
+        return DeliveryOutcome.INTENTIONALLY_DROPPED
     return DeliveryOutcome.DELIVERED if sent else DeliveryOutcome.FAILED
 
 
@@ -955,9 +1033,14 @@ async def _try_edit_tool_result(
     chat_id: int,
     tkey: int,
     task: ContentTask,
+    admit: Callable[[], bool] | None = None,
 ) -> bool:
     """Edit a prior tool-use message when this task supplies its result."""
-    if task.content_type != "tool_result" or not task.tool_use_id:
+    if (
+        (admit is not None and not admit())
+        or task.content_type != "tool_result"
+        or not task.tool_use_id
+    ):
         return False
     key = (task.tool_use_id, user_id, tkey)
     edit_msg_id = _tool_msg_ids.get(key)
@@ -965,11 +1048,14 @@ async def _try_edit_tool_result(
         return False
     try:
         await clear_status_message(client, user_id, tkey)
+        if admit is not None and not admit():
+            return False
         success = await edit_with_fallback(
             client,
             chat_id,
             edit_msg_id,
             "\n\n".join(task.parts),
+            admit=admit,
         )
     except RetryAfter:
         # Keep the ID so the queue retry edits the original tool-use message.
@@ -983,11 +1069,19 @@ async def _try_edit_tool_result(
     return success
 
 
-async def _process_content_task(
-    client: TelegramClient, user_id: int, task: ContentTask
-) -> DeliveryOutcome:
-    """Process a content message task and report whether it reached Telegram."""
-    if task.is_backlog_notice and (
+def _backlog_notice_outcome(user_id: int, task: ContentTask) -> DeliveryOutcome | None:
+    """Return a terminal outcome for an invalidated or stale skip notice."""
+    if not task.is_backlog_notice:
+        return None
+    if any(receipt.failed for receipt in task.delivery_receipts):
+        logger.debug(
+            "Dropping invalidated backlog skip notice",
+            user_id=user_id,
+            window_id=task.window_id,
+            thread_id=task.thread_id,
+        )
+        return DeliveryOutcome.INTENTIONALLY_DROPPED
+    if (
         task.chat_id is None
         or thread_router.resolve_window_for_thread(
             user_id, task.thread_id, task.chat_id
@@ -1001,59 +1095,88 @@ async def _process_content_task(
             thread_id=task.thread_id,
         )
         return DeliveryOutcome.FAILED
+    return None
 
+
+async def _send_content_part(
+    client: TelegramClient,
+    user_id: int,
+    chat_id: int,
+    task: ContentTask,
+    part: str,
+    *,
+    first: bool,
+) -> int | None:
+    """Admit the status edit or message RPC that represents one part."""
+    admit = _content_task_admission(task)
+    if not _content_task_is_current(task):
+        return None
+    if first and task.chat_id is None:
+        converted = await convert_status_to_content(
+            client,
+            user_id,
+            thread_key(task.thread_id),
+            task.window_id,
+            part,
+            admit=admit,
+        )
+        if converted is not None:
+            return converted
+    if not _content_task_is_current(task):
+        return None
+    sent = await rate_limit_send_message(
+        client, chat_id, part, admit=admit, **send_kwargs(task.thread_id)
+    )
+    return sent.message_id if sent else None
+
+
+async def _process_content_task(
+    client: TelegramClient, user_id: int, task: ContentTask
+) -> DeliveryOutcome:
+    """Deliver current content, allowing only an RPC already in flight to finish."""
+    if outcome := _backlog_notice_outcome(user_id, task):
+        return outcome
+    if not _content_task_is_current(task):
+        return DeliveryOutcome.INTENTIONALLY_DROPPED
+    admit = _content_task_admission(task)
     tkey = thread_key(task.thread_id)
     chat_id = task.chat_id or thread_router.resolve_chat_id(user_id, task.thread_id)
-
     if task.is_text_batch:
-        return await _process_text_batch(client, chat_id, task)
-
-    if await _try_edit_tool_result(client, user_id, chat_id, tkey, task):
+        return await _process_text_batch(client, chat_id, task, admit)
+    if await _try_edit_tool_result(client, user_id, chat_id, tkey, task, admit):
         return DeliveryOutcome.DELIVERED
 
-    first_part = True
     last_msg_id: int | None = None
-    for part in task.parts:
-        sent = None
-
-        if first_part and task.chat_id is None:
-            first_part = False
-            converted_msg_id = await convert_status_to_content(
-                client,
-                user_id,
-                tkey,
-                task.window_id,
-                part,
-            )
-            if converted_msg_id is not None:
-                last_msg_id = converted_msg_id
-                continue
-        else:
-            first_part = False
-
-        sent = await rate_limit_send_message(
-            client, chat_id, part, **send_kwargs(task.thread_id)
+    for index, part in enumerate(task.parts):
+        last_msg_id = await _send_content_part(
+            client, user_id, chat_id, task, part, first=index == 0
         )
-
-        if sent:
-            last_msg_id = sent.message_id
-        else:
-            # The sender exhausted its entity/plain fallback without raising.
-            # A transcript watermark must treat that as a terminal failure.
-            return DeliveryOutcome.FAILED
-
-    if _should_send_tts(task) and (tts_text := prepare_tts_text(task.parts)):
+        if last_msg_id is None:
+            return (
+                DeliveryOutcome.FAILED
+                if _content_task_is_current(task)
+                else DeliveryOutcome.INTENTIONALLY_DROPPED
+            )
+    if (
+        _content_task_is_current(task)
+        and _should_send_tts(task)
+        and (tts_text := prepare_tts_text(task.parts))
+    ):
         await _send_tts_voice(
             client,
             chat_id,
             task.thread_id,
             tts_text,
             window_id=task.window_id,
+            admit=admit,
         )
-
     if last_msg_id and task.tool_use_id and task.content_type == "tool_use":
         _tool_msg_ids[(task.tool_use_id, user_id, tkey)] = last_msg_id
-    return DeliveryOutcome.DELIVERED
+    return (
+        DeliveryOutcome.DELIVERED
+        if _content_task_is_current(task)
+        else DeliveryOutcome.INTENTIONALLY_DROPPED
+    )
 
 
 async def enqueue_content_message(
@@ -1080,9 +1203,13 @@ async def enqueue_content_message(
             "Skipping enqueue for closed multiplexer session", window_id=window_id
         )
         return False
+    if not delivery_is_current():
+        return False
     queue = get_or_create_queue(client, user_id)
 
     receipt = get_active_delivery_receipt()
+    if receipt is not None and receipt.revoked:
+        return False
     if receipt is not None:
         receipt.track()
     task = ContentTask(
