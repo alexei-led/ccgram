@@ -81,9 +81,9 @@ _MARKER_BYTES = 128
 
 # Full-prefix verification is O(file) while appends are the common case, so
 # marker-verified append cycles defer it on an exponential backoff (capped).
-# A missed in-place rewrite is only caught at the next verification, and the
-# parse position never rewinds, so no replay can occur: a delayed clamp is
-# the only cost.
+# A missed in-place rewrite is only caught at the next verification; the
+# parse position never rewinds, so no replay can occur, and the cost is a
+# delayed clamp plus whatever appends land in the clamp cycle itself.
 _PREFIX_VERIFY_CAP = 32
 _PREFIX_VERIFY_FRESH = (0, 1)
 
@@ -538,25 +538,22 @@ class TranscriptReader:
     def _reset_prefix_verify(self, session_id: str) -> None:
         self._prefix_verify[session_id] = _PREFIX_VERIFY_FRESH
 
-    async def _record_prefix_verification(
-        self, session_id: str, file_path: Path, st: Any, *, clean: bool
+    async def _record_clean_verification(
+        self, session_id: str, file_path: Path, st: Any
     ) -> None:
-        """Close out a verification cycle: extend the baseline and grow or
-        re-arm the schedule. Runs at the verification site (not at commit) so
-        quiet cycles that return at the mtime gate still advance it."""
-        if clean:
-            size, digest = self._file_prefixes.get(session_id, (0, b""))
-            if size != st.st_size:
-                digest = await asyncio.to_thread(_prefix_digest, file_path, st.st_size)
-                size = st.st_size
-            self._file_prefixes[session_id] = (size, digest)
-            threshold = self._prefix_verify.get(session_id, _PREFIX_VERIFY_FRESH)[1]
-            self._prefix_verify[session_id] = (
-                0,
-                min(threshold * 2, _PREFIX_VERIFY_CAP),
-            )
-        else:
-            self._reset_prefix_verify(session_id)
+        """Extend the baseline to the current size and double the verify
+        interval. Runs at the verification site, not at commit, so quiet
+        cycles that return at the mtime gate still advance the schedule."""
+        size, digest = self._file_prefixes.get(session_id, (0, b""))
+        if size != st.st_size:
+            digest = await asyncio.to_thread(_prefix_digest, file_path, st.st_size)
+            size = st.st_size
+        self._file_prefixes[session_id] = (size, digest)
+        threshold = self._prefix_verify.get(session_id, _PREFIX_VERIFY_FRESH)[1]
+        self._prefix_verify[session_id] = (
+            0,
+            min(threshold * 2, _PREFIX_VERIFY_CAP),
+        )
 
     async def _prepare_observed_generation(
         self,
@@ -589,21 +586,18 @@ class TranscriptReader:
                 changed = True
         prefix_changed = False
         prefix_checked = False
+        # Defer the scheduled digest while the marker already verified this
+        # cycle's growth; once the defer counter hits the cap the
+        # verification is forced even on growth cycles so a continuously
+        # appending session still gets checked.
+        deferred_growth = (
+            st.st_size > pos
+            and marker_changed is False
+            and not self._prefix_verify_overdue(session_id)
+        )
+        scheduled_verify = self._prefix_verify_due(session_id) and not deferred_growth
         if previous_prefix is not None and (
-            not check_marker
-            or changed
-            or (
-                self._prefix_verify_due(session_id)
-                # Defer the scheduled digest while the marker already verified
-                # this cycle's growth; once the defer counter hits the cap the
-                # verification is forced even on growth cycles so a
-                # continuously appending session still gets checked.
-                and not (
-                    st.st_size > pos
-                    and marker_changed is False
-                    and not self._prefix_verify_overdue(session_id)
-                )
-            )
+            not check_marker or changed or scheduled_verify
         ):
             try:
                 prefix_changed = (
@@ -646,14 +640,19 @@ class TranscriptReader:
                 # that survived would bound parser rebuild past the new file and
                 # swallow live answers.
                 self._startup_clamped.pop(session_id, None)
+                # Re-baseline at the clamp point. The old content is gone; a
+                # stale baseline would make every later due verification
+                # mismatch and clamp away one append cycle each time.
+                self._file_prefixes[session_id] = (
+                    st.st_size,
+                    await asyncio.to_thread(_prefix_digest, file_path, st.st_size),
+                )
         resolved = changed and not consumed_intact
         if prefix_checked and not prefix_changed and not resolved:
-            await self._record_prefix_verification(
-                session_id, file_path, st, clean=True
-            )
+            await self._record_clean_verification(session_id, file_path, st)
         elif resolved or (not prefix_checked and (generation_signal or marker_changed)):
-            # A clamp or an unresolved replacement signal re-arms immediate
-            # verification.
+            # A clamp or an unresolved replacement signal puts the schedule
+            # back on its shortest interval.
             self._reset_prefix_verify(session_id)
         return _GenerationCheck(resolved, consumed_intact)
 
@@ -721,9 +720,7 @@ class TranscriptReader:
             if consumed_survived:
                 # Concurrent append or metadata churn, not a replacement: the
                 # bytes already delivered survived, so keep this read.
-                await self._record_prefix_verification(
-                    session_id, file_path, after, clean=True
-                )
+                await self._record_clean_verification(session_id, file_path, after)
                 return _StableRead(entries, after, reset_generation)
             tracked.parsed_offset = after.st_size
             self._startup_file_boundaries.pop(session_id, None)

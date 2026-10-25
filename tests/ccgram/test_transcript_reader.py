@@ -885,7 +885,9 @@ async def test_rewrite_of_tail_marker_window_clamps_without_replay(
     tracked = state.get_session("sess")
     assert tracked is not None
     assert tracked.parsed_offset == session_file.stat().st_size
-    assert reader._prefix_verify["sess"] == (0, 1)
+    # The clamp re-baselines, the read then verifies intact, and the clean
+    # verification doubles the interval from the reset threshold.
+    assert reader._prefix_verify["sess"] == (0, 2)
 
 
 async def test_prefix_verify_backoff_resets_on_restart_and_generation_change(
