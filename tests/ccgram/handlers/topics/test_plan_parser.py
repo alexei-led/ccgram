@@ -187,6 +187,38 @@ class TestParseTopicPlan:
         assert parsed.plan.project == last
         assert parsed.plan.instruction == "fix the bug"
 
+    async def test_an_unresolved_explicit_path_never_falls_back(
+        self, roots: list[Path]
+    ) -> None:
+        """A typed path that does not exist is an error, not a cue to use MRU."""
+        last = (roots[0] / "ccgram").resolve()
+
+        parsed = parse_topic_plan(
+            "codex /missing/project @feat-x fix it",
+            roots=roots,
+            default_agent="claude",
+            last_project=last,
+        )
+
+        assert parsed.plan is None
+        assert parsed.reason == "project"
+
+    async def test_ambiguous_project_keeps_the_requested_branch(
+        self, tmp_path: Path
+    ) -> None:
+        """The candidate callback rebuilds from slots: @branch must survive."""
+        for name in ("app-one", "app-two"):
+            (tmp_path / name / ".git").mkdir(parents=True)
+
+        parsed = parse_topic_plan(
+            "codex app @feat-x fix it", roots=[tmp_path], default_agent="claude"
+        )
+
+        assert parsed.plan is None
+        assert parsed.reason == "project"
+        assert parsed.branch == "feat-x"
+        assert parsed.instruction == "fix it"
+
 
 class TestBuildLabel:
     def test_label_carries_project_and_hint(self) -> None:

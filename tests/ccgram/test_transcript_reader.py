@@ -625,3 +625,45 @@ class TestStartupReplayBound:
         )
 
         assert len(messages) == 10
+
+    async def test_a_rebuild_failure_does_not_replay_a_clamped_backlog(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A rollback after clamping must re-clamp, not fall back to the watermark."""
+        from unittest.mock import AsyncMock, patch
+
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "startup_replay_max_bytes", 120, raising=False)
+        reader, state, session_file = self._reader(tmp_path, backlog=10)
+        skipped: list = []
+        await reader._process_session_file(
+            "sess", session_file, skipped, window_id="@1"
+        )
+        assert skipped == []
+
+        with session_file.open("a") as transcript:
+            transcript.write(self._record("live"))
+
+        # Force the parser-rebuild path and make it fail.
+        reader._parser_rebuild_pending.add("sess")
+        with patch.object(
+            reader,
+            "_rebuild_committed_parser_context",
+            AsyncMock(return_value=False),
+        ):
+            blocked: list = []
+            await reader._process_session_file(
+                "sess", session_file, blocked, window_id="@1"
+            )
+
+        tracked = state.get_session("sess")
+        assert tracked is not None
+        assert tracked.parsed_offset >= reader._startup_clamped["sess"]
+
+        # The live record written after the clamp is still delivered.
+        delivered: list = []
+        await reader._process_session_file(
+            "sess", session_file, delivered, window_id="@1"
+        )
+        assert [msg.text for msg in delivered] == ["live"]

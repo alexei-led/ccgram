@@ -286,6 +286,7 @@ async def launch_plan(
             worktree_repo=worktree.get("worktree_repo"),
             worktree_branch=worktree.get("worktree_branch"),
             worktree_path=worktree.get("worktree_path"),
+            ignore_pending_worktree=True,
         ),
     )
 

@@ -83,6 +83,10 @@ class WindowLaunchRequest:
     worktree_repo: str | None = None
     worktree_branch: str | None = None
     worktree_path: str | None = None
+    # A typed plan owns its worktree decision: it must never inherit the
+    # PENDING_WORKTREE_* keys of a half-finished browser flow, which would
+    # launch this plan into another repository's checkout.
+    ignore_pending_worktree: bool = False
 
 
 @dataclass
@@ -160,7 +164,7 @@ async def _create_topic_window(
     request: "WindowLaunchRequest | None" = None,
 ) -> tuple[bool, str, str, str]:
     """Create a topic session through the shared session service."""
-    ud = context.user_data
+    ud = None if request and request.ignore_pending_worktree else context.user_data
     wt_repo = (
         request.worktree_repo
         if request and request.worktree_repo

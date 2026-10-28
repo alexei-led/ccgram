@@ -557,7 +557,7 @@ Notes:
 
 - Agent words are matched against the alias table only, so an ordinary sentence is never mistaken for a command.
 - When the project word does not resolve, CCGram replies with one message listing candidate projects as buttons. A tap launches the same plan. There is no second step.
-- When neither a project word nor a last-used project exists, the directory browser opens instead — rooted at the first projects root.
+- When the project slot fails, CCGram offers candidate projects as buttons; the directory browser opens only when there is nothing to offer (no project word, no last-used project, no candidates) — rooted at the first projects root.
 - Under a projects root the directory browser lists **git checkouts only**; deeper levels list every subdirectory. Set `CCGRAM_DIR_BROWSER_ALL_DIRS=true` to list everything everywhere.
 
 ### Defaults instead of pickers
@@ -851,7 +851,7 @@ All state files live in `$CCGRAM_DIR` (`~/.ccgram/` by default):
 | `events.jsonl`       | Append-only hook event log (read incrementally by monitor)        |
 | `monitor_state.json` | Delivered transcript watermarks and pending Jump-to-live barriers |
 
-Session transcripts are read from provider-specific locations (read-only): `~/.claude/projects/` (Claude), `~/.codex/sessions/` (Codex), `~/.gemini/tmp/` (Gemini), `~/.pi/agent/sessions/` (Pi). Shell has no transcript — output is captured directly from the tmux pane. The bot never writes to agent data directories; the delivered watermark records relay progress, not a mutation of the raw transcript.
+Session transcripts are read from provider-specific locations (read-only): `~/.claude/projects/` (Claude), `~/.codex/sessions/` (Codex), `~/.gemini/tmp/` (Gemini), `~/.pi/agent/sessions/` (Pi). Shell has no transcript — output is captured directly from the tmux pane. The bot never rewrites a raw transcript: the delivered watermark records relay progress, not a mutation of the transcript. The one agent-config write is the optional first-run trust seeding described in [First-run approval screens](#first-run-approval-screens) — a project entry in `~/.claude.json` or `$CODEX_HOME/config.toml`; disable it with `CCGRAM_AUTOSTART_TRUST=false`.
 
 ## Running as a Service
 

@@ -216,6 +216,71 @@ def _existing_dir(path: Path | None) -> Path | None:
         return None
 
 
+def _take_project(
+    tokens: list[tuple[str, int, int]],
+    *,
+    start: int,
+    roots: list[Path] | tuple[Path, ...],
+    git_only: bool,
+    last_project: Path | None,
+) -> tuple[Path | None, tuple[Path, ...], int, bool, bool]:
+    """Consume the optional project word.
+
+    Returns (project, candidates, next_consumed, blocked, project_typed).
+    ``blocked`` means the word named something real but unusable — several
+    matching projects, or an explicit path that does not exist. Falling back
+    to the last project there would launch in the wrong repository, so it is
+    reported instead. Only a word that matches nothing stays instruction.
+    """
+    project: Path | None = None
+    project_typed = False
+    candidates: tuple[Path, ...] = ()
+    blocked = False
+    consumed = start
+    if consumed < len(tokens) and not tokens[consumed][0].startswith("@"):
+        word = tokens[consumed][0]
+        project, candidates = resolve_project(word, roots, git_only=git_only)
+        if project is not None:
+            project_typed = True
+            consumed += 1
+        else:
+            blocked = bool(candidates) or _is_explicit_path(word)
+    if project is None and not blocked:
+        project = _existing_dir(last_project)
+    return project, candidates, consumed, blocked, project_typed
+
+
+def _take_branch(
+    tokens: list[tuple[str, int, int]],
+    *,
+    slot: int,
+    candidates: tuple[Path, ...],
+    agent: str,
+    agent_typed: bool,
+    project_typed: bool,
+    mode: str,
+) -> tuple[str | None, int, int] | PlanParse:
+    """Consume the optional ``@branch`` word at *slot*.
+
+    Returns (branch, next_consumed, token_end) or a failure PlanParse. The
+    branch slot follows the project slot whether that slot resolved or not,
+    so a typed "@branch" never falls into the instruction.
+    """
+    if slot >= len(tokens) or not tokens[slot][0].startswith("@"):
+        return None, -1, 0
+    branch = tokens[slot][0][1:] or None
+    if branch is None:
+        return PlanParse(
+            reason="branch",
+            candidates=candidates,
+            agent=agent,
+            agent_typed=agent_typed,
+            project_typed=project_typed,
+            mode=mode,
+        )
+    return branch, slot + 1, tokens[slot][2]
+
+
 def parse_topic_plan(
     text: str,
     *,
@@ -241,39 +306,36 @@ def parse_topic_plan(
         agent_typed = True
         consumed = 1
 
-    project: Path | None = None
-    project_typed = False
-    candidates: tuple[Path, ...] = ()
-    # A word that matches several projects is ambiguous, not missing: falling
-    # back to the last project there would launch in the wrong repository and
-    # turn a typed "@branch" into instruction text. Only a word that matches
-    # nothing at all (an ordinary sentence) falls back.
-    ambiguous = False
-    if consumed < len(tokens) and not tokens[consumed][0].startswith("@"):
-        project, candidates = resolve_project(
-            tokens[consumed][0], roots, git_only=git_only
-        )
-        if project is not None:
-            project_typed = True
-            consumed += 1
-        else:
-            ambiguous = bool(candidates)
-    if project is None and not ambiguous:
-        project = _existing_dir(last_project)
+    project, candidates, consumed, blocked, project_typed = _take_project(
+        tokens,
+        start=consumed,
+        roots=roots,
+        git_only=git_only,
+        last_project=last_project,
+    )
 
-    branch: str | None = None
-    if consumed < len(tokens) and tokens[consumed][0].startswith("@"):
-        branch = tokens[consumed][0][1:] or None
-        if branch is None:
-            return PlanParse(
-                reason="branch",
-                candidates=candidates,
-                agent=agent,
-                agent_typed=agent_typed,
-                project_typed=project_typed,
-                mode=mode,
-            )
-        consumed += 1
+    # Where the instruction begins if the project slot fails: after the
+    # unresolved project word when there is one, else after the agent word.
+    instruction_start = (
+        tokens[consumed][2] if blocked else tokens[consumed - 1][2] if consumed else 0
+    )
+    taken = _take_branch(
+        tokens,
+        slot=consumed + 1 if blocked else consumed,
+        candidates=candidates,
+        agent=agent,
+        agent_typed=agent_typed,
+        project_typed=project_typed,
+        mode=mode,
+    )
+    if isinstance(taken, PlanParse):
+        return taken
+    branch, branch_consumed, branch_start = taken
+    if branch_consumed >= 0:
+        consumed = branch_consumed
+        if blocked:
+            # The branch is consumed even though the project was not.
+            instruction_start = branch_start
 
     if project is None:
         return PlanParse(
@@ -283,9 +345,7 @@ def parse_topic_plan(
             agent=agent,
             agent_typed=agent_typed,
             project_typed=project_typed,
-            instruction=text[tokens[consumed - 1][2] :].strip()
-            if consumed
-            else text.strip(),
+            instruction=text[instruction_start:].strip(),
             mode=mode,
             branch=branch,
         )

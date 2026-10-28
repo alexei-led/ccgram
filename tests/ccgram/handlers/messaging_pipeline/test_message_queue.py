@@ -1470,7 +1470,7 @@ class TestFloodLaneScoping:
             ContentTask(window_id="@1", parts=("b",), chat_id=-100, thread_id=2)
         )
 
-        assert mq._has_ready_task(q, parked) is False
+        assert mq._has_runnable_task(q, parked) is False
 
     def test_a_task_in_another_chat_is_ready(self) -> None:
         from ccgram.handlers.messaging_pipeline import message_queue as mq
@@ -1481,7 +1481,7 @@ class TestFloodLaneScoping:
             ContentTask(window_id="@1", parts=("b",), chat_id=-200, thread_id=2)
         )
 
-        assert mq._has_ready_task(q, parked) is True
+        assert mq._has_runnable_task(q, parked) is True
 
     def test_drain_keeps_a_parked_task_queued(self) -> None:
         from ccgram.handlers.messaging_pipeline import message_queue as mq
@@ -1502,6 +1502,47 @@ class TestFloodLaneScoping:
         assert drained == [ready]
         assert q.qsize() == 1
         assert q.get_nowait() == parked
+
+    def test_a_task_behind_a_parked_peer_is_not_runnable(self) -> None:
+        """A blocked lane must not look runnable just because its own deadline passed."""
+        from ccgram.handlers.messaging_pipeline import message_queue as mq
+
+        q: asyncio.Queue = asyncio.Queue()
+        q.put_nowait(
+            ContentTask(
+                window_id="@0",
+                parts=("a1",),
+                chat_id=-100,
+                thread_id=1,
+                deferred_until=time.monotonic() + 30,
+            )
+        )
+        later_same_lane = ContentTask(
+            window_id="@1", parts=("a2",), chat_id=-100, thread_id=2
+        )
+
+        assert mq._lane_hold(q, later_same_lane) > 0
+        assert mq._has_runnable_task(q, later_same_lane) is False
+
+    def test_another_lane_still_runs_while_a_lane_is_blocked(self) -> None:
+        from ccgram.handlers.messaging_pipeline import message_queue as mq
+
+        q: asyncio.Queue = asyncio.Queue()
+        q.put_nowait(
+            ContentTask(
+                window_id="@0",
+                parts=("a1",),
+                chat_id=-100,
+                thread_id=1,
+                deferred_until=time.monotonic() + 30,
+            )
+        )
+        blocked = ContentTask(window_id="@1", parts=("a2",), chat_id=-100, thread_id=2)
+        q.put_nowait(
+            ContentTask(window_id="@2", parts=("b1",), chat_id=-200, thread_id=3)
+        )
+
+        assert mq._has_runnable_task(q, blocked) is True
 
     async def test_a_later_task_in_the_same_chat_waits_for_the_parked_one(
         self, bot
@@ -1549,24 +1590,44 @@ class TestFloodLaneScoping:
                 q.get_nowait()
             await mq.shutdown_workers(drain_timeout=0.1)
 
-    def test_purge_retires_a_parked_task_from_the_skipped_range(self) -> None:
-        """A confirmed skip must not leave a parked task to deliver later."""
+    async def test_purge_retires_a_parked_task_from_the_skipped_range(self) -> None:
+        """A confirmed skip must not leave a parked task to deliver later.
+
+        Goes through purge_source_tasks, not the drain: the flag it passes is
+        the behaviour under test.
+        """
         from ccgram.handlers.messaging_pipeline import message_queue as mq
 
-        q: asyncio.Queue = asyncio.Queue()
-        parked = ContentTask(
-            window_id="@0",
-            parts=("skipped",),
-            chat_id=-100,
-            thread_id=1,
-            source_session_id="s",
-            source_checkpoint=10,
-            deferred_until=time.monotonic() + 60,
+        user_id = 88060
+        await mq.shutdown_workers()
+        mq._message_queues[user_id] = asyncio.Queue()
+        mq._queue_locks[user_id] = asyncio.Lock()
+        q = mq._message_queues[user_id]
+        receipt = mq.DeliveryReceipt()
+        receipt.track()
+        receipt.close()
+
+        q.put_nowait(
+            ContentTask(
+                window_id="@0",
+                parts=("skipped",),
+                chat_id=-100,
+                thread_id=1,
+                source_session_id="s",
+                source_checkpoint=10,
+                deferred_until=time.monotonic() + 60,
+                delivery_receipts=(receipt,),
+            )
         )
-        kept = ContentTask(window_id="@0", parts=("kept",), chat_id=-100, thread_id=1)
-        q.put_nowait(parked)
-        q.put_nowait(kept)
+        q.put_nowait(
+            ContentTask(window_id="@0", parts=("kept",), chat_id=-100, thread_id=1)
+        )
 
-        drained = mq._drain_queue(q, include_deferred=True)
+        removed = await mq.purge_source_tasks(user_id, "@0", 1, "s", 20)
 
-        assert [task.parts for task in drained] == [("skipped",), ("kept",)]
+        assert removed == 1
+        assert [task.parts for task in q._queue] == [("kept",)]
+        # A retired task settles as intentionally dropped, not failed, so the
+        # source watermark may advance past the skipped range.
+        assert receipt.commit_ready
+        mq._message_queues.pop(user_id, None)

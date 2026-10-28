@@ -10,7 +10,7 @@ import asyncio
 import contextlib
 import random
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from io import BytesIO
 from typing import assert_never
 
@@ -864,9 +864,9 @@ async def _dispatch_with_retry(
                             backoff_seconds=backoff,
                             jitter_seconds=jitter,
                             retry_in_seconds=retry_in,
-                            others_ready=_has_ready_task(queue, state.task),
+                            others_ready=_has_runnable_task(queue, state.task),
                         )
-                        if _has_ready_task(queue, state.task):
+                        if _has_runnable_task(queue, state.task):
                             # Another topic can go now; give it the turn.
                             raise _FloodDeferredError(retry_in) from exc
                         await asyncio.sleep(retry_in)
@@ -891,46 +891,74 @@ def _lane(task: MessageTask) -> tuple[str, object]:
     return ("thread", getattr(task, "thread_id", None))
 
 
-def _parked_peer_ahead(queue: asyncio.Queue[MessageTask], task: MessageTask) -> bool:
-    """True when an earlier task in the same lane is still parked.
+def _queued(queue: asyncio.Queue[MessageTask]) -> tuple[MessageTask, ...]:
+    """Peek at the queued tasks without mutating order or accounting."""
+    return tuple(getattr(queue, "_queue", ()))
 
-    Lane ordering has to hold: if A1 for a chat is waiting out its backoff, a
-    later A2 for the same chat must wait too, or A2 is attempted against the
-    same limited chat and can overtake A1.
+
+def _lane_hold(queue: asyncio.Queue[MessageTask], task: MessageTask) -> float:
+    """Seconds *task* must wait: its own backoff or a parked task in its lane.
+
+    Lane ordering is what makes the wait meaningful. A later task for a chat
+    whose earlier message is parked returns that message's remaining backoff,
+    so it is never attempted against the still-limited chat first.
     """
     now = time.monotonic()
     lane = _lane(task)
-    parked_or_ready = getattr(queue, "_queue", ())
-    return any(
-        getattr(queued, "deferred_until", 0.0) > now and _lane(queued) == lane
-        for queued in parked_or_ready
-    )
+    holds = [task.deferred_until - now]
+    for queued in _queued(queue):
+        if _lane(queued) == lane:
+            holds.append(getattr(queued, "deferred_until", 0.0) - now)
+    return max(0.0, max(holds))
 
 
-def _has_ready_task(queue: asyncio.Queue[MessageTask], task: MessageTask) -> bool:
-    """True when a queued task in another lane can be sent right now.
+def _has_runnable_task(queue: asyncio.Queue[MessageTask], task: MessageTask) -> bool:
+    """True when some queued task can be attempted right now, other lanes first.
 
-    Same-lane tasks are excluded on purpose: attempting one would spend its
-    retry budget against a chat that is still limited, and reorder delivery
-    behind the message already waiting out the backoff.
+    Runnability, not bare readiness, is what the worker needs: a task blocked
+    behind a parked peer in its own lane cannot run either, so counting it as
+    available would make two blocked lanes rotate forever without yielding.
     """
-    now = time.monotonic()
     lane = _lane(task)
-    # Queue internals: only a peek, never a mutation, so ordering and
-    # unfinished-task accounting stay intact.
-    parked_or_ready = getattr(queue, "_queue", ())
-    return any(
-        getattr(queued, "deferred_until", 0.0) <= now and _lane(queued) != lane
-        for queued in parked_or_ready
-    )
+    for queued in _queued(queue):
+        if _lane(queued) == lane:
+            continue
+        if _lane_hold(queue, queued) <= 0.0:
+            return True
+    return False
+
+
+def _next_wake_in(queue: asyncio.Queue[MessageTask]) -> float:
+    """Seconds until the earliest parked task may run, or a poll interval."""
+    now = time.monotonic()
+    deadlines = [
+        getattr(queued, "deferred_until", 0.0) - now for queued in _queued(queue)
+    ]
+    upcoming = [value for value in deadlines if value > 0.0]
+    if not upcoming:
+        return _FLOOD_POLL_MAX_S
+    return min(min(upcoming), _FLOOD_POLL_MAX_S)
+
+
+def _park_task(task: MessageTask, *, hold: float) -> MessageTask:
+    """Return *task* parked for *hold* seconds without touching retry budget.
+
+    Waiting behind a peer is not a flood retry: charging it to the budget
+    would let a busy lane exhaust a task that never reached Telegram.
+    """
+    return replace(task, deferred_until=time.monotonic() + max(hold, 0.0))
 
 
 async def _rotate_deferred_task(
-    queue: asyncio.Queue[MessageTask], task: MessageTask
+    queue: asyncio.Queue[MessageTask], task: MessageTask, *, hold: float
 ) -> None:
-    """Park a flood-limited task at the tail so a ready lane goes first."""
+    """Park *task* at the tail so a ready lane goes first.
+
+    Rotation is what preserves lane order: tasks leave and re-enter in
+    arrival order, so an earlier message in a lane stays ahead of a later one.
+    """
     queue.task_done()
-    queue.put_nowait(task)
+    queue.put_nowait(_park_task(task, hold=hold))
 
 
 def _settle_attempt(
@@ -967,21 +995,18 @@ async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
     while True:
         try:
             task = await queue.get()
-            if task.deferred_until > time.monotonic() or _parked_peer_ahead(
-                queue, task
-            ):
-                if _has_ready_task(queue, task):
-                    await _rotate_deferred_task(queue, task)
-                    continue
-                # Nothing else to send: wait out this task's backoff, then
-                # dispatch it. Sleeping here is the old behaviour, and only
-                # happens when every queued message is parked.
-                await asyncio.sleep(
-                    min(
-                        task.deferred_until - time.monotonic(),
-                        _QUEUE_RETRY_BUDGET_SECONDS,
-                    )
-                )
+            hold = _lane_hold(queue, task)
+            if hold > 0:
+                # Parked (or behind a parked peer): rotate in arrival order so
+                # a later task never overtakes an earlier one in its lane.
+                # Peer waiting is not a retry, so it is parked, not charged.
+                await _rotate_deferred_task(queue, task, hold=hold)
+                if not _has_runnable_task(queue, task):
+                    # Nothing can run: yield until the earliest deadline. Could
+                    # not sleeping here would spin the worker on a nonempty
+                    # queue and starve every other coroutine.
+                    await asyncio.sleep(_next_wake_in(queue))
+                continue
             _clear_pending_markers(user_id, task)
             _inflight_count += 1
             _mark_task_inflight(user_id, task)
