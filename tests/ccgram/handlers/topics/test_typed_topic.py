@@ -22,6 +22,16 @@ from ccgram.handlers.topics.typed_topic import (
 from ccgram.worktrees import WorktreeEligibility
 
 
+@pytest.fixture(autouse=True)
+def _providers_installed(monkeypatch: pytest.MonkeyPatch):
+    """Treat every provider as installed: these tests are about parsing.
+
+    Availability is a host property (CI has no agent CLIs on PATH), so it is
+    pinned here and exercised on its own in the uninstalled-agent test.
+    """
+    monkeypatch.setattr(typed_topic, "provider_launchable", lambda _name: True)
+
+
 @pytest.fixture
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A git project under a configured projects root."""
