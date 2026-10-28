@@ -903,6 +903,11 @@ class TranscriptReader:
         tracked.parsed_offset = file_size
         self._startup_clamped[session_id] = file_size
         self._startup_file_boundaries.pop(session_id, None)
+        # Rebuild the parser context from the clamped prefix. Without this a
+        # provider whose delivery mirrors state (Codex task_complete) can emit
+        # a skipped final answer again, because the rebuild guard only fires
+        # for a nonzero watermark.
+        self._parser_rebuild_pending.add(session_id)
         logger.warning(
             "Startup replay bounded: skipped %.1f KiB of undelivered transcript "
             "for session %s (limit %d KiB, CCGRAM_STARTUP_REPLAY_MAX_KB)",
@@ -1027,7 +1032,7 @@ class TranscriptReader:
             return
         if (
             not generation_changed
-            and tracked.last_byte_offset > 0
+            and (tracked.last_byte_offset > 0 or session_id in self._startup_clamped)
             and session_id not in self._protocol_parser_states
         ):
             # Parser-only context is volatile. Recreate it from the durable

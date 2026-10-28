@@ -375,3 +375,13 @@ class TestLaunchPlan:
         assert handled is True
         assert launched == []
         assert "disabled" in message.reply_text.call_args[0][0]
+
+    async def test_an_agent_with_no_project_is_answered_not_handed_to_the_browser(
+        self, project: Path
+    ) -> None:
+        """The browser stores the line and blocks a corrected retry."""
+        handled, launched, message = await _start("codex fix the bug")
+
+        assert handled is True
+        assert launched == []
+        assert "Project not found" in message.reply_text.call_args[0][0]

@@ -165,7 +165,8 @@ def list_projects(
     Entries keep the name they are listed under: a root may hold a symlink
     (``client`` → ``/repos/backend``) whose name is the word the operator
     types, and resolving it here would make that word unmatchable. Dedupe is
-    by resolved path so two links to one checkout appear once.
+    by entry path, so two differently named links to one checkout both stay
+    usable — they are two names an operator may type.
     """
     seen: set[Path] = set()
     projects: list[Path] = []
@@ -210,10 +211,11 @@ def resolve_project(
     matching projects so the caller can name them in one reply.
     """
     if _is_explicit_path(token):
-        path = Path(token).expanduser()
         try:
-            resolved = path.resolve()
-        except OSError:
+            # expanduser raises RuntimeError for an unknown ~user, which is a
+            # bad path, not a crash: report it like any other unresolvable one.
+            resolved = Path(token).expanduser().resolve()
+        except OSError, RuntimeError:
             return None, ()
         return (resolved, ()) if resolved.is_dir() else (None, ())
 

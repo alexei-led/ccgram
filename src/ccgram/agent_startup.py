@@ -12,11 +12,11 @@ a session that never answers. Two layers, cheapest first:
    fingerprint a provider declares in its capabilities, sends the declared
    keys. Unknown screens are reported, never guessed at.
 
-Seeding runs in the bot process, so it uses the bot's environment. A window
-whose shell was started with a different profile (a reused multiplexer
-session, for example) is seeded in the wrong place: the write is additive and
-harmless there, and the pane fingerprint above still clears the screen once
-the agent is up.
+Seeding runs in the bot process, so it only knows the bot's environment. It
+therefore seeds the default profile only: when ``CODEX_HOME`` or
+``CLAUDE_CONFIG_DIR`` is set, or a launch-command override is in use, the
+launched shell may read another profile, so seeding is skipped and the pane
+fingerprint above clears the screen instead.
 
 Both layers are best-effort: every failure is logged and swallowed, because a
 readiness nicety must never fail a launch. Opt out globally with
@@ -77,15 +77,25 @@ def _write_atomic(path: Path, text: str) -> bool:
     try:
         if path.is_symlink():
             target = path.resolve()
+    except OSError as exc:
+        logger.debug("could not resolve %s: %s", path, exc)
+        return False
+    tmp: Path | None = None
+    try:
         target.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(
             "w", dir=target.parent, prefix=f".{target.name}.", delete=False
         ) as handle:
-            handle.write(text)
             tmp = Path(handle.name)
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
     except OSError as exc:
         logger.debug("could not prepare write for %s: %s", path, exc)
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
         return False
+    assert tmp is not None  # set by the successful block above
     try:
         tmp.replace(target)
     except OSError as exc:
@@ -241,13 +251,20 @@ def _codex_project_trust(existing: str, cwd: Path) -> bool | None:
     return True
 
 
+# Environment variable that selects a provider's profile. When set, the
+# launched shell may read a different profile than this process does.
+_PROFILE_ENV = {"claude": "CLAUDE_CONFIG_DIR", "codex": "CODEX_HOME"}
+
+
 def preseed_trust(provider_name: str, cwd: Path) -> bool:
     """Best-effort trust seeding for *provider_name* in *cwd*.
 
-    Skipped when the provider has a launch-command override: an override can
-    point the agent at its own profile (``CODEX_HOME=... codex``), which this
-    process cannot resolve, so seeding the bot's own profile would write to a
-    file the launch never reads.
+    Only the default profile is seeded. A launch-command override can point
+    the agent at its own profile (``CODEX_HOME=... codex``), and the
+    multiplexer shell may carry its own ``CODEX_HOME``/``CLAUDE_CONFIG_DIR``;
+    in either case this process cannot know which file the launch reads, so
+    the pane fingerprint is left to clear the screen instead of writing trust
+    into a profile nobody reads.
     """
     if not autostart_enabled(provider_name):
         return False
@@ -255,6 +272,15 @@ def preseed_trust(provider_name: str, cwd: Path) -> bool:
         logger.debug(
             "Skipping trust seeding for %s: launch command override in use",
             provider_name,
+        )
+        return False
+    profile_env = _PROFILE_ENV.get(provider_name)
+    if profile_env and os.environ.get(profile_env, "").strip():
+        logger.debug(
+            "Skipping trust seeding for %s: %s selects a profile the launch "
+            "shell may not share",
+            provider_name,
+            profile_env,
         )
         return False
     seeder = _PRESEEDERS.get(provider_name)

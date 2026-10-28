@@ -300,6 +300,19 @@ class TestParseTopicPlan:
             assert parsed.plan is not None, word
             assert parsed.plan.project == expected
 
+    def test_an_unknown_tilde_user_is_reported_not_crashed(
+        self, roots: list[Path]
+    ) -> None:
+        """expanduser raises RuntimeError for an unknown account."""
+        parsed = parse_topic_plan(
+            "codex ~nonexistent-user/project fix it",
+            roots=roots,
+            default_agent="claude",
+        )
+
+        assert parsed.plan is None
+        assert parsed.reason == "project"
+
 
 class TestBuildLabel:
     def test_label_carries_project_and_hint(self) -> None:

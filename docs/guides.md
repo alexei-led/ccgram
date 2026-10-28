@@ -604,7 +604,10 @@ without a tap:
 
 - **Claude — "Do you trust the files in this folder?"** — CCGram writes
   `hasTrustDialogAccepted` for the project in the profile the launch reads: the
-  `CLAUDE_CONFIG_DIR` profile when that is set, otherwise `~/.claude.json`.
+  `CLAUDE_CONFIG_DIR` profile when that is set, otherwise `~/.claude.json`. Seeding runs only for
+the default profile: when `CODEX_HOME` or `CLAUDE_CONFIG_DIR` is set, the launched shell may
+read a different profile, so the pane fingerprint clears the screen instead of
+a write landing in a file nothing reads.
 - **Codex — hooks review ("trust all and continue")** — CCGram adds
   `[projects."<path>"]` with `trust_level = "trusted"` to
   `$CODEX_HOME/config.toml` (or `~/.codex/config.toml`).

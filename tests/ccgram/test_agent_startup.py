@@ -8,6 +8,7 @@ multiplexer.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -69,7 +70,7 @@ class TestPreseedCodexTrust:
         project = tmp_path / "ccgram"
         project.mkdir()
 
-        assert agent_startup.preseed_trust("codex", project) is True
+        assert agent_startup.preseed_codex_trust(project) is True
 
         body = config_file.read_text()
         assert 'model = "gpt-5-codex"' in body
@@ -108,7 +109,7 @@ class TestPreseedCodexTrust:
         config_file.parent.mkdir(parents=True)
         config_file.write_text('model = "gpt-5-codex"\n')
 
-        assert agent_startup.preseed_trust("codex", project) is True
+        assert agent_startup.preseed_codex_trust(project) is True
 
         import tomllib
 
@@ -195,7 +196,7 @@ class TestPreseedCodexTrust:
         project = tmp_path / "ccgram"
         project.mkdir()
 
-        assert agent_startup.preseed_trust("codex", project) is True
+        assert agent_startup.preseed_codex_trust(project) is True
 
         assert config_file.is_symlink()
         assert 'trust_level = "trusted"' in real.read_text()
@@ -219,6 +220,17 @@ class TestPreseedCodexTrust:
             p.name for p in config_file.parent.iterdir() if p.name.startswith(".")
         ]
         assert leftovers == []
+
+    def test_a_custom_profile_env_skips_seeding(
+        self, fake_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The launch shell may read another profile than this process does."""
+        assert os.environ.get("CODEX_HOME")
+        project = tmp_path / "ccgram"
+        project.mkdir()
+
+        assert agent_startup.preseed_trust("codex", project) is False
+        assert not (fake_home / ".codex" / "config.toml").exists()
 
 
 class TestAutostartGating:

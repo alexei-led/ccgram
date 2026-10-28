@@ -291,10 +291,11 @@ async def start_from_text(
         )
         return True
 
+    # The directory browser applies no mode or branch, and it stores the line
+    # as pending text so a corrected retry is blocked until Cancel. Anything
+    # more structured than a bare instruction gets an answer instead.
     mode_requested = parsed.mode and parsed.mode != config.default_mode
-    if mode_requested or parsed.branch:
-        # The directory browser applies neither, so say the line is incomplete
-        # instead of dropping half of it.
+    if mode_requested or parsed.branch or parsed.agent_typed:
         await safe_reply(message, _resolution_reply(parsed, []))
         return True
 
