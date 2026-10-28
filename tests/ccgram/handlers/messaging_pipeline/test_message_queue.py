@@ -1,8 +1,6 @@
 import ast
 import asyncio
-import time
 import contextlib
-from contextlib import suppress
 from datetime import timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -1366,268 +1364,389 @@ class TestMessageQueueWorker:
             worker.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await worker
+            mq._message_queues.pop(user_id, None)
+            mq._queue_locks.pop(user_id, None)
 
+    async def test_telegram_error_calls_task_done(self, bot):
+        from ccgram.handlers.messaging_pipeline.message_queue import (
+            _message_queue_worker,
+            _message_queues,
+            _queue_locks,
+        )
+        from telegram.error import TelegramError
 
-class TestFloodFairness:
-    """One flood-limited chat must not hold another topic's message.
-
-    Telegram rate limits per chat. The worker serves a ready task from another
-    lane while the limited one waits out its backoff, instead of sleeping in
-    place for the whole retry window.
-    """
-
-    async def test_ready_lane_is_served_before_the_parked_one(self, bot) -> None:
-        from ccgram.handlers.messaging_pipeline import message_queue as mq
-
-        user_id = 88051
-        await mq.shutdown_workers()
-        mq._message_queues[user_id] = asyncio.Queue()
-        mq._queue_locks[user_id] = asyncio.Lock()
-        q = mq._message_queues[user_id]
-        order: list[str] = []
-
-        async def dispatch(_client, _user_id, task, *_args):
-            if task.parts == ("blocked",) and order.count("blocked") == 0:
-                order.append("blocked")
-                raise RetryAfter(timedelta(seconds=5))
-            order.append(task.parts[0])
-            return mq.DispatchResult(0, mq.DeliveryOutcome.DELIVERED)
-
-        q.put_nowait(ContentTask(window_id="@0", parts=("blocked",), thread_id=1))
-        q.put_nowait(ContentTask(window_id="@1", parts=("ready",), thread_id=2))
-
-        worker = asyncio.create_task(mq._message_queue_worker(bot, user_id))
+        user_id = 88001
+        _message_queues[user_id] = asyncio.Queue()
+        _queue_locks[user_id] = asyncio.Lock()
+        q = _message_queues[user_id]
+        q.put_nowait(_content_task("hello"))
+        worker = asyncio.create_task(_message_queue_worker(bot, user_id))
         try:
-            with patch.object(mq, "_dispatch", dispatch):
-                for _ in range(100):
-                    if "ready" in order:
-                        break
-                    await asyncio.sleep(0.01)
+            with patch(
+                "ccgram.handlers.messaging_pipeline.message_queue._dispatch",
+                new_callable=AsyncMock,
+                side_effect=TelegramError("fail"),
+            ):
+                await asyncio.wait_for(q.join(), timeout=1.0)
         finally:
             worker.cancel()
-            with suppress(asyncio.CancelledError):
+            with contextlib.suppress(asyncio.CancelledError):
                 await worker
-            while not q.empty():
-                q.get_nowait()
-            await mq.shutdown_workers(drain_timeout=0.1)
+            _message_queues.pop(user_id, None)
+            _queue_locks.pop(user_id, None)
 
-        assert order[:2] == ["blocked", "ready"]
-
-    async def test_parked_task_keeps_its_receipt_open(self, bot) -> None:
-        from ccgram.handlers.messaging_pipeline import message_queue as mq
-
-        user_id = 88052
-        await mq.shutdown_workers()
-        mq._message_queues[user_id] = asyncio.Queue()
-        mq._queue_locks[user_id] = asyncio.Lock()
-        q = mq._message_queues[user_id]
-        receipt = mq.DeliveryReceipt()
-        receipt.track()
-        receipt.close()
-
-        q.put_nowait(
-            ContentTask(
-                window_id="@0",
-                parts=("blocked",),
-                thread_id=1,
-                delivery_receipts=(receipt,),
-            )
+    async def test_oserror_calls_task_done(self, bot):
+        from ccgram.handlers.messaging_pipeline.message_queue import (
+            _message_queue_worker,
+            _message_queues,
+            _queue_locks,
         )
-        q.put_nowait(ContentTask(window_id="@1", parts=("ready",), thread_id=2))
 
-        async def dispatch(_client, _user_id, task, *_args):
-            if task.parts == ("blocked",):
-                raise RetryAfter(timedelta(seconds=5))
-            return mq.DispatchResult(0, mq.DeliveryOutcome.DELIVERED)
-
-        worker = asyncio.create_task(mq._message_queue_worker(bot, user_id))
+        user_id = 88002
+        _message_queues[user_id] = asyncio.Queue()
+        _queue_locks[user_id] = asyncio.Lock()
+        q = _message_queues[user_id]
+        q.put_nowait(_content_task("hello"))
+        worker = asyncio.create_task(_message_queue_worker(bot, user_id))
         try:
-            with patch.object(mq, "_dispatch", dispatch):
-                for _ in range(100):
-                    if receipt.failed or receipt.commit_ready:
-                        break
-                    await asyncio.sleep(0.01)
-                assert not receipt.failed
-                assert not receipt.commit_ready
+            with patch(
+                "ccgram.handlers.messaging_pipeline.message_queue._dispatch",
+                new_callable=AsyncMock,
+                side_effect=OSError("disk error"),
+            ):
+                await asyncio.wait_for(q.join(), timeout=1.0)
         finally:
             worker.cancel()
-            with suppress(asyncio.CancelledError):
+            with contextlib.suppress(asyncio.CancelledError):
                 await worker
-            while not q.empty():
-                q.get_nowait()
-            await mq.shutdown_workers(drain_timeout=0.1)
+            _message_queues.pop(user_id, None)
+            _queue_locks.pop(user_id, None)
 
-
-class TestFloodLaneScoping:
-    """Same-chat messages share a rate limit; only other lanes can go first."""
-
-    def test_a_task_in_the_same_chat_is_not_ready(self) -> None:
-        from ccgram.handlers.messaging_pipeline import message_queue as mq
-
-        q: asyncio.Queue = asyncio.Queue()
-        parked = ContentTask(window_id="@0", parts=("a",), chat_id=-100, thread_id=1)
-        q.put_nowait(
-            ContentTask(window_id="@1", parts=("b",), chat_id=-100, thread_id=2)
+    async def test_cancelled_error_exits_cleanly(self, bot):
+        from ccgram.handlers.messaging_pipeline.message_queue import (
+            _message_queue_worker,
+            _message_queues,
+            _queue_locks,
         )
 
-        assert mq._has_runnable_task(q, parked) is False
-
-    def test_a_task_in_another_chat_is_ready(self) -> None:
-        from ccgram.handlers.messaging_pipeline import message_queue as mq
-
-        q: asyncio.Queue = asyncio.Queue()
-        parked = ContentTask(window_id="@0", parts=("a",), chat_id=-100, thread_id=1)
-        q.put_nowait(
-            ContentTask(window_id="@1", parts=("b",), chat_id=-200, thread_id=2)
-        )
-
-        assert mq._has_runnable_task(q, parked) is True
-
-    def test_drain_keeps_a_parked_task_queued(self) -> None:
-        from ccgram.handlers.messaging_pipeline import message_queue as mq
-
-        q: asyncio.Queue = asyncio.Queue()
-        parked = ContentTask(
-            window_id="@0",
-            parts=("a",),
-            chat_id=-100,
-            deferred_until=time.monotonic() + 60,
-        )
-        ready = ContentTask(window_id="@1", parts=("b",), chat_id=-100)
-        q.put_nowait(parked)
-        q.put_nowait(ready)
-
-        drained = mq._drain_queue(q)
-
-        assert drained == [ready]
-        assert q.qsize() == 1
-        assert q.get_nowait() == parked
-
-    def test_a_task_behind_a_parked_peer_is_not_runnable(self) -> None:
-        """A blocked lane must not look runnable just because its own deadline passed."""
-        from ccgram.handlers.messaging_pipeline import message_queue as mq
-
-        q: asyncio.Queue = asyncio.Queue()
-        q.put_nowait(
-            ContentTask(
-                window_id="@0",
-                parts=("a1",),
-                chat_id=-100,
-                thread_id=1,
-                deferred_until=time.monotonic() + 30,
-            )
-        )
-        later_same_lane = ContentTask(
-            window_id="@1", parts=("a2",), chat_id=-100, thread_id=2
-        )
-
-        assert mq._lane_hold(q, later_same_lane) > 0
-        assert mq._has_runnable_task(q, later_same_lane) is False
-
-    def test_another_lane_still_runs_while_a_lane_is_blocked(self) -> None:
-        from ccgram.handlers.messaging_pipeline import message_queue as mq
-
-        q: asyncio.Queue = asyncio.Queue()
-        q.put_nowait(
-            ContentTask(
-                window_id="@0",
-                parts=("a1",),
-                chat_id=-100,
-                thread_id=1,
-                deferred_until=time.monotonic() + 30,
-            )
-        )
-        blocked = ContentTask(window_id="@1", parts=("a2",), chat_id=-100, thread_id=2)
-        q.put_nowait(
-            ContentTask(window_id="@2", parts=("b1",), chat_id=-200, thread_id=3)
-        )
-
-        assert mq._has_runnable_task(q, blocked) is True
-
-    async def test_a_later_task_in_the_same_chat_waits_for_the_parked_one(
-        self, bot
-    ) -> None:
-        """Lane ordering: A2 must not overtake a parked A1 in the same chat."""
-        from ccgram.handlers.messaging_pipeline import message_queue as mq
-
-        user_id = 88053
-        await mq.shutdown_workers()
-        mq._message_queues[user_id] = asyncio.Queue()
-        mq._queue_locks[user_id] = asyncio.Lock()
-        q = mq._message_queues[user_id]
-        order: list[str] = []
-
-        async def dispatch(_client, _user_id, task, *_args):
-            order.append(task.parts[0])
-            if task.parts == ("a1",):
-                raise RetryAfter(timedelta(seconds=5))
-            return mq.DispatchResult(0, mq.DeliveryOutcome.DELIVERED)
-
-        q.put_nowait(
-            ContentTask(window_id="@0", parts=("a1",), chat_id=-100, thread_id=1)
-        )
-        q.put_nowait(
-            ContentTask(window_id="@1", parts=("a2",), chat_id=-100, thread_id=2)
-        )
-        q.put_nowait(
-            ContentTask(window_id="@2", parts=("b1",), chat_id=-200, thread_id=3)
-        )
-
-        worker = asyncio.create_task(mq._message_queue_worker(bot, user_id))
+        user_id = 88003
+        _message_queues[user_id] = asyncio.Queue()
+        _queue_locks[user_id] = asyncio.Lock()
+        worker = asyncio.create_task(_message_queue_worker(bot, user_id))
         try:
-            with patch.object(mq, "_dispatch", dispatch):
-                for _ in range(200):
-                    if "b1" in order:
-                        break
-                    await asyncio.sleep(0.01)
-                # a2 shares a1's limited chat, so only the other lane went.
-                assert "a2" not in order
-        finally:
+            await asyncio.sleep(0)
             worker.cancel()
-            with suppress(asyncio.CancelledError):
-                await worker
-            while not q.empty():
-                q.get_nowait()
-            await mq.shutdown_workers(drain_timeout=0.1)
+            await asyncio.wait_for(worker, timeout=1.0)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            _message_queues.pop(user_id, None)
+            _queue_locks.pop(user_id, None)
 
-    async def test_purge_retires_a_parked_task_from_the_skipped_range(self) -> None:
-        """A confirmed skip must not leave a parked task to deliver later.
+        assert worker.done()
+        assert not worker.exception() if not worker.cancelled() else True
 
-        Goes through purge_source_tasks, not the drain: the flag it passes is
-        the behaviour under test.
-        """
+
+class TestThinkingGate:
+    @patch(
+        "ccgram.handlers.messaging_pipeline.message_queue._process_content_task",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "ccgram.handlers.messaging_pipeline.message_queue.flush_if_active",
+        new_callable=AsyncMock,
+    )
+    async def test_hidden_suppresses_thinking(
+        self, mock_flush, mock_process, bot, queue, lock
+    ):
+        ct = _content_task("private reasoning", content_type="thinking")
+        with patch(
+            "ccgram.handlers.messaging_pipeline.message_queue.config.hide_thinking",
+            True,
+        ):
+            extra = await _handle_content_task(bot, 1, ct, queue, lock)
+
+        assert extra == 0
+        mock_flush.assert_not_awaited()
+        mock_process.assert_not_awaited()
+
+    @patch(
+        "ccgram.handlers.messaging_pipeline.message_queue._process_content_task",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "ccgram.handlers.messaging_pipeline.message_queue.flush_if_active",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "ccgram.handlers.messaging_pipeline.message_queue.is_batch_eligible",
+        return_value=False,
+    )
+    async def test_shown_processes_thinking(
+        self, mock_eligible, mock_flush, mock_process, bot, queue, lock
+    ):
+        ct = _content_task("public reasoning", content_type="thinking")
+        with patch(
+            "ccgram.handlers.messaging_pipeline.message_queue.config.hide_thinking",
+            False,
+        ):
+            extra = await _handle_content_task(bot, 1, ct, queue, lock)
+
+        assert extra == 0
+        mock_flush.assert_awaited_once_with(bot, 1, ct)
+        mock_process.assert_awaited_once_with(bot, 1, ct)
+
+
+class TestToolCallsGate:
+    @patch(
+        "ccgram.handlers.messaging_pipeline.message_queue._process_content_task",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "ccgram.handlers.messaging_pipeline.message_queue.process_tool_event",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "ccgram.handlers.messaging_pipeline.message_queue.flush_if_active",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "ccgram.handlers.messaging_pipeline.message_queue.is_batch_eligible",
+        return_value=True,
+    )
+    @patch(
+        "ccgram.handlers.messaging_pipeline.message_queue.is_tool_calls_hidden",
+        return_value=True,
+    )
+    async def test_hidden_suppresses_tool_use(
+        self,
+        mock_hidden,
+        mock_eligible,
+        mock_flush,
+        mock_tool_event,
+        mock_process,
+        bot,
+        queue,
+        lock,
+    ):
+        ct = _content_task("tool", content_type="tool_use")
+        extra = await _handle_content_task(bot, 1, ct, queue, lock)
+        assert extra == 0
+        mock_tool_event.assert_not_awaited()
+        mock_process.assert_not_awaited()
+        mock_flush.assert_not_awaited()
+
+    @patch(
+        "ccgram.handlers.messaging_pipeline.message_queue._process_content_task",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "ccgram.handlers.messaging_pipeline.message_queue.process_tool_event",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "ccgram.handlers.messaging_pipeline.message_queue.flush_if_active",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "ccgram.handlers.messaging_pipeline.message_queue.is_batch_eligible",
+        return_value=True,
+    )
+    @patch(
+        "ccgram.handlers.messaging_pipeline.message_queue.is_tool_calls_hidden",
+        return_value=True,
+    )
+    async def test_hidden_suppresses_tool_result(
+        self,
+        mock_hidden,
+        mock_eligible,
+        mock_flush,
+        mock_tool_event,
+        mock_process,
+        bot,
+        queue,
+        lock,
+    ):
+        ct = _content_task("res", content_type="tool_result", tool_use_id="t1")
+        extra = await _handle_content_task(bot, 1, ct, queue, lock)
+        assert extra == 0
+        mock_tool_event.assert_not_awaited()
+        mock_process.assert_not_awaited()
+
+    @patch(
+        "ccgram.handlers.messaging_pipeline.message_queue._process_content_task",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "ccgram.handlers.messaging_pipeline.message_queue.process_tool_event",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "ccgram.handlers.messaging_pipeline.message_queue.is_batch_eligible",
+        return_value=True,
+    )
+    @patch(
+        "ccgram.handlers.messaging_pipeline.message_queue.is_tool_calls_hidden",
+        return_value=False,
+    )
+    async def test_shown_allows_tool_use(
+        self,
+        mock_hidden,
+        mock_eligible,
+        mock_tool_event,
+        mock_process,
+        bot,
+        queue,
+        lock,
+    ):
+        ct = _content_task("tool", content_type="tool_use")
+        mock_tool_event.return_value = None
+        extra = await _handle_content_task(bot, 1, ct, queue, lock)
+        assert extra == 0
+        mock_tool_event.assert_awaited_once_with(bot, 1, ct)
+
+    @patch(
+        "ccgram.handlers.messaging_pipeline.message_queue._process_content_task",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "ccgram.handlers.messaging_pipeline.message_queue.flush_if_active",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "ccgram.handlers.messaging_pipeline.message_queue.is_batch_eligible",
+        return_value=False,
+    )
+    @patch(
+        "ccgram.handlers.messaging_pipeline.message_queue.is_tool_calls_hidden",
+        return_value=True,
+    )
+    async def test_text_unaffected_when_hidden(
+        self,
+        mock_hidden,
+        mock_eligible,
+        mock_flush,
+        mock_process,
+        bot,
+        queue,
+        lock,
+    ):
+        ct = _content_task("hello", content_type="text")
+        extra = await _handle_content_task(bot, 1, ct, queue, lock)
+        assert extra == 0
+        mock_flush.assert_awaited_once_with(bot, 1, ct)
+        mock_process.assert_awaited_once()
+
+    @patch("ccgram.handlers.messaging_pipeline.message_queue._tool_msg_ids", {})
+    @patch(
+        "ccgram.handlers.messaging_pipeline.message_queue._process_content_task",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "ccgram.handlers.messaging_pipeline.message_queue.process_tool_event",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "ccgram.handlers.messaging_pipeline.message_queue.is_batch_eligible",
+        return_value=True,
+    )
+    @patch(
+        "ccgram.handlers.messaging_pipeline.message_queue.is_tool_calls_hidden",
+        return_value=True,
+    )
+    async def test_hidden_does_not_register_tool_msg_ids(
+        self,
+        mock_hidden,
+        mock_eligible,
+        mock_tool_event,
+        mock_process,
+        bot,
+        queue,
+        lock,
+    ):
         from ccgram.handlers.messaging_pipeline import message_queue as mq
 
-        user_id = 88060
-        await mq.shutdown_workers()
-        mq._message_queues[user_id] = asyncio.Queue()
-        mq._queue_locks[user_id] = asyncio.Lock()
-        q = mq._message_queues[user_id]
-        receipt = mq.DeliveryReceipt()
-        receipt.track()
-        receipt.close()
+        mq._tool_msg_ids.clear()
+        ct = _content_task("tool", content_type="tool_use", tool_use_id="t-xyz")
+        await _handle_content_task(bot, 1, ct, queue, lock)
+        assert not mq._tool_msg_ids
 
-        q.put_nowait(
-            ContentTask(
-                window_id="@0",
-                parts=("skipped",),
-                chat_id=-100,
-                thread_id=1,
-                source_session_id="s",
-                source_checkpoint=10,
-                deferred_until=time.monotonic() + 60,
-                delivery_receipts=(receipt,),
+
+class TestTruncateCaption:
+    def test_short_text_unchanged(self):
+        from ccgram.handlers.messaging_pipeline.message_queue import _truncate_caption
+
+        assert _truncate_caption("hello world") == "hello world"
+
+    def test_truncates_at_whitespace(self):
+        from ccgram.handlers.messaging_pipeline.message_queue import _truncate_caption
+
+        text = ("word " * 220).rstrip()  # > 1024 chars
+        result = _truncate_caption(text)
+        assert len(result) <= 1024
+        assert result.endswith("…")
+        assert not result[:-1].endswith(" ")
+
+    def test_no_whitespace_still_within_limit(self):
+        from ccgram.handlers.messaging_pipeline.message_queue import _truncate_caption
+
+        text = "x" * 1100  # no spaces
+        result = _truncate_caption(text)
+        assert len(result) <= 1024  # must not exceed limit
+
+    def test_exact_limit_unchanged(self):
+        from ccgram.handlers.messaging_pipeline.message_queue import _truncate_caption
+
+        text = "a" * 1024
+        assert _truncate_caption(text) == text
+
+
+class TestShutdownDrain:
+    """Issue #179: graceful shutdown must drain queued tasks before cancelling."""
+
+    async def test_drain_delivers_pending_task_before_cancel(self) -> None:
+        from ccgram.handlers.messaging_pipeline.message_queue import (
+            get_or_create_queue,
+            shutdown_workers,
+        )
+        from ccgram.handlers.messaging_pipeline.message_task import ContentTask
+
+        await shutdown_workers()  # clean state
+        delivered: list[str] = []
+
+        async def fake_handle(*args, **kwargs):
+            delivered.append("delivered")
+
+        with patch(
+            "ccgram.handlers.messaging_pipeline.message_queue._handle_content_task",
+            new=AsyncMock(side_effect=fake_handle),
+        ):
+            bot = AsyncMock()
+            queue = get_or_create_queue(bot, 99)
+            queue.put_nowait(
+                ContentTask(window_id="@0", parts=("last words",), content_type="text")
             )
-        )
-        q.put_nowait(
-            ContentTask(window_id="@0", parts=("kept",), chat_id=-100, thread_id=1)
-        )
+            await shutdown_workers(drain_timeout=2.0)
 
-        removed = await mq.purge_source_tasks(user_id, "@0", 1, "s", 20)
+        assert delivered == ["delivered"]
 
-        assert removed == 1
-        assert [task.parts for task in q._queue] == [("kept",)]
-        # A retired task settles as intentionally dropped, not failed, so the
-        # source watermark may advance past the skipped range.
-        assert receipt.commit_ready
-        mq._message_queues.pop(user_id, None)
+    async def test_drain_timeout_does_not_hang(self) -> None:
+        from ccgram.handlers.messaging_pipeline.message_queue import (
+            get_or_create_queue,
+            shutdown_workers,
+        )
+        from ccgram.handlers.messaging_pipeline.message_task import ContentTask
+
+        async def block_dispatch(*_args, **_kwargs) -> int:
+            await asyncio.sleep(10)
+            return 0
+
+        await shutdown_workers()  # clean state
+        bot = AsyncMock()
+        queue = get_or_create_queue(bot, 98)
+        queue.put_nowait(ContentTask(window_id="@0", parts=("x",), content_type="text"))
+        with patch(
+            "ccgram.handlers.messaging_pipeline.message_queue._handle_content_task",
+            new=AsyncMock(side_effect=block_dispatch),
+        ):
+            await asyncio.wait_for(shutdown_workers(drain_timeout=0.3), timeout=5.0)

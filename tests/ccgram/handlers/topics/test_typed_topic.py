@@ -380,3 +380,78 @@ class TestPlanDraftIdentity:
             )
 
         assert launched and launched[0].project == project.resolve()
+
+    async def test_start_clears_a_pending_plan(self, project: Path) -> None:
+        """A resolution keyboard must fail closed after /start, like every other."""
+        from ccgram.handlers.topics.new_command import new_command
+
+        user_data: dict = {}
+        await _start("codex nosuchproject do it", user_data=user_data)
+        assert PENDING_PLAN in user_data
+
+        update = MagicMock()
+        update.effective_user.id = 100
+        update.message = MagicMock()
+        update.message.reply_text = AsyncMock()
+        context = _context(user_data)
+        with (
+            patch.object(
+                new_command.__globals__["config"], "is_user_allowed", return_value=True
+            ),
+            patch.object(new_command.__globals__["config"], "group_id", None),
+            patch("ccgram.handlers.topics.new_command.commands_command", AsyncMock()),
+        ):
+            await new_command(update, context)
+
+        assert PENDING_PLAN not in user_data
+
+    async def test_typed_plan_ignores_a_browser_flows_pending_worktree(
+        self, project: Path
+    ) -> None:
+        """A typed launch must not inherit another flow's PENDING_WORKTREE_*."""
+        from ccgram.handlers.topics.window_launch_service import (
+            WindowLaunchRequest,
+            _create_topic_window,
+        )
+
+        request = WindowLaunchRequest(
+            user_id=100,
+            thread_id=42,
+            provider_name="codex",
+            cwd=str(project),
+            mode="yolo",
+            pending_text="do it",
+            ignore_pending_worktree=True,
+        )
+        captured: list = []
+        adapter = MagicMock()
+
+        async def create(data, **_kwargs):
+            captured.append(data)
+            return MagicMock(title="t", target_id="@9")
+
+        adapter.create = AsyncMock(side_effect=create)
+        user_data = {
+            "browse_path": str(project),
+            "_pending_worktree_repo": "/some/other/repo",
+            "_pending_worktree_branch": "other-branch",
+            "_pending_worktree_path": "/some/other/repo.worktrees/other-branch",
+        }
+        context = _context(user_data)
+        with (
+            patch(
+                "ccgram.handlers.topics.window_launch_service.adapter_for",
+                lambda _bot_data: adapter,
+            ),
+            patch(
+                "ccgram.handlers.topics.window_launch_service.preseed_trust",
+                lambda *a, **k: False,
+            ),
+        ):
+            await _create_topic_window(
+                str(project), "codex", "yolo", None, context, request
+            )
+
+        assert captured
+        assert "worktree" not in captured[0]
+        assert captured[0]["directory"] == str(project)

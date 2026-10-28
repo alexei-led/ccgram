@@ -337,7 +337,16 @@ async def start_from_text(
 
     candidates = list(parsed.candidates)[:PROJECT_HINTS]
     if parsed.reason == "project" and not candidates:
-        # Nothing to offer: let the caller fall back to the directory browser.
+        if parsed.mode and parsed.mode != config.default_mode or parsed.branch:
+            # The line asked for a mode or a worktree; the directory browser
+            # cannot honour either, so say so instead of dropping them.
+            await safe_reply(
+                message,
+                "\u274c Project not found, and a mode/branch was requested.\n"
+                "Type: <agent>[:<mode>] <project|path> [@branch] <instruction>",
+            )
+            return True
+        # A plain instruction: let the caller open the directory browser.
         return False
     prompt = await safe_reply(
         message,

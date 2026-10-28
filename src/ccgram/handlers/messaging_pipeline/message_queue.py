@@ -10,7 +10,7 @@ import asyncio
 import contextlib
 import random
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from io import BytesIO
 from typing import assert_never
 
@@ -61,7 +61,6 @@ from .message_task import (
     MessageTask,
     StatusClearTask,
     StatusUpdateTask,
-    defer_task,
     thread_key,
 )
 from .tool_batch import (
@@ -188,9 +187,7 @@ async def purge_source_tasks(
             )
             return None
         retained: list[MessageTask] = []
-        # Retirement sees parked tasks too: a flood-limited task inside the
-        # skipped range must not deliver once its backoff expires.
-        for task in _drain_queue(queue, include_deferred=True):
+        for task in _drain_queue(queue):
             if (
                 isinstance(task, ContentTask)
                 and task.window_id == window_id
@@ -260,9 +257,6 @@ def queues_idle() -> bool:
 _tool_msg_ids: dict[tuple[str, int, int], int] = {}
 
 _CAPTION_MAX_LENGTH = 1024  # Telegram Bot API caption limit
-
-# Longest sleep when every queued task is parked behind flood control.
-_FLOOD_POLL_MAX_S = 0.5
 
 
 def _truncate_caption(text: str) -> str:
@@ -349,34 +343,19 @@ def get_or_create_queue(
     return _message_queues[user_id]
 
 
-def _drain_queue(
-    queue: asyncio.Queue[MessageTask], *, include_deferred: bool = False
-) -> list[MessageTask]:
-    """Drain the ready items from the queue and return them as a list.
+def _drain_queue(queue: asyncio.Queue[MessageTask]) -> list[MessageTask]:
+    """Drain all items from the queue and return them as a list.
 
-    Destructive for those items only. Tasks parked behind flood control stay
-    queued: draining one would let ``_merge_content_tasks`` absorb it into
-    another task, losing its deferral and reopening the chat that is still
-    limited. Re-queued tasks carry the matching ``task_done`` so the
-    unfinished count is unchanged.
-
-    ``include_deferred`` is for retirement, not delivery: a confirmed backlog
-    skip must be able to drop a parked task from the skipped range, or that
-    task would deliver after its backoff expires.
+    Destructive: the queue is empty after this call. Caller is responsible
+    for re-enqueueing any items that should not be discarded.
     """
     items: list[MessageTask] = []
-    now = time.monotonic()
-    # Bounded by the entries present at entry: a parked task is re-queued at
-    # the tail, so an unbounded while-loop would cycle over it forever.
-    for _ in range(queue.qsize()):
-        if queue.empty():
+    while not queue.empty():
+        try:
+            item = queue.get_nowait()
+            items.append(item)
+        except asyncio.QueueEmpty:
             break
-        item = queue.get_nowait()
-        if not include_deferred and getattr(item, "deferred_until", 0.0) > now:
-            queue.put_nowait(item)
-            queue.task_done()
-            continue
-        items.append(item)
     return items
 
 
@@ -762,19 +741,6 @@ def _log_rate_limit_queue_state(
     )
 
 
-class _FloodDeferredError(Exception):
-    """A task Telegram rate-limited while other messages are ready to send.
-
-    Parked instead of slept on: flood control is per chat, so a blocked chat
-    must not hold another topic's message for the length of its backoff. When
-    nothing else is ready the caller just waits in place, as before.
-    """
-
-    def __init__(self, retry_in: float) -> None:
-        super().__init__(f"deferred {retry_in:.1f}s")
-        self.retry_in = retry_in
-
-
 def _is_transient_status_task(task: MessageTask) -> bool:
     """Return whether flood control may safely discard this status operation."""
     return isinstance(task, StatusClearTask) or (
@@ -790,8 +756,8 @@ async def _dispatch_with_retry(
     lock: asyncio.Lock,
 ) -> DeliveryOutcome:
     """Dispatch one task, dropping dead targets and bounding flood retries."""
-    rate_limit_retry = state.task.flood_retries
-    retry_started = state.task.flood_started or time.monotonic()
+    rate_limit_retry = 0
+    retry_started = time.monotonic()
     while True:
         dispatch_state = DispatchState()
         if _is_stale_task(user_id, state.task):
@@ -864,11 +830,7 @@ async def _dispatch_with_retry(
                             backoff_seconds=backoff,
                             jitter_seconds=jitter,
                             retry_in_seconds=retry_in,
-                            others_ready=_has_runnable_task(queue, state.task),
                         )
-                        if _has_runnable_task(queue, state.task):
-                            # Another topic can go now; give it the turn.
-                            raise _FloodDeferredError(retry_in) from exc
                         await asyncio.sleep(retry_in)
             finally:
                 structlog.contextvars.clear_contextvars()
@@ -879,115 +841,9 @@ async def _dispatch_with_retry(
             return outcome
 
 
-def _lane(task: MessageTask) -> tuple[str, object]:
-    """Delivery lane of a task: the chat, or the topic when none is carried.
-
-    Telegram rate limits per chat, so messages for the same chat sit behind
-    the same limit and cannot help each other; a different lane can.
-    """
-    chat_id = getattr(task, "chat_id", None)
-    if chat_id is not None:
-        return ("chat", chat_id)
-    return ("thread", getattr(task, "thread_id", None))
-
-
-def _queued(queue: asyncio.Queue[MessageTask]) -> tuple[MessageTask, ...]:
-    """Peek at the queued tasks without mutating order or accounting."""
-    return tuple(getattr(queue, "_queue", ()))
-
-
-def _lane_hold(queue: asyncio.Queue[MessageTask], task: MessageTask) -> float:
-    """Seconds *task* must wait: its own backoff or a parked task in its lane.
-
-    Lane ordering is what makes the wait meaningful. A later task for a chat
-    whose earlier message is parked returns that message's remaining backoff,
-    so it is never attempted against the still-limited chat first.
-    """
-    now = time.monotonic()
-    lane = _lane(task)
-    holds = [task.deferred_until - now]
-    for queued in _queued(queue):
-        if _lane(queued) == lane:
-            holds.append(getattr(queued, "deferred_until", 0.0) - now)
-    return max(0.0, max(holds))
-
-
-def _has_runnable_task(queue: asyncio.Queue[MessageTask], task: MessageTask) -> bool:
-    """True when some queued task can be attempted right now, other lanes first.
-
-    Runnability, not bare readiness, is what the worker needs: a task blocked
-    behind a parked peer in its own lane cannot run either, so counting it as
-    available would make two blocked lanes rotate forever without yielding.
-    """
-    lane = _lane(task)
-    for queued in _queued(queue):
-        if _lane(queued) == lane:
-            continue
-        if _lane_hold(queue, queued) <= 0.0:
-            return True
-    return False
-
-
-def _next_wake_in(queue: asyncio.Queue[MessageTask]) -> float:
-    """Seconds until the earliest parked task may run, or a poll interval."""
-    now = time.monotonic()
-    deadlines = [
-        getattr(queued, "deferred_until", 0.0) - now for queued in _queued(queue)
-    ]
-    upcoming = [value for value in deadlines if value > 0.0]
-    if not upcoming:
-        return _FLOOD_POLL_MAX_S
-    return min(min(upcoming), _FLOOD_POLL_MAX_S)
-
-
-def _park_task(task: MessageTask, *, hold: float) -> MessageTask:
-    """Return *task* parked for *hold* seconds without touching retry budget.
-
-    Waiting behind a peer is not a flood retry: charging it to the budget
-    would let a busy lane exhaust a task that never reached Telegram.
-    """
-    return replace(task, deferred_until=time.monotonic() + max(hold, 0.0))
-
-
-async def _rotate_deferred_task(
-    queue: asyncio.Queue[MessageTask], task: MessageTask, *, hold: float
-) -> None:
-    """Park *task* at the tail so a ready lane goes first.
-
-    Rotation is what preserves lane order: tasks leave and re-enter in
-    arrival order, so an earlier message in a lane stays ahead of a later one.
-    """
-    queue.task_done()
-    queue.put_nowait(_park_task(task, hold=hold))
-
-
-def _settle_attempt(
-    user_id: int,
-    task: MessageTask,
-    merged_receipts: tuple[DeliveryReceipt, ...],
-    outcome: DeliveryOutcome,
-) -> None:
-    """Close out one attempt: settle receipts and record delivery lag."""
-    for receipt in _delivery_receipts_for_settlement(task, merged_receipts):
-        receipt.settle(outcome)
-    _record_content_delivery(user_id, task)
-
-
-def _clear_pending_markers(user_id: int, task: MessageTask) -> None:
-    """Drop the queued markers for a status task now that it is being served."""
-    if isinstance(task, StatusUpdateTask):
-        _pending_status_updates.discard(
-            (user_id, task.window_id, thread_key(task.thread_id), task.transient)
-        )
-    elif isinstance(task, StatusClearTask):
-        _pending_status_clears.discard(
-            (user_id, task.window_id or "", thread_key(task.thread_id))
-        )
-
-
 async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
     global _inflight_count
-    """Process message tasks for a user, one at a time, fair across lanes."""
+    """Process message tasks for a user sequentially."""
     queue = _message_queues[user_id]
     lock = _queue_locks[user_id]
     logger.debug("Message queue worker started for user %s", user_id)
@@ -995,38 +851,33 @@ async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
     while True:
         try:
             task = await queue.get()
-            hold = _lane_hold(queue, task)
-            if hold > 0:
-                # Parked (or behind a parked peer): rotate in arrival order so
-                # a later task never overtakes an earlier one in its lane.
-                # Peer waiting is not a retry, so it is parked, not charged.
-                await _rotate_deferred_task(queue, task, hold=hold)
-                if not _has_runnable_task(queue, task):
-                    # Nothing can run: yield until the earliest deadline. Could
-                    # not sleeping here would spin the worker on a nonempty
-                    # queue and starve every other coroutine.
-                    await asyncio.sleep(_next_wake_in(queue))
-                continue
-            _clear_pending_markers(user_id, task)
+            if isinstance(task, StatusUpdateTask):
+                _pending_status_updates.discard(
+                    (
+                        user_id,
+                        task.window_id,
+                        thread_key(task.thread_id),
+                        task.transient,
+                    )
+                )
+            elif isinstance(task, StatusClearTask):
+                _pending_status_clears.discard(
+                    (user_id, task.window_id or "", thread_key(task.thread_id))
+                )
             _inflight_count += 1
             _mark_task_inflight(user_id, task)
             outcome = DeliveryOutcome.DELIVERED
             retry_state = RetryDispatchState(task)
-            deferred: _FloodDeferredError | None = None
             try:
                 outcome = await _dispatch_with_retry(
                     client, user_id, retry_state, queue, lock
                 )
-            except _FloodDeferredError as flood:
-                # Not delivered and not failed: keep the receipts open so the
-                # source watermark cannot advance past an unsent message.
-                deferred = flood
             except asyncio.CancelledError:
                 # A bounded shutdown may cancel an in-flight send. Do not
                 # acknowledge bytes whose task was interrupted; restart replays.
                 outcome = DeliveryOutcome.FAILED
                 raise
-            except Exception:  # noqa: BLE001 - delivery failures must not kill workers
+            except Exception:  # noqa: BLE001 — delivery failures must not kill workers
                 outcome = DeliveryOutcome.FAILED
                 logger.exception(
                     "Error processing message task for user %s (thread %s)",
@@ -1034,23 +885,13 @@ async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
                     getattr(task, "thread_id", None),
                 )
             finally:
+                for receipt in _delivery_receipts_for_settlement(
+                    retry_state.task, retry_state.merged_receipts
+                ):
+                    receipt.settle(outcome)
+                _record_content_delivery(user_id, retry_state.task)
                 _inflight_count -= 1
                 queue.task_done()
-                if deferred is not None:
-                    queue.put_nowait(
-                        defer_task(
-                            retry_state.task,
-                            retry_in=deferred.retry_in,
-                            now=time.monotonic(),
-                        )
-                    )
-                else:
-                    _settle_attempt(
-                        user_id,
-                        retry_state.task,
-                        retry_state.merged_receipts,
-                        outcome,
-                    )
         except asyncio.CancelledError:
             logger.debug("Message queue worker cancelled for user %s", user_id)
             break

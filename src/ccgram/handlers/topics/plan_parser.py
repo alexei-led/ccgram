@@ -319,9 +319,15 @@ def parse_topic_plan(
     instruction_start = (
         tokens[consumed][2] if blocked else tokens[consumed - 1][2] if consumed else 0
     )
+    # The branch word is the token after the project *slot*, whether that word
+    # resolved, matched several projects, or matched nothing: an unmatched
+    # project word followed by @branch must not bury the branch in text.
+    project_word_present = consumed < len(tokens) and not tokens[consumed][
+        0
+    ].startswith("@")
     taken = _take_branch(
         tokens,
-        slot=consumed + 1 if blocked else consumed,
+        slot=consumed + 1 if (blocked or project_word_present) else consumed,
         candidates=candidates,
         agent=agent,
         agent_typed=agent_typed,

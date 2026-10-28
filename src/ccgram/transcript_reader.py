@@ -698,7 +698,12 @@ class TranscriptReader:
         prefix = [
             entry
             for entry in read_entries(raw, provider_name)
-            if entry.offset < tracked.last_byte_offset
+            # Rebuild to the position the reader will resume from, which is the
+            # clamp point when a startup clamp applied. Rebuilding only to the
+            # delivered watermark would miss the skipped turn and replay stale
+            # parser context (a Codex task_complete "Done" that the skipped
+            # user turn had cleared), discarding the next real answer.
+            if entry.offset < self._clamped_floor(session_id, tracked.last_byte_offset)
         ]
         _, parser_state = parse_records(
             prefix,
@@ -748,12 +753,24 @@ class TranscriptReader:
         self._protocol_parser_states.pop(session_id, None)
         self._parser_rebuild_pending.discard(session_id)
 
+    def _clamped_floor(self, session_id: str, watermark: int) -> int:
+        """Lower bound for a resumed parse position: the clamp, when applied."""
+        return max(self._startup_clamped.get(session_id, watermark), watermark)
+
     def replay_from_watermark(self, session_id: str) -> None:
-        """Discard uncommitted parse context and resume from durable progress."""
+        """Discard uncommitted parse context and resume from durable progress.
+
+        A canceled or expired backlog skip restores the delivered watermark.
+        For a clamped session that watermark still precedes the range this
+        process decided to skip, so resuming from it alone would replay the
+        backlog the clamp exists to prevent.
+        """
         tracked = self._state.get_session(session_id)
         if tracked is None:
             return
-        tracked.parsed_offset = tracked.last_byte_offset
+        tracked.parsed_offset = self._clamped_floor(
+            session_id, tracked.last_byte_offset
+        )
         self.reset_parser_state(session_id)
         self._parser_rebuild_pending.add(session_id)
         self._file_mtimes.pop(session_id, None)
@@ -812,6 +829,14 @@ class TranscriptReader:
                 self._startup_file_boundaries[session_id] = (
                     self._startup_file_boundaries.pop(old_session_id)
                 )
+            # The clamp is keyed by session id, so a refreshed id would read as
+            # a brand-new session and replay the backlog the old id clamped.
+            if old_session_id in self._startup_clamped:
+                self._startup_clamped[session_id] = self._startup_clamped.pop(
+                    old_session_id
+                )
+                self._startup_sessions.add(session_id)
+                self._startup_replay_checked.add(session_id)
             self._parser_rebuild_pending.add(session_id)
             log_throttle_reset(f"partial-jsonl:{old_session_id}")
             logger.debug(

@@ -1,6 +1,7 @@
 """Tests for transcript reader offset handling."""
 
 import os
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -667,3 +668,54 @@ class TestStartupReplayBound:
             "sess", session_file, delivered, window_id="@1"
         )
         assert [msg.text for msg in delivered] == ["live"]
+
+    async def test_canceling_a_skip_cannot_undo_the_clamp(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A canceled backlog skip must not reopen the clamped range."""
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "startup_replay_max_bytes", 120, raising=False)
+        reader, state, session_file = self._reader_with_backlog(tmp_path)
+        messages: list = []
+        await reader._process_session_file(
+            "sess", session_file, messages, window_id="@1"
+        )
+
+        assert messages == []
+        assert "sess" in reader._startup_clamped
+
+        reader.replay_from_watermark("sess")
+
+        tracked = state.get_session("sess")
+        assert tracked is not None
+        assert tracked.parsed_offset >= reader._startup_clamped["sess"]
+
+    async def test_a_refreshed_session_id_keeps_the_clamp(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """The same transcript under a new id must not replay its backlog."""
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "startup_replay_max_bytes", 120, raising=False)
+        reader, _state, session_file = self._reader_with_backlog(tmp_path)
+        await reader._process_session_file("sess", session_file, [], window_id="@1")
+        clamped = reader._startup_clamped.get("sess")
+        assert clamped is not None
+
+        tracked = reader._adopt_tracking_for_file("refreshed", session_file)
+
+        assert tracked is not None
+        assert reader._startup_clamped.get("refreshed") == clamped
+        assert "refreshed" in reader._startup_sessions
+
+    def _reader_with_backlog(self, tmp_path):
+        session_file = tmp_path / "transcript.jsonl"
+        session_file.write_text(
+            "".join(self._record(f"m{i}") for i in range(10)), newline="\n"
+        )
+        state = MonitorState(state_file=tmp_path / "monitor_state.json")
+        state.update_session(
+            TrackedSession(session_id="sess", file_path=str(session_file))
+        )
+        return TranscriptReader(state, IdleTracker()), state, session_file

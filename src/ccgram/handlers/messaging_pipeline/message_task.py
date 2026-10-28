@@ -6,7 +6,7 @@ keeping the dependency graph acyclic.
 """
 
 import time
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Literal, TypeAlias
 
 from ccgram.delivery_contract import DeliveryReceipt
@@ -41,12 +41,6 @@ class ContentTask:
     enqueued_monotonic: float = field(default_factory=time.monotonic, compare=False)
     is_backlog_notice: bool = False
     source_provider_name: str | None = None
-    # Flood-control bookkeeping owned by the queue worker. A deferred task
-    # rotates to the tail so one rate-limited chat cannot hold every other
-    # lane's messages; deferred_until is monotonic, 0 means ready now.
-    deferred_until: float = field(default=0.0, compare=False, hash=False)
-    flood_retries: int = field(default=0, compare=False, hash=False)
-    flood_started: float = field(default=0.0, compare=False, hash=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,9 +53,6 @@ class StatusUpdateTask:
     # Poll refreshes are replaceable. Hook notices are durable and must not be
     # discarded merely because Telegram temporarily rate-limits the chat.
     transient: bool = False
-    deferred_until: float = field(default=0.0, compare=False, hash=False)
-    flood_retries: int = field(default=0, compare=False, hash=False)
-    flood_started: float = field(default=0.0, compare=False, hash=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,9 +61,6 @@ class StatusClearTask:
 
     window_id: str | None
     thread_id: int | None = None
-    deferred_until: float = field(default=0.0, compare=False, hash=False)
-    flood_retries: int = field(default=0, compare=False, hash=False)
-    flood_started: float = field(default=0.0, compare=False, hash=False)
 
 
 MessageTask: TypeAlias = ContentTask | StatusUpdateTask | StatusClearTask
@@ -81,18 +69,3 @@ MessageTask: TypeAlias = ContentTask | StatusUpdateTask | StatusClearTask
 def thread_key(thread_id: int | None) -> int:
     """Normalise an optional thread_id to a dict key (None -> 0)."""
     return thread_id or 0
-
-
-def defer_task(task: MessageTask, *, retry_in: float, now: float) -> MessageTask:
-    """Return *task* parked until *now* + *retry_in*.
-
-    Flood control is per chat, so the worker rotates a parked task back into
-    the queue and serves other lanes instead of sleeping in place. The first
-    deferral stamps flood_started so the retry budget spans rotations.
-    """
-    return replace(
-        task,
-        deferred_until=now + max(retry_in, 0.0),
-        flood_retries=task.flood_retries + 1,
-        flood_started=task.flood_started or now,
-    )

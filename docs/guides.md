@@ -311,21 +311,21 @@ The raw provider transcript is retained; Jump to live does not delete or rewrite
 
 ### Restarts and flood control
 
-The delivered watermark advances only once the queue is fully drained, so a
-flood-limited or wedged queue leaves it behind the transcript. Two behaviours
-keep the next restart from turning that into a message flood:
+The delivered watermark follows each session's settled receipt prefix, so a
+flood-limited or wedged queue can leave it well behind the transcript. One
+behaviour keeps the next restart from turning that into a message flood:
 
-- **Bounded startup replay** — on the first poll of each session after a
-  restart, an undelivered range larger than `CCGRAM_STARTUP_REPLAY_MAX_KB`
-  (default **256**) is treated as history: the parse position jumps to the
-  transcript EOF and the range is not delivered. The bytes stay in the raw
-  transcript. Set `CCGRAM_STARTUP_REPLAY_MAX_KB=0` to replay everything again
-  (the previous behaviour).
-- **Fair delivery across chats** — Telegram rate limits per chat. When a send
-  hits flood control and another queued message is ready, the limited task is
-  parked at the tail and the ready one goes first; the parked task keeps its
-  delivery receipts open, so no watermark advances past it. When nothing else
-  is ready the worker waits out the backoff in place, as before.
+**Bounded startup replay** — on the first poll of each session after a
+restart, an undelivered range larger than `CCGRAM_STARTUP_REPLAY_MAX_KB`
+(default **256**) is treated as history: the parse position jumps to the
+transcript EOF and the range is not delivered. The bytes stay in the raw
+transcript. Set `CCGRAM_STARTUP_REPLAY_MAX_KB=0` to replay everything again
+(the previous behaviour).
+
+Flood control itself is per chat and is handled by waiting in place: the
+worker retries the same task after the backoff, so delivery order is never
+changed. Cross-topic fairness while one chat is limited is a separate
+concern and is not attempted here.
 
 ## Thinking Visibility
 

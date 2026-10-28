@@ -219,6 +219,24 @@ class TestParseTopicPlan:
         assert parsed.branch == "feat-x"
         assert parsed.instruction == "fix it"
 
+    def test_an_unmatched_project_still_consumes_a_following_branch(
+        self, roots: list[Path]
+    ) -> None:
+        """A typo'd project word must not bury a typed @branch in the text."""
+        last = (roots[0] / "ccgram").resolve()
+
+        parsed = parse_topic_plan(
+            "codex nosuchproject @fix repair the bug",
+            roots=roots,
+            default_agent="claude",
+            last_project=last,
+        )
+
+        assert parsed.plan is not None
+        assert parsed.plan.project == last
+        assert parsed.plan.branch == "fix"
+        assert parsed.plan.instruction == "repair the bug"
+
 
 class TestBuildLabel:
     def test_label_carries_project_and_hint(self) -> None:
