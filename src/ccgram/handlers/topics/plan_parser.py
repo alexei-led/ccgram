@@ -40,6 +40,11 @@ AGENT_ALIASES: dict[str, str] = {
     "ag": "antigravity",
     "agy": "antigravity",
     "antigravity": "antigravity",
+    # Registered but hidden from pickers by default; recognised here so an
+    # explicit "gemini ..." is either launched as Gemini or reported as
+    # disabled, never silently run as the default provider.
+    "gm": "gemini",
+    "gemini": "gemini",
     "sh": "shell",
     "bash": "shell",
     "shell": "shell",
@@ -95,6 +100,9 @@ class PlanParse:
 
     plan: TopicPlan | None = None
     reason: str = ""
+    # Projects that matched the word. The caller lists their names in one
+    # reply and the operator retypes with the full name: nothing is stored
+    # between messages.
     candidates: tuple[Path, ...] = ()
     agent: str = ""
     agent_typed: bool = False
@@ -172,11 +180,14 @@ def list_projects(
                 resolved = child.resolve()
             except OSError:
                 continue
-            if resolved in seen:
+            # Dedupe by entry path, not by target: a symlink and its target
+            # are two names an operator may type, and dropping the link would
+            # make its name unmatchable.
+            if child in seen:
                 continue
             if git_only and not is_git_repo(resolved):
                 continue
-            seen.add(resolved)
+            seen.add(child)
             projects.append(child)
     return projects
 

@@ -263,6 +263,13 @@ async def start_from_text(
                 return True
 
     if parsed.plan is not None:
+        # Checked here as well as inside launch_plan: the refusal must happen
+        # before anything is created, and a caller that replaces launch_plan
+        # (tests, future flows) must not bypass it.
+        blocked_agent = _agent_blocked(parsed.plan.agent)
+        if blocked_agent:
+            await safe_reply(message, f"\u274c {blocked_agent}")
+            return True
         await launch_plan(
             parsed.plan,
             user_id=user_id,
@@ -283,6 +290,13 @@ async def start_from_text(
             message,
             _resolution_reply(parsed, list(parsed.candidates)[:PROJECT_HINTS]),
         )
+        return True
+
+    mode_requested = parsed.mode and parsed.mode != config.default_mode
+    if mode_requested or parsed.branch:
+        # The directory browser applies neither, so say the line is incomplete
+        # instead of dropping half of it.
+        await safe_reply(message, _resolution_reply(parsed, []))
         return True
 
     # A plain instruction: let the caller open the directory browser.

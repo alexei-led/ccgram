@@ -134,10 +134,12 @@ class TestStartFromText:
         assert launched == []
         assert "Unknown mode" in message.reply_text.call_args[0][0]
 
-    async def test_disabled_agent_is_refused_with_the_enabled_list(
-        self, project: Path
+    @pytest.mark.parametrize("word", ["gemini", "gemini:safe", "gm"])
+    async def test_a_disabled_agent_is_refused_never_run_as_the_default(
+        self, project: Path, word: str
     ) -> None:
-        handled, launched, message = await _start("gemini ccgram do it")
+        """A hidden provider must not fall through to the default provider."""
+        handled, launched, message = await _start(f"{word} ccgram do it")
 
         assert handled is True
         assert launched == []
@@ -329,3 +331,13 @@ class TestLaunchPlan:
         request = captured[0]
         assert request.ignore_pending_worktree is True
         assert request.ignore_pending_workspace is True
+
+    async def test_a_mode_request_without_a_project_is_reported(
+        self, project: Path
+    ) -> None:
+        """The browser applies no mode, so a half-line must not fall through."""
+        handled, launched, message = await _start("codex:safe @fix repair the bug")
+
+        assert handled is True
+        assert launched == []
+        assert "codex:safe" not in message.reply_text.call_args[0][0]

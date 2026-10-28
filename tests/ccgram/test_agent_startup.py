@@ -141,6 +141,47 @@ class TestPreseedCodexTrust:
         assert agent_startup.preseed_trust("codex", project) is False
         assert config_file.read_text() == original
 
+    def test_global_off_beats_a_per_agent_on(
+        self, fake_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The documented global switch is final, not a default."""
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "autostart_trust", False, raising=False)
+        monkeypatch.setenv("CCGRAM_CLAUDE_AUTOSTART", "on")
+        project = tmp_path / "ccgram"
+        project.mkdir()
+
+        assert agent_startup.preseed_trust("claude", project) is False
+
+    def test_a_launch_command_override_skips_seeding(
+        self, fake_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An override can point the agent at a profile this process cannot see."""
+        monkeypatch.setenv("CCGRAM_CODEX_COMMAND", "CODEX_HOME=/profiles/work codex")
+        project = tmp_path / "ccgram"
+        project.mkdir()
+
+        assert agent_startup.preseed_trust("codex", project) is False
+        assert not (fake_home / ".codex" / "config.toml").exists()
+
+    def test_a_configured_profile_without_a_file_is_not_seeded_elsewhere(
+        self, fake_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """CLAUDE_CONFIG_DIR names the profile the launch reads, and only that."""
+        work = fake_home / ".claude-work"
+        work.mkdir()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(work))
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "claude_config_dir", work, raising=False)
+        project = tmp_path / "ccgram"
+        project.mkdir()
+
+        assert agent_startup.preseed_trust("claude", project) is False
+        home_config = json.loads((fake_home / ".claude.json").read_text())
+        assert str(project) not in home_config.get("projects", {})
+
 
 class TestAutostartGating:
     def test_global_switch_off_disables_seeding(

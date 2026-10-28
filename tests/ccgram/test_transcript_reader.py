@@ -751,3 +751,33 @@ class TestStartupReplayBound:
         if watermark < clamp:
             # Bounded by the watermark, the rebuild would stop before the clamp.
             assert max(seen) > watermark
+
+    async def test_a_refresh_before_the_first_poll_still_bounds_the_replay(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The refresh case that the poll-then-refresh test cannot reach."""
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "startup_replay_max_bytes", 120, raising=False)
+        session_file = tmp_path / "transcript.jsonl"
+        session_file.write_text(
+            "".join(self._record(f"m{i}") for i in range(10)), newline="\n"
+        )
+        state = MonitorState(state_file=tmp_path / "monitor_state.json")
+        state.update_session(
+            TrackedSession(session_id="old", file_path=str(session_file))
+        )
+        reader = TranscriptReader(state, IdleTracker())
+
+        # Refresh the id before any poll clamped the old one.
+        tracked = reader._adopt_tracking_for_file("new", session_file)
+        assert tracked is not None
+        assert "new" in reader._startup_sessions
+
+        messages: list = []
+        await reader._process_session_file(
+            "new", session_file, messages, window_id="@1"
+        )
+
+        assert messages == []
+        assert "new" in reader._startup_clamped

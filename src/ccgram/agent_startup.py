@@ -88,13 +88,11 @@ def _claude_config_file() -> Path | None:
     home_profile = Path.home() / ".claude.json"
     config_dir = config.claude_config_dir
     if os.getenv("CLAUDE_CONFIG_DIR", "").strip():
-        # The configured profile is the only one the launch reads. Falling back
-        # to home would write trust into a file that agent never opens, while
-        # leaving the real profile unseeded.
-        candidates = [
-            config_dir / ".claude.json",
-            config_dir.parent / ".claude.json",
-        ]
+        # The configured profile is the only profile the launch reads, so it is
+        # the only candidate. A parent or home fallback would silently seed an
+        # unrelated profile (home/.claude.json is the parent of ~/.claude) and
+        # leave the real one untrusted.
+        candidates = [config_dir / ".claude.json"]
     else:
         candidates = [
             home_profile,

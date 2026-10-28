@@ -49,9 +49,15 @@ class TestParseAgent:
         assert spec.mode is None
         assert spec.unknown_mode == "sfae"
 
-    @pytest.mark.parametrize("token", ["gemini", "fix", "codex2", "", "not:known"])
+    @pytest.mark.parametrize("token", ["fix", "codex2", "", "not:known"])
     def test_rejects_non_agents(self, token: str) -> None:
         assert parse_agent(token) is None
+
+    def test_gemini_is_recognised_so_it_is_never_run_as_the_default(self) -> None:
+        """A registered-but-hidden provider must parse, not fall through."""
+        spec = parse_agent("gemini:safe")
+        assert spec is not None
+        assert (spec.name, spec.mode) == ("gemini", "normal")
 
     def test_every_alias_maps_to_a_registered_name(self) -> None:
         from ccgram.providers import registry, _ensure_registered  # noqa: PLC0415
@@ -276,6 +282,21 @@ class TestParseTopicPlan:
         # The plan keeps the listed name; resolution happens at launch time.
         assert parsed.plan.project.name == "client"
         assert parsed.plan.project.resolve() == real.resolve()
+
+    def test_a_symlink_alias_is_not_deduped_away(self, tmp_path: Path) -> None:
+        """Two names for one checkout are two words the operator may type."""
+        real = tmp_path / "alpha"
+        (real / ".git").mkdir(parents=True)
+        root = tmp_path / "workspace"
+        root.mkdir()
+        (root / "zclient").symlink_to(real)
+
+        parsed = parse_topic_plan(
+            "codex zclient fix the bug", roots=[root], default_agent="claude"
+        )
+
+        assert parsed.plan is not None
+        assert parsed.plan.project == root / "zclient"
 
 
 class TestBuildLabel:

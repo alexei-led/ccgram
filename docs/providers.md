@@ -72,7 +72,7 @@ during launch when `CCGRAM_AUTOSTART_TRUST` is on (the default):
 
 | Provider | Screen | How CCGram clears it |
 | --- | --- | --- |
-| Claude | "Do you trust the files in this folder?" | Seeds `hasTrustDialogAccepted` for the project in `~/.claude.json` before launch; falls back to one `Enter` on the exact dialog text. |
+| Claude | "Do you trust the files in this folder?" | Seeds `hasTrustDialogAccepted` for the project in the profile the launch reads — `$CLAUDE_CONFIG_DIR/.claude.json` when that is set, otherwise `~/.claude.json`; falls back to one `Enter` on the exact dialog text. |
 | Codex | Hooks review: "trust all and continue" | Seeds `[projects."<path>"]` with `trust_level = "trusted"` in `$CODEX_HOME/config.toml`; falls back to `Down`+`Enter` on the exact hooks prompt. |
 | Pi, Antigravity, Shell | none known | No recipe declared: a blocked screen is reported, never guessed at. |
 
