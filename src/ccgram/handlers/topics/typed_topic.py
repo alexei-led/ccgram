@@ -21,7 +21,7 @@ import structlog
 
 from ...config import config
 from ...multiplexer import multiplexer as tmux_manager
-from ...providers import has_yolo_mode, is_known_provider
+from ...providers import has_yolo_mode, is_known_provider, provider_launchable
 from ...user_preferences import user_preferences
 from ...worktrees import (
     WorktreeError,
@@ -78,6 +78,11 @@ def _agent_blocked(agent: str) -> str:
         return (
             f"Agent '{agent}' is disabled. Enabled: {', '.join(enabled)} "
             "(CCGRAM_PROVIDERS_ENABLED)."
+        )
+    if not provider_launchable(agent):
+        return (
+            f"Agent '{agent}' is not installed (no '{agent}' on PATH). "
+            "Install it or set a command override."
         )
     return ""
 
@@ -253,23 +258,17 @@ async def start_from_text(
         git_only=not config.dir_browser_all_dirs,
     )
 
-    first_word = text.split(maxsplit=1)[0].lower() if text.split() else ""
-    if not parsed.agent_typed and first_word:
-        name = first_word.split(":", 1)[0]
-        if is_known_provider(name):
-            blocked = _agent_blocked(name)
-            if blocked:
-                await safe_reply(message, f"\u274c {blocked}")
-                return True
+    # Refused before anything is created, and before the project slot is even
+    # considered: a disabled or uninstalled agent must never be replaced by the
+    # default provider, and no worktree or window should appear for a command
+    # that cannot run.
+    if is_known_provider(parsed.agent):
+        blocked = _agent_blocked(parsed.agent)
+        if blocked:
+            await safe_reply(message, f"\u274c {blocked}")
+            return True
 
     if parsed.plan is not None:
-        # Checked here as well as inside launch_plan: the refusal must happen
-        # before anything is created, and a caller that replaces launch_plan
-        # (tests, future flows) must not bypass it.
-        blocked_agent = _agent_blocked(parsed.plan.agent)
-        if blocked_agent:
-            await safe_reply(message, f"\u274c {blocked_agent}")
-            return True
         await launch_plan(
             parsed.plan,
             user_id=user_id,

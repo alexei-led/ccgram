@@ -556,7 +556,7 @@ this topic, renames the topic to the plan label, and forwards the instruction.
 Notes:
 
 - Agent words are matched against the alias table only, so an ordinary sentence is never mistaken for a command.
-- When the project word matches several projects, CCGram replies with one message naming them; retype the line with the full name. Nothing is stored between messages, so there is no keyboard to go stale. A word that matches nothing is read as the first instruction word (using the last-used project), unless an `@branch` follows it — that proves a project slot, so the failure is reported instead of guessed. The directory browser opens only when nothing else can be done: no project word, no last-used project, no candidates.
+- When the project word matches several projects, CCGram replies with one message naming them; retype the line with the full name. Nothing is stored between messages, so there is no keyboard to go stale. A word that matches nothing is read as the first instruction word (using the last-used project), unless an `@branch` follows it — that proves a project slot, so the failure is reported instead of guessed. The directory browser opens only for a plain instruction: no project slot was attempted, so nothing about the line is lost by handing it to the browser.
 - Under a projects root the directory browser lists **git checkouts only**; deeper levels list every subdirectory. Set `CCGRAM_DIR_BROWSER_ALL_DIRS=true` to list everything everywhere.
 
 ### Defaults instead of pickers

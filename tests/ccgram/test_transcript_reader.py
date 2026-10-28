@@ -708,6 +708,15 @@ class TestStartupReplayBound:
         assert tracked is not None
         assert reader._startup_clamped.get("refreshed") == clamped
         assert "refreshed" in reader._startup_sessions
+        # The replacement cursor starts at -1, which falls back to the delivered
+        # watermark and would replay the clamped range.
+        assert tracked.parsed_offset >= clamped
+
+        replayed: list = []
+        await reader._process_session_file(
+            "refreshed", session_file, replayed, window_id="@1"
+        )
+        assert replayed == []
 
     def _reader_with_backlog(self, tmp_path):
         session_file = tmp_path / "transcript.jsonl"

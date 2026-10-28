@@ -283,20 +283,22 @@ class TestParseTopicPlan:
         assert parsed.plan.project.name == "client"
         assert parsed.plan.project.resolve() == real.resolve()
 
-    def test_a_symlink_alias_is_not_deduped_away(self, tmp_path: Path) -> None:
-        """Two names for one checkout are two words the operator may type."""
+    def test_two_names_for_one_checkout_both_resolve(self, tmp_path: Path) -> None:
+        """A link and its target are two words the operator may type."""
         real = tmp_path / "alpha"
         (real / ".git").mkdir(parents=True)
         root = tmp_path / "workspace"
         root.mkdir()
         (root / "zclient").symlink_to(real)
 
-        parsed = parse_topic_plan(
-            "codex zclient fix the bug", roots=[root], default_agent="claude"
-        )
-
-        assert parsed.plan is not None
-        assert parsed.plan.project == root / "zclient"
+        for word, expected in (("zclient", root / "zclient"), ("alpha", real)):
+            parsed = parse_topic_plan(
+                f"codex {word} fix the bug",
+                roots=[root, tmp_path],
+                default_agent="claude",
+            )
+            assert parsed.plan is not None, word
+            assert parsed.plan.project == expected
 
 
 class TestBuildLabel:

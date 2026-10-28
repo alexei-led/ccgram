@@ -182,6 +182,44 @@ class TestPreseedCodexTrust:
         home_config = json.loads((fake_home / ".claude.json").read_text())
         assert str(project) not in home_config.get("projects", {})
 
+    def test_a_symlinked_config_is_written_through_its_target(
+        self, fake_home: Path, tmp_path: Path
+    ) -> None:
+        """Replacing the link would detach a dotfile-managed config."""
+        real = fake_home / "dotfiles" / "config.toml"
+        real.parent.mkdir(parents=True)
+        real.write_text('model = "gpt-5-codex"\n')
+        config_file = fake_home / ".codex" / "config.toml"
+        config_file.parent.mkdir(parents=True)
+        config_file.symlink_to(real)
+        project = tmp_path / "ccgram"
+        project.mkdir()
+
+        assert agent_startup.preseed_trust("codex", project) is True
+
+        assert config_file.is_symlink()
+        assert 'trust_level = "trusted"' in real.read_text()
+
+    def test_a_failed_write_leaves_no_temporary_file_behind(
+        self, fake_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config_file = fake_home / ".codex" / "config.toml"
+        config_file.parent.mkdir(parents=True)
+        config_file.write_text('model = "gpt-5-codex"\n')
+        project = tmp_path / "ccgram"
+        project.mkdir()
+
+        def boom(self, target):
+            raise OSError("replace refused")
+
+        monkeypatch.setattr(agent_startup.Path, "replace", boom)
+
+        assert agent_startup.preseed_trust("codex", project) is False
+        leftovers = [
+            p.name for p in config_file.parent.iterdir() if p.name.startswith(".")
+        ]
+        assert leftovers == []
+
 
 class TestAutostartGating:
     def test_global_switch_off_disables_seeding(

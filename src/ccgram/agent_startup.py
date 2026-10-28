@@ -12,6 +12,12 @@ a session that never answers. Two layers, cheapest first:
    fingerprint a provider declares in its capabilities, sends the declared
    keys. Unknown screens are reported, never guessed at.
 
+Seeding runs in the bot process, so it uses the bot's environment. A window
+whose shell was started with a different profile (a reused multiplexer
+session, for example) is seeded in the wrong place: the write is additive and
+harmless there, and the pane fingerprint above still clears the screen once
+the agent is up.
+
 Both layers are best-effort: every failure is logged and swallowed, because a
 readiness nicety must never fail a launch. Opt out globally with
 ``CCGRAM_AUTOSTART_TRUST=off`` or per agent with
@@ -60,17 +66,31 @@ def autostart_enabled(provider_name: str) -> bool:
 
 
 def _write_atomic(path: Path, text: str) -> bool:
-    """Replace *path* with *text* atomically; False on any filesystem error."""
+    """Replace *path* with *text* atomically; False on any filesystem error.
+
+    A symlinked config (a dotfile-managed ``~/.codex/config.toml``) is written
+    through its target: replacing the link itself would silently detach the
+    file future managed updates write to. A failed write never leaves the
+    temporary file behind.
+    """
+    target = path
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.is_symlink():
+            target = path.resolve()
+        target.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(
-            "w", dir=path.parent, prefix=f".{path.name}.", delete=False
+            "w", dir=target.parent, prefix=f".{target.name}.", delete=False
         ) as handle:
             handle.write(text)
             tmp = Path(handle.name)
-        tmp.replace(path)
+    except OSError as exc:
+        logger.debug("could not prepare write for %s: %s", path, exc)
+        return False
+    try:
+        tmp.replace(target)
     except OSError as exc:
         logger.debug("could not write %s: %s", path, exc)
+        tmp.unlink(missing_ok=True)
         return False
     return True
 

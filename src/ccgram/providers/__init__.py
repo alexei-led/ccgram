@@ -66,17 +66,27 @@ def provider_launchable(provider_name: str) -> bool:
     # Lazy: shutil + config only matter for the picker path.
     import shutil
 
+    _ensure_registered()
     env_key = f"CCGRAM_{provider_name.upper()}_COMMAND"
     if os.environ.get(env_key):
         return True
     try:
-        command = registry.get(provider_name).capabilities.launch_command
+        provider = registry.get(provider_name)
     except UnknownProviderError:
         return False
-    if not command:
+    if not provider.capabilities.launch_command:
         # A provider that IS the shell (shell) launches no CLI of its own.
         return True
-    return shutil.which(command) is not None
+    if provider_name == "antigravity":
+        # Antigravity also ships outside PATH; its own resolver knows where.
+        # Lazy: only this provider needs the executable resolver.
+        from ccgram.providers.antigravity import resolve_antigravity_executable
+
+        resolved = resolve_antigravity_executable()
+        return bool(resolved) and (
+            shutil.which(resolved) is not None or os.path.isfile(resolved)
+        )
+    return shutil.which(provider.capabilities.launch_command) is not None
 
 
 def picker_provider_names() -> list[str]:

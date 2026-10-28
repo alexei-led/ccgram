@@ -94,8 +94,9 @@ class PlanParse:
     """Outcome of :func:`parse_topic_plan`.
 
     ``plan`` is set on success. Otherwise ``reason`` names the slot that
-    could not be filled ("empty", "project", "branch") and ``candidates``
-    lists projects the caller can offer as one-tap alternatives.
+    could not be filled ("empty", "project", "branch", "mode") and
+    ``candidates`` lists the projects the word matched, for the caller to
+    name in a single reply.
     """
 
     plan: TopicPlan | None = None
@@ -107,9 +108,9 @@ class PlanParse:
     agent: str = ""
     agent_typed: bool = False
     project_typed: bool = False
-    # Slots already resolved when only the project word is missing: the
-    # candidate keyboard rebuilds the plan from these instead of re-parsing
-    # (a re-parse would meet the same ambiguity again).
+    # Slots already resolved when only the project word is missing. They are
+    # reported back so the operator can retype the line knowing what was
+    # understood; nothing is stored between messages.
     instruction: str = ""
     mode: str = ""
     branch: str | None = None
@@ -206,7 +207,7 @@ def resolve_project(
 
     An explicit path wins outright. A bare word matches exactly first, then
     by unique prefix, then by unique substring; ambiguity returns the
-    matching projects so the caller can offer them as buttons.
+    matching projects so the caller can name them in one reply.
     """
     if _is_explicit_path(token):
         path = Path(token).expanduser()

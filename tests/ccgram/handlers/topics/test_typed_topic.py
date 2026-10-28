@@ -332,12 +332,36 @@ class TestLaunchPlan:
         assert request.ignore_pending_worktree is True
         assert request.ignore_pending_workspace is True
 
-    async def test_a_mode_request_without_a_project_is_reported(
-        self, project: Path
+    @pytest.mark.parametrize("line", ["codex:safe repair the bug", "codex @fix repair"])
+    async def test_a_half_line_never_falls_through_to_the_browser(
+        self, project: Path, line: str
     ) -> None:
-        """The browser applies no mode, so a half-line must not fall through."""
-        handled, launched, message = await _start("codex:safe @fix repair the bug")
+        """The browser applies neither a mode nor a branch, so report instead."""
+        handled, launched, message = await _start(line)
 
         assert handled is True
         assert launched == []
-        assert "codex:safe" not in message.reply_text.call_args[0][0]
+        assert message.reply_text.call_args is not None
+
+    async def test_an_enabled_but_uninstalled_agent_is_refused_up_front(
+        self, project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No worktree or window should be created for a command that cannot run."""
+        from ccgram.handlers.topics import typed_topic
+
+        monkeypatch.setattr(typed_topic, "provider_launchable", lambda _name: False)
+        handled, launched, message = await _start("codex ccgram fix it")
+
+        assert handled is True
+        assert launched == []
+        assert "not installed" in message.reply_text.call_args[0][0]
+
+    async def test_a_disabled_agent_without_a_project_is_still_refused(
+        self, project: Path
+    ) -> None:
+        """Refusal must not depend on the project slot resolving."""
+        handled, launched, message = await _start("gemini fix the test")
+
+        assert handled is True
+        assert launched == []
+        assert "disabled" in message.reply_text.call_args[0][0]
