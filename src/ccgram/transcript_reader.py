@@ -372,6 +372,8 @@ class TranscriptReader:
         self._startup_sessions: set[str] = set(self._state.tracked_sessions)
         # Deliberate replay-from-start requests, which must never be clamped.
         self._replay_allowed: set[str] = set()
+        # Sessions this process clamped; a later rollback must not undo it.
+        self._startup_clamped: set[str] = set()
 
     def _snapshot_file_ctimes(self) -> dict[str, int]:
         ctimes: dict[str, int] = {}
@@ -858,6 +860,7 @@ class TranscriptReader:
         if pending <= limit:
             return
         tracked.parsed_offset = file_size
+        self._startup_clamped.add(session_id)
         self._startup_file_boundaries.pop(session_id, None)
         logger.warning(
             "Startup replay bounded: skipped %.1f KiB of undelivered transcript "
@@ -1057,7 +1060,15 @@ class TranscriptReader:
                 supports_incremental_read=provider.capabilities.supports_incremental_read,
             )
             if not rebuilt:
-                tracked.parsed_offset = tracked.last_byte_offset
+                # Rolling back to the delivered watermark is right for a live
+                # session, but a clamped one would then replay the whole
+                # backlog this process already decided to skip. Keep the clamp
+                # decision and re-clamp to the current EOF.
+                tracked.parsed_offset = (
+                    stable_read.stat.st_size
+                    if session_id in self._startup_clamped
+                    else tracked.last_byte_offset
+                )
                 self._file_mtimes.pop(session_id, None)
                 new_entries = []
             elif not self._admit_read(

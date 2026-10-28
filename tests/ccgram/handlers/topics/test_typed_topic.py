@@ -153,7 +153,7 @@ class TestStartFromText:
 
         assert handled is True
         assert launched == []
-        assert user_data[PENDING_PLAN]["text"] == "hello there"
+        assert user_data[PENDING_PLAN]["instruction"] == "hello there"
 
     async def test_plain_sentence_with_no_projects_falls_through(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -167,6 +167,35 @@ class TestStartFromText:
 
         assert handled is False
         assert launched == []
+
+    async def test_the_draft_identity_is_the_keyboard_message(
+        self, project: Path
+    ) -> None:
+        """A callback arrives on the bot's prompt message, not the user's."""
+        message = _message()
+        message.message_id = 11
+        reply = MagicMock(message_id=777)
+        user_data: dict = {}
+
+        with (
+            patch.object(typed_topic, "safe_reply", AsyncMock(return_value=reply)),
+            patch.object(typed_topic.user_preferences, "get_user_mru", return_value=[]),
+        ):
+            await start_from_text(
+                user_id=100,
+                thread_id=42,
+                text="codex nosuchproject do it",
+                user_data=user_data,
+                message=message,
+                context=_context(user_data),
+            )
+
+        draft = user_data[PENDING_PLAN]
+        assert draft["message_id"] == reply.message_id
+        assert draft["message_id"] != message.message_id
+        # The unresolved project word stays in the instruction: it is not
+        # consumed, so nothing the user typed is silently dropped.
+        assert draft["instruction"] == "nosuchproject do it"
 
 
 class TestAgentBlocked:
@@ -246,10 +275,14 @@ class TestReviewFindings:
                 typed_topic, "check_worktree_eligibility", return_value=eligible
             ),
         ):
-            _cwd, worktree = await _resolve_cwd(plan)
+            cwd, worktree = await _resolve_cwd(plan)
 
         assert worktree["worktree_branch"] == "feat-x"
         assert worktree["worktree_repo"] == str(project.resolve())
+        # Without worktree_path the launch gate skips worktree creation and
+        # launches in the source checkout, so this assertion is the regression.
+        assert worktree["worktree_path"].endswith("feat-x")
+        assert cwd == worktree["worktree_path"]
 
     async def test_agent_without_a_yolo_flag_launches_normally(
         self, project: Path, monkeypatch: pytest.MonkeyPatch
@@ -293,7 +326,8 @@ class TestPlanDraftIdentity:
         return {
             "agent": "codex",
             "mode": "yolo",
-            "text": "codex nosuch do it",
+            "instruction": "do it",
+            "branch": None,
             "thread_id": 42,
             "chat_id": -100999,
             "message_id": message_id,

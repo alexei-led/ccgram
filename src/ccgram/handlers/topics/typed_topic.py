@@ -38,7 +38,13 @@ from ..callback_registry import register
 from ..messaging_pipeline.message_sender import interactive_edit as safe_edit
 from ..messaging_pipeline.message_sender import safe_reply
 from ..user_state import PENDING_PLAN
-from .plan_parser import PROJECT_HINTS, PlanParse, TopicPlan, parse_topic_plan
+from .plan_parser import (
+    PROJECT_HINTS,
+    PlanParse,
+    TopicPlan,
+    build_label,
+    parse_topic_plan,
+)
 from .window_launch_service import WindowLaunchRequest, launch_window
 
 if TYPE_CHECKING:
@@ -113,20 +119,22 @@ def _store_pending(
     parsed: PlanParse,
     candidates: list[Path],
     thread_id: int | None,
-    text: str,
     *,
     chat_id: int | None,
     message_id: int | None,
 ) -> None:
     if user_data is None:
         return
-    # Identity is (chat, thread, prompt message): one draft per user is not
+    # Identity is (chat, thread, keyboard message): one draft per user is not
     # enough, because a second unresolved plan in the same topic would answer
-    # the first keyboard with the second plan's candidate index.
+    # the first keyboard with the second plan's candidate index. message_id
+    # is the bot's prompt message that carries the keyboard — the one the
+    # callback arrives on — never the user's own message.
     user_data[PENDING_PLAN] = {
         "agent": parsed.agent,
-        "mode": config.default_mode,
-        "text": text,
+        "mode": parsed.mode or config.default_mode,
+        "instruction": parsed.instruction,
+        "branch": parsed.branch,
         "thread_id": thread_id,
         "chat_id": chat_id,
         "message_id": message_id,
@@ -157,6 +165,42 @@ def _agent_blocked(agent: str) -> str:
     return ""
 
 
+async def _materialize_worktree(repo: Path, branch: str, subdir: Path) -> Path:
+    """Create the checkout with git and return the directory to launch in."""
+    worktree_path = worktree_path_for(repo, slug_for_path(branch))
+    if worktree_path.exists():
+        raise PlanError(f"Worktree {worktree_path} already exists")
+    try:
+        await asyncio.to_thread(create_worktree, repo, branch, worktree_path)
+    except WorktreeError as exc:
+        raise PlanError(
+            f"Could not create worktree: {str(exc).splitlines()[0]}"
+        ) from exc
+    target = worktree_path / subdir if subdir.parts else worktree_path
+    if target.is_dir():
+        logger.info(
+            "Worktree %s on %s ready for plan launch (cwd=%s)",
+            worktree_path,
+            branch,
+            target,
+        )
+        return target
+    logger.info(
+        "Worktree subdir %s absent in the fresh checkout; rooting at %s",
+        subdir,
+        worktree_path,
+    )
+    return worktree_path
+
+
+def _subdir_within(project: Path, repo: Path) -> Path:
+    """Path of *project* relative to *repo*, empty when they are the same."""
+    try:
+        return project.resolve().relative_to(repo.resolve())
+    except OSError, ValueError:
+        return Path()
+
+
 async def _resolve_cwd(plan: TopicPlan) -> tuple[str, dict[str, str]]:
     """Resolve the launch cwd and any worktree metadata for *plan*."""
     branch = plan.branch
@@ -175,33 +219,24 @@ async def _resolve_cwd(plan: TopicPlan) -> tuple[str, dict[str, str]]:
         # CCGRAM_NEW_TOPIC_WORKTREES=on: every session gets its own worktree.
         branch = await asyncio.to_thread(suggest_branch_name, plan.label, repo)
     worktree_path = worktree_path_for(repo, slug_for_path(branch))
-    if tmux_manager.capabilities.native_worktrees:
+    subdir = _subdir_within(plan.project, repo)
+    native = tmux_manager.capabilities.native_worktrees
+    if native and not subdir.parts:
         # The backend creates the checkout itself, but the launch gate still
         # requires all three fields: without the path the plan silently
-        # launches in the source checkout and never creates the branch.
-        return str(plan.project), {
+        # launches in the source checkout and never creates the branch. The
+        # worktree is also the cwd, so MRU and the window record point at the
+        # checkout that was just used, not at the source clone.
+        return str(worktree_path), {
             "worktree_repo": str(repo),
             "worktree_branch": branch,
             "worktree_path": str(worktree_path),
         }
-    if worktree_path.exists():
-        raise PlanError(f"Worktree {worktree_path} already exists")
-    try:
-        await asyncio.to_thread(create_worktree, repo, branch, worktree_path)
-    except WorktreeError as exc:
-        raise PlanError(
-            f"Could not create worktree: {str(exc).splitlines()[0]}"
-        ) from exc
-    cwd = worktree_path
-    try:
-        subdir = plan.project.resolve().relative_to(repo.resolve())
-    except OSError, ValueError:
-        subdir = Path()
-    if subdir.parts and (worktree_path / subdir).is_dir():
-        cwd = worktree_path / subdir
-    logger.info(
-        "Worktree %s on %s ready for plan launch (cwd=%s)", worktree_path, branch, cwd
-    )
+    cwd = await _materialize_worktree(repo, branch, subdir)
+    if native:
+        # ccgram created the checkout itself to honor the subdirectory, so the
+        # backend must not create it again: launch plainly in the target dir.
+        return str(cwd), {}
     return str(cwd), {
         "worktree_repo": str(repo),
         "worktree_branch": branch,
@@ -303,41 +338,43 @@ async def start_from_text(
     if parsed.reason == "project" and not candidates:
         # Nothing to offer: let the caller fall back to the directory browser.
         return False
+    prompt = await safe_reply(
+        message,
+        _plan_prompt(parsed, candidates),
+        reply_markup=_plan_keyboard(candidates, last),
+    )
+    # The keyboard lives on the bot's prompt message, so that message is the
+    # draft identity: a callback always carries its id, never the user's.
     _store_pending(
         user_data,
         parsed,
         candidates,
         thread_id,
-        text,
         chat_id=message.chat.id if message.chat else None,
-        message_id=message.message_id,
-    )
-    await safe_reply(
-        message,
-        _plan_prompt(parsed, candidates),
-        reply_markup=_plan_keyboard(candidates, last),
+        message_id=prompt.message_id if prompt is not None else None,
     )
     return True
 
 
 def _draft_plan(draft: dict, project: Path) -> TopicPlan | None:
-    """Rebuild the plan for *project* from a stored draft."""
-    text = str(draft.get("text") or "")
+    """Rebuild the plan for *project* from the slots the parse already resolved.
+
+    Re-parsing the original text would meet the same ambiguity again and could
+    never produce a plan, so the chosen project is taken as given here.
+    """
     agent = str(draft.get("agent") or "")
-    mode = str(draft.get("mode") or "yolo")
-    # Re-parse against the chosen project so instruction/branch slicing stays
-    # in one place instead of being duplicated in the draft format.
-    parsed = parse_topic_plan(
-        text,
-        roots=[project.parent],
-        default_agent=agent,
-        default_mode=mode,
-        last_project=project,
-        git_only=False,
+    if not agent:
+        return None
+    instruction = str(draft.get("instruction") or "")
+    branch = draft.get("branch")
+    return TopicPlan(
+        agent=agent,
+        project=project,
+        instruction=instruction,
+        mode=str(draft.get("mode") or config.default_mode),
+        branch=str(branch) if branch else None,
+        label=build_label(project, instruction),
     )
-    if parsed.plan is not None:
-        return parsed.plan
-    return None
 
 
 async def _draft_is_current(query, draft: dict, thread_id: int | None) -> bool:

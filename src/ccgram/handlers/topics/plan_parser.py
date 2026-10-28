@@ -99,6 +99,12 @@ class PlanParse:
     agent: str = ""
     agent_typed: bool = False
     project_typed: bool = False
+    # Slots already resolved when only the project word is missing: the
+    # candidate keyboard rebuilds the plan from these instead of re-parsing
+    # (a re-parse would meet the same ambiguity again).
+    instruction: str = ""
+    mode: str = ""
+    branch: str | None = None
 
 
 def parse_agent(token: str) -> tuple[str, str | None] | None:
@@ -265,6 +271,7 @@ def parse_topic_plan(
                 agent=agent,
                 agent_typed=agent_typed,
                 project_typed=project_typed,
+                mode=mode,
             )
         consumed += 1
 
@@ -276,6 +283,11 @@ def parse_topic_plan(
             agent=agent,
             agent_typed=agent_typed,
             project_typed=project_typed,
+            instruction=text[tokens[consumed - 1][2] :].strip()
+            if consumed
+            else text.strip(),
+            mode=mode,
+            branch=branch,
         )
 
     instruction = text[tokens[consumed - 1][2] :].strip() if consumed else text.strip()

@@ -37,10 +37,13 @@ that instruction, in one message. Omit the agent word to use
 [Starting a Session](guides.md#starting-a-session-one-typed-line) for the
 grammar, project resolution, and every default.
 
-A provider picker appears only when the provider cannot be read from the line,
-and it lists enabled providers whose CLI is installed. The default list is
-Antigravity, Claude, Codex, Pi, and Shell; Gemini is opt-in via
-`CCGRAM_PROVIDERS_ENABLED=claude,codex,gemini,pi,shell,antigravity`.
+The typed line never opens a provider picker: an omitted agent word uses
+`CCGRAM_PROVIDER`, and a provider that is disabled or whose CLI is not
+installed fails the launch with a one-line reason. A provider that supports no
+permissive flag (Shell, Pi) always launches in normal mode, whatever
+`CCGRAM_DEFAULT_MODE` says. The default provider list — also used by the
+directory browser's picker — is Antigravity, Claude, Codex, Pi, and Shell;
+Gemini is opt-in via `CCGRAM_PROVIDERS_ENABLED=claude,codex,gemini,pi,shell,antigravity`.
 
 **From the terminal**: If you create a window manually and start an agent CLI, CCGram auto-detects the provider from the running process name. When the pane command is a JS runtime wrapper (node, bun), it inspects the pane's foreground process to reliably identify the actual CLI. Evidence is limited to the executable name and, for wrapper commands, the script path: helper data paths, inline `-e` code, and flag values never name a provider, so a helper that mentions another CLI's directory cannot override the running one. How the foreground process is read is owned by the multiplexer backend — tmux uses `ps -t <tty>`, herdr reads `pane process-info` (no tty needed), and agterm reports foreground argv (no tty or process-group ID) — so detection works through the same seam on all three. The shell provider uses the same seam to classify a bare shell pane. Agterm reports `foregroundShell` (and `splitForegroundShell` for a split peer) for a known shell, so the Terminal provider is available there. This does not prove the shell is at a prompt: a builtin such as `read` is invisible in argv, so agterm disables shell prompt-marker setup rather than risk sending setup commands while foreground state is unknown. As a last resort, Gemini pane-title symbols (`✦`, `✋`, `◇`) are checked.
 

@@ -566,7 +566,7 @@ Notes:
 | --- | --- | --- |
 | Launch mode | `yolo` | `CCGRAM_DEFAULT_MODE=normal` |
 | Agent without an agent word | `CCGRAM_PROVIDER` | `CCGRAM_PROVIDER` |
-| Project search roots | `~/Workspace` (else `~`) | `CCGRAM_PROJECTS_ROOTS` (`os.pathsep`-separated) |
+| Project search roots | `~/Workspace` when it exists, else `~`; configured roots that do not exist are dropped | `CCGRAM_PROJECTS_ROOTS` (`os.pathsep`-separated) |
 | Worktree in the browser flow | off | `CCGRAM_NEW_TOPIC_WORKTREES=true` |
 | Workspace picker (herdr/agterm) | off — resolved from the folder | `CCGRAM_WORKSPACE_PICKER=true` |
 | Bind-existing window picker on a new topic | off — use `/bind` | `CCGRAM_BIND_PICKER=true` |
@@ -574,8 +574,9 @@ Notes:
 | First-run trust screens | answered automatically | `CCGRAM_AUTOSTART_TRUST=false`, `CCGRAM_<AGENT>_AUTOSTART=off` |
 | Directory browser listing | git checkouts at the roots | `CCGRAM_DIR_BROWSER_ALL_DIRS=true` |
 
-The provider picker still exists, but only when the provider cannot be read
-from the line (no agent word and `CCGRAM_PROVIDER` is not installed). It lists
+The typed flow never opens a provider picker: an omitted agent word uses
+`CCGRAM_PROVIDER`, and a provider that is disabled or not installed fails the
+launch with a one-line reason. The directory browser's provider picker lists
 only enabled providers whose CLI resolves on `PATH`; Gemini is not offered by
 default — list it in `CCGRAM_PROVIDERS_ENABLED` to bring it back.
 

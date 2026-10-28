@@ -12,9 +12,10 @@ a session that never answers. Two layers, cheapest first:
    fingerprint a provider declares in its capabilities, sends the declared
    keys. Unknown screens are reported, never guessed at.
 
-Every failure here is logged and swallowed: a readiness nicety must never
-fail a launch. Opt out globally with ``CCGRAM_AUTOSTART_TRUST=off`` or per
-agent with ``CCGRAM_<AGENT>_AUTOSTART=off``.
+Both layers are best-effort: every failure is logged and swallowed, because a
+readiness nicety must never fail a launch. Opt out globally with
+``CCGRAM_AUTOSTART_TRUST=off`` or per agent with
+``CCGRAM_<AGENT>_AUTOSTART=off``.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ import os
 import tomllib
 import tempfile
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
@@ -257,6 +258,34 @@ async def _capture_pane(window_id: str) -> str | None:
     return text if isinstance(text, str) else None
 
 
+async def _send_answer(
+    window_id: str, provider_name: str, recipe: Any, adapter: TelegramSessionAdapter
+) -> bool:
+    """Send the declared keys once; False when the send fails or raises."""
+    try:
+        ok, message = await adapter.send_keys(window_id, list(recipe.keys))
+    except Exception as exc:  # noqa: BLE001 - best effort, never fail a launch
+        logger.warning(
+            "First-run answer for %s in %s raised: %s", provider_name, window_id, exc
+        )
+        return False
+    if not ok:
+        logger.warning(
+            "First-run answer for %s in %s failed: %s",
+            provider_name,
+            window_id,
+            message,
+        )
+        return False
+    logger.info(
+        "Answered %s first-run screen in %s (%s)",
+        provider_name,
+        window_id,
+        recipe.needles[0],
+    )
+    return True
+
+
 async def answer_first_run_prompt(
     window_id: str,
     provider_name: str,
@@ -270,36 +299,28 @@ async def answer_first_run_prompt(
     Only the exact fingerprint the provider declares triggers a keypress.
     With ``poll=False`` the pane is read once and the call costs a single
     capture, which is what the launch path uses on its first attempt: the
-    screen is either up already or the caller's own readiness wait will
-    bring it back here.
+    screen is either up already or the caller's own readiness wait will bring
+    it back here. Never raises: the caller is mid-launch.
     """
     if not autostart_enabled(provider_name):
         return False
     recipe = _first_run_recipe(provider_name)
     if recipe is None:
         return False
-    if not poll:
-        timeout = 0.0
-    deadline = asyncio.get_running_loop().time() + timeout
+    deadline = asyncio.get_running_loop().time() + (timeout if poll else 0.0)
     while True:
-        pane_text = await _capture_pane(window_id)
-        if pane_text and _matches(pane_text, recipe.needles):
-            ok, message = await adapter.send_keys(window_id, list(recipe.keys))
-            if not ok:
-                logger.warning(
-                    "First-run answer for %s in %s failed: %s",
-                    provider_name,
-                    window_id,
-                    message,
-                )
-                return False
-            logger.info(
-                "Answered %s first-run screen in %s (%s)",
+        try:
+            pane_text = await _capture_pane(window_id)
+        except Exception as exc:  # noqa: BLE001 - best effort, never fail a launch
+            logger.warning(
+                "First-run check for %s in %s could not read the pane: %s",
                 provider_name,
                 window_id,
-                recipe.needles[0],
+                exc,
             )
-            return True
+            return False
+        if pane_text and _matches(pane_text, recipe.needles):
+            return await _send_answer(window_id, provider_name, recipe, adapter)
         if pane_text and _settled(pane_text, recipe.settled):
             return False
         if asyncio.get_running_loop().time() >= deadline:

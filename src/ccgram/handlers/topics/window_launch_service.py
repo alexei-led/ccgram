@@ -569,8 +569,8 @@ async def launch_window(  # noqa: C901, PLR0911, PLR0912, PLR0915
     """Create a tmux window, bind to the pending topic, and forward pending text.
 
     Shared by the typed-plan entry (which passes the reply Message it just
-    sent), _handle_mode_select (after mode picker) and _handle_provider_select
-    (when the mode picker is skipped for providers without YOLO flags).
+    sent), _handle_provider_select (provider picker) and the legacy
+    _handle_mode_select callback from keyboards sent by older versions.
 
     CRITICAL (MC-2967): creation starts inside a global transaction guard,
     then its durable target is registered before the transaction releases. This

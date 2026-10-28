@@ -188,7 +188,9 @@ async def purge_source_tasks(
             )
             return None
         retained: list[MessageTask] = []
-        for task in _drain_queue(queue):
+        # Retirement sees parked tasks too: a flood-limited task inside the
+        # skipped range must not deliver once its backoff expires.
+        for task in _drain_queue(queue, include_deferred=True):
             if (
                 isinstance(task, ContentTask)
                 and task.window_id == window_id
@@ -347,7 +349,9 @@ def get_or_create_queue(
     return _message_queues[user_id]
 
 
-def _drain_queue(queue: asyncio.Queue[MessageTask]) -> list[MessageTask]:
+def _drain_queue(
+    queue: asyncio.Queue[MessageTask], *, include_deferred: bool = False
+) -> list[MessageTask]:
     """Drain the ready items from the queue and return them as a list.
 
     Destructive for those items only. Tasks parked behind flood control stay
@@ -355,6 +359,10 @@ def _drain_queue(queue: asyncio.Queue[MessageTask]) -> list[MessageTask]:
     another task, losing its deferral and reopening the chat that is still
     limited. Re-queued tasks carry the matching ``task_done`` so the
     unfinished count is unchanged.
+
+    ``include_deferred`` is for retirement, not delivery: a confirmed backlog
+    skip must be able to drop a parked task from the skipped range, or that
+    task would deliver after its backoff expires.
     """
     items: list[MessageTask] = []
     now = time.monotonic()
@@ -364,7 +372,7 @@ def _drain_queue(queue: asyncio.Queue[MessageTask]) -> list[MessageTask]:
         if queue.empty():
             break
         item = queue.get_nowait()
-        if getattr(item, "deferred_until", 0.0) > now:
+        if not include_deferred and getattr(item, "deferred_until", 0.0) > now:
             queue.put_nowait(item)
             queue.task_done()
             continue
@@ -883,6 +891,22 @@ def _lane(task: MessageTask) -> tuple[str, object]:
     return ("thread", getattr(task, "thread_id", None))
 
 
+def _parked_peer_ahead(queue: asyncio.Queue[MessageTask], task: MessageTask) -> bool:
+    """True when an earlier task in the same lane is still parked.
+
+    Lane ordering has to hold: if A1 for a chat is waiting out its backoff, a
+    later A2 for the same chat must wait too, or A2 is attempted against the
+    same limited chat and can overtake A1.
+    """
+    now = time.monotonic()
+    lane = _lane(task)
+    parked_or_ready = getattr(queue, "_queue", ())
+    return any(
+        getattr(queued, "deferred_until", 0.0) > now and _lane(queued) == lane
+        for queued in parked_or_ready
+    )
+
+
 def _has_ready_task(queue: asyncio.Queue[MessageTask], task: MessageTask) -> bool:
     """True when a queued task in another lane can be sent right now.
 
@@ -943,7 +967,9 @@ async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
     while True:
         try:
             task = await queue.get()
-            if task.deferred_until > time.monotonic():
+            if task.deferred_until > time.monotonic() or _parked_peer_ahead(
+                queue, task
+            ):
                 if _has_ready_task(queue, task):
                     await _rotate_deferred_task(queue, task)
                     continue

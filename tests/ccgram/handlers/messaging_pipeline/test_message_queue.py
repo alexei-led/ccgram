@@ -1502,3 +1502,71 @@ class TestFloodLaneScoping:
         assert drained == [ready]
         assert q.qsize() == 1
         assert q.get_nowait() == parked
+
+    async def test_a_later_task_in_the_same_chat_waits_for_the_parked_one(
+        self, bot
+    ) -> None:
+        """Lane ordering: A2 must not overtake a parked A1 in the same chat."""
+        from ccgram.handlers.messaging_pipeline import message_queue as mq
+
+        user_id = 88053
+        await mq.shutdown_workers()
+        mq._message_queues[user_id] = asyncio.Queue()
+        mq._queue_locks[user_id] = asyncio.Lock()
+        q = mq._message_queues[user_id]
+        order: list[str] = []
+
+        async def dispatch(_client, _user_id, task, *_args):
+            order.append(task.parts[0])
+            if task.parts == ("a1",):
+                raise RetryAfter(timedelta(seconds=5))
+            return mq.DispatchResult(0, mq.DeliveryOutcome.DELIVERED)
+
+        q.put_nowait(
+            ContentTask(window_id="@0", parts=("a1",), chat_id=-100, thread_id=1)
+        )
+        q.put_nowait(
+            ContentTask(window_id="@1", parts=("a2",), chat_id=-100, thread_id=2)
+        )
+        q.put_nowait(
+            ContentTask(window_id="@2", parts=("b1",), chat_id=-200, thread_id=3)
+        )
+
+        worker = asyncio.create_task(mq._message_queue_worker(bot, user_id))
+        try:
+            with patch.object(mq, "_dispatch", dispatch):
+                for _ in range(200):
+                    if "b1" in order:
+                        break
+                    await asyncio.sleep(0.01)
+                # a2 shares a1's limited chat, so only the other lane went.
+                assert "a2" not in order
+        finally:
+            worker.cancel()
+            with suppress(asyncio.CancelledError):
+                await worker
+            while not q.empty():
+                q.get_nowait()
+            await mq.shutdown_workers(drain_timeout=0.1)
+
+    def test_purge_retires_a_parked_task_from_the_skipped_range(self) -> None:
+        """A confirmed skip must not leave a parked task to deliver later."""
+        from ccgram.handlers.messaging_pipeline import message_queue as mq
+
+        q: asyncio.Queue = asyncio.Queue()
+        parked = ContentTask(
+            window_id="@0",
+            parts=("skipped",),
+            chat_id=-100,
+            thread_id=1,
+            source_session_id="s",
+            source_checkpoint=10,
+            deferred_until=time.monotonic() + 60,
+        )
+        kept = ContentTask(window_id="@0", parts=("kept",), chat_id=-100, thread_id=1)
+        q.put_nowait(parked)
+        q.put_nowait(kept)
+
+        drained = mq._drain_queue(q, include_deferred=True)
+
+        assert [task.parts for task in drained] == [("skipped",), ("kept",)]

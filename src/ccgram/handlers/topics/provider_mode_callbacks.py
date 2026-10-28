@@ -1,9 +1,10 @@
 """Provider and mode selection callbacks for the topic-creation flow.
 
-Handles CB_PROV_SELECT (select provider, then show mode picker or go direct to
-window creation) and CB_MODE_SELECT (select launch mode and create the window).
+Handles CB_PROV_SELECT (select provider, then launch in the configured mode)
+and the legacy CB_MODE_SELECT callback still attached to keyboards sent by
+older versions.
 
-Both ultimately call ``launch_window`` from ``window_launch_service``.
+Both call ``launch_window`` from ``window_launch_service`.
 """
 
 from __future__ import annotations
@@ -91,10 +92,11 @@ async def _handle_provider_select(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    """Handle CB_PROV_SELECT: select provider and show mode picker.
+    """Handle CB_PROV_SELECT: launch in the configured mode.
 
-    Providers without a YOLO flag (e.g. shell) skip the mode picker
-    and go directly to window creation with approval_mode="normal".
+    CCGRAM_DEFAULT_MODE decides between normal and YOLO; providers without a
+    permissive flag (shell, pi) always launch normally, because
+    ``_launch_options`` rejects YOLO for them.
     """
     # Lazy: providers package heavy bootstrap
     from ccgram.providers import has_yolo_mode

@@ -91,11 +91,16 @@ def _delivery_watch_gap_bytes() -> int:
 
 
 def _flag_env(name: str, default: bool) -> bool:
-    """Parse an on/off env var, defaulting when unset or unrecognized."""
+    """Parse an on/off env var, keeping *default* for unset or unrecognized values."""
     raw = os.getenv(name)
     if raw is None or not raw.strip():
         return default
-    return raw.strip().lower() in ("1", "true", "yes", "on")
+    value = raw.strip().lower()
+    if value in ("1", "true", "yes", "on"):
+        return True
+    if value in ("0", "false", "no", "off"):
+        return False
+    return default
 
 
 def _choice_env(name: str, allowed: tuple[str, ...], default: str) -> str:
@@ -107,16 +112,18 @@ def _choice_env(name: str, allowed: tuple[str, ...], default: str) -> str:
 def _projects_roots_env() -> list[Path]:
     """Project roots for typed session start: CCGRAM_PROJECTS_ROOTS.
 
-    os.pathsep-separated paths, each expanded. Defaults to ~/Workspace when
-    it exists, else ~. Missing directories are dropped so a stale entry
-    cannot silently widen the project search.
+    os.pathsep-separated paths, each expanded. Unset defaults to
+    ~/Workspace when it exists, else ~. A configured entry that does not
+    exist is dropped, and when every configured entry is missing the result
+    is empty: the typed flow then falls back to the directory browser instead
+    of searching home behind the operator's back.
     """
     raw = (os.getenv("CCGRAM_PROJECTS_ROOTS") or "").strip()
-    candidates = (
-        [p for p in raw.split(os.pathsep) if p.strip()]
-        if raw
-        else [str(Path.home() / "Workspace"), str(Path.home())]
-    )
+    if raw:
+        candidates = [p for p in raw.split(os.pathsep) if p.strip()]
+    else:
+        workspace = Path.home() / "Workspace"
+        candidates = [str(workspace if workspace.is_dir() else Path.home())]
     roots: list[Path] = []
     for entry in candidates:
         try:
@@ -125,7 +132,12 @@ def _projects_roots_env() -> list[Path]:
                 roots.append(path.resolve())
         except OSError:
             continue
-    return roots or [Path.home()]
+    if not roots and raw:
+        logger.warning(
+            "CCGRAM_PROJECTS_ROOTS names no existing directory; project search "
+            "is empty and the typed flow falls back to the directory browser"
+        )
+    return roots
 
 
 def _startup_replay_max_bytes() -> int:
@@ -152,8 +164,9 @@ def _enabled_providers_env() -> tuple[str, ...]:
     """Providers offered in pickers: CCGRAM_PROVIDERS_ENABLED.
 
     The default list keeps Gemini out of the UI; its provider code stays
-    available to explicitly configured windows and resumes. An empty value
-    means every registered provider.
+    available to explicitly configured windows and resumes. An unset value
+    means DEFAULT_ENABLED_PROVIDERS; to offer every registered provider, list
+    them all explicitly.
     """
     raw = (os.getenv("CCGRAM_PROVIDERS_ENABLED") or "").strip()
     if not raw:
