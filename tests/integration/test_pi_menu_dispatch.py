@@ -8,7 +8,7 @@ from telegram.ext import filters
 
 from ccgram.handlers.registry import register_all
 
-from ccgram.providers.pi_tui import PI_MENU_INSTRUCTION
+from ccgram.handlers.interactive.pi_controls import PI_MENU_INSTRUCTION
 
 pytestmark = pytest.mark.integration
 

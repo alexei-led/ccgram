@@ -598,15 +598,7 @@ async def _forward_message(
     message: Message,
     adapter,
 ) -> None:
-    """Forward text, except explicit replies to the live Pi menu."""
-    # Lazy: text and interactive handlers are registered together; only the
-    # explicit terminal-input route needs Pi menu controls.
-    from ..interactive.pi_controls import handle_pi_reply
-
-    if await handle_pi_reply(
-        client, user_id, window_id, thread_id, text, message, adapter
-    ):
-        return
+    """Forward a text message to the bound tmux window."""
     # Best-effort: a network error here must not drop the user's text (#257).
     with contextlib.suppress(TelegramError):
         await message.chat.send_action(ChatAction.TYPING)  # type: ignore[union-attr]
@@ -707,6 +699,59 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await handle_text_message(update, context)
 
 
+async def _handle_pi_menu_reply(
+    user_id: int,
+    thread_id: int | None,
+    text: str,
+    message: Message,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> bool:
+    # Lazy: menu rendering imports handlers during callback registration.
+    from ..interactive.pi_controls import (
+        PI_MENU_EXPIRED,
+        is_pi_menu_reply,
+    )
+
+    if not is_pi_menu_reply(message):
+        return False
+    # Lazy: callback dispatch shares the renderer; load only for actual menu input.
+    from ..interactive.interactive_callbacks import handle_pi_reply
+
+    # A retired menu reply is never a new session plan, a rename, or shell input.
+    window_id = (
+        thread_router.get_window_for_thread(user_id, thread_id, message.chat.id)
+        if thread_id is not None
+        else None
+    )
+    if thread_id is None or window_id is None:
+        await safe_reply(message, PI_MENU_EXPIRED)
+        return True
+    await handle_pi_reply(
+        PTBTelegramClient(context.bot),
+        user_id,
+        window_id,
+        thread_id,
+        text,
+        message,
+        protocol_adapter_for(context.bot_data),
+    )
+    return True
+
+
+async def _reply_without_topic(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, message: Message
+) -> None:
+    if update.effective_chat and is_general_topic(message):
+        await handle_general_topic_message(
+            context.bot, message, update.effective_chat.id
+        )
+    else:
+        await safe_reply(
+            message,
+            "\u274c Please use a named topic. Create a new topic to start a session.",
+        )
+
+
 async def handle_text_message(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
@@ -721,6 +766,9 @@ async def handle_text_message(
 
     text = message.text
     thread_id = _get_thread_id(update)
+
+    if await _handle_pi_menu_reply(user.id, thread_id, text, message, context):
+        return
 
     # Store group chat_id for forum topic message routing
     chat = message.chat
@@ -742,15 +790,7 @@ async def handle_text_message(
 
     # Must be in a named topic
     if thread_id is None:
-        if message and update.effective_chat and is_general_topic(message):
-            await handle_general_topic_message(
-                context.bot, message, update.effective_chat.id
-            )
-        else:
-            await safe_reply(
-                message,
-                "\u274c Please use a named topic. Create a new topic to start a session.",
-            )
+        await _reply_without_topic(update, context, message)
         return
 
     # Unbound topic — typed plan, picker, or browser

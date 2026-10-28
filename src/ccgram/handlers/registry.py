@@ -25,7 +25,7 @@ from telegram.ext import (
 from telegram.ext._utils.types import HandlerCallback
 
 from ..config import config
-from ..providers.pi_tui import PI_MENU_INSTRUCTION
+from .interactive.pi_controls import is_pi_menu_reply
 from .callback_registry import dispatch as _dispatch_callback
 from .callback_registry import load_handlers as _load_callback_handlers
 from .agent_command import agent_command
@@ -86,8 +86,7 @@ class CommandSpec:
 
 class _PiMenuReplyFilter(filters.MessageFilter):
     def filter(self, message: Message) -> bool:
-        reply = message.reply_to_message
-        return bool(reply and reply.text and reply.text.startswith(PI_MENU_INSTRUCTION))
+        return is_pi_menu_reply(message)
 
 
 def register_all(

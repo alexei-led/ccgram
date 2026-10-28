@@ -16,7 +16,9 @@ from ccgram.handlers.interactive.interactive_ui import (
     handle_interactive_ui,
 )
 from ccgram.handlers.interactive.pi_controls import build_pi_keyboard, parse_pi_control
-from ccgram.handlers.text.text_handler import _forward_message
+from ccgram.handlers.callback_tokens import compact_callback_data
+from ccgram.handlers.text.text_handler import handle_text_message
+from ccgram.thread_router import ThreadRouter
 
 FIXTURES = Path(__file__).parents[2] / "providers" / "fixtures" / "pi_menus"
 USER, CHAT, THREAD, MESSAGE = 9941, -9941, 9942, 9943
@@ -25,6 +27,8 @@ WINDOW, PANE = "pi:opaque:session", "%9"
 
 @pytest.fixture
 async def menu(monkeypatch):
+    router = ThreadRouter(schedule_save=lambda: None, has_window_state=lambda _: True)
+    monkeypatch.setattr("ccgram.handlers.text.text_handler.thread_router", router)
     client = AsyncMock()
     client.send_message.return_value = SimpleNamespace(message_id=MESSAGE)
     mux = AsyncMock()
@@ -46,7 +50,10 @@ async def menu(monkeypatch):
         "ccgram.session_protocol.telegram.adapter_for", lambda _: adapter
     )
     monkeypatch.setattr(
-        "ccgram.handlers.interactive.pi_controls.asyncio.sleep", AsyncMock()
+        "ccgram.handlers.interactive.interactive_callbacks.asyncio.sleep", AsyncMock()
+    )
+    monkeypatch.setattr(
+        "ccgram.handlers.text.text_handler.protocol_adapter_for", lambda _: adapter
     )
     await clear_interactive_msg(USER, thread_id=THREAD, chat_id=CHAT)
     assert await handle_interactive_ui(
@@ -59,6 +66,8 @@ async def menu(monkeypatch):
     message.chat.send_action = AsyncMock()
     message.reply_text = AsyncMock()
     message.message_id = MESSAGE + 1
+    message.message_thread_id = THREAD
+    message.is_topic_message = True
     message.reply_to_message = SimpleNamespace(message_id=MESSAGE, text=sent["text"])
     query = MagicMock()
     query.id = "pi-callback"
@@ -69,9 +78,10 @@ async def menu(monkeypatch):
     query.message.message_id = MESSAGE
     query.answer = AsyncMock()
     update = MagicMock(message=None, callback_query=query)
-    context = SimpleNamespace(bot=client, bot_data={})
+    context = SimpleNamespace(bot=client, bot_data={}, user_data={})
     yield SimpleNamespace(
         client=client,
+        router=router,
         mux=mux,
         adapter=adapter,
         message=message,
@@ -81,6 +91,17 @@ async def menu(monkeypatch):
         sent=sent,
     )
     await clear_interactive_msg(USER, thread_id=THREAD, chat_id=CHAT)
+
+
+async def _route_reply(menu, text: str, window_id: str = WINDOW) -> None:
+    menu.router.bind_thread(USER, THREAD, window_id, chat_id=CHAT)
+    menu.message.text = text
+    update = MagicMock(
+        effective_user=SimpleNamespace(id=USER),
+        message=menu.message,
+        effective_chat=menu.message.chat,
+    )
+    await handle_text_message(update, menu.context)
 
 
 def _action(menu, action: str) -> str:
@@ -164,9 +185,7 @@ async def test_enter_closing_menu_retires_keyboard(menu):
 
 
 async def test_reply_pastes_without_enter_or_agent_message(menu):
-    await _forward_message(
-        WINDOW, USER, THREAD, "theme", menu.client, menu.message, menu.adapter
-    )
+    await _route_reply(menu, "theme")
     call = menu.adapter.send_text.call_args
     assert call.args == (WINDOW, "theme")
     assert call.kwargs["submit"] is False
@@ -185,30 +204,22 @@ async def test_stale_menu_reply_never_becomes_agent_input(menu, change):
         menu.message.reply_to_message.text += "\nOld view"
     elif change == "closed":
         await clear_interactive_msg(USER, thread_id=THREAD, chat_id=CHAT)
-    await _forward_message(
-        "other-window" if change == "window" else WINDOW,
-        USER,
-        THREAD,
-        "theme",
-        menu.client,
-        menu.message,
-        menu.adapter,
-    )
+    await _route_reply(menu, "theme", "other-window" if change == "window" else WINDOW)
     menu.adapter.send_text.assert_not_called()
     menu.adapter.send_keys.assert_not_called()
 
 
 @pytest.mark.parametrize("text", ["hello\nworld", "\x1b[A", "theme\r", "\t"])
 async def test_reply_cannot_inject_terminal_controls(menu, text):
-    await _forward_message(
-        WINDOW, USER, THREAD, text, menu.client, menu.message, menu.adapter
-    )
+    await _route_reply(menu, text)
     menu.adapter.send_text.assert_not_called()
     menu.adapter.send_keys.assert_not_called()
 
 
 def test_opaque_target_and_pane_round_trip():
-    keyboard = build_pi_keyboard(WINDOW, "PiScopedModels", PANE, 17)
+    keyboard = build_pi_keyboard(
+        WINDOW, "PiScopedModels", PANE, 17, compact_callback_data
+    )
     parsed = [
         parse_pi_control(str(button.callback_data))
         for row in keyboard.inline_keyboard

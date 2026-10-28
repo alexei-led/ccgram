@@ -27,8 +27,8 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telegram.error import BadRequest, NetworkError, RetryAfter, TelegramError, TimedOut
 
 from ...providers import get_provider_for_window
-from ...providers.pi_tui import PI_MENU_INSTRUCTION, PI_QUESTION_FOOTER
-from .pi_controls import build_pi_keyboard
+from ...providers.pi import PI_QUESTION_FOOTER
+from .pi_controls import PI_MENU_INSTRUCTION, build_pi_keyboard
 from ...telegram_client import TelegramClient
 from ...window_query import get_window_provider
 from ...thread_router import thread_router
@@ -480,7 +480,9 @@ def _build_interactive_keyboard(
     responses route to a specific pane instead of the window's active pane.
     """
     if ui_name.startswith("Pi"):
-        return build_pi_keyboard(window_id, ui_name, pane_id, sequence)
+        return build_pi_keyboard(
+            window_id, ui_name, pane_id, sequence, compact_callback_data
+        )
 
     # Lazy: pane delimiter constant
     from ..callback_data import CB_PANE_DELIMITER

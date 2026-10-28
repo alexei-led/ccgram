@@ -5,10 +5,6 @@ import re
 from .base import StatusUpdate
 
 PI_QUESTION_FOOTER = "↑↓ navigate • Enter select • Esc cancel • number quick-select"
-PI_MENU_INSTRUCTION = (
-    "↑↓ navigate · Enter select/change · Esc back/cancel\n"
-    "Reply to this message to type/filter without Enter. Never send credentials."
-)
 
 _FRAME_BORDERS = 2
 _TREE_BORDERS = 3

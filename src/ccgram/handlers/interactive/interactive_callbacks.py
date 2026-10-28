@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 import asyncio
 import structlog
 
-from telegram import CallbackQuery, Update
+from telegram import CallbackQuery, Message, Update
 from ...telegram_client import PTBTelegramClient
 from ...session_protocol.models import ProtocolError
 from ..callback_data import (
@@ -30,8 +30,18 @@ from ..callback_data import (
     CB_PI_CONTROL,
 )
 from ..callback_registry import register
-from .pi_controls import handle_pi_control, parse_pi_control
+from .pi_controls import (
+    PI_MENU_EXPIRED,
+    is_pi_menu_reply,
+    parse_pi_control,
+    pi_control_keys,
+)
+from ..messaging_pipeline.message_sender import ack_reaction, safe_reply
 from .interactive_ui import (
+    PromptStateError,
+    pane_has_interactive_prompt,
+    get_pi_reply_target,
+    get_interactive_window,
     advance_interactive_sequence,
     clear_interactive_msg,
     get_interactive_prompt_fingerprint,
@@ -328,6 +338,122 @@ async def handle_interactive_callback(
         if exc.code != "session_busy":
             raise
         await query.answer("Session is busy. Try again.", show_alert=True)
+
+
+async def refresh_pi_menu(
+    client: TelegramClient,
+    user_id: int,
+    window_id: str,
+    thread_id: int | None,
+    chat_id: int,
+    pane_id: str | None,
+) -> None:
+    if await handle_interactive_ui(
+        client, user_id, window_id, thread_id, pane_id=pane_id, chat_id=chat_id
+    ):
+        return
+    try:
+        still_open = await pane_has_interactive_prompt(window_id, pane_id)
+    except PromptStateError:
+        return
+    if not still_open:
+        await clear_interactive_msg(user_id, client, thread_id, chat_id=chat_id)
+
+
+async def handle_pi_control(
+    query: CallbackQuery,
+    user_id: int,
+    thread_id: int | None,
+    client: TelegramClient,
+    data: str,
+    adapter: TelegramSessionAdapter,
+) -> None:
+    parsed = parse_pi_control(data)
+    message = query.message
+    if parsed is None or message is None:
+        await query.answer("This prompt has expired", show_alert=True)
+        return
+    action, sequence, window_id, pane_id = parsed
+    chat_id = message.chat.id
+    fingerprint = get_interactive_prompt_fingerprint(
+        user_id, thread_id, chat_id, message.message_id
+    )
+    current = is_current_interactive_prompt(
+        user_id, thread_id, window_id, chat_id, message.message_id, sequence
+    )
+    if action == "refresh":
+        # Input consumes its sequence even if the subsequent Telegram edit fails.
+        # Recapture is safe from that older keyboard; sending another key is not.
+        current = (
+            is_current_interactive_message(
+                user_id, thread_id, chat_id, message.message_id
+            )
+            and get_interactive_window(user_id, thread_id, chat_id=chat_id) == window_id
+        )
+    if fingerprint is None or not current:
+        await query.answer("This prompt has expired", show_alert=True)
+        return
+    if action != "refresh":
+        sent, detail = await adapter.send_keys(
+            window_id,
+            list(pi_control_keys(action)),
+            pane_id=pane_id,
+            action_id=f"telegram-callback:{query.id}",
+            expected_prompt=fingerprint,
+        )
+        if not sent:
+            await query.answer(detail or "Unable to send key", show_alert=True)
+            return
+        advance_interactive_sequence(user_id, thread_id, chat_id=chat_id)
+    await query.answer()
+    if action != "refresh":
+        await asyncio.sleep(0.5)
+    await refresh_pi_menu(client, user_id, window_id, thread_id, chat_id, pane_id)
+
+
+async def handle_pi_reply(
+    client: TelegramClient,
+    user_id: int,
+    window_id: str,
+    thread_id: int,
+    text: str,
+    message: Message,
+    adapter: TelegramSessionAdapter,
+) -> bool:
+    """Only an explicit reply to the live Pi menu is literal, unsubmitted input."""
+    reply = message.reply_to_message
+    if reply is None or reply.text is None or not is_pi_menu_reply(message):
+        return False
+    target = get_pi_reply_target(
+        user_id, thread_id, message.chat.id, reply.message_id, reply.text, window_id
+    )
+    if target is None:
+        await safe_reply(message, PI_MENU_EXPIRED)
+        return True
+    if not text.isprintable():
+        await safe_reply(
+            message,
+            "Use a single line without control characters; tap Enter separately.",
+        )
+        return True
+    pane_id, fingerprint = target
+    sent, detail = await adapter.send_text(
+        window_id,
+        text,
+        submit=False,
+        pane_id=pane_id,
+        action_id=f"telegram-message:{message.chat.id}:{message.message_id}:pi-input",
+        expected_prompt=fingerprint,
+    )
+    if not sent:
+        await safe_reply(message, detail or "Unable to type into the Pi menu.")
+        return True
+    await ack_reaction(client, message.chat.id, message.message_id)
+    await asyncio.sleep(0.5)
+    await refresh_pi_menu(
+        client, user_id, window_id, thread_id, message.chat.id, pane_id
+    )
+    return True
 
 
 # --- Registry dispatch entry point ---
