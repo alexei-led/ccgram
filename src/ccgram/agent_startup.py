@@ -72,15 +72,29 @@ def _write_atomic(path: Path, text: str) -> bool:
 
 
 def _claude_config_file() -> Path | None:
-    """Locate Claude's JSON config, or None when neither candidate exists."""
+    """Locate Claude's JSON config, or None when no candidate exists.
+
+    A configured profile wins: with ``CLAUDE_CONFIG_DIR`` set, the agent reads
+    that profile, so seeding trust into the home profile would change a file
+    the launch never consults and leave the real one untrusted.
+    """
     # Lazy: Config reads the environment.
     from .config import config
 
-    candidates = [
-        Path.home() / ".claude.json",
-        config.claude_config_dir / ".claude.json",
-        config.claude_config_dir.parent / ".claude.json",
-    ]
+    home_profile = Path.home() / ".claude.json"
+    config_dir = config.claude_config_dir
+    if os.getenv("CLAUDE_CONFIG_DIR", "").strip():
+        candidates = [
+            config_dir / ".claude.json",
+            config_dir.parent / ".claude.json",
+            home_profile,
+        ]
+    else:
+        candidates = [
+            home_profile,
+            config_dir / ".claude.json",
+            config_dir.parent / ".claude.json",
+        ]
     seen: set[Path] = set()
     for candidate in candidates:
         if candidate in seen:

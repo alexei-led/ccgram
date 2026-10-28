@@ -556,8 +556,7 @@ this topic, renames the topic to the plan label, and forwards the instruction.
 Notes:
 
 - Agent words are matched against the alias table only, so an ordinary sentence is never mistaken for a command.
-- When the project word does not resolve, CCGram replies with one message listing candidate projects as buttons. A tap launches the same plan. There is no second step.
-- When the project slot fails, CCGram offers candidate projects as buttons; the directory browser opens only when there is nothing to offer (no project word, no last-used project, no candidates) — rooted at the first projects root.
+- When the project word matches several projects, CCGram replies with one message listing them as buttons; a tap launches the same plan. A word that matches nothing is read as the first instruction word (using the last-used project), unless an `@branch` follows it — that proves a project slot, so the failure is reported instead of guessed. The directory browser opens only when nothing else can be done: no project word, no last-used project, no candidates.
 - Under a projects root the directory browser lists **git checkouts only**; deeper levels list every subdirectory. Set `CCGRAM_DIR_BROWSER_ALL_DIRS=true` to list everything everywhere.
 
 ### Defaults instead of pickers
@@ -583,9 +582,12 @@ default — list it in `CCGRAM_PROVIDERS_ENABLED` to bring it back.
 ### Worktrees
 
 `@branch` always works, whatever `CCGRAM_NEW_TOPIC_WORKTREES` says: it is the
-deliberate case. The worktree is created at `<repo>.worktrees/<slug>` with
+deliberate case. An `@word` inside the instruction is ordinary text: a branch
+is only recognised immediately after the project slot. The worktree is created at `<repo>.worktrees/<slug>` with
 `git worktree add … -b <branch>`, and the session is rooted at the same
 subdirectory you named (when the project was a subdirectory of the repo). A
+subdirectory that exists only as uncommitted content in the source checkout is
+absent from the fresh worktree, so the session starts at the worktree root. A
 branch that already exists fails with a one-line error; type a different name.
 Backends with native worktrees (herdr) create the checkout themselves.
 

@@ -719,3 +719,20 @@ class TestStartupReplayBound:
             TrackedSession(session_id="sess", file_path=str(session_file))
         )
         return TranscriptReader(state, IdleTracker()), state, session_file
+
+    async def test_the_parser_rebuild_bound_is_the_clamp_point(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Rebuilding to the watermark would miss the skipped turn (Codex "Done")."""
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "startup_replay_max_bytes", 120, raising=False)
+        reader, state, session_file = self._reader_with_backlog(tmp_path)
+        await reader._process_session_file("sess", session_file, [], window_id="@1")
+        tracked = state.get_session("sess")
+        assert tracked is not None
+
+        assert (
+            reader._clamped_floor("sess", tracked.last_byte_offset)
+            == (reader._startup_clamped["sess"])
+        )

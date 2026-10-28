@@ -38,7 +38,16 @@ class TestParseAgent:
         ],
     )
     def test_resolves_aliases_and_modes(self, token: str, expected) -> None:
-        assert parse_agent(token) == expected
+        spec = parse_agent(token)
+        assert spec is not None
+        assert (spec.name, spec.mode) == expected
+
+    def test_an_unknown_mode_suffix_is_reported(self) -> None:
+        spec = parse_agent("claude:sfae")
+        assert spec is not None
+        assert spec.name == "claude"
+        assert spec.mode is None
+        assert spec.unknown_mode == "sfae"
 
     @pytest.mark.parametrize("token", ["gemini", "fix", "codex2", "", "not:known"])
     def test_rejects_non_agents(self, token: str) -> None:
@@ -219,10 +228,10 @@ class TestParseTopicPlan:
         assert parsed.branch == "feat-x"
         assert parsed.instruction == "fix it"
 
-    def test_an_unmatched_project_still_consumes_a_following_branch(
+    def test_an_unmatched_project_before_a_branch_is_reported(
         self, roots: list[Path]
     ) -> None:
-        """A typo'd project word must not bury a typed @branch in the text."""
+        """<word> @branch proves a project slot: report it, do not use MRU."""
         last = (roots[0] / "ccgram").resolve()
 
         parsed = parse_topic_plan(
@@ -232,10 +241,24 @@ class TestParseTopicPlan:
             last_project=last,
         )
 
+        assert parsed.plan is None
+        assert parsed.reason == "project"
+        assert parsed.branch == "fix"
+        assert parsed.instruction == "repair the bug"
+
+    def test_an_instruction_word_is_never_taken_as_a_branch(
+        self, roots: list[Path]
+    ) -> None:
+        """After a resolved project, an @word inside the instruction stays text."""
+        parsed = parse_topic_plan(
+            "codex ccgram explain @decorator syntax",
+            roots=roots,
+            default_agent="claude",
+        )
+
         assert parsed.plan is not None
-        assert parsed.plan.project == last
-        assert parsed.plan.branch == "fix"
-        assert parsed.plan.instruction == "repair the bug"
+        assert parsed.plan.branch is None
+        assert parsed.plan.instruction == "explain @decorator syntax"
 
 
 class TestBuildLabel:

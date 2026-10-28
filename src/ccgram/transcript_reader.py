@@ -832,11 +832,14 @@ class TranscriptReader:
             # The clamp is keyed by session id, so a refreshed id would read as
             # a brand-new session and replay the backlog the old id clamped.
             if old_session_id in self._startup_clamped:
-                self._startup_clamped[session_id] = self._startup_clamped.pop(
-                    old_session_id
-                )
+                clamped = self._startup_clamped.pop(old_session_id)
+                self._startup_clamped[session_id] = clamped
                 self._startup_sessions.add(session_id)
                 self._startup_replay_checked.add(session_id)
+                # The replacement cursor starts at -1, which falls back to the
+                # delivered watermark and would replay the clamped range. Point
+                # it at the clamp instead: the clamp state moved with the id.
+                tracked.parsed_offset = max(clamped, tracked.last_byte_offset)
             self._parser_rebuild_pending.add(session_id)
             log_throttle_reset(f"partial-jsonl:{old_session_id}")
             logger.debug(

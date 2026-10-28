@@ -332,6 +332,13 @@ async def start_from_text(
         )
         return True
 
+    if parsed.reason == "mode":
+        await safe_reply(
+            message,
+            "\u274c Unknown mode. Use `yolo` or `safe`:\n"
+            "`codex:safe <project> <instruction>`",
+        )
+        return True
     if parsed.reason not in ("project", "branch"):
         return False
 

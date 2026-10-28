@@ -107,15 +107,30 @@ class PlanParse:
     branch: str | None = None
 
 
-def parse_agent(token: str) -> tuple[str, str | None] | None:
-    """Return (agent, mode_override) when *token* is an agent alias."""
+@dataclass(frozen=True, slots=True)
+class AgentSpec:
+    """An agent word, with the mode suffix it carried (if any)."""
+
+    name: str
+    mode: str | None = None
+    # The raw suffix when it is not a known mode. Reported instead of being
+    # treated as "no suffix", which would silently launch the default (YOLO)
+    # after a typo like ``claude:sfae``.
+    unknown_mode: str | None = None
+
+
+def parse_agent(token: str) -> AgentSpec | None:
+    """Return the agent spec for *token*, or None when it is not an alias."""
     name, sep, mode = token.lower().partition(":")
     agent = AGENT_ALIASES.get(name)
     if agent is None:
         return None
     if not sep:
-        return agent, None
-    return agent, MODE_ALIASES.get(mode)
+        return AgentSpec(agent)
+    resolved = MODE_ALIASES.get(mode)
+    if resolved is None:
+        return AgentSpec(agent, unknown_mode=mode)
+    return AgentSpec(agent, mode=resolved)
 
 
 def is_git_repo(path: Path) -> bool:
@@ -244,7 +259,15 @@ def _take_project(
             project_typed = True
             consumed += 1
         else:
-            blocked = bool(candidates) or _is_explicit_path(word)
+            # A word is a project attempt when it names something real but
+            # unusable (several matches, or an explicit path), or when the
+            # very next word is an @branch: <project> @branch is the only
+            # grammar slot a branch can follow, so its presence proves the
+            # intent. Anything else is the first instruction word.
+            next_is_branch = consumed + 1 < len(tokens) and tokens[consumed + 1][
+                0
+            ].startswith("@")
+            blocked = bool(candidates) or _is_explicit_path(word) or next_is_branch
     if project is None and not blocked:
         project = _existing_dir(last_project)
     return project, candidates, consumed, blocked, project_typed
@@ -301,10 +324,19 @@ def parse_topic_plan(
     agent_typed = False
     parsed_agent = parse_agent(tokens[0][0])
     if parsed_agent is not None:
-        agent, mode_override = parsed_agent
-        mode = mode_override or default_mode
+        agent = parsed_agent.name
         agent_typed = True
         consumed = 1
+        if parsed_agent.unknown_mode is not None:
+            # A typo in the requested approval mode must not select the
+            # permissive default behind the operator's back.
+            return PlanParse(
+                reason="mode",
+                agent=agent,
+                agent_typed=True,
+                mode=default_mode,
+            )
+        mode = parsed_agent.mode or default_mode
 
     project, candidates, consumed, blocked, project_typed = _take_project(
         tokens,
@@ -319,15 +351,12 @@ def parse_topic_plan(
     instruction_start = (
         tokens[consumed][2] if blocked else tokens[consumed - 1][2] if consumed else 0
     )
-    # The branch word is the token after the project *slot*, whether that word
-    # resolved, matched several projects, or matched nothing: an unmatched
-    # project word followed by @branch must not bury the branch in text.
-    project_word_present = consumed < len(tokens) and not tokens[consumed][
-        0
-    ].startswith("@")
+    # Only a blocked project word leaves a slot to skip: after a resolved one,
+    # ``consumed`` already points past it, so the next word is the branch or
+    # the start of the instruction — never another project.
     taken = _take_branch(
         tokens,
-        slot=consumed + 1 if (blocked or project_word_present) else consumed,
+        slot=consumed + 1 if blocked else consumed,
         candidates=candidates,
         agent=agent,
         agent_typed=agent_typed,

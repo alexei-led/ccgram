@@ -455,3 +455,34 @@ class TestPlanDraftIdentity:
         assert captured
         assert "worktree" not in captured[0]
         assert captured[0]["directory"] == str(project)
+
+    def test_an_unknown_explicit_mode_is_reported(self, project: Path) -> None:
+        """A mode typo must not silently launch the permissive default."""
+        from ccgram.handlers.topics.plan_parser import parse_topic_plan
+
+        parsed = parse_topic_plan(
+            "claude:sfae ccgram inspect this",
+            roots=[project.parent],
+            default_agent="claude",
+        )
+        assert parsed.plan is None
+        assert parsed.reason == "mode"
+
+    async def test_an_unknown_mode_gets_a_usage_reply(self, project: Path) -> None:
+        message = _message()
+        with patch.object(
+            typed_topic.user_preferences, "get_user_mru", return_value=[]
+        ):
+            handled = await start_from_text(
+                user_id=100,
+                thread_id=42,
+                text="claude:sfae ccgram inspect this",
+                user_data={},
+                message=message,
+                context=_context({}),
+            )
+
+        assert handled is True
+        reply = message.reply_text.call_args[0][0]
+        assert "Unknown mode" in reply
+        assert "safe" in reply
