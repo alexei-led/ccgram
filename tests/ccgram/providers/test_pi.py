@@ -345,13 +345,24 @@ class TestCapabilities:
             "/session",
             "/settings",
             "/share",
+            "/thinking",
             "/tree",
         }
         assert "/clear" not in caps.builtin_commands
         assert "/resume" not in caps.builtin_commands
 
         assert caps.tui_picker_commands == frozenset(
-            {"model", "login", "fork", "clone", "scoped-models", "settings"}
+            {
+                "model",
+                "thinking",
+                "login",
+                "logout",
+                "fork",
+                "clone",
+                "scoped-models",
+                "settings",
+                "tree",
+            }
         )
 
 

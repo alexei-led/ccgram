@@ -1,0 +1,45 @@
+
+ ▀▀█  v1.4.0
+ █▀ █ escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more
+ Press ctrl+o to show full startup help and loaded resources.
+
+ Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.
+
+
+[Context]
+  ~/.pi/agent/AGENTS.md
+
+[Extensions]
+  ccgram-pi-ui-test.mjs
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+Theme
+
+Select a theme, or choose automatic to follow terminal appearance.
+
+    system     Theme created from your terminal's colors
+    automatic  Use separate themes for light and dark terminal appearance
+→ ✓ dark
+    light
+
+  Enter to select · Esc to go back
+────────────────────────────────────────────────────────────────────────────────────────────────────
+/private/tmp
+0.0%/1.0M (auto)                                                               deepseek-flash • high

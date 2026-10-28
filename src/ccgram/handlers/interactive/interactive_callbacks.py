@@ -27,8 +27,10 @@ from ..callback_data import (
     CB_ASK_SPACE,
     CB_ASK_TAB,
     CB_ASK_UP,
+    CB_PI_CONTROL,
 )
 from ..callback_registry import register
+from .pi_controls import handle_pi_control, parse_pi_control
 from .interactive_ui import (
     advance_interactive_sequence,
     clear_interactive_msg,
@@ -40,6 +42,9 @@ from .interactive_ui import (
 
 if TYPE_CHECKING:
     from telegram.ext import ContextTypes
+
+    from ...session_protocol.telegram import TelegramSessionAdapter
+    from ...telegram_client import TelegramClient
 
 logger = structlog.get_logger()
 
@@ -68,6 +73,7 @@ INTERACTIVE_PREFIXES: tuple[str, ...] = (
     *INTERACTIVE_KEY_MAP,
     CB_ASK_REFRESH,
     CB_ASK_CHOICE,
+    CB_PI_CONTROL,
 )
 
 
@@ -107,6 +113,10 @@ def match_interactive_prefix(data: str) -> tuple[str, str, str | None] | None:
       - ``"aq:enter:@12|%5"``      → tmux: window @12, pane %5
       - callback target suffixes remain opaque and are resolved by the backend
     """
+    if data.startswith(CB_PI_CONTROL):
+        parsed = parse_pi_control(data)
+        return (CB_PI_CONTROL, parsed[2], parsed[3]) if parsed else None
+
     direct_choice = parse_direct_choice_callback(data)
     if direct_choice is not None:
         _, _, window_id, pane_id = direct_choice
@@ -172,6 +182,52 @@ async def _handle_direct_choice(
     await query.answer()
 
 
+async def _handle_navigation_key(
+    query: CallbackQuery,
+    user_id: int,
+    thread_id: int | None,
+    chat_id: int | None,
+    message_id: int | None,
+    window_id: str,
+    pane_id: str | None,
+    cb_prefix: str,
+    adapter: TelegramSessionAdapter,
+    client: TelegramClient,
+    action_id: str,
+    expected_prompt: str | None,
+) -> None:
+    """Keep the existing provider navigation path separate from Pi controls."""
+    if not is_current_interactive_message(user_id, thread_id, chat_id, message_id):
+        await query.answer("This prompt has expired", show_alert=True)
+        return
+    tmux_key, refresh_ui = INTERACTIVE_KEY_MAP[cb_prefix]
+    sent, message_text = await adapter.send_keys(
+        window_id,
+        [tmux_key],
+        pane_id=pane_id,
+        action_id=action_id,
+        expected_prompt=expected_prompt,
+    )
+    if not sent:
+        await query.answer(
+            message_text or "Unable to send key. Try again.", show_alert=True
+        )
+        return
+    if refresh_ui:
+        await asyncio.sleep(0.5)
+        await handle_interactive_ui(
+            client,
+            user_id,
+            window_id,
+            thread_id,
+            pane_id=pane_id,
+            chat_id=chat_id,
+        )
+    else:
+        await clear_interactive_msg(user_id, client, thread_id, chat_id=chat_id)
+    await query.answer(INTERACTIVE_KEY_LABELS.get(cb_prefix, message_text))
+
+
 async def handle_interactive_callback(
     query: CallbackQuery,
     user_id: int,
@@ -221,6 +277,11 @@ async def handle_interactive_callback(
     )
 
     try:
+        if cb_prefix == CB_PI_CONTROL:
+            await handle_pi_control(
+                query, user_id, thread_id, PTBTelegramClient(context.bot), data, adapter
+            )
+            return
         if cb_prefix == CB_ASK_CHOICE:
             await _handle_direct_choice(
                 query,
@@ -249,37 +310,20 @@ async def handle_interactive_callback(
             )
             await query.answer("\U0001f504")
         else:
-            if not is_current_interactive_message(
-                user_id, thread_id, chat_id, message_id
-            ):
-                await query.answer("This prompt has expired", show_alert=True)
-                return
-            tmux_key, refresh_ui = INTERACTIVE_KEY_MAP[cb_prefix]
-            sent, message_text = await adapter.send_keys(
+            await _handle_navigation_key(
+                query,
+                user_id,
+                thread_id,
+                chat_id,
+                message_id,
                 window_id,
-                [tmux_key],
-                pane_id=pane_id,
-                action_id=action_id,
-                expected_prompt=expected_prompt,
+                pane_id,
+                cb_prefix,
+                adapter,
+                client,
+                action_id,
+                expected_prompt,
             )
-            if not sent:
-                await query.answer(
-                    message_text or "Unable to send key. Try again.", show_alert=True
-                )
-                return
-            if refresh_ui:
-                await asyncio.sleep(0.5)
-                await handle_interactive_ui(
-                    client,
-                    user_id,
-                    window_id,
-                    thread_id,
-                    pane_id=pane_id,
-                    chat_id=chat_id,
-                )
-            else:
-                await clear_interactive_msg(user_id, client, thread_id, chat_id=chat_id)
-            await query.answer(INTERACTIVE_KEY_LABELS.get(cb_prefix, message_text))
     except ProtocolError as exc:
         if exc.code != "session_busy":
             raise

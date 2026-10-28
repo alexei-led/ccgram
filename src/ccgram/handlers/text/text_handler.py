@@ -598,7 +598,15 @@ async def _forward_message(
     message: Message,
     adapter,
 ) -> None:
-    """Forward a text message to the bound tmux window."""
+    """Forward text, except explicit replies to the live Pi menu."""
+    # Lazy: text and interactive handlers are registered together; only the
+    # explicit terminal-input route needs Pi menu controls.
+    from ..interactive.pi_controls import handle_pi_reply
+
+    if await handle_pi_reply(
+        client, user_id, window_id, thread_id, text, message, adapter
+    ):
+        return
     # Best-effort: a network error here must not drop the user's text (#257).
     with contextlib.suppress(TelegramError):
         await message.chat.send_action(ChatAction.TYPING)  # type: ignore[union-attr]

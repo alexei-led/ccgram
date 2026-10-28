@@ -53,6 +53,7 @@ CB_ASK_SPACE = "aq:spc:"  # aq:spc:<window>
 CB_ASK_TAB = "aq:tab:"  # aq:tab:<window>
 CB_ASK_REFRESH = "aq:ref:"  # aq:ref:<window>
 CB_ASK_CHOICE = "aq:pick:"  # aq:pick:<key>:<sequence>:<window>
+CB_PI_CONTROL = "aq:pi:"  # aq:pi:<action>:<sequence>:<window>
 
 # Sessions dashboard
 CB_SESSIONS_REFRESH = "sess:ref"

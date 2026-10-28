@@ -1,0 +1,45 @@
+writing-style, writing-typescript, writing-web
+
+[Prompts]
+  /council, /gather-context-and-clarify, /implement, /implement-and-review, /parallel-cleanup,
+/parallel-research, /parallel-review, /review-loop, /scout-and-plan
+
+[Extensions]
+  @alexeiled/pi-fusion@latest:src, @alexeiled/pi-model-router, @alexeiled/pi-plan-exec:src,
+@alexeiled/pi-provider-compat:src, @alexeiled/pi-subagents-bridge:src, @benvargas/pi-openai-fast,
+@ian-pascoe/pi-lsp:src, @marckrenn/pi-sub-bar, @marckrenn/pi-sub-bar:../pi-sub-core,
+@narumitw/pi-btw:dist, @nicknisi/pi-ast-grep, @pi-stef/atlassian:atlassian.ts,
+@tintinweb/pi-tasks:src, agterm-status.ts,
+alexei-led/cc-thingz:dist/pi/extensions/agentbundler-hooks.ts,
+alexei-led/cc-thingz:dist/pi/extensions/ask-user-question.ts,
+alexei-led/cc-thingz:dist/pi/extensions/hook-runner,
+alexei-led/cc-thingz:dist/pi/extensions/permission-gate.ts,
+alexei-led/cc-thingz:dist/pi/extensions/plan-mode, classifier-catalog, herdr-agent-state.ts,
+pi-gitnexus:src, pi-intercom, pi-powerline-footer, pi-sub-aliases:src, pi-subagents:bundle,
+pi-web-access:dist, resume-from:shims/pi/extensions/resume-from.js,
+umputun/revdiff:plugins/pi/extensions/revdiff.ts
+
+
+ Router initialized with profiles: claude-personal, claude-work, openai-personal, openai-work
+
+  Router openai-personal  think:high   fix-pi-interactive-commands
+Router / openai-personal · last
+Local eligible baseline · openai-personal · balanced (default)
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ Select provider to logout:
+
+>
+
+ → Anthropic [subscription] ✓ configured
+   Anthropic (Claude Pro/Max) - Personal [account] ✓ configured
+   Anthropic (Claude Pro/Max) - Work [account] ✓ configured
+   Cloudflare Workers AI [API key] ✓ configured
+   Moonshot AI [API key] ✓ configured
+   OpenAI (ChatGPT Plus/Pro) - Codex Personal [account] ✓ configured
+   OpenAI (ChatGPT Plus/Pro) - Codex Work [account] ✓ configured
+   OpenAI Codex (legacy) [subscription] ✓ configured
+   (1/11)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  fix/pi-interactive-commands   0/872k (0.0%) 󰁨

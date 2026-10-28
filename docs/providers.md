@@ -235,7 +235,7 @@ Pi transcripts are JSONL files (v3 format) under `~/.pi/agent/sessions/--<encode
 
 ### Commands
 
-Pi exposes a Telegram-safe command list based on the [Pi usage docs](https://pi.dev/docs/latest/usage): `/changelog`, `/clone`, `/compact`, `/copy`, `/export`, `/fork`, `/hotkeys`, `/login`, `/logout`, `/model`, `/name`, `/new`, `/quit`, `/reload`, `/scoped_models` (native `/scoped-models`), `/session`, `/settings`, `/share`, and `/tree`. `/followup <message>` is ccgram's Pi-only bridge to Pi's Alt+Enter behavior: it queues the message after current work finishes instead of steering the active turn. `/clear` is accepted as a hidden compatibility alias for Pi `/new`, but it is not advertised because Pi does not define `/clear`. Pi `/resume` is not advertised because it collides with ccgram's bot-native session picker. Dynamic discovery surfaces three more sources:
+Pi exposes a Telegram-safe command list based on the [Pi usage docs](https://pi.dev/docs/latest/usage): `/changelog`, `/clone`, `/compact`, `/copy`, `/export`, `/fork`, `/hotkeys`, `/login`, `/logout`, `/model`, `/name`, `/new`, `/quit`, `/reload`, `/scoped_models` (native `/scoped-models`), `/session`, `/settings`, `/share`, `/thinking`, and `/tree`. `/followup <message>` is ccgram's Pi-only bridge to Pi's Alt+Enter behavior: it queues the message after current work finishes instead of steering the active turn. `/clear` is accepted as a hidden compatibility alias for Pi `/new`, but it is not advertised because Pi does not define `/clear`. Pi `/resume` is not advertised because it collides with ccgram's bot-native session picker. Dynamic discovery surfaces three more sources:
 
 - **Skills** — `SKILL.md` under `~/.pi/agent/skills/<name>/`, `~/.agents/skills/<name>/`, `<project>/.pi/skills/<name>/`, or `<project>/.agents/skills/<name>/`. Loose `.md` files at the root of `~/.pi/agent/skills/` or `<project>/.pi/skills/` are also picked up.
 - **Prompt templates** — `.md` files under `~/.pi/agent/prompts/` or `<project>/.pi/prompts/` (per-project walk stops at the first `.git` ancestor).
@@ -247,9 +247,50 @@ Names collide-dedupe with first-source wins (skills > prompts > extensions).
 
 With hook-runner installed, Pi `Stop` hooks mark the topic ready immediately. Without hooks, status is inferred from transcript activity — idle when the latest assistant message has no pending tool calls, working when there are unreturned tool uses.
 
+### Interactive commands
+
+CCGram mirrors Pi's live terminal menu into one editable Telegram message.
+This covers `/model`, `/thinking`, `/settings` and its submenus,
+`/scoped_models`, `/fork`, `/tree`,
+authentication selectors, and extension commands that use Pi's standard
+selector, settings, input, or editor components. Detection follows the displayed UI, not a
+command-name allowlist; an extension's `/modes` menu works the same way.
+
+| Task | Telegram control |
+| --- | --- |
+| Navigate a long list | ↑ / ↓; ↑5 / ↓5 sends five arrows |
+| Select or change a value | Enter; Space where Pi supports it |
+| Search or type | **Reply to the menu message** with one line; no Enter is sent |
+| Clear or correct search | Clear search / ⌫ |
+| Add a line in an extension editor | New line, then reply with the next line |
+| Change model scope | Enter toggles; All matching / None matching / Provider |
+| Reorder scoped models | Move ↑ / Move ↓ |
+| Persist a model/thinking default or scope | Save default / Save scope (Pi's Ctrl+S) |
+| Go back or close | Esc; a parent settings menu stays visible |
+| Capture again | 🔄 |
+
+Replies append to the current input; clear search before replacing it.
+Slash-prefixed replies, including bot command names, are literal menu input too.
+Ordinary messages still dismiss a blocking prompt before reaching the agent.
+Replies to an expired menu are rejected, not forwarded as agent messages.
+Buttons and replies target the owning pane and revalidate the captured prompt
+before sending input. If Telegram cannot update the display, tap 🔄 to recapture
+it; old action buttons stay rejected. Restarting the bot expires existing menu controls.
+
+Only visible terminal rows are mirrored; navigation scrolls Pi itself. Pi's
+SelectList and SettingsList do not use PageUp/PageDown, so the five-arrow
+buttons work across both. Selection and persistence follow Pi's semantics:
+changing settings can take effect immediately; Esc is not an undo operation.
+
+Use default Pi keybindings for these controls. Nonstandard custom extension
+screens or rebound keys may require `/screenshot` plus `/toolbar`, or the
+terminal itself. Do not send API keys, passwords, or OAuth codes through
+Telegram; finish authentication in the terminal.
+
 ### Toolbar
 
-Pi's default toolbar omits Mode/Think/YOLO (pi has no mode cycling) and adds a dedicated nav row for driving Pi's `/model` and `/session` pickers:
+Pi's default toolbar omits Mode/Think/YOLO and adds a dedicated navigation row.
+The automatic menu above is the primary control; the toolbar remains a fallback:
 
 - Row 1: `📷 Screen, ⏹ Ctrl-C, 📺 Live`
 - Row 2: `⎋ Esc, ⇥ Tab, π Model`
