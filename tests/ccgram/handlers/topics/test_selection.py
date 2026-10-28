@@ -29,6 +29,15 @@ def _buttons(keyboard: InlineKeyboardMarkup) -> list:
 
 
 class TestBuildProviderPicker:
+    @pytest.fixture(autouse=True)
+    def _installed_providers(self):
+        """Pin the picker list: the real one probes PATH for each CLI."""
+        with patch(
+            "ccgram.providers.picker_provider_names",
+            return_value=["claude", "codex", "pi", "shell"],
+        ):
+            yield
+
     def test_header_names_the_selected_directory(self) -> None:
         text, keyboard = build_provider_picker("/home/user/my-project")
         assert "Select Provider" in text
@@ -44,16 +53,20 @@ class TestBuildProviderPicker:
         [
             ("claude", "Claude"),
             ("codex", "Codex"),
-            ("gemini", "Gemini"),
             ("pi", "Pi"),
             ("shell", "Term"),
         ],
     )
-    def test_offers_every_provider(self, provider: str, label: str) -> None:
+    def test_offers_every_enabled_provider(self, provider: str, label: str) -> None:
         _text, keyboard = build_provider_picker("/tmp/test")
         buttons = _buttons(keyboard)
         assert any(label in btn.text for btn in buttons)
         assert f"{CB_PROV_SELECT}{provider}" in [btn.callback_data for btn in buttons]
+
+    def test_gemini_is_not_offered(self) -> None:
+        _text, keyboard = build_provider_picker("/tmp/test")
+        callbacks = [btn.callback_data for btn in _buttons(keyboard)]
+        assert f"{CB_PROV_SELECT}gemini" not in callbacks
 
     def test_claude_marked_as_default(self) -> None:
         _text, keyboard = build_provider_picker("/tmp/test")
@@ -190,22 +203,19 @@ class TestHandleConfirmShowsProviderPicker:
 
 class TestHandleProviderSelect:
     @patch(
-        "ccgram.handlers.topics.provider_mode_callbacks.safe_edit",
+        "ccgram.handlers.topics.provider_mode_callbacks.launch_window",
         new_callable=AsyncMock,
     )
-    @patch("ccgram.handlers.topics.window_launch_service.tmux_manager")
-    @patch("ccgram.handlers.topics.provider_mode_callbacks.provider_registry")
     @patch("ccgram.handlers.topics.provider_mode_callbacks.thread_router")
-    async def test_shows_mode_picker(
+    @patch("ccgram.handlers.topics.provider_mode_callbacks.provider_registry")
+    async def test_launches_in_the_default_mode_without_a_mode_picker(
         self,
-        mock_tr: MagicMock,
         mock_registry: MagicMock,
-        mock_tmux: MagicMock,
-        mock_edit: AsyncMock,
+        mock_tr: MagicMock,
+        mock_launch: AsyncMock,
     ) -> None:
         mock_registry.is_valid.return_value = True
         mock_tr.get_window_for_thread.return_value = None
-        mock_tmux.create_window = AsyncMock()
 
         user_data = {"browse_path": "/tmp/test", PENDING_THREAD_ID: 42}
         query = _make_query(data=f"{CB_PROV_SELECT}codex")
@@ -216,10 +226,10 @@ class TestHandleProviderSelect:
             query, 100, f"{CB_PROV_SELECT}codex", update, context
         )
 
-        mock_tmux.create_window.assert_not_called()
-        mock_edit.assert_called_once()
-        text = mock_edit.call_args[0][1]
-        assert "Select Session Mode" in text
+        mock_launch.assert_awaited_once()
+        request = mock_launch.call_args[0][2]
+        assert request.provider_name == "codex"
+        assert request.mode == "yolo"
 
     @patch("ccgram.handlers.topics.provider_mode_callbacks.provider_registry")
     async def test_rejects_unknown_provider(self, mock_registry: MagicMock) -> None:

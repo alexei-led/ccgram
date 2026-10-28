@@ -99,6 +99,14 @@ async def _reset_flow_with_new_command(context: MagicMock) -> None:
 
 
 class TestConfirmWorktreeGating:
+    @pytest.fixture(autouse=True)
+    def _worktrees_enabled(self, monkeypatch: pytest.MonkeyPatch):
+        """The browser offers worktrees only with the opt-in flag on."""
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "new_topic_worktrees", True, raising=False)
+        yield
+
     @patch(
         "ccgram.handlers.topics.directory_callbacks.safe_edit", new_callable=AsyncMock
     )
@@ -116,6 +124,26 @@ class TestConfirmWorktreeGating:
         assert "Git Worktree" in text
         assert user_data[PENDING_WORKTREE_REPO] == str(git_repo.resolve())
         assert user_data[PENDING_WORKTREE_DIRTY] is False
+
+    @patch(
+        "ccgram.handlers.topics.workspace_callbacks.safe_edit", new_callable=AsyncMock
+    )
+    @patch("ccgram.handlers.topics.directory_callbacks.thread_router")
+    async def test_eligible_repo_skips_worktrees_by_default(
+        self, mock_tr: MagicMock, mock_edit: AsyncMock, git_repo: Path
+    ) -> None:
+        from ccgram.config import config
+
+        config.new_topic_worktrees = False
+        mock_tr.get_window_for_thread.return_value = None
+        user_data = {BROWSE_PATH_KEY: str(git_repo), PENDING_THREAD_ID: 42}
+        context = _make_context(user_data)
+
+        await _handle_confirm(_make_query(), 100, _make_update(42), context)
+
+        text = mock_edit.call_args[0][1]
+        assert "Select Provider" in text
+        assert PENDING_WORKTREE_REPO not in user_data
 
     @patch(
         "ccgram.handlers.topics.workspace_callbacks.safe_edit", new_callable=AsyncMock

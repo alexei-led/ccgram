@@ -690,7 +690,12 @@ async def handle_command_panel(
 
         await query.answer()
         await _handle_unbound_topic(
-            user.id, target.thread_id, "", context.user_data, query.message
+            user.id,
+            target.thread_id,
+            "",
+            context.user_data,
+            query.message,
+            context,
         )
     else:
         await _execute_panel_action(update, context, target, provider, action, value)

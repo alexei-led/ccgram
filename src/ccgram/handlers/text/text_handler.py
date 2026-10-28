@@ -22,6 +22,7 @@ from ...config import config
 from ...telegram_client import PTBTelegramClient, TelegramClient
 from ..callback_helpers import get_thread_id as _get_thread_id
 from ..commands import sync_scoped_menu_for_text_context
+from ..topics.typed_topic import start_from_text
 from ..topics.directory_browser import (
     BROWSE_DIRS_KEY,
     BROWSE_PAGE_KEY,
@@ -271,14 +272,21 @@ async def _handle_worktree_name_reply(
     return True
 
 
+def _browser_start_path() -> str:
+    """Directory-browser root: the first configured projects root."""
+    roots = config.projects_roots
+    return str(roots[0] if roots else Path.cwd())
+
+
 async def _handle_unbound_topic(
     user_id: int,
     thread_id: int,
     text: str,
     user_data: dict | None,
     message: Message,
+    context: ContextTypes.DEFAULT_TYPE | None = None,
 ) -> bool:
-    """Show window picker or directory browser for an unbound topic.
+    """Start a session for an unbound topic, or ask for the one missing word.
 
     Returns True if the topic is unbound (handled), False if already bound.
     """
@@ -286,7 +294,23 @@ async def _handle_unbound_topic(
     if window_id is not None:
         return False
 
-    all_windows = await tmux_manager.list_windows()
+    # Typed plan first: "<agent> <project> [@branch] <instruction>" starts the
+    # session from this one message. No picker, no follow-up taps.
+    if (
+        context is not None
+        and text.strip()
+        and await start_from_text(
+            user_id=user_id,
+            thread_id=thread_id,
+            text=text,
+            user_data=user_data,
+            message=message,
+            context=context,
+        )
+    ):
+        return True
+
+    all_windows = await tmux_manager.list_windows() if config.bind_picker else []
     bound_ids = {bound_wid for _, _, bound_wid in thread_router.iter_thread_bindings()}
     bound_lookup = {canonical_window_id(wid) for wid in bound_ids}
     unbound = [
@@ -319,13 +343,14 @@ async def _handle_unbound_topic(
             await safe_reply(message, PENDING_DELIVERY_NOTICE)
         return True
 
-    # No unbound windows — show directory browser to create a new session
+    # Nothing parsed — fall back to the directory browser (still one screen
+    # per level, but rooted at the projects root and limited to git checkouts).
     logger.info(
         "Unbound topic: showing directory browser (user=%d, thread=%d)",
         user_id,
         thread_id,
     )
-    start_path = str(Path.cwd())
+    start_path = _browser_start_path()
     msg_text, keyboard, subdirs = build_directory_browser(start_path, user_id=user_id)
     if user_data is not None:
         user_data[STATE_KEY] = STATE_BROWSING_DIRECTORY
@@ -448,7 +473,7 @@ async def _handle_dead_window(
             cleanup_eligible=True,
         )
         lifecycle_strategy.clear_dead_notification(user_id, thread_id)
-        start_path = str(Path.cwd())
+        start_path = _browser_start_path()
         msg_text, keyboard, subdirs = build_directory_browser(
             start_path, user_id=user_id
         )
@@ -721,9 +746,9 @@ async def handle_text_message(
             )
         return
 
-    # Unbound topic — show picker or browser
+    # Unbound topic — typed plan, picker, or browser
     if await _handle_unbound_topic(
-        user.id, thread_id, text, context.user_data, message
+        user.id, thread_id, text, context.user_data, message, context
     ):
         return
 

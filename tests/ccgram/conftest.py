@@ -91,6 +91,26 @@ def _clean_proxy_env(monkeypatch):
             monkeypatch.delenv(key, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _no_agent_config_writes(monkeypatch):
+    """Keep launch tests from touching the operator's real agent config.
+
+    The launch path seeds a provider's trust record (Claude: ~/.claude.json,
+    Codex: config.toml) and may answer a first-run pane prompt. Both are
+    correct in production and a side effect on the developer's machine here,
+    so they are disabled by default; the tests that exercise them patch the
+    functions explicitly with a temp home.
+    """
+    from ccgram.handlers.topics import window_launch_service as wls
+
+    monkeypatch.setattr(wls, "preseed_trust", lambda *a, **k: False)
+    monkeypatch.setattr(wls, "answer_first_run_prompt", _no_first_run_answer)
+
+
+async def _no_first_run_answer(*_args, **_kwargs) -> bool:
+    return False
+
+
 # ── JSONL entry factories ────────────────────────────────────────────────
 
 

@@ -17,6 +17,7 @@ from ccgram.providers._resume import discover_claude_sessions
 from ccgram.providers.base import UUID_RE
 from ccgram.providers.base import (
     DiscoveredCommand,
+    FirstRunPrompt,
     ProviderCapabilities,
     ResumableSession,
     SessionStartEvent,
@@ -125,6 +126,14 @@ class ClaudeProvider:
                 "theme",
                 "tui",
             }
+        ),
+        # Folder trust dialog: "Yes, proceed" is the default selection, so
+        # Enter clears it. Seeded in ~/.claude.json first; this covers a
+        # config path ccgram could not write.
+        first_run=FirstRunPrompt(
+            needles=("do you trust the files in this folder",),
+            keys=("Enter",),
+            settled=("bypass permissions", "for shortcuts"),
         ),
     )
 

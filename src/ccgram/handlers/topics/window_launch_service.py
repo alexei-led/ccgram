@@ -17,8 +17,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 import structlog
+from telegram import CallbackQuery, Message
 from telegram.error import TelegramError
 
+from ...agent_startup import answer_first_run_prompt, preseed_trust
 from ...config import config
 from ...providers import registry as provider_registry
 from ...session import session_manager
@@ -71,10 +73,16 @@ class WindowLaunchRequest:
     mode: Literal["normal", "yolo"]
     pending_text: str | None
     chat_id: int | None = None
-    # Worktree metadata is NOT carried in this request. It flows through
-    # context.user_data via PENDING_WORKTREE_PATH / PENDING_WORKTREE_BRANCH /
-    # PENDING_WORKTREE_REPO keys, read directly by _persist_worktree_state and
-    # _create_topic_window.
+    # Topic/window label. Pinned as the display name so a backend or agent
+    # title change cannot rename the Telegram topic. None keeps the legacy
+    # behaviour of using the backend's derived window name.
+    label: str | None = None
+    # Worktree metadata. The typed-plan path fills these in directly; the
+    # directory-browser path leaves them None and keeps using the
+    # PENDING_WORKTREE_* user_data keys set by its own steps.
+    worktree_repo: str | None = None
+    worktree_branch: str | None = None
+    worktree_path: str | None = None
 
 
 @dataclass
@@ -100,7 +108,12 @@ def _cwd_within(cwd: str, worktree_path: str) -> bool:
 
 
 def _persist_worktree_state(
-    window_id: str, cwd: str, context: ContextTypes.DEFAULT_TYPE
+    window_id: str,
+    cwd: str,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    worktree_path: str | None = None,
+    worktree_branch: str | None = None,
 ) -> None:
     """Persist a pending worktree path/branch onto the new window state.
 
@@ -111,15 +124,17 @@ def _persist_worktree_state(
     worktree flow keys afterwards.
     """
     user_data = context.user_data
-    worktree_path = user_data.get(PENDING_WORKTREE_PATH) if user_data else None
-    worktree_branch = user_data.get(PENDING_WORKTREE_BRANCH) if user_data else None
+    if worktree_path is None:
+        worktree_path = user_data.get(PENDING_WORKTREE_PATH) if user_data else None
+    if worktree_branch is None:
+        worktree_branch = user_data.get(PENDING_WORKTREE_BRANCH) if user_data else None
     if worktree_path and worktree_branch and _cwd_within(cwd, worktree_path):
         session_manager.set_window_worktree(window_id, worktree_path, worktree_branch)
     clear_worktree_state(user_data)
 
 
 async def _abort_topic_creation(
-    query: CallbackQuery, message: str, context: ContextTypes.DEFAULT_TYPE
+    query: CallbackQuery | Message, message: str, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
     """Surface a window-creation failure and drop all pending-topic state.
 
@@ -142,12 +157,28 @@ async def _create_topic_window(
     approval_mode: Literal["normal", "yolo"],
     chosen_workspace_id: str | None,
     context: ContextTypes.DEFAULT_TYPE,
+    request: "WindowLaunchRequest | None" = None,
 ) -> tuple[bool, str, str, str]:
     """Create a topic session through the shared session service."""
     ud = context.user_data
-    wt_repo = ud.get(PENDING_WORKTREE_REPO) if ud else None
-    wt_branch = ud.get(PENDING_WORKTREE_BRANCH) if ud else None
-    wt_path = ud.get(PENDING_WORKTREE_PATH) if ud else None
+    wt_repo = (
+        request.worktree_repo
+        if request and request.worktree_repo
+        else (ud.get(PENDING_WORKTREE_REPO) if ud else None)
+    )
+    wt_branch = (
+        request.worktree_branch
+        if request and request.worktree_branch
+        else (ud.get(PENDING_WORKTREE_BRANCH) if ud else None)
+    )
+    wt_path = (
+        request.worktree_path
+        if request and request.worktree_path
+        else (ud.get(PENDING_WORKTREE_PATH) if ud else None)
+    )
+    # Seed the agent's own trust record so its first-run dialog never shows.
+    # Offloaded: it reads/writes a JSON/TOML file on disk.
+    await asyncio.to_thread(preseed_trust, provider_name, Path(selected_path))
     data: dict[str, Any] = {"provider": provider_name, "directory": selected_path}
     if chosen_workspace_id:
         data["workspaceId"] = chosen_workspace_id
@@ -499,18 +530,47 @@ async def _finish_failed_provisioning(  # noqa: C901
     return False
 
 
+async def _await_agent_ready(
+    window_id: str,
+    provider_name: str,
+    provider: Any,
+    provider_caps: Any,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> bool:
+    """Wait until the created target reports a live, matching agent foreground."""
+    adapter = adapter_for(context.bot_data)
+    if provider.capabilities.supports_hook:
+        if not await session_map_sync.wait_for_session_map_entry(
+            window_id, resolve_window_id=window_query.resolve_window_alias
+        ):
+            return False
+        # SessionStart can arrive before the terminal reports the CLI.
+        return await _wait_for_agent_process(
+            window_id, adapter, expected_provider=provider_name
+        )
+    if provider_caps.chat_first_command_path:
+        return True
+    # Only a pane that actually left its launch shell may be bound; a timed-out
+    # wait reuses the quarantine path instead of reporting success for a window
+    # the next poll would kill.
+    return await _wait_for_agent_process(
+        window_id, adapter, expected_provider=provider_name
+    )
+
+
 # ── main entry point ──────────────────────────────────────────────────────────
 
 
 async def launch_window(  # noqa: C901, PLR0911, PLR0912, PLR0915
-    query: CallbackQuery,
+    query: CallbackQuery | Message,
     context: ContextTypes.DEFAULT_TYPE,
     request: WindowLaunchRequest,
 ) -> WindowLaunchResult:
     """Create a tmux window, bind to the pending topic, and forward pending text.
 
-    Shared by _handle_mode_select (after mode picker) and _handle_provider_select
-    (when mode picker is skipped for providers without YOLO flags).
+    Shared by the typed-plan entry (which passes the reply Message it just
+    sent), _handle_mode_select (after mode picker) and _handle_provider_select
+    (when the mode picker is skipped for providers without YOLO flags).
 
     CRITICAL (MC-2967): creation starts inside a global transaction guard,
     then its durable target is registered before the transaction releases. This
@@ -523,7 +583,9 @@ async def launch_window(  # noqa: C901, PLR0911, PLR0912, PLR0915
     provider_name = request.provider_name
     approval_mode = request.mode
 
-    query_message = query.message
+    # A CallbackQuery carries the message in .message; a Message is its own.
+    # Duck-typed (Any) so test doubles and both real types behave alike.
+    query_message: Any = getattr(query, "message", None) or query
     chat = query_message.chat if query_message else None
     raw_chat_id = (
         request.chat_id if request.chat_id is not None else getattr(chat, "id", None)
@@ -565,6 +627,7 @@ async def launch_window(  # noqa: C901, PLR0911, PLR0912, PLR0915
                     approval_mode,
                     chosen_workspace_id,
                     context,
+                    request,
                 )
             )
         except BaseException:  # noqa: BLE001
@@ -652,7 +715,13 @@ async def launch_window(  # noqa: C901, PLR0911, PLR0912, PLR0915
     session_manager.set_window_cwd(created_wid, selected_path)
     session_manager.set_window_provider(created_wid, provider_name)
     session_manager.set_window_approval_mode(created_wid, approval_mode)
-    _persist_worktree_state(created_wid, selected_path, context)
+    _persist_worktree_state(
+        created_wid,
+        selected_path,
+        context,
+        worktree_path=request.worktree_path,
+        worktree_branch=request.worktree_branch,
+    )
     logger.info(
         "Window created: %s (id=%s) at %s provider=%s mode=%s (user=%d, thread=%s)",
         created_wname,
@@ -702,32 +771,34 @@ async def launch_window(  # noqa: C901, PLR0911, PLR0912, PLR0915
             raise
 
     provider = provider_registry.get(provider_name)
+    yolo_confirm = (
+        approval_mode == "yolo" and provider.capabilities.has_yolo_confirmation
+    )
     try:
-        if approval_mode == "yolo" and provider.capabilities.has_yolo_confirmation:
+        if yolo_confirm:
             await _accept_yolo_confirmation(created_wid, adapter_for(context.bot_data))
 
-        if provider.capabilities.supports_hook:
-            map_entry_found = await session_map_sync.wait_for_session_map_entry(
-                created_wid, resolve_window_id=window_query.resolve_window_alias
-            )
-            if map_entry_found:
-                # SessionStart can arrive before the terminal reports the CLI.
-                map_entry_found = await _wait_for_agent_process(
-                    created_wid,
-                    adapter_for(context.bot_data),
-                    expected_provider=provider_name,
-                )
-        elif provider_caps.chat_first_command_path:
-            map_entry_found = True
-        else:
-            # Only a pane that actually left its launch shell may be bound;
-            # a timed-out wait reuses the quarantine path below instead of
-            # reporting success for a window the next poll would kill.
-            map_entry_found = await _wait_for_agent_process(
+        map_entry_found = await _await_agent_ready(
+            created_wid, provider_name, provider, provider_caps, context
+        )
+        if not map_entry_found:
+            # A declared first-run screen (folder trust, hook trust) blocks the
+            # agent before it can report readiness. Answer it and wait once
+            # more, instead of quarantining a session the user can see running.
+            answered = await answer_first_run_prompt(
                 created_wid,
-                adapter_for(context.bot_data),
-                expected_provider=provider_name,
+                provider_name,
+                adapter=adapter_for(context.bot_data),
+                poll=False,
             )
+            if answered:
+                if yolo_confirm:
+                    await _accept_yolo_confirmation(
+                        created_wid, adapter_for(context.bot_data)
+                    )
+                map_entry_found = await _await_agent_ready(
+                    created_wid, provider_name, provider, provider_caps, context
+                )
     except BaseException as exc:  # noqa: BLE001
         created_wid = _follow_supersession(created_wid, claim_id=claim_id)
         await _finish_failed_provisioning(
@@ -828,12 +899,16 @@ async def launch_window(  # noqa: C901, PLR0911, PLR0912, PLR0915
         await safe_edit(query, f"✅ {message}")
         return WindowLaunchResult(success=True, window_id=created_wid)
 
+    # Pin the label before renaming: pinned names survive backend/agent title
+    # changes, so the topic stops drifting to "<name> <target id>".
+    topic_label = request.label or created_wname
+    thread_router.set_display_name(created_wid, topic_label, pin=True)
     chat_id = thread_router.resolve_chat_id(user_id, pending_thread_id)
     try:
         await context.bot.edit_forum_topic(
             chat_id=chat_id,
             message_thread_id=pending_thread_id,
-            name=format_topic_name_for_mode(created_wname, approval_mode),
+            name=format_topic_name_for_mode(topic_label, approval_mode),
         )
     except TelegramError as e:
         logger.debug("Failed to rename topic: %s", e)

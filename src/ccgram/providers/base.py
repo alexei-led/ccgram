@@ -118,6 +118,21 @@ class HookEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class FirstRunPrompt:
+    """A blocking first-run screen a launch has to clear without a human.
+
+    ``needles`` must ALL appear (case-insensitive) in the captured pane
+    before ``keys`` are sent; ``settled`` is a substring that proves the
+    prompt is gone. Matching is exact-substring on purpose: a fuzzy match
+    would send keys into an unrelated screen.
+    """
+
+    needles: tuple[str, ...]
+    keys: tuple[str, ...]
+    settled: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class ProviderCapabilities:
     """Declares what features a provider supports.
 
@@ -161,6 +176,10 @@ class ProviderCapabilities:
     # pointing at /toolbar so users know how to drive the picker from
     # Telegram. Empty for providers without modal pickers.
     tui_picker_commands: frozenset[str] = frozenset()
+    # First-run approval/trust screen this agent shows before its prompt.
+    # None means "no recipe": the launcher then reports the block instead of
+    # guessing at keys.
+    first_run: FirstRunPrompt | None = None
 
 
 # ── Provider protocol ────────────────────────────────────────────────────

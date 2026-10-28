@@ -136,15 +136,34 @@ class TestHandleUnboundTopic:
         unbound_env.picker.assert_not_called()
         unbound_env.browser.assert_not_called()
 
-    async def test_adoptable_windows_show_the_picker(
+    async def test_adoptable_windows_are_not_offered_by_default(
         self, unbound_env: SimpleNamespace
     ) -> None:
+        """A new topic wants a new session; /bind covers adoption instead."""
         unbound_env.mux.list_windows = AsyncMock(
             return_value=[MagicMock(window_id="@5", window_name="proj", cwd="/tmp")]
         )
-        user_data: dict = {}
 
-        result = await _handle_unbound_topic(100, 42, "my text", user_data, AsyncMock())
+        result = await _handle_unbound_topic(100, 42, "my text", {}, AsyncMock())
+
+        assert result is True
+        unbound_env.picker.assert_not_called()
+        unbound_env.browser.assert_called_once()
+
+    async def test_adoptable_windows_show_the_picker_when_opted_in(
+        self, unbound_env: SimpleNamespace
+    ) -> None:
+        from ccgram.config import config
+
+        with patch.object(config, "bind_picker", True):
+            unbound_env.mux.list_windows = AsyncMock(
+                return_value=[MagicMock(window_id="@5", window_name="proj", cwd="/tmp")]
+            )
+            user_data: dict = {}
+
+            result = await _handle_unbound_topic(
+                100, 42, "my text", user_data, AsyncMock()
+            )
 
         assert result is True
         unbound_env.picker.assert_called_once()

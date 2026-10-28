@@ -37,3 +37,7 @@ PENDING_WORKTREE_DIRTY = "_pending_worktree_dirty"
 PENDING_WORKTREE_SUBDIR = "_pending_worktree_subdir"
 PENDING_WORKTREE_CREATING = "_pending_worktree_creating"
 AWAITING_WORKTREE_BRANCH_NAME = "_awaiting_worktree_branch_name"
+
+# Typed-plan flow: one entry holding the parsed draft plus the candidate
+# projects offered as one-tap buttons when the project word was ambiguous.
+PENDING_PLAN = "_pending_plan"

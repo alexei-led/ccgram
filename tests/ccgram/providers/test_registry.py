@@ -62,6 +62,68 @@ class TestProviderRegistry:
             reg.get("missing")
 
 
+class TestEnabledProviders:
+    """CCGRAM_PROVIDERS_ENABLED narrows what the UI offers (Gemini is out)."""
+
+    def test_default_list_excludes_gemini(self) -> None:
+        env = {"TELEGRAM_BOT_TOKEN": "test-token", "ALLOWED_USERS": "123"}
+        with patch.dict("os.environ", env, clear=True):
+            from ccgram.config import Config
+
+            cfg = Config()
+        assert "gemini" not in cfg.enabled_providers
+        assert "claude" in cfg.enabled_providers
+
+    def test_env_list_replaces_the_default(self) -> None:
+        env = {
+            "TELEGRAM_BOT_TOKEN": "test-token",
+            "ALLOWED_USERS": "123",
+            "CCGRAM_PROVIDERS_ENABLED": "claude, gemini",
+        }
+        with patch.dict("os.environ", env, clear=True):
+            from ccgram.config import Config
+
+            cfg = Config()
+        assert cfg.enabled_providers == ("claude", "gemini")
+
+    def test_enabled_names_follow_registry_order(self) -> None:
+        from ccgram.config import config
+        from ccgram.providers import enabled_provider_names
+
+        with patch.object(config, "enabled_providers", ("gemini", "claude")):
+            names = enabled_provider_names()
+
+        assert names == ["claude", "gemini"]
+
+    def test_launchable_is_false_for_a_missing_cli(self) -> None:
+        from ccgram.providers import provider_launchable
+
+        with patch("shutil.which", return_value=None):
+            assert provider_launchable("claude") is False
+
+    def test_launchable_is_true_for_a_user_override(self) -> None:
+        from ccgram.providers import provider_launchable
+
+        with (
+            patch.dict("os.environ", {"CCGRAM_CLAUDE_COMMAND": "my-claude"}),
+            patch("shutil.which", return_value=None),
+        ):
+            assert provider_launchable("claude") is True
+
+    def test_picker_names_drop_disabled_and_unlaunchable(self) -> None:
+        from ccgram.config import config
+        from ccgram.providers import picker_provider_names
+
+        with (
+            patch.object(config, "enabled_providers", ("claude", "codex")),
+            patch(
+                "ccgram.providers.provider_launchable",
+                side_effect=lambda name: name == "claude",
+            ),
+        ):
+            assert picker_provider_names() == ["claude"]
+
+
 class TestConfigProviderSettings:
     def test_default_provider_name(self) -> None:
         env = {

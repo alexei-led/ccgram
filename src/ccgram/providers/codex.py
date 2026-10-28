@@ -21,6 +21,7 @@ from ccgram.providers.codex_format import format_codex_interactive_prompt
 from ccgram.providers._jsonl import JsonlProvider
 from ccgram.providers.base import (
     RESUME_ID_RE,
+    FirstRunPrompt,
     ProviderCapabilities,
     SessionStartEvent,
     StatusUpdate,
@@ -146,6 +147,16 @@ class CodexProvider(JsonlProvider):
         # drive with arrow keys + Enter.
         tui_picker_commands=frozenset(
             {"model", "permissions", "skills", "statusline", "personality"}
+        ),
+        # Hooks review screen shown when ccgram's hooks entry is new for this
+        # project: "1. review hooks / 2. trust all and continue / 3. continue
+        # without trust". Option 2 is one Down from the default selection.
+        # The project trust entry in config.toml is seeded first, which is
+        # what removes this screen in the first place.
+        first_run=FirstRunPrompt(
+            needles=("trust all and continue",),
+            keys=("Down", "Enter"),
+            settled=("for shortcuts",),
         ),
     )
 

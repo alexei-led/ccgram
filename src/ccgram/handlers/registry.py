@@ -49,6 +49,7 @@ from .split_command import split_command
 from .sync_command import sync_command
 from .text.text_handler import text_handler
 from .topics import new_command
+from .topics.bind_command import bind_command
 from .topics.topic_lifecycle import topic_closed_handler, topic_edited_handler
 from .upgrade import upgrade_command
 from .voice import handle_voice_message
@@ -102,6 +103,7 @@ def register_all(
         CommandSpec("dashboard", dashboard_command),
         CommandSpec("resume", resume_command),
         CommandSpec("unbind", unbind_command),
+        CommandSpec("bind", bind_command),
         CommandSpec("rollback", rollback_command),
         CommandSpec("upgrade", upgrade_command),
         CommandSpec("recall", recall_command),
@@ -193,6 +195,7 @@ COMMAND_NAMES: tuple[str, ...] = (
     "dashboard",
     "resume",
     "unbind",
+    "bind",
     "rollback",
     "upgrade",
     "recall",

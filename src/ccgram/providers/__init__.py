@@ -38,6 +38,52 @@ _YOLO_FLAGS: dict[str, str] = {
 }
 
 
+def enabled_provider_names() -> list[str]:
+    """Providers offered in pickers, in registry order.
+
+    ``CCGRAM_PROVIDERS_ENABLED`` narrows the list (Gemini is out by
+    default). Registry order is kept so the UI is stable across restarts.
+    """
+    _ensure_registered()
+    # Lazy: Config reads the environment; providers is imported by lightweight
+    # callers (doctor, status) that must not require a full Config.
+    from ccgram.config import config
+
+    configured = tuple(config.enabled_providers)
+    names = registry.provider_names()
+    if not configured:
+        return names
+    return [name for name in names if name in configured]
+
+
+def provider_launchable(provider_name: str) -> bool:
+    """True when the provider CLI resolves on PATH or is user-overridden.
+
+    Keeps an uninstalled agent out of the picker instead of offering a launch
+    that fails after the tap. An explicit ``CCGRAM_<NAME>_COMMAND`` override
+    always counts: the operator owns that command, PATH lookup or not.
+    """
+    # Lazy: shutil + config only matter for the picker path.
+    import shutil
+
+    env_key = f"CCGRAM_{provider_name.upper()}_COMMAND"
+    if os.environ.get(env_key):
+        return True
+    try:
+        command = registry.get(provider_name).capabilities.launch_command
+    except UnknownProviderError:
+        return False
+    if not command:
+        # A provider that IS the shell (shell) launches no CLI of its own.
+        return True
+    return shutil.which(command) is not None
+
+
+def picker_provider_names() -> list[str]:
+    """Enabled providers that are also launchable on this host."""
+    return [name for name in enabled_provider_names() if provider_launchable(name)]
+
+
 def has_yolo_mode(provider_name: str) -> bool:
     """Return True if the provider supports YOLO (permissive) launch mode."""
     return provider_name in _YOLO_FLAGS
@@ -395,6 +441,9 @@ def resolve_capabilities(provider_name: str | None = None) -> ProviderCapabiliti
 
 
 __all__ = [
+    "enabled_provider_names",
+    "picker_provider_names",
+    "provider_launchable",
     "is_known_provider",
     "picker_capable_providers",
     "providers_to_scan",

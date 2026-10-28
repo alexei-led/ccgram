@@ -62,7 +62,7 @@ Each Telegram topic maps to one tmux window. With Herdr, it maps instead to one 
 
 ## What You Can Do
 
-- **Bind agents to topics** — one agent per group or private-chat topic; create via directory browser
+- **Start from one line** — `codex ccgram fix the hook timeout` creates the session, binds the topic, and forwards the instruction; `/bind` adopts an already-running window
 - **Auto-detect providers** — Supports Claude Code, Codex, Gemini, Pi, and Shell simultaneously
 - **Monitor live** — Terminal screenshots on demand or auto-refresh every 5 seconds
 - **Topic-aware command panels** — Four safe General controls; session-specific CCGram actions and original agent command names in each topic
@@ -123,7 +123,24 @@ Get your user ID from [@userinfobot](https://t.me/userinfobot). For a group, get
 ccgram
 ```
 
-Open the configured group or private bot chat. Create a topic and send a message. The directory browser appears. Pick a project directory and an agent (Claude, Codex, Gemini, Pi, or Shell).
+Open the configured group or private bot chat, create a topic, and type one line:
+
+```text
+<agent>[:<mode>] <project|path> [@branch] <instruction...>
+```
+
+```text
+codex ccgram fix the hook timeout
+claude:safe ccgram refactor the parser
+pi archfit @perf-sweep profile the scan stage
+```
+
+CCGram resolves the project under `CCGRAM_PROJECTS_ROOTS` (default
+`~/Workspace`), starts the agent in YOLO mode, names the topic after the line,
+and forwards the instruction. No pickers. See
+[Starting a Session](docs/guides.md#starting-a-session-one-typed-line) for the
+grammar, the defaults that replaced each former step, and `/bind` for adopting
+an already-running window.
 
 **Prerequisites:** Python 3.14+, [tmux](https://github.com/tmux/tmux), [herdr](https://github.com/ogulcancelik/herdr), or [agterm](https://github.com/umputun/agterm), and one agent CLI. CCGram does not modify agent SDKs.
 

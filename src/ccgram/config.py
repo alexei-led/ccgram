@@ -19,6 +19,16 @@ from .utils import ccgram_dir
 
 logger = structlog.get_logger()
 
+# Providers offered by default. Gemini is deliberately absent: keep it only
+# by listing it in CCGRAM_PROVIDERS_ENABLED.
+DEFAULT_ENABLED_PROVIDERS: tuple[str, ...] = (
+    "antigravity",
+    "claude",
+    "codex",
+    "pi",
+    "shell",
+)
+
 
 def _parse_int_env(name: str, default: int) -> int:
     """Parse an integer from an env var with a clear error on bad values."""
@@ -74,6 +84,57 @@ def _delivery_watch_gap_bytes() -> int:
     except OverflowError, ValueError:
         # Finite but too large for an int; treat like any other bad value.
         return 256 * 1024
+
+
+def _flag_env(name: str, default: bool) -> bool:
+    """Parse an on/off env var, defaulting when unset or unrecognized."""
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _choice_env(name: str, allowed: tuple[str, ...], default: str) -> str:
+    """Parse a closed-set env var, falling back to *default* when invalid."""
+    raw = (os.getenv(name) or "").strip().lower()
+    return raw if raw in allowed else default
+
+
+def _projects_roots_env() -> list[Path]:
+    """Project roots for typed session start: CCGRAM_PROJECTS_ROOTS.
+
+    os.pathsep-separated paths, each expanded. Defaults to ~/Workspace when
+    it exists, else ~. Missing directories are dropped so a stale entry
+    cannot silently widen the project search.
+    """
+    raw = (os.getenv("CCGRAM_PROJECTS_ROOTS") or "").strip()
+    candidates = (
+        [p for p in raw.split(os.pathsep) if p.strip()]
+        if raw
+        else [str(Path.home() / "Workspace"), str(Path.home())]
+    )
+    roots: list[Path] = []
+    for entry in candidates:
+        try:
+            path = Path(entry).expanduser()
+            if path.is_dir():
+                roots.append(path.resolve())
+        except OSError:
+            continue
+    return roots or [Path.home()]
+
+
+def _enabled_providers_env() -> tuple[str, ...]:
+    """Providers offered in pickers: CCGRAM_PROVIDERS_ENABLED.
+
+    The default list keeps Gemini out of the UI; its provider code stays
+    available to explicitly configured windows and resumes. An empty value
+    means every registered provider.
+    """
+    raw = (os.getenv("CCGRAM_PROVIDERS_ENABLED") or "").strip()
+    if not raw:
+        return DEFAULT_ENABLED_PROVIDERS
+    return tuple(name.strip().lower() for name in raw.split(",") if name.strip())
 
 
 def _whisper_timeout_s() -> float:
@@ -163,6 +224,26 @@ class Config:
 
         # Provider selection
         self.provider_name: str = os.getenv("CCGRAM_PROVIDER", "claude")
+
+        # Typed new-topic flow:
+        #   <agent>[:<mode>] <project|path> [@branch] <instruction>
+        # Each knob replaces a picker step. Defaults are the fewest-steps
+        # path: YOLO start, current branch, auto-resolved workspace, no
+        # bind-existing picker, first-run trust prompts answered for you.
+        self.default_mode: str = _choice_env(
+            "CCGRAM_DEFAULT_MODE", ("yolo", "normal"), "yolo"
+        )
+        self.projects_roots: list[Path] = _projects_roots_env()
+        # Opt-in worktrees: a typed @branch still works when this is off.
+        self.new_topic_worktrees: bool = _flag_env("CCGRAM_NEW_TOPIC_WORKTREES", False)
+        self.workspace_picker: bool = _flag_env("CCGRAM_WORKSPACE_PICKER", False)
+        self.bind_picker: bool = _flag_env("CCGRAM_BIND_PICKER", False)
+        self.autostart_trust: bool = _flag_env("CCGRAM_AUTOSTART_TRUST", True)
+        # Directory browser listing: git repositories + MRU only.
+        self.dir_browser_all_dirs: bool = _flag_env(
+            "CCGRAM_DIR_BROWSER_ALL_DIRS", False
+        )
+        self.enabled_providers: tuple[str, ...] = _enabled_providers_env()
 
         self._init_multiplexer()
 

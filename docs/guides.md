@@ -506,6 +506,111 @@ Set `CCGRAM_GROUP_ID` to one group ID to restrict the process to that group. It 
 ignores updates from other groups. To find the ID, add
 [@RawDataBot](https://t.me/RawDataBot) to the group; it replies with the negative chat ID.
 
+## Starting a Session (one typed line)
+
+A new session starts from one message in a fresh topic:
+
+```text
+<agent>[:<mode>] <project|path> [@branch] <instruction...>
+```
+
+```text
+codex ccgram fix the hook timeout
+claude:yolo ccgram refactor the parser
+pi archfit @perf-sweep profile the scan stage
+ccgram explain the delivery queue          # no agent word → CCGRAM_PROVIDER
+fix the flaky test                          # no project word → last project
+```
+
+The parsed line becomes one launch: CCGram creates the session, binds it to
+this topic, renames the topic to the plan label, and forwards the instruction.
+
+### What each slot accepts
+
+| Slot | Rules |
+| --- | --- |
+| agent | `claude`/`c`/`cc`, `codex`/`cx`, `pi`, `antigravity`/`agy`/`ag`, `shell`/`sh`/`bash`. Omitted → `CCGRAM_PROVIDER`. |
+| `:mode` | `yolo` (default), `safe`/`normal`/`std`. Omitted → `CCGRAM_DEFAULT_MODE`. |
+| project | A name under `CCGRAM_PROJECTS_ROOTS` (default `~/Workspace`), or any absolute/`~` path. Matched by exact name, then unique prefix, then unique substring. |
+| `@branch` | Optional. Creates a git worktree on that new branch and roots the session there. |
+| instruction | Everything after the consumed words, verbatim, including newlines. |
+
+Notes:
+
+- Agent words are matched against the alias table only, so an ordinary sentence is never mistaken for a command.
+- When the project word does not resolve, CCGram replies with one message listing candidate projects as buttons. A tap launches the same plan. There is no second step.
+- When neither a project word nor a last-used project exists, the directory browser opens instead — rooted at the first projects root.
+- Under a projects root the directory browser lists **git checkouts only**; deeper levels list every subdirectory. Set `CCGRAM_DIR_BROWSER_ALL_DIRS=true` to list everything everywhere.
+
+### Defaults instead of pickers
+
+| Behaviour | Default | Environment variable |
+| --- | --- | --- |
+| Launch mode | `yolo` | `CCGRAM_DEFAULT_MODE=normal` |
+| Agent without an agent word | `CCGRAM_PROVIDER` | `CCGRAM_PROVIDER` |
+| Project search roots | `~/Workspace` (else `~`) | `CCGRAM_PROJECTS_ROOTS` (`os.pathsep`-separated) |
+| Worktree in the browser flow | off | `CCGRAM_NEW_TOPIC_WORKTREES=true` |
+| Workspace picker (herdr/agterm) | off — resolved from the folder | `CCGRAM_WORKSPACE_PICKER=true` |
+| Bind-existing window picker on a new topic | off — use `/bind` | `CCGRAM_BIND_PICKER=true` |
+| Provider list | antigravity, claude, codex, pi, shell | `CCGRAM_PROVIDERS_ENABLED` |
+| First-run trust screens | answered automatically | `CCGRAM_AUTOSTART_TRUST=false`, `CCGRAM_<AGENT>_AUTOSTART=off` |
+| Directory browser listing | git checkouts at the roots | `CCGRAM_DIR_BROWSER_ALL_DIRS=true` |
+
+The provider picker still exists, but only when the provider cannot be read
+from the line (no agent word and `CCGRAM_PROVIDER` is not installed). It lists
+only enabled providers whose CLI resolves on `PATH`; Gemini is not offered by
+default — list it in `CCGRAM_PROVIDERS_ENABLED` to bring it back.
+
+### Worktrees
+
+`@branch` always works, whatever `CCGRAM_NEW_TOPIC_WORKTREES` says: it is the
+deliberate case. The worktree is created at `<repo>.worktrees/<slug>` with
+`git worktree add … -b <branch>`, and the session is rooted at the same
+subdirectory you named (when the project was a subdirectory of the repo). A
+branch that already exists fails with a one-line error; type a different name.
+Backends with native worktrees (herdr) create the checkout themselves.
+
+`CCGRAM_NEW_TOPIC_WORKTREES=true` additionally makes every session get its own
+worktree with a suggested `ccg/<kebab(label)>` branch, and restores the
+worktree step in the directory-browser flow.
+
+Dirty source repositories are allowed; uncommitted work stays where it is.
+
+### First-run approval screens
+
+A fresh agent can stop before its prompt. CCGram clears the two known cases
+without a tap:
+
+- **Claude — "Do you trust the files in this folder?"** — CCGram writes
+  `hasTrustDialogAccepted` for the project in `~/.claude.json` before launch.
+- **Codex — hooks review ("trust all and continue")** — CCGram adds
+  `[projects."<path>"]` with `trust_level = "trusted"` to
+  `$CODEX_HOME/config.toml` (or `~/.codex/config.toml`).
+
+If a declared first-run screen still appears, CCGram answers it only on an
+exact fingerprint and sends the documented keys once. If readiness fails and
+no fingerprint matches, the launch reports the blocked session instead of
+guessing.
+
+Turn the whole layer off with `CCGRAM_AUTOSTART_TRUST=false`, or for one agent
+with `CCGRAM_<AGENT>_AUTOSTART=off` (for example
+`CCGRAM_CODEX_AUTOSTART=off`).
+
+### Topic and session names
+
+The topic title comes from the plan label: project name plus the first few
+instruction words (`ccgram · fix the hook timeout`, truncated to 48
+characters). CCGram pins that name as the window display name, so a backend,
+shell prompt, or agent title update can no longer rename the topic to
+`<name> <target id>`. Rename explicitly with Telegram's topic rename or the
+toolbar; pinned names survive window re-keying.
+
+### Binding an existing session
+
+`/bind` in an unbound topic lists windows that are running but not bound to
+any topic; one tap attaches the chosen one and renames the topic. Sessions
+started from the terminal still become topics automatically.
+
 ## Creating Sessions from the Terminal
 
 Besides creating sessions through Telegram topics, you can create windows directly in your terminal multiplexer.
@@ -690,6 +795,10 @@ Action names must be ≤24 chars (callback_data budget). Providers absent from t
 When you forward a slash command that opens a modal in-TUI picker (e.g. Claude `/model`, `/login`, `/theme`; Codex/Gemini `/model`; Pi `/model`), the topic reply adds a hint pointing at `/toolbar` to drive the picker with arrow keys. The hint adapts to your toolbar — if you removed Up/Down/Enter/Esc keys, the hint degrades to "Open /toolbar to drive the picker."
 
 ## Git Worktree Topics
+
+The typed form `<agent> <project> @<branch> <instruction>` covers the
+deliberate case; the steps below appear only with
+`CCGRAM_NEW_TOPIC_WORKTREES=true`.
 
 When you create a new topic and pick a directory that's an **eligible git repo** (in-work-tree, not bare, on a named branch, no in-progress merge/rebase), an extra step appears between directory-confirm and provider-pick:
 

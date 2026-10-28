@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from ...config import config
 from ...multiplexer import multiplexer as tmux_manager
 from ..callback_data import CB_WS_SELECT, CB_WS_SKIP
 
@@ -56,7 +57,13 @@ async def _show_workspace_picker_or_provider(
     let the user pin the new session. Other backends go straight to provider pick.
     When only one workspace matches the cwd exactly, skip the picker and pre-select it.
     """
-    if tmux_manager.capabilities.supports_workspace_selection is True:
+    # Off by default: the backend resolves (or creates) the workspace from the
+    # cwd, which is what CB_WS_SKIP does. CCGRAM_WORKSPACE_PICKER=on restores
+    # the explicit choice for operators who pin sessions to workspaces.
+    if (
+        config.workspace_picker
+        and tmux_manager.capabilities.supports_workspace_selection
+    ):
         workspaces = await tmux_manager.list_workspaces()
         ws_triples = [(w.workspace_id, w.label, w.cwd) for w in workspaces]
         if context is not None and context.user_data is not None:

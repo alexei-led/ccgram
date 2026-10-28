@@ -8,17 +8,17 @@ Both ultimately call ``launch_window`` from ``window_launch_service``.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import structlog
 
+from ...config import config
 from ...providers import registry as provider_registry
 from ...thread_router import thread_router
 from ..callback_data import CB_MODE_SELECT, CB_PROV_SELECT
 from ..callback_helpers import get_thread_id
 from ..messaging_pipeline.message_sender import interactive_edit as safe_edit
 from .directory_browser import (
-    build_mode_picker,
     clear_browse_state,
     clear_worktree_state,
 )
@@ -118,29 +118,31 @@ async def _handle_provider_select(
     ):
         return
 
-    if not has_yolo_mode(provider_name):
-        # No mode picker needed — go directly to window creation
-        clear_browse_state(context.user_data)
-        await launch_window(
-            query,
-            context,
-            WindowLaunchRequest(
-                user_id=user_id,
-                thread_id=pending_thread_id,
-                provider_name=provider_name,
-                cwd=selected_path,
-                mode="normal",
-                pending_text=(
-                    context.user_data.get(PENDING_THREAD_TEXT)
-                    if context.user_data
-                    else None
-                ),
+    # No mode picker: launch straight away in the configured default mode.
+    # CCGRAM_DEFAULT_MODE=yolo (default) uses each provider's permissive flag;
+    # providers without one always launch normally.
+    clear_browse_state(context.user_data)
+    approval_mode: Literal["normal", "yolo"] = (
+        "yolo"
+        if config.default_mode == "yolo" and has_yolo_mode(provider_name)
+        else "normal"
+    )
+    await launch_window(
+        query,
+        context,
+        WindowLaunchRequest(
+            user_id=user_id,
+            thread_id=pending_thread_id,
+            provider_name=provider_name,
+            cwd=selected_path,
+            mode=approval_mode,
+            pending_text=(
+                context.user_data.get(PENDING_THREAD_TEXT)
+                if context.user_data
+                else None
             ),
-        )
-        return
-
-    text, keyboard = build_mode_picker(selected_path, provider_name)
-    await safe_edit(query, text, reply_markup=keyboard)
+        ),
+    )
 
 
 def _parse_mode_select(data: str) -> tuple[str, str] | None:

@@ -1,10 +1,14 @@
+import os
 from pathlib import Path
 
 import pytest
 
 from ccgram.config import (
+    DEFAULT_ENABLED_PROVIDERS,
     Config,
     _delivery_watch_gap_bytes,
+    _enabled_providers_env,
+    _projects_roots_env,
     _skip_barrier_deadline_s,
 )
 
@@ -305,6 +309,73 @@ class TestPollingConfig:
         assert getattr(Config(), attr) == expected
         monkeypatch.setenv(env_var, clamp_str)
         assert getattr(Config(), attr) == clamped
+
+
+class TestTypedTopicKeywords:
+    """Knobs that replace the old picker steps with defaults."""
+
+    @pytest.mark.usefixtures("_base_env")
+    def test_defaults_are_the_fewest_steps_path(self, monkeypatch, tmp_path) -> None:
+        root = tmp_path / "Workspace"
+        root.mkdir()
+        monkeypatch.setenv("CCGRAM_PROJECTS_ROOTS", str(root))
+        cfg = Config()
+
+        assert cfg.default_mode == "yolo"
+        assert cfg.projects_roots == [root.resolve()]
+        assert cfg.new_topic_worktrees is False
+        assert cfg.workspace_picker is False
+        assert cfg.bind_picker is False
+        assert cfg.autostart_trust is True
+        assert cfg.dir_browser_all_dirs is False
+        assert cfg.enabled_providers == DEFAULT_ENABLED_PROVIDERS
+
+    @pytest.mark.usefixtures("_base_env")
+    def test_each_knob_can_be_turned_back_on(self, monkeypatch, tmp_path) -> None:
+        root = tmp_path / "Workspace"
+        root.mkdir()
+        monkeypatch.setenv("CCGRAM_PROJECTS_ROOTS", str(root))
+        monkeypatch.setenv("CCGRAM_DEFAULT_MODE", "normal")
+        monkeypatch.setenv("CCGRAM_NEW_TOPIC_WORKTREES", "on")
+        monkeypatch.setenv("CCGRAM_WORKSPACE_PICKER", "yes")
+        monkeypatch.setenv("CCGRAM_BIND_PICKER", "1")
+        monkeypatch.setenv("CCGRAM_AUTOSTART_TRUST", "off")
+        monkeypatch.setenv("CCGRAM_DIR_BROWSER_ALL_DIRS", "true")
+        cfg = Config()
+
+        assert cfg.default_mode == "normal"
+        assert cfg.new_topic_worktrees is True
+        assert cfg.workspace_picker is True
+        assert cfg.bind_picker is True
+        assert cfg.autostart_trust is False
+        assert cfg.dir_browser_all_dirs is True
+
+    def test_invalid_mode_falls_back_to_yolo(self, monkeypatch) -> None:
+        monkeypatch.setenv("CCGRAM_DEFAULT_MODE", "whatever")
+        assert Config().default_mode == "yolo"
+
+    def test_projects_roots_honor_pathsep_and_drop_missing(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        first = tmp_path / "one"
+        second = tmp_path / "two"
+        first.mkdir()
+        second.mkdir()
+        missing = tmp_path / "gone"
+        monkeypatch.setenv(
+            "CCGRAM_PROJECTS_ROOTS",
+            os.pathsep.join([str(first), str(second), str(missing)]),
+        )
+        assert _projects_roots_env() == [first.resolve(), second.resolve()]
+
+    def test_projects_roots_default_when_unset(self, monkeypatch) -> None:
+        monkeypatch.delenv("CCGRAM_PROJECTS_ROOTS", raising=False)
+        roots = _projects_roots_env()
+        assert roots and all(root.is_dir() for root in roots)
+
+    def test_enabled_providers_default_excludes_gemini(self, monkeypatch) -> None:
+        monkeypatch.delenv("CCGRAM_PROVIDERS_ENABLED", raising=False)
+        assert "gemini" not in _enabled_providers_env()
 
 
 class TestSkipBarrierDeadline:
