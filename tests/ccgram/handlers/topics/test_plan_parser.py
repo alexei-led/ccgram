@@ -152,6 +152,41 @@ class TestParseTopicPlan:
         assert parsed.plan is not None
         assert parsed.plan.instruction == "fix this\n\nsteps:\n1. read\n2. patch"
 
+    def test_ambiguous_project_surfaces_even_with_a_last_project(
+        self, tmp_path: Path
+    ) -> None:
+        for name in ("app-one", "app-two"):
+            (tmp_path / name / ".git").mkdir(parents=True)
+        last = (tmp_path / "app-one").resolve()
+
+        parsed = parse_topic_plan(
+            "codex app @feat-x fix it",
+            roots=[tmp_path],
+            default_agent="claude",
+            last_project=last,
+        )
+
+        assert parsed.plan is None
+        assert parsed.reason == "project"
+        assert sorted(path.name for path in parsed.candidates) == [
+            "app-one",
+            "app-two",
+        ]
+
+    def test_an_unmatched_word_stays_instruction(self, roots: list[Path]) -> None:
+        last = (roots[0] / "ccgram").resolve()
+
+        parsed = parse_topic_plan(
+            "codex fix the bug",
+            roots=roots,
+            default_agent="claude",
+            last_project=last,
+        )
+
+        assert parsed.plan is not None
+        assert parsed.plan.project == last
+        assert parsed.plan.instruction == "fix the bug"
+
 
 class TestBuildLabel:
     def test_label_carries_project_and_hint(self) -> None:

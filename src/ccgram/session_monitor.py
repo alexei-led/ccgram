@@ -595,6 +595,7 @@ class SessionMonitor:
             )
         if not self.state.save_if_dirty():
             return False
+        self._transcript_reader.allow_replay(session_id)
         if not acknowledge_replay_from_start(window_id, session_id):
             logger.warning(
                 "Could not consume replay-from-start marker for session %s",

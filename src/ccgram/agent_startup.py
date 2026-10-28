@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import tomllib
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -39,7 +40,6 @@ logger = structlog.get_logger()
 FIRST_RUN_TIMEOUT_S = 8.0
 FIRST_RUN_POLL_S = 0.4
 
-_CODEX_PROJECT_SECTION = '[projects."{path}"]'
 _CODEX_TRUST_LINE = 'trust_level = "trusted"'
 
 
@@ -128,8 +128,11 @@ def _codex_config_file() -> Path:
 def preseed_codex_trust(cwd: Path) -> bool:
     """Add a trusted project entry to Codex's ``config.toml``.
 
-    Appends a new ``[projects."<cwd>"]`` section only. Existing content is
-    never rewritten, so a hand-edited config keeps its layout.
+    Appends one ``[projects."<cwd>"]`` section and leaves the rest of the
+    file byte-identical, so a hand-edited config keeps its layout. Both the
+    existing file and the result are parsed with tomllib: a config this code
+    cannot read is never modified, and a duplicate table (which TOML forbids)
+    can never be produced by a quoting mismatch.
     """
     config_file = _codex_config_file()
     try:
@@ -139,14 +142,63 @@ def preseed_codex_trust(cwd: Path) -> bool:
     except OSError as exc:
         logger.debug("codex config unreadable: %s", exc)
         return False
-    section = _CODEX_PROJECT_SECTION.format(path=cwd)
-    if section in existing:
+    state = _codex_project_trust(existing, cwd)
+    if state is None:
+        logger.warning(
+            "Codex config %s is not valid TOML or not a table; trust not seeded",
+            config_file,
+        )
         return False
-    addition = f"\n{section}\n{_CODEX_TRUST_LINE}\n"
+    if state:
+        return False
+    key = _toml_quote(str(cwd))
+    addition = f"\n[projects.{key}]\n{_CODEX_TRUST_LINE}\n"
     body = existing + ("" if existing.endswith("\n") or not existing else "\n")
-    if not _write_atomic(config_file, body + addition):
+    updated = body + addition
+    try:
+        tomllib.loads(updated)
+    except tomllib.TOMLDecodeError as exc:
+        logger.warning(
+            "Refusing to write an unparseable Codex config for %s: %s", cwd, exc
+        )
+        return False
+    if not _write_atomic(config_file, updated):
         return False
     logger.info("Seeded Codex project trust for %s in %s", cwd, config_file)
+    return True
+
+
+def _toml_quote(text: str) -> str:
+    """Quote *text* as a TOML basic string (backslash and quote escaped)."""
+    escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _codex_project_trust(existing: str, cwd: Path) -> bool | None:
+    """Whether Codex already trusts *cwd*, or None when the file is unusable.
+
+    Parsing rather than matching header text is what makes a config written
+    with single quotes, extra whitespace, or an inline table count as already
+    trusted instead of gaining a duplicate ``[projects...]`` table, which
+    TOML rejects outright.
+    """
+    if not existing.strip():
+        return False
+    try:
+        data = tomllib.loads(existing)
+    except tomllib.TOMLDecodeError:
+        return None
+    projects = data.get("projects", {})
+    if not isinstance(projects, dict):
+        return None
+    entry = projects.get(str(cwd))
+    if entry is None:
+        return False
+    if not isinstance(entry, dict):
+        return None
+    # Any existing entry already defines the table: appending a second one is
+    # invalid TOML, and an explicit non-trusted value is the operator's
+    # decision, not something to rewrite behind their back.
     return True
 
 

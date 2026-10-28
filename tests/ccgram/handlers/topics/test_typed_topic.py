@@ -16,6 +16,7 @@ from ccgram.handlers.topics.typed_topic import (
     start_from_text,
 )
 from ccgram.handlers.user_state import PENDING_PLAN
+from ccgram.worktrees import WorktreeEligibility
 
 
 @pytest.fixture
@@ -44,6 +45,16 @@ def _message() -> MagicMock:
     message.chat.id = -100999
     message.reply_text = AsyncMock(return_value=MagicMock())
     return message
+
+
+def _update(thread_id: int = 42) -> MagicMock:
+    update = MagicMock()
+    # get_thread_id prefers update.message; a callback update carries none.
+    update.message = None
+    update.callback_query = MagicMock()
+    update.callback_query.message = MagicMock()
+    update.callback_query.message.message_thread_id = thread_id
+    return update
 
 
 def _context(user_data: dict | None = None) -> MagicMock:
@@ -201,3 +212,137 @@ class TestResolveCwd:
 class TestPlanCallbackConstants:
     def test_select_prefix_is_stable(self) -> None:
         assert CB_PLAN_SELECT == "plan:p:"
+
+
+class TestReviewFindings:
+    """Regressions for the findings the pre-merge review raised."""
+
+    async def test_native_backend_plan_carries_a_worktree_path(
+        self, project: Path
+    ) -> None:
+        from unittest.mock import patch
+
+        from ccgram.handlers.topics.plan_parser import TopicPlan
+
+        plan = TopicPlan(
+            agent="codex",
+            project=project,
+            instruction="x",
+            mode="yolo",
+            branch="feat-x",
+            label="l",
+        )
+        native = MagicMock()
+        native.capabilities.native_worktrees = True
+        eligible = WorktreeEligibility(
+            eligible=True,
+            repo_path=project.resolve(),
+            current_branch="main",
+            dirty=False,
+        )
+        with (
+            patch.object(typed_topic, "tmux_manager", native),
+            patch.object(
+                typed_topic, "check_worktree_eligibility", return_value=eligible
+            ),
+        ):
+            _cwd, worktree = await _resolve_cwd(plan)
+
+        assert worktree["worktree_branch"] == "feat-x"
+        assert worktree["worktree_repo"] == str(project.resolve())
+
+    async def test_agent_without_a_yolo_flag_launches_normally(
+        self, project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "default_mode", "yolo", raising=False)
+        captured: list = []
+
+        async def fake_launch(_target, _context, request):
+            captured.append(request)
+
+        message = _message()
+        plan = typed_topic.parse_topic_plan(
+            "pi ccgram say hi",
+            roots=[project.parent],
+            default_agent="claude",
+        ).plan
+        assert plan is not None
+        with (
+            patch.object(typed_topic, "launch_window", side_effect=fake_launch),
+            patch.object(typed_topic.user_preferences, "get_user_mru", return_value=[]),
+        ):
+            await typed_topic.launch_plan(
+                plan,
+                user_id=100,
+                thread_id=42,
+                message=message,
+                context=_context({}),
+            )
+
+        assert captured and captured[0].provider_name == "pi"
+        assert captured[0].mode == "normal"
+
+
+class TestPlanDraftIdentity:
+    """A keyboard may only launch the draft it was rendered for."""
+
+    @staticmethod
+    def _draft(message_id: int, candidate: Path) -> dict:
+        return {
+            "agent": "codex",
+            "mode": "yolo",
+            "text": "codex nosuch do it",
+            "thread_id": 42,
+            "chat_id": -100999,
+            "message_id": message_id,
+            "candidates": [str(candidate)],
+        }
+
+    @staticmethod
+    def _query(message_id: int) -> MagicMock:
+        query = AsyncMock()
+        query.data = f"{CB_PLAN_SELECT}0"
+        query.message = MagicMock()
+        query.message.message_id = message_id
+        query.message.chat.id = -100999
+        return query
+
+    async def test_an_older_keyboard_cannot_launch_the_newer_plan(
+        self, project: Path
+    ) -> None:
+        user_data = {PENDING_PLAN: self._draft(11, project.resolve())}
+        launched: list = []
+
+        async def fake_launch(plan, **_kwargs):
+            launched.append(plan)
+
+        stale = self._query(22)
+        with patch.object(typed_topic, "launch_plan", side_effect=fake_launch):
+            await typed_topic._handle_plan_callback(
+                stale, 100, f"{CB_PLAN_SELECT}0", _update(), _context(user_data)
+            )
+
+        assert stale.answer.await_args.args[0].startswith("Stale plan")
+
+        assert launched == []
+        assert PENDING_PLAN in user_data
+
+    async def test_the_matching_keyboard_launches(self, project: Path) -> None:
+        user_data = {PENDING_PLAN: self._draft(11, project.resolve())}
+        launched: list = []
+
+        async def fake_launch(plan, **_kwargs):
+            launched.append(plan)
+
+        with patch.object(typed_topic, "launch_plan", side_effect=fake_launch):
+            await typed_topic._handle_plan_callback(
+                self._query(11),
+                100,
+                f"{CB_PLAN_SELECT}0",
+                _update(),
+                _context(user_data),
+            )
+
+        assert launched and launched[0].project == project.resolve()

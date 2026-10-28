@@ -22,7 +22,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 
 from ...config import config
 from ...multiplexer import multiplexer as tmux_manager
-from ...providers import is_known_provider
+from ...providers import has_yolo_mode, is_known_provider
 from ...user_preferences import user_preferences
 from ...worktrees import (
     WorktreeError,
@@ -114,14 +114,22 @@ def _store_pending(
     candidates: list[Path],
     thread_id: int | None,
     text: str,
+    *,
+    chat_id: int | None,
+    message_id: int | None,
 ) -> None:
     if user_data is None:
         return
+    # Identity is (chat, thread, prompt message): one draft per user is not
+    # enough, because a second unresolved plan in the same topic would answer
+    # the first keyboard with the second plan's candidate index.
     user_data[PENDING_PLAN] = {
         "agent": parsed.agent,
         "mode": config.default_mode,
         "text": text,
         "thread_id": thread_id,
+        "chat_id": chat_id,
+        "message_id": message_id,
         "candidates": [str(path) for path in candidates],
     }
 
@@ -166,12 +174,16 @@ async def _resolve_cwd(plan: TopicPlan) -> tuple[str, dict[str, str]]:
     if branch is None:
         # CCGRAM_NEW_TOPIC_WORKTREES=on: every session gets its own worktree.
         branch = await asyncio.to_thread(suggest_branch_name, plan.label, repo)
+    worktree_path = worktree_path_for(repo, slug_for_path(branch))
     if tmux_manager.capabilities.native_worktrees:
+        # The backend creates the checkout itself, but the launch gate still
+        # requires all three fields: without the path the plan silently
+        # launches in the source checkout and never creates the branch.
         return str(plan.project), {
             "worktree_repo": str(repo),
             "worktree_branch": branch,
+            "worktree_path": str(worktree_path),
         }
-    worktree_path = worktree_path_for(repo, slug_for_path(branch))
     if worktree_path.exists():
         raise PlanError(f"Worktree {worktree_path} already exists")
     try:
@@ -226,7 +238,13 @@ async def launch_plan(
             thread_id=thread_id,
             provider_name=plan.agent,
             cwd=cwd,
-            mode="yolo" if plan.mode == "yolo" else "normal",
+            # Providers without a permissive flag reject mode=yolo outright,
+            # so normalize here exactly as the browser flow does.
+            mode=(
+                "yolo"
+                if plan.mode == "yolo" and has_yolo_mode(plan.agent)
+                else "normal"
+            ),
             pending_text=plan.instruction or None,
             chat_id=message.chat.id if message.chat else None,
             label=plan.label,
@@ -285,7 +303,15 @@ async def start_from_text(
     if parsed.reason == "project" and not candidates:
         # Nothing to offer: let the caller fall back to the directory browser.
         return False
-    _store_pending(user_data, parsed, candidates, thread_id, text)
+    _store_pending(
+        user_data,
+        parsed,
+        candidates,
+        thread_id,
+        text,
+        chat_id=message.chat.id if message.chat else None,
+        message_id=message.message_id,
+    )
     await safe_reply(
         message,
         _plan_prompt(parsed, candidates),
@@ -312,6 +338,39 @@ def _draft_plan(draft: dict, project: Path) -> TopicPlan | None:
     if parsed.plan is not None:
         return parsed.plan
     return None
+
+
+async def _draft_is_current(query, draft: dict, thread_id: int | None) -> bool:
+    """True when this keyboard still owns the pending draft.
+
+    The draft carries the chat, thread and prompt message it was created for.
+    A second unresolved plan in the same topic replaces the draft, and its
+    keyboard answers any older one — a tap there must not launch the newer
+    plan with an index taken from the older candidate list.
+    """
+    if draft.get("thread_id") not in (None, thread_id):
+        await query.answer("Stale plan (topic mismatch)", show_alert=True)
+        return False
+    prompt_message = query.message
+    if prompt_message is None:
+        return True
+    expected_message_id = draft.get("message_id")
+    if (
+        expected_message_id is not None
+        and prompt_message.message_id != expected_message_id
+    ):
+        await query.answer("Stale plan: send the line again", show_alert=True)
+        return False
+    expected_chat_id = draft.get("chat_id")
+    prompt_chat = prompt_message.chat
+    if (
+        expected_chat_id is not None
+        and prompt_chat is not None
+        and prompt_chat.id != expected_chat_id
+    ):
+        await query.answer("Stale plan (chat mismatch)", show_alert=True)
+        return False
+    return True
 
 
 async def _choice_from_callback(
@@ -348,8 +407,7 @@ async def _handle_plan_callback(
     if draft is None:
         await query.answer("Start over: type the session line again", show_alert=True)
         return
-    if draft.get("thread_id") not in (None, thread_id):
-        await query.answer("Stale plan (topic mismatch)", show_alert=True)
+    if not await _draft_is_current(query, draft, thread_id):
         return
     if data == CB_PLAN_CANCEL:
         if context.user_data is not None:

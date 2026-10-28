@@ -348,18 +348,27 @@ def get_or_create_queue(
 
 
 def _drain_queue(queue: asyncio.Queue[MessageTask]) -> list[MessageTask]:
-    """Drain all items from the queue and return them as a list.
+    """Drain the ready items from the queue and return them as a list.
 
-    Destructive: the queue is empty after this call. Caller is responsible
-    for re-enqueueing any items that should not be discarded.
+    Destructive for those items only. Tasks parked behind flood control stay
+    queued: draining one would let ``_merge_content_tasks`` absorb it into
+    another task, losing its deferral and reopening the chat that is still
+    limited. Re-queued tasks carry the matching ``task_done`` so the
+    unfinished count is unchanged.
     """
     items: list[MessageTask] = []
-    while not queue.empty():
-        try:
-            item = queue.get_nowait()
-            items.append(item)
-        except asyncio.QueueEmpty:
+    now = time.monotonic()
+    # Bounded by the entries present at entry: a parked task is re-queued at
+    # the tail, so an unbounded while-loop would cycle over it forever.
+    for _ in range(queue.qsize()):
+        if queue.empty():
             break
+        item = queue.get_nowait()
+        if getattr(item, "deferred_until", 0.0) > now:
+            queue.put_nowait(item)
+            queue.task_done()
+            continue
+        items.append(item)
     return items
 
 
@@ -847,9 +856,9 @@ async def _dispatch_with_retry(
                             backoff_seconds=backoff,
                             jitter_seconds=jitter,
                             retry_in_seconds=retry_in,
-                            others_ready=_has_ready_task(queue),
+                            others_ready=_has_ready_task(queue, state.task),
                         )
-                        if _has_ready_task(queue):
+                        if _has_ready_task(queue, state.task):
                             # Another topic can go now; give it the turn.
                             raise _FloodDeferredError(retry_in) from exc
                         await asyncio.sleep(retry_in)
@@ -862,18 +871,33 @@ async def _dispatch_with_retry(
             return outcome
 
 
-def _has_ready_task(queue: asyncio.Queue[MessageTask]) -> bool:
-    """True when a queued task is not parked behind flood control.
+def _lane(task: MessageTask) -> tuple[str, object]:
+    """Delivery lane of a task: the chat, or the topic when none is carried.
 
-    Delivery is one worker per user, so "is anything else ready" is the whole
-    fairness question: a ready message from another topic must go first.
+    Telegram rate limits per chat, so messages for the same chat sit behind
+    the same limit and cannot help each other; a different lane can.
+    """
+    chat_id = getattr(task, "chat_id", None)
+    if chat_id is not None:
+        return ("chat", chat_id)
+    return ("thread", getattr(task, "thread_id", None))
+
+
+def _has_ready_task(queue: asyncio.Queue[MessageTask], task: MessageTask) -> bool:
+    """True when a queued task in another lane can be sent right now.
+
+    Same-lane tasks are excluded on purpose: attempting one would spend its
+    retry budget against a chat that is still limited, and reorder delivery
+    behind the message already waiting out the backoff.
     """
     now = time.monotonic()
+    lane = _lane(task)
     # Queue internals: only a peek, never a mutation, so ordering and
     # unfinished-task accounting stay intact.
     parked_or_ready = getattr(queue, "_queue", ())
     return any(
-        getattr(queued, "deferred_until", 0.0) <= now for queued in parked_or_ready
+        getattr(queued, "deferred_until", 0.0) <= now and _lane(queued) != lane
+        for queued in parked_or_ready
     )
 
 
@@ -920,7 +944,7 @@ async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
         try:
             task = await queue.get()
             if task.deferred_until > time.monotonic():
-                if _has_ready_task(queue):
+                if _has_ready_task(queue, task):
                     await _rotate_deferred_task(queue, task)
                     continue
                 # Nothing else to send: wait out this task's backoff, then

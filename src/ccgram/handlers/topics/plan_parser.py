@@ -238,6 +238,11 @@ def parse_topic_plan(
     project: Path | None = None
     project_typed = False
     candidates: tuple[Path, ...] = ()
+    # A word that matches several projects is ambiguous, not missing: falling
+    # back to the last project there would launch in the wrong repository and
+    # turn a typed "@branch" into instruction text. Only a word that matches
+    # nothing at all (an ordinary sentence) falls back.
+    ambiguous = False
     if consumed < len(tokens) and not tokens[consumed][0].startswith("@"):
         project, candidates = resolve_project(
             tokens[consumed][0], roots, git_only=git_only
@@ -245,7 +250,9 @@ def parse_topic_plan(
         if project is not None:
             project_typed = True
             consumed += 1
-    if project is None:
+        else:
+            ambiguous = bool(candidates)
+    if project is None and not ambiguous:
         project = _existing_dir(last_project)
 
     branch: str | None = None

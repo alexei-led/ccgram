@@ -367,6 +367,11 @@ class TranscriptReader:
         self._startup_file_boundaries = self._snapshot_startup_boundaries()
         # Sessions whose startup replay was already bounded in this process.
         self._startup_replay_checked: set[str] = set()
+        # Sessions that existed before this process started. A session first
+        # seen now is a fresh launch, not a backlog from before the restart.
+        self._startup_sessions: set[str] = set(self._state.tracked_sessions)
+        # Deliberate replay-from-start requests, which must never be clamped.
+        self._replay_allowed: set[str] = set()
 
     def _snapshot_file_ctimes(self) -> dict[str, int]:
         ctimes: dict[str, int] = {}
@@ -814,6 +819,14 @@ class TranscriptReader:
             return tracked
         return None
 
+    def allow_replay(self, session_id: str) -> None:
+        """Exempt *session_id* from the startup replay bound.
+
+        Called when a session map explicitly asks for a replay from the start:
+        that request is authoritative, so the clamp must not silently skip it.
+        """
+        self._replay_allowed.add(session_id)
+
     def _clamp_startup_replay(
         self, session_id: str, tracked: TrackedSession, file_size: int
     ) -> None:
@@ -831,6 +844,13 @@ class TranscriptReader:
         if session_id in self._startup_replay_checked:
             return
         self._startup_replay_checked.add(session_id)
+        if (
+            session_id not in self._startup_sessions
+            or session_id in self._replay_allowed
+        ):
+            # Freshly created in this process, or an explicit replay request:
+            # there is no pre-restart backlog to bound.
+            return
         limit = config.startup_replay_max_bytes
         if limit <= 0:
             return

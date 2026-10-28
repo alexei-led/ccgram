@@ -1,5 +1,6 @@
 import ast
 import asyncio
+import time
 import contextlib
 from contextlib import suppress
 from datetime import timedelta
@@ -1455,3 +1456,49 @@ class TestFloodFairness:
             while not q.empty():
                 q.get_nowait()
             await mq.shutdown_workers(drain_timeout=0.1)
+
+
+class TestFloodLaneScoping:
+    """Same-chat messages share a rate limit; only other lanes can go first."""
+
+    def test_a_task_in_the_same_chat_is_not_ready(self) -> None:
+        from ccgram.handlers.messaging_pipeline import message_queue as mq
+
+        q: asyncio.Queue = asyncio.Queue()
+        parked = ContentTask(window_id="@0", parts=("a",), chat_id=-100, thread_id=1)
+        q.put_nowait(
+            ContentTask(window_id="@1", parts=("b",), chat_id=-100, thread_id=2)
+        )
+
+        assert mq._has_ready_task(q, parked) is False
+
+    def test_a_task_in_another_chat_is_ready(self) -> None:
+        from ccgram.handlers.messaging_pipeline import message_queue as mq
+
+        q: asyncio.Queue = asyncio.Queue()
+        parked = ContentTask(window_id="@0", parts=("a",), chat_id=-100, thread_id=1)
+        q.put_nowait(
+            ContentTask(window_id="@1", parts=("b",), chat_id=-200, thread_id=2)
+        )
+
+        assert mq._has_ready_task(q, parked) is True
+
+    def test_drain_keeps_a_parked_task_queued(self) -> None:
+        from ccgram.handlers.messaging_pipeline import message_queue as mq
+
+        q: asyncio.Queue = asyncio.Queue()
+        parked = ContentTask(
+            window_id="@0",
+            parts=("a",),
+            chat_id=-100,
+            deferred_until=time.monotonic() + 60,
+        )
+        ready = ContentTask(window_id="@1", parts=("b",), chat_id=-100)
+        q.put_nowait(parked)
+        q.put_nowait(ready)
+
+        drained = mq._drain_queue(q)
+
+        assert drained == [ready]
+        assert q.qsize() == 1
+        assert q.get_nowait() == parked

@@ -584,3 +584,44 @@ class TestStartupReplayBound:
         await reader._process_session_file("sess", session_file, fresh, window_id="@1")
 
         assert [msg.text for msg in fresh] == ["fresh"]
+
+    async def test_a_session_tracked_after_startup_is_never_clamped(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A session first tracked by this process has no pre-restart backlog."""
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "startup_replay_max_bytes", 120, raising=False)
+        session_file = tmp_path / "fresh.jsonl"
+        session_file.write_text(
+            "".join(self._record(f"m{i}") for i in range(10)), newline="\n"
+        )
+        state = MonitorState(state_file=tmp_path / "monitor_state.json")
+        reader = TranscriptReader(state, IdleTracker())
+        # Tracked at offset 0 by a replay request during this process.
+        state.update_session(
+            TrackedSession(session_id="fresh", file_path=str(session_file))
+        )
+
+        messages: list = []
+        await reader._process_session_file(
+            "fresh", session_file, messages, window_id="@1"
+        )
+
+        assert [msg.text for msg in messages] == [f"m{i}" for i in range(10)]
+
+    async def test_an_explicit_replay_request_is_never_clamped(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "startup_replay_max_bytes", 120, raising=False)
+        reader, _state, session_file = self._reader(tmp_path, backlog=10)
+        reader.allow_replay("sess")
+
+        messages: list = []
+        await reader._process_session_file(
+            "sess", session_file, messages, window_id="@1"
+        )
+
+        assert len(messages) == 10

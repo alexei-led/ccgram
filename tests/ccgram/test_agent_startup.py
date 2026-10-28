@@ -87,6 +87,60 @@ class TestPreseedCodexTrust:
 
         assert agent_startup.preseed_trust("codex", project) is False
 
+    def test_single_quoted_existing_entry_is_not_duplicated(
+        self, fake_home: Path, tmp_path: Path
+    ) -> None:
+        project = tmp_path / "ccgram"
+        project.mkdir()
+        config_file = fake_home / ".codex" / "config.toml"
+        config_file.parent.mkdir(parents=True)
+        config_file.write_text(f"[projects.'{project}']\ntrust_level = \"trusted\"\n")
+
+        assert agent_startup.preseed_trust("codex", project) is False
+        assert config_file.read_text().count("[projects.") == 1
+
+    def test_a_path_with_a_quote_produces_valid_toml(
+        self, fake_home: Path, tmp_path: Path
+    ) -> None:
+        project = tmp_path / 'we"ird'
+        project.mkdir()
+        config_file = fake_home / ".codex" / "config.toml"
+        config_file.parent.mkdir(parents=True)
+        config_file.write_text('model = "gpt-5-codex"\n')
+
+        assert agent_startup.preseed_trust("codex", project) is True
+
+        import tomllib
+
+        parsed = tomllib.loads(config_file.read_text())
+        assert parsed["projects"][str(project)]["trust_level"] == "trusted"
+
+    def test_an_unparseable_config_is_left_alone(
+        self, fake_home: Path, tmp_path: Path
+    ) -> None:
+        project = tmp_path / "ccgram"
+        project.mkdir()
+        config_file = fake_home / ".codex" / "config.toml"
+        config_file.parent.mkdir(parents=True)
+        original = "this is = not = toml [[[\n"
+        config_file.write_text(original)
+
+        assert agent_startup.preseed_trust("codex", project) is False
+        assert config_file.read_text() == original
+
+    def test_an_untrusted_entry_is_not_rewritten(
+        self, fake_home: Path, tmp_path: Path
+    ) -> None:
+        project = tmp_path / "ccgram"
+        project.mkdir()
+        config_file = fake_home / ".codex" / "config.toml"
+        config_file.parent.mkdir(parents=True)
+        original = f'[projects."{project}"]\ntrust_level = "untrusted"\n'
+        config_file.write_text(original)
+
+        assert agent_startup.preseed_trust("codex", project) is False
+        assert config_file.read_text() == original
+
 
 class TestAutostartGating:
     def test_global_switch_off_disables_seeding(
