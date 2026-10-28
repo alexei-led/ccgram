@@ -21,6 +21,10 @@ logger = structlog.get_logger()
 
 # Providers offered by default. Gemini is deliberately absent: keep it only
 # by listing it in CCGRAM_PROVIDERS_ENABLED.
+# Undelivered transcript (KiB) a restart may replay per session before the
+# remainder is treated as history. See _startup_replay_max_bytes.
+DEFAULT_STARTUP_REPLAY_MAX_KB = 256
+
 DEFAULT_ENABLED_PROVIDERS: tuple[str, ...] = (
     "antigravity",
     "claude",
@@ -122,6 +126,26 @@ def _projects_roots_env() -> list[Path]:
         except OSError:
             continue
     return roots or [Path.home()]
+
+
+def _startup_replay_max_bytes() -> int:
+    """Undelivered transcript a restart may replay: CCGRAM_STARTUP_REPLAY_MAX_KB.
+
+    A wedged or flood-limited queue leaves the delivered watermark far behind
+    the transcript, so an unbounded replay re-sends thousands of messages on
+    every restart and trips Telegram flood control. 0 disables the bound and
+    restores replay-everything.
+    """
+    raw = (os.getenv("CCGRAM_STARTUP_REPLAY_MAX_KB") or "").strip()
+    if not raw:
+        return DEFAULT_STARTUP_REPLAY_MAX_KB * 1024
+    try:
+        value = float(raw)
+    except ValueError:
+        return DEFAULT_STARTUP_REPLAY_MAX_KB * 1024
+    if not math.isfinite(value) or value <= 0:
+        return 0
+    return int(value * 1024)
 
 
 def _enabled_providers_env() -> tuple[str, ...]:
@@ -244,6 +268,7 @@ class Config:
             "CCGRAM_DIR_BROWSER_ALL_DIRS", False
         )
         self.enabled_providers: tuple[str, ...] = _enabled_providers_env()
+        self.startup_replay_max_bytes: int = _startup_replay_max_bytes()
 
         self._init_multiplexer()
 

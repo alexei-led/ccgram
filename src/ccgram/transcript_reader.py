@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any, Callable, NamedTuple
 import aiofiles
 import structlog
 
+from .config import config
 from .monitor_events import NewMessage, SessionInfo
 from .expandable_quote import format_expandable_quote
 from .window_state_ports import identity_state
@@ -364,6 +365,8 @@ class TranscriptReader:
         self._file_generations = self._snapshot_file_generations()
         self._file_markers = self._snapshot_file_markers()
         self._startup_file_boundaries = self._snapshot_startup_boundaries()
+        # Sessions whose startup replay was already bounded in this process.
+        self._startup_replay_checked: set[str] = set()
 
     def _snapshot_file_ctimes(self) -> dict[str, int]:
         ctimes: dict[str, int] = {}
@@ -811,6 +814,39 @@ class TranscriptReader:
             return tracked
         return None
 
+    def _clamp_startup_replay(
+        self, session_id: str, tracked: TrackedSession, file_size: int
+    ) -> None:
+        """Bound what one restart may replay from an undelivered transcript.
+
+        The delivered watermark only advances when the queue fully drains, so
+        a wedged or flood-limited queue leaves it far behind. Replaying that
+        whole range on the next start re-sends thousands of messages, which
+        trips Telegram flood control and freezes delivery again — a loop.
+        Once per process per session, a range larger than
+        CCGRAM_STARTUP_REPLAY_MAX_KB is treated as history: the parse position
+        jumps to EOF, exactly like a replaced transcript. The bytes stay in
+        the transcript file; only their Telegram delivery is skipped.
+        """
+        if session_id in self._startup_replay_checked:
+            return
+        self._startup_replay_checked.add(session_id)
+        limit = config.startup_replay_max_bytes
+        if limit <= 0:
+            return
+        pending = file_size - self._parse_pos(tracked)
+        if pending <= limit:
+            return
+        tracked.parsed_offset = file_size
+        self._startup_file_boundaries.pop(session_id, None)
+        logger.warning(
+            "Startup replay bounded: skipped %.1f KiB of undelivered transcript "
+            "for session %s (limit %d KiB, CCGRAM_STARTUP_REPLAY_MAX_KB)",
+            pending / 1024,
+            session_id,
+            limit // 1024,
+        )
+
     @staticmethod
     def _parse_pos(session: TrackedSession) -> int:
         """Current parse position (parsed_offset once set, watermark before)."""
@@ -910,6 +946,7 @@ class TranscriptReader:
         except OSError:
             return
 
+        self._clamp_startup_replay(session_id, tracked, current_size)
         probe_offset = tracked.parsed_offset
         probe_boundary = self._startup_file_boundaries.get(session_id)
         generation_changed, consumed_intact = await self._prepare_observed_generation(

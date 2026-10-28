@@ -490,3 +490,97 @@ async def test_replaced_smaller_transcript_resumes_from_eof_no_replay(
     tracked = state.get_session("sess-replaced")
     assert tracked is not None
     assert tracked.parsed_offset == session_file.stat().st_size
+
+
+class TestStartupReplayBound:
+    """A restart must not re-send an unbounded undelivered backlog.
+
+    The delivered watermark only advances when the queue fully drains, so a
+    wedged or flood-limited queue leaves it far behind. Replaying that range
+    re-sends thousands of messages and trips Telegram flood control again.
+    """
+
+    @staticmethod
+    def _record(text: str) -> str:
+        return f'{{"type":"assistant","message":{{"content":[{{"type":"text","text":"{text}"}}]}}}}\n'
+
+    def _reader(self, tmp_path, backlog: int, *, watermark: int = 0):
+        session_file = tmp_path / "transcript.jsonl"
+        session_file.write_text(
+            "".join(self._record(f"m{i}") for i in range(backlog)), newline="\n"
+        )
+        state = MonitorState(state_file=tmp_path / "monitor_state.json")
+        state.update_session(
+            TrackedSession(
+                session_id="sess",
+                file_path=str(session_file),
+                last_byte_offset=watermark,
+            )
+        )
+        return TranscriptReader(state, IdleTracker()), state, session_file
+
+    async def test_backlog_larger_than_the_bound_is_skipped(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "startup_replay_max_bytes", 120, raising=False)
+        reader, state, session_file = self._reader(tmp_path, backlog=10)
+
+        messages: list = []
+        await reader._process_session_file(
+            "sess", session_file, messages, window_id="@1"
+        )
+
+        assert messages == []
+        tracked = state.get_session("sess")
+        assert tracked is not None
+        assert tracked.parsed_offset == session_file.stat().st_size
+
+    async def test_backlog_within_the_bound_still_replays(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "startup_replay_max_bytes", 1 << 20, raising=False)
+        reader, _state, session_file = self._reader(tmp_path, backlog=3)
+
+        messages: list = []
+        await reader._process_session_file(
+            "sess", session_file, messages, window_id="@1"
+        )
+
+        assert [msg.text for msg in messages] == ["m0", "m1", "m2"]
+
+    async def test_zero_limit_replays_everything(self, tmp_path, monkeypatch) -> None:
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "startup_replay_max_bytes", 0, raising=False)
+        reader, _state, session_file = self._reader(tmp_path, backlog=10)
+
+        messages: list = []
+        await reader._process_session_file(
+            "sess", session_file, messages, window_id="@1"
+        )
+
+        assert len(messages) == 10
+
+    async def test_only_the_first_poll_is_bounded(self, tmp_path, monkeypatch) -> None:
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "startup_replay_max_bytes", 120, raising=False)
+        reader, _state, session_file = self._reader(tmp_path, backlog=10)
+
+        skipped: list = []
+        await reader._process_session_file(
+            "sess", session_file, skipped, window_id="@1"
+        )
+        assert skipped == []
+
+        with session_file.open("a") as transcript:
+            transcript.write(self._record("fresh"))
+
+        fresh: list = []
+        await reader._process_session_file("sess", session_file, fresh, window_id="@1")
+
+        assert [msg.text for msg in fresh] == ["fresh"]
