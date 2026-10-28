@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.20.0] - 2026-10-28
+
+### Pi menus in Telegram
+
+- Navigate Pi selectors and settings with scrolling, selection, save, toggle, and reorder controls.
+- Reply to a menu to type or search without submitting. Slash-prefixed replies remain literal input.
+- Fix agterm menu detection and keep stale buttons from sending input after the prompt changes.
+- Recover with Refresh when Telegram cannot update a menu.
+
+### Upgrade
+
+No configuration migration is required. Upgrade and restart ccgram:
+
+```console
+uv tool upgrade ccgram
+# Or:
+brew upgrade ccgram
+```
+
+[Full Changelog](https://github.com/alexei-led/ccgram/compare/v4.19.0...v4.20.0)
+
 ## [4.19.0] - 2026-10-28
 
 ### One line to start a session
