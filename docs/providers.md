@@ -15,6 +15,42 @@ CCGram supports multiple agent CLI backends. Each Telegram topic can use a diffe
 
 `Resume` in this table means the CLI accepts a known session ID. CCGram's Telegram Resume picker can enumerate sessions for Claude and Antigravity. Codex, Gemini, and Pi currently expose Fresh and Continue recovery actions only.
 
+## Native command menus
+
+Pi, Codex, and Claude Code declare controls for recognized native screens.
+CCGram mirrors the screen in an editable Telegram message. Buttons follow that
+screen's keys and scope; numbered rows alone do not create selection shortcuts.
+
+| Provider | Recognized menu families |
+| --- | --- |
+| Pi | Model, thinking, settings, scoped models, tree/fork, standard extension selectors, inputs and editors |
+| Codex | Model/reasoning, permissions, skills/review selectors, statusline, title, theme, keymap, configuration |
+| Claude Code | Model, effort, permissions, skills, settings/config, theme, help, empty rewind |
+
+These captures cover Pi 1.4.0, Codex 0.164.0, and Claude Code 2.1.312, not every
+command or nested screen. Codex review/skills child activation and keymap editing,
+Claude populated rewind and nested editors, and authenticated/private resource
+screens remain unverified. Unsupported screens require the terminal.
+
+- **Reply to the menu message** only when it invites text. A reply appends one
+  line without Enter; slash-prefixed replies stay literal, including bot command
+  names. Root shortcut menus may require **Search** first.
+- **Esc follows native behavior:** it can clear a filter, leave search focus,
+  return to a parent, or close. Observe the updated screen before the next action.
+- **Persistence is native:** Save, Set default, Apply policy, and Change setting
+  can write preferences immediately. Esc does not undo saved changes. Session-only
+  actions are labelled separately where the native footer offers them.
+- Buttons and replies revalidate the displayed prompt and owning pane. Old
+  controls expire after a transition or bot restart. Tap **🔄** after a failed
+  display update. Advisory detections cannot send unverified input.
+- Ordinary messages reach the agent only after a blocking prompt is confirmed
+  closed; otherwise the message is not forwarded. Permission/question prompts
+  retain their separate reply behavior and do not become command menus.
+
+Captured footers establish available controls, not proof that every save/apply
+action was executed. Use default CLI keybindings. Finish passwords, API keys,
+OAuth and other authentication in the terminal.
+
 ## Transcript Delivery Guarantees
 
 Structured transcripts mix conversation with provider instructions, API-request snapshots, and other internal records. CCGram accepts only supported conversation envelopes for each provider before building history or live output. Internal and unknown records are not promoted to chat based on a nested role or text field. The same classification applies to history, live updates, resume and completion summaries, and task status. Visible tool results, configured thinking, local-command notices, and provider errors retain their existing presentation. Shell command output uses its separate explicit terminal path.

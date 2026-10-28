@@ -37,6 +37,7 @@ CC_BUILTINS: dict[str, str] = {
     "branch": "↗ Fork conversation at current point",
     "clear": "↗ Clear conversation context",
     "compact": "↗ Summarize history to free context",
+    "config": "↗ Open Settings interface (alias /settings)",
     "context": "↗ Show context window usage",
     "copy": "↗ Copy last response to clipboard",
     "cost": "↗ Show session cost (alias /usage)",

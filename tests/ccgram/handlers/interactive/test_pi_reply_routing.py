@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from ccgram.handlers.text.text_handler import handle_text_message
-from ccgram.handlers.interactive.pi_controls import PI_MENU_INSTRUCTION
+from ccgram.handlers.interactive.pi_controls import MENU_INSTRUCTION
 from ccgram.thread_router import ThreadRouter
 from ccgram.multiplexer.base import WindowRef
 
@@ -38,7 +38,7 @@ async def test_expired_reply_is_rejected_before_topic_routing(monkeypatch, bindi
     message.is_topic_message = True
     message.reply_text = AsyncMock()
     message.reply_to_message = SimpleNamespace(
-        message_id=10, text=PI_MENU_INSTRUCTION + "\nOld menu"
+        message_id=10, text=MENU_INSTRUCTION + "\nOld menu"
     )
     update = MagicMock(
         effective_user=SimpleNamespace(id=72),

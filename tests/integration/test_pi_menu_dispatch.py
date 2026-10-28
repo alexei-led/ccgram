@@ -4,13 +4,36 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from telegram import Update
-from telegram.ext import filters
+from telegram.ext import CommandHandler, filters
 
 from ccgram.handlers.registry import register_all
 
-from ccgram.handlers.interactive.pi_controls import PI_MENU_INSTRUCTION
+from ccgram.handlers.interactive.pi_controls import MENU_INSTRUCTION
+
+from ccgram.handlers.live import screenshot_command
+from ccgram.handlers.interactive.interactive_ui import INTERACTIVE_INSTRUCTION_LINE
 
 pytestmark = pytest.mark.integration
+
+
+async def test_screenshot_reply_to_ordinary_prompt_is_not_menu_input(
+    dispatch_app, make_text_update
+):
+    dispatch_app.handlers.clear()
+    register_all(dispatch_app, filters.ALL)
+    update = make_text_update("/screenshot", bot=dispatch_app.bot)
+    raw = update.to_dict()
+    raw["message"]["reply_to_message"] = {
+        "message_id": 988,
+        "date": raw["message"]["date"],
+        "chat": raw["message"]["chat"],
+        "from": {"id": 999, "is_bot": True, "first_name": "CCGram"},
+        "text": INTERACTIVE_INSTRUCTION_LINE + "\nAllow this command?",
+    }
+    reply = Update.de_json(raw, dispatch_app.bot)
+    handler = next(h for h in dispatch_app.handlers[0] if h.check_update(reply))
+    assert isinstance(handler, CommandHandler)
+    assert handler.callback is screenshot_command
 
 
 @pytest.mark.parametrize("text", ["/tmp", "/history", "/settings"])
@@ -26,7 +49,7 @@ async def test_command_shaped_pi_menu_reply_uses_guarded_text_route(
         "date": raw["message"]["date"],
         "chat": raw["message"]["chat"],
         "from": {"id": 999, "is_bot": True, "first_name": "CCGram"},
-        "text": PI_MENU_INSTRUCTION + "\nNon-secret input",
+        "text": MENU_INSTRUCTION + "\nNon-secret input",
     }
     reply_update = Update.de_json(raw, dispatch_app.bot)
     with patch(

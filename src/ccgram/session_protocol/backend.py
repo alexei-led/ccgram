@@ -15,7 +15,12 @@ from typing import Any, Literal, Protocol
 from ..command_catalog import CommandCatalog
 from ..multiplexer import agent_status_cache
 from ..multiplexer.base import Multiplexer, WindowRef
-from ..providers import get_provider_for_window, has_yolo_mode, resolve_launch_command
+from ..providers import (
+    get_provider_for_window,
+    has_yolo_mode,
+    resolve_launch_command,
+    TerminalMenu,
+)
 from ..providers.process_detection import classify_provider_from_argv
 from ..providers.shell_infra import KNOWN_SHELLS, match_prompt
 from ..window_state_ports import identity_state
@@ -102,6 +107,7 @@ class Target:
 class Prompt:
     text: str
     kind: str
+    menu: TerminalMenu | None = None
 
     @property
     def fingerprint(self) -> str:
@@ -315,7 +321,7 @@ class MultiplexerSessionBackend:
         )
         status = provider.parse_terminal_status(text, pane_title=title)
         if status and status.is_interactive and not status.ui_advisory:
-            return Prompt(status.raw_text, status.ui_type or "prompt")
+            return Prompt(status.raw_text, status.ui_type or "prompt", menu=status.menu)
         return None
 
     async def terminal(self, target: Target, pane: str) -> dict[str, Any]:

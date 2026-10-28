@@ -1,0 +1,16 @@
+  Configure Status Line
+  Select which items to display in the status line.
+
+  Type to search
+↑
+  [x] context-window-size    Total context window size in tokens (omitted when unknown)
+  [x] context-remaining      Percentage of context window remaining (omitted when unknown)
+  [x] pull-request-number    Open pull request number for the current branch (omitted when unavailable)
+  [x] branch-changes         Committed branch changes against the default branch (omitted when unavailable)
+  [x] run-state              Compact session run-state text (Ready, Working, Thinking)
+  [x] used-tokens            Total tokens used in session (omitted when zero)
+  [x] estimated-thread-cost  Estimated current-thread cost in USD (Enterprise workspaces only; omitted when unavailable)
+› [x] thread-title           Current thread title, or thread identifier when unnamed
+↓
+  GPT-6-Astra high · feat/awesome-feature · 872K window · Context 100% left · PR #123 · +12 -3 · Ready · 0 used · ~$1.82 · <session>
+  space toggle · ←/→ reorder · enter save · esc cancel

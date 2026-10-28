@@ -15,10 +15,14 @@ from ccgram.handlers.interactive.interactive_ui import (
     get_interactive_window,
     handle_interactive_ui,
 )
-from ccgram.handlers.interactive.pi_controls import build_pi_keyboard, parse_pi_control
+from ccgram.handlers.interactive.pi_controls import (
+    build_menu_keyboard,
+    parse_menu_control,
+)
 from ccgram.handlers.callback_tokens import compact_callback_data
 from ccgram.handlers.text.text_handler import handle_text_message
 from ccgram.thread_router import ThreadRouter
+from ccgram.providers.pi import PiProvider
 
 FIXTURES = Path(__file__).parents[2] / "providers" / "fixtures" / "pi_menus"
 USER, CHAT, THREAD, MESSAGE = 9941, -9941, 9942, 9943
@@ -107,8 +111,16 @@ async def _route_reply(menu, text: str, window_id: str = WINDOW) -> None:
 def _action(menu, action: str) -> str:
     for row in menu.sent["reply_markup"].inline_keyboard:
         for button in row:
-            parsed = parse_pi_control(str(button.callback_data))
-            if parsed is not None and parsed[0] == action:
+            labels = {
+                "down5": "↓5",
+                "up5": "↑5",
+                "down": "↓",
+                "clear": "Clear search",
+                "enter": "⏎ Enter",
+                "esc": "⎋ Esc",
+                "refresh": "🔄",
+            }
+            if button.text == labels[action]:
                 return str(button.callback_data)
     raise AssertionError(action)
 
@@ -217,18 +229,25 @@ async def test_reply_cannot_inject_terminal_controls(menu, text):
 
 
 def test_opaque_target_and_pane_round_trip():
-    keyboard = build_pi_keyboard(
-        WINDOW, "PiScopedModels", PANE, 17, compact_callback_data
+    status = PiProvider().parse_terminal_status(
+        (FIXTURES / "scoped-models.txt").read_text()
     )
+    assert status is not None and status.menu is not None
+    keyboard = build_menu_keyboard(WINDOW, status.menu, PANE, 17, compact_callback_data)
     parsed = [
-        parse_pi_control(str(button.callback_data))
+        parse_menu_control(str(button.callback_data))
         for row in keyboard.inline_keyboard
         for button in row
     ]
     assert all(item is not None and item[1:] == (17, WINDOW, PANE) for item in parsed)
-    assert {"save", "all", "none", "provider", "reorder-up", "reorder-down"} <= {
-        item[0] for item in parsed if item is not None
-    }
+    assert {
+        "Save scope",
+        "All matching",
+        "None matching",
+        "Provider",
+        "Move ↑",
+        "Move ↓",
+    } <= {button.text for row in keyboard.inline_keyboard for button in row}
 
 
 @pytest.mark.parametrize(
@@ -241,4 +260,38 @@ def test_opaque_target_and_pane_round_trip():
     ],
 )
 def test_invalid_controls_are_rejected(data):
-    assert parse_pi_control(data) is None
+    assert parse_menu_control(data) is None
+
+
+async def test_native_refresh_recovers_after_failed_downgrade_to_advisory(menu):
+    from ccgram.providers.base import StatusUpdate
+
+    old = _action(menu, "refresh")
+    original = menu.mux.capture_pane_by_id.return_value
+    menu.client.edit_message_text.side_effect = [NetworkError("offline"), MagicMock()]
+    from unittest.mock import patch
+
+    with patch(
+        "ccgram.handlers.interactive.interactive_ui.get_provider_for_window"
+    ) as provider:
+        provider.return_value.capabilities.uses_pane_title = False
+        provider.return_value.parse_terminal_status.return_value = StatusUpdate(
+            "unverified", "SelectionUI", True, "SelectionUI", True
+        )
+        assert not await handle_interactive_ui(
+            menu.client, USER, WINDOW, THREAD, pane_id=PANE, chat_id=CHAT
+        )
+    menu.mux.capture_pane_by_id.return_value = original
+    await handle_interactive_callback(menu.query, USER, old, menu.update, menu.context)
+    menu.adapter.send_keys.assert_not_called()
+    assert menu.client.edit_message_text.await_count == 2
+    assert menu.client.edit_message_text.call_args.kwargs[
+        "reply_markup"
+    ].inline_keyboard
+
+
+async def test_menu_reply_failure_is_provider_neutral(menu):
+    menu.adapter.send_text.return_value = (False, "")
+    await _route_reply(menu, "theme")
+    menu.message.reply_text.assert_awaited_once()
+    assert menu.message.reply_text.call_args.args[0] == "Unable to type into the menu."

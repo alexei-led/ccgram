@@ -1,0 +1,9 @@
+  Configure Terminal Title
+  Select which items to display in the terminal title.
+
+  zzzz-no-title-item
+
+no matches
+
+  [ ! ] Action Required | thread name | ccgram-ui-codex
+  space toggle · ←/→ reorder · enter save · esc cancel

@@ -26,6 +26,7 @@ from ccgram.providers.base import (
     SessionStartEvent,
     StatusUpdate,
 )
+from ccgram.providers.codex_tui import parse_codex_menu
 from ccgram.terminal_parser import extract_interactive_content
 
 # Codex CLI known slash commands. Refreshed from
@@ -34,15 +35,15 @@ _CODEX_BUILTINS: dict[str, str] = {
     "/clear": "Clear conversation history",
     "/compact": "Summarize history and free up context",
     "/copy": "Copy last response as Markdown",
+    "/config": "Configure Codex preferences",
     "/feedback": "Send logs to maintainers",
     "/fork": "Branch chat into a new thread",
     "/init": "Create AGENTS.md project guidance",
+    "/keymap": "View and configure keyboard shortcuts",
     "/mcp": "List configured MCP tools",
     "/mention": "Attach files to conversation",
-    "/mode": "Switch approval mode (suggest/auto-edit/full-auto)",
     "/model": "Switch model and reasoning effort",
     "/permissions": "Manage confirmation rules",
-    "/personality": "Customize Codex communication style",
     "/plan": "Enter plan mode",
     "/rename": "Rename current thread",
     "/review": "Review current changes",
@@ -50,6 +51,8 @@ _CODEX_BUILTINS: dict[str, str] = {
     "/skills": "List available skills",
     "/statusline": "Configure status line items",
     "/status": "Show model, approvals, token usage",
+    "/theme": "Choose a syntax highlighting theme",
+    "/title": "Configure terminal title items",
 }
 
 _TOOL_NAME_ALIASES: dict[str, str] = {
@@ -143,10 +146,19 @@ class CodexProvider(JsonlProvider):
         builtin_commands=tuple(_CODEX_BUILTINS.keys()),
         supports_user_command_discovery=True,
         supports_status_snapshot=True,
-        # Pickers per tooltips.txt: each opens a modal selector users
-        # drive with arrow keys + Enter.
+        # Command menus observed in the installed Codex CLI 0.164.0.
         tui_picker_commands=frozenset(
-            {"model", "permissions", "skills", "statusline", "personality"}
+            {
+                "config",
+                "keymap",
+                "model",
+                "permissions",
+                "review",
+                "skills",
+                "statusline",
+                "theme",
+                "title",
+            }
         ),
         # Hooks review screen shown when ccgram's hooks entry is new for this
         # project: "1. review hooks / 2. trust all and continue / 3. continue
@@ -188,7 +200,11 @@ class CodexProvider(JsonlProvider):
         *,
         pane_title: str = "",  # noqa: ARG002
     ) -> StatusUpdate | None:
-        """Parse Codex pane content for interactive prompts."""
+        """Parse Codex command menus before generic interactive prompts."""
+        codex_menu = parse_codex_menu(pane_text)
+        if codex_menu:
+            return codex_menu
+
         interactive = extract_interactive_content(pane_text)
         if interactive:
             formatted = format_codex_interactive_prompt(

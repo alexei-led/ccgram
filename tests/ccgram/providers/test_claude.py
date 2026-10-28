@@ -34,7 +34,8 @@ _PICKER_COMMANDS = {
     # "status" is deliberately absent from Claude's set: it prints a report
     # rather than opening a TUI picker.
     ClaudeProvider: {
-        "agents",
+        "config",
+        "help",
         "copy",
         "diff",
         "effort",
@@ -47,7 +48,17 @@ _PICKER_COMMANDS = {
         "theme",
         "tui",
     },
-    CodexProvider: {"model", "permissions", "skills", "statusline", "personality"},
+    CodexProvider: {
+        "config",
+        "keymap",
+        "model",
+        "permissions",
+        "review",
+        "skills",
+        "statusline",
+        "theme",
+        "title",
+    },
     GeminiProvider: {
         "agents",
         "auth",

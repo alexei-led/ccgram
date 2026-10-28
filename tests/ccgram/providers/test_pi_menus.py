@@ -48,6 +48,23 @@ def test_old_menu_above_idle_editor_is_not_interactive(name: str) -> None:
     assert PiProvider().parse_terminal_status(capture + idle_editor) is None
 
 
+def test_editor_newline_uses_verified_shift_enter() -> None:
+    capture = (FIXTURES / "ccgram-editor.txt").read_text()
+    status = PiProvider().parse_terminal_status(capture)
+    assert status is not None and status.menu is not None
+    newline = next(c for c in status.menu.controls if c.label == "New line")
+    assert newline.keys == ("S-Enter",)
+
+
+def test_unadvertised_editor_newline_key_is_not_invented() -> None:
+    capture = (
+        (FIXTURES / "ccgram-editor.txt").read_text().replace("shift+enter", "alt+enter")
+    )
+    status = PiProvider().parse_terminal_status(capture)
+    assert status is not None and status.menu is not None
+    assert not any(c.label == "New line" for c in status.menu.controls)
+
+
 def test_empty_filtered_settings_remain_interactive() -> None:
     screen = (
         "─" * 80

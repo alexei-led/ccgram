@@ -27,21 +27,22 @@ from ..callback_data import (
     CB_ASK_SPACE,
     CB_ASK_TAB,
     CB_ASK_UP,
-    CB_PI_CONTROL,
+    CB_MENU_CONTROL,
 )
 from ..callback_registry import register
 from .pi_controls import (
-    PI_MENU_EXPIRED,
-    is_pi_menu_reply,
-    parse_pi_control,
-    pi_control_keys,
+    MENU_EXPIRED,
+    is_menu_reply,
+    parse_menu_control,
 )
 from ..messaging_pipeline.message_sender import ack_reaction, safe_reply
 from .interactive_ui import (
     PromptStateError,
     pane_has_interactive_prompt,
-    get_pi_reply_target,
+    get_menu_reply_target,
     get_interactive_window,
+    get_interactive_menu,
+    get_interactive_pane,
     advance_interactive_sequence,
     clear_interactive_msg,
     get_interactive_prompt_fingerprint,
@@ -83,7 +84,7 @@ INTERACTIVE_PREFIXES: tuple[str, ...] = (
     *INTERACTIVE_KEY_MAP,
     CB_ASK_REFRESH,
     CB_ASK_CHOICE,
-    CB_PI_CONTROL,
+    CB_MENU_CONTROL,
 )
 
 
@@ -119,13 +120,13 @@ def match_interactive_prefix(data: str) -> tuple[str, str, str | None] | None:
     Returns (cb_prefix, window_id, pane_id_or_None) or None.
 
     Callback data format:
-      - ``"aq:enter:@12"``         → window @12, active pane
-      - ``"aq:enter:@12|%5"``      → tmux: window @12, pane %5
+      - ``"aq:enter:1:@12"``         → window @12, active pane
+      - ``"aq:enter:1:@12|%5"``      → tmux: window @12, pane %5
       - callback target suffixes remain opaque and are resolved by the backend
     """
-    if data.startswith(CB_PI_CONTROL):
-        parsed = parse_pi_control(data)
-        return (CB_PI_CONTROL, parsed[2], parsed[3]) if parsed else None
+    if data.startswith(CB_MENU_CONTROL):
+        parsed = parse_menu_control(data)
+        return (CB_MENU_CONTROL, parsed[2], parsed[3]) if parsed else None
 
     direct_choice = parse_direct_choice_callback(data)
     if direct_choice is not None:
@@ -136,9 +137,11 @@ def match_interactive_prefix(data: str) -> tuple[str, str, str | None] | None:
     # function body is reached; CB_PANE_DELIMITER is a plain string constant.
     from ..callback_data import CB_PANE_DELIMITER
 
-    for prefix in INTERACTIVE_PREFIXES:
+    for prefix in (*INTERACTIVE_KEY_MAP, CB_ASK_REFRESH):
         if data.startswith(prefix):
-            remainder = data[len(prefix) :]
+            sequence, separator, remainder = data.removeprefix(prefix).partition(":")
+            if not separator or not sequence.isdecimal():
+                return None
             if CB_PANE_DELIMITER in remainder:
                 window_id, pane_id = remainder.split(CB_PANE_DELIMITER, 1)
                 return prefix, window_id, pane_id
@@ -164,10 +167,18 @@ async def _handle_direct_choice(
         await query.answer("This prompt has expired", show_alert=True)
         return
     key, sequence, _window_id, _pane_id = choice
-    if not is_current_interactive_prompt(
-        user_id, thread_id, window_id, chat_id, message_id, sequence
+    if (
+        not is_current_interactive_prompt(
+            user_id, thread_id, window_id, chat_id, message_id, sequence
+        )
+        or get_interactive_pane(user_id, thread_id, chat_id) != pane_id
     ):
         await query.answer("This prompt has expired", show_alert=True)
+        return
+    if expected_prompt is None:
+        await query.answer(
+            "Unverified terminal UI. Use /toolbar or the terminal.", show_alert=True
+        )
         return
     enter = key in {"y", "n"}
     try:
@@ -201,14 +212,25 @@ async def _handle_navigation_key(
     window_id: str,
     pane_id: str | None,
     cb_prefix: str,
+    sequence: int,
     adapter: TelegramSessionAdapter,
     client: TelegramClient,
     action_id: str,
     expected_prompt: str | None,
 ) -> None:
     """Keep the existing provider navigation path separate from Pi controls."""
-    if not is_current_interactive_message(user_id, thread_id, chat_id, message_id):
+    if (
+        not is_current_interactive_prompt(
+            user_id, thread_id, window_id, chat_id, message_id, sequence
+        )
+        or get_interactive_pane(user_id, thread_id, chat_id) != pane_id
+    ):
         await query.answer("This prompt has expired", show_alert=True)
+        return
+    if expected_prompt is None:
+        await query.answer(
+            "Unverified terminal UI. Use /toolbar or the terminal.", show_alert=True
+        )
         return
     tmux_key, refresh_ui = INTERACTIVE_KEY_MAP[cb_prefix]
     sent, message_text = await adapter.send_keys(
@@ -223,6 +245,7 @@ async def _handle_navigation_key(
             message_text or "Unable to send key. Try again.", show_alert=True
         )
         return
+    advance_interactive_sequence(user_id, thread_id, chat_id=chat_id)
     if refresh_ui:
         await asyncio.sleep(0.5)
         await handle_interactive_ui(
@@ -248,6 +271,7 @@ async def handle_interactive_callback(
     """Handle interactive UI callbacks (AskUserQuestion/ExitPlanMode navigation)."""
     matched = match_interactive_prefix(data)
     if not matched:
+        await query.answer("This prompt has expired", show_alert=True)
         return
 
     cb_prefix, window_id, pane_id = matched
@@ -287,8 +311,8 @@ async def handle_interactive_callback(
     )
 
     try:
-        if cb_prefix == CB_PI_CONTROL:
-            await handle_pi_control(
+        if cb_prefix == CB_MENU_CONTROL:
+            await handle_menu_control(
                 query, user_id, thread_id, PTBTelegramClient(context.bot), data, adapter
             )
             return
@@ -310,6 +334,11 @@ async def handle_interactive_callback(
 
         client = PTBTelegramClient(context.bot)
         if cb_prefix == CB_ASK_REFRESH:
+            if not is_current_interactive_message(
+                user_id, thread_id, chat_id, message_id
+            ):
+                await query.answer("This prompt has expired", show_alert=True)
+                return
             await handle_interactive_ui(
                 client,
                 user_id,
@@ -329,6 +358,7 @@ async def handle_interactive_callback(
                 window_id,
                 pane_id,
                 cb_prefix,
+                int(data.removeprefix(cb_prefix).partition(":")[0]),
                 adapter,
                 client,
                 action_id,
@@ -340,7 +370,7 @@ async def handle_interactive_callback(
         await query.answer("Session is busy. Try again.", show_alert=True)
 
 
-async def refresh_pi_menu(
+async def refresh_menu(
     client: TelegramClient,
     user_id: int,
     window_id: str,
@@ -360,7 +390,7 @@ async def refresh_pi_menu(
         await clear_interactive_msg(user_id, client, thread_id, chat_id=chat_id)
 
 
-async def handle_pi_control(
+async def handle_menu_control(
     query: CallbackQuery,
     user_id: int,
     thread_id: int | None,
@@ -368,7 +398,7 @@ async def handle_pi_control(
     data: str,
     adapter: TelegramSessionAdapter,
 ) -> None:
-    parsed = parse_pi_control(data)
+    parsed = parse_menu_control(data)
     message = query.message
     if parsed is None or message is None:
         await query.answer("This prompt has expired", show_alert=True)
@@ -382,36 +412,59 @@ async def handle_pi_control(
         user_id, thread_id, window_id, chat_id, message.message_id, sequence
     )
     if action == "refresh":
-        # Input consumes its sequence even if the subsequent Telegram edit fails.
-        # Recapture is safe from that older keyboard; sending another key is not.
-        current = (
-            is_current_interactive_message(
+        # Recapture needs message ownership, not input metadata that a failed
+        # display update may already have retired.
+        if (
+            not is_current_interactive_message(
                 user_id, thread_id, chat_id, message.message_id
             )
-            and get_interactive_window(user_id, thread_id, chat_id=chat_id) == window_id
-        )
-    if fingerprint is None or not current:
+            or get_interactive_window(user_id, thread_id, chat_id=chat_id) != window_id
+            or get_interactive_pane(user_id, thread_id, chat_id) != pane_id
+        ):
+            await query.answer("This prompt has expired", show_alert=True)
+            return
+        await query.answer()
+        await refresh_menu(client, user_id, window_id, thread_id, chat_id, pane_id)
+        return
+    menu = get_interactive_menu(
+        user_id, thread_id, chat_id, message.message_id, window_id
+    )
+    owner = get_interactive_pane(user_id, thread_id, chat_id)
+    if fingerprint is None or not current or menu is None or owner != pane_id:
         await query.answer("This prompt has expired", show_alert=True)
         return
-    if action != "refresh":
-        sent, detail = await adapter.send_keys(
+    index = int(action)
+    if index >= len(menu.controls):
+        await query.answer("This prompt has expired", show_alert=True)
+        return
+    keys = menu.controls[index].keys
+    if len(keys) == 1 and len(keys[0]) == 1 and keys[0].isprintable():
+        sent, detail = await adapter.send_text(
             window_id,
-            list(pi_control_keys(action)),
+            keys[0],
+            submit=False,
             pane_id=pane_id,
             action_id=f"telegram-callback:{query.id}",
             expected_prompt=fingerprint,
         )
-        if not sent:
-            await query.answer(detail or "Unable to send key", show_alert=True)
-            return
-        advance_interactive_sequence(user_id, thread_id, chat_id=chat_id)
+    else:
+        sent, detail = await adapter.send_keys(
+            window_id,
+            list(keys),
+            pane_id=pane_id,
+            action_id=f"telegram-callback:{query.id}",
+            expected_prompt=fingerprint,
+        )
+    if not sent:
+        await query.answer(detail or "Unable to send key", show_alert=True)
+        return
+    advance_interactive_sequence(user_id, thread_id, chat_id=chat_id)
     await query.answer()
-    if action != "refresh":
-        await asyncio.sleep(0.5)
-    await refresh_pi_menu(client, user_id, window_id, thread_id, chat_id, pane_id)
+    await asyncio.sleep(0.5)
+    await refresh_menu(client, user_id, window_id, thread_id, chat_id, pane_id)
 
 
-async def handle_pi_reply(
+async def handle_menu_reply(
     client: TelegramClient,
     user_id: int,
     window_id: str,
@@ -420,15 +473,15 @@ async def handle_pi_reply(
     message: Message,
     adapter: TelegramSessionAdapter,
 ) -> bool:
-    """Only an explicit reply to the live Pi menu is literal, unsubmitted input."""
+    """Only an explicit reply to a live, text-capable menu is literal input."""
     reply = message.reply_to_message
-    if reply is None or reply.text is None or not is_pi_menu_reply(message):
+    if reply is None or reply.text is None or not is_menu_reply(message):
         return False
-    target = get_pi_reply_target(
+    target = get_menu_reply_target(
         user_id, thread_id, message.chat.id, reply.message_id, reply.text, window_id
     )
     if target is None:
-        await safe_reply(message, PI_MENU_EXPIRED)
+        await safe_reply(message, MENU_EXPIRED)
         return True
     if not text.isprintable():
         await safe_reply(
@@ -436,23 +489,24 @@ async def handle_pi_reply(
             "Use a single line without control characters; tap Enter separately.",
         )
         return True
-    pane_id, fingerprint = target
+    pane_id, fingerprint, menu = target
+    if not menu.text_input:
+        await safe_reply(message, "This menu does not accept text. Use its buttons.")
+        return True
     sent, detail = await adapter.send_text(
         window_id,
         text,
         submit=False,
         pane_id=pane_id,
-        action_id=f"telegram-message:{message.chat.id}:{message.message_id}:pi-input",
+        action_id=f"telegram-message:{message.chat.id}:{message.message_id}:menu-input",
         expected_prompt=fingerprint,
     )
     if not sent:
-        await safe_reply(message, detail or "Unable to type into the Pi menu.")
+        await safe_reply(message, detail or "Unable to type into the menu.")
         return True
     await ack_reaction(client, message.chat.id, message.message_id)
     await asyncio.sleep(0.5)
-    await refresh_pi_menu(
-        client, user_id, window_id, thread_id, message.chat.id, pane_id
-    )
+    await refresh_menu(client, user_id, window_id, thread_id, message.chat.id, pane_id)
     return True
 
 

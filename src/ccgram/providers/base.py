@@ -68,6 +68,22 @@ class AgentMessage:
 
 
 @dataclass(frozen=True, slots=True)
+class TerminalControl:
+    """A verified native key action, independent of any remote UI layout."""
+
+    label: str
+    keys: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalMenu:
+    """Controls supported by one verified command menu in the active terminal."""
+
+    controls: tuple[TerminalControl, ...]
+    text_input: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class StatusUpdate:
     """Parsed terminal status line from the agent's pane.
 
@@ -89,6 +105,8 @@ class StatusUpdate:
     # anchor: the keyboard may be shown, but it must not latch the
     # blocking interactive mode.
     ui_advisory: bool = False
+    # Only verified command menus opt in; guesses and ordinary output stay out.
+    menu: TerminalMenu | None = None
 
 
 @dataclass(frozen=True, slots=True)

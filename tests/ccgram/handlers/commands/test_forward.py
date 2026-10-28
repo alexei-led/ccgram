@@ -578,7 +578,7 @@ class TestForwardWithRealProvider:
             ("gemini", "model"),
             ("pi", "model"),
             ("claude", "effort"),
-            ("codex", "personality"),
+            ("codex", "config"),
             ("gemini", "auth"),
             ("pi", "login"),
         ],

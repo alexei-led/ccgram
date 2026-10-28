@@ -205,6 +205,12 @@ def test_agterm_native_status_is_none_when_unreported() -> None:
         ("C-u", "\x15"),
         ("M-Enter", "\x1b\r"),
         ("C-[", "\x1b"),
+        ("s", "s"),
+        ("5", "5"),
+        ("PPage", "\x1b[5~"),
+        ("NPage", "\x1b[6~"),
+        ("S-Tab", "\x1b[Z"),
+        ("S-Enter", "\x1b[13;2u"),
     ],
 )
 def test_key_names_translate_to_pty_bytes(token: str, expected: str) -> None:

@@ -1,0 +1,12 @@
+› /model         choose what model and reasoning effort to use
+  /fast          2x speed, increased usage
+  /presets       run or save reusable prompts and slash commands
+  /daybreak      Learn about broader access for cybersecurity work
+  /ide           include current selection, open files, and other context from your IDE
+  /permissions   choose what Codex is allowed to do
+  /keymap        remap TUI shortcuts
+  /vim           toggle Vim mode for the composer
+
+› /
+
+  GPT-6-Astra high · 872K window · Context 100% left · Ready

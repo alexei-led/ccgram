@@ -25,7 +25,7 @@ from telegram.ext import (
 from telegram.ext._utils.types import HandlerCallback
 
 from ..config import config
-from .interactive.pi_controls import is_pi_menu_reply
+from .interactive.pi_controls import is_menu_reply
 from .callback_registry import dispatch as _dispatch_callback
 from .callback_registry import load_handlers as _load_callback_handlers
 from .agent_command import agent_command
@@ -84,9 +84,9 @@ class CommandSpec:
     handler: HandlerFn
 
 
-class _PiMenuReplyFilter(filters.MessageFilter):
+class _MenuReplyFilter(filters.MessageFilter):
     def filter(self, message: Message) -> bool:
-        return is_pi_menu_reply(message)
+        return is_menu_reply(message)
 
 
 def register_all(
@@ -101,7 +101,7 @@ def register_all(
     Otherwise explicit commands precede the COMMAND fallback and ordinary TEXT.
     """
     application.add_handler(
-        MessageHandler(filters.TEXT & group_filter & _PiMenuReplyFilter(), text_handler)
+        MessageHandler(filters.TEXT & group_filter & _MenuReplyFilter(), text_handler)
     )
     command_specs: list[CommandSpec] = [
         CommandSpec("start", new_command),

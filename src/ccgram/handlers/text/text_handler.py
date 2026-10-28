@@ -699,7 +699,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await handle_text_message(update, context)
 
 
-async def _handle_pi_menu_reply(
+async def _handle_menu_reply(
     user_id: int,
     thread_id: int | None,
     text: str,
@@ -708,14 +708,14 @@ async def _handle_pi_menu_reply(
 ) -> bool:
     # Lazy: menu rendering imports handlers during callback registration.
     from ..interactive.pi_controls import (
-        PI_MENU_EXPIRED,
-        is_pi_menu_reply,
+        MENU_EXPIRED,
+        is_menu_reply,
     )
 
-    if not is_pi_menu_reply(message):
+    if not is_menu_reply(message):
         return False
     # Lazy: callback dispatch shares the renderer; load only for actual menu input.
-    from ..interactive.interactive_callbacks import handle_pi_reply
+    from ..interactive.interactive_callbacks import handle_menu_reply
 
     # A retired menu reply is never a new session plan, a rename, or shell input.
     window_id = (
@@ -724,9 +724,9 @@ async def _handle_pi_menu_reply(
         else None
     )
     if thread_id is None or window_id is None:
-        await safe_reply(message, PI_MENU_EXPIRED)
+        await safe_reply(message, MENU_EXPIRED)
         return True
-    await handle_pi_reply(
+    await handle_menu_reply(
         PTBTelegramClient(context.bot),
         user_id,
         window_id,
@@ -767,7 +767,7 @@ async def handle_text_message(
     text = message.text
     thread_id = _get_thread_id(update)
 
-    if await _handle_pi_menu_reply(user.id, thread_id, text, message, context):
+    if await _handle_menu_reply(user.id, thread_id, text, message, context):
         return
 
     # Store group chat_id for forum topic message routing

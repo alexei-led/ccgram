@@ -1,0 +1,52 @@
+Help  General   Commands   Custom commands
+
+
+   Browse default commands
+
+   ❯ /add-dir
+     Add a new working directory
+     /auto-mode-setup
+     Teach auto mode about your environment, plus optional rule tweaks
+     /autocompact
+     Set how full the context gets before auto-summarizing
+     /background
+     Send this session to the background and free the terminal
+     /batch
+     Plan a large change; background agents each open a PR
+     /branch
+     Create a branch of the current conversation at this point
+     /btw
+     Ask a quick side question without interrupting the main conversation
+     /bug
+     Report a bug or share your conversation
+     /cd
+     Move this session to a new working directory
+     /claude-api
+     Build and debug apps that use the Claude API
+     /clear
+     Start a new session with empty context; previous session stays on disk (resumable with /resume)
+     /code-review
+     Review the current diff or a PR for bugs and cleanups
+     /color
+     Set the prompt bar color for this session
+     /compact
+     Free up context by summarizing the conversation so far
+     /config
+     Open settings
+     /context
+     Visualize current context usage as a colored grid
+     /copy
+     Copy Claude's last response to clipboard (or /copy N for the Nth-latest)
+     /dataviz
+     Chart and dashboard design guidance
+     /debug
+     Turn on debug logging and investigate problems
+     /deep-research
+     Deep research harness — fan-out web searches, fetch sources, adversarially verify claims, synthesize a cited report. (dynamic workflow)
+
+     ↓ 60 more
+
+
+   For more help: https://code.claude.com/docs/en/overview
+
+   Esc to cancel

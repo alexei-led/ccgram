@@ -1,0 +1,7 @@
+Skills
+Choose an action
+
+› 1. List skills            Tip: press $ to open this list directly
+  2. Enable/Disable Skills  Enable or disable skills
+
+  enter select · esc back

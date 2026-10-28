@@ -133,6 +133,8 @@ _KEY_BYTES: dict[str, str] = {
     "Space": " ",
     "BSpace": "\x7f",
     "BTab": "\x1b[Z",
+    "S-Tab": "\x1b[Z",
+    "S-Enter": "\x1b[13;2u",
     "Up": "\x1b[A",
     "Down": "\x1b[B",
     "Right": "\x1b[C",
@@ -141,6 +143,8 @@ _KEY_BYTES: dict[str, str] = {
     "End": "\x1b[F",
     "PageUp": "\x1b[5~",
     "PageDown": "\x1b[6~",
+    "PPage": "\x1b[5~",
+    "NPage": "\x1b[6~",
     "Delete": "\x1b[3~",
 }
 
@@ -207,6 +211,8 @@ def _key_to_bytes(token: str) -> str | None:
     """
     if token in _KEY_BYTES:
         return _KEY_BYTES[token]
+    if len(token) == 1 and token.isprintable() and not token.isspace():
+        return token
     if token.startswith("M-"):
         rest = token[2:]
         # Meta plus a single printable character is ESC then that character —

@@ -1,4 +1,4 @@
-"""The Pi keyboard contract must remain a leaf, not join handler import cycles."""
+"""The keyboard leaf may depend on pure models, never stateful handlers."""
 
 import ast
 from pathlib import Path
@@ -14,7 +14,7 @@ def test_pi_keyboard_has_no_stateful_ccgram_dependencies():
         if isinstance(node, ast.ImportFrom)
         and (node.level or (node.module or "").startswith("ccgram"))
     ]
-    assert imports == [(2, "callback_data")]
+    assert imports == [(2, "callback_data"), (3, "providers.base")]
     assert not any(
         alias.name.startswith("ccgram")
         for node in ast.walk(tree)

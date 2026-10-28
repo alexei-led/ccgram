@@ -586,6 +586,16 @@ class TmuxManager:
 
         return await asyncio.to_thread(_sync_capture)
 
+    @staticmethod
+    def _send_pane_input(
+        pane: libtmux.Pane, text: str, *, enter: bool, literal: bool
+    ) -> None:
+        # tmux needs extended-key configuration to encode Shift+Enter itself.
+        # CLI editors accept CSI-u directly; don't change the user's server.
+        if not literal and text == "S-Enter":
+            text, literal = "\x1b[13;2u", True
+        pane.send_keys(text, enter=enter, literal=literal)
+
     def _pane_send(
         self,
         window_id: str,
@@ -613,7 +623,7 @@ class TmuxManager:
             if not pane:
                 logger.debug("No active pane in window %s", window_id)
                 return False
-            pane.send_keys(chars, enter=enter, literal=literal)
+            self._send_pane_input(pane, chars, enter=enter, literal=literal)
             return True
         except _TmuxError:
             logger.exception("Failed to send keys to window %s", window_id)
@@ -930,7 +940,7 @@ class TmuxManager:
                 if not pane:
                     logger.debug("Pane %s not found", pane_id)
                     return False
-                pane.send_keys(text, enter=enter, literal=literal)
+                self._send_pane_input(pane, text, enter=enter, literal=literal)
                 return True
             except _TmuxError:
                 logger.exception("Failed to send keys to pane %s", pane_id)

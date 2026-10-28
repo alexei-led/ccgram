@@ -2,7 +2,7 @@
 
 import re
 
-from .base import StatusUpdate
+from .base import StatusUpdate, TerminalControl, TerminalMenu
 
 PI_QUESTION_FOOTER = "↑↓ navigate • Enter select • Esc cancel • number quick-select"
 
@@ -72,7 +72,59 @@ def parse_pi_ui(pane_text: str) -> StatusUpdate | None:
         display_label=ui_type,
         is_interactive=True,
         ui_type=ui_type,
+        menu=_menu(ui_type, body) if ui_type.startswith("Pi") else None,
     )
+
+
+def _menu(ui_type: str, body: str) -> TerminalMenu:
+    controls = [
+        TerminalControl("↑5", ("Up",) * 5),
+        TerminalControl("↑", ("Up",)),
+        TerminalControl("↓", ("Down",)),
+        TerminalControl("↓5", ("Down",) * 5),
+        TerminalControl("←", ("Left",)),
+        TerminalControl("␣ Space", ("Space",)),
+        TerminalControl("→", ("Right",)),
+        TerminalControl("⇥ Tab", ("Tab",)),
+    ]
+    text_input = (
+        ui_type != "PiSelect"
+        or "Type to filter" in body
+        or body.startswith("Select provider to logout:")
+    )
+    if text_input:
+        controls.extend(
+            [
+                TerminalControl("Clear search", ("C-u",)),
+                TerminalControl("⌫", ("BSpace",)),
+            ]
+        )
+    if ui_type in {"PiModel", "PiThinking", "PiScopedModels"}:
+        controls.append(
+            TerminalControl(
+                "Save scope" if ui_type == "PiScopedModels" else "Save default",
+                ("C-s",),
+            )
+        )
+    if ui_type == "PiScopedModels":
+        controls.extend(
+            [
+                TerminalControl("All matching", ("C-a",)),
+                TerminalControl("None matching", ("C-x",)),
+                TerminalControl("Provider", ("C-p",)),
+                TerminalControl("Move ↑", ("M-Up",)),
+                TerminalControl("Move ↓", ("M-Down",)),
+            ]
+        )
+    if ui_type == "PiEditor" and "shift+enter" in body:
+        controls.append(TerminalControl("New line", ("S-Enter",)))
+    controls.extend(
+        [
+            TerminalControl("⎋ Esc", ("Escape",)),
+            TerminalControl("⏎ Enter", ("Enter",)),
+        ]
+    )
+    return TerminalMenu(tuple(controls), text_input=text_input)
 
 
 def _ui_type(body: str) -> str | None:

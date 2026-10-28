@@ -1,0 +1,16 @@
+Configure Status Line
+Select which items to display in the status line.
+
+Type to search
+
+› [x] Use theme colors      Apply colors from the active /theme
+  ───────────────────────
+  [x] model-with-reasoning  Current model name with reasoning level
+  [x] git-branch            Current Git branch (omitted when unavailable)
+  [x] context-window-size   Total context window size in tokens (omitted when unknown)
+  [x] context-remaining     Percentage of context window remaining (omitted when unknown)
+  [x] pull-request-number   Open pull request number for the current branch (omitted when unavailable)
+  [x] branch-changes        Committed branch changes against the default branch (omitted when unavailable)
+↓
+  <status preview>
+  space toggle · ←/→ reorder · enter save · esc cancel

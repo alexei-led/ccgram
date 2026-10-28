@@ -21,6 +21,8 @@ from ccgram.providers.base import (
     ResumableSession,
     SessionStartEvent,
     StatusUpdate,
+    TerminalControl,
+    TerminalMenu,
 )
 from ccgram.providers.process_detection import JS_RUNTIMES, get_cached_foreground_pgid
 from ccgram.providers.registry import ProviderRegistry, UnknownProviderError, registry
@@ -465,6 +467,8 @@ __all__ = [
     "ResumableSession",
     "SessionStartEvent",
     "StatusUpdate",
+    "TerminalControl",
+    "TerminalMenu",
     "UnknownProviderError",
     "detect_provider_from_command",
     "detect_provider_from_pane",
