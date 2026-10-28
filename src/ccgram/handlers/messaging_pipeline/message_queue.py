@@ -61,6 +61,7 @@ from .message_task import (
     MessageTask,
     StatusClearTask,
     StatusUpdateTask,
+    defer_task,
     thread_key,
 )
 from .tool_batch import (
@@ -257,6 +258,9 @@ def queues_idle() -> bool:
 _tool_msg_ids: dict[tuple[str, int, int], int] = {}
 
 _CAPTION_MAX_LENGTH = 1024  # Telegram Bot API caption limit
+
+# Longest sleep when every queued task is parked behind flood control.
+_FLOOD_POLL_MAX_S = 0.5
 
 
 def _truncate_caption(text: str) -> str:
@@ -741,6 +745,19 @@ def _log_rate_limit_queue_state(
     )
 
 
+class _FloodDeferredError(Exception):
+    """A task Telegram rate-limited while other messages are ready to send.
+
+    Parked instead of slept on: flood control is per chat, so a blocked chat
+    must not hold another topic's message for the length of its backoff. When
+    nothing else is ready the caller just waits in place, as before.
+    """
+
+    def __init__(self, retry_in: float) -> None:
+        super().__init__(f"deferred {retry_in:.1f}s")
+        self.retry_in = retry_in
+
+
 def _is_transient_status_task(task: MessageTask) -> bool:
     """Return whether flood control may safely discard this status operation."""
     return isinstance(task, StatusClearTask) or (
@@ -756,8 +773,8 @@ async def _dispatch_with_retry(
     lock: asyncio.Lock,
 ) -> DeliveryOutcome:
     """Dispatch one task, dropping dead targets and bounding flood retries."""
-    rate_limit_retry = 0
-    retry_started = time.monotonic()
+    rate_limit_retry = state.task.flood_retries
+    retry_started = state.task.flood_started or time.monotonic()
     while True:
         dispatch_state = DispatchState()
         if _is_stale_task(user_id, state.task):
@@ -830,7 +847,11 @@ async def _dispatch_with_retry(
                             backoff_seconds=backoff,
                             jitter_seconds=jitter,
                             retry_in_seconds=retry_in,
+                            others_ready=_has_ready_task(queue),
                         )
+                        if _has_ready_task(queue):
+                            # Another topic can go now; give it the turn.
+                            raise _FloodDeferredError(retry_in) from exc
                         await asyncio.sleep(retry_in)
             finally:
                 structlog.contextvars.clear_contextvars()
@@ -841,9 +862,56 @@ async def _dispatch_with_retry(
             return outcome
 
 
+def _has_ready_task(queue: asyncio.Queue[MessageTask]) -> bool:
+    """True when a queued task is not parked behind flood control.
+
+    Delivery is one worker per user, so "is anything else ready" is the whole
+    fairness question: a ready message from another topic must go first.
+    """
+    now = time.monotonic()
+    # Queue internals: only a peek, never a mutation, so ordering and
+    # unfinished-task accounting stay intact.
+    parked_or_ready = getattr(queue, "_queue", ())
+    return any(
+        getattr(queued, "deferred_until", 0.0) <= now for queued in parked_or_ready
+    )
+
+
+async def _rotate_deferred_task(
+    queue: asyncio.Queue[MessageTask], task: MessageTask
+) -> None:
+    """Park a flood-limited task at the tail so a ready lane goes first."""
+    queue.task_done()
+    queue.put_nowait(task)
+
+
+def _settle_attempt(
+    user_id: int,
+    task: MessageTask,
+    merged_receipts: tuple[DeliveryReceipt, ...],
+    outcome: DeliveryOutcome,
+) -> None:
+    """Close out one attempt: settle receipts and record delivery lag."""
+    for receipt in _delivery_receipts_for_settlement(task, merged_receipts):
+        receipt.settle(outcome)
+    _record_content_delivery(user_id, task)
+
+
+def _clear_pending_markers(user_id: int, task: MessageTask) -> None:
+    """Drop the queued markers for a status task now that it is being served."""
+    if isinstance(task, StatusUpdateTask):
+        _pending_status_updates.discard(
+            (user_id, task.window_id, thread_key(task.thread_id), task.transient)
+        )
+    elif isinstance(task, StatusClearTask):
+        _pending_status_clears.discard(
+            (user_id, task.window_id or "", thread_key(task.thread_id))
+        )
+
+
 async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
     global _inflight_count
-    """Process message tasks for a user sequentially."""
+    """Process message tasks for a user, one at a time, fair across lanes."""
     queue = _message_queues[user_id]
     lock = _queue_locks[user_id]
     logger.debug("Message queue worker started for user %s", user_id)
@@ -851,33 +919,39 @@ async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
     while True:
         try:
             task = await queue.get()
-            if isinstance(task, StatusUpdateTask):
-                _pending_status_updates.discard(
-                    (
-                        user_id,
-                        task.window_id,
-                        thread_key(task.thread_id),
-                        task.transient,
+            if task.deferred_until > time.monotonic():
+                if _has_ready_task(queue):
+                    await _rotate_deferred_task(queue, task)
+                    continue
+                # Nothing else to send: wait out this task's backoff, then
+                # dispatch it. Sleeping here is the old behaviour, and only
+                # happens when every queued message is parked.
+                await asyncio.sleep(
+                    min(
+                        task.deferred_until - time.monotonic(),
+                        _QUEUE_RETRY_BUDGET_SECONDS,
                     )
                 )
-            elif isinstance(task, StatusClearTask):
-                _pending_status_clears.discard(
-                    (user_id, task.window_id or "", thread_key(task.thread_id))
-                )
+            _clear_pending_markers(user_id, task)
             _inflight_count += 1
             _mark_task_inflight(user_id, task)
             outcome = DeliveryOutcome.DELIVERED
             retry_state = RetryDispatchState(task)
+            deferred: _FloodDeferredError | None = None
             try:
                 outcome = await _dispatch_with_retry(
                     client, user_id, retry_state, queue, lock
                 )
+            except _FloodDeferredError as flood:
+                # Not delivered and not failed: keep the receipts open so the
+                # source watermark cannot advance past an unsent message.
+                deferred = flood
             except asyncio.CancelledError:
                 # A bounded shutdown may cancel an in-flight send. Do not
                 # acknowledge bytes whose task was interrupted; restart replays.
                 outcome = DeliveryOutcome.FAILED
                 raise
-            except Exception:  # noqa: BLE001 — delivery failures must not kill workers
+            except Exception:  # noqa: BLE001 - delivery failures must not kill workers
                 outcome = DeliveryOutcome.FAILED
                 logger.exception(
                     "Error processing message task for user %s (thread %s)",
@@ -885,13 +959,23 @@ async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
                     getattr(task, "thread_id", None),
                 )
             finally:
-                for receipt in _delivery_receipts_for_settlement(
-                    retry_state.task, retry_state.merged_receipts
-                ):
-                    receipt.settle(outcome)
-                _record_content_delivery(user_id, retry_state.task)
                 _inflight_count -= 1
                 queue.task_done()
+                if deferred is not None:
+                    queue.put_nowait(
+                        defer_task(
+                            retry_state.task,
+                            retry_in=deferred.retry_in,
+                            now=time.monotonic(),
+                        )
+                    )
+                else:
+                    _settle_attempt(
+                        user_id,
+                        retry_state.task,
+                        retry_state.merged_receipts,
+                        outcome,
+                    )
         except asyncio.CancelledError:
             logger.debug("Message queue worker cancelled for user %s", user_id)
             break
