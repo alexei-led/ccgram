@@ -260,6 +260,23 @@ class TestParseTopicPlan:
         assert parsed.plan.branch is None
         assert parsed.plan.instruction == "explain @decorator syntax"
 
+    def test_a_symlinked_project_keeps_its_listed_name(self, tmp_path: Path) -> None:
+        """The word the operator types is the link name, not the target name."""
+        real = tmp_path / "repos" / "backend"
+        (real / ".git").mkdir(parents=True)
+        root = tmp_path / "workspace"
+        root.mkdir()
+        (root / "client").symlink_to(real)
+
+        parsed = parse_topic_plan(
+            "codex client fix the bug", roots=[root], default_agent="claude"
+        )
+
+        assert parsed.plan is not None
+        # The plan keeps the listed name; resolution happens at launch time.
+        assert parsed.plan.project.name == "client"
+        assert parsed.plan.project.resolve() == real.resolve()
+
 
 class TestBuildLabel:
     def test_label_carries_project_and_hint(self) -> None:

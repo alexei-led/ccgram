@@ -14,7 +14,7 @@ from telegram import Update
 from ...config import config
 from ..messaging_pipeline.message_sender import safe_reply
 from ..commands import commands_command
-from ..user_state import PENDING_PLAN, PENDING_THREAD_ID, PENDING_THREAD_TEXT
+from ..user_state import PENDING_THREAD_ID, PENDING_THREAD_TEXT
 from .directory_browser import (
     clear_browse_state,
     clear_window_picker_state,
@@ -37,10 +37,6 @@ async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     clear_window_picker_state(context.user_data)
     clear_worktree_state(context.user_data)
     clear_workspace_state(context.user_data)
-    # A pending typed plan is creation state too: its keyboard must fail
-    # closed after /start like every other creation keyboard.
-    if context.user_data is not None:
-        context.user_data.pop(PENDING_PLAN, None)
     if context.user_data is not None:
         context.user_data.pop(PENDING_THREAD_ID, None)
         context.user_data.pop(PENDING_THREAD_TEXT, None)

@@ -105,6 +105,10 @@ class PlanParse:
     instruction: str = ""
     mode: str = ""
     branch: str | None = None
+    # True when the text named a project slot that could not be used
+    # (ambiguous, explicit path, or followed by @branch). Then the caller
+    # reports it; False means the word was just the first instruction word.
+    blocked: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +152,11 @@ def list_projects(
 
     With ``git_only`` a child counts only when it holds a git marker, which
     keeps the candidate list to things an agent session can actually use.
+
+    Entries keep the name they are listed under: a root may hold a symlink
+    (``client`` → ``/repos/backend``) whose name is the word the operator
+    types, and resolving it here would make that word unmatchable. Dedupe is
+    by resolved path so two links to one checkout appear once.
     """
     seen: set[Path] = set()
     projects: list[Path] = []
@@ -168,7 +177,7 @@ def list_projects(
             if git_only and not is_git_repo(resolved):
                 continue
             seen.add(resolved)
-            projects.append(resolved)
+            projects.append(child)
     return projects
 
 
@@ -373,16 +382,22 @@ def parse_topic_plan(
             instruction_start = branch_start
 
     if project is None:
+        # Offer the whole candidate list only when no project word was tried:
+        # with a blocked slot the candidates are exactly what was matched, and
+        # an empty list means "nothing by that name", not "pick anything".
+        offered = candidates
+        if not blocked:
+            offered = tuple(list_projects(roots, git_only=git_only)[:PROJECT_HINTS])
         return PlanParse(
             reason="project",
-            candidates=candidates
-            or tuple(list_projects(roots, git_only=git_only)[:PROJECT_HINTS]),
+            candidates=offered,
             agent=agent,
             agent_typed=agent_typed,
             project_typed=project_typed,
             instruction=text[instruction_start:].strip(),
             mode=mode,
             branch=branch,
+            blocked=blocked,
         )
 
     instruction = text[tokens[consumed - 1][2] :].strip() if consumed else text.strip()

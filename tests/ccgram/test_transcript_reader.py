@@ -720,10 +720,11 @@ class TestStartupReplayBound:
         )
         return TranscriptReader(state, IdleTracker()), state, session_file
 
-    async def test_the_parser_rebuild_bound_is_the_clamp_point(
+    async def test_the_parser_rebuild_reads_up_to_the_clamp_point(
         self, tmp_path, monkeypatch
     ) -> None:
-        """Rebuilding to the watermark would miss the skipped turn (Codex "Done")."""
+        """A rebuild bounded by the watermark would miss the skipped turn."""
+        from ccgram import transcript_reader as module
         from ccgram.config import config
 
         monkeypatch.setattr(config, "startup_replay_max_bytes", 120, raising=False)
@@ -731,8 +732,22 @@ class TestStartupReplayBound:
         await reader._process_session_file("sess", session_file, [], window_id="@1")
         tracked = state.get_session("sess")
         assert tracked is not None
+        clamp = reader._startup_clamped["sess"]
+        watermark = tracked.last_byte_offset
 
-        assert (
-            reader._clamped_floor("sess", tracked.last_byte_offset)
-            == (reader._startup_clamped["sess"])
-        )
+        seen: list[int] = []
+        real_parse = module.parse_records
+
+        def spy(entries, provider_name, parser_state, **kwargs):
+            seen.extend(entry.offset for entry in entries)
+            return real_parse(entries, provider_name, parser_state, **kwargs)
+
+        reader._parser_rebuild_pending.add("sess")
+        monkeypatch.setattr(module, "parse_records", spy)
+        await reader._process_session_file("sess", session_file, [], window_id="@1")
+
+        assert seen, "rebuild did not parse anything"
+        assert max(seen) <= clamp
+        if watermark < clamp:
+            # Bounded by the watermark, the rebuild would stop before the clamp.
+            assert max(seen) > watermark

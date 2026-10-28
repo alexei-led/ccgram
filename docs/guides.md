@@ -556,7 +556,7 @@ this topic, renames the topic to the plan label, and forwards the instruction.
 Notes:
 
 - Agent words are matched against the alias table only, so an ordinary sentence is never mistaken for a command.
-- When the project word matches several projects, CCGram replies with one message listing them as buttons; a tap launches the same plan. A word that matches nothing is read as the first instruction word (using the last-used project), unless an `@branch` follows it — that proves a project slot, so the failure is reported instead of guessed. The directory browser opens only when nothing else can be done: no project word, no last-used project, no candidates.
+- When the project word matches several projects, CCGram replies with one message naming them; retype the line with the full name. Nothing is stored between messages, so there is no keyboard to go stale. A word that matches nothing is read as the first instruction word (using the last-used project), unless an `@branch` follows it — that proves a project slot, so the failure is reported instead of guessed. The directory browser opens only when nothing else can be done: no project word, no last-used project, no candidates.
 - Under a projects root the directory browser lists **git checkouts only**; deeper levels list every subdirectory. Set `CCGRAM_DIR_BROWSER_ALL_DIRS=true` to list everything everywhere.
 
 ### Defaults instead of pickers
@@ -603,7 +603,8 @@ A fresh agent can stop before its prompt. CCGram clears the two known cases
 without a tap:
 
 - **Claude — "Do you trust the files in this folder?"** — CCGram writes
-  `hasTrustDialogAccepted` for the project in `~/.claude.json` before launch.
+  `hasTrustDialogAccepted` for the project in the profile the launch reads: the
+  `CLAUDE_CONFIG_DIR` profile when that is set, otherwise `~/.claude.json`.
 - **Codex — hooks review ("trust all and continue")** — CCGram adds
   `[projects."<path>"]` with `trust_level = "trusted"` to
   `$CODEX_HOME/config.toml` (or `~/.codex/config.toml`).
@@ -613,9 +614,12 @@ exact fingerprint and sends the documented keys once. If readiness fails and
 no fingerprint matches, the launch reports the blocked session instead of
 guessing.
 
-Turn the whole layer off with `CCGRAM_AUTOSTART_TRUST=false`, or for one agent
-with `CCGRAM_<AGENT>_AUTOSTART=off` (for example
-`CCGRAM_CODEX_AUTOSTART=off`).
+Turn the whole layer off with `CCGRAM_AUTOSTART_TRUST=false` — that switch is final, and a
+per-agent `on` cannot override it. Disable one agent with `CCGRAM_<AGENT>_AUTOSTART=off` (for example
+`CCGRAM_CODEX_AUTOSTART=off`). Seeding is skipped automatically when a
+provider has a launch-command override, because an override such as
+`CODEX_HOME=/profiles/work codex` points the agent at a profile this
+process cannot see.
 
 ### Topic and session names
 

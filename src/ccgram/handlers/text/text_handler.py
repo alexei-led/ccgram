@@ -303,7 +303,6 @@ async def _handle_unbound_topic(
             user_id=user_id,
             thread_id=thread_id,
             text=text,
-            user_data=user_data,
             message=message,
             context=context,
         )

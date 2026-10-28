@@ -46,13 +46,17 @@ _CODEX_TRUST_LINE = 'trust_level = "trusted"'
 
 def autostart_enabled(provider_name: str) -> bool:
     """Whether readiness handling runs for *provider_name*."""
-    override = os.getenv(f"CCGRAM_{provider_name.upper()}_AUTOSTART")
-    if override is not None and override.strip():
-        return override.strip().lower() in ("1", "true", "yes", "on")
     # Lazy: Config requires the runtime environment.
     from .config import config
 
-    return config.autostart_trust
+    if not config.autostart_trust:
+        # The global switch is an off switch: a per-agent "on" cannot override
+        # an operator who turned the whole layer off.
+        return False
+    override = os.getenv(f"CCGRAM_{provider_name.upper()}_AUTOSTART")
+    if override is not None and override.strip():
+        return override.strip().lower() in ("1", "true", "yes", "on")
+    return True
 
 
 def _write_atomic(path: Path, text: str) -> bool:
@@ -84,10 +88,12 @@ def _claude_config_file() -> Path | None:
     home_profile = Path.home() / ".claude.json"
     config_dir = config.claude_config_dir
     if os.getenv("CLAUDE_CONFIG_DIR", "").strip():
+        # The configured profile is the only one the launch reads. Falling back
+        # to home would write trust into a file that agent never opens, while
+        # leaving the real profile unseeded.
         candidates = [
             config_dir / ".claude.json",
             config_dir.parent / ".claude.json",
-            home_profile,
         ]
     else:
         candidates = [
@@ -218,8 +224,20 @@ def _codex_project_trust(existing: str, cwd: Path) -> bool | None:
 
 
 def preseed_trust(provider_name: str, cwd: Path) -> bool:
-    """Best-effort trust seeding for *provider_name* in *cwd*."""
+    """Best-effort trust seeding for *provider_name* in *cwd*.
+
+    Skipped when the provider has a launch-command override: an override can
+    point the agent at its own profile (``CODEX_HOME=... codex``), which this
+    process cannot resolve, so seeding the bot's own profile would write to a
+    file the launch never reads.
+    """
     if not autostart_enabled(provider_name):
+        return False
+    if os.environ.get(f"CCGRAM_{provider_name.upper()}_COMMAND", "").strip():
+        logger.debug(
+            "Skipping trust seeding for %s: launch command override in use",
+            provider_name,
+        )
         return False
     seeder = _PRESEEDERS.get(provider_name)
     if seeder is None:

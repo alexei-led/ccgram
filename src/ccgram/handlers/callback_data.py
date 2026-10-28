@@ -84,11 +84,6 @@ CB_RESUME_PICK = "res:p:"  # res:p:<index> (session selection)
 CB_RESUME_PAGE = "res:pg:"  # res:pg:<page> (pagination)
 CB_RESUME_CANCEL = "res:x"  # cancel resume browser
 
-# Typed-plan flow (one message starts a session)
-CB_PLAN_HOME = "plan:h"  # plan:h — start in the last-used project, no project word
-CB_PLAN_SELECT = "plan:p:"  # plan:p:<idx> — pick a candidate project by index
-CB_PLAN_CANCEL = "plan:x"  # plan:x — drop the pending plan
-
 # Provider selection (directory browser flow)
 CB_PROV_SELECT = "prov:"  # prov:<provider_name>
 CB_MODE_SELECT = "mode:"  # mode:<provider_name>:<normal|yolo>

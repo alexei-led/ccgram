@@ -87,6 +87,9 @@ class WindowLaunchRequest:
     # PENDING_WORKTREE_* keys of a half-finished browser flow, which would
     # launch this plan into another repository's checkout.
     ignore_pending_worktree: bool = False
+    # Same rule for a workspace picked in another topic's browser flow: a
+    # typed launch resolves its own placement and must not inherit it.
+    ignore_pending_workspace: bool = False
 
 
 @dataclass
@@ -618,7 +621,11 @@ async def launch_window(  # noqa: C901, PLR0911, PLR0912, PLR0915
             raise
 
     chosen_workspace_id: str | None = (
-        context.user_data.get(PENDING_WORKSPACE_ID) if context.user_data else None
+        None
+        if request.ignore_pending_workspace
+        else (
+            context.user_data.get(PENDING_WORKSPACE_ID) if context.user_data else None
+        )
     ) or None
 
     creation_was_cancelled = False

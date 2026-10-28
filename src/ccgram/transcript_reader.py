@@ -573,6 +573,10 @@ class TranscriptReader:
                 # watermark follow via commit_parsed_offsets().
                 tracked.parsed_offset = st.st_size
                 self._startup_file_boundaries.pop(session_id, None)
+                # A replaced transcript has no pre-restart backlog left: a clamp
+                # that survived would bound parser rebuild past the new file and
+                # swallow live answers.
+                self._startup_clamped.pop(session_id, None)
         return _GenerationCheck(changed and not consumed_intact, consumed_intact)
 
     async def _read_session_entries(
@@ -620,6 +624,7 @@ class TranscriptReader:
                 return _StableRead(entries, after, reset_generation)
             tracked.parsed_offset = after.st_size
             self._startup_file_boundaries.pop(session_id, None)
+            self._startup_clamped.pop(session_id, None)
             reset_generation = True
         return None
 
@@ -829,6 +834,12 @@ class TranscriptReader:
                 self._startup_file_boundaries[session_id] = (
                     self._startup_file_boundaries.pop(old_session_id)
                 )
+            # A refresh can arrive before the old id was ever polled, so the
+            # clamp has not run yet: carry the membership instead of the clamp,
+            # and clear the checked flag so the bound is applied to this id.
+            if old_session_id in self._startup_sessions:
+                self._startup_sessions.add(session_id)
+                self._startup_replay_checked.discard(session_id)
             # The clamp is keyed by session id, so a refreshed id would read as
             # a brand-new session and replay the backlog the old id clamped.
             if old_session_id in self._startup_clamped:
