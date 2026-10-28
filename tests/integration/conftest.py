@@ -54,13 +54,13 @@ def _no_agent_config_writes(monkeypatch):
     tests exercise the real launch_window, so without this every run would
     rewrite the developer's own agent config.
     """
-    from ccgram.handlers.topics import window_launch_service as wls
+    from ccgram import agent_startup
 
     async def _no_answer(*_args, **_kwargs) -> bool:
         return False
 
-    monkeypatch.setattr(wls, "preseed_trust", lambda *a, **k: False)
-    monkeypatch.setattr(wls, "answer_first_run_prompt", _no_answer)
+    monkeypatch.setattr(agent_startup, "preseed_trust", lambda *a, **k: False)
+    monkeypatch.setattr(agent_startup, "answer_first_run_prompt", _no_answer)
 
 
 @pytest.fixture(autouse=True)

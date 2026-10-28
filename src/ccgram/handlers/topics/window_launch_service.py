@@ -20,7 +20,6 @@ import structlog
 from telegram import CallbackQuery, Message
 from telegram.error import TelegramError
 
-from ...agent_startup import answer_first_run_prompt, preseed_trust
 from ...config import config
 from ...providers import registry as provider_registry
 from ...session import session_manager
@@ -183,6 +182,10 @@ async def _create_topic_window(
         if request and request.worktree_path
         else (ud.get(PENDING_WORKTREE_PATH) if ud else None)
     )
+    # Lazy: agent_startup imports the provider registry, which reaches back
+    # into the handlers package — a module-scope import closes that cycle.
+    from ...agent_startup import preseed_trust
+
     # Seed the agent's own trust record so its first-run dialog never shows.
     # Offloaded: it reads/writes a JSON/TOML file on disk.
     await asyncio.to_thread(preseed_trust, provider_name, Path(selected_path))
@@ -796,6 +799,9 @@ async def launch_window(  # noqa: C901, PLR0911, PLR0912, PLR0915
             # A declared first-run screen (folder trust, hook trust) blocks the
             # agent before it can report readiness. Answer it and wait once
             # more, instead of quarantining a session the user can see running.
+            # Lazy: same cycle as the seeding import above.
+            from ...agent_startup import answer_first_run_prompt
+
             answered = await answer_first_run_prompt(
                 created_wid,
                 provider_name,

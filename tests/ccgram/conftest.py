@@ -92,7 +92,7 @@ def _clean_proxy_env(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _no_agent_config_writes(monkeypatch):
+def _no_agent_config_writes(monkeypatch, request):
     """Keep launch tests from touching the operator's real agent config.
 
     The launch path seeds a provider's trust record (Claude: ~/.claude.json,
@@ -101,10 +101,14 @@ def _no_agent_config_writes(monkeypatch):
     so they are disabled by default; the tests that exercise them patch the
     functions explicitly with a temp home.
     """
-    from ccgram.handlers.topics import window_launch_service as wls
+    if request.node.path.name == "test_agent_startup.py":
+        # That module tests the real seeding and fingerprint code.
+        return
 
-    monkeypatch.setattr(wls, "preseed_trust", lambda *a, **k: False)
-    monkeypatch.setattr(wls, "answer_first_run_prompt", _no_first_run_answer)
+    from ccgram import agent_startup
+
+    monkeypatch.setattr(agent_startup, "preseed_trust", lambda *a, **k: False)
+    monkeypatch.setattr(agent_startup, "answer_first_run_prompt", _no_first_run_answer)
 
 
 async def _no_first_run_answer(*_args, **_kwargs) -> bool:
