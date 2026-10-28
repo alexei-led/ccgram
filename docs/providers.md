@@ -334,6 +334,44 @@ The automatic menu above is the primary control; the toolbar remains a fallback:
 
 Override with a `[providers.pi]` block in `~/.ccgram/toolbar.toml`.
 
+## omo
+
+[omo](https://github.com/) is an omo-ai distribution built on
+`@code-yeongyu/senpi`, a Pi fork. Its sessions, TUI parser and Telegram command
+list are shared with Pi, so CCGram serves both through the same code path.
+
+Unlike Pi, omo ships no `cc-thingz` hook runner: CCGram marks the provider as
+hook-less (`ccgram doctor` reports "hook check skipped") and relies on transcript
+scanning only. State lives under `~/.omo/agent`; the agent directory is resolved
+from `OMO_CODING_AGENT_DIR`, then `SENPI_CODING_AGENT_DIR`, then
+`PI_CODING_AGENT_DIR`, matching omo's own resolution order.
+
+### Launch
+
+The default command is `omo`; override it with `CCGRAM_OMO_COMMAND`. YOLO mode
+appends `--permission-preset full-access`, which omo needs to run unattended -
+without it the agent waits on approval prompts Telegram cannot answer.
+
+### Detection
+
+The omo launcher is a JS entry point, so tmux reports `bun` as the pane command.
+CCGram therefore asks for the pane title on `bun`/`node` panes and matches omo's
+window title (`OmO - <project>`); a process literally named `omo`, and the
+`@code-yeongyu/senpi` path markers used by the agterm backend, are recognised as
+well.
+
+### Transcript
+
+`~/.omo/agent/sessions/--<encoded-cwd>--/<timestamp>_<uuid>.jsonl`, with the same
+JSONL v3 header as Pi. Resume uses `--session <path-or-uuid>`, and `--continue`
+serves the Continue button.
+
+### Model selection
+
+`/model` in omo prints the model list into the transcript instead of opening a
+modal selector, so it is not advertised as a TUI picker; pin the model in the
+launch command when a specific one is required.
+
 ## Shell
 
 The shell provider opens a plain shell session in tmux. It has no hooks, no transcript, and no resume/continue support — shell sessions are ephemeral.

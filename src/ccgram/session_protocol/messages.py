@@ -14,6 +14,7 @@ from pathlib import Path
 from datetime import UTC, datetime
 from typing import Any
 
+from ..providers.pi import PI_LIKE_PROVIDERS
 from .models import Message, Part
 
 _PART_FIELDS = frozenset(part_field.name for part_field in fields(Part)) - {"id"}
@@ -508,7 +509,11 @@ def _chat(entry: SourceEntry, provider: str) -> TranscriptRecord | None:
     if role not in _CHAT_ROLES:
         return None
     parts, results = _content(msg.get("content"))
-    if provider == "pi" and role == "assistant" and msg.get("stopReason") == "error":
+    if (
+        provider in PI_LIKE_PROVIDERS
+        and role == "assistant"
+        and msg.get("stopReason") == "error"
+    ):
         error_message = msg.get("errorMessage")
         error_text = (
             error_message.strip()
@@ -807,7 +812,7 @@ def parse_records(
             else _claude(entry, parser_state)
             if provider == "claude"
             else _pi(entry)
-            if provider == "pi"
+            if provider in PI_LIKE_PROVIDERS
             else None
         )
         if record is None or record.role not in {"user", "agent"}:
