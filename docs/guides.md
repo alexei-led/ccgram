@@ -309,6 +309,24 @@ These are in-memory progress metrics, so they reset when CCGram restarts. Health
 
 The raw provider transcript is retained; Jump to live does not delete or rewrite it. CCGram advances the durable delivered watermark past the skipped range only after Telegram acknowledges the skipped-range notice. If CCGram restarts or notice delivery fails first, it restores the barrier and retries the notice rather than silently advancing. Normal transcript relay is **at-least-once**, not exactly-once: a Telegram outcome that is not confirmed before a retry or restart can produce a duplicate message. This watermark policy favors retaining/replaying output over losing it.
 
+### Restarts and flood control
+
+The delivered watermark advances only once the queue is fully drained, so a
+flood-limited or wedged queue leaves it behind the transcript. Two behaviours
+keep the next restart from turning that into a message flood:
+
+- **Bounded startup replay** — on the first poll of each session after a
+  restart, an undelivered range larger than `CCGRAM_STARTUP_REPLAY_MAX_KB`
+  (default **256**) is treated as history: the parse position jumps to the
+  transcript EOF and the range is not delivered. The bytes stay in the raw
+  transcript. Set `CCGRAM_STARTUP_REPLAY_MAX_KB=0` to replay everything again
+  (the previous behaviour).
+- **Fair delivery across chats** — Telegram rate limits per chat. When a send
+  hits flood control and another queued message is ready, the limited task is
+  parked at the tail and the ready one goes first; the parked task keeps its
+  delivery receipts open, so no watermark advances past it. When nothing else
+  is ready the worker waits out the backoff in place, as before.
+
 ## Thinking Visibility
 
 By default, thinking messages are forwarded to Telegram. Set `CCGRAM_HIDE_THINKING=true` or use `--hide-thinking` to hide them globally.
