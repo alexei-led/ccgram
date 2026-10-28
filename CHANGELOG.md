@@ -5,6 +5,76 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.19.0] - 2026-10-28
+
+### One line to start a session
+
+- Type `<agent>[:<mode>] <project|path> [@branch] <instruction>` in a fresh
+  topic and CCGram creates the session, binds the topic, names it and forwards
+  the instruction. The window picker, directory browser, worktree picker,
+  workspace picker, provider picker and mode picker are no longer part of the
+  normal path. `codex ccgram fix the hook timeout` is the whole flow.
+- Projects resolve under `CCGRAM_PROJECTS_ROOTS` (default `~/Workspace` when
+  it exists, else `~`): exact name, unique prefix, or an explicit path.
+  Symlinked names keep working. An ambiguous name gets one reply naming the
+  choices; a word followed by `@branch` is reported rather than guessed, and
+  nothing is stored between messages.
+- `@branch` creates a git worktree and roots the session in the same
+  subdirectory the project named, on every backend.
+- `/bind` adopts an already-running window when you want the old behaviour,
+  and sessions started in the terminal still become topics on their own.
+
+### Fewer prompts
+
+- Sessions launch in YOLO mode by default, and providers without a permissive
+  flag (Shell, Pi) always launch normally. An unrecognized mode suffix is
+  reported instead of silently selecting YOLO.
+- First-run screens are cleared without a tap: Claude's folder trust is seeded
+  in the profile the launch reads (`$CLAUDE_CONFIG_DIR` when set, otherwise
+  `~/.claude.json`), Codex's project trust in `$CODEX_HOME/config.toml`. When
+  a declared screen still appears, its exact fingerprint is answered once.
+  Seeding is skipped when a provider has a launch-command override, because an
+  override can select a profile CCGram cannot see.
+- Pickers offer only enabled providers whose CLI is installed. Gemini is out of
+  the default list, and an explicit `gemini ...` line is refused rather than
+  running the default provider.
+
+### Names that stay put
+
+- The topic title comes from the plan label and is pinned as the display name,
+  so a backend or agent title change no longer renames a topic to
+  `<name> <target id>`.
+
+### Restart flood control
+
+- An undelivered transcript range larger than `CCGRAM_STARTUP_REPLAY_MAX_KB`
+  (default 256) is treated as history on the first poll after a restart,
+  instead of re-sending thousands of messages into a flood-limited chat. A
+  skipped range stays skipped across a backlog-skip cancel, a session-id
+  refresh and a transcript replacement; output written after the clamp is
+  still delivered.
+
+### Upgrade
+
+**Defaults changed.** Each is one variable away from the previous behaviour:
+
+| Behaviour | New default | Restore the old default |
+| --- | --- | --- |
+| Launch mode | YOLO | `CCGRAM_DEFAULT_MODE=normal` |
+| Worktree step in the browser flow | off | `CCGRAM_NEW_TOPIC_WORKTREES=true` |
+| Workspace picker (herdr/agterm) | off, resolved from the folder | `CCGRAM_WORKSPACE_PICKER=true` |
+| Bind-existing picker on a new topic | off, use `/bind` | `CCGRAM_BIND_PICKER=true` |
+| Provider list | antigravity, claude, codex, pi, shell | `CCGRAM_PROVIDERS_ENABLED=claude,codex,gemini,pi,shell,antigravity` |
+
+**New settings:** `CCGRAM_PROJECTS_ROOTS`, `CCGRAM_STARTUP_REPLAY_MAX_KB`.
+
+**Agent config writes:** CCGram may now add a trust entry for the project it
+launches into: `~/.claude.json` (or the configured profile) and
+`$CODEX_HOME/config.toml`. `CCGRAM_AUTOSTART_TRUST=false` turns this off; the
+switch is final, and a per-agent `on` cannot override it.
+
+No state migration is needed. Upgrade and restart the bot.
+
 ## [4.18.4] - 2026-10-25
 
 ### Reliable session cleanup
