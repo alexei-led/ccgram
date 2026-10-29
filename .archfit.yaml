@@ -401,26 +401,31 @@ rules:
     from: ccgram.handlers**
     to: ccgram.multiplexer.tmux
     gate: fail
+    rationale: "A handler that imports a concrete multiplexer backend ties message handling to that one backend; callers go through the neutral ccgram.multiplexer proxy, so a backend can change without touching them."
   - id: no-handlers-to-herdr
     type: forbidden_dependency
     from: ccgram.handlers**
     to: ccgram.multiplexer.herdr
     gate: fail
+    rationale: "A handler that imports a concrete multiplexer backend ties message handling to that one backend; callers go through the neutral ccgram.multiplexer proxy, so a backend can change without touching them."
   - id: no-handlers-to-mux-registry
     type: forbidden_dependency
     from: ccgram.handlers**
     to: ccgram.multiplexer.registry
     gate: fail
+    rationale: "A handler that imports a concrete multiplexer backend ties message handling to that one backend; callers go through the neutral ccgram.multiplexer proxy, so a backend can change without touching them."
   - id: no-providers-to-tmux
     type: forbidden_dependency
     from: ccgram.providers**
     to: ccgram.multiplexer.tmux
     gate: fail
+    rationale: "A provider that imports a concrete multiplexer backend ties provider logic to that one backend; callers go through the neutral ccgram.multiplexer proxy, so a backend can change without touching them."
   - id: no-providers-to-herdr
     type: forbidden_dependency
     from: ccgram.providers**
     to: ccgram.multiplexer.herdr
     gate: fail
+    rationale: "A provider that imports a concrete multiplexer backend ties provider logic to that one backend; callers go through the neutral ccgram.multiplexer proxy, so a backend can change without touching them."
   # No-tty drift gate: handlers learn the foreground process through the
   # `detect_provider_from_pane` facade, never by importing the classifier
   # directly. Mirrors the pytest test_no_tty_outside_backend audit.
@@ -429,6 +434,7 @@ rules:
     from: ccgram.handlers**
     to: ccgram.providers.process_detection
     gate: fail
+    rationale: "A handler that imports the process classifier reads terminal state itself; handlers learn the foreground process through the detect_provider_from_pane facade."
   # Neutral push observation must not own Telegram transport or recipient routing.
   # The runtime import audit also covers nested/lazy imports and external types.
   - id: no-event-stream-to-handlers
@@ -436,28 +442,33 @@ rules:
     from: ccgram.event_stream_monitor
     to: ccgram.handlers**
     gate: fail
+    rationale: "Push observation that owns message handling stops being neutral: it can no longer be reused or tested without the bot."
   - id: no-event-stream-to-telegram
     type: forbidden_dependency
     from: ccgram.event_stream_monitor
     to: ccgram.telegram**
     gate: fail
+    rationale: "Push observation that owns Telegram transport stops being neutral: it can no longer be reused or tested without the bot."
   - id: no-event-stream-to-routing
     type: forbidden_dependency
     from: ccgram.event_stream_monitor
     to: ccgram.thread_router
     gate: fail
+    rationale: "Push observation that owns recipient routing stops being neutral: it can no longer be reused or tested without the bot."
   # Composition uses the supported adapter entrypoint, not private policy helpers.
   - id: no-bootstrap-to-polling-implementation
     type: forbidden_dependency
     from: ccgram.bootstrap
     to: ccgram.handlers.polling.window_tick**
     gate: fail
+    rationale: "Composition that reaches into private polling helpers breaks when they change; it uses the supported adapter entrypoint."
   # The runner supplies live lifecycle facts; the bot must not import CLI state.
   - id: no-bot-to-main
     type: forbidden_dependency
     from: ccgram.bot
     to: ccgram.main
     gate: fail
+    rationale: "The bot importing CLI state inverts the dependency: the runner supplies live lifecycle facts to the bot, not the other way round."
   # Advisory (see header): archfit counts lazy/in-function imports as cycle
   # edges; the runtime gate is the clean-interpreter test_import_no_cycles.
   - id: no-import-cycles
