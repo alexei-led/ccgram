@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.21.0] - 2026-10-28
+
+### Native command menus across agents
+
+- Drive recognized Codex and Claude Code command menus from an editable Telegram message, alongside Pi. Controls follow the native screen instead of guessing shortcuts from numbered rows.
+- Search or type by replying to a text-enabled menu without pressing Enter. Shortcut-only views expose a Search button where the CLI supports one.
+- Keep callbacks and replies bound to the displayed message, prompt, sequence and pane. Stale controls cannot confirm a newer prompt. Permission and question replies retain their existing workflow.
+
+### Input and recovery
+
+- Insert a newline in Pi extension editors without submitting, on agterm and tmux.
+- Recognize wrapped and ANSI-colored Codex menus without reviving stale screens.
+- Show only Refresh on unverified views, recover after failed menu updates, and label persistent and session-only actions separately.
+
+Support is limited to recognized screens and default keybindings. Not every native command, nested editor or save/apply action has been validated. Finish authentication and unsupported/private screens in the terminal. See [provider coverage](docs/providers.md#native-command-menus).
+
+### Upgrade
+
+No configuration migration is required. Upgrade and restart ccgram, then reopen menus for fresh controls:
+
+```console
+uv tool upgrade ccgram
+# Or:
+brew upgrade ccgram
+```
+
+[Full Changelog](https://github.com/alexei-led/ccgram/compare/v4.20.0...v4.21.0)
+
 ## [4.20.0] - 2026-10-28
 
 ### Pi menus in Telegram
