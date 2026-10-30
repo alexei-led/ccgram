@@ -37,6 +37,9 @@ _YOLO_FLAGS: dict[str, str] = {
     "claude": "--dangerously-skip-permissions",
     "codex": "--dangerously-bypass-approvals-and-sandbox",
     "gemini": "--yolo",
+    # ccgram launches in yolo mode by default; without this flag omo would
+    # stop on approval prompts nobody can answer from Telegram.
+    "omo": "--permission-preset full-access",
 }
 
 
@@ -126,6 +129,9 @@ def _ensure_registered() -> None:
     from ccgram.providers.gemini import GeminiProvider
 
     # Lazy: provider classes register against the registry at import; defer until the registry factory runs
+    from ccgram.providers.omo import OmoProvider
+
+    # Lazy: provider classes register against the registry at import; defer until the registry factory runs
     from ccgram.providers.pi import PiProvider
 
     # Lazy: provider classes register against the registry at import; defer until the registry factory runs
@@ -135,6 +141,7 @@ def _ensure_registered() -> None:
     registry.register("claude", ClaudeProvider)
     registry.register("codex", CodexProvider)
     registry.register("gemini", GeminiProvider)
+    registry.register("omo", OmoProvider)
     registry.register("pi", PiProvider)
     registry.register("shell", ShellProvider)
     _registered = True
@@ -249,7 +256,7 @@ def detect_provider_from_command(pane_current_command: str) -> str:
     # Match basename only (first token) to avoid false positives
     # from paths like /home/claude/bin/vim
     basename = os.path.basename(cmd.split()[0])
-    for name in ("antigravity", "claude", "codex", "gemini", "pi"):
+    for name in ("antigravity", "claude", "codex", "gemini", "omo", "pi"):
         if (
             basename == name
             or (name == "antigravity" and basename == "agy")
@@ -300,8 +307,12 @@ def detect_provider_from_transcript_path(transcript_path: str) -> str:
         return "claude"
     if "/.gemini/" in normalized and "/chats/" in normalized:
         return "gemini"
-    if "/.pi/agent/sessions/" in normalized:
-        return "pi"
+    for marker, provider in (
+        ("/.omo/agent/sessions/", "omo"),
+        ("/.pi/agent/sessions/", "pi"),
+    ):
+        if marker in normalized:
+            return provider
     return ""
 
 

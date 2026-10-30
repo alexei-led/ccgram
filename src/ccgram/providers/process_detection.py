@@ -49,6 +49,7 @@ _PROVIDER_BASENAMES: tuple[tuple[frozenset[str], str], ...] = (
     (frozenset({"claude", "ce", "cc-mirror", "zai"}), "claude"),
     (frozenset({"codex"}), "codex"),
     (frozenset({"gemini"}), "gemini"),
+    (frozenset({"omo"}), "omo"),
     (frozenset({"pi"}), "pi"),
 )
 
@@ -59,6 +60,9 @@ _PROVIDER_PATH_MARKERS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("claude-code", "cc-team"), "claude"),
     (("@openai/codex", "/codex/", "/codex-"), "codex"),
     (("gemini-cli",), "gemini"),
+    # omo ships as a JS CLI under @code-yeongyu/senpi with its plugin package;
+    # the bin shim re-execs under bun, so only the path identifies it.
+    (("@code-yeongyu/senpi", "/senpi/", "/omo-ai/"), "omo"),
     (("@mariozechner/pi-coding-agent", "/pi-coding-agent/"), "pi"),
 )
 
@@ -92,8 +96,8 @@ def classify_provider_from_argv(argv: Sequence[str]) -> str:
 
     Skips wrapper tokens (``node``, ``bun``, ``sudo``, …) and matches the
     first meaningful token against known provider names or path markers.
-    Returns provider name (``"claude"``, ``"codex"``, ``"gemini"``, ``"pi"``,
-    ``"shell"``) or empty string if unrecognised.
+    Returns provider name (``"claude"``, ``"codex"``, ``"gemini"``, ``"omo"``,
+    ``"pi"``, ``"shell"``) or empty string if unrecognised.
     """
     for token in argv:
         cleaned = os.path.basename(token).lower().lstrip("-")

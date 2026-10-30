@@ -63,7 +63,7 @@ Each Telegram topic maps to one tmux window. With Herdr, it maps instead to one 
 ## What You Can Do
 
 - **Start from one line** — `codex ccgram fix the hook timeout` creates the session, binds the topic, and forwards the instruction; `/bind` adopts an already-running window
-- **Auto-detect providers** — Supports Claude Code, Codex, Gemini, Pi, and Shell simultaneously
+- **Auto-detect providers** — Supports Claude Code, Codex, Gemini, Pi, omo, and Shell simultaneously
 - **Monitor live** — Terminal screenshots on demand or auto-refresh every 5 seconds
 - **Topic-aware command panels** — Four safe General controls; session-specific CCGram actions and original agent command names in each topic
 - **Send commands** — Slash commands, voice messages (transcribed via Whisper), or raw shell input

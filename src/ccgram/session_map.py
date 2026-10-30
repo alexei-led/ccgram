@@ -34,6 +34,7 @@ from typing import Any, Literal, cast
 import aiofiles
 
 from .config import config
+from .providers.pi import PI_LIKE_PROVIDERS
 from .herdr_targets import is_herdr_session_target
 from .hooks.state_files import StateFileValidationError, parse_session_map_entry
 from .utils import atomic_write_json, log_throttle_reset, log_throttled
@@ -887,7 +888,7 @@ class SessionMapSync:
 
                     pending_key = pending_pi_replay_key(session_id)
                     existing = session_map.get(window_key)
-                    replay_from_start = provider_name == "pi" and (
+                    replay_from_start = provider_name in PI_LIKE_PROVIDERS and (
                         pending_key in session_map
                         or (
                             isinstance(existing, dict)
