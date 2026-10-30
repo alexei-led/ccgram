@@ -89,6 +89,11 @@ _MARKER_BYTES = 128
 # a marker-preserving rewrite would never reach the cap: the idle deadline
 # forces one full verification regardless of activity.
 _PREFIX_VERIFY_CAP = 32
+# (0, 1, 0.0) is the never-verified sentinel for sessions the schedule has
+# not seen yet. monotonic() is boot-relative, so on a host up for less than
+# _PREFIX_VERIFY_MAX_IDLE_S the 0.0 stamp leaves the idle deadline undue:
+# that defers verifications, never adds one, and the first clean
+# verification writes a real stamp.
 _PREFIX_VERIFY_FRESH = (0, 1, 0.0)
 _PREFIX_VERIFY_MAX_IDLE_S = 900.0
 
@@ -551,7 +556,9 @@ class TranscriptReader:
         )
 
     def _reset_prefix_verify(self, session_id: str) -> None:
-        self._prefix_verify[session_id] = _PREFIX_VERIFY_FRESH
+        # A real monotonic stamp, not the 0.0 sentinel: the post-clamp idle
+        # deadline must already be running (see _PREFIX_VERIFY_FRESH).
+        self._prefix_verify[session_id] = (0, 1, time.monotonic())
 
     async def _record_clean_verification(
         self, session_id: str, file_path: Path, st: Any

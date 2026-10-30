@@ -1066,6 +1066,7 @@ async def test_overdue_session_forces_verification_even_while_growing(
     reader._prefix_verify["sess"] = (
         transcript_reader._PREFIX_VERIFY_CAP,
         transcript_reader._PREFIX_VERIFY_CAP,
+        0.0,
     )
     real_digest = transcript_reader._prefix_digest
 
@@ -1093,14 +1094,17 @@ async def test_atomic_replacement_preserving_marker_clamps(tmp_path) -> None:
     """A new inode keeping the verified prefix and marker but editing the gap clamps.
 
     Review P1. The baseline must NOT cover consumed: appends since the
-    last clean verification grow the parse position past the digest, then
-    an atomic replacement preserves the verified prefix and the last 128
-    bytes while changing the middle. The digest ran and matched its own
-    range, the marker matches, yet nothing proved the gap.
+    constructor snapshot grow the parse position past the digest, then an
+    atomic replacement preserves the verified prefix and the last 128
+    bytes while changing the middle and appends one unread line beyond.
+    The digest ran and matched its own range, the marker matches, the size
+    covers pos, yet nothing proved the gap: the dismissal must not fire on
+    generation evidence alone, and the clamp must swallow the unread line
+    as history.
     """
     base = '{"type":"user","message":{"content":[{"type":"text","text":"a"}]}}\n'
     session_file = tmp_path / "t.jsonl"
-    session_file.write_text(base)
+    session_file.write_text(base, newline="\n")
     state = MonitorState(state_file=tmp_path / "m.json")
     state.update_session(
         TrackedSession(session_id="s", file_path=str(session_file), last_byte_offset=0)
@@ -1110,25 +1114,164 @@ async def test_atomic_replacement_preserving_marker_clamps(tmp_path) -> None:
     baseline = state.tracked_sessions["s"].parsed_offset
 
     grow = (
-        '{"type":"assistant","message":{"content":[{"type":"text","text":"pad0"}]}}\n'
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"%s"}]}}\n'
+        % ("g" * 160)
     )
     with session_file.open("a") as fh:
         fh.write(grow)
     await reader._process_session_file("s", session_file, [], window_id="@1")
     consumed = state.tracked_sessions["s"].parsed_offset
     assert consumed > baseline
-
-    text = session_file.read_text()
     gap_len = (consumed - 128) - baseline
+    # The preserved tail window must start past the baseline: a shorter
+    # grow puts the fill inside the window and clamps through the ordinary
+    # marker-mismatch path, which the pre-fix code takes as well.
+    assert gap_len > 0
+
+    fresh = (
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"tail-fresh"}]}}\n'
+    )
+    # Byte-exact construction: char slicing preserves the 128-byte marker
+    # window only while every fixture byte is ASCII.
+    data = session_file.read_bytes()
     replaced = tmp_path / "r.jsonl"
-    replaced.write_text(
-        text[:baseline] + "X" * max(gap_len, 1) + text[consumed - 128 :]
+    replaced.write_bytes(
+        data[:baseline] + b"X" * gap_len + data[consumed - 128 :] + fresh.encode()
     )
     os.replace(replaced, session_file)
 
     messages: list = []
     await reader._process_session_file("s", session_file, messages, window_id="@1")
-    assert all("XXXX" not in str(m) for m in messages)
+    # The discriminating observable: the pre-fix code dismisses the
+    # generation signal (marker, size, and digest all intact) and delivers
+    # the unread line; the clamp treats it as already-notified history.
+    assert messages == []
+    assert state.tracked_sessions["s"].parsed_offset >= session_file.stat().st_size
+
+
+async def test_stale_marker_mismatch_during_inplace_rewrite_is_not_an_append(
+    tmp_path,
+) -> None:
+    """A stale-offset marker mismatch during an in-place rewrite is not an append.
+
+    Review gate 2. The cached marker offset trails the parse position (the
+    post-clamp cache shape), so a mismatch there cannot set marker_changed,
+    but it did happen during a rewrite: only a marker that still MATCHES
+    may qualify the cycle as a verified append. The mid-read rewrite edits
+    consumed bytes inside the stale window, so the read must fall to the
+    consumed-prefix digest, fail it, and clamp instead of delivering the
+    concurrent entry as an append cycle.
+    """
+    history = "".join(
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"h%d"}]}}\n'
+        % index
+        for index in range(6)
+    )
+    fresh = (
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"fresh"}]}}\n'
+    )
+    session_file = tmp_path / "t.jsonl"
+    session_file.write_text(history, newline="\n")
+    state = MonitorState(state_file=tmp_path / "m.json")
+    state.update_session(
+        TrackedSession(session_id="s", file_path=str(session_file), last_byte_offset=0)
+    )
+    reader = TranscriptReader(state, IdleTracker())
+    await reader._process_session_file("s", session_file, [], window_id="@1")
+    pos = state.tracked_sessions["s"].parsed_offset
+    with session_file.open("a") as fh:
+        fh.write(fresh)
+    # Sentinel bytes no transcript content can match.
+    reader._file_markers["s"] = (pos - 64, b"stale-sentinel")
+
+    original_read = reader._read_new_lines
+    rewritten = False
+
+    async def rewrite_then_read(*args, **kwargs):
+        nonlocal rewritten
+        if not rewritten:
+            session_file.write_text(
+                session_file.read_text().replace('"h3"', '"hZ"', 1),
+                newline="\n",
+            )
+            rewritten = True
+        return await original_read(*args, **kwargs)
+
+    import time as _time
+
+    messages: list = []
+    t0 = _time.monotonic()
+    with patch.object(reader, "_read_new_lines", side_effect=rewrite_then_read):
+        await reader._process_session_file("s", session_file, messages, window_id="@1")
+
+    assert messages == []
+    assert reader._prefix_verify["s"][:2] == (0, 1)
+    # The post-clamp reset must carry a real monotonic stamp, not the
+    # never-verified 0.0 sentinel: on a freshly booted host the sentinel
+    # would leave the idle deadline undue for the whole boot window.
+    assert reader._prefix_verify["s"][2] >= t0
+
+
+async def test_generation_dismissal_requires_a_digest_verdict(tmp_path) -> None:
+    """An OSError during the scheduled digest blocks the generation dismissal.
+
+    Review P1, OSError half. The marker matches and the cached baseline
+    covers every consumed byte, but the digest run raised: no verdict ran,
+    so a new inode must not be dismissed on metadata alone. Dropping the
+    prefix_checked conjunct would fire the dismissal and deliver the
+    unread line.
+    """
+    base = '{"type":"user","message":{"content":[{"type":"text","text":"a"}]}}\n'
+    session_file = tmp_path / "t.jsonl"
+    session_file.write_text(base, newline="\n")
+    state = MonitorState(state_file=tmp_path / "m.json")
+    state.update_session(
+        TrackedSession(session_id="s", file_path=str(session_file), last_byte_offset=0)
+    )
+    reader = TranscriptReader(state, IdleTracker())
+    await reader._process_session_file("s", session_file, [], window_id="@1")
+    baseline = state.tracked_sessions["s"].parsed_offset
+
+    grow = (
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"%s"}]}}\n'
+        % ("g" * 160)
+    )
+    with session_file.open("a") as fh:
+        fh.write(grow)
+    # Drop the marker cache so the growth cycle cannot defer the scheduled
+    # digest: the clean verification extends the cached baseline over the
+    # gap, which is what would make the covered-range check alone pass.
+    reader._file_markers.pop("s", None)
+    await reader._process_session_file("s", session_file, [], window_id="@1")
+    consumed = state.tracked_sessions["s"].parsed_offset
+    gap_len = (consumed - 128) - baseline
+    assert gap_len > 0
+
+    fresh = (
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"tail-fresh"}]}}\n'
+    )
+    data = session_file.read_bytes()
+    replaced = tmp_path / "r.jsonl"
+    replaced.write_bytes(
+        data[:baseline] + b"X" * gap_len + data[consumed - 128 :] + fresh.encode()
+    )
+    os.replace(replaced, session_file)
+
+    real_digest = transcript_reader._prefix_digest
+    raised = {"done": False}
+
+    def _raise_once(path, size):
+        if not raised["done"]:
+            raised["done"] = True
+            raise OSError("digest unavailable")
+        return real_digest(path, size)
+
+    messages: list = []
+    with patch("ccgram.transcript_reader._prefix_digest", side_effect=_raise_once):
+        await reader._process_session_file("s", session_file, messages, window_id="@1")
+
+    assert messages == []
+    assert state.tracked_sessions["s"].parsed_offset >= session_file.stat().st_size
 
 
 def test_idle_deadline_forces_verification(tmp_path) -> None:
