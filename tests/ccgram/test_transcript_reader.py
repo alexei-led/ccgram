@@ -877,7 +877,7 @@ async def test_clamp_cycle_keeps_verify_schedule_at_shortest_interval(
         session_file.write_text(history.replace('"h4"', '"h9"'), newline="\n")
         reader._file_mtimes["sess"] = 0.0
         await reader._process_session_file("sess", session_file, [], window_id="@1")
-        assert reader._prefix_verify["sess"] == (0, 1)
+        assert reader._prefix_verify["sess"][:2] == (0, 1)
 
         # One marker-verified append cycle counts up to (1, 1), so the next
         # quiet cycle is due and must run the full verification. Had the
@@ -888,7 +888,7 @@ async def test_clamp_cycle_keeps_verify_schedule_at_shortest_interval(
                 '{"type":"assistant","message":{"content":[{"type":"text","text":"m0"}]}}\n'
             )
         await reader._process_session_file("sess", session_file, [], window_id="@1")
-        assert reader._prefix_verify["sess"] == (1, 1)
+        assert reader._prefix_verify["sess"][:2] == (1, 1)
 
         reader._file_mtimes["sess"] = 0.0
         with patch(
@@ -896,7 +896,7 @@ async def test_clamp_cycle_keeps_verify_schedule_at_shortest_interval(
         ) as digest:
             await reader._process_session_file("sess", session_file, [], window_id="@1")
         assert digest.call_count > 0
-        assert reader._prefix_verify["sess"] == (0, 2)
+        assert reader._prefix_verify["sess"][:2] == (0, 2)
 
 
 async def test_rewrite_of_tail_marker_window_clamps_without_replay(
@@ -940,7 +940,7 @@ async def test_rewrite_of_tail_marker_window_clamps_without_replay(
     assert tracked.parsed_offset == session_file.stat().st_size
     # The clamp resets the schedule to the shortest interval, and the same
     # cycle's intact read must not double the interval away from it.
-    assert reader._prefix_verify["sess"] == (0, 1)
+    assert reader._prefix_verify["sess"][:2] == (0, 1)
 
 
 async def test_prefix_verify_backoff_resets_on_restart_and_generation_change(
@@ -969,7 +969,7 @@ async def test_prefix_verify_backoff_resets_on_restart_and_generation_change(
         return_value=_CLAUDE_PROVIDER,
     ):
         await reader._process_session_file("sess", session_file, [], window_id="@1")
-        assert reader._prefix_verify["sess"] == (0, 2)
+        assert reader._prefix_verify["sess"][:2] == (0, 2)
 
         for index in range(2):
             line = (
@@ -979,7 +979,7 @@ async def test_prefix_verify_backoff_resets_on_restart_and_generation_change(
             with session_file.open("a") as transcript:
                 transcript.write(line)
             await reader._process_session_file("sess", session_file, [], window_id="@1")
-        assert reader._prefix_verify["sess"] == (2, 2)
+        assert reader._prefix_verify["sess"][:2] == (2, 2)
 
         replacement = tmp_path / "replacement.jsonl"
         replacement.write_text(
@@ -993,7 +993,7 @@ async def test_prefix_verify_backoff_resets_on_restart_and_generation_change(
         )
 
     assert messages == []
-    assert reader._prefix_verify["sess"] == (0, 1)
+    assert reader._prefix_verify["sess"][:2] == (0, 1)
 
     reader.clear_session("sess")
     assert "sess" not in reader._prefix_verify
@@ -1087,3 +1087,71 @@ async def test_overdue_session_forces_verification_even_while_growing(
         assert reader._prefix_verify["sess"][0] < transcript_reader._PREFIX_VERIFY_CAP
 
     assert [msg.text for msg in messages] == ["m0"]
+
+
+async def test_atomic_replacement_preserving_marker_clamps(tmp_path) -> None:
+    """A new inode keeping the verified prefix and marker but editing the gap clamps.
+
+    Review P1. The baseline must NOT cover consumed: appends since the
+    last clean verification grow the parse position past the digest, then
+    an atomic replacement preserves the verified prefix and the last 128
+    bytes while changing the middle. The digest ran and matched its own
+    range, the marker matches, yet nothing proved the gap.
+    """
+    base = '{"type":"user","message":{"content":[{"type":"text","text":"a"}]}}\n'
+    session_file = tmp_path / "t.jsonl"
+    session_file.write_text(base)
+    state = MonitorState(state_file=tmp_path / "m.json")
+    state.update_session(
+        TrackedSession(session_id="s", file_path=str(session_file), last_byte_offset=0)
+    )
+    reader = TranscriptReader(state, IdleTracker())
+    await reader._process_session_file("s", session_file, [], window_id="@1")
+    baseline = state.tracked_sessions["s"].parsed_offset
+
+    grow = (
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"pad0"}]}}\n'
+    )
+    with session_file.open("a") as fh:
+        fh.write(grow)
+    await reader._process_session_file("s", session_file, [], window_id="@1")
+    consumed = state.tracked_sessions["s"].parsed_offset
+    assert consumed > baseline
+
+    text = session_file.read_text()
+    gap_len = (consumed - 128) - baseline
+    replaced = tmp_path / "r.jsonl"
+    replaced.write_text(
+        text[:baseline] + "X" * max(gap_len, 1) + text[consumed - 128 :]
+    )
+    os.replace(replaced, session_file)
+
+    messages: list = []
+    await reader._process_session_file("s", session_file, messages, window_id="@1")
+    assert all("XXXX" not in str(m) for m in messages)
+
+
+def test_idle_deadline_forces_verification(tmp_path) -> None:
+    """Quiet polls stop counting, so the monotonic deadline forces a digest.
+
+    Review P2: the stale-stamp branch is the one that must fire when the
+    growth-cycle counter sits far under its threshold.
+    """
+    import time as _time
+    from ccgram.transcript_reader import _PREFIX_VERIFY_MAX_IDLE_S
+
+    session_file = tmp_path / "t.jsonl"
+    session_file.write_text("{}\n")
+    state = MonitorState(state_file=tmp_path / "m.json")
+    state.update_session(
+        TrackedSession(session_id="s", file_path=str(session_file), last_byte_offset=0)
+    )
+    reader = TranscriptReader(state, IdleTracker())
+    reader._prefix_verify["s"] = (
+        1,
+        32,
+        _time.monotonic() - _PREFIX_VERIFY_MAX_IDLE_S - 1,
+    )
+    assert reader._prefix_verify_due("s") is True
+    reader._prefix_verify["s"] = (1, 32, _time.monotonic())
+    assert reader._prefix_verify_due("s") is False

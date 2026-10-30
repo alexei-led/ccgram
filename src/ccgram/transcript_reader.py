@@ -19,6 +19,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 from pathlib import Path
+import time
 from typing import TYPE_CHECKING, Any, Callable, NamedTuple
 
 import aiofiles
@@ -84,8 +85,12 @@ _MARKER_BYTES = 128
 # A missed in-place rewrite is only caught at the next verification; the
 # parse position never rewinds, so no replay can occur, and the cost is a
 # delayed clamp plus whatever appends land in the clamp cycle itself.
+# The backoff only counts growth cycles, so a session that goes quiet after
+# a marker-preserving rewrite would never reach the cap: the idle deadline
+# forces one full verification regardless of activity.
 _PREFIX_VERIFY_CAP = 32
-_PREFIX_VERIFY_FRESH = (0, 1)
+_PREFIX_VERIFY_FRESH = (0, 1, 0.0)
+_PREFIX_VERIFY_MAX_IDLE_S = 900.0
 
 
 def _transcript_output_text(value: Any) -> str:
@@ -384,7 +389,9 @@ class TranscriptReader:
         # later rollback must not undo the clamp, and must not skip output
         # written after it either.
         self._startup_clamped: dict[str, int] = {}
-        self._prefix_verify: dict[str, tuple[int, int]] = {}
+        # (cycles, threshold, last-verified monotonic): one value so pop and
+        # adoption migrate atomically instead of drifting across two dicts.
+        self._prefix_verify: dict[str, tuple[int, int, float]] = {}
 
     def _snapshot_file_ctimes(self) -> dict[str, int]:
         ctimes: dict[str, int] = {}
@@ -522,17 +529,25 @@ class TranscriptReader:
 
     def _prefix_verify_due(self, session_id: str) -> bool:
         state = self._prefix_verify.get(session_id)
-        return state is None or state[0] >= state[1]
+        if state is None or state[0] >= state[1]:
+            return True
+        # Growth-cycle backoff never counts quiet polls, so a session that
+        # stops appending right after a marker-preserving rewrite would sit
+        # under the threshold forever; the idle deadline bounds the deferral.
+        return time.monotonic() - state[2] > _PREFIX_VERIFY_MAX_IDLE_S
 
     def _prefix_verify_overdue(self, session_id: str) -> bool:
         state = self._prefix_verify.get(session_id)
         return state is not None and state[0] >= _PREFIX_VERIFY_CAP
 
     def _note_append_cycle(self, session_id: str) -> None:
-        cycles, threshold = self._prefix_verify.get(session_id, _PREFIX_VERIFY_FRESH)
+        cycles, threshold, verified_at = self._prefix_verify.get(
+            session_id, _PREFIX_VERIFY_FRESH
+        )
         self._prefix_verify[session_id] = (
             min(cycles + 1, _PREFIX_VERIFY_CAP),
             threshold,
+            verified_at,
         )
 
     def _reset_prefix_verify(self, session_id: str) -> None:
@@ -553,6 +568,7 @@ class TranscriptReader:
         self._prefix_verify[session_id] = (
             0,
             min(threshold * 2, _PREFIX_VERIFY_CAP),
+            time.monotonic(),
         )
 
     async def _prepare_observed_generation(
@@ -615,10 +631,25 @@ class TranscriptReader:
         if changed and check_marker:
             if prefix_checked and prefix_changed:
                 consumed_intact = False
-            elif marker_changed is False and st.st_size >= pos:
+            elif (
+                marker_changed is False
+                and st.st_size >= pos
+                and (
+                    not generation_signal
+                    or (
+                        prefix_checked
+                        and self._prefix_covers_consumed(session_id, pos, st)
+                    )
+                )
+            ):
                 # No digest verdict contradicts the signal (none ran, or the
                 # checked prefix matched while no longer covering consumed):
-                # an intact tail marker rules out a consuming rewrite.
+                # an intact tail marker rules out a consuming rewrite. An
+                # inode change is stronger evidence than same-file ctime
+                # churn: an atomic replacement can preserve the old prefix
+                # and the marker window while changing bytes between them,
+                # so dismissing a NEW generation demands proof covering all
+                # consumed bytes, not the last 128 alone.
                 consumed_intact = True
             else:
                 consumed_intact = prefix_checked and self._prefix_covers_consumed(
@@ -683,6 +714,7 @@ class TranscriptReader:
             rewritten_in_place = before.st_ctime_ns != after.st_ctime_ns
             marker_changed = False
             marker_checked = False
+            marker_matched = False
             saved = self._file_markers.get(session_id) if check_marker else None
             # saved[0] may sit before start_offset when a same-cycle clamp in
             # the generation probe already advanced the parse position. The
@@ -690,7 +722,10 @@ class TranscriptReader:
             # survived, so it can qualify the read as a verified append, but
             # only a comparison at the current offset is replacement evidence:
             # treating a stale mismatch as changed would leave the marker
-            # cache forever unmatched and clamp every later append away.
+            # cache forever unmatched and clamp every later append away. A
+            # MISMATCH at the stale offset still happened during an in-place
+            # rewrite, so it must not qualify the read as an append; only a
+            # marker that still matches may.
             if saved is not None and saved[0] <= start_offset:
                 try:
                     marker = await asyncio.to_thread(_tail_marker, file_path, saved[0])
@@ -698,12 +733,17 @@ class TranscriptReader:
                     return None
                 marker_changed = saved[0] == start_offset and marker != saved[1]
                 marker_checked = True
+                marker_matched = marker == saved[1]
             if (
                 same_generation
                 and not marker_changed
                 and (
                     not rewritten_in_place
-                    or (marker_checked and after.st_size >= before.st_size)
+                    or (
+                        marker_checked
+                        and marker_matched
+                        and after.st_size >= before.st_size
+                    )
                 )
             ):
                 # Verified append: either nothing changed during the read, or
