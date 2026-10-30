@@ -1148,6 +1148,32 @@ class TranscriptReader:
         self._file_mtimes.pop(tracked.session_id, None)
         return False
 
+    def _poll_already_seen(
+        self,
+        tracked: TrackedSession,
+        *,
+        supports_incremental_read: bool,
+        generation_changed: bool,
+        rebuild_parser: bool,
+        current_mtime: float,
+        current_size: int,
+    ) -> bool:
+        """True when nothing this poll depends on changed since the last one.
+
+        A generation change, a pending parser rebuild, or an mtime bump all
+        force the read; otherwise incremental readers also need the size to
+        have passed the parse position, while whole-document readers re-parse
+        on any mtime change alone.
+        """
+        if generation_changed or rebuild_parser:
+            return False
+        last_mtime = self._file_mtimes.get(tracked.session_id, 0.0)
+        if current_mtime > last_mtime:
+            return False
+        if supports_incremental_read:
+            return current_size <= self._parse_pos(tracked)
+        return True
+
     async def _process_session_file(
         self,
         session_id: str,
@@ -1209,19 +1235,13 @@ class TranscriptReader:
             self._parser_rebuild_pending.add(session_id)
         previous_parsed_offset = tracked.parsed_offset
         rebuild_parser = session_id in self._parser_rebuild_pending
-        last_mtime = self._file_mtimes.get(session_id, 0.0)
-        if provider.capabilities.supports_incremental_read:
-            if (
-                not generation_changed
-                and not rebuild_parser
-                and current_mtime <= last_mtime
-                and current_size <= self._parse_pos(tracked)
-            ):
-                return
-        elif (
-            not generation_changed
-            and not rebuild_parser
-            and current_mtime <= last_mtime
+        if self._poll_already_seen(
+            tracked,
+            supports_incremental_read=provider.capabilities.supports_incremental_read,
+            generation_changed=generation_changed,
+            rebuild_parser=rebuild_parser,
+            current_mtime=current_mtime,
+            current_size=current_size,
         ):
             return
 
