@@ -82,9 +82,13 @@ _MARKER_BYTES = 128
 
 # Full-prefix verification is O(file) while appends are the common case, so
 # marker-verified append cycles defer it on an exponential backoff (capped).
-# A missed in-place rewrite is only caught at the next verification; the
-# parse position never rewinds, so no replay can occur, and the cost is a
-# delayed clamp plus whatever appends land in the clamp cycle itself.
+# A rewrite of already-verified bytes is caught at the next verification of
+# that range; the parse position never rewinds, so no replay can occur, and
+# the cost is a delayed clamp plus whatever appends land in the clamp cycle
+# itself. One region has no prior digest to compare against: bytes appended
+# since the last verification but outside the tail-marker window are hashed
+# for the first time at the next verification, so a rewrite there is simply
+# absorbed.
 # The backoff only counts growth cycles, so a session that goes quiet after
 # a marker-preserving rewrite would never reach the cap: the idle deadline
 # forces one full verification regardless of activity.
@@ -568,7 +572,12 @@ class TranscriptReader:
         cycles that return at the mtime gate still advance the schedule."""
         size, digest = self._file_prefixes.get(session_id, (0, b""))
         if size != st.st_size:
-            digest = await asyncio.to_thread(_prefix_digest, file_path, st.st_size)
+            # A transient read error leaves the schedule untouched, so the
+            # verification stays due and retries next cycle.
+            try:
+                digest = await asyncio.to_thread(_prefix_digest, file_path, st.st_size)
+            except OSError:
+                return
             size = st.st_size
         self._file_prefixes[session_id] = (size, digest)
         threshold = self._prefix_verify.get(session_id, _PREFIX_VERIFY_FRESH)[1]
@@ -680,11 +689,19 @@ class TranscriptReader:
                 self._startup_clamped.pop(session_id, None)
                 # Re-baseline at the clamp point. The old content is gone; a
                 # stale baseline would make every later due verification
-                # mismatch and clamp away one append cycle each time.
-                self._file_prefixes[session_id] = (
-                    st.st_size,
-                    await asyncio.to_thread(_prefix_digest, file_path, st.st_size),
-                )
+                # mismatch and clamp away one append cycle each time. A
+                # transient read error keeps the stale baseline rather than
+                # unwinding the clamp: the covers check then stays false and
+                # the next cycle clamps again until the digest succeeds.
+                try:
+                    self._file_prefixes[session_id] = (
+                        st.st_size,
+                        await asyncio.to_thread(_prefix_digest, file_path, st.st_size),
+                    )
+                except OSError:
+                    logger.debug(
+                        "Clamp re-baseline digest failed for %s", session_id
+                    )
         resolved = changed and not consumed_intact
         if prefix_checked and not prefix_changed and not resolved:
             await self._record_clean_verification(session_id, file_path, st)
@@ -1148,6 +1165,42 @@ class TranscriptReader:
         self._file_mtimes.pop(tracked.session_id, None)
         return False
 
+    def _rollback_probe_observation(
+        self,
+        tracked: TrackedSession,
+        probe_offset: int,
+        probe_boundary: _StartupBoundary | None,
+        probe_clamped: int | None,
+        probe_prefix: tuple[int, bytes] | None,
+        probe_verify: tuple[int, int, float] | None,
+    ) -> None:
+        """Undo the probe's speculative writes when identity flipped.
+
+        A clamp inside the probe re-baselines the prefix at the new file
+        and re-arms the verify schedule. The observation flip discarded
+        this cycle's verdict, so keeping that baseline would bless a
+        replacement nobody committed to: every cached judgement goes back
+        to what the probe saw and the next cycle re-judges the file.
+        """
+        tracked.parsed_offset = probe_offset
+        session_id = tracked.session_id
+        if probe_boundary is None:
+            self._startup_file_boundaries.pop(session_id, None)
+        else:
+            self._startup_file_boundaries[session_id] = probe_boundary
+        if probe_clamped is None:
+            self._startup_clamped.pop(session_id, None)
+        else:
+            self._startup_clamped[session_id] = probe_clamped
+        if probe_prefix is None:
+            self._file_prefixes.pop(session_id, None)
+        else:
+            self._file_prefixes[session_id] = probe_prefix
+        if probe_verify is None:
+            self._prefix_verify.pop(session_id, None)
+        else:
+            self._prefix_verify[session_id] = probe_verify
+
     def _poll_already_seen(
         self,
         tracked: TrackedSession,
@@ -1210,6 +1263,9 @@ class TranscriptReader:
         self._clamp_startup_replay(session_id, tracked, current_size)
         probe_offset = tracked.parsed_offset
         probe_boundary = self._startup_file_boundaries.get(session_id)
+        probe_clamped = self._startup_clamped.get(session_id)
+        probe_prefix = self._file_prefixes.get(session_id)
+        probe_verify = self._prefix_verify.get(session_id)
         (
             generation_changed,
             consumed_intact,
@@ -1221,9 +1277,14 @@ class TranscriptReader:
             check_marker=provider.capabilities.supports_incremental_read,
         )
         if not identity_state.accepts_provider_observation(window_id, provider_name):
-            tracked.parsed_offset = probe_offset
-            if probe_boundary is not None:
-                self._startup_file_boundaries[session_id] = probe_boundary
+            self._rollback_probe_observation(
+                tracked,
+                probe_offset,
+                probe_boundary,
+                probe_clamped,
+                probe_prefix,
+                probe_verify,
+            )
             return
         if (
             not generation_changed

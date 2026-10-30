@@ -1212,6 +1212,78 @@ async def test_stale_marker_mismatch_during_inplace_rewrite_is_not_an_append(
     assert reader._prefix_verify["s"][2] >= t0
 
 
+async def test_identity_flip_after_probe_clamp_restores_the_baseline(
+    tmp_path, monkeypatch
+) -> None:
+    """A clamp observed during an identity flip must not bless the new file.
+
+    The probe clamps a replaced transcript and re-baselines the prefix at
+    the new EOF. When the provider observation flips right after the probe,
+    the rollback restores the parse offset; it must restore the baseline
+    too, or the next cycle dismisses the replacement against a baseline
+    nobody committed to and delivers the replaced file as new messages.
+    """
+    from ccgram.window_state_ports import identity_state
+
+    history = "".join(
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"h%d"}]}}\n'
+        % index
+        for index in range(5)
+    )
+    session_file = tmp_path / "transcript.jsonl"
+    session_file.write_text(history, newline="\n")
+    state = MonitorState(state_file=tmp_path / "m.json")
+    state.update_session(
+        TrackedSession(session_id="s", file_path=str(session_file), last_byte_offset=0)
+    )
+    reader = TranscriptReader(state, IdleTracker())
+    await reader._process_session_file("s", session_file, [], window_id="@1")
+    pos = state.tracked_sessions["s"].parsed_offset
+    baseline = reader._file_prefixes["s"]
+    verify = reader._prefix_verify.get("s")
+
+    replaced = tmp_path / "r.jsonl"
+    replaced.write_text(
+        "".join(
+            '{"type":"assistant","message":{"content":[{"type":"text","text":"g%d"}]}}\n'
+            % index
+            for index in range(4)
+        ),
+        newline="\n",
+    )
+    os.replace(replaced, session_file)
+
+    calls = {"n": 0}
+
+    def flip_after_probe(window_id, provider_name):
+        calls["n"] += 1
+        # The entry gate accepts; the post-probe check is what flips.
+        return calls["n"] < 2
+
+    monkeypatch.setattr(
+        identity_state, "accepts_provider_observation", flip_after_probe
+    )
+    flipped: list = []
+    await reader._process_session_file("s", session_file, flipped, window_id="@1")
+    assert flipped == []
+    assert state.tracked_sessions["s"].parsed_offset == pos
+    assert reader._file_prefixes["s"] == baseline
+    assert reader._prefix_verify.get("s") == verify
+
+    # With identity stable again the next cycle re-judges the file from the
+    # OLD baseline: the replacement clamps instead of being dismissed and
+    # the replaced content is never delivered.
+    monkeypatch.setattr(
+        identity_state,
+        "accepts_provider_observation",
+        lambda window_id, provider_name: True,
+    )
+    messages: list = []
+    await reader._process_session_file("s", session_file, messages, window_id="@1")
+    assert messages == []
+    assert state.tracked_sessions["s"].parsed_offset >= session_file.stat().st_size
+
+
 async def test_generation_dismissal_requires_a_digest_verdict(tmp_path) -> None:
     """An OSError during the scheduled digest blocks the generation dismissal.
 
