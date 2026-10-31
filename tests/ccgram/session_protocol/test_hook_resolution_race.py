@@ -44,18 +44,18 @@ async def test_obsolete_unmatched_resolution_preserves_newer_queued_evidence(
     session = (await service.list_sessions())[0]
     backend.current_prompt = Prompt("newer\n1. Yes\n2. No", "permission")
     await service.get_session(session.id)
-    read_entries = service_module.read_entries
+    advance = service_module.MessageBuilder.advance
     entered, release = asyncio.Event(), threading.Event()
     loop = asyncio.get_running_loop()
 
-    def delayed_read(source, provider):
+    def delayed_read(builder, *args):
         if not release.is_set():
             loop.call_soon_threadsafe(entered.set)
             if not release.wait(5):
                 raise TimeoutError("test did not release transcript read")
-        return read_entries(source, provider)
+        return advance(builder, *args)
 
-    monkeypatch.setattr(service_module, "read_entries", delayed_read)
+    monkeypatch.setattr(service_module.MessageBuilder, "advance", delayed_read)
     monkeypatch.setattr(
         "ccgram.session_protocol.runtime.asyncio.sleep",
         AsyncMock(side_effect=asyncio.CancelledError),

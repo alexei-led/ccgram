@@ -47,6 +47,7 @@ class ProtocolStore:
         os.chmod(path, 0o600)
         self.path = path
         self.clock = clock
+        self._observed: dict[str, _Tracked] = {}
         self.db = sqlite3.connect(path, timeout=10)
         self.db.execute("PRAGMA synchronous=FULL")
         self.db.executescript("""
@@ -305,7 +306,10 @@ class ProtocolStore:
             "SELECT inode, size, prefix_size, prefix_hash, generation FROM transcripts WHERE key=?",
             (key,),
         ).fetchone()
-        snapshot = await asyncio.to_thread(_transcript_record, path, row)
+        snapshot = await asyncio.to_thread(
+            _track_transcript, path, row, self._observed.get(key)
+        )
+        self._observed[key] = snapshot.tracked
         record = snapshot.record
         if row != record:
             with self.db:
@@ -314,6 +318,11 @@ class ProtocolStore:
                     (key, *record),
                 )
         return snapshot
+
+    def retain_transcripts(self, keys: set[str]) -> None:
+        """Drop in-memory observations of sources that no longer have a target."""
+        for key in self._observed.keys() - keys:
+            del self._observed[key]
 
     def retarget(self, previous: str, current: str) -> None:
         """Apply a recovery mapping already attested by the existing resolver."""
@@ -328,50 +337,173 @@ class ProtocolStore:
                 )
 
 
+_WINDOW = 4096
+_BLOCK = 4096
+_AUDIT = 1 << 20
+_CHUNK = 1 << 20
+_Stamp = tuple[int, int, int, int]
+_Row = tuple[int, int, int, str, int]
+
+
+@dataclass(frozen=True, slots=True)
+class _Tracked:
+    """In-memory proof of what was already read: no transcript bytes are kept.
+
+    ``blocks`` holds a short hash per complete 4 KiB block; every growth poll
+    re-checks the next ``_AUDIT`` bytes of them, so a rewrite of known bytes is
+    found within ``size / _AUDIT`` polls. ``digest`` is a running sha256 of every
+    byte read, so the persisted ``record`` always hashes its whole ``size`` prefix
+    and a restart's full read re-verifies everything seen.
+    """
+
+    stamp: _Stamp
+    dev: int
+    tail: bytes
+    blocks: bytes
+    cursor: int
+    record: _Row
+    digest: Any
+
+
 @dataclass(frozen=True, slots=True)
 class TranscriptSnapshot:
-    content: bytes
-    stamp: tuple[int, int, int, int]
-    record: tuple[int, int, int, str, int]
+    tracked: _Tracked
+
+    @property
+    def stamp(self) -> _Stamp:
+        return self.tracked.stamp
+
+    @property
+    def record(self) -> _Row:
+        return self.tracked.record
 
     @property
     def generation(self) -> int:
         return self.record[4]
 
 
-def _source_stamp(stat: os.stat_result) -> tuple[int, int, int, int]:
+def _source_stamp(stat: os.stat_result) -> _Stamp:
     return stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
 
 
-def _transcript_record(
-    path: Path, row: tuple[int, int, int, str, int] | None
+def _read_at(source: Any, start: int, length: int) -> bytes:
+    source.seek(start)
+    return source.read(length)
+
+
+def _block_hashes(data: bytes) -> bytes:
+    return b"".join(
+        hashlib.blake2b(data[i : i + _BLOCK], digest_size=8).digest()
+        for i in range(0, len(data) - _BLOCK + 1, _BLOCK)
+    )
+
+
+def _scan(
+    source: Any, size: int, prefix_size: int
+) -> tuple[str, Any, bytes, bytes, int]:
+    """Stream the file once: hash of its first ``prefix_size`` bytes, running hash of all."""
+    prefix, whole, blocks = hashlib.sha256(), hashlib.sha256(), []
+    pending = tail = b""
+    done = 0
+    source.seek(0)
+    while done < size:
+        chunk = source.read(min(_CHUNK, size - done))
+        if not chunk:
+            break
+        prefix.update(chunk[: max(prefix_size - done, 0)])
+        whole.update(chunk)
+        tail = (tail + chunk)[-_WINDOW:]
+        pending += chunk
+        complete = len(pending) // _BLOCK * _BLOCK
+        blocks.append(_block_hashes(pending[:complete]))
+        pending = pending[complete:]
+        done += len(chunk)
+    return prefix.hexdigest(), whole, tail, b"".join(blocks), done
+
+
+def _extend(source: Any, before: os.stat_result, known: _Tracked) -> _Tracked | None:
+    """Read appended bytes; ``None`` when the known bytes no longer match."""
+    old, size = known.record[1], before.st_size
+    complete = len(known.blocks) // 8
+    window = min(_AUDIT // _BLOCK, complete)
+    first = known.cursor if known.cursor < complete else 0
+    window = min(window, complete - first)
+    if (
+        before.st_ino != known.record[0]
+        or before.st_dev != known.dev
+        or size < old
+        or _read_at(source, old - len(known.tail), len(known.tail)) != known.tail
+        or _block_hashes(_read_at(source, first * _BLOCK, window * _BLOCK))
+        != known.blocks[first * 8 : (first + window) * 8]
+    ):
+        return None
+    start = complete * _BLOCK
+    data = _read_at(source, start, size - start)
+    if len(data) != size - start:
+        raise OSError("Transcript changed while reading")
+    digest = known.digest.copy()
+    digest.update(data[old - start :])
+    record = (before.st_ino, size, size, digest.hexdigest(), known.record[4])
+    return _Tracked(
+        _source_stamp(before),
+        before.st_dev,
+        (known.tail + data[old - start :])[-_WINDOW:],
+        known.blocks + _block_hashes(data),
+        first + window,
+        record,
+        digest,
+    )
+
+
+def _rescan(
+    source: Any, before: os.stat_result, row: _Row | None, changed: bool
+) -> _Tracked | None:
+    size = before.st_size
+    prefix, whole, tail, blocks, done = _scan(source, size, row[2] if row else 0)
+    if done != size:
+        return None
+    generation = row[4] if row else 0
+    if changed or (
+        row and (before.st_ino != row[0] or size < row[1] or prefix != row[3])
+    ):
+        generation += 1
+    record = (before.st_ino, size, size, whole.hexdigest(), generation)
+    return _Tracked(
+        _source_stamp(before), before.st_dev, tail, blocks, 0, record, whole
+    )
+
+
+def _rewritten_in_place(before: os.stat_result, known: _Tracked) -> bool:
+    return (
+        before.st_size == known.record[1]
+        and before.st_ino == known.record[0]
+        and before.st_dev == known.dev
+    )
+
+
+def _track_transcript(
+    path: Path, row: _Row | None, known: _Tracked | None
 ) -> TranscriptSnapshot:
+    if known:
+        current = path.stat()
+        if known.stamp == _source_stamp(current) and known.dev == current.st_dev:
+            return TranscriptSnapshot(known)
     for _ in range(3):
         with path.open("rb") as source:
             before = os.fstat(source.fileno())
-            content = source.read()
+            if known and _rewritten_in_place(before, known):
+                # Same size, new stamp: an append-only audit window cannot clear it.
+                tracked = _rescan(source, before, known.record, False)
+            else:
+                tracked = known and _extend(source, before, known)
+                tracked = tracked or _rescan(source, before, row, known is not None)
             after = os.fstat(source.fileno())
         current = path.stat()
         if (
-            _source_stamp(before) != _source_stamp(after)
-            or _source_stamp(after) != _source_stamp(current)
-            or before.st_dev != current.st_dev
-            or len(content) != current.st_size
+            tracked
+            and _source_stamp(before) == _source_stamp(after)
+            and _source_stamp(after) == _source_stamp(current)
+            and before.st_dev == current.st_dev
         ):
-            continue
-        generation = row[4] if row else 0
-        if row and (
-            row[0] != current.st_ino
-            or len(content) < row[1]
-            or hashlib.sha256(content[: row[2]]).hexdigest() != row[3]
-        ):
-            generation += 1
-        record = (
-            current.st_ino,
-            len(content),
-            len(content),
-            hashlib.sha256(content).hexdigest(),
-            generation,
-        )
-        return TranscriptSnapshot(content, _source_stamp(current), record)
+            return TranscriptSnapshot(tracked)
     raise OSError("Transcript changed repeatedly while reading")

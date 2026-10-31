@@ -17,6 +17,7 @@ from typing import Any
 from .models import Message, Part
 
 _PART_FIELDS = frozenset(part_field.name for part_field in fields(Part)) - {"id"}
+
 _CHAT_ROLES = ("user", "assistant")
 _CODEX_USER_CONTEXT_RE = re.compile(
     r"^(?:<(?:environment_context|permissions|user_instructions)(?:\s|>)|"
@@ -58,12 +59,13 @@ class TranscriptRecord:
 
 
 def read_entries(
-    source: Path | bytes, provider: str | None = None
+    source: Path | bytes, provider: str | None = None, *, base: int = 0
 ) -> list[SourceEntry]:
     """Parse complete JSONL records from a path or immutable byte snapshot.
 
     Byte offsets always refer to the original transcript. An unfinished final
-    line is ignored; the next poll will read it after it is completed.
+    line is ignored; the next poll will read it after it is completed. ``base``
+    is the transcript offset at which ``source`` starts.
     """
     raw = source.read_bytes() if isinstance(source, Path) else source
     result = []
@@ -81,7 +83,7 @@ def read_entries(
                 for index, entry in enumerate(document["messages"])
                 if isinstance(entry, dict)
             ]
-    offset = 0
+    offset = base
     for line in raw.splitlines(keepends=True):
         if not line.endswith(b"\n"):
             break
