@@ -1122,21 +1122,23 @@ async def test_atomic_replacement_preserving_marker_clamps(tmp_path) -> None:
     await reader._process_session_file("s", session_file, [], window_id="@1")
     consumed = state.tracked_sessions["s"].parsed_offset
     assert consumed > baseline
-    gap_len = (consumed - 128) - baseline
+    marker_bytes = transcript_reader._MARKER_BYTES
+    gap_len = (consumed - marker_bytes) - baseline
     # The preserved tail window must start past the baseline: a shorter
     # grow puts the fill inside the window and clamps through the ordinary
     # marker-mismatch path, which the pre-fix code takes as well.
     assert gap_len > 0
 
-    fresh = (
-        '{"type":"assistant","message":{"content":[{"type":"text","text":"tail-fresh"}]}}\n'
-    )
-    # Byte-exact construction: char slicing preserves the 128-byte marker
+    fresh = '{"type":"assistant","message":{"content":[{"type":"text","text":"tail-fresh"}]}}\n'
+    # Byte-exact by construction: text slicing would match the marker
     # window only while every fixture byte is ASCII.
     data = session_file.read_bytes()
     replaced = tmp_path / "r.jsonl"
     replaced.write_bytes(
-        data[:baseline] + b"X" * gap_len + data[consumed - 128 :] + fresh.encode()
+        data[:baseline]
+        + b"X" * gap_len
+        + data[consumed - marker_bytes :]
+        + fresh.encode()
     )
     os.replace(replaced, session_file)
 
@@ -1306,9 +1308,7 @@ async def test_missing_baseline_seeds_on_read_and_recovers_detection(
         transcript_reader._PREFIX_VERIFY_CAP,
         0.0,
     )
-    fresh = (
-        '{"type":"assistant","message":{"content":[{"type":"text","text":"tail-fresh"}]}}\n'
-    )
+    fresh = '{"type":"assistant","message":{"content":[{"type":"text","text":"tail-fresh"}]}}\n'
     session_file.write_text(
         session_file.read_text().replace('"h0"', '"hZ"', 1) + fresh, newline="\n"
     )
@@ -1422,16 +1422,18 @@ async def test_generation_dismissal_requires_a_digest_verdict(tmp_path) -> None:
     reader._file_markers.pop("s", None)
     await reader._process_session_file("s", session_file, [], window_id="@1")
     consumed = state.tracked_sessions["s"].parsed_offset
-    gap_len = (consumed - 128) - baseline
+    marker_bytes = transcript_reader._MARKER_BYTES
+    gap_len = (consumed - marker_bytes) - baseline
     assert gap_len > 0
 
-    fresh = (
-        '{"type":"assistant","message":{"content":[{"type":"text","text":"tail-fresh"}]}}\n'
-    )
+    fresh = '{"type":"assistant","message":{"content":[{"type":"text","text":"tail-fresh"}]}}\n'
     data = session_file.read_bytes()
     replaced = tmp_path / "r.jsonl"
     replaced.write_bytes(
-        data[:baseline] + b"X" * gap_len + data[consumed - 128 :] + fresh.encode()
+        data[:baseline]
+        + b"X" * gap_len
+        + data[consumed - marker_bytes :]
+        + fresh.encode()
     )
     os.replace(replaced, session_file)
 

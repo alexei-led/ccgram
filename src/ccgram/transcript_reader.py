@@ -90,14 +90,16 @@ _MARKER_BYTES = 128
 # for the first time at the next verification, so a rewrite there is simply
 # absorbed.
 # The backoff only counts growth cycles, so a session that goes quiet after
-# a marker-preserving rewrite would never reach the cap: the idle deadline
-# forces one full verification regardless of activity.
+# a marker-preserving rewrite would never reach the cap: once the session
+# goes quiet, the idle deadline forces one full verification.
 _PREFIX_VERIFY_CAP = 32
-# (0, 1, 0.0) is the never-verified sentinel for sessions the schedule has
-# not seen yet. monotonic() is boot-relative, so on a host up for less than
-# _PREFIX_VERIFY_MAX_IDLE_S the 0.0 stamp leaves the idle deadline undue:
-# that defers verifications, never adds one, and the first clean
-# verification writes a real stamp.
+# (0, 1, 0.0) is the read-only default for sessions the schedule has not
+# seen yet: those are due via the None entry, without a tuple to read. The
+# 0.0 stamp then only survives when _note_append_cycle preserves it, always
+# with cycles already at the threshold of 1, and every writer that puts
+# cycles below the threshold (clean verification, reset, seed) stamps a
+# real monotonic clock, so the stamp comparison is never reached while a
+# 0.0 is stored.
 _PREFIX_VERIFY_FRESH = (0, 1, 0.0)
 _PREFIX_VERIFY_MAX_IDLE_S = 900.0
 
@@ -577,6 +579,7 @@ class TranscriptReader:
             try:
                 digest = await asyncio.to_thread(_prefix_digest, file_path, st.st_size)
             except OSError:
+                logger.debug("Baseline extension digest failed for %s", session_id)
                 return
             size = st.st_size
         self._file_prefixes[session_id] = (size, digest)
@@ -699,9 +702,7 @@ class TranscriptReader:
                         await asyncio.to_thread(_prefix_digest, file_path, st.st_size),
                     )
                 except OSError:
-                    logger.debug(
-                        "Clamp re-baseline digest failed for %s", session_id
-                    )
+                    logger.debug("Clamp re-baseline digest failed for %s", session_id)
         resolved = changed and not consumed_intact
         if prefix_checked and not prefix_changed and not resolved:
             await self._record_clean_verification(session_id, file_path, st)
@@ -1206,6 +1207,12 @@ class TranscriptReader:
         this cycle's verdict, so keeping that baseline would bless a
         replacement nobody committed to: every cached judgement goes back
         to what the probe saw and the next cycle re-judges the file.
+
+        The restore set must cover every write _prepare_observed_generation
+        can make: the parse offset, the startup boundary, the clamp entry,
+        the prefix baseline, and the verify schedule. A new probe write
+        needs a matching restore here or it survives flips by omission
+        (test_probe_rollback_audit enforces the set).
         """
         tracked.parsed_offset = probe_offset
         session_id = tracked.session_id
