@@ -1212,6 +1212,112 @@ async def test_stale_marker_mismatch_during_inplace_rewrite_is_not_an_append(
     assert reader._prefix_verify["s"][2] >= t0
 
 
+async def test_baseline_seed_failure_keeps_the_cycle_and_retries(tmp_path) -> None:
+    """A transient OSError during the seed keeps the commit and the retry.
+
+    The marker read already succeeded, so the cycle must deliver and store
+    its caches rather than abort; and the stored mtime must not gate the
+    retry away, or a quiet file never reaches the next commit and the
+    missing-baseline condition persists. The successful retry stamps the
+    verification schedule instead of re-hashing the same range.
+    """
+    history = "".join(
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"h%d"}]}}\n'
+        % index
+        for index in range(5)
+    )
+    session_file = tmp_path / "t.jsonl"
+    session_file.write_text(history, newline="\n")
+    state = MonitorState(state_file=tmp_path / "m.json")
+    state.update_session(
+        TrackedSession(session_id="s", file_path=str(session_file), last_byte_offset=0)
+    )
+    reader = TranscriptReader(state, IdleTracker())
+    reader._file_prefixes.pop("s", None)
+
+    real_digest = transcript_reader._prefix_digest
+    raised = {"done": False}
+
+    def _raise_once(path, size):
+        if not raised["done"]:
+            raised["done"] = True
+            raise OSError("digest unavailable")
+        return real_digest(path, size)
+
+    messages: list = []
+    with patch("ccgram.transcript_reader._prefix_digest", side_effect=_raise_once):
+        await reader._process_session_file("s", session_file, messages, window_id="@1")
+        assert len(messages) == 5
+        assert "s" not in reader._file_prefixes
+        assert "s" not in reader._file_mtimes
+
+        # Quiet file, same patch context: the retry reaches the commit and
+        # the seed succeeds, stamping the schedule it just verified.
+        await reader._process_session_file("s", session_file, [], window_id="@1")
+        baseline = reader._file_prefixes.get("s")
+        assert baseline is not None
+        assert baseline[0] == state.tracked_sessions["s"].parsed_offset
+        assert reader._prefix_verify.get("s") is not None
+        assert reader._prefix_verify["s"][:2] == (0, 1)
+
+
+async def test_missing_baseline_seeds_on_read_and_recovers_detection(
+    tmp_path,
+) -> None:
+    """A failed startup snapshot must not disable rewrite detection forever.
+
+    Review P1: with no cached prefix baseline the scheduled digest never
+    starts, and the clamp-only re-baseline means a healthy read never
+    creates one, so a rewrite outside the tail-marker window would stay
+    undetected for the process lifetime. The first committed read now
+    seeds the baseline at its parse position, and the next replacement
+    signal gets a digest verdict again.
+    """
+    history = "".join(
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"h%d"}]}}\n'
+        % index
+        for index in range(5)
+    )
+    session_file = tmp_path / "t.jsonl"
+    session_file.write_text(history, newline="\n")
+    state = MonitorState(state_file=tmp_path / "m.json")
+    state.update_session(
+        TrackedSession(session_id="s", file_path=str(session_file), last_byte_offset=0)
+    )
+    reader = TranscriptReader(state, IdleTracker())
+    # The state a failed constructor snapshot leaves behind: no baseline.
+    reader._file_prefixes.pop("s", None)
+
+    messages: list = []
+    await reader._process_session_file("s", session_file, messages, window_id="@1")
+    assert len(messages) == 5
+    baseline = reader._file_prefixes.get("s")
+    pos = state.tracked_sessions["s"].parsed_offset
+    assert baseline is not None
+    assert baseline[0] == pos
+
+    # A rewrite inside the now-verified range but outside the tail-marker
+    # window, plus one unread line, with the schedule overdue so the growth
+    # cycle cannot defer the digest: without the seeded baseline the digest
+    # has no range to compare, the marker dismisses the signal, and the
+    # unread line is delivered as if nothing happened.
+    reader._prefix_verify["s"] = (
+        transcript_reader._PREFIX_VERIFY_CAP,
+        transcript_reader._PREFIX_VERIFY_CAP,
+        0.0,
+    )
+    fresh = (
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"tail-fresh"}]}}\n'
+    )
+    session_file.write_text(
+        session_file.read_text().replace('"h0"', '"hZ"', 1) + fresh, newline="\n"
+    )
+    clamped: list = []
+    await reader._process_session_file("s", session_file, clamped, window_id="@1")
+    assert clamped == []
+    assert state.tracked_sessions["s"].parsed_offset >= session_file.stat().st_size
+
+
 async def test_identity_flip_after_probe_clamp_restores_the_baseline(
     tmp_path, monkeypatch
 ) -> None:

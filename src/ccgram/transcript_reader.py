@@ -812,10 +812,9 @@ class TranscriptReader:
     ) -> bool:
         """Commit caches only after a stable read and marker capture."""
         stable_stat = stable_read.stat
+        pos = self._parse_pos(tracked)
         try:
-            marker = await asyncio.to_thread(
-                _tail_marker, file_path, self._parse_pos(tracked)
-            )
+            marker = await asyncio.to_thread(_tail_marker, file_path, pos)
         except OSError:
             return False
         self._file_mtimes[session_id] = stable_stat.st_mtime
@@ -827,11 +826,37 @@ class TranscriptReader:
         self._file_sizes[session_id] = stable_stat.st_size
         if refresh_prefix:
             # A clamp moved the parse position: re-baseline at the new EOF.
-            self._file_prefixes[session_id] = (
-                stable_stat.st_size,
-                await asyncio.to_thread(_prefix_digest, file_path, stable_stat.st_size),
-            )
-        self._file_markers[session_id] = (self._parse_pos(tracked), marker)
+            # A transient read error keeps the stale baseline, which blocks
+            # dismissals until the next clamp retries.
+            try:
+                self._file_prefixes[session_id] = (
+                    stable_stat.st_size,
+                    await asyncio.to_thread(
+                        _prefix_digest, file_path, stable_stat.st_size
+                    ),
+                )
+            except OSError:
+                logger.debug("Commit re-baseline digest failed for %s", session_id)
+        elif self._file_prefixes.get(session_id) is None:
+            # A failed startup snapshot leaves no baseline, and without one
+            # the scheduled digest never starts (it needs a range to
+            # compare), so rewrite detection would never recover. Seed the
+            # baseline at the parse position once, on the first successful
+            # read; a transient read error retries on the next commit.
+            try:
+                self._file_prefixes[session_id] = (
+                    pos,
+                    await asyncio.to_thread(_prefix_digest, file_path, pos),
+                )
+                # The seed is itself a verification of [0, pos): record it,
+                # or the next quiet poll re-hashes the exact same range.
+                self._reset_prefix_verify(session_id)
+            except OSError:
+                logger.debug("Baseline seeding digest failed for %s", session_id)
+                # The mtime was already stored above; drop it so a quiet
+                # file still reaches the next commit and the seed retries.
+                self._file_mtimes.pop(session_id, None)
+        self._file_markers[session_id] = (pos, marker)
         return True
 
     async def _rebuild_committed_parser_context(
