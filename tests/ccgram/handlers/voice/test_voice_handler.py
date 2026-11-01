@@ -132,6 +132,23 @@ class TestHandleVoiceMessage:
             chat_id=_CHAT_ID, message_thread_id=_THREAD_ID, action=ChatAction.TYPING
         )
 
+    async def test_typing_failure_still_transcribes(
+        self, voice_env: SimpleNamespace
+    ) -> None:
+        """Regression #366: a failed typing action must not drop the voice note."""
+        update = _make_update()
+        update.message.get_bot.return_value.send_chat_action.side_effect = (
+            TelegramError("timed out")
+        )
+        context = MagicMock(user_data={})
+
+        await voice_handler.handle_voice_message(update, context)
+
+        voice_env.transcriber.transcribe.assert_awaited_once_with(
+            b"fake audio bytes", "voice.ogg"
+        )
+        assert context.user_data[VOICE_PENDING][(_CHAT_ID, 1)] == _TRANSCRIPT
+
     async def test_autosend_posts_transcription_without_keyboard(
         self, voice_env: SimpleNamespace
     ) -> None:
