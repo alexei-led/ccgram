@@ -425,3 +425,23 @@ async def test_foreground_none_when_window_gone(mgr: TmuxManager) -> None:
 )
 def test_parse_ps_line(line: str, expected: tuple | None) -> None:
     assert TmuxManager._parse_ps_line(line) == expected
+
+
+async def test_foreground_preserves_argv_beyond_terminal_width(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    argv = [
+        "/home/runner/work/ccgram/ccgram/.venv/bin/python",
+        "/tmp/" + "project/" * 20 + "claude",
+    ]
+    line = "321 321 S+ " + " ".join(argv)
+
+    async def spawn(*args: object, **_kwargs: object) -> AsyncMock:
+        proc = AsyncMock()
+        proc.returncode = 0
+        output = line if "-ww" in args else line[:80]
+        proc.communicate.return_value = (output.encode(), b"")
+        return proc
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", spawn)
+    assert await TmuxManager._ps_foreground("/dev/pts/1") == (321, 321, argv)

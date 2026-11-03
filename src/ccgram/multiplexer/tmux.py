@@ -1264,6 +1264,7 @@ class TmuxManager:
         try:
             proc = await asyncio.create_subprocess_exec(
                 "ps",
+                "-ww",
                 "-t",
                 tty_path,
                 "-o",
