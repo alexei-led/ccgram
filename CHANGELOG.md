@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.21.1] - 2026-11-04
+
+### Hook reporting
+
+- Run Claude Code, Codex, and Pi reporting hooks asynchronously, including SessionStart and Stop. Gemini reporting uses a detached worker because Gemini has no native async hook option.
+- Give up on contended hook file locks after two seconds per lock rather than waiting indefinitely. A timed-out write is logged and dropped; reporting remains best-effort.
+
+### Upgrade
+
+Upgrade ccgram and re-run the hook installer for each provider you use. Existing ccgram hook entries are updated in place without duplicates. Restart Pi or reload its hook-runner after updating its configuration. Without reinstalling, existing synchronous hooks can continue to delay the agent.
+
+```console
+uv tool upgrade ccgram
+# Or: brew upgrade ccgram
+ccgram hook --install
+ccgram hook --provider codex --install
+ccgram hook --provider pi --install
+ccgram hook --provider gemini --install
+```
+
+[Full Changelog](https://github.com/alexei-led/ccgram/compare/v4.21.0...v4.21.1)
+
 ## [4.21.0] - 2026-10-28
 
 ### Native command menus across agents

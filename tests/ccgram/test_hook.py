@@ -258,18 +258,17 @@ class TestInstallMultipleEvents:
             )
 
     def test_async_flag_on_subagent_events(self, tmp_path, monkeypatch) -> None:
+        from ccgram.hook import _HOOK_EVENT_TYPES
+
         settings_file = tmp_path / "settings.json"
         monkeypatch.setattr("ccgram.hook._claude_settings_file", lambda: settings_file)
 
         _install_hook()
 
         settings = json.loads(settings_file.read_text())
-        for event_type in ("SubagentStart", "SubagentStop"):
+        for event_type in _HOOK_EVENT_TYPES:
             hook_config = settings["hooks"][event_type][0]["hooks"][0]
             assert hook_config.get("async") is True
-
-        session_hook = settings["hooks"]["SessionStart"][0]["hooks"][0]
-        assert "async" not in session_hook
 
     def test_idempotent_install(self, tmp_path, monkeypatch) -> None:
         settings_file = tmp_path / "settings.json"

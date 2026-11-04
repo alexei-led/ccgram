@@ -144,6 +144,8 @@ an already-running window.
 
 **Prerequisites:** Python 3.14+, [tmux](https://github.com/tmux/tmux), [herdr](https://github.com/ogulcancelik/herdr), or [agterm](https://github.com/umputun/agterm), and one agent CLI. CCGram does not modify agent SDKs.
 
+**Hook setup:** `ccgram hook --install` installs asynchronous Claude Code hooks, including `SessionStart` and `Stop`. Re-run it after upgrading to update existing synchronous entries without duplicates. Codex and Pi use native async hooks. Gemini uses a detached background worker, so it does not wait for event reporting either. See [provider hooks](docs/providers.md#hooks) for setup and best-effort delivery limits.
+
 ### Herdr setup
 
 CCGram supports Herdr protocols **14–22** and uses the public socket API for operations, so a newer CLI can coexist with an older running server. Set `HERDR_SOCKET_PATH` for an explicit endpoint; otherwise `herdr status --json` discovers it. Future protocol numbers are attempted with a warning, extra response fields are tolerated, and required session identities remain strictly validated. Telegram rate limiting uses a protected PTB adapter seam and is therefore tested against and constrained to `python-telegram-bot>=22.8,<22.9`. Install Herdr's integration before launching an agent that needs a native session identity:

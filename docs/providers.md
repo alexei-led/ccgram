@@ -167,7 +167,9 @@ The bot also detects Remote Control mode (📡 topic badge + one-tap activation 
 
 ### Hooks
 
-Install hooks with `ccgram hook --install`.
+Install hooks with `ccgram hook --install`. All ccgram Claude hooks run with `async: true`, including `SessionStart`, `Stop`, and permission/tool notifications. They only report events; they do not approve, reject, or modify agent actions. Re-running the installer upgrades existing synchronous entries in place without adding duplicates or changing other hooks.
+
+Hook writes retry contended session-map and event-log locks for up to two seconds per lock. On timeout, the hook logs to stderr and drops that write instead of waiting indefinitely. Bot locking is unchanged; hook reporting is best-effort.
 
 If hooks are missing, ccgram warns at startup with the fix command. Hooks are optional — terminal scraping works as fallback.
 
@@ -185,7 +187,7 @@ Claude task state is derived from the transcript, not from terminal footer scrap
 
 ## Codex CLI
 
-Codex CLI supports feature-flagged hooks. Install ccgram's lifecycle hooks with `ccgram hook --provider codex --install`; ccgram writes user-level `~/.codex/hooks.json` entries for `SessionStart` and `Stop` and enables `[features].hooks = true` in `~/.codex/config.toml`. Transcript discovery remains as fallback and as the source of message truth.
+Codex CLI supports feature-flagged hooks. Install ccgram's lifecycle hooks with `ccgram hook --provider codex --install`; ccgram writes user-level `~/.codex/hooks.json` entries for `SessionStart` and `Stop` with `async: true` and enables `[features].hooks = true` in `~/.codex/config.toml`. Re-running the installer upgrades existing ccgram entries in place. Transcript discovery remains as fallback and as the source of message truth.
 
 ### Interactive Prompts
 
@@ -226,7 +228,7 @@ Codex transcripts are JSONL files under `~/.codex/sessions/`. They are read incr
 
 ## Gemini CLI
 
-Gemini CLI supports command hooks in `settings.json`. Install ccgram's lifecycle hooks with `ccgram hook --provider gemini --install`; ccgram writes user-level `~/.gemini/settings.json` entries for `SessionStart`, `AfterAgent`, `SessionEnd`, and `Notification`. Transcript discovery remains as fallback and as the source of message truth.
+Gemini CLI supports command hooks in `settings.json`. Install ccgram's lifecycle hooks with `ccgram hook --provider gemini --install`; ccgram writes user-level `~/.gemini/settings.json` entries for `SessionStart`, `AfterAgent`, `SessionEnd`, and `Notification`. Gemini has no native async hook option. CCGram installs its commands with `--background`: a short-lived launcher hands the stdin payload to a detached worker and returns without waiting for event reporting. The worker does not retain Gemini's stdin/stdout/stderr pipes, and writes diagnostics to `$CCGRAM_DIR/hook.log` (default `~/.ccgram/hook.log`). Handoff failures are logged without failing the agent hook. Re-running the installer upgrades existing entries in place. The launcher keeps a 5,000 ms provider timeout, and worker lock waits remain limited to two seconds per lock. Transcript discovery remains as fallback and as the source of message truth.
 
 Gemini sets pane titles (`Working: ✦`, `Action Required: ✋`, `Ready: ◇`) that CCGram reads for status, and its `@inquirer/select` permission prompts are detected as interactive UI. Gemini transcript discovery matches project hash/alias only (no cross-project full scan) to avoid wrong-session attachment.
 
@@ -253,7 +255,7 @@ ccgram hook --provider pi --install
 ccgram hook --provider pi --status
 ```
 
-CCGram writes `SessionStart`, `Stop`, `SessionEnd`, and `Notification` entries to `~/.pi/agent/hooks.json`. Set `PI_CODING_AGENT_DIR` to use another Pi agent directory for both hook configuration and transcript discovery. Existing top-level event maps are preserved; if an object-valued `hooks` map exists, it takes precedence, matching hook-runner behavior.
+CCGram writes `SessionStart`, `Stop`, `SessionEnd`, and `Notification` entries with `async: true` to `~/.pi/agent/hooks.json`. Re-running the installer upgrades existing ccgram entries in place. Set `PI_CODING_AGENT_DIR` to use another Pi agent directory for both hook configuration and transcript discovery. Existing top-level event maps are preserved; if an object-valued `hooks` map exists, it takes precedence, matching hook-runner behavior.
 
 Pi must load the existing `cc-thingz` `hook-runner` extension. CCGram installs hook commands but does not install or replace the extension. The runner caches hook configuration and does not watch the file. Restart Pi or reload the extension after changes. Without the runner, session tracking falls back to scanning transcripts under `~/.pi/agent/sessions/`.
 
