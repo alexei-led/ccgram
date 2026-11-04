@@ -741,6 +741,13 @@ class TranscriptReader:
         self._file_prefixes.pop(session_id, None)
         self._file_markers.pop(session_id, None)
         self._startup_file_boundaries.pop(session_id, None)
+        # The startup replay bound's per-session state goes too: a session id
+        # reused later must not inherit the old session's replay exemption,
+        # clamp offset, or pre-existing-at-startup status (#367).
+        self._replay_allowed.discard(session_id)
+        self._startup_clamped.pop(session_id, None)
+        self._startup_sessions.discard(session_id)
+        self._startup_replay_checked.discard(session_id)
         log_throttle_reset(f"partial-jsonl:{session_id}")
 
     def retire_skipped_tool_state(self, session_id: str) -> None:
