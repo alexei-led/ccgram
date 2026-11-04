@@ -313,6 +313,8 @@ async def test_source_change_during_read_never_uses_old_generation(
     backend.target = replace(backend.target, transcript=path)
     session = (await service.list_sessions())[0]
     initial = (await service.history(session.id, None, 50)).messages[0]
+    # An unchanged stamp is never re-read, so give the observation a read to race.
+    append(path, {"type": "assistant", "uuid": "next", "message": {"content": "x"}})
     real_open = Path.open
     reads = 0
     mutate_on = 2 if operation == "action" else 1
@@ -410,6 +412,7 @@ async def test_unstable_source_fails_closed(service, backend, tmp_path, monkeypa
     path.write_text("{}\n")
     backend.target = replace(backend.target, transcript=path)
     session = (await service.list_sessions())[0]
+    path.write_text("{}\n{}\n")
     real_open = Path.open
 
     @contextmanager
