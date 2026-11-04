@@ -22,9 +22,10 @@ import shlex
 import subprocess
 import structlog
 import sys
+import time
 from pathlib import Path
 from collections.abc import Callable
-from typing import Any, cast
+from typing import Any, TextIO, cast
 
 from ccgram.hooks.adapters import (
     detect_provider_from_payload,
@@ -79,18 +80,12 @@ _HOOK_EVENT_TYPES: tuple[str, ...] = (
     "PreToolUse",
 )
 
-# Events that should not block the agent (async: true)
-_ASYNC_EVENTS: frozenset[str] = frozenset(
-    {
-        "StopFailure",
-        "SessionEnd",
-        "SubagentStart",
-        "SubagentStop",
-        "TeammateIdle",
-        "TaskCompleted",
-    }
-)
+# Hook reporting is best-effort; never wait indefinitely for the bot's locks.
+_HOOK_LOCK_TIMEOUT_SECONDS = 2.0
+_HOOK_LOCK_RETRY_SECONDS = 0.05
 _KNOWN_HOOK_PROVIDERS: frozenset[str] = frozenset({"claude", "pi", "codex", "gemini"})
+# Gemini command hooks have no detached execution option.
+_ASYNC_JSON_HOOK_PROVIDERS = frozenset({"codex", "pi"})
 
 
 def _installable_events_for(provider_name: str) -> tuple[str, ...]:
@@ -140,11 +135,6 @@ def _current_hook_command(provider_name: str = "claude") -> str:
     return command
 
 
-def _is_current_hook_command(command: str) -> bool:
-    """Return True when the command matches the current module-based hook style."""
-    return _CURRENT_HOOK_MARKER in command
-
-
 def _is_any_ccgram_hook_command(command: str) -> bool:
     """Return True for current, old, or legacy hook command styles."""
     return any(
@@ -189,15 +179,19 @@ def get_installed_events(settings: dict) -> dict[str, bool]:
 
 
 def _replace_hook_commands(
-    settings: dict, event_type: str, predicate: Callable[[str], bool], replacement: str
-) -> None:
-    """Replace matching hook commands for an event with the given command."""
+    settings: dict,
+    event_type: str,
+    predicate: Callable[[str], bool],
+    replacement: dict[str, Any],
+) -> bool:
+    """Upgrade matching hooks in place, preserving unrelated configuration."""
     hooks = settings.get("hooks", {})
     if not isinstance(hooks, dict):
-        return
+        return False
     event_hooks = hooks.get(event_type, [])
     if not isinstance(event_hooks, list):
-        return
+        return False
+    changed = False
     for entry in event_hooks:
         if not isinstance(entry, dict):
             continue
@@ -208,8 +202,16 @@ def _replace_hook_commands(
             if not isinstance(hook_config, dict):
                 continue
             command = hook_config.get("command", "")
-            if isinstance(command, str) and predicate(command):
-                hook_config["command"] = replacement
+            if (
+                isinstance(command, str)
+                and predicate(command)
+                and any(
+                    hook_config.get(key) != value for key, value in replacement.items()
+                )
+            ):
+                hook_config.update(replacement)
+                changed = True
+    return changed
 
 
 def _load_json_settings(path: Path) -> dict[str, Any] | None:
@@ -275,12 +277,15 @@ def _hook_entry(provider_name: str, timeout_value: int) -> dict[str, Any]:
     while Gemini settings.json uses milliseconds. Callers pass the target
     schema's unit.
     """
-    return {
+    entry: dict[str, Any] = {
         "name": "ccgram-session-tracker",
         "type": "command",
         "command": _current_hook_command(provider_name),
         "timeout": timeout_value,
     }
+    if provider_name in _ASYNC_JSON_HOOK_PROVIDERS:
+        entry["async"] = True
+    return entry
 
 
 def _install_json_hooks(
@@ -303,7 +308,9 @@ def _install_json_hooks(
     installed_count = 0
     already_count = 0
     predicate = _json_hook_command_predicate(provider_name)
-    hook_command = _current_hook_command(provider_name)
+    replacement: dict[str, Any] = {"command": _current_hook_command(provider_name)}
+    if provider_name in _ASYNC_JSON_HOOK_PROVIDERS:
+        replacement["async"] = True
     for event_type in events:
         event_hooks = hooks.setdefault(event_type, [])
         if not isinstance(event_hooks, list):
@@ -313,7 +320,7 @@ def _install_json_hooks(
             )
             return 1
         if _has_matching_hook(hook_settings, event_type, predicate):
-            _replace_hook_commands(hook_settings, event_type, predicate, hook_command)
+            _replace_hook_commands(hook_settings, event_type, predicate, replacement)
             already_count += 1
             continue
         event_hooks.append({"hooks": [_hook_entry(provider_name, timeout_value)]})
@@ -595,32 +602,29 @@ def _install_hook(provider_name: str = "claude") -> int:  # noqa: PLR0912
     current_command = _current_hook_command("claude")
 
     for event_type in _HOOK_EVENT_TYPES:
-        has_current = _has_matching_hook(settings, event_type, _is_current_hook_command)
         has_known = _has_matching_hook(
             settings, event_type, _is_any_ccgram_hook_command
         )
 
-        if has_known and not has_current:
-            _replace_hook_commands(
+        if has_known:
+            changed = _replace_hook_commands(
                 settings,
                 event_type,
                 _is_any_ccgram_hook_command,
-                current_command,
+                {"command": current_command, "async": True},
             )
-            installed_count += 1
-            continue
-
-        if has_current:
-            already_count += 1
+            if changed:
+                installed_count += 1
+            else:
+                already_count += 1
             continue
 
         hook_config: dict[str, Any] = {
             "type": "command",
             "command": current_command,
             "timeout": 5,
+            "async": True,
         }
-        if event_type in _ASYNC_EVENTS:
-            hook_config["async"] = True
 
         if event_type not in settings["hooks"]:
             settings["hooks"][event_type] = []
@@ -1134,6 +1138,21 @@ def _is_nested_session(pane_tty: str) -> bool:
     return _closest_claude_ancestor(snapshot, owner_info[0]) is not None
 
 
+def _acquire_hook_lock(file: TextIO) -> bool:
+    """Try an exclusive lock for at most two seconds, then drop the update."""
+    deadline = time.monotonic() + _HOOK_LOCK_TIMEOUT_SECONDS
+    while True:
+        try:
+            fcntl.flock(file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                logger.warning("Timed out waiting for hook lock: %s", file.name)
+                return False
+            time.sleep(min(_HOOK_LOCK_RETRY_SECONDS, remaining))
+
+
 def _write_event(
     event_type: str,
     session_id: str,
@@ -1161,7 +1180,8 @@ def _write_event(
 
     try:
         with open(events_file, "a") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
+            if not _acquire_hook_lock(f):
+                return
             try:
                 f.write(event_line + "\n")
             finally:
@@ -1192,7 +1212,8 @@ def _update_session_map(
     lock_path = map_file.with_suffix(".lock")
     try:
         with open(lock_path, "w") as lock_f:
-            fcntl.flock(lock_f, fcntl.LOCK_EX)
+            if not _acquire_hook_lock(lock_f):
+                return
             try:
                 session_map: dict[str, Any] = {}
                 if map_file.exists():
