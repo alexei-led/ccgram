@@ -21,6 +21,7 @@ from ..providers import (
     resolve_launch_command,
     TerminalMenu,
 )
+from ..providers.pi import PI_LIKE_PROVIDERS
 from ..providers.process_detection import classify_provider_from_argv
 from ..providers.shell_infra import KNOWN_SHELLS, match_prompt
 from ..window_state_ports import identity_state
@@ -35,6 +36,12 @@ from ..worktrees import (
     WorktreeError,
 )
 from .models import ProtocolError, Status, utc_now
+
+#: Providers whose transcripts feed structured history.  pi-family forks share
+#: pi's JSONL format, so they join the literal set without a second table.
+_TRANSCRIPT_HISTORY_PROVIDERS: frozenset[str] = (
+    frozenset({"claude", "codex", "gemini", "antigravity"}) | PI_LIKE_PROVIDERS
+)
 
 logger = logging.getLogger(__name__)
 
@@ -215,7 +222,7 @@ class MultiplexerSessionBackend:
             else ""
         )
         transcript = identity.transcript_path if conversation_id and identity else None
-        if history_provider not in {"claude", "codex", "gemini", "pi", "antigravity"}:
+        if history_provider not in _TRANSCRIPT_HISTORY_PROVIDERS:
             transcript = None
         panes = await self.mux.list_panes(window.window_id)
         active = next((p for p in panes if p.active), None)
@@ -380,7 +387,7 @@ class MultiplexerSessionBackend:
         return await self.mux.send(target.id, key, enter=False, literal=False, raw=True)
 
     async def send_followup(self, target: Target, text: str) -> bool:
-        if target.provider != "pi":
+        if target.provider not in PI_LIKE_PROVIDERS:
             raise ProtocolError(
                 422,
                 "unsupported_action",

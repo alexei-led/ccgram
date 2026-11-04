@@ -29,6 +29,7 @@ from ...providers import (
     get_provider_for_window,
 )
 from ... import window_query
+from ...providers.pi import PI_LIKE_PROVIDERS
 from ...telegram_client import PTBTelegramClient
 from ...window_state_store import window_store
 from ...thread_router import thread_router
@@ -99,7 +100,10 @@ def _default_command_args(cc_name: str, args: str, display: str) -> str:
 
 def _provider_command_name(provider_name: str, cc_name: str) -> str:
     """Apply provider-specific compatibility aliases before forwarding."""
-    if provider_name == "pi" and cc_name.lower() == _PI_CLEAR_ALIAS_COMMAND:
+    if (
+        provider_name in PI_LIKE_PROVIDERS
+        and cc_name.lower() == _PI_CLEAR_ALIAS_COMMAND
+    ):
         return _PI_NEW_COMMAND
     return cc_name
 
@@ -111,7 +115,7 @@ def _is_session_reset_command(provider_name: str, cc_slash: str) -> bool:
     if len(parts) > 1:
         return False
     return command == _PI_CLEAR_ALIAS_COMMAND or (
-        provider_name == "pi" and command == _PI_NEW_COMMAND
+        provider_name in PI_LIKE_PROVIDERS and command == _PI_NEW_COMMAND
     )
 
 
@@ -327,7 +331,7 @@ async def forward_command_handler(
     cc_slash = f"/{cc_name} {args}".rstrip() if args else f"/{cc_name}"
     status_like = cc_name.lower() in {"status", "stats"}
 
-    if provider_name == "pi" and cc_name.lower() == _PI_FOLLOWUP_COMMAND:
+    if provider_name in PI_LIKE_PROVIDERS and cc_name.lower() == _PI_FOLLOWUP_COMMAND:
         await _handle_pi_followup_command(
             update.message,
             user.id,
