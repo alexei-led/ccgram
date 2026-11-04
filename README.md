@@ -144,7 +144,7 @@ an already-running window.
 
 **Prerequisites:** Python 3.14+, [tmux](https://github.com/tmux/tmux), [herdr](https://github.com/ogulcancelik/herdr), or [agterm](https://github.com/umputun/agterm), and one agent CLI. CCGram does not modify agent SDKs.
 
-**Hook setup:** `ccgram hook --install` installs asynchronous Claude Code hooks, including `SessionStart` and `Stop`. Re-run it after upgrading to update existing synchronous entries without duplicates. Codex and Pi hooks also run asynchronously; Gemini retains a bounded synchronous timeout. See [provider hooks](docs/providers.md#hooks) for setup and best-effort delivery limits.
+**Hook setup:** `ccgram hook --install` installs asynchronous Claude Code hooks, including `SessionStart` and `Stop`. Re-run it after upgrading to update existing synchronous entries without duplicates. Codex and Pi use native async hooks. Gemini uses a detached background worker, so it does not wait for event reporting either. See [provider hooks](docs/providers.md#hooks) for setup and best-effort delivery limits.
 
 ### Herdr setup
 

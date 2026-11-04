@@ -221,6 +221,11 @@ def run_cmd(**kwargs: object) -> None:
 
 @cli.command("hook")
 @click.option(
+    "--background",
+    is_flag=True,
+    help="Hand off event reporting to a detached worker and return immediately.",
+)
+@click.option(
     "--install",
     is_flag=True,
     help="Install hook into the selected provider's settings file.",
@@ -245,7 +250,11 @@ def run_cmd(**kwargs: object) -> None:
     help="Agent provider hook contract (default: auto-detect; claude for setup).",
 )
 def hook_cmd(
-    install: bool, uninstall: bool, status: bool, provider_name: str | None
+    install: bool,
+    uninstall: bool,
+    status: bool,
+    provider_name: str | None,
+    background: bool,
 ) -> None:
     """Agent session tracking hook."""
     # Lazy: defer subcommand import until that command is invoked, keeping `ccgram --help` fast
@@ -256,6 +265,7 @@ def hook_cmd(
         uninstall=uninstall,
         status=status,
         provider_name=provider_name.lower() if provider_name else None,
+        background=background,
     )
 
 

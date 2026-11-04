@@ -134,5 +134,7 @@ def test_provider_hooks_use_supported_async_mode(
         assert hooks[0]["command"] == _current_hook_command(provider)
         assert hooks[0]["timeout"] == timeout
         assert hooks[0].get("async", False) is asynchronous
+        if provider == "gemini":
+            assert "--background" in hooks[0]["command"]
         if existing:
             assert groups[0]["matcher"] == ".*"

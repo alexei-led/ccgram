@@ -84,7 +84,7 @@ _HOOK_EVENT_TYPES: tuple[str, ...] = (
 _HOOK_LOCK_TIMEOUT_SECONDS = 2.0
 _HOOK_LOCK_RETRY_SECONDS = 0.05
 _KNOWN_HOOK_PROVIDERS: frozenset[str] = frozenset({"claude", "pi", "codex", "gemini"})
-# Gemini command hooks have no detached execution option.
+# Gemini uses --background because its command hooks have no native async option.
 _ASYNC_JSON_HOOK_PROVIDERS = frozenset({"codex", "pi"})
 
 
@@ -132,6 +132,8 @@ def _current_hook_command(provider_name: str = "claude") -> str:
     command = f"{shlex.quote(sys.executable)} -m ccgram.main hook"
     if provider_name != "claude":
         command += f" --provider {shlex.quote(provider_name)}"
+    if provider_name == "gemini":
+        command += " --background"
     return command
 
 
@@ -2003,11 +2005,42 @@ def _configure_hook_logging() -> None:
     )
 
 
+def _launch_hook_worker(provider_name: str | None) -> None:
+    """Detach reporting without retaining the provider's stdin/stdout pipes."""
+    # Lazy: temporary-file machinery is only needed for detached hook handoff.
+    from tempfile import TemporaryFile
+
+    # Lazy: resolve CCGRAM_DIR only when dispatching a background event.
+    from .utils import ccgram_dir
+
+    command = [sys.executable, "-m", "ccgram.main", "hook"]
+    if provider_name:
+        command.extend(["--provider", provider_name])
+    try:
+        log_path = ccgram_dir() / "hook.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with TemporaryFile(mode="w+", encoding="utf-8") as payload:
+            payload.write(sys.stdin.read())
+            payload.seek(0)
+            with log_path.open("ab") as log:
+                # A regular file avoids waiting for a slow worker to drain a pipe.
+                subprocess.Popen(
+                    command,
+                    stdin=payload,
+                    stdout=subprocess.DEVNULL,
+                    stderr=log,
+                    start_new_session=True,
+                )
+    except OSError as exc:
+        logger.warning("Failed to launch background hook: %s", exc)
+
+
 def hook_main(
     install: bool = False,
     uninstall: bool = False,
     status: bool = False,
     provider_name: str | None = None,
+    background: bool = False,
 ) -> None:
     """Process an agent hook event from stdin, or manage hook installation."""
     _configure_hook_logging()
@@ -2021,6 +2054,10 @@ def hook_main(
 
     if status:
         sys.exit(_hook_status(provider_name or "claude"))
+
+    if background:
+        _launch_hook_worker(provider_name)
+        return
 
     normalized = _process_hook_stdin(provider_name)
     if (
