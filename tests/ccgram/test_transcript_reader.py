@@ -22,6 +22,27 @@ def test_clear_session_cancels_pending_skip_barrier(tmp_path) -> None:
     assert state.get_session("sess") is None
 
 
+def test_clear_session_drops_startup_replay_state(tmp_path) -> None:
+    """A cleared session id reused later must not inherit the old session's
+    startup replay state (#367): the replay exemption, the clamp offset, and
+    the existed-at-startup markers all belong to the cleared lifetime."""
+    state = MonitorState(state_file=tmp_path / "monitor.json")
+    state.update_session(TrackedSession("sess", str(tmp_path / "session.jsonl")))
+    reader = TranscriptReader(state, IdleTracker())
+    # What the startup replay bound leaves behind for a pre-existing session.
+    reader._replay_allowed.add("sess")
+    reader._startup_clamped["sess"] = 4096
+    reader._startup_replay_checked.add("sess")
+    assert "sess" in reader._startup_sessions
+
+    reader.clear_session("sess")
+
+    assert "sess" not in reader._replay_allowed
+    assert "sess" not in reader._startup_clamped
+    assert "sess" not in reader._startup_sessions
+    assert "sess" not in reader._startup_replay_checked
+
+
 async def test_same_transcript_reuses_offset_after_session_map_refresh(
     tmp_path,
 ) -> None:
