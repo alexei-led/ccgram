@@ -147,6 +147,19 @@ _APP_TIMEOUT = 15.0
 _RC_TIMEOUT = 124
 _RC_NO_BINARY = 127
 
+# Clearing a leftover draft before a message goes in (see ``_clear_input``).
+# Claude Code draws its input box as a ``❯`` row between two horizontal rules;
+# a rule may carry the session name, so it only has to be mostly rule glyphs.
+_RULE_GLYPH = "─"
+_RULE_MIN_GLYPHS = 20
+_PROMPT_GLYPH = "❯"
+# One round empties one line of the box and joins it with its neighbour: end of
+# line, kill to start, kill to end (joins the next line), backspace (joins the
+# previous one), forward delete. Each key is a no-op on an empty box, unlike
+# Ctrl+C, which arms Claude Code's exit on an empty box.
+_CLEAR_ROUND = ("ctrl+e", "ctrl+u", "ctrl+k", "backspace", "delete")
+_CLEAR_MAX_ROUNDS = 40
+
 # Login-shell wrapper the Herdr app itself uses for an agent tab, so the agent
 # resolves through the user's PATH and the terminal falls back to a shell when
 # it exits. Used for the ``terminal.run`` fallback when the app is unreachable.
@@ -160,6 +173,30 @@ HcStreamOpener = Callable[[], AsyncGenerator[dict, None]]
 
 class HcError(RuntimeError):
     """herdr-core could not be reached or answered something unusable."""
+
+
+def _is_rule(line: str) -> bool:
+    stripped = line.strip()
+    return stripped.count(_RULE_GLYPH) >= _RULE_MIN_GLYPHS and _RULE_GLYPH in (
+        stripped[0],
+        stripped[-1],
+    )
+
+
+def input_box_rows(screen: str) -> int | None:
+    """Rows of the Claude Code input box on ``screen``, or None when there is none.
+
+    The box is the lowest pair of adjacent rules whose first row starts with
+    ``❯``. A permission or question dialog has its own text under the rule, so
+    it does not count as an input box.
+    """
+    lines = screen.splitlines()
+    rules = [i for i, line in enumerate(lines) if _is_rule(line)]
+    for top, bottom in reversed(list(zip(rules, rules[1:], strict=False))):
+        body = lines[top + 1 : bottom]
+        if body and body[0].lstrip().startswith(_PROMPT_GLYPH):
+            return len(body)
+    return None
 
 
 # ── Identity ───────────────────────────────────────────────────────────
@@ -908,6 +945,23 @@ class HcManager:
             return False
         return True
 
+    async def _clear_input(self, window_id: str, address: str) -> None:
+        """Empty the agent's input box so a pasted message is not appended to a draft.
+
+        ``terminal.send`` pastes at the cursor, so text left in the box at the
+        desk (a half-typed ``/rename ``) would prefix the message and change what
+        it means. The message from Telegram wins over the draft. The plain-text
+        screen cannot tell a draft from Claude Code's dimmed placeholder, so the
+        box is always cleared, with one round of no-op-when-empty keys per row.
+        Best effort: an unreadable screen or an unrecognised UI sends as before.
+        """
+        screen = await self._read_screen(window_id)
+        rows = input_box_rows(screen) if screen else None
+        if rows is None:
+            return
+        rounds = min(rows + 1, _CLEAR_MAX_ROUNDS)
+        await self._keys(address, list(_CLEAR_ROUND) * rounds)
+
     async def send(
         self,
         window_id: str,
@@ -919,7 +973,8 @@ class HcManager:
     ) -> bool:
         """Send text or keys to the terminal.
 
-        * Literal text with Enter goes to ``terminal.send``: a bracketed paste
+        * Literal text with Enter first clears the input box (``_clear_input``),
+          then goes to ``terminal.send``: a bracketed paste
           followed by Enter once the keyboard has been quiet for ~3 s, so a
           person typing at the desk is never interleaved mid-line. ``force``
           is set because ccgram already validates prompts before sending,
@@ -949,6 +1004,7 @@ class HcManager:
                 keys.append("enter")
             return bool(keys) and await self._keys(address, keys)
         if enter and text:
+            await self._clear_input(window_id, address)
             try:
                 await self._call(
                     "terminal.send",

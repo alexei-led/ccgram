@@ -664,6 +664,95 @@ async def test_literal_text_with_enter_uses_terminal_send() -> None:
     assert timeout >= 10  # the quiet-keyboard wait is ~3 s
 
 
+_RULE = "─" * 60
+
+
+def _claude_screen(*box: str) -> dict:
+    """A Claude Code screen whose input box holds ``box`` (first row has ``❯``)."""
+    rows = ["⏺ Done.", "", _RULE, *box, _RULE, "  [Opus] ctx 3%", "  ⏵⏵ auto mode on"]
+    return {"complete": True, "how": "screen", "text": "\n".join(rows)}
+
+
+def _clear_round() -> list[str]:
+    return ["ctrl+e", "ctrl+u", "ctrl+k", "backspace", "delete"]
+
+
+async def test_send_clears_a_leftover_draft_first() -> None:
+    # A half-typed "/rename " left at the desk must not swallow a phone message.
+    fake = (
+        FakeHc()
+        .on("terminal.read", _claude_screen("❯ /rename abc", "  second line"))
+        .on("terminal.keys", {"turn": 4})
+        .on("terminal.send", {"started": True, "status": "idle", "turn": 4})
+    )
+    assert await _manager(fake).send("hc-t5", "visualise it") is True
+    assert [name for name, _p, _t in fake.calls] == [
+        "terminal.read",
+        "terminal.keys",
+        "terminal.send",
+    ]
+    # One round per box row plus one spare; every key is a no-op on an empty box.
+    assert fake.calls_to("terminal.keys") == [
+        {"terminal": "t5", "keys": _clear_round() * 3}
+    ]
+    assert fake.calls_to("terminal.send")[0]["text"] == "visualise it"
+
+
+async def test_send_clear_sees_a_rule_holding_the_session_name() -> None:
+    screen = _claude_screen('❯ Try "create a util"')
+    rows = screen["text"].split("\n")
+    rows[4] = "─" * 40 + " aivideo " + "──"  # the rule under the box
+    screen["text"] = "\n".join(rows)
+    fake = (
+        FakeHc()
+        .on("terminal.read", screen)
+        .on("terminal.keys", {"turn": 4})
+        .on("terminal.send", {"started": True, "status": "idle", "turn": 4})
+    )
+    assert await _manager(fake).send("hc-t5", "hi") is True
+    assert fake.calls_to("terminal.keys") == [
+        {"terminal": "t5", "keys": _clear_round() * 2}
+    ]
+
+
+async def test_send_does_not_clear_without_an_input_box() -> None:
+    # A permission dialog (no ❯ row right under the rule) or an unknown UI.
+    dialog = {
+        "complete": True,
+        "how": "screen",
+        "text": "\n".join(
+            [_RULE, " Bash command", "   ls", " ❯ 1. Yes", "   2. No", _RULE]
+        ),
+    }
+    fake = (
+        FakeHc()
+        .on("terminal.read", dialog)
+        .on("terminal.send", {"started": True, "status": "idle", "turn": 4})
+    )
+    assert await _manager(fake).send("hc-t5", "hi") is True
+    assert fake.calls_to("terminal.keys") == []
+    assert len(fake.calls_to("terminal.send")) == 1
+
+
+async def test_send_still_goes_out_when_the_screen_cannot_be_read() -> None:
+    fake = FakeHc().on("terminal.send", {"started": True, "status": "idle", "turn": 4})
+    assert await _manager(fake).send("hc-t5", "hi") is True
+    assert fake.calls_to("terminal.keys") == []
+
+
+async def test_clear_rounds_are_capped() -> None:
+    box = ["❯ line 0", *(f"  line {i}" for i in range(1, 200))]
+    fake = (
+        FakeHc()
+        .on("terminal.read", _claude_screen(*box))
+        .on("terminal.keys", {"turn": 4})
+        .on("terminal.send", {"started": True, "status": "idle", "turn": 4})
+    )
+    assert await _manager(fake).send("hc-t5", "hi") is True
+    (keys,) = fake.calls_to("terminal.keys")
+    assert len(keys["keys"]) == len(_clear_round()) * hc_module._CLEAR_MAX_ROUNDS
+
+
 async def test_send_failure_returns_false() -> None:
     fake = FakeHc().on("terminal.send", HcRpcError("finished", kind="finished"))
     assert await _manager(fake).send("hc-t5", "hello") is False
