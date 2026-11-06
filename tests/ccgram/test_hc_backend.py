@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import os
+import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
@@ -121,6 +123,10 @@ class FakeApp:
         return (127, "", "herdr-app: command not found")
 
 
+# Keep listings hermetic: never read this machine's ~/.claude/sessions.
+_NO_SESSIONS = "/nonexistent/claude-sessions"
+
+
 def _manager(
     fake: FakeHc,
     app: FakeApp | None = None,
@@ -134,6 +140,7 @@ def _manager(
         app_runner=app or FakeApp(),
         own_terminal_id=own,
         stream_opener=stream_opener,
+        claude_sessions_dir=_NO_SESSIONS,
     )
 
 
@@ -305,7 +312,11 @@ async def test_window_projection_fields() -> None:
 
 async def test_own_terminal_defaults_to_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HC_TERMINAL_ID", "t5")
-    manager = HcManager(transport=_listing_fake(), app_runner=FakeApp())
+    manager = HcManager(
+        transport=_listing_fake(),
+        app_runner=FakeApp(),
+        claude_sessions_dir=_NO_SESSIONS,
+    )
     windows = await manager.list_windows()
     assert "hc-t5" not in {w.window_id for w in windows}
 
@@ -1072,3 +1083,31 @@ async def test_shared_tab_names_add_the_space() -> None:
     assert manager._to_window(first, shared).window_name == "research (Sessions)"
     assert manager._to_window(second, shared).window_name == "research (Tabula)"
     assert manager._to_window(alone, shared).window_name == "cua"
+
+
+async def test_claude_session_name_names_the_topic(tmp_path) -> None:
+    """A named Claude Code session gives the topic its name; a rename follows."""
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    manager = HcManager(
+        transport=_listing_fake(),
+        app_runner=FakeApp(),
+        own_terminal_id="",
+        claude_sessions_dir=str(sessions),
+    )
+    terminal = {
+        "address": "t20",
+        "labels": {"where": "Digients / cua"},
+        "foreground": {"pid": 4242, "argv": ["claude"]},
+    }
+    assert manager._to_window(terminal).window_name == "cua"
+    session_file = sessions / "4242.json"
+    session_file.write_text(json.dumps({"pid": 4242, "name": "dig-cua"}))
+    assert manager._to_window(terminal).window_name == "dig-cua"
+    session_file.write_text(json.dumps({"pid": 4242, "name": "dig-cua-2"}))
+    os.utime(session_file, (time.time() + 5, time.time() + 5))
+    assert manager._to_window(terminal).window_name == "dig-cua-2"
+    # An unnamed session falls back to the tab.
+    session_file.write_text(json.dumps({"pid": 4242, "name": None}))
+    os.utime(session_file, (time.time() + 10, time.time() + 10))
+    assert manager._to_window(terminal).window_name == "cua"

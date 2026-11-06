@@ -419,6 +419,7 @@ class HcManager:
         app_runner: HcAppRunner | None = None,
         app_binary: str = "herdr-app",
         own_terminal_id: str | None = None,
+        claude_sessions_dir: str | None = None,
     ) -> None:
         """Build the backend without touching the socket or the filesystem.
 
@@ -431,6 +432,9 @@ class HcManager:
             app_binary: the Herdr app's command-line executable.
             own_terminal_id: the terminal ccgram itself runs in, never offered
                 or adopted; defaults to ``$HC_TERMINAL_ID``. ``""`` excludes none.
+            claude_sessions_dir: Claude Code's per-process session files, read
+                for session names; defaults to ``$CLAUDE_CONFIG_DIR/sessions``
+                (``~/.claude/sessions``).
         """
         self._socket_path = socket_path or default_socket_path()
         self._transport: HcTransport = transport or self._socket_transport
@@ -443,6 +447,9 @@ class HcManager:
             else os.environ.get("HC_TERMINAL_ID", "")
         )
         self._own_address = own.strip()
+        self._claude_sessions_dir = claude_sessions_dir
+        # pid -> (session file mtime, session name), so a /rename is picked up.
+        self._session_names: dict[int, tuple[float, str]] = {}
         # Per-address history-read backoff deadlines and in-flight reads.
         self._history_backoff: dict[str, float] = {}
         self._history_inflight: set[str] = set()
@@ -592,13 +599,51 @@ class HcManager:
             terminal.get("name")
         ) or address
 
+    def _sessions_dir(self) -> Path:
+        if self._claude_sessions_dir is not None:
+            return Path(self._claude_sessions_dir)
+        base = os.environ.get("CLAUDE_CONFIG_DIR") or str(Path.home() / ".claude")
+        return Path(base) / "sessions"
+
+    def _claude_session_name(self, terminal: Mapping[str, object]) -> str:
+        """The Claude Code session name (``/rename``) of the terminal's agent.
+
+        Claude Code writes ``sessions/<pid>.json`` with a ``name`` for each running
+        process. Empty when the foreground isn't a named Claude session.
+        """
+        foreground = terminal.get("foreground")
+        pid = foreground.get("pid") if isinstance(foreground, Mapping) else None
+        if not isinstance(pid, int) or pid <= 0:
+            return ""
+        path = self._sessions_dir() / f"{pid}.json"
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            self._session_names.pop(pid, None)
+            return ""
+        cached = self._session_names.get(pid)
+        if cached is not None and cached[0] == mtime:
+            return cached[1]
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except OSError, ValueError:
+            return ""
+        name = raw.get("name") if isinstance(raw, dict) else None
+        name = name.strip() if isinstance(name, str) else ""
+        self._session_names[pid] = (mtime, name)
+        return name
+
+    def _base_name(self, terminal: Mapping[str, object]) -> str:
+        """A terminal's topic name before disambiguation: session name, else tab."""
+        return self._claude_session_name(terminal) or self._space_tab(terminal)[1]
+
     def _shared_tabs(self, terminals: Sequence[Mapping[str, object]]) -> frozenset[str]:
         """Tab names that more than one visible terminal uses."""
         seen: dict[str, int] = {}
         for terminal in terminals:
             if self._is_visible(terminal):
-                _space, tab = self._space_tab(terminal)
-                seen[tab] = seen.get(tab, 0) + 1
+                name = self._base_name(terminal)
+                seen[name] = seen.get(name, 0) + 1
         return frozenset(tab for tab, count in seen.items() if count > 1)
 
     def _to_window(
@@ -608,9 +653,10 @@ class HcManager:
     ) -> WindowRef:
         """Map one herdr-core terminal onto the neutral ``WindowRef``.
 
-        Topic headers are narrow, so the name is just the Herdr tab (``chore``),
-        with the space added only when another terminal shares the tab name
-        (``research (Tabula)``). The provider prefix is added by the topic layer.
+        Topic headers are narrow, so the name is the Claude Code session name
+        (``dig-cua``), else the Herdr tab (``chore``), with the space added only
+        when another terminal shares the name (``research (Tabula)``). The
+        provider prefix is added by the topic layer.
         """
         address = _str(terminal.get("address"))
         status = parse_status(terminal.get("status"))
@@ -619,8 +665,9 @@ class HcManager:
         fg_argv = (
             _argv(foreground.get("argv")) if isinstance(foreground, Mapping) else []
         )
-        space, tab = self._space_tab(terminal)
-        name = f"{tab} ({space})" if tab in shared_tabs else tab
+        space, _tab = self._space_tab(terminal)
+        base = self._base_name(terminal)
+        name = f"{base} ({space})" if base in shared_tabs else base
         cols, rows = terminal.get("cols"), terminal.get("rows")
         return WindowRef(
             window_id=window_id_for_address(address),
