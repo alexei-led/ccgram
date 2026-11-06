@@ -21,6 +21,7 @@ from ..live.live_view import tick_live_views
 from .delivery_watch import check_delivery_wedges
 from ..topics.topic_deletion import cleanup_retired_topics
 from ..topics.topic_provisioning_recovery import recover_topic_provisioning
+from ..topics.topic_routes import relocate_misrouted_topics
 from ..topics.topic_lifecycle import (
     check_unbound_window_ttl,
     probe_topic_existence,
@@ -59,6 +60,9 @@ async def run_periodic_tasks(
         await prune_stale_state(all_windows)
         if not recovery.get("rate_limited"):
             await probe_topic_existence(client, adapter)
+            # A tab moved to another space, or a route added later: move its
+            # topic into the workspace's chat (no-op without routes).
+            await relocate_misrouted_topics(client)
             # The drain retries failed deletions from ANY retire path
             # (explicit unbind --delete, failed provisioning, system
             # replacement), not only dead-session retention. With the

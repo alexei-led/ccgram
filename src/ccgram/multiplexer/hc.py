@@ -718,6 +718,8 @@ class HcManager:
             # never ccgram's own terminal, a probe, or a remote terminal whose
             # transcripts ccgram cannot read.
             topic_eligible=status is not None and self._is_visible(terminal),
+            # Only a real Herdr space routes; "Herdr" is a display fallback.
+            workspace=space if _labels(terminal).get(_WHERE_LABEL) else "",
         )
 
     # ── Multiplexer Protocol surface ───────────────────────────────────

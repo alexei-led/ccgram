@@ -60,6 +60,32 @@ def _resolve_toolbar_path() -> str:
     return str(fallback) if fallback.exists() else ""
 
 
+def parse_topic_chat_routes(raw: str) -> dict[str, int]:
+    """Parse ``CCGRAM_TOPIC_CHAT_ROUTES``: ``Space=-100123,Other=-100456``.
+
+    Keys are workspace labels as the multiplexer reports them (a Herdr space
+    name); values are Telegram group chat ids. A malformed entry is logged and
+    skipped so one typo does not take the bot down.
+    """
+    routes: dict[str, int] = {}
+    for entry in raw.split(","):
+        if not entry.strip():
+            continue
+        name, sep, chat = entry.rpartition("=")
+        name = name.strip()
+        try:
+            chat_id = int(chat.strip())
+        except ValueError:
+            chat_id = 0
+        if not sep or not name or chat_id >= 0:
+            logger.warning(
+                "Ignoring malformed CCGRAM_TOPIC_CHAT_ROUTES entry %r", entry
+            )
+            continue
+        routes[name] = chat_id
+    return routes
+
+
 def _skip_barrier_deadline_s() -> float:
     """Backlog-skip barrier aging, floored so no value expires barriers
     near-instantly and tolerant of empty, non-numeric, or non-finite
@@ -250,6 +276,10 @@ class Config:
         # change). Hook notices and new bubbles are never held back.
         self.status_edit_interval = max(
             0.0, float(os.getenv("CCGRAM_STATUS_EDIT_INTERVAL", "0"))
+        )
+        # Workspace label -> Telegram chat for that workspace's auto-created topics.
+        self.topic_chat_routes = parse_topic_chat_routes(
+            os.getenv("CCGRAM_TOPIC_CHAT_ROUTES", "")
         )
         self.skip_barrier_deadline_s = _skip_barrier_deadline_s()
         self.delivery_watch_gap_bytes = _delivery_watch_gap_bytes()

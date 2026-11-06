@@ -34,6 +34,12 @@ from ...telegram_client import TelegramClient
 from ...thread_router import TopicProvisioning, thread_router
 from ...multiplexer import multiplexer as tmux_manager
 from ...multiplexer.base import canonical_window_id
+from .topic_routes import (
+    configured_routes,
+    relocate_misrouted_topics,
+    route_target_chats,
+    window_workspace,
+)
 
 logger = structlog.get_logger()
 
@@ -934,11 +940,17 @@ async def _handle_new_window_locked(
     await _auto_detect_provider(event.window_id)
 
     topic_name = event.window_name or Path(event.cwd).name or event.window_id
-    seen_chats = (
-        {target_chat_id}
-        if target_chat_id is not None
-        else collect_target_chats(event.window_id)
-    )
+    if target_chat_id is not None:
+        seen_chats = {target_chat_id}
+    else:
+        seen_chats = collect_target_chats(event.window_id)
+        routes = configured_routes()
+        if routes:
+            # One group per workspace: a routed workspace's sessions go to its
+            # group only, the rest stay out of the routed groups.
+            seen_chats = route_target_chats(
+                seen_chats, await window_workspace(event.window_id), routes
+            )
     if not seen_chats:
         return False
 
@@ -1015,3 +1027,6 @@ async def adopt_unbound_windows(client: TelegramClient) -> None:
 
         await _adopt_orphaned_windows(client, orphaned)
         logger.info("Startup: adopted %d unbound window(s)", len(orphaned))
+    moved = await relocate_misrouted_topics(client)
+    if moved:
+        logger.info("Startup: moved %d topic(s) to their workspace chat", moved)

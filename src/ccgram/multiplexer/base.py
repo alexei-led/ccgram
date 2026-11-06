@@ -62,6 +62,14 @@ class WindowRef:
     applied by omission. Backends with nothing to exclude leave it True.
     """
 
+    workspace: str = ""
+    """Label of the workspace the window sits in, as the backend names it.
+
+    Used to route a window's topic to the Telegram chat configured for that
+    workspace (``CCGRAM_TOPIC_CHAT_ROUTES``). Empty when the backend has no
+    workspace concept or does not report one.
+    """
+
     alias_window_ids: tuple[str, ...] = ()
     """Superseded canonical identities this same window may be persisted under."""
     legacy_alias_window_ids: tuple[str, ...] = ()

@@ -1174,6 +1174,15 @@ async def test_shared_tab_names_add_the_space() -> None:
     assert manager._to_window(alone, shared).window_name == "cua"
 
 
+async def test_window_carries_its_space_for_topic_routing() -> None:
+    manager = _manager(_listing_fake())
+    window = manager._to_window(
+        {"address": "t3", "labels": {"where": "Digients / cua"}}
+    )
+    assert window.workspace == "Digients"
+    assert manager._to_window({"address": "t4", "labels": {}}).workspace == ""
+
+
 async def test_claude_session_name_names_the_topic(tmp_path) -> None:
     """A named Claude Code session gives the topic its name; a rename follows."""
     sessions = tmp_path / "sessions"
