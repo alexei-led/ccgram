@@ -4,7 +4,8 @@ The Claude Code hook runs as a separate process spawned inside a multiplexer
 pane; it cannot import bot config or wire the ``multiplexer`` proxy. It only
 needs to answer "which window am I?" from the environment. Each backend exposes
 that differently — tmux via ``$TMUX_PANE`` + ``tmux display-message``, herdr via
-``$HERDR_PANE_ID``, agterm via ``$AGTERM_SESSION_ID`` — so this module picks the
+``$HERDR_PANE_ID``, hc (Herdr desktop) via ``$HC_TERMINAL_ID``, agterm via
+``$AGTERM_SESSION_ID`` — so this module picks the
 backend by which ``self_identify_env`` variable is present (never a ``name ==
 "<backend>"`` conditional) and returns a neutral ``SelfIdentity``.
 
@@ -36,8 +37,9 @@ class SelfIdentity:
     """Neutral identity of the window that fired the hook.
 
     ``session_window_key`` is the ``session_map.json`` key (``<session>:<id>``
-    for tmux, ``herdr:<opaque-target-id>`` for herdr, ``agterm:<session-uuid>``
-    for an agterm primary, or ``agterm:<guarded-split-target>`` for its peer).
+    for tmux, ``herdr:<opaque-target-id>`` for herdr, ``hc:hc-<address>`` for
+    hc, ``agterm:<session-uuid>`` for an agterm primary, or
+    ``agterm:<guarded-split-target>`` for its peer).
     ``pane_tty`` is tmux-only
     (herdr does not expose a tty).
     """
@@ -59,14 +61,19 @@ def resolve_self_identity(
     """Resolve the firing window's identity from ``env``.
 
     Dispatches on which backend's ``self_identify_env`` var is present:
-    ``$TMUX_PANE`` → tmux (via ``tmux_query``), ``$HERDR_PANE_ID`` → herdr.
+    ``$TMUX_PANE`` → tmux (via ``tmux_query``), ``$HERDR_PANE_ID`` → herdr,
+    ``$HC_TERMINAL_ID`` → hc, ``$AGTERM_SESSION_ID`` → agterm.
     Returns None when none is set or the tmux probe fails (today's
     "cannot determine window" path).
 
-    The order is fixed: tmux, then herdr, then agterm. It is a precedence list,
-    not a rule about which multiplexer is innermost. tmux is first because it
-    is the established path and a herdr pane inside a tmux pane reports the
-    tmux identity. agterm is last because its variable is the least specific
+    The order is fixed: tmux, then herdr, then hc, then agterm. It is a
+    precedence list, not a rule about which multiplexer is innermost. tmux is
+    first because it is the established path and a herdr pane inside a tmux
+    pane reports the tmux identity. hc comes after both because a tmux or herdr
+    session started inside a Herdr desktop terminal inherits
+    ``HC_TERMINAL_ID`` but owns its own panes. Its address is herdr-core's own
+    permanent terminal id, so no probe is needed. agterm is last because its
+    variable is the least specific
     evidence of anything: every shell agterm spawns inherits
     ``AGTERM_SESSION_ID``, including one running a nested tmux or herdr, so
     checking it earlier would claim panes owned by the inner multiplexer.
@@ -105,6 +112,19 @@ def resolve_self_identity(
             mux="herdr",
             session_window_key=f"herdr:{target_id}",
             window_id=target_id,
+            window_name="",
+        )
+
+    # hc after tmux and herdr: an inner tmux or herdr inherits HC_TERMINAL_ID
+    # from the Herdr desktop terminal it runs in, but owns its own panes. The
+    # address never changes and is never reused, so it is the identity as is.
+    hc_terminal = env.get("HC_TERMINAL_ID", "").strip()
+    if hc_terminal:
+        window_id = f"hc-{hc_terminal}"
+        return SelfIdentity(
+            mux="hc",
+            session_window_key=f"hc:{window_id}",
+            window_id=window_id,
             window_name="",
         )
 

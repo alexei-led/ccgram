@@ -1,0 +1,56 @@
+{
+  "id": 1,
+  "jsonrpc": "2.0",
+  "result": {
+    "core": {
+      "id": "0123456789abcdef0123456789abcdef",
+      "name": "example-host"
+    },
+    "features": [
+      "framed",
+      "attach",
+      "events",
+      "status",
+      "shell",
+      "resize_notifications",
+      "automatic_input"
+    ],
+    "framed": false,
+    "generation": 1,
+    "methods": [
+      "hello",
+      "server.status",
+      "server.stop",
+      "server.restart",
+      "terminal.run",
+      "templates.list",
+      "terminal.list",
+      "terminal.get",
+      "terminal.kill",
+      "terminal.rm",
+      "terminal.keep",
+      "terminal.label",
+      "terminal.read",
+      "terminal.attach",
+      "terminal.send",
+      "terminal.wait",
+      "terminal.keys",
+      "terminal.interrupt",
+      "terminal.put",
+      "machine.exec",
+      "file.read",
+      "file.write",
+      "file.edit",
+      "doc.get",
+      "doc.set",
+      "events.subscribe",
+      "machine.add",
+      "machine.list",
+      "machine.connect",
+      "machine.rename",
+      "machine.rm",
+      "rpc.discover"
+    ],
+    "version": "0.1.18"
+  }
+}

@@ -297,6 +297,31 @@ class TestUnreachableBackendNeverPrintsDead:
         assert "my-project" in out
         assert "unreachable" in out
 
+    def test_hc_backend_line(self, tmp_path, monkeypatch, capsys) -> None:
+        self._bound(tmp_path, monkeypatch, "hc")
+        monkeypatch.setattr(
+            "ccgram.status_cmd._list_backend_windows",
+            lambda name: (
+                [{"id": "hc-t5", "name": "Claude ▸ Sessions ▸ chore"}]
+                if name == "hc"
+                else None
+            ),
+        )
+
+        out = self._run(capsys)
+
+        assert "Herdr desktop (hc): 1 terminal(s)" in out
+        assert "hc-t5" in out
+
+    def test_hc_unreachable(self, tmp_path, monkeypatch, capsys) -> None:
+        self._bound(tmp_path, monkeypatch, "hc")
+        monkeypatch.setattr("ccgram.status_cmd._list_backend_windows", lambda _: None)
+
+        out = self._run(capsys)
+
+        assert "Herdr desktop (hc): unreachable" in out
+        assert "dead" not in out
+
     def test_tmux_listing_failure(self, tmp_path, monkeypatch, capsys) -> None:
         self._bound(tmp_path, monkeypatch, "tmux")
         monkeypatch.setattr("ccgram.status_cmd._list_tmux_windows", lambda _: None)

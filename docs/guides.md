@@ -208,7 +208,7 @@ All settings accept both CLI flags and environment variables. CLI flags take pre
 | `CCGRAM_DIR` / `--config-dir`                         | `~/.ccgram`                    | Config and state directory                                                                           |
 | `CLAUDE_CONFIG_DIR` / `--claude-config-dir`           | `~/.claude`                    | Override Claude config directory (for wrappers like ce, cc-mirror)                                   |
 | `TMUX_SESSION_NAME` / `--tmux-session`                | `ccgram`                       | tmux session name                                                                                    |
-| `CCGRAM_MULTIPLEXER`                                  | `tmux`                         | Terminal multiplexer backend: `tmux` (default), `herdr` or `agterm`                                  |
+| `CCGRAM_MULTIPLEXER`                                  | `tmux`                         | Terminal multiplexer backend: `tmux` (default), `herdr`, `agterm` or `hc` (Herdr desktop)            |
 | `CCGRAM_AGTERM_WORKSPACES`                            | `ccgram`                       | agterm only: workspaces ccgram may adopt sessions from (comma-separated; `*` for all)                |
 | `CCGRAM_PROVIDER` / `--provider`                      | `claude`                       | Default agent provider (`claude`, `codex`, `gemini`, `pi`, `shell`)                                  |
 | `CCGRAM_<NAME>_COMMAND`                               | _(from provider)_              | Per-provider launch command (env only, see below)                                                    |
@@ -450,6 +450,19 @@ Creating sessions from the terminal on herdr is covered in [Creating Sessions fr
 > **Workspace picker:** On herdr, `/new` shows an extra step after directory selection. Choose a workspace to pin the new tab there, or skip it: ccgram then explicitly creates a workspace from the requested directory and uses only its returned ID. It never infers the active or a matching workspace.
 >
 > **Self-hosting escape hatch:** Workspaces or tabs whose label matches `__*__` (e.g. `__main__`) are invisible to ccgram. Use this naming convention to run ccgram itself inside herdr without it auto-adopting its own terminal as a topic.
+
+### hc (Herdr desktop) backend
+
+`CCGRAM_MULTIPLEXER=hc` drives the terminals of the Herdr desktop app (`herdr-app`), which runs them in herdr-core (`hc`). This is a different product from the `herdr` backend above. CCGram talks to herdr-core over its JSON-RPC socket (`$HC_TERMINAL_SOCKET`, default `~/.local/state/herdr-core/default/default.sock`) and uses `herdr-app do` only for tabs. Auto-detection picks `hc` when `HC_TERMINAL_SOCKET` is set and neither `HERDR_PANE_ID` nor `TMUX_PANE` is.
+
+- **Identity.** One terminal is one topic, with `window_id` `hc-<address>` (for example `hc-t5`). herdr-core never reuses an address and keeps it across core restarts. Hooks resolve their terminal from `HC_TERMINAL_ID`, which every Herdr terminal exports, so `ccgram hook --install` needs no extra step.
+- **Topics.** Only terminals whose program reports an agent status (Claude Code, Codex, …) are adopted. CCGram never adopts its own terminal, terminals labelled `ccgram.probe`, or terminals on another machine (`machine/t7`). Topic names come from the app's `where` label, for example `Claude ▸ Sessions ▸ chore`.
+- **Input.** A message goes in through `terminal.send`, which pastes the text and presses Enter once nobody has typed at the desk for about 3 s. Keys such as Esc, arrows and `C-c` go through `terminal.keys`. Text that must not be submitted (menu answers) is typed key by key. herdr-core can only type letters, digits and unshifted punctuation that way, so other characters are refused.
+- **Reads.** Status, prompts and screenshots use fast screen-only reads, without colour. Scrollback is capped at 1000 lines and limited to a few seconds, because herdr-core reads history slowly on idle full-screen agents. If the read takes too long, CCGram returns the screen and flags it as truncated.
+- **New sessions.** `/new` opens a normal Herdr tab with `herdr-app do tab.new` in the chosen space and finds its terminal. If the app is unreachable, the terminal is started with `terminal.run` and has no tab. Panes, splits and native worktrees are not supported.
+- **Verify** with `ccgram doctor`. It checks the socket handshake and protocol generation 1, and warns when `herdr-app` is missing from `PATH`.
+
+The live tests run only on request: `uv run pytest tests/integration/test_hc_live.py -m hc`. They use a hidden throwaway terminal and remove it afterwards.
 
 ## Sync and Retired Topic Cleanup
 

@@ -1,0 +1,396 @@
+{
+  "id": 3,
+  "jsonrpc": "2.0",
+  "result": {
+    "hidden_finished": 13,
+    "terminals": [
+      {
+        "address": "t3",
+        "argv": [
+          "/bin/zsh",
+          "-l"
+        ],
+        "cols": 130,
+        "created_ms": 1793519480885,
+        "cwd": "/Users/alice/code/work",
+        "die_with_parent": false,
+        "exit_code": null,
+        "finished_ms": null,
+        "foreground": {
+          "argv": [
+            "claude"
+          ],
+          "cwd": "/Users/alice/code/work",
+          "name": "2.1.317",
+          "pid": 62995
+        },
+        "identity": "ghostty",
+        "keep": true,
+        "labels": {
+          "herdr.seen": "67",
+          "herdr.space": "sp8602102732563f04e4eaa54814672093",
+          "herdr.tab": "tb3fd8d40af2c5657fa56feed32c55f438",
+          "where": "Work / api"
+        },
+        "name": null,
+        "notify": true,
+        "parent": null,
+        "pid": 37397,
+        "reason": null,
+        "reported": true,
+        "rm": false,
+        "rows": 33,
+        "screen": "exact",
+        "signal": null,
+        "state": "live",
+        "status": {
+          "app": "claude-code",
+          "state": "done"
+        },
+        "status_ms": 1793949240544,
+        "template": null,
+        "title": "api",
+        "turn": 67
+      },
+      {
+        "address": "t5",
+        "argv": [
+          "/bin/zsh",
+          "-l"
+        ],
+        "cols": 130,
+        "created_ms": 1793610260564,
+        "cwd": "/Users/alice/code/work",
+        "die_with_parent": false,
+        "exit_code": null,
+        "finished_ms": null,
+        "foreground": {
+          "argv": [
+            "claude"
+          ],
+          "cwd": "/Users/alice/code/sessions",
+          "name": "2.1.317",
+          "pid": 53443
+        },
+        "identity": "ghostty",
+        "keep": true,
+        "labels": {
+          "herdr.seen": "96",
+          "herdr.space": "spafd190f5344b21030a45cf8ea71d36ac",
+          "herdr.tab": "tbdf4448221061c406863872cc3eb0b084",
+          "where": "Sessions / chore"
+        },
+        "name": null,
+        "notify": true,
+        "parent": null,
+        "pid": 48205,
+        "reason": null,
+        "reported": true,
+        "rm": false,
+        "rows": 33,
+        "screen": "exact",
+        "signal": null,
+        "state": "live",
+        "status": {
+          "app": "claude-code",
+          "msg": "Reading the plan",
+          "state": "working"
+        },
+        "status_ms": 1793969522468,
+        "template": null,
+        "title": "chore",
+        "turn": 96
+      },
+      {
+        "address": "t16",
+        "argv": [
+          "/bin/zsh",
+          "-lic",
+          "\"$@\"; exec \"$0\" -li",
+          "/bin/zsh",
+          "claude"
+        ],
+        "cols": 130,
+        "created_ms": 1793858923631,
+        "cwd": "/Users/alice/code/sessions",
+        "die_with_parent": false,
+        "exit_code": null,
+        "finished_ms": null,
+        "foreground": {
+          "argv": [
+            "claude"
+          ],
+          "cwd": "/Users/alice/code/sessions",
+          "name": "2.1.317",
+          "pid": 1743
+        },
+        "identity": "ghostty",
+        "keep": true,
+        "labels": {
+          "herdr.seen": "38",
+          "herdr.space": "spafd190f5344b21030a45cf8ea71d36ac",
+          "herdr.tab": "tb5708e215028731653015bc08a5d74596",
+          "where": "Sessions / video"
+        },
+        "name": null,
+        "notify": true,
+        "parent": null,
+        "pid": 1617,
+        "reason": null,
+        "reported": true,
+        "rm": false,
+        "rows": 33,
+        "screen": "exact",
+        "signal": null,
+        "state": "live",
+        "status": {
+          "app": "claude-code",
+          "state": "working"
+        },
+        "status_ms": 1793969288970,
+        "template": null,
+        "title": "video-research",
+        "turn": 38
+      },
+      {
+        "address": "t1y",
+        "argv": [
+          "/bin/zsh",
+          "-l"
+        ],
+        "cols": 130,
+        "created_ms": 1793519480885,
+        "cwd": "/Users/alice/code/work",
+        "die_with_parent": false,
+        "exit_code": null,
+        "finished_ms": null,
+        "foreground": {
+          "argv": [
+            "node",
+            "/opt/homebrew/bin/codex"
+          ],
+          "cwd": "/Users/alice/code/work",
+          "name": "node",
+          "pid": 9001
+        },
+        "identity": "ghostty",
+        "keep": true,
+        "labels": {
+          "herdr.space": "sp8602102732563f04e4eaa54814672093",
+          "herdr.tab": "tb1111111111111111111111111111111y",
+          "where": "Work / review"
+        },
+        "name": null,
+        "notify": true,
+        "parent": null,
+        "pid": 37397,
+        "reason": null,
+        "reported": true,
+        "rm": false,
+        "rows": 33,
+        "screen": "exact",
+        "signal": null,
+        "state": "live",
+        "status": {
+          "app": "codex",
+          "state": "blocked",
+          "kind": "permission"
+        },
+        "status_ms": 1793949240544,
+        "template": null,
+        "title": "codex",
+        "turn": 67
+      },
+      {
+        "address": "t9",
+        "argv": [
+          "/bin/zsh",
+          "-l"
+        ],
+        "cols": 130,
+        "created_ms": 1793519480885,
+        "cwd": "/Users/alice/code/notes",
+        "die_with_parent": false,
+        "exit_code": null,
+        "finished_ms": null,
+        "foreground": {
+          "argv": [
+            "-zsh"
+          ],
+          "cwd": "/Users/alice/code/notes",
+          "name": "zsh",
+          "pid": 41001
+        },
+        "identity": "ghostty",
+        "keep": true,
+        "labels": {
+          "herdr.seen": "0",
+          "herdr.space": "spafd190f5344b21030a45cf8ea71d36ac",
+          "herdr.tab": "tb00000000000000000000000000000009",
+          "where": "Sessions / notes"
+        },
+        "name": null,
+        "notify": true,
+        "parent": null,
+        "pid": 37397,
+        "reason": null,
+        "reported": false,
+        "rm": false,
+        "rows": 33,
+        "screen": "exact",
+        "signal": null,
+        "state": "live",
+        "status": null,
+        "status_ms": null,
+        "template": null,
+        "title": "zsh",
+        "turn": 0
+      },
+      {
+        "address": "t2b",
+        "argv": [
+          "/bin/sh",
+          "-c",
+          "stty raw -isig -echo; cat -v"
+        ],
+        "cols": 200,
+        "created_ms": 1793969686774,
+        "cwd": "/",
+        "die_with_parent": false,
+        "exit_code": null,
+        "finished_ms": null,
+        "identity": "ghostty",
+        "keep": false,
+        "labels": {
+          "ccgram.probe": "1"
+        },
+        "name": "ccgram-probe",
+        "notify": false,
+        "parent": null,
+        "pid": 51128,
+        "reason": null,
+        "reported": false,
+        "rm": false,
+        "rows": 120,
+        "screen": "exact",
+        "signal": null,
+        "state": "live",
+        "status": null,
+        "status_ms": null,
+        "template": null,
+        "title": "",
+        "turn": 0,
+        "foreground": {
+          "argv": [
+            "/bin/sh",
+            "-c",
+            "stty raw -isig -echo; cat -v"
+          ],
+          "cwd": "/",
+          "name": "sh",
+          "pid": 51128
+        }
+      },
+      {
+        "address": "t2e",
+        "argv": [
+          "/bin/zsh",
+          "-l"
+        ],
+        "cols": 130,
+        "created_ms": 1793519480885,
+        "cwd": "/Users/alice/code/work",
+        "die_with_parent": false,
+        "exit_code": null,
+        "finished_ms": null,
+        "foreground": {
+          "argv": [
+            "claude"
+          ],
+          "cwd": "/Users/alice/code/work",
+          "name": "2.1.317",
+          "pid": 62995
+        },
+        "identity": "ghostty",
+        "keep": true,
+        "labels": {
+          "ccgram.probe": "1"
+        },
+        "name": null,
+        "notify": true,
+        "parent": null,
+        "pid": 37397,
+        "reason": null,
+        "reported": true,
+        "rm": false,
+        "rows": 33,
+        "screen": "exact",
+        "signal": null,
+        "state": "live",
+        "status": {
+          "app": "claude-code",
+          "state": "done"
+        },
+        "status_ms": 1793949240544,
+        "template": null,
+        "title": "probe-agent",
+        "turn": 67
+      },
+      {
+        "address": "rohan/t7",
+        "argv": [
+          "/bin/zsh",
+          "-l"
+        ],
+        "cols": 130,
+        "created_ms": 1793519480885,
+        "cwd": "/home/alice/build",
+        "die_with_parent": false,
+        "exit_code": null,
+        "finished_ms": null,
+        "foreground": {
+          "argv": [
+            "codex"
+          ],
+          "cwd": "/home/alice/build",
+          "name": "codex",
+          "pid": 777
+        },
+        "identity": "ghostty",
+        "keep": true,
+        "labels": {
+          "where": "Rohan / build"
+        },
+        "name": null,
+        "notify": true,
+        "parent": null,
+        "pid": 37397,
+        "reason": null,
+        "reported": true,
+        "rm": false,
+        "rows": 33,
+        "screen": "exact",
+        "signal": null,
+        "state": "live",
+        "status": {
+          "app": "codex",
+          "state": "idle"
+        },
+        "status_ms": 1793949240544,
+        "template": null,
+        "title": "remote",
+        "turn": 67
+      }
+    ],
+    "machines": [
+      {
+        "name": "rohan",
+        "host": "rohan",
+        "id": "fedcba9876543210",
+        "target": "alice@rohan",
+        "version": "0.1.18",
+        "state": "connected"
+      }
+    ]
+  }
+}

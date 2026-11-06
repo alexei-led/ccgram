@@ -1635,11 +1635,12 @@ def _locate_primary_window(
         if (
             not os.environ.get("TMUX_PANE")
             and not os.environ.get("HERDR_PANE_ID")
+            and not os.environ.get("HC_TERMINAL_ID")
             and not os.environ.get("AGTERM_SESSION_ID")
         ):
             logger.warning(
-                "None of TMUX_PANE, HERDR_PANE_ID or AGTERM_SESSION_ID set, "
-                "cannot determine window"
+                "None of TMUX_PANE, HERDR_PANE_ID, HC_TERMINAL_ID or "
+                "AGTERM_SESSION_ID set, cannot determine window"
             )
         elif os.environ.get("HERDR_PANE_ID"):
             logger.warning(

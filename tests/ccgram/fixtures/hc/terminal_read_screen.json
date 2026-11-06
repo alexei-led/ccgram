@@ -1,0 +1,10 @@
+{
+  "id": 9,
+  "jsonrpc": "2.0",
+  "result": {
+    "complete": true,
+    "how": "screen",
+    "text": "  12 files changed\n\n⏺ Done. The adapter is wired.\n\n──────────────────────────────────────────────\n❯ \n──────────────────────────────────────────────\n  ⏵⏵ auto mode on (shift+tab to cycle)\n",
+    "why": null
+  }
+}

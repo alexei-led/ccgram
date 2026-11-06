@@ -1,0 +1,10 @@
+{
+  "id": 10,
+  "jsonrpc": "2.0",
+  "result": {
+    "complete": true,
+    "how": "stitched",
+    "text": "history line 1\nhistory line 2\nhistory line 3\nhistory line 4\nhistory line 5\nhistory line 6\nhistory line 7\nhistory line 8\nhistory line 9\nhistory line 10\nhistory line 11\nhistory line 12\nhistory line 13\nhistory line 14\nhistory line 15\nhistory line 16\nhistory line 17\nhistory line 18\nhistory line 19\nhistory line 20\nhistory line 21\nhistory line 22\nhistory line 23\nhistory line 24\nhistory line 25\nhistory line 26\nhistory line 27\nhistory line 28\nhistory line 29\nhistory line 30\nhistory line 31\nhistory line 32\nhistory line 33\nhistory line 34\nhistory line 35\nhistory line 36\nhistory line 37\nhistory line 38\nhistory line 39\nhistory line 40\n  12 files changed\n\n⏺ Done. The adapter is wired.\n\n──────────────────────────────────────────────\n❯ \n──────────────────────────────────────────────\n  ⏵⏵ auto mode on (shift+tab to cycle)\n",
+    "why": null
+  }
+}

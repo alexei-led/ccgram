@@ -1,0 +1,53 @@
+{
+  "id": 8,
+  "jsonrpc": "2.0",
+  "result": {
+    "address": "t5",
+    "argv": [
+      "/bin/zsh",
+      "-l"
+    ],
+    "cols": 130,
+    "created_ms": 1793610260564,
+    "cwd": "/Users/alice/code/work",
+    "die_with_parent": false,
+    "exit_code": null,
+    "finished_ms": null,
+    "foreground": {
+      "argv": [
+        "claude"
+      ],
+      "cwd": "/Users/alice/code/sessions",
+      "name": "2.1.317",
+      "pid": 53443
+    },
+    "identity": "ghostty",
+    "keep": true,
+    "labels": {
+      "herdr.seen": "96",
+      "herdr.space": "spafd190f5344b21030a45cf8ea71d36ac",
+      "herdr.tab": "tbdf4448221061c406863872cc3eb0b084",
+      "where": "Sessions / chore"
+    },
+    "name": null,
+    "notify": true,
+    "parent": null,
+    "pid": 48205,
+    "reason": null,
+    "reported": true,
+    "rm": false,
+    "rows": 33,
+    "screen": "exact",
+    "signal": null,
+    "state": "live",
+    "status": {
+      "app": "claude-code",
+      "msg": "Reading the plan",
+      "state": "working"
+    },
+    "status_ms": 1793969522468,
+    "template": null,
+    "title": "chore",
+    "turn": 96
+  }
+}

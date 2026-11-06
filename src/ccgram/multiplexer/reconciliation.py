@@ -17,12 +17,19 @@ _AGTERM_WINDOW_ID_RE = re.compile(
 )
 
 
+# hc window ids: ``hc-`` plus a herdr-core address (``t5``, ``machine/t7``).
+# Kept in step with ``multiplexer.hc.address_for_window_id``; checked after
+# case-folding, like every other id here.
+_HC_WINDOW_ID_RE = re.compile(r"hc-(?:[a-z0-9][a-z0-9._-]{0,63}/)?t[0-9a-z]+\Z")
+
+
 _BACKEND_WINDOW_ID_VALIDATORS: dict[str, Callable[[str], bool]] = {
     "tmux": is_window_id,
     "herdr": is_herdr_session_target,
     "agterm": lambda value: bool(
         _AGTERM_WINDOW_ID_RE.fullmatch(canonical_window_id(value))
     ),
+    "hc": lambda value: bool(_HC_WINDOW_ID_RE.fullmatch(canonical_window_id(value))),
 }
 _MISSING = object()
 

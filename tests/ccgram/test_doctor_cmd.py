@@ -8,7 +8,9 @@ from ccgram.doctor_cmd import (
     _check_allowed_users,
     _check_config_dir,
     _check_draft_streaming,
+    _check_hc,
     _check_herdr,
+    _check_herdr_app,
     _check_herdr_hook_coexistence,
     _check_hooks,
     _check_multiplexer,
@@ -472,6 +474,80 @@ class TestCheckHerdr:
         status, msg = _check_herdr()
         assert status == "fail"
         assert "connection refused" in msg
+
+
+class TestCheckHc:
+    def test_hc_selected(self, monkeypatch) -> None:
+        monkeypatch.setenv("CCGRAM_MULTIPLEXER", "hc")
+        status, msg = _check_multiplexer()
+        assert status == "pass"
+        assert "multiplexer backend: hc" in msg
+
+    def test_reachable(self, monkeypatch) -> None:
+        monkeypatch.setenv("HC_TERMINAL_SOCKET", "/tmp/hc.sock")
+        monkeypatch.setattr(
+            "ccgram.multiplexer.get_multiplexer", lambda _name: _FakeHerdrBackend()
+        )
+        status, msg = _check_hc()
+        assert status == "pass"
+        assert "herdr-core reachable (/tmp/hc.sock)" in msg
+
+    def test_unreachable_fails(self, monkeypatch) -> None:
+        boom = RuntimeError("herdr-core is not reachable at /tmp/x.sock")
+        monkeypatch.setattr(
+            "ccgram.multiplexer.get_multiplexer",
+            lambda _name: _FakeHerdrBackend(fail=boom),
+        )
+        status, msg = _check_hc()
+        assert status == "fail"
+        assert "not reachable" in msg
+
+    def test_herdr_app_missing_only_warns(self, monkeypatch) -> None:
+        monkeypatch.setattr("ccgram.doctor_cmd.shutil.which", lambda _cmd: None)
+        status, msg = _check_herdr_app()
+        assert status == "warn"
+        assert "herdr-app" in msg
+        monkeypatch.setattr(
+            "ccgram.doctor_cmd.shutil.which", lambda _cmd: "/usr/local/bin/herdr-app"
+        )
+        assert _check_herdr_app()[0] == "pass"
+
+    def test_doctor_main_runs_the_hc_branch(
+        self, tmp_path, monkeypatch, capsys
+    ) -> None:
+        monkeypatch.setenv("CCGRAM_DIR", str(tmp_path))
+        monkeypatch.setenv("CCGRAM_MULTIPLEXER", "hc")
+        monkeypatch.setenv("ALLOWED_USERS", "123")
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "fake-token")
+        monkeypatch.setattr(
+            "ccgram.doctor_cmd.shutil.which", lambda _cmd: f"/usr/bin/{_cmd}"
+        )
+        monkeypatch.setattr(
+            "ccgram.doctor_cmd._check_hc", lambda: ("pass", "herdr-core reachable")
+        )
+        monkeypatch.setattr(
+            "ccgram.doctor_cmd._check_hooks",
+            lambda _provider="claude": (
+                "pass",
+                "all 5 hook events installed",
+                _all_hooks_status(),
+            ),
+        )
+
+        def _no_tmux(*_args, **_kwargs):
+            raise AssertionError("tmux checks must not run on hc")
+
+        monkeypatch.setattr("ccgram.doctor_cmd._check_tmux", _no_tmux)
+        monkeypatch.setattr("ccgram.doctor_cmd._find_orphaned_windows", _no_tmux)
+
+        with pytest.raises(SystemExit) as exc_info:
+            doctor_main()
+
+        assert exc_info.value.code == 0
+        out = capsys.readouterr().out
+        assert "multiplexer backend: hc" in out
+        assert "herdr-core reachable" in out
+        assert "herdr-app found" in out
 
 
 class TestCheckHerdrHookCoexistence:

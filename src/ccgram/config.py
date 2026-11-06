@@ -381,10 +381,11 @@ class Config:
         """Select the terminal-multiplexer backend.
 
         ``CCGRAM_MULTIPLEXER`` accepts a concrete backend name (``tmux``,
-        ``herdr``, ``agterm``) or the special value ``auto`` (the default).
-        In auto mode the backend is detected from environment variables:
-        ``HERDR_PANE_ID`` → herdr, ``TMUX_PANE`` → tmux,
-        ``AGTERM_SESSION_ID`` → agterm; falls back to ``tmux`` when none match.
+        ``herdr``, ``agterm``, ``hc``) or the special value ``auto`` (the
+        default). In auto mode the backend is detected from environment
+        variables: ``HERDR_PANE_ID`` → herdr, ``TMUX_PANE`` → tmux,
+        ``HC_TERMINAL_SOCKET`` → hc (Herdr desktop), ``AGTERM_SESSION_ID`` →
+        agterm; falls back to ``tmux`` when none match.
         """
         raw = os.getenv("CCGRAM_MULTIPLEXER", "auto")
         if raw == "auto":

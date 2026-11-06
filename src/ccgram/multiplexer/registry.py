@@ -6,8 +6,9 @@ their factory so importing this module pulls in no backend I/O library
 (``libtmux``, herdr socket client) — the core stays I/O-free.
 
 The "tmux" backend reuses the existing ``multiplexer.tmux.tmux_manager``
-singleton so there is exactly one tmux server connection. The "herdr" backend
-(Task 7) is constructed lazily and is I/O-free until its first real call.
+singleton so there is exactly one tmux server connection. The "herdr",
+"agterm" and "hc" backends are constructed lazily and are I/O-free until their
+first real call.
 """
 
 from __future__ import annotations
@@ -51,10 +52,20 @@ def _make_agterm() -> Multiplexer:
     return AgtermManager()
 
 
+def _make_hc() -> Multiplexer:
+    # Lazy: same reason as herdr — keep the backend out of the registry's
+    # import-time deps; the constructor only computes the socket path and
+    # never connects.
+    from ccgram.multiplexer.hc import HcManager
+
+    return HcManager()
+
+
 _FACTORIES: dict[str, Callable[[], Multiplexer]] = {
     "tmux": _make_tmux,
     "herdr": _make_herdr,
     "agterm": _make_agterm,
+    "hc": _make_hc,
 }
 
 _instances: dict[str, Multiplexer] = {}
@@ -90,8 +101,13 @@ def detect_multiplexer_name(env: dict[str, str]) -> str:
     """Detect the active multiplexer backend from environment variables.
 
     Checks backend-specific env vars in priority order and returns the first
-    match. Precedence: herdr > tmux > agterm. Falls back to ``"tmux"`` when
-    none of the backend-specific vars are set.
+    match. Precedence: herdr > tmux > hc > agterm. Falls back to ``"tmux"``
+    when none of the backend-specific vars are set.
+
+    ``HC_TERMINAL_SOCKET`` (exported in every Herdr desktop terminal) selects
+    hc after herdr and tmux, because a tmux or herdr session started inside a
+    Herdr terminal owns its own panes, and before agterm, whose variable is the
+    least specific evidence.
 
     This is intentionally I/O-free: it only inspects the provided mapping,
     never spawns a subprocess or touches a socket.
@@ -103,6 +119,8 @@ def detect_multiplexer_name(env: dict[str, str]) -> str:
         return "herdr"
     if env.get("TMUX_PANE"):
         return "tmux"
+    if env.get("HC_TERMINAL_SOCKET"):
+        return "hc"
     if env.get("AGTERM_SESSION_ID"):
         return "agterm"
     return "tmux"
