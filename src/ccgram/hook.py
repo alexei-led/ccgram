@@ -1391,8 +1391,14 @@ def _refresh_session_map_if_stale(
     payload_transcript_path: str,
     *,
     recover_missing: bool = False,
+    replay_recovered: bool = True,
 ) -> None:
     """Refresh stale entries and recover a dropped or newly pane-qualified start.
+
+    ``replay_recovered=False`` binds a recovered entry from the transcript's
+    current end instead of replaying it from the start: hc sessions are often
+    long-running conversations that predate the hook install, and replaying
+    them would flood the topic with history.
 
     A stale Herdr snapshot can make the one-shot Pi SessionStart unsafe to
     bind. A later matching Pi hook may therefore create the missing entry once
@@ -1417,7 +1423,7 @@ def _refresh_session_map_if_stale(
         )
     ):
         return
-    replay_from_start = (recover_missing and not existing) or (
+    replay_from_start = (recover_missing and not existing and replay_recovered) or (
         provider_name == "pi"
         and (
             not existing
@@ -1979,7 +1985,10 @@ def _process_hook_stdin(
             if normalized.transcript_path
             else herdr_transcript_path
         ),
-        recover_missing=session_window_key.startswith("agterm:"),
+        recover_missing=session_window_key.startswith(("agterm:", "hc:")),
+        # hc terminals keep sessions that started before ccgram's hooks were
+        # installed; pick them up from now on rather than replaying history.
+        replay_recovered=not session_window_key.startswith("hc:"),
     )
     _write_event(event, normalized.session_id, session_window_key, normalized.data)
     return normalized

@@ -930,3 +930,56 @@ def test_pi_custom_agent_directory_resolves_exact_session(tmp_path, monkeypatch)
     assert (
         _resolve_pi_transcript_path("00000000-0000-0000-0000-000000000000", cwd) == ""
     )
+
+
+def test_hc_hook_recovers_missing_entry_without_replaying_history(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """An hc session that predates the hook install is bound from now on."""
+    # Lazy: private helper, imported only by the tests that exercise it.
+    from ccgram.hook import _refresh_session_map_if_stale
+
+    monkeypatch.setenv("CCGRAM_DIR", str(tmp_path))
+    transcript = tmp_path / "session.jsonl"
+    transcript.write_text("{}\n")
+    session_id = "18ac8cf0-4e04-48f5-9762-6f450759501c"
+
+    _refresh_session_map_if_stale(
+        "hc:hc-t5",
+        session_id,
+        "claude",
+        "chore",
+        str(tmp_path),
+        str(transcript),
+        recover_missing=True,
+        replay_recovered=False,
+    )
+
+    entry = json.loads((tmp_path / "session_map.json").read_text())["hc:hc-t5"]
+    assert entry["session_id"] == session_id
+    assert entry["transcript_path"] == str(transcript)
+    assert not entry.get("replay_from_start")
+
+
+def test_agterm_hook_recovery_still_replays_from_start(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # Lazy: private helper, imported only by the tests that exercise it.
+    from ccgram.hook import _refresh_session_map_if_stale
+
+    monkeypatch.setenv("CCGRAM_DIR", str(tmp_path))
+    transcript = tmp_path / "session.jsonl"
+    transcript.write_text("{}\n")
+
+    _refresh_session_map_if_stale(
+        "agterm:ABC",
+        "18ac8cf0-4e04-48f5-9762-6f450759501c",
+        "claude",
+        "chore",
+        str(tmp_path),
+        str(transcript),
+        recover_missing=True,
+    )
+
+    entry = json.loads((tmp_path / "session_map.json").read_text())["agterm:ABC"]
+    assert entry.get("replay_from_start")
