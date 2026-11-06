@@ -286,19 +286,21 @@ async def test_window_projection_fields() -> None:
     assert windows is not None
     by_id = {w.window_id: w for w in windows}
     chore = by_id["hc-t5"]
-    assert chore.window_name == "Claude ▸ Sessions ▸ chore"
+    # Just the tab: the topic layer adds any provider label.
+    assert chore.window_name == "chore"
     assert chore.cwd == "/Users/alice/code/work"
     assert chore.pane_current_command == "claude"
     assert (chore.pane_width, chore.pane_height) == (130, 33)
     assert chore.pane_tty == ""
     # The codex app word wins over the node wrapper in the foreground.
-    assert by_id["hc-t1y"].window_name == "Codex ▸ Work ▸ review"
+    assert by_id["hc-t1y"].window_name == "review"
     assert by_id["hc-t1y"].pane_current_command == "codex"
     # A bare shell keeps the shell name for shell detection.
     assert by_id["hc-t9"].pane_current_command == "zsh"
-    assert by_id["hc-t9"].window_name == "Sessions ▸ notes"
-    # No `where` label: fall back to the terminal title.
-    assert by_id["hc-t2b"].window_name.startswith("Herdr")
+    assert by_id["hc-t9"].window_name == "notes"
+    # No `where` label: fall back to the terminal title, name or address.
+    assert by_id["hc-t2b"].window_name
+    assert "▸" not in by_id["hc-t2b"].window_name
 
 
 async def test_own_terminal_defaults_to_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1057,3 +1059,16 @@ async def test_create_topic_target_raises_on_failure(tmp_path: Path) -> None:
         await _manager(FakeHc()).create_topic_target(
             str(tmp_path / "missing"), launch_command="claude", workspace_id=None
         )
+
+
+async def test_shared_tab_names_add_the_space() -> None:
+    """Two terminals in tabs of the same name are told apart by their space."""
+    manager = _manager(_listing_fake())
+    first = {"address": "t1", "labels": {"where": "Sessions / research"}}
+    second = {"address": "t2", "labels": {"where": "Tabula / research"}}
+    alone = {"address": "t3", "labels": {"where": "Digients / cua"}}
+    shared = manager._shared_tabs([first, second, alone])
+    assert shared == frozenset({"research"})
+    assert manager._to_window(first, shared).window_name == "research (Sessions)"
+    assert manager._to_window(second, shared).window_name == "research (Tabula)"
+    assert manager._to_window(alone, shared).window_name == "cua"

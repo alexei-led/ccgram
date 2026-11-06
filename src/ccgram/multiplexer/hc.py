@@ -75,7 +75,6 @@ from .hc_events import (
     translate_event,
 )
 from .hc_socket import HcRpcError, HcTransport, default_socket_path, request
-from .topic_mapping import format_agent_topic_prefix
 
 __all__ = [
     "HC_SUPPORTED_GENERATION",
@@ -581,8 +580,38 @@ class HcManager:
         provider = classify_provider_from_argv(argv)
         return provider if provider and provider != "shell" else ""
 
-    def _to_window(self, terminal: Mapping[str, object]) -> WindowRef:
-        """Map one herdr-core terminal onto the neutral ``WindowRef``."""
+    @staticmethod
+    def _space_tab(terminal: Mapping[str, object]) -> tuple[str, str]:
+        """The Herdr space and tab a terminal sits in, from its ``where`` label."""
+        where = _str(_labels(terminal).get(_WHERE_LABEL))
+        if where:
+            space, _sep, tab = where.partition(_WHERE_SEPARATOR)
+            return space.strip(), tab.strip()
+        address = _str(terminal.get("address"))
+        return "Herdr", _str(terminal.get("title")) or _str(
+            terminal.get("name")
+        ) or address
+
+    def _shared_tabs(self, terminals: Sequence[Mapping[str, object]]) -> frozenset[str]:
+        """Tab names that more than one visible terminal uses."""
+        seen: dict[str, int] = {}
+        for terminal in terminals:
+            if self._is_visible(terminal):
+                _space, tab = self._space_tab(terminal)
+                seen[tab] = seen.get(tab, 0) + 1
+        return frozenset(tab for tab, count in seen.items() if count > 1)
+
+    def _to_window(
+        self,
+        terminal: Mapping[str, object],
+        shared_tabs: frozenset[str] = frozenset(),
+    ) -> WindowRef:
+        """Map one herdr-core terminal onto the neutral ``WindowRef``.
+
+        Topic headers are narrow, so the name is just the Herdr tab (``chore``),
+        with the space added only when another terminal shares the tab name
+        (``research (Tabula)``). The provider prefix is added by the topic layer.
+        """
         address = _str(terminal.get("address"))
         status = parse_status(terminal.get("status"))
         provider = self._provider(terminal)
@@ -590,16 +619,12 @@ class HcManager:
         fg_argv = (
             _argv(foreground.get("argv")) if isinstance(foreground, Mapping) else []
         )
-        where = _str(_labels(terminal).get(_WHERE_LABEL))
-        if where:
-            space, _sep, tab = where.partition(_WHERE_SEPARATOR)
-        else:
-            space = "Herdr"
-            tab = _str(terminal.get("title")) or _str(terminal.get("name")) or address
+        space, tab = self._space_tab(terminal)
+        name = f"{tab} ({space})" if tab in shared_tabs else tab
         cols, rows = terminal.get("cols"), terminal.get("rows")
         return WindowRef(
             window_id=window_id_for_address(address),
-            window_name=format_agent_topic_prefix(space, tab, provider=provider),
+            window_name=name,
             cwd=_str(terminal.get("cwd")),
             pane_current_command=provider or _command_name(fg_argv),
             pane_tty="",
@@ -644,7 +669,8 @@ class HcManager:
         terminals = await self._list_terminals()
         if terminals is None:
             return []
-        return [self._to_window(t) for t in terminals if self._is_visible(t)]
+        shared = self._shared_tabs(terminals)
+        return [self._to_window(t, shared) for t in terminals if self._is_visible(t)]
 
     async def list_windows_for_reconciliation(self) -> list[WindowRef] | None:
         """Every live terminal, or None when herdr-core could not answer.
@@ -655,7 +681,8 @@ class HcManager:
         terminals = await self._list_terminals()
         if terminals is None:
             return None
-        return [self._to_window(t) for t in terminals]
+        shared = self._shared_tabs(terminals)
+        return [self._to_window(t, shared) for t in terminals]
 
     async def window_exists(self, window_id: str) -> bool | None:
         """Ask herdr-core about one terminal: True, False, or None if unknown.
@@ -708,7 +735,11 @@ class HcManager:
     async def find_window_by_id(self, window_id: str) -> WindowRef | None:
         """The live terminal behind *window_id*, or None."""
         terminal = await self._terminal(window_id)
-        return None if terminal is None else self._to_window(terminal)
+        if terminal is None:
+            return None
+        # Name it the way the listing does, so the topic title doesn't flip.
+        terminals = await self._list_terminals()
+        return self._to_window(terminal, self._shared_tabs(terminals or []))
 
     async def _read(self, window_id: str, lines: int) -> dict | None:
         address = address_for_window_id(window_id)
