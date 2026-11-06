@@ -52,6 +52,8 @@ logger = structlog.get_logger()
 
 # Status message tracking: (user_id, thread_key) -> (message_id, window_id, last_text, chat_id)
 _status_msg_info: dict[tuple[int, int], tuple[int, str, str, int]] = {}
+# When each status bubble was last edited (monotonic), for CCGRAM_STATUS_EDIT_INTERVAL.
+_status_edited_at: dict[tuple[int, int], float] = {}
 _backlog_status_cache: dict[tuple[int, int, str], tuple[float, str]] = {}
 _BACKLOG_STATUS_THROTTLE_SECONDS = 15.0
 SEVERE_BACKLOG_COUNT = 100
@@ -357,6 +359,7 @@ async def send_status_text(
     text: str,
     *,
     backlog_severe: bool = False,
+    transient: bool = False,
 ) -> None:
     """Send a new status message with action buttons and track it.
 
@@ -364,6 +367,11 @@ async def send_status_text(
     in-place via ``edit_with_fallback`` (entity-formatted, plain-text fallback
     on TelegramError).  Same-window same-text calls are a no-op.  When
     ``CCGRAM_HIDE_STATUS=true``, skip the transient status presentation.
+
+    ``transient`` marks a poll refresh: with ``CCGRAM_STATUS_EDIT_INTERVAL`` set,
+    such an edit is skipped until that many seconds have passed since the last
+    edit of this bubble (the next poll brings the latest text). Durable updates
+    (hook notices) always edit at once.
     """
     if config.hide_status is True:
         return
@@ -387,6 +395,15 @@ async def send_status_text(
         if stored_wid == window_id and text == last_text:
             return
         if stored_wid == window_id:
+            interval = config.status_edit_interval
+            last_edit = _status_edited_at.get(skey)
+            if (
+                transient
+                and interval > 0
+                and last_edit is not None
+                and time.monotonic() - last_edit < interval
+            ):
+                return
             success = await edit_with_fallback(
                 client,
                 stored_chat_id,
@@ -397,6 +414,7 @@ async def send_status_text(
             )
             if success:
                 _status_msg_info[skey] = (msg_id, window_id, text, stored_chat_id)
+                _status_edited_at[skey] = time.monotonic()
                 return
             # Edit failed — original message may still exist server-side.
             # Best-effort delete to avoid an orphan before creating a replacement.
@@ -416,6 +434,7 @@ async def send_status_text(
     )
     if msg is not None:
         _status_msg_info[skey] = (msg.message_id, window_id, text, chat_id)
+        _status_edited_at[skey] = time.monotonic()
 
 
 async def clear_status_message(
@@ -494,6 +513,7 @@ async def process_status_update(
         task.window_id,
         f"{status_text}\n{backlog_line}" if backlog_line else status_text,
         backlog_severe=severe,
+        transient=task.transient,
     )
 
 

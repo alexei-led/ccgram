@@ -246,6 +246,11 @@ class Config:
             max(0.5, float(os.getenv("CCGRAM_STATUS_POLL_INTERVAL", "1.0"))),
             max(1.0, float(os.getenv("CCGRAM_YOLO_CONFIRMATION_TIMEOUT", "30.0"))),
         )
+        # Minimum seconds between poll-driven edits of one status bubble (0 = every
+        # change). Hook notices and new bubbles are never held back.
+        self.status_edit_interval = max(
+            0.0, float(os.getenv("CCGRAM_STATUS_EDIT_INTERVAL", "0"))
+        )
         self.skip_barrier_deadline_s = _skip_barrier_deadline_s()
         self.delivery_watch_gap_bytes = _delivery_watch_gap_bytes()
 
