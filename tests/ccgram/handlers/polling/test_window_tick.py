@@ -285,6 +285,39 @@ class TestUpdateStatusInteractive:
             mock_enqueue.assert_not_called()
 
 
+class TestUpdateStatusWaitingDot:
+    @pytest.mark.parametrize(
+        "prompt_window", [None, "@0"], ids=["new_prompt", "prompt_still_showing"]
+    )
+    async def test_a_prompt_on_screen_marks_the_topic_waiting(
+        self, prompt_window: str | None
+    ) -> None:
+        w = _make_window()
+        prompt = _make_status(raw_text="Pick one", is_interactive=True)
+        module = "ccgram.handlers.polling.window_tick.apply"
+        with (
+            patch(f"{module}.tmux_manager") as mock_tm,
+            patch(f"{module}.window_query"),
+            patch(f"{module}.thread_router") as mock_tr,
+            patch(f"{module}.get_interactive_window", return_value=prompt_window),
+            patch(
+                "ccgram.handlers.polling.window_tick.observe._parse_with_pyte",
+                return_value=prompt,
+            ),
+            patch(f"{module}.handle_interactive_ui", new_callable=AsyncMock),
+            patch(f"{module}.enqueue_status_update", new_callable=AsyncMock),
+            patch(f"{module}.update_topic_emoji", new_callable=AsyncMock) as emoji,
+        ):
+            mock_tm.find_window_by_id = AsyncMock(return_value=w)
+            mock_tm.capture_pane = AsyncMock(return_value="pane text")
+            mock_tr.resolve_chat_id.return_value = -100
+            mock_tr.get_display_name.return_value = "chore"
+            await _update_status(AsyncMock(spec=Bot), 1, "@0", thread_id=100, _window=w)
+        emoji.assert_awaited_once()
+        assert emoji.await_args is not None
+        assert emoji.await_args.args[1:4] == (-100, 100, "waiting")
+
+
 class TestUpdateStatusActiveLine:
     async def test_active_status_enqueues_and_sets_emoji(self):
         bot = AsyncMock(spec=Bot)
