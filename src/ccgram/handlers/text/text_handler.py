@@ -611,29 +611,26 @@ async def _answer_free_text_option(
     from ..interactive import (
         get_interactive_msg_id,
         get_interactive_pane,
-        typed_answer_option,
+        typed_answer_keys,
     )
 
-    option = typed_answer_option(user_id, thread_id, chat_id)
-    if option is None:
+    moves = typed_answer_keys(user_id, thread_id, chat_id)
+    if moves is None:
         return False
-    key, focused = option
     pane_id = get_interactive_pane(user_id, thread_id, chat_id=chat_id)
     base_id = f"telegram-message:{chat_id}:{message.message_id}"
     try:
-        if not focused:
+        if moves:
             expected_prompt = get_interactive_prompt_fingerprint(
                 user_id,
                 thread_id,
                 chat_id,
                 get_interactive_msg_id(user_id, thread_id, chat_id=chat_id),
             )
-            moved, _ = await adapter.send_text(
+            moved, _ = await adapter.send_keys(
                 window_id,
-                key,
+                moves,
                 pane_id=pane_id,
-                submit=False,
-                terminal_input=True,
                 action_id=f"{base_id}:focus",
                 expected_prompt=expected_prompt,
             )

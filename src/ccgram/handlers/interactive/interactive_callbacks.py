@@ -37,6 +37,7 @@ from .pi_controls import (
 )
 from ..messaging_pipeline.message_sender import ack_reaction, safe_reply
 from .interactive_ui import (
+    question_choice_keys,
     PromptStateError,
     pane_has_interactive_prompt,
     get_menu_reply_target,
@@ -149,6 +150,45 @@ def match_interactive_prefix(data: str) -> tuple[str, str, str | None] | None:
     return None
 
 
+async def _send_question_choice(
+    query: CallbackQuery,
+    user_id: int,
+    thread_id: int | None,
+    chat_id: int | None,
+    window_id: str,
+    pane_id: str | None,
+    keys: list[str],
+    adapter,
+    action_id: str,
+    expected_prompt: str | None,
+) -> None:
+    """Pick a Claude question option with cursor keys (it ignores digits)."""
+    if not keys:
+        # The cursor already sits on the free-text option: nothing changes on
+        # screen, so the keyboard stays valid for the next tap.
+        await query.answer("Send your answer as a message")
+        return
+    try:
+        sent, _ = await adapter.send_keys(
+            window_id,
+            keys,
+            pane_id=pane_id,
+            action_id=action_id,
+            expected_prompt=expected_prompt,
+        )
+    except ProtocolError:
+        raise
+    except Exception:  # noqa: BLE001 — report any backend delivery failure to user
+        logger.warning("Failed to send question choice", exc_info=True)
+        sent = False
+    if not sent:
+        await query.answer("Unable to send choice. Try again.", show_alert=True)
+        return
+    advance_interactive_sequence(user_id, thread_id, chat_id=chat_id)
+    free_text = keys[-1] != "Enter"
+    await query.answer("Send your answer as a message" if free_text else None)
+
+
 async def _handle_direct_choice(
     query: CallbackQuery,
     user_id: int,
@@ -178,6 +218,21 @@ async def _handle_direct_choice(
     if expected_prompt is None:
         await query.answer(
             "Unverified terminal UI. Use /toolbar or the terminal.", show_alert=True
+        )
+        return
+    keys = question_choice_keys(user_id, thread_id, chat_id, key)
+    if keys is not None:
+        await _send_question_choice(
+            query,
+            user_id,
+            thread_id,
+            chat_id,
+            window_id,
+            pane_id,
+            keys,
+            adapter,
+            action_id,
+            expected_prompt,
         )
         return
     enter = key in {"y", "n"}

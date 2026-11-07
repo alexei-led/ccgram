@@ -444,25 +444,86 @@ def get_interactive_prompt_fingerprint(
 
 
 _TYPED_ANSWER_RE = re.compile(r"^(?:[\u2610\u2611] )?Type something\.?$")
+_QUESTION_NAV_FOOTER_RE = re.compile(r"^\s*Enter to select\b.*\bto navigate\b")
+_QUESTION_CURSOR_RE = re.compile(r"^\s*[❯>]\s*(\d+)\.")
 
 
-def typed_answer_option(
+def _live_question(
     user_id: int, thread_id: int | None, chat_id: int | None
-) -> tuple[str, bool] | None:
-    """The free-text ("Type something") option of the topic's live question.
+) -> tuple[int, tuple[tuple[str, str], ...]] | None:
+    """Cursor position and options of the topic's live Claude question prompt.
 
-    Returns its number key and whether the cursor already sits on it, or None
-    when the prompt offers no free-text answer. Text sent from Telegram while
-    such a prompt shows becomes that answer instead of dismissing the prompt.
+    A Claude question shows its tab bar or its "Enter to select · … to
+    navigate" footer; the cursor is the option row marked ❯. None for any
+    other prompt, or when the cursor cannot be found.
     """
     content = _interactive_contents.get(_interactive_key(user_id, thread_id, chat_id))
     if not content:
         return None
-    for key, label in parse_direct_choices(content, question=True):
-        if _TYPED_ANSWER_RE.match(label.split(". ", 1)[-1]):
-            cursor = re.compile(rf"^\s*[❯>]\s*{key}\.")
-            focused = any(cursor.match(line) for line in content.splitlines())
-            return key, focused
+    lines = content.splitlines()
+    if not any(
+        _QUESTION_TAB_BAR_RE.match(line) or _QUESTION_NAV_FOOTER_RE.match(line)
+        for line in lines
+    ):
+        return None
+    cursor = next(
+        (int(m.group(1)) for line in lines if (m := _QUESTION_CURSOR_RE.match(line))),
+        None,
+    )
+    if cursor is None:
+        return None
+    return cursor, parse_direct_choices(content, question=True)
+
+
+def _moves(cursor: int, target: int) -> list[str]:
+    return (
+        ["Down"] * (target - cursor) if target > cursor else ["Up"] * (cursor - target)
+    )
+
+
+def _is_free_text(label: str) -> bool:
+    return bool(_TYPED_ANSWER_RE.match(label.split(". ", 1)[-1]))
+
+
+def question_choice_keys(
+    user_id: int, thread_id: int | None, chat_id: int | None, key: str
+) -> list[str] | None:
+    """Keys that pick option *key* of the topic's live Claude question.
+
+    Claude's question prompt ignores number keys, so a pick moves the cursor
+    with Up/Down from the row the screen marks, then presses Enter (which
+    selects a single-select option or toggles a checkbox). The free-text
+    option only gets the cursor, so the next text message fills it in. None
+    when the live prompt is not a Claude question: other prompts take the
+    number key itself.
+    """
+    question = _live_question(user_id, thread_id, chat_id)
+    if question is None or not key.isdigit():
+        return None
+    cursor, choices = question
+    label = next((label for k, label in choices if k == key), None)
+    if label is None:
+        return None
+    moves = _moves(cursor, int(key))
+    return moves if _is_free_text(label) else [*moves, "Enter"]
+
+
+def typed_answer_keys(
+    user_id: int, thread_id: int | None, chat_id: int | None
+) -> list[str] | None:
+    """Keys that put the cursor on the live question's free-text option.
+
+    Empty when it is already there; None when the prompt offers no free-text
+    ("Type something") answer. Text sent from Telegram while such a prompt
+    shows becomes that answer instead of dismissing the prompt.
+    """
+    question = _live_question(user_id, thread_id, chat_id)
+    if question is None:
+        return None
+    cursor, choices = question
+    for key, label in choices:
+        if _is_free_text(label):
+            return _moves(cursor, int(key))
     return None
 
 
