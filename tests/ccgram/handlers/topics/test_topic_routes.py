@@ -225,3 +225,32 @@ class TestRelocation:
         windows = [_window("hc-t1", "Digients")]
         assert await _Relocation(windows, bindings, routes={}).run() == 0
         assert await _Relocation(None, bindings).run() == 0
+
+
+class TestGroupJoinLog:
+    @staticmethod
+    def _update(chat_type: str, *, migrate_to: int | None = None) -> MagicMock:
+        update = MagicMock()
+        msg = update.effective_message
+        msg.chat.type = chat_type
+        msg.chat.id = -555
+        msg.chat.title = "Digients"
+        msg.chat.is_forum = False
+        msg.migrate_to_chat_id = migrate_to
+        update.effective_user.id = PRIVATE
+        return update
+
+    async def test_logs_the_group_id_and_its_supergroup_successor(self) -> None:
+        with patch.object(topic_routes, "logger") as log:
+            await topic_routes.log_group_join(
+                self._update("group", migrate_to=-100555), MagicMock()
+            )
+        kwargs = log.info.call_args.kwargs
+        assert kwargs["chat_id"] == -555
+        assert kwargs["migrated_to"] == -100555
+        assert kwargs["title"] == "Digients"
+
+    async def test_private_chats_are_ignored(self) -> None:
+        with patch.object(topic_routes, "logger") as log:
+            await topic_routes.log_group_join(self._update("private"), MagicMock())
+        log.info.assert_not_called()

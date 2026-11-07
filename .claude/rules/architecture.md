@@ -217,7 +217,7 @@ Top-level (constants, leaves, top-level commands):
 `handlers/topics/` — topic lifecycle + window picker:
 
 - `topic_orchestration.py` — new window/topic creation, unbound window adoption, rate limiting.
-- `topic_routes.py` — `CCGRAM_TOPIC_CHAT_ROUTES` (workspace label → group chat): `route_target_chats` (pure destination choice; a routed workspace goes to its group only, others stay out of routed groups), applied in `_handle_new_window_locked` via `WindowRef.workspace`; `relocate_misrouted_topics` (startup + 60 s topic check) creates the topic in the right chat first, then retires the misplaced binding with reason `relocated`, leaving the session running.
+- `topic_routes.py` — `CCGRAM_TOPIC_CHAT_ROUTES` (workspace label → group chat): `route_target_chats` (pure destination choice; a routed workspace goes to its group only, others stay out of routed groups), applied in `_handle_new_window_locked` via `WindowRef.workspace`; `relocate_misrouted_topics` (startup + 60 s topic check) creates the topic in the right chat first, then retires the misplaced binding with reason `relocated`, leaving the session running. `log_group_join` (registered in its own handler group) logs a group's chat id when the bot joins it, it is created with the bot, or it migrates to a supergroup (`migrated_to`), so routes need no third-party id bot.
 - `topic_lifecycle.py` — autoclose timers for done/dead topics, unbound window TTL.
 - `directory_browser.py` — directory selection UI + worktree picker/confirm keyboard builders.
 - `directory_callbacks.py` — directory navigation callbacks; orchestrates the full directory→worktree→workspace→provider→mode→window flow. Re-exports submodule surfaces for backward-compat.

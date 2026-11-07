@@ -9,11 +9,14 @@ workspace has no route keep the default behaviour, minus the routed groups.
   - window_workspace(): the workspace label the backend reports for a window.
   - relocate_misrouted_topics(): move live topics bound in the wrong chat (the
     route was added after the topic existed, or the tab moved to another space).
+  - log_group_join(): log a group's chat id when the bot joins it or the group
+    becomes a supergroup, so routes can be filled without a third-party bot.
 """
 
 from __future__ import annotations
 
 from collections.abc import Collection, Mapping
+from typing import TYPE_CHECKING
 
 import structlog
 from telegram.error import TelegramError
@@ -26,6 +29,10 @@ from ...session import session_manager
 from ...telegram_client import TelegramClient
 from ..cleanup import clear_topic_state
 from .topic_deletion import retire_topic_binding
+
+if TYPE_CHECKING:
+    from telegram import Update
+    from telegram.ext import ContextTypes
 
 logger = structlog.get_logger()
 
@@ -162,3 +169,26 @@ async def relocate_misrouted_topics(client: TelegramClient) -> int:
             dropped=[chat for _u, chat, _t, _w in drop],
         )
     return moved
+
+
+async def log_group_join(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log the chat id of a group the bot was added to, created in or migrated.
+
+    Telegram always delivers these service messages to bots, so the id needed
+    for ``CCGRAM_TOPIC_CHAT_ROUTES`` shows up in the log. Turning on Topics
+    upgrades a basic group to a supergroup with a new ``-100…`` id, logged as
+    ``migrated_to``.
+    """
+    msg = update.effective_message
+    if msg is None or msg.chat.type not in ("group", "supergroup"):
+        return
+    user = update.effective_user
+    logger.info(
+        "Group service message: chat id for CCGRAM_TOPIC_CHAT_ROUTES",
+        chat_id=msg.chat.id,
+        title=msg.chat.title,
+        chat_type=msg.chat.type,
+        is_forum=bool(msg.chat.is_forum),
+        migrated_to=msg.migrate_to_chat_id,
+        by_allowed_user=bool(user and config.is_user_allowed(user.id)),
+    )

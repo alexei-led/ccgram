@@ -550,6 +550,10 @@ in the wrong chat (the route was added later, or the tab moved to another space)
 moved within a minute: the new topic is created first, then the old one is deleted;
 the session keeps running. Leave `CCGRAM_GROUP_ID` unset so every group is served.
 
+To find a group's ID, add the CCGram bot to it and look for `Group service message`
+in the log. Turning on Topics upgrades a basic group to a supergroup with a new
+`-100…` ID, logged as `migrated_to`; use that one.
+
 Set `CCGRAM_GROUP_ID` to one group ID to restrict the process to that group. It then
 ignores updates from other groups. To find the ID, add
 [@RawDataBot](https://t.me/RawDataBot) to the group; it replies with the negative chat ID.
