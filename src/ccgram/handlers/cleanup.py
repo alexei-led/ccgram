@@ -74,7 +74,7 @@ async def clear_topic_state(
             thread_id=thread_id,
         )
     else:
-        clear_status_msg_info(user_id, thread_id)
+        clear_status_msg_info(user_id, thread_id, window_id or "")
 
     if window_id:
         revoke_window_tokens(window_id)

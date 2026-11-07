@@ -46,6 +46,17 @@ def _make_bot(send_id: int = 99) -> AsyncMock:
     return bot
 
 
+@pytest.fixture(autouse=True)
+def _bindings_resolve_to_chat(monkeypatch):
+    """No topic bindings in these tests: the bubble's chat comes from the router."""
+    from ccgram.handlers.status import status_bubble
+
+    monkeypatch.setattr(status_bubble.session_query, "iter_bound_topics", lambda: [])
+    monkeypatch.setattr(
+        status_bubble.thread_router, "resolve_chat_id", lambda *_a, **_k: CHAT_ID
+    )
+
+
 class TestSendStatusText:
     @patch("ccgram.handlers.status.status_bubble.config", create=True)
     @patch("ccgram.handlers.status.status_bubble.thread_router")
@@ -57,7 +68,7 @@ class TestSendStatusText:
 
         mock_router.resolve_chat_id.assert_not_called()
         bot.send_message.assert_not_awaited()
-        assert (USER_ID, THREAD_ID) not in _status_msg_info
+        assert (USER_ID, CHAT_ID, THREAD_ID) not in _status_msg_info
 
     @patch("ccgram.handlers.status.status_bubble.thread_router")
     async def test_sends_new_message(self, mock_router):
@@ -72,7 +83,7 @@ class TestSendStatusText:
             bot.send_message.await_args.kwargs["rate_limit_args"]
             == NO_RETRY_RATE_LIMIT_ARGS
         )
-        assert _status_msg_info[(USER_ID, THREAD_ID)] == (
+        assert _status_msg_info[(USER_ID, CHAT_ID, THREAD_ID)] == (
             99,
             WINDOW_ID,
             "running...",
@@ -86,7 +97,12 @@ class TestSendStatusText:
     )
     async def test_edits_existing_same_window(self, mock_edit, mock_router):
         mock_router.resolve_chat_id.return_value = CHAT_ID
-        _status_msg_info[(USER_ID, THREAD_ID)] = (50, WINDOW_ID, "old", CHAT_ID)
+        _status_msg_info[(USER_ID, CHAT_ID, THREAD_ID)] = (
+            50,
+            WINDOW_ID,
+            "old",
+            CHAT_ID,
+        )
         mock_edit.return_value = True
 
         bot = _make_bot()
@@ -97,7 +113,7 @@ class TestSendStatusText:
             mock_edit.await_args.kwargs["rate_limit_args"] == NO_RETRY_RATE_LIMIT_ARGS
         )
         bot.send_message.assert_not_called()
-        assert _status_msg_info[(USER_ID, THREAD_ID)] == (
+        assert _status_msg_info[(USER_ID, CHAT_ID, THREAD_ID)] == (
             50,
             WINDOW_ID,
             "new text",
@@ -116,7 +132,12 @@ class TestSendStatusText:
         # message must be deleted before a fresh one is created — otherwise
         # the topic ends up with two status bubbles, the first one orphaned.
         mock_router.resolve_chat_id.return_value = CHAT_ID
-        _status_msg_info[(USER_ID, THREAD_ID)] = (50, WINDOW_ID, "old", CHAT_ID)
+        _status_msg_info[(USER_ID, CHAT_ID, THREAD_ID)] = (
+            50,
+            WINDOW_ID,
+            "old",
+            CHAT_ID,
+        )
         mock_edit.return_value = False
 
         bot = _make_bot(send_id=99)
@@ -124,7 +145,7 @@ class TestSendStatusText:
 
         bot.delete_message.assert_awaited_once_with(chat_id=CHAT_ID, message_id=50)
         bot.send_message.assert_awaited_once()
-        assert _status_msg_info[(USER_ID, THREAD_ID)] == (
+        assert _status_msg_info[(USER_ID, CHAT_ID, THREAD_ID)] == (
             99,
             WINDOW_ID,
             "new text",
@@ -140,14 +161,19 @@ class TestSendStatusText:
         self, mock_clear, mock_router
     ):
         mock_router.resolve_chat_id.return_value = CHAT_ID
-        _status_msg_info[(USER_ID, THREAD_ID)] = (50, "@1", "running...", CHAT_ID)
+        _status_msg_info[(USER_ID, CHAT_ID, THREAD_ID)] = (
+            50,
+            "@1",
+            "running...",
+            CHAT_ID,
+        )
 
         bot = _make_bot(send_id=300)
         await send_status_text(bot, USER_ID, THREAD_ID, WINDOW_ID, "running...")
 
-        mock_clear.assert_called_once_with(bot, USER_ID, THREAD_ID)
+        mock_clear.assert_called_once_with(bot, USER_ID, THREAD_ID, chat_id=CHAT_ID)
         bot.send_message.assert_awaited_once()
-        assert _status_msg_info[(USER_ID, THREAD_ID)] == (
+        assert _status_msg_info[(USER_ID, CHAT_ID, THREAD_ID)] == (
             300,
             WINDOW_ID,
             "running...",
@@ -161,7 +187,12 @@ class TestSendStatusText:
     )
     async def test_dedup_identical_content(self, mock_edit, mock_router):
         mock_router.resolve_chat_id.return_value = CHAT_ID
-        _status_msg_info[(USER_ID, THREAD_ID)] = (50, WINDOW_ID, "same", CHAT_ID)
+        _status_msg_info[(USER_ID, CHAT_ID, THREAD_ID)] = (
+            50,
+            WINDOW_ID,
+            "same",
+            CHAT_ID,
+        )
 
         bot = _make_bot()
         await send_status_text(bot, USER_ID, THREAD_ID, WINDOW_ID, "same")
@@ -185,37 +216,47 @@ class TestSendStatusText:
         # The new bubble is sent; the poll refresh inside the interval is skipped.
         bot.send_message.assert_awaited_once()
         bot.edit_message_text.assert_not_awaited()
-        assert _status_msg_info[(USER_ID, THREAD_ID)][2] == "a"
+        assert _status_msg_info[(USER_ID, CHAT_ID, THREAD_ID)][2] == "a"
 
         # A durable update (hook notice) edits at once.
         await send_status_text(bot, USER_ID, THREAD_ID, WINDOW_ID, "done")
         bot.edit_message_text.assert_awaited_once()
-        assert _status_msg_info[(USER_ID, THREAD_ID)][2] == "done"
+        assert _status_msg_info[(USER_ID, CHAT_ID, THREAD_ID)][2] == "done"
 
 
 class TestClearStatusMessage:
     async def test_deletes_tracked_message(self):
         # No DraftStream tracked → falls back to bot.delete_message.
-        _status_msg_info[(USER_ID, THREAD_ID)] = (50, WINDOW_ID, "text", CHAT_ID)
+        _status_msg_info[(USER_ID, CHAT_ID, THREAD_ID)] = (
+            50,
+            WINDOW_ID,
+            "text",
+            CHAT_ID,
+        )
 
         bot = AsyncMock()
-        await clear_status_message(bot, USER_ID, THREAD_ID)
+        await clear_status_message(bot, USER_ID, THREAD_ID, chat_id=CHAT_ID)
 
         bot.delete_message.assert_called_once_with(chat_id=CHAT_ID, message_id=50)
-        assert (USER_ID, THREAD_ID) not in _status_msg_info
+        assert (USER_ID, CHAT_ID, THREAD_ID) not in _status_msg_info
 
     async def test_swallows_delete_failure_and_forgets_tracking(self):
-        _status_msg_info[(USER_ID, THREAD_ID)] = (50, WINDOW_ID, "text", CHAT_ID)
+        _status_msg_info[(USER_ID, CHAT_ID, THREAD_ID)] = (
+            50,
+            WINDOW_ID,
+            "text",
+            CHAT_ID,
+        )
 
         bot = AsyncMock()
         bot.delete_message.side_effect = TelegramError("message to delete not found")
-        await clear_status_message(bot, USER_ID, THREAD_ID)
+        await clear_status_message(bot, USER_ID, THREAD_ID, chat_id=CHAT_ID)
 
-        assert (USER_ID, THREAD_ID) not in _status_msg_info
+        assert (USER_ID, CHAT_ID, THREAD_ID) not in _status_msg_info
 
     async def test_noop_when_no_tracking(self):
         bot = AsyncMock()
-        await clear_status_message(bot, USER_ID, THREAD_ID)
+        await clear_status_message(bot, USER_ID, THREAD_ID, chat_id=CHAT_ID)
 
         bot.delete_message.assert_not_called()
 
@@ -226,7 +267,12 @@ class TestConvertStatusToContent:
         new_callable=AsyncMock,
     )
     async def test_converts_status_to_content(self, mock_edit):
-        _status_msg_info[(USER_ID, THREAD_ID)] = (50, WINDOW_ID, "old", CHAT_ID)
+        _status_msg_info[(USER_ID, CHAT_ID, THREAD_ID)] = (
+            50,
+            WINDOW_ID,
+            "old",
+            CHAT_ID,
+        )
         mock_edit.return_value = True
 
         bot = AsyncMock()
@@ -236,7 +282,7 @@ class TestConvertStatusToContent:
 
         assert result == 50
         mock_edit.assert_called_once()
-        assert (USER_ID, THREAD_ID) not in _status_msg_info
+        assert (USER_ID, CHAT_ID, THREAD_ID) not in _status_msg_info
 
     async def test_returns_none_when_no_status(self):
         bot = AsyncMock()
@@ -251,7 +297,12 @@ class TestConvertStatusToContent:
         new_callable=AsyncMock,
     )
     async def test_returns_none_when_edit_fails(self, mock_edit):
-        _status_msg_info[(USER_ID, THREAD_ID)] = (50, WINDOW_ID, "old", CHAT_ID)
+        _status_msg_info[(USER_ID, CHAT_ID, THREAD_ID)] = (
+            50,
+            WINDOW_ID,
+            "old",
+            CHAT_ID,
+        )
         mock_edit.return_value = False
 
         result = await convert_status_to_content(
@@ -260,14 +311,14 @@ class TestConvertStatusToContent:
 
         assert result is None
         # Tracking is dropped either way — the bubble is no longer ours to edit.
-        assert (USER_ID, THREAD_ID) not in _status_msg_info
+        assert (USER_ID, CHAT_ID, THREAD_ID) not in _status_msg_info
 
     @patch(
         "ccgram.handlers.status.status_bubble.edit_with_fallback",
         new_callable=AsyncMock,
     )
     async def test_deletes_status_from_different_window(self, mock_edit):
-        _status_msg_info[(USER_ID, THREAD_ID)] = (50, "@1", "old", CHAT_ID)
+        _status_msg_info[(USER_ID, CHAT_ID, THREAD_ID)] = (50, "@1", "old", CHAT_ID)
 
         bot = AsyncMock()
         result = await convert_status_to_content(
@@ -325,13 +376,18 @@ class TestFormatClaudeTaskStatus:
 
 class TestClearStatusMsgInfo:
     def test_clears_specific_thread(self):
-        _status_msg_info[(USER_ID, THREAD_ID)] = (50, WINDOW_ID, "text", CHAT_ID)
-        _status_msg_info[(USER_ID, 20)] = (51, WINDOW_ID, "text", CHAT_ID)
+        _status_msg_info[(USER_ID, CHAT_ID, THREAD_ID)] = (
+            50,
+            WINDOW_ID,
+            "text",
+            CHAT_ID,
+        )
+        _status_msg_info[(USER_ID, CHAT_ID, 20)] = (51, WINDOW_ID, "text", CHAT_ID)
 
         clear_status_msg_info(USER_ID, THREAD_ID)
 
-        assert (USER_ID, THREAD_ID) not in _status_msg_info
-        assert (USER_ID, 20) in _status_msg_info
+        assert (USER_ID, CHAT_ID, THREAD_ID) not in _status_msg_info
+        assert (USER_ID, CHAT_ID, 20) in _status_msg_info
 
     def test_noop_when_not_tracked(self):
         clear_status_msg_info(USER_ID, THREAD_ID)
@@ -354,7 +410,13 @@ class TestProcessStatusUpdate:
 
     @patch("ccgram.handlers.status.status_bubble.thread_router")
     async def test_clears_when_no_status_text(self, mock_router):
-        _status_msg_info[(USER_ID, THREAD_ID)] = (50, WINDOW_ID, "old", CHAT_ID)
+        mock_router.resolve_chat_id.return_value = CHAT_ID
+        _status_msg_info[(USER_ID, CHAT_ID, THREAD_ID)] = (
+            50,
+            WINDOW_ID,
+            "old",
+            CHAT_ID,
+        )
 
         bot = _make_bot()
         task = StatusUpdateTask(window_id=WINDOW_ID, text=None, thread_id=THREAD_ID)
@@ -365,7 +427,7 @@ class TestProcessStatusUpdate:
             result = await process_status_update(bot, USER_ID, task)
 
         assert result is None
-        assert (USER_ID, THREAD_ID) not in _status_msg_info
+        assert (USER_ID, CHAT_ID, THREAD_ID) not in _status_msg_info
 
 
 class TestProcessStatusClear:
@@ -377,7 +439,12 @@ class TestProcessStatusClear:
     async def test_re_renders_with_task_snapshot(self, mock_edit, mock_router):
         mock_router.resolve_chat_id.return_value = CHAT_ID
         mock_edit.return_value = True
-        _status_msg_info[(USER_ID, THREAD_ID)] = (50, WINDOW_ID, "old", CHAT_ID)
+        _status_msg_info[(USER_ID, CHAT_ID, THREAD_ID)] = (
+            50,
+            WINDOW_ID,
+            "old",
+            CHAT_ID,
+        )
 
         bot = AsyncMock()
         task = StatusClearTask(window_id=WINDOW_ID, thread_id=THREAD_ID)
@@ -390,7 +457,12 @@ class TestProcessStatusClear:
         mock_edit.assert_called_once()
 
     async def test_deletes_when_no_snapshot(self):
-        _status_msg_info[(USER_ID, THREAD_ID)] = (50, WINDOW_ID, "old", CHAT_ID)
+        _status_msg_info[(USER_ID, CHAT_ID, THREAD_ID)] = (
+            50,
+            WINDOW_ID,
+            "old",
+            CHAT_ID,
+        )
 
         bot = AsyncMock()
         task = StatusClearTask(window_id=WINDOW_ID, thread_id=THREAD_ID)
@@ -401,7 +473,7 @@ class TestProcessStatusClear:
             await process_status_clear(bot, USER_ID, task)
 
         bot.delete_message.assert_called_once_with(chat_id=CHAT_ID, message_id=50)
-        assert (USER_ID, THREAD_ID) not in _status_msg_info
+        assert (USER_ID, CHAT_ID, THREAD_ID) not in _status_msg_info
 
 
 class TestNoImportFromMessageQueue:
@@ -709,3 +781,34 @@ class TestBuildStatusKeyboardGroupVsPrivate:
             _make_bot(78), USER_ID, 0, WINDOW_ID, "working"
         )
         mock_dash.assert_called_once_with(WINDOW_ID, USER_ID)
+
+
+class TestSameThreadInTwoGroups:
+    """Topic ids repeat across groups: thread 5 can be two sessions."""
+
+    async def test_each_window_gets_its_own_bubble_in_its_own_group(
+        self, monkeypatch
+    ) -> None:
+        from ccgram.handlers.status import status_bubble
+
+        bindings = [
+            (USER_ID, -100, 5, "hc-t16"),
+            (USER_ID, -200, 5, "hc-t20"),
+        ]
+        monkeypatch.setattr(
+            status_bubble.session_query, "iter_bound_topics", lambda: bindings
+        )
+        bot = _make_bot()
+        with patch(
+            "ccgram.handlers.status.status_bubble.build_status_keyboard",
+            return_value=None,
+        ):
+            await send_status_text(bot, USER_ID, 5, "hc-t20", "working")
+            await send_status_text(bot, USER_ID, 5, "hc-t16", "idle")
+
+        chats = [call.kwargs["chat_id"] for call in bot.send_message.await_args_list]
+        assert sorted(chats) == [-200, -100]
+        assert _status_msg_info[(USER_ID, -200, 5)][1] == "hc-t20"
+        assert _status_msg_info[(USER_ID, -100, 5)][1] == "hc-t16"
+        _status_msg_info.pop((USER_ID, -200, 5), None)
+        _status_msg_info.pop((USER_ID, -100, 5), None)

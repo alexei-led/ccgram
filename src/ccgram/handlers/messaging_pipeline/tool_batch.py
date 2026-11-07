@@ -366,7 +366,7 @@ async def _send_or_edit_batch(
         from .message_sender import edit_with_fallback, safe_send
 
         if batch.telegram_msg_id is None:
-            await clear_status_message(client, user_id, thread_id_or_0)
+            await clear_status_message(client, user_id, thread_id_or_0, chat_id=chat_id)
             await _rate_limit_chat(chat_id)
             msg = await safe_send(
                 client, chat_id, batch_text, message_thread_id=raw_thread_id
@@ -384,7 +384,7 @@ async def _send_or_edit_batch(
         return success
 
     if batch.draft is None:
-        await clear_status_message(client, user_id, thread_id_or_0)
+        await clear_status_message(client, user_id, thread_id_or_0, chat_id=chat_id)
         await _rate_limit_chat(chat_id)
         # Tool-batch transcript work may advance a delivered watermark. A
         # streaming draft is ephemeral until finalization, so it cannot

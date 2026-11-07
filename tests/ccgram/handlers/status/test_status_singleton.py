@@ -26,7 +26,7 @@ USER_ID = 1
 THREAD_ID = 10
 WINDOW_ID = "@0"
 CHAT_ID = 42
-SKEY = (USER_ID, THREAD_ID)
+SKEY = (USER_ID, CHAT_ID, THREAD_ID)
 
 
 @pytest.fixture(autouse=True)

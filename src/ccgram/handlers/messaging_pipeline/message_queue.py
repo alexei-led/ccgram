@@ -964,7 +964,7 @@ async def _try_edit_tool_result(
     if edit_msg_id is None:
         return False
     try:
-        await clear_status_message(client, user_id, tkey)
+        await clear_status_message(client, user_id, tkey, chat_id=chat_id)
         success = await edit_with_fallback(
             client,
             chat_id,
