@@ -527,6 +527,19 @@ def is_likely_spinner(char: str) -> bool:
     return category in _SPINNER_CATEGORIES
 
 
+# Claude Code leaves a summary under a finished turn with the same glyph as the
+# working spinner: "✻ Baked for 11s · done 3:09 PM" (working reads "✻ Baking…
+# (11s · esc to interrupt)"). It means the turn is over, not that it is running.
+_FINISHED_TURN_RE = re.compile(
+    r"^[^\s…]+ for (?=\d)(?:\d+h ?)?(?:\d+m ?)?(?:\d+s)?(?:\s|·|$)"
+)
+
+
+def is_finished_turn_summary(status_text: str) -> bool:
+    """True for Claude's past-tense turn summary ("Worked for 1m 3s")."""
+    return "…" not in status_text and bool(_FINISHED_TURN_RE.match(status_text))
+
+
 def parse_status_line(pane_text: str, *, pane_rows: int | None = None) -> str | None:
     """Extract the Claude Code status line from terminal output.
 
@@ -554,7 +567,8 @@ def parse_status_line(pane_text: str, *, pane_rows: int | None = None) -> str | 
     status_idx = _find_status_line_index(lines, scan_start)
     if status_idx is None:
         return None
-    return lines[status_idx].strip()[1:].strip()
+    status = lines[status_idx].strip()[1:].strip()
+    return None if is_finished_turn_summary(status) else status
 
 
 def parse_status_block(pane_text: str, *, pane_rows: int | None = None) -> str | None:
@@ -570,6 +584,8 @@ def parse_status_block(pane_text: str, *, pane_rows: int | None = None) -> str |
         return None
 
     status_line = lines[status_idx].strip()[1:].strip()
+    if is_finished_turn_summary(status_line):
+        return None
     progress_lines = _collect_status_progress_lines(lines, status_idx, scan_start)
 
     if not progress_lines:

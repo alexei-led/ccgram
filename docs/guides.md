@@ -214,6 +214,7 @@ All settings accept both CLI flags and environment variables. CLI flags take pre
 | `CCGRAM_<NAME>_COMMAND`                               | _(from provider)_              | Per-provider launch command (env only, see below)                                                    |
 | `CCGRAM_GROUP_ID` / `--group-id`                      | _(all groups)_                 | Restrict to one Telegram group                                                                       |
 | `CCGRAM_TOPIC_CHAT_ROUTES`                            | _(none)_                       | One group per workspace: `Space=-100123,Other=-100456` (env only, see below)                         |
+| `CCGRAM_WORKSPACE_FOLDERS`                           | _(none)_                       | Default folder per workspace for launches from its group: `Space=~/path`                             |
 | `CCGRAM_INSTANCE_NAME` / `--instance-name`            | hostname                       | Display label for this instance                                                                      |
 | `CCGRAM_LOG_LEVEL` / `--log-level`                    | `INFO`                         | Logging level (DEBUG, INFO, WARNING, ERROR)                                                          |
 | `MONITOR_POLL_INTERVAL` / `--monitor-interval`        | `2.0`                          | Seconds between transcript polls                                                                     |
@@ -268,6 +269,8 @@ Topic emojis change color to reflect agent status. The mapping between color and
 | `user`             | agent is idle / ready for input | agent is working | "does anything need my attention?" |
 
 Set globally via `CCGRAM_STATUS_MODE=user` or `--status-mode user`. Invalid values fall back to `system`.
+
+In both modes 🔴 means the agent is idle at a prompt (a question, a plan or an approval) and waits for you.
 
 ## Status Bubble Visibility
 
@@ -549,6 +552,11 @@ workspaces keep the usual chats, minus the routed groups. Topics that already ex
 in the wrong chat (the route was added later, or the tab moved to another space) are
 moved within a minute: the new topic is created first, then the old one is deleted;
 the session keeps running. Leave `CCGRAM_GROUP_ID` unset so every group is served.
+
+A session started from a topic in a routed group opens in that group's workspace.
+A line without a project word starts in the workspace's folder (as the backend
+reports it, or as `CCGRAM_WORKSPACE_FOLDERS=Space=~/path,…` overrides it) instead of
+the last project used.
 
 To find a group's ID, add the CCGram bot to it and look for `Group service message`
 in the log. Turning on Topics upgrades a basic group to a supergroup with a new

@@ -19,6 +19,7 @@ from ccgram.handlers.topics.typed_topic import (
     _resolve_cwd,
     start_from_text,
 )
+from ccgram.multiplexer.base import WorkspaceRef
 from ccgram.worktrees import WorktreeEligibility
 
 
@@ -113,6 +114,20 @@ class TestStartFromText:
         assert launched
         assert launched[0].project.name == "ccgram"
         assert launched[0].instruction == "fix it"
+
+    async def test_a_workspace_group_starts_in_that_workspace_folder(
+        self, project: Path, tmp_path: Path
+    ) -> None:
+        space = tmp_path / "space"
+        space.mkdir()
+        routed = WorkspaceRef("sp-d", "Digients", str(space))
+        with patch.object(
+            typed_topic, "routed_workspace", AsyncMock(return_value=routed)
+        ):
+            _handled, launched, _message_ = await _start(
+                "codex fix it", mru=[str(project)]
+            )
+        assert launched[0].project == space.resolve()
 
     async def test_an_ambiguous_project_gets_one_reply_naming_the_choices(
         self, project: Path

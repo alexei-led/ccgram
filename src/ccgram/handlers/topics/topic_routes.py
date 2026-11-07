@@ -9,6 +9,8 @@ workspace has no route keep the default behaviour, minus the routed groups.
   - window_workspace(): the workspace label the backend reports for a window.
   - relocate_misrouted_topics(): move live topics bound in the wrong chat (the
     route was added after the topic existed, or the tab moved to another space).
+  - routed_workspace(): the reverse direction, so a session started from a topic
+    in a workspace's group opens in that workspace.
   - log_group_join(): log a group's chat id when the bot joins it or the group
     becomes a supergroup, so routes can be filled without a third-party bot.
 """
@@ -16,6 +18,7 @@ workspace has no route keep the default behaviour, minus the routed groups.
 from __future__ import annotations
 
 from collections.abc import Collection, Mapping
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import structlog
@@ -24,7 +27,7 @@ from telegram.error import TelegramError
 from ... import session_query, window_query
 from ...config import config
 from ...multiplexer import multiplexer
-from ...multiplexer.base import WindowRef
+from ...multiplexer.base import WindowRef, WorkspaceRef
 from ...session import session_manager
 from ...telegram_client import TelegramClient
 from ..cleanup import clear_topic_state
@@ -66,6 +69,30 @@ def _wanted(chat_id: int, workspace: str, routes: Mapping[str, int]) -> bool:
     if target is not None:
         return chat_id == target
     return chat_id not in set(routes.values())
+
+
+def routed_label(chat_id: int | None, routes: Mapping[str, int]) -> str | None:
+    """Workspace label whose topics live in *chat_id*, if it is a routed group."""
+    if chat_id is None:
+        return None
+    return next((label for label, chat in routes.items() if chat == chat_id), None)
+
+
+async def routed_workspace(chat_id: int | None) -> WorkspaceRef | None:
+    """The workspace a session started from *chat_id* belongs in, if routed.
+
+    Without this a launch from a workspace's group lands wherever the backend
+    places it, and relocation would then move the new topic out of the group.
+    """
+    label = routed_label(chat_id, configured_routes())
+    if label is None or not multiplexer.capabilities.supports_workspace_selection:
+        return None
+    for workspace in await multiplexer.list_workspaces():
+        if workspace.label == label:
+            folder = config.workspace_folders.get(label)
+            return replace(workspace, cwd=folder) if folder else workspace
+    logger.warning("Routed workspace not found", workspace=label, chat_id=chat_id)
+    return None
 
 
 async def window_workspace(window_id: str) -> str:

@@ -34,6 +34,7 @@ from ...worktrees import (
 from ..messaging_pipeline.message_sender import interactive_edit as safe_edit
 from ..messaging_pipeline.message_sender import safe_reply
 from .plan_parser import PROJECT_HINTS, PlanParse, TopicPlan, parse_topic_plan
+from .topic_routes import routed_workspace
 from .window_launch_service import WindowLaunchRequest, launch_window
 
 if TYPE_CHECKING:
@@ -248,7 +249,11 @@ async def start_from_text(
     pending draft for a later callback, a /start reset or another topic's
     flow to trip over.
     """
-    last = _last_project(user_id)
+    # In a workspace's group a line without a project starts in that
+    # workspace's folder rather than the last project used anywhere.
+    routed = await routed_workspace(message.chat.id if message.chat else None)
+    routed_dir = Path(routed.cwd) if routed and routed.cwd else None
+    last = routed_dir or _last_project(user_id)
     parsed = parse_topic_plan(
         text,
         roots=config.projects_roots,

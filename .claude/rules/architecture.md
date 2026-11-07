@@ -203,7 +203,7 @@ Top-level (constants, leaves, top-level commands):
 
 - `status_bubble.py` — keyboard + status message lifecycle (`_status_msg_info`, `send_status_text`, `clear_status_message`, `build_status_keyboard`).
 - `status_bar_actions.py` — button callbacks (last reply, get file, recall, esc, keys).
-- `topic_emoji.py` — topic name emoji updates (active/idle/done/dead + RC/YOLO badges), debounced. Color scheme via `CCGRAM_STATUS_MODE`.
+- `topic_emoji.py` — topic name emoji updates (active/idle/waiting/done/dead + RC/YOLO badges), debounced. Color scheme via `CCGRAM_STATUS_MODE`; `waiting` (🔴 in both modes) is set by `window_tick/apply._transition_to_idle` when the topic's interactive prompt belongs to the window.
 - `provider_switch.py` — stable provider-change observation, quiet notice, and retry/backoff.
 - `rc_probe.py` — Claude `/remote-control` outcome probe: `arm_rc_probe`, pure `classify_rc_output`, `_classify_loop`. De-duped via `WindowState.rc_probe_state` (in-memory).
 
@@ -217,7 +217,7 @@ Top-level (constants, leaves, top-level commands):
 `handlers/topics/` — topic lifecycle + window picker:
 
 - `topic_orchestration.py` — new window/topic creation, unbound window adoption, rate limiting.
-- `topic_routes.py` — `CCGRAM_TOPIC_CHAT_ROUTES` (workspace label → group chat): `route_target_chats` (pure destination choice; a routed workspace goes to its group only, others stay out of routed groups), applied in `_handle_new_window_locked` via `WindowRef.workspace`; `relocate_misrouted_topics` (startup + 60 s topic check) creates the topic in the right chat first, then retires the misplaced binding with reason `relocated`, leaving the session running. `log_group_join` (registered in its own handler group) logs a group's chat id when the bot joins it, it is created with the bot, or it migrates to a supergroup (`migrated_to`), so routes need no third-party id bot.
+- `topic_routes.py` — `CCGRAM_TOPIC_CHAT_ROUTES` (workspace label → group chat): `route_target_chats` (pure destination choice; a routed workspace goes to its group only, others stay out of routed groups), applied in `_handle_new_window_locked` via `WindowRef.workspace`; `relocate_misrouted_topics` (startup + 60 s topic check) creates the topic in the right chat first, then retires the misplaced binding with reason `relocated`, leaving the session running. `log_group_join` (registered in its own handler group) logs a group's chat id when the bot joins it, it is created with the bot, or it migrates to a supergroup (`migrated_to`), so routes need no third-party id bot. `routed_workspace` is the reverse direction: `launch_window` pins a session started from a routed group to that group's workspace (unless a picker choice exists or the backend has native worktrees), and `typed_topic.start_from_text` uses that workspace's folder (`CCGRAM_WORKSPACE_FOLDERS` overrides the backend's) in place of the last project when the line names none.
 - `topic_lifecycle.py` — autoclose timers for done/dead topics, unbound window TTL.
 - `directory_browser.py` — directory selection UI + worktree picker/confirm keyboard builders.
 - `directory_callbacks.py` — directory navigation callbacks; orchestrates the full directory→worktree→workspace→provider→mode→window flow. Re-exports submodule surfaces for backward-compat.
