@@ -47,6 +47,10 @@ def _clean_pi_hook_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PI_SUBAGENT_CHILD", raising=False)
     monkeypatch.delenv("AGTERM_PANE", raising=False)
     monkeypatch.delenv("AGTERM_PANE_ID", raising=False)
+    # Every Herdr desktop terminal exports these; a suite run from inside one
+    # would otherwise auto-detect the hc backend and resolve an hc hook identity.
+    monkeypatch.delenv("HC_TERMINAL_ID", raising=False)
+    monkeypatch.delenv("HC_TERMINAL_SOCKET", raising=False)
 
 
 @pytest.fixture(autouse=True)

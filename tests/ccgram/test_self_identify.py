@@ -116,6 +116,51 @@ class TestResolveSelfIdentity:
         assert ident.session_window_key == "agterm:157B4C8C-EFAE-40C2-BA54-9A5D7FD8B5E4"
         assert ident.pane_tty == ""
 
+    def test_hc_terminal_id_resolves_without_a_probe(self) -> None:
+        # herdr-core addresses are permanent and never reused: the address is
+        # the identity, so there is nothing to probe.
+        ident = resolve_self_identity({"HC_TERMINAL_ID": "t5"}, tmux_query=_fail_query)
+        assert ident is not None
+        assert ident.mux == "hc"
+        assert ident.window_id == "hc-t5"
+        assert ident.session_window_key == "hc:hc-t5"
+        assert ident.pane_tty == ""
+
+    def test_tmux_and_herdr_inside_hc_report_the_inner_multiplexer(self) -> None:
+        ident = resolve_self_identity(
+            {"TMUX_PANE": "%1", "HC_TERMINAL_ID": "t5"},
+            tmux_query=lambda _pane: ("s:@1", "@1", "win", "/dev/ttys1"),
+        )
+        assert ident is not None and ident.mux == "tmux"
+        ident = resolve_self_identity(
+            {
+                "HERDR_PANE_ID": "w2:p1",
+                "HERDR_WORKSPACE_ID": "w2",
+                "HC_TERMINAL_ID": "t5",
+            },
+            tmux_query=_fail_query,
+            herdr_query=lambda _workspace, _pane: "herdr-session-v1-target",
+        )
+        assert ident is not None and ident.mux == "herdr"
+
+    def test_failed_herdr_probe_inside_hc_does_not_fall_through(self) -> None:
+        env = {
+            "HERDR_PANE_ID": "w2:p1",
+            "HERDR_WORKSPACE_ID": "w2",
+            "HC_TERMINAL_ID": "t5",
+        }
+        assert (
+            resolve_self_identity(
+                env, tmux_query=_fail_query, herdr_query=lambda _w, _p: None
+            )
+            is None
+        )
+
+    def test_hc_wins_over_agterm(self) -> None:
+        env = {"HC_TERMINAL_ID": "t5", "AGTERM_SESSION_ID": "157B4C8C"}
+        ident = resolve_self_identity(env, tmux_query=_fail_query)
+        assert ident is not None and ident.mux == "hc"
+
     def test_tmux_inside_agterm_reports_tmux(self) -> None:
         # Every shell agterm spawns inherits AGTERM_SESSION_ID, including one
         # running a nested tmux, so agterm must be the last branch checked or it
@@ -262,6 +307,16 @@ class TestLocatePrimaryWindowThroughResolver:
         from ccgram.hook import _locate_primary_window
 
         assert _locate_primary_window("sid", "Stop", "claude") is None
+
+    def test_hc_terminal_resolves_through_the_hook(self, monkeypatch) -> None:
+        monkeypatch.delenv("TMUX_PANE", raising=False)
+        monkeypatch.delenv("HERDR_PANE_ID", raising=False)
+        monkeypatch.delenv("AGTERM_SESSION_ID", raising=False)
+        monkeypatch.setenv("HC_TERMINAL_ID", "t1y")
+        from ccgram.hook import _locate_primary_window
+
+        located = _locate_primary_window("sid", "Stop", "claude")
+        assert located == ("hc:hc-t1y", "hc-t1y", "")
 
     def test_agterm_session_resolves_through_the_hook(self, monkeypatch) -> None:
         monkeypatch.delenv("TMUX_PANE", raising=False)

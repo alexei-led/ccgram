@@ -152,6 +152,7 @@ markers = [
     "llm: tests requiring real LLM API keys (slow, requires env vars)",
     "herdr: contract tests against a running herdr server (local only, needs socket)",
     "agterm: smoke tests against a running agterm socket (local only)",
+    "hc: live tests against the running herdr-core socket (local only, opt-in with -m hc)",
 ]
 
 [tool.coverage.run]

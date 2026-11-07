@@ -33,6 +33,7 @@ FORBIDDEN_PREFIXES: tuple[str, ...] = (
     "ccgram.multiplexer.tmux",
     "ccgram.multiplexer.herdr",
     "ccgram.multiplexer.agterm",
+    "ccgram.multiplexer.hc",
     "ccgram.tmux_manager",
     "libtmux",
 )

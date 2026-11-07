@@ -37,6 +37,10 @@ _MULTIPLEXER_ENV = "CCGRAM_MULTIPLEXER"
 _DEFAULT_MULTIPLEXER = "tmux"
 _HERDR_BACKEND = "herdr"
 _TMUX_BACKEND = "tmux"
+# Display label and unit for seam backends with a friendlier name than their id.
+_BACKEND_LABELS: dict[str, tuple[str, str]] = {
+    "hc": ("Herdr desktop (hc)", "terminal(s)"),
+}
 
 
 def _active_multiplexer_name() -> str:
@@ -187,7 +191,8 @@ def status_main() -> None:
         # a bespoke listing, and routing a third backend into the tmux branch
         # reports its session count as zero.
         live_windows = _list_backend_windows(mux_name)
-        backend_line = _backend_line(mux_name, live_windows, "session(s)")
+        label, unit = _BACKEND_LABELS.get(mux_name, (mux_name, "session(s)"))
+        backend_line = _backend_line(label, live_windows, unit)
     else:
         live_windows = _list_tmux_windows(session_name)
         backend_line = (

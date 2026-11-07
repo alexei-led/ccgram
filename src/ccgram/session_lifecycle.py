@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger()
 
-_SESSION_MAP_PREFIXES = frozenset({"agterm", "ccgram", "herdr", "tmux"})
+_SESSION_MAP_PREFIXES = frozenset({"agterm", "ccgram", "hc", "herdr", "tmux"})
 
 
 def _canonical_session_map_window_id(window_id: str) -> str:

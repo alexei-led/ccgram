@@ -1,0 +1,38 @@
+{
+  "keys": {
+    "enter": "ok",
+    "esc": "ok",
+    "escape": "ok",
+    "tab": "ok",
+    "shift+tab": "ok",
+    "backspace": "ok",
+    "up": "ok",
+    "down": "ok",
+    "left": "ok",
+    "right": "ok",
+    "ctrl+c": "ok",
+    "ctrl+d": "ok",
+    "ctrl+u": "ok",
+    "space": "ok",
+    "pageup": "ok",
+    "pagedown": "ok",
+    "home": "ok",
+    "end": "ok",
+    "f1": "ok",
+    "alt+enter": "ok",
+    "shift+enter": "ok",
+    "C-c": "unknown key \"C-c\" (try enter, esc, up, ctrl+c, alt+x, f5, a)",
+    "Escape": "ok",
+    "Enter": "ok",
+    "Up": "ok"
+  },
+  "send": {
+    "id": 28,
+    "jsonrpc": "2.0",
+    "result": {
+      "started": null,
+      "status": null,
+      "turn": 0
+    }
+  }
+}

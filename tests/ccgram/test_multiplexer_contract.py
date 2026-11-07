@@ -21,7 +21,7 @@ from ccgram.multiplexer import UnknownMultiplexerError, get_multiplexer
 from ccgram.multiplexer.base import Multiplexer, MultiplexerCapabilities
 
 # Every backend the contract should hold for. Unregistered names skip.
-CANDIDATE_BACKENDS = ["tmux", "herdr", "agterm"]
+CANDIDATE_BACKENDS = ["tmux", "herdr", "agterm", "hc"]
 
 # The full method surface every backend must expose (Protocol + transitional).
 CONTRACT_METHODS = (
@@ -161,6 +161,33 @@ def test_herdr_capability_values() -> None:
     assert caps.supports_workspace_selection is True
     assert caps.native_topic_targets is True
     assert caps.supports_shell_prompt_markers is True
+
+
+def test_hc_capability_values() -> None:
+    """hc (Herdr desktop) capability flags are pinned; resolving it is I/O-free."""
+    caps = get_multiplexer("hc").capabilities
+    assert caps.name == "hc"
+    assert caps.ids_stable_across_restart is True
+    assert caps.exposes_pane_tty is False
+    assert caps.native_agent_status is True
+    assert caps.read_max_lines == 1000
+    assert caps.self_identify_env == "HC_TERMINAL_ID"
+    assert caps.supports_event_stream is True
+    assert caps.native_worktrees is False
+    assert caps.supports_workspace_selection is True
+    assert caps.native_topic_targets is False
+    assert caps.supports_shell_prompt_markers is False
+
+
+async def test_hc_single_pane_and_no_worktrees() -> None:
+    """Like agterm: no sibling pane handles, no native worktrees."""
+    backend = get_multiplexer("hc")
+    assert await backend.list_panes("hc-t1") == []
+    assert await backend.split_window("hc-t1") is None
+    ok, _msg, name, window_id = await backend.create_worktree_window(
+        "/repo", "/repo.worktrees/x", "ccg/x"
+    )
+    assert (ok, name, window_id) == (False, "", "")
 
 
 # ── window identity matching (WindowRef.matches / window_presence) ─────
@@ -400,8 +427,36 @@ async def test_herdr_does_not_prove_foreign_ids_absent(window_id: str) -> None:
 @pytest.mark.parametrize(
     "window_id",
     [
+        pytest.param("@42", id="tmux"),
+        pytest.param(_AGTERM_WINDOW_ID, id="agterm"),
+        pytest.param(_HERDR_WINDOW_ID, id="herdr"),
+        pytest.param("hc-name", id="hc-terminal-name"),
+        pytest.param("hc-v2-unknown", id="future"),
+    ],
+)
+async def test_hc_does_not_prove_foreign_ids_absent(window_id: str) -> None:
+    from ccgram.multiplexer.hc import HcManager
+    from ccgram.multiplexer.reconciliation import window_presence, window_snapshot
+
+    calls: list[str] = []
+
+    async def never(method, params, timeout):
+        calls.append(method)
+        raise AssertionError(f"foreign window reached herdr-core: {method}")
+
+    backend = HcManager(socket_path="/tmp/hc.sock", transport=never, own_terminal_id="")
+
+    assert await window_presence(window_id, backend) is None
+    assert await window_snapshot(window_id, backend) == (False, None)
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "window_id",
+    [
         pytest.param(_HERDR_WINDOW_ID, id="herdr"),
         pytest.param(_AGTERM_WINDOW_ID, id="agterm"),
+        pytest.param("hc-t5", id="hc"),
         pytest.param("tmux-window-v2-unknown", id="future"),
     ],
 )

@@ -42,6 +42,7 @@ _DEFAULT_MULTIPLEXER = "tmux"
 _HERDR_BACKEND = "herdr"
 _TMUX_BACKEND = "tmux"
 _AGTERM_BACKEND = "agterm"
+_HC_BACKEND = "hc"
 
 
 def _active_multiplexer_name() -> str:
@@ -159,6 +160,36 @@ def _check_agterm() -> tuple[str, str]:
         return _FAIL, f"agterm control socket unreachable: {exc}"
     where = f" ({socket})" if socket else " (default socket)"
     return _PASS, f"agterm control socket reachable{where}"
+
+
+def _check_hc() -> tuple[str, str]:
+    """hc (Herdr desktop): herdr-core's socket answers its ``hello`` handshake.
+
+    Drives the backend's ``ensure_session`` so the generation check stays in
+    the adapter (it warns, but continues, on an unverified generation).
+    """
+    # Lazy: defer the registry import (see _check_multiplexer).
+    from .multiplexer import get_multiplexer
+
+    backend = get_multiplexer(_HC_BACKEND)
+    try:
+        asyncio.run(backend.ensure_session())
+    except Exception as exc:  # noqa: BLE001 — surface any backend failure verbatim
+        return _FAIL, f"herdr-core unreachable: {exc}"
+    socket = os.environ.get("HC_TERMINAL_SOCKET", "")
+    where = f" ({socket})" if socket else " (default socket)"
+    return _PASS, f"herdr-core reachable{where}"
+
+
+def _check_herdr_app() -> tuple[str, str]:
+    """hc: the Herdr app CLI, used to open, rename and list tabs and spaces."""
+    if shutil.which("herdr-app"):
+        return _PASS, "herdr-app found"
+    return (
+        _WARN,
+        "herdr-app not found in PATH — new sessions start without a Herdr tab, "
+        "and the workspace picker and tab renames are unavailable",
+    )
 
 
 def _check_tmux() -> tuple[str, str]:
@@ -532,6 +563,10 @@ def doctor_main(fix: bool = False) -> None:
     elif mux_name == _AGTERM_BACKEND:
         _, _, failed = _run_check(_check_agterm)
         has_failures = has_failures or failed
+    elif mux_name == _HC_BACKEND:
+        _, _, failed = _run_check(_check_hc)
+        has_failures = has_failures or failed
+        _run_check(_check_herdr_app)
     else:
         _, _, failed = _run_check(_check_tmux)
         has_failures = has_failures or failed

@@ -1,0 +1,39 @@
+{
+  "id": 1,
+  "jsonrpc": "2.0",
+  "result": {
+    "address": "t2b",
+    "argv": [
+      "/bin/sh",
+      "-c",
+      "stty raw -isig -echo; cat -v"
+    ],
+    "cols": 200,
+    "created_ms": 1793969686774,
+    "cwd": "/",
+    "die_with_parent": false,
+    "exit_code": null,
+    "finished_ms": null,
+    "identity": "ghostty",
+    "keep": false,
+    "labels": {
+      "ccgram.probe": "1"
+    },
+    "name": "ccgram-probe",
+    "notify": false,
+    "parent": null,
+    "pid": 51128,
+    "reason": null,
+    "reported": false,
+    "rm": false,
+    "rows": 120,
+    "screen": "exact",
+    "signal": null,
+    "state": "live",
+    "status": null,
+    "status_ms": null,
+    "template": null,
+    "title": "",
+    "turn": 0
+  }
+}
