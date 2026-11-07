@@ -225,3 +225,34 @@ class TestQuestionChoiceCallback:
         advance.assert_not_called()
         assert self.redrawn == 1
         assert "changed on the computer" in query.answer.await_args.args[0]
+
+
+class TestQuestionKeyboard:
+    @staticmethod
+    def _labels(content: str, *, question: bool = True) -> list[str]:
+        from ccgram.handlers.interactive.interactive_ui import (
+            _build_interactive_keyboard,
+        )
+
+        choices = parse_direct_choices(content, question=True)
+        keyboard = _build_interactive_keyboard(
+            "hc-t5", "AskUserQuestion", direct_choices=choices, question=question
+        )
+        return [b.text for row in keyboard.inline_keyboard for b in row]
+
+    def test_single_select_has_only_its_options(self) -> None:
+        assert self._labels(SINGLE) == [
+            "1. Red",
+            "2. Blue",
+            "3. Green",
+            "4. ✏️ Type something.",
+            "5. 💬 Chat about this",
+        ]
+
+    def test_multi_select_adds_a_next_button(self) -> None:
+        labels = self._labels(MULTI)
+        assert labels[-1] == "➡ 下一步"
+        assert "⏎ Enter" not in labels and "␣ Space" not in labels
+
+    def test_other_prompts_keep_the_keypad(self) -> None:
+        assert "⏎ Enter" in self._labels(SINGLE, question=False)

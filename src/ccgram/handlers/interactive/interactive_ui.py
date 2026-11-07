@@ -113,6 +113,14 @@ INTERACTIVE_INSTRUCTION_LINE = (
     "↑↓ select · Enter confirm · Esc cancel · type to enter text"
 )
 
+# Claude questions with tappable options need no keypad: the hint says how to
+# answer instead.
+QUESTION_INSTRUCTION_LINE = "点选项作答 · 直接发文字 = 自定义答案（✏️）· 💬 = 先聊聊"
+QUESTION_MULTI_INSTRUCTION_LINE = (
+    "点选项勾选 · 选完点 ➡ 下一步 · 直接发文字 = 自定义答案（✏️）· 💬 = 先聊聊"
+)
+_QUESTION_ICONS = (("Type something", "✏️ "), ("Chat about this", "💬 "))
+
 # Hard ceiling per Telegram message; leave headroom for entities.
 _TELEGRAM_MAX_TEXT = 4096
 _MAX_DIRECT_CHOICES = 8
@@ -620,6 +628,18 @@ def advance_interactive_sequence(
         _interactive_sequences[ikey] += 1
 
 
+def _question_label(label: str) -> str:
+    """Mark the free-text and chat options of a Claude question with icons."""
+    for words, icon in _QUESTION_ICONS:
+        if words in label:
+            return label.replace(words, icon + words, 1)
+    return label
+
+
+def _is_multi_select(choices: tuple[tuple[str, str], ...]) -> bool:
+    return any("\u2610" in label or "\u2611" in label for _, label in choices)
+
+
 def _build_interactive_keyboard(
     window_id: str,
     ui_name: str = "",
@@ -628,8 +648,13 @@ def _build_interactive_keyboard(
     sequence: int = 0,
     menu: TerminalMenu | None = None,
     advisory: bool = False,
+    question: bool = False,
 ) -> InlineKeyboardMarkup:
     """Build keyboard for interactive UI navigation.
+
+    ``question`` (a Claude question with tappable options) drops the keypad:
+    a single-select tap moves on by itself, and a multi-select gets one
+    "➡ 下一步" button (the → key) to leave the question.
 
     ``ui_name`` controls the layout: ``RestoreCheckpoint`` omits ←/→ keys
     since only vertical selection is needed.
@@ -669,6 +694,17 @@ def _build_interactive_keyboard(
         return InlineKeyboardMarkup([[btn("🔄", CB_ASK_REFRESH)]])
 
     rows: list[list[InlineKeyboardButton]] = []
+    if question and direct_choices:
+        for start in range(0, len(direct_choices), 2):
+            rows.append(
+                [
+                    choice_btn(key, _question_label(label))
+                    for key, label in direct_choices[start : start + 2]
+                ]
+            )
+        if _is_multi_select(direct_choices):
+            rows.append([btn("➡ 下一步", CB_ASK_RIGHT)])
+        return InlineKeyboardMarkup(rows)
     # Direct choices come first, while the complete navigation keyboard remains
     # available for multi-select and unrecognised prompts.
     for start in range(0, len(direct_choices), 2):
@@ -916,6 +952,12 @@ async def handle_interactive_ui(
     # stale blocking latch from an earlier prompt.
     blocking = not advisory
     pane_name = _lookup_pane_name(window_id, pane_id) if pane_id else None
+    direct_choices = (
+        ()
+        if menu is not None or advisory
+        else parse_direct_choices(content, question=ui_name == "AskUserQuestion")
+    )
+    question = ui_name == "AskUserQuestion" and bool(direct_choices)
     text = format_interactive_message(
         content,
         pane_id=pane_id,
@@ -925,6 +967,12 @@ async def handle_interactive_ui(
             if advisory
             else (MENU_INSTRUCTION if menu.text_input else MENU_BUTTON_INSTRUCTION)
             if menu is not None
+            else (
+                QUESTION_MULTI_INSTRUCTION_LINE
+                if _is_multi_select(direct_choices)
+                else QUESTION_INSTRUCTION_LINE
+            )
+            if question
             else INTERACTIVE_INSTRUCTION_LINE
         ),
     )
@@ -947,12 +995,11 @@ async def handle_interactive_ui(
         window_id,
         ui_name=ui_name,
         pane_id=pane_id,
-        direct_choices=()
-        if menu is not None or advisory
-        else parse_direct_choices(content, question=ui_name == "AskUserQuestion"),
+        direct_choices=direct_choices,
         sequence=sequence,
         menu=menu,
         advisory=advisory,
+        question=question,
     )
 
     # Try editing existing interactive message first
