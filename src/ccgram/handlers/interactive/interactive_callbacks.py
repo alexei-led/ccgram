@@ -37,6 +37,7 @@ from .pi_controls import (
 )
 from ..messaging_pipeline.message_sender import ack_reaction, safe_reply
 from .interactive_ui import (
+    FREE_TEXT_TOAST,
     follow_prompt_changes,
     question_choice_keys,
     PromptStateError,
@@ -204,7 +205,7 @@ async def _send_question_choice(
     if not keys:
         # The cursor already sits on the free-text option: nothing changes on
         # screen, so the keyboard stays valid for the next tap.
-        await query.answer("Send your answer as a message")
+        await query.answer(FREE_TEXT_TOAST)
         return
     try:
         sent, reason = await adapter.send_keys(
@@ -229,7 +230,7 @@ async def _send_question_choice(
         return
     advance_interactive_sequence(user_id, thread_id, chat_id=chat_id)
     free_text = keys[-1] != "Enter"
-    await query.answer("Send your answer as a message" if free_text else None)
+    await query.answer(FREE_TEXT_TOAST if free_text else None)
     if client is not None:
         task = asyncio.create_task(
             follow_prompt_changes(

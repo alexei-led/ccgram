@@ -120,6 +120,8 @@ QUESTION_MULTI_INSTRUCTION_LINE = (
     "点选项勾选 · 选完点 ➡ 下一步 · 直接发文字 = 自定义答案（✏️）· 💬 = 先聊聊"
 )
 _QUESTION_ICONS = (("Type something", "✏️ "), ("Chat about this", "💬 "))
+FREE_TEXT_HINT = "（直接在 TG 发消息）"
+FREE_TEXT_TOAST = "直接在 TG 里发消息作答"
 
 # Hard ceiling per Telegram message; leave headroom for entities.
 _TELEGRAM_MAX_TEXT = 4096
@@ -629,10 +631,16 @@ def advance_interactive_sequence(
 
 
 def _question_label(label: str) -> str:
-    """Mark the free-text and chat options of a Claude question with icons."""
+    """Mark the free-text and chat options of a Claude question with icons.
+
+    Button labels are CCGram's own UI, not terminal text (the message body
+    and its fingerprint stay verbatim), so the free-text option also says
+    how to use it from the phone.
+    """
     for words, icon in _QUESTION_ICONS:
         if words in label:
-            return label.replace(words, icon + words, 1)
+            marked = label.replace(words, icon + words, 1)
+            return marked + FREE_TEXT_HINT if words == "Type something" else marked
     return label
 
 
