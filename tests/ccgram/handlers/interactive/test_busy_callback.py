@@ -11,7 +11,7 @@ from ccgram.handlers.interactive.interactive_ui import (
     _interactive_mode,
     _interactive_prompt_fingerprints,
 )
-from ccgram.session_protocol.models import ProtocolError
+from ccgram.session_protocol.models import PROMPT_CHANGED_MESSAGE, ProtocolError
 
 
 def _confirmed_prompt():
@@ -51,7 +51,7 @@ async def test_busy_callback_answers_without_sending_input(monkeypatch):
     adapter.send_keys.assert_awaited_once()
 
 
-async def test_changed_prompt_is_reported_instead_of_success_label(monkeypatch):
+async def test_changed_prompt_is_redrawn_instead_of_success_label(monkeypatch):
     query = MagicMock()
     query.answer = AsyncMock()
     query.message.chat.type = "supergroup"
@@ -64,16 +64,21 @@ async def test_changed_prompt_is_reported_instead_of_success_label(monkeypatch):
         "ccgram.handlers.callback_helpers.user_owns_window", lambda *_: True
     )
     adapter = MagicMock()
-    adapter.send_keys = AsyncMock(
-        return_value=(False, "Interactive prompt changed before input")
-    )
+    adapter.send_keys = AsyncMock(return_value=(False, PROMPT_CHANGED_MESSAGE))
     monkeypatch.setattr(
         "ccgram.session_protocol.telegram.adapter_for", lambda _: adapter
+    )
+    redraw = AsyncMock()
+    monkeypatch.setattr(
+        "ccgram.handlers.interactive.interactive_callbacks.handle_interactive_ui",
+        redraw,
     )
     await handle_interactive_callback(
         query, 10, f"{CB_ASK_ESC}1:@12", update, MagicMock()
     )
+    redraw.assert_awaited_once()
     query.answer.assert_awaited_once_with(
-        "Interactive prompt changed before input", show_alert=True
+        "The prompt changed on the computer. Refreshed: pick again.",
+        show_alert=True,
     )
     adapter.send_keys.assert_awaited_once()

@@ -16,6 +16,7 @@ from .input_lock import input_lock
 from .models import (
     ACTION_KINDS,
     MAX_TEXT_BYTES,
+    PROMPT_CHANGED_MESSAGE,
     Action,
     ActionResult,
     ProtocolError,
@@ -344,9 +345,7 @@ class ActionExecutor:
         if expected_prompt is not None:
             prompt = await self.service.backend.prompt(target)
             if prompt is None or prompt.fingerprint != expected_prompt:
-                raise ProtocolError(
-                    409, "binding_conflict", "Interactive prompt changed before input"
-                )
+                raise ProtocolError(409, "binding_conflict", PROMPT_CHANGED_MESSAGE)
         return target
 
     @staticmethod

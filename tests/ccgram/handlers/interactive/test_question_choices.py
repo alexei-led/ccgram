@@ -184,13 +184,15 @@ class TestFreeTextAnswer:
 
 
 class TestQuestionChoiceCallback:
-    async def _tap(self, keys: list[str]) -> tuple[MagicMock, MagicMock, MagicMock]:
+    async def _tap(
+        self, keys: list[str], result: tuple[bool, str] = (True, "")
+    ) -> tuple[MagicMock, MagicMock, MagicMock]:
         from ccgram.handlers.interactive import interactive_callbacks as cb
 
         query = MagicMock()
         query.answer = AsyncMock()
         adapter = MagicMock()
-        adapter.send_keys = AsyncMock(return_value=(True, ""))
+        adapter.send_keys = AsyncMock(return_value=result)
         with (
             patch.object(cb, "advance_interactive_sequence") as advance,
             patch.object(cb, "_QUESTION_REFRESH_DELAY_S", 0),
@@ -213,3 +215,13 @@ class TestQuestionChoiceCallback:
         adapter.send_keys.assert_not_awaited()
         advance.assert_not_called()
         query.answer.assert_awaited_once()
+
+    async def test_a_prompt_changed_at_the_computer_is_redrawn(self) -> None:
+        from ccgram.session_protocol.models import PROMPT_CHANGED_MESSAGE
+
+        query, _adapter, advance = await self._tap(
+            ["Down", "Enter"], (False, PROMPT_CHANGED_MESSAGE)
+        )
+        advance.assert_not_called()
+        assert self.redrawn == 1
+        assert "changed on the computer" in query.answer.await_args.args[0]

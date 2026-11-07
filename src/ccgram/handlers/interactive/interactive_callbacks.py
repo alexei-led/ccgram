@@ -15,7 +15,7 @@ import structlog
 
 from telegram import CallbackQuery, Message, Update
 from ...telegram_client import PTBTelegramClient
-from ...session_protocol.models import ProtocolError
+from ...session_protocol.models import PROMPT_CHANGED_MESSAGE, ProtocolError
 from ..callback_data import (
     CB_ASK_CHOICE,
     CB_ASK_DOWN,
@@ -154,6 +154,31 @@ def match_interactive_prefix(data: str) -> tuple[str, str, str | None] | None:
     return None
 
 
+_PROMPT_CHANGED_NOTICE = "The prompt changed on the computer. Refreshed: pick again."
+
+
+async def _refresh_changed_prompt(
+    query: CallbackQuery,
+    client: TelegramClient | None,
+    user_id: int,
+    window_id: str,
+    thread_id: int | None,
+    pane_id: str | None,
+    chat_id: int | None,
+) -> None:
+    """Redraw a prompt someone changed at the terminal, then say so.
+
+    A tap is refused when the live prompt no longer matches the keyboard (an
+    answer or cursor move at the computer). Redrawing gives a keyboard for
+    the prompt as it is now, so the next tap works.
+    """
+    if client is not None:
+        await handle_interactive_ui(
+            client, user_id, window_id, thread_id, pane_id=pane_id, chat_id=chat_id
+        )
+    await query.answer(_PROMPT_CHANGED_NOTICE, show_alert=True)
+
+
 async def _send_question_choice(
     query: CallbackQuery,
     user_id: int,
@@ -180,7 +205,7 @@ async def _send_question_choice(
         await query.answer("Send your answer as a message")
         return
     try:
-        sent, _ = await adapter.send_keys(
+        sent, reason = await adapter.send_keys(
             window_id,
             keys,
             pane_id=pane_id,
@@ -191,8 +216,13 @@ async def _send_question_choice(
         raise
     except Exception:  # noqa: BLE001 — report any backend delivery failure to user
         logger.warning("Failed to send question choice", exc_info=True)
-        sent = False
+        sent, reason = False, ""
     if not sent:
+        if reason == PROMPT_CHANGED_MESSAGE:
+            await _refresh_changed_prompt(
+                query, client, user_id, window_id, thread_id, pane_id, chat_id
+            )
+            return
         await query.answer("Unable to send choice. Try again.", show_alert=True)
         return
     advance_interactive_sequence(user_id, thread_id, chat_id=chat_id)
@@ -268,8 +298,13 @@ async def _handle_direct_choice(
         raise
     except Exception:  # noqa: BLE001 — report any backend delivery failure to user
         logger.warning("Failed to send direct interactive choice", exc_info=True)
-        sent = False
+        sent, message = False, ""
     if not sent:
+        if message == PROMPT_CHANGED_MESSAGE:
+            await _refresh_changed_prompt(
+                query, client, user_id, window_id, thread_id, pane_id, chat_id
+            )
+            return
         await query.answer("Unable to send choice. Try again.", show_alert=True)
         return
     advance_interactive_sequence(user_id, thread_id, chat_id=chat_id)
@@ -314,6 +349,11 @@ async def _handle_navigation_key(
         expected_prompt=expected_prompt,
     )
     if not sent:
+        if message_text == PROMPT_CHANGED_MESSAGE:
+            await _refresh_changed_prompt(
+                query, client, user_id, window_id, thread_id, pane_id, chat_id
+            )
+            return
         await query.answer(
             message_text or "Unable to send key. Try again.", show_alert=True
         )

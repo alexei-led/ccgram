@@ -23,6 +23,9 @@ CLOSE_REASONS = frozenset(
     {"answered", "dismissed", "interrupted", "turn_ended", "vanished", "expired"}
 )
 MAX_TEXT_BYTES = 65536
+# Refusal when the live prompt no longer matches the one the input was aimed at
+# (someone answered or moved it at the terminal first).
+PROMPT_CHANGED_MESSAGE = "Interactive prompt changed before input"
 
 
 def utc_now() -> str:
