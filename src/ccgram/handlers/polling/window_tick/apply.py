@@ -135,7 +135,11 @@ async def _transition_to_idle(
     else:
         ps.mark_startup_quietly_settled(window_id)
     client = PTBTelegramClient(bot)
-    await update_topic_emoji(client, chat_id, thread_id, "idle", display)
+    # Idle at a prompt (a question, a plan or an approval) means it waits on
+    # the user, which the topic shows apart from a plain idle.
+    waiting = get_interactive_window(user_id, thread_id, chat_id=chat_id) == window_id
+    state = "waiting" if waiting else "idle"
+    await update_topic_emoji(client, chat_id, thread_id, state, display)
     lc.clear_typing_state(user_id, thread_id)
     if not send_status:
         return

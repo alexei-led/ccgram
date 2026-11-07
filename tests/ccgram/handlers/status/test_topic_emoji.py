@@ -17,6 +17,7 @@ from ccgram.handlers.status.topic_emoji import (
     EMOJI_GREEN_CIRCLE,
     EMOJI_IDLE,
     EMOJI_RC,
+    EMOJI_RED_CIRCLE,
     EMOJI_YELLOW_CIRCLE,
     EMOJI_YOLO,
     clear_topic_emoji_state,
@@ -575,6 +576,12 @@ class TestStatusMode:
         table = _state_emoji_map()
         assert table["active"] == EMOJI_GREEN_CIRCLE
         assert table["idle"] == EMOJI_YELLOW_CIRCLE
+        assert table["waiting"] == EMOJI_RED_CIRCLE
+
+    def test_waiting_prefix_is_stripped(self) -> None:
+        from ccgram.handlers.status.topic_emoji import strip_emoji_prefix
+
+        assert strip_emoji_prefix(f"{EMOJI_RED_CIRCLE} myproject") == "myproject"
 
     def test_user_mode_swaps_active_idle_colors(self, _user_mode) -> None:
         from ccgram.handlers.status.topic_emoji import _state_emoji_map
@@ -582,7 +589,8 @@ class TestStatusMode:
         table = _state_emoji_map()
         assert table["active"] == EMOJI_YELLOW_CIRCLE
         assert table["idle"] == EMOJI_GREEN_CIRCLE
-        # done/dead are unchanged across modes.
+        # waiting/done/dead are unchanged across modes.
+        assert table["waiting"] == EMOJI_RED_CIRCLE
         assert table["done"] == EMOJI_DONE
         assert table["dead"] == EMOJI_DEAD
 
