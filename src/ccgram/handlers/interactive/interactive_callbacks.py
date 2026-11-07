@@ -37,6 +37,8 @@ from .pi_controls import (
 )
 from ..messaging_pipeline.message_sender import ack_reaction, safe_reply
 from .interactive_ui import (
+    FREE_TEXT_TOAST,
+    follow_prompt_changes,
     question_choice_keys,
     PromptStateError,
     pane_has_interactive_prompt,
@@ -61,9 +63,11 @@ if TYPE_CHECKING:
 logger = structlog.get_logger()
 
 # cb_prefix -> (tmux_key, refresh_ui_after)
-# Pause before re-rendering a question after a pick, so the terminal shows
-# the next question or the moved cursor.
-_QUESTION_REFRESH_DELAY_S = 0.5
+# How long to keep redrawing a question after a pick: cursor keys land at
+# once, so the next question shows within a second or two.
+_QUESTION_FOLLOW_S = 6.0
+# One follower per topic: a new tap replaces the previous one.
+_follow_tasks: dict[tuple[int, int | None, int | None], asyncio.Task[None]] = {}
 
 INTERACTIVE_KEY_MAP: dict[str, tuple[str, bool]] = {
     CB_ASK_UP: ("Up", True),
@@ -105,7 +109,7 @@ def parse_direct_choice_callback(
     if (
         not separator
         or not separator2
-        or key not in {"y", "n", "1", "2", "3", "4", "5", "6", "7", "8"}
+        or key not in {"y", "n", "x", "1", "2", "3", "4", "5", "6", "7", "8"}
         or not sequence_text.isdecimal()
         or not target
     ):
@@ -202,8 +206,12 @@ async def _send_question_choice(
     if not keys:
         # The cursor already sits on the free-text option: nothing changes on
         # screen, so the keyboard stays valid for the next tap.
-        await query.answer("Send your answer as a message")
+        await query.answer(FREE_TEXT_TOAST)
         return
+    # Retire this keyboard before the keys land: a follower still running from
+    # an earlier tap may redraw the next state at once, and its keyboard must
+    # carry the newest sequence, not one this tap bumps afterwards.
+    advance_interactive_sequence(user_id, thread_id, chat_id=chat_id)
     try:
         sent, reason = await adapter.send_keys(
             window_id,
@@ -223,16 +231,39 @@ async def _send_question_choice(
                 query, client, user_id, window_id, thread_id, pane_id, chat_id
             )
             return
+        if client is not None:
+            await handle_interactive_ui(
+                client, user_id, window_id, thread_id, pane_id=pane_id, chat_id=chat_id
+            )
         await query.answer("Unable to send choice. Try again.", show_alert=True)
         return
-    advance_interactive_sequence(user_id, thread_id, chat_id=chat_id)
-    free_text = keys[-1] != "Enter"
-    await query.answer("Send your answer as a message" if free_text else None)
+    # Start following before answering the tap: the redraw is what the user
+    # waits for, and answering is another round trip.
     if client is not None:
-        await asyncio.sleep(_QUESTION_REFRESH_DELAY_S)
-        await handle_interactive_ui(
-            client, user_id, window_id, thread_id, pane_id=pane_id, chat_id=chat_id
+        follow_key = (user_id, thread_id, chat_id)
+        previous = _follow_tasks.pop(follow_key, None)
+        if previous is not None:
+            previous.cancel()
+        task = asyncio.create_task(
+            follow_prompt_changes(
+                client,
+                user_id,
+                window_id,
+                thread_id,
+                pane_id=pane_id,
+                chat_id=chat_id,
+                timeout=_QUESTION_FOLLOW_S,
+            )
         )
+        _follow_tasks[follow_key] = task
+        task.add_done_callback(
+            lambda done, key=follow_key: (
+                _follow_tasks.pop(key, None) if _follow_tasks.get(key) is done else None
+            )
+        )
+    # Cursor moves alone mean the free-text field now has the focus.
+    free_text = keys[-1] in ("Up", "Down")
+    await query.answer(FREE_TEXT_TOAST if free_text else None)
 
 
 async def _handle_direct_choice(

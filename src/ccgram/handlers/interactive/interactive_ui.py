@@ -113,6 +113,20 @@ INTERACTIVE_INSTRUCTION_LINE = (
     "↑↓ select · Enter confirm · Esc cancel · type to enter text"
 )
 
+# Claude questions with tappable options need no keypad: the hint says how to
+# answer instead.
+QUESTION_INSTRUCTION_LINE = (
+    "Tap an option · send a message for your own answer (✏️) · 💬 to discuss"
+)
+QUESTION_MULTI_INSTRUCTION_LINE = (
+    "Tap to check · ➡ Next when done · a message skips the question and goes"
+    " to the agent"
+)
+_QUESTION_ICONS = (("Type something", "✏️ "), ("Chat about this", "💬 "))
+# Callback key of the multi-select "➡ Next" button (not an option number).
+NEXT_CHOICE_KEY = "x"
+FREE_TEXT_TOAST = "Send your answer as a message"
+
 # Hard ceiling per Telegram message; leave headroom for entities.
 _TELEGRAM_MAX_TEXT = 4096
 _MAX_DIRECT_CHOICES = 8
@@ -128,7 +142,6 @@ _NUMBERED_OPTION_RE = re.compile(r"^\s*(?:[←→❯>]\s*)?(\d+)\.\s+(.+?)\s*$")
 # lines, "Chat about this" sits below a rule, and multi-select options are
 # "[ ]" / "[✔]" checkboxes.
 _QUESTION_TAB_BAR_RE = re.compile(r"^\s*←.*→\s*$")
-_QUESTION_FOOTER_RE = re.compile(r"^\s*Enter to select\b")
 _RULE_LINE_RE = re.compile(r"^\s*─+\s*$")
 _CHECKBOX_RE = re.compile(r"^\[([ ✔✓xX])\]\s*")
 _MULTI_SELECT_RE = re.compile(
@@ -359,9 +372,7 @@ def parse_direct_choices(
         line for line in content.splitlines() if not _QUESTION_TAB_BAR_RE.match(line)
     ]
     body = "\n".join(lines)
-    claude_question = question and any(
-        _QUESTION_FOOTER_RE.match(line) for line in lines
-    )
+    claude_question = question
     if not claude_question and (
         "☐" in body or "☑" in body or _MULTI_SELECT_RE.search(body)
     ):
@@ -453,16 +464,19 @@ def _live_question(
 ) -> tuple[int, tuple[tuple[str, str], ...]] | None:
     """Cursor position and options of the topic's live Claude question prompt.
 
-    A Claude question shows its tab bar or its "Enter to select · … to
-    navigate" footer; the cursor is the option row marked ❯. None for any
-    other prompt, or when the cursor cannot be found.
+    A Claude question shows its tab bar, its "Enter to select · … to
+    navigate" footer, or (once drawn) CCGram's question hint line; the
+    cursor is the option row marked ❯. None for any other prompt, or when
+    the cursor cannot be found.
     """
     content = _interactive_contents.get(_interactive_key(user_id, thread_id, chat_id))
     if not content:
         return None
     lines = content.splitlines()
     if not any(
-        _QUESTION_TAB_BAR_RE.match(line) or _QUESTION_NAV_FOOTER_RE.match(line)
+        _QUESTION_TAB_BAR_RE.match(line)
+        or _QUESTION_NAV_FOOTER_RE.match(line)
+        or line in (QUESTION_INSTRUCTION_LINE, QUESTION_MULTI_INSTRUCTION_LINE)
         for line in lines
     ):
         return None
@@ -481,50 +495,92 @@ def _moves(cursor: int, target: int) -> list[str]:
     )
 
 
-def _is_free_text(label: str) -> bool:
-    return bool(_TYPED_ANSWER_RE.match(label.split(". ", 1)[-1]))
+def _option_text(label: str) -> str:
+    """An option's text without its number and checkbox."""
+    text = label.split(". ", 1)[-1]
+    return re.sub(r"^[\u2610\u2611] ", "", text)
+
+
+def _free_text_option(
+    choices: tuple[tuple[str, str], ...],
+) -> tuple[str, str] | None:
+    """Number key and current text of a Claude question's free-text option.
+
+    It is the option right above "Chat about this": its label reads "Type
+    something" until an answer is typed, then shows that answer. The text is
+    "" while it still reads "Type something".
+    """
+    for index, (_key, label) in enumerate(choices):
+        if index and "Chat about this" in label:
+            key, free = choices[index - 1]
+            text = _option_text(free)
+            return key, "" if _TYPED_ANSWER_RE.match(text) else text
+    for key, label in choices:
+        if _TYPED_ANSWER_RE.match(_option_text(label)):
+            return key, ""
+    return None
 
 
 def question_choice_keys(
     user_id: int, thread_id: int | None, chat_id: int | None, key: str
 ) -> list[str] | None:
-    """Keys that pick option *key* of the topic's live Claude question.
+    """Keys that act on option *key* of the topic's live Claude question.
 
     Claude's question prompt ignores number keys, so a pick moves the cursor
     with Up/Down from the row the screen marks, then presses Enter (which
     selects a single-select option or toggles a checkbox). The free-text
-    option only gets the cursor, so the next text message fills it in. None
-    when the live prompt is not a Claude question: other prompts take the
-    number key itself.
-    """
-    question = _live_question(user_id, thread_id, chat_id)
-    if question is None or not key.isdigit():
-        return None
-    cursor, choices = question
-    label = next((label for k, label in choices if k == key), None)
-    if label is None:
-        return None
-    moves = _moves(cursor, int(key))
-    return moves if _is_free_text(label) else [*moves, "Enter"]
-
-
-def typed_answer_keys(
-    user_id: int, thread_id: int | None, chat_id: int | None
-) -> list[str] | None:
-    """Keys that put the cursor on the live question's free-text option.
-
-    Empty when it is already there; None when the prompt offers no free-text
-    ("Type something") answer. Text sent from Telegram while such a prompt
-    shows becomes that answer instead of dismissing the prompt.
+    option, while still empty, only gets the cursor, so the next text message
+    fills it in; once it holds an answer it is picked like any other option.
+    ``NEXT_CHOICE_KEY`` leaves the question with →, stepping out of the
+    free-text field first (→ moves the text cursor there). None when the live
+    prompt is not a Claude question: other prompts take the number key itself.
     """
     question = _live_question(user_id, thread_id, chat_id)
     if question is None:
         return None
     cursor, choices = question
-    for key, label in choices:
-        if _is_free_text(label):
-            return _moves(cursor, int(key))
-    return None
+    free = _free_text_option(choices)
+    if key == NEXT_CHOICE_KEY:
+        on_field = free is not None and int(free[0]) == cursor
+        return ["Up", "Right"] if on_field else ["Right"]
+    if not key.isdigit() or all(k != key for k, _ in choices):
+        return None
+    moves = _moves(cursor, int(key))
+    if free is not None and free[0] == key and not free[1]:
+        return moves
+    return [*moves, "Enter"]
+
+
+def typed_answer_keys(
+    user_id: int, thread_id: int | None, chat_id: int | None
+) -> list[str] | None:
+    """Keys that leave the live question's free-text field focused and empty.
+
+    The cursor moves to the field, a checked multi-select answer is unchecked
+    (the paste's own Enter checks it again), and an answer typed earlier is
+    erased (End, then one Backspace per character), so a new message
+    replaces it.
+    Empty when nothing needs doing; None when the prompt offers no free-text
+    answer. Text sent from Telegram while such a prompt shows becomes that
+    answer instead of dismissing the prompt.
+    """
+    question = _live_question(user_id, thread_id, chat_id)
+    if question is None:
+        return None
+    cursor, choices = question
+    free = _free_text_option(choices)
+    # Multi-select free text is not typed from Telegram: Enter toggles the
+    # box there and herdr-core can only paste with Enter, so a message
+    # dismisses the question and goes to the agent as a plain reply instead.
+    if free is None or _is_multi_select(choices):
+        return None
+    key, text = free
+    # Enter toggles a multi-select checkbox, and the paste ends with Enter: a
+    # checked answer is unchecked first so the paste leaves it checked.
+    label = next(label for k, label in choices if k == key)
+    uncheck = ["Enter"] if "\u2611" in label else []
+    clear = ["End", *["BSpace"] * len(text)] if text else []
+    return [*_moves(cursor, int(key)), *uncheck, *clear]
 
 
 def is_current_interactive_message(
@@ -620,6 +676,22 @@ def advance_interactive_sequence(
         _interactive_sequences[ikey] += 1
 
 
+def _question_label(label: str) -> str:
+    """Mark the free-text and chat options of a Claude question with icons.
+
+    How to answer from the phone is said in the hint line above the prompt,
+    which is CCGram's own text, so the button stays short.
+    """
+    for words, icon in _QUESTION_ICONS:
+        if words in label:
+            return label.replace(words, icon + words, 1)
+    return label
+
+
+def _is_multi_select(choices: tuple[tuple[str, str], ...]) -> bool:
+    return any("\u2610" in label or "\u2611" in label for _, label in choices)
+
+
 def _build_interactive_keyboard(
     window_id: str,
     ui_name: str = "",
@@ -628,8 +700,14 @@ def _build_interactive_keyboard(
     sequence: int = 0,
     menu: TerminalMenu | None = None,
     advisory: bool = False,
+    question: bool = False,
 ) -> InlineKeyboardMarkup:
     """Build keyboard for interactive UI navigation.
+
+    ``question`` (a Claude question with tappable options) drops the keypad:
+    a single-select tap moves on by itself, and a multi-select (which hides
+    its free-text option: a message replies in chat instead) gets one
+    "➡ Next" button (the → key) to leave the question.
 
     ``ui_name`` controls the layout: ``RestoreCheckpoint`` omits ←/→ keys
     since only vertical selection is needed.
@@ -669,6 +747,20 @@ def _build_interactive_keyboard(
         return InlineKeyboardMarkup([[btn("🔄", CB_ASK_REFRESH)]])
 
     rows: list[list[InlineKeyboardButton]] = []
+    if question and direct_choices:
+        multi = _is_multi_select(direct_choices)
+        free = _free_text_option(direct_choices) if multi else None
+        shown = [c for c in direct_choices if free is None or c[0] != free[0]]
+        for start in range(0, len(shown), 2):
+            rows.append(
+                [
+                    choice_btn(key, _question_label(label))
+                    for key, label in shown[start : start + 2]
+                ]
+            )
+        if multi:
+            rows.append([choice_btn(NEXT_CHOICE_KEY, "➡ Next")])
+        return InlineKeyboardMarkup(rows)
     # Direct choices come first, while the complete navigation keyboard remains
     # available for multi-select and unrecognised prompts.
     for start in range(0, len(direct_choices), 2):
@@ -916,8 +1008,25 @@ async def handle_interactive_ui(
     # stale blocking latch from an earlier prompt.
     blocking = not advisory
     pane_name = _lookup_pane_name(window_id, pane_id) if pane_id else None
+    direct_choices = (
+        ()
+        if menu is not None or advisory
+        else parse_direct_choices(content, question=ui_name == "AskUserQuestion")
+    )
+    question = ui_name == "AskUserQuestion" and bool(direct_choices)
+    # The keyboard footer means nothing on a phone. Only the display drops it:
+    # the fingerprint above still covers the full capture.
+    shown = (
+        "\n".join(
+            line
+            for line in content.splitlines()
+            if not _QUESTION_NAV_FOOTER_RE.match(line)
+        ).rstrip()
+        if question
+        else content
+    )
     text = format_interactive_message(
-        content,
+        shown,
         pane_id=pane_id,
         pane_name=pane_name,
         instruction_line=(
@@ -925,6 +1034,12 @@ async def handle_interactive_ui(
             if advisory
             else (MENU_INSTRUCTION if menu.text_input else MENU_BUTTON_INSTRUCTION)
             if menu is not None
+            else (
+                QUESTION_MULTI_INSTRUCTION_LINE
+                if _is_multi_select(direct_choices)
+                else QUESTION_INSTRUCTION_LINE
+            )
+            if question
             else INTERACTIVE_INSTRUCTION_LINE
         ),
     )
@@ -947,12 +1062,11 @@ async def handle_interactive_ui(
         window_id,
         ui_name=ui_name,
         pane_id=pane_id,
-        direct_choices=()
-        if menu is not None or advisory
-        else parse_direct_choices(content, question=ui_name == "AskUserQuestion"),
+        direct_choices=direct_choices,
         sequence=sequence,
         menu=menu,
         advisory=advisory,
+        question=question,
     )
 
     # Try editing existing interactive message first
@@ -1008,6 +1122,90 @@ async def handle_interactive_ui(
             _interactive_mode.pop(ikey, None)
         _send_cooldowns.pop(ikey, None)
     return sent is not None
+
+
+async def follow_prompt_changes(
+    client: TelegramClient,
+    user_id: int,
+    window_id: str,
+    thread_id: int | None,
+    *,
+    pane_id: str | None = None,
+    chat_id: int | None = None,
+    timeout: float,
+    interval: float = 0.25,
+) -> None:
+    """Redraw the topic's prompt each time the terminal shows a new state.
+
+    The poller does not redraw a prompt it already shows, so after a tap or a
+    typed answer the next question would never reach Telegram. The terminal
+    settles on no fixed schedule (a paste waits for a quiet keyboard first),
+    so this watches for *timeout* seconds and redraws on every change. It
+    stops early once the prompt is gone; the poller then clears the message.
+    """
+    ikey = _interactive_key(user_id, thread_id, chat_id)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        await asyncio.sleep(interval)
+        if _interactive_mode.get(ikey) != window_id:
+            return
+        captured = await _capture_interactive_content(window_id, pane_id=pane_id)
+        if captured is None:
+            return
+        _ui_name, content, advisory, _menu = captured
+        fingerprint = None if advisory else hashlib.sha256(content.encode()).hexdigest()
+        if fingerprint != _interactive_prompt_fingerprints.get(ikey):
+            await handle_interactive_ui(
+                client, user_id, window_id, thread_id, pane_id=pane_id, chat_id=chat_id
+            )
+
+
+async def settle_free_text_answer(
+    client: TelegramClient,
+    user_id: int,
+    window_id: str,
+    thread_id: int | None,
+    answer: str,
+    *,
+    pane_id: str | None = None,
+    chat_id: int | None = None,
+    timeout: float,
+    interval: float = 0.25,
+) -> None:
+    """Redraw the prompt until a typed answer has landed, or *timeout*.
+
+    herdr-core pastes the answer, then presses Enter only after the keyboard
+    has been quiet a few seconds. The answer has landed once its field shows
+    it checked (multi-select), or once the field showed it and then moved on
+    (single-select: the next question). Until then a second typed answer
+    would act on a stale state, so callers hold the topic's answer lock for
+    as long as this runs.
+    """
+    ikey = _interactive_key(user_id, thread_id, chat_id)
+    deadline = time.monotonic() + timeout
+    seen = False
+    while time.monotonic() < deadline:
+        await asyncio.sleep(interval)
+        captured = await _capture_interactive_content(window_id, pane_id=pane_id)
+        if captured is None:
+            return
+        _ui_name, content, advisory, _menu = captured
+        fingerprint = None if advisory else hashlib.sha256(content.encode()).hexdigest()
+        if fingerprint != _interactive_prompt_fingerprints.get(ikey):
+            await handle_interactive_ui(
+                client, user_id, window_id, thread_id, pane_id=pane_id, chat_id=chat_id
+            )
+        free = _free_text_option(parse_direct_choices(content, question=True))
+        if free is None:
+            return
+        key, text = free
+        if text == answer.strip():
+            seen = True
+            choices = parse_direct_choices(content, question=True)
+            if any(k == key and "\u2611" in label for k, label in choices):
+                return
+        elif seen:
+            return
 
 
 async def clear_interactive_msg(

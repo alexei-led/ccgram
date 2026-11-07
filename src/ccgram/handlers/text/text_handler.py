@@ -97,9 +97,11 @@ _DISMISS_CONFIRM_INTERVAL_S = 0.3
 # Pause after moving a question's cursor to its free-text option, so the
 # input field is focused before the answer is pasted.
 _TYPED_ANSWER_FOCUS_S = 0.4
-# The paste waits for a quiet keyboard (about 3 s) before Enter, so the next
-# question shows only after that.
-_TYPED_ANSWER_REFRESH_S = 4.0
+_MAX_KEYS_PER_ACTION = 32
+# How long to wait for a typed answer to land: herdr-core presses Enter only
+# after the keyboard has been quiet a few seconds (the cursor keys count), so
+# the answer can take 6 s or more to show checked or move on.
+_TYPED_ANSWER_FOLLOW_S = 15.0
 
 PENDING_DELIVERY_NOTICE = "\U0001f4ac Will deliver once the agent starts."
 
@@ -595,6 +597,9 @@ async def _dismiss_interactive_prompt(
     return False
 
 
+_typed_answer_locks: dict[tuple[int, int], asyncio.Lock] = {}
+
+
 async def _answer_free_text_option(
     user_id: int,
     thread_id: int,
@@ -607,22 +612,103 @@ async def _answer_free_text_option(
 ) -> bool:
     """Type *text* into the live question's "Type something" option.
 
-    True when the prompt has such an option and the text was handled there
-    (delivered, or echoed back on failure); False to fall back to dismissing
-    the prompt and sending the text as a normal message.
+    True when the prompt has such an option (the answer is typed in the
+    background); False to fall back to dismissing the prompt and sending the
+    text as a normal message. Answers in one topic are typed one at a time,
+    each only after the previous one has landed, so a quick second message
+    never acts on a state herdr-core has not finished changing.
     """
+    # Lazy: interactive imports pull PTB types
+    from ..interactive import typed_answer_keys
+
+    if typed_answer_keys(user_id, thread_id, chat_id) is None:
+        return False
+    lock = _typed_answer_locks.setdefault((user_id, thread_id), asyncio.Lock())
+    task = asyncio.create_task(
+        _type_free_text_answer(
+            lock, user_id, thread_id, window_id, chat_id, text, message, adapter, client
+        )
+    )
+    task.add_done_callback(task_done_callback)
+    return True
+
+
+async def _type_free_text_answer(
+    lock: asyncio.Lock,
+    user_id: int,
+    thread_id: int,
+    window_id: str,
+    chat_id: int,
+    text: str,
+    message: Message,
+    adapter,
+    client: TelegramClient,
+) -> None:
+    """Move to the free-text field, replace its text, submit, wait to land."""
     # Lazy: interactive imports pull PTB types
     from ..interactive import (
         get_interactive_msg_id,
         get_interactive_pane,
         handle_interactive_ui,
+        settle_free_text_answer,
         typed_answer_keys,
     )
 
-    moves = typed_answer_keys(user_id, thread_id, chat_id)
-    if moves is None:
-        return False
-    pane_id = get_interactive_pane(user_id, thread_id, chat_id=chat_id)
+    async with lock:
+        pane_id = get_interactive_pane(user_id, thread_id, chat_id=chat_id)
+        # Read the prompt afresh: an earlier answer may have changed the field.
+        await handle_interactive_ui(
+            client, user_id, window_id, thread_id, pane_id=pane_id, chat_id=chat_id
+        )
+        moves = typed_answer_keys(user_id, thread_id, chat_id)
+        logger.info("Free-text answer", keys=moves, chars=len(text))
+        sent = False
+        if moves is not None:
+            sent = await _send_free_text(
+                user_id,
+                thread_id,
+                window_id,
+                chat_id,
+                text,
+                message,
+                adapter,
+                moves,
+                pane_id,
+                get_interactive_msg_id,
+            )
+        logger.info("Free-text answer: submitted", sent=sent)
+        if not sent:
+            await safe_reply(
+                message,
+                f"\u26a0\ufe0f Could not type your answer into the prompt: {text}\n"
+                "Retry, or use the prompt's buttons.",
+            )
+            return
+        await settle_free_text_answer(
+            client,
+            user_id,
+            window_id,
+            thread_id,
+            text,
+            pane_id=pane_id,
+            chat_id=chat_id,
+            timeout=_TYPED_ANSWER_FOLLOW_S,
+        )
+
+
+async def _send_free_text(
+    user_id: int,
+    thread_id: int,
+    window_id: str,
+    chat_id: int,
+    text: str,
+    message: Message,
+    adapter,
+    moves: list[str],
+    pane_id: str | None,
+    get_interactive_msg_id,
+) -> bool:
+    """Send the focus/clear keys, then paste *text* and submit it."""
     base_id = f"telegram-message:{chat_id}:{message.message_id}"
     try:
         if moves:
@@ -632,15 +718,19 @@ async def _answer_free_text_option(
                 chat_id,
                 get_interactive_msg_id(user_id, thread_id, chat_id=chat_id),
             )
-            moved, _ = await adapter.send_keys(
-                window_id,
-                moves,
-                pane_id=pane_id,
-                action_id=f"{base_id}:focus",
-                expected_prompt=expected_prompt,
-            )
-            if not moved:
-                return False
+            # One action takes at most 32 keys; a long earlier answer needs
+            # more Backspaces than that.
+            for start in range(0, len(moves), _MAX_KEYS_PER_ACTION):
+                moved, reason = await adapter.send_keys(
+                    window_id,
+                    moves[start : start + _MAX_KEYS_PER_ACTION],
+                    pane_id=pane_id,
+                    action_id=f"{base_id}:focus:{start}",
+                    expected_prompt=expected_prompt if start == 0 else None,
+                )
+                if not moved:
+                    logger.info("Free-text answer: focus keys refused", reason=reason)
+                    return False
             await asyncio.sleep(_TYPED_ANSWER_FOCUS_S)
         sent, _ = await adapter.send_text(
             window_id,
@@ -650,29 +740,10 @@ async def _answer_free_text_option(
             terminal_input=True,
             action_id=f"{base_id}:answer",
         )
-    except Exception:  # noqa: BLE001  # reported to the user below
+    except Exception:  # noqa: BLE001  # reported to the user by the caller
         logger.warning("Failed to type a free-text answer", exc_info=True)
-        sent = False
-    if not sent:
-        await safe_reply(
-            message,
-            f"\u26a0\ufe0f Could not type your answer into the prompt: {text}\n"
-            "Retry, or use the prompt's buttons.",
-        )
-        return True
-
-    # The poller does not redraw a prompt it already shows: re-render it so
-    # the next question replaces the answered one in Telegram. In the
-    # background, so the wait does not hold up other updates.
-    async def refresh() -> None:
-        await asyncio.sleep(_TYPED_ANSWER_REFRESH_S)
-        await handle_interactive_ui(
-            client, user_id, window_id, thread_id, pane_id=pane_id, chat_id=chat_id
-        )
-
-    task = asyncio.create_task(refresh())
-    task.add_done_callback(task_done_callback)
-    return True
+        return False
+    return sent
 
 
 async def _forward_message(
