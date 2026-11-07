@@ -11,6 +11,7 @@ from ccgram.terminal_parser import (
     extract_interactive_content,
     find_chrome_boundary,
     format_status_display,
+    is_finished_turn_summary,
     is_likely_spinner,
     parse_status_block,
     parse_status_line,
@@ -1279,3 +1280,36 @@ class TestScrollbackGuardLongList:
         pane = ["Pick a task:"] + ["❯ " + options[0][2:]] + options[1:]
         result = extract_interactive_content(pane)
         assert result is not None and result.name == "SelectionUI"
+
+
+class TestFinishedTurnSummary:
+    """Claude's past-tense turn summary uses the spinner glyph but is not work."""
+
+    @pytest.mark.parametrize(
+        "text",
+        ["Baked for 11s · done 3:09 PM", "Worked for 1m 3s", "Cooked for 2h 5m"],
+    )
+    def test_summaries_are_recognised(self, text: str) -> None:
+        assert is_finished_turn_summary(text)
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Baking… (11s · esc to interrupt)",
+            "Thinking…",
+            "Waiting for approval",
+            "Searching for 3 files",
+        ],
+    )
+    def test_working_lines_are_not(self, text: str) -> None:
+        assert not is_finished_turn_summary(text)
+
+    def test_status_block_ignores_a_finished_turn(self) -> None:
+        sep = "─" * 40
+        screen = f"output\n\n✻ Baked for 11s · done 3:09 PM\n{sep}\n❯ \n{sep}\n"
+        assert parse_status_block(screen) is None
+        assert parse_status_line(screen) is None
+        working = screen.replace(
+            "Baked for 11s · done 3:09 PM", "Baking… (11s · esc to interrupt)"
+        )
+        assert parse_status_block(working) == "Baking… (11s · esc to interrupt)"
