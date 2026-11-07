@@ -66,7 +66,8 @@ logger = structlog.get_logger()
 # How long to keep redrawing a question after a pick: cursor keys land at
 # once, so the next question shows within a second or two.
 _QUESTION_FOLLOW_S = 6.0
-_follow_tasks: set[asyncio.Task[None]] = set()
+# One follower per topic: a new tap replaces the previous one.
+_follow_tasks: dict[tuple[int, int | None, int | None], asyncio.Task[None]] = {}
 
 INTERACTIVE_KEY_MAP: dict[str, tuple[str, bool]] = {
     CB_ASK_UP: ("Up", True),
@@ -207,6 +208,10 @@ async def _send_question_choice(
         # screen, so the keyboard stays valid for the next tap.
         await query.answer(FREE_TEXT_TOAST)
         return
+    # Retire this keyboard before the keys land: a follower still running from
+    # an earlier tap may redraw the next state at once, and its keyboard must
+    # carry the newest sequence, not one this tap bumps afterwards.
+    advance_interactive_sequence(user_id, thread_id, chat_id=chat_id)
     try:
         sent, reason = await adapter.send_keys(
             window_id,
@@ -226,12 +231,19 @@ async def _send_question_choice(
                 query, client, user_id, window_id, thread_id, pane_id, chat_id
             )
             return
+        if client is not None:
+            await handle_interactive_ui(
+                client, user_id, window_id, thread_id, pane_id=pane_id, chat_id=chat_id
+            )
         await query.answer("Unable to send choice. Try again.", show_alert=True)
         return
-    advance_interactive_sequence(user_id, thread_id, chat_id=chat_id)
     # Start following before answering the tap: the redraw is what the user
     # waits for, and answering is another round trip.
     if client is not None:
+        follow_key = (user_id, thread_id, chat_id)
+        previous = _follow_tasks.pop(follow_key, None)
+        if previous is not None:
+            previous.cancel()
         task = asyncio.create_task(
             follow_prompt_changes(
                 client,
@@ -243,8 +255,12 @@ async def _send_question_choice(
                 timeout=_QUESTION_FOLLOW_S,
             )
         )
-        _follow_tasks.add(task)
-        task.add_done_callback(_follow_tasks.discard)
+        _follow_tasks[follow_key] = task
+        task.add_done_callback(
+            lambda done, key=follow_key: (
+                _follow_tasks.pop(key, None) if _follow_tasks.get(key) is done else None
+            )
+        )
     # Cursor moves alone mean the free-text field now has the focus.
     free_text = keys[-1] in ("Up", "Down")
     await query.answer(FREE_TEXT_TOAST if free_text else None)

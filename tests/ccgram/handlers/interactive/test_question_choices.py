@@ -338,10 +338,9 @@ class TestQuestionChoiceCallback:
     async def test_a_prompt_changed_at_the_computer_is_redrawn(self) -> None:
         from ccgram.session_protocol.models import PROMPT_CHANGED_MESSAGE
 
-        query, _adapter, advance = await self._tap(
+        query, _adapter, _advance = await self._tap(
             ["Down", "Enter"], (False, PROMPT_CHANGED_MESSAGE)
         )
-        advance.assert_not_called()
         assert self.redrawn == 1
         assert "changed on the computer" in query.answer.await_args.args[0]
 
@@ -421,3 +420,41 @@ class TestFollowPromptChanges:
             [None] + [("AskUserQuestion", "x", False, None)] * 20
         )
         redraw.assert_not_awaited()
+
+
+class TestOneFollowerPerTopic:
+    async def test_a_new_tap_cancels_the_previous_follower(self) -> None:
+        from ccgram.handlers.interactive import interactive_callbacks as cb
+
+        started: list[asyncio.Event] = []
+
+        async def follow(*_a, **_k):
+            started.append(asyncio.Event())
+            await asyncio.sleep(10)
+
+        adapter = MagicMock()
+        adapter.send_keys = AsyncMock(return_value=(True, ""))
+        with (
+            patch.object(cb, "advance_interactive_sequence"),
+            patch.object(cb, "follow_prompt_changes", follow),
+        ):
+            for _ in range(2):
+                query = MagicMock()
+                query.answer = AsyncMock()
+                await cb._send_question_choice(
+                    query,
+                    1,
+                    42,
+                    -100,
+                    "hc-t5",
+                    None,
+                    ["Enter"],
+                    adapter,
+                    "a",
+                    "fp",
+                    MagicMock(),
+                )
+                await asyncio.sleep(0)
+            tasks = list(cb._follow_tasks.values())
+            assert len(tasks) == 1
+            tasks[0].cancel()
