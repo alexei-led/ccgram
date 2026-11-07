@@ -554,8 +554,10 @@ def typed_answer_keys(
 ) -> list[str] | None:
     """Keys that leave the live question's free-text field focused and empty.
 
-    The cursor moves to the field, and an answer typed earlier is erased
-    (End, then one Backspace per character), so a new message replaces it.
+    The cursor moves to the field, a checked multi-select answer is unchecked
+    (the paste's own Enter checks it again), and an answer typed earlier is
+    erased (End, then one Backspace per character), so a new message
+    replaces it.
     Empty when nothing needs doing; None when the prompt offers no free-text
     answer. Text sent from Telegram while such a prompt shows becomes that
     answer instead of dismissing the prompt.
@@ -568,8 +570,12 @@ def typed_answer_keys(
     if free is None:
         return None
     key, text = free
+    # Enter toggles a multi-select checkbox, and the paste ends with Enter: a
+    # checked answer is unchecked first so the paste leaves it checked.
+    label = next(label for k, label in choices if k == key)
+    uncheck = ["Enter"] if "\u2611" in label else []
     clear = ["End", *["BSpace"] * len(text)] if text else []
-    return [*_moves(cursor, int(key)), *clear]
+    return [*_moves(cursor, int(key)), *uncheck, *clear]
 
 
 def is_current_interactive_message(

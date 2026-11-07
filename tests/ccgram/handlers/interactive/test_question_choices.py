@@ -151,7 +151,17 @@ class TestEditingAndNext:
         _interactive_contents.pop(key, None)
 
     def test_a_new_message_replaces_the_typed_answer(self, stored) -> None:
-        stored(self.ANSWERED)  # cursor already on the answered field
+        stored(self.ANSWERED)  # cursor already on the answered, checked field
+        assert typed_answer_keys(1, 42, -100) == [
+            "Enter",
+            "End",
+            "BSpace",
+            "BSpace",
+            "BSpace",
+        ]
+
+    def test_an_unchecked_answer_is_not_toggled_first(self, stored) -> None:
+        stored(self.ANSWERED.replace("[✔] C++", "[ ] C++"))
         assert typed_answer_keys(1, 42, -100) == ["End", "BSpace", "BSpace", "BSpace"]
 
     def test_the_answered_field_is_still_the_free_text_option(self, stored) -> None:
@@ -159,6 +169,7 @@ class TestEditingAndNext:
         assert typed_answer_keys(1, 42, -100) == [
             "Down",
             "Down",
+            "Enter",
             "End",
             "BSpace",
             "BSpace",
