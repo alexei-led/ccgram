@@ -150,32 +150,23 @@ class TestEditingAndNext:
         yield lambda content: _interactive_contents.__setitem__(key, content)
         _interactive_contents.pop(key, None)
 
-    def test_a_new_message_replaces_the_typed_answer(self, stored) -> None:
-        stored(self.ANSWERED)  # cursor already on the answered, checked field
+    def test_multi_select_takes_no_typed_answer(self, stored) -> None:
+        stored(self.ANSWERED)
+        assert typed_answer_keys(1, 42, -100) is None
+
+    def test_a_single_select_answer_is_replaced(self, stored) -> None:
+        stored(
+            SINGLE.replace("❯ 1. Red", "  1. Red").replace(
+                "  4. Type something.", "❯ 4. Mauve"
+            )
+        )
         assert typed_answer_keys(1, 42, -100) == [
-            "Enter",
             "End",
-            "BSpace",
-            "BSpace",
-            "BSpace",
+            *["BSpace"] * 5,
         ]
 
-    def test_an_unchecked_answer_is_not_toggled_first(self, stored) -> None:
-        stored(self.ANSWERED.replace("[✔] C++", "[ ] C++"))
-        assert typed_answer_keys(1, 42, -100) == ["End", "BSpace", "BSpace", "BSpace"]
-
-    def test_the_answered_field_is_still_the_free_text_option(self, stored) -> None:
+    def test_an_answered_field_is_picked_like_any_option(self, stored) -> None:
         stored(self.ANSWERED.replace("❯ 3.", "  3.").replace("  1. [✔]", "❯ 1. [✔]"))
-        assert typed_answer_keys(1, 42, -100) == [
-            "Down",
-            "Down",
-            "Enter",
-            "End",
-            "BSpace",
-            "BSpace",
-            "BSpace",
-        ]
-        # Once it holds an answer, tapping it toggles it like any option.
         assert question_choice_keys(1, 42, -100, "3") == ["Down", "Down", "Enter"]
 
     def test_next_steps_out_of_the_text_field_first(self, stored) -> None:
@@ -380,6 +371,7 @@ class TestQuestionKeyboard:
     def test_multi_select_adds_a_next_button(self) -> None:
         labels = self._labels(MULTI)
         assert labels[-1] == "➡ Next"
+        assert not any("Type something" in label for label in labels)
         assert "⏎ Enter" not in labels and "␣ Space" not in labels
 
     def test_other_prompts_keep_the_keypad(self) -> None:

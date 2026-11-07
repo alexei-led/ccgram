@@ -119,7 +119,8 @@ QUESTION_INSTRUCTION_LINE = (
     "Tap an option · send a message for your own answer (✏️) · 💬 to discuss"
 )
 QUESTION_MULTI_INSTRUCTION_LINE = (
-    "Tap to check · ➡ Next when done · send a message for your own answer (✏️)"
+    "Tap to check · ➡ Next when done · a message skips the question and goes"
+    " to the agent"
 )
 _QUESTION_ICONS = (("Type something", "✏️ "), ("Chat about this", "💬 "))
 # Callback key of the multi-select "➡ Next" button (not an option number).
@@ -568,7 +569,10 @@ def typed_answer_keys(
         return None
     cursor, choices = question
     free = _free_text_option(choices)
-    if free is None:
+    # Multi-select free text is not typed from Telegram: Enter toggles the
+    # box there and herdr-core can only paste with Enter, so a message
+    # dismisses the question and goes to the agent as a plain reply instead.
+    if free is None or _is_multi_select(choices):
         return None
     key, text = free
     # Enter toggles a multi-select checkbox, and the paste ends with Enter: a
@@ -701,7 +705,8 @@ def _build_interactive_keyboard(
     """Build keyboard for interactive UI navigation.
 
     ``question`` (a Claude question with tappable options) drops the keypad:
-    a single-select tap moves on by itself, and a multi-select gets one
+    a single-select tap moves on by itself, and a multi-select (which hides
+    its free-text option: a message replies in chat instead) gets one
     "➡ Next" button (the → key) to leave the question.
 
     ``ui_name`` controls the layout: ``RestoreCheckpoint`` omits ←/→ keys
@@ -743,14 +748,17 @@ def _build_interactive_keyboard(
 
     rows: list[list[InlineKeyboardButton]] = []
     if question and direct_choices:
-        for start in range(0, len(direct_choices), 2):
+        multi = _is_multi_select(direct_choices)
+        free = _free_text_option(direct_choices) if multi else None
+        shown = [c for c in direct_choices if free is None or c[0] != free[0]]
+        for start in range(0, len(shown), 2):
             rows.append(
                 [
                     choice_btn(key, _question_label(label))
-                    for key, label in direct_choices[start : start + 2]
+                    for key, label in shown[start : start + 2]
                 ]
             )
-        if _is_multi_select(direct_choices):
+        if multi:
             rows.append([choice_btn(NEXT_CHOICE_KEY, "➡ Next")])
         return InlineKeyboardMarkup(rows)
     # Direct choices come first, while the complete navigation keyboard remains
