@@ -528,7 +528,8 @@ def question_choice_keys(
     Claude's question prompt ignores number keys, so a pick moves the cursor
     with Up/Down from the row the screen marks, then presses Enter (which
     selects a single-select option or toggles a checkbox). The free-text
-    option only gets the cursor, so the next text message fills it in.
+    option, while still empty, only gets the cursor, so the next text message
+    fills it in; once it holds an answer it is picked like any other option.
     ``NEXT_CHOICE_KEY`` leaves the question with →, stepping out of the
     free-text field first (→ moves the text cursor there). None when the live
     prompt is not a Claude question: other prompts take the number key itself.
@@ -544,7 +545,7 @@ def question_choice_keys(
     if not key.isdigit() or all(k != key for k, _ in choices):
         return None
     moves = _moves(cursor, int(key))
-    if free is not None and free[0] == key:
+    if free is not None and free[0] == key and not free[1]:
         return moves
     return [*moves, "Enter"]
 
@@ -1124,7 +1125,7 @@ async def follow_prompt_changes(
     pane_id: str | None = None,
     chat_id: int | None = None,
     timeout: float,
-    interval: float = 1.0,
+    interval: float = 0.25,
 ) -> None:
     """Redraw the topic's prompt each time the terminal shows a new state.
 
@@ -1149,6 +1150,54 @@ async def follow_prompt_changes(
             await handle_interactive_ui(
                 client, user_id, window_id, thread_id, pane_id=pane_id, chat_id=chat_id
             )
+
+
+async def settle_free_text_answer(
+    client: TelegramClient,
+    user_id: int,
+    window_id: str,
+    thread_id: int | None,
+    answer: str,
+    *,
+    pane_id: str | None = None,
+    chat_id: int | None = None,
+    timeout: float,
+    interval: float = 0.25,
+) -> None:
+    """Redraw the prompt until a typed answer has landed, or *timeout*.
+
+    herdr-core pastes the answer, then presses Enter only after the keyboard
+    has been quiet a few seconds. The answer has landed once its field shows
+    it checked (multi-select), or once the field showed it and then moved on
+    (single-select: the next question). Until then a second typed answer
+    would act on a stale state, so callers hold the topic's answer lock for
+    as long as this runs.
+    """
+    ikey = _interactive_key(user_id, thread_id, chat_id)
+    deadline = time.monotonic() + timeout
+    seen = False
+    while time.monotonic() < deadline:
+        await asyncio.sleep(interval)
+        captured = await _capture_interactive_content(window_id, pane_id=pane_id)
+        if captured is None:
+            return
+        _ui_name, content, advisory, _menu = captured
+        fingerprint = None if advisory else hashlib.sha256(content.encode()).hexdigest()
+        if fingerprint != _interactive_prompt_fingerprints.get(ikey):
+            await handle_interactive_ui(
+                client, user_id, window_id, thread_id, pane_id=pane_id, chat_id=chat_id
+            )
+        free = _free_text_option(parse_direct_choices(content, question=True))
+        if free is None:
+            return
+        key, text = free
+        if text == answer.strip():
+            seen = True
+            choices = parse_direct_choices(content, question=True)
+            if any(k == key and "\u2611" in label for k, label in choices):
+                return
+        elif seen:
+            return
 
 
 async def clear_interactive_msg(

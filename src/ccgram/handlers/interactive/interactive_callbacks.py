@@ -229,9 +229,8 @@ async def _send_question_choice(
         await query.answer("Unable to send choice. Try again.", show_alert=True)
         return
     advance_interactive_sequence(user_id, thread_id, chat_id=chat_id)
-    # Cursor moves alone mean the free-text field now has the focus.
-    free_text = keys[-1] in ("Up", "Down")
-    await query.answer(FREE_TEXT_TOAST if free_text else None)
+    # Start following before answering the tap: the redraw is what the user
+    # waits for, and answering is another round trip.
     if client is not None:
         task = asyncio.create_task(
             follow_prompt_changes(
@@ -246,6 +245,9 @@ async def _send_question_choice(
         )
         _follow_tasks.add(task)
         task.add_done_callback(_follow_tasks.discard)
+    # Cursor moves alone mean the free-text field now has the focus.
+    free_text = keys[-1] in ("Up", "Down")
+    await query.answer(FREE_TEXT_TOAST if free_text else None)
 
 
 async def _handle_direct_choice(

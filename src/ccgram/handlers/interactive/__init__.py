@@ -31,11 +31,13 @@ from .interactive_ui import (
     handle_interactive_ui,
     pane_has_interactive_prompt as pane_has_interactive_prompt,
     set_interactive_mode,
+    settle_free_text_answer,
     question_choice_keys,
     typed_answer_keys,
 )
 
 __all__ = [
+    "settle_free_text_answer",
     "follow_prompt_changes",
     "question_choice_keys",
     "typed_answer_keys",

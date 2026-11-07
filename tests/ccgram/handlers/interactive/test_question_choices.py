@@ -175,8 +175,8 @@ class TestEditingAndNext:
             "BSpace",
             "BSpace",
         ]
-        # Tapping it only focuses it, it never toggles it off.
-        assert question_choice_keys(1, 42, -100, "3") == ["Down", "Down"]
+        # Once it holds an answer, tapping it toggles it like any option.
+        assert question_choice_keys(1, 42, -100, "3") == ["Down", "Down", "Enter"]
 
     def test_next_steps_out_of_the_text_field_first(self, stored) -> None:
         stored(self.ANSWERED)
@@ -199,48 +199,114 @@ class TestEditingAndNext:
 
 
 class TestFreeTextAnswer:
-    async def _answer(self, moves: list[str] | None) -> tuple[bool, MagicMock]:
+    async def test_without_a_free_text_option_falls_back(self) -> None:
+        with patch("ccgram.handlers.interactive.typed_answer_keys", return_value=None):
+            handled = await text_handler._answer_free_text_option(
+                1, 42, "hc-t5", -100, "hi", MagicMock(), MagicMock(), MagicMock()
+            )
+        assert handled is False
+
+    async def test_answers_are_typed_one_at_a_time(self) -> None:
+        order: list[str] = []
+
+        async def typing(lock, *_args, text="", **_kw):
+            async with lock:
+                order.append(f"start {_args[4]}")
+                await asyncio.sleep(0.01)
+                order.append(f"end {_args[4]}")
+
+        with (
+            patch("ccgram.handlers.interactive.typed_answer_keys", return_value=[]),
+            patch.object(text_handler, "_type_free_text_answer", typing),
+        ):
+            for answer in ("C++", "Kotlin"):
+                assert await text_handler._answer_free_text_option(
+                    1, 42, "hc-t5", -100, answer, MagicMock(), MagicMock(), MagicMock()
+                )
+            await asyncio.sleep(0.05)
+        assert order == ["start C++", "end C++", "start Kotlin", "end Kotlin"]
+        text_handler._typed_answer_locks.pop((1, 42), None)
+
+    async def _send(self, moves: list[str]) -> MagicMock:
         adapter = MagicMock()
         adapter.send_text = AsyncMock(return_value=(True, ""))
         adapter.send_keys = AsyncMock(return_value=(True, ""))
-        message = MagicMock(message_id=9)
-        with (
-            patch("ccgram.handlers.interactive.typed_answer_keys", return_value=moves),
-            patch(
-                "ccgram.handlers.interactive.get_interactive_pane", return_value=None
-            ),
-            patch("ccgram.handlers.interactive.get_interactive_msg_id", return_value=7),
-            patch.object(text_handler, "_TYPED_ANSWER_FOCUS_S", 0),
-            patch(
-                "ccgram.handlers.interactive.follow_prompt_changes",
-                new_callable=AsyncMock,
-            ) as refresh,
-        ):
-            handled = await text_handler._answer_free_text_option(
-                1, 42, "hc-t5", -100, "my own answer", message, adapter, MagicMock()
+        with patch.object(text_handler, "_TYPED_ANSWER_FOCUS_S", 0):
+            assert await text_handler._send_free_text(
+                1,
+                42,
+                "hc-t5",
+                -100,
+                "my own answer",
+                MagicMock(message_id=9),
+                adapter,
+                moves,
+                None,
+                lambda *a, **k: 7,
             )
-            await asyncio.sleep(0)
-            await asyncio.sleep(0)
-        self.refreshed = refresh.await_count
-        return handled, adapter
+        return adapter
 
     async def test_moves_to_the_option_then_types_and_submits(self) -> None:
-        handled, adapter = await self._answer(["Down", "Down"])
-        assert handled is True
-        assert self.refreshed == 1
+        adapter = await self._send(["Down", "Down"])
         assert adapter.send_keys.await_args.args[1] == ["Down", "Down"]
         assert adapter.send_text.await_args.args[1] == "my own answer"
         assert adapter.send_text.await_args.kwargs["submit"] is True
 
     async def test_skips_the_move_when_already_focused(self) -> None:
-        _handled, adapter = await self._answer([])
+        adapter = await self._send([])
         adapter.send_keys.assert_not_awaited()
         adapter.send_text.assert_awaited_once()
 
-    async def test_falls_back_without_a_free_text_option(self) -> None:
-        handled, adapter = await self._answer(None)
-        assert handled is False
-        adapter.send_text.assert_not_awaited()
+    async def test_long_clears_are_split_into_actions(self) -> None:
+        adapter = await self._send(["End", *["BSpace"] * 40])
+        assert [len(c.args[1]) for c in adapter.send_keys.await_args_list] == [32, 9]
+
+
+class TestSettleFreeTextAnswer:
+    async def _settle(self, screens: list) -> int:
+        from ccgram.handlers.interactive import interactive_ui as ui
+
+        captures = AsyncMock(side_effect=screens + [None])
+        with (
+            patch.object(ui, "_capture_interactive_content", captures),
+            patch.object(ui, "handle_interactive_ui", new_callable=AsyncMock),
+        ):
+            await ui.settle_free_text_answer(
+                MagicMock(),
+                1,
+                "hc-t5",
+                42,
+                "Kotlin",
+                chat_id=-100,
+                timeout=1,
+                interval=0.001,
+            )
+        return captures.await_count
+
+    @staticmethod
+    def _screen(field: str) -> tuple:
+        return (
+            "AskUserQuestion",
+            MULTI.replace("[ ] Type something", field),
+            False,
+            None,
+        )
+
+    async def test_waits_until_the_answer_shows_checked(self) -> None:
+        count = await self._settle(
+            [
+                self._screen("[ ] Type something"),
+                self._screen("[ ] Kotlin"),
+                self._screen("[✔] Kotlin"),
+                self._screen("[✔] Kotlin"),
+            ]
+        )
+        assert count == 3
+
+    async def test_single_select_lands_when_the_question_moves_on(self) -> None:
+        moved_on = ("AskUserQuestion", SINGLE, False, None)
+        count = await self._settle([self._screen("[ ] Kotlin"), moved_on, moved_on])
+        assert count == 2
 
 
 class TestQuestionChoiceCallback:
