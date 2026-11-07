@@ -18,6 +18,7 @@ workspace has no route keep the default behaviour, minus the routed groups.
 from __future__ import annotations
 
 from collections.abc import Collection, Mapping
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import structlog
@@ -88,7 +89,8 @@ async def routed_workspace(chat_id: int | None) -> WorkspaceRef | None:
         return None
     for workspace in await multiplexer.list_workspaces():
         if workspace.label == label:
-            return workspace
+            folder = config.workspace_folders.get(label)
+            return replace(workspace, cwd=folder) if folder else workspace
     logger.warning("Routed workspace not found", workspace=label, chat_id=chat_id)
     return None
 

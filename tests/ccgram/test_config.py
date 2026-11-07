@@ -414,3 +414,17 @@ class TestDeliveryWatchGap:
     def test_invalid_values_fall_back(self, monkeypatch, raw) -> None:
         monkeypatch.setenv("CCGRAM_DELIVERY_WATCH_GAP_KB", raw)
         assert _delivery_watch_gap_bytes() == 256 * 1024
+
+
+class TestWorkspaceFolders:
+    def test_pairs_expand_home(self) -> None:
+        from pathlib import Path
+
+        from ccgram.config import parse_workspace_folders
+
+        assert parse_workspace_folders(
+            "Sessions=~/r/s, Trading=/b/t ,bad,=/x,Rel=a/b"
+        ) == {
+            "Sessions": str(Path.home() / "r/s"),
+            "Trading": "/b/t",
+        }

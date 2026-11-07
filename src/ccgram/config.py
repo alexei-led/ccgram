@@ -86,6 +86,29 @@ def parse_topic_chat_routes(raw: str) -> dict[str, int]:
     return routes
 
 
+def parse_workspace_folders(raw: str) -> dict[str, str]:
+    """Parse ``CCGRAM_WORKSPACE_FOLDERS``: ``Space=~/path,Other=/abs/path``.
+
+    Overrides the folder the multiplexer reports for a workspace, used as the
+    default directory for sessions started from that workspace's group. A
+    malformed entry (no name, or a relative path) is logged and skipped.
+    """
+    folders: dict[str, str] = {}
+    for entry in raw.split(","):
+        if not entry.strip():
+            continue
+        name, sep, folder = entry.partition("=")
+        name = name.strip()
+        path = Path(folder.strip()).expanduser()
+        if not sep or not name or not path.is_absolute():
+            logger.warning(
+                "Ignoring malformed CCGRAM_WORKSPACE_FOLDERS entry %r", entry
+            )
+            continue
+        folders[name] = str(path)
+    return folders
+
+
 def _skip_barrier_deadline_s() -> float:
     """Backlog-skip barrier aging, floored so no value expires barriers
     near-instantly and tolerant of empty, non-numeric, or non-finite
@@ -280,6 +303,10 @@ class Config:
         # Workspace label -> Telegram chat for that workspace's auto-created topics.
         self.topic_chat_routes = parse_topic_chat_routes(
             os.getenv("CCGRAM_TOPIC_CHAT_ROUTES", "")
+        )
+        # Workspace label -> default folder, overriding what the backend reports.
+        self.workspace_folders = parse_workspace_folders(
+            os.getenv("CCGRAM_WORKSPACE_FOLDERS", "")
         )
         self.skip_barrier_deadline_s = _skip_barrier_deadline_s()
         self.delivery_watch_gap_bytes = _delivery_watch_gap_bytes()
