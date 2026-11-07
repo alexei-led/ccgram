@@ -97,6 +97,7 @@ _DISMISS_CONFIRM_INTERVAL_S = 0.3
 # Pause after moving a question's cursor to its free-text option, so the
 # input field is focused before the answer is pasted.
 _TYPED_ANSWER_FOCUS_S = 0.4
+_MAX_KEYS_PER_ACTION = 32
 # How long to keep redrawing a question after a typed answer: herdr-core
 # waits for a quiet keyboard (about 3 s, and the cursor keys count) before it
 # pastes and again before Enter, so the next question can take 6 s or more.
@@ -633,15 +634,18 @@ async def _answer_free_text_option(
                 chat_id,
                 get_interactive_msg_id(user_id, thread_id, chat_id=chat_id),
             )
-            moved, _ = await adapter.send_keys(
-                window_id,
-                moves,
-                pane_id=pane_id,
-                action_id=f"{base_id}:focus",
-                expected_prompt=expected_prompt,
-            )
-            if not moved:
-                return False
+            # One action takes at most 32 keys; a long earlier answer needs
+            # more Backspaces than that.
+            for start in range(0, len(moves), _MAX_KEYS_PER_ACTION):
+                moved, _ = await adapter.send_keys(
+                    window_id,
+                    moves[start : start + _MAX_KEYS_PER_ACTION],
+                    pane_id=pane_id,
+                    action_id=f"{base_id}:focus:{start}",
+                    expected_prompt=expected_prompt if start == 0 else None,
+                )
+                if not moved:
+                    return False
             await asyncio.sleep(_TYPED_ANSWER_FOCUS_S)
         sent, _ = await adapter.send_text(
             window_id,

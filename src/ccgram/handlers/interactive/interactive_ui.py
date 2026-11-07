@@ -122,7 +122,8 @@ QUESTION_MULTI_INSTRUCTION_LINE = (
     "Tap to check · ➡ Next when done · send a message for your own answer (✏️)"
 )
 _QUESTION_ICONS = (("Type something", "✏️ "), ("Chat about this", "💬 "))
-FREE_TEXT_HINT = " (Send message directly)"
+# Callback key of the multi-select "➡ Next" button (not an option number).
+NEXT_CHOICE_KEY = "x"
 FREE_TEXT_TOAST = "Send your answer as a message"
 
 # Hard ceiling per Telegram message; leave headroom for entities.
@@ -140,7 +141,6 @@ _NUMBERED_OPTION_RE = re.compile(r"^\s*(?:[←→❯>]\s*)?(\d+)\.\s+(.+?)\s*$")
 # lines, "Chat about this" sits below a rule, and multi-select options are
 # "[ ]" / "[✔]" checkboxes.
 _QUESTION_TAB_BAR_RE = re.compile(r"^\s*←.*→\s*$")
-_QUESTION_FOOTER_RE = re.compile(r"^\s*Enter to select\b")
 _RULE_LINE_RE = re.compile(r"^\s*─+\s*$")
 _CHECKBOX_RE = re.compile(r"^\[([ ✔✓xX])\]\s*")
 _MULTI_SELECT_RE = re.compile(
@@ -371,9 +371,7 @@ def parse_direct_choices(
         line for line in content.splitlines() if not _QUESTION_TAB_BAR_RE.match(line)
     ]
     body = "\n".join(lines)
-    claude_question = question and any(
-        _QUESTION_FOOTER_RE.match(line) for line in lines
-    )
+    claude_question = question
     if not claude_question and (
         "☐" in body or "☑" in body or _MULTI_SELECT_RE.search(body)
     ):
@@ -465,16 +463,19 @@ def _live_question(
 ) -> tuple[int, tuple[tuple[str, str], ...]] | None:
     """Cursor position and options of the topic's live Claude question prompt.
 
-    A Claude question shows its tab bar or its "Enter to select · … to
-    navigate" footer; the cursor is the option row marked ❯. None for any
-    other prompt, or when the cursor cannot be found.
+    A Claude question shows its tab bar, its "Enter to select · … to
+    navigate" footer, or (once drawn) CCGram's question hint line; the
+    cursor is the option row marked ❯. None for any other prompt, or when
+    the cursor cannot be found.
     """
     content = _interactive_contents.get(_interactive_key(user_id, thread_id, chat_id))
     if not content:
         return None
     lines = content.splitlines()
     if not any(
-        _QUESTION_TAB_BAR_RE.match(line) or _QUESTION_NAV_FOOTER_RE.match(line)
+        _QUESTION_TAB_BAR_RE.match(line)
+        or _QUESTION_NAV_FOOTER_RE.match(line)
+        or line in (QUESTION_INSTRUCTION_LINE, QUESTION_MULTI_INSTRUCTION_LINE)
         for line in lines
     ):
         return None
@@ -493,50 +494,82 @@ def _moves(cursor: int, target: int) -> list[str]:
     )
 
 
-def _is_free_text(label: str) -> bool:
-    return bool(_TYPED_ANSWER_RE.match(label.split(". ", 1)[-1]))
+def _option_text(label: str) -> str:
+    """An option's text without its number and checkbox."""
+    text = label.split(". ", 1)[-1]
+    return re.sub(r"^[\u2610\u2611] ", "", text)
+
+
+def _free_text_option(
+    choices: tuple[tuple[str, str], ...],
+) -> tuple[str, str] | None:
+    """Number key and current text of a Claude question's free-text option.
+
+    It is the option right above "Chat about this": its label reads "Type
+    something" until an answer is typed, then shows that answer. The text is
+    "" while it still reads "Type something".
+    """
+    for index, (_key, label) in enumerate(choices):
+        if index and "Chat about this" in label:
+            key, free = choices[index - 1]
+            text = _option_text(free)
+            return key, "" if _TYPED_ANSWER_RE.match(text) else text
+    for key, label in choices:
+        if _TYPED_ANSWER_RE.match(_option_text(label)):
+            return key, ""
+    return None
 
 
 def question_choice_keys(
     user_id: int, thread_id: int | None, chat_id: int | None, key: str
 ) -> list[str] | None:
-    """Keys that pick option *key* of the topic's live Claude question.
+    """Keys that act on option *key* of the topic's live Claude question.
 
     Claude's question prompt ignores number keys, so a pick moves the cursor
     with Up/Down from the row the screen marks, then presses Enter (which
     selects a single-select option or toggles a checkbox). The free-text
-    option only gets the cursor, so the next text message fills it in. None
-    when the live prompt is not a Claude question: other prompts take the
-    number key itself.
-    """
-    question = _live_question(user_id, thread_id, chat_id)
-    if question is None or not key.isdigit():
-        return None
-    cursor, choices = question
-    label = next((label for k, label in choices if k == key), None)
-    if label is None:
-        return None
-    moves = _moves(cursor, int(key))
-    return moves if _is_free_text(label) else [*moves, "Enter"]
-
-
-def typed_answer_keys(
-    user_id: int, thread_id: int | None, chat_id: int | None
-) -> list[str] | None:
-    """Keys that put the cursor on the live question's free-text option.
-
-    Empty when it is already there; None when the prompt offers no free-text
-    ("Type something") answer. Text sent from Telegram while such a prompt
-    shows becomes that answer instead of dismissing the prompt.
+    option only gets the cursor, so the next text message fills it in.
+    ``NEXT_CHOICE_KEY`` leaves the question with →, stepping out of the
+    free-text field first (→ moves the text cursor there). None when the live
+    prompt is not a Claude question: other prompts take the number key itself.
     """
     question = _live_question(user_id, thread_id, chat_id)
     if question is None:
         return None
     cursor, choices = question
-    for key, label in choices:
-        if _is_free_text(label):
-            return _moves(cursor, int(key))
-    return None
+    free = _free_text_option(choices)
+    if key == NEXT_CHOICE_KEY:
+        on_field = free is not None and int(free[0]) == cursor
+        return ["Up", "Right"] if on_field else ["Right"]
+    if not key.isdigit() or all(k != key for k, _ in choices):
+        return None
+    moves = _moves(cursor, int(key))
+    if free is not None and free[0] == key:
+        return moves
+    return [*moves, "Enter"]
+
+
+def typed_answer_keys(
+    user_id: int, thread_id: int | None, chat_id: int | None
+) -> list[str] | None:
+    """Keys that leave the live question's free-text field focused and empty.
+
+    The cursor moves to the field, and an answer typed earlier is erased
+    (End, then one Backspace per character), so a new message replaces it.
+    Empty when nothing needs doing; None when the prompt offers no free-text
+    answer. Text sent from Telegram while such a prompt shows becomes that
+    answer instead of dismissing the prompt.
+    """
+    question = _live_question(user_id, thread_id, chat_id)
+    if question is None:
+        return None
+    cursor, choices = question
+    free = _free_text_option(choices)
+    if free is None:
+        return None
+    key, text = free
+    clear = ["End", *["BSpace"] * len(text)] if text else []
+    return [*_moves(cursor, int(key)), *clear]
 
 
 def is_current_interactive_message(
@@ -635,14 +668,12 @@ def advance_interactive_sequence(
 def _question_label(label: str) -> str:
     """Mark the free-text and chat options of a Claude question with icons.
 
-    Button labels are CCGram's own UI, not terminal text (the message body
-    and its fingerprint stay verbatim), so the free-text option also says
-    how to use it from the phone.
+    How to answer from the phone is said in the hint line above the prompt,
+    which is CCGram's own text, so the button stays short.
     """
     for words, icon in _QUESTION_ICONS:
         if words in label:
-            marked = label.replace(words, icon + words, 1)
-            return marked + FREE_TEXT_HINT if words == "Type something" else marked
+            return label.replace(words, icon + words, 1)
     return label
 
 
@@ -713,7 +744,7 @@ def _build_interactive_keyboard(
                 ]
             )
         if _is_multi_select(direct_choices):
-            rows.append([btn("➡ Next", CB_ASK_RIGHT)])
+            rows.append([choice_btn(NEXT_CHOICE_KEY, "➡ Next")])
         return InlineKeyboardMarkup(rows)
     # Direct choices come first, while the complete navigation keyboard remains
     # available for multi-select and unrecognised prompts.
@@ -968,8 +999,19 @@ async def handle_interactive_ui(
         else parse_direct_choices(content, question=ui_name == "AskUserQuestion")
     )
     question = ui_name == "AskUserQuestion" and bool(direct_choices)
+    # The keyboard footer means nothing on a phone. Only the display drops it:
+    # the fingerprint above still covers the full capture.
+    shown = (
+        "\n".join(
+            line
+            for line in content.splitlines()
+            if not _QUESTION_NAV_FOOTER_RE.match(line)
+        ).rstrip()
+        if question
+        else content
+    )
     text = format_interactive_message(
-        content,
+        shown,
         pane_id=pane_id,
         pane_name=pane_name,
         instruction_line=(

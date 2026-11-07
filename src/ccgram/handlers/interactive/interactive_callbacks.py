@@ -108,7 +108,7 @@ def parse_direct_choice_callback(
     if (
         not separator
         or not separator2
-        or key not in {"y", "n", "1", "2", "3", "4", "5", "6", "7", "8"}
+        or key not in {"y", "n", "x", "1", "2", "3", "4", "5", "6", "7", "8"}
         or not sequence_text.isdecimal()
         or not target
     ):
@@ -229,7 +229,8 @@ async def _send_question_choice(
         await query.answer("Unable to send choice. Try again.", show_alert=True)
         return
     advance_interactive_sequence(user_id, thread_id, chat_id=chat_id)
-    free_text = keys[-1] != "Enter"
+    # Cursor moves alone mean the free-text field now has the focus.
+    free_text = keys[-1] in ("Up", "Down")
     await query.answer(FREE_TEXT_TOAST if free_text else None)
     if client is not None:
         task = asyncio.create_task(

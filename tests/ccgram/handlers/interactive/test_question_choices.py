@@ -137,6 +137,56 @@ class TestQuestionKeys:
         assert typed_answer_keys(1, 42, -100) is None
 
 
+class TestEditingAndNext:
+    """Changing a typed answer, and leaving a multi-select from its text field."""
+
+    ANSWERED = MULTI.replace("  3. [ ] Type something", "❯ 3. [✔] C++").replace(
+        "❯ 2. [ ] Banana", "  2. [ ] Banana"
+    )
+
+    @pytest.fixture
+    def stored(self):
+        key = _interactive_key(1, 42, -100)
+        yield lambda content: _interactive_contents.__setitem__(key, content)
+        _interactive_contents.pop(key, None)
+
+    def test_a_new_message_replaces_the_typed_answer(self, stored) -> None:
+        stored(self.ANSWERED)  # cursor already on the answered field
+        assert typed_answer_keys(1, 42, -100) == ["End", "BSpace", "BSpace", "BSpace"]
+
+    def test_the_answered_field_is_still_the_free_text_option(self, stored) -> None:
+        stored(self.ANSWERED.replace("❯ 3.", "  3.").replace("  1. [✔]", "❯ 1. [✔]"))
+        assert typed_answer_keys(1, 42, -100) == [
+            "Down",
+            "Down",
+            "End",
+            "BSpace",
+            "BSpace",
+            "BSpace",
+        ]
+        # Tapping it only focuses it, it never toggles it off.
+        assert question_choice_keys(1, 42, -100, "3") == ["Down", "Down"]
+
+    def test_next_steps_out_of_the_text_field_first(self, stored) -> None:
+        stored(self.ANSWERED)
+        assert question_choice_keys(1, 42, -100, "x") == ["Up", "Right"]
+
+    def test_next_from_an_ordinary_option(self, stored) -> None:
+        stored(MULTI)
+        assert question_choice_keys(1, 42, -100, "x") == ["Right"]
+
+    def test_hint_line_marks_a_question_without_its_footer(self, stored) -> None:
+        from ccgram.handlers.interactive.interactive_ui import (
+            QUESTION_INSTRUCTION_LINE,
+        )
+
+        body = "\n".join(
+            line for line in SINGLE_QUESTION.splitlines() if "to navigate" not in line
+        )
+        stored(f"{QUESTION_INSTRUCTION_LINE}\n{body}")
+        assert question_choice_keys(1, 42, -100, "1") == ["Up", "Enter"]
+
+
 class TestFreeTextAnswer:
     async def _answer(self, moves: list[str] | None) -> tuple[bool, MagicMock]:
         adapter = MagicMock()
@@ -246,7 +296,7 @@ class TestQuestionKeyboard:
             "1. Red",
             "2. Blue",
             "3. Green",
-            "4. ✏️ Type something. (Send message directly)",
+            "4. ✏️ Type something.",
             "5. 💬 Chat about this",
         ]
 
