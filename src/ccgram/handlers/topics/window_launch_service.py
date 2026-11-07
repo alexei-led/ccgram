@@ -45,6 +45,7 @@ from .topic_creation_draft import (
     PENDING_WORKTREE_REPO,
 )
 from . import topic_orchestration
+from .topic_routes import routed_workspace
 
 if TYPE_CHECKING:
     from telegram import CallbackQuery
@@ -630,6 +631,11 @@ async def launch_window(  # noqa: C901, PLR0911, PLR0912, PLR0915
             context.user_data.get(PENDING_WORKSPACE_ID) if context.user_data else None
         )
     ) or None
+    # A session started in a workspace's group opens in that workspace. Native
+    # worktree backends cannot pin a workspace, so they keep their own placement.
+    if chosen_workspace_id is None and not tmux_manager.capabilities.native_worktrees:
+        routed = await routed_workspace(chat_id)
+        chosen_workspace_id = routed.workspace_id if routed else None
 
     creation_was_cancelled = False
     with topic_orchestration.pending_creation_transaction():

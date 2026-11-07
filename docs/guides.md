@@ -550,6 +550,10 @@ in the wrong chat (the route was added later, or the tab moved to another space)
 moved within a minute: the new topic is created first, then the old one is deleted;
 the session keeps running. Leave `CCGRAM_GROUP_ID` unset so every group is served.
 
+A session started from a topic in a routed group opens in that group's workspace.
+A line without a project word starts in the workspace's folder (as the backend
+reports it) instead of the last project used.
+
 To find a group's ID, add the CCGram bot to it and look for `Group service message`
 in the log. Turning on Topics upgrades a basic group to a supergroup with a new
 `-100…` ID, logged as `migrated_to`; use that one.

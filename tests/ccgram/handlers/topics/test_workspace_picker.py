@@ -313,12 +313,21 @@ class TestHandleWorkspaceCallback:
 
 class TestWorkspaceIdThreaded:
     @pytest.mark.parametrize(
-        "chosen_workspace_id",
-        ["ws-chosen", None],
-        ids=["explicit_pick", "auto_resolve"],
+        ("chosen_workspace_id", "routed_id", "expected"),
+        [
+            ("ws-chosen", None, "ws-chosen"),
+            (None, None, None),
+            (None, "ws-routed", "ws-routed"),
+            ("ws-chosen", "ws-routed", "ws-chosen"),
+        ],
+        ids=["explicit_pick", "auto_resolve", "routed_group", "pick_beats_route"],
     )
     async def test_pending_workspace_id_reaches_create_window(
-        self, tmp_path: Path, chosen_workspace_id: str | None
+        self,
+        tmp_path: Path,
+        chosen_workspace_id: str | None,
+        routed_id: str | None,
+        expected: str | None,
     ) -> None:
         module = "ccgram.handlers.topics.window_launch_service."
         user_data: dict[str, object] = {PENDING_THREAD_ID: 42}
@@ -336,6 +345,14 @@ class TestWorkspaceIdThreaded:
             patch(f"{module}safe_edit", new_callable=AsyncMock),
             patch(f"{module}provider_registry") as mock_reg,
             patch("ccgram.providers.resolve_launch_command", return_value="claude"),
+            patch(
+                f"{module}routed_workspace",
+                AsyncMock(
+                    return_value=WorkspaceRef(routed_id, "Digients", "/d")
+                    if routed_id
+                    else None
+                ),
+            ),
         ):
             adapter = mock_adapter_for.return_value
             adapter.create = AsyncMock(
@@ -379,6 +396,4 @@ class TestWorkspaceIdThreaded:
             )
 
         adapter.create.assert_awaited_once()
-        assert (
-            adapter.create.call_args.args[0].get("workspaceId") == chosen_workspace_id
-        )
+        assert adapter.create.call_args.args[0].get("workspaceId") == expected

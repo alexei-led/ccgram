@@ -15,7 +15,7 @@ from ccgram.handlers.topics.topic_routes import (
     route_target_chats,
 )
 from ccgram.monitor_events import NewWindowEvent
-from ccgram.multiplexer.base import WindowRef
+from ccgram.multiplexer.base import WindowRef, WorkspaceRef
 
 PRIVATE = 1644026884
 DIGIENTS = -1001
@@ -254,3 +254,38 @@ class TestGroupJoinLog:
         with patch.object(topic_routes, "logger") as log:
             await topic_routes.log_group_join(self._update("private"), MagicMock())
         log.info.assert_not_called()
+
+
+class TestRoutedWorkspace:
+    def test_label_for_a_routed_group(self) -> None:
+        assert topic_routes.routed_label(DIGIENTS, ROUTES) == "Digients"
+        assert topic_routes.routed_label(PRIVATE, ROUTES) is None
+        assert topic_routes.routed_label(None, ROUTES) is None
+
+    async def _resolve(
+        self, chat_id: int, *, selectable: bool = True
+    ) -> WorkspaceRef | None:
+        mux = MagicMock()
+        mux.capabilities.supports_workspace_selection = selectable
+        mux.list_workspaces = AsyncMock(
+            return_value=[
+                WorkspaceRef("sp-t", "Tabula", "/r/tabula"),
+                WorkspaceRef("sp-d", "Digients", "/r/digients"),
+            ]
+        )
+        with (
+            patch.object(topic_routes, "configured_routes", return_value=ROUTES),
+            patch.object(topic_routes, "multiplexer", mux),
+        ):
+            return await topic_routes.routed_workspace(chat_id)
+
+    async def test_a_routed_group_resolves_to_its_workspace(self) -> None:
+        workspace = await self._resolve(DIGIENTS)
+        assert workspace is not None
+        assert (workspace.workspace_id, workspace.cwd) == ("sp-d", "/r/digients")
+
+    async def test_unrouted_chats_and_unselectable_backends_resolve_to_none(
+        self,
+    ) -> None:
+        assert await self._resolve(PRIVATE) is None
+        assert await self._resolve(DIGIENTS, selectable=False) is None
