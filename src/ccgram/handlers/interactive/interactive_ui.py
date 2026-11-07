@@ -115,13 +115,15 @@ INTERACTIVE_INSTRUCTION_LINE = (
 
 # Claude questions with tappable options need no keypad: the hint says how to
 # answer instead.
-QUESTION_INSTRUCTION_LINE = "点选项作答 · 直接发文字 = 自定义答案（✏️）· 💬 = 先聊聊"
+QUESTION_INSTRUCTION_LINE = (
+    "Tap an option · send a message for your own answer (✏️) · 💬 to discuss"
+)
 QUESTION_MULTI_INSTRUCTION_LINE = (
-    "点选项勾选 · 选完点 ➡ 下一步 · 直接发文字 = 自定义答案（✏️）· 💬 = 先聊聊"
+    "Tap to check · ➡ Next when done · send a message for your own answer (✏️)"
 )
 _QUESTION_ICONS = (("Type something", "✏️ "), ("Chat about this", "💬 "))
-FREE_TEXT_HINT = "（直接在 TG 发消息）"
-FREE_TEXT_TOAST = "直接在 TG 里发消息作答"
+FREE_TEXT_HINT = " (Send message directly)"
+FREE_TEXT_TOAST = "Send your answer as a message"
 
 # Hard ceiling per Telegram message; leave headroom for entities.
 _TELEGRAM_MAX_TEXT = 4096
@@ -662,7 +664,7 @@ def _build_interactive_keyboard(
 
     ``question`` (a Claude question with tappable options) drops the keypad:
     a single-select tap moves on by itself, and a multi-select gets one
-    "➡ 下一步" button (the → key) to leave the question.
+    "➡ Next" button (the → key) to leave the question.
 
     ``ui_name`` controls the layout: ``RestoreCheckpoint`` omits ←/→ keys
     since only vertical selection is needed.
@@ -711,7 +713,7 @@ def _build_interactive_keyboard(
                 ]
             )
         if _is_multi_select(direct_choices):
-            rows.append([btn("➡ 下一步", CB_ASK_RIGHT)])
+            rows.append([btn("➡ Next", CB_ASK_RIGHT)])
         return InlineKeyboardMarkup(rows)
     # Direct choices come first, while the complete navigation keyboard remains
     # available for multi-select and unrecognised prompts.

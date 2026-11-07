@@ -246,13 +246,13 @@ class TestQuestionKeyboard:
             "1. Red",
             "2. Blue",
             "3. Green",
-            "4. ✏️ Type something.（直接在 TG 发消息）",
+            "4. ✏️ Type something. (Send message directly)",
             "5. 💬 Chat about this",
         ]
 
     def test_multi_select_adds_a_next_button(self) -> None:
         labels = self._labels(MULTI)
-        assert labels[-1] == "➡ 下一步"
+        assert labels[-1] == "➡ Next"
         assert "⏎ Enter" not in labels and "␣ Space" not in labels
 
     def test_other_prompts_keep_the_keypad(self) -> None:
