@@ -23,6 +23,7 @@ from ...session_state_ports.live_session_state import get_task_snapshot, get_wai
 from ...expandable_quote import format_expandable_quote
 from ...telegram_client import TelegramClient
 from ...telegram_rate_limiter import NO_RETRY_RATE_LIMIT_ARGS
+from ... import session_query
 from ...thread_router import thread_router
 from ...window_state_ports.pane_state import PaneProjection, list_pane_projections
 
@@ -51,9 +52,12 @@ logger = structlog.get_logger()
 # ---------------------------------------------------------------------------
 
 # Status message tracking: (user_id, thread_key) -> (message_id, window_id, last_text, chat_id)
-_status_msg_info: dict[tuple[int, int], tuple[int, str, str, int]] = {}
+# Keyed by (user, chat, thread): topic ids repeat across groups (each group
+# numbers its own topics), so one user's thread 5 can be two sessions.
+_StatusKey = tuple[int, int, int]
+_status_msg_info: dict[_StatusKey, tuple[int, str, str, int]] = {}
 # When each status bubble was last edited (monotonic), for CCGRAM_STATUS_EDIT_INTERVAL.
-_status_edited_at: dict[tuple[int, int], float] = {}
+_status_edited_at: dict[_StatusKey, float] = {}
 _backlog_status_cache: dict[tuple[int, int, str], tuple[float, str]] = {}
 _BACKLOG_STATUS_THROTTLE_SECONDS = 15.0
 SEVERE_BACKLOG_COUNT = 100
@@ -351,6 +355,23 @@ def format_claude_task_status(window_id: str, base_text: str | None) -> str | No
 # ---------------------------------------------------------------------------
 
 
+def _bubble_chat(user_id: int, thread_id: int | None, window_id: str) -> int:
+    """The chat holding *window_id*'s topic for this user.
+
+    Found from the topic bindings, since a bare thread id is ambiguous once
+    several groups hold topics; falls back to the thread's resolved chat.
+    """
+    if thread_id is not None and window_id:
+        for uid, chat, tid, wid in session_query.iter_bound_topics():
+            if uid == user_id and tid == thread_id and wid == window_id and chat:
+                return chat
+    return thread_router.resolve_chat_id(user_id, thread_id)
+
+
+def _thread(thread_id_or_0: int) -> int | None:
+    return thread_id_or_0 if thread_id_or_0 != 0 else None
+
+
 async def send_status_text(
     client: TelegramClient,
     user_id: int,
@@ -376,9 +397,9 @@ async def send_status_text(
     if config.hide_status is True:
         return
 
-    skey = (user_id, thread_id_or_0)
-    thread_id: int | None = thread_id_or_0 if thread_id_or_0 != 0 else None
-    chat_id = thread_router.resolve_chat_id(user_id, thread_id)
+    thread_id = _thread(thread_id_or_0)
+    chat_id = _bubble_chat(user_id, thread_id, window_id)
+    skey = (user_id, chat_id, thread_id_or_0)
 
     history = _get_idle_history(user_id, thread_id_or_0, text)
     keyboard = build_status_keyboard(
@@ -422,7 +443,7 @@ async def send_status_text(
                 await client.delete_message(chat_id=stored_chat_id, message_id=msg_id)
             _status_msg_info.pop(skey, None)
         else:
-            await clear_status_message(client, user_id, thread_id_or_0)
+            await clear_status_message(client, user_id, thread_id_or_0, chat_id=chat_id)
 
     msg = await safe_send(
         client,
@@ -441,9 +462,18 @@ async def clear_status_message(
     client: TelegramClient,
     user_id: int,
     thread_id_or_0: int = 0,
+    *,
+    chat_id: int | None = None,
+    window_id: str = "",
 ) -> None:
-    """Delete the status message for a user."""
-    skey = (user_id, thread_id_or_0)
+    """Delete the status message of one topic.
+
+    The topic is the thread in *chat_id*, or else the chat holding
+    *window_id*'s topic, or else the thread's resolved chat.
+    """
+    if chat_id is None:
+        chat_id = _bubble_chat(user_id, _thread(thread_id_or_0), window_id)
+    skey = (user_id, chat_id, thread_id_or_0)
     info = _status_msg_info.pop(skey, None)
     if info:
         msg_id, _, _, chat_id = info
@@ -464,7 +494,11 @@ async def convert_status_to_content(
 
     Returns the message_id if converted successfully, None otherwise.
     """
-    skey = (user_id, thread_id_or_0)
+    skey = (
+        user_id,
+        _bubble_chat(user_id, _thread(thread_id_or_0), window_id),
+        thread_id_or_0,
+    )
     info = _status_msg_info.pop(skey, None)
     if not info:
         return None
@@ -502,7 +536,7 @@ async def process_status_update(
     status_text = format_claude_task_status(task.window_id, task.text)
 
     if not status_text:
-        await clear_status_message(client, user_id, tkey)
+        await clear_status_message(client, user_id, tkey, window_id=task.window_id)
         return
 
     backlog_line, severe = format_backlog_status(user_id, tkey, task.window_id)
@@ -537,7 +571,7 @@ async def process_status_clear(
             backlog_severe=severe,
         )
         return
-    await clear_status_message(client, user_id, tkey)
+    await clear_status_message(client, user_id, tkey, window_id=window_id)
 
 
 # ---------------------------------------------------------------------------
@@ -545,7 +579,9 @@ async def process_status_clear(
 # ---------------------------------------------------------------------------
 
 
-def clear_status_msg_info(user_id: int, thread_id: int | None = None) -> None:
+def clear_status_msg_info(
+    user_id: int, thread_id: int | None = None, window_id: str = ""
+) -> None:
     """Clear status message tracking for a user (and optionally a specific thread).
 
     NOT registered with TopicStateRegistry — must only be called explicitly
@@ -555,5 +591,11 @@ def clear_status_msg_info(user_id: int, thread_id: int | None = None) -> None:
     with the registry would pop the entry before the worker runs, preventing
     the actual Telegram delete.
     """
-    skey = (user_id, thread_key(thread_id))
-    _status_msg_info.pop(skey, None)
+    tkey = thread_key(thread_id)
+    for skey, info in list(_status_msg_info.items()):
+        if (
+            skey[0] == user_id
+            and skey[2] == tkey
+            and (not window_id or info[1] == window_id)
+        ):
+            _status_msg_info.pop(skey, None)
