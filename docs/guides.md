@@ -233,6 +233,9 @@ All settings accept both CLI flags and environment variables. CLI flags take pre
 | `CCGRAM_LIVE_VIEW_INTERVAL` / `--live-view-interval`  | `5`                            | Live view refresh interval in seconds (min 1)                                                        |
 | `CCGRAM_LIVE_VIEW_TIMEOUT` / `--live-view-timeout`    | `300`                          | Live view auto-stop timeout in seconds (min 1)                                                       |
 | `CCGRAM_STATUS_MODE` / `--status-mode`                | `system`                       | Topic emoji color scheme: `system` (green=working) or `user` (green=ready)                           |
+| `CCGRAM_DESK_MODE`                                    | `false`                        | Set `true` for desk mode: quiet Telegram while you work at the terminal (see below)                  |
+| `CCGRAM_DESK_DIGEST_MINUTES`                          | `10`                           | Desk mode: minutes between digest refreshes (min 1)                                                  |
+| `CCGRAM_AWAY_IDLE_MINUTES`                            | `10`                           | Desk mode: computer idle this long counts as away (macOS; `0` disables)                              |
 | `CCGRAM_HIDE_TOOL_CALLS` / `--hide-tool-calls`        | `false`                        | Set `true` to globally hide `tool_use`/`tool_result` messages (per-window override via `/toolcalls`) |
 | `CCGRAM_HIDE_THINKING` / `--hide-thinking`            | `false`                        | Set `true` to globally hide thinking messages                                                        |
 | `CCGRAM_HIDE_STATUS`                                  | `false`                        | Set `true` to suppress transient status bubbles; replies and controls remain available               |
@@ -271,6 +274,33 @@ Topic emojis change color to reflect agent status. The mapping between color and
 Set globally via `CCGRAM_STATUS_MODE=user` or `--status-mode user`. Invalid values fall back to `system`.
 
 In both modes 🔴 means the agent is idle at a prompt (a question, a plan or an approval) and waits for you.
+
+## Desk Mode
+
+With `CCGRAM_DESK_MODE=true`, CCGram tells whether you are at the computer:
+
+- **At the desk** once you type a prompt into a session at the terminal. Telegram goes quiet:
+  replies, tool calls, status bubbles and prompts are not sent one by one. Instead each topic
+  with news gets one digest message, sent silently and then edited in place every
+  `CCGRAM_DESK_DIGEST_MINUTES`:
+
+  ```
+  🟡 working · 12 messages, 8 tool calls since last update
+  Latest reply:
+  <the agent's latest reply, folded>
+  updated 14:32 · desk mode
+  ```
+
+  Topic-title dots keep updating (🔴 still marks a prompt waiting for you).
+- **Away** as soon as you send anything or tap a button in Telegram, or after the computer sits
+  idle for `CCGRAM_AWAY_IDLE_MINUTES` (macOS only). The digest is brought up to date once,
+  real-time delivery resumes, and a waiting prompt appears with its buttons within a second.
+  After an idle switch, a topic that finished or waits for you gets a fresh message (with a
+  notification) instead of a silent edit.
+
+A Telegram message the agent writes to its transcript late never counts as terminal input, and
+neither does a prompt while the computer has been idle for over two minutes. After a restart
+CCGram starts in away mode.
 
 ## Status Bubble Visibility
 

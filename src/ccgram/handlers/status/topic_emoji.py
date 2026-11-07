@@ -512,6 +512,20 @@ def clear_topic_emoji_state(chat_id: int, thread_id: int) -> None:
     _awaiting_first_paint.discard(key)
 
 
+def topic_state_badge(chat_id: int, thread_id: int) -> tuple[str, str] | None:
+    """The ``(state, emoji)`` a topic shows, or is about to show once debounced.
+
+    None when the topic has no tracked state yet.
+    """
+    key = (chat_id, thread_id)
+    pending = _pending_transitions.get(key)
+    applied = _topic_states.get(key)
+    state = pending[0] if pending is not None else (applied[0] if applied else None)
+    if state is None:
+        return None
+    return state, _state_emoji_map().get(state, "")
+
+
 def mark_awaiting_first_paint(chat_id: int, thread_id: int) -> None:
     """Let an inherited topic apply its next observed state without debounce."""
     _awaiting_first_paint.add((chat_id, thread_id))

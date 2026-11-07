@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import time
 
 from ..session_protocol.models import ProtocolError
+from .presence import remember_telegram_text
 
 _PENDING_INJECTION_TTL_S = 30.0
 _AGENT_EXITED_MESSAGE = (
@@ -48,6 +49,9 @@ def remember_telegram_injection(
     )
     injection = _PendingInjection(_normalize(text), now)
     pending.append(injection)
+    # Longer memory for desk detection: a late transcript echo of this text
+    # must not count as terminal input.
+    remember_telegram_text(user_id, text)
     return injection
 
 

@@ -627,6 +627,26 @@ class TestHandleStopFailure:
             assert "rate_limit" in text
             assert "429" in text
 
+    async def test_desk_mode_puts_the_error_in_the_digest(self, bindings) -> None:
+        bot = AsyncMock(spec=Bot)
+        with (
+            patch(
+                "ccgram.handlers.hook_events.thread_router.resolve_chat_id",
+                return_value=-100,
+            ),
+            patch("ccgram.handlers.hook_events.is_quiet", return_value=True),
+            patch("ccgram.handlers.hook_events.desk_digest") as digest,
+            patch(
+                "ccgram.handlers.messaging_pipeline.message_sender.rate_limit_send_message"
+            ) as mock_send,
+        ):
+            event = _make_event(event_type="StopFailure", data={"error": "overloaded"})
+            await dispatch_hook_event(event, bot)
+            mock_send.assert_not_called()
+            digest.record_error.assert_called_once_with(
+                100, -100, 42, "@0", "API error — overloaded"
+            )
+
     async def test_no_users_skips(self, bindings) -> None:
         bindings()
         bot = AsyncMock(spec=Bot)

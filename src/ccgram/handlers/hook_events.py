@@ -34,6 +34,8 @@ from .interactive import (
 )
 from .messaging_pipeline.message_queue import enqueue_status_update
 from .polling.polling_state import reset_window_polling_state
+from .presence import digest as desk_digest
+from .presence import is_quiet
 from .status.topic_emoji import update_topic_emoji
 
 
@@ -334,8 +336,13 @@ async def _handle_stop_failure(event: HookEvent, client: TelegramClient) -> None
     detail = f": {error_details}" if error_details else ""
     text = f"⚠ API error — {error}{detail}"
 
-    for user_id, thread_id, _window_id in users:
+    for user_id, thread_id, window_id in users:
         chat_id = thread_router.resolve_chat_id(user_id, thread_id)
+        if is_quiet(user_id):
+            desk_digest.record_error(
+                user_id, chat_id, thread_id, window_id, text.removeprefix("⚠ ")
+            )
+            continue
         await rate_limit_send_message(
             client, chat_id, text, message_thread_id=thread_id
         )

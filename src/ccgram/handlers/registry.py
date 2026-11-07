@@ -20,6 +20,7 @@ from telegram.ext import (
     CommandHandler,
     InlineQueryHandler,
     MessageHandler,
+    TypeHandler,
     filters,
 )
 from telegram.ext._utils.types import HandlerCallback
@@ -40,6 +41,7 @@ from .commands import (
 from .file_handler import handle_document_message, handle_photo_message
 from .inline import inline_query_handler, unsupported_content_handler
 from .live import live_command, panes_command, screenshot_command
+from .presence.desk_mode import telegram_activity_handler
 from .messaging_pipeline import toolcalls_command, verbose_command
 from .last_reply import last_command
 from .recovery import restore_command, resume_command
@@ -152,6 +154,11 @@ def register_all(
 
     _load_callback_handlers()
     application.add_handler(CallbackQueryHandler(_dispatch_callback))
+
+    # Desk mode: any update from the user means they are on Telegram. Earliest
+    # group, so the switch to real-time delivery happens before the update is
+    # handled; it never consumes the update.
+    application.add_handler(TypeHandler(Update, telegram_activity_handler), group=-3)
 
     # Own group so it never shadows the handlers below; logging only.
     application.add_handler(

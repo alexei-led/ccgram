@@ -44,6 +44,7 @@ from ...window_query import get_window_provider
 from ...thread_router import thread_router
 from ...multiplexer import multiplexer as tmux_manager
 from ...topic_state_registry import topic_state
+from ..presence import is_quiet
 from ..callback_data import (
     CB_ASK_CHOICE,
     CB_ASK_DOWN,
@@ -976,6 +977,27 @@ async def pane_has_interactive_prompt(
 
 
 async def handle_interactive_ui(
+    client: TelegramClient,
+    user_id: int,
+    window_id: str,
+    thread_id: int | None = None,
+    pane_id: str | None = None,
+    *,
+    chat_id: int | None = None,
+) -> bool:
+    """Send the interactive UI on screen to the user; True if one was sent.
+
+    In desk mode nothing is sent (False): the user answers at the computer.
+    The poller retries every tick, so the prompt appears once they go away.
+    """
+    if is_quiet(user_id):
+        return False
+    return await _send_interactive_ui(
+        client, user_id, window_id, thread_id, pane_id, chat_id=chat_id
+    )
+
+
+async def _send_interactive_ui(
     client: TelegramClient,
     user_id: int,
     window_id: str,
