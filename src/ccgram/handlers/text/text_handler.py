@@ -97,6 +97,9 @@ _DISMISS_CONFIRM_INTERVAL_S = 0.3
 # Pause after moving a question's cursor to its free-text option, so the
 # input field is focused before the answer is pasted.
 _TYPED_ANSWER_FOCUS_S = 0.4
+# The paste waits for a quiet keyboard (about 3 s) before Enter, so the next
+# question shows only after that.
+_TYPED_ANSWER_REFRESH_S = 4.0
 
 PENDING_DELIVERY_NOTICE = "\U0001f4ac Will deliver once the agent starts."
 
@@ -600,6 +603,7 @@ async def _answer_free_text_option(
     text: str,
     message: Message,
     adapter,
+    client: TelegramClient,
 ) -> bool:
     """Type *text* into the live question's "Type something" option.
 
@@ -611,6 +615,7 @@ async def _answer_free_text_option(
     from ..interactive import (
         get_interactive_msg_id,
         get_interactive_pane,
+        handle_interactive_ui,
         typed_answer_keys,
     )
 
@@ -654,6 +659,19 @@ async def _answer_free_text_option(
             f"\u26a0\ufe0f Could not type your answer into the prompt: {text}\n"
             "Retry, or use the prompt's buttons.",
         )
+        return True
+
+    # The poller does not redraw a prompt it already shows: re-render it so
+    # the next question replaces the answered one in Telegram. In the
+    # background, so the wait does not hold up other updates.
+    async def refresh() -> None:
+        await asyncio.sleep(_TYPED_ANSWER_REFRESH_S)
+        await handle_interactive_ui(
+            client, user_id, window_id, thread_id, pane_id=pane_id, chat_id=chat_id
+        )
+
+    task = asyncio.create_task(refresh())
+    task.add_done_callback(task_done_callback)
     return True
 
 
@@ -706,6 +724,7 @@ async def _forward_message(
             text,
             message,
             telegram_adapter,
+            client,
         ):
             await ack_reaction(client, message.chat.id, message.message_id)
             return

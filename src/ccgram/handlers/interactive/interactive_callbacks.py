@@ -61,6 +61,10 @@ if TYPE_CHECKING:
 logger = structlog.get_logger()
 
 # cb_prefix -> (tmux_key, refresh_ui_after)
+# Pause before re-rendering a question after a pick, so the terminal shows
+# the next question or the moved cursor.
+_QUESTION_REFRESH_DELAY_S = 0.5
+
 INTERACTIVE_KEY_MAP: dict[str, tuple[str, bool]] = {
     CB_ASK_UP: ("Up", True),
     CB_ASK_DOWN: ("Down", True),
@@ -161,8 +165,15 @@ async def _send_question_choice(
     adapter,
     action_id: str,
     expected_prompt: str | None,
+    client: TelegramClient | None = None,
 ) -> None:
-    """Pick a Claude question option with cursor keys (it ignores digits)."""
+    """Pick a Claude question option with cursor keys (it ignores digits).
+
+    Like the arrow buttons, the prompt message is re-rendered afterwards: the
+    poller does not redraw a prompt it already shows, so without this the
+    next question (or the moved cursor) never reaches Telegram and every
+    button on the stale keyboard reads as expired.
+    """
     if not keys:
         # The cursor already sits on the free-text option: nothing changes on
         # screen, so the keyboard stays valid for the next tap.
@@ -187,6 +198,11 @@ async def _send_question_choice(
     advance_interactive_sequence(user_id, thread_id, chat_id=chat_id)
     free_text = keys[-1] != "Enter"
     await query.answer("Send your answer as a message" if free_text else None)
+    if client is not None:
+        await asyncio.sleep(_QUESTION_REFRESH_DELAY_S)
+        await handle_interactive_ui(
+            client, user_id, window_id, thread_id, pane_id=pane_id, chat_id=chat_id
+        )
 
 
 async def _handle_direct_choice(
@@ -201,6 +217,7 @@ async def _handle_direct_choice(
     adapter,
     action_id: str,
     expected_prompt: str | None,
+    client: TelegramClient | None = None,
 ) -> None:
     """Send one validated direct choice and invalidate its sequence."""
     if choice is None:
@@ -233,6 +250,7 @@ async def _handle_direct_choice(
             adapter,
             action_id,
             expected_prompt,
+            client,
         )
         return
     enter = key in {"y", "n"}
@@ -384,6 +402,7 @@ async def handle_interactive_callback(
                 adapter,
                 action_id,
                 expected_prompt,
+                PTBTelegramClient(context.bot),
             )
             return
 

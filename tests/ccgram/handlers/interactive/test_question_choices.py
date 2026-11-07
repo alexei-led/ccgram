@@ -5,6 +5,7 @@ Screens are trimmed captures of Claude Code 2.1 question prompts.
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -149,15 +150,24 @@ class TestFreeTextAnswer:
             ),
             patch("ccgram.handlers.interactive.get_interactive_msg_id", return_value=7),
             patch.object(text_handler, "_TYPED_ANSWER_FOCUS_S", 0),
+            patch.object(text_handler, "_TYPED_ANSWER_REFRESH_S", 0),
+            patch(
+                "ccgram.handlers.interactive.handle_interactive_ui",
+                new_callable=AsyncMock,
+            ) as refresh,
         ):
             handled = await text_handler._answer_free_text_option(
-                1, 42, "hc-t5", -100, "my own answer", message, adapter
+                1, 42, "hc-t5", -100, "my own answer", message, adapter, MagicMock()
             )
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+        self.refreshed = refresh.await_count
         return handled, adapter
 
     async def test_moves_to_the_option_then_types_and_submits(self) -> None:
         handled, adapter = await self._answer(["Down", "Down"])
         assert handled is True
+        assert self.refreshed == 1
         assert adapter.send_keys.await_args.args[1] == ["Down", "Down"]
         assert adapter.send_text.await_args.args[1] == "my own answer"
         assert adapter.send_text.await_args.kwargs["submit"] is True
@@ -181,16 +191,22 @@ class TestQuestionChoiceCallback:
         query.answer = AsyncMock()
         adapter = MagicMock()
         adapter.send_keys = AsyncMock(return_value=(True, ""))
-        with patch.object(cb, "advance_interactive_sequence") as advance:
+        with (
+            patch.object(cb, "advance_interactive_sequence") as advance,
+            patch.object(cb, "_QUESTION_REFRESH_DELAY_S", 0),
+            patch.object(cb, "handle_interactive_ui", new_callable=AsyncMock) as ui,
+        ):
             await cb._send_question_choice(
-                query, 1, 42, -100, "hc-t5", None, keys, adapter, "a", "fp"
+                query, 1, 42, -100, "hc-t5", None, keys, adapter, "a", "fp", MagicMock()
             )
+        self.redrawn = ui.await_count
         return query, adapter, advance
 
     async def test_tap_sends_cursor_keys_and_advances(self) -> None:
         _query, adapter, advance = await self._tap(["Down", "Enter"])
         assert adapter.send_keys.await_args.args[1] == ["Down", "Enter"]
         advance.assert_called_once()
+        assert self.redrawn == 1
 
     async def test_tap_on_the_focused_free_text_option_changes_nothing(self) -> None:
         query, adapter, advance = await self._tap([])
