@@ -92,9 +92,9 @@ def test_register_all_registers_all_handler_kinds():
     assert by_kind.get(CommandHandler) == len(COMMAND_NAMES)
     assert by_kind.get(CallbackQueryHandler) == 1
     assert by_kind.get(InlineQueryHandler) == 1
-    # Pi menu reply input, command trace, topic events, command fallback,
-    # ordinary text, photo, document, voice, unsupported content.
-    assert by_kind.get(MessageHandler) == 10
+    # Pi menu reply input, command trace, group-join log, topic events, command
+    # fallback, ordinary text, photo, document, voice, unsupported content.
+    assert by_kind.get(MessageHandler) == 11
 
 
 async def test_command_trace_logs_general_topic_without_arguments():

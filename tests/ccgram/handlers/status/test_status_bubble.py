@@ -169,6 +169,29 @@ class TestSendStatusText:
         mock_edit.assert_not_called()
         bot.send_message.assert_not_called()
 
+    @patch("ccgram.handlers.status.status_bubble.config", create=True)
+    @patch("ccgram.handlers.status.status_bubble.thread_router")
+    async def test_edit_interval_holds_back_poll_refreshes_only(
+        self, mock_router, mock_config
+    ):
+        mock_config.hide_status = False
+        mock_config.status_edit_interval = 60.0
+        mock_router.resolve_chat_id.return_value = CHAT_ID
+        bot = _make_bot(send_id=99)
+
+        await send_status_text(bot, USER_ID, THREAD_ID, WINDOW_ID, "a", transient=True)
+        await send_status_text(bot, USER_ID, THREAD_ID, WINDOW_ID, "b", transient=True)
+
+        # The new bubble is sent; the poll refresh inside the interval is skipped.
+        bot.send_message.assert_awaited_once()
+        bot.edit_message_text.assert_not_awaited()
+        assert _status_msg_info[(USER_ID, THREAD_ID)][2] == "a"
+
+        # A durable update (hook notice) edits at once.
+        await send_status_text(bot, USER_ID, THREAD_ID, WINDOW_ID, "done")
+        bot.edit_message_text.assert_awaited_once()
+        assert _status_msg_info[(USER_ID, THREAD_ID)][2] == "done"
+
 
 class TestClearStatusMessage:
     async def test_deletes_tracked_message(self):

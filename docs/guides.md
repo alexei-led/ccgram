@@ -213,6 +213,7 @@ All settings accept both CLI flags and environment variables. CLI flags take pre
 | `CCGRAM_PROVIDER` / `--provider`                      | `claude`                       | Default agent provider (`claude`, `codex`, `gemini`, `pi`, `shell`)                                  |
 | `CCGRAM_<NAME>_COMMAND`                               | _(from provider)_              | Per-provider launch command (env only, see below)                                                    |
 | `CCGRAM_GROUP_ID` / `--group-id`                      | _(all groups)_                 | Restrict to one Telegram group                                                                       |
+| `CCGRAM_TOPIC_CHAT_ROUTES`                            | _(none)_                       | One group per workspace: `Space=-100123,Other=-100456` (env only, see below)                         |
 | `CCGRAM_INSTANCE_NAME` / `--instance-name`            | hostname                       | Display label for this instance                                                                      |
 | `CCGRAM_LOG_LEVEL` / `--log-level`                    | `INFO`                         | Logging level (DEBUG, INFO, WARNING, ERROR)                                                          |
 | `MONITOR_POLL_INTERVAL` / `--monitor-interval`        | `2.0`                          | Seconds between transcript polls                                                                     |
@@ -532,6 +533,26 @@ Add the bot to each group, enable Topics, and grant the required topic permissio
 Both groups use the same configuration, session discovery, allowed users, and state.
 They do not provide separate control or security boundaries. Use separate machines
 or OS users when those settings and terminal targets must be isolated.
+
+### One group per workspace
+
+On a backend that reports workspaces (the Herdr desktop `hc` backend reports the
+Herdr space), `CCGRAM_TOPIC_CHAT_ROUTES` gives each workspace its own forum group,
+so the group is the workspace and each topic is one of its sessions:
+
+```ini
+CCGRAM_TOPIC_CHAT_ROUTES=Sessions=-1001111111111,Digients=-1002222222222
+```
+
+A session in a routed workspace gets its topic in that group only. Sessions in other
+workspaces keep the usual chats, minus the routed groups. Topics that already exist
+in the wrong chat (the route was added later, or the tab moved to another space) are
+moved within a minute: the new topic is created first, then the old one is deleted;
+the session keeps running. Leave `CCGRAM_GROUP_ID` unset so every group is served.
+
+To find a group's ID, add the CCGram bot to it and look for `Group service message`
+in the log. Turning on Topics upgrades a basic group to a supergroup with a new
+`-100…` ID, logged as `migrated_to`; use that one.
 
 Set `CCGRAM_GROUP_ID` to one group ID to restrict the process to that group. It then
 ignores updates from other groups. To find the ID, add

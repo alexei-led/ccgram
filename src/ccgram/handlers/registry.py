@@ -52,6 +52,7 @@ from .text.text_handler import text_handler
 from .topics import new_command
 from .topics.bind_command import bind_command
 from .topics.topic_lifecycle import topic_closed_handler, topic_edited_handler
+from .topics.topic_routes import log_group_join
 from .upgrade import upgrade_command
 from .voice import handle_voice_message
 
@@ -152,6 +153,19 @@ def register_all(
     _load_callback_handlers()
     application.add_handler(CallbackQueryHandler(_dispatch_callback))
 
+    # Own group so it never shadows the handlers below; logging only.
+    application.add_handler(
+        MessageHandler(
+            (
+                filters.StatusUpdate.NEW_CHAT_MEMBERS
+                | filters.StatusUpdate.CHAT_CREATED
+                | filters.StatusUpdate.MIGRATE
+            )
+            & group_filter,
+            log_group_join,
+        ),
+        group=-2,
+    )
     application.add_handler(
         MessageHandler(
             filters.StatusUpdate.FORUM_TOPIC_CLOSED & group_filter,

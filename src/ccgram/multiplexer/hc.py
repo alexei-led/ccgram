@@ -75,7 +75,6 @@ from .hc_events import (
     translate_event,
 )
 from .hc_socket import HcRpcError, HcTransport, default_socket_path, request
-from .topic_mapping import format_agent_topic_prefix
 
 __all__ = [
     "HC_SUPPORTED_GENERATION",
@@ -148,6 +147,19 @@ _APP_TIMEOUT = 15.0
 _RC_TIMEOUT = 124
 _RC_NO_BINARY = 127
 
+# Clearing a leftover draft before a message goes in (see ``_clear_input``).
+# Claude Code draws its input box as a ``❯`` row between two horizontal rules;
+# a rule may carry the session name, so it only has to be mostly rule glyphs.
+_RULE_GLYPH = "─"
+_RULE_MIN_GLYPHS = 20
+_PROMPT_GLYPH = "❯"
+# One round empties one line of the box and joins it with its neighbour: end of
+# line, kill to start, kill to end (joins the next line), backspace (joins the
+# previous one), forward delete. Each key is a no-op on an empty box, unlike
+# Ctrl+C, which arms Claude Code's exit on an empty box.
+_CLEAR_ROUND = ("ctrl+e", "ctrl+u", "ctrl+k", "backspace", "delete")
+_CLEAR_MAX_ROUNDS = 40
+
 # Login-shell wrapper the Herdr app itself uses for an agent tab, so the agent
 # resolves through the user's PATH and the terminal falls back to a shell when
 # it exits. Used for the ``terminal.run`` fallback when the app is unreachable.
@@ -161,6 +173,30 @@ HcStreamOpener = Callable[[], AsyncGenerator[dict, None]]
 
 class HcError(RuntimeError):
     """herdr-core could not be reached or answered something unusable."""
+
+
+def _is_rule(line: str) -> bool:
+    stripped = line.strip()
+    return stripped.count(_RULE_GLYPH) >= _RULE_MIN_GLYPHS and _RULE_GLYPH in (
+        stripped[0],
+        stripped[-1],
+    )
+
+
+def input_box_rows(screen: str) -> int | None:
+    """Rows of the Claude Code input box on ``screen``, or None when there is none.
+
+    The box is the lowest pair of adjacent rules whose first row starts with
+    ``❯``. A permission or question dialog has its own text under the rule, so
+    it does not count as an input box.
+    """
+    lines = screen.splitlines()
+    rules = [i for i, line in enumerate(lines) if _is_rule(line)]
+    for top, bottom in reversed(list(zip(rules, rules[1:], strict=False))):
+        body = lines[top + 1 : bottom]
+        if body and body[0].lstrip().startswith(_PROMPT_GLYPH):
+            return len(body)
+    return None
 
 
 # ── Identity ───────────────────────────────────────────────────────────
@@ -420,6 +456,7 @@ class HcManager:
         app_runner: HcAppRunner | None = None,
         app_binary: str = "herdr-app",
         own_terminal_id: str | None = None,
+        claude_sessions_dir: str | None = None,
     ) -> None:
         """Build the backend without touching the socket or the filesystem.
 
@@ -432,6 +469,9 @@ class HcManager:
             app_binary: the Herdr app's command-line executable.
             own_terminal_id: the terminal ccgram itself runs in, never offered
                 or adopted; defaults to ``$HC_TERMINAL_ID``. ``""`` excludes none.
+            claude_sessions_dir: Claude Code's per-process session files, read
+                for session names; defaults to ``$CLAUDE_CONFIG_DIR/sessions``
+                (``~/.claude/sessions``).
         """
         self._socket_path = socket_path or default_socket_path()
         self._transport: HcTransport = transport or self._socket_transport
@@ -444,6 +484,9 @@ class HcManager:
             else os.environ.get("HC_TERMINAL_ID", "")
         )
         self._own_address = own.strip()
+        self._claude_sessions_dir = claude_sessions_dir
+        # pid -> (session file mtime, session name), so a /rename is picked up.
+        self._session_names: dict[int, tuple[float, str]] = {}
         # Per-address history-read backoff deadlines and in-flight reads.
         self._history_backoff: dict[str, float] = {}
         self._history_inflight: set[str] = set()
@@ -581,8 +624,77 @@ class HcManager:
         provider = classify_provider_from_argv(argv)
         return provider if provider and provider != "shell" else ""
 
-    def _to_window(self, terminal: Mapping[str, object]) -> WindowRef:
-        """Map one herdr-core terminal onto the neutral ``WindowRef``."""
+    @staticmethod
+    def _space_tab(terminal: Mapping[str, object]) -> tuple[str, str]:
+        """The Herdr space and tab a terminal sits in, from its ``where`` label."""
+        where = _str(_labels(terminal).get(_WHERE_LABEL))
+        if where:
+            space, _sep, tab = where.partition(_WHERE_SEPARATOR)
+            return space.strip(), tab.strip()
+        address = _str(terminal.get("address"))
+        return "Herdr", _str(terminal.get("title")) or _str(
+            terminal.get("name")
+        ) or address
+
+    def _sessions_dir(self) -> Path:
+        if self._claude_sessions_dir is not None:
+            return Path(self._claude_sessions_dir)
+        base = os.environ.get("CLAUDE_CONFIG_DIR") or str(Path.home() / ".claude")
+        return Path(base) / "sessions"
+
+    def _claude_session_name(self, terminal: Mapping[str, object]) -> str:
+        """The Claude Code session name (``/rename``) of the terminal's agent.
+
+        Claude Code writes ``sessions/<pid>.json`` with a ``name`` for each running
+        process. Empty when the foreground isn't a named Claude session.
+        """
+        foreground = terminal.get("foreground")
+        pid = foreground.get("pid") if isinstance(foreground, Mapping) else None
+        if not isinstance(pid, int) or pid <= 0:
+            return ""
+        path = self._sessions_dir() / f"{pid}.json"
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            self._session_names.pop(pid, None)
+            return ""
+        cached = self._session_names.get(pid)
+        if cached is not None and cached[0] == mtime:
+            return cached[1]
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except OSError, ValueError:
+            return ""
+        name = raw.get("name") if isinstance(raw, dict) else None
+        name = name.strip() if isinstance(name, str) else ""
+        self._session_names[pid] = (mtime, name)
+        return name
+
+    def _base_name(self, terminal: Mapping[str, object]) -> str:
+        """A terminal's topic name before disambiguation: session name, else tab."""
+        return self._claude_session_name(terminal) or self._space_tab(terminal)[1]
+
+    def _shared_tabs(self, terminals: Sequence[Mapping[str, object]]) -> frozenset[str]:
+        """Tab names that more than one visible terminal uses."""
+        seen: dict[str, int] = {}
+        for terminal in terminals:
+            if self._is_visible(terminal):
+                name = self._base_name(terminal)
+                seen[name] = seen.get(name, 0) + 1
+        return frozenset(tab for tab, count in seen.items() if count > 1)
+
+    def _to_window(
+        self,
+        terminal: Mapping[str, object],
+        shared_tabs: frozenset[str] = frozenset(),
+    ) -> WindowRef:
+        """Map one herdr-core terminal onto the neutral ``WindowRef``.
+
+        Topic headers are narrow, so the name is the Claude Code session name
+        (``dig-cua``), else the Herdr tab (``chore``), with the space added only
+        when another terminal shares the name (``research (Tabula)``). The
+        provider prefix is added by the topic layer.
+        """
         address = _str(terminal.get("address"))
         status = parse_status(terminal.get("status"))
         provider = self._provider(terminal)
@@ -590,16 +702,13 @@ class HcManager:
         fg_argv = (
             _argv(foreground.get("argv")) if isinstance(foreground, Mapping) else []
         )
-        where = _str(_labels(terminal).get(_WHERE_LABEL))
-        if where:
-            space, _sep, tab = where.partition(_WHERE_SEPARATOR)
-        else:
-            space = "Herdr"
-            tab = _str(terminal.get("title")) or _str(terminal.get("name")) or address
+        space, _tab = self._space_tab(terminal)
+        base = self._base_name(terminal)
+        name = f"{base} ({space})" if base in shared_tabs else base
         cols, rows = terminal.get("cols"), terminal.get("rows")
         return WindowRef(
             window_id=window_id_for_address(address),
-            window_name=format_agent_topic_prefix(space, tab, provider=provider),
+            window_name=name,
             cwd=_str(terminal.get("cwd")),
             pane_current_command=provider or _command_name(fg_argv),
             pane_tty="",
@@ -609,6 +718,8 @@ class HcManager:
             # never ccgram's own terminal, a probe, or a remote terminal whose
             # transcripts ccgram cannot read.
             topic_eligible=status is not None and self._is_visible(terminal),
+            # Only a real Herdr space routes; "Herdr" is a display fallback.
+            workspace=space if _labels(terminal).get(_WHERE_LABEL) else "",
         )
 
     # ── Multiplexer Protocol surface ───────────────────────────────────
@@ -644,7 +755,8 @@ class HcManager:
         terminals = await self._list_terminals()
         if terminals is None:
             return []
-        return [self._to_window(t) for t in terminals if self._is_visible(t)]
+        shared = self._shared_tabs(terminals)
+        return [self._to_window(t, shared) for t in terminals if self._is_visible(t)]
 
     async def list_windows_for_reconciliation(self) -> list[WindowRef] | None:
         """Every live terminal, or None when herdr-core could not answer.
@@ -655,7 +767,8 @@ class HcManager:
         terminals = await self._list_terminals()
         if terminals is None:
             return None
-        return [self._to_window(t) for t in terminals]
+        shared = self._shared_tabs(terminals)
+        return [self._to_window(t, shared) for t in terminals]
 
     async def window_exists(self, window_id: str) -> bool | None:
         """Ask herdr-core about one terminal: True, False, or None if unknown.
@@ -708,7 +821,11 @@ class HcManager:
     async def find_window_by_id(self, window_id: str) -> WindowRef | None:
         """The live terminal behind *window_id*, or None."""
         terminal = await self._terminal(window_id)
-        return None if terminal is None else self._to_window(terminal)
+        if terminal is None:
+            return None
+        # Name it the way the listing does, so the topic title doesn't flip.
+        terminals = await self._list_terminals()
+        return self._to_window(terminal, self._shared_tabs(terminals or []))
 
     async def _read(self, window_id: str, lines: int) -> dict | None:
         address = address_for_window_id(window_id)
@@ -830,6 +947,23 @@ class HcManager:
             return False
         return True
 
+    async def _clear_input(self, window_id: str, address: str) -> None:
+        """Empty the agent's input box so a pasted message is not appended to a draft.
+
+        ``terminal.send`` pastes at the cursor, so text left in the box at the
+        desk (a half-typed ``/rename ``) would prefix the message and change what
+        it means. The message from Telegram wins over the draft. The plain-text
+        screen cannot tell a draft from Claude Code's dimmed placeholder, so the
+        box is always cleared, with one round of no-op-when-empty keys per row.
+        Best effort: an unreadable screen or an unrecognised UI sends as before.
+        """
+        screen = await self._read_screen(window_id)
+        rows = input_box_rows(screen) if screen else None
+        if rows is None:
+            return
+        rounds = min(rows + 1, _CLEAR_MAX_ROUNDS)
+        await self._keys(address, list(_CLEAR_ROUND) * rounds)
+
     async def send(
         self,
         window_id: str,
@@ -841,7 +975,8 @@ class HcManager:
     ) -> bool:
         """Send text or keys to the terminal.
 
-        * Literal text with Enter goes to ``terminal.send``: a bracketed paste
+        * Literal text with Enter first clears the input box (``_clear_input``),
+          then goes to ``terminal.send``: a bracketed paste
           followed by Enter once the keyboard has been quiet for ~3 s, so a
           person typing at the desk is never interleaved mid-line. ``force``
           is set because ccgram already validates prompts before sending,
@@ -871,6 +1006,7 @@ class HcManager:
                 keys.append("enter")
             return bool(keys) and await self._keys(address, keys)
         if enter and text:
+            await self._clear_input(window_id, address)
             try:
                 await self._call(
                     "terminal.send",

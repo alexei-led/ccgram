@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import os
+import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
@@ -121,6 +123,10 @@ class FakeApp:
         return (127, "", "herdr-app: command not found")
 
 
+# Keep listings hermetic: never read this machine's ~/.claude/sessions.
+_NO_SESSIONS = "/nonexistent/claude-sessions"
+
+
 def _manager(
     fake: FakeHc,
     app: FakeApp | None = None,
@@ -134,6 +140,7 @@ def _manager(
         app_runner=app or FakeApp(),
         own_terminal_id=own,
         stream_opener=stream_opener,
+        claude_sessions_dir=_NO_SESSIONS,
     )
 
 
@@ -286,24 +293,30 @@ async def test_window_projection_fields() -> None:
     assert windows is not None
     by_id = {w.window_id: w for w in windows}
     chore = by_id["hc-t5"]
-    assert chore.window_name == "Claude ▸ Sessions ▸ chore"
+    # Just the tab: the topic layer adds any provider label.
+    assert chore.window_name == "chore"
     assert chore.cwd == "/Users/alice/code/work"
     assert chore.pane_current_command == "claude"
     assert (chore.pane_width, chore.pane_height) == (130, 33)
     assert chore.pane_tty == ""
     # The codex app word wins over the node wrapper in the foreground.
-    assert by_id["hc-t1y"].window_name == "Codex ▸ Work ▸ review"
+    assert by_id["hc-t1y"].window_name == "review"
     assert by_id["hc-t1y"].pane_current_command == "codex"
     # A bare shell keeps the shell name for shell detection.
     assert by_id["hc-t9"].pane_current_command == "zsh"
-    assert by_id["hc-t9"].window_name == "Sessions ▸ notes"
-    # No `where` label: fall back to the terminal title.
-    assert by_id["hc-t2b"].window_name.startswith("Herdr")
+    assert by_id["hc-t9"].window_name == "notes"
+    # No `where` label: fall back to the terminal title, name or address.
+    assert by_id["hc-t2b"].window_name
+    assert "▸" not in by_id["hc-t2b"].window_name
 
 
 async def test_own_terminal_defaults_to_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HC_TERMINAL_ID", "t5")
-    manager = HcManager(transport=_listing_fake(), app_runner=FakeApp())
+    manager = HcManager(
+        transport=_listing_fake(),
+        app_runner=FakeApp(),
+        claude_sessions_dir=_NO_SESSIONS,
+    )
     windows = await manager.list_windows()
     assert "hc-t5" not in {w.window_id for w in windows}
 
@@ -649,6 +662,95 @@ async def test_literal_text_with_enter_uses_terminal_send() -> None:
     ]
     timeout = fake.calls[-1][2]
     assert timeout >= 10  # the quiet-keyboard wait is ~3 s
+
+
+_RULE = "─" * 60
+
+
+def _claude_screen(*box: str) -> dict:
+    """A Claude Code screen whose input box holds ``box`` (first row has ``❯``)."""
+    rows = ["⏺ Done.", "", _RULE, *box, _RULE, "  [Opus] ctx 3%", "  ⏵⏵ auto mode on"]
+    return {"complete": True, "how": "screen", "text": "\n".join(rows)}
+
+
+def _clear_round() -> list[str]:
+    return ["ctrl+e", "ctrl+u", "ctrl+k", "backspace", "delete"]
+
+
+async def test_send_clears_a_leftover_draft_first() -> None:
+    # A half-typed "/rename " left at the desk must not swallow a phone message.
+    fake = (
+        FakeHc()
+        .on("terminal.read", _claude_screen("❯ /rename abc", "  second line"))
+        .on("terminal.keys", {"turn": 4})
+        .on("terminal.send", {"started": True, "status": "idle", "turn": 4})
+    )
+    assert await _manager(fake).send("hc-t5", "visualise it") is True
+    assert [name for name, _p, _t in fake.calls] == [
+        "terminal.read",
+        "terminal.keys",
+        "terminal.send",
+    ]
+    # One round per box row plus one spare; every key is a no-op on an empty box.
+    assert fake.calls_to("terminal.keys") == [
+        {"terminal": "t5", "keys": _clear_round() * 3}
+    ]
+    assert fake.calls_to("terminal.send")[0]["text"] == "visualise it"
+
+
+async def test_send_clear_sees_a_rule_holding_the_session_name() -> None:
+    screen = _claude_screen('❯ Try "create a util"')
+    rows = screen["text"].split("\n")
+    rows[4] = "─" * 40 + " aivideo " + "──"  # the rule under the box
+    screen["text"] = "\n".join(rows)
+    fake = (
+        FakeHc()
+        .on("terminal.read", screen)
+        .on("terminal.keys", {"turn": 4})
+        .on("terminal.send", {"started": True, "status": "idle", "turn": 4})
+    )
+    assert await _manager(fake).send("hc-t5", "hi") is True
+    assert fake.calls_to("terminal.keys") == [
+        {"terminal": "t5", "keys": _clear_round() * 2}
+    ]
+
+
+async def test_send_does_not_clear_without_an_input_box() -> None:
+    # A permission dialog (no ❯ row right under the rule) or an unknown UI.
+    dialog = {
+        "complete": True,
+        "how": "screen",
+        "text": "\n".join(
+            [_RULE, " Bash command", "   ls", " ❯ 1. Yes", "   2. No", _RULE]
+        ),
+    }
+    fake = (
+        FakeHc()
+        .on("terminal.read", dialog)
+        .on("terminal.send", {"started": True, "status": "idle", "turn": 4})
+    )
+    assert await _manager(fake).send("hc-t5", "hi") is True
+    assert fake.calls_to("terminal.keys") == []
+    assert len(fake.calls_to("terminal.send")) == 1
+
+
+async def test_send_still_goes_out_when_the_screen_cannot_be_read() -> None:
+    fake = FakeHc().on("terminal.send", {"started": True, "status": "idle", "turn": 4})
+    assert await _manager(fake).send("hc-t5", "hi") is True
+    assert fake.calls_to("terminal.keys") == []
+
+
+async def test_clear_rounds_are_capped() -> None:
+    box = ["❯ line 0", *(f"  line {i}" for i in range(1, 200))]
+    fake = (
+        FakeHc()
+        .on("terminal.read", _claude_screen(*box))
+        .on("terminal.keys", {"turn": 4})
+        .on("terminal.send", {"started": True, "status": "idle", "turn": 4})
+    )
+    assert await _manager(fake).send("hc-t5", "hi") is True
+    (keys,) = fake.calls_to("terminal.keys")
+    assert len(keys["keys"]) == len(_clear_round()) * hc_module._CLEAR_MAX_ROUNDS
 
 
 async def test_send_failure_returns_false() -> None:
@@ -1057,3 +1159,53 @@ async def test_create_topic_target_raises_on_failure(tmp_path: Path) -> None:
         await _manager(FakeHc()).create_topic_target(
             str(tmp_path / "missing"), launch_command="claude", workspace_id=None
         )
+
+
+async def test_shared_tab_names_add_the_space() -> None:
+    """Two terminals in tabs of the same name are told apart by their space."""
+    manager = _manager(_listing_fake())
+    first = {"address": "t1", "labels": {"where": "Sessions / research"}}
+    second = {"address": "t2", "labels": {"where": "Tabula / research"}}
+    alone = {"address": "t3", "labels": {"where": "Digients / cua"}}
+    shared = manager._shared_tabs([first, second, alone])
+    assert shared == frozenset({"research"})
+    assert manager._to_window(first, shared).window_name == "research (Sessions)"
+    assert manager._to_window(second, shared).window_name == "research (Tabula)"
+    assert manager._to_window(alone, shared).window_name == "cua"
+
+
+async def test_window_carries_its_space_for_topic_routing() -> None:
+    manager = _manager(_listing_fake())
+    window = manager._to_window(
+        {"address": "t3", "labels": {"where": "Digients / cua"}}
+    )
+    assert window.workspace == "Digients"
+    assert manager._to_window({"address": "t4", "labels": {}}).workspace == ""
+
+
+async def test_claude_session_name_names_the_topic(tmp_path) -> None:
+    """A named Claude Code session gives the topic its name; a rename follows."""
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    manager = HcManager(
+        transport=_listing_fake(),
+        app_runner=FakeApp(),
+        own_terminal_id="",
+        claude_sessions_dir=str(sessions),
+    )
+    terminal = {
+        "address": "t20",
+        "labels": {"where": "Digients / cua"},
+        "foreground": {"pid": 4242, "argv": ["claude"]},
+    }
+    assert manager._to_window(terminal).window_name == "cua"
+    session_file = sessions / "4242.json"
+    session_file.write_text(json.dumps({"pid": 4242, "name": "dig-cua"}))
+    assert manager._to_window(terminal).window_name == "dig-cua"
+    session_file.write_text(json.dumps({"pid": 4242, "name": "dig-cua-2"}))
+    os.utime(session_file, (time.time() + 5, time.time() + 5))
+    assert manager._to_window(terminal).window_name == "dig-cua-2"
+    # An unnamed session falls back to the tab.
+    session_file.write_text(json.dumps({"pid": 4242, "name": None}))
+    os.utime(session_file, (time.time() + 10, time.time() + 10))
+    assert manager._to_window(terminal).window_name == "cua"
