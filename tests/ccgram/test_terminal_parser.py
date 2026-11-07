@@ -1313,3 +1313,33 @@ class TestFinishedTurnSummary:
             "Baked for 11s · done 3:09 PM", "Baking… (11s · esc to interrupt)"
         )
         assert parse_status_block(working) == "Baking… (11s · esc to interrupt)"
+
+
+class TestMultiTabQuestionBottom:
+    """A multi-tab question ends at its footer, not at the live status line."""
+
+    def _screen(self, body: str) -> str:
+        sep = "─" * 40
+        return (
+            f"{sep}\n←  ☐ Fruit  ☐ Colour  ✔ Submit  →\n\nPick one.\n\n{body}\n\n"
+            f"{sep} chore ─\n  [Opus 5.5] 💰 $1.23 │ ⚡ 86.7 tok/s\n"
+        )
+
+    def test_stops_at_the_footer(self) -> None:
+        content = extract_interactive_content(
+            self._screen(
+                "❯ 1. Red\n  2. Blue\n\n"
+                "Enter to select · Tab/Arrow keys to navigate · Esc to cancel"
+            )
+        )
+        assert content is not None
+        assert content.content.splitlines()[-1].startswith("Enter to select")
+
+    def test_submit_tab_stops_at_its_last_option(self) -> None:
+        content = extract_interactive_content(
+            self._screen(
+                "Ready to submit your answers?\n\n❯ 1. Submit answers\n  2. Cancel"
+            )
+        )
+        assert content is not None
+        assert content.content.splitlines()[-1].strip() == "2. Cancel"
