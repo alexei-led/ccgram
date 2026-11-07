@@ -122,6 +122,15 @@ _DIRECT_CHOICE_ACTION_RE = re.compile(
     r"(?i)^\s*(?:Esc to|Enter to|Press enter to|ctrl-g to edit)"
 )
 _NUMBERED_OPTION_RE = re.compile(r"^\s*(?:[←→❯>]\s*)?(\d+)\.\s+(.+?)\s*$")
+# Claude Code's AskUserQuestion chrome: a tab bar of questions on top
+# ("←  ☐ Topic  ✔ Submit  →", ☐/☒ mark unanswered/answered questions, not
+# options) and an "Enter to select" footer. Options carry indented description
+# lines, "Chat about this" sits below a rule, and multi-select options are
+# "[ ]" / "[✔]" checkboxes.
+_QUESTION_TAB_BAR_RE = re.compile(r"^\s*←.*→\s*$")
+_QUESTION_FOOTER_RE = re.compile(r"^\s*Enter to select\b")
+_RULE_LINE_RE = re.compile(r"^\s*─+\s*$")
+_CHECKBOX_RE = re.compile(r"^\[([ ✔✓xX])\]\s*")
 _MULTI_SELECT_RE = re.compile(
     r"(?i)\b(?:select|choose|pick)\b[^\n]*(?:all|multiple|more than one)\b"
 )
@@ -277,6 +286,15 @@ def get_interactive_msg_id(
     return _interactive_msgs.get(_interactive_key(user_id, thread_id, chat_id))
 
 
+def _checkbox_label(label: str) -> str:
+    """Show a "[ ]" / "[✔]" checkbox option as ☐ / ☑ on its button."""
+    box = _CHECKBOX_RE.match(label)
+    if box is None:
+        return label
+    mark = "\u2610" if box.group(1) == " " else "\u2611"
+    return f"{mark} {label[box.end() :]}"
+
+
 def _numbered_menu_blocks(
     lines: list[str],
     *,
@@ -295,11 +313,14 @@ def _numbered_menu_blocks(
         choices: list[tuple[str, str]] = []
         expected = 1
         while index < len(lines):
-            # Pi indents descriptions past the option number, including numbered prose.
-            if (
-                allow_descriptions
-                and lines[index].strip()
-                and lines[index].startswith(" " * (first.start(1) + 1))
+            # Pi and Claude indent descriptions past the option number, including
+            # numbered prose; Claude also rules off "Chat about this".
+            if allow_descriptions and (
+                (
+                    lines[index].strip()
+                    and lines[index].startswith(" " * (first.start(1) + 1))
+                )
+                or _RULE_LINE_RE.match(lines[index])
             ):
                 index += 1
                 continue
@@ -309,7 +330,7 @@ def _numbered_menu_blocks(
             number, label = option.groups()
             if int(number) != expected:
                 break
-            choices.append((number, f"{number}. {label}"))
+            choices.append((number, f"{number}. {_checkbox_label(label)}"))
             expected += 1
             index += 1
 
@@ -320,22 +341,36 @@ def _numbered_menu_blocks(
     return blocks
 
 
-def parse_direct_choices(content: str) -> tuple[tuple[str, str], ...]:
+def parse_direct_choices(
+    content: str, *, question: bool = False
+) -> tuple[tuple[str, str], ...]:
     """Extract direct choices only from the active single-select menu.
 
     Numbered options must form a contiguous sequential menu with two through
     eight choices. The candidate nearest a cursor marker or action footer wins;
     ties are ambiguous and deliberately retain the navigation keyboard. This
     prevents unrelated numbered prose elsewhere in a terminal capture from
-    becoming one-tap input. Explicit multi-select prompts never get buttons.
+    becoming one-tap input. Explicit multi-select prompts never get buttons,
+    except Claude's AskUserQuestion (``question=True``), whose number keys
+    toggle "[ ]" options.
     """
-    if "☐" in content or "☑" in content or _MULTI_SELECT_RE.search(content):
+    # Claude's question tab bar uses ☐/☒ for questions, not for options.
+    lines = [
+        line for line in content.splitlines() if not _QUESTION_TAB_BAR_RE.match(line)
+    ]
+    body = "\n".join(lines)
+    claude_question = question and any(
+        _QUESTION_FOOTER_RE.match(line) for line in lines
+    )
+    if not claude_question and (
+        "☐" in body or "☑" in body or _MULTI_SELECT_RE.search(body)
+    ):
         return ()
 
-    lines = content.splitlines()
     blocks = _numbered_menu_blocks(
         lines,
-        allow_descriptions=any(line.strip() == PI_QUESTION_FOOTER for line in lines),
+        allow_descriptions=claude_question
+        or any(line.strip() == PI_QUESTION_FOOTER for line in lines),
     )
     anchors = [
         index
@@ -406,6 +441,90 @@ def get_interactive_prompt_fingerprint(
     if _interactive_msgs.get(ikey) != message_id:
         return None
     return _interactive_prompt_fingerprints.get(ikey)
+
+
+_TYPED_ANSWER_RE = re.compile(r"^(?:[\u2610\u2611] )?Type something\.?$")
+_QUESTION_NAV_FOOTER_RE = re.compile(r"^\s*Enter to select\b.*\bto navigate\b")
+_QUESTION_CURSOR_RE = re.compile(r"^\s*[❯>]\s*(\d+)\.")
+
+
+def _live_question(
+    user_id: int, thread_id: int | None, chat_id: int | None
+) -> tuple[int, tuple[tuple[str, str], ...]] | None:
+    """Cursor position and options of the topic's live Claude question prompt.
+
+    A Claude question shows its tab bar or its "Enter to select · … to
+    navigate" footer; the cursor is the option row marked ❯. None for any
+    other prompt, or when the cursor cannot be found.
+    """
+    content = _interactive_contents.get(_interactive_key(user_id, thread_id, chat_id))
+    if not content:
+        return None
+    lines = content.splitlines()
+    if not any(
+        _QUESTION_TAB_BAR_RE.match(line) or _QUESTION_NAV_FOOTER_RE.match(line)
+        for line in lines
+    ):
+        return None
+    cursor = next(
+        (int(m.group(1)) for line in lines if (m := _QUESTION_CURSOR_RE.match(line))),
+        None,
+    )
+    if cursor is None:
+        return None
+    return cursor, parse_direct_choices(content, question=True)
+
+
+def _moves(cursor: int, target: int) -> list[str]:
+    return (
+        ["Down"] * (target - cursor) if target > cursor else ["Up"] * (cursor - target)
+    )
+
+
+def _is_free_text(label: str) -> bool:
+    return bool(_TYPED_ANSWER_RE.match(label.split(". ", 1)[-1]))
+
+
+def question_choice_keys(
+    user_id: int, thread_id: int | None, chat_id: int | None, key: str
+) -> list[str] | None:
+    """Keys that pick option *key* of the topic's live Claude question.
+
+    Claude's question prompt ignores number keys, so a pick moves the cursor
+    with Up/Down from the row the screen marks, then presses Enter (which
+    selects a single-select option or toggles a checkbox). The free-text
+    option only gets the cursor, so the next text message fills it in. None
+    when the live prompt is not a Claude question: other prompts take the
+    number key itself.
+    """
+    question = _live_question(user_id, thread_id, chat_id)
+    if question is None or not key.isdigit():
+        return None
+    cursor, choices = question
+    label = next((label for k, label in choices if k == key), None)
+    if label is None:
+        return None
+    moves = _moves(cursor, int(key))
+    return moves if _is_free_text(label) else [*moves, "Enter"]
+
+
+def typed_answer_keys(
+    user_id: int, thread_id: int | None, chat_id: int | None
+) -> list[str] | None:
+    """Keys that put the cursor on the live question's free-text option.
+
+    Empty when it is already there; None when the prompt offers no free-text
+    ("Type something") answer. Text sent from Telegram while such a prompt
+    shows becomes that answer instead of dismissing the prompt.
+    """
+    question = _live_question(user_id, thread_id, chat_id)
+    if question is None:
+        return None
+    cursor, choices = question
+    for key, label in choices:
+        if _is_free_text(label):
+            return _moves(cursor, int(key))
+    return None
 
 
 def is_current_interactive_message(
@@ -830,7 +949,7 @@ async def handle_interactive_ui(
         pane_id=pane_id,
         direct_choices=()
         if menu is not None or advisory
-        else parse_direct_choices(content),
+        else parse_direct_choices(content, question=ui_name == "AskUserQuestion"),
         sequence=sequence,
         menu=menu,
         advisory=advisory,

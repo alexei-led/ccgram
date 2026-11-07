@@ -37,6 +37,7 @@ from .pi_controls import (
 )
 from ..messaging_pipeline.message_sender import ack_reaction, safe_reply
 from .interactive_ui import (
+    question_choice_keys,
     PromptStateError,
     pane_has_interactive_prompt,
     get_menu_reply_target,
@@ -60,6 +61,10 @@ if TYPE_CHECKING:
 logger = structlog.get_logger()
 
 # cb_prefix -> (tmux_key, refresh_ui_after)
+# Pause before re-rendering a question after a pick, so the terminal shows
+# the next question or the moved cursor.
+_QUESTION_REFRESH_DELAY_S = 0.5
+
 INTERACTIVE_KEY_MAP: dict[str, tuple[str, bool]] = {
     CB_ASK_UP: ("Up", True),
     CB_ASK_DOWN: ("Down", True),
@@ -149,6 +154,57 @@ def match_interactive_prefix(data: str) -> tuple[str, str, str | None] | None:
     return None
 
 
+async def _send_question_choice(
+    query: CallbackQuery,
+    user_id: int,
+    thread_id: int | None,
+    chat_id: int | None,
+    window_id: str,
+    pane_id: str | None,
+    keys: list[str],
+    adapter,
+    action_id: str,
+    expected_prompt: str | None,
+    client: TelegramClient | None = None,
+) -> None:
+    """Pick a Claude question option with cursor keys (it ignores digits).
+
+    Like the arrow buttons, the prompt message is re-rendered afterwards: the
+    poller does not redraw a prompt it already shows, so without this the
+    next question (or the moved cursor) never reaches Telegram and every
+    button on the stale keyboard reads as expired.
+    """
+    if not keys:
+        # The cursor already sits on the free-text option: nothing changes on
+        # screen, so the keyboard stays valid for the next tap.
+        await query.answer("Send your answer as a message")
+        return
+    try:
+        sent, _ = await adapter.send_keys(
+            window_id,
+            keys,
+            pane_id=pane_id,
+            action_id=action_id,
+            expected_prompt=expected_prompt,
+        )
+    except ProtocolError:
+        raise
+    except Exception:  # noqa: BLE001 — report any backend delivery failure to user
+        logger.warning("Failed to send question choice", exc_info=True)
+        sent = False
+    if not sent:
+        await query.answer("Unable to send choice. Try again.", show_alert=True)
+        return
+    advance_interactive_sequence(user_id, thread_id, chat_id=chat_id)
+    free_text = keys[-1] != "Enter"
+    await query.answer("Send your answer as a message" if free_text else None)
+    if client is not None:
+        await asyncio.sleep(_QUESTION_REFRESH_DELAY_S)
+        await handle_interactive_ui(
+            client, user_id, window_id, thread_id, pane_id=pane_id, chat_id=chat_id
+        )
+
+
 async def _handle_direct_choice(
     query: CallbackQuery,
     user_id: int,
@@ -161,6 +217,7 @@ async def _handle_direct_choice(
     adapter,
     action_id: str,
     expected_prompt: str | None,
+    client: TelegramClient | None = None,
 ) -> None:
     """Send one validated direct choice and invalidate its sequence."""
     if choice is None:
@@ -178,6 +235,22 @@ async def _handle_direct_choice(
     if expected_prompt is None:
         await query.answer(
             "Unverified terminal UI. Use /toolbar or the terminal.", show_alert=True
+        )
+        return
+    keys = question_choice_keys(user_id, thread_id, chat_id, key)
+    if keys is not None:
+        await _send_question_choice(
+            query,
+            user_id,
+            thread_id,
+            chat_id,
+            window_id,
+            pane_id,
+            keys,
+            adapter,
+            action_id,
+            expected_prompt,
+            client,
         )
         return
     enter = key in {"y", "n"}
@@ -329,6 +402,7 @@ async def handle_interactive_callback(
                 adapter,
                 action_id,
                 expected_prompt,
+                PTBTelegramClient(context.bot),
             )
             return
 

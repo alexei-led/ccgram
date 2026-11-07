@@ -30,9 +30,13 @@ from .interactive_ui import (
     handle_interactive_ui,
     pane_has_interactive_prompt as pane_has_interactive_prompt,
     set_interactive_mode,
+    question_choice_keys,
+    typed_answer_keys,
 )
 
 __all__ = [
+    "question_choice_keys",
+    "typed_answer_keys",
     "INTERACTIVE_INSTRUCTION_LINE",
     "INTERACTIVE_KEY_LABELS",
     "INTERACTIVE_KEY_MAP",

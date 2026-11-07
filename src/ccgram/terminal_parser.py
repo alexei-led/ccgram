@@ -211,6 +211,33 @@ def _last_nonempty_from(lines: list[str], top_idx: int) -> int | None:
     return None
 
 
+_OPEN_BOTTOM_OPTION_RE = re.compile(r"^\s*(?:[❯>]\s*)?\d+\.\s")
+
+
+def _open_bottom(lines: list[str], top_idx: int) -> int | None:
+    """End of a region whose bottom marker varies (multi-tab AskUserQuestion).
+
+    The action-hint footer when a tab shows one, else the last numbered option
+    (the submit tab has no footer), else the last non-empty line. Stopping
+    there keeps the input box and status line below the prompt, which change
+    every second, out of the content, so the prompt reads as one prompt.
+    """
+    for i in range(top_idx + 1, len(lines)):
+        if any(p.search(lines[i]) for p in _SELECTION_HINT_BOTTOMS):
+            return i
+    last_option = next(
+        (
+            i
+            for i in range(len(lines) - 1, top_idx, -1)
+            if _OPEN_BOTTOM_OPTION_RE.match(lines[i])
+        ),
+        None,
+    )
+    return (
+        last_option if last_option is not None else _last_nonempty_from(lines, top_idx)
+    )
+
+
 def _rejects_scrollback_footer(lines: list[str], top_idx: int, bottom_idx: int) -> bool:
     """Reject detached numbered echoes as well as distant numbered bottoms.
 
@@ -248,9 +275,9 @@ def _rejects_scrollback_footer(lines: list[str], top_idx: int, bottom_idx: int) 
 def _try_extract(lines: list[str], pattern: UIPattern) -> InteractiveUIContent | None:
     """Try to extract content matching a single UI pattern.
 
-    When ``pattern.bottom`` is empty, the region extends from the top marker
-    to the last non-empty line (used for multi-tab AskUserQuestion where the
-    bottom delimiter varies by tab).
+    When ``pattern.bottom`` is empty, the region ends at ``_open_bottom``
+    (used for multi-tab AskUserQuestion where the bottom delimiter varies by
+    tab).
     """
     top_idx: int | None = None
     bottom_idx: int | None = None
@@ -283,7 +310,7 @@ def _try_extract(lines: list[str], pattern: UIPattern) -> InteractiveUIContent |
         return None
 
     if not pattern.bottom:
-        bottom_idx = _last_nonempty_from(lines, top_idx)
+        bottom_idx = _open_bottom(lines, top_idx)
 
     if bottom_idx is None or bottom_idx - top_idx < pattern.min_gap:
         return None

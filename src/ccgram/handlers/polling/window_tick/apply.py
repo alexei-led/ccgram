@@ -135,11 +135,7 @@ async def _transition_to_idle(
     else:
         ps.mark_startup_quietly_settled(window_id)
     client = PTBTelegramClient(bot)
-    # Idle at a prompt (a question, a plan or an approval) means it waits on
-    # the user, which the topic shows apart from a plain idle.
-    waiting = get_interactive_window(user_id, thread_id, chat_id=chat_id) == window_id
-    state = "waiting" if waiting else "idle"
-    await update_topic_emoji(client, chat_id, thread_id, state, display)
+    await update_topic_emoji(client, chat_id, thread_id, "idle", display)
     lc.clear_typing_state(user_id, thread_id)
     if not send_status:
         return
@@ -585,6 +581,21 @@ async def _apply_tick_decision(
 # ── Status-update orchestration ─────────────────────────────────────────
 
 
+async def _show_waiting(
+    client: PTBTelegramClient, user_id: int, window_id: str, thread_id: int | None
+) -> None:
+    """Mark the topic as waiting on the user while a prompt is on screen.
+
+    The prompt path returns before the tick decision, so the idle/active
+    transitions never run while a question, plan or approval is showing.
+    """
+    if thread_id is None:
+        return
+    chat_id = thread_router.resolve_chat_id(user_id, thread_id)
+    display = thread_router.get_display_name(window_id)
+    await update_topic_emoji(client, chat_id, thread_id, "waiting", display)
+
+
 async def _update_status(
     bot: "Bot",
     user_id: int,
@@ -619,6 +630,7 @@ async def _update_status(
     client = PTBTelegramClient(bot)
     if interactive_window == window_id:
         if status is not None and status.is_interactive:
+            await _show_waiting(client, user_id, window_id, thread_id)
             return
         await clear_interactive_msg(user_id, client, thread_id)
         clear_interactive_mode(user_id, thread_id)
@@ -628,6 +640,7 @@ async def _update_status(
 
     if should_check_new_ui and status is not None and status.is_interactive:
         await handle_interactive_ui(client, user_id, window_id, thread_id)
+        await _show_waiting(client, user_id, window_id, thread_id)
         return
 
     ctx = build_context(window_id, w, status, runtime=runtime)

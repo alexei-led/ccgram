@@ -426,26 +426,6 @@ class TestTransitionToIdle:
         assert mock_enqueue.call_args[0][3] == IDLE_STATUS_TEXT
         assert mock_enqueue.call_args[1]["thread_id"] == 42
 
-    @pytest.mark.parametrize(
-        ("prompt_window", "state"),
-        [("@0", "waiting"), (None, "idle"), ("@9", "idle")],
-        ids=["own_prompt", "no_prompt", "other_window_prompt"],
-    )
-    async def test_idle_at_a_prompt_shows_waiting(
-        self, prompt_window: str | None, state: str
-    ) -> None:
-        from ccgram.handlers.polling.window_tick import _transition_to_idle
-
-        module = "ccgram.handlers.polling.window_tick.apply"
-        with (
-            patch(f"{module}.update_topic_emoji", new_callable=AsyncMock) as emoji,
-            patch(f"{module}.enqueue_status_update", new_callable=AsyncMock),
-            patch(f"{module}.get_interactive_window", return_value=prompt_window),
-        ):
-            await _transition_to_idle(AsyncMock(spec=Bot), 1, "@0", 42, -100, "project")
-        assert emoji.await_args is not None
-        assert emoji.await_args.args[3] == state
-
 
 class TestQuietStartupSettlement:
     async def test_startup_expiry_stays_quiet_and_runs_idle_cleanup(self) -> None:
