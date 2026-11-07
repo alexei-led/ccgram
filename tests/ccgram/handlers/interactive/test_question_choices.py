@@ -150,9 +150,8 @@ class TestFreeTextAnswer:
             ),
             patch("ccgram.handlers.interactive.get_interactive_msg_id", return_value=7),
             patch.object(text_handler, "_TYPED_ANSWER_FOCUS_S", 0),
-            patch.object(text_handler, "_TYPED_ANSWER_REFRESH_S", 0),
             patch(
-                "ccgram.handlers.interactive.handle_interactive_ui",
+                "ccgram.handlers.interactive.follow_prompt_changes",
                 new_callable=AsyncMock,
             ) as refresh,
         ):
@@ -195,20 +194,22 @@ class TestQuestionChoiceCallback:
         adapter.send_keys = AsyncMock(return_value=result)
         with (
             patch.object(cb, "advance_interactive_sequence") as advance,
-            patch.object(cb, "_QUESTION_REFRESH_DELAY_S", 0),
             patch.object(cb, "handle_interactive_ui", new_callable=AsyncMock) as ui,
+            patch.object(cb, "follow_prompt_changes", new_callable=AsyncMock) as follow,
         ):
             await cb._send_question_choice(
                 query, 1, 42, -100, "hc-t5", None, keys, adapter, "a", "fp", MagicMock()
             )
+            await asyncio.sleep(0)
         self.redrawn = ui.await_count
+        self.followed = follow.await_count
         return query, adapter, advance
 
     async def test_tap_sends_cursor_keys_and_advances(self) -> None:
         _query, adapter, advance = await self._tap(["Down", "Enter"])
         assert adapter.send_keys.await_args.args[1] == ["Down", "Enter"]
         advance.assert_called_once()
-        assert self.redrawn == 1
+        assert self.followed == 1
 
     async def test_tap_on_the_focused_free_text_option_changes_nothing(self) -> None:
         query, adapter, advance = await self._tap([])
@@ -256,3 +257,48 @@ class TestQuestionKeyboard:
 
     def test_other_prompts_keep_the_keypad(self) -> None:
         assert "⏎ Enter" in self._labels(SINGLE, question=False)
+
+
+class TestFollowPromptChanges:
+    async def _follow(self, captures: list) -> AsyncMock:
+        from ccgram.handlers.interactive import interactive_ui as ui
+
+        key = ui._interactive_key(1, 42, -100)
+        ui._interactive_mode[key] = "hc-t5"
+        ui._interactive_prompt_fingerprints[key] = "old"
+        redraw = AsyncMock(
+            side_effect=lambda *a, **k: ui._interactive_prompt_fingerprints.__setitem__(
+                key, __import__("hashlib").sha256(b"next").hexdigest()
+            )
+        )
+        try:
+            with (
+                patch.object(
+                    ui, "_capture_interactive_content", AsyncMock(side_effect=captures)
+                ),
+                patch.object(ui, "handle_interactive_ui", redraw),
+            ):
+                await ui.follow_prompt_changes(
+                    MagicMock(),
+                    1,
+                    "hc-t5",
+                    42,
+                    chat_id=-100,
+                    timeout=0.05,
+                    interval=0.01,
+                )
+        finally:
+            ui._interactive_mode.pop(key, None)
+            ui._interactive_prompt_fingerprints.pop(key, None)
+        return redraw
+
+    async def test_redraws_once_per_new_state(self) -> None:
+        state = ("AskUserQuestion", "next", False, None)
+        redraw = await self._follow([state] * 20)
+        assert redraw.await_count == 1
+
+    async def test_stops_when_the_prompt_is_gone(self) -> None:
+        redraw = await self._follow(
+            [None] + [("AskUserQuestion", "x", False, None)] * 20
+        )
+        redraw.assert_not_awaited()

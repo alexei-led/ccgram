@@ -23,6 +23,7 @@ from .interactive_ui import (
     clear_interactive_mode,
     clear_interactive_msg,
     clear_send_cooldowns,
+    follow_prompt_changes,
     format_interactive_message,
     get_interactive_msg_id,
     get_interactive_pane as get_interactive_pane,
@@ -35,6 +36,7 @@ from .interactive_ui import (
 )
 
 __all__ = [
+    "follow_prompt_changes",
     "question_choice_keys",
     "typed_answer_keys",
     "INTERACTIVE_INSTRUCTION_LINE",

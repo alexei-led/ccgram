@@ -1057,6 +1057,42 @@ async def handle_interactive_ui(
     return sent is not None
 
 
+async def follow_prompt_changes(
+    client: TelegramClient,
+    user_id: int,
+    window_id: str,
+    thread_id: int | None,
+    *,
+    pane_id: str | None = None,
+    chat_id: int | None = None,
+    timeout: float,
+    interval: float = 1.0,
+) -> None:
+    """Redraw the topic's prompt each time the terminal shows a new state.
+
+    The poller does not redraw a prompt it already shows, so after a tap or a
+    typed answer the next question would never reach Telegram. The terminal
+    settles on no fixed schedule (a paste waits for a quiet keyboard first),
+    so this watches for *timeout* seconds and redraws on every change. It
+    stops early once the prompt is gone; the poller then clears the message.
+    """
+    ikey = _interactive_key(user_id, thread_id, chat_id)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        await asyncio.sleep(interval)
+        if _interactive_mode.get(ikey) != window_id:
+            return
+        captured = await _capture_interactive_content(window_id, pane_id=pane_id)
+        if captured is None:
+            return
+        _ui_name, content, advisory, _menu = captured
+        fingerprint = None if advisory else hashlib.sha256(content.encode()).hexdigest()
+        if fingerprint != _interactive_prompt_fingerprints.get(ikey):
+            await handle_interactive_ui(
+                client, user_id, window_id, thread_id, pane_id=pane_id, chat_id=chat_id
+            )
+
+
 async def clear_interactive_msg(
     user_id: int,
     client: TelegramClient | None = None,
