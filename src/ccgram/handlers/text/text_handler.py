@@ -94,6 +94,9 @@ _BASH_OUTPUT_LIMIT = 3800
 # owning pane after an Escape, before concluding the prompt stayed.
 _DISMISS_CONFIRM_ATTEMPTS = 3
 _DISMISS_CONFIRM_INTERVAL_S = 0.3
+# Pause after moving a question's cursor to its free-text option, so the
+# input field is focused before the answer is pasted.
+_TYPED_ANSWER_FOCUS_S = 0.4
 
 PENDING_DELIVERY_NOTICE = "\U0001f4ac Will deliver once the agent starts."
 
@@ -589,6 +592,74 @@ async def _dismiss_interactive_prompt(
     return False
 
 
+async def _answer_free_text_option(
+    user_id: int,
+    thread_id: int,
+    window_id: str,
+    chat_id: int,
+    text: str,
+    message: Message,
+    adapter,
+) -> bool:
+    """Type *text* into the live question's "Type something" option.
+
+    True when the prompt has such an option and the text was handled there
+    (delivered, or echoed back on failure); False to fall back to dismissing
+    the prompt and sending the text as a normal message.
+    """
+    # Lazy: interactive imports pull PTB types
+    from ..interactive import (
+        get_interactive_msg_id,
+        get_interactive_pane,
+        typed_answer_option,
+    )
+
+    option = typed_answer_option(user_id, thread_id, chat_id)
+    if option is None:
+        return False
+    key, focused = option
+    pane_id = get_interactive_pane(user_id, thread_id, chat_id=chat_id)
+    base_id = f"telegram-message:{chat_id}:{message.message_id}"
+    try:
+        if not focused:
+            expected_prompt = get_interactive_prompt_fingerprint(
+                user_id,
+                thread_id,
+                chat_id,
+                get_interactive_msg_id(user_id, thread_id, chat_id=chat_id),
+            )
+            moved, _ = await adapter.send_text(
+                window_id,
+                key,
+                pane_id=pane_id,
+                submit=False,
+                terminal_input=True,
+                action_id=f"{base_id}:focus",
+                expected_prompt=expected_prompt,
+            )
+            if not moved:
+                return False
+            await asyncio.sleep(_TYPED_ANSWER_FOCUS_S)
+        sent, _ = await adapter.send_text(
+            window_id,
+            text,
+            pane_id=pane_id,
+            submit=True,
+            terminal_input=True,
+            action_id=f"{base_id}:answer",
+        )
+    except Exception:  # noqa: BLE001  # reported to the user below
+        logger.warning("Failed to type a free-text answer", exc_info=True)
+        sent = False
+    if not sent:
+        await safe_reply(
+            message,
+            f"\u26a0\ufe0f Could not type your answer into the prompt: {text}\n"
+            "Retry, or use the prompt's buttons.",
+        )
+    return True
+
+
 async def _forward_message(
     window_id: str,
     user_id: int,
@@ -630,6 +701,17 @@ async def _forward_message(
     )
     interactive_dismissed = False
     if interactive_window and interactive_window == window_id:
+        if await _answer_free_text_option(
+            user_id,
+            thread_id,
+            window_id,
+            message.chat.id,
+            text,
+            message,
+            telegram_adapter,
+        ):
+            await ack_reaction(client, message.chat.id, message.message_id)
+            return
         if not await _dismiss_interactive_prompt(
             user_id,
             thread_id,
