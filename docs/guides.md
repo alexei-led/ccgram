@@ -291,7 +291,8 @@ With `CCGRAM_DESK_MODE=true`, CCGram tells whether you are at the computer:
   updated 14:32 · desk mode
   ```
 
-  Topic-title dots keep updating (🔴 still marks a prompt waiting for you).
+  Topic titles are not renamed either (every rename posts a "changed the topic name" message);
+  the digest header shows the state instead, and the titles catch up once you are away.
 - **Away** as soon as you send anything or tap a button in Telegram, or after the computer sits
   idle for `CCGRAM_AWAY_IDLE_MINUTES` (macOS only). The digest is brought up to date once,
   real-time delivery resumes, and a waiting prompt appears with its buttons within a second.

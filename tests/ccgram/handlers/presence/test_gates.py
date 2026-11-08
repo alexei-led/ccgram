@@ -107,3 +107,37 @@ async def test_tick_is_a_no_op_when_disabled(monkeypatch: pytest.MonkeyPatch) ->
     with patch.object(desk_mode.digest, "flush_due", new=AsyncMock()) as flush:
         await desk_mode.run_desk_mode_tick(MagicMock())
     flush.assert_not_awaited()
+
+
+async def test_topic_renames_are_held_at_the_desk(desk) -> None:
+    from ccgram.handlers.status import topic_emoji
+
+    topic_emoji.reset_all_state()
+    client = MagicMock()
+    client.edit_forum_topic = AsyncMock()
+    await presence.note_desk_prompt(USER, "fix the tests")
+    with patch.object(topic_emoji, "_resolve_topic_name", return_value=("s", True)):
+        await topic_emoji.update_topic_emoji(
+            client, -1, 42, "active", "s", user_id=USER
+        )
+        client.edit_forum_topic.assert_not_awaited()
+        # The digest header still sees the state the topic should show.
+        assert topic_emoji.topic_state_badge(-1, 42) == (
+            "active",
+            topic_emoji._state_emoji_map()["active"],
+        )
+
+        # Back to away: the held state has outlasted its debounce and is
+        # applied on the next poll without waiting again.
+        presence.note_telegram_activity(USER)
+        first_seen = topic_emoji._pending_transitions[(-1, 42)][1]
+        topic_emoji._pending_transitions[(-1, 42)] = ("active", first_seen - 60)
+        with (
+            patch.object(topic_emoji, "_resolve_approval_mode", return_value="normal"),
+            patch.object(topic_emoji, "_resolve_rc_mode", return_value=False),
+        ):
+            await topic_emoji.update_topic_emoji(
+                client, -1, 42, "active", "s", user_id=USER
+            )
+    client.edit_forum_topic.assert_awaited_once()
+    topic_emoji.reset_all_state()

@@ -32,6 +32,7 @@ from ...thread_router import thread_router
 from ...topic_state_registry import topic_state
 from ...window_query import get_approval_mode
 from ...window_state_ports import identity_state
+from ..presence import is_quiet
 from ..provider_display import provider_topic_name, strip_provider_prefix
 
 logger = structlog.get_logger()
@@ -403,6 +404,8 @@ async def update_topic_emoji(
     thread_id: int,
     state: str,
     display_name: str,
+    *,
+    user_id: int | None = None,
 ) -> None:
     """Update topic name with emoji prefix reflecting session state.
 
@@ -416,11 +419,17 @@ async def update_topic_emoji(
         thread_id: Forum topic thread ID
         state: One of "active", "idle", "waiting", "done", "dead"
         display_name: Base topic name (without emoji prefix)
+        user_id: Topic owner. While desk mode holds that user's Telegram
+            back, the rename is held too: every title edit posts a
+            "changed the topic name" service message.
     """
     if chat_id in _disabled_chats:
         return
 
     key = (chat_id, thread_id)
+    if user_id is not None and is_quiet(user_id):
+        _hold_for_desk(key, state)
+        return
     clean_name, name_changed = _resolve_topic_name(key, display_name)
 
     approval_mode = _resolve_approval_mode(chat_id, thread_id)
@@ -468,6 +477,24 @@ async def update_topic_emoji(
         state_token=state_token,
         state=state,
     )
+
+
+def _hold_for_desk(key: tuple[int, int], state: str) -> None:
+    """Track the desired state without renaming the topic (desk mode).
+
+    The pending transition keeps its first-seen time, so once the user is
+    away the next poll applies a state that has already outlasted its
+    debounce. ``topic_state_badge`` reads it for the desk digest header.
+    """
+    if not _state_emoji_map().get(state):
+        return
+    applied = _topic_states.get(key)
+    if applied is not None and applied[0] == state:
+        _pending_transitions.pop(key, None)
+        return
+    pending = _pending_transitions.get(key)
+    if pending is None or pending[0] != state:
+        _pending_transitions[key] = (state, time.monotonic())
 
 
 def strip_emoji_prefix(name: str) -> str:

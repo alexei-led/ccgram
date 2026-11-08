@@ -683,7 +683,9 @@ class TestHandleSessionEnd:
             await dispatch_hook_event(event, bot)
 
             mock_clear.assert_called_once_with("@0")
-            mock_emoji.assert_called_once_with(ANY, -100, 42, "done", "project")
+            mock_emoji.assert_called_once_with(
+                ANY, -100, 42, "done", "project", user_id=ANY
+            )
             mock_enqueue.assert_called_once_with(ANY, 100, "@0", None, thread_id=42)
             mock_clear_session.assert_called_once_with("@0")
 
