@@ -214,7 +214,7 @@ Top-level (constants, leaves, top-level commands):
 - `provider_switch.py` — stable provider-change observation, quiet notice, and retry/backoff.
 - `rc_probe.py` — Claude `/remote-control` outcome probe: `arm_rc_probe`, pure `classify_rc_output`, `_classify_loop`. De-duped via `WindowState.rc_probe_state` (in-memory).
 
-`handlers/text/` — `text_handler.py` (UI guards → unbound → dead → forward).
+`handlers/text/` — `text_handler.py` (UI guards → unbound → dead → forward); `reply_quote.py` — a Telegram reply reaches the agent as a quote in front of the typed text (`compose_with_quote`, applied in `_forward_message` right before `send_telegram_to_window`; `!` bash commands, menu replies and free-text answers to an open prompt are untouched). Partial quote (`message.quote`) beats the whole message, then `text`, then `caption`; the forum topic's root message is not a reply. Labels: bot author → "Quoting your earlier message:", the sender → "Quoting my earlier message:", others → "Quoting an earlier message:". Excerpts are cut to a weighted 3000 (CJK/full-width = 3), keeping head and tail.
 
 `handlers/toolbar/` — `/toolbar` inline keyboard:
 
