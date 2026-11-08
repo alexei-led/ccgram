@@ -70,6 +70,24 @@ def test_parse_session_map_adopts_newer_stale_candidate(tmp_path: Path) -> None:
     assert parsed["@7"]["session_id"] == "new"
 
 
+def test_parse_session_map_adopts_candidate_on_an_mtime_tie(tmp_path: Path) -> None:
+    # Resuming a session writes the old and the resumed transcript in the same
+    # second; the hook's map entry (the resumed one) must win the tie.
+    old = tmp_path / "old.jsonl"
+    resumed = tmp_path / "resumed.jsonl"
+    _write_transcript(old, 300)
+    _write_transcript(resumed, 300)
+    mtime = os.stat(old).st_mtime
+    os.utime(resumed, (mtime, mtime))
+    window_store.window_states["@7"] = WindowState(
+        session_id="old", cwd="/repo", transcript_path=str(old)
+    )
+
+    parsed = parse_session_map({"ccgram:@7": _info("resumed", resumed)}, "ccgram:")
+
+    assert parsed["@7"]["session_id"] == "resumed"
+
+
 def test_parse_session_map_adopts_when_existing_state_was_cleared(
     tmp_path: Path,
 ) -> None:

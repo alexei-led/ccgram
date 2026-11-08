@@ -39,6 +39,12 @@ from ccgram.multiplexer.self_identify import resolve_self_identity
 
 logger = structlog.get_logger()
 
+# When this hook process started. Claude Code runs ccgram hooks asynchronously,
+# so a quick "start, then /resume" fires two SessionStart hooks that run side
+# by side and can finish in either order; session_map keeps the entry written
+# by the later-started one.
+_PROCESS_STARTED_AT = time.time()
+
 # Validate session_id looks like a UUID
 
 
@@ -82,6 +88,10 @@ _HOOK_EVENT_TYPES: tuple[str, ...] = (
 
 # Hook reporting is best-effort; never wait indefinitely for the bot's locks.
 _HOOK_LOCK_TIMEOUT_SECONDS = 2.0
+# A dropped SessionStart leaves a topic watching the wrong transcript until the
+# next session change, and the hook is async (Claude Code does not wait), so
+# the session_map update for it waits longer than other hook reports.
+_SESSION_START_LOCK_TIMEOUT_SECONDS = 10.0
 _HOOK_LOCK_RETRY_SECONDS = 0.05
 _KNOWN_HOOK_PROVIDERS: frozenset[str] = frozenset({"claude", "pi", "codex", "gemini"})
 # Gemini uses --background because its command hooks have no native async option.
@@ -1140,9 +1150,22 @@ def _is_nested_session(pane_tty: str) -> bool:
     return _closest_claude_ancestor(snapshot, owner_info[0]) is not None
 
 
-def _acquire_hook_lock(file: TextIO) -> bool:
-    """Try an exclusive lock for at most two seconds, then drop the update."""
-    deadline = time.monotonic() + _HOOK_LOCK_TIMEOUT_SECONDS
+def _session_start_lock_timeout() -> float:
+    raw = os.environ.get("CCGRAM_SESSION_START_LOCK_TIMEOUT_SEC")
+    if raw is None:
+        return _SESSION_START_LOCK_TIMEOUT_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        return _SESSION_START_LOCK_TIMEOUT_SECONDS
+    return value if value >= 0 else _SESSION_START_LOCK_TIMEOUT_SECONDS
+
+
+def _acquire_hook_lock(
+    file: TextIO, timeout: float = _HOOK_LOCK_TIMEOUT_SECONDS
+) -> bool:
+    """Try an exclusive lock for at most ``timeout`` seconds, then drop the update."""
+    deadline = time.monotonic() + timeout
     while True:
         try:
             fcntl.flock(file, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1203,8 +1226,15 @@ def _update_session_map(
     *,
     replay_from_start: bool = False,
     consume_pending_replay: bool = True,
+    started_at: float | None = None,
+    lock_timeout: float = _HOOK_LOCK_TIMEOUT_SECONDS,
 ) -> None:
-    """Update session_map.json for a SessionStart event."""
+    """Update session_map.json for a SessionStart event.
+
+    With ``started_at`` the write is skipped when the window's current entry
+    came from a hook process that started later: that hook reports the newer
+    session, and this one merely finished last.
+    """
     # Lazy: same hook fast-path rationale as ``_write_event``.
     from .utils import ccgram_dir, atomic_write_json
 
@@ -1214,7 +1244,7 @@ def _update_session_map(
     lock_path = map_file.with_suffix(".lock")
     try:
         with open(lock_path, "w") as lock_f:
-            if not _acquire_hook_lock(lock_f):
+            if not _acquire_hook_lock(lock_f, lock_timeout):
                 return
             try:
                 session_map: dict[str, Any] = {}
@@ -1254,6 +1284,16 @@ def _update_session_map(
                     serialize_session_map_entry,
                 )
 
+                if _superseded_by_later_hook(
+                    session_map.get(session_window_key), started_at
+                ):
+                    logger.info(
+                        "Skipped out-of-order SessionStart: %s -> session_id=%s "
+                        "(a later-started hook already wrote this window)",
+                        session_window_key,
+                        session_id,
+                    )
+                    return
                 session_map[session_window_key] = serialize_session_map_entry(
                     session_id,
                     cwd,
@@ -1261,6 +1301,7 @@ def _update_session_map(
                     transcript_path,
                     provider_name,
                     replay_from_start=replay_from_start,
+                    started_at=started_at,
                 )
                 if consume_pending_replay:
                     session_map.pop(pending_pi_replay_key(session_id), None)
@@ -1282,6 +1323,16 @@ def _update_session_map(
                 fcntl.flock(lock_f, fcntl.LOCK_UN)
     except OSError:
         logger.exception("Failed to write session_map")
+
+
+def _superseded_by_later_hook(existing: Any, started_at: float | None) -> bool:
+    """True when ``existing`` was written by a hook that started after this one."""
+    if started_at is None or not isinstance(existing, dict):
+        return False
+    other = existing.get("started_at")
+    if isinstance(other, bool) or not isinstance(other, (int, float)):
+        return False
+    return other > started_at
 
 
 def _record_pending_pi_replay(session_id: str) -> None:
@@ -1962,6 +2013,8 @@ def _process_hook_stdin(
             replay_from_start=_session_start_replays_from_zero(
                 detected_provider, normalized.session_id, transcript_path
             ),
+            started_at=_PROCESS_STARTED_AT,
+            lock_timeout=_session_start_lock_timeout(),
         )
         data = dict(normalized.data)
         data.update(
