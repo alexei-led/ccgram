@@ -94,7 +94,9 @@ through its result checkpoint settles. Later unrelated output does not hold that
 fence. A completed backlog skip retires pending calls and tool fences for the
 skipped range. Canceled skips leave the durable checkpoint unchanged and rewind
 parsing if their receipts retire. Startup, completed skips, and session identity
-adoption rebuild parser context from committed source bytes. Source replacement
+adoption rebuild parser context from committed source bytes. The rebuild runs on
+the first poll that has new entries to parse, so an idle restored session costs
+nothing until it produces output. Source replacement
 retires the old generation's receipts and parser context. It emits a
 checkpoint-only batch at the replacement's EOF. Receipt settlement persists that
 boundary.
