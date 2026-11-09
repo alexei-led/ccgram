@@ -450,7 +450,12 @@ class TranscriptReader:
         self._file_mtimes: dict[str, float] = {}
         self._file_ctimes: dict[str, int] = self._snapshot_file_ctimes()
         self._file_sizes = self._snapshot_file_sizes()
-        self._file_prefixes = self._snapshot_file_prefixes()
+        # Empty at startup on purpose: the first committed read of each session
+        # hashes its baseline in a worker thread. Hashing every tracked
+        # transcript here blocked the event loop for seconds. A transcript
+        # replaced before that first read has no baseline and is treated as
+        # replaced (skip to EOF, never replay).
+        self._file_prefixes: dict[str, tuple[int, Any]] = {}
         self._file_generations = self._snapshot_file_generations()
         self._file_markers = self._snapshot_file_markers()
         self._startup_file_boundaries = self._snapshot_startup_boundaries()
@@ -483,16 +488,6 @@ class TranscriptReader:
             except OSError:
                 continue
         return sizes
-
-    def _snapshot_file_prefixes(self) -> dict[str, tuple[int, Any]]:
-        prefixes: dict[str, tuple[int, Any]] = {}
-        for session_id, tracked in self._state.tracked_sessions.items():
-            path = Path(tracked.file_path)
-            try:
-                prefixes[session_id] = _advance_prefix(None, path, path.stat().st_size)
-            except OSError:
-                continue
-        return prefixes
 
     def _snapshot_file_generations(self) -> dict[str, tuple[int, int]]:
         generations: dict[str, tuple[int, int]] = {}

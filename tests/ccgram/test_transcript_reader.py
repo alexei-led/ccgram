@@ -1,6 +1,7 @@
 """Tests for transcript reader offset handling."""
 
 import os
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -1154,3 +1155,86 @@ class TestParserRebuildOnActiveFile:
             )
 
         assert seen == [len(_record("h0").encode()) * i for i in range(4)]
+
+
+class TestLazyStartupBaseline:
+    """Construction must not hash transcripts; the first poll seeds them."""
+
+    def _tracked(self, tmp_path, count=3):
+        history = _record("h0") * 5
+        state = MonitorState(state_file=tmp_path / "monitor_state.json")
+        files = []
+        for index in range(count):
+            session_file = tmp_path / f"s{index}.jsonl"
+            session_file.write_text(history)
+            state.update_session(
+                TrackedSession(
+                    session_id=f"s{index}",
+                    file_path=str(session_file),
+                    last_byte_offset=len(history.encode()),
+                )
+            )
+            files.append(session_file)
+        return state, files, history
+
+    def test_construction_hashes_nothing(self, tmp_path) -> None:
+        state, _, _ = self._tracked(tmp_path)
+
+        with (
+            patch("ccgram.transcript_reader._hash_range") as hashed,
+            patch("ccgram.transcript_reader._prefix_digest") as digest,
+        ):
+            TranscriptReader(state, IdleTracker())
+
+        assert hashed.call_count == 0
+        assert digest.call_count == 0
+
+    async def test_first_poll_hashes_the_baseline_off_the_event_loop(
+        self, tmp_path
+    ) -> None:
+        state, files, _ = self._tracked(tmp_path, count=1)
+        reader = TranscriptReader(state, IdleTracker())
+        threads: list[threading.Thread] = []
+        real_range = transcript_reader._hash_range
+
+        def record_thread(*args, **kwargs):
+            threads.append(threading.current_thread())
+            return real_range(*args, **kwargs)
+
+        with patch("ccgram.transcript_reader._hash_range", record_thread):
+            await reader._process_session_file("s0", files[0], [], window_id="@1")
+
+        assert threads
+        assert all(thread is not threading.main_thread() for thread in threads)
+
+    async def test_replacement_before_the_first_poll_still_clamps(
+        self, tmp_path
+    ) -> None:
+        state, files, history = self._tracked(tmp_path, count=1)
+        reader = TranscriptReader(state, IdleTracker())
+        replacement = tmp_path / "replacement.jsonl"
+        replacement.write_text(_record("other") * 8)
+        replacement.replace(files[0])
+
+        messages: list = []
+        await reader._process_session_file("s0", files[0], messages, window_id="@1")
+
+        assert messages == []
+        tracked = state.get_session("s0")
+        assert tracked is not None
+        assert tracked.parsed_offset == files[0].stat().st_size
+
+    async def test_inode_change_after_seeding_is_still_verified_once(
+        self, tmp_path
+    ) -> None:
+        state, files, history = self._tracked(tmp_path, count=1)
+        reader = TranscriptReader(state, IdleTracker())
+        await reader._process_session_file("s0", files[0], [], window_id="@1")
+        copy = tmp_path / "copy.jsonl"
+        copy.write_text(history + _record("fresh"))
+        copy.replace(files[0])
+
+        messages: list = []
+        await reader._process_session_file("s0", files[0], messages, window_id="@1")
+
+        assert [msg.text for msg in messages] == ["fresh"]
