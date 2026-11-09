@@ -88,7 +88,9 @@ class SessionLifecycle:
 
         Calls claude_task_state.clear_window() for changed/deleted windows.
         Returns sessions to remove and new windows so the coordinator can
-        clean up its own per-session state dicts.
+        clean up its own per-session state dicts. A session id that is still
+        present under any window of ``current_map`` is never returned for
+        removal, even when the window it used to belong to is gone.
         """
         old_by_canonical = {
             _canonical_session_map_window_id(wid): wid for wid in self._last_session_map
@@ -128,7 +130,7 @@ class SessionLifecycle:
         for window_id in old_windows - current_windows:
             old_sid = self._last_session_map[window_id]["session_id"]
             logger.info(
-                "Window '%s' deleted, removing session %s",
+                "Window '%s' deleted (session %s)",
                 window_id,
                 old_sid,
             )
