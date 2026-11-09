@@ -586,6 +586,27 @@ class TestStartupReplayBound:
 
         assert [msg.text for msg in fresh] == ["fresh"]
 
+    async def test_a_cleared_session_id_that_returns_is_not_clamped(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A cleared id that comes back is a new session, not the old backlog (#367)."""
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "startup_replay_max_bytes", 120, raising=False)
+        reader, state, session_file = self._reader(tmp_path, backlog=10)
+
+        reader.clear_session("sess")
+        state.update_session(
+            TrackedSession(session_id="sess", file_path=str(session_file))
+        )
+
+        returned: list = []
+        await reader._process_session_file(
+            "sess", session_file, returned, window_id="@1"
+        )
+
+        assert len(returned) == 10
+
     async def test_a_session_tracked_after_startup_is_never_clamped(
         self, tmp_path, monkeypatch
     ) -> None:
