@@ -122,7 +122,6 @@ class SessionLifecycle:
                 )
                 result.sessions_to_remove.add(old_details["session_id"])
                 result.changed_windows[window_id] = new_details
-                idle_tracker.clear_session(old_details["session_id"])
                 claude_task_state.clear_window(window_id)
 
         # Deleted: window in old map but not current
@@ -134,8 +133,17 @@ class SessionLifecycle:
                 old_sid,
             )
             result.sessions_to_remove.add(old_sid)
-            idle_tracker.clear_session(old_sid)
             claude_task_state.clear_window(window_id)
+
+        # A session id can outlive its window key (re-keyed window, session
+        # moved to another window). Clearing it would drop its saved offset
+        # and replay or skip transcript output, so only ids gone from the
+        # whole new map are removed.
+        result.sessions_to_remove -= {
+            details["session_id"] for details in converged_map.values()
+        }
+        for session_id in result.sessions_to_remove:
+            idle_tracker.clear_session(session_id)
 
         # New windows
         for window_id in current_windows - old_windows:
