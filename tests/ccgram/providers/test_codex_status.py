@@ -43,13 +43,10 @@ def test_build_codex_status_snapshot_with_token_stats(tmp_path) -> None:
                             "reasoning_output_tokens": 2,
                             "total_tokens": 14,
                         },
-                        "rate_limits": {
-                            "primary": {"used_percent": 12.5, "resets_at": 1772485454},
-                            "secondary": {
-                                "used_percent": 20.0,
-                                "resets_at": 1772792459,
-                            },
-                        },
+                    },
+                    "rate_limits": {
+                        "primary": {"used_percent": 12.5, "resets_at": 1772485454},
+                        "secondary": {"used_percent": 20.0, "resets_at": 1772792459},
                     },
                 },
             },
@@ -133,6 +130,53 @@ def _filler_entry(index: int) -> dict:
         "type": "response_item",
         "payload": {"type": "reasoning", "text": "x" * 80},
     }
+
+
+def test_snapshot_reads_rate_limits_nested_in_info_for_older_rollouts(
+    tmp_path,
+) -> None:
+    transcript = tmp_path / "codex.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            _meta_entry(),
+            {
+                "timestamp": "2026-03-02T17:00:01.000Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "info": {
+                        "total_token_usage": {"total_tokens": 14},
+                        "rate_limits": {
+                            "primary": {"used_percent": 7.0, "resets_at": 1772485454}
+                        },
+                    },
+                },
+            },
+        ],
+    )
+
+    result = build_codex_status_snapshot(str(transcript), display_name="repo")
+
+    assert result is not None
+    assert "primary limit: `7.0%` used" in result
+    assert "secondary limit" not in result
+
+
+def test_snapshot_shows_primary_limit_when_secondary_is_null(tmp_path) -> None:
+    transcript = tmp_path / "codex.jsonl"
+    entry = _token_entry(5)
+    entry["payload"]["rate_limits"] = {
+        "primary": {"used_percent": 71.0, "resets_at": 1772485454},
+        "secondary": None,
+    }
+    _write_jsonl(transcript, [_meta_entry(), entry])
+
+    result = build_codex_status_snapshot(str(transcript), display_name="repo")
+
+    assert result is not None
+    assert "primary limit: `71.0%` used" in result
+    assert "secondary limit" not in result
 
 
 @pytest.mark.parametrize("block_bytes", [32, 100, 1 << 20])

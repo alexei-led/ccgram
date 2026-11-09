@@ -111,6 +111,17 @@ def _read_session_meta(path: Path) -> dict[str, Any]:
     return _as_dict(entry.get("payload"))
 
 
+def _with_sibling_rate_limits(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return ``payload["info"]`` with the event's ``rate_limits`` attached.
+
+    Codex writes ``rate_limits`` next to ``info``; older rollouts nested it
+    inside ``info``, which is kept when no sibling is present.
+    """
+    info = _as_dict(payload.get("info"))
+    rate_limits = _as_dict(payload.get("rate_limits"))
+    return {**info, "rate_limits": rate_limits} if info and rate_limits else info
+
+
 def _read_tail_state(path: Path) -> tuple[str, dict[str, Any], bool]:
     """Find the newest timestamp and ``token_count`` info, scanning backwards.
 
@@ -145,7 +156,7 @@ def _read_tail_state(path: Path) -> tuple[str, dict[str, Any], bool]:
                     entry.get("type") == "event_msg"
                     and payload.get("type") == "token_count"
                 ):
-                    token_info = _as_dict(payload.get("info"))
+                    token_info = _with_sibling_rate_limits(payload)
                 if last_timestamp and token_info:
                     break
     return last_timestamp, token_info, saw_entry
