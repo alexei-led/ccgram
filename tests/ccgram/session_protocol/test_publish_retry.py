@@ -152,3 +152,40 @@ async def test_full_republish_does_not_lag_a_draining_subscriber(connected):
     task.cancel()
     assert subscription.lagged is False
     assert len(_upserts(received)) == 256
+
+
+def _lean(backend, store, tmp_path):
+    path = tmp_path / "transcript.jsonl"
+    path.write_text(json.dumps(_user("u0", "first")) + "\n", encoding="utf-8")
+    backend.target = replace(backend.target, transcript=path)
+    return LocalSessionService(backend, store), path
+
+
+@pytest.mark.parametrize(
+    ("error", "kept"), [(OSError("io"), True), (ValueError("bad record"), False)]
+)
+async def test_failed_appended_scan_is_retried_only_after_io_errors(
+    backend, store, tmp_path, monkeypatch, error, kept
+):
+    service, path = _lean(backend, store, tmp_path)
+    await service.list_sessions()
+    await service.refresh()
+    _append(path, _user("u1", "second"))
+
+    async def failing(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(service, "_correlate_windows", failing)
+    await service.refresh()
+    source = next(iter(service._sources.values()))
+    assert (source.appended is not None) is kept
+
+
+async def test_publishing_leaves_no_appended_range_pending(connected):
+    service, path, _ = connected
+    await service.list_sessions()
+    service.hub.subscribe(None)
+    await service.refresh()
+    _append(path, _user("later", "more"))
+    await service.refresh()
+    assert next(iter(service._sources.values())).appended is None

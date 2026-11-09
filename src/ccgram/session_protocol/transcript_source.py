@@ -20,13 +20,14 @@ read of the file per rebuild and O(appended bytes) per append.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import os
 import time
 from collections.abc import Callable, Generator, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import BinaryIO
 
 from .messages import MessageBuilder, SourceChangedError, split_jsonl
 from .store import ProtocolStore, TranscriptCursor
@@ -52,7 +53,9 @@ def _digest(data: bytes | bytearray | memoryview) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-async def run_in_worker[T](func: Callable[..., T], *args: Any) -> T:
+async def run_in_worker[**P, T](
+    func: Callable[P, T], *args: P.args, **kwargs: P.kwargs
+) -> T:
     """Run `func` in a thread; a cancelled caller waits for the thread to stop.
 
     The thread may mutate the index or step a window generator, and the caller
@@ -60,11 +63,14 @@ async def run_in_worker[T](func: Callable[..., T], *args: Any) -> T:
     thread, so the lock is never released under a running worker and a generator
     is never closed while it executes.
     """
-    work = asyncio.ensure_future(asyncio.to_thread(func, *args))
+    work = asyncio.ensure_future(asyncio.to_thread(func, *args, **kwargs))
     try:
         return await asyncio.shield(work)
     except asyncio.CancelledError:
-        await asyncio.wait([work])
+        # A repeated cancel must not cut the wait short either.
+        while not work.done():
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.wait([work])
         if not work.cancelled():
             # Retrieve the result so a failed worker does not log an unretrieved error.
             work.exception()
@@ -243,8 +249,12 @@ class TranscriptSource:
             if os.fstat(handle.fileno()).st_ino != stat.st_ino:
                 raise SourceChangedError("Transcript was replaced while reading")
         # Only an append that extends the resident index is "appended". A rebuild
-        # covers the whole transcript and is not correlated as new messages.
-        self._appended = (start, consumed) if incremental else None
+        # covers the whole transcript and is not correlated as new messages. A
+        # range still pending from a failed correlation stays part of the range.
+        pending = self._appended if incremental else None
+        self._appended = (
+            (pending[0] if pending else start, consumed) if incremental else None
+        )
         self._commit(builder, consumed, stat, marker, builder.generation)
 
     def scan(

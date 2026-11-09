@@ -126,3 +126,20 @@ async def test_replacement_discards_a_pending_appended_range(source, store):
     replacement.replace(source.path)
     await source.sync(store)
     assert source.appended == (0, source.consumed)
+
+
+async def test_pending_range_is_kept_when_the_index_is_resident(store, tmp_path):
+    path = tmp_path / "transcript.jsonl"
+    path.write_text(_row(0), encoding="utf-8")
+    indexed = TranscriptSource("k", path, "conv", "claude", None)
+    await indexed.sync(store)
+    assert indexed.appended is None
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(_row(1))
+    await indexed.sync(store)
+    first, _ = indexed.appended or (None, None)
+    assert first is not None and first > 0
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(_row(2))
+    await indexed.sync(store)
+    assert indexed.appended == (first, indexed.consumed)

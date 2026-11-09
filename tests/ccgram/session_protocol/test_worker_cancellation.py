@@ -13,7 +13,7 @@ import pytest
 from ccgram.session_protocol import runtime as runtime_module
 from ccgram.session_protocol.runtime import ProtocolRuntime
 from ccgram.session_protocol.service import LocalSessionService
-from ccgram.session_protocol.transcript_source import TranscriptSource
+from ccgram.session_protocol.transcript_source import TranscriptSource, run_in_worker
 
 
 def _write_user_rows(path: Path, count: int) -> None:
@@ -132,3 +132,49 @@ async def test_close_returns_when_the_poll_ignores_cancellation(monkeypatch):
     assert store.closed and lock.closed
     released.set()
     await runtime.task
+
+
+async def test_run_in_worker_waits_through_repeated_cancels():
+    release = threading.Event()
+    finished: list[int] = []
+
+    def work() -> int:
+        release.wait(5)
+        finished.append(1)
+        return 7
+
+    task = asyncio.create_task(run_in_worker(work))
+    await asyncio.sleep(0.01)
+    task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0.01)
+    assert not task.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert finished == [1]
+
+
+async def test_poll_stops_when_the_cancel_surfaces_as_another_error():
+    stop = False
+
+    class Service:
+        async def refresh(self) -> None:
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                if stop:
+                    raise
+                raise ValueError("raised while unwinding") from None
+
+    runtime = ProtocolRuntime(None, Service(), None, prefix="")  # type: ignore[arg-type]
+    task = asyncio.create_task(runtime.poll(""))
+    await asyncio.sleep(0.01)
+    task.cancel()
+    done, _ = await asyncio.wait({task}, timeout=2)
+    stop = True
+    task.cancel()
+    assert done, "poll kept running after it was cancelled"
+    with pytest.raises(ValueError, match="while unwinding"):
+        await task

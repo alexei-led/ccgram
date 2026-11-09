@@ -34,8 +34,9 @@ from .transcript_source import TranscriptSource, run_in_worker, source_stamp
 from .uploads import UploadStore
 
 MAX_HISTORY_PAGE = 200
-# Upserts per worker round. Smaller than a subscriber's queue, so a batch cannot
-# overflow a fresh subscriber that has not drained yet.
+# Upserts per worker round, well under a subscriber's queue. With a yield between
+# batches, a subscriber that drains each loop turn keeps up. A subscriber blocked on
+# a slow transport still lags, and resyncs.
 _PUBLISH_BATCH = 64
 # A read of history, or of a matching window, keeps the index resident this long.
 INDEX_IDLE_SECONDS = 60.0
@@ -153,8 +154,9 @@ class LocalSessionService:
                     snapshot = await self._observe(sid, version, target, prompt)
                 except SourceChangedError:
                     # A replacement found during observation retries it. Messages
-                    # already published keep their revisions, so the retry sends
-                    # only what changed.
+                    # already published keep their revisions, so a retry skips
+                    # them; a failed first publish starts over (see
+                    # `_publish_messages`).
                     continue
                 if target.transcript is None:
                     return target, snapshot
@@ -370,6 +372,8 @@ class LocalSessionService:
             return
         builder = source.builder
         assert builder is not None
+        # Publishing correlates through the builder, so no range is left pending.
+        source.clear_appended()
         first = session_id not in self._revisions
         # Dirty state and the recorrelation window are cleared only after every
         # message materialized, so a failed read leaves the work for the retry.
@@ -840,7 +844,15 @@ class LocalSessionService:
         appended = source.appended
         since = self._recorrelate.get(session_id)
         if appended is not None:
-            await self._correlate_windows(session_id, source.scan(*appended))
+            try:
+                await self._correlate_windows(session_id, source.scan(*appended))
+            except OSError:
+                # Transient: the range stays and the next poll scans it again.
+                raise
+            except Exception:
+                # A failure that is not I/O would repeat on every poll.
+                source.clear_appended()
+                raise
             source.clear_appended()
         if since is not None:
             windows = source.scan(0, source.consumed, newest_first=True)

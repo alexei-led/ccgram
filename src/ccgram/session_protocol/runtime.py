@@ -25,6 +25,18 @@ logger = logging.getLogger(__name__)
 CLOSE_TIMEOUT_SECONDS = 5.0
 
 
+def _raise_if_cancelling() -> None:
+    """Re-raise the error being handled when the poll was asked to stop.
+
+    A cancel can surface as another exception, such as a failure while a worker
+    unwinds. Swallowing it would leave the cancel request consumed and the loop
+    running.
+    """
+    task = asyncio.current_task()
+    if task is not None and task.cancelling():
+        raise
+
+
 class ProtocolRuntime:
     def __init__(
         self,
@@ -71,6 +83,7 @@ class ProtocolRuntime:
                     await self.service.observe_hook(event, prefix)
                     self.service.resolve_hook(sessions)
             except (ProtocolError, OSError) as exc:
+                _raise_if_cancelling()
                 # A multiplexer that is briefly unreachable or restarting is
                 # expected, and the next pass retries. Log the incident's start
                 # and end instead of one traceback per second: a sustained
@@ -81,6 +94,7 @@ class ProtocolRuntime:
                         "Session protocol source unavailable: %s", exc, exc_info=True
                     )
             except Exception:
+                _raise_if_cancelling()
                 # Never stop the shared poll: an unexpected error is logged and the
                 # next pass retries every session.
                 logger.exception("Session protocol poll failed; retrying")
