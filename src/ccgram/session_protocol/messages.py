@@ -1029,8 +1029,8 @@ class MessageBuilder:
     With a `reader` (the transcript's byte-range reader), a value larger than
     SPILL_BYTES stays in the transcript: the index keeps its record offset and
     slot, and materializing a message re-parses that one record. Batch builds
-    have no reader and keep every value in memory. Gemini is one JSON document
-    and is indexed without a reader.
+    have no reader and keep every value in memory. Every provider, Gemini
+    included, is JSONL and is indexed with the transcript's reader.
     """
 
     def __init__(
@@ -1091,12 +1091,6 @@ class MessageBuilder:
 
     def clear_dirty(self) -> None:
         self._dirty.clear()
-
-    def take_dirty(self) -> list[str]:
-        """Return message IDs changed since the last call, in message order."""
-        dirty = self.dirty_ids()
-        self.clear_dirty()
-        return dirty
 
     def calls_named(self, name: str) -> Iterator[Part]:
         """Resolved tool parts called `name`, newest message first.
