@@ -127,6 +127,25 @@ async def _send_typing(message: Message, thread_id: int | None) -> None:
         )
 
 
+async def _send_confirmation(
+    message: Message, text: str, command: str, window_id: str
+) -> None:
+    """Reply with the delivery confirmation without failing the handler.
+
+    The command is already delivered: a failed reply (flood control, network)
+    must not skip the probes or the /clear session reset that follow.
+    """
+    try:
+        await safe_reply(message, text)
+    except TelegramError:
+        logger.warning(
+            "Command confirmation reply failed",
+            command=command,
+            window_id=window_id,
+            exc_info=True,
+        )
+
+
 async def _handle_pi_followup_command(
     message: Message,
     user_id: int,
@@ -392,7 +411,7 @@ async def forward_command_handler(
     # modal, so the "type /toolbar" guidance would mislead.
     if not args and cc_name.lower() in provider.capabilities.tui_picker_commands:
         confirmation += _picker_hint(provider_name)
-    await safe_reply(update.message, confirmation)
+    await _send_confirmation(update.message, confirmation, cc_slash, window_id)
     _arm_rc_probe_if_remote_control(update, window_id, cc_name)
     await _send_forward_post_probes(
         update.message,
