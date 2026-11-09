@@ -117,21 +117,24 @@ def _read_tail_state(
     """Find the newest timestamp, token info and rate limits, scanning backwards.
 
     ``info`` and ``rate_limits`` are independent: Codex can write a
-    ``token_count`` with ``info: null`` that still carries fresh limits, so
-    each comes from the newest event that has it. Reads blocks from the end
-    until all are found or ``_TAIL_MAX_BYTES`` of the file were scanned.
-    Returns ``(timestamp, token_info, rate_limits, saw_entry)``.
+    ``token_count`` with ``info: null`` that still carries fresh limits. The
+    limits come from the newest ``token_count`` (none when it has none, so an
+    older, possibly reset window is never shown as current); ``info`` comes
+    from the newest event that has it. Reads blocks from the end until the
+    timestamp and info are found or ``_TAIL_MAX_BYTES`` of the file were
+    scanned. Returns ``(timestamp, token_info, rate_limits, saw_entry)``.
     """
     last_timestamp = ""
     token_info: dict[str, Any] = {}
     rate_limits: dict[str, Any] = {}
+    seen_token_count = False
     saw_entry = False
     with path.open("rb") as handle:
         size = handle.seek(0, os.SEEK_END)
         floor = max(0, size - _TAIL_MAX_BYTES)
         pos = size
         carry = b""
-        while pos > floor and not (last_timestamp and token_info and rate_limits):
+        while pos > floor and not (last_timestamp and token_info):
             start = max(floor, pos - _READ_BLOCK_BYTES)
             handle.seek(start)
             lines = (handle.read(pos - start) + carry).split(b"\n")
@@ -150,9 +153,11 @@ def _read_tail_state(
                 if entry.get("type") == "event_msg" and payload.get("type") == (
                     "token_count"
                 ):
+                    if not seen_token_count:
+                        seen_token_count = True
+                        rate_limits = _as_dict(payload.get("rate_limits"))
                     token_info = token_info or _as_dict(payload.get("info"))
-                    rate_limits = rate_limits or _as_dict(payload.get("rate_limits"))
-                if last_timestamp and token_info and rate_limits:
+                if last_timestamp and token_info:
                     break
     return last_timestamp, token_info, rate_limits, saw_entry
 
@@ -259,7 +264,7 @@ def _format_rate_limit_lines(rate_limits: dict[str, Any]) -> list[str]:
         if limit:
             lines.append(
                 f"- {_limit_label(limit, key)} limit: "
-                f"`{limit.get('used_percent', '?')}%` used, "
+                f"`{'?' if limit.get('used_percent') is None else limit['used_percent']}%` used, "
                 f"reset `{_fmt_epoch_utc(limit.get('resets_at'))}`"
             )
     return lines

@@ -218,6 +218,66 @@ def test_rate_limits_show_when_no_token_usage_exists(tmp_path) -> None:
     assert "primary limit: `40.0%` used" in result
 
 
+def test_newest_token_count_without_limits_does_not_show_older_limits(
+    tmp_path,
+) -> None:
+    info = {"total_token_usage": {"total_tokens": 40}}
+    old = {"primary": {"used_percent": 95.0, "resets_at": 1000000000}}
+
+    result = _snapshot(
+        tmp_path, _token_count(info, old, 1), _token_count(info, None, 2)
+    )
+
+    assert "limit:" not in result
+    assert "total `40`" in result
+
+
+def test_limits_object_without_windows_shows_no_limit_lines(tmp_path) -> None:
+    info = {"total_token_usage": {"total_tokens": 40}}
+    old = {"primary": {"used_percent": 95.0, "resets_at": 1000000000}}
+    empty = {"limit_id": "codex", "primary": None, "secondary": None}
+
+    result = _snapshot(
+        tmp_path, _token_count(info, old, 1), _token_count(info, empty, 2)
+    )
+
+    assert "limit:" not in result
+
+
+def test_null_used_percent_renders_as_unknown(tmp_path) -> None:
+    limits = {"primary": {"used_percent": None, "resets_at": 1772485454}}
+
+    result = _snapshot(tmp_path, _token_count(None, limits))
+
+    assert "primary limit: `?%` used" in result
+    assert "None" not in result
+
+
+def test_snapshot_stops_at_the_newest_token_count_without_rate_limits(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(codex_status, "_TAIL_MAX_BYTES", 1 << 20)
+    info = {"total_token_usage": {"total_tokens": 1}}
+    transcript = tmp_path / "codex.jsonl"
+    _write_jsonl(
+        transcript,
+        [_meta_entry(), *[_token_count(info, None, i % 60) for i in range(3000)]],
+    )
+    parsed_lines = []
+    real_loads = json.loads
+
+    def counting_loads(raw, *args, **kwargs):
+        parsed_lines.append(raw)
+        return real_loads(raw, *args, **kwargs)
+
+    monkeypatch.setattr(codex_status.json, "loads", counting_loads)
+
+    result = build_codex_status_snapshot(str(transcript), display_name="repo")
+
+    assert result is not None
+    assert len(parsed_lines) < 10
+
+
 @pytest.mark.parametrize(
     ("window_minutes", "label"),
     [
