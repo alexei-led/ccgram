@@ -5,7 +5,8 @@ handle checks the previous observation's identity, then parses only the complete
 records appended since the last line boundary into the existing builder and
 digests the new tail. A replacement (inode change, shrink, or a changed marker
 before the last observed size) rebuilds from byte 0 under a new generation.
-Gemini stores one JSON document, so any change rebuilds it from one read.
+Every provider, Gemini included, writes JSONL; a Gemini chat is one session-*.jsonl
+file, so it takes the same incremental path.
 
 Detection is a tail marker, not a full-content hash: a rewrite that keeps the
 inode, the size, and the last 4 KiB before the observed size goes unnoticed, as
@@ -22,17 +23,19 @@ import asyncio
 import hashlib
 import os
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import BinaryIO
 
-from .messages import MessageBuilder, read_entries, split_jsonl
+from .messages import MessageBuilder, SourceChangedError, split_jsonl
 from .store import ProtocolStore, TranscriptCursor
 
 MARKER_BYTES = 4096
 READ_CHUNK_BYTES = 4 * 1024 * 1024
 MAX_RETRY_SECONDS = 30.0
 _SYNC_ATTEMPTS = 3
+_BACKOFF_DOUBLINGS = 5  # 2**5 = 32 s, past MAX_RETRY_SECONDS
 
 type Stamp = tuple[int, int, int, int, int]
 
@@ -43,10 +46,6 @@ def source_stamp(stat: os.stat_result) -> Stamp:
 
 def _digest(data: bytes | bytearray | memoryview) -> str:
     return hashlib.sha256(data).hexdigest()
-
-
-class _SourceChangedError(OSError):
-    """The file was replaced or truncated while it was being read. Retryable."""
 
 
 class TranscriptSource:
@@ -83,6 +82,7 @@ class TranscriptSource:
         self._failed_stamp: Stamp | None = None
         self._retry_at = 0.0
         self._saved = cursor
+        self._handle: BinaryIO | None = None
 
     @property
     def generation(self) -> int:
@@ -97,7 +97,7 @@ class TranscriptSource:
         for _ in range(_SYNC_ATTEMPTS):
             try:
                 await self._run_sync()
-            except _SourceChangedError:
+            except SourceChangedError:
                 continue
             break
         else:
@@ -128,12 +128,15 @@ class TranscriptSource:
             raise OSError("Transcript read failed; retry pending")
         try:
             self._observe(stat)
-        except _SourceChangedError:
+        except SourceChangedError:
             raise
         except OSError:
             self._failures += 1
             self._failed_stamp = stamp
-            delay = min(MAX_RETRY_SECONDS, 2.0 ** (self._failures - 1))
+            # Cap the exponent before exponentiating: a long outage must not overflow.
+            delay = min(
+                MAX_RETRY_SECONDS, 2.0 ** min(self._failures - 1, _BACKOFF_DOUBLINGS)
+            )
             self._retry_at = self._clock() + delay
             raise
         self.stamp = stamp
@@ -144,10 +147,7 @@ class TranscriptSource:
         prior = self.cursor
         with self.path.open("rb") as handle:
             if os.fstat(handle.fileno()).st_ino != stat.st_ino:
-                raise _SourceChangedError("Transcript was replaced before reading")
-            if self.provider == "gemini":
-                self._observe_document(handle, stat, prior)
-                return
+                raise SourceChangedError("Transcript was replaced before reading")
             intact = _tail_intact(handle, stat, prior)
             if intact and self.builder is not None and not self._poisoned:
                 builder, start = self.builder, self._consumed
@@ -157,43 +157,52 @@ class TranscriptSource:
             else:
                 builder, start = (
                     MessageBuilder(
-                        self.conversation_id, self.provider, _generation(prior, intact)
+                        self.conversation_id,
+                        self.provider,
+                        _generation(prior, intact),
+                        reader=self._read_record,
                     ),
                     0,
                 )
             consumed, marker = _consume(handle, builder, start, stat.st_size)
             if os.fstat(handle.fileno()).st_ino != stat.st_ino:
-                raise _SourceChangedError("Transcript was replaced while reading")
+                raise SourceChangedError("Transcript was replaced while reading")
         self._commit(builder, consumed, stat, marker)
 
-    def _observe_document(
-        self, handle: BinaryIO, stat: os.stat_result, prior: TranscriptCursor | None
-    ) -> None:
-        raw = handle.read()
-        after = os.fstat(handle.fileno())
-        if (
-            len(raw) != stat.st_size
-            or after.st_size != stat.st_size
-            or after.st_mtime_ns != stat.st_mtime_ns
-        ):
-            raise _SourceChangedError("Transcript changed while reading")
-        marker = _digest(raw)
-        intact = (
-            prior is not None
-            and prior.inode == stat.st_ino
-            and len(raw) >= prior.observed
-            and (
-                marker
-                if prior.observed == len(raw)
-                else _digest(memoryview(raw)[: prior.observed])
-            )
-            == prior.marker
-        )
-        builder = MessageBuilder(
-            self.conversation_id, self.provider, _generation(prior, intact)
-        )
-        builder.feed(read_entries(raw, "gemini"))
-        self._commit(builder, len(raw), stat, marker)
+    @contextmanager
+    def reading(self) -> Iterator[None]:
+        """Pin one handle for a batch of materializations, such as one publish.
+
+        The handle pins the inode it opened, so reads stay on the bytes the index
+        describes even if the path is replaced during the batch. The identity check
+        runs once here, before any message is read.
+        """
+        with self.path.open("rb") as handle:
+            self._check_indexed(handle)
+            self._handle = handle
+            try:
+                yield
+            finally:
+                self._handle = None
+
+    def _read_record(self, offset: int) -> bytes:
+        """The record line at `offset`. Only valid inside `reading`."""
+        if self._handle is None:
+            raise RuntimeError("Transcript records are read only inside reading()")
+        return self._line(self._handle, offset)
+
+    def _check_indexed(self, handle: BinaryIO) -> None:
+        prior = self.cursor
+        if prior is None or not _tail_intact(handle, os.fstat(handle.fileno()), prior):
+            raise SourceChangedError("Transcript changed after it was indexed")
+
+    def _line(self, handle: BinaryIO, offset: int) -> bytes:
+        assert self.cursor is not None
+        handle.seek(offset)
+        line = handle.readline(self.cursor.observed - offset)
+        if not line.endswith(b"\n"):
+            raise SourceChangedError("Indexed record is no longer complete")
+        return line
 
     def _commit(
         self,
@@ -246,7 +255,7 @@ def _consume(
     while position < limit:
         data = handle.read(min(READ_CHUNK_BYTES, limit - position))
         if not data:
-            raise _SourceChangedError("Transcript shrank while reading")
+            raise SourceChangedError("Transcript shrank while reading")
         chunk_start = position
         position += len(data)
         if position > tail_from:
