@@ -165,7 +165,7 @@ class ProviderCapabilities:
     supports_resume_picker: bool = False
     supports_continue: bool = False
     supports_structured_transcript: bool = False
-    supports_incremental_read: bool = True  # False → whole-file JSON (e.g. Gemini)
+    supports_incremental_read: bool = True  # False → whole-document file
     uses_pane_title: bool = False  # Provider reads OSC pane title for status
     # True only for providers whose terminal chrome matches Claude Code's
     # UI_PATTERNS + ─-separator status block, so the shared pyte fast-path
