@@ -102,6 +102,7 @@ async def test_real_service_output_matches_schema(service, backend, tmp_path, pr
     path.write_text("".join(json.dumps(e) + "\n" for e in entries), encoding="utf-8")
     backend.target = replace(backend.target, provider=provider, transcript=path)
     session = (await service.list_sessions())[0]
+    service.hub.subscribe()  # message events are published to subscribers only
     validate("Session", wire(session))
     history = await service.history(session.id, None, 50)
     assert len(history.messages) == 1 and history.messages[0].role == "agent"

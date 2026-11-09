@@ -25,6 +25,7 @@ async def test_delivery_correlates_after_transcript_was_published_during_send(
     path.touch()
     backend.target = replace(backend.target, transcript=path)
     session = (await service.list_sessions())[0]
+    service.hub.subscribe()  # message events are published to subscribers only
     action = Action(
         str(uuid4()), session.binding_version, "message.send", {"text": "hello"}
     )
@@ -312,6 +313,7 @@ async def test_source_change_during_read_never_uses_old_generation(
     append(path, original)
     backend.target = replace(backend.target, transcript=path)
     session = (await service.list_sessions())[0]
+    service.hub.subscribe()  # message events are published to subscribers only
     initial = (await service.history(session.id, None, 50)).messages[0]
     # Observation reads only appended bytes. Append first so the next
     # observation has a read in which the source can change.

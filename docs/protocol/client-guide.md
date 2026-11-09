@@ -29,6 +29,12 @@ Tokens in query parameters are not accepted. Never log the pairing payload or to
    the server sends missed durable events through that boundary before live events.
 3. Send `subscribe` before loading snapshots or history. A fresh connection initially
    observes all sessions, including during replay, so there is no unsubscribed gap.
+   A resume succeeds only if no message events were lost since the cursor. Message
+   events are published to a session's subscribers for 300 seconds after their last
+   subscriber leaves. A reconnect within that window replays every message event
+   exactly. After it, the server stops publishing messages for that session and marks
+   the gap. Any resume at or before the gap returns `resumed: false`. Subscribing again
+   afterwards sends each current message as an upsert, so no message is missing.
 4. Load `/v1/sessions` and the open conversation's history on a fresh connection, a
    new epoch, or a failed resume. Refresh snapshots on every app foreground to remove
    requests that closed while the app was suspended.
@@ -67,6 +73,11 @@ do not replace the subscribe-before-history merge rule.
 `before=<prevCursor>` to load older messages. An optional `conversation` must match
 that session's currently bound conversation. Cursors are opaque, scoped to both
 conversation and transcript generation, and invalid after source replacement.
+
+Message upserts are sent only to subscribers. A client that has not subscribed to a
+session gets its messages from history reads, which build the index on demand; a
+client that subscribes later receives the current messages as upserts. Do not rely
+on the replay buffer for messages published before you subscribed.
 
 Native transcript entry IDs are retained when first observed. Missing native IDs
 use UTF-8 byte offsets. A streamed Codex message keeps its first visible ID when

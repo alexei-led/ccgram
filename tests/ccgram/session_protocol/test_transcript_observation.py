@@ -320,6 +320,8 @@ async def test_delivery_publishes_and_materializes_only_the_matching_message(
     _write(path, [_record(f"u{i}", f"text {i}", old) for i in range(300)])
     backend.target = replace(backend.target, transcript=path)
     session = (await service.list_sessions())[0]
+    service.hub.subscribe()  # resident publish: subscribers receive message events
+    await service.refresh()  # baseline publish, outside the case under test
     sent_at = time()
     await service.remember_delivery("act_1", session.id, "conv", "hello there", sent_at)
     sent = datetime.fromtimestamp(sent_at + 1, UTC).isoformat()

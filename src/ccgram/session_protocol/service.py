@@ -7,7 +7,8 @@ import base64
 import contextlib
 import json
 import logging
-from collections.abc import AsyncIterator, Collection
+import time
+from collections.abc import AsyncIterator, Callable, Collection, Generator
 from dataclasses import replace
 from datetime import datetime
 from typing import Any, Protocol
@@ -34,6 +35,13 @@ from .uploads import UploadStore
 
 MAX_HISTORY_PAGE = 200
 _PUBLISH_BATCH = 256
+# A read of history, or of a matching window, keeps the index resident this long.
+INDEX_IDLE_SECONDS = 60.0
+# Message events keep being published this long after a session's last subscriber
+# leaves, so a client that reconnects in time replays them exactly.
+SUBSCRIBER_GRACE_SECONDS = 300.0
+# Hook matching without a resident index searches the newest part of the transcript.
+HOOK_SCAN_BYTES = 16 * 1024 * 1024
 logger = logging.getLogger(__name__)
 
 SUPPORTED_ACTIONS = (
@@ -67,10 +75,18 @@ class SessionService(Protocol):
 
 class LocalSessionService:
     def __init__(
-        self, backend: SessionBackend, store: ProtocolStore, hub: EventHub | None = None
+        self,
+        backend: SessionBackend,
+        store: ProtocolStore,
+        hub: EventHub | None = None,
+        *,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.backend = backend
         self.store = store
+        self._clock = clock
+        self._index_until: dict[str, float] = {}
+        self._subscribed_until: dict[str, float] = {}
         self.uploads = UploadStore(store.path.parent / "uploads", store)
         self.hub = hub or EventHub()
         self.requests = RequestStore(self.hub)
@@ -213,6 +229,43 @@ class LocalSessionService:
             await self._publish_messages(session_id, target)
         return self._snapshots[session_id]
 
+    def request_index(self, session_id: str) -> None:
+        """Keep the session's index resident for an on-demand read."""
+        target = self._targets.get(session_id)
+        if target is not None:
+            self._index_until[target.id.casefold()] = self._clock() + INDEX_IDLE_SECONDS
+
+    def _residency(self, target: Target) -> tuple[bool, bool]:
+        """(publishing, indexed) for a target.
+
+        Publishing follows subscribers through their grace period. The index is
+        also kept for a recent on-demand read.
+        """
+        key = target.id.casefold()
+        now = self._clock()
+        for session_id, known in self._targets.items():
+            if known.id.casefold() == key and self.hub.has_subscriber(session_id):
+                self._subscribed_until[key] = now + SUBSCRIBER_GRACE_SECONDS
+        publishing = self._live_until(self._subscribed_until, key, now)
+        reading = self._live_until(self._index_until, key, now)
+        return publishing, publishing or reading
+
+    @staticmethod
+    def _live_until(deadlines: dict[str, float], key: str, now: float) -> bool:
+        deadline = deadlines.get(key)
+        if deadline is None:
+            return False
+        if deadline > now:
+            return True
+        del deadlines[key]
+        return False
+
+    def _forget_revisions(self, target: Target) -> None:
+        """A later resident publish starts over, sending every message again."""
+        for known_id, known in self._targets.items():
+            if known.id.casefold() == target.id.casefold():
+                self._revisions.pop(known_id, None)
+
     async def _source_version(self, target: Target) -> Target:
         if target.transcript is None:
             return target
@@ -232,6 +285,18 @@ class LocalSessionService:
                 provider,
                 self.store.transcript_cursor(key),
             )
+        publishing, indexed = self._residency(target)
+        if source.publishing != publishing:
+            if not publishing:
+                # Messages produced from now on have no events; replay must not
+                # bridge that gap.
+                self.hub.mark_gap()
+                self._forget_revisions(target)
+            source.publishing = publishing
+        if source.indexed != indexed:
+            source.set_indexed(indexed)
+            if not indexed:
+                self._forget_revisions(target)
         try:
             await source.sync(self.store)
         except OSError as exc:
@@ -290,6 +355,11 @@ class LocalSessionService:
         if target.transcript is None:
             return
         source = self._sources[target.id.casefold()]
+        if not source.publishing:
+            # Message events go only to subscribers and their grace period.
+            # Otherwise correlation still runs over the appended and recent windows.
+            await self._correlate_unindexed(session_id, source)
+            return
         builder = source.builder
         assert builder is not None
         first = session_id not in self._revisions
@@ -390,6 +460,7 @@ class LocalSessionService:
             )
         if session_id not in self._targets:
             await self.refresh()
+        self.request_index(session_id)
         async with self._refresh_lock:
             try:
                 return await self._history_page(session_id, cursor, limit, conversation)
@@ -480,6 +551,7 @@ class LocalSessionService:
             raise ProtocolError(400, "invalid_request", "Invalid transcript byte range")
         if session_id not in self._targets:
             await self.refresh()
+        self.request_index(session_id)
         async with self._refresh_lock:
             try:
                 return await self._range_page(session_id, start_byte, end_byte)
@@ -697,8 +769,11 @@ class LocalSessionService:
         # Hook records can arrive after the last poll; do not reconcile requests
         # while refreshing this evidence, as a newer queued hook may own them.
         target = await self._source_version(await self.backend.inspect(target.id))
-        if target.conversation_id != event.session_id:
+        if target.conversation_id != event.session_id or target.transcript is None:
             return False
+        source = self._sources[target.id.casefold()]
+        if not source.indexed:
+            return await self._match_hook_windows(sid, source, event)
         try:
             with self._reading(target):
                 return self._hook_matches(sid, self._page_builder(target), event)
@@ -707,6 +782,65 @@ class LocalSessionService:
             target = await self._source_version(await self.backend.inspect(target.id))
             with self._reading(target):
                 return self._hook_matches(sid, self._page_builder(target), event)
+
+    async def _match_hook_windows(
+        self, sid: str, source: TranscriptSource, event: HookEvent
+    ) -> bool:
+        """Hook matching without a resident index: newest windows first."""
+        begin = await asyncio.to_thread(source.tail_boundary, HOOK_SCAN_BYTES)
+        windows = source.scan(begin, source.consumed, newest_first=True)
+        try:
+            while True:
+                builder = await asyncio.to_thread(next, windows, None)
+                if builder is None:
+                    return False
+                if self._hook_matches(sid, builder, event):
+                    return True
+        finally:
+            windows.close()
+
+    async def _correlate_unindexed(
+        self, session_id: str, source: TranscriptSource
+    ) -> None:
+        """Delivery correlation without a resident index.
+
+        Appended user messages are correlated as they arrive. A pending delivery
+        also looks back through the newest windows, stopping once a window is
+        older than the send.
+        """
+        appended = source.take_appended()
+        since = self._recorrelate.get(session_id)
+        if appended is not None:
+            await self._correlate_windows(session_id, source.scan(*appended))
+        if since is not None:
+            windows = source.scan(0, source.consumed, newest_first=True)
+            await self._correlate_windows(session_id, windows, since)
+            self._recorrelate.pop(session_id, None)
+
+    async def _correlate_windows(
+        self,
+        session_id: str,
+        windows: Generator[MessageBuilder, None, None],
+        since: float | None = None,
+    ) -> None:
+        try:
+            while True:
+                builder = await asyncio.to_thread(next, windows, None)
+                if builder is None:
+                    return
+                earliest: float | None = None
+                for message_id in builder.ids:
+                    stamp = _timestamp(builder.time(message_id))
+                    if stamp is not None:
+                        earliest = stamp if earliest is None else min(earliest, stamp)
+                    if builder.role(message_id) != "user":
+                        continue
+                    if since is None or (stamp is not None and stamp >= since):
+                        self._correlate(session_id, builder.message(message_id))
+                if since is not None and earliest is not None and earliest < since:
+                    return
+        finally:
+            windows.close()
 
     def _hook_matches(
         self, sid: str, builder: MessageBuilder, event: HookEvent

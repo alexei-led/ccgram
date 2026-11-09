@@ -23,7 +23,7 @@ import asyncio
 import hashlib
 import os
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import BinaryIO
@@ -33,6 +33,7 @@ from .store import ProtocolStore, TranscriptCursor
 
 MARKER_BYTES = 4096
 READ_CHUNK_BYTES = 4 * 1024 * 1024
+WINDOW_BYTES = 1024 * 1024
 MAX_RETRY_SECONDS = 30.0
 _SYNC_ATTEMPTS = 3
 _BACKOFF_DOUBLINGS = 5  # 2**5 = 32 s, past MAX_RETRY_SECONDS
@@ -83,6 +84,12 @@ class TranscriptSource:
         self._retry_at = 0.0
         self._saved = cursor
         self._handle: BinaryIO | None = None
+        # Resident index. The service turns it off for sessions nobody reads, so
+        # only the cursor is kept and windows are parsed on demand by `scan`.
+        self.indexed = True
+        # Message events are published for this source. Set by the service.
+        self.publishing = False
+        self._appended: tuple[int, int] | None = None
 
     @property
     def generation(self) -> int:
@@ -118,7 +125,11 @@ class TranscriptSource:
     def _sync(self) -> None:
         stat = self.path.stat()
         stamp = source_stamp(stat)
-        if self.builder is not None and not self._poisoned and stamp == self.stamp:
+        if (
+            not self._poisoned
+            and stamp == self.stamp
+            and (self.builder is not None or not self.indexed)
+        ):
             return
         if (
             self._failures
@@ -143,23 +154,61 @@ class TranscriptSource:
         self._failures = 0
         self._failed_stamp = None
 
+    def set_indexed(self, on: bool) -> None:
+        """Keep the resident index, or drop it and keep only the cursor."""
+        self.indexed = on
+        if not on:
+            self.builder = None
+            self._poisoned = False
+
+    @property
+    def consumed(self) -> int:
+        """Line boundary up to which the transcript has been observed."""
+        return self._consumed
+
+    def tail_boundary(self, nbytes: int) -> int:
+        """Line boundary at or after `consumed - nbytes`, for a bounded tail scan."""
+        begin = max(0, self._consumed - nbytes)
+        if begin == 0 or self.cursor is None:
+            return 0
+        with self.path.open("rb") as handle:
+            self._check_indexed(handle)
+            return _after_newline(handle, begin, self._consumed)
+
+    def take_appended(self) -> tuple[int, int] | None:
+        """Line-aligned byte range appended since the last call, if not indexed."""
+        appended, self._appended = self._appended, None
+        return appended
+
     def _observe(self, stat: os.stat_result) -> None:
         prior = self.cursor
         with self.path.open("rb") as handle:
             if os.fstat(handle.fileno()).st_ino != stat.st_ino:
                 raise SourceChangedError("Transcript was replaced before reading")
             intact = _tail_intact(handle, stat, prior)
+            generation = _generation(prior, intact)
+            if not self.indexed:
+                start = self._consumed if intact else 0
+                consumed, marker = _consume(handle, None, start, stat.st_size)
+                if os.fstat(handle.fileno()).st_ino != stat.st_ino:
+                    raise SourceChangedError("Transcript was replaced while reading")
+                first = self._appended[0] if self._appended else start
+                self._appended = (first, consumed)
+                self._commit(None, consumed, stat, marker, generation)
+                return
             if intact and self.builder is not None and not self._poisoned:
                 builder, start = self.builder, self._consumed
                 # A failure mid-feed leaves the builder partial; the next sync
                 # rebuilds it under the same generation if the file is intact.
                 self._poisoned = True
+                incremental = True
             else:
+                incremental = False
                 builder, start = (
                     MessageBuilder(
                         self.conversation_id,
                         self.provider,
-                        _generation(prior, intact),
+                        generation,
                         reader=self._read_record,
                     ),
                     0,
@@ -167,7 +216,37 @@ class TranscriptSource:
             consumed, marker = _consume(handle, builder, start, stat.st_size)
             if os.fstat(handle.fileno()).st_ino != stat.st_ino:
                 raise SourceChangedError("Transcript was replaced while reading")
-        self._commit(builder, consumed, stat, marker)
+        # Only an append that extends the resident index is "appended". A rebuild
+        # covers the whole transcript and is not correlated as new messages.
+        self._appended = (start, consumed) if incremental else None
+        self._commit(builder, consumed, stat, marker, builder.generation)
+
+    def scan(
+        self, start: int, end: int, *, newest_first: bool = False
+    ) -> Generator[MessageBuilder, None, None]:
+        """Canonical builders over line-aligned windows of [start, end).
+
+        Each window is a transient builder with inline values, for correlation and
+        hook matching when no index is resident. Windows are at most WINDOW_BYTES
+        of transcript, so memory does not grow with the transcript.
+        """
+        prior = self.cursor
+        if prior is None or end <= start:
+            return
+        with self.path.open("rb") as handle:
+            self._check_indexed(handle)
+            ranges = _line_windows(handle, start, end)
+            if newest_first:
+                ranges.reverse()
+            for begin, stop in ranges:
+                handle.seek(begin)
+                raw = handle.read(stop - begin)
+                builder = MessageBuilder(
+                    self.conversation_id, self.provider, prior.generation
+                )
+                entries, _ = split_jsonl(raw, begin)
+                builder.feed(entries)
+                yield builder
 
     @contextmanager
     def reading(self) -> Iterator[None]:
@@ -206,17 +285,16 @@ class TranscriptSource:
 
     def _commit(
         self,
-        builder: MessageBuilder,
+        builder: MessageBuilder | None,
         consumed: int,
         stat: os.stat_result,
         marker: str,
+        generation: int,
     ) -> None:
         self.builder = builder
         self._consumed = consumed
         self._poisoned = False
-        self.cursor = TranscriptCursor(
-            stat.st_ino, stat.st_size, marker, builder.generation
-        )
+        self.cursor = TranscriptCursor(stat.st_ino, stat.st_size, marker, generation)
 
 
 def _generation(prior: TranscriptCursor | None, intact: bool) -> int:
@@ -237,14 +315,42 @@ def _tail_intact(
     return len(data) == prior.observed - start and _digest(data) == prior.marker
 
 
+def _line_windows(handle: BinaryIO, start: int, end: int) -> list[tuple[int, int]]:
+    """Split [start, end) into windows that each end just after a newline."""
+    ranges: list[tuple[int, int]] = []
+    position = start
+    while position < end:
+        stop = min(position + WINDOW_BYTES, end)
+        if stop < end:
+            stop = _after_newline(handle, stop, end)
+        ranges.append((position, stop))
+        position = stop
+    return ranges
+
+
+def _after_newline(handle: BinaryIO, offset: int, limit: int) -> int:
+    handle.seek(offset)
+    position = offset
+    while position < limit:
+        data = handle.read(min(READ_CHUNK_BYTES, limit - position))
+        if not data:
+            break
+        found = data.find(b"\n")
+        if found >= 0:
+            return position + found + 1
+        position += len(data)
+    return limit
+
+
 def _consume(
-    handle: BinaryIO, builder: MessageBuilder, start: int, limit: int
+    handle: BinaryIO, builder: MessageBuilder | None, start: int, limit: int
 ) -> tuple[int, str]:
     """Feed complete records in [start, limit) and digest the tail before limit.
 
     Returns the new line boundary and the marker for `limit`. The read starts up
     to MARKER_BYTES before `start` when needed, so the marker comes from the same
-    read as the parsed records.
+    read as the parsed records. With no builder, only the boundary advances and
+    nothing is parsed.
     """
     tail_from = max(0, limit - MARKER_BYTES)
     position = min(start, tail_from)
@@ -266,7 +372,8 @@ def _consume(
         cut = buffered.rfind(b"\n") + 1
         pending = buffered[cut:]
         if cut:
-            entries, _ = split_jsonl(buffered[:cut], consumed)
-            builder.feed(entries)
+            if builder is not None:
+                entries, _ = split_jsonl(buffered[:cut], consumed)
+                builder.feed(entries)
             consumed += cut
     return consumed, _digest(tail)
