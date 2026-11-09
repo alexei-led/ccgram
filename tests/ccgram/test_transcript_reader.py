@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from ccgram import transcript_reader
 from ccgram.idle_tracker import IdleTracker
 from ccgram.monitor_state import BacklogSkipIntent, MonitorState, TrackedSession
 from ccgram.transcript_reader import TranscriptReader, _StableRead
@@ -811,3 +812,165 @@ class TestStartupReplayBound:
 
         assert messages == []
         assert "new" in reader._startup_clamped
+
+
+def _record(text: str) -> str:
+    return (
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"%s"}]}}\n'
+        % text
+    )
+
+
+def _tracked_reader(tmp_path, session_file, offset):
+    state = MonitorState(state_file=tmp_path / "monitor_state.json")
+    state.update_session(
+        TrackedSession(
+            session_id="sess", file_path=str(session_file), last_byte_offset=offset
+        )
+    )
+    return TranscriptReader(state, IdleTracker()), state
+
+
+class TestSteadyStateCost:
+    """Polling a growing transcript must not hash the consumed prefix."""
+
+    async def test_appends_and_idle_polls_never_digest_the_prefix(
+        self, tmp_path
+    ) -> None:
+        history = _record("h0") * 50
+        session_file = tmp_path / "transcript.jsonl"
+        session_file.write_text(history)
+        reader, _ = _tracked_reader(tmp_path, session_file, len(history.encode()))
+        hashed = 0
+        real_range = transcript_reader._hash_range
+
+        def counting_range(digest, path, start, end):
+            nonlocal hashed
+            hashed += end - start
+            return real_range(digest, path, start, end)
+
+        delivered: list[str] = []
+        appended = 0
+        with (
+            patch(
+                "ccgram.transcript_reader._prefix_digest",
+                wraps=transcript_reader._prefix_digest,
+            ) as full_digest,
+            patch("ccgram.transcript_reader._hash_range", counting_range),
+        ):
+            await reader._process_session_file("sess", session_file, [], window_id="@1")
+            hashed = 0
+            for index in range(5):
+                line = _record(f"m{index}")
+                with session_file.open("a") as transcript:
+                    transcript.write(line)
+                appended += len(line.encode())
+                messages: list = []
+                await reader._process_session_file(
+                    "sess", session_file, messages, window_id="@1"
+                )
+                delivered.extend(msg.text for msg in messages)
+                await reader._process_session_file(
+                    "sess", session_file, [], window_id="@1"
+                )
+
+        assert delivered == [f"m{index}" for index in range(5)]
+        assert full_digest.call_count == 0
+        assert hashed == appended
+
+    async def test_metadata_only_change_on_idle_file_is_inspected_once(
+        self, tmp_path
+    ) -> None:
+        history = _record("h0") * 5
+        session_file = tmp_path / "transcript.jsonl"
+        session_file.write_text(history)
+        reader, _ = _tracked_reader(tmp_path, session_file, len(history.encode()))
+        await reader._process_session_file("sess", session_file, [], window_id="@1")
+        os.chmod(session_file, 0o600)
+        os.chmod(session_file, 0o644)
+
+        with (
+            patch(
+                "ccgram.transcript_reader._prefix_digest",
+                wraps=transcript_reader._prefix_digest,
+            ) as full_digest,
+            patch.object(
+                reader, "_marker_changed", wraps=reader._marker_changed
+            ) as marker,
+        ):
+            for _ in range(4):
+                await reader._process_session_file(
+                    "sess", session_file, [], window_id="@1"
+                )
+
+        assert full_digest.call_count == 0
+        assert marker.call_count <= 1
+
+    async def test_inode_change_with_intact_bytes_digests_once_and_delivers(
+        self, tmp_path
+    ) -> None:
+        history = _record("h0") * 5
+        session_file = tmp_path / "transcript.jsonl"
+        session_file.write_text(history)
+        reader, _ = _tracked_reader(tmp_path, session_file, len(history.encode()))
+        await reader._process_session_file("sess", session_file, [], window_id="@1")
+
+        copy = tmp_path / "copy.jsonl"
+        copy.write_text(history + _record("fresh"))
+        copy.replace(session_file)
+
+        with patch(
+            "ccgram.transcript_reader._prefix_digest",
+            wraps=transcript_reader._prefix_digest,
+        ) as full_digest:
+            messages: list = []
+            await reader._process_session_file(
+                "sess", session_file, messages, window_id="@1"
+            )
+            await reader._process_session_file("sess", session_file, [], window_id="@1")
+
+        assert [msg.text for msg in messages] == ["fresh"]
+        assert full_digest.call_count == 1
+
+    async def test_rewrite_inside_tail_marker_clamps_without_replay(
+        self, tmp_path
+    ) -> None:
+        history = _record("h0") * 5
+        session_file = tmp_path / "transcript.jsonl"
+        session_file.write_text(history)
+        reader, state = _tracked_reader(tmp_path, session_file, len(history.encode()))
+        await reader._process_session_file("sess", session_file, [], window_id="@1")
+
+        session_file.write_text(history.replace("h0", "h1") + _record("after"))
+
+        messages: list = []
+        await reader._process_session_file(
+            "sess", session_file, messages, window_id="@1"
+        )
+
+        assert messages == []
+        tracked = state.get_session("sess")
+        assert tracked is not None
+        assert tracked.parsed_offset == session_file.stat().st_size
+
+    async def test_replacement_rebaselines_so_later_appends_deliver(
+        self, tmp_path
+    ) -> None:
+        history = _record("h0") * 5
+        session_file = tmp_path / "transcript.jsonl"
+        session_file.write_text(history)
+        reader, _ = _tracked_reader(tmp_path, session_file, len(history.encode()))
+        await reader._process_session_file("sess", session_file, [], window_id="@1")
+
+        replacement = tmp_path / "replacement.jsonl"
+        replacement.write_text(_record("other") * 3)
+        replacement.replace(session_file)
+        await reader._process_session_file("sess", session_file, [], window_id="@1")
+        with session_file.open("a") as transcript:
+            transcript.write(_record("live"))
+        messages: list = []
+        await reader._process_session_file(
+            "sess", session_file, messages, window_id="@1"
+        )
+
+        assert [msg.text for msg in messages] == ["live"]
