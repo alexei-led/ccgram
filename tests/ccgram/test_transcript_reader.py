@@ -22,27 +22,6 @@ def test_clear_session_cancels_pending_skip_barrier(tmp_path) -> None:
     assert state.get_session("sess") is None
 
 
-def test_clear_session_drops_startup_replay_state(tmp_path) -> None:
-    """A cleared session id reused later must not inherit the old session's
-    startup replay state (#367): the replay exemption, the clamp offset, and
-    the existed-at-startup markers all belong to the cleared lifetime."""
-    state = MonitorState(state_file=tmp_path / "monitor.json")
-    state.update_session(TrackedSession("sess", str(tmp_path / "session.jsonl")))
-    reader = TranscriptReader(state, IdleTracker())
-    # What the startup replay bound leaves behind for a pre-existing session.
-    reader._replay_allowed.add("sess")
-    reader._startup_clamped["sess"] = 4096
-    reader._startup_replay_checked.add("sess")
-    assert "sess" in reader._startup_sessions
-
-    reader.clear_session("sess")
-
-    assert "sess" not in reader._replay_allowed
-    assert "sess" not in reader._startup_clamped
-    assert "sess" not in reader._startup_sessions
-    assert "sess" not in reader._startup_replay_checked
-
-
 async def test_same_transcript_reuses_offset_after_session_map_refresh(
     tmp_path,
 ) -> None:
@@ -606,6 +585,27 @@ class TestStartupReplayBound:
         await reader._process_session_file("sess", session_file, fresh, window_id="@1")
 
         assert [msg.text for msg in fresh] == ["fresh"]
+
+    async def test_a_cleared_session_id_that_returns_is_not_clamped(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A cleared id that comes back is a new session, not the old backlog (#367)."""
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "startup_replay_max_bytes", 120, raising=False)
+        reader, state, session_file = self._reader(tmp_path, backlog=10)
+
+        reader.clear_session("sess")
+        state.update_session(
+            TrackedSession(session_id="sess", file_path=str(session_file))
+        )
+
+        returned: list = []
+        await reader._process_session_file(
+            "sess", session_file, returned, window_id="@1"
+        )
+
+        assert len(returned) == 10
 
     async def test_a_session_tracked_after_startup_is_never_clamped(
         self, tmp_path, monkeypatch
