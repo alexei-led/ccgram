@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 from collections.abc import AsyncIterator, Collection
 from dataclasses import replace
@@ -13,7 +14,7 @@ from typing import Any, Protocol
 from ..providers.base import HookEvent
 from .backend import CreationOptions, Prompt, SessionBackend, Target
 from .events import Event, EventHub
-from .messages import Message, MessageBuilder
+from .messages import Message, MessageBuilder, SourceChangedError
 from .models import (
     Action,
     ActionResult,
@@ -111,7 +112,12 @@ class LocalSessionService:
                 sid, version = self.store.bind(
                     target.id, target.binding, target.aliases
                 )
-                snapshot = await self._observe(sid, version, target, prompt)
+                try:
+                    snapshot = await self._observe(sid, version, target, prompt)
+                except SourceChangedError:
+                    # Publishing pins the file before it reads any message, so
+                    # nothing was published. Observe the replacement and retry.
+                    continue
                 if target.transcript is None:
                     return target, snapshot
                 stat = await asyncio.to_thread(target.transcript.stat)
@@ -234,6 +240,12 @@ class LocalSessionService:
             transcript_stamp=source.stamp,
         )
 
+    def _reading(self, target: Target) -> contextlib.AbstractContextManager[None]:
+        """Pin one transcript handle while a batch of messages materializes."""
+        if target.transcript is None:
+            return contextlib.nullcontext()
+        return self._sources[target.id.casefold()].reading()
+
     def _page_builder(self, target: Target) -> MessageBuilder:
         if target.transcript is None:
             return MessageBuilder(target.conversation_id, target.provider)
@@ -278,12 +290,13 @@ class LocalSessionService:
             return
         revisions = self._revisions[session_id]
         changed = False
-        for message_id in builder.in_order(changed_ids):
-            message = self._correlate(session_id, builder.message(message_id))
-            if revisions.get(message_id) != message.revision:
-                changed = True
-                self.hub.publish("message.upsert", session_id, message)
-                revisions[message_id] = message.revision
+        with self._reading(target):
+            for message_id in builder.in_order(changed_ids):
+                message = self._correlate(session_id, builder.message(message_id))
+                if revisions.get(message_id) != message.revision:
+                    changed = True
+                    self.hub.publish("message.upsert", session_id, message)
+                    revisions[message_id] = message.revision
         if changed:
             snapshot = replace(self._snapshots[session_id], last_activity=utc_now())
             self._snapshots[session_id] = snapshot
@@ -354,48 +367,70 @@ class LocalSessionService:
         if session_id not in self._targets:
             await self.refresh()
         async with self._refresh_lock:
-            target, _ = await self._refreshed(session_id)
-            if conversation is not None and conversation != target.conversation_id:
-                raise ProtocolError(
-                    404, "not_found", "Conversation is no longer bound to this session"
-                )
-            builder = self._page_builder(target)
-            ids = builder.ids
-            before = len(ids)
-            if cursor:
+            try:
+                return await self._history_page(session_id, cursor, limit, conversation)
+            except SourceChangedError:
+                # A spilled value moved under the index. Observe again, read once more.
                 try:
-                    decoded = json.loads(base64.urlsafe_b64decode(cursor.encode()))
-                    if (
-                        decoded["conversation"] != target.conversation_id
-                        or decoded.get("generation", 0) != target.history_generation
-                    ):
-                        raise ValueError
-                    position = builder.position(decoded["before"])
-                    if position is None:
-                        raise ValueError
-                    before = position
-                except (ValueError, KeyError, TypeError) as exc:
+                    return await self._history_page(
+                        session_id, cursor, limit, conversation
+                    )
+                except SourceChangedError as exc:
                     raise ProtocolError(
-                        400, "invalid_request", "Invalid cursor for this conversation"
+                        503, "backend_unavailable", "Transcript changed while reading"
                     ) from exc
-            start = max(0, before - limit)
+
+    async def _history_page(
+        self,
+        session_id: str,
+        cursor: str | None,
+        limit: int,
+        conversation: str | None,
+    ) -> HistoryPage:
+        """Read one page. Call with `_refresh_lock` held."""
+        target, _ = await self._refreshed(session_id)
+        if conversation is not None and conversation != target.conversation_id:
+            raise ProtocolError(
+                404, "not_found", "Conversation is no longer bound to this session"
+            )
+        builder = self._page_builder(target)
+        ids = builder.ids
+        before = len(ids)
+        if cursor:
+            try:
+                decoded = json.loads(base64.urlsafe_b64decode(cursor.encode()))
+                if (
+                    decoded["conversation"] != target.conversation_id
+                    or decoded.get("generation", 0) != target.history_generation
+                ):
+                    raise ValueError
+                position = builder.position(decoded["before"])
+                if position is None:
+                    raise ValueError
+                before = position
+            except (ValueError, KeyError, TypeError) as exc:
+                raise ProtocolError(
+                    400, "invalid_request", "Invalid cursor for this conversation"
+                ) from exc
+        start = max(0, before - limit)
+        with self._reading(target):
             page = tuple(
                 self._correlate(session_id, builder.message(message_id))
                 for message_id in ids[start:before]
             )
-            prev = (
-                base64.urlsafe_b64encode(
-                    json.dumps(
-                        {
-                            "conversation": target.conversation_id,
-                            "before": ids[start],
-                            "generation": target.history_generation,
-                        }
-                    ).encode()
-                ).decode()
-                if start
-                else None
-            )
+        prev = (
+            base64.urlsafe_b64encode(
+                json.dumps(
+                    {
+                        "conversation": target.conversation_id,
+                        "before": ids[start],
+                        "generation": target.history_generation,
+                    }
+                ).encode()
+            ).decode()
+            if start
+            else None
+        )
         return HistoryPage(
             target.conversation_id or None,
             page,
@@ -421,8 +456,23 @@ class LocalSessionService:
         if session_id not in self._targets:
             await self.refresh()
         async with self._refresh_lock:
-            target, _ = await self._refreshed(session_id)
-            builder = self._page_builder(target)
+            try:
+                return await self._range_page(session_id, start_byte, end_byte)
+            except SourceChangedError:
+                try:
+                    return await self._range_page(session_id, start_byte, end_byte)
+                except SourceChangedError as exc:
+                    raise ProtocolError(
+                        503, "backend_unavailable", "Transcript changed while reading"
+                    ) from exc
+
+    async def _range_page(
+        self, session_id: str, start_byte: int, end_byte: int | None
+    ) -> HistoryPage:
+        """Read messages in a source range. Call with `_refresh_lock` held."""
+        target, _ = await self._refreshed(session_id)
+        builder = self._page_builder(target)
+        with self._reading(target):
             selected = builder.messages(source_range=(start_byte, end_byte))
             messages = tuple(self._correlate(session_id, m) for m in selected)
         return HistoryPage(
@@ -623,29 +673,30 @@ class LocalSessionService:
         if target.conversation_id != event.session_id:
             return False
         builder = self._page_builder(target)
-        for message_id in reversed(builder.ids):
-            for part in builder.message(message_id).parts:
-                if (
-                    part.type != "tool"
-                    or part.name != tool_name
-                    or not isinstance(part.input, dict)
-                ):
-                    continue
-                digest = hook_input_hash(part.input)
-                if digest == event.data.get("tool_input_hash"):
-                    self.requests.observe_hook(
-                        sid,
-                        PendingHook(
-                            event.session_id,
-                            "question"
-                            if tool_name == "AskUserQuestion"
-                            else "permission",
-                            tool_name,
-                            part.input,
-                            event.timestamp,
-                        ),
-                    )
-                    return True
+        with self._reading(target):
+            for message_id in reversed(builder.ids):
+                for part in builder.message(message_id).parts:
+                    if (
+                        part.type != "tool"
+                        or part.name != tool_name
+                        or not isinstance(part.input, dict)
+                    ):
+                        continue
+                    digest = hook_input_hash(part.input)
+                    if digest == event.data.get("tool_input_hash"):
+                        self.requests.observe_hook(
+                            sid,
+                            PendingHook(
+                                event.session_id,
+                                "question"
+                                if tool_name == "AskUserQuestion"
+                                else "permission",
+                                tool_name,
+                                part.input,
+                                event.timestamp,
+                            ),
+                        )
+                        return True
         return False
 
 
