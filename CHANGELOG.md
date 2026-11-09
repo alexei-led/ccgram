@@ -5,6 +5,65 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.22.0] - 2026-11-09
+
+### Performance — cost follows new output, not transcript size
+
+Large, long-lived transcripts made ccgram expensive. Every second the session protocol read, hashed and re-parsed each whole transcript. The Telegram reader hashed the consumed prefix up to three times per poll. With a few 100–200 MB sessions, the bot used a full CPU core and more than 1 GB of RAM, and inbound messages waited over a minute. Now an idle transcript costs one `stat`, and an append costs only the appended bytes.
+
+Measured on 21 Claude sessions (200/120/80/60/50 MB + 16 × 5 MB, 592 MB total):
+
+| | v4.21.1 | v4.22.0 |
+|---|---|---|
+| CPU, 60 s idle | 24.5 s | 0.4 s |
+| RSS, idle | ~1.2 GB | ~110 MB |
+| CPU, 60 s with 3 active sessions | 26.0 s | 0.7 s |
+| Longest event-loop block at startup | 0.35 s | 0.004 s |
+| Restart → first new output | 5.6 s | 2.1 s |
+| Append → delivered, p95 | 2.2 s | 1.1 s |
+
+### Session protocol
+
+- **Stat-first observation, one incremental builder.** An unchanged transcript costs one `stat`; an append reads only new bytes. Replacement is detected by inode and a tail marker. `build_messages` is now a batch wrapper over the same incremental `MessageBuilder`, so IDs, revisions, tool pairing and `historyGeneration` are unchanged ([#377](https://github.com/alexei-led/ccgram/pull/377)).
+- **No message index unless something reads it.** When only Telegram runs, the protocol core keeps a cursor per session, not a copy of the history. The index is built for a subscriber (kept for 300 s after it disconnects) or for 60 s after a history read. Large values stay in the transcript and are re-read by byte range ([#386](https://github.com/alexei-led/ccgram/pull/386), [#388](https://github.com/alexei-led/ccgram/pull/388)).
+- **Robust polling.** Cancellation cannot hang shutdown, read errors back off without overflow, one failing session does not stop the others, and a failed publish is retried in full ([#386](https://github.com/alexei-led/ccgram/pull/386), [#389](https://github.com/alexei-led/ccgram/pull/389)).
+
+### Telegram delivery
+
+- **O(appended) polling.** Appends are verified with a tail marker and a running hash instead of re-hashing the whole prefix every poll ([#379](https://github.com/alexei-led/ccgram/pull/379)).
+- **Fast, bounded restarts.** No transcript hashing at startup; the parser rebuild streams only the committed prefix in 4 MiB chunks (500 MB: 3.98 GB → 93 MB peak) and runs only for sessions with new output ([#379](https://github.com/alexei-led/ccgram/pull/379), [#381](https://github.com/alexei-led/ccgram/pull/381), [#385](https://github.com/alexei-led/ccgram/pull/385)).
+- **No lost output on transient I/O errors.** A read that is not emitted now restores its cursor ([#387](https://github.com/alexei-led/ccgram/pull/387)). Sessions that stay live under another window keep their state ([#383](https://github.com/alexei-led/ccgram/pull/383)); a cleared session id no longer inherits stale startup-replay state ([#374](https://github.com/alexei-led/ccgram/pull/374)).
+
+### Codex and commands
+
+- **`/status` on huge Codex rollouts** reads the head and a bounded tail instead of parsing the whole file (750 MB: 3.6 s → 0.2 s). It now shows rate limits, a correct context-window share and `5h`/`weekly` limit labels ([#378](https://github.com/alexei-led/ccgram/pull/378), [#382](https://github.com/alexei-led/ccgram/pull/382)).
+- **A failed typing indicator no longer drops a voice note or a forwarded command**, and `/clear` cleanup runs even when the confirmation reply fails ([#375](https://github.com/alexei-led/ccgram/pull/375), [#380](https://github.com/alexei-led/ccgram/pull/380), [#384](https://github.com/alexei-led/ccgram/pull/384)).
+
+### Mobile protocol clients
+
+Message upserts now go only to subscribers. A reconnect within 300 s replays from its cursor; after that, resume returns `resumed: false` and the client reloads history. The replay ring holds 1,000 events / 600 s. See [client guide](docs/protocol/client-guide.md).
+
+### Thanks
+
+- @Exzentttt — reported the protocol and Codex rollout cost ([#357](https://github.com/alexei-led/ccgram/issues/357), [#346](https://github.com/alexei-led/ccgram/issues/346)) and proposed the incremental design in [#358](https://github.com/alexei-led/ccgram/pull/358).
+- @moqaa — field measurements on #357 that showed the scale of the regression.
+- @paoloantinori — reported the prefix re-hash cost ([#354](https://github.com/alexei-led/ccgram/issues/354)), the tail-marker idea and tests in [#355](https://github.com/alexei-led/ccgram/pull/355), and the clear-session leak ([#367](https://github.com/alexei-led/ccgram/issues/367)).
+- @xh123637 — clear-session fix ([#371](https://github.com/alexei-led/ccgram/pull/371)).
+- @zerone0x — voice typing fix ([#368](https://github.com/alexei-led/ccgram/pull/368)).
+- @korengast — reported the dropped voice note ([#366](https://github.com/alexei-led/ccgram/issues/366)).
+
+### Upgrade
+
+No configuration migration is required. Upgrade and restart ccgram:
+
+```console
+uv tool upgrade ccgram
+# Or:
+brew upgrade ccgram
+```
+
+[Full Changelog](https://github.com/alexei-led/ccgram/compare/v4.21.1...v4.22.0)
+
 ## [4.21.1] - 2026-11-04
 
 ### Hook reporting
