@@ -197,13 +197,13 @@ def test_snapshot_parses_only_a_bounded_tail_of_a_large_transcript(
         [_meta_entry(), *[_token_entry(i) for i in range(2000)]],
     )
     parsed_lines = []
-    real_parse = codex_status._parse_json_object
+    real_loads = json.loads
 
-    def counting_parse(raw_line):
-        parsed_lines.append(raw_line)
-        return real_parse(raw_line)
+    def counting_loads(raw, *args, **kwargs):
+        parsed_lines.append(raw)
+        return real_loads(raw, *args, **kwargs)
 
-    monkeypatch.setattr(codex_status, "_parse_json_object", counting_parse)
+    monkeypatch.setattr(codex_status.json, "loads", counting_loads)
 
     result = build_codex_status_snapshot(str(transcript), display_name="repo")
 

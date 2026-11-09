@@ -17,9 +17,10 @@ from typing import Any
 # timestamp from a bounded tail, and counts lines with a byte scan. Upgrade
 # trigger: if one turn pushes the last token_count past the tail window, the
 # snapshot shows "token stats: unavailable"; raise _TAIL_MAX_BYTES then.
+# session_meta shares the cap: a longer first line reads as "unknown".
 _TAIL_MAX_BYTES = 8 * 1024 * 1024
 _READ_BLOCK_BYTES = 1024 * 1024
-_HEAD_MAX_BYTES = 1024 * 1024
+_HEAD_MAX_BYTES = _TAIL_MAX_BYTES
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -199,7 +200,7 @@ def _format_token_lines(last_token_info: dict[str, Any]) -> list[str]:
     """Format token and rate-limit lines."""
     total_usage = _as_dict(last_token_info.get("total_token_usage"))
     if not total_usage:
-        return ["- token stats: unavailable (no `token_count` event yet)"]
+        return ["- token stats: unavailable (no recent `token_count` event)"]
 
     lines = [
         "- tokens (total): "
@@ -259,7 +260,7 @@ def build_codex_status_snapshot(
     except OSError:
         return None
 
-    if entry_count == 0 or not (saw_entry or session_meta):
+    if not (saw_entry or session_meta):
         return None
 
     resolved_session = (
