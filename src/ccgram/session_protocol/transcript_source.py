@@ -1,12 +1,15 @@
 """Stat-first, append-only view of one transcript for the protocol core.
 
-An unchanged transcript costs one stat. An append reads only the new complete
-records into the existing builder. A replacement (inode change, shrink, or a
-changed marker before the last observed size) rebuilds from byte 0 and bumps the
-history generation. Gemini stores one JSON document, so any change rebuilds it.
+An unchanged transcript costs one stat. A change opens the file once: the same
+handle checks the previous observation's identity, then parses only the complete
+records appended since the last line boundary into the existing builder and
+digests the new tail. A replacement (inode change, shrink, or a changed marker
+before the last observed size) rebuilds from byte 0 under a new generation.
+Gemini stores one JSON document, so any change rebuilds it from one read.
 
 Detection is a tail marker, not a full-content hash: a rewrite that keeps the
-inode, the size, and the last 4 KiB before the observed size goes unnoticed.
+inode, the size, and the last 4 KiB before the observed size goes unnoticed, as
+does an in-place rewrite between the identity check and the parse on one handle.
 Claude and Codex transcripts are append-only, so this is the accepted trade for
 not rehashing the whole file on every append. Upgrade trigger: a field report of a
 rewrite that keeps the tail. The fix is a rolling full-prefix digest, which costs one
@@ -18,13 +21,17 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import BinaryIO
 
 from .messages import MessageBuilder, read_entries, split_jsonl
 from .store import ProtocolStore, TranscriptCursor
 
 MARKER_BYTES = 4096
 READ_CHUNK_BYTES = 4 * 1024 * 1024
+MAX_RETRY_SECONDS = 30.0
 _SYNC_ATTEMPTS = 3
 
 type Stamp = tuple[int, int, int, int, int]
@@ -34,19 +41,8 @@ def source_stamp(stat: os.stat_result) -> Stamp:
     return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
 
 
-def _marker(path: Path, provider: str, observed: int) -> str:
-    start = 0 if provider == "gemini" else max(0, observed - MARKER_BYTES)
-    digest = hashlib.sha256()
-    remaining = observed - start
-    with path.open("rb") as handle:
-        handle.seek(start)
-        while remaining > 0:
-            chunk = handle.read(min(remaining, READ_CHUNK_BYTES))
-            if not chunk:
-                break
-            digest.update(chunk)
-            remaining -= len(chunk)
-    return digest.hexdigest()
+def _digest(data: bytes | bytearray | memoryview) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
 class _SourceChangedError(OSError):
@@ -56,9 +52,11 @@ class _SourceChangedError(OSError):
 class TranscriptSource:
     """Builder plus the identity it was built from. Not thread-safe.
 
-    Callers serialize `sync` calls. A read error is not retried until the
-    transcript's stamp changes, so a persistent error costs one stat per poll
-    instead of a full re-parse. A replacement during the read is retried.
+    Callers serialize `sync` calls. A failed read is retried when the stamp
+    changes or after an exponential backoff (1 s doubling to 30 s), so a
+    persistent error costs one stat per poll instead of a full re-parse, and a
+    transient error on an idle transcript still recovers. A replacement during
+    the read is retried at once.
     """
 
     def __init__(
@@ -68,6 +66,8 @@ class TranscriptSource:
         conversation_id: str,
         provider: str,
         cursor: TranscriptCursor | None,
+        *,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.key = key
         self.path = path
@@ -76,14 +76,22 @@ class TranscriptSource:
         self.cursor = cursor
         self.stamp: Stamp | None = None
         self.builder: MessageBuilder | None = None
+        self._clock = clock
         self._consumed = 0
         self._poisoned = False
+        self._failures = 0
         self._failed_stamp: Stamp | None = None
+        self._retry_at = 0.0
         self._saved = cursor
 
     @property
     def generation(self) -> int:
         return self.cursor.generation if self.cursor else 0
+
+    @property
+    def failing(self) -> bool:
+        """Whether the last read attempt failed."""
+        return self._failures > 0
 
     async def sync(self, store: ProtocolStore) -> None:
         for _ in range(_SYNC_ATTEMPTS):
@@ -112,104 +120,144 @@ class TranscriptSource:
         stamp = source_stamp(stat)
         if self.builder is not None and not self._poisoned and stamp == self.stamp:
             return
-        if stamp == self._failed_stamp:
-            raise OSError("Transcript is unreadable at its current stamp")
+        if (
+            self._failures
+            and stamp == self._failed_stamp
+            and self._clock() < self._retry_at
+        ):
+            raise OSError("Transcript read failed; retry pending")
         try:
-            if self._extends(stat):
-                self._append(stat)
-            else:
-                self._rebuild(stat)
+            self._observe(stat)
         except _SourceChangedError:
             raise
         except OSError:
+            self._failures += 1
             self._failed_stamp = stamp
+            delay = min(MAX_RETRY_SECONDS, 2.0 ** (self._failures - 1))
+            self._retry_at = self._clock() + delay
             raise
         self.stamp = stamp
+        self._failures = 0
         self._failed_stamp = None
 
-    def _extends(self, stat: os.stat_result) -> bool:
-        return (
-            self.provider != "gemini"
-            and self.builder is not None
-            and not self._poisoned
-            and self._identity_holds(self.cursor, stat)
-        )
+    def _observe(self, stat: os.stat_result) -> None:
+        prior = self.cursor
+        with self.path.open("rb") as handle:
+            if os.fstat(handle.fileno()).st_ino != stat.st_ino:
+                raise _SourceChangedError("Transcript was replaced before reading")
+            if self.provider == "gemini":
+                self._observe_document(handle, stat, prior)
+                return
+            intact = _tail_intact(handle, stat, prior)
+            if intact and self.builder is not None and not self._poisoned:
+                builder, start = self.builder, self._consumed
+                # A failure mid-feed leaves the builder partial; the next sync
+                # rebuilds it under the same generation if the file is intact.
+                self._poisoned = True
+            else:
+                builder, start = (
+                    MessageBuilder(
+                        self.conversation_id, self.provider, _generation(prior, intact)
+                    ),
+                    0,
+                )
+            consumed, marker = _consume(handle, builder, start, stat.st_size)
+            if os.fstat(handle.fileno()).st_ino != stat.st_ino:
+                raise _SourceChangedError("Transcript was replaced while reading")
+        self._commit(builder, consumed, stat, marker)
 
-    def _identity_holds(
-        self, prior: TranscriptCursor | None, stat: os.stat_result
-    ) -> bool:
-        return (
+    def _observe_document(
+        self, handle: BinaryIO, stat: os.stat_result, prior: TranscriptCursor | None
+    ) -> None:
+        raw = handle.read()
+        after = os.fstat(handle.fileno())
+        if (
+            len(raw) != stat.st_size
+            or after.st_size != stat.st_size
+            or after.st_mtime_ns != stat.st_mtime_ns
+        ):
+            raise _SourceChangedError("Transcript changed while reading")
+        marker = _digest(raw)
+        intact = (
             prior is not None
             and prior.inode == stat.st_ino
-            and stat.st_size >= prior.observed
-            and _marker(self.path, self.provider, prior.observed) == prior.marker
+            and len(raw) >= prior.observed
+            and (
+                marker
+                if prior.observed == len(raw)
+                else _digest(memoryview(raw)[: prior.observed])
+            )
+            == prior.marker
         )
-
-    def _append(self, stat: os.stat_result) -> None:
-        assert self.builder is not None
-        # A failure mid-feed leaves the builder partial; the next change rebuilds.
-        self._poisoned = True
-        self._consumed = self._consume(
-            self.builder, self._consumed, stat.st_size, stat.st_ino
+        builder = MessageBuilder(
+            self.conversation_id, self.provider, _generation(prior, intact)
         )
-        self._poisoned = False
-        self.cursor = self._commit_cursor(stat.st_ino, stat.st_size)
+        builder.feed(read_entries(raw, "gemini"))
+        self._commit(builder, len(raw), stat, marker)
 
-    def _rebuild(self, stat: os.stat_result) -> None:
-        prior = self.cursor
-        if prior is None:
-            generation = 0
-        elif self._poisoned or not self._identity_holds(prior, stat):
-            generation = prior.generation + 1
-        else:
-            generation = prior.generation
-        builder = MessageBuilder(self.conversation_id, self.provider, generation)
-        if self.provider == "gemini":
-            raw = self.path.read_bytes()
-            builder.feed(read_entries(raw, "gemini"))
-            consumed, observed = len(raw), len(raw)
-        else:
-            consumed = self._consume(builder, 0, stat.st_size, stat.st_ino)
-            observed = stat.st_size
+    def _commit(
+        self,
+        builder: MessageBuilder,
+        consumed: int,
+        stat: os.stat_result,
+        marker: str,
+    ) -> None:
         self.builder = builder
         self._consumed = consumed
         self._poisoned = False
         self.cursor = TranscriptCursor(
-            stat.st_ino,
-            observed,
-            _marker(self.path, self.provider, observed),
-            generation,
+            stat.st_ino, stat.st_size, marker, builder.generation
         )
 
-    def _commit_cursor(self, inode: int, observed: int) -> TranscriptCursor:
-        return TranscriptCursor(
-            inode,
-            observed,
-            _marker(self.path, self.provider, observed),
-            self.generation,
-        )
 
-    def _consume(
-        self, builder: MessageBuilder, start: int, limit: int, inode: int
-    ) -> int:
-        """Feed complete records in [start, limit); return the new line boundary."""
-        consumed = start
-        position = start
-        pending = b""
-        with self.path.open("rb") as handle:
-            handle.seek(start)
-            while position < limit:
-                data = handle.read(min(READ_CHUNK_BYTES, limit - position))
-                if not data:
-                    raise _SourceChangedError("Transcript shrank while reading")
-                position += len(data)
-                buffered = pending + data
-                cut = buffered.rfind(b"\n") + 1
-                pending = buffered[cut:]
-                if cut:
-                    entries, _ = split_jsonl(buffered[:cut], consumed)
-                    builder.feed(entries)
-                    consumed += cut
-            if os.fstat(handle.fileno()).st_ino != inode:
-                raise _SourceChangedError("Transcript was replaced while reading")
-        return consumed
+def _generation(prior: TranscriptCursor | None, intact: bool) -> int:
+    if prior is None:
+        return 0
+    return prior.generation if intact else prior.generation + 1
+
+
+def _tail_intact(
+    handle: BinaryIO, stat: os.stat_result, prior: TranscriptCursor | None
+) -> bool:
+    """Whether the bytes before the previously observed size are unchanged."""
+    if prior is None or prior.inode != stat.st_ino or stat.st_size < prior.observed:
+        return False
+    start = max(0, prior.observed - MARKER_BYTES)
+    handle.seek(start)
+    data = handle.read(prior.observed - start)
+    return len(data) == prior.observed - start and _digest(data) == prior.marker
+
+
+def _consume(
+    handle: BinaryIO, builder: MessageBuilder, start: int, limit: int
+) -> tuple[int, str]:
+    """Feed complete records in [start, limit) and digest the tail before limit.
+
+    Returns the new line boundary and the marker for `limit`. The read starts up
+    to MARKER_BYTES before `start` when needed, so the marker comes from the same
+    read as the parsed records.
+    """
+    tail_from = max(0, limit - MARKER_BYTES)
+    position = min(start, tail_from)
+    handle.seek(position)
+    tail = bytearray()
+    pending = b""
+    consumed = start
+    while position < limit:
+        data = handle.read(min(READ_CHUNK_BYTES, limit - position))
+        if not data:
+            raise _SourceChangedError("Transcript shrank while reading")
+        chunk_start = position
+        position += len(data)
+        if position > tail_from:
+            tail += data[max(0, tail_from - chunk_start) :]
+        if position <= start:
+            continue
+        buffered = pending + data[max(0, start - chunk_start) :]
+        cut = buffered.rfind(b"\n") + 1
+        pending = buffered[cut:]
+        if cut:
+            entries, _ = split_jsonl(buffered[:cut], consumed)
+            builder.feed(entries)
+            consumed += cut
+    return consumed, _digest(tail)

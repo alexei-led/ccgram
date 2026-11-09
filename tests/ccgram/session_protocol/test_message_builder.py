@@ -131,7 +131,22 @@ def test_result_never_attaches_to_a_part_with_another_call_id():
     assert [(p.tool_call_id, p.status) for p in message.parts] == [
         ("new-call", "running")
     ]
-    assert message.revision == 2
+    assert message.revision == 3
+
+
+def test_dropping_a_completed_tool_part_raises_the_revision():
+    builder = MessageBuilder("conv", "claude")
+    builder.feed([_call(0, "same", "c"), _result(10, "r", "c", "done")])
+    before = builder.message("conv/same")
+    text_only = {
+        "type": "assistant",
+        "uuid": "same",
+        "message": {"role": "assistant", "content": "text only"},
+    }
+    builder.feed([SourceEntry(20, text_only)])
+    after = builder.message("conv/same")
+    assert after.revision > before.revision
+    assert [p.type for p in after.parts] == ["text"]
 
 
 def test_source_range_selects_messages_by_contributing_offsets():

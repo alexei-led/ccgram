@@ -158,3 +158,28 @@ async def test_lost_hook_processing_keeps_session_blocked(
         with pytest.raises(asyncio.CancelledError):
             await runtime.poll("")
     assert service.requests.has_deferred(session.id)
+
+
+async def test_turn_end_hook_resolves_while_capture_is_unavailable(
+    service, backend, store, tmp_path, monkeypatch
+):
+    path = tmp_path / "transcript.jsonl"
+    path.touch()
+    backend.target = replace(backend.target, transcript=path)
+    session = (await service.list_sessions())[0]
+
+    async def capture_glitch(target):
+        raise OSError("capture failed")
+
+    backend.prompt = capture_glitch
+    monkeypatch.setattr(
+        "ccgram.session_protocol.runtime.asyncio.sleep",
+        AsyncMock(side_effect=asyncio.CancelledError),
+    )
+    with TemporaryFile() as lock:
+        runtime = ProtocolRuntime(store, service, lock)
+        runtime.observe_hook(HookEvent("Stop", "@1", "conv", {}, time.time()))
+        assert service.requests.has_deferred(session.id)
+        with pytest.raises(asyncio.CancelledError):
+            await runtime.poll("")
+    assert not service.requests.has_deferred(session.id)

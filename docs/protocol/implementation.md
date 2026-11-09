@@ -65,22 +65,24 @@ Telegram rendering retains its command metadata. Telegram history includes an
 
 History and live mobile events read a verified transcript observation. Each
 observation starts with one stat. An unchanged stamp (device, inode, size, mtime,
-and ctime) reads nothing. Otherwise the reader checks identity and parses only the
-complete records appended since the last observed byte offset. The shared
-`MessageBuilder` in `messages.py` keeps the per-message index, so a page materializes
-only its own messages.
+and ctime) reads nothing. Otherwise one open handle checks the previous
+observation's identity, parses only the complete records appended since the last
+line boundary, and digests the new tail. The shared `MessageBuilder` in
+`messages.py` keeps one in-memory index per target, so a page materializes only
+its own messages. Parsed parts, including tool output text, stay in memory while
+the target keeps the same conversation; raw transcript bytes are not kept.
 
 Identity is the inode, the observed size, and a digest of the last 4 KiB before that
 size. A replacement, a truncation, or a changed tail increments the persisted
 generation and rebuilds from byte 0. A rewrite that keeps the inode, size, and tail
 is not detected; transcripts are append-only, so this is accepted. Gemini stores one
-JSON document, so any change rebuilds it. A file that cannot be read is not retried
-until its stamp changes, so a persistent error costs one stat per poll.
+JSON document, so any change rebuilds it from one read, rejected if the size or
+mtime changed during the read. A failed read is retried when the stamp changes or
+after a backoff of 1 s doubling to 30 s.
 
-The reader checks identity before and after each read and retries a source that
-changes mid-read. A final source check after publication prevents action preflight
-from accepting a source that changed during observation. An unstable source becomes
-unavailable and exposes no input actions. Message bytes are not kept between polls.
+A source replaced or truncated during a read is retried. A final source check after
+publication prevents action preflight from accepting a source that changed during
+observation. An unstable source becomes unavailable and exposes no input actions.
 
 Telegram delivery uses a separate byte cursor because its receipt checkpoint must
 survive queue failures and restart. This is a delivery policy, not another provider

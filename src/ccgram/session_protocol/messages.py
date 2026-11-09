@@ -1069,30 +1069,38 @@ class MessageBuilder:
         if owner:
             self._dirty.add(owner[0])
 
-    def _applied_results(self, message_id: str) -> Iterator[tuple[int, _CallResult]]:
+    def _owned_results(
+        self, message_id: str
+    ) -> Iterator[tuple[int | None, _CallResult]]:
+        """Results of calls this message claims, with the part index they apply to.
+
+        The index is None when a later record replaced the claimed part: the result
+        still counts toward the revision, so dropping the part raises it, but it
+        never attaches to a part with another call ID.
+        """
         head = self._heads[message_id]
         for call_id in self._owned.get(message_id, ()):
             result = self._results.get(call_id)
-            index = self._claims[call_id][1]
-            # A later record may have replaced the parts this claim pointed at.
-            if (
-                result is None
-                or index >= len(head.parts)
-                or head.parts[index].tool_call_id != call_id
-            ):
+            if result is None:
                 continue
-            yield index, result
+            index = self._claims[call_id][1]
+            if index >= len(head.parts) or head.parts[index].tool_call_id != call_id:
+                yield None, result
+            else:
+                yield index, result
 
     def _contributing(self, message_id: str) -> set[int]:
         offsets = set(self._heads[message_id].offsets)
-        for _, result in self._applied_results(message_id):
+        for _, result in self._owned_results(message_id):
             offsets.update(result.offsets)
         return offsets
 
     def _resolve(self, message_id: str) -> Message:
         head = self._heads[message_id]
         parts = list(head.parts)
-        for index, result in self._applied_results(message_id):
+        for index, result in self._owned_results(message_id):
+            if index is None:
+                continue
             parts[index] = replace(
                 parts[index], status=result.status, output=result.output
             )

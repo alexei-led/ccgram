@@ -318,7 +318,7 @@ async def test_source_change_during_read_never_uses_old_generation(
     append(path, {"type": "user", "uuid": "filler", "message": {"content": "more"}})
     real_open = Path.open
     reads = 0
-    mutate_on = 2 if operation == "action" else 1
+    mutate_on = 1
 
     @contextmanager
     def open_source(source, mode="r", *args, **kwargs):

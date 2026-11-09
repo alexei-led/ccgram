@@ -73,6 +73,7 @@ class LocalSessionService:
         self._snapshots: dict[str, SessionSnapshot] = {}
         self._targets: dict[str, Target] = {}
         self._refresh_lock = asyncio.Lock()
+        # One source per target: a new conversation replaces the old builder.
         self._sources: dict[str, TranscriptSource] = {}
         self._revisions: dict[str, dict[str, int]] = {}
         # Earliest send time per session with a delivery not yet matched in the
@@ -98,7 +99,7 @@ class LocalSessionService:
                 )
                 self._snapshots.pop(session_id)
                 target = self._targets.pop(session_id)
-                self._sources.pop(_source_key(target), None)
+                self._sources.pop(target.id.casefold(), None)
                 self._revisions.pop(session_id, None)
                 self._recorrelate.pop(session_id, None)
 
@@ -197,13 +198,14 @@ class LocalSessionService:
             return target
         key = _source_key(target)
         provider = target.transcript_provider or target.provider
-        source = self._sources.get(key)
+        source = self._sources.get(target.id.casefold())
         if (
             source is None
+            or source.key != key
             or source.path != target.transcript
             or source.provider != provider
         ):
-            source = self._sources[key] = TranscriptSource(
+            source = self._sources[target.id.casefold()] = TranscriptSource(
                 key,
                 target.transcript,
                 target.conversation_id,
@@ -239,7 +241,7 @@ class LocalSessionService:
             raise ProtocolError(
                 503, "backend_unavailable", "Transcript observation is unavailable"
             )
-        builder = self._sources[_source_key(target)].builder
+        builder = self._sources[target.id.casefold()].builder
         assert builder is not None
         return builder
 
@@ -261,7 +263,7 @@ class LocalSessionService:
     async def _publish_messages(self, session_id: str, target: Target) -> None:
         if target.transcript is None:
             return
-        builder = self._sources[_source_key(target)].builder
+        builder = self._sources[target.id.casefold()].builder
         assert builder is not None
         if session_id in self._revisions:
             changed_ids = set(builder.take_dirty())
@@ -331,10 +333,7 @@ class LocalSessionService:
         if session_id not in self._targets:
             await self.refresh()
         async with self._refresh_lock:
-            target = self._targets.get(session_id)
-            if target is None:
-                raise ProtocolError(404, "not_found", "Session not found")
-            return await self._update(await self.backend.inspect(target.id))
+            return await self._refreshed(session_id)
 
     async def for_target(self, target_id: str) -> tuple[Target, SessionSnapshot]:
         async with self._refresh_lock:
@@ -355,7 +354,7 @@ class LocalSessionService:
         if session_id not in self._targets:
             await self.refresh()
         async with self._refresh_lock:
-            target = await self._refreshed_target(session_id)
+            target, _ = await self._refreshed(session_id)
             if conversation is not None and conversation != target.conversation_id:
                 raise ProtocolError(
                     404, "not_found", "Conversation is no longer bound to this session"
@@ -422,7 +421,7 @@ class LocalSessionService:
         if session_id not in self._targets:
             await self.refresh()
         async with self._refresh_lock:
-            target = await self._refreshed_target(session_id)
+            target, _ = await self._refreshed(session_id)
             builder = self._page_builder(target)
             selected = builder.messages(source_range=(start_byte, end_byte))
             messages = tuple(self._correlate(session_id, m) for m in selected)
@@ -434,13 +433,12 @@ class LocalSessionService:
             target.history_generation,
         )
 
-    async def _refreshed_target(self, session_id: str) -> Target:
+    async def _refreshed(self, session_id: str) -> tuple[Target, SessionSnapshot]:
         """Observe the session's current source. Call with `_refresh_lock` held."""
         target = self._targets.get(session_id)
         if target is None:
             raise ProtocolError(404, "not_found", "Session not found")
-        refreshed, _ = await self._update(await self.backend.inspect(target.id))
-        return refreshed
+        return await self._update(await self.backend.inspect(target.id))
 
     async def watch(
         self, session_ids: Collection[str] | None = None
@@ -594,9 +592,11 @@ class LocalSessionService:
         if identity is None:
             return
         for sid, target in self._hook_targets(event, prefix):
-            if not target.available:
-                # An unreadable source closed this identity during refresh. Raise so
-                # the caller keeps its deferral instead of resolving lost evidence.
+            source = self._sources.get(target.id.casefold())
+            if identity.kind != "turn_ended" and source and source.failing:
+                # Matching needs the transcript, and the failed read may already
+                # have closed this identity. Raise so the caller keeps the deferral
+                # instead of resolving evidence it could not check.
                 raise ProtocolError(
                     503, "backend_unavailable", "Transcript source is unavailable"
                 )
@@ -663,19 +663,17 @@ def _timestamp(value: str | None) -> float | None:
 
 
 def _recent_user_ids(builder: MessageBuilder, since: float) -> list[str]:
-    """User messages at or after `since`, newest first.
+    """User messages timestamped at or after `since`.
 
-    A delivery matches only a transcript timestamp at or after its send time, and
-    messages arrive in transcript order, so the scan stops at the first older one.
+    A delivery matches only a transcript timestamp at or after its send time.
+    Timestamps need not rise with position, so this scans every message's index
+    entry, but materializes only the candidates.
     """
     ids = []
-    for message_id in reversed(builder.ids):
-        timestamp = _timestamp(builder.time(message_id))
-        if timestamp is None:
-            # Untimed messages cannot match a delivery; skip without materializing.
+    for message_id in builder.ids:
+        if builder.role(message_id) != "user":
             continue
-        if timestamp < since:
-            break
-        if builder.role(message_id) == "user":
+        timestamp = _timestamp(builder.time(message_id))
+        if timestamp is not None and timestamp >= since:
             ids.append(message_id)
     return ids

@@ -157,32 +157,110 @@ async def test_truncated_transcript_rebuilds_under_a_new_generation(store, tmp_p
     assert _builder(source).ids == ["conv/g1/c"]
 
 
-async def test_unreadable_source_is_not_retried_until_it_changes(
+class _Flaky:
+    """Make reads of one path fail while `failing` is set; count attempts."""
+
+    def __init__(self, monkeypatch, path):
+        self.path = path
+        self.failing = True
+        self.attempts = 0
+        real_open = Path.open
+
+        def flaky_open(source, mode="r", *args, **kwargs):
+            if source == path and "r" in mode:
+                self.attempts += 1
+                if self.failing:
+                    raise OSError(24, "Too many open files")
+            return real_open(source, mode, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", flaky_open)
+
+
+async def test_failed_read_backs_off_then_recovers_on_an_idle_transcript(
+    store, tmp_path, monkeypatch
+):
+    path = tmp_path / "transcript.jsonl"
+    _write(path, [_record("a", "one")])
+    now = [100.0]
+    source = TranscriptSource(
+        "conv", path, "conv", "claude", None, clock=lambda: now[0]
+    )
+    flaky = _Flaky(monkeypatch, path)
+    with pytest.raises(OSError):
+        await source.sync(store)
+    assert source.failing
+    with pytest.raises(OSError):
+        await source.sync(store)
+    assert flaky.attempts == 1
+    flaky.failing = False
+    now[0] += 1.0
+    await source.sync(store)
+    assert flaky.attempts == 2
+    assert not source.failing
+    assert _builder(source).ids == ["conv/a"]
+
+
+async def test_backoff_doubles_and_caps(store, tmp_path, monkeypatch):
+    path = tmp_path / "transcript.jsonl"
+    _write(path, [_record("a", "one")])
+    now = [0.0]
+    source = TranscriptSource(
+        "conv", path, "conv", "claude", None, clock=lambda: now[0]
+    )
+    flaky = _Flaky(monkeypatch, path)
+    waits = []
+    for _ in range(8):
+        before = flaky.attempts
+        waited = 0.0
+        while flaky.attempts == before:
+            with pytest.raises(OSError):
+                await source.sync(store)
+            now[0] += 0.5
+            waited += 0.5
+        waits.append(waited)
+    assert waits[1:] == [1.0, 2.0, 4.0, 8.0, 16.0, 30.0, 30.0]
+
+
+async def test_changed_stamp_retries_a_failed_read_at_once(
     store, tmp_path, monkeypatch
 ):
     path = tmp_path / "transcript.jsonl"
     _write(path, [_record("a", "one")])
     source = _source(store, path)
-    attempts = 0
-    real_open = Path.open
-
-    def failing_open(self, mode="r", *args, **kwargs):
-        nonlocal attempts
-        if self == path and "r" in mode:
-            attempts += 1
-            raise PermissionError("denied")
-        return real_open(self, mode, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "open", failing_open)
+    flaky = _Flaky(monkeypatch, path)
     with pytest.raises(OSError):
         await source.sync(store)
-    with pytest.raises(OSError):
-        await source.sync(store)
-    assert attempts == 1
     _write(path, [_record("b", "two")], mode="a")
+    flaky.failing = False
+    await source.sync(store)
+    assert flaky.attempts == 2
+    assert _builder(source).ids == ["conv/a", "conv/b"]
+
+
+async def test_failure_mid_append_rebuilds_under_the_same_generation(
+    store, tmp_path, monkeypatch
+):
+    path = tmp_path / "transcript.jsonl"
+    _write(path, [_record("a", "one")])
+    source = _source(store, path)
+    await source.sync(store)
+    _write(path, [_record("b", "two")], mode="a")
+    real_feed = MessageBuilder.feed
+    calls = {"n": 0}
+
+    def failing_feed(self, entries):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError(5, "Input/output error")
+        return real_feed(self, entries)
+
+    monkeypatch.setattr(MessageBuilder, "feed", failing_feed)
     with pytest.raises(OSError):
         await source.sync(store)
-    assert attempts == 2
+    _write(path, [_record("c", "three")], mode="a")
+    await source.sync(store)
+    assert source.generation == 0
+    assert _builder(source).ids == ["conv/a", "conv/b", "conv/c"]
 
 
 async def test_idle_refresh_publishes_nothing_and_reads_nothing(
@@ -259,3 +337,50 @@ async def test_delivery_publishes_and_materializes_only_the_matching_message(
     assert materialized == ["conv/hello"]
     assert [u.id for u in upserts] == ["conv/hello"]
     assert upserts[0].action_id == "act_1"
+
+
+async def test_new_conversation_replaces_the_previous_source(
+    service, backend, tmp_path
+):
+    first = tmp_path / "first.jsonl"
+    second = tmp_path / "second.jsonl"
+    _write(first, [_record("a", "one")])
+    _write(second, [_record("b", "two")])
+    backend.target = replace(backend.target, transcript=first)
+    await service.list_sessions()
+    backend.target = replace(
+        backend.target, transcript=second, conversation_id="conv-2"
+    )
+    await service.refresh()
+    assert [source.key for source in service._sources.values()] == ["@1:conv-2"]
+
+
+async def test_gemini_document_changed_during_read_is_retried(
+    store, tmp_path, monkeypatch
+):
+    path = tmp_path / "session.json"
+    document = {"messages": [{"id": "m1", "type": "user", "content": "hi"}]}
+    path.write_text(json.dumps(document))
+    source = TranscriptSource("conv", path, "conv", "gemini", None)
+    real_open = Path.open
+    rewrites = []
+
+    def rewriting_open(self, mode="r", *args, **kwargs):
+        stream = real_open(self, mode, *args, **kwargs)
+        if self == path and mode == "rb" and not rewrites:
+            rewrites.append(True)
+            grown = {
+                "messages": [
+                    *document["messages"],
+                    {"id": "m2", "type": "user", "content": "more"},
+                ]
+            }
+            with real_open(path, "w") as out:
+                out.write(json.dumps(grown))
+        return stream
+
+    monkeypatch.setattr(Path, "open", rewriting_open)
+    await source.sync(store)
+    assert rewrites == [True]
+    assert _builder(source).ids == ["conv/m1", "conv/m2"]
+    assert source.generation == 0
