@@ -15,7 +15,7 @@ jobs:
         python-version:
           - "3.14"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: astral-sh/setup-uv@v7
@@ -44,17 +44,17 @@ jobs:
     continue-on-error: true
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: "3.14"
       - run: uv sync --all-extras
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
       - name: Install archfit + analyzers
@@ -69,7 +69,7 @@ jobs:
         run: make arch-score | tee archfit-scorecard.md
       - name: Upload scorecard
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: archfit-scorecard
           path: archfit-scorecard.md
