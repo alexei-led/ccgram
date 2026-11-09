@@ -974,3 +974,117 @@ class TestSteadyStateCost:
         )
 
         assert [msg.text for msg in messages] == ["live"]
+
+
+class TestParserRebuildOnActiveFile:
+    """The restart rebuild must finish on a transcript that keeps growing."""
+
+    def _setup(self, tmp_path, count=20):
+        history = "".join(_record(f"h{i}") for i in range(count))
+        session_file = tmp_path / "transcript.jsonl"
+        session_file.write_text(history)
+        reader, state = _tracked_reader(tmp_path, session_file, len(history.encode()))
+        return reader, state, session_file, history
+
+    async def test_rebuild_survives_a_concurrent_append(self, tmp_path) -> None:
+        reader, _, session_file, _ = self._setup(tmp_path)
+        await reader._process_session_file("sess", session_file, [], window_id="@1")
+        reader._parser_rebuild_pending.add("sess")
+        real = transcript_reader._replay_committed_prefix
+
+        def append_then_replay(*args, **kwargs):
+            with session_file.open("a") as transcript:
+                transcript.write(_record("during"))
+            return real(*args, **kwargs)
+
+        with patch(
+            "ccgram.transcript_reader._replay_committed_prefix", append_then_replay
+        ):
+            messages: list = []
+            await reader._process_session_file(
+                "sess", session_file, messages, window_id="@1"
+            )
+
+        assert "sess" not in reader._parser_rebuild_pending
+        assert "sess" in reader._protocol_parser_states
+
+    async def test_rebuild_rejects_a_replaced_file(self, tmp_path) -> None:
+        reader, _, session_file, history = self._setup(tmp_path)
+        await reader._process_session_file("sess", session_file, [], window_id="@1")
+        stat = session_file.stat()
+        replacement = tmp_path / "replacement.jsonl"
+        replacement.write_text(history)
+        replacement.replace(session_file)
+
+        rebuilt = await reader._rebuild_committed_parser_context(
+            "sess", session_file, "claude", stat, supports_incremental_read=True
+        )
+
+        assert rebuilt is False
+
+    async def test_rebuild_rejects_a_file_truncated_during_the_read(
+        self, tmp_path
+    ) -> None:
+        _, _, session_file, history = self._setup(tmp_path)
+        stat = session_file.stat()
+        real_feed_read = transcript_reader.read_entries
+
+        def truncate_then_read(raw, provider):
+            session_file.write_text(history[:50])
+            return real_feed_read(raw, provider)
+
+        with patch("ccgram.transcript_reader.read_entries", truncate_then_read):
+            state = transcript_reader._replay_committed_prefix(
+                session_file,
+                "claude",
+                len(history.encode()),
+                (stat.st_dev, stat.st_ino),
+            )
+
+        assert state is None
+
+    async def test_chunked_rebuild_matches_a_whole_file_rebuild(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        count = 40
+        tool_use = (
+            '{"type":"assistant","message":{"content":[{"type":"tool_use",'
+            '"id":"t1","name":"Bash","input":{"command":"ls"}}]}}\n'
+        )
+        history = "".join(_record(f"h{i}") for i in range(count)) + tool_use
+        session_file = tmp_path / "transcript.jsonl"
+        session_file.write_text(history)
+        stat = session_file.stat()
+        generation = (stat.st_dev, stat.st_ino)
+        floor = len(history.encode())
+
+        whole = transcript_reader._replay_committed_prefix(
+            session_file, "claude", floor, generation
+        )
+        monkeypatch.setattr(transcript_reader, "_REBUILD_CHUNK_BYTES", 37)
+        chunked = transcript_reader._replay_committed_prefix(
+            session_file, "claude", floor, generation
+        )
+
+        assert whole is not None and chunked is not None
+        assert set(chunked.pending_tools) == set(whole.pending_tools) == {"t1"}
+
+    async def test_rebuild_stops_at_the_floor(self, tmp_path) -> None:
+        history = "".join(_record(f"h{i}") for i in range(10))
+        session_file = tmp_path / "transcript.jsonl"
+        session_file.write_text(history)
+        stat = session_file.stat()
+        seen: list[int] = []
+        real_parse = transcript_reader.parse_records
+
+        def spy(entries, provider_name, parser_state, **kwargs):
+            seen.extend(entry.offset for entry in entries)
+            return real_parse(entries, provider_name, parser_state, **kwargs)
+
+        floor = len(_record("h0").encode()) * 4
+        with patch("ccgram.transcript_reader.parse_records", spy):
+            transcript_reader._replay_committed_prefix(
+                session_file, "claude", floor, (stat.st_dev, stat.st_ino)
+            )
+
+        assert seen == [len(_record("h0").encode()) * i for i in range(4)]

@@ -314,6 +314,65 @@ def _advance_prefix(
     return (size, digest)
 
 
+_REBUILD_CHUNK_BYTES = 4 * 1024 * 1024
+
+
+def _replay_committed_prefix(
+    file_path: Path, provider_name: str, floor: int, generation: tuple[int, int]
+) -> TranscriptParserState | None:
+    """Rebuild parser state from the committed prefix [0, floor) in bounded chunks.
+
+    Bytes past *floor* are read live by the reader and may grow concurrently,
+    so they are never read here. Only a replacement (device/inode change) or a
+    file that shrank during the read invalidates the rebuild; growth does not.
+    A file shorter than *floor* is replayed to its end, as a watermark can
+    outlive a replaced transcript until the monitor commits the clamp.
+    Memory stays at one chunk instead of the whole transcript.
+    """
+
+    def same_file(st: Any, min_size: int) -> bool:
+        return (st.st_dev, st.st_ino) == generation and st.st_size >= min_size
+
+    start_size = file_path.stat().st_size
+    if not same_file(file_path.stat(), 0):
+        return None
+    parser_state = TranscriptParserState()
+
+    def feed(raw: bytes, base: int) -> None:
+        nonlocal parser_state
+        entries = [
+            SourceEntry(base + entry.offset, entry.data)
+            for entry in read_entries(raw, provider_name)
+            if base + entry.offset < floor
+        ]
+        _, parser_state = parse_records(
+            entries, provider_name, parser_state, deduplicate_updates=True
+        )
+
+    with file_path.open("rb") as transcript:
+        base = 0
+        carry = b""
+        remaining = floor
+        while remaining > 0:
+            block = transcript.read(min(_REBUILD_CHUNK_BYTES, remaining))
+            if not block:
+                break
+            remaining -= len(block)
+            buf = carry + block
+            cut = buf.rfind(b"\n") + 1
+            if cut:
+                feed(buf[:cut], base)
+                base += cut
+            carry = buf[cut:]
+        if carry:
+            # A parse position inside a line still owns that whole line.
+            carry += transcript.readline()
+            feed(carry, base)
+    if not same_file(file_path.stat(), start_size):
+        return None
+    return parser_state
+
+
 def _tail_marker(file_path: Path, offset: int) -> bytes:
     """Read a small marker immediately before a consumed byte offset."""
     if offset <= 0:
@@ -718,46 +777,24 @@ class TranscriptReader:
         tracked = self._state.get_session(session_id)
         if tracked is None:
             return False
+        # Rebuild to the position the reader will resume from, which is the
+        # clamp point when a startup clamp applied. Rebuilding only to the
+        # delivered watermark would miss the skipped turn and replay stale
+        # parser context (a Codex task_complete "Done" that the skipped
+        # user turn had cleared), discarding the next real answer.
+        floor = self._clamped_floor(session_id, tracked.last_byte_offset)
         try:
-            before = file_path.stat()
-            raw = await asyncio.to_thread(file_path.read_bytes)
-            after = file_path.stat()
+            parser_state = await asyncio.to_thread(
+                _replay_committed_prefix,
+                file_path,
+                provider_name,
+                floor,
+                (expected_stat.st_dev, expected_stat.st_ino),
+            )
         except OSError:
             return False
-        expected_generation = (
-            expected_stat.st_dev,
-            expected_stat.st_ino,
-            expected_stat.st_size,
-            expected_stat.st_ctime_ns,
-        )
-        if any(
-            (
-                stat.st_dev,
-                stat.st_ino,
-                stat.st_size,
-                stat.st_ctime_ns,
-            )
-            != expected_generation
-            for stat in (before, after)
-        ):
+        if parser_state is None:
             return False
-
-        prefix = [
-            entry
-            for entry in read_entries(raw, provider_name)
-            # Rebuild to the position the reader will resume from, which is the
-            # clamp point when a startup clamp applied. Rebuilding only to the
-            # delivered watermark would miss the skipped turn and replay stale
-            # parser context (a Codex task_complete "Done" that the skipped
-            # user turn had cleared), discarding the next real answer.
-            if entry.offset < self._clamped_floor(session_id, tracked.last_byte_offset)
-        ]
-        _, parser_state = parse_records(
-            prefix,
-            provider_name,
-            TranscriptParserState(),
-            deduplicate_updates=True,
-        )
         self._protocol_parser_states[session_id] = (provider_name, parser_state)
         self._pending_tools[session_id] = dict(parser_state.pending_tools)
         self.retire_skipped_tool_state(session_id)
