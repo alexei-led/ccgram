@@ -111,32 +111,27 @@ def _read_session_meta(path: Path) -> dict[str, Any]:
     return _as_dict(entry.get("payload"))
 
 
-def _with_sibling_rate_limits(payload: dict[str, Any]) -> dict[str, Any]:
-    """Return ``payload["info"]`` with the event's ``rate_limits`` attached.
+def _read_tail_state(
+    path: Path,
+) -> tuple[str, dict[str, Any], dict[str, Any], bool]:
+    """Find the newest timestamp, token info and rate limits, scanning backwards.
 
-    Codex writes ``rate_limits`` next to ``info``; older rollouts nested it
-    inside ``info``, which is kept when no sibling is present.
-    """
-    info = _as_dict(payload.get("info"))
-    rate_limits = _as_dict(payload.get("rate_limits"))
-    return {**info, "rate_limits": rate_limits} if info and rate_limits else info
-
-
-def _read_tail_state(path: Path) -> tuple[str, dict[str, Any], bool]:
-    """Find the newest timestamp and ``token_count`` info, scanning backwards.
-
-    Reads blocks from the end until both are found or ``_TAIL_MAX_BYTES`` of
-    the file were scanned. Returns ``(timestamp, token_info, saw_entry)``.
+    ``info`` and ``rate_limits`` are independent: Codex can write a
+    ``token_count`` with ``info: null`` that still carries fresh limits, so
+    each comes from the newest event that has it. Reads blocks from the end
+    until all are found or ``_TAIL_MAX_BYTES`` of the file were scanned.
+    Returns ``(timestamp, token_info, rate_limits, saw_entry)``.
     """
     last_timestamp = ""
     token_info: dict[str, Any] = {}
+    rate_limits: dict[str, Any] = {}
     saw_entry = False
     with path.open("rb") as handle:
         size = handle.seek(0, os.SEEK_END)
         floor = max(0, size - _TAIL_MAX_BYTES)
         pos = size
         carry = b""
-        while pos > floor and not (last_timestamp and token_info):
+        while pos > floor and not (last_timestamp and token_info and rate_limits):
             start = max(floor, pos - _READ_BLOCK_BYTES)
             handle.seek(start)
             lines = (handle.read(pos - start) + carry).split(b"\n")
@@ -152,14 +147,14 @@ def _read_tail_state(path: Path) -> tuple[str, dict[str, Any], bool]:
                 if not last_timestamp and isinstance(timestamp, str) and timestamp:
                     last_timestamp = timestamp
                 payload = _as_dict(entry.get("payload"))
-                if not token_info and (
-                    entry.get("type") == "event_msg"
-                    and payload.get("type") == "token_count"
+                if entry.get("type") == "event_msg" and payload.get("type") == (
+                    "token_count"
                 ):
-                    token_info = _with_sibling_rate_limits(payload)
-                if last_timestamp and token_info:
+                    token_info = token_info or _as_dict(payload.get("info"))
+                    rate_limits = rate_limits or _as_dict(payload.get("rate_limits"))
+                if last_timestamp and token_info and rate_limits:
                     break
-    return last_timestamp, token_info, saw_entry
+    return last_timestamp, token_info, rate_limits, saw_entry
 
 
 def _entry_has_assistant_output(entry: dict[str, Any]) -> bool:
@@ -207,9 +202,9 @@ def has_codex_assistant_output_since(
     return False
 
 
-def _format_token_lines(last_token_info: dict[str, Any]) -> list[str]:
-    """Format token and rate-limit lines."""
-    total_usage = _as_dict(last_token_info.get("total_token_usage"))
+def _format_token_lines(token_info: dict[str, Any]) -> list[str]:
+    """Format token totals and the current context-window use."""
+    total_usage = _as_dict(token_info.get("total_token_usage"))
     if not total_usage:
         return ["- token stats: unavailable (no recent `token_count` event)"]
 
@@ -222,30 +217,51 @@ def _format_token_lines(last_token_info: dict[str, Any]) -> list[str]:
         f"total `{_fmt_int(total_usage.get('total_tokens'))}`"
     ]
 
-    total_tokens = _as_int(total_usage.get("total_tokens"))
-    context_window = _as_int(last_token_info.get("model_context_window"))
-    if total_tokens is not None and context_window is not None and context_window > 0:
-        usage_pct = (total_tokens / context_window) * 100
+    # The window holds the last request's context, not the session's running
+    # total, which passes the window on long sessions.
+    context_tokens = _as_int(
+        _as_dict(token_info.get("last_token_usage")).get("total_tokens")
+    )
+    context_window = _as_int(token_info.get("model_context_window"))
+    if context_tokens is not None and context_window is not None and context_window > 0:
+        usage_pct = (context_tokens / context_window) * 100
         lines.append(
             "- context window: "
-            f"`{total_tokens:,}` / `{context_window:,}` ({usage_pct:.1f}%)"
+            f"`{context_tokens:,}` / `{context_window:,}` ({usage_pct:.1f}%)"
         )
+    return lines
 
-    rate_limits = _as_dict(last_token_info.get("rate_limits"))
-    primary = _as_dict(rate_limits.get("primary"))
-    secondary = _as_dict(rate_limits.get("secondary"))
-    if primary:
-        lines.append(
-            "- primary limit: "
-            f"`{primary.get('used_percent', '?')}%` used, "
-            f"reset `{_fmt_epoch_utc(primary.get('resets_at'))}`"
-        )
-    if secondary:
-        lines.append(
-            "- secondary limit: "
-            f"`{secondary.get('used_percent', '?')}%` used, "
-            f"reset `{_fmt_epoch_utc(secondary.get('resets_at'))}`"
-        )
+
+_MINUTES_PER_HOUR = 60
+_MINUTES_PER_DAY = 24 * _MINUTES_PER_HOUR
+_MINUTES_PER_WEEK = 7 * _MINUTES_PER_DAY
+
+
+def _limit_label(limit: dict[str, Any], fallback: str) -> str:
+    """Name a rate-limit window from ``window_minutes``, else *fallback*."""
+    minutes = _as_int(limit.get("window_minutes"))
+    if minutes is None or minutes <= 0:
+        return fallback
+    if minutes == _MINUTES_PER_WEEK:
+        return "weekly"
+    if minutes % _MINUTES_PER_DAY == 0:
+        return f"{minutes // _MINUTES_PER_DAY}d"
+    if minutes % _MINUTES_PER_HOUR == 0:
+        return f"{minutes // _MINUTES_PER_HOUR}h"
+    return f"{minutes}m"
+
+
+def _format_rate_limit_lines(rate_limits: dict[str, Any]) -> list[str]:
+    """Format one line per rate-limit window present."""
+    lines = []
+    for key in ("primary", "secondary"):
+        limit = _as_dict(rate_limits.get(key))
+        if limit:
+            lines.append(
+                f"- {_limit_label(limit, key)} limit: "
+                f"`{limit.get('used_percent', '?')}%` used, "
+                f"reset `{_fmt_epoch_utc(limit.get('resets_at'))}`"
+            )
     return lines
 
 
@@ -267,7 +283,7 @@ def build_codex_status_snapshot(
     try:
         entry_count = _count_lines(path)
         session_meta = _read_session_meta(path)
-        last_timestamp, last_token_info, saw_entry = _read_tail_state(path)
+        last_timestamp, token_info, rate_limits, saw_entry = _read_tail_state(path)
     except OSError:
         return None
 
@@ -299,7 +315,8 @@ def build_codex_status_snapshot(
     ]
     if last_timestamp:
         lines.append(f"- last transcript event: `{last_timestamp}`")
-    lines.extend(_format_token_lines(last_token_info))
+    lines.extend(_format_token_lines(token_info))
+    lines.extend(_format_rate_limit_lines(rate_limits))
 
     lines.append(
         "_Note: Codex `/status` may not emit transcript messages; this is a transcript snapshot._"
