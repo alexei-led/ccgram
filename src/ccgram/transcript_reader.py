@@ -18,6 +18,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, NamedTuple
 
@@ -278,16 +279,18 @@ def render_transcript_batch(batch: TranscriptBatch) -> tuple[NewMessage, ...]:
     )
 
 
-def _hash_range(digest: Any, file_path: Path, start: int, end: int) -> None:
+def _hash_range(digest: Any, file_path: Path, start: int, end: int) -> int:
+    """Feed bytes [start, end) to *digest*; return how many were actually there."""
+    hashed = 0
     with file_path.open("rb") as transcript:
         transcript.seek(start)
-        remaining = end - start
-        while remaining:
-            chunk = transcript.read(min(64 * 1024, remaining))
+        while hashed < end - start:
+            chunk = transcript.read(min(64 * 1024, end - start - hashed))
             if not chunk:
                 break
             digest.update(chunk)
-            remaining -= len(chunk)
+            hashed += len(chunk)
+    return hashed
 
 
 def _prefix_digest(file_path: Path, size: int) -> bytes:
@@ -305,13 +308,14 @@ def _advance_prefix(
     Append-only growth costs O(appended). A missing baseline, or one that
     covers more than *size* (truncation), is hashed from the start once.
     The saved digest is copied, so a failed read leaves the baseline intact.
+    A short read (file truncated meanwhile) records only the bytes hashed, so
+    the baseline never claims coverage it does not have.
     """
     if saved is None or saved[0] > size:
         digest, start = hashlib.sha256(), 0
     else:
         digest, start = saved[1].copy(), saved[0]
-    _hash_range(digest, file_path, start, size)
-    return (size, digest)
+    return (start + _hash_range(digest, file_path, start, size), digest)
 
 
 _REBUILD_CHUNK_BYTES = 4 * 1024 * 1024
@@ -333,9 +337,6 @@ def _replay_committed_prefix(
     def same_file(st: Any, min_size: int) -> bool:
         return (st.st_dev, st.st_ino) == generation and st.st_size >= min_size
 
-    start_size = file_path.stat().st_size
-    if not same_file(file_path.stat(), 0):
-        return None
     parser_state = TranscriptParserState()
 
     def feed(raw: bytes, base: int) -> None:
@@ -350,25 +351,31 @@ def _replay_committed_prefix(
         )
 
     with file_path.open("rb") as transcript:
+        opened = os.fstat(transcript.fileno())
+        if not same_file(opened, 0):
+            return None
         base = 0
-        carry = b""
+        # Pieces of the unfinished last line; joined once so a line spanning
+        # many chunks is not re-copied per chunk.
+        pending: list[bytes] = []
         remaining = floor
         while remaining > 0:
             block = transcript.read(min(_REBUILD_CHUNK_BYTES, remaining))
             if not block:
                 break
             remaining -= len(block)
-            buf = carry + block
-            cut = buf.rfind(b"\n") + 1
-            if cut:
-                feed(buf[:cut], base)
-                base += cut
-            carry = buf[cut:]
-        if carry:
+            cut = block.rfind(b"\n") + 1
+            if not cut:
+                pending.append(block)
+                continue
+            complete = b"".join(pending) + block[:cut]
+            feed(complete, base)
+            base += len(complete)
+            pending = [block[cut:]]
+        if pending and (tail := b"".join(pending)):
             # A parse position inside a line still owns that whole line.
-            carry += transcript.readline()
-            feed(carry, base)
-    if not same_file(file_path.stat(), start_size):
+            feed(tail + transcript.readline(), base)
+    if not same_file(file_path.stat(), opened.st_size):
         return None
     return parser_state
 
@@ -558,6 +565,19 @@ class TranscriptReader:
             and st.st_size >= consumed
         )
 
+    async def _saved_prefix_matches(
+        self, session_id: str, file_path: Path
+    ) -> bool | None:
+        """Digest the baseline range once; None when there is no verdict."""
+        saved = self._file_prefixes.get(session_id)
+        if saved is None:
+            return None
+        try:
+            current = await asyncio.to_thread(_prefix_digest, file_path, saved[0])
+        except OSError:
+            return None
+        return current == saved[1].digest()
+
     async def _consumed_prefix_intact(
         self, session_id: str, consumed: int, file_path: Path, st: Any
     ) -> bool:
@@ -569,24 +589,25 @@ class TranscriptReader:
         """
         if not self._prefix_covers_consumed(session_id, consumed, st):
             return False
-        size, digest = self._file_prefixes[session_id]
-        try:
-            current = await asyncio.to_thread(_prefix_digest, file_path, size)
-        except OSError:
-            return False
-        return current == digest.digest()
+        return await self._saved_prefix_matches(session_id, file_path) is True
 
     async def _marker_changed(
-        self, session_id: str, tracked: TrackedSession, file_path: Path
-    ) -> bool:
-        pos = self._parse_pos(tracked)
+        self, session_id: str, file_path: Path, st: Any
+    ) -> bool | None:
+        """Compare the bytes before the last committed offset; None if unverifiable.
+
+        Checked at the committed offset, not the live parse position, so a
+        rollback that moved the position still leaves rewrites detectable.
+        """
         saved = self._file_markers.get(session_id)
-        if saved is None or saved[0] != pos:
-            return False
+        if saved is None:
+            return None
+        if st.st_size < saved[0]:
+            return True
         try:
-            current = await asyncio.to_thread(_tail_marker, file_path, pos)
+            current = await asyncio.to_thread(_tail_marker, file_path, saved[0])
         except OSError:
-            return False
+            return None
         return current != saved[1]
 
     def _stat_unchanged(self, session_id: str, st: Any) -> bool:
@@ -596,16 +617,6 @@ class TranscriptReader:
             and self._file_sizes.get(session_id) == st.st_size
             and self._file_ctimes.get(session_id) == st.st_ctime_ns
         )
-
-    async def _prefix_changed(self, session_id: str, file_path: Path) -> bool:
-        saved = self._file_prefixes.get(session_id)
-        if saved is None:
-            return False
-        try:
-            current = await asyncio.to_thread(_prefix_digest, file_path, saved[0])
-        except OSError:
-            return False
-        return current != saved[1].digest()
 
     async def _prepare_observed_generation(
         self,
@@ -641,14 +652,16 @@ class TranscriptReader:
         elif not self._stat_unchanged(session_id, st):
             # Whole-document providers have no append-only contract, so their
             # signal is the saved prefix; they re-parse the file on change anyway.
-            changed = await (
-                self._marker_changed(session_id, tracked, file_path)
-                if check_marker
-                else self._prefix_changed(session_id, file_path)
-            )
-            if not changed:
-                # Metadata-only change (chmod, touch): remember it as verified
-                # so an idle file is not re-inspected every poll.
+            if check_marker:
+                verdict = await self._marker_changed(session_id, file_path, st)
+            else:
+                matches = await self._saved_prefix_matches(session_id, file_path)
+                verdict = None if matches is None else not matches
+            changed = verdict is True
+            if verdict is False:
+                # Verified metadata-only change (chmod, touch): remember it so
+                # an idle file is not re-inspected every poll. An unverifiable
+                # check (no baseline, I/O error) must not be memoised.
                 self._file_ctimes[session_id] = st.st_ctime_ns
         if changed and not consumed_intact:
             # Replaced transcript: jump the parse position to EOF so the
@@ -730,7 +743,7 @@ class TranscriptReader:
         file_path: Path,
         stable_read: _StableRead,
         *,
-        incremental: bool = True,
+        incremental: bool,
     ) -> bool:
         """Commit caches only after a stable read and marker capture."""
         stable_stat = stable_read.stat

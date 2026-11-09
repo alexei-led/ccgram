@@ -1012,6 +1012,35 @@ class TestSteadyStateCost:
 
         assert [msg.text for msg in messages] == ["live"]
 
+    async def test_rewrite_is_detected_after_the_parse_position_rolled_back(
+        self, tmp_path
+    ) -> None:
+        history = _record("h0") * 5
+        session_file = tmp_path / "transcript.jsonl"
+        session_file.write_text(history)
+        reader, state = _tracked_reader(tmp_path, session_file, len(history.encode()))
+        await reader._process_session_file("sess", session_file, [], window_id="@1")
+        tracked = state.get_session("sess")
+        assert tracked is not None
+        tracked.parsed_offset = len(_record("h0").encode()) * 2  # rolled back
+
+        session_file.write_text(history.replace("h0", "h1") + _record("after"))
+        messages: list = []
+        await reader._process_session_file(
+            "sess", session_file, messages, window_id="@1"
+        )
+
+        assert messages == []
+        assert tracked.parsed_offset == session_file.stat().st_size
+
+    def test_a_short_read_baseline_never_claims_unread_bytes(self, tmp_path) -> None:
+        session_file = tmp_path / "transcript.jsonl"
+        session_file.write_bytes(b"x" * 10)
+
+        size, _ = transcript_reader._advance_prefix(None, session_file, 25)
+
+        assert size == 10
+
 
 class TestParserRebuildOnActiveFile:
     """The restart rebuild must finish on a transcript that keeps growing."""
