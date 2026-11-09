@@ -32,9 +32,12 @@ Tokens in query parameters are not accepted. Never log the pairing payload or to
    A resume succeeds only if no message events were lost since the cursor. Message
    events are published to a session's subscribers for 300 seconds after their last
    subscriber leaves. A reconnect within that window replays every message event
-   exactly. After it, the server stops publishing messages for that session and marks
-   the gap. Any resume at or before the gap returns `resumed: false`. Subscribing again
-   afterwards sends each current message as an upsert, so no message is missing.
+   exactly, as long as the replay ring still holds them: it keeps at most 1,000
+   durable events (shared by all sessions) and at most 600 seconds of events. A
+   longer backlog or gap returns `resumed: false`, even inside the grace window.
+   After the grace window, the server stops publishing messages for that session and
+   marks the gap. Any resume at or before the gap returns `resumed: false`. Subscribing
+   again afterwards sends each current message as an upsert, so no message is missing.
 4. Load `/v1/sessions` and the open conversation's history on a fresh connection, a
    new epoch, or a failed resume. Refresh snapshots on every app foreground to remove
    requests that closed while the app was suspended.

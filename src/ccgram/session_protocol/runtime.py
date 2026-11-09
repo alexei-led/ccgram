@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import fcntl
 import logging
 import os
@@ -21,6 +20,21 @@ from .service import LocalSessionService
 from .store import ProtocolStore
 
 logger = logging.getLogger(__name__)
+# Shutdown waits this long for the poll to honour cancellation. Past it, the store
+# and lock are closed anyway: a stuck shutdown would block every restart.
+CLOSE_TIMEOUT_SECONDS = 5.0
+
+
+def _raise_if_cancelling() -> None:
+    """Re-raise the error being handled when the poll was asked to stop.
+
+    A cancel can surface as another exception, such as a failure while a worker
+    unwinds. Swallowing it would leave the cancel request consumed and the loop
+    running.
+    """
+    task = asyncio.current_task()
+    if task is not None and task.cancelling():
+        raise
 
 
 class ProtocolRuntime:
@@ -69,6 +83,7 @@ class ProtocolRuntime:
                     await self.service.observe_hook(event, prefix)
                     self.service.resolve_hook(sessions)
             except (ProtocolError, OSError) as exc:
+                _raise_if_cancelling()
                 # A multiplexer that is briefly unreachable or restarting is
                 # expected, and the next pass retries. Log the incident's start
                 # and end instead of one traceback per second: a sustained
@@ -79,6 +94,7 @@ class ProtocolRuntime:
                         "Session protocol source unavailable: %s", exc, exc_info=True
                     )
             except Exception:
+                _raise_if_cancelling()
                 # Never stop the shared poll: an unexpected error is logged and the
                 # next pass retries every session.
                 logger.exception("Session protocol poll failed; retrying")
@@ -92,8 +108,19 @@ class ProtocolRuntime:
             try:
                 if self.task is not None:
                     self.task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await self.task
+                    done, _ = await asyncio.wait(
+                        {self.task}, timeout=CLOSE_TIMEOUT_SECONDS
+                    )
+                    if not done:
+                        logger.error(
+                            "Session protocol poll did not stop within %ss; closing anyway",
+                            CLOSE_TIMEOUT_SECONDS,
+                        )
+                    elif not self.task.cancelled() and self.task.exception():
+                        logger.error(
+                            "Session protocol poll ended with an error",
+                            exc_info=self.task.exception(),
+                        )
             finally:
                 self.store.close()
                 self.lock.close()

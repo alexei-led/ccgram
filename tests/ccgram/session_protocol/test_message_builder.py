@@ -176,14 +176,17 @@ def test_position_and_ids_follow_first_observed_order():
     assert builder.position("conv/missing") is None
 
 
-def test_take_dirty_reports_only_changes_since_last_call():
+def test_dirty_ids_report_changes_until_cleared():
     builder = MessageBuilder("conv", "claude")
     entries = _mixed_transcript()
     builder.feed(entries[:3])
-    assert builder.take_dirty() == ["conv/p1", "conv/a1"]
+    assert builder.dirty_ids() == ["conv/p1", "conv/a1"]
+    assert builder.dirty_ids() == ["conv/p1", "conv/a1"]
+    builder.clear_dirty()
     builder.feed(entries[3:4])
-    assert builder.take_dirty() == ["conv/a1"]
-    assert builder.take_dirty() == []
+    assert builder.dirty_ids() == ["conv/a1"]
+    builder.clear_dirty()
+    assert builder.dirty_ids() == []
 
 
 @pytest.fixture
