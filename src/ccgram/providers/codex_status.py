@@ -6,10 +6,21 @@ messages; this snapshot provides a reliable fallback.
 """
 
 import json
+import os
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+# /status must not parse a whole rollout: Codex rollouts reach hundreds of MB.
+# The snapshot reads session_meta from the head, the latest token_count and
+# timestamp from a bounded tail, and counts lines with a byte scan. Upgrade
+# trigger: if one turn pushes the last token_count past the tail window, the
+# snapshot shows "token stats: unavailable"; raise _TAIL_MAX_BYTES then.
+# session_meta shares the cap: a longer first line reads as "unknown".
+_TAIL_MAX_BYTES = 8 * 1024 * 1024
+_READ_BLOCK_BYTES = 1024 * 1024
+_HEAD_MAX_BYTES = _TAIL_MAX_BYTES
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -75,6 +86,71 @@ def _iter_json_entries(
                 yield parsed
 
 
+def _count_lines(path: Path) -> int:
+    """Count transcript lines with a byte scan; no JSON parsing.
+
+    Matches the parsed-entry count for well-formed rollouts. Blank or
+    unparsable lines are counted too, which the old full parse skipped.
+    """
+    count = 0
+    last = b""
+    with path.open("rb") as handle:
+        while block := handle.read(_READ_BLOCK_BYTES):
+            count += block.count(b"\n")
+            last = block[-1:]
+    return count + (1 if last and last != b"\n" else 0)
+
+
+def _read_session_meta(path: Path) -> dict[str, Any]:
+    """Return the first-line ``session_meta`` payload, as the provider reads it."""
+    with path.open("rb") as handle:
+        first = handle.readline(_HEAD_MAX_BYTES)
+    entry = _parse_json_object(first.decode("utf-8", errors="replace"))
+    if entry is None or entry.get("type") != "session_meta":
+        return {}
+    return _as_dict(entry.get("payload"))
+
+
+def _read_tail_state(path: Path) -> tuple[str, dict[str, Any], bool]:
+    """Find the newest timestamp and ``token_count`` info, scanning backwards.
+
+    Reads blocks from the end until both are found or ``_TAIL_MAX_BYTES`` of
+    the file were scanned. Returns ``(timestamp, token_info, saw_entry)``.
+    """
+    last_timestamp = ""
+    token_info: dict[str, Any] = {}
+    saw_entry = False
+    with path.open("rb") as handle:
+        size = handle.seek(0, os.SEEK_END)
+        floor = max(0, size - _TAIL_MAX_BYTES)
+        pos = size
+        carry = b""
+        while pos > floor and not (last_timestamp and token_info):
+            start = max(floor, pos - _READ_BLOCK_BYTES)
+            handle.seek(start)
+            lines = (handle.read(pos - start) + carry).split(b"\n")
+            pos = start
+            # Unless the file start is in view, the first piece may be cut mid-line.
+            carry = lines.pop(0) if pos > 0 else b""
+            for raw in reversed(lines):
+                entry = _parse_json_object(raw.decode("utf-8", errors="replace"))
+                if entry is None:
+                    continue
+                saw_entry = True
+                timestamp = entry.get("timestamp")
+                if not last_timestamp and isinstance(timestamp, str) and timestamp:
+                    last_timestamp = timestamp
+                payload = _as_dict(entry.get("payload"))
+                if not token_info and (
+                    entry.get("type") == "event_msg"
+                    and payload.get("type") == "token_count"
+                ):
+                    token_info = _as_dict(payload.get("info"))
+                if last_timestamp and token_info:
+                    break
+    return last_timestamp, token_info, saw_entry
+
+
 def _entry_has_assistant_output(entry: dict[str, Any]) -> bool:
     """True when entry contains assistant-visible output."""
     entry_type = entry.get("type")
@@ -124,7 +200,7 @@ def _format_token_lines(last_token_info: dict[str, Any]) -> list[str]:
     """Format token and rate-limit lines."""
     total_usage = _as_dict(last_token_info.get("total_token_usage"))
     if not total_usage:
-        return ["- token stats: unavailable (no `token_count` event yet)"]
+        return ["- token stats: unavailable (no recent `token_count` event)"]
 
     lines = [
         "- tokens (total): "
@@ -177,31 +253,14 @@ def build_codex_status_snapshot(
     if not path.exists():
         return None
 
-    entry_count = 0
-    last_timestamp = ""
-    session_meta: dict[str, Any] = {}
-    last_token_info: dict[str, Any] = {}
-
     try:
-        for entry in _iter_json_entries(path):
-            entry_count += 1
-            timestamp = entry.get("timestamp")
-            if isinstance(timestamp, str) and timestamp:
-                last_timestamp = timestamp
-
-            payload = _as_dict(entry.get("payload"))
-            entry_type = entry.get("type")
-            if entry_type == "session_meta" and payload:
-                session_meta = payload
-                continue
-            if entry_type == "event_msg" and payload.get("type") == "token_count":
-                info = _as_dict(payload.get("info"))
-                if info:
-                    last_token_info = info
+        entry_count = _count_lines(path)
+        session_meta = _read_session_meta(path)
+        last_timestamp, last_token_info, saw_entry = _read_tail_state(path)
     except OSError:
         return None
 
-    if entry_count == 0:
+    if not (saw_entry or session_meta):
         return None
 
     resolved_session = (

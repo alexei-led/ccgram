@@ -1,5 +1,8 @@
 import json
 
+import pytest
+
+from ccgram.providers import codex_status
 from ccgram.providers.codex_status import (
     build_codex_status_snapshot,
     has_codex_assistant_output_since,
@@ -100,6 +103,122 @@ def test_build_codex_status_snapshot_without_token_count(tmp_path) -> None:
 
     assert result is not None
     assert "token stats: unavailable" in result
+
+
+def _meta_entry() -> dict:
+    return {
+        "timestamp": "2026-03-02T17:00:00.000Z",
+        "type": "session_meta",
+        "payload": {"id": "sess-big", "cwd": "/tmp/repo", "cli_version": "0.106.0"},
+    }
+
+
+def _token_entry(index: int) -> dict:
+    return {
+        "timestamp": f"2026-03-02T17:00:{index % 60:02d}.000Z",
+        "type": "event_msg",
+        "payload": {
+            "type": "token_count",
+            "info": {
+                "model_context_window": 1000,
+                "total_token_usage": {"total_tokens": index},
+            },
+        },
+    }
+
+
+def _filler_entry(index: int) -> dict:
+    return {
+        "timestamp": f"2026-03-02T18:{index // 60 % 60:02d}:{index % 60:02d}.000Z",
+        "type": "response_item",
+        "payload": {"type": "reasoning", "text": "x" * 80},
+    }
+
+
+@pytest.mark.parametrize("block_bytes", [32, 100, 1 << 20])
+def test_snapshot_reads_latest_token_count_across_tail_blocks(
+    tmp_path, monkeypatch, block_bytes
+) -> None:
+    monkeypatch.setattr(codex_status, "_READ_BLOCK_BYTES", block_bytes)
+    transcript = tmp_path / "codex.jsonl"
+    entries = [_meta_entry(), _token_entry(1), _token_entry(7)]
+    entries += [_filler_entry(i) for i in range(40)]
+    _write_jsonl(transcript, entries)
+
+    result = build_codex_status_snapshot(str(transcript), display_name="repo")
+
+    assert result is not None
+    assert "session: `sess-big`" in result
+    assert "transcript entries: `43`" in result
+    assert "last transcript event: `2026-03-02T18:00:39.000Z`" in result
+    assert "total `7`" in result
+
+
+def test_snapshot_without_trailing_newline_counts_last_entry(tmp_path) -> None:
+    transcript = tmp_path / "codex.jsonl"
+    transcript.write_text(
+        json.dumps(_meta_entry()) + "\n" + json.dumps(_token_entry(3)),
+        encoding="utf-8",
+    )
+
+    result = build_codex_status_snapshot(str(transcript), display_name="repo")
+
+    assert result is not None
+    assert "transcript entries: `2`" in result
+    assert "total `3`" in result
+
+
+def test_snapshot_ignores_token_count_older_than_the_tail_limit(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(codex_status, "_TAIL_MAX_BYTES", 2048)
+    monkeypatch.setattr(codex_status, "_READ_BLOCK_BYTES", 256)
+    transcript = tmp_path / "codex.jsonl"
+    entries = [_meta_entry(), _token_entry(5)]
+    entries += [_filler_entry(i) for i in range(200)]
+    _write_jsonl(transcript, entries)
+
+    result = build_codex_status_snapshot(str(transcript), display_name="repo")
+
+    assert result is not None
+    assert "session: `sess-big`" in result
+    assert "transcript entries: `202`" in result
+    assert "last transcript event: `2026-03-02T18:03:19.000Z`" in result
+    assert "token stats: unavailable" in result
+
+
+def test_snapshot_parses_only_a_bounded_tail_of_a_large_transcript(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(codex_status, "_TAIL_MAX_BYTES", 4096)
+    transcript = tmp_path / "codex.jsonl"
+    _write_jsonl(
+        transcript,
+        [_meta_entry(), *[_token_entry(i) for i in range(2000)]],
+    )
+    parsed_lines = []
+    real_loads = json.loads
+
+    def counting_loads(raw, *args, **kwargs):
+        parsed_lines.append(raw)
+        return real_loads(raw, *args, **kwargs)
+
+    monkeypatch.setattr(codex_status.json, "loads", counting_loads)
+
+    result = build_codex_status_snapshot(str(transcript), display_name="repo")
+
+    assert result is not None
+    assert "transcript entries: `2,001`" in result
+    assert "total `1,999`" in result
+    assert len(parsed_lines) < 10
+
+
+@pytest.mark.parametrize("content", ["", "\n\n", "not json\n[1, 2]\n"])
+def test_snapshot_returns_none_without_json_object_entries(tmp_path, content) -> None:
+    transcript = tmp_path / "codex.jsonl"
+    transcript.write_text(content, encoding="utf-8")
+
+    assert build_codex_status_snapshot(str(transcript), display_name="repo") is None
 
 
 def test_has_codex_assistant_output_since_detects_response(tmp_path) -> None:
