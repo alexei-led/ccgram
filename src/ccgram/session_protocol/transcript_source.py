@@ -87,6 +87,8 @@ class TranscriptSource:
         # Resident index. The service turns it off for sessions nobody reads, so
         # only the cursor is kept and windows are parsed on demand by `scan`.
         self.indexed = True
+        # Message events are published for this source. Set by the service.
+        self.publishing = False
         self._appended: tuple[int, int] | None = None
 
     @property

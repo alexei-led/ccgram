@@ -69,14 +69,17 @@ observation starts with one stat. An unchanged stamp (device, inode, size, mtime
 and ctime) reads nothing. Otherwise one open handle checks the previous
 observation's identity, parses only the complete records appended since the last
 line boundary, and digests the new tail. The shared `MessageBuilder` in
-`messages.py` builds the message index only when something reads it. The index is
-resident for a session that an EventHub subscriber covers, and for 60 seconds after
-an on-demand history read (`INDEX_IDLE_SECONDS`). Otherwise the source keeps only its
-cursor, and nothing is parsed except appended bytes and bounded windows: delivery
-correlation covers the appended range and the newest windows until the send is
-matched, and hook matching searches the newest 16 MiB (`HOOK_SCAN_BYTES`). Message
-events are published only to subscribers. A session that gains a subscriber gets
-every message as an upsert, starting from the first resident publish.
+`messages.py` builds the message index only when something reads it. Message events
+are published for a session while an EventHub subscriber covers it, and for 300
+seconds after its last subscriber leaves (`SUBSCRIBER_GRACE_SECONDS`). The index is
+resident in that window and for 60 seconds after an on-demand history read
+(`INDEX_IDLE_SECONDS`). When publishing stops, the hub records a gap
+(`EventHub.mark_gap`), so any resume at or before it fails and the client reloads.
+Otherwise the source keeps only its cursor, and nothing is parsed except appended
+bytes and bounded windows: delivery correlation covers the appended range and the
+newest windows until the send is matched, and hook matching searches the newest 16 MiB
+(`HOOK_SCAN_BYTES`). A session that gains a subscriber gets its current messages as
+upserts from its first publish.
 
 The resident index keeps message IDs, revisions, source offsets, and small
 parts. A text, tool input, or diff over 4 KiB, and a tool output over 4 KiB, stay in

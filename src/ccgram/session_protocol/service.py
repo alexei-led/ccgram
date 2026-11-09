@@ -37,6 +37,9 @@ MAX_HISTORY_PAGE = 200
 _PUBLISH_BATCH = 256
 # A read of history, or of a matching window, keeps the index resident this long.
 INDEX_IDLE_SECONDS = 60.0
+# Message events keep being published this long after a session's last subscriber
+# leaves, so a client that reconnects in time replays them exactly.
+SUBSCRIBER_GRACE_SECONDS = 300.0
 # Hook matching without a resident index searches the newest part of the transcript.
 HOOK_SCAN_BYTES = 16 * 1024 * 1024
 logger = logging.getLogger(__name__)
@@ -83,6 +86,7 @@ class LocalSessionService:
         self.store = store
         self._clock = clock
         self._index_until: dict[str, float] = {}
+        self._subscribed_until: dict[str, float] = {}
         self.uploads = UploadStore(store.path.parent / "uploads", store)
         self.hub = hub or EventHub()
         self.requests = RequestStore(self.hub)
@@ -231,19 +235,36 @@ class LocalSessionService:
         if target is not None:
             self._index_until[target.id.casefold()] = self._clock() + INDEX_IDLE_SECONDS
 
-    def _wants_index(self, target: Target) -> bool:
-        """Whether a subscriber or a recent read needs the resident index."""
+    def _residency(self, target: Target) -> tuple[bool, bool]:
+        """(publishing, indexed) for a target.
+
+        Publishing follows subscribers through their grace period. The index is
+        also kept for a recent on-demand read.
+        """
         key = target.id.casefold()
+        now = self._clock()
         for session_id, known in self._targets.items():
             if known.id.casefold() == key and self.hub.has_subscriber(session_id):
-                return True
-        until = self._index_until.get(key)
-        if until is None:
+                self._subscribed_until[key] = now + SUBSCRIBER_GRACE_SECONDS
+        publishing = self._live_until(self._subscribed_until, key, now)
+        reading = self._live_until(self._index_until, key, now)
+        return publishing, publishing or reading
+
+    @staticmethod
+    def _live_until(deadlines: dict[str, float], key: str, now: float) -> bool:
+        deadline = deadlines.get(key)
+        if deadline is None:
             return False
-        if until > self._clock():
+        if deadline > now:
             return True
-        del self._index_until[key]
+        del deadlines[key]
         return False
+
+    def _forget_revisions(self, target: Target) -> None:
+        """A later resident publish starts over, sending every message again."""
+        for known_id, known in self._targets.items():
+            if known.id.casefold() == target.id.casefold():
+                self._revisions.pop(known_id, None)
 
     async def _source_version(self, target: Target) -> Target:
         if target.transcript is None:
@@ -264,14 +285,18 @@ class LocalSessionService:
                 provider,
                 self.store.transcript_cursor(key),
             )
-        wanted = self._wants_index(target)
-        if source.indexed != wanted:
-            source.set_indexed(wanted)
-            if not wanted:
-                # A later resident publish starts over, sending every message again.
-                for known_id, known in self._targets.items():
-                    if known.id.casefold() == target.id.casefold():
-                        self._revisions.pop(known_id, None)
+        publishing, indexed = self._residency(target)
+        if source.publishing != publishing:
+            if not publishing:
+                # Messages produced from now on have no events; replay must not
+                # bridge that gap.
+                self.hub.mark_gap()
+                self._forget_revisions(target)
+            source.publishing = publishing
+        if source.indexed != indexed:
+            source.set_indexed(indexed)
+            if not indexed:
+                self._forget_revisions(target)
         try:
             await source.sync(self.store)
         except OSError as exc:
@@ -330,9 +355,9 @@ class LocalSessionService:
         if target.transcript is None:
             return
         source = self._sources[target.id.casefold()]
-        if not source.indexed or not self.hub.has_subscriber(session_id):
-            # Message events go only to subscribers. Without one, correlation
-            # still runs over the appended and recent windows.
+        if not source.publishing:
+            # Message events go only to subscribers and their grace period.
+            # Otherwise correlation still runs over the appended and recent windows.
             await self._correlate_unindexed(session_id, source)
             return
         builder = source.builder
