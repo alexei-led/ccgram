@@ -145,6 +145,13 @@ class EventHub:
             return False, []
         return True, [event for _, event in self._ring if (event.seq or 0) > seq]
 
+    def has_subscriber(self, session_id: str) -> bool:
+        """Whether a live subscription receives events for this session."""
+        return any(
+            subscriber.session_ids is None or session_id in subscriber.session_ids
+            for subscriber in self._subscribers
+        )
+
     def subscribe(self, session_ids: Collection[str] | None = None) -> Subscription:
         subscriber = Subscription(session_ids, self.queue_capacity)
         self._subscribers.add(subscriber)

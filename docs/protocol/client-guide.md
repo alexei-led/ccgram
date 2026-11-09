@@ -68,6 +68,11 @@ do not replace the subscribe-before-history merge rule.
 that session's currently bound conversation. Cursors are opaque, scoped to both
 conversation and transcript generation, and invalid after source replacement.
 
+Message upserts are sent only to subscribers. A client that has not subscribed to a
+session gets its messages from history reads, which build the index on demand; a
+client that subscribes later receives the current messages as upserts. Do not rely
+on the replay buffer for messages published before you subscribed.
+
 Native transcript entry IDs are retained when first observed. Missing native IDs
 use UTF-8 byte offsets. A streamed Codex message keeps its first visible ID when
 the final response arrives.
