@@ -480,7 +480,7 @@ class TestHookMainValidation:
             {
                 "session_id": "550e8400-e29b-41d4-a716-446655440000",
                 "cwd": "/tmp",
-                "hook_event_name": "PreToolUse",
+                "hook_event_name": "PostToolUse",
             },
         )
         assert not (tmp_path / "session_map.json").exists()
