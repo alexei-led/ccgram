@@ -26,7 +26,7 @@ import time
 from collections.abc import Callable, Generator, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import BinaryIO
+from typing import Any, BinaryIO
 
 from .messages import MessageBuilder, SourceChangedError, split_jsonl
 from .store import ProtocolStore, TranscriptCursor
@@ -34,6 +34,9 @@ from .store import ProtocolStore, TranscriptCursor
 MARKER_BYTES = 4096
 READ_CHUNK_BYTES = 4 * 1024 * 1024
 WINDOW_BYTES = 1024 * 1024
+# A record rarely spans more than this, so a backward search for a line boundary
+# stays short.
+BACKSCAN_BYTES = 64 * 1024
 MAX_RETRY_SECONDS = 30.0
 _SYNC_ATTEMPTS = 3
 _BACKOFF_DOUBLINGS = 5  # 2**5 = 32 s, past MAX_RETRY_SECONDS
@@ -47,6 +50,25 @@ def source_stamp(stat: os.stat_result) -> Stamp:
 
 def _digest(data: bytes | bytearray | memoryview) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+async def run_in_worker[T](func: Callable[..., T], *args: Any) -> T:
+    """Run `func` in a thread; a cancelled caller waits for the thread to stop.
+
+    The thread may mutate the index or step a window generator, and the caller
+    holds the refresh lock until it returns. Cancellation therefore waits for the
+    thread, so the lock is never released under a running worker and a generator
+    is never closed while it executes.
+    """
+    work = asyncio.ensure_future(asyncio.to_thread(func, *args))
+    try:
+        return await asyncio.shield(work)
+    except asyncio.CancelledError:
+        await asyncio.wait([work])
+        if not work.cancelled():
+            # Retrieve the result so a failed worker does not log an unretrieved error.
+            work.exception()
+        raise
 
 
 class TranscriptSource:
@@ -114,13 +136,7 @@ class TranscriptSource:
             self._saved = self.cursor
 
     async def _run_sync(self) -> None:
-        work = asyncio.ensure_future(asyncio.to_thread(self._sync))
-        try:
-            await asyncio.shield(work)
-        except asyncio.CancelledError:
-            # The worker mutates the builder. Keep the caller's lock until it stops.
-            await asyncio.wait([work])
-            raise
+        await run_in_worker(self._sync)
 
     def _sync(self) -> None:
         stat = self.path.stat()
@@ -175,10 +191,17 @@ class TranscriptSource:
             self._check_indexed(handle)
             return _after_newline(handle, begin, self._consumed)
 
-    def take_appended(self) -> tuple[int, int] | None:
-        """Line-aligned byte range appended since the last call, if not indexed."""
-        appended, self._appended = self._appended, None
-        return appended
+    @property
+    def appended(self) -> tuple[int, int] | None:
+        """Line-aligned byte range appended since the last `clear_appended`.
+
+        Only tracked while not indexed. It stays set until a caller has correlated
+        the range, so a failed scan is retried on the next poll.
+        """
+        return self._appended
+
+    def clear_appended(self) -> None:
+        self._appended = None
 
     def _observe(self, stat: os.stat_result) -> None:
         prior = self.cursor
@@ -192,7 +215,10 @@ class TranscriptSource:
                 consumed, marker = _consume(handle, None, start, stat.st_size)
                 if os.fstat(handle.fileno()).st_ino != stat.st_ino:
                     raise SourceChangedError("Transcript was replaced while reading")
-                first = self._appended[0] if self._appended else start
+                # A replacement starts over: a range pending from the old transcript
+                # must not extend the new one.
+                pending = self._appended if intact else None
+                first = pending[0] if pending else start
                 self._appended = (first, consumed)
                 self._commit(None, consumed, stat, marker, generation)
                 return
@@ -235,10 +261,9 @@ class TranscriptSource:
             return
         with self.path.open("rb") as handle:
             self._check_indexed(handle)
-            ranges = _line_windows(handle, start, end)
-            if newest_first:
-                ranges.reverse()
-            for begin, stop in ranges:
+            for begin, stop in _line_windows(
+                handle, start, end, newest_first=newest_first
+            ):
                 handle.seek(begin)
                 raw = handle.read(stop - begin)
                 builder = MessageBuilder(
@@ -315,17 +340,43 @@ def _tail_intact(
     return len(data) == prior.observed - start and _digest(data) == prior.marker
 
 
-def _line_windows(handle: BinaryIO, start: int, end: int) -> list[tuple[int, int]]:
-    """Split [start, end) into windows that each end just after a newline."""
-    ranges: list[tuple[int, int]] = []
+def _line_windows(
+    handle: BinaryIO, start: int, end: int, *, newest_first: bool = False
+) -> Iterator[tuple[int, int]]:
+    """Split [start, end) lazily into line-aligned windows.
+
+    Each window starts and ends on a line boundary. Newest first, the windows are
+    found by reading backwards from `end`, so a caller that stops early reads only
+    the windows it took.
+    """
+    if newest_first:
+        stop = end
+        while stop > start:
+            begin = _before_newline(handle, start, max(start, stop - WINDOW_BYTES))
+            yield begin, stop
+            stop = begin
+        return
     position = start
     while position < end:
         stop = min(position + WINDOW_BYTES, end)
         if stop < end:
             stop = _after_newline(handle, stop, end)
-        ranges.append((position, stop))
+        yield position, stop
         position = stop
-    return ranges
+
+
+def _before_newline(handle: BinaryIO, start: int, offset: int) -> int:
+    """Line boundary in [start, offset]: just after the last newline before it."""
+    position = offset
+    while position > start:
+        chunk_start = max(start, position - BACKSCAN_BYTES)
+        handle.seek(chunk_start)
+        data = handle.read(position - chunk_start)
+        found = data.rfind(b"\n")
+        if found >= 0:
+            return chunk_start + found + 1
+        position = chunk_start
+    return start
 
 
 def _after_newline(handle: BinaryIO, offset: int, limit: int) -> int:

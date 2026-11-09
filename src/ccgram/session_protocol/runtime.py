@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import fcntl
 import logging
 import os
@@ -21,6 +20,9 @@ from .service import LocalSessionService
 from .store import ProtocolStore
 
 logger = logging.getLogger(__name__)
+# Shutdown waits this long for the poll to honour cancellation. Past it, the store
+# and lock are closed anyway: a stuck shutdown would block every restart.
+CLOSE_TIMEOUT_SECONDS = 5.0
 
 
 class ProtocolRuntime:
@@ -92,8 +94,19 @@ class ProtocolRuntime:
             try:
                 if self.task is not None:
                     self.task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await self.task
+                    done, _ = await asyncio.wait(
+                        {self.task}, timeout=CLOSE_TIMEOUT_SECONDS
+                    )
+                    if not done:
+                        logger.error(
+                            "Session protocol poll did not stop within %ss; closing anyway",
+                            CLOSE_TIMEOUT_SECONDS,
+                        )
+                    elif not self.task.cancelled() and self.task.exception():
+                        logger.error(
+                            "Session protocol poll ended with an error",
+                            exc_info=self.task.exception(),
+                        )
             finally:
                 self.store.close()
                 self.lock.close()

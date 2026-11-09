@@ -30,11 +30,13 @@ from .models import (
 )
 from .requests import HookIdentity, PendingHook, RequestStore, hook_input_hash
 from .store import ProtocolStore
-from .transcript_source import TranscriptSource, source_stamp
+from .transcript_source import TranscriptSource, run_in_worker, source_stamp
 from .uploads import UploadStore
 
 MAX_HISTORY_PAGE = 200
-_PUBLISH_BATCH = 256
+# Upserts per worker round. Smaller than a subscriber's queue, so a batch cannot
+# overflow a fresh subscriber that has not drained yet.
+_PUBLISH_BATCH = 64
 # A read of history, or of a matching window, keeps the index resident this long.
 INDEX_IDLE_SECONDS = 60.0
 # Message events keep being published this long after a session's last subscriber
@@ -113,6 +115,11 @@ class LocalSessionService:
                 try:
                     _, snapshot = await self._update(target)
                 except Exception:
+                    # Cancellation is not an Exception, but an error raised while
+                    # the task is being cancelled is part of the shutdown: propagate it.
+                    current = asyncio.current_task()
+                    if current is not None and current.cancelling():
+                        raise
                     # One target's unexpected failure must not stop the others.
                     # Its sessions stay live, so they are not reported as removed.
                     logger.exception("Session protocol target %s failed", target.id)
@@ -145,8 +152,9 @@ class LocalSessionService:
                 try:
                     snapshot = await self._observe(sid, version, target, prompt)
                 except SourceChangedError:
-                    # Publishing pins the file before it reads any message, so
-                    # nothing was published. Observe the replacement and retry.
+                    # A replacement found during observation retries it. Messages
+                    # already published keep their revisions, so the retry sends
+                    # only what changed.
                     continue
                 if target.transcript is None:
                     return target, snapshot
@@ -374,20 +382,43 @@ class LocalSessionService:
             self._recorrelate.pop(session_id, None)
             return
         ordered = builder.in_order(changed_ids)
-        changed = False
         try:
             with source.reading():
-                # Batches bound the materialized messages held at once. Each
-                # publish is recorded in `revisions`, so a retry skips it.
-                for start in range(0, len(ordered), _PUBLISH_BATCH):
-                    batch = ordered[start : start + _PUBLISH_BATCH]
-                    raw = await asyncio.to_thread(_materialize_messages, builder, batch)
-                    for message_id, message in zip(batch, raw, strict=True):
-                        message = self._correlate(session_id, message)
-                        if revisions.get(message_id) != message.revision:
-                            changed = True
-                            self.hub.publish("message.upsert", session_id, message)
-                            revisions[message_id] = message.revision
+                await self._publish_batches(session_id, builder, ordered, revisions)
+        except BaseException:
+            if first:
+                # A first publish is complete only when every message went out.
+                # Forget the partial record so the retry is again a full publish.
+                self._revisions.pop(session_id, None)
+            raise
+        builder.clear_dirty()
+        self._recorrelate.pop(session_id, None)
+
+    async def _publish_batches(
+        self,
+        session_id: str,
+        builder: MessageBuilder,
+        ordered: list[str],
+        revisions: dict[str, int],
+    ) -> None:
+        """Publish changed messages in batches. Call inside `source.reading()`.
+
+        Batches bound the materialized messages held at once. Each publish is
+        recorded in `revisions`, so a retry skips it. Yielding between batches lets
+        a fresh subscriber drain its queue.
+        """
+        changed = False
+        try:
+            for start in range(0, len(ordered), _PUBLISH_BATCH):
+                batch = ordered[start : start + _PUBLISH_BATCH]
+                raw = await run_in_worker(_materialize_messages, builder, batch)
+                for message_id, message in zip(batch, raw, strict=True):
+                    message = self._correlate(session_id, message)
+                    if revisions.get(message_id) != message.revision:
+                        changed = True
+                        self.hub.publish("message.upsert", session_id, message)
+                        revisions[message_id] = message.revision
+                await asyncio.sleep(0)
         finally:
             if changed:
                 snapshot = replace(self._snapshots[session_id], last_activity=utc_now())
@@ -400,8 +431,6 @@ class LocalSessionService:
                         "lastActivity": snapshot.last_activity,
                     },
                 )
-        builder.clear_dirty()
-        self._recorrelate.pop(session_id, None)
 
     def _correlate(self, session_id: str, message: Message) -> Message:
         if message.role != "user":
@@ -510,7 +539,7 @@ class LocalSessionService:
         start = max(0, before - limit)
         selected = ids[start:before]
         with self._reading(target):
-            raw = await asyncio.to_thread(
+            raw = await run_in_worker(
                 lambda: [builder.message(message_id) for message_id in selected]
             )
         page = tuple(self._correlate(session_id, message) for message in raw)
@@ -570,7 +599,7 @@ class LocalSessionService:
         target, _ = await self._refreshed(session_id)
         builder = self._page_builder(target)
         with self._reading(target):
-            selected = await asyncio.to_thread(
+            selected = await run_in_worker(
                 lambda: builder.messages(source_range=(start_byte, end_byte))
             )
         messages = tuple(self._correlate(session_id, m) for m in selected)
@@ -787,11 +816,11 @@ class LocalSessionService:
         self, sid: str, source: TranscriptSource, event: HookEvent
     ) -> bool:
         """Hook matching without a resident index: newest windows first."""
-        begin = await asyncio.to_thread(source.tail_boundary, HOOK_SCAN_BYTES)
+        begin = await run_in_worker(source.tail_boundary, HOOK_SCAN_BYTES)
         windows = source.scan(begin, source.consumed, newest_first=True)
         try:
             while True:
-                builder = await asyncio.to_thread(next, windows, None)
+                builder = await run_in_worker(_next_window, windows)
                 if builder is None:
                     return False
                 if self._hook_matches(sid, builder, event):
@@ -808,10 +837,11 @@ class LocalSessionService:
         also looks back through the newest windows, stopping once a window is
         older than the send.
         """
-        appended = source.take_appended()
+        appended = source.appended
         since = self._recorrelate.get(session_id)
         if appended is not None:
             await self._correlate_windows(session_id, source.scan(*appended))
+            source.clear_appended()
         if since is not None:
             windows = source.scan(0, source.consumed, newest_first=True)
             await self._correlate_windows(session_id, windows, since)
@@ -825,7 +855,7 @@ class LocalSessionService:
     ) -> None:
         try:
             while True:
-                builder = await asyncio.to_thread(next, windows, None)
+                builder = await run_in_worker(_next_window, windows)
                 if builder is None:
                     return
                 earliest: float | None = None
@@ -865,6 +895,12 @@ class LocalSessionService:
                 )
                 return True
         return False
+
+
+def _next_window(
+    windows: Generator[MessageBuilder, None, None],
+) -> MessageBuilder | None:
+    return next(windows, None)
 
 
 def _materialize_messages(builder: MessageBuilder, ids: list[str]) -> list[Message]:
