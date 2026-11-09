@@ -11,6 +11,7 @@ import pytest
 from ccgram.session_protocol.messages import MessageBuilder
 from ccgram.session_protocol.transcript_source import (
     MARKER_BYTES,
+    MAX_RETRY_SECONDS,
     TranscriptSource,
 )
 
@@ -355,32 +356,53 @@ async def test_new_conversation_replaces_the_previous_source(
     assert [source.key for source in service._sources.values()] == ["@1:conv-2"]
 
 
-async def test_gemini_document_changed_during_read_is_retried(
-    store, tmp_path, monkeypatch
-):
-    path = tmp_path / "session.json"
-    document = {"messages": [{"id": "m1", "type": "user", "content": "hi"}]}
-    path.write_text(json.dumps(document))
+async def test_gemini_chat_appends_read_only_new_lines(store, tmp_path, read_meter):
+    path = tmp_path / "session-chat.jsonl"
+    first = {"id": "m1", "type": "user", "content": "x" * 20_000}
+    _write(path, [json.dumps(first) + "\n"])
+    read_meter["path"] = path
     source = TranscriptSource("conv", path, "conv", "gemini", None)
-    real_open = Path.open
-    rewrites = []
-
-    def rewriting_open(self, mode="r", *args, **kwargs):
-        stream = real_open(self, mode, *args, **kwargs)
-        if self == path and mode == "rb" and not rewrites:
-            rewrites.append(True)
-            grown = {
-                "messages": [
-                    *document["messages"],
-                    {"id": "m2", "type": "user", "content": "more"},
-                ]
-            }
-            with real_open(path, "w") as out:
-                out.write(json.dumps(grown))
-        return stream
-
-    monkeypatch.setattr(Path, "open", rewriting_open)
     await source.sync(store)
-    assert rewrites == [True]
+    appended = {"id": "m2", "type": "gemini", "content": "more"}
+    _write(path, [json.dumps(appended) + "\n"], mode="a")
+    read_meter["opens"] = read_meter["bytes"] = 0
+    await source.sync(store)
     assert _builder(source).ids == ["conv/m1", "conv/m2"]
     assert source.generation == 0
+    assert read_meter["bytes"] <= len(json.dumps(appended)) + 1 + 2 * MARKER_BYTES
+
+
+def test_backoff_stays_capped_through_a_long_outage(tmp_path, monkeypatch):
+    path = tmp_path / "claude.jsonl"
+    path.write_text("")
+    now = [0.0]
+    source = TranscriptSource(
+        "conv", path, "conv", "claude", None, clock=lambda: now[0]
+    )
+
+    def unreadable(stat):
+        raise OSError("unreadable")
+
+    monkeypatch.setattr(source, "_observe", unreadable)
+    for _ in range(1100):
+        now[0] = source._retry_at
+        with pytest.raises(OSError, match="unreadable"):
+            source._sync()
+    assert source._failures == 1100
+    assert source._retry_at - now[0] == MAX_RETRY_SECONDS
+
+
+async def test_refresh_keeps_sessions_of_a_target_that_failed_unexpectedly(
+    service, backend, tmp_path, monkeypatch
+):
+    path = tmp_path / "transcript.jsonl"
+    _write(path, [_record("u1", "hello")])
+    backend.target = replace(backend.target, transcript=path)
+    session = (await service.list_sessions())[0]
+
+    async def broken(target):
+        raise RuntimeError("bug in one target")
+
+    monkeypatch.setattr(service, "_update", broken)
+    await service.refresh()
+    assert session.id in service._snapshots

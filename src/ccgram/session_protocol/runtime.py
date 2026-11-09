@@ -78,6 +78,10 @@ class ProtocolRuntime:
                     logger.warning(
                         "Session protocol source unavailable: %s", exc, exc_info=True
                     )
+            except Exception:
+                # Never stop the shared poll: an unexpected error is logged and the
+                # next pass retries every session.
+                logger.exception("Session protocol poll failed; retrying")
             await asyncio.sleep(1)
 
     async def close(self) -> None:

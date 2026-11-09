@@ -9,6 +9,7 @@ Telegram calls the core directly. HTTP and WebSocket expose its wire contract.
 | `session_protocol/models.py` | Dataclasses, wire serialization, and protocol errors. |
 | `session_protocol/backend.py` | Consumer-owned backend Protocol and its Multiplexer adapter. |
 | `session_protocol/service.py` | Session discovery, snapshots, history, live replacements, and delivery correlations. |
+| `session_protocol/transcript_source.py` | Stat-first, append-only observation of one transcript: identity, generation, and byte-range reads of spilled values. |
 | `session_protocol/messages.py` | Canonical provider normalization, structured records, and the history/live message builder. |
 | `transcript_reader.py` | Delivery cursor reads and Telegram rendering of canonical records. |
 | `session_protocol/telegram.py` | In-process Telegram adapter and application-owned service access. |
@@ -69,15 +70,18 @@ and ctime) reads nothing. Otherwise one open handle checks the previous
 observation's identity, parses only the complete records appended since the last
 line boundary, and digests the new tail. The shared `MessageBuilder` in
 `messages.py` keeps one in-memory index per target, so a page materializes only
-its own messages. Parsed parts, including tool output text, stay in memory while
-the target keeps the same conversation; raw transcript bytes are not kept.
+its own messages. The index keeps message IDs, revisions, source offsets, and small
+parts. A text, tool input, or diff over 4 KiB, and a tool output over 4 KiB, stay in
+the transcript. The index keeps their record offset and slot, and materialization
+re-reads that one record by byte range through a per-target LRU capped at 512 KiB.
+Publishing pins one handle per batch. A replaced transcript raises
+`SourceChangedError` and the source is observed again. Batch builds keep every value.
 
 Identity is the inode, the observed size, and a digest of the last 4 KiB before that
 size. A replacement, a truncation, or a changed tail increments the persisted
 generation and rebuilds from byte 0. A rewrite that keeps the inode, size, and tail
-is not detected; transcripts are append-only, so this is accepted. Gemini stores one
-JSON document, so any change rebuilds it from one read, rejected if the size or
-mtime changed during the read. A failed read is retried when the stamp changes or
+is not detected; transcripts are append-only, so this is accepted. Gemini chats are
+JSONL (`session-*.jsonl`) and take the same incremental path. A failed read is retried when the stamp changes or
 after a backoff of 1 s doubling to 30 s.
 
 A source replaced or truncated during a read is retried. A final source check after
