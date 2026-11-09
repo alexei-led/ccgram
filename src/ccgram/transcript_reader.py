@@ -926,6 +926,9 @@ class TranscriptReader:
             if old_session_id in self._startup_sessions:
                 self._startup_sessions.add(session_id)
                 self._startup_replay_checked.discard(session_id)
+            # An explicit replay request belongs to the transcript, not the id.
+            if old_session_id in self._replay_allowed:
+                self._replay_allowed.add(session_id)
             # The clamp is keyed by session id, so a refreshed id would read as
             # a brand-new session and replay the backlog the old id clamped.
             if old_session_id in self._startup_clamped:
@@ -937,6 +940,10 @@ class TranscriptReader:
                 # delivered watermark and would replay the clamped range. Point
                 # it at the clamp instead: the clamp state moved with the id.
                 tracked.parsed_offset = max(clamped, tracked.last_byte_offset)
+            # The old id is retired: leaving its membership behind would leak.
+            self._replay_allowed.discard(old_session_id)
+            self._startup_sessions.discard(old_session_id)
+            self._startup_replay_checked.discard(old_session_id)
             self._parser_rebuild_pending.add(session_id)
             log_throttle_reset(f"partial-jsonl:{old_session_id}")
             logger.debug(

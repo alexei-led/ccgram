@@ -813,6 +813,43 @@ class TestStartupReplayBound:
         assert messages == []
         assert "new" in reader._startup_clamped
 
+    async def test_a_refresh_moves_startup_state_to_the_new_id(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The old id must not leak startup state; the replay exemption follows."""
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "startup_replay_max_bytes", 120, raising=False)
+        reader, _state, session_file = self._reader_with_backlog(tmp_path)
+        reader.allow_replay("sess")
+        await reader._process_session_file("sess", session_file, [], window_id="@1")
+        assert "sess" in reader._startup_replay_checked
+
+        assert reader._adopt_tracking_for_file("refreshed", session_file) is not None
+
+        assert "sess" not in reader._startup_sessions
+        assert "sess" not in reader._startup_replay_checked
+        assert "sess" not in reader._replay_allowed
+        assert "refreshed" in reader._replay_allowed
+
+    async def test_an_explicit_replay_request_survives_a_refresh(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "startup_replay_max_bytes", 120, raising=False)
+        reader, _state, session_file = self._reader_with_backlog(tmp_path)
+        reader.allow_replay("sess")
+        assert reader._adopt_tracking_for_file("refreshed", session_file) is not None
+
+        messages: list = []
+        await reader._process_session_file(
+            "refreshed", session_file, messages, window_id="@1"
+        )
+
+        assert len(messages) == 10
+        assert "refreshed" not in reader._startup_clamped
+
 
 def _record(text: str) -> str:
     return (
