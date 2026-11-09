@@ -5,7 +5,8 @@ handle checks the previous observation's identity, then parses only the complete
 records appended since the last line boundary into the existing builder and
 digests the new tail. A replacement (inode change, shrink, or a changed marker
 before the last observed size) rebuilds from byte 0 under a new generation.
-Gemini stores one JSON document, so any change rebuilds it from one read.
+Every provider, Gemini included, writes JSONL; a Gemini chat is one session-*.jsonl
+file, so it takes the same incremental path.
 
 Detection is a tail marker, not a full-content hash: a rewrite that keeps the
 inode, the size, and the last 4 KiB before the observed size goes unnoticed, as
@@ -27,13 +28,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import BinaryIO
 
-from .messages import MessageBuilder, SourceChangedError, read_entries, split_jsonl
+from .messages import MessageBuilder, SourceChangedError, split_jsonl
 from .store import ProtocolStore, TranscriptCursor
 
 MARKER_BYTES = 4096
 READ_CHUNK_BYTES = 4 * 1024 * 1024
 MAX_RETRY_SECONDS = 30.0
 _SYNC_ATTEMPTS = 3
+_BACKOFF_DOUBLINGS = 5  # 2**5 = 32 s, past MAX_RETRY_SECONDS
 
 type Stamp = tuple[int, int, int, int, int]
 
@@ -131,7 +133,10 @@ class TranscriptSource:
         except OSError:
             self._failures += 1
             self._failed_stamp = stamp
-            delay = min(MAX_RETRY_SECONDS, 2.0 ** (self._failures - 1))
+            # Cap the exponent before exponentiating: a long outage must not overflow.
+            delay = min(
+                MAX_RETRY_SECONDS, 2.0 ** min(self._failures - 1, _BACKOFF_DOUBLINGS)
+            )
             self._retry_at = self._clock() + delay
             raise
         self.stamp = stamp
@@ -143,9 +148,6 @@ class TranscriptSource:
         with self.path.open("rb") as handle:
             if os.fstat(handle.fileno()).st_ino != stat.st_ino:
                 raise SourceChangedError("Transcript was replaced before reading")
-            if self.provider == "gemini":
-                self._observe_document(handle, stat, prior)
-                return
             intact = _tail_intact(handle, stat, prior)
             if intact and self.builder is not None and not self._poisoned:
                 builder, start = self.builder, self._consumed
@@ -184,12 +186,10 @@ class TranscriptSource:
                 self._handle = None
 
     def _read_record(self, offset: int) -> bytes:
-        """The record line at `offset`, if the file still holds the indexed bytes."""
-        if self._handle is not None:
-            return self._line(self._handle, offset)
-        with self.path.open("rb") as handle:
-            self._check_indexed(handle)
-            return self._line(handle, offset)
+        """The record line at `offset`. Only valid inside `reading`."""
+        if self._handle is None:
+            raise RuntimeError("Transcript records are read only inside reading()")
+        return self._line(self._handle, offset)
 
     def _check_indexed(self, handle: BinaryIO) -> None:
         prior = self.cursor
@@ -203,35 +203,6 @@ class TranscriptSource:
         if not line.endswith(b"\n"):
             raise SourceChangedError("Indexed record is no longer complete")
         return line
-
-    def _observe_document(
-        self, handle: BinaryIO, stat: os.stat_result, prior: TranscriptCursor | None
-    ) -> None:
-        raw = handle.read()
-        after = os.fstat(handle.fileno())
-        if (
-            len(raw) != stat.st_size
-            or after.st_size != stat.st_size
-            or after.st_mtime_ns != stat.st_mtime_ns
-        ):
-            raise SourceChangedError("Transcript changed while reading")
-        marker = _digest(raw)
-        intact = (
-            prior is not None
-            and prior.inode == stat.st_ino
-            and len(raw) >= prior.observed
-            and (
-                marker
-                if prior.observed == len(raw)
-                else _digest(memoryview(raw)[: prior.observed])
-            )
-            == prior.marker
-        )
-        builder = MessageBuilder(
-            self.conversation_id, self.provider, _generation(prior, intact)
-        )
-        builder.feed(read_entries(raw, "gemini"))
-        self._commit(builder, len(raw), stat, marker)
 
     def _commit(
         self,

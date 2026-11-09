@@ -967,21 +967,25 @@ class _CallResult:
 
 
 class _ByteLRU:
-    """Least-recently-used cache bounded by the summed size of its values."""
+    """Least-recently-used cache bounded by the summed size of its values.
+
+    Keys are source record offsets. A value larger than the whole budget is not
+    kept.
+    """
 
     def __init__(self, limit: int) -> None:
         self._limit = limit
         self._size = 0
-        self._items: OrderedDict[_Spill, tuple[Any, int]] = OrderedDict()
+        self._items: OrderedDict[int, tuple[Any, int]] = OrderedDict()
 
-    def get(self, key: _Spill) -> Any:
+    def get(self, key: int) -> Any:
         item = self._items.get(key)
         if item is None:
             return _MISSING
         self._items.move_to_end(key)
         return item[0]
 
-    def put(self, key: _Spill, value: Any, size: int) -> None:
+    def put(self, key: int, value: Any, size: int) -> None:
         if size > self._limit:
             return
         previous = self._items.pop(key, None)
@@ -1024,10 +1028,9 @@ class MessageBuilder:
 
     With a `reader` (the transcript's byte-range reader), a value larger than
     SPILL_BYTES stays in the transcript: the index keeps its record offset and
-    slot, and materializing a message re-parses that one record. The re-parse
-    starts from the Claude local-command state recorded with the record. Batch
-    builds have no reader and keep every value in memory. Gemini is one JSON
-    document and is indexed without a reader.
+    slot, and materializing a message re-parses that one record. Batch builds
+    have no reader and keep every value in memory. Gemini is one JSON document
+    and is indexed without a reader.
     """
 
     def __init__(
@@ -1043,7 +1046,7 @@ class MessageBuilder:
         self.generation = generation
         self._reader = reader
         self._parser = TranscriptParserState()
-        self._cache = _ByteLRU(CACHE_BYTES)
+        self._records = _ByteLRU(CACHE_BYTES)
         self._ids: list[str] = []
         self._heads: dict[str, _Head] = {}
         self._claims: dict[str, tuple[str, int]] = {}
@@ -1082,11 +1085,33 @@ class MessageBuilder:
         """Sort known message IDs into message order."""
         return sorted(message_ids, key=lambda mid: self._heads[mid].position)
 
+    def dirty_ids(self) -> list[str]:
+        """Message IDs changed since the last `clear_dirty`, in message order."""
+        return self.in_order(self._dirty)
+
+    def clear_dirty(self) -> None:
+        self._dirty.clear()
+
     def take_dirty(self) -> list[str]:
         """Return message IDs changed since the last call, in message order."""
-        dirty = self.in_order(self._dirty)
-        self._dirty.clear()
+        dirty = self.dirty_ids()
+        self.clear_dirty()
         return dirty
+
+    def calls_named(self, name: str) -> Iterator[Part]:
+        """Resolved tool parts called `name`, newest message first.
+
+        Only messages that have such a part are materialized.
+        """
+        for message_id in reversed(self._ids):
+            head = self._heads[message_id]
+            if not any(
+                part.type == "tool" and part.name == name for part in head.parts
+            ):
+                continue
+            for part in self._resolve(message_id).parts:
+                if part.type == "tool" and part.name == name:
+                    yield part
 
     def message(self, message_id: str) -> Message:
         return self._resolve(message_id)
@@ -1230,27 +1255,10 @@ class MessageBuilder:
         )
 
     def _materialize(self, spill: _Spill) -> Any:
-        cached = self._cache.get(spill)
-        if cached is not _MISSING:
-            return cached
-        value = self._reparse(spill)
-        self._cache.put(spill, value, _json_size(value))
-        return value
-
-    def _reparse(self, spill: _Spill) -> Any:
         if self._reader is None:
             raise SourceChangedError("A spilled value has no transcript reader")
-        line = self._reader(spill.offset)
-        try:
-            data = json.loads(line)
-        except ValueError as exc:
-            raise SourceChangedError("Indexed record is no longer valid JSON") from exc
-        # A fresh parser state is enough. A spilled value is a field of its own
-        # record. The state only changes keys and drops, and the index keeps keys.
-        records, _ = parse_records(
-            [SourceEntry(spill.offset, data)], self.provider, TranscriptParserState()
-        )
-        for _, record in records:
+        records = self._parsed(spill.offset)
+        for record in records:
             if spill.field == _RESULT and spill.slot < len(record.results):
                 return {
                     "text": _text(record.results[spill.slot][1]),
@@ -1259,6 +1267,29 @@ class MessageBuilder:
             if spill.field != _RESULT and spill.slot < len(record.parts):
                 return record.parts[spill.slot][spill.field]
         raise SourceChangedError("Indexed record no longer parses to its message")
+
+    def _parsed(self, offset: int) -> tuple[TranscriptRecord, ...]:
+        """Records of the source line at `offset`, parsed once while cached.
+
+        A line can hold several spilled values; the cache lets them share one read.
+        The parse uses a fresh parser state. A spilled value is a field of its own
+        record, and the state only changes keys and drops, which the index keeps.
+        """
+        cached = self._records.get(offset)
+        if cached is not _MISSING:
+            return cached
+        assert self._reader is not None
+        line = self._reader(offset)
+        try:
+            data = json.loads(line)
+        except ValueError as exc:
+            raise SourceChangedError("Indexed record is no longer valid JSON") from exc
+        parsed, _ = parse_records(
+            [SourceEntry(offset, data)], self.provider, TranscriptParserState()
+        )
+        records = tuple(record for _, record in parsed)
+        self._records.put(offset, records, len(line))
+        return records
 
 
 def build_messages(

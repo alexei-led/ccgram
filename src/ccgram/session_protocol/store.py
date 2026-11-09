@@ -42,9 +42,11 @@ def _digest(value: str) -> str:
 class TranscriptCursor:
     """Identity of the transcript bytes last observed for one source.
 
-    `marker` digests the bytes ending at `observed`. Rows written before this
-    shape hashed the whole content, so their first check fails and bumps the
-    generation once.
+    `marker` digests the last 4 KiB before `observed`. A row written before this
+    shape stored a digest of the whole content, so its first check fails and bumps
+    the generation once when the file is at least 4 KiB. A smaller file's whole
+    content is its tail, so that legacy digest still matches and the generation
+    is kept.
     """
 
     inode: int

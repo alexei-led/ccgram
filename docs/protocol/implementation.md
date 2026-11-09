@@ -9,6 +9,7 @@ Telegram calls the core directly. HTTP and WebSocket expose its wire contract.
 | `session_protocol/models.py` | Dataclasses, wire serialization, and protocol errors. |
 | `session_protocol/backend.py` | Consumer-owned backend Protocol and its Multiplexer adapter. |
 | `session_protocol/service.py` | Session discovery, snapshots, history, live replacements, and delivery correlations. |
+| `session_protocol/transcript_source.py` | Stat-first, append-only observation of one transcript: identity, generation, and byte-range reads of spilled values. |
 | `session_protocol/messages.py` | Canonical provider normalization, structured records, and the history/live message builder. |
 | `transcript_reader.py` | Delivery cursor reads and Telegram rendering of canonical records. |
 | `session_protocol/telegram.py` | In-process Telegram adapter and application-owned service access. |
@@ -79,9 +80,8 @@ Publishing pins one handle per batch. A replaced transcript raises
 Identity is the inode, the observed size, and a digest of the last 4 KiB before that
 size. A replacement, a truncation, or a changed tail increments the persisted
 generation and rebuilds from byte 0. A rewrite that keeps the inode, size, and tail
-is not detected; transcripts are append-only, so this is accepted. Gemini stores one
-JSON document, so any change rebuilds it from one read, rejected if the size or
-mtime changed during the read. A failed read is retried when the stamp changes or
+is not detected; transcripts are append-only, so this is accepted. Gemini chats are
+JSONL (`session-*.jsonl`) and take the same incremental path. A failed read is retried when the stamp changes or
 after a backoff of 1 s doubling to 30 s.
 
 A source replaced or truncated during a read is retried. A final source check after

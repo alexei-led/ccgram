@@ -6,6 +6,7 @@ import asyncio
 import base64
 import contextlib
 import json
+import logging
 from collections.abc import AsyncIterator, Collection
 from dataclasses import replace
 from datetime import datetime
@@ -32,6 +33,8 @@ from .transcript_source import TranscriptSource, source_stamp
 from .uploads import UploadStore
 
 MAX_HISTORY_PAGE = 200
+_PUBLISH_BATCH = 256
+logger = logging.getLogger(__name__)
 
 SUPPORTED_ACTIONS = (
     "message.send",
@@ -91,7 +94,18 @@ class LocalSessionService:
             targets = await self.backend.targets()
             live = set()
             for target in targets:
-                _, snapshot = await self._update(target)
+                try:
+                    _, snapshot = await self._update(target)
+                except Exception:
+                    # One target's unexpected failure must not stop the others.
+                    # Its sessions stay live, so they are not reported as removed.
+                    logger.exception("Session protocol target %s failed", target.id)
+                    live.update(
+                        sid
+                        for sid, known in self._targets.items()
+                        if known.id == target.id
+                    )
+                    continue
                 live.add(snapshot.id)
             for session_id in self._snapshots.keys() - live:
                 self.requests.close(session_id, "vanished")
@@ -275,39 +289,49 @@ class LocalSessionService:
     async def _publish_messages(self, session_id: str, target: Target) -> None:
         if target.transcript is None:
             return
-        builder = self._sources[target.id.casefold()].builder
+        source = self._sources[target.id.casefold()]
+        builder = source.builder
         assert builder is not None
-        if session_id in self._revisions:
-            changed_ids = set(builder.take_dirty())
-        else:
-            self._revisions[session_id] = {}
-            builder.take_dirty()
-            changed_ids = set(builder.ids)
-        since = self._recorrelate.pop(session_id, None)
+        first = session_id not in self._revisions
+        # Dirty state and the recorrelation window are cleared only after every
+        # message materialized, so a failed read leaves the work for the retry.
+        changed_ids = set(builder.ids) if first else set(builder.dirty_ids())
+        since = self._recorrelate.get(session_id)
         if since is not None:
             changed_ids.update(_recent_user_ids(builder, since))
+        revisions = self._revisions.setdefault(session_id, {})
         if not changed_ids:
+            self._recorrelate.pop(session_id, None)
             return
-        revisions = self._revisions[session_id]
+        ordered = builder.in_order(changed_ids)
         changed = False
-        with self._reading(target):
-            for message_id in builder.in_order(changed_ids):
-                message = self._correlate(session_id, builder.message(message_id))
-                if revisions.get(message_id) != message.revision:
-                    changed = True
-                    self.hub.publish("message.upsert", session_id, message)
-                    revisions[message_id] = message.revision
-        if changed:
-            snapshot = replace(self._snapshots[session_id], last_activity=utc_now())
-            self._snapshots[session_id] = snapshot
-            self.hub.publish(
-                "session.updated",
-                session_id,
-                {
-                    "bindingVersion": snapshot.binding_version,
-                    "lastActivity": snapshot.last_activity,
-                },
-            )
+        try:
+            with source.reading():
+                # Batches bound the materialized messages held at once. Each
+                # publish is recorded in `revisions`, so a retry skips it.
+                for start in range(0, len(ordered), _PUBLISH_BATCH):
+                    batch = ordered[start : start + _PUBLISH_BATCH]
+                    raw = await asyncio.to_thread(_materialize_messages, builder, batch)
+                    for message_id, message in zip(batch, raw, strict=True):
+                        message = self._correlate(session_id, message)
+                        if revisions.get(message_id) != message.revision:
+                            changed = True
+                            self.hub.publish("message.upsert", session_id, message)
+                            revisions[message_id] = message.revision
+        finally:
+            if changed:
+                snapshot = replace(self._snapshots[session_id], last_activity=utc_now())
+                self._snapshots[session_id] = snapshot
+                self.hub.publish(
+                    "session.updated",
+                    session_id,
+                    {
+                        "bindingVersion": snapshot.binding_version,
+                        "lastActivity": snapshot.last_activity,
+                    },
+                )
+        builder.clear_dirty()
+        self._recorrelate.pop(session_id, None)
 
     def _correlate(self, session_id: str, message: Message) -> Message:
         if message.role != "user":
@@ -413,11 +437,12 @@ class LocalSessionService:
                     400, "invalid_request", "Invalid cursor for this conversation"
                 ) from exc
         start = max(0, before - limit)
+        selected = ids[start:before]
         with self._reading(target):
-            page = tuple(
-                self._correlate(session_id, builder.message(message_id))
-                for message_id in ids[start:before]
+            raw = await asyncio.to_thread(
+                lambda: [builder.message(message_id) for message_id in selected]
             )
+        page = tuple(self._correlate(session_id, message) for message in raw)
         prev = (
             base64.urlsafe_b64encode(
                 json.dumps(
@@ -473,8 +498,10 @@ class LocalSessionService:
         target, _ = await self._refreshed(session_id)
         builder = self._page_builder(target)
         with self._reading(target):
-            selected = builder.messages(source_range=(start_byte, end_byte))
-            messages = tuple(self._correlate(session_id, m) for m in selected)
+            selected = await asyncio.to_thread(
+                lambda: builder.messages(source_range=(start_byte, end_byte))
+            )
+        messages = tuple(self._correlate(session_id, m) for m in selected)
         return HistoryPage(
             target.conversation_id or None,
             messages,
@@ -672,32 +699,42 @@ class LocalSessionService:
         target = await self._source_version(await self.backend.inspect(target.id))
         if target.conversation_id != event.session_id:
             return False
-        builder = self._page_builder(target)
-        with self._reading(target):
-            for message_id in reversed(builder.ids):
-                for part in builder.message(message_id).parts:
-                    if (
-                        part.type != "tool"
-                        or part.name != tool_name
-                        or not isinstance(part.input, dict)
-                    ):
-                        continue
-                    digest = hook_input_hash(part.input)
-                    if digest == event.data.get("tool_input_hash"):
-                        self.requests.observe_hook(
-                            sid,
-                            PendingHook(
-                                event.session_id,
-                                "question"
-                                if tool_name == "AskUserQuestion"
-                                else "permission",
-                                tool_name,
-                                part.input,
-                                event.timestamp,
-                            ),
-                        )
-                        return True
+        try:
+            with self._reading(target):
+                return self._hook_matches(sid, self._page_builder(target), event)
+        except SourceChangedError:
+            # The transcript moved while the tool input was read. Observe it again.
+            target = await self._source_version(await self.backend.inspect(target.id))
+            with self._reading(target):
+                return self._hook_matches(sid, self._page_builder(target), event)
+
+    def _hook_matches(
+        self, sid: str, builder: MessageBuilder, event: HookEvent
+    ) -> bool:
+        tool_name = event.data.get("tool_name")
+        if not isinstance(tool_name, str):
+            return False
+        for part in builder.calls_named(tool_name):
+            if not isinstance(part.input, dict):
+                continue
+            digest = hook_input_hash(part.input)
+            if digest == event.data.get("tool_input_hash"):
+                self.requests.observe_hook(
+                    sid,
+                    PendingHook(
+                        event.session_id,
+                        "question" if tool_name == "AskUserQuestion" else "permission",
+                        tool_name,
+                        part.input,
+                        event.timestamp,
+                    ),
+                )
+                return True
         return False
+
+
+def _materialize_messages(builder: MessageBuilder, ids: list[str]) -> list[Message]:
+    return [builder.message(message_id) for message_id in ids]
 
 
 def _source_key(target: Target) -> str:

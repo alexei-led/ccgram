@@ -67,7 +67,8 @@ async def test_history_reads_a_spilled_tool_output_from_the_transcript(store, tm
     source = _source(store, path)
     await source.sync(store)
     assert source.builder is not None
-    message = source.builder.message("conv/a1")
+    with source.reading():
+        message = source.builder.message("conv/a1")
     assert message.parts[1].output == {"text": output, "truncated": False}
 
 
@@ -83,13 +84,14 @@ async def test_rewritten_tail_after_sync_raises_until_the_source_resyncs(
     last = data.rfind(b"line of tool output")
     path.write_bytes(data[:last] + b"LINE OF TOOL OUTPUT" + data[last + 19 :])
 
-    with pytest.raises(SourceChangedError):
+    with pytest.raises(SourceChangedError), source.reading():
         source.builder.message("conv/a2")
 
     await source.sync(store)
     assert source.generation == 1
     assert source.builder is not None
-    rewritten = source.builder.message("conv/g1/a2").parts[1].output["text"]
+    with source.reading():
+        rewritten = source.builder.message("conv/g1/a2").parts[1].output["text"]
     assert rewritten.endswith("LINE OF TOOL OUTPUT\n")
 
 
@@ -108,3 +110,14 @@ async def test_index_retains_far_less_than_a_transcript_of_large_outputs(
     finally:
         tracemalloc.stop()
     assert retained < size * 0.5, f"retained {retained} of {size} bytes"
+
+
+async def test_gemini_document_larger_than_a_marker_still_pins(store, tmp_path):
+    path = tmp_path / "session.json"
+    path.write_text(json.dumps({"messages": [], "pad": "x" * 8000}), encoding="utf-8")
+    source = TranscriptSource(
+        "conv", path, "conv", "gemini", store.transcript_cursor("conv")
+    )
+    await source.sync(store)
+    with source.reading():
+        pass
