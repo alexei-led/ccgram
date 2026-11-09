@@ -775,6 +775,8 @@ class TestStartupReplayBound:
             return real_parse(entries, provider_name, parser_state, **kwargs)
 
         reader._parser_rebuild_pending.add("sess")
+        with session_file.open("a") as transcript:
+            transcript.write(self._record("live"))
         monkeypatch.setattr(module, "parse_records", spy)
         await reader._process_session_file("sess", session_file, [], window_id="@1")
 
@@ -1057,6 +1059,8 @@ class TestParserRebuildOnActiveFile:
         reader, _, session_file, _ = self._setup(tmp_path)
         await reader._process_session_file("sess", session_file, [], window_id="@1")
         reader._parser_rebuild_pending.add("sess")
+        with session_file.open("a") as transcript:
+            transcript.write(_record("live"))
         real = transcript_reader._replay_committed_prefix
 
         def append_then_replay(*args, **kwargs):
@@ -1238,3 +1242,80 @@ class TestLazyStartupBaseline:
         await reader._process_session_file("s0", files[0], messages, window_id="@1")
 
         assert [msg.text for msg in messages] == ["fresh"]
+
+
+class TestDeferredParserRebuild:
+    """A restored session rebuilds parser context only when it has output to parse."""
+
+    _TOOL_USE = (
+        '{"type":"assistant","message":{"content":[{"type":"tool_use",'
+        '"id":"t1","name":"Bash","input":{"command":"ls"}}]}}\n'
+    )
+    _TOOL_RESULT = (
+        '{"type":"user","message":{"content":[{"type":"tool_result",'
+        '"tool_use_id":"t1","content":"a\\nb\\nc\\nd"}]}}\n'
+    )
+
+    def _restored(self, tmp_path, history: str):
+        session_file = tmp_path / "transcript.jsonl"
+        session_file.write_text(history)
+        return (
+            *_tracked_reader(tmp_path, session_file, len(history.encode())),
+            session_file,
+        )
+
+    async def _poll(self, reader, session_file) -> list:
+        messages: list = []
+        await reader._process_session_file(
+            "sess", session_file, messages, window_id="@1"
+        )
+        return messages
+
+    async def test_idle_restored_session_is_not_rebuilt(self, tmp_path) -> None:
+        reader, _, session_file = self._restored(tmp_path, _record("h0") * 20)
+
+        with patch(
+            "ccgram.transcript_reader._replay_committed_prefix",
+            wraps=transcript_reader._replay_committed_prefix,
+        ) as rebuild:
+            for _ in range(3):
+                assert await self._poll(reader, session_file) == []
+
+        assert rebuild.call_count == 0
+
+    async def test_first_output_after_restart_rebuilds_once(self, tmp_path) -> None:
+        reader, _, session_file = self._restored(tmp_path, _record("h0") * 20)
+        await self._poll(reader, session_file)
+
+        with patch(
+            "ccgram.transcript_reader._replay_committed_prefix",
+            wraps=transcript_reader._replay_committed_prefix,
+        ) as rebuild:
+            with session_file.open("a") as transcript:
+                transcript.write(_record("live"))
+            delivered = await self._poll(reader, session_file)
+            with session_file.open("a") as transcript:
+                transcript.write(_record("later"))
+            delivered += await self._poll(reader, session_file)
+
+        assert [msg.text for msg in delivered] == ["live", "later"]
+        assert rebuild.call_count == 1
+
+    async def test_deferred_rebuild_keeps_context_from_before_the_watermark(
+        self, tmp_path
+    ) -> None:
+        reader, _, session_file = self._restored(
+            tmp_path, _record("h0") * 3 + self._TOOL_USE
+        )
+        await self._poll(reader, session_file)
+        await self._poll(reader, session_file)
+
+        with session_file.open("a") as transcript:
+            transcript.write(self._TOOL_RESULT)
+        messages = await self._poll(reader, session_file)
+
+        results = [msg for msg in messages if msg.content_type == "tool_result"]
+        assert [msg.tool_name for msg in results] == ["Bash"]
+        assert results[0].text.startswith(
+            transcript_reader.format_tool_line("Bash", "")[:6]
+        )

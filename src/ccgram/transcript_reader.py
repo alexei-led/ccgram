@@ -1143,9 +1143,10 @@ class TranscriptReader:
         rebuild_parser = session_id in self._parser_rebuild_pending
         last_mtime = self._file_mtimes.get(session_id, 0.0)
         if provider.capabilities.supports_incremental_read:
+            # A pending rebuild alone is no reason to read: parser context is
+            # only needed once there are entries to parse (see below).
             if (
                 not generation_changed
-                and not rebuild_parser
                 and current_mtime <= last_mtime
                 and current_size <= self._parse_pos(tracked)
             ):
@@ -1202,7 +1203,16 @@ class TranscriptReader:
             if self._on_session_retired is not None:
                 self._on_session_retired(session_id)
             self.reset_parser_state(session_id)
-        elif rebuild_parser:
+        elif rebuild_parser and (
+            new_entries or not provider.capabilities.supports_incremental_read
+        ):
+            # Deferred until this poll has entries to parse. The rebuilt
+            # context only affects how later entries render: its pending tools
+            # are retired right after the rebuild, and the floor it rebuilds to
+            # cannot move while nothing is parsed (the watermark advances only
+            # through this session's deliveries; replacement and replay reset
+            # the pending flag). Rebuilding every idle restored session on the
+            # first poll stalled that whole cycle (~4 s per 100 MB).
             rebuilt = await self._rebuild_committed_parser_context(
                 session_id,
                 file_path,
