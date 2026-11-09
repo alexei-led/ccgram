@@ -79,8 +79,9 @@ produce higher revisions when the provider appends another version of the record
 `complete` reflects streaming completion. Optional `phase` preserves provider phase
 metadata, such as Codex `final_answer`. Clients can ignore phases they do not know.
 
-Generation checks and parsing use the same verified source bytes. A transcript
-replacement or truncation increments persisted `historyGeneration`.
+A transcript replacement or truncation increments persisted `historyGeneration`.
+A change that keeps the file identity, size, and last 4 KiB is not detected; the
+transcript is append-only in practice.
 Nonzero generations also change message IDs. On a changed `conversation.id` or
 `conversation.historyGeneration`, clear that conversation's cached messages and
 load its history again. `bindingVersion` also increases, invalidating queued input.

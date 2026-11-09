@@ -76,8 +76,7 @@ class Target:
     resume_provider: str = ""
     transcript_provider: str = ""
     history_generation: int = 0
-    transcript_content: bytes | None = None
-    transcript_stamp: tuple[int, int, int, int] | None = None
+    transcript_stamp: tuple[int, int, int, int, int] | None = None
     selected_pane_command: str | None = None
     foreground_argv: tuple[str, ...] = ()
     available: bool = True
