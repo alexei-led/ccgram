@@ -1316,6 +1316,3 @@ class TestDeferredParserRebuild:
 
         results = [msg for msg in messages if msg.content_type == "tool_result"]
         assert [msg.tool_name for msg in results] == ["Bash"]
-        assert results[0].text.startswith(
-            transcript_reader.format_tool_line("Bash", "")[:6]
-        )

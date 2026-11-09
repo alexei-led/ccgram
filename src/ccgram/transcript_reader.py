@@ -1203,16 +1203,15 @@ class TranscriptReader:
             if self._on_session_retired is not None:
                 self._on_session_retired(session_id)
             self.reset_parser_state(session_id)
-        elif rebuild_parser and (
-            new_entries or not provider.capabilities.supports_incremental_read
-        ):
+        elif rebuild_parser and new_entries:
             # Deferred until this poll has entries to parse. The rebuilt
             # context only affects how later entries render: its pending tools
-            # are retired right after the rebuild, and the floor it rebuilds to
-            # cannot move while nothing is parsed (the watermark advances only
-            # through this session's deliveries; replacement and replay reset
-            # the pending flag). Rebuilding every idle restored session on the
-            # first poll stalled that whole cycle (~4 s per 100 MB).
+            # are retired right after the rebuild. Its floor cannot move while
+            # the flag waits: the watermark advances only through this
+            # session's batches, and every batch without entries comes from a
+            # replacement or replay, which reset or re-arm the flag in that
+            # same poll. Rebuilding every idle restored session on the first
+            # poll stalled that whole cycle (~4 s per 100 MB).
             rebuilt = await self._rebuild_committed_parser_context(
                 session_id,
                 file_path,
