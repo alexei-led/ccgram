@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from telegram.error import TelegramError
 
 from ccgram.handlers.commands import forward_command_handler
 
@@ -204,6 +205,31 @@ class TestForwardCommandResolution:
         self.mock_send_to_window.assert_not_called()
         reply_text = update.message.reply_text.call_args[0][0]
         assert reply_text == "⏭️ [project] Follow-up queued."
+
+    async def test_typing_failure_still_forwards_the_command(self) -> None:
+        update = _make_update(text="/compact")
+        update.message.get_bot.return_value.send_chat_action.side_effect = (
+            TelegramError("timed out")
+        )
+
+        await forward_command_handler(update, _make_context())
+
+        self.mock_send_to_window.assert_called_once_with(
+            100, "@1", 42, "/compact", -100999, adapter=self.mock_adapter
+        )
+
+    async def test_typing_failure_still_queues_pi_followup(self) -> None:
+        self.mock_provider.capabilities.name = "pi"
+        update = _make_update(text="/followup run tests")
+        update.message.get_bot.return_value.send_chat_action.side_effect = (
+            TelegramError("timed out")
+        )
+
+        await forward_command_handler(update, _make_context())
+
+        self.mock_send_followup_to_window.assert_called_once_with(
+            100, "@1", 42, "run tests", -100999, adapter=self.mock_adapter
+        )
 
     async def test_pi_followup_requires_message(self) -> None:
         self.mock_provider.capabilities.name = "pi"
