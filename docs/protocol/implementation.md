@@ -69,8 +69,12 @@ and ctime) reads nothing. Otherwise one open handle checks the previous
 observation's identity, parses only the complete records appended since the last
 line boundary, and digests the new tail. The shared `MessageBuilder` in
 `messages.py` keeps one in-memory index per target, so a page materializes only
-its own messages. Parsed parts, including tool output text, stay in memory while
-the target keeps the same conversation; raw transcript bytes are not kept.
+its own messages. The index keeps message IDs, revisions, source offsets, and small
+parts. A text, tool input, or diff over 4 KiB, and a tool output over 4 KiB, stay in
+the transcript. The index keeps their record offset and slot, and materialization
+re-reads that one record by byte range through a per-target LRU capped at 512 KiB.
+Publishing pins one handle per batch. A replaced transcript raises
+`SourceChangedError` and the source is observed again. Batch builds keep every value.
 
 Identity is the inode, the observed size, and a digest of the last 4 KiB before that
 size. A replacement, a truncation, or a changed tail increments the persisted
