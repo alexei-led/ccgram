@@ -690,13 +690,18 @@ class TranscriptReader:
     ) -> _StableRead | None:
         """Read a stable file generation, retrying once after a write race."""
         reset_generation = False
+        start_offset = self._parse_pos(tracked)
+        # Every None exit restores the cursor to where the failed attempt
+        # started: the bytes it read were never emitted, and the next poll
+        # must read them again instead of resuming after them.
         for _attempt in range(2):
+            start_offset = self._parse_pos(tracked)
             try:
                 before = file_path.stat()
-                start_offset = self._parse_pos(tracked)
                 entries = await self._read_new_lines(tracked, file_path, window_id)
                 after = file_path.stat()
             except OSError:
+                self._rollback_read(session_id, tracked, start_offset)
                 return None
             same_generation = (before.st_dev, before.st_ino) == (
                 after.st_dev,
@@ -710,6 +715,7 @@ class TranscriptReader:
                         _tail_marker, file_path, start_offset
                     )
                 except OSError:
+                    self._rollback_read(session_id, tracked, start_offset)
                     return None
                 marker_changed = marker != saved[1]
             if same_generation and not marker_changed:
@@ -729,6 +735,8 @@ class TranscriptReader:
             self._startup_clamped.pop(session_id, None)
             self._file_prefixes.pop(session_id, None)
             reset_generation = True
+        # Two write races in a row: leave the last attempt's range unread.
+        self._rollback_read(session_id, tracked, start_offset)
         return None
 
     async def _commit_stable_read(
@@ -739,8 +747,13 @@ class TranscriptReader:
         stable_read: _StableRead,
         *,
         incremental: bool,
+        rollback_offset: int,
     ) -> bool:
-        """Commit caches only after a stable read and marker capture."""
+        """Commit caches only after a stable read and marker capture.
+
+        On an I/O failure nothing is cached and the cursor returns to
+        ``rollback_offset``, so the next poll reads the same range again.
+        """
         stable_stat = stable_read.stat
         try:
             marker = await asyncio.to_thread(
@@ -754,6 +767,7 @@ class TranscriptReader:
                 stable_stat.st_size,
             )
         except OSError:
+            self._rollback_read(session_id, tracked, rollback_offset)
             return False
         self._file_prefixes[session_id] = prefix
         self._file_mtimes[session_id] = stable_stat.st_mtime
@@ -1079,9 +1093,20 @@ class TranscriptReader:
         """Roll back speculative progress if selection changed during file I/O."""
         if identity_state.accepts_provider_observation(window_id, provider_name):
             return True
-        tracked.parsed_offset = previous_offset
-        self._file_mtimes.pop(tracked.session_id, None)
+        self._rollback_read(tracked.session_id, tracked, previous_offset)
         return False
+
+    def _rollback_read(
+        self, session_id: str, tracked: TrackedSession, offset: int
+    ) -> None:
+        """Undo the cursor move of a read whose entries were not emitted.
+
+        The single exit for every read that is abandoned. The mtime gate is
+        cleared so a whole-document provider re-reads on the next poll even
+        though the file did not change again.
+        """
+        tracked.parsed_offset = offset
+        self._file_mtimes.pop(session_id, None)
 
     async def _process_session_file(
         self,
@@ -1189,6 +1214,7 @@ class TranscriptReader:
             file_path,
             stable_read,
             incremental=provider.capabilities.supports_incremental_read,
+            rollback_offset=previous_parsed_offset,
         )
         if (
             not self._admit_read(
@@ -1225,12 +1251,13 @@ class TranscriptReader:
                 # process decided to skip. Roll back to the clamp point, not to
                 # EOF: records written after it are live output and must be
                 # read on the next poll.
-                tracked.parsed_offset = (
+                self._rollback_read(
+                    session_id,
+                    tracked,
                     max(self._startup_clamped[session_id], tracked.last_byte_offset)
                     if session_id in self._startup_clamped
-                    else tracked.last_byte_offset
+                    else tracked.last_byte_offset,
                 )
-                self._file_mtimes.pop(session_id, None)
                 new_entries = []
             elif not self._admit_read(
                 window_id, provider_name, tracked, previous_parsed_offset

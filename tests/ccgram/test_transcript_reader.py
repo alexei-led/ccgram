@@ -6,6 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 from ccgram import transcript_reader
 from ccgram.idle_tracker import IdleTracker
 from ccgram.monitor_state import BacklogSkipIntent, MonitorState, TrackedSession
@@ -1316,3 +1318,100 @@ class TestDeferredParserRebuild:
 
         results = [msg for msg in messages if msg.content_type == "tool_result"]
         assert [msg.tool_name for msg in results] == ["Bash"]
+
+
+def _assistant_line(text: str) -> str:
+    return (
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"%s"}]}}\n'
+        % text
+    )
+
+
+@pytest.mark.parametrize("failing_helper", ["_tail_marker", "_advance_prefix"])
+async def test_failed_commit_io_redelivers_unsent_entries_once(
+    tmp_path, monkeypatch, failing_helper: str
+) -> None:
+    """An OSError during commit must not let a later checkpoint skip entries."""
+    delivered = _assistant_line("a")
+    session_file = tmp_path / "transcript.jsonl"
+    session_file.write_text(
+        delivered + _assistant_line("b") + _assistant_line("c"), newline="\n"
+    )
+    state = MonitorState(state_file=tmp_path / "monitor_state.json")
+    state.update_session(
+        TrackedSession(
+            session_id="sess",
+            file_path=str(session_file),
+            last_byte_offset=len(delivered.encode()),
+        )
+    )
+    reader = TranscriptReader(state, IdleTracker())
+    real_helper = getattr(transcript_reader, failing_helper)
+    failures_left = [1]
+
+    def fail_once(*args, **kwargs):
+        if failures_left[0]:
+            failures_left[0] -= 1
+            raise OSError("transient read failure")
+        return real_helper(*args, **kwargs)
+
+    monkeypatch.setattr(transcript_reader, failing_helper, fail_once)
+
+    failed_poll: list = []
+    await reader._process_session_file(
+        "sess", session_file, failed_poll, window_id="@1"
+    )
+    assert failed_poll == []
+
+    retry_poll: list = []
+    await reader._process_session_file("sess", session_file, retry_poll, window_id="@1")
+    assert [msg.text for msg in retry_poll] == ["b", "c"]
+
+    idle_poll: list = []
+    await reader._process_session_file("sess", session_file, idle_poll, window_id="@1")
+    assert idle_poll == []
+
+
+async def test_failed_marker_verification_redelivers_unsent_entries_once(
+    tmp_path, monkeypatch
+) -> None:
+    """An OSError while verifying the saved marker must not skip the read range."""
+    session_file = tmp_path / "transcript.jsonl"
+    session_file.write_text(_assistant_line("a"), newline="\n")
+    state = MonitorState(state_file=tmp_path / "monitor_state.json")
+    state.update_session(
+        TrackedSession(
+            session_id="sess", file_path=str(session_file), last_byte_offset=0
+        )
+    )
+    reader = TranscriptReader(state, IdleTracker())
+    first_poll: list = []
+    await reader._process_session_file("sess", session_file, first_poll, window_id="@1")
+    assert [msg.text for msg in first_poll] == ["a"]
+
+    with session_file.open("a", newline="\n") as handle:
+        handle.write(_assistant_line("b"))
+    real_marker = transcript_reader._tail_marker
+    io_failing = [True]
+
+    def fail_while_flagged(*args, **kwargs):
+        if io_failing[0]:
+            raise OSError("transient read failure")
+        return real_marker(*args, **kwargs)
+
+    monkeypatch.setattr(transcript_reader, "_tail_marker", fail_while_flagged)
+
+    failed_poll: list = []
+    await reader._process_session_file(
+        "sess", session_file, failed_poll, window_id="@1"
+    )
+    assert failed_poll == []
+
+    io_failing[0] = False
+    retry_poll: list = []
+    await reader._process_session_file("sess", session_file, retry_poll, window_id="@1")
+    assert [msg.text for msg in retry_poll] == ["b"]
+
+    idle_poll: list = []
+    await reader._process_session_file("sess", session_file, idle_poll, window_id="@1")
+    assert idle_poll == []
