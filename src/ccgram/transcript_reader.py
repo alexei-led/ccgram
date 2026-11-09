@@ -450,14 +450,15 @@ class TranscriptReader:
         self._file_mtimes: dict[str, float] = {}
         self._file_ctimes: dict[str, int] = self._snapshot_file_ctimes()
         self._file_sizes = self._snapshot_file_sizes()
+        # Empty at startup on purpose: the first committed read of each session
+        # hashes its baseline in a worker thread. Hashing every tracked
+        # transcript here blocked the event loop for seconds. A transcript
+        # replaced before that first read has no baseline and is treated as
+        # replaced (skip to EOF, never replay).
         self._file_prefixes: dict[str, tuple[int, Any]] = {}
         self._file_generations = self._snapshot_file_generations()
         self._file_markers = self._snapshot_file_markers()
         self._startup_file_boundaries = self._snapshot_startup_boundaries()
-        # Pre-restart baselines are hashed on the first poll, off the event
-        # loop: hashing every tracked transcript here blocked startup for
-        # seconds. The startup size and generation above bound what is hashed.
-        self._unseeded_prefixes: set[str] = set(self._file_sizes)
         # Sessions whose startup replay was already bounded in this process.
         self._startup_replay_checked: set[str] = set()
         # Sessions that existed before this process started. A session first
@@ -549,29 +550,6 @@ class TranscriptReader:
             self._startup_file_boundaries[session_id] = boundary
         return boundary
 
-    async def _seed_startup_prefix(
-        self, session_id: str, file_path: Path, st: Any
-    ) -> None:
-        """Hash the pre-restart bytes once, if the same file is still there.
-
-        A different inode since startup gets no baseline, so a replacement
-        that happened before the first poll is treated as one (skip to EOF,
-        never replay) instead of being verified against the new file.
-        """
-        if session_id not in self._unseeded_prefixes:
-            return
-        self._unseeded_prefixes.discard(session_id)
-        size = self._file_sizes.get(session_id)
-        if size is None or self._file_generations.get(session_id) != (
-            st.st_dev,
-            st.st_ino,
-        ):
-            return
-        with suppress(OSError):
-            self._file_prefixes[session_id] = await asyncio.to_thread(
-                _advance_prefix, None, file_path, size
-            )
-
     def _prefix_covers_consumed(self, session_id: str, consumed: int, st: Any) -> bool:
         """True when the cached prefix digest spans every byte already delivered."""
         saved = self._file_prefixes.get(session_id)
@@ -652,7 +630,6 @@ class TranscriptReader:
         every append moves it. A new inode costs one digest of the consumed
         prefix, on that event only.
         """
-        await self._seed_startup_prefix(session_id, file_path, st)
         pos = self._parse_pos(tracked)
         previous = self._file_generations.get(session_id)
         generation_changed = previous is not None and previous != (
@@ -849,7 +826,6 @@ class TranscriptReader:
         self._file_ctimes.pop(session_id, None)
         self._file_sizes.pop(session_id, None)
         self._file_prefixes.pop(session_id, None)
-        self._unseeded_prefixes.discard(session_id)
         self._file_markers.pop(session_id, None)
         self._startup_file_boundaries.pop(session_id, None)
         # The startup replay bound's per-session state goes too: a session id
@@ -946,9 +922,6 @@ class TranscriptReader:
                     old_session_id
                 )
             self.reset_parser_state(old_session_id)
-            if old_session_id in self._unseeded_prefixes:
-                self._unseeded_prefixes.discard(old_session_id)
-                self._unseeded_prefixes.add(session_id)
             if old_session_id in self._file_markers:
                 self._file_markers[session_id] = self._file_markers.pop(old_session_id)
             if old_session_id in self._startup_file_boundaries:

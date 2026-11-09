@@ -1,6 +1,7 @@
 """Tests for transcript reader offset handling."""
 
 import os
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -1188,20 +1189,23 @@ class TestLazyStartupBaseline:
         assert hashed.call_count == 0
         assert digest.call_count == 0
 
-    async def test_first_poll_seeds_the_baseline_for_the_startup_bytes(
+    async def test_first_poll_hashes_the_baseline_off_the_event_loop(
         self, tmp_path
     ) -> None:
-        state, files, history = self._tracked(tmp_path, count=1)
+        state, files, _ = self._tracked(tmp_path, count=1)
         reader = TranscriptReader(state, IdleTracker())
-        assert reader._file_prefixes == {}
-        with files[0].open("a") as transcript:
-            transcript.write(_record("after-start"))
+        threads: list[threading.Thread] = []
+        real_range = transcript_reader._hash_range
 
-        await reader._process_session_file("s0", files[0], [], window_id="@1")
+        def record_thread(*args, **kwargs):
+            threads.append(threading.current_thread())
+            return real_range(*args, **kwargs)
 
-        size, digest = reader._file_prefixes["s0"]
-        assert size >= len(history.encode())
-        assert "s0" not in reader._unseeded_prefixes
+        with patch("ccgram.transcript_reader._hash_range", record_thread):
+            await reader._process_session_file("s0", files[0], [], window_id="@1")
+
+        assert threads
+        assert all(thread is not threading.main_thread() for thread in threads)
 
     async def test_replacement_before_the_first_poll_still_clamps(
         self, tmp_path
@@ -1219,9 +1223,6 @@ class TestLazyStartupBaseline:
         tracked = state.get_session("s0")
         assert tracked is not None
         assert tracked.parsed_offset == files[0].stat().st_size
-        assert "s0" not in reader._file_prefixes or (
-            reader._file_prefixes["s0"][0] == files[0].stat().st_size
-        )
 
     async def test_inode_change_after_seeding_is_still_verified_once(
         self, tmp_path
@@ -1237,28 +1238,3 @@ class TestLazyStartupBaseline:
         await reader._process_session_file("s0", files[0], messages, window_id="@1")
 
         assert [msg.text for msg in messages] == ["fresh"]
-
-    async def test_seeding_runs_off_the_event_loop(self, tmp_path) -> None:
-        state, files, _ = self._tracked(tmp_path, count=1)
-        reader = TranscriptReader(state, IdleTracker())
-        with patch(
-            "ccgram.transcript_reader.asyncio.to_thread",
-            wraps=transcript_reader.asyncio.to_thread,
-        ) as offloaded:
-            await reader._process_session_file("s0", files[0], [], window_id="@1")
-
-        assert any(
-            call.args and call.args[0] is transcript_reader._advance_prefix
-            for call in offloaded.call_args_list
-        )
-
-    def test_clear_and_adopt_account_for_the_unseeded_marker(self, tmp_path) -> None:
-        state, files, _ = self._tracked(tmp_path, count=2)
-        reader = TranscriptReader(state, IdleTracker())
-
-        reader.clear_session("s1")
-        assert "s1" not in reader._unseeded_prefixes
-
-        assert reader._adopt_tracking_for_file("renamed", files[0]) is not None
-        assert "s0" not in reader._unseeded_prefixes
-        assert "renamed" in reader._unseeded_prefixes
