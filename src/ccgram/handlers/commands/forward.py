@@ -132,17 +132,18 @@ async def _send_confirmation(
 ) -> None:
     """Reply with the delivery confirmation without failing the handler.
 
-    The command is already delivered: a failed reply (flood control, network)
-    must not skip the probes or the /clear session reset that follow.
+    The command is already delivered: a failed reply must not skip the probes
+    or the /clear session reset that follow. ``safe_reply`` only re-raises
+    flood control (RetryAfter); the rate limiter has already logged its detail.
     """
     try:
         await safe_reply(message, text)
-    except TelegramError:
+    except TelegramError as exc:
         logger.warning(
             "Command confirmation reply failed",
             command=command,
             window_id=window_id,
-            exc_info=True,
+            error=str(exc),
         )
 
 
