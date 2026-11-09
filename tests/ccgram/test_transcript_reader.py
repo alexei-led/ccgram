@@ -1,5 +1,6 @@
 """Tests for transcript reader offset handling."""
 
+import json
 import os
 import threading
 from pathlib import Path
@@ -11,7 +12,7 @@ import pytest
 from ccgram import transcript_reader
 from ccgram.idle_tracker import IdleTracker
 from ccgram.monitor_state import BacklogSkipIntent, MonitorState, TrackedSession
-from ccgram.transcript_reader import TranscriptReader, _StableRead
+from ccgram.transcript_reader import TranscriptReader, _StableRead, _StartupBoundary
 
 
 def test_clear_session_cancels_pending_skip_barrier(tmp_path) -> None:
@@ -243,7 +244,7 @@ async def test_whole_file_rewrite_bypasses_unchanged_mtime(tmp_path) -> None:
     reader = TranscriptReader(state, IdleTracker())
     provider = SimpleNamespace(
         capabilities=SimpleNamespace(
-            name="gemini",
+            name="whole-document",
             supports_incremental_read=False,
             supports_task_tracking=False,
         )
@@ -257,7 +258,7 @@ async def test_whole_file_rewrite_bypasses_unchanged_mtime(tmp_path) -> None:
             "_read_session_entries",
             new=AsyncMock(
                 side_effect=lambda *_args, **_kwargs: _StableRead(
-                    [], session_file.stat(), False
+                    [], session_file.stat(), False, 0
                 )
             ),
         ) as read,
@@ -283,7 +284,7 @@ async def test_whole_file_replacement_bypasses_unchanged_mtime(tmp_path) -> None
     reader = TranscriptReader(state, IdleTracker())
     provider = SimpleNamespace(
         capabilities=SimpleNamespace(
-            name="gemini",
+            name="whole-document",
             supports_incremental_read=False,
             supports_task_tracking=False,
         )
@@ -301,6 +302,7 @@ async def test_whole_file_replacement_bypasses_unchanged_mtime(tmp_path) -> None
                     [],
                     session_file.stat(),
                     False,
+                    0,
                 )
             ),
         ) as read,
@@ -1415,3 +1417,109 @@ async def test_failed_marker_verification_redelivers_unsent_entries_once(
     idle_poll: list = []
     await reader._process_session_file("sess", session_file, idle_poll, window_id="@1")
     assert idle_poll == []
+
+
+def _gemini_line(entry_id: str, text: str) -> str:
+    return json.dumps({"id": entry_id, "type": "gemini", "content": text}) + "\n"
+
+
+def _gemini_session(tmp_path: Path) -> tuple[Path, TranscriptReader]:
+    session_file = tmp_path / ".gemini/tmp/proj/chats/session-1.jsonl"
+    session_file.parent.mkdir(parents=True)
+    session_file.write_text(_gemini_line("m1", "first"), newline="\n")
+    state = MonitorState(state_file=tmp_path / "monitor_state.json")
+    state.update_session(
+        TrackedSession(
+            session_id="sess", file_path=str(session_file), last_byte_offset=0
+        )
+    )
+    return session_file, TranscriptReader(state, IdleTracker())
+
+
+async def test_gemini_jsonl_transcript_is_read_incrementally(tmp_path) -> None:
+    session_file, reader = _gemini_session(tmp_path)
+
+    first: list = []
+    await reader._process_session_file("sess", session_file, first, window_id="@1")
+    assert [(m.text, m.provider_name) for m in first] == [("first", "gemini")]
+    tracked = reader._state.get_session("sess")
+    assert tracked is not None
+    assert tracked.parsed_offset == session_file.stat().st_size
+
+    with session_file.open("a", newline="\n") as handle:
+        handle.write(_gemini_line("m2", "second"))
+    second: list = []
+    await reader._process_session_file("sess", session_file, second, window_id="@1")
+    assert [m.text for m in second] == ["second"]
+
+    idle: list = []
+    await reader._process_session_file("sess", session_file, idle, window_id="@1")
+    assert idle == []
+
+
+async def test_gemini_failed_commit_redelivers_appended_entries_once(
+    tmp_path, monkeypatch
+) -> None:
+    session_file, reader = _gemini_session(tmp_path)
+    await reader._process_session_file("sess", session_file, [], window_id="@1")
+    with session_file.open("a", newline="\n") as handle:
+        handle.write(_gemini_line("m2", "second"))
+    real_prefix = transcript_reader._advance_prefix
+    failures_left = [1]
+
+    def fail_once(*args, **kwargs):
+        if failures_left[0]:
+            failures_left[0] -= 1
+            raise OSError("transient read failure")
+        return real_prefix(*args, **kwargs)
+
+    monkeypatch.setattr(transcript_reader, "_advance_prefix", fail_once)
+
+    failed: list = []
+    await reader._process_session_file("sess", session_file, failed, window_id="@1")
+    assert failed == []
+    retry: list = []
+    await reader._process_session_file("sess", session_file, retry, window_id="@1")
+    assert [m.text for m in retry] == ["second"]
+    idle: list = []
+    await reader._process_session_file("sess", session_file, idle, window_id="@1")
+    assert idle == []
+
+
+async def test_failed_commit_after_startup_boundary_jump_does_not_replay(
+    tmp_path, monkeypatch
+) -> None:
+    """The rollback target is the cursor the read started from, not the older one."""
+    history = _assistant_line("old1") + _assistant_line("old2")
+    session_file = tmp_path / "transcript.jsonl"
+    session_file.write_text(history, newline="\n")
+    stat = session_file.stat()
+    state = MonitorState(state_file=tmp_path / "monitor_state.json")
+    state.update_session(
+        TrackedSession(
+            session_id="sess", file_path=str(session_file), last_byte_offset=0
+        )
+    )
+    reader = TranscriptReader(state, IdleTracker())
+    # The file shrank below the size seen at startup: the reader skips to EOF.
+    reader._startup_file_boundaries["sess"] = _StartupBoundary(
+        size=stat.st_size + 1000, device=stat.st_dev, inode=stat.st_ino
+    )
+    real_prefix = transcript_reader._advance_prefix
+    failures_left = [1]
+
+    def fail_once(*args, **kwargs):
+        if failures_left[0]:
+            failures_left[0] -= 1
+            raise OSError("transient read failure")
+        return real_prefix(*args, **kwargs)
+
+    monkeypatch.setattr(transcript_reader, "_advance_prefix", fail_once)
+
+    for _ in range(3):
+        polled: list = []
+        await reader._process_session_file("sess", session_file, polled, window_id="@1")
+        assert polled == []
+    tracked = state.get_session("sess")
+    assert tracked is not None
+    assert tracked.parsed_offset == stat.st_size
