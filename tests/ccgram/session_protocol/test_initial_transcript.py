@@ -94,6 +94,7 @@ async def test_unreadable_initial_transcript_does_not_admit_input(
     service, backend, tmp_path, monkeypatch, failure
 ):
     path = tmp_path / "unreadable.jsonl"
+    path.touch()
     backend.target = replace(backend.target, transcript=path)
     original_open = Path.open
 

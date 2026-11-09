@@ -13,7 +13,7 @@ from typing import Any, Protocol
 from ..providers.base import HookEvent
 from .backend import CreationOptions, Prompt, SessionBackend, Target
 from .events import Event, EventHub
-from .messages import Message, build_messages, read_entries
+from .messages import Message, MessageBuilder
 from .models import (
     Action,
     ActionResult,
@@ -27,6 +27,7 @@ from .models import (
 )
 from .requests import HookIdentity, PendingHook, RequestStore, hook_input_hash
 from .store import ProtocolStore
+from .transcript_source import TranscriptSource, source_stamp
 from .uploads import UploadStore
 
 MAX_HISTORY_PAGE = 200
@@ -72,8 +73,12 @@ class LocalSessionService:
         self._snapshots: dict[str, SessionSnapshot] = {}
         self._targets: dict[str, Target] = {}
         self._refresh_lock = asyncio.Lock()
-        self._transcript_stamps: dict[str, tuple[int, int, int, int]] = {}
+        self._sources: dict[str, TranscriptSource] = {}
         self._revisions: dict[str, dict[str, int]] = {}
+        # Earliest send time per session with a delivery not yet matched in the
+        # transcript. A send can match user messages already published before
+        # the send returned.
+        self._recorrelate: dict[str, float] = {}
         # Lazy: ActionExecutor imports the service only for type checking.
         from .actions import ActionExecutor
 
@@ -92,9 +97,10 @@ class LocalSessionService:
                     "session.removed", session_id, {"reason": "target_gone"}
                 )
                 self._snapshots.pop(session_id)
-                self._targets.pop(session_id)
-                self._transcript_stamps.pop(session_id, None)
+                target = self._targets.pop(session_id)
+                self._sources.pop(_source_key(target), None)
                 self._revisions.pop(session_id, None)
+                self._recorrelate.pop(session_id, None)
 
     async def _update(self, target: Target) -> tuple[Target, SessionSnapshot]:
         try:
@@ -108,19 +114,13 @@ class LocalSessionService:
                 if target.transcript is None:
                     return target, snapshot
                 stat = await asyncio.to_thread(target.transcript.stat)
-                if target.transcript_stamp == (
-                    stat.st_ino,
-                    stat.st_size,
-                    stat.st_mtime_ns,
-                    stat.st_ctime_ns,
-                ):
+                if target.transcript_stamp == source_stamp(stat):
                     return target, snapshot
             raise OSError("Transcript changed repeatedly during observation")
         except (ProtocolError, OSError) as exc:
             target = replace(
                 target,
                 available=False,
-                transcript_content=None,
                 transcript_stamp=None,
                 status=Status("unknown", str(exc), "screen", utc_now()),
             )
@@ -134,10 +134,7 @@ class LocalSessionService:
         if old and old.binding_version != version:
             self.requests.close(session_id, "vanished")
             self._revisions.pop(session_id, None)
-            self._transcript_stamps.pop(session_id, None)
-        self._targets[session_id] = replace(
-            target, transcript_content=None, transcript_stamp=None
-        )
+        self._targets[session_id] = replace(target, transcript_stamp=None)
         opened = self.requests.reconcile(
             session_id, target.conversation_id, version, prompt
         )
@@ -198,18 +195,30 @@ class LocalSessionService:
     async def _source_version(self, target: Target) -> Target:
         if target.transcript is None:
             return target
-        source_key = f"{target.id.casefold()}:{target.conversation_id}"
-        try:
-            observation = await self.store.transcript_snapshot(
-                source_key, target.transcript
+        key = _source_key(target)
+        provider = target.transcript_provider or target.provider
+        source = self._sources.get(key)
+        if (
+            source is None
+            or source.path != target.transcript
+            or source.provider != provider
+        ):
+            source = self._sources[key] = TranscriptSource(
+                key,
+                target.transcript,
+                target.conversation_id,
+                provider,
+                self.store.transcript_cursor(key),
             )
+        try:
+            await source.sync(self.store)
         except OSError as exc:
             if (
                 isinstance(exc, FileNotFoundError)
                 and target.provider == "claude"
                 and target.foreground_verified
                 and target.conversation_id
-                and not self.store.has_transcript_observation(source_key)
+                and not self.store.has_transcript_observation(key)
             ):
                 # Claude can create the JSONL only after its first input. Do not
                 # confuse pending initial history with an unverified terminal.
@@ -219,43 +228,20 @@ class LocalSessionService:
             ) from exc
         return replace(
             target,
-            history_generation=observation.generation,
-            transcript_content=observation.content,
-            transcript_stamp=observation.stamp,
+            history_generation=source.generation,
+            transcript_stamp=source.stamp,
         )
 
-    async def _messages(
-        self,
-        target: Target,
-        *,
-        source_range: tuple[int, int | None] | None = None,
-    ) -> tuple[Message, ...]:
+    def _page_builder(self, target: Target) -> MessageBuilder:
         if target.transcript is None:
-            return ()
-        try:
-            if target.transcript_content is None:
-                raise ProtocolError(
-                    503, "backend_unavailable", "Transcript observation is unavailable"
-                )
-            entries = await asyncio.to_thread(
-                read_entries,
-                target.transcript_content,
-                target.transcript_provider or target.provider,
-            )
-        except OSError as exc:
+            return MessageBuilder(target.conversation_id, target.provider)
+        if not target.available:
             raise ProtocolError(
-                503, "backend_unavailable", "Transcript is unavailable"
-            ) from exc
-        messages = await asyncio.to_thread(
-            build_messages,
-            entries,
-            target.conversation_id,
-            target.transcript_provider or target.provider,
-            target.history_generation,
-            source_range=source_range,
-        )
-        sid = next((sid for sid, t in self._targets.items() if t.id == target.id), "")
-        return tuple(self._correlate(sid, message) for message in messages)
+                503, "backend_unavailable", "Transcript observation is unavailable"
+            )
+        builder = self._sources[_source_key(target)].builder
+        assert builder is not None
+        return builder
 
     async def remember_delivery(
         self,
@@ -269,25 +255,33 @@ class LocalSessionService:
             self.store.remember_delivery(
                 action_id, session_id, conversation_id, text, sent_at
             )
-            # A refresh may have observed the user entry before send acknowledgement.
-            self._transcript_stamps.pop(session_id, None)
+            earliest = min(sent_at, self._recorrelate.get(session_id, sent_at))
+            self._recorrelate[session_id] = earliest
 
     async def _publish_messages(self, session_id: str, target: Target) -> None:
         if target.transcript is None:
             return
-        stamp = target.transcript_stamp
-        if self._transcript_stamps.get(session_id) == stamp:
+        builder = self._sources[_source_key(target)].builder
+        assert builder is not None
+        if session_id in self._revisions:
+            changed_ids = set(builder.take_dirty())
+        else:
+            self._revisions[session_id] = {}
+            builder.take_dirty()
+            changed_ids = set(builder.ids)
+        since = self._recorrelate.pop(session_id, None)
+        if since is not None:
+            changed_ids.update(_recent_user_ids(builder, since))
+        if not changed_ids:
             return
-        messages = await self._messages(target)
-        revisions = self._revisions.setdefault(session_id, {})
+        revisions = self._revisions[session_id]
         changed = False
-        for message in messages:
-            if revisions.get(message.id) != message.revision:
+        for message_id in builder.in_order(changed_ids):
+            message = self._correlate(session_id, builder.message(message_id))
+            if revisions.get(message_id) != message.revision:
                 changed = True
                 self.hub.publish("message.upsert", session_id, message)
-                revisions[message.id] = message.revision
-        if stamp is not None:
-            self._transcript_stamps[session_id] = stamp
+                revisions[message_id] = message.revision
         if changed:
             snapshot = replace(self._snapshots[session_id], last_activity=utc_now())
             self._snapshots[session_id] = snapshot
@@ -301,11 +295,10 @@ class LocalSessionService:
             )
 
     def _correlate(self, session_id: str, message: Message) -> Message:
-        if message.role != "user" or not message.time:
+        if message.role != "user":
             return message
-        try:
-            timestamp = datetime.fromisoformat(message.time).timestamp()
-        except ValueError:
+        timestamp = _timestamp(message.time)
+        if timestamp is None:
             return message
         text = " ".join(p.text or "" for p in message.parts if p.type == "text")
         action_id, fresh = self.store.match_delivery(
@@ -359,43 +352,51 @@ class LocalSessionService:
             raise ProtocolError(
                 400, "invalid_request", "limit must be between 1 and 200"
             )
-        target, _ = await self.current(session_id)
-        if conversation is not None and conversation != target.conversation_id:
-            raise ProtocolError(
-                404, "not_found", "Conversation is no longer bound to this session"
-            )
-        messages = await self._messages(target)
-        before = len(messages)
-        if cursor:
-            try:
-                decoded = json.loads(base64.urlsafe_b64decode(cursor.encode()))
-                if (
-                    decoded["conversation"] != target.conversation_id
-                    or decoded.get("generation", 0) != target.history_generation
-                ):
-                    raise ValueError
-                before = next(
-                    i for i, m in enumerate(messages) if m.id == decoded["before"]
-                )
-            except (ValueError, KeyError, TypeError, StopIteration) as exc:
+        if session_id not in self._targets:
+            await self.refresh()
+        async with self._refresh_lock:
+            target = await self._refreshed_target(session_id)
+            if conversation is not None and conversation != target.conversation_id:
                 raise ProtocolError(
-                    400, "invalid_request", "Invalid cursor for this conversation"
-                ) from exc
-        start = max(0, before - limit)
-        page = messages[start:before]
-        prev = (
-            base64.urlsafe_b64encode(
-                json.dumps(
-                    {
-                        "conversation": target.conversation_id,
-                        "before": messages[start].id,
-                        "generation": target.history_generation,
-                    }
-                ).encode()
-            ).decode()
-            if start
-            else None
-        )
+                    404, "not_found", "Conversation is no longer bound to this session"
+                )
+            builder = self._page_builder(target)
+            ids = builder.ids
+            before = len(ids)
+            if cursor:
+                try:
+                    decoded = json.loads(base64.urlsafe_b64decode(cursor.encode()))
+                    if (
+                        decoded["conversation"] != target.conversation_id
+                        or decoded.get("generation", 0) != target.history_generation
+                    ):
+                        raise ValueError
+                    position = builder.position(decoded["before"])
+                    if position is None:
+                        raise ValueError
+                    before = position
+                except (ValueError, KeyError, TypeError) as exc:
+                    raise ProtocolError(
+                        400, "invalid_request", "Invalid cursor for this conversation"
+                    ) from exc
+            start = max(0, before - limit)
+            page = tuple(
+                self._correlate(session_id, builder.message(message_id))
+                for message_id in ids[start:before]
+            )
+            prev = (
+                base64.urlsafe_b64encode(
+                    json.dumps(
+                        {
+                            "conversation": target.conversation_id,
+                            "before": ids[start],
+                            "generation": target.history_generation,
+                        }
+                    ).encode()
+                ).decode()
+                if start
+                else None
+            )
         return HistoryPage(
             target.conversation_id or None,
             page,
@@ -418,8 +419,13 @@ class LocalSessionService:
         """
         if start_byte < 0 or (end_byte is not None and end_byte < start_byte):
             raise ProtocolError(400, "invalid_request", "Invalid transcript byte range")
-        target, _ = await self.current(session_id)
-        messages = await self._messages(target, source_range=(start_byte, end_byte))
+        if session_id not in self._targets:
+            await self.refresh()
+        async with self._refresh_lock:
+            target = await self._refreshed_target(session_id)
+            builder = self._page_builder(target)
+            selected = builder.messages(source_range=(start_byte, end_byte))
+            messages = tuple(self._correlate(session_id, m) for m in selected)
         return HistoryPage(
             target.conversation_id or None,
             messages,
@@ -427,6 +433,14 @@ class LocalSessionService:
             "full" if target.transcript else "scrollback",
             target.history_generation,
         )
+
+    async def _refreshed_target(self, session_id: str) -> Target:
+        """Observe the session's current source. Call with `_refresh_lock` held."""
+        target = self._targets.get(session_id)
+        if target is None:
+            raise ProtocolError(404, "not_found", "Session not found")
+        refreshed, _ = await self._update(await self.backend.inspect(target.id))
+        return refreshed
 
     async def watch(
         self, session_ids: Collection[str] | None = None
@@ -580,6 +594,12 @@ class LocalSessionService:
         if identity is None:
             return
         for sid, target in self._hook_targets(event, prefix):
+            if not target.available:
+                # An unreadable source closed this identity during refresh. Raise so
+                # the caller keeps its deferral instead of resolving lost evidence.
+                raise ProtocolError(
+                    503, "backend_unavailable", "Transcript source is unavailable"
+                )
             if not self.requests.observe_identity(sid, identity):
                 continue
             if event.event_type in {"Stop", "SessionEnd"}:
@@ -602,8 +622,9 @@ class LocalSessionService:
         target = await self._source_version(await self.backend.inspect(target.id))
         if target.conversation_id != event.session_id:
             return False
-        for message in reversed(await self._messages(target)):
-            for part in message.parts:
+        builder = self._page_builder(target)
+        for message_id in reversed(builder.ids):
+            for part in builder.message(message_id).parts:
                 if (
                     part.type != "tool"
                     or part.name != tool_name
@@ -626,3 +647,35 @@ class LocalSessionService:
                     )
                     return True
         return False
+
+
+def _source_key(target: Target) -> str:
+    return f"{target.id.casefold()}:{target.conversation_id}"
+
+
+def _timestamp(value: str | None) -> float | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value).timestamp()
+    except ValueError:
+        return None
+
+
+def _recent_user_ids(builder: MessageBuilder, since: float) -> list[str]:
+    """User messages at or after `since`, newest first.
+
+    A delivery matches only a transcript timestamp at or after its send time, and
+    messages arrive in transcript order, so the scan stops at the first older one.
+    """
+    ids = []
+    for message_id in reversed(builder.ids):
+        timestamp = _timestamp(builder.time(message_id))
+        if timestamp is None:
+            # Untimed messages cannot match a delivery; skip without materializing.
+            continue
+        if timestamp < since:
+            break
+        if builder.role(message_id) == "user":
+            ids.append(message_id)
+    return ids

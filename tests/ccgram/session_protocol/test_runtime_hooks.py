@@ -3,6 +3,7 @@ import hashlib
 import json
 import time
 from dataclasses import replace
+from pathlib import Path
 from tempfile import TemporaryFile
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -145,13 +146,15 @@ async def test_lost_hook_processing_keeps_session_blocked(
         for _ in range(257 if failure == "overflow" else 1):
             runtime.observe_hook(event)
         if failure == "processing":
+            path.write_text('{"type":"user","uuid":"later"}\n')
+            real_open = Path.open
 
-            def unavailable(path, provider):
-                raise OSError("transcript unavailable")
+            def unavailable(source, *args, **kwargs):
+                if source == path:
+                    raise OSError("transcript unavailable")
+                return real_open(source, *args, **kwargs)
 
-            monkeypatch.setattr(
-                "ccgram.session_protocol.service.read_entries", unavailable
-            )
+            monkeypatch.setattr(Path, "open", unavailable)
         with pytest.raises(asyncio.CancelledError):
             await runtime.poll("")
     assert service.requests.has_deferred(session.id)
