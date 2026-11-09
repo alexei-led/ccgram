@@ -3,6 +3,7 @@ import hashlib
 import json
 import time
 from dataclasses import replace
+from pathlib import Path
 from tempfile import TemporaryFile
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -145,13 +146,40 @@ async def test_lost_hook_processing_keeps_session_blocked(
         for _ in range(257 if failure == "overflow" else 1):
             runtime.observe_hook(event)
         if failure == "processing":
+            path.write_text('{"type":"user","uuid":"later"}\n')
+            real_open = Path.open
 
-            def unavailable(path, provider):
-                raise OSError("transcript unavailable")
+            def unavailable(source, *args, **kwargs):
+                if source == path:
+                    raise OSError("transcript unavailable")
+                return real_open(source, *args, **kwargs)
 
-            monkeypatch.setattr(
-                "ccgram.session_protocol.service.read_entries", unavailable
-            )
+            monkeypatch.setattr(Path, "open", unavailable)
         with pytest.raises(asyncio.CancelledError):
             await runtime.poll("")
     assert service.requests.has_deferred(session.id)
+
+
+async def test_turn_end_hook_resolves_while_capture_is_unavailable(
+    service, backend, store, tmp_path, monkeypatch
+):
+    path = tmp_path / "transcript.jsonl"
+    path.touch()
+    backend.target = replace(backend.target, transcript=path)
+    session = (await service.list_sessions())[0]
+
+    async def capture_glitch(target):
+        raise OSError("capture failed")
+
+    backend.prompt = capture_glitch
+    monkeypatch.setattr(
+        "ccgram.session_protocol.runtime.asyncio.sleep",
+        AsyncMock(side_effect=asyncio.CancelledError),
+    )
+    with TemporaryFile() as lock:
+        runtime = ProtocolRuntime(store, service, lock)
+        runtime.observe_hook(HookEvent("Stop", "@1", "conv", {}, time.time()))
+        assert service.requests.has_deferred(session.id)
+        with pytest.raises(asyncio.CancelledError):
+            await runtime.poll("")
+    assert not service.requests.has_deferred(session.id)

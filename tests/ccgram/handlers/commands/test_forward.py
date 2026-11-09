@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from telegram.error import TelegramError
+from telegram.error import RetryAfter, TelegramError
 
 from ccgram.handlers.commands import forward_command_handler
 
@@ -304,6 +304,32 @@ class TestForwardCommandResolution:
         await forward_command_handler(update, _make_context())
 
         self.mock_ws.clear_window_session.assert_called_once_with("@1")
+
+    async def test_clear_still_resets_session_when_confirmation_reply_fails(
+        self,
+    ) -> None:
+        update = _make_update(text="/clear")
+
+        with patch(f"{_FW}.safe_reply", AsyncMock(side_effect=RetryAfter(1))):
+            await forward_command_handler(update, _make_context())
+
+        self.mock_send_to_window.assert_called_once()
+        self.mock_ws.clear_window_session.assert_called_once_with("@1")
+
+    async def test_post_send_probes_still_run_when_confirmation_reply_fails(
+        self,
+    ) -> None:
+        update = _make_update(text="/compact")
+
+        with (
+            patch(f"{_FW}.safe_reply", AsyncMock(side_effect=RetryAfter(1))),
+            patch(
+                f"{_FW}._send_forward_post_probes", new_callable=AsyncMock
+            ) as post_probes,
+        ):
+            await forward_command_handler(update, _make_context())
+
+        post_probes.assert_awaited_once()
 
     async def test_clear_enqueues_status_clear_and_resets_idle(self) -> None:
         from ccgram.handlers.polling.polling_state import terminal_poll_state

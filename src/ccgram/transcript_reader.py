@@ -450,7 +450,12 @@ class TranscriptReader:
         self._file_mtimes: dict[str, float] = {}
         self._file_ctimes: dict[str, int] = self._snapshot_file_ctimes()
         self._file_sizes = self._snapshot_file_sizes()
-        self._file_prefixes = self._snapshot_file_prefixes()
+        # Empty at startup on purpose: the first committed read of each session
+        # hashes its baseline in a worker thread. Hashing every tracked
+        # transcript here blocked the event loop for seconds. A transcript
+        # replaced before that first read has no baseline and is treated as
+        # replaced (skip to EOF, never replay).
+        self._file_prefixes: dict[str, tuple[int, Any]] = {}
         self._file_generations = self._snapshot_file_generations()
         self._file_markers = self._snapshot_file_markers()
         self._startup_file_boundaries = self._snapshot_startup_boundaries()
@@ -483,16 +488,6 @@ class TranscriptReader:
             except OSError:
                 continue
         return sizes
-
-    def _snapshot_file_prefixes(self) -> dict[str, tuple[int, Any]]:
-        prefixes: dict[str, tuple[int, Any]] = {}
-        for session_id, tracked in self._state.tracked_sessions.items():
-            path = Path(tracked.file_path)
-            try:
-                prefixes[session_id] = _advance_prefix(None, path, path.stat().st_size)
-            except OSError:
-                continue
-        return prefixes
 
     def _snapshot_file_generations(self) -> dict[str, tuple[int, int]]:
         generations: dict[str, tuple[int, int]] = {}
@@ -1148,9 +1143,10 @@ class TranscriptReader:
         rebuild_parser = session_id in self._parser_rebuild_pending
         last_mtime = self._file_mtimes.get(session_id, 0.0)
         if provider.capabilities.supports_incremental_read:
+            # A pending rebuild alone is no reason to read: parser context is
+            # only needed once there are entries to parse (see below).
             if (
                 not generation_changed
-                and not rebuild_parser
                 and current_mtime <= last_mtime
                 and current_size <= self._parse_pos(tracked)
             ):
@@ -1207,7 +1203,15 @@ class TranscriptReader:
             if self._on_session_retired is not None:
                 self._on_session_retired(session_id)
             self.reset_parser_state(session_id)
-        elif rebuild_parser:
+        elif rebuild_parser and new_entries:
+            # Deferred until this poll has entries to parse. The rebuilt
+            # context only affects how later entries render: its pending tools
+            # are retired right after the rebuild. Its floor cannot move while
+            # the flag waits: the watermark advances only through this
+            # session's batches, and every batch without entries comes from a
+            # replacement or replay, which reset or re-arm the flag in that
+            # same poll. Rebuilding every idle restored session on the first
+            # poll stalled that whole cycle (~4 s per 100 MB).
             rebuilt = await self._rebuild_committed_parser_context(
                 session_id,
                 file_path,

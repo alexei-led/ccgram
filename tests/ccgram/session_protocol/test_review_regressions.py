@@ -12,6 +12,7 @@ from ccgram.session_protocol.models import ProtocolError
 from ccgram.session_protocol.requests import PendingHook, RequestStore
 from ccgram.session_protocol.service import LocalSessionService
 from ccgram.session_protocol.store import ProtocolStore
+from ccgram.session_protocol.transcript_source import TranscriptSource
 
 
 @pytest.mark.parametrize("role", ["developer", "tool", "unknown"])
@@ -212,6 +213,12 @@ async def test_capture_failure_is_isolated_and_recovery_preserves_identity(
     assert recovered.binding_version > failed.binding_version
 
 
+def _source(store, path):
+    return TranscriptSource(
+        "conv", path, "conv", "claude", store.transcript_cursor("conv")
+    )
+
+
 async def test_rewrite_beyond_first_page_invalidates_history_and_survives_restart(
     tmp_path,
 ):
@@ -219,15 +226,21 @@ async def test_rewrite_beyond_first_page_invalidates_history_and_survives_restar
     path.write_bytes(b"a" * 4096 + b"b" * 4096)
     db = tmp_path / "protocol.sqlite3"
     store = ProtocolStore(db)
-    assert await store.transcript_generation("conv", path) == 0
+    source = _source(store, path)
+    await source.sync(store)
+    assert source.generation == 0
     path.write_bytes(b"a" * 4096 + b"c" * 8192)
-    assert await store.transcript_generation("conv", path) == 1
+    await source.sync(store)
+    assert source.generation == 1
     with path.open("ab") as stream:
         stream.write(b"d")
-    assert await store.transcript_generation("conv", path) == 1
+    await source.sync(store)
+    assert source.generation == 1
     store.close()
     store = ProtocolStore(db)
-    assert await store.transcript_generation("conv", path) == 1
+    reopened = _source(store, path)
+    await reopened.sync(store)
+    assert reopened.generation == 1
     store.close()
 
 

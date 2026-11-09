@@ -313,9 +313,12 @@ async def test_source_change_during_read_never_uses_old_generation(
     backend.target = replace(backend.target, transcript=path)
     session = (await service.list_sessions())[0]
     initial = (await service.history(session.id, None, 50)).messages[0]
+    # Observation reads only appended bytes. Append first so the next
+    # observation has a read in which the source can change.
+    append(path, {"type": "user", "uuid": "filler", "message": {"content": "more"}})
     real_open = Path.open
     reads = 0
-    mutate_on = 2 if operation == "action" else 1
+    mutate_on = 1
 
     @contextmanager
     def open_source(source, mode="r", *args, **kwargs):
@@ -410,6 +413,8 @@ async def test_unstable_source_fails_closed(service, backend, tmp_path, monkeypa
     path.write_text("{}\n")
     backend.target = replace(backend.target, transcript=path)
     session = (await service.list_sessions())[0]
+    with path.open("a") as stream:
+        stream.write("{}\n")
     real_open = Path.open
 
     @contextmanager
