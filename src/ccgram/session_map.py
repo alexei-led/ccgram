@@ -242,8 +242,10 @@ def _prefer_existing_primary(
     existing_mtime = _transcript_mtime(state.transcript_path)
     incoming_mtime = _transcript_mtime(incoming.get("transcript_path", ""))
     existing_is_fresh = _transcript_is_fresh(state.transcript_path)
+    # Strictly newer: resuming a session writes the old and the resumed
+    # transcript within the same second, and a tie must not keep the old one.
     existing_is_newer = existing_mtime is not None and (
-        incoming_mtime is None or existing_mtime >= incoming_mtime
+        incoming_mtime is None or existing_mtime > incoming_mtime
     )
     if not existing_is_fresh and not existing_is_newer:
         return None

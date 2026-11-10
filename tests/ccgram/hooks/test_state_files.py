@@ -210,6 +210,15 @@ class TestParseSessionMapEntry:
         ):
             parse_session_map_entry(_entry(replay_from_start="true"))
 
+    def test_started_at_is_optional_and_numeric(self) -> None:
+        assert parse_session_map_entry(_entry()).started_at is None
+        assert parse_session_map_entry(_entry(started_at=12)).started_at == 12.0
+        for bad in ("12", True):
+            with pytest.raises(
+                StateFileValidationError, match="started_at must be a number"
+            ):
+                parse_session_map_entry(_entry(started_at=bad))
+
 
 class TestSerializeSessionMapEntry:
     def test_all_fields_present(self) -> None:
@@ -241,4 +250,14 @@ class TestSerializeSessionMapEntry:
             transcript_path="/x.jsonl",
             provider_name="gemini",
             replay_from_start=True,
+        )
+
+    def test_started_at_round_trip(self) -> None:
+        d = serialize_session_map_entry(
+            "s3", "/x", "x", "/x.jsonl", "claude", started_at=1794129472.5
+        )
+        assert d["started_at"] == 1794129472.5
+        assert parse_session_map_entry(d).started_at == 1794129472.5
+        assert "started_at" not in serialize_session_map_entry(
+            "s3", "/x", "x", "/x.jsonl", "claude"
         )

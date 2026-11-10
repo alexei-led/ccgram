@@ -54,6 +54,29 @@ def _clean_pi_hook_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _restore_logging_config() -> Iterator[None]:
+    """Undo logging setup a test performs, e.g. by calling ``hook_main``.
+
+    ``hook_main`` points structlog and the root logger at the current
+    ``sys.stderr``, which under pytest is that test's capture stream. Left in
+    place, every later test in the same worker logs to the closed stream and
+    fails with "I/O operation on closed file".
+    """
+    import logging
+
+    import structlog
+
+    saved_structlog = structlog.get_config()
+    root = logging.getLogger()
+    saved_handlers = root.handlers[:]
+    saved_level = root.level
+    yield
+    structlog.configure(**saved_structlog)
+    root.handlers[:] = saved_handlers
+    root.setLevel(saved_level)
+
+
+@pytest.fixture(autouse=True)
 def _clear_window_store():
     from ccgram.claude_task_state import claude_task_state
     from ccgram.window_state_store import get_window_store

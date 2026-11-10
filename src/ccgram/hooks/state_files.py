@@ -86,6 +86,10 @@ class SessionMapEntry:
     transcript_path: str
     provider_name: str
     replay_from_start: bool = False
+    # Wall-clock start of the hook process that wrote the entry. Hooks run
+    # asynchronously, so two SessionStarts for one window can finish out of
+    # order; the writer keeps the entry from the later-started hook.
+    started_at: float | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +207,11 @@ def parse_session_map_entry(raw: dict[str, Any]) -> SessionMapEntry:
         raise StateFileValidationError(
             "Session map entry replay_from_start must be a boolean"
         )
+    started_at = raw.get("started_at")
+    if started_at is not None and (
+        isinstance(started_at, bool) or not isinstance(started_at, (int, float))
+    ):
+        raise StateFileValidationError("Session map entry started_at must be a number")
 
     return SessionMapEntry(
         schema_version=version,
@@ -212,6 +221,7 @@ def parse_session_map_entry(raw: dict[str, Any]) -> SessionMapEntry:
         transcript_path=raw.get("transcript_path", ""),
         provider_name=raw.get("provider_name", ""),
         replay_from_start=replay_from_start,
+        started_at=float(started_at) if started_at is not None else None,
     )
 
 
@@ -223,6 +233,7 @@ def serialize_session_map_entry(
     provider_name: str,
     *,
     replay_from_start: bool = False,
+    started_at: float | None = None,
 ) -> dict[str, Any]:
     """Build a backward-compatible v1 session-map entry."""
     entry: dict[str, Any] = {
@@ -235,4 +246,6 @@ def serialize_session_map_entry(
     }
     if replay_from_start:
         entry["replay_from_start"] = True
+    if started_at is not None:
+        entry["started_at"] = started_at
     return entry
