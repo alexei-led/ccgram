@@ -26,6 +26,8 @@ from ..interactive import (
 )
 from ..response_builder import build_response_parts
 from ..telegram_origin import consume_telegram_injection
+from ..presence import digest as desk_digest
+from ..presence import presence
 from .message_queue import enqueue_content_message, get_or_create_queue
 
 logger = structlog.get_logger()
@@ -211,6 +213,25 @@ async def handle_new_message(msg: NewMessage, client: TelegramClient) -> None:  
             )
         ):
             logger.debug("Suppressed Telegram-originated user transcript message")
+            continue
+
+        if msg.is_complete and msg.role == "user" and msg.content_type == "text":
+            # Not from Telegram, so typed at the terminal: the user is at the desk.
+            await presence.note_desk_prompt(user_id, msg.text)
+
+        if presence.is_quiet(user_id):
+            # Desk mode: count it for the topic digest instead of sending it.
+            if msg.is_complete:
+                desk_digest.record_content(
+                    user_id,
+                    chat_id,
+                    thread_id,
+                    window_id,
+                    role=msg.role,
+                    content_type=msg.content_type,
+                    text=msg.text,
+                )
+                await _update_window_offset(user_id, window_id)
             continue
 
         if msg.content_type == "thinking":

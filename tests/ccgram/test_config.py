@@ -240,6 +240,37 @@ class TestStatusMode:
 
 
 @pytest.mark.usefixtures("_base_env")
+class TestDeskModeConfig:
+    def test_defaults(self, monkeypatch):
+        for name in (
+            "CCGRAM_DESK_MODE",
+            "CCGRAM_DESK_DIGEST_MINUTES",
+            "CCGRAM_AWAY_IDLE_MINUTES",
+        ):
+            monkeypatch.delenv(name, raising=False)
+        cfg = Config()
+        assert cfg.desk_mode is False
+        assert cfg.desk_digest_minutes == 10.0
+        assert cfg.away_idle_minutes == 10.0
+
+    def test_values(self, monkeypatch):
+        monkeypatch.setenv("CCGRAM_DESK_MODE", "true")
+        monkeypatch.setenv("CCGRAM_DESK_DIGEST_MINUTES", "30")
+        monkeypatch.setenv("CCGRAM_AWAY_IDLE_MINUTES", "0")
+        cfg = Config()
+        assert cfg.desk_mode is True
+        assert cfg.desk_digest_minutes == 30.0
+        assert cfg.away_idle_minutes == 0.0
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"), [("abc", 10.0), ("inf", 10.0), ("0.2", 1.0)]
+    )
+    def test_digest_interval_is_floored_and_tolerant(self, monkeypatch, raw, expected):
+        monkeypatch.setenv("CCGRAM_DESK_DIGEST_MINUTES", raw)
+        assert Config().desk_digest_minutes == expected
+
+
+@pytest.mark.usefixtures("_base_env")
 class TestLiveViewConfig:
     @pytest.mark.parametrize(
         ("attr", "env_var", "default", "env_str", "expected"),

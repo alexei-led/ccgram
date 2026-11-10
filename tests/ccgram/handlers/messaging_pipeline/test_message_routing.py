@@ -317,3 +317,66 @@ async def test_telegram_echo_is_suppressed_only_for_its_origin_topic(bot, mock_d
 
     mock_deps["eq"].assert_awaited_once()
     assert mock_deps["eq"].call_args.kwargs["user_id"] == 200
+
+
+# ── Desk mode ────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def desk(monkeypatch):
+    from ccgram.config import config
+    from ccgram.handlers.presence import digest, presence
+
+    async def _recent_input() -> float:
+        return 1.0
+
+    monkeypatch.setattr(config, "desk_mode", True)
+    presence._reset_presence_for_testing(_recent_input)
+    digest._reset_digest_for_testing()
+    yield presence, digest
+    presence._reset_presence_for_testing()
+    digest._reset_digest_for_testing()
+
+
+async def test_terminal_prompt_switches_to_desk_and_is_not_echoed(bot, mock_deps, desk):
+    presence, _digest = desk
+    await handle_new_message(_make_msg(role="user", text="fix the tests"), bot)
+    assert presence.is_quiet(100)
+    mock_deps["eq"].assert_not_called()
+
+
+async def test_telegram_prompt_does_not_switch_to_desk(bot, mock_deps, desk):
+    presence, _digest = desk
+    remember_telegram_injection(100, "@5", 42, "from the phone", -100)
+    await handle_new_message(_make_msg(role="user", text="from the phone"), bot)
+    assert not presence.is_quiet(100)
+
+
+async def test_desk_mode_counts_content_instead_of_sending(bot, mock_deps, desk):
+    presence, digest = desk
+    await presence.note_desk_prompt(100, "fix the tests")
+    await handle_new_message(_make_msg(text="All green."), bot)
+    await handle_new_message(
+        _make_msg(content_type="tool_use", tool_name="Bash", tool_use_id="t1"), bot
+    )
+    mock_deps["eq"].assert_not_called()
+    entry = digest._digests[(100, -100, 42)]
+    assert (entry.messages, entry.tool_calls, entry.latest_reply) == (
+        1,
+        1,
+        "All green.",
+    )
+
+
+async def test_desk_mode_skips_interactive_ui(bot, mock_deps, desk):
+    presence, digest = desk
+    await presence.note_desk_prompt(100, "fix the tests")
+    await handle_new_message(
+        _make_msg(
+            content_type="tool_use", tool_name="AskUserQuestion", tool_use_id="q1"
+        ),
+        bot,
+    )
+    mock_deps["hui"].assert_not_called()
+    mock_deps["eq"].assert_not_called()
+    assert digest._digests[(100, -100, 42)].tool_calls == 1

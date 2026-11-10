@@ -109,7 +109,7 @@ Provider-aware hook support + state-file contracts. Import-light: runs inside ag
 
 ### `handlers/`
 
-Grouped into 14 feature subpackages. Each subpackage `__init__.py` re-exports the public surface; call sites use subpackage-qualified imports. Handlers depend on `TelegramClient` Protocol, not `telegram.Bot`.
+Grouped into 15 feature subpackages. Each subpackage `__init__.py` re-exports the public surface; call sites use subpackage-qualified imports. Handlers depend on `TelegramClient` Protocol, not `telegram.Bot`.
 
 Top-level (constants, leaves, top-level commands):
 
@@ -175,6 +175,13 @@ Top-level (constants, leaves, top-level commands):
 - `window_tick/decide.py` — pure decision kernel (`decide_tick`, `build_status_line`, `is_shell_prompt`). Zero deps on tmux/PTB/singletons.
 - `window_tick/observe.py` — pure inputs → `TickContext` (pane-text capture, last-activity lookup, screen-buffer parsing, status resolve, vim-insert detection). Key functions accept optional `runtime` kwarg.
 - `window_tick/apply.py` — DI-heavy side effects: `_apply_*_transition`, `_update_status`, `_send_typing_throttled`, `_handle_dead_window_notification`, `_scan_window_panes`, pane forwarding. All stateful-strategy functions accept optional `runtime` kwarg.
+
+`handlers/presence/` — desk mode (quiet Telegram while the user works at the terminal; `CCGRAM_DESK_MODE`, off by default):
+
+- `presence.py` — per-user `desk`/`away` state (default `away`, also after restart). away → desk: an unmatched transcript user message (`message_routing`, typed at the terminal), unless the text was sent from Telegram in the last 10 min (`remember_telegram_text`, fed by `telegram_origin.remember_telegram_injection`) or the computer idled > 2 min. desk → away: any Telegram update (`note_telegram_activity`) or computer idle ≥ `CCGRAM_AWAY_IDLE_MINUTES` (`refresh_idle`; macOS `ioreg` HIDIdleTime, cached 15 s, injectable reader). `is_quiet(user_id)` is the gate. Leaf module (config only); the package `__init__` re-exports only this module so the messaging pipeline can import it without a cycle.
+- `digest.py` — per (user, chat, thread) accumulator of held-back content (assistant replies, tool calls, API errors). `flush_due` sends one silent message (`disable_notification`) one `CCGRAM_DESK_DIGEST_MINUTES` interval after the first activity, then edits it in place; the header uses `topic_emoji.topic_state_badge`. `close_out` (desk → away) brings it up to date once and forgets it; after an idle switch a settled topic gets a fresh notifying message instead of a silent edit.
+- `desk_mode.py` — `telegram_activity_handler` (PTB `TypeHandler`, handler group -3, so the switch precedes the update's handling; close-out runs in the background) and `run_desk_mode_tick` (every 15 s from `periodic_tasks`: idle check, then `flush_due`).
+- Gates while quiet: `message_routing` (content → digest; no drafts, no interactive UI, no 👤 echo; offsets still advance and an empty delivery receipt commits as intentionally dropped), `enqueue_status_update` (non-clear updates dropped), `handle_interactive_ui` (returns False; polling re-offers the prompt each tick, so it appears once the user is away; 🔴 still set by `_show_waiting`), `hook_events._handle_stop_failure` (→ digest), `topic_emoji.update_topic_emoji(user_id=…)` (no rename, since each posts a service message; the state is kept as a pending transition for the digest header and applied on the first poll once away). Dead-window notices, recovery banners and topic creation are unchanged.
 
 `handlers/recovery/` — dead window recovery + history:
 

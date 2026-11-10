@@ -135,7 +135,9 @@ async def _transition_to_idle(
     else:
         ps.mark_startup_quietly_settled(window_id)
     client = PTBTelegramClient(bot)
-    await update_topic_emoji(client, chat_id, thread_id, "idle", display)
+    await update_topic_emoji(
+        client, chat_id, thread_id, "idle", display, user_id=user_id
+    )
     lc.clear_typing_state(user_id, thread_id)
     if not send_status:
         return
@@ -485,7 +487,12 @@ async def _apply_active_transition(
         chat_id = thread_router.resolve_chat_id(user_id, thread_id)
         display = thread_router.get_display_name(window_id)
         await update_topic_emoji(
-            PTBTelegramClient(bot), chat_id, thread_id, "active", display
+            PTBTelegramClient(bot),
+            chat_id,
+            thread_id,
+            "active",
+            display,
+            user_id=user_id,
         )
 
 
@@ -509,7 +516,9 @@ async def _apply_done_transition(
     # the next tick, so a finished agent kept re-painting its topic green.
     ps.mark_seen_status(window_id)
     client = PTBTelegramClient(bot)
-    await update_topic_emoji(client, chat_id, thread_id, "done", display)
+    await update_topic_emoji(
+        client, chat_id, thread_id, "done", display, user_id=user_id
+    )
     lc.clear_typing_state(user_id, thread_id)
     await enqueue_status_update(
         client,
@@ -537,7 +546,12 @@ async def _apply_starting_transition(
         chat_id = thread_router.resolve_chat_id(user_id, thread_id)
         display = thread_router.get_display_name(window_id)
         await update_topic_emoji(
-            PTBTelegramClient(bot), chat_id, thread_id, "active", display
+            PTBTelegramClient(bot),
+            chat_id,
+            thread_id,
+            "active",
+            display,
+            user_id=user_id,
         )
 
 
@@ -593,7 +607,9 @@ async def _show_waiting(
         return
     chat_id = thread_router.resolve_chat_id(user_id, thread_id)
     display = thread_router.get_display_name(window_id)
-    await update_topic_emoji(client, chat_id, thread_id, "waiting", display)
+    await update_topic_emoji(
+        client, chat_id, thread_id, "waiting", display, user_id=user_id
+    )
 
 
 async def _update_status(

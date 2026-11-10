@@ -6,6 +6,7 @@ from telegram.ext import (
     CommandHandler,
     InlineQueryHandler,
     MessageHandler,
+    TypeHandler,
     filters,
 )
 
@@ -95,6 +96,8 @@ def test_register_all_registers_all_handler_kinds():
     # Pi menu reply input, command trace, group-join log, topic events, command
     # fallback, ordinary text, photo, document, voice, unsupported content.
     assert by_kind.get(MessageHandler) == 11
+    # Desk-mode presence: sees every update, consumes none.
+    assert by_kind.get(TypeHandler) == 1
 
 
 async def test_command_trace_logs_general_topic_without_arguments():

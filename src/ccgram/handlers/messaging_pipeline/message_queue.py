@@ -40,6 +40,7 @@ from ...utils import task_done_callback
 from ...tts import TtsSynthesisError, get_synthesizer, prepare_tts_text
 from ...window_query import is_tool_calls_hidden
 from ...window_state_ports import identity_state
+from ..presence import is_quiet
 from ..status.status_bubble import (
     clear_status_message,
     convert_status_to_content,
@@ -1118,6 +1119,9 @@ async def enqueue_status_update(
     transient: bool = False,
 ) -> None:
     """Enqueue a durable notice or a replaceable polling status operation."""
+    if status_text is not None and is_quiet(user_id):
+        # Desk mode: the topic digest carries the state; clears still pass.
+        return
     if (
         transient
         and status_text is not None

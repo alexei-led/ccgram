@@ -139,6 +139,17 @@ def _delivery_watch_gap_bytes() -> int:
         return 256 * 1024
 
 
+def _positive_minutes(name: str, default: float, *, minimum: float) -> float:
+    """A minutes setting, floored at ``minimum``; bad input means the default."""
+    try:
+        value = float(os.getenv(name) or default)
+    except ValueError:
+        return default
+    if not math.isfinite(value):
+        return default
+    return max(minimum, value)
+
+
 def _flag_env(name: str, default: bool) -> bool:
     """Parse an on/off env var, keeping *default* for unset or unrecognized values."""
     raw = os.getenv(name)
@@ -430,6 +441,23 @@ class Config:
         raw_status_mode = os.getenv("CCGRAM_STATUS_MODE", "").strip().lower()
         self.status_mode: str = (
             raw_status_mode if raw_status_mode in ("system", "user") else "system"
+        )
+
+        # Desk mode: while the user works in the terminal, Telegram gets one
+        # silent digest per topic, refreshed in place, instead of every message.
+        # Any Telegram update (or the computer sitting idle) restores real-time
+        # delivery. Off by default.
+        self.desk_mode: bool = os.getenv("CCGRAM_DESK_MODE", "").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        self.desk_digest_minutes: float = _positive_minutes(
+            "CCGRAM_DESK_DIGEST_MINUTES", 10.0, minimum=1.0
+        )
+        # 0 disables the idle rule (only Telegram activity then means "away").
+        self.away_idle_minutes: float = _positive_minutes(
+            "CCGRAM_AWAY_IDLE_MINUTES", 10.0, minimum=0.0
         )
 
         logger.debug(
