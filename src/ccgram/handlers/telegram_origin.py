@@ -6,7 +6,7 @@ from collections import deque
 from dataclasses import dataclass
 import time
 
-from ..session_protocol.models import ProtocolError
+from ..session_protocol.models import UNCONFIRMED_DELIVERY_MESSAGE, ProtocolError
 from .presence import remember_telegram_text
 
 _PENDING_INJECTION_TTL_S = 30.0
@@ -117,6 +117,7 @@ async def send_telegram_to_window(
 ) -> tuple[bool, str]:
     injection = None
     success = False
+    unconfirmed = False
     try:
         if await agent_origin_returned_to_shell(window_id):
             return False, _AGENT_EXITED_MESSAGE
@@ -131,11 +132,19 @@ async def send_telegram_to_window(
             submit=True,
             action_id=action_id,
         )
+        # Unconfirmed text usually did arrive: keep the injection so the
+        # agent's prompt is not echoed back to Telegram as a user message.
+        unconfirmed = message == UNCONFIRMED_DELIVERY_MESSAGE
         return success, message
     except ProtocolError as exc:
         return False, exc.message
     finally:
-        if not success and injection is not None and thread_id is not None:
+        if (
+            not success
+            and not unconfirmed
+            and injection is not None
+            and thread_id is not None
+        ):
             forget_telegram_injection(user_id, window_id, thread_id, injection, chat_id)
 
 

@@ -8,7 +8,13 @@ from typing import Any, Literal
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from .backend import CreationOptions, Target
-from .models import Action, ActionResult, ProtocolError, SessionSnapshot
+from .models import (
+    UNCONFIRMED_DELIVERY_MESSAGE,
+    Action,
+    ActionResult,
+    ProtocolError,
+    SessionSnapshot,
+)
 from .service import LocalSessionService
 
 _SESSION_SERVICE_KEY = "session_service"
@@ -36,7 +42,7 @@ def _action_id(value: str | None) -> str:
 def _result_message(result: ActionResult) -> str:
     if result.error and isinstance(result.error.get("message"), str):
         return result.error["message"]
-    return "Sent" if result.outcome == "sent" else "Could not confirm delivery"
+    return "Sent" if result.outcome == "sent" else UNCONFIRMED_DELIVERY_MESSAGE
 
 
 class TelegramSessionAdapter:

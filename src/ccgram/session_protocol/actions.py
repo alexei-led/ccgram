@@ -7,6 +7,8 @@ import hashlib
 import json
 import re
 import time
+
+import structlog
 from weakref import WeakValueDictionary
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -17,6 +19,7 @@ from .models import (
     ACTION_KINDS,
     MAX_TEXT_BYTES,
     PROMPT_CHANGED_MESSAGE,
+    UNCONFIRMED_DELIVERY_MESSAGE,
     Action,
     ActionResult,
     ProtocolError,
@@ -25,6 +28,8 @@ from .models import (
 
 if TYPE_CHECKING:
     from .service import LocalSessionService
+
+logger = structlog.get_logger()
 
 _MAX_KEYS = 32
 _MAX_ATTACHMENTS = 10
@@ -232,6 +237,8 @@ class ActionExecutor:
             return previous
         store.reserve(action.id, fingerprint)
         attempted = False
+        started = time.monotonic()
+        sent_at = None
         try:
             target, _ = await self.service.current(session_id)
             async with input_lock(target.id):
@@ -278,21 +285,50 @@ class ActionExecutor:
                     ActionResult(action.id, "rejected", exc.body()["error"]),
                     exc.status,
                 )
+            self._log_timing(action, result, started, sent_at)
             store.finish(result, status)
             return result, status
-        except OSError, TimeoutError:
+        except (OSError, TimeoutError) as exc:
+            reason = type(exc).__name__
             result = ActionResult(
                 action.id,
                 "unknown" if attempted else "rejected",
                 {
                     "code": "backend_unavailable",
-                    "message": "Could not confirm delivery",
+                    "message": UNCONFIRMED_DELIVERY_MESSAGE,
                     "details": {},
                 },
             )
+        else:
+            reason = None
+        self._log_timing(action, result, started, sent_at, reason)
         store.finish(result)
         self.service.hub.publish("action.updated", session_id, result)
         return result, 200
+
+    @staticmethod
+    def _log_timing(
+        action: Action,
+        result: ActionResult,
+        started: float,
+        sent_at: float | None,
+        reason: str | None = None,
+    ) -> None:
+        """One line per executed action, so a slow or unconfirmed send shows where the time went."""
+        now = time.monotonic()
+        perform_ms = round((time.time() - sent_at) * 1000) if sent_at else None
+        preflight_ms = round((now - started) * 1000) - (perform_ms or 0)
+        log = logger.info if result.outcome == "sent" else logger.warning
+        log(
+            "Action finished",
+            action_id=action.id,
+            kind=action.kind,
+            outcome=result.outcome,
+            preflight_ms=preflight_ms,
+            perform_ms=perform_ms,
+            error=(result.error or {}).get("message"),
+            reason=reason,
+        )
 
     async def _preflight(
         self,

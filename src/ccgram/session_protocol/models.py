@@ -26,6 +26,9 @@ MAX_TEXT_BYTES = 65536
 # Refusal when the live prompt no longer matches the one the input was aimed at
 # (someone answered or moved it at the terminal first).
 PROMPT_CHANGED_MESSAGE = "Interactive prompt changed before input"
+# The input may have reached the terminal, but the backend never confirmed it
+# (a refused or timed-out send). Callers treat it as "probably delivered".
+UNCONFIRMED_DELIVERY_MESSAGE = "Could not confirm delivery"
 
 
 def utc_now() -> str:

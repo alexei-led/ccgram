@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from ccgram.session_protocol.models import UNCONFIRMED_DELIVERY_MESSAGE
 from ccgram.handlers.telegram_origin import (
     _PENDING_INJECTION_TTL_S,
     agent_origin_returned_to_shell,
@@ -210,3 +211,21 @@ def test_pending_correlations_are_not_evicted_before_ttl() -> None:
 
     assert consume_telegram_injection(0, "@0", 42, "message-0") is True
     assert consume_telegram_injection(999, "@burst", 42, "burst-0") is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("result", "kept"),
+    [((False, UNCONFIRMED_DELIVERY_MESSAGE), True), ((False, "Session ended"), False)],
+)
+async def test_unconfirmed_send_keeps_the_injection(result, kept) -> None:
+    """Unconfirmed text usually arrived: forgetting it would echo the prompt back."""
+    adapter = MagicMock(send_text=AsyncMock(return_value=result))
+    with patch(
+        "ccgram.handlers.telegram_origin.agent_origin_returned_to_shell",
+        new_callable=AsyncMock,
+        return_value=False,
+    ):
+        await send_telegram_to_window(1, "@1", 42, "hello", adapter=adapter)
+
+    assert consume_telegram_injection(1, "@1", 42, "hello") is kept

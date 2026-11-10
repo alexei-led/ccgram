@@ -24,6 +24,7 @@ from telegram.constants import ChatAction
 from telegram.error import TelegramError
 from ..config import config
 from ..telegram_client import PTBTelegramClient
+from ..session_protocol.models import UNCONFIRMED_DELIVERY_MESSAGE
 from ..session_protocol.telegram import adapter_for
 from ..window_query import view_window
 from .telegram_origin import send_telegram_to_window
@@ -176,11 +177,11 @@ async def _download_and_save(
     file_id: str,
     file_size: int | None,
     size_label: str,
-) -> str | None:
+) -> tuple[str, int] | None:
     """Download a Telegram file and save it to the upload directory.
 
-    Returns the final filename on success, or None on failure (error already
-    replied to the user).
+    Returns the final filename and its size on disk on success, or None on
+    failure (error already replied to the user).
     """
     # Pre-download size check
     if file_size is not None and file_size > _MAX_FILE_SIZE:
@@ -222,7 +223,23 @@ async def _download_and_save(
         await safe_reply(message, "\u274c Failed to save file.")
         return None
 
-    return filename
+    return filename, actual_size
+
+
+def _size_note(actual_size: int, expected_size: int | None) -> tuple[bool, str]:
+    """Whether the saved file matches the size Telegram reported, and how to say so.
+
+    Telegram publishes no checksum, so the byte count is the only integrity
+    check the Bot API offers.
+    """
+    if expected_size is None:
+        return False, f"{actual_size:,} bytes; Telegram reported no size to check"
+    if actual_size == expected_size:
+        return True, f"{actual_size:,} bytes, matches Telegram"
+    return (
+        False,
+        f"\u26a0\ufe0f {actual_size:,} bytes, but Telegram reported {expected_size:,}",
+    )
 
 
 async def _upload_and_notify(
@@ -250,11 +267,20 @@ async def _upload_and_notify(
     with contextlib.suppress(TelegramError):
         await message.chat.send_action(ChatAction.TYPING)
 
-    saved_name = await _download_and_save(
+    saved = await _download_and_save(
         message, upload_path, filename, file_id, file_size, size_label
     )
-    if not saved_name:
+    if not saved:
         return
+    saved_name, actual_size = saved
+    size_ok, size_note = _size_note(actual_size, file_size)
+    if not size_ok:
+        logger.warning(
+            "Upload size could not be confirmed",
+            filename=saved_name,
+            actual_size=actual_size,
+            expected_size=file_size,
+        )
 
     rel_path = f"{_UPLOAD_DIR}/{saved_name}"
     caption = message.caption or ""
@@ -277,10 +303,22 @@ async def _upload_and_notify(
         await ack_reaction(
             PTBTelegramClient(message.get_bot()), message.chat.id, message.message_id
         )
-        await safe_reply(message, f"{success_emoji} Uploaded `{rel_path}`")
+        await safe_reply(
+            message, f"{success_emoji} Uploaded `{rel_path}` ({size_note})"
+        )
+    elif err == UNCONFIRMED_DELIVERY_MESSAGE:
+        # The message usually did reach the agent; only the confirmation is missing.
+        icon = "\u2705" if size_ok else "\u26a0\ufe0f"
+        await safe_reply(
+            message,
+            f"{icon} Saved `{rel_path}` ({size_note}). The message to the agent "
+            "was sent, but delivery could not be confirmed; check the session.",
+        )
     else:
         await safe_reply(
-            message, f"\u274c File saved but failed to notify Claude: {err}"
+            message,
+            f"\u274c Saved `{rel_path}` ({size_note}), but could not notify "
+            f"the agent: {err}",
         )
 
 

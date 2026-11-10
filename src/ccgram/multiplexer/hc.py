@@ -1006,16 +1006,30 @@ class HcManager:
                 keys.append("enter")
             return bool(keys) and await self._keys(address, keys)
         if enter and text:
+            started = time.monotonic()
             await self._clear_input(window_id, address)
+            cleared = time.monotonic()
+            outcome = "cancelled"
             try:
                 await self._call(
                     "terminal.send",
                     {"terminal": address, "text": text, "force": True},
                     timeout=_SEND_TIMEOUT,
                 )
+                outcome = "ok"
             except HcRpcError as exc:
-                logger.debug("hc send failed", terminal=address, kind=exc.kind)
+                outcome = f"error:{exc.kind}"
                 return False
+            finally:
+                # Logged even when the caller's timeout cancels the send mid-way.
+                logger.info(
+                    "hc send timing",
+                    terminal=address,
+                    outcome=outcome,
+                    clear_ms=round((cleared - started) * 1000),
+                    send_ms=round((time.monotonic() - cleared) * 1000),
+                    chars=len(text),
+                )
             return True
         if not text:
             return enter and await self._keys(address, ["enter"])
