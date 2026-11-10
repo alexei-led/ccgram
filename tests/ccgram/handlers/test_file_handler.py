@@ -10,6 +10,7 @@ import pytest
 from telegram.error import TimedOut
 
 from ccgram.handlers import file_handler
+from ccgram.session_protocol.models import UNCONFIRMED_DELIVERY_MESSAGE
 from ccgram.handlers.file_handler import (
     _generate_photo_filename,
     _sanitize_caption,
@@ -212,7 +213,7 @@ class TestUploadTypingFailure:
                 file_handler,
                 "_download_and_save",
                 new_callable=AsyncMock,
-                return_value="a.txt",
+                return_value=("a.txt", 10),
             ),
             patch.object(
                 file_handler,
@@ -261,7 +262,7 @@ class TestUploadNotifiesAbsolutePath:
                 file_handler,
                 "_download_and_save",
                 new_callable=AsyncMock,
-                return_value="a.txt",
+                return_value=("a.txt", 10),
             ),
             patch.object(
                 file_handler,
@@ -293,6 +294,91 @@ class TestUploadNotifiesAbsolutePath:
         assert mock_reply.await_args is not None
         # The user-facing reply keeps the short relative form.
         assert ".ccgram-uploads/a.txt" in mock_reply.await_args.args[1]
+
+
+class TestSizeNote:
+    def test_matching_size_is_confirmed(self) -> None:
+        assert file_handler._size_note(6761, 6761) == (
+            True,
+            "6,761 bytes, matches Telegram",
+        )
+
+    def test_mismatch_is_flagged(self) -> None:
+        ok, note = file_handler._size_note(6000, 6761)
+        assert not ok and "6,761" in note and "6,000" in note
+
+    def test_missing_telegram_size_is_not_confirmed(self) -> None:
+        ok, note = file_handler._size_note(10, None)
+        assert not ok and "no size" in note
+
+
+class TestUploadReplies:
+    async def _reply_for(
+        self, tmp_path: Path, send_result: tuple[bool, str], saved_size: int
+    ) -> str:
+        message = MagicMock()
+        message.caption = None
+        message.chat.id = -100
+        message.chat.send_action = AsyncMock()
+        with (
+            patch.object(
+                file_handler,
+                "_resolve_upload_dir",
+                return_value=("@0", tmp_path, None),
+            ),
+            patch.object(
+                file_handler,
+                "_download_and_save",
+                new_callable=AsyncMock,
+                return_value=("a.txt", saved_size),
+            ),
+            patch.object(
+                file_handler,
+                "send_telegram_to_window",
+                new_callable=AsyncMock,
+                return_value=send_result,
+            ),
+            patch.object(file_handler, "ack_reaction", new_callable=AsyncMock),
+            patch.object(
+                file_handler, "safe_reply", new_callable=AsyncMock
+            ) as mock_reply,
+        ):
+            await file_handler._upload_and_notify(
+                message,
+                1,
+                42,
+                "a.txt",
+                "fid",
+                10,
+                "File",
+                "see {path}",
+                "📎",
+                adapter=MagicMock(),
+            )
+        assert mock_reply.await_args is not None
+        return mock_reply.await_args.args[1]
+
+    async def test_success_reports_matching_size(self, tmp_path: Path) -> None:
+        reply = await self._reply_for(tmp_path, (True, "Sent"), 10)
+        assert reply.startswith("📎 Uploaded") and "matches Telegram" in reply
+
+    async def test_unconfirmed_with_matching_size_is_green(
+        self, tmp_path: Path
+    ) -> None:
+        reply = await self._reply_for(
+            tmp_path, (False, UNCONFIRMED_DELIVERY_MESSAGE), 10
+        )
+        assert reply.startswith("\u2705") and "could not be confirmed" in reply
+
+    async def test_unconfirmed_with_size_mismatch_warns(self, tmp_path: Path) -> None:
+        reply = await self._reply_for(
+            tmp_path, (False, UNCONFIRMED_DELIVERY_MESSAGE), 9
+        )
+        assert reply.startswith("\u26a0\ufe0f")
+
+    async def test_refused_send_is_a_failure(self, tmp_path: Path) -> None:
+        reply = await self._reply_for(tmp_path, (False, "Session ended"), 10)
+        assert reply.startswith("\u274c") and "Session ended" in reply
 
 
 class TestResolveUploadDir:
