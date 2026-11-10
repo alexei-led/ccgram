@@ -60,6 +60,7 @@ from ...session_protocol.telegram import (
     adapter_for as protocol_adapter_for,
 )
 from ..polling.polling_state import lifecycle_strategy
+from .reply_quote import compose_with_quote
 from ..telegram_origin import (
     agent_origin_returned_to_shell,
     send_telegram_to_window,
@@ -811,11 +812,14 @@ async def _forward_message(
             return
         interactive_dismissed = True
 
+    # A reply in Telegram reaches the agent as a quote of the replied message
+    # in front of the typed text. "!" bash commands go through verbatim.
+    outgoing = text if text.startswith("!") else compose_with_quote(text, message)
     success, err_message = await send_telegram_to_window(
         user_id,
         window_id,
         thread_id,
-        text,
+        outgoing,
         message.chat.id,
         adapter=telegram_adapter,
         action_id=action_id,

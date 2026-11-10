@@ -303,6 +303,22 @@ A Telegram message the agent writes to its transcript late never counts as termi
 neither does a prompt while the computer has been idle for over two minutes. After a restart
 CCGram starts in away mode.
 
+## Replying to a Message
+
+Reply to (or quote part of) any message in a topic and the agent gets that text as a quote in front of what you type:
+
+```
+Quoting your earlier message:
+> Step 3 uses X.
+
+why not Y?
+```
+
+- Select part of a message before replying to quote only that part.
+- Replies to the bot are labelled as the agent's message, replies to your own messages as yours.
+- Long messages are cut to about 1000 Chinese or 3000 English characters (head and tail kept).
+- `!` bash commands, replies to a terminal menu and answers to an open question are sent as typed.
+
 ## Status Bubble Visibility
 
 Status bubbles show transient progress, elapsed time, task state, and toolbar controls.
