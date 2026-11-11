@@ -80,6 +80,9 @@ class _Digest:
 _digests: dict[_Key, _Digest] = {}
 # Desk-brief mode: user_id -> when the current brief period's first news came.
 _brief_since: dict[int, float] = {}
+# Desk-brief mode: messages exchanged in a guest chat topic this brief period.
+# Guest chats are delivered in real time; the brief only mentions them.
+_guest_traffic: dict[_Key, int] = {}
 _lock = asyncio.Lock()
 
 
@@ -134,6 +137,24 @@ def record_content(
     else:
         return
     _mark_news(user_id, entry)
+
+
+def record_guest_traffic(
+    user_id: int,
+    chat_id: int,
+    thread_id: int | None,
+    *,
+    role: str,
+    content_type: str,
+) -> None:
+    """Count one message in a guest chat for the owner's next desk brief."""
+    if not _brief_enabled() or thread_id is None:
+        return
+    if content_type != "text" or role not in ("user", "assistant"):
+        return
+    key = (user_id, chat_id, thread_id)
+    _guest_traffic[key] = _guest_traffic.get(key, 0) + 1
+    _brief_since.setdefault(user_id, _clock())
 
 
 def record_error(
@@ -263,14 +284,36 @@ def _quiet_count(user_id: int, listed: list[_Key]) -> int:
     return len(bound - {(key[1], key[2]) for key in listed})
 
 
+def _take_guest_traffic(user_id: int) -> dict[_Key, int]:
+    """Pop the user's guest-chat traffic for one brief."""
+    return {
+        key: _guest_traffic.pop(key)
+        for key in [k for k in _guest_traffic if k[0] == user_id]
+    }
+
+
 def _render_brief(
-    user_id: int, entries: list[tuple[_Key, _Digest]], *, away: bool
+    user_id: int,
+    entries: list[tuple[_Key, _Digest]],
+    *,
+    away: bool,
+    guest_traffic: dict[_Key, int],
 ) -> str:
+    guests = [
+        desk_brief.GuestLine(
+            label=config.guest_chats.get(chat_id, "Guest chat"),
+            messages=count,
+            link=desk_brief.topic_link(chat_id, thread_id),
+        )
+        for (_uid, chat_id, thread_id), count in guest_traffic.items()
+    ]
+    listed = [key for key, _entry in entries] + list(guest_traffic)
     return desk_brief.render_brief(
         [_brief_section(key, entry) for key, entry in entries],
-        quiet_count=_quiet_count(user_id, [key for key, _entry in entries]),
+        quiet_count=_quiet_count(user_id, listed),
         wall_time=_wall_time(),
         away=away,
+        guests=guests,
     )
 
 
@@ -281,11 +324,13 @@ async def _flush_brief(client: TelegramClient, user_id: int) -> None:
         for key, entry in _digests.items()
         if key[0] == user_id and _has_news(key, entry)
     ]
-    if not news:
+    traffic = _take_guest_traffic(user_id)
+    if not news and not traffic:
         _brief_since.pop(user_id, None)
         return
-    text = _render_brief(user_id, news, away=False)
+    text = _render_brief(user_id, news, away=False, guest_traffic=traffic)
     if await desk_brief.send_brief(client, user_id, text) == "retry":
+        _guest_traffic.update(traffic)
         return
     _brief_since.pop(user_id, None)
     for key, entry in news:
@@ -340,8 +385,9 @@ async def close_out(client: TelegramClient, user_id: int, *, reason: str) -> Non
         brief_sent = False
         if _brief_enabled():
             _brief_since.pop(user_id, None)
-            if reason == "idle" and entries:
-                text = _render_brief(user_id, entries, away=True)
+            traffic = _take_guest_traffic(user_id)
+            if reason == "idle" and (entries or traffic):
+                text = _render_brief(user_id, entries, away=True, guest_traffic=traffic)
                 outcome = await desk_brief.send_brief(client, user_id, text)
                 brief_sent = outcome == "sent"
         for key, entry in entries:
@@ -369,3 +415,4 @@ def clear_topic_digest(chat_id: int, thread_id: int) -> None:
 def _reset_digest_for_testing() -> None:
     _digests.clear()
     _brief_since.clear()
+    _guest_traffic.clear()

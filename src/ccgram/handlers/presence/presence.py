@@ -122,9 +122,15 @@ def enabled() -> bool:
     return config.desk_mode
 
 
-def is_quiet(user_id: int) -> bool:
-    """True while Telegram delivery for this user should be held back."""
+def is_quiet(user_id: int, chat_id: int | None = None) -> bool:
+    """True while Telegram delivery for this user should be held back.
+
+    A guest chat (``CCGRAM_GUEST_CHATS``) is never held back: the guest is not
+    at the owner's desk and expects real-time replies.
+    """
     if not config.desk_mode:
+        return False
+    if chat_id is not None and chat_id in config.guest_chats:
         return False
     state = _users.get(user_id)
     return state is not None and state.mode == DESK

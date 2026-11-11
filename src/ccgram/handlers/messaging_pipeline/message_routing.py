@@ -12,6 +12,7 @@ from pathlib import Path
 import structlog
 
 from ... import session_query
+from ...config import config
 from ...session_monitor import NewMessage
 from ...telegram_client import TelegramClient, unwrap_bot
 from ...telegram_draft import DRAFT_UNSET, DraftStream
@@ -219,7 +220,22 @@ async def handle_new_message(msg: NewMessage, client: TelegramClient) -> None:  
             # Not from Telegram, so typed at the terminal: the user is at the desk.
             await presence.note_desk_prompt(user_id, msg.text)
 
-        if presence.is_quiet(user_id):
+        if (
+            msg.is_complete
+            and chat_id is not None
+            and chat_id in config.guest_chats
+            and presence.is_quiet(user_id)
+        ):
+            # A guest chat stays real-time; the desk brief only counts it.
+            desk_digest.record_guest_traffic(
+                user_id,
+                chat_id,
+                thread_id,
+                role=msg.role,
+                content_type=msg.content_type,
+            )
+
+        if presence.is_quiet(user_id, chat_id):
             # Desk mode: count it for the topic digest instead of sending it.
             if msg.is_complete:
                 desk_digest.record_content(

@@ -338,7 +338,7 @@ async def _handle_stop_failure(event: HookEvent, client: TelegramClient) -> None
 
     for user_id, thread_id, window_id in users:
         chat_id = thread_router.resolve_chat_id(user_id, thread_id)
-        if is_quiet(user_id):
+        if is_quiet(user_id, chat_id):
             desk_digest.record_error(
                 user_id, chat_id, thread_id, window_id, text.removeprefix("⚠ ")
             )

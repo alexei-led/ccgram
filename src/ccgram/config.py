@@ -86,6 +86,29 @@ def parse_topic_chat_routes(raw: str) -> dict[str, int]:
     return routes
 
 
+def parse_guest_chats(raw: str) -> dict[int, str]:
+    """Parse ``CCGRAM_GUEST_CHATS``: ``Label=-100123,Other=-100456``.
+
+    Returns chat id -> label. Only these group chats can ever host guests
+    (people outside ``ALLOWED_USERS``); a malformed entry is logged and skipped.
+    """
+    chats: dict[int, str] = {}
+    for entry in raw.split(","):
+        if not entry.strip():
+            continue
+        label, sep, chat = entry.rpartition("=")
+        label = label.strip()
+        try:
+            chat_id = int(chat.strip())
+        except ValueError:
+            chat_id = 0
+        if not sep or not label or chat_id >= 0:
+            logger.warning("Ignoring malformed CCGRAM_GUEST_CHATS entry %r", entry)
+            continue
+        chats[chat_id] = label
+    return chats
+
+
 def parse_workspace_folders(raw: str) -> dict[str, str]:
     """Parse ``CCGRAM_WORKSPACE_FOLDERS``: ``Space=~/path,Other=/abs/path``.
 
@@ -315,6 +338,8 @@ class Config:
         self.topic_chat_routes = parse_topic_chat_routes(
             os.getenv("CCGRAM_TOPIC_CHAT_ROUTES", "")
         )
+        # Group chat -> label for chats where guests may talk to a session.
+        self.guest_chats = parse_guest_chats(os.getenv("CCGRAM_GUEST_CHATS", ""))
         # Workspace label -> default folder, overriding what the backend reports.
         self.workspace_folders = parse_workspace_folders(
             os.getenv("CCGRAM_WORKSPACE_FOLDERS", "")

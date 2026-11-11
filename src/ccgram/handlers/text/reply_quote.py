@@ -54,7 +54,7 @@ def truncate_weighted(text: str, budget: int = QUOTE_BUDGET) -> str:
     return head.rstrip() + _ELISION + tail.lstrip()
 
 
-def _explicit_reply(message: Message) -> Message | None:
+def explicit_reply(message: Message) -> Message | None:
     """The message the user replied to, ignoring a forum topic's root message.
 
     Inside a forum topic every message carries ``reply_to_message`` pointing at
@@ -86,7 +86,7 @@ def _label(message: Message, reply: Message) -> str:
 
 def quoted_context(message: Message) -> str | None:
     """The quote block for a reply, or None when there is nothing to quote."""
-    reply = _explicit_reply(message)
+    reply = explicit_reply(message)
     if reply is None:
         return None
     partial = message.quote.text if message.quote is not None else None

@@ -60,6 +60,9 @@ from ...session_protocol.telegram import (
     adapter_for as protocol_adapter_for,
 )
 from ..polling.polling_state import lifecycle_strategy
+from ..guest import access as guest_access
+from ..guest.framing import frame_for_agent
+from ..guest.inbound import handle_guest_text
 from .reply_quote import compose_with_quote
 from ..telegram_origin import (
     agent_origin_returned_to_shell,
@@ -87,6 +90,11 @@ if TYPE_CHECKING:
     from telegram.ext import ContextTypes
 
 logger = structlog.get_logger()
+
+GUEST_CHAT_NO_NEW_SESSION = (
+    "Sessions in a guest chat are started on the computer with the guest "
+    "launcher, so they run with the guest's restricted settings."
+)
 
 # Maximum characters for bash output before truncation (fits Telegram 4096-char limit)
 _BASH_OUTPUT_LIMIT = 3800
@@ -302,6 +310,12 @@ async def _handle_unbound_topic(
     window_id = thread_router.get_window_for_thread(user_id, thread_id, message.chat.id)
     if window_id is not None:
         return False
+
+    # A guest chat never starts sessions from Telegram: a session started here
+    # would run with the owner's own settings, not the guest launcher's.
+    if guest_access.is_guest_chat(message.chat.id):
+        await safe_reply(message, GUEST_CHAT_NO_NEW_SESSION)
+        return True
 
     # Typed plan first: "<agent> <project> [@branch] <instruction>" starts the
     # session from this one message. No picker, no follow-up taps.
@@ -755,8 +769,14 @@ async def _forward_message(
     client: TelegramClient,
     message: Message,
     adapter,
-) -> None:
-    """Forward a text message to the bound tmux window."""
+    *,
+    is_guest: bool = False,
+) -> bool:
+    """Forward a text message to the bound tmux window; True once delivered.
+
+    In a guest chat the text is labelled with its speaker (``frame_for_agent``);
+    ``is_guest`` adds the guest-scope note.
+    """
     # Best-effort: a network error here must not drop the user's text (#257).
     with contextlib.suppress(TelegramError):
         await message.chat.send_action(ChatAction.TYPING)  # type: ignore[union-attr]
@@ -799,7 +819,7 @@ async def _forward_message(
             client,
         ):
             await ack_reaction(client, message.chat.id, message.message_id)
-            return
+            return True
         if not await _dismiss_interactive_prompt(
             user_id,
             thread_id,
@@ -809,12 +829,22 @@ async def _forward_message(
             message,
             telegram_adapter,
         ):
-            return
+            return False
         interactive_dismissed = True
 
     # A reply in Telegram reaches the agent as a quote of the replied message
     # in front of the typed text. "!" bash commands go through verbatim.
-    outgoing = text if text.startswith("!") else compose_with_quote(text, message)
+    if text.startswith("!"):
+        outgoing = text
+    else:
+        sender = message.from_user
+        outgoing = frame_for_agent(
+            compose_with_quote(text, message),
+            chat_id=message.chat.id,
+            user_id=sender.id if sender else user_id,
+            first_name=sender.first_name if sender else None,
+            is_guest=is_guest,
+        )
     success, err_message = await send_telegram_to_window(
         user_id,
         window_id,
@@ -826,7 +856,7 @@ async def _forward_message(
     )
     if not success:
         await safe_reply(message, f"\u274c {err_message}")
-        return
+        return False
 
     if interactive_dismissed:
         await safe_reply(
@@ -850,6 +880,31 @@ async def _forward_message(
         )
         task.add_done_callback(task_done_callback)
         _bash_capture_tasks[(user_id, thread_id)] = task
+    return True
+
+
+async def forward_guest_text(
+    window_id: str,
+    owner_id: int,
+    thread_id: int,
+    text: str,
+    message: Message,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> bool:
+    """Deliver a guest's text to the owner's session; True once delivered."""
+    # Lazy: same protocol-backend import as the bound-topic path below.
+    from ...session_protocol.telegram import adapter_for
+
+    return await _forward_message(
+        window_id,
+        owner_id,
+        thread_id,
+        text,
+        PTBTelegramClient(context.bot),
+        message,
+        adapter_for(context.bot_data),
+        is_guest=True,
+    )
 
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -860,6 +915,22 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     bool early-return routing chain.
     """
     user = update.effective_user
+    if user and not config.is_user_allowed(user.id) and update.message:
+        chat_id = update.message.chat.id
+        owner_id = guest_access.owner_for(user.id, chat_id)
+        if owner_id is not None:
+            await handle_guest_text(update, context, owner_id)
+            return
+        if guest_access.is_guest_chat(chat_id):
+            # Silent: a stranger in a guest chat learns nothing; the owner can
+            # find the id here and run "/guest allow" as a reply.
+            logger.info(
+                "Message from a non-guest in a guest chat",
+                user_id=user.id,
+                name=user.full_name,
+                chat_id=chat_id,
+            )
+            return
     if not user or not config.is_user_allowed(user.id):
         if update.message:
             await safe_reply(update.message, "You are not authorized to use this bot.")

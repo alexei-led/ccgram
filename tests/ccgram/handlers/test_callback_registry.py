@@ -152,7 +152,9 @@ class TestDispatch:
             await dispatch(update, context)
 
         handler.assert_not_awaited()
-        update.callback_query.answer.assert_awaited_once_with("Not authorized")
+        update.callback_query.answer.assert_awaited_once_with(
+            "Only the owner can use these buttons."
+        )
 
     @pytest.mark.asyncio
     async def test_dispatch_wrong_group(self) -> None:

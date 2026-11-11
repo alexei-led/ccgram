@@ -77,7 +77,9 @@ async def dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     user = update.effective_user
     if not user or not config.is_user_allowed(user.id):
-        await query.answer("Not authorized")
+        # Guests may chat with the session but never press its buttons
+        # (approvals, keys, menus): those stay with the owner.
+        await query.answer("Only the owner can use these buttons.")
         return
 
     # Store group chat_id for forum topic message routing.
