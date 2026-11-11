@@ -42,6 +42,13 @@ def test_matching_skips_unrelated_pending_entries() -> None:
     assert consume_telegram_injection(1, "@1", 42, "/local-command") is True
 
 
+def test_long_paste_wrapped_by_claude_code_still_matches() -> None:
+    text = "QFY: a long message\n\nwith paragraphs"
+    remember_telegram_injection(1, "@1", 42, text)
+    recorded = f'\n\n<pasted_content id="cccd">\n{text}\n</pasted_content id="cccd">\n'
+    assert consume_telegram_injection(1, "@1", 42, recorded) is True
+
+
 def test_failed_send_forgets_exact_reservation() -> None:
     first = remember_telegram_injection(1, "@1", 42, "same")
     second = remember_telegram_injection(1, "@1", 42, "same")

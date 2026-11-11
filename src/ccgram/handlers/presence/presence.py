@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 import structlog
 
 from ...config import config
+from ...pasted_content import unwrap_pasted_content
 
 logger = structlog.get_logger()
 
@@ -69,7 +70,7 @@ def _clock() -> float:
 
 
 def _normalize(text: str) -> str:
-    return text.replace("\r\n", "\n").strip()
+    return unwrap_pasted_content(text.replace("\r\n", "\n")).strip()
 
 
 def _state(user_id: int) -> _UserPresence:

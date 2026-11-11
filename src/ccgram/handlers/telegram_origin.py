@@ -6,6 +6,7 @@ from collections import deque
 from dataclasses import dataclass
 import time
 
+from ..pasted_content import unwrap_pasted_content
 from ..session_protocol.models import UNCONFIRMED_DELIVERY_MESSAGE, ProtocolError
 from .presence import remember_telegram_text
 
@@ -28,7 +29,7 @@ _pending_injections: dict[
 
 
 def _normalize(text: str) -> str:
-    return text.replace("\r\n", "\n").strip()
+    return unwrap_pasted_content(text.replace("\r\n", "\n")).strip()
 
 
 def _key(user_id: int, window_id: str, thread_id: int, chat_id: int | None):
