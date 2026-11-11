@@ -291,6 +291,10 @@ sessions in a dedicated forum group listed in `CCGRAM_GUEST_CHATS`.
 - The group is always real-time, even in desk mode; the desk brief mentions its traffic.
 - A guest message handled long after it was sent (the computer was off) gets a reply saying
   when it was sent and when it arrived.
+- In a guest group the status bubble has three buttons for everyone: Esc, screenshot and last
+  reply. There is no Get File; the session delivers files by saving them to `outbox/` in its
+  folder, and CCGram posts each one to the topic (then moves it to `outbox/sent/`). Links are
+  refused. Buttons on screenshots (keys) stay the owner's.
 - CCGram never starts a session in a guest group. Start it on the computer with settings meant
   for a guest, e.g. `claude --setting-sources project --strict-mcp-config --permission-mode
   acceptEdits` in a dedicated folder whose `.claude/settings.json` holds the CCGram hooks,

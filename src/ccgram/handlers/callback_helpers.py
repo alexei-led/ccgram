@@ -5,10 +5,37 @@ Provides utility functions used by multiple callback handler modules:
   - get_thread_id: Extract thread_id from a Telegram update
 """
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+
 from telegram import Update
 
 from ..thread_router import thread_router
 from .callback_data import CB_PANE_DELIMITER
+
+
+# The user a callback acts for. A guest pressing one of the buttons open to
+# guests acts with the owner's identity (bindings are the owner's).
+_acting_user: ContextVar[int | None] = ContextVar("ccgram_acting_user", default=None)
+
+
+@contextmanager
+def acting_as(user_id: int) -> Iterator[None]:
+    token = _acting_user.set(user_id)
+    try:
+        yield
+    finally:
+        _acting_user.reset(token)
+
+
+def callback_user_id(update: Update) -> int | None:
+    """The user a callback acts for: the owner for a guest, else the presser."""
+    override = _acting_user.get()
+    if override is not None:
+        return override
+    user = update.effective_user
+    return user.id if user is not None else None
 
 
 def user_owns_window(user_id: int, window_id: str, chat_id: int | None = None) -> bool:

@@ -76,6 +76,7 @@ def build_status_keyboard(
     user_id: int | None = None,
     is_group: bool = False,
     backlog_severe: bool = False,
+    guest_chat: bool = False,
 ) -> InlineKeyboardMarkup:
     """Build inline keyboard for status messages.
 
@@ -86,6 +87,9 @@ def build_status_keyboard(
         and the chat is private (``is_group=False``). Telegram rejects
         ``web_app`` buttons in groups and supergroups, so the button is hidden
         there to stop every status-bubble edit from raising a TelegramError.
+
+    In a guest chat (``guest_chat``) only Esc, screenshot and last reply are
+    shown, for everyone: no history recall, no file browser.
     """
     # Lazy: command_history → messaging_pipeline → status → status_bubble
     # forms a cycle when imported at module top. Keep lazy.
@@ -97,7 +101,7 @@ def build_status_keyboard(
 
     rows: list[list[InlineKeyboardButton]] = []
 
-    if history:
+    if history and not guest_chat:
         hist_row: list[InlineKeyboardButton] = []
         for idx, cmd in enumerate(history[:2]):
             label = truncate_for_display(cmd, 20)
@@ -113,30 +117,32 @@ def build_status_keyboard(
             )
         rows.append(hist_row)
 
-    rows.append(
-        [
-            InlineKeyboardButton(
-                "\u238b Esc",
-                callback_data=compact_callback_data(
-                    CB_STATUS_ESC, f"{CB_STATUS_ESC}{window_id}", window_id
-                ),
+    action_row = [
+        InlineKeyboardButton(
+            "\u238b Esc",
+            callback_data=compact_callback_data(
+                CB_STATUS_ESC, f"{CB_STATUS_ESC}{window_id}", window_id
             ),
-            InlineKeyboardButton(
-                "\U0001f4f8",
-                callback_data=compact_callback_data(
-                    CB_STATUS_SCREENSHOT,
-                    f"{CB_STATUS_SCREENSHOT}{window_id}",
-                    window_id,
-                ),
+        ),
+        InlineKeyboardButton(
+            "\U0001f4f8",
+            callback_data=compact_callback_data(
+                CB_STATUS_SCREENSHOT,
+                f"{CB_STATUS_SCREENSHOT}{window_id}",
+                window_id,
             ),
-            InlineKeyboardButton(
-                "\U0001f4c4 Last",
-                callback_data=compact_callback_data(
-                    CB_STATUS_LAST_REPLY,
-                    f"{CB_STATUS_LAST_REPLY}{window_id}",
-                    window_id,
-                ),
+        ),
+        InlineKeyboardButton(
+            "\U0001f4c4 Last",
+            callback_data=compact_callback_data(
+                CB_STATUS_LAST_REPLY,
+                f"{CB_STATUS_LAST_REPLY}{window_id}",
+                window_id,
             ),
+        ),
+    ]
+    if not guest_chat:
+        action_row.append(
             InlineKeyboardButton(
                 "\U0001f4e5 Get File",
                 callback_data=compact_callback_data(
@@ -144,9 +150,9 @@ def build_status_keyboard(
                     f"{CB_STATUS_GET_FILE}{window_id}",
                     window_id,
                 ),
-            ),
-        ]
-    )
+            )
+        )
+    rows.append(action_row)
     if backlog_severe:
         rows.append(
             [
@@ -408,6 +414,7 @@ async def send_status_text(
         user_id=user_id,
         is_group=(thread_id_or_0 != 0),
         backlog_severe=backlog_severe,
+        guest_chat=chat_id in config.guest_chats,
     )
 
     existing = _status_msg_info.get(skey)
