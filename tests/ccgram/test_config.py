@@ -246,12 +246,21 @@ class TestDeskModeConfig:
             "CCGRAM_DESK_MODE",
             "CCGRAM_DESK_DIGEST_MINUTES",
             "CCGRAM_AWAY_IDLE_MINUTES",
+            "CCGRAM_DESK_BRIEF",
         ):
             monkeypatch.delenv(name, raising=False)
         cfg = Config()
         assert cfg.desk_mode is False
         assert cfg.desk_digest_minutes == 10.0
         assert cfg.away_idle_minutes == 10.0
+        assert cfg.desk_brief == "off"
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"), [("dm", "dm"), (" DM ", "dm"), ("group", "off")]
+    )
+    def test_desk_brief(self, monkeypatch, raw, expected):
+        monkeypatch.setenv("CCGRAM_DESK_BRIEF", raw)
+        assert Config().desk_brief == expected
 
     def test_values(self, monkeypatch):
         monkeypatch.setenv("CCGRAM_DESK_MODE", "true")

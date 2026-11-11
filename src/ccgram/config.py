@@ -459,6 +459,11 @@ class Config:
         self.away_idle_minutes: float = _positive_minutes(
             "CCGRAM_AWAY_IDLE_MINUTES", 10.0, minimum=0.0
         )
+        # "dm": one notifying brief per interval in the user's private chat
+        # with the bot, covering every session; topic digests then stay
+        # silent. "off" (default): each topic digest works on its own.
+        raw_desk_brief = os.getenv("CCGRAM_DESK_BRIEF", "").strip().lower()
+        self.desk_brief: str = raw_desk_brief if raw_desk_brief == "dm" else "off"
 
         logger.debug(
             "Config initialized: dir=%s, allowed_users=%d, tmux_session=%s",

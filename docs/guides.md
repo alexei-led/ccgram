@@ -236,6 +236,7 @@ All settings accept both CLI flags and environment variables. CLI flags take pre
 | `CCGRAM_DESK_MODE`                                    | `false`                        | Set `true` for desk mode: quiet Telegram while you work at the terminal (see below)                  |
 | `CCGRAM_DESK_DIGEST_MINUTES`                          | `10`                           | Desk mode: minutes between digest refreshes (min 1)                                                  |
 | `CCGRAM_AWAY_IDLE_MINUTES`                            | `10`                           | Desk mode: computer idle this long counts as away (macOS; `0` disables)                              |
+| `CCGRAM_DESK_BRIEF`                                   | `off`                          | Desk mode: `dm` sends one notifying brief for all sessions to your private chat (see below)          |
 | `CCGRAM_HIDE_TOOL_CALLS` / `--hide-tool-calls`        | `false`                        | Set `true` to globally hide `tool_use`/`tool_result` messages (per-window override via `/toolcalls`) |
 | `CCGRAM_HIDE_THINKING` / `--hide-thinking`            | `false`                        | Set `true` to globally hide thinking messages                                                        |
 | `CCGRAM_HIDE_STATUS`                                  | `false`                        | Set `true` to suppress transient status bubbles; replies and controls remain available               |
@@ -298,6 +299,15 @@ With `CCGRAM_DESK_MODE=true`, CCGram tells whether you are at the computer:
   real-time delivery resumes, and a waiting prompt appears with its buttons within a second.
   After an idle switch, a topic that finished or waits for you gets a fresh message (with a
   notification) instead of a silent edit.
+
+**One brief for every session.** With `CCGRAM_DESK_BRIEF=dm`, the topic digests stay silent and
+a single brief in your private chat with the bot is the only desk-mode message that rings. One
+`CCGRAM_DESK_DIGEST_MINUTES` interval after the first news of a desk period it lists every topic
+with news (waiting for you first, then errors, finished, still running), with counts, the start
+of the latest reply and a link to the topic (supergroup topics only); topics without news are
+counted in one footer line. No news, no brief. Going away after an idle spell sends one last
+"You stepped away" brief instead of the per-topic notifications; if the private chat cannot be
+reached (for example you never started the bot there), those notifications come back.
 
 A Telegram message the agent writes to its transcript late never counts as terminal input, and
 neither does a prompt while the computer has been idle for over two minutes. After a restart
