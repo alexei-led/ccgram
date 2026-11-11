@@ -237,6 +237,7 @@ All settings accept both CLI flags and environment variables. CLI flags take pre
 | `CCGRAM_DESK_DIGEST_MINUTES`                          | `10`                           | Desk mode: minutes between digest refreshes (min 1)                                                  |
 | `CCGRAM_AWAY_IDLE_MINUTES`                            | `10`                           | Desk mode: computer idle this long counts as away (macOS; `0` disables)                              |
 | `CCGRAM_DESK_BRIEF`                                   | `off`                          | Desk mode: `dm` sends one notifying brief for all sessions to your private chat (see below)          |
+| `CCGRAM_GUEST_CHATS`                                  | _(empty)_                      | `Label=-100…` groups where guests may talk to your sessions (see Guest Chats below)                  |
 | `CCGRAM_HIDE_TOOL_CALLS` / `--hide-tool-calls`        | `false`                        | Set `true` to globally hide `tool_use`/`tool_result` messages (per-window override via `/toolcalls`) |
 | `CCGRAM_HIDE_THINKING` / `--hide-thinking`            | `false`                        | Set `true` to globally hide thinking messages                                                        |
 | `CCGRAM_HIDE_STATUS`                                  | `false`                        | Set `true` to suppress transient status bubbles; replies and controls remain available               |
@@ -275,6 +276,26 @@ Topic emojis change color to reflect agent status. The mapping between color and
 Set globally via `CCGRAM_STATUS_MODE=user` or `--status-mode user`. Invalid values fall back to `system`.
 
 In both modes 🔴 means the agent is idle at a prompt (a question, a plan or an approval) and waits for you.
+
+## Guest Chats
+
+A guest is someone outside `ALLOWED_USERS` (a friend, a partner) who may talk to one of your
+sessions in a dedicated forum group listed in `CCGRAM_GUEST_CHATS`.
+
+- In that group, reply to their message with `/guest allow [name]`. From then on their text,
+  photos and files in a topic you have bound reach the session, labelled `name: …`; yours are
+  labelled with your first name. Everything else stays yours: commands, buttons (including
+  approvals), `!` shell commands, new sessions. Strangers in the group get no answer.
+- `/guest off` ignores every guest at once and survives restarts; `/guest on` restores;
+  `/guest` shows the list; `/guest remove` (as a reply, or with an id) drops one.
+- The group is always real-time, even in desk mode; the desk brief mentions its traffic.
+- A guest message handled long after it was sent (the computer was off) gets a reply saying
+  when it was sent and when it arrived.
+- CCGram never starts a session in a guest group. Start it on the computer with settings meant
+  for a guest, e.g. `claude --setting-sources project --strict-mcp-config --permission-mode
+  acceptEdits` in a dedicated folder whose `.claude/settings.json` holds the CCGram hooks,
+  deny rules for secrets, and the read access you want to grant. Labels and the scope note are
+  guidance for the agent; the permission settings are the boundary.
 
 ## Desk Mode
 

@@ -58,6 +58,15 @@ class BriefSection:
     link: str | None = None
 
 
+@dataclass(slots=True)
+class GuestLine:
+    """Traffic in one guest chat topic since the last brief (never held back)."""
+
+    label: str
+    messages: int
+    link: str | None = None
+
+
 def topic_link(chat_id: int, thread_id: int) -> str | None:
     """A t.me link into a supergroup topic; None for private-chat topics."""
     text = str(chat_id)
@@ -117,15 +126,24 @@ def _render_section(section: BriefSection) -> list[str]:
     return lines
 
 
+def _render_guest_line(line: GuestLine) -> str:
+    text = f"👥 **{_escape(line.label)}** · {_plural(line.messages, 'message')} (guest chat)"
+    if line.link:
+        text += f" · [Open]({line.link})"
+    return text
+
+
 def render_brief(
     sections: list[BriefSection],
     *,
     quiet_count: int,
     wall_time: str,
     away: bool = False,
+    guests: list[GuestLine] | None = None,
 ) -> str:
     """The brief text (markdown; converted to entities at send time)."""
-    count = _plural(len(sections), "session")
+    guests = guests or []
+    count = _plural(len(sections) + len(guests), "session")
     if away:
         lines = [f"🚶 You stepped away · {count} active while you were here"]
     else:
@@ -133,6 +151,9 @@ def render_brief(
     for section in sort_sections(sections):
         lines.append("")
         lines.extend(_render_section(section))
+    if guests:
+        lines.append("")
+        lines.extend(_render_guest_line(line) for line in guests)
     lines.append("")
     if quiet_count > 0:
         noun = "session" if quiet_count == 1 else "sessions"

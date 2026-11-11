@@ -1119,7 +1119,12 @@ async def enqueue_status_update(
     transient: bool = False,
 ) -> None:
     """Enqueue a durable notice or a replaceable polling status operation."""
-    if status_text is not None and is_quiet(user_id):
+    if status_text is not None and is_quiet(
+        user_id,
+        thread_router.resolve_chat_id(user_id, thread_id)
+        if thread_id is not None
+        else None,
+    ):
         # Desk mode: the topic digest carries the state; clears still pass.
         return
     if (

@@ -427,7 +427,7 @@ async def update_topic_emoji(
         return
 
     key = (chat_id, thread_id)
-    if user_id is not None and is_quiet(user_id):
+    if user_id is not None and is_quiet(user_id, chat_id):
         _hold_for_desk(key, state)
         return
     clean_name, name_changed = _resolve_topic_name(key, display_name)

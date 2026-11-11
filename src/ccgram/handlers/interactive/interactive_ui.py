@@ -990,7 +990,10 @@ async def handle_interactive_ui(
     In desk mode nothing is sent (False): the user answers at the computer.
     The poller retries every tick, so the prompt appears once they go away.
     """
-    if is_quiet(user_id):
+    quiet_chat = chat_id
+    if quiet_chat is None and thread_id is not None:
+        quiet_chat = thread_router.resolve_chat_id(user_id, thread_id)
+    if is_quiet(user_id, quiet_chat):
         return False
     return await _send_interactive_ui(
         client, user_id, window_id, thread_id, pane_id, chat_id=chat_id

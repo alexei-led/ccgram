@@ -30,6 +30,9 @@ from ..window_query import view_window
 from .telegram_origin import send_telegram_to_window
 from ..thread_router import thread_router
 from .callback_helpers import get_thread_id
+from .guest import access as guest_access
+from .guest import inbound as guest_inbound
+from .guest.framing import frame_for_agent
 from .messaging_pipeline.message_sender import ack_reaction, safe_reply
 
 if TYPE_CHECKING:
@@ -254,6 +257,7 @@ async def _upload_and_notify(
     success_emoji: str,
     *,
     adapter,
+    is_guest: bool = False,
 ) -> None:
     """Shared upload flow: resolve dir, download, notify Claude, reply to user."""
     window_id, upload_path, error = _resolve_upload_dir(
@@ -290,6 +294,14 @@ async def _upload_and_notify(
     claude_msg = claude_msg_tpl.format(name=saved_name, path=upload_path / saved_name)
     if caption:
         claude_msg += f"\n\nUser note: {_sanitize_caption(caption)}"
+    sender = message.from_user
+    claude_msg = frame_for_agent(
+        claude_msg,
+        chat_id=message.chat.id,
+        user_id=sender.id if sender else user_id,
+        first_name=sender.first_name if sender else None,
+        is_guest=is_guest,
+    )
 
     success, err = await send_telegram_to_window(
         user_id,
@@ -322,6 +334,39 @@ async def _upload_and_notify(
         )
 
 
+async def _resolve_uploader(
+    update: Update, message: Message
+) -> tuple[int, bool] | None:
+    """(acting user id, is guest) for an upload, or None when refused.
+
+    A guest uploads into the owner's bound session, so the owner's id drives
+    the topic lookup; a guest without a bound topic is told so.
+    """
+    user = update.effective_user
+    if user is None:
+        return None
+    if config.is_user_allowed(user.id):
+        return user.id, False
+    owner_id = guest_access.owner_for(user.id, message.chat.id)
+    if owner_id is not None:
+        thread_id = get_thread_id(update)
+        if guest_inbound.bound_window(owner_id, message, thread_id) is None:
+            await safe_reply(message, guest_inbound.NOT_BOUND)
+            return None
+        logger.info("Guest upload", user_id=user.id, chat_id=message.chat.id)
+        guest_inbound.count_for_brief(owner_id, message, thread_id)
+        return owner_id, True
+    if guest_access.is_guest_chat(message.chat.id):
+        logger.info(
+            "Upload from a non-guest in a guest chat",
+            user_id=user.id,
+            chat_id=message.chat.id,
+        )
+        return None
+    await safe_reply(message, "You are not authorized to use this bot.")
+    return None
+
+
 async def handle_photo_message(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
@@ -330,14 +375,15 @@ async def handle_photo_message(
     message = update.message
     if not user or not message or not message.photo:
         return
-    if not config.is_user_allowed(user.id):
-        await safe_reply(message, "You are not authorized to use this bot.")
+    uploader = await _resolve_uploader(update, message)
+    if uploader is None:
         return
+    acting_user_id, is_guest = uploader
 
     photo = message.photo[-1]
     await _upload_and_notify(
         message,
-        user.id,
+        acting_user_id,
         get_thread_id(update),
         _generate_photo_filename(photo.file_unique_id),
         photo.file_id,
@@ -346,6 +392,7 @@ async def handle_photo_message(
         "I've uploaded an image to {path} — please take a look.",
         "\U0001f4f7",
         adapter=adapter_for(context.bot_data),
+        is_guest=is_guest,
     )
 
 
@@ -357,14 +404,15 @@ async def handle_document_message(
     message = update.message
     if not user or not message or not message.document:
         return
-    if not config.is_user_allowed(user.id):
-        await safe_reply(message, "You are not authorized to use this bot.")
+    uploader = await _resolve_uploader(update, message)
+    if uploader is None:
         return
+    acting_user_id, is_guest = uploader
 
     doc = message.document
     await _upload_and_notify(
         message,
-        user.id,
+        acting_user_id,
         get_thread_id(update),
         _sanitize_filename(doc.file_name or "document"),
         doc.file_id,
@@ -373,4 +421,5 @@ async def handle_document_message(
         "I've uploaded {name} to {path}",
         "\U0001f4ce",
         adapter=adapter_for(context.bot_data),
+        is_guest=is_guest,
     )
