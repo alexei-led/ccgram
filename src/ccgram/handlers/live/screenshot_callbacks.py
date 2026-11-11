@@ -44,7 +44,12 @@ from ..callback_data import (
     CB_SCREENSHOT_REFRESH,
     CB_STATUS_SCREENSHOT,
 )
-from ..callback_helpers import get_thread_id, parse_target, user_owns_window
+from ..callback_helpers import (
+    callback_user_id,
+    get_thread_id,
+    parse_target,
+    user_owns_window,
+)
 from ..callback_tokens import compact_callback_data, resolve_callback_data
 from ..callback_registry import register
 
@@ -657,10 +662,10 @@ async def panes_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> 
 )
 async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
-    user = update.effective_user
-    assert query is not None and query.data is not None and user is not None
-    data = resolve_callback_data(query.data, user.id, user_owns_window)
+    user_id = callback_user_id(update)
+    assert query is not None and query.data is not None and user_id is not None
+    data = resolve_callback_data(query.data, user_id, user_owns_window)
     if data is None:
         await query.answer("This button has expired", show_alert=True)
         return
-    await handle_screenshot_callback(query, user.id, data, update, context)
+    await handle_screenshot_callback(query, user_id, data, update, context)

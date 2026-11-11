@@ -17,10 +17,15 @@ from typing import TYPE_CHECKING
 from collections.abc import Awaitable, Callable
 
 import structlog
-from telegram import Update
+from telegram import CallbackQuery, Update
 from ..config import config
 from ..thread_router import thread_router
-from .callback_helpers import get_thread_id
+from .callback_data import CB_STATUS_ESC, CB_STATUS_LAST_REPLY, CB_STATUS_SCREENSHOT
+from .callback_helpers import acting_as, get_thread_id
+from .guest import access as guest_access
+
+# Buttons a guest may press (acting as the owner): Esc, screenshot, last reply.
+GUEST_BUTTON_PREFIXES = (CB_STATUS_ESC, CB_STATUS_SCREENSHOT, CB_STATUS_LAST_REPLY)
 
 if TYPE_CHECKING:
     from telegram.ext import ContextTypes
@@ -76,25 +81,46 @@ async def dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     user = update.effective_user
-    if not user or not config.is_user_allowed(user.id):
-        # Guests may chat with the session but never press its buttons
-        # (approvals, keys, menus): those stay with the owner.
-        await query.answer("Only the owner can use these buttons.")
+    if not user:
         return
+    acting_id = user.id
+    if not config.is_user_allowed(user.id):
+        # A guest may press only Esc, screenshot and last reply, acting as the
+        # owner. Approvals, keys and menus stay with the owner.
+        chat_id = query.message.chat.id if query.message else None
+        owner_id = guest_access.owner_for(user.id, chat_id)
+        if owner_id is None or not query.data.startswith(GUEST_BUTTON_PREFIXES):
+            await query.answer("Only the owner can use these buttons.")
+            return
+        logger.info(
+            "Guest button", user_id=user.id, chat_id=chat_id, data=query.data[:16]
+        )
+        acting_id = owner_id
 
+    with acting_as(acting_id):
+        await _dispatch_authorized(update, context, query, acting_id)
+
+
+async def _dispatch_authorized(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    query: CallbackQuery,
+    acting_id: int,
+) -> None:
+    assert query.data is not None
     # Store group chat_id for forum topic message routing.
     if query.message and query.message.chat.type in ("group", "supergroup"):
         cb_thread_id = get_thread_id(update)
         if cb_thread_id is not None:
             thread_router.set_group_chat_id(
-                user.id, cb_thread_id, query.message.chat.id
+                acting_id, cb_thread_id, query.message.chat.id
             )
 
     data = query.data
     if data.startswith("cmdpanel:"):
         logger.info(
             "Topic command panel callback received",
-            user_id=user.id,
+            user_id=acting_id,
             chat_id=query.message.chat.id if query.message else None,
             thread_id=get_thread_id(update),
         )

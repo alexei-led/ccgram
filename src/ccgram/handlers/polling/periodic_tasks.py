@@ -19,6 +19,7 @@ from ...utils import log_throttle_sweep
 from ...session_protocol.telegram import TelegramSessionAdapter
 from ..live.live_view import tick_live_views
 from ..presence.desk_mode import run_desk_mode_tick
+from ..guest.outbox import flush_outboxes
 from .delivery_watch import check_delivery_wedges
 from ..topics.topic_deletion import cleanup_retired_topics
 from ..topics.topic_provisioning_recovery import recover_topic_provisioning
@@ -39,6 +40,8 @@ logger = structlog.get_logger()
 TOPIC_CHECK_INTERVAL = 60.0  # seconds
 # Desk mode: idle check and digest refresh (the digest interval is minutes).
 DESK_MODE_TICK_INTERVAL = 15.0
+# Guest chats: send files their sessions left in outbox/.
+GUEST_OUTBOX_INTERVAL = 5.0
 
 
 # ── Orchestration ──────────────────────────────────────────────────────────
@@ -60,6 +63,10 @@ async def run_periodic_tasks(
     if now - timers.setdefault("desk_mode", 0.0) >= DESK_MODE_TICK_INTERVAL:
         timers["desk_mode"] = now
         await run_desk_mode_tick(client)
+
+    if now - timers.setdefault("guest_outbox", 0.0) >= GUEST_OUTBOX_INTERVAL:
+        timers["guest_outbox"] = now
+        await flush_outboxes(client)
 
     if now - timers["topic_check"] >= TOPIC_CHECK_INTERVAL:
         timers["topic_check"] = now
