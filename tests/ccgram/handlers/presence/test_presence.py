@@ -77,6 +77,15 @@ async def test_text_sent_from_telegram_is_not_desk_input(clock: _Clock) -> None:
     assert not presence.is_quiet(USER)
 
 
+async def test_wrapped_long_paste_from_telegram_is_not_desk_input(
+    clock: _Clock,
+) -> None:
+    presence.remember_telegram_text(USER, "a long message")
+    wrapped = '<pasted_content id="ab12">\na long message\n</pasted_content id="ab12">'
+    assert not await presence.note_desk_prompt(USER, wrapped)
+    assert not presence.is_quiet(USER)
+
+
 async def test_telegram_text_memory_expires(clock: _Clock) -> None:
     presence.remember_telegram_text(USER, "run the build")
     clock.now += 601
