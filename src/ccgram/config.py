@@ -86,6 +86,15 @@ def parse_topic_chat_routes(raw: str) -> dict[str, int]:
     return routes
 
 
+def _positive_int(raw: str, *, default: int) -> int:
+    """Parse a positive integer setting, falling back to *default*."""
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
 def parse_guest_chats(raw: str) -> dict[int, str]:
     """Parse ``CCGRAM_GUEST_CHATS``: ``Label=-100123,Other=-100456``.
 
@@ -340,6 +349,13 @@ class Config:
         )
         # Group chat -> label for chats where guests may talk to a session.
         self.guest_chats = parse_guest_chats(os.getenv("CCGRAM_GUEST_CHATS", ""))
+        # Command a guest's "/sessions new" runs in the chat's workspace; "{label}"
+        # becomes the chat's label (shell-quoted). Empty: guests cannot start one.
+        self.guest_launch_command = os.getenv("CCGRAM_GUEST_LAUNCH_COMMAND", "").strip()
+        # Most sessions a guest chat may have at once (live or still starting).
+        self.guest_max_sessions = _positive_int(
+            os.getenv("CCGRAM_GUEST_MAX_SESSIONS", ""), default=3
+        )
         # Workspace label -> default folder, overriding what the backend reports.
         self.workspace_folders = parse_workspace_folders(
             os.getenv("CCGRAM_WORKSPACE_FOLDERS", "")

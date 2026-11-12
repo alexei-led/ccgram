@@ -63,7 +63,7 @@ def guest_target_allowed(
     resolved = resolve_callback_data(data, owner_id, user_owns_window)
     if resolved is None:
         return False
-    for prefix in prefixes:
+    for prefix in sorted(prefixes, key=len, reverse=True):
         if resolved.startswith(prefix):
             window_id, _pane = parse_target(resolved[len(prefix) :])
             return bool(window_id) and window_id in windows_in_chat(chat_id)

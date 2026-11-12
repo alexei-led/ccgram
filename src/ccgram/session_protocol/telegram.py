@@ -225,8 +225,11 @@ class TelegramSessionAdapter:
         approval_mode: Literal["normal", "yolo"] = "normal",
         resume_id: str | None = None,
         continue_session: bool = False,
+        launch_command: str | None = None,
     ) -> CreatedSession:
-        options = CreationOptions(approval_mode, resume_id, continue_session)
+        options = CreationOptions(
+            approval_mode, resume_id, continue_session, launch_command
+        )
         target, snapshot = await self.service.create_target(data, options=options)
         return CreatedSession(target.id, snapshot)
 

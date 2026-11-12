@@ -43,11 +43,13 @@ from .callback_data import (
     CB_STATUS_ESC,
     CB_STATUS_SCREENSHOT,
 )
-from .callback_helpers import user_owns_window
+from .callback_helpers import callback_user_id, user_owns_window
 from .callback_tokens import compact_callback_data, resolve_callback_data
 from .callback_registry import register
 from .cleanup import clear_topic_state
+from .guest import access as guest_access
 from .guest import scope as guest_scope
+from .guest import sessions as guest_sessions
 from .topics.topic_deletion import cleanup_retired_topics, retire_topic_binding
 from .messaging_pipeline.message_sender import safe_edit, safe_reply
 
@@ -75,22 +77,28 @@ async def _build_dashboard(
     """Build dashboard text and keyboard for a user's sessions.
 
     In a guest chat every member sees the dashboard, so it lists only the
-    sessions bound in that chat and offers no New Session button.
+    sessions bound in that chat, with a count against the chat's limit; New
+    Session there starts one with the guest launcher (when configured).
     """
     bindings = thread_router.get_all_thread_windows(user_id)
     footer = [_REFRESH_BTN, _NEW_BTN]
-    if guest_scope.is_guest_chat(chat_id):
+    guest_chat = guest_scope.is_guest_chat(chat_id)
+    if guest_chat:
         assert chat_id is not None
         here = guest_scope.windows_in_chat(chat_id)
         bindings = {tid: wid for tid, wid in bindings.items() if wid in here}
-        footer = [_REFRESH_BTN]
+        footer = (
+            [_REFRESH_BTN, _NEW_BTN] if config.guest_launch_command else [_REFRESH_BTN]
+        )
 
     if not bindings:
         keyboard = InlineKeyboardMarkup([footer])
-        return (
-            "No active sessions.\n\nCreate a new topic to start a session.",
-            keyboard,
+        empty = (
+            "No sessions here yet.\n\nStart one with /sessions new."
+            if guest_chat and config.guest_launch_command
+            else "No active sessions.\n\nCreate a new topic to start a session."
         )
+        return empty, keyboard
 
     # The complete listing, not the adoption-filtered one: every id here is
     # already bound, and a live window a backend merely will not auto-adopt
@@ -147,23 +155,44 @@ async def _build_dashboard(
             ]
             action_rows.append(row)
 
-    text = "Sessions\n\n" + "\n".join(lines)
+    title = "Sessions"
+    if guest_chat:
+        title += f" ({len(action_rows)}/{config.guest_max_sessions})"
+    text = f"{title}\n\n" + "\n".join(lines)
     rows = action_rows + [footer]
     return text, InlineKeyboardMarkup(rows)
 
 
-async def sessions_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /sessions — show dashboard of all bound sessions."""
+async def sessions_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /sessions — show dashboard of all bound sessions.
+
+    In a guest chat a guest may use it too (acting as the owner, scoped to the
+    chat), and ``/sessions new`` starts a session there with the guest launcher.
+    """
     user = update.effective_user
     if not user or not update.message:
         return
 
+    chat = update.effective_chat
+    chat_id = chat.id if chat else None
+    acting_id = user.id
     if not config.is_user_allowed(user.id):
-        await safe_reply(update.message, "You are not authorized to use this bot.")
+        owner_id = guest_access.owner_for(user.id, chat_id)
+        if owner_id is None:
+            await safe_reply(update.message, "You are not authorized to use this bot.")
+            return
+        acting_id = owner_id
+
+    args = getattr(context, "args", None) or []
+    if guest_scope.is_guest_chat(chat_id) and args and args[0].lower() == "new":
+        assert chat_id is not None
+        reply = await guest_sessions.start_guest_session(
+            chat_id, adapter_for(context.bot_data)
+        )
+        await safe_reply(update.message, reply)
         return
 
-    chat = update.effective_chat
-    text, keyboard = await _build_dashboard(user.id, chat.id if chat else None)
+    text, keyboard = await _build_dashboard(acting_id, chat_id)
     await safe_reply(update.message, text, reply_markup=keyboard)
 
 
@@ -171,6 +200,20 @@ async def handle_sessions_refresh(query: CallbackQuery, user_id: int) -> None:
     """Handle refresh button — re-render the dashboard in-place."""
     text, keyboard = await _build_dashboard(user_id, _chat_of(query))
     await safe_edit(query, text, reply_markup=keyboard)
+
+
+async def handle_sessions_new(
+    query: CallbackQuery, user_id: int, adapter: TelegramSessionAdapter
+) -> None:
+    """New Session button: start a guest session in a guest chat, else explain."""
+    chat_id = _chat_of(query)
+    if not (guest_scope.is_guest_chat(chat_id) and config.guest_launch_command):
+        await query.answer("Create a new topic to start a session.")
+        return
+    assert chat_id is not None
+    reply = await guest_sessions.start_guest_session(chat_id, adapter)
+    await query.answer(reply, show_alert=True)
+    await handle_sessions_refresh(query, user_id)
 
 
 async def handle_sessions_kill(
@@ -287,25 +330,27 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not user:
         return
+    # A guest's press in a guest chat acts as the owner (callback_registry).
+    uid = callback_user_id(update) or user.id
 
-    data = resolve_callback_data(query.data, user.id, user_owns_window)
+    data = resolve_callback_data(query.data, uid, user_owns_window)
     if data is None:
         await query.answer("This button has expired", show_alert=True)
         return
 
     if data == CB_SESSIONS_REFRESH:
-        await handle_sessions_refresh(query, user.id)
+        await handle_sessions_refresh(query, uid)
         await query.answer("Refreshed")
     elif data == CB_SESSIONS_NEW:
-        await query.answer("Create a new topic to start a session.")
+        await handle_sessions_new(query, uid, adapter_for(context.bot_data))
     elif data.startswith(CB_SESSIONS_KILL_CONFIRM):
         window_id = data[len(CB_SESSIONS_KILL_CONFIRM) :]
-        if not user_owns_window(user.id, window_id):
+        if not user_owns_window(uid, window_id):
             await query.answer("Not your session", show_alert=True)
             return
         await handle_sessions_kill_confirm(
             query,
-            user.id,
+            uid,
             window_id,
             PTBTelegramClient(context.bot),
             adapter_for(context.bot_data),
@@ -313,8 +358,8 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await query.answer("Killed")
     elif data.startswith(CB_SESSIONS_KILL):
         window_id = data[len(CB_SESSIONS_KILL) :]
-        if not user_owns_window(user.id, window_id):
+        if not user_owns_window(uid, window_id):
             await query.answer("Not your session", show_alert=True)
             return
-        await handle_sessions_kill(query, user.id, window_id)
+        await handle_sessions_kill(query, uid, window_id)
         await query.answer()

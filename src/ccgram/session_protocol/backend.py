@@ -121,6 +121,10 @@ class CreationOptions:
     approval_mode: Literal["normal", "yolo"] = "normal"
     resume_id: str | None = None
     continue_session: bool = False
+    # A complete launch command used as is (no provider flags or arguments),
+    # e.g. a guest launcher that applies its own restricted settings. Only
+    # in-process callers can set it; remote creation never carries options.
+    launch_command: str | None = None
 
 
 class SessionBackend(Protocol):
@@ -566,6 +570,20 @@ class MultiplexerSessionBackend:
             raise ProtocolError(
                 422, "unsupported_action", "Provider does not support continue"
             )
+        if options is not None and options.launch_command:
+            if approval_mode != "normal" or resume_id or continue_session:
+                raise ProtocolError(
+                    400,
+                    "invalid_request",
+                    "A custom launch command takes no mode, resume or continue",
+                )
+            if data.get("worktree"):
+                raise ProtocolError(
+                    422,
+                    "unsupported_action",
+                    "A custom launch command cannot create a worktree",
+                )
+            return approval_mode, options.launch_command, ""
         command = resolve_launch_command(provider, approval_mode=approval_mode)
         arguments = candidate.make_launch_args(
             resume_id=resume_id, use_continue=continue_session
