@@ -23,6 +23,9 @@ GUEST = 555
 GUEST_CHAT = -1009990001
 OWN_CHAT = -1004477516122
 LAUNCH = "/admin/start-friend.sh {label}"
+CODEX_LAUNCH = "/admin/start-friend-codex.sh {label}"
+# Captured before the fixture replaces it.
+_REAL_SEED_TRUST = guest_sessions._seed_trust
 WORKSPACE = WorkspaceRef(workspace_id="sp-xy", label="XY", cwd="/friends/XY")
 
 
@@ -56,6 +59,7 @@ def world(monkeypatch: pytest.MonkeyPatch, tmp_path) -> Iterator[World]:
     monkeypatch.setattr(config, "allowed_users", {OWNER})
     monkeypatch.setattr(config, "group_id", None)
     monkeypatch.setattr(config, "guest_launch_command", LAUNCH)
+    monkeypatch.setattr(config, "guest_codex_launch_command", CODEX_LAUNCH)
     monkeypatch.setattr(config, "guest_max_sessions", 3)
     w = World()
     monkeypatch.setattr(
@@ -75,7 +79,7 @@ def world(monkeypatch: pytest.MonkeyPatch, tmp_path) -> Iterator[World]:
 
 async def test_start_runs_the_guest_launcher_in_the_chats_workspace(world) -> None:
     reply = await guest_sessions.start_guest_session(GUEST_CHAT, world)
-    assert reply == guest_sessions.STARTED.format(count=1, max=3)
+    assert reply == guest_sessions.STARTED.format(provider="Claude", count=1, max=3)
     (call,) = world.created
     assert call["directory"] == "/friends/XY"
     assert call["launch_command"] == "/admin/start-friend.sh XY"
@@ -129,11 +133,60 @@ async def test_disabled_without_a_launch_command(
     world, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(config, "guest_launch_command", "")
+    monkeypatch.setattr(config, "guest_codex_launch_command", "")
     assert (
         await guest_sessions.start_guest_session(GUEST_CHAT, world)
         == guest_sessions.DISABLED
     )
     assert world.created == []
+
+
+async def test_codex_runs_the_codex_launcher(world) -> None:
+    reply = await guest_sessions.start_guest_session(GUEST_CHAT, world, "codex")
+    assert reply == guest_sessions.STARTED.format(provider="Codex", count=1, max=3)
+    (call,) = world.created
+    assert call["provider"] == "codex"
+    assert call["launch_command"] == "/admin/start-friend-codex.sh XY"
+    assert call["directory"] == "/friends/XY"
+
+
+async def test_codex_without_its_launcher_is_refused(
+    world, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(config, "guest_codex_launch_command", "")
+    reply = await guest_sessions.start_guest_session(GUEST_CHAT, world, "codex")
+    assert reply == guest_sessions.DISABLED_PROVIDER.format(provider="Codex")
+    assert world.created == []
+
+
+async def test_unknown_agent_is_refused(world) -> None:
+    reply = await guest_sessions.start_guest_session(GUEST_CHAT, world, "gemini")
+    assert reply.startswith("Starting gemini sessions")
+    assert world.created == []
+
+
+async def test_the_limit_counts_both_agents_together(world) -> None:
+    await guest_sessions.start_guest_session(GUEST_CHAT, world, "claude")
+    await guest_sessions.start_guest_session(GUEST_CHAT, world, "codex")
+    await guest_sessions.start_guest_session(GUEST_CHAT, world, "codex")
+    reply = await guest_sessions.start_guest_session(GUEST_CHAT, world, "claude")
+    assert reply.startswith("This chat already has 3 sessions")
+    assert [c["provider"] for c in world.created] == ["claude", "codex", "codex"]
+
+
+async def test_trust_is_seeded_for_claude_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Codex guests trust their folder in their own CODEX_HOME; seeding would
+    # write the owner's ~/.codex/config.toml instead.
+    seeded: list[str] = []
+    monkeypatch.setattr(
+        "ccgram.agent_startup.preseed_trust",
+        lambda provider, _folder: seeded.append(provider),
+    )
+    await _REAL_SEED_TRUST("codex", "/friends/XY")
+    await _REAL_SEED_TRUST("claude", "/friends/XY")
+    assert seeded == ["claude"]
 
 
 async def test_not_a_guest_chat_is_disabled(world) -> None:
@@ -180,7 +233,14 @@ async def test_guest_sessions_new_starts_one(world, replies) -> None:
     await sessions_dashboard.sessions_command(update, context)
     assert len(world.created) == 1
     assert replies.await_args is not None
-    assert replies.await_args.args[1].startswith("Starting a new session")
+    assert replies.await_args.args[1].startswith("Starting a new Claude session")
+
+
+async def test_guest_sessions_new_codex_starts_codex(world, replies) -> None:
+    access.allow(OWNER, GUEST, GUEST_CHAT, "XY")
+    update, context = _command(GUEST, GUEST_CHAT, "new", "codex")
+    await sessions_dashboard.sessions_command(update, context)
+    assert [c["provider"] for c in world.created] == ["codex"]
 
 
 async def test_stranger_cannot_start_one(world, replies) -> None:
@@ -245,7 +305,15 @@ def seen(monkeypatch: pytest.MonkeyPatch, world) -> list[int | None]:
     return acted
 
 
-@pytest.mark.parametrize("data", [CB_SESSIONS_NEW, CB_SESSIONS_REFRESH])
+@pytest.mark.parametrize(
+    "data",
+    [
+        CB_SESSIONS_NEW,
+        f"{CB_SESSIONS_NEW}:claude",
+        f"{CB_SESSIONS_NEW}:codex",
+        CB_SESSIONS_REFRESH,
+    ],
+)
 async def test_guest_may_press_chat_buttons(seen, data) -> None:
     access.allow(OWNER, GUEST, GUEST_CHAT, "XY")
     update, _query = _callback(GUEST, data)
@@ -266,3 +334,53 @@ async def test_guest_cannot_end_the_owners_other_sessions(seen) -> None:
     await callback_registry.dispatch(update, MagicMock())
     assert seen == []
     query.answer.assert_awaited_once_with("Only the owner can use these buttons.")
+
+
+async def test_guest_cannot_press_a_forged_new_button(seen) -> None:
+    access.allow(OWNER, GUEST, GUEST_CHAT, "XY")
+    update, query = _callback(GUEST, f"{CB_SESSIONS_NEW}:gemini")
+    await callback_registry.dispatch(update, MagicMock())
+    assert seen == []
+    query.answer.assert_awaited_once_with("Only the owner can use these buttons.")
+
+
+# --- the guest dashboard ----------------------------------------------------------
+
+
+def _button_rows(keyboard) -> list[list[tuple[str, str]]]:
+    return [
+        [(b.text, b.callback_data) for b in row] for row in keyboard.inline_keyboard
+    ]
+
+
+async def test_guest_dashboard_offers_one_start_button_per_agent(world) -> None:
+    text, keyboard = await sessions_dashboard._build_dashboard(OWNER, GUEST_CHAT)
+    assert "Start one with a button below" in text
+    assert _button_rows(keyboard) == [
+        [("\U0001f504 Refresh", CB_SESSIONS_REFRESH)],
+        [
+            ("\u2795 Claude", f"{CB_SESSIONS_NEW}:claude"),
+            ("\u2795 Codex", f"{CB_SESSIONS_NEW}:codex"),
+        ],
+    ]
+
+
+async def test_guest_dashboard_hides_agents_without_a_launcher(
+    world, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(config, "guest_codex_launch_command", "")
+    _text, keyboard = await sessions_dashboard._build_dashboard(OWNER, GUEST_CHAT)
+    assert _button_rows(keyboard)[-1] == [
+        ("\u2795 Claude", f"{CB_SESSIONS_NEW}:claude")
+    ]
+
+
+async def test_codex_button_starts_codex(
+    world, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    query = MagicMock()
+    query.answer = AsyncMock()
+    query.message = SimpleNamespace(chat=SimpleNamespace(id=GUEST_CHAT))
+    monkeypatch.setattr(sessions_dashboard, "safe_edit", AsyncMock())
+    await sessions_dashboard.handle_sessions_new(query, OWNER, world, "codex")
+    assert [c["provider"] for c in world.created] == ["codex"]

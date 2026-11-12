@@ -733,6 +733,49 @@ class TestCodexDiscoverTranscript:
         assert event is not None
         assert event.session_id == "uuid-new"
 
+    def test_searches_configured_codex_homes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A guest's Codex runs with its own CODEX_HOME; a glob covers them all.
+        guest_sessions = tmp_path / "admin" / "codex" / "XY" / ".codex" / "sessions"
+        fpath = _write_codex_session(
+            guest_sessions, "2026/11/12", "guest", "uuid-guest", "/friends/XY"
+        )
+        from ccgram.config import config
+
+        monkeypatch.setattr(
+            config,
+            "codex_session_dirs",
+            [str(tmp_path / "admin" / "codex" / "*" / ".codex" / "sessions")],
+        )
+        codex = CodexProvider()
+        with patch.object(Path, "home", return_value=tmp_path / "home"):
+            event = codex.discover_transcript("/friends/XY", "hc:hc-t50")
+        assert event is not None
+        assert event.session_id == "uuid-guest"
+        assert event.transcript_path == str(fpath)
+
+    def test_newest_match_wins_across_codex_homes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        own = _write_codex_session(
+            tmp_path / ".codex" / "sessions", "2026/11/12", "a", "uuid-own", "/p"
+        )
+        _write_codex_session(
+            tmp_path / "guest" / "sessions", "2026/11/12", "b", "uuid-guest", "/p"
+        )
+        os.utime(own, (own.stat().st_mtime - 50, own.stat().st_mtime - 50))
+        from ccgram.config import config
+
+        monkeypatch.setattr(
+            config, "codex_session_dirs", [str(tmp_path / "guest" / "sessions")]
+        )
+        codex = CodexProvider()
+        with patch.object(Path, "home", return_value=tmp_path):
+            event = codex.discover_transcript("/p", "ccgram:@7")
+        assert event is not None
+        assert event.session_id == "uuid-guest"
+
     def test_skips_non_session_meta_first_line(self, tmp_path: Path) -> None:
         sessions_dir = tmp_path / ".codex" / "sessions" / "2026" / "03" / "02"
         sessions_dir.mkdir(parents=True)

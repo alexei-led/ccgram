@@ -43,7 +43,14 @@ GUEST_BUTTON_PREFIXES = (
     CB_SESSIONS_KILL,
 )
 # Whole-chat /sessions buttons a guest may press; they act on the chat itself.
-GUEST_CHAT_BUTTONS = frozenset({CB_SESSIONS_REFRESH, CB_SESSIONS_NEW})
+GUEST_CHAT_BUTTONS = frozenset(
+    {
+        CB_SESSIONS_REFRESH,
+        CB_SESSIONS_NEW,
+        f"{CB_SESSIONS_NEW}:claude",
+        f"{CB_SESSIONS_NEW}:codex",
+    }
+)
 
 if TYPE_CHECKING:
     from telegram.ext import ContextTypes

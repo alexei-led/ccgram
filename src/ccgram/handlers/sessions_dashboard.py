@@ -63,6 +63,21 @@ _REFRESH_BTN = InlineKeyboardButton(
 )
 _NEW_BTN = InlineKeyboardButton("\u2795 New Session", callback_data=CB_SESSIONS_NEW)
 
+_PROVIDER_LABELS = {"claude": "Claude", "codex": "Codex"}
+
+
+def _guest_footer() -> list[list[InlineKeyboardButton]]:
+    """Refresh, then one ➕ per agent a guest chat can start."""
+    starts = [
+        InlineKeyboardButton(
+            f"\u2795 {_PROVIDER_LABELS.get(p, p)}",
+            callback_data=f"{CB_SESSIONS_NEW}:{p}",
+        )
+        for p in guest_sessions.enabled_providers()
+    ]
+    return [[_REFRESH_BTN], starts] if starts else [[_REFRESH_BTN]]
+
+
 # Green running, black stopped, white when the multiplexer could not be asked.
 _LIVENESS_MARKER = {True: "\U0001f7e2", False: "\u26ab", None: "\u26aa"}
 
@@ -77,25 +92,25 @@ async def _build_dashboard(
     """Build dashboard text and keyboard for a user's sessions.
 
     In a guest chat every member sees the dashboard, so it lists only the
-    sessions bound in that chat, with a count against the chat's limit; New
-    Session there starts one with the guest launcher (when configured).
+    sessions bound in that chat, with a count against the chat's limit; the
+    ➕ Claude / ➕ Codex buttons there start one with the guest launchers
+    (those configured).
     """
     bindings = thread_router.get_all_thread_windows(user_id)
-    footer = [_REFRESH_BTN, _NEW_BTN]
+    footer: list[list[InlineKeyboardButton]] = [[_REFRESH_BTN, _NEW_BTN]]
     guest_chat = guest_scope.is_guest_chat(chat_id)
+    can_start = guest_chat and bool(guest_sessions.enabled_providers())
     if guest_chat:
         assert chat_id is not None
         here = guest_scope.windows_in_chat(chat_id)
         bindings = {tid: wid for tid, wid in bindings.items() if wid in here}
-        footer = (
-            [_REFRESH_BTN, _NEW_BTN] if config.guest_launch_command else [_REFRESH_BTN]
-        )
+        footer = _guest_footer()
 
     if not bindings:
-        keyboard = InlineKeyboardMarkup([footer])
+        keyboard = InlineKeyboardMarkup(footer)
         empty = (
-            "No sessions here yet.\n\nStart one with /sessions new."
-            if guest_chat and config.guest_launch_command
+            "No sessions here yet.\n\nStart one with a button below."
+            if can_start
             else "No active sessions.\n\nCreate a new topic to start a session."
         )
         return empty, keyboard
@@ -159,7 +174,7 @@ async def _build_dashboard(
     if guest_chat:
         title += f" ({len(action_rows)}/{config.guest_max_sessions})"
     text = f"{title}\n\n" + "\n".join(lines)
-    rows = action_rows + [footer]
+    rows = action_rows + footer
     return text, InlineKeyboardMarkup(rows)
 
 
@@ -167,7 +182,8 @@ async def sessions_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     """Handle /sessions — show dashboard of all bound sessions.
 
     In a guest chat a guest may use it too (acting as the owner, scoped to the
-    chat), and ``/sessions new`` starts a session there with the guest launcher.
+    chat), and ``/sessions new [claude|codex]`` starts a session there with the
+    guest launcher for that agent (Claude when none is named).
     """
     user = update.effective_user
     if not user or not update.message:
@@ -186,8 +202,9 @@ async def sessions_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     args = getattr(context, "args", None) or []
     if guest_scope.is_guest_chat(chat_id) and args and args[0].lower() == "new":
         assert chat_id is not None
+        provider = args[1].lower() if len(args) > 1 else "claude"
         reply = await guest_sessions.start_guest_session(
-            chat_id, adapter_for(context.bot_data)
+            chat_id, adapter_for(context.bot_data), provider
         )
         await safe_reply(update.message, reply)
         return
@@ -203,15 +220,18 @@ async def handle_sessions_refresh(query: CallbackQuery, user_id: int) -> None:
 
 
 async def handle_sessions_new(
-    query: CallbackQuery, user_id: int, adapter: TelegramSessionAdapter
+    query: CallbackQuery,
+    user_id: int,
+    adapter: TelegramSessionAdapter,
+    provider: str = "claude",
 ) -> None:
-    """New Session button: start a guest session in a guest chat, else explain."""
+    """➕ button: start a guest session in a guest chat, else explain."""
     chat_id = _chat_of(query)
-    if not (guest_scope.is_guest_chat(chat_id) and config.guest_launch_command):
+    if not (guest_scope.is_guest_chat(chat_id) and guest_sessions.enabled_providers()):
         await query.answer("Create a new topic to start a session.")
         return
     assert chat_id is not None
-    reply = await guest_sessions.start_guest_session(chat_id, adapter)
+    reply = await guest_sessions.start_guest_session(chat_id, adapter, provider)
     await query.answer(reply, show_alert=True)
     await handle_sessions_refresh(query, user_id)
 
@@ -250,7 +270,11 @@ async def handle_sessions_kill_confirm(
     client: TelegramClient,
     adapter: TelegramSessionAdapter,
 ) -> None:
-    """Second tap — kill the tmux window, unbind all users, refresh dashboard."""
+    """Second tap: end the session's program, unbind it, refresh the dashboard.
+
+    Its topics are closed, not deleted, so the conversation stays readable in
+    the group; the agent's own transcript is never touched either.
+    """
     display = thread_router.get_display_name(window_id)
 
     # find_window_by_id answers None both for a window that is gone and for a
@@ -299,6 +323,8 @@ async def handle_sessions_kill_confirm(
                 router=thread_router,
                 chat_id=chat_id,
                 before_delete=clear_state_before_delete,
+                retirement_reason="session_killed",
+                keep_topic=True,
             )
 
     session_manager.flush_state()
@@ -314,7 +340,11 @@ async def handle_sessions_kill_confirm(
     # Re-render dashboard
     text, keyboard = await _build_dashboard(user_id, _chat_of(query))
     headline = "\U0001f5d1 Killed" if presence else "\U0001f5d1 Was already gone:"
-    await safe_edit(query, f"{headline} '{display}'\n\n{text}", reply_markup=keyboard)
+    await safe_edit(
+        query,
+        f"{headline} '{display}' (its topic is closed and kept)\n\n{text}",
+        reply_markup=keyboard,
+    )
 
 
 @register(
@@ -341,8 +371,10 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if data == CB_SESSIONS_REFRESH:
         await handle_sessions_refresh(query, uid)
         await query.answer("Refreshed")
-    elif data == CB_SESSIONS_NEW:
-        await handle_sessions_new(query, uid, adapter_for(context.bot_data))
+    elif data == CB_SESSIONS_NEW or data.startswith(f"{CB_SESSIONS_NEW}:"):
+        # "sess:new" (older dashboards) means Claude; "sess:new:<provider>".
+        provider = data[len(CB_SESSIONS_NEW) + 1 :] or "claude"
+        await handle_sessions_new(query, uid, adapter_for(context.bot_data), provider)
     elif data.startswith(CB_SESSIONS_KILL_CONFIRM):
         window_id = data[len(CB_SESSIONS_KILL_CONFIRM) :]
         if not user_owns_window(uid, window_id):

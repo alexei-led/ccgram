@@ -352,6 +352,18 @@ class Config:
         # Command a guest's "/sessions new" runs in the chat's workspace; "{label}"
         # becomes the chat's label (shell-quoted). Empty: guests cannot start one.
         self.guest_launch_command = os.getenv("CCGRAM_GUEST_LAUNCH_COMMAND", "").strip()
+        # The same for a guest's Codex session ("/sessions new codex" or the
+        # ➕ Codex button). Empty: guests can start Claude sessions only.
+        self.guest_codex_launch_command = os.getenv(
+            "CCGRAM_GUEST_CODEX_LAUNCH_COMMAND", ""
+        ).strip()
+        # Further Codex session folders (globs allowed) for Codex runs with their
+        # own CODEX_HOME, e.g. guests; ~/.codex/sessions is always searched.
+        self.codex_session_dirs = [
+            os.path.expanduser(entry.strip())
+            for entry in os.getenv("CCGRAM_CODEX_SESSION_DIRS", "").split(",")
+            if entry.strip()
+        ]
         # Most sessions a guest chat may have at once (live or still starting).
         self.guest_max_sessions = _positive_int(
             os.getenv("CCGRAM_GUEST_MAX_SESSIONS", ""), default=3

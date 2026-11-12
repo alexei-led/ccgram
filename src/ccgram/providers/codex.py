@@ -13,6 +13,7 @@ Modern Codex ``response_item`` payloads use typed shapes:
   - ``type=function_call_output`` with ``call_id``, ``output``
 """
 
+import glob
 import json
 from pathlib import Path
 from typing import Any
@@ -79,6 +80,25 @@ def _collect_codex_sessions(sessions_dir: Path) -> list[tuple[float, Path]]:
             continue
     result.sort(reverse=True)
     return result
+
+
+def codex_session_roots() -> list[Path]:
+    """Existing Codex session folders: ~/.codex/sessions plus configured ones.
+
+    ``CCGRAM_CODEX_SESSION_DIRS`` adds folders (globs allowed) for Codex runs
+    with their own ``CODEX_HOME``, such as guest sessions.
+    """
+    # Lazy: config reads the environment at import; providers stay import-light.
+    from ccgram.config import config
+
+    candidates = [Path.home() / ".codex" / "sessions"]
+    for pattern in config.codex_session_dirs:
+        candidates += [Path(p) for p in sorted(glob.glob(pattern))]
+    roots: list[Path] = []
+    for path in candidates:
+        if path.is_dir() and path not in roots:
+            roots.append(path)
+    return roots
 
 
 def _read_codex_session_meta(fpath: Path) -> dict[str, Any] | None:
@@ -226,7 +246,7 @@ class CodexProvider(JsonlProvider):
         *,
         max_age: float | None = None,
     ) -> SessionStartEvent | None:
-        """Scan ~/.codex/sessions/ for the most recent transcript matching cwd.
+        """Scan the Codex session folders for the newest transcript matching cwd.
 
         Codex transcript path: ~/.codex/sessions/YYYY/MM/DD/<name>-<ts>-<uuid>.jsonl
         First line: {"type": "session_meta", "payload": {"id": "<uuid>", "cwd": "..."}}
@@ -236,8 +256,8 @@ class CodexProvider(JsonlProvider):
                 default ``_TRANSCRIPT_MAX_AGE_SECS`` (120s). Pass ``0`` or
                 negative to disable the age check entirely.
         """
-        sessions_dir = Path.home() / ".codex" / "sessions"
-        if not sessions_dir.is_dir():
+        roots = codex_session_roots()
+        if not roots:
             return None
 
         # Lazy: only used inside the polling branch below
@@ -245,7 +265,10 @@ class CodexProvider(JsonlProvider):
 
         age_limit = _TRANSCRIPT_MAX_AGE_SECS if max_age is None else max_age
 
-        jsonl_files = _collect_codex_sessions(sessions_dir)
+        jsonl_files = sorted(
+            (item for root in roots for item in _collect_codex_sessions(root)),
+            reverse=True,
+        )
         now = time.time()
         resolved_cwd = str(Path(cwd).resolve())
         for mtime, fpath in jsonl_files[:20]:

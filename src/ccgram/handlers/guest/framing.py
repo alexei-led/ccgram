@@ -3,7 +3,8 @@
 In a guest chat both the owner and the guest talk to the same session, so
 every forwarded message says who wrote it ("Jason: …", "QFY: …"). A guest's
 message also carries a one-line reminder that its scope is limited; the
-session's CLAUDE.md spells out that scope. The real boundary is the session's
+session's instructions file (AGENTS.md, or CLAUDE.md for Claude) spells out
+that scope. The real boundary is the session's
 permission settings: anything that needs approval still goes to the owner.
 """
 
@@ -13,7 +14,8 @@ from . import access
 
 GUEST_NOTE = (
     "[Guest message from {name}. Keep to the guest scope described in "
-    "CLAUDE.md; anything that needs approval goes to the owner, who decides.]"
+    "AGENTS.md / CLAUDE.md; anything that needs approval goes to the owner, "
+    "who decides.]"
 )
 
 

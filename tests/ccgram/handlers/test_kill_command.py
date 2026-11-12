@@ -11,6 +11,7 @@ from ccgram.handlers.sessions_dashboard import (
     handle_sessions_kill,
     handle_sessions_kill_confirm,
 )
+from ccgram.handlers.topics.topic_deletion import cleanup_retired_topics
 from ccgram.session import WindowState
 from ccgram.telegram_rate_limiter import NO_RETRY_RATE_LIMIT_ARGS
 from ccgram.thread_router import ThreadRouter
@@ -91,15 +92,16 @@ class TestHandleSessionsKillConfirm:
             await handle_sessions_kill_confirm(query, 100, "@5", bot, adapter)
 
         adapter.close.assert_awaited_once_with("@5")
+        # Topics are closed and kept (readable history), never deleted.
         assert {
             (call.args[0], call.args[1], call.kwargs["rate_limit_args"])
-            for call in bot.delete_forum_topic.await_args_list
+            for call in bot.close_forum_topic.await_args_list
         } == {
             (-100, 42, NO_RETRY_RATE_LIMIT_ARGS),
             (-200, 99, NO_RETRY_RATE_LIMIT_ARGS),
         }
         assert mock_clear.call_count == 2
-        bot.close_forum_topic.assert_not_awaited()
+        bot.delete_forum_topic.assert_not_awaited()
         assert router.get_window_for_chat_thread(-100, 42) is None
         assert router.get_window_for_chat_thread(-200, 99) is None
         assert router.get_window_for_chat_thread(-300, 10) == "@9"
@@ -127,14 +129,17 @@ class TestHandleSessionsKillConfirm:
             await handle_sessions_kill_confirm(query, 100, "@5", bot, adapter)
 
         adapter.close.assert_not_awaited()
-        bot.delete_forum_topic.assert_awaited_once_with(
+        bot.close_forum_topic.assert_awaited_once_with(
             -999, 42, rate_limit_args=NO_RETRY_RATE_LIMIT_ARGS
         )
+        bot.delete_forum_topic.assert_not_awaited()
         assert "Was already gone" in edit.call_args.args[1]
         assert router.get_window_for_chat_thread(-999, 42) is None
         assert list(router.iter_retired_topics()) == []
 
-    async def test_failed_topic_delete_keeps_pending_record(self, _patch_deps) -> None:
+    async def test_failed_topic_close_still_unbinds_and_queues_nothing(
+        self, _patch_deps
+    ) -> None:
         _, _, mock_tm, mock_clear = _patch_deps
         router = self._router()
         router.bind_thread(100, 42, "@5", chat_id=-999)
@@ -142,7 +147,6 @@ class TestHandleSessionsKillConfirm:
 
         query = AsyncMock()
         bot = AsyncMock()
-        bot.delete_forum_topic.side_effect = TelegramError("Forbidden")
         bot.close_forum_topic.side_effect = TelegramError("Forbidden")
         with (
             patch("ccgram.handlers.sessions_dashboard.safe_edit"),
@@ -158,18 +162,37 @@ class TestHandleSessionsKillConfirm:
             await handle_sessions_kill_confirm(query, 100, "@5", bot, adapter)
 
         adapter.close.assert_awaited_once_with("@5")
-        bot.delete_forum_topic.assert_awaited_once_with(
-            -999, 42, rate_limit_args=NO_RETRY_RATE_LIMIT_ARGS
-        )
         bot.close_forum_topic.assert_awaited_once_with(
             -999, 42, rate_limit_args=NO_RETRY_RATE_LIMIT_ARGS
         )
+        bot.delete_forum_topic.assert_not_awaited()
         assert mock_clear.await_count == 1
         assert router.get_window_for_chat_thread(-999, 42) is None
-        pending = next(router.iter_retired_topics())
-        assert pending.reason == "session_closed"
-        assert pending.cleanup_eligible is True
-        assert pending.closed is False
+        # Nothing left for a later sweep to delete.
+        assert list(router.iter_retired_topics()) == []
+
+    async def test_a_kept_topic_is_not_deleted_by_a_later_sweep(
+        self, _patch_deps
+    ) -> None:
+        router = self._router()
+        router.bind_thread(100, 42, "@5", chat_id=-999)
+        adapter = _core_adapter()
+        bot = AsyncMock()
+        with (
+            patch("ccgram.handlers.sessions_dashboard.safe_edit"),
+            patch("ccgram.handlers.sessions_dashboard.thread_router", router),
+            patch("ccgram.handlers.sessions_dashboard.session_manager"),
+            patch(
+                "ccgram.handlers.sessions_dashboard.window_presence",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch("ccgram.handlers.topics.topic_deletion.session_manager"),
+        ):
+            await handle_sessions_kill_confirm(AsyncMock(), 100, "@5", bot, adapter)
+            await cleanup_retired_topics(bot, router=router, include_closed=True)
+
+        bot.delete_forum_topic.assert_not_awaited()
 
     async def test_refreshes_dashboard_after_kill(self, _patch_deps) -> None:
         _mock_sm, mock_tr, mock_tm, _ = _patch_deps
@@ -214,15 +237,16 @@ class TestHandleSessionsKillConfirm:
             )
 
         adapter.close.assert_awaited_once_with("9f1c2d3e-4a5b")
+        # Topics are closed and kept (readable history), never deleted.
         assert {
             (call.args[0], call.args[1], call.kwargs["rate_limit_args"])
-            for call in bot.delete_forum_topic.await_args_list
+            for call in bot.close_forum_topic.await_args_list
         } == {
             (-100, 42, NO_RETRY_RATE_LIMIT_ARGS),
             (-200, 99, NO_RETRY_RATE_LIMIT_ARGS),
         }
         assert mock_clear.call_count == 2
-        bot.close_forum_topic.assert_not_awaited()
+        bot.delete_forum_topic.assert_not_awaited()
         assert router.get_window_for_chat_thread(-100, 42) is None
         assert router.get_window_for_chat_thread(-200, 99) is None
         assert list(router.iter_retired_topics()) == []

@@ -30,8 +30,13 @@ async def retire_topic_binding(
     chat_id: int | None = None,
     before_delete: Callable[[], Awaitable[None]] | None = None,
     retirement_reason: str = "session_closed",
+    keep_topic: bool = False,
 ) -> str:
-    """Retire an exact confirmed-dead binding before any asynchronous cleanup."""
+    """Retire an exact confirmed-dead binding before any asynchronous cleanup.
+
+    With *keep_topic* the topic is closed instead of deleted, so its messages
+    stay readable in the group; nothing is queued for later deletion.
+    """
     if router.has_target_provisioning(window_id) is True:
         return "protected_provisioning"
     if (
@@ -66,7 +71,7 @@ async def retire_topic_binding(
         thread_id,
         chat_id=binding_chat,
         retirement_reason=retirement_reason,
-        cleanup_eligible=True,
+        cleanup_eligible=not keep_topic,
     )
     session_manager.flush_state()
     retired = next(
@@ -76,9 +81,49 @@ async def retire_topic_binding(
         and topic.chat_id == exact_chat
         and topic.thread_id == thread_id
     )
+    if keep_topic:
+        return await _close_kept_topic(
+            client, retired, router=router, before_close=before_delete
+        )
     return await cleanup_retired_topic(
         client, retired, router=router, before_delete=before_delete
     )
+
+
+async def _close_kept_topic(
+    client: TelegramClient,
+    topic: RetiredTopic,
+    *,
+    router: ThreadRouter,
+    before_close: Callable[[], Awaitable[None]] | None,
+) -> str:
+    """Close a retired topic and forget the record; the topic itself stays."""
+    if before_close is not None:
+        await before_close()
+    outcome = "closed"
+    try:
+        await client.close_forum_topic(
+            topic.chat_id, topic.thread_id, rate_limit_args=NO_RETRY_RATE_LIMIT_ARGS
+        )
+    except TelegramError as exc:
+        already_closed = isinstance(exc, BadRequest) and exc.message.lower().replace(
+            " ", "_"
+        ) in {"topic_not_modified", "topic_closed"}
+        if is_thread_gone(exc):
+            outcome = "already_gone"
+        elif not already_closed:
+            # The binding is gone either way; an open, unbound topic is only
+            # untidy, and retrying here would hold the caller.
+            logger.warning(
+                "Could not close a kept topic",
+                chat_id=topic.chat_id,
+                thread_id=topic.thread_id,
+                error=str(exc),
+            )
+            outcome = "close_failed"
+    router.discard_retired_topic(topic)
+    session_manager.flush_state()
+    return outcome
 
 
 def is_cleanup_candidate(topic: RetiredTopic, *, include_closed: bool = False) -> bool:
