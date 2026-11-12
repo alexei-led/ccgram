@@ -295,6 +295,10 @@ sessions in a dedicated forum group listed in `CCGRAM_GUEST_CHATS`.
   reply. There is no Get File; the session delivers files by saving them to `outbox/` in its
   folder, and CCGram posts each one to the topic (then moves it to `outbox/sent/`). Links are
   refused. Buttons on screenshots (keys) stay the owner's.
+- Everything posted in a guest group is visible to every member, so the group only ever sees
+  the sessions bound in it: `/sessions` there lists only those (and offers no New Session),
+  `/bind` and `/sync` (which survey every window and topic) are refused, and a guest's button
+  press works only for a session bound in that group, whatever the button data says.
 - CCGram never starts a session in a guest group. Start it on the computer with settings meant
   for a guest, e.g. `claude --setting-sources project --strict-mcp-config --permission-mode
   acceptEdits` in a dedicated folder whose `.claude/settings.json` holds the CCGram hooks,

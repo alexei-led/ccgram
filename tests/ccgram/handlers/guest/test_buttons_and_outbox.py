@@ -86,6 +86,12 @@ def seen(monkeypatch: pytest.MonkeyPatch) -> list[int | None]:
 
     monkeypatch.setattr(callback_registry, "_find_handler", lambda _d: handler)
     monkeypatch.setattr(callback_registry, "thread_router", MagicMock())
+    # The guest's session is bound in the guest chat (guest.scope checks it).
+    monkeypatch.setattr(
+        outbox.session_query,
+        "iter_bound_topics",
+        lambda: [(OWNER, GUEST_CHAT, THREAD, "hc-t9")],
+    )
     return acted
 
 

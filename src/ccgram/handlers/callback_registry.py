@@ -92,6 +92,21 @@ async def dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if owner_id is None or not query.data.startswith(GUEST_BUTTON_PREFIXES):
             await query.answer("Only the owner can use these buttons.")
             return
+        # Lazy: guest.scope imports the message sender, which reaches back here.
+        from .guest.scope import guest_target_allowed
+
+        # Only for a session bound in this guest chat, whatever the data says
+        # (a /sessions list may show other buttons, and clients can forge data).
+        if not guest_target_allowed(
+            query.data, GUEST_BUTTON_PREFIXES, owner_id, chat_id
+        ):
+            logger.warning(
+                "Guest button for a session outside this chat refused",
+                user_id=user.id,
+                chat_id=chat_id,
+            )
+            await query.answer("Only the owner can use these buttons.")
+            return
         logger.info(
             "Guest button", user_id=user.id, chat_id=chat_id, data=query.data[:16]
         )

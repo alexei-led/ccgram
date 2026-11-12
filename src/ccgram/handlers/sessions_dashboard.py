@@ -47,6 +47,7 @@ from .callback_helpers import user_owns_window
 from .callback_tokens import compact_callback_data, resolve_callback_data
 from .callback_registry import register
 from .cleanup import clear_topic_state
+from .guest import scope as guest_scope
 from .topics.topic_deletion import cleanup_retired_topics, retire_topic_binding
 from .messaging_pipeline.message_sender import safe_edit, safe_reply
 
@@ -64,12 +65,28 @@ _NEW_BTN = InlineKeyboardButton("\u2795 New Session", callback_data=CB_SESSIONS_
 _LIVENESS_MARKER = {True: "\U0001f7e2", False: "\u26ab", None: "\u26aa"}
 
 
-async def _build_dashboard(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
-    """Build dashboard text and keyboard for a user's sessions."""
+def _chat_of(query: CallbackQuery) -> int | None:
+    return query.message.chat.id if query.message else None
+
+
+async def _build_dashboard(
+    user_id: int, chat_id: int | None = None
+) -> tuple[str, InlineKeyboardMarkup]:
+    """Build dashboard text and keyboard for a user's sessions.
+
+    In a guest chat every member sees the dashboard, so it lists only the
+    sessions bound in that chat and offers no New Session button.
+    """
     bindings = thread_router.get_all_thread_windows(user_id)
+    footer = [_REFRESH_BTN, _NEW_BTN]
+    if guest_scope.is_guest_chat(chat_id):
+        assert chat_id is not None
+        here = guest_scope.windows_in_chat(chat_id)
+        bindings = {tid: wid for tid, wid in bindings.items() if wid in here}
+        footer = [_REFRESH_BTN]
 
     if not bindings:
-        keyboard = InlineKeyboardMarkup([[_REFRESH_BTN, _NEW_BTN]])
+        keyboard = InlineKeyboardMarkup([footer])
         return (
             "No active sessions.\n\nCreate a new topic to start a session.",
             keyboard,
@@ -131,7 +148,7 @@ async def _build_dashboard(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
             action_rows.append(row)
 
     text = "Sessions\n\n" + "\n".join(lines)
-    rows = action_rows + [[_REFRESH_BTN, _NEW_BTN]]
+    rows = action_rows + [footer]
     return text, InlineKeyboardMarkup(rows)
 
 
@@ -145,13 +162,14 @@ async def sessions_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) 
         await safe_reply(update.message, "You are not authorized to use this bot.")
         return
 
-    text, keyboard = await _build_dashboard(user.id)
+    chat = update.effective_chat
+    text, keyboard = await _build_dashboard(user.id, chat.id if chat else None)
     await safe_reply(update.message, text, reply_markup=keyboard)
 
 
 async def handle_sessions_refresh(query: CallbackQuery, user_id: int) -> None:
     """Handle refresh button — re-render the dashboard in-place."""
-    text, keyboard = await _build_dashboard(user_id)
+    text, keyboard = await _build_dashboard(user_id, _chat_of(query))
     await safe_edit(query, text, reply_markup=keyboard)
 
 
@@ -251,7 +269,7 @@ async def handle_sessions_kill_confirm(
     )
 
     # Re-render dashboard
-    text, keyboard = await _build_dashboard(user_id)
+    text, keyboard = await _build_dashboard(user_id, _chat_of(query))
     headline = "\U0001f5d1 Killed" if presence else "\U0001f5d1 Was already gone:"
     await safe_edit(query, f"{headline} '{display}'\n\n{text}", reply_markup=keyboard)
 
