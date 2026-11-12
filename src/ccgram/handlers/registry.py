@@ -40,6 +40,7 @@ from .commands import (
 )
 from .file_handler import handle_document_message, handle_photo_message
 from .guest.command import guest_command
+from .guest.scope import refuse_in_guest_chats
 from .inline import inline_query_handler, unsupported_content_handler
 from .live import live_command, panes_command, screenshot_command
 from .presence.desk_mode import telegram_activity_handler
@@ -115,7 +116,7 @@ def register_all(
         CommandSpec("dashboard", dashboard_command),
         CommandSpec("resume", resume_command),
         CommandSpec("unbind", unbind_command),
-        CommandSpec("bind", bind_command),
+        CommandSpec("bind", refuse_in_guest_chats(bind_command)),
         CommandSpec("rollback", rollback_command),
         CommandSpec("upgrade", upgrade_command),
         CommandSpec("recall", recall_command),
@@ -123,7 +124,7 @@ def register_all(
         CommandSpec("live", live_command),
         CommandSpec("panes", panes_command),
         CommandSpec("split", split_command),
-        CommandSpec("sync", sync_command),
+        CommandSpec("sync", refuse_in_guest_chats(sync_command)),
         CommandSpec("toolbar", toolbar_command),
         CommandSpec("send", send_command),
         CommandSpec("verbose", verbose_command),

@@ -320,7 +320,8 @@ async def _handle_last_reply(
 ) -> None:
     """Handle CB_STATUS_LAST_REPLY: show last assistant reply or shell output."""
     window_id = data[len(CB_STATUS_LAST_REPLY) :]
-    if not user_owns_window(user_id, window_id):
+    callback_chat_id = query.message.chat.id if query.message else None
+    if not user_owns_window(user_id, window_id, callback_chat_id):
         await query.answer("Not your session", show_alert=True)
         return
     thread_id = get_thread_id(update)
