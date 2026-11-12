@@ -238,6 +238,8 @@ All settings accept both CLI flags and environment variables. CLI flags take pre
 | `CCGRAM_AWAY_IDLE_MINUTES`                            | `10`                           | Desk mode: computer idle this long counts as away (macOS; `0` disables)                              |
 | `CCGRAM_DESK_BRIEF`                                   | `off`                          | Desk mode: `dm` sends one notifying brief for all sessions to your private chat (see below)          |
 | `CCGRAM_GUEST_CHATS`                                  | _(empty)_                      | `Label=-100…` groups where guests may talk to your sessions (see Guest Chats below)                  |
+| `CCGRAM_GUEST_LAUNCH_COMMAND`                        | _(empty)_                      | Command `/sessions new` runs in a guest chat's workspace; `{label}` becomes the chat's label         |
+| `CCGRAM_GUEST_MAX_SESSIONS`                          | `3`                            | Most sessions one guest chat may have at once (live or still starting)                               |
 | `CCGRAM_HIDE_TOOL_CALLS` / `--hide-tool-calls`        | `false`                        | Set `true` to globally hide `tool_use`/`tool_result` messages (per-window override via `/toolcalls`) |
 | `CCGRAM_HIDE_THINKING` / `--hide-thinking`            | `false`                        | Set `true` to globally hide thinking messages                                                        |
 | `CCGRAM_HIDE_STATUS`                                  | `false`                        | Set `true` to suppress transient status bubbles; replies and controls remain available               |
@@ -299,7 +301,13 @@ sessions in a dedicated forum group listed in `CCGRAM_GUEST_CHATS`.
   the sessions bound in it: `/sessions` there lists only those (and offers no New Session),
   `/bind` and `/sync` (which survey every window and topic) are refused, and a guest's button
   press works only for a session bound in that group, whatever the button data says.
-- CCGram never starts a session in a guest group. Start it on the computer with settings meant
+- With `CCGRAM_GUEST_LAUNCH_COMMAND` set (e.g. `/path/start-friend.sh {label}`), anyone allowed in a
+  guest group can type `/sessions new` (or press ➕ under `/sessions`) to start a session: a new
+  tab in the workspace routed to that group runs the command, and the session shows up as a new
+  topic there a few seconds later. A group holds at most `CCGRAM_GUEST_MAX_SESSIONS` (default 3),
+  counting sessions still starting; guests can end one with 🗑 under `/sessions` to free a slot.
+  The command must start the agent with guest settings; CCGram does not add any.
+- Typing in an unbound topic never starts a session in a guest group. Start one on the computer with settings meant
   for a guest, e.g. `claude --setting-sources project --strict-mcp-config --permission-mode
   acceptEdits` in a dedicated folder whose `.claude/settings.json` holds the CCGram hooks,
   deny rules for secrets, and the read access you want to grant. Labels and the scope note are

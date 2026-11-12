@@ -988,3 +988,33 @@ async def test_prompt_setup_without_panes_rechecks_every_write(
     assert not success
     assert mux.send.await_count == after_write
     mux.send_to_pane.assert_not_awaited()
+
+
+async def test_trusted_launch_command_is_used_as_is(mux, tmp_path):
+    mux.capabilities.native_topic_targets = False
+    mux.create_window.return_value = (True, "", "", "@1")
+    await MultiplexerSessionBackend(mux, "/tmp").create(
+        {"directory": str(tmp_path), "provider": "claude"},
+        trusted_options=CreationOptions(launch_command="/admin/start-friend.sh XY"),
+    )
+    kwargs = mux.create_window.await_args.kwargs
+    assert kwargs["launch_command"] == "/admin/start-friend.sh XY"
+    assert kwargs["agent_args"] == ""
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        CreationOptions(approval_mode="yolo", launch_command="/x"),
+        CreationOptions(resume_id="r", launch_command="/x"),
+        CreationOptions(continue_session=True, launch_command="/x"),
+    ],
+)
+async def test_launch_command_refuses_mode_resume_and_continue(mux, tmp_path, options):
+    with pytest.raises(ProtocolError) as error:
+        await MultiplexerSessionBackend(mux, "/tmp").create(
+            {"directory": str(tmp_path), "provider": "claude"},
+            trusted_options=options,
+        )
+    assert error.value.status in (400, 422)
+    mux.create_window.assert_not_awaited()

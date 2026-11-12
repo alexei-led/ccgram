@@ -20,12 +20,30 @@ import structlog
 from telegram import CallbackQuery, Update
 from ..config import config
 from ..thread_router import thread_router
-from .callback_data import CB_STATUS_ESC, CB_STATUS_LAST_REPLY, CB_STATUS_SCREENSHOT
+from .callback_data import (
+    CB_SESSIONS_KILL,
+    CB_SESSIONS_KILL_CONFIRM,
+    CB_SESSIONS_NEW,
+    CB_SESSIONS_REFRESH,
+    CB_STATUS_ESC,
+    CB_STATUS_LAST_REPLY,
+    CB_STATUS_SCREENSHOT,
+)
 from .callback_helpers import acting_as, get_thread_id
 from .guest import access as guest_access
 
-# Buttons a guest may press (acting as the owner): Esc, screenshot, last reply.
-GUEST_BUTTON_PREFIXES = (CB_STATUS_ESC, CB_STATUS_SCREENSHOT, CB_STATUS_LAST_REPLY)
+# Buttons a guest may press (acting as the owner) for one session, which must
+# be bound in the guest chat: Esc, screenshot, last reply, and ending it from
+# /sessions (to free a slot under the chat's session limit).
+GUEST_BUTTON_PREFIXES = (
+    CB_STATUS_ESC,
+    CB_STATUS_SCREENSHOT,
+    CB_STATUS_LAST_REPLY,
+    CB_SESSIONS_KILL_CONFIRM,
+    CB_SESSIONS_KILL,
+)
+# Whole-chat /sessions buttons a guest may press; they act on the chat itself.
+GUEST_CHAT_BUTTONS = frozenset({CB_SESSIONS_REFRESH, CB_SESSIONS_NEW})
 
 if TYPE_CHECKING:
     from telegram.ext import ContextTypes
@@ -85,11 +103,14 @@ async def dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     acting_id = user.id
     if not config.is_user_allowed(user.id):
-        # A guest may press only Esc, screenshot and last reply, acting as the
-        # owner. Approvals, keys and menus stay with the owner.
+        # A guest may press only the buttons above, acting as the owner.
+        # Approvals, keys and menus stay with the owner.
         chat_id = query.message.chat.id if query.message else None
         owner_id = guest_access.owner_for(user.id, chat_id)
-        if owner_id is None or not query.data.startswith(GUEST_BUTTON_PREFIXES):
+        chat_button = query.data in GUEST_CHAT_BUTTONS
+        if owner_id is None or not (
+            chat_button or query.data.startswith(GUEST_BUTTON_PREFIXES)
+        ):
             await query.answer("Only the owner can use these buttons.")
             return
         # Lazy: guest.scope imports the message sender, which reaches back here.
@@ -97,7 +118,7 @@ async def dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
         # Only for a session bound in this guest chat, whatever the data says
         # (a /sessions list may show other buttons, and clients can forge data).
-        if not guest_target_allowed(
+        if not chat_button and not guest_target_allowed(
             query.data, GUEST_BUTTON_PREFIXES, owner_id, chat_id
         ):
             logger.warning(
