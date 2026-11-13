@@ -24,7 +24,7 @@ If neither saved nor current verifiable ownership exists, CCGram must not guess 
 
 ### tmux
 
-Selection lives only in the window-local `@ccgram_topic` option, ignoring inherited global/session defaults. The owner-aware unreleased format carries a selected bit and an opaque UUID. An absent option is unmarked. Malformed data or a failed read is unknown. A healthy unmarked window has a native witness tied to the actual server socket incarnation and window ID, not a reusable ID or PID alone. Root code never constructs or parses that witness.
+Selection lives only in the window-local `@ccgram_topic` option, ignoring inherited global/session defaults. The native value is `v1:1:<32 lowercase hex>` when selected and `v1:0:<same 32 lowercase hex>` when cleared. Clearing retains the owner as a native tombstone. Use the CCGram commands rather than writing raw option values. An absent option is unmarked. Malformed data or a failed read is unknown. A healthy unmarked window has a native witness tied to the actual server socket incarnation and window ID, not a reusable ID or PID alone. Root code never constructs or parses that witness.
 
 A live window retains its selection across agent respawn, CCGram restart and client reconnect while the tmux server lives. Destroying a vanilla server destroys its terminals and window options. External restorers must preserve the full native option value within their own verified window snapshots. No particular plugin is required or claimed as supported. Reused window IDs, names and working directories cannot recover selection.
 
@@ -34,9 +34,9 @@ The native session `flagged` boolean selects the primary only. The native sessio
 
 ### Standard Herdr
 
-Standard `pane.rename` and raw manual labels from `pane.get`/`pane.list` carry selection. Dynamic titles, terminal titles and agent names are not substitutes. A visible versioned suffix preserves the original manual label and carries a 32-hex opaque owner UUID, with a selected bit if needed. Ordinary labels do not select. Native snapshots preserve the explicitly written suffix with their saved terminal. This is stored state, not matching a display label heuristically. Unmarked ownership comes from the current native terminal and connection namespace. Once an assigned mark is persisted, its stored owner is authoritative across native restoration.
+Standard `pane.rename` and raw manual labels from `pane.get`/`pane.list` carry selection. Dynamic titles, terminal titles and agent names are not substitutes. The exact suffix is `[ccgram-topic-v1:<32 lowercase hex owner>]`. It follows the original manual label and one space, or stands alone when no original label exists. Ordinary labels do not select. Native snapshots preserve the explicitly written suffix with their saved terminal. This is stored state, not matching a display label heuristically. Unmarked ownership comes from the current native terminal and connection namespace. Once an assigned mark is persisted, its stored owner is authoritative across native restoration.
 
-Marking must reject non-reversible normalization, unsafe serialized requests, reserved/nested/malformed or colliding suffixes, and overlarge labels **before writing**. It must never truncate or overwrite user data. Unmark removes only the managed suffix and restores the original label, including null when no original existed. A literal `--clear` label remains user data, not a clear command.
+Marking must reject non-reversible normalization, unsafe serialized requests, reserved/nested/malformed or colliding suffixes, and overlarge labels **before writing**. The complete serialized rename request, including its framing newline, must not exceed 1 MiB. It must never truncate or overwrite user data. Unmark removes only the managed suffix and restores the original label, including null when no original existed. A literal `--clear` label remains user data, not a clear command.
 
 Marker observations join authoritative `agent.list` records by current native terminal identity. A marker-query failure leaves liveness and auto eligibility intact. Routing still uses the guarded agent-session target, never the selection owner. Bare shells remain ineligible for automatic topics but must be discoverable by the backend when resolving an owned clear.
 
@@ -45,6 +45,14 @@ Marker observations join authoritative `agent.list` records by current native te
 Normal native spawn/split creates no assigned mark. However, `layout.export` includes manual labels and `layout.apply` copies them into new terminals, including managed selection metadata. Duplicate assigned owners are quarantined: no adoption or marker writes. Templates for new workers must omit managed selection metadata. A native operator can remove a copied suffix with pane rename, preserving the original label.
 
 A sole copied marker is indistinguishable from an imported selection and is treated as explicitly copied selection. CCGram does **not** promise to reset selection for arbitrary marker-copy operations or infer lineage from layout. No fork, upstream publication, sidecar selection registry or label-based routing recovery is required.
+
+## Native verification and limits
+
+Isolated native tests against stock Herdr 0.9.5 verified exact Unicode/literal-`--clear` label restoration, conversation re-key and bare-shell clearing, fresh split unmarked state, duplicate-owner quarantine, and cold restore preserving the stored owner despite a changed runtime terminal ID. These tests used genuine native helpers with controlled standard hook reports. They did not launch an AI CLI or prove actual provider-session resumption.
+
+Private tmux integration tests verified native token retention, full-server loss, reused window IDs, restored full tokens, duplicate-owner quarantine, and acknowledgement-loss retries. Agterm adapter tests and pinned upstream source establish the intended persisted primary flag and unmarked duplicates. A live agterm application restart has not been verified here.
+
+Native CLI read/check/write operations are not an atomic compare-and-set. Inventory, identity and readback checks detect observed changes, but an external replacement or metadata change between verification and dispatch can still affect a different resource before a postcheck reports uncertainty. No atomic-write or rollback guarantee is claimed. Final integration acceptance of this native limitation remains pending.
 
 ## Backend and policy contract
 
