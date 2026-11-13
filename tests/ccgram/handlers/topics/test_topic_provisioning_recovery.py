@@ -51,6 +51,18 @@ def _isolate_persistence():
     _ensure_registered()
     with (
         patch("ccgram.handlers.topics.topic_provisioning_recovery.session_manager"),
+        patch("ccgram.session.session_manager"),
+        patch(
+            "ccgram.multiplexer.multiplexer",
+            new=SimpleNamespace(
+                find_window_by_id=AsyncMock(
+                    side_effect=lambda wid: SimpleNamespace(
+                        window_id=wid, topic_markable=True
+                    )
+                ),
+                set_topic_mark=AsyncMock(return_value=True),
+            ),
+        ),
         patch("ccgram.handlers.topics.topic_deletion.session_manager"),
         patch(
             "ccgram.handlers.topics.topic_provisioning_recovery.window_query.get_window_provider",
@@ -98,6 +110,44 @@ async def test_restored_known_topic_follows_authoritative_presence(presence):
         assert outcome == {"unresolved": 1}
         assert router.iter_topic_provisionings() == [claim]
         client.delete_forum_topic.assert_not_awaited()
+
+
+async def test_marked_explicit_creation_recovers_only_after_verified_selection(
+    monkeypatch,
+):
+    from ccgram.config import config
+    from ccgram.window_state_ports import lifecycle_state
+
+    monkeypatch.setattr(config, "topic_discovery_mode", "marked", raising=False)
+    router, claim = _restored_claim()
+    client = AsyncMock()
+    native = SimpleNamespace(
+        find_window_by_id=AsyncMock(
+            return_value=SimpleNamespace(window_id="@2", topic_markable=True)
+        ),
+        set_topic_mark=AsyncMock(return_value=False),
+    )
+    with (
+        patch("ccgram.multiplexer.multiplexer", native),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.window_presence",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+    ):
+        assert await recover_topic_provisioning(
+            client, router=router, adapter=_adapter()
+        ) == {"unresolved": 1}
+        assert router.get_window_for_chat_thread(-100, 42) is None
+        assert router.iter_topic_provisionings() == [claim]
+        assert lifecycle_state.get_pending_topic_mark("@2") is True
+        native.set_topic_mark.return_value = True
+        assert await recover_topic_provisioning(
+            client, router=router, adapter=_adapter()
+        ) == {"bound": 1}
+
+    assert router.get_window_for_chat_thread(-100, 42) == "@2"
+    assert lifecycle_state.get_pending_topic_mark("@2") is None
 
 
 async def test_title_repair_rate_limit_retains_claim_then_stops_batch():

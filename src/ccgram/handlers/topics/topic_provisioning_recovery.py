@@ -10,6 +10,9 @@ import structlog
 from telegram.error import RetryAfter
 
 from ... import window_query
+from ...config import config
+from ...topic_selection import select_topic_target
+from ...window_state_ports import lifecycle_state
 from ...multiplexer.base import canonical_window_id
 from ...multiplexer.reconciliation import window_presence
 from ...session_protocol.telegram import TelegramSessionAdapter
@@ -240,12 +243,23 @@ async def _recreate_deleted_topic(
             return "changed"
         if not ready:
             return "unresolved"
-        prepared = _prepare_recreation(router, claim)
+        prepared, outcome = await _prepare_selected_recreation(router, claim)
         if prepared is None:
-            return "changed"
+            return outcome
         return await _create_prepared_replacement(
             client, router, prepared, target_id, topic_name, dead_window
         )
+
+
+async def _prepare_selected_recreation(
+    router: ThreadRouter, claim: TopicProvisioning
+) -> tuple[TopicProvisioning | None, str]:
+    """Select the explicit target before taking replacement ownership."""
+    if not await _select_recovered_target(claim):
+        return None, "unresolved"
+    if not _claim_is_current(router, claim):
+        return None, "changed"
+    return _prepare_recreation(router, claim), "changed"
 
 
 async def _create_prepared_replacement(
@@ -285,10 +299,30 @@ async def _create_prepared_replacement(
     return _recreation_outcome(router, prepared, created=created)
 
 
+async def _select_recovered_target(claim: TopicProvisioning) -> bool:
+    """Recover explicit creation selection, not automatic/admitted topics."""
+    if claim.kind != "target_for_topic":
+        return True
+    assert claim.target_id is not None
+    if await select_topic_target(claim.target_id):
+        return True
+    logger.warning("recovered_topic_selection_pending", window_id=claim.target_id)
+    return (
+        config.topic_discovery_mode != "marked"
+        and not lifecycle_state.is_topic_detach_pending(claim.target_id)
+    )
+
+
 async def _commit_present_topic(router: ThreadRouter, claim: TopicProvisioning) -> str:
     """Commit a proven-live topic without evicting a concurrent target bind."""
     assert claim.target_id is not None
     async with _window_topic_lock(canonical_window_id(claim.target_id)):
+        if not _claim_is_current(router, claim):
+            return "changed"
+        if _target_bound_in_chat(router, claim):
+            return "unresolved"
+        if not await _select_recovered_target(claim):
+            return "unresolved"
         if not _claim_is_current(router, claim):
             return "changed"
         if _target_bound_in_chat(router, claim):

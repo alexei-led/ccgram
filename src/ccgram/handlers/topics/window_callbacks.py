@@ -17,11 +17,15 @@ from pathlib import Path
 from telegram import CallbackQuery, Chat, Update
 from telegram.error import TelegramError
 from ... import window_query
+from ...config import config
+from ...topic_selection import select_topic_target
+from .topic_orchestration import pending_creation_transaction
 from ...telegram_client import PTBTelegramClient, TelegramClient
 from ...session import session_manager
 from ...thread_router import thread_router
 from ...multiplexer import multiplexer as tmux_manager
 from ...window_state_ports.identity_state import get_initial_provider_name
+from ...window_state_ports import lifecycle_state
 from ..telegram_origin import send_telegram_to_window
 from ...session_protocol.telegram import TelegramSessionAdapter, adapter_for
 from ...session_protocol.models import ProtocolError
@@ -318,25 +322,39 @@ async def _handle_bind(
         return
 
     display = w.window_name
-    clear_window_picker_state(context.user_data)
-    thread_router.bind_thread(
-        user_id,
-        thread_id,
-        selected_wid,
-        window_name=display,
-        chat_id=(
-            update.callback_query.message.chat.id
-            if update.callback_query and update.callback_query.message
-            else None
-        ),
-    )
+    # Native selection may create an otherwise empty WindowState. Capture
+    # provider history first so that empty state is not mistaken for an exit.
+    previous_provider = window_query.get_window_provider(selected_wid)
+    initial_provider = get_initial_provider_name(selected_wid)
+    with pending_creation_transaction():
+        selected = await select_topic_target(selected_wid)
+        if not selected:
+            if (
+                config.topic_discovery_mode == "marked"
+                or lifecycle_state.is_topic_detach_pending(selected_wid)
+            ):
+                await query.answer(
+                    "Could not verify topic selection; please retry", show_alert=True
+                )
+                return
+            logger.warning("topic_selection_pending_on_bind", window_id=selected_wid)
+        clear_window_picker_state(context.user_data)
+        thread_router.bind_thread(
+            user_id,
+            thread_id,
+            selected_wid,
+            window_name=display,
+            chat_id=(
+                update.callback_query.message.chat.id
+                if update.callback_query and update.callback_query.message
+                else None
+            ),
+        )
     _store_group_chat_id(user_id, thread_id, update, query)
     client: TelegramClient = PTBTelegramClient(context.bot)
     # Capture origin before detection updates the window's current provider.
     # One foreground observation must drive both routing and exit policy: a
     # second probe can see a different process during an agent exit.
-    previous_provider = window_query.get_window_provider(selected_wid)
-    initial_provider = get_initial_provider_name(selected_wid)
     detected = await _detect_and_setup_provider(
         selected_wid,
         w.pane_current_command,

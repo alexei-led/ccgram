@@ -335,6 +335,18 @@ def _launch_env(
     """
     with (
         patch(f"{_MODULE}tmux_manager") as mux,
+        patch(
+            "ccgram.multiplexer.multiplexer",
+            new=SimpleNamespace(
+                find_window_by_id=AsyncMock(
+                    side_effect=lambda wid: SimpleNamespace(
+                        window_id=wid, topic_markable=True
+                    )
+                ),
+                set_topic_mark=AsyncMock(return_value=True),
+            ),
+        ),
+        patch("ccgram.session.session_manager"),
         patch(f"{_MODULE}session_manager") as session,
         patch(f"{_MODULE}thread_router") as router,
         patch(f"{_MODULE}topic_orchestration") as orchestration,
@@ -401,6 +413,83 @@ def _request(**overrides) -> WindowLaunchRequest:
     }
     fields.update(overrides)
     return WindowLaunchRequest(**fields)
+
+
+@pytest.mark.parametrize("mode", ["auto", "marked"])
+async def test_failed_native_selection_is_retryable_and_gates_only_marked(
+    mode, monkeypatch
+):
+    from ccgram.config import config
+    from ccgram.window_state_ports import lifecycle_state
+
+    monkeypatch.setattr(config, "topic_discovery_mode", mode, raising=False)
+    native = SimpleNamespace(
+        find_window_by_id=AsyncMock(
+            return_value=SimpleNamespace(window_id="@5", topic_markable=True)
+        ),
+        set_topic_mark=AsyncMock(return_value=False),
+    )
+    with _launch_env() as m, patch("ccgram.multiplexer.multiplexer", native):
+        result = await launch_window(_make_query(), _make_context(), _request())
+
+    assert result.success is (mode == "auto")
+    assert lifecycle_state.get_pending_topic_mark("@5") is True
+    native.set_topic_mark.assert_awaited_once_with("@5", True)
+    m.adapter.close.assert_not_awaited()
+    if mode == "marked":
+        m.router.commit_topic_provisioning.assert_not_called()
+        m.router.mark_provisioning_uncertain.assert_called_once_with("claim-1")
+    else:
+        m.router.commit_topic_provisioning.assert_called_once()
+
+
+async def test_cancellation_during_selection_preserves_provisioning(monkeypatch):
+    from ccgram.config import config
+    from ccgram.window_state_ports import lifecycle_state
+
+    monkeypatch.setattr(config, "topic_discovery_mode", "marked", raising=False)
+    native = SimpleNamespace(
+        find_window_by_id=AsyncMock(
+            return_value=SimpleNamespace(window_id="@5", topic_markable=True)
+        ),
+        set_topic_mark=AsyncMock(side_effect=asyncio.CancelledError),
+    )
+    with (
+        _launch_env() as m,
+        patch("ccgram.multiplexer.multiplexer", native),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await launch_window(_make_query(), _make_context(), _request())
+
+    assert lifecycle_state.get_pending_topic_mark("@5") is True
+    m.router.mark_provisioning_uncertain.assert_called_once_with("claim-1")
+    m.router.commit_topic_provisioning.assert_not_called()
+    m.adapter.close.assert_not_awaited()
+
+
+async def test_native_selection_precedes_creation_commit(monkeypatch):
+    from ccgram.config import config
+
+    monkeypatch.setattr(config, "topic_discovery_mode", "marked", raising=False)
+    with _launch_env() as m:
+
+        async def mark(window_id, selected):
+            assert window_id == "@5" and selected is True
+            m.router.commit_topic_provisioning.assert_not_called()
+            return True
+
+        native = SimpleNamespace(
+            find_window_by_id=AsyncMock(
+                return_value=SimpleNamespace(window_id="@5", topic_markable=True)
+            ),
+            set_topic_mark=AsyncMock(side_effect=mark),
+        )
+        with patch("ccgram.multiplexer.multiplexer", native):
+            result = await launch_window(_make_query(), _make_context(), _request())
+
+    assert result.success
+    native.set_topic_mark.assert_awaited_once()
+    m.router.commit_topic_provisioning.assert_called_once()
 
 
 class TestLaunchWindowSuccess:
