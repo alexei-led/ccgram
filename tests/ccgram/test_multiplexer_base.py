@@ -36,6 +36,8 @@ class TestValueTypeDefaults:
         assert window.pane_width == 0
         assert window.pane_height == 0
         assert window.alias_window_ids == ()
+        assert window.topic_marked is False
+        assert window.topic_markable is True
 
     def test_capture_result_is_untruncated_by_default(self) -> None:
         assert CaptureResult(text="hello").truncated is False
@@ -143,6 +145,7 @@ def test_multiplexer_protocol_has_expected_methods() -> None:
         "capabilities",
         "ensure_session",
         "list_windows",
+        "set_topic_mark",
         "capture_scrollback",
         "pane_dims",
         "send",
