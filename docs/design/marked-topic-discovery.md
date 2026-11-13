@@ -12,7 +12,7 @@ A mark selects a terminal/window, not an agent conversation. Replacing an agent 
 
 The mode does not filter liveness, mobile listings, explicit binding, routing identity, or ongoing forwarding. Existing bound topics keep working after unmarking or changing modes. `/new` and picker binding attempt selection in both modes before binding. In `auto`, an unverified native write warns and persists a mark-on retry without changing historical binding success. In `marked`, it prevents binding and keeps creation quarantined until verification. Creation ownership and foreground readiness remain in force.
 
-In marked mode, intentional close or `/unbind` of the last binding clears that terminal's native mark, prevents automatic recreation, and leaves the terminal running. Other bindings protect the shared selection from clearing. Deliberate detach is exempt from orphan TTL without changing terminal origin. Abandoned failed creation retains its existing cleanup behavior.
+In marked mode, intentional close or `/unbind` of the last binding clears that terminal's native mark, prevents automatic recreation, and leaves the terminal running. Other bindings and active creation claims protect the shared selection from clearing. Deliberate detach is exempt from orphan TTL without changing terminal origin. Abandoned failed creation retains its existing cleanup behavior.
 
 ### Unfinished or ambiguous detach
 
@@ -62,7 +62,7 @@ The existing `topic_eligible` remains separate from existence and visibility. Ap
 - `topic_markable: bool = True`: false for agterm splits.
 - `topic_mark_owner: str | None = None`: opaque native selection-resource identity, never a routing alias.
 
-`async Multiplexer.set_topic_mark(window_id: str, marked: bool, *, owner: str | None = None) -> bool` is idempotent and reports success only after verification. Bot and CLI callers supply an observed or saved owner. An explicit owner permits mutation only of that exact proven resource, even when the old conversation target is gone. First mark requires a matching current unmarked witness. A missing mark-on owner cannot be guessed or recreated after restart.
+`async Multiplexer.set_topic_mark(window_id: str, marked: bool, *, owner: str | None = None) -> bool` is idempotent and reports success only after verification. Bot and CLI callers supply an observed or saved owner. The CLI helper consumes its already captured `WindowRef` rather than resolving the routing ID again. An explicit owner permits mutation only of that exact proven resource, even when the old conversation target is gone. First mark requires a matching current unmarked witness. A missing mark-on owner cannot be guessed or recreated after restart.
 
 For clear, complete validated owner absence can prove the old selection off. Duplicate owners, malformed owned markers, incomplete inventory or read errors cannot. Resolution includes bare shells but never falls back to a stale locator, another backend, a display name or a guessed current terminal. An unavailable listing is not an empty listing and never proves closure.
 
@@ -76,9 +76,9 @@ The credential-free journal reader is read-only. A missing state file or journal
 
 Explicit selection observes a healthy current owner and persists owner plus desired-on before mutation. Unknown ownership produces a recoverable diagnostic, not a candidate identity. Automatic admission records the actual observed owner before binding **without marking** automatically discovered targets, including unmarked targets in auto mode. Already-bound, verifiable rows refresh observed ownership only when no pending operation owns that state. Unadmitted workers do not acquire window state merely for being listed.
 
-Before last detach, capture current verifiable ownership while the binding remains intact. Synchronously unbind, record owner plus desired-off/detached, and flush before awaiting native clear. Retry by saved owner without requiring the old routing target to resolve. Lock by owner when known. Preserve journal operations through cancellation, stale pruning and checkpoint failure. Observing a new owner must not retarget or discard an old owner's operation. Split exceptions never touch the primary.
+Before last detach, capture current verifiable ownership while the binding remains intact. Synchronously unbind, record owner plus desired-off/detached, and flush before awaiting native clear. Retry by saved owner without requiring the old routing target to resolve. Lock by owner when known. Recheck remaining bindings and creation claims under that lock before clearing. If another consumer now protects the resource, complete the clear operation without changing native selection. Preserve journal operations through cancellation, stale pruning and checkpoint failure. Observing a new owner must not retarget or discard an old owner's operation. Split exceptions never touch the primary.
 
-Fresh automatic admission checks run inside the actual creation-ownership lock and again before commit or recovery. A stale pre-lock verdict must not bypass a newly pending owner-clear. Unmarking alone still leaves admitted topics connected.
+Fresh automatic admission checks run inside the actual creation-ownership lock and again before commit or recovery. A stale pre-lock verdict must not bypass a newly pending owner-clear. Unmarking alone still leaves admitted topics connected. Settling a native operation, including a protected no-op, does not remove detached-lifetime TTL protection. Only successful actual readmission clears that protection, not observing a true native flag.
 
 ## Acceptance matrix
 
