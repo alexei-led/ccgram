@@ -643,6 +643,8 @@ started from the terminal still become topics automatically.
 
 Besides creating sessions through Telegram topics, you can create windows directly in your terminal multiplexer.
 
+The instructions below describe default automatic discovery. Opt-in marked-only discovery is specified in the [implementation contract](design/marked-topic-discovery.md), including selection, explicit binding, detach and backend restore requirements. Its all-backend support remains pending integration verification.
+
 ### tmux (default)
 
 ```bash

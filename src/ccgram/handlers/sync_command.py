@@ -37,6 +37,8 @@ from ..telegram_client import PTBTelegramClient, TelegramClient
 from ..thread_router import thread_router
 from ..multiplexer import multiplexer as tmux_manager
 from ..multiplexer.reconciliation import list_windows_for_reconciliation
+from ..multiplexer.topic_mapping import should_adopt_window
+from ..window_state_ports import lifecycle_state
 from ..user_preferences import user_preferences
 from .callback_data import CB_SYNC_DISMISS, CB_SYNC_FIX
 from .callback_registry import register
@@ -92,7 +94,7 @@ async def _run_audit() -> AuditResult | None:
     ``list_windows``: that one is the UI listing and a backend legitimately
     omits what it will not adopt, so using it here reports a live bound
     session as a fixable ghost the moment it becomes excluded. Adoptability is
-    the ``topic_eligible`` subset of the same listing.
+    the discovery-policy subset of the same listing.
 
     Returns None when no listing is available. The caller must not treat that
     as "nothing is live", which would classify every binding as dead.
@@ -102,7 +104,15 @@ async def _run_audit() -> AuditResult | None:
         return None
     live_ids = {w.window_id for w in all_windows}
     live_pairs = [(w.window_id, w.window_name) for w in all_windows]
-    adoptable = {w.window_id for w in all_windows if w.topic_eligible}
+    adoptable = {
+        w.window_id
+        for w in all_windows
+        if should_adopt_window(
+            w,
+            mode=config.topic_discovery_mode,
+            detach_pending=lifecycle_state.is_topic_detach_pending(w.window_id),
+        )
+    }
     audit = session_manager.audit_state(live_ids, live_pairs, adoptable)
     audit.issues.extend(
         AuditIssue(
@@ -553,7 +563,15 @@ async def handle_sync_fix(
     # Fix adopts the orphans this audit reports, so the adoption question takes
     # the backend's verdict. The live set stays complete: it drives the pruning
     # below, and narrowing it would make a live excluded binding a fixable ghost.
-    adoptable_ids = {w.window_id for w in all_windows if w.topic_eligible}
+    adoptable_ids = {
+        w.window_id
+        for w in all_windows
+        if should_adopt_window(
+            w,
+            mode=config.topic_discovery_mode,
+            detach_pending=lifecycle_state.is_topic_detach_pending(w.window_id),
+        )
+    }
 
     # Audit before fixing to count fixable issues
     client = PTBTelegramClient(query.get_bot())

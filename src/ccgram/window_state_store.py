@@ -169,6 +169,11 @@ class WindowState:
     # runtime provider switches so agent exits cannot be mistaken for shell.
     # Appended to preserve positional construction compatibility.
     initial_provider_name: str = ""
+    # Deliberate marked-mode detach protects an otherwise ccgram-created
+    # terminal from orphan TTL without changing its historical origin.
+    topic_detached: bool = False
+    # Desired native mark while its verified write remains unfinished.
+    topic_mark_pending: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:  # noqa: C901, PLR0912
         d: dict[str, Any] = {
@@ -191,6 +196,10 @@ class WindowState:
             d["tool_call_visibility"] = self.tool_call_visibility
         if self.origin != DEFAULT_WINDOW_ORIGIN:
             d["origin"] = self.origin
+        if self.topic_detached:
+            d["topic_detached"] = True
+        if self.topic_mark_pending is not None:
+            d["topic_mark_pending"] = self.topic_mark_pending
         if self.panes:
             d["panes"] = {pid: p.to_dict() for pid, p in self.panes.items()}
         if self.pane_lifecycle_notify is not None:
@@ -239,6 +248,12 @@ class WindowState:
                 data.get("origin", DEFAULT_WINDOW_ORIGIN)
                 if data.get("origin", DEFAULT_WINDOW_ORIGIN) in WINDOW_ORIGINS
                 else DEFAULT_WINDOW_ORIGIN
+            ),
+            topic_detached=data.get("topic_detached") is True,
+            topic_mark_pending=(
+                data["topic_mark_pending"]
+                if type(data.get("topic_mark_pending")) is bool
+                else None
             ),
             panes=panes,
             pane_lifecycle_notify=data.get("pane_lifecycle_notify"),
@@ -322,6 +337,17 @@ class WindowStateStore:
         if state.origin == origin:
             return
         state.origin = origin
+        self._schedule_save()
+
+    def set_topic_selection(
+        self, window_id: str, *, detached: bool, pending: bool | None
+    ) -> None:
+        """Record lifecycle intent and unfinished native mark write together."""
+        state = self.get_window_state(window_id)
+        if state.topic_detached == detached and state.topic_mark_pending == pending:
+            return
+        state.topic_detached = detached
+        state.topic_mark_pending = pending
         self._schedule_save()
 
     def set_worktree(self, window_id: str, worktree_path: str, branch: str) -> None:

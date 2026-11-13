@@ -1169,6 +1169,36 @@ class TestAdoptUnboundWindowsRespectsEligibility:
         assert adoptable == {"IN-SCOPE"}
 
 
+class TestMarkedStartupAdoption:
+    async def test_startup_audit_keeps_live_windows_and_only_adopts_marked(
+        self, monkeypatch
+    ):
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "topic_discovery_mode", "marked")
+        windows = [
+            WindowRef("marked", "one", "/p", topic_marked=True),
+            WindowRef("unmarked", "two", "/p", topic_marked=False),
+            WindowRef("unknown", "three", "/p", topic_marked=None),
+            WindowRef("pending", "four", "/p", topic_marked=True),
+        ]
+        monkeypatch.setattr(
+            "ccgram.handlers.topics.topic_orchestration.lifecycle_state.is_topic_detach_pending",
+            lambda window_id: window_id == "pending",
+        )
+        with (
+            patch("ccgram.handlers.topics.topic_orchestration.tmux_manager") as mux,
+            patch("ccgram.handlers.topics.topic_orchestration.session_manager") as sm,
+        ):
+            mux.list_windows_for_reconciliation = AsyncMock(return_value=windows)
+            sm.audit_state.return_value = MagicMock(issues=[])
+            await adopt_unbound_windows(AsyncMock())
+            live, _, adoptable = sm.audit_state.call_args.args
+
+        assert live == {"marked", "unmarked", "unknown", "pending"}
+        assert adoptable == {"marked"}
+
+
 class TestAdoptUnboundWindowsNeedsAConfirmedListing:
     """Startup repair creates topics; it must not run on a guess."""
 
@@ -1227,6 +1257,34 @@ class TestStillAdoptable:
 
     async def test_unconfirmed_listing_is_refused(self):
         assert await self._verdict(None) is False
+
+
+class TestMarkedPointOfUse:
+    @pytest.mark.parametrize(
+        ("marked", "pending", "expected"),
+        [
+            (True, False, True),
+            (False, False, False),
+            (None, False, False),
+            (True, True, False),
+        ],
+    )
+    async def test_fresh_listing_controls_admission(
+        self, monkeypatch, marked, pending, expected
+    ):
+        from ccgram.config import config
+        from ccgram.handlers.topics.topic_orchestration import still_adoptable
+
+        monkeypatch.setattr(config, "topic_discovery_mode", "marked")
+        monkeypatch.setattr(
+            "ccgram.handlers.topics.topic_orchestration.lifecycle_state.is_topic_detach_pending",
+            lambda window_id: pending,
+        )
+        with patch("ccgram.handlers.topics.topic_orchestration.tmux_manager") as mux:
+            mux.list_windows_for_reconciliation = AsyncMock(
+                return_value=[WindowRef("@5", "proj", "/p", topic_marked=marked)]
+            )
+            assert await still_adoptable("@5") is expected
 
 
 class TestAdoptionIdentityFoldsCase:

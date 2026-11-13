@@ -31,6 +31,7 @@ CONTRACT_METHODS = (
     # backend lacks it, so a backend can pass every other check here and still
     # bring the bot down at startup and on every monitor cycle.
     "list_windows_for_reconciliation",
+    "set_topic_mark",
     "capture_scrollback",
     "pane_dims",
     "send",

@@ -34,6 +34,8 @@ from ...telegram_client import TelegramClient
 from ...thread_router import TopicProvisioning, thread_router
 from ...multiplexer import multiplexer as tmux_manager
 from ...multiplexer.base import canonical_window_id
+from ...multiplexer.topic_mapping import should_adopt_window
+from ...window_state_ports import lifecycle_state
 
 logger = structlog.get_logger()
 
@@ -983,7 +985,15 @@ async def still_adoptable(window_id: str) -> bool:
             "Skipping adoption: no confirmed window listing", window_id=window_id
         )
         return False
-    if not any(w.matches(window_id) and w.topic_eligible for w in windows):
+    if not any(
+        w.matches(window_id)
+        and should_adopt_window(
+            w,
+            mode=config.topic_discovery_mode,
+            detach_pending=lifecycle_state.is_topic_detach_pending(w.window_id),
+        )
+        for w in windows
+    ):
         logger.info(
             "Skipping adoption: window no longer adoptable", window_id=window_id
         )
@@ -1005,7 +1015,15 @@ async def adopt_unbound_windows(client: TelegramClient) -> None:
         return
     live_ids = {w.window_id for w in all_windows}
     live_pairs = [(w.window_id, w.window_name) for w in all_windows]
-    adoptable_ids = {w.window_id for w in all_windows if w.topic_eligible}
+    adoptable_ids = {
+        w.window_id
+        for w in all_windows
+        if should_adopt_window(
+            w,
+            mode=config.topic_discovery_mode,
+            detach_pending=lifecycle_state.is_topic_detach_pending(w.window_id),
+        )
+    }
     audit = session_manager.audit_state(live_ids, live_pairs, adoptable_ids)
     orphaned = [i for i in audit.issues if i.category == "orphaned_window"]
     if orphaned:

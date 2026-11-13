@@ -73,6 +73,16 @@ class WindowRef:
     ambiguous and must not be migrated.
     """
 
+    topic_marked: bool | None = False
+    """Native selection for automatic topic admission, independent of liveness.
+
+    ``None`` means the backend could not confirm the marker; it never grants
+    marked-mode admission. Existing bindings and ``topic_eligible`` are unchanged.
+    """
+
+    topic_markable: bool = True
+    """Whether this target has its own native marker (agterm splits do not)."""
+
     def matches(self, window_id: str) -> bool:
         """Whether *window_id* names this window, under any identity it has had.
 
@@ -344,6 +354,15 @@ class Multiplexer(Protocol):
         ``None`` means the backend could not confirm the listing (an
         unreachable socket, a failed command). It is never an empty listing:
         treating it as one closes every binding the bot holds.
+        """
+        ...
+
+    async def set_topic_mark(self, window_id: str, marked: bool) -> bool:
+        """Set the native admission marker, idempotently, with verified readback.
+
+        Success means the exact live target reports the requested value. A
+        missing target, unsupported marker, failed write or unconfirmed readback
+        returns False. Never infer selection from a name, cwd or layout.
         """
         ...
 

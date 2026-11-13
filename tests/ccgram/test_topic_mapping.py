@@ -9,12 +9,18 @@ Covers:
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from pathlib import Path
+
 import pytest
+
+from ccgram.config import config
 
 from ccgram.multiplexer.base import MultiplexerCapabilities, WindowRef
 from ccgram.multiplexer.topic_mapping import (
     format_agent_topic_prefix,
     is_agent_topic_window,
+    should_adopt_window,
 )
 from ccgram.session import SessionManager
 from ccgram.session_resolver import session_resolver
@@ -157,12 +163,12 @@ class TestFormatAgentTopicPrefix:
 
 
 @pytest.fixture
-def mgr(monkeypatch) -> SessionManager:
+def mgr(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[SessionManager]:
+    monkeypatch.setattr(config, "state_file", tmp_path / "state.json")
+    manager = SessionManager()
+    yield manager
     thread_router.reset()
     window_store.window_states.clear()
-    monkeypatch.setattr(SessionManager, "_load_state", lambda self: None)
-    monkeypatch.setattr(SessionManager, "_save_state", lambda self: None)
-    return SessionManager()
 
 
 class TestHerdrSessionRouting:
@@ -231,3 +237,38 @@ class TestTopicEligibleFlag:
     def test_windows_default_to_eligible(self) -> None:
         """Backends with nothing to exclude say nothing and stay unaffected."""
         assert WindowRef(window_id="@1", window_name="", cwd="/p").topic_eligible
+
+
+@pytest.mark.parametrize(
+    ("mode", "eligible", "marked", "markable", "pending", "expected"),
+    [
+        ("auto", True, False, True, False, True),
+        ("auto", True, None, True, False, True),
+        ("auto", True, True, False, True, True),
+        ("auto", False, True, True, False, False),
+        ("marked", True, True, True, False, True),
+        ("marked", True, False, True, False, False),
+        ("marked", True, None, True, False, False),
+        ("marked", False, True, True, False, False),
+        ("marked", True, True, False, False, False),
+        ("marked", True, True, True, True, False),
+    ],
+)
+def test_automatic_admission_policy(
+    mode, eligible, marked, markable, pending, expected
+):
+    window = WindowRef(
+        "@1",
+        "project",
+        "/repo",
+        topic_eligible=eligible,
+        topic_marked=marked,
+        topic_markable=markable,
+    )
+    assert should_adopt_window(window, mode=mode, detach_pending=pending) is expected
+
+
+@pytest.mark.parametrize("mode", ["", "all", "mark", " "])
+def test_admission_rejects_unvalidated_mode(mode):
+    with pytest.raises(ValueError, match="CCGRAM_TOPIC_DISCOVERY"):
+        should_adopt_window(_win("@1"), mode=mode, detach_pending=False)

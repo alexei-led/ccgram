@@ -21,6 +21,7 @@ from telegram import CallbackQuery, Message
 from telegram.error import TelegramError
 
 from ...config import config
+from ...topic_selection import select_topic_target
 from ...providers import registry as provider_registry
 from ...session import session_manager
 from ...session_map import session_map_sync
@@ -33,6 +34,7 @@ from ...session_protocol.models import ProtocolError
 from ...user_preferences import user_preferences
 from ... import window_query
 from ...window_state_store import CCGRAM_CREATED_WINDOW_ORIGIN
+from ...window_state_ports import lifecycle_state
 from ..messaging_pipeline.message_sender import safe_edit, safe_send
 from ..status.topic_emoji import format_topic_name_for_mode
 from .directory_browser import clear_worktree_state, clear_workspace_state
@@ -879,6 +881,26 @@ async def launch_window(  # noqa: C901, PLR0911, PLR0912, PLR0915
         # matching foreground evidence is still unavailable.
         await safe_edit(query, f"⚠ {message}")
         return WindowLaunchResult(success=False, error_message=message)
+
+    try:
+        selected = await select_topic_target(created_wid)
+    except BaseException:
+        _mark_provisioning_uncertain(claim_id)
+        if claim_id is not None:
+            topic_orchestration.clear_pending_creation(created_wid)
+        raise
+    if not selected:
+        logger.warning("topic_selection_pending_on_create", window_id=created_wid)
+        if (
+            config.topic_discovery_mode == "marked"
+            or lifecycle_state.is_topic_detach_pending(created_wid)
+        ):
+            _mark_provisioning_uncertain(claim_id)
+            if claim_id is not None:
+                topic_orchestration.clear_pending_creation(created_wid)
+            message = "Could not verify topic selection; kept the session quarantined for recovery."
+            await safe_edit(query, f"⚠ {message}")
+            return WindowLaunchResult(success=False, error_message=message)
 
     if claim_id is not None and pending_thread_id is not None:
         try:

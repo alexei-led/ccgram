@@ -89,6 +89,10 @@ class _FakeWindow:
         self.window_id = window_id
         self.window_name = window_name
 
+    def cmd(self, *args):
+        assert args == ("show-options", "-w")
+        return SimpleNamespace(stdout=[], stderr=[], returncode=0)
+
     @property
     def active_pane(self):
         return None
@@ -173,15 +177,14 @@ async def test_reconciliation_listing_is_complete(mgr: TmuxManager) -> None:
 
 
 def test_reconciliation_window_keeps_identity_when_pane_query_fails() -> None:
-    class FailedPaneWindow:
-        window_id = "@7"
-        window_name = "project"
-
+    class FailedPaneWindow(_FakeWindow):
         @property
         def active_pane(self):
             raise OSError("pane unavailable")
 
-    window = TmuxManager._window_ref_for_reconciliation(FailedPaneWindow())  # type: ignore[arg-type]
+    window = TmuxManager._window_ref_for_reconciliation(
+        FailedPaneWindow("@7", "project")  # pyright: ignore[reportArgumentType]
+    )
 
     assert window is not None
     assert window.window_id == "@7"
