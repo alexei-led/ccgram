@@ -69,6 +69,7 @@ def _patch_deps():
         mock_tm.list_windows_for_reconciliation = mock_listing
         mock_tm_topics.list_windows_for_reconciliation = mock_listing
         mock_listing.return_value = []
+        mock_cfg.topic_discovery_mode = "auto"
         mock_cfg.is_user_allowed.return_value = True
         yield mock_sm, mock_sms, mock_wq, mock_tr, mock_tm, mock_cfg
 
@@ -1886,6 +1887,84 @@ class TestSyncAuditSeparatesLivenessFromAdoption:
         for call in mock_adopt.call_args_list:
             for issue in call[0][1]:
                 assert "REFUSED" not in getattr(issue, "detail", "")
+
+
+class TestMarkedSyncDiscovery:
+    @staticmethod
+    def windows():
+        return [
+            WindowRef("marked", "one", "/p", topic_marked=True),
+            WindowRef("unmarked", "two", "/p", topic_marked=False),
+            WindowRef("unknown", "three", "/p", topic_marked=None),
+            WindowRef("pending", "four", "/p", topic_marked=True),
+        ]
+
+    async def test_audit_and_fix_use_the_policy_without_narrowing_liveness(
+        self, _patch_deps, monkeypatch
+    ):
+        sm, _, _, _, mux, cfg = _patch_deps
+        cfg.topic_discovery_mode = "marked"
+        mux.list_windows_for_reconciliation.return_value = self.windows()
+        monkeypatch.setattr(
+            "ccgram.handlers.sync_command.lifecycle_state.is_topic_detach_pending",
+            lambda window_id: window_id == "pending",
+        )
+        await _run_audit()
+        live, _, adoptable = sm.audit_state.call_args.args
+        assert live == {"marked", "unmarked", "unknown", "pending"}
+        assert adoptable == {"marked"}
+
+        sm.audit_state.reset_mock()
+        with (
+            patch("ccgram.handlers.sync_command.safe_edit", new_callable=AsyncMock),
+            patch(
+                "ccgram.handlers.sync_command._sync_live_topic_names",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "ccgram.handlers.sync_command._cleanup_stale_topics",
+                new_callable=AsyncMock,
+                return_value=(0, 0, {}),
+            ),
+        ):
+            await handle_sync_fix(MagicMock(), _test_adapter())
+        live, _, adoptable = sm.audit_state.call_args_list[0].args
+        assert live == {"marked", "unmarked", "unknown", "pending"}
+        assert adoptable == {"marked"}
+
+    async def test_fix_rechecks_each_target_after_unmarking(
+        self, _patch_deps, monkeypatch
+    ):
+        from ccgram.config import config
+
+        sm, _, wq, _, mux, cfg = _patch_deps
+        cfg.topic_discovery_mode = "marked"
+        monkeypatch.setattr(config, "topic_discovery_mode", "marked")
+        sm.audit_state.side_effect = [
+            AuditResult(
+                issues=[AuditIssue("orphaned_window", "@1 (project)", fixable=True)],
+                total_bindings=1,
+                live_binding_count=1,
+            ),
+            AuditResult(issues=[], total_bindings=1, live_binding_count=1),
+        ]
+        wq.view_window.return_value = MagicMock(
+            session_id="s1", cwd="/p", window_name="project"
+        )
+        mux.list_windows_for_reconciliation.side_effect = [
+            [WindowRef("@1", "project", "/p", topic_marked=True)],
+            [WindowRef("@1", "project", "/p", topic_marked=False)],
+            [WindowRef("@1", "project", "/p", topic_marked=False)],
+        ]
+        with (
+            patch("ccgram.handlers.sync_command.safe_edit"),
+            patch(
+                "ccgram.handlers.topics.topic_orchestration.handle_new_window",
+                new_callable=AsyncMock,
+            ) as handle,
+        ):
+            await handle_sync_fix(MagicMock(), _test_adapter())
+        handle.assert_not_awaited()
 
 
 @pytest.mark.parametrize(("fix", "count"), [(False, 30), (True, 1)])

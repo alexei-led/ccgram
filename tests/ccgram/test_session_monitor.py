@@ -3680,6 +3680,83 @@ class TestTheLoopPassesTheEligibleSubset:
         assert [key for key, _ in notices] == ["monitor-window-reconciliation-listing"]
 
 
+class TestMarkedMonitorDiscovery:
+    async def test_unregistered_windows_apply_policy(self, monitor, monkeypatch):
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "topic_discovery_mode", "marked")
+        monkeypatch.setattr(SessionManager, "_save_state", lambda self: None)
+        SessionManager()
+        callback = AsyncMock()
+        monitor.set_new_window_callback(callback)
+        windows = [
+            WindowRef("marked", "one", "/p", topic_marked=True),
+            WindowRef("unmarked", "two", "/p", topic_marked=False),
+            WindowRef("unknown", "three", "/p", topic_marked=None),
+            WindowRef("pending", "four", "/p", topic_marked=True),
+            WindowRef("split", "five", "/p", topic_marked=True, topic_markable=False),
+        ]
+        monkeypatch.setattr(
+            "ccgram.session_monitor.lifecycle_state.is_topic_detach_pending",
+            lambda window_id: window_id == "pending",
+        )
+
+        await monitor._emit_unbound_window_events(windows, set())
+
+        assert [call.args[0].window_id for call in callback.await_args_list] == [
+            "marked"
+        ]
+
+    async def test_loop_filters_delta_and_known_paths_but_keeps_every_window_live(
+        self, monitor, monkeypatch
+    ):
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "topic_discovery_mode", "marked")
+        windows = [
+            WindowRef("marked", "one", "/p", topic_marked=True),
+            WindowRef("unmarked", "two", "/p", topic_marked=False),
+            WindowRef("unknown", "three", "/p", topic_marked=None),
+            WindowRef("pending", "four", "/p", topic_marked=True),
+        ]
+        observed = {}
+
+        async def delta(raw=None, *, adoptable_window_ids):
+            observed["delta"] = adoptable_window_ids
+            monitor._running = False
+            return {}
+
+        async def known(current_map, adoptable_window_ids):
+            observed["known"] = adoptable_window_ids
+
+        monkeypatch.setattr(
+            "ccgram.session_monitor.list_windows_for_reconciliation",
+            AsyncMock(return_value=windows),
+        )
+        monkeypatch.setattr(
+            "ccgram.session_monitor.lifecycle_state.is_topic_detach_pending",
+            lambda window_id: window_id == "pending",
+        )
+        monkeypatch.setattr(
+            "ccgram.session_monitor.read_session_map_raw", AsyncMock(return_value={})
+        )
+        monkeypatch.setattr(monitor, "_read_hook_events", AsyncMock())
+        monkeypatch.setattr(monitor, "_cleanup_all_stale_sessions", AsyncMock())
+        monkeypatch.setattr(monitor, "_detect_and_cleanup_changes", delta)
+        monkeypatch.setattr(monitor, "_emit_known_unbound_window_events", known)
+        monkeypatch.setattr(monitor, "_emit_unbound_window_events", AsyncMock())
+        prune = Mock()
+        monkeypatch.setattr(
+            "ccgram.session_map.session_map_sync.prune_session_map", prune
+        )
+        monitor._running = True
+
+        await monitor._monitor_loop()
+
+        assert observed == {"delta": {"marked"}, "known": {"marked"}}
+        prune.assert_called_once_with({"marked", "unmarked", "unknown", "pending"})
+
+
 class TestAdoptionIdentityFoldsCaseInTheMonitor:
     """Session-map keys are written by the hook; the adoption set comes from
     the backend's listing. On agterm those can spell one UUID differently, and

@@ -21,6 +21,24 @@ def _base_env(monkeypatch, tmp_path):
 
 
 @pytest.mark.usefixtures("_base_env")
+class TestTopicDiscovery:
+    def test_defaults_to_auto(self, monkeypatch):
+        monkeypatch.delenv("CCGRAM_TOPIC_DISCOVERY", raising=False)
+        assert Config().topic_discovery_mode == "auto"
+
+    @pytest.mark.parametrize("mode", ["auto", "marked", " MARKED "])
+    def test_accepts_supported_modes(self, monkeypatch, mode):
+        monkeypatch.setenv("CCGRAM_TOPIC_DISCOVERY", mode)
+        assert Config().topic_discovery_mode == mode.strip().lower()
+
+    @pytest.mark.parametrize("mode", ["", " ", "all", "mark", "true"])
+    def test_invalid_mode_fails_closed(self, monkeypatch, mode):
+        monkeypatch.setenv("CCGRAM_TOPIC_DISCOVERY", mode)
+        with pytest.raises(ValueError, match="CCGRAM_TOPIC_DISCOVERY.*auto.*marked"):
+            Config()
+
+
+@pytest.mark.usefixtures("_base_env")
 class TestConfigValid:
     def test_valid_config(self):
         cfg = Config()
