@@ -114,11 +114,7 @@ def set_topic_selection(
 
 def observe_topic_mark_owner(window_id: str, owner: str | None) -> bool:
     state = window_store.window_states.get(_selection_key(window_id))
-    if (
-        state is None
-        or not owner
-        or window_store.has_pending_topic_mark(window_id, owner)
-    ):
+    if state is None or not owner:
         return False
     window_store.set_topic_selection(
         _selection_key(window_id), detached=state.topic_detached, owner=owner

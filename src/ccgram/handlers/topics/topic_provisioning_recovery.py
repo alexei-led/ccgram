@@ -11,7 +11,7 @@ from telegram.error import RetryAfter
 
 from ... import window_query
 from ...config import config
-from ...topic_selection import select_topic_target
+from ...topic_selection import recover_topic_selections, verify_topic_target
 from ...window_state_ports import lifecycle_state
 from ...multiplexer import multiplexer
 from ...multiplexer.base import canonical_window_id
@@ -303,57 +303,54 @@ async def _create_prepared_replacement(
 async def _select_recovered_target(
     claim: TopicProvisioning, adapter: TelegramSessionAdapter
 ) -> bool:
-    """Recover explicit creation selection, not automatic/admitted topics."""
+    """Recover a live admission, never derive a mark-on from a stale claim."""
     assert claim.target_id is not None
     if not await _claim_agent_is_ready(claim, adapter):
         return False
     saved_owner = lifecycle_state.get_topic_mark_owner(claim.target_id)
-    window = await multiplexer.find_window_by_id(claim.target_id)
+    window = await verify_topic_target(
+        claim.target_id, owner=saved_owner, require_marked=False, mux=multiplexer
+    )
     if window is None:
         return False
-    observed_owner = window.topic_mark_owner
-    owner = observed_owner if observed_owner is not None else saved_owner
-    require_selection = (
-        config.topic_discovery_mode == "marked" or claim.kind == "target_for_topic"
-    )
+    owner = window.topic_mark_owner or saved_owner
+    marked_mode = config.topic_discovery_mode == "marked"
+    require_selection = marked_mode or claim.kind == "target_for_topic"
     if (
+        require_selection
+        and lifecycle_state.is_topic_detach_pending(claim.target_id, owner=owner)
+    ) or (marked_mode and saved_owner is None and window.topic_markable):
+        return False
+    pending = next(
         (
-            saved_owner is not None
-            and observed_owner is not None
-            and observed_owner != saved_owner
-        )
-        or (
-            require_selection
-            and (
-                lifecycle_state.is_topic_detach_pending(claim.target_id, owner=owner)
-                or lifecycle_state.is_topic_detached(claim.target_id)
-            )
-        )
-        or (config.topic_discovery_mode == "marked" and saved_owner is None)
+            operation
+            for operation in lifecycle_state.pending_topic_selections()
+            if owner is not None and operation.owner == owner and operation.desired
+        ),
+        None,
+    )
+    if pending is not None:
+        await recover_topic_selections(mux=multiplexer, operation=pending)
+        if marked_mode and lifecycle_state.topic_mark_operation_is_current(pending):
+            return False
+        if not await _claim_agent_is_ready(claim, adapter):
+            return False
+    current = await verify_topic_target(
+        claim.target_id, owner=saved_owner, require_marked=marked_mode, mux=multiplexer
+    )
+    if current is None or (
+        marked_mode and claim.kind != "target_for_topic" and not current.topic_markable
     ):
         return False
-    if claim.kind != "target_for_topic":
-        if config.topic_discovery_mode == "marked" and (
-            window is None
-            or not window.topic_markable
-            or window.topic_marked is not True
-            or not observed_owner
-            or saved_owner != observed_owner
-        ):
-            return False
-        return (
-            lifecycle_state.record_topic_mark_owner(claim.target_id, observed_owner)
-            or config.topic_discovery_mode != "marked"
-        )
-    if await select_topic_target(claim.target_id):
-        return await _claim_agent_is_ready(
-            claim, adapter
-        ) and not lifecycle_state.is_topic_detach_pending(claim.target_id, owner=owner)
-    logger.warning("recovered_topic_selection_pending", window_id=claim.target_id)
+    if require_selection and lifecycle_state.is_topic_detach_pending(
+        claim.target_id, owner=current.topic_mark_owner
+    ):
+        return False
     return (
-        config.topic_discovery_mode != "marked"
-        and not lifecycle_state.is_topic_detach_pending(claim.target_id, owner=owner)
-        and not lifecycle_state.is_topic_detached(claim.target_id)
+        lifecycle_state.record_topic_mark_owner(
+            claim.target_id, current.topic_mark_owner
+        )
+        or not marked_mode
     )
 
 
@@ -374,7 +371,15 @@ async def _commit_present_topic(
         if _target_bound_in_chat(router, claim):
             return "unresolved"
         committed = router.commit_topic_provisioning(claim.claim_id)
+        completed = not committed or lifecycle_state.complete_topic_admission(
+            claim.target_id, lifecycle_state.get_topic_mark_owner(claim.target_id)
+        )
         session_manager.flush_state()
+        if not completed:
+            logger.warning(
+                "recovered_topic_lifecycle_unfinished", window_id=claim.target_id
+            )
+            return "unresolved"
         return "bound" if committed else "changed"
 
 

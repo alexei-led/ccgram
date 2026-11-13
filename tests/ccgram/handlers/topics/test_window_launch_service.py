@@ -28,6 +28,26 @@ from ccgram.handlers.user_state import (
     PENDING_WORKTREE_REPO,
 )
 
+
+@pytest.fixture(autouse=True)
+def _isolated_window_state_owner():
+    from ccgram.window_state_store import (
+        WindowStateStore,
+        get_window_store,
+        install_window_store,
+    )
+
+    previous = get_window_store()
+    store = WindowStateStore(
+        schedule_save=lambda: None, on_hookless_provider_switch=lambda _wid: None
+    )
+    install_window_store(store)
+    try:
+        yield
+    finally:
+        install_window_store(previous)
+
+
 _MODULE = "ccgram.handlers.topics.window_launch_service."
 
 
@@ -542,6 +562,39 @@ async def test_agent_exit_during_native_mark_keeps_creation_quarantined(monkeypa
     m.router.commit_topic_provisioning.assert_not_called()
     m.router.mark_provisioning_uncertain.assert_called_once_with("claim-1")
     m.adapter.close.assert_not_awaited()
+
+
+async def test_new_terminal_cannot_inherit_old_detached_ttl_at_reused_id(monkeypatch):
+    from ccgram.config import config
+    from ccgram.window_state_ports import lifecycle_state
+
+    monkeypatch.setattr(config, "topic_discovery_mode", "marked")
+    lifecycle_state.set_topic_selection(
+        "@5", detached=True, pending=False, owner="old-terminal"
+    )
+    native = SimpleNamespace(
+        find_window_by_id=AsyncMock(
+            return_value=SimpleNamespace(
+                window_id="@5",
+                topic_markable=True,
+                topic_marked=False,
+                topic_mark_owner="new-terminal",
+            )
+        ),
+        set_topic_mark=AsyncMock(return_value=False),
+    )
+    with _launch_env() as m, patch("ccgram.multiplexer.multiplexer", native):
+        result = await launch_window(_make_query(), _make_context(), _request())
+    assert not result.success
+    assert not lifecycle_state.is_topic_detached("@5")
+    assert lifecycle_state.get_topic_mark_owner("@5") == "new-terminal"
+    assert {
+        op.owner: op.desired for op in lifecycle_state.pending_topic_selections()
+    } == {
+        "old-terminal": False,
+        "new-terminal": True,
+    }
+    m.router.commit_topic_provisioning.assert_not_called()
 
 
 class TestLaunchWindowSuccess:

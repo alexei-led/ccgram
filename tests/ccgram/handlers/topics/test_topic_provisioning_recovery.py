@@ -12,6 +12,25 @@ from ccgram.telegram_rate_limiter import NO_RETRY_RATE_LIMIT_ARGS
 from ccgram.thread_router import ThreadRouter
 
 
+@pytest.fixture(autouse=True)
+def _isolated_window_state_owner():
+    from ccgram.window_state_store import (
+        WindowStateStore,
+        get_window_store,
+        install_window_store,
+    )
+
+    previous = get_window_store()
+    store = WindowStateStore(
+        schedule_save=lambda: None, on_hookless_provider_switch=lambda _wid: None
+    )
+    install_window_store(store)
+    try:
+        yield
+    finally:
+        install_window_store(previous)
+
+
 def _adapter() -> MagicMock:
     adapter = MagicMock()
     adapter.resolve = AsyncMock(
@@ -141,6 +160,7 @@ async def test_marked_explicit_creation_recovers_only_after_verified_selection(
     )
     with (
         patch("ccgram.multiplexer.multiplexer", native),
+        patch("ccgram.handlers.topics.topic_provisioning_recovery.multiplexer", native),
         patch(
             "ccgram.handlers.topics.topic_provisioning_recovery.window_presence",
             new_callable=AsyncMock,
