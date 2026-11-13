@@ -8,9 +8,9 @@ Status: approved design for [issue #400](https://github.com/alexei-led/ccgram/is
 
 A mark selects a terminal/window, not an agent conversation. Replacing an agent or using `/clear` does not change the selection. A newly created or duplicated worker terminal starts unmarked. A mark survives restoration only when the backend verifies that it restored the same terminal. Names, working directories and layout are not identity evidence.
 
-This setting does not filter liveness, mobile listings, explicit binding, routing identity, or ongoing forwarding. Existing bound topics continue working after unmarking or changing modes. `/new` and `/bind` select their target before a successful binding. Creation ownership, foreground readiness and quarantine remain in force.
+This setting does not filter liveness, mobile listings, explicit binding, routing identity, or ongoing forwarding. Existing bound topics continue working after unmarking or changing modes. `/new` and picker binding attempt selection in both modes before binding. In `auto`, an unverified native write warns and persists a mark-on retry without changing historical binding success. In `marked`, it prevents binding and keeps creation quarantined until verification. Creation ownership and foreground readiness remain in force.
 
-In marked mode, intentionally closing or unbinding the last binding clears the native mark, prevents automatic recreation, and leaves the terminal running. A deliberate detach is exempt from orphan TTL. An abandoned failed create retains its existing cleanup behavior. If clearing the mark fails, the lifecycle operation remains unfinished. A separate suppression preference must not mask the failure.
+In marked mode, intentionally closing or unbinding the last binding clears the native mark, prevents automatic recreation, and leaves the terminal running. A deliberate detach is exempt from orphan TTL. An abandoned failed create retains its existing cleanup behavior. If clearing the mark fails, the lifecycle operation remains unfinished. A persisted desired-false operation blocks automatic readmission until verification and is retried by topic maintenance every 60 seconds, including after restart. This is unfinished lifecycle work, not a permanent suppression preference. Detach does not change the terminal origin.
 
 ## Native storage and restoration
 
@@ -28,11 +28,13 @@ The existing `topic_eligible` answers whether a backend target is eligible for u
 | agterm | Native session mark selects the primary only. A split is explicitly bindable but not natively markable; binding it must not toggle the primary mark or create a primary topic. | Native adapter implemented; integrated mutation verification pending. |
 | Herdr | Terminal selection must survive agent replacement and verified restoration without using transient agent or locator identity as durable proof. | Native durable support and restore pending; do not treat ephemeral tokens as durable. |
 
+Herdr must work with the standard application, without a fork. Its selection primitive remains unresolved. A durable, explicit manual pane label is under investigation as selection metadata distinct from dynamic agent titles. Any such mechanism must preserve user data and prove same-terminal restoration. Explicit metadata is not permission to infer identity from a matching display name.
+
 Herdr routing remains keyed by the guarded agent-session target, not by the selection mark. A durable selection mechanism must not replace its existing guards, infer identities from labels, or make a bare shell automatically topic-eligible.
 
 ### Local upstream proposal: Herdr
 
-For discussion only. Not submitted. Provide a public, documented terminal-scoped selection value with read and idempotent set/clear operations, verifiable after mutation. Its identity must remain stable while an agent is replaced or cleared, and a newly created or duplicated terminal must not inherit the mark. For restoration, the API must attest that a restored terminal is the same terminal before restoring its selection. The API must distinguish unavailable or unconfirmed state from `false`, expose enough information to target the exact terminal safely, and document concurrency and failure behavior. CCGram must still use fresh guarded agent targets for routing. Upstream acceptance and publication are outside this proposal.
+Optional requirements draft, not a dependency or a fork proposal. Not submitted. A public, documented terminal-scoped selection value should support read and idempotent set/clear operations, verifiable after mutation. Its identity must remain stable while an agent is replaced or cleared, and a newly created or duplicated terminal must not inherit the mark. For restoration, the API must attest that a restored terminal is the same terminal before restoring its selection. The API must distinguish unavailable or unconfirmed state from `false`, expose enough information to target the exact terminal safely, and document concurrency and failure behavior. CCGram must still use fresh guarded agent targets for routing. Upstream acceptance and publication are outside this proposal.
 
 ## Acceptance matrix
 
@@ -46,7 +48,7 @@ These are required behavior checks, not claims that tests have passed.
 | Unmark or switch mode with an existing binding | Keep the binding and forwarding; liveness and mobile listing remain complete. |
 | Agent replacement or `/clear` in selected terminal | Selection survives; newly created or duplicated terminal is unmarked. |
 | Restore same terminal / unrelated terminal with matching name, cwd or layout | Restore mark only with verified same-terminal evidence; never infer from resemblance. |
-| `/new` or `/bind` | Select before successful bind; preserve creation ownership, readiness and quarantine on failures. |
+| `/new` or `/bind`, native mark failure | Auto warns, persists retry and preserves historical bind success. Marked blocks binding and preserves quarantine until verified. |
 | agterm split explicit bind | Bind split without changing primary mark or automatically creating a primary topic. |
 | Marked-mode deliberate detach, last binding / other bindings remain | Last binding clears mark and keeps terminal alive, without orphan TTL; do not clear while another binding remains. |
 | Mark clear fails | Retain unfinished lifecycle operation; do not claim completed detach or suppress recreation with competing state. |
