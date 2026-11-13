@@ -4,7 +4,7 @@ Status: approved design for [issue #400](https://github.com/alexei-led/ccgram/is
 
 ## Operator model
 
-`CCGRAM_TOPIC_DISCOVERY=auto|marked` selects automatic Telegram topic admission. `auto` remains the default and preserves existing discovery and unbound-window TTL behavior. In `marked` mode, unattended discovery admits only an eligible target with a confirmed native mark. An unknown mark is not confirmation. The planned local controls are `ccgram topic mark TARGET`, `ccgram topic unmark TARGET`, and `ccgram topic status [TARGET]`. Mutations require a target. Status without one lists selection. Availability remains pending integration verification.
+`CCGRAM_TOPIC_DISCOVERY=auto|marked` selects automatic Telegram topic admission. `auto` remains the default and preserves existing discovery and unbound-window TTL behavior. In `marked` mode, unattended discovery admits only an eligible target with a confirmed native mark. An unknown mark is not confirmation. The local controls are `ccgram topic mark TARGET`, `ccgram topic unmark TARGET`, and `ccgram topic status [TARGET]`. Get the exact target ID from `ccgram topic status`: mutations require an explicit ID, never a name or the active GUI terminal. Status returns JSON with `backend`, `mode`, and `targets`; each target has `id`, `name`, native `marked` (true, false or null) and `markable`. CLI unmark leaves existing topics connected. CLI help and target-safety checks are implemented, but successful backend mutation remains pending integration verification.
 
 A mark selects a terminal/window, not an agent conversation. Replacing an agent or using `/clear` does not change the selection. A newly created or duplicated worker terminal starts unmarked. A mark survives restoration only when the backend verifies that it restored the same terminal. Names, working directories and layout are not identity evidence.
 
@@ -12,14 +12,20 @@ This setting does not filter liveness, mobile listings, explicit binding, routin
 
 In marked mode, intentionally closing or unbinding the last binding clears the native mark, prevents automatic recreation, and leaves the terminal running. A deliberate detach is exempt from orphan TTL. An abandoned failed create retains its existing cleanup behavior. If clearing the mark fails, the lifecycle operation remains unfinished. A separate suppression preference must not mask the failure.
 
+## Native storage and restoration
+
+The tmux adapter uses a window-local `@ccgram_topic` option (`1` or `0`), ignoring inherited session and global defaults. Missing local selection is unmarked. A malformed value or failed read is unknown. The same live window retains its mark across agent respawn and CCGram reconnect. Destroying the tmux server loses its window options: a reused window ID and matching name do not restore selection. An external restorer would need to persist and reapply selection only after verifying the same-window identity. That restore path is not verified support.
+
+The agterm adapter reads the native session `flagged` boolean for the primary only. A split reports `topic_markable=False` and `topic_marked=False`; explicit split binding must skip marker writes.
+
 ## Backend contract
 
 The existing `topic_eligible` answers whether a backend target is eligible for unattended adoption. It remains separate from existence and visibility. The neutral interface adds `WindowRef.topic_marked: bool | None = False` and `WindowRef.topic_markable: bool = True`. `None` means the mark is unconfirmed and cannot grant marked-mode admission. `Multiplexer.set_topic_mark(window_id: str, marked: bool) -> bool` is idempotent and reports success only after verification. An unavailable listing is not an empty listing and never proves closure.
 
 | Backend | Selection boundary and required verification | Evidence status |
 | --- | --- | --- |
-| tmux | Window mark, retained across agent replacement; restore only with verified same-window identity. | Implementation and restore pending integration verification. |
-| agterm | Native session mark selects the primary only. A split is explicitly bindable but not natively markable; binding it must not toggle the primary mark or create a primary topic. | Implementation pending integration verification. |
+| tmux | Window mark, retained across agent replacement; restore only with verified same-window identity. | Native storage implemented; integrated mutation and same-window restore verification pending. |
+| agterm | Native session mark selects the primary only. A split is explicitly bindable but not natively markable; binding it must not toggle the primary mark or create a primary topic. | Native adapter implemented; integrated mutation verification pending. |
 | Herdr | Terminal selection must survive agent replacement and verified restoration without using transient agent or locator identity as durable proof. | Native durable support and restore pending; do not treat ephemeral tokens as durable. |
 
 Herdr routing remains keyed by the guarded agent-session target, not by the selection mark. A durable selection mechanism must not replace its existing guards, infer identities from labels, or make a bare shell automatically topic-eligible.
