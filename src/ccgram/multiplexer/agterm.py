@@ -527,6 +527,8 @@ class AgtermManager:
 
             if shell in KNOWN_SHELLS:
                 command = shell
+        markable = split_session_id(str(session.get("id", ""))) is None
+        flag = session.get("flagged")
         return WindowRef(
             window_id=str(session.get("id", "")),
             window_name=str(session.get("name") or ""),
@@ -542,6 +544,12 @@ class AgtermManager:
             topic_eligible=self._is_adoptable(session)
             and (workspace is None or self._in_scope(workspace))
             and _runs_a_known_agent(foreground),
+            # agterm flags a session, not each pane. Never project the primary
+            # flag onto a split, even a hidden one that shares its tree node.
+            topic_marked=(flag if isinstance(flag, bool) else None)
+            if markable
+            else False,
+            topic_markable=markable,
         )
 
     async def _find_session(self, window_id: str) -> dict | None:
@@ -654,6 +662,28 @@ class AgtermManager:
             for workspace, session in self._sessions(tree)
             for pane in pane_sessions(session)
         ]
+
+    async def set_topic_mark(self, window_id: str, marked: bool) -> bool:
+        """Set the primary session flag and confirm it on the same UUID."""
+        if split_session_id(window_id) is not None:
+            return False
+        session = await self._find_session(window_id)
+        if session is None or not isinstance(session.get("flagged"), bool):
+            return False
+        if session["flagged"] is marked:
+            return True
+        if not await self._call_ok(
+            [
+                "session",
+                "flag",
+                "on" if marked else "off",
+                "--target",
+                str(session["id"]),
+            ]
+        ):
+            return False
+        confirmed = await self._find_session(window_id)
+        return confirmed is not None and confirmed.get("flagged") is marked
 
     async def list_workspaces(self) -> list[WorkspaceRef]:
         """List agterm workspaces; the id is an opaque token for ``create_window``."""

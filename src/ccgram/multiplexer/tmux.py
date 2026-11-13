@@ -88,6 +88,8 @@ _TmuxError = (
     subprocess.CalledProcessError,
 )
 
+_TOPIC_MARK_OPTION = "@ccgram_topic"
+
 # Static capability declaration for the tmux backend (design Task 2).
 _TMUX_CAPABILITIES = MultiplexerCapabilities(
     name="tmux",
@@ -165,6 +167,28 @@ class TmuxManager:
         return session
 
     @staticmethod
+    def _topic_mark(window: libtmux.Window) -> bool | None:
+        """Read only window-local options, never global/session defaults.
+
+        Enumerate without -A: asking for a named option can resolve inherited
+        values. libtmux.show_options discards command failures, so inspect the
+        raw status to keep a vanished window from confirming a successful clear.
+        Options survive ccgram/process restarts, not tmux server destruction.
+        A restorer must reapply them only with verified same-window identity.
+        """
+        try:
+            result = window.cmd("show-options", "-w")
+            if result.returncode != 0 or result.stderr:
+                return None
+            for line in result.stdout:
+                key, _, value = line.partition(" ")
+                if key == _TOPIC_MARK_OPTION:
+                    return {"1": True, "0": False}.get(value.strip())
+            return False
+        except _TmuxError:
+            return None
+
+    @staticmethod
     def _window_ref_for_reconciliation(window: libtmux.Window) -> TmuxWindow:
         """Build a window ref while treating pane metadata as optional.
 
@@ -209,6 +233,7 @@ class TmuxManager:
             pane_width=pw,
             pane_height=ph,
             topic_eligible=bool(adoptable),
+            topic_marked=TmuxManager._topic_mark(window),
         )
 
     async def list_windows(self) -> list[TmuxWindow]:
@@ -259,6 +284,7 @@ class TmuxManager:
                             pane_tty=pane_tty,
                             pane_width=pw,
                             pane_height=ph,
+                            topic_marked=self._topic_mark(window),
                         )
                     )
                 except _TmuxError as e:
@@ -306,6 +332,33 @@ class TmuxManager:
             return windows
 
         return await asyncio.to_thread(_sync_list_windows)
+
+    async def set_topic_mark(self, window_id: str, marked: bool) -> bool:
+        """Set a window-local native marker and verify the same target."""
+
+        def _sync_set() -> bool:
+            session = self.get_session()
+            if session is None:
+                return False
+            try:
+                window = session.windows.get(window_id=window_id, default=None)
+                if window is None:
+                    return False
+                current = self._topic_mark(window)
+                if current is None:
+                    return False
+                if current is marked:
+                    return True
+                result = window.cmd(
+                    "set-option", "-w", _TOPIC_MARK_OPTION, "1" if marked else "0"
+                )
+                if result.returncode != 0 or result.stderr:
+                    return False
+                return self._topic_mark(window) is marked
+            except _TmuxError:
+                return False
+
+        return await asyncio.to_thread(_sync_set)
 
     async def find_window_by_name(self, window_name: str) -> TmuxWindow | None:
         """Find a window by its name.
