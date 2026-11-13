@@ -46,6 +46,8 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from collections import Counter
+from uuid import UUID
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 
 import structlog
@@ -550,7 +552,37 @@ class AgtermManager:
             if markable
             else False,
             topic_markable=markable,
+            topic_mark_owner=self._topic_owner(session)
+            if markable and isinstance(flag, bool)
+            else None,
         )
+
+    @staticmethod
+    def _topic_owner(session: dict) -> str | None:
+        try:
+            return f"agterm:{UUID(str(session.get('id', '')))}"
+        except ValueError:
+            return None
+
+    def _topic_windows(self, tree: dict, *, picker: bool = False) -> list[WindowRef]:
+        rows = [
+            (
+                self._to_window(pane, workspace),
+                self._in_scope(workspace) and self._is_adoptable(session),
+            )
+            for workspace, session in self._sessions(tree)
+            for pane in pane_sessions(session)
+        ]
+        owners = Counter(
+            owner
+            for _, session in self._sessions(tree)
+            if (owner := self._topic_owner(session)) is not None
+        )
+        for window, _ in rows:
+            if window.topic_mark_owner and owners[window.topic_mark_owner] > 1:
+                window.topic_marked = None
+                window.topic_mark_owner = None
+        return [window for window, visible in rows if not picker or visible]
 
     async def _find_session(self, window_id: str) -> dict | None:
         """Return the private session dict for *window_id*, or None if gone.
@@ -634,12 +666,7 @@ class AgtermManager:
         tree = await self._tree()
         if tree is None:
             return []
-        return [
-            self._to_window(pane, workspace)
-            for workspace, session in self._sessions(tree)
-            if self._in_scope(workspace) and self._is_adoptable(session)
-            for pane in pane_sessions(session)
-        ]
+        return self._topic_windows(tree, picker=True)
 
     async def list_windows_for_reconciliation(self) -> list[WindowRef] | None:
         """List windows, or None when agterm cannot confirm the listing.
@@ -657,33 +684,60 @@ class AgtermManager:
         tree = await self._tree()
         if tree is None:
             return None
-        return [
-            self._to_window(pane, workspace)
-            for workspace, session in self._sessions(tree)
-            for pane in pane_sessions(session)
-        ]
+        return self._topic_windows(tree)
 
-    async def set_topic_mark(self, window_id: str, marked: bool) -> bool:
-        """Set the primary session flag and confirm it on the same UUID."""
-        if split_session_id(window_id) is not None:
+    async def set_topic_mark(
+        self, window_id: str, marked: bool, *, owner: str | None = None
+    ) -> bool:
+        """Change only the expected primary UUID, never a stale routing target."""
+        try:
+            UUID(window_id)
+            target = (
+                str(UUID(owner.removeprefix("agterm:")))
+                if owner and owner.startswith("agterm:")
+                else window_id
+            )
+        except ValueError:
             return False
-        session = await self._find_session(window_id)
-        if session is None or not isinstance(session.get("flagged"), bool):
+        expected = f"agterm:{UUID(target)}"
+        if owner is not None and owner != expected:
             return False
-        if session["flagged"] is marked:
-            return True
-        if not await self._call_ok(
-            [
-                "session",
-                "flag",
-                "on" if marked else "off",
-                "--target",
-                str(session["id"]),
-            ]
+        windows = await self.list_windows_for_reconciliation()
+        if windows is None or any(
+            window.topic_markable and window.topic_mark_owner is None
+            for window in windows
         ):
             return False
-        confirmed = await self._find_session(window_id)
-        return confirmed is not None and confirmed.get("flagged") is marked
+        matches = [window for window in windows if window.topic_mark_owner == expected]
+        if not matches:
+            # A tree miss alone is not authoritative absence across app windows.
+            return (
+                owner is not None
+                and not marked
+                and await self.window_exists(target) is False
+            )
+        if len(matches) != 1:
+            return False
+        window = matches[0]
+        if window.topic_marked is marked:
+            return True
+        if not await self._call_ok(
+            ["session", "flag", "on" if marked else "off", "--target", window.window_id]
+        ):
+            return False
+        confirmed = await self.list_windows_for_reconciliation()
+        return (
+            confirmed is not None
+            and all(
+                not row.topic_markable or row.topic_mark_owner is not None
+                for row in confirmed
+            )
+            and sum(
+                row.topic_mark_owner == expected and row.topic_marked is marked
+                for row in confirmed
+            )
+            == 1
+        )
 
     async def list_workspaces(self) -> list[WorkspaceRef]:
         """List agterm workspaces; the id is an opaque token for ``create_window``."""
@@ -710,10 +764,10 @@ class AgtermManager:
 
     async def find_window_by_id(self, window_id: str) -> WindowRef | None:
         """Find a session by its UUID; None when it no longer exists."""
-        session = await self._find_session(window_id)
-        # No workspace passed: addressing a known id is not discovery, so an
-        # out-of-scope window is still findable and drivable.
-        return None if session is None else self._to_window(session)
+        windows = await self.list_windows_for_reconciliation()
+        return next(
+            (window for window in windows or [] if window.matches(window_id)), None
+        )
 
     async def _read_text(self, window_id: str, *, lines: int | None) -> str | None:
         """Read the agent pane's buffer as plain text; None on a failed read.

@@ -83,6 +83,14 @@ class WindowRef:
     topic_markable: bool = True
     """Whether this target has its own native marker (agterm splits do not)."""
 
+    topic_mark_owner: str | None = None
+    """Opaque native selection-resource identity, never a routing/input alias.
+
+    Healthy unmarked resources expose a witness too; None means ownership is
+    unconfirmed. Persist this before changing selection so retries cannot act
+    on a new terminal that recycled an old routing ID.
+    """
+
     def matches(self, window_id: str) -> bool:
         """Whether *window_id* names this window, under any identity it has had.
 
@@ -357,12 +365,16 @@ class Multiplexer(Protocol):
         """
         ...
 
-    async def set_topic_mark(self, window_id: str, marked: bool) -> bool:
-        """Set the native admission marker, idempotently, with verified readback.
+    async def set_topic_mark(
+        self, window_id: str, marked: bool, *, owner: str | None = None
+    ) -> bool:
+        """Set selection with verified readback, scoped to the expected owner.
 
-        Success means the exact live target reports the requested value. A
-        missing target, unsupported marker, failed write or unconfirmed readback
-        returns False. Never infer selection from a name, cwd or layout.
+        With owner, act only on that uniquely proven native resource, even if
+        its routing ID changed. A complete validated absence can confirm clear,
+        never mark-on. No stale-ID fallback. Without owner, resolve the fresh
+        target first. Unknown, duplicate or malformed ownership returns False.
+        Never infer ownership from a name, cwd or layout.
         """
         ...
 
