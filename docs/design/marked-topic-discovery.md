@@ -6,7 +6,7 @@ Status: approved design for [issue #400](https://github.com/alexei-led/ccgram/is
 
 `CCGRAM_TOPIC_DISCOVERY=auto|marked` selects automatic Telegram topic admission (CLI: `--topic-discovery auto|marked`). `auto` remains the default and preserves existing discovery and unbound-window TTL behavior. In `marked`, unattended discovery requires an eligible, markable target with a confirmed true native mark and a confirmed selection owner. Unknown metadata cannot grant admission.
 
-The local controls are `ccgram topic mark TARGET`, `ccgram topic unmark TARGET`, and `ccgram topic status [TARGET]`. Get the exact target ID from `ccgram topic status`: mutations require an explicit ID, never a name or the active GUI terminal. Status returns JSON with `backend`, `mode`, and `targets`. Each target reports `id`, `name`, native `marked` (true, false or null), `markable`, and an opaque `owner` for diagnostics. An owner is not an input target or routing alias. These local commands do not require bot credentials. CLI unmark leaves existing topics connected.
+The local controls are `ccgram topic mark TARGET`, `ccgram topic unmark TARGET`, and `ccgram topic status [TARGET]`. Get the exact target ID from `ccgram topic status`: mutations require an explicit ID, never a name or the active GUI terminal. Status returns JSON with `backend`, `mode`, and `targets`. Each target reports `id`, `name`, native `marked` (true, false or null), `markable`, and an opaque `owner` for diagnostics. An owner is not an input target or routing alias. These local commands do not require bot credentials. CLI unmark leaves existing topics connected. A read-only journal guard rejects a manual native write that conflicts with unfinished opposite intent. Repeating the same desired value is nonconflicting, but the CLI does not complete or rewrite bot-owned journal operations.
 
 A mark selects a terminal/window, not an agent conversation. Replacing an agent or using `/clear` does not change that selection. Normal native creation or splitting starts unmarked. Explicitly copying native selection metadata is a separate operation with the Herdr limits below. Names, working directories and layout resemblance never prove terminal identity.
 
@@ -16,7 +16,7 @@ In marked mode, intentional close or `/unbind` of the last binding clears that t
 
 ### Unfinished or ambiguous detach
 
-A failed clear remains unfinished lifecycle work, not a permanent suppression preference. Persisted desired-false state survives restart and blocks automatic readmission for the original routing target or the exact same native owner, including after conversation re-keying. Topic maintenance retries unfinished operations every 60 seconds. Independent owners remain independently admissible.
+A failed clear remains unfinished lifecycle work, not a permanent suppression preference. Persisted desired-false operations survive restart and block readmission of the exact same native owner, including after conversation re-keying. When both owners are known, exact owner matching takes precedence over routing IDs: an old owner's clear does not block an independent new owner reusing that ID. Route matching is a fallback only when ownership is unknown. Topic maintenance retries unfinished operations every 60 seconds. Independent owners remain independently admissible.
 
 If neither saved nor current verifiable ownership exists, CCGram must not guess which terminal to clear or report completed native detach. It keeps the unfinished operation and warns that ownership is unconfirmed. The operator must explicitly unmark the current target. A backend may settle an ownerless clear only if it safely proves no selected native owners remain. Merely losing the old routing target is not success.
 
@@ -50,7 +50,7 @@ A sole copied marker is indistinguishable from an imported selection and is trea
 
 Isolated native tests against stock Herdr 0.9.5 verified exact Unicode/literal-`--clear` label restoration, conversation re-key and bare-shell clearing, fresh split unmarked state, duplicate-owner quarantine, and cold restore preserving the stored owner despite a changed runtime terminal ID. These tests used genuine native helpers with controlled standard hook reports. They did not launch an AI CLI or prove actual provider-session resumption.
 
-Tmux test coverage includes native token retention, full-server loss, reused window IDs, restored full tokens, duplicate-owner quarantine, and acknowledgement-loss retries. Safe native-pytest revalidation remains pending correction of the global test-cleanup harness. Earlier execution must not be described as fully isolated. Agterm adapter tests and pinned upstream source establish the intended persisted primary flag and unmarked duplicates. A live agterm application restart has not been verified here.
+Tmux test coverage includes native token retention, full-server loss, reused window IDs, restored full tokens, duplicate-owner quarantine, and acknowledgement-loss retries. The native cases passed again after the cleanup patch established an owned default namespace before imports and retained the creating socket/incarnation for teardown. This fresh evidence does not establish that earlier unguarded execution was fully isolated or had no effects. Historical default-server effects remain unknown. Agterm adapter tests and pinned upstream source establish the intended persisted primary flag and unmarked duplicates. A live agterm application restart has not been verified here.
 
 Native CLI read/check/write operations are not an atomic compare-and-set. Inventory, identity and readback checks detect observed changes, but an external replacement or metadata change between verification and dispatch can still affect a different resource before a postcheck reports uncertainty. No atomic-write or rollback guarantee is claimed. Final integration acceptance of this native limitation remains pending.
 
@@ -70,11 +70,13 @@ For clear, complete validated owner absence can prove the old selection off. Dup
 
 ## Lifecycle ownership
 
-`WindowState` stores `topic_mark_owner`, `topic_mark_pending` (`True`: unfinished on, `False`: unfinished clear, `None`: settled), and `topic_detached`. There is no separate selection registry. Root code never generates backend-specific owner IDs or writes native storage.
+`WindowState` stores observed `topic_mark_owner` and intentional `topic_detached` metadata. Unfinished native effects live in the owner-keyed `topic_mark_operations` journal within the existing `state.json`, not in a per-window pending flag. Each operation records its original `window_id`, opaque `owner` (or null when unknown), and boolean `desired`. Known owners key operations independently of routing IDs. Unknown-owner operations retain their original route as a quarantine key. Native metadata remains the only selected-state truth: this journal authorizes retries, not routing or a competing selection preference.
+
+The credential-free journal reader is read-only. A missing state file or journal field means no operations. Malformed, duplicate or unreadable records fail closed rather than hiding unfinished work. Opposite desired intent on a matching operation conflicts with manual CLI mutation. Both known owners compare exactly, with route fallback only for unknown ownership. Root code never generates backend-specific owner IDs or writes native storage.
 
 Explicit selection observes a healthy current owner and persists owner plus desired-on before mutation. Unknown ownership produces a recoverable diagnostic, not a candidate identity. Automatic admission records the actual observed owner before binding **without marking** automatically discovered targets, including unmarked targets in auto mode. Already-bound, verifiable rows refresh observed ownership only when no pending operation owns that state. Unadmitted workers do not acquire window state merely for being listed.
 
-Before last detach, capture current verifiable ownership while the binding remains intact. Synchronously unbind, record owner plus desired-off/detached, and flush before awaiting native clear. Retry by saved owner without requiring the old routing target to resolve. Lock by owner when known. Preserve pending work through cancellation, stale pruning and checkpoint failure. Split exceptions never touch the primary.
+Before last detach, capture current verifiable ownership while the binding remains intact. Synchronously unbind, record owner plus desired-off/detached, and flush before awaiting native clear. Retry by saved owner without requiring the old routing target to resolve. Lock by owner when known. Preserve journal operations through cancellation, stale pruning and checkpoint failure. Observing a new owner must not retarget or discard an old owner's operation. Split exceptions never touch the primary.
 
 Fresh automatic admission checks run inside the actual creation-ownership lock and again before commit or recovery. A stale pre-lock verdict must not bypass a newly pending owner-clear. Unmarking alone still leaves admitted topics connected.
 
@@ -98,7 +100,9 @@ These are required checks, not claims that tests have passed.
 | agterm explicit split binding | Bind split without flagging or auto-adopting primary. |
 | Last marked-mode detach / another binding remains | Clear only after last binding. Keep terminal alive and exempt intentional detach from TTL. |
 | Lost mark acknowledgement, conversation re-key or bare shell | Retry the exact saved owner, not the old conversation locator. |
-| Clear fails or local checkpoint fails | Retain unfinished owner-scoped work across restart. No competing suppression preference. |
+| Clear fails, local checkpoint fails or current owner changes | Retain original owner-keyed operation across restart without retargeting it. No competing suppression preference. |
+| Manual CLI write conflicts with journal | Reject opposite matching intent. Same desired value is nonconflicting but does not settle the journal. |
+| Known new owner reuses routing ID with old-owner clear pending | Keep old operation, but admit independent new owner if otherwise eligible. |
 | Owner unknown, duplicate or stale | Fail closed without clearing another terminal. Unknown historical ownership requires operator unmark. |
 | Clear owner absent in complete validated native inventory | Backend may verify old selection off without mutating another resource. |
 | Pending clear appears after pre-lock admission check | Recheck under creation ownership before bind/recovery. |
