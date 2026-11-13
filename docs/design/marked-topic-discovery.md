@@ -1,6 +1,6 @@
 # Marked topic discovery: implementation contract
 
-Status: approved design for [issue #400](https://github.com/alexei-led/ccgram/issues/400), not a release or backend-support claim. The baseline implements automatic discovery. Marked discovery and the restore guarantees below require integrated code and verification. In particular, Herdr support and tmux restore have not yet been verified here.
+Status: approved design for [issue #400](https://github.com/alexei-led/ccgram/issues/400), not a release or backend-support claim. The baseline implements automatic discovery. Marked discovery and the restore guarantees below require integrated code and verification. Herdr support remains under review. Tmux selection follows its native window lifetime, not a promised cold-restore path.
 
 ## Operator model
 
@@ -14,7 +14,7 @@ In marked mode, intentionally closing or unbinding the last binding clears the n
 
 ## Native storage and restoration
 
-The tmux adapter uses a window-local `@ccgram_topic` option (`1` or `0`), ignoring inherited session and global defaults. Missing local selection is unmarked. A malformed value or failed read is unknown. The same live window retains its mark across agent respawn and CCGram reconnect. Destroying the tmux server loses its window options: a reused window ID and matching name do not restore selection. An external restorer would need to persist and reapply selection only after verifying the same-window identity. That restore path is not verified support.
+The tmux adapter uses a window-local `@ccgram_topic` option (`1` or `0`), ignoring inherited session and global defaults. Missing local selection is unmarked. A malformed value or failed read is unknown. The same live window retains its mark across agent respawn, CCGram restart and client reconnect while the tmux server lives. Destroying a vanilla tmux server destroys its terminals and their window options. This is a native-lifetime limit, not supported cold restoration. An external restorer must preserve the option within a verified same-window snapshot. No particular third-party restorer is required or claimed as supported. Reused window IDs, names and working directories do not prove the same terminal.
 
 The agterm adapter reads the native session `flagged` boolean for the primary only. A split reports `topic_markable=False` and `topic_marked=False`; explicit split binding must skip marker writes.
 
@@ -28,7 +28,7 @@ Lifecycle state distinguishes `topic_mark_pending=True` (unfinished mark-on), `F
 
 | Backend | Selection boundary and required verification | Evidence status |
 | --- | --- | --- |
-| tmux | Window mark, retained across agent replacement; restore only with verified same-window identity. | Native storage implemented; integrated mutation and same-window restore verification pending. |
+| tmux | Window-local mark persists for the native window lifetime, including agent replacement and client/CCGram restarts. | Native storage implemented; no cold-restore promise or required third-party plugin. |
 | agterm | Native session mark selects the primary only. A split is explicitly bindable but not natively markable; binding it must not toggle the primary mark or create a primary topic. | Native adapter implemented; integrated mutation verification pending. |
 | Herdr | Terminal selection must survive agent replacement and verified restoration without using transient agent or locator identity as durable proof. | Native durable support and restore pending; do not treat ephemeral tokens as durable. |
 
