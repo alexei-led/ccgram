@@ -17,7 +17,7 @@ import logging
 import os
 import signal
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TextIO
 
 import structlog
 
@@ -154,14 +154,14 @@ def _log_level_styles() -> dict[str, str]:
     return styles
 
 
-def setup_logging(log_level: str) -> None:
+def setup_logging(log_level: str, *, output: TextIO | None = None) -> None:
     """Configure structured, colored logging for interactive CLI use."""
     numeric_level = getattr(logging, log_level, None)
     if not isinstance(numeric_level, int):
         numeric_level = logging.INFO
 
     level_styles = _log_level_styles()
-    stdout_colors = _use_colors(sys.stdout)
+    stdout_colors = _use_colors(sys.stdout if output is None else output)
     stderr_colors = _use_colors(sys.stderr)
 
     structlog.configure(
@@ -183,7 +183,7 @@ def setup_logging(log_level: str) -> None:
         ],
         wrapper_class=structlog.make_filtering_bound_logger(numeric_level),
         context_class=dict,
-        logger_factory=structlog.PrintLoggerFactory(),
+        logger_factory=structlog.PrintLoggerFactory(file=output),
         cache_logger_on_first_use=True,
     )
 

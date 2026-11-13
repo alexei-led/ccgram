@@ -22,8 +22,8 @@ def test_run_bot_exits_nonzero_after_sustained_polling_conflict() -> None:
     with (
         patch.dict(os.environ, {"TMUX_SESSION_NAME": "test"}),
         patch("ccgram.main.setup_logging"),
-        patch("ccgram.config.config", config),
         patch("ccgram.bot.create_bot", return_value=application),
+        patch("ccgram.config.config", config),
         patch("ccgram.bot.polling_conflict_requires_restart", return_value=True),
         patch("ccgram.main._install_signal_handlers"),
         pytest.raises(SystemExit, match="1") as exc_info,
@@ -49,8 +49,8 @@ def test_run_bot_execs_again_after_restart_callback() -> None:
     with (
         patch.dict(os.environ, {"TMUX_SESSION_NAME": "test"}),
         patch("ccgram.main.setup_logging"),
-        patch("ccgram.config.config", config),
         patch("ccgram.bot.create_bot", return_value=application),
+        patch("ccgram.config.config", config),
         patch("ccgram.bot.polling_conflict_requires_restart", return_value=False),
         patch("ccgram.main._install_signal_handlers"),
         patch("ccgram.main.os.execv", side_effect=SystemExit(0)) as execv,

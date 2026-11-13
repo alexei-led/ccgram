@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 
 from .multiplexer import get_multiplexer
 from .multiplexer.base import Multiplexer, WindowRef
@@ -70,6 +71,10 @@ async def _topic_action(
 
 def topic_main(action: str, target: str | None) -> str:
     """Run one native selection command without validating Telegram credentials."""
+    # Lazy: reuse logging setup without loading the bot; stdout is reserved for JSON.
+    from .main import setup_logging
+
+    setup_logging("WARNING", output=sys.stderr)
     load_ccgram_env()
     name = os.environ.get("CCGRAM_MULTIPLEXER", "auto")
     if name == "auto":

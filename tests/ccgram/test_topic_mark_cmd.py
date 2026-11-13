@@ -208,3 +208,47 @@ def test_status_is_json_and_needs_no_bot_credentials(monkeypatch, marked_backend
     assert payload["backend"] == "agterm"
     assert payload["mode"] == "marked"
     assert payload["targets"][0]["id"] == "ABC-123"
+
+
+def test_topic_status_keeps_native_diagnostics_off_json_stdout(tmp_path):
+    import json
+    import subprocess
+    import sys
+    from textwrap import dedent
+
+    script = dedent("""
+        import structlog
+        from ccgram.cli import cli
+        from ccgram.multiplexer.base import WindowRef
+        from ccgram.multiplexer import registry
+
+        class NativeBackend:
+            async def list_windows_for_reconciliation(self):
+                structlog.get_logger().warning("native_marker_read_unconfirmed")
+                return [WindowRef("target", "session", "/project", topic_marked=None)]
+
+        registry._FACTORIES["agterm"] = NativeBackend
+        cli(["topic", "status"], prog_name="ccgram")
+    """)
+    env = dict(os.environ)
+    env.update(
+        CCGRAM_DIR=str(tmp_path),
+        CCGRAM_MULTIPLEXER="agterm",
+        CCGRAM_TOPIC_DISCOVERY="auto",
+    )
+    env.pop("TELEGRAM_BOT_TOKEN", None)
+    env.pop("ALLOWED_USERS", None)
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["targets"][0]["marked"] is None
+    assert "native_marker_read_unconfirmed" in result.stderr
