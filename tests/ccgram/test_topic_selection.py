@@ -33,7 +33,12 @@ def selection(monkeypatch):
     )
     mux = SimpleNamespace(
         find_window_by_id=AsyncMock(
-            return_value=SimpleNamespace(window_id="@1", topic_markable=True)
+            return_value=SimpleNamespace(
+                window_id="@1",
+                topic_markable=True,
+                topic_mark_owner="owner:" + "@1",
+                topic_marked=True,
+            )
         ),
         set_topic_mark=AsyncMock(return_value=True),
     )
@@ -47,12 +52,20 @@ async def test_native_mark_operation_is_verified_and_does_not_touch_lifecycle(
     assert await topic_selection.set_topic_selection(
         "@1", marked, backend=selection.mux
     )
-    selection.mux.set_topic_mark.assert_awaited_once_with("@1", marked)
+    selection.mux.set_topic_mark.assert_awaited_once_with(
+        "@1", marked, owner="owner:" + "@1"
+    )
     assert selection.store.to_dict() == {}
     assert selection.saved == []
 
 
-@pytest.mark.parametrize("window", [None, SimpleNamespace(topic_markable=False)])
+@pytest.mark.parametrize(
+    "window",
+    [
+        None,
+        SimpleNamespace(topic_markable=False, topic_mark_owner=None, topic_marked=True),
+    ],
+)
 async def test_native_mark_rejects_absent_or_unmarkable_target(selection, window):
     selection.mux.find_window_by_id.return_value = window
     assert not await topic_selection.set_topic_selection(
@@ -74,7 +87,10 @@ async def test_explicit_selection_preserves_unfinished_mark_on_failure(
 
 async def test_explicit_selection_and_detach_of_split_never_mutate_primary(selection):
     selection.mux.find_window_by_id.return_value = SimpleNamespace(
-        window_id="primary:split", topic_markable=False
+        window_id="primary:split",
+        topic_markable=False,
+        topic_mark_owner=None,
+        topic_marked=True,
     )
     assert await topic_selection.select_topic_target("primary:split", mux=selection.mux)
     selection.router.bind_thread(1, 42, "primary:split", chat_id=-100)
@@ -83,16 +99,17 @@ async def test_explicit_selection_and_detach_of_split_never_mutate_primary(selec
     )
     selection.mux.set_topic_mark.assert_not_awaited()
     assert lifecycle_state.is_topic_detached("primary:split")
-    assert not lifecycle_state.is_topic_detach_pending("primary:split")
+    assert not lifecycle_state.is_topic_detach_pending("primary:split", owner=None)
 
 
 async def test_last_binding_detach_persists_before_native_clear(selection):
     selection.router.bind_thread(1, 42, "@1", chat_id=-100)
     selection.store.set_window_origin("@1", "ccgram_created")
 
-    async def clear_mark(window_id, marked):
+    async def clear_mark(window_id, marked, *, owner):
         assert window_id == "@1"
         assert marked is False
+        assert owner == "owner:@1"
         assert selection.router.get_window_for_thread(1, 42, -100) is None
         assert selection.saved[-1][0]["@1"]["topic_mark_pending"] is False
         assert selection.saved[-1][0]["@1"]["topic_detached"] is True
@@ -102,7 +119,7 @@ async def test_last_binding_detach_persists_before_native_clear(selection):
     assert await topic_selection.detach_topic_target(
         1, 42, "@1", chat_id=-100, router=selection.router, mux=selection.mux
     )
-    assert not lifecycle_state.is_topic_detach_pending("@1")
+    assert not lifecycle_state.is_topic_detach_pending("@1", owner=None)
     assert lifecycle_state.is_topic_detached("@1")
     assert lifecycle_state.get_origin("@1") == "ccgram_created"
 
@@ -130,11 +147,11 @@ async def test_clear_failure_survives_restart_then_retries_and_allows_reselectio
     snapshot = selection.store.to_dict()
     selection.store.reset()
     selection.store.from_dict(snapshot)
-    assert lifecycle_state.is_topic_detach_pending("@1")
+    assert lifecycle_state.is_topic_detach_pending("@1", owner=None)
     assert not await topic_selection.select_topic_target("@1", mux=selection.mux)
     selection.mux.set_topic_mark.return_value = True
     await topic_selection.recover_topic_selections(mux=selection.mux)
-    assert not lifecycle_state.is_topic_detach_pending("@1")
+    assert not lifecycle_state.is_topic_detach_pending("@1", owner=None)
     assert lifecycle_state.is_topic_detached("@1")
     assert await topic_selection.select_topic_target("@1", mux=selection.mux)
     assert not lifecycle_state.is_topic_detached("@1")
@@ -154,12 +171,12 @@ async def test_interrupted_clear_retains_durable_operation(selection, failure):
         assert not await topic_selection.detach_topic_target(
             1, 42, "@1", chat_id=-100, router=selection.router, mux=selection.mux
         )
-    assert lifecycle_state.is_topic_detach_pending("@1")
+    assert lifecycle_state.is_topic_detach_pending("@1", owner=None)
     assert lifecycle_state.is_topic_detached("@1")
     assert selection.router.get_window_for_thread(1, 42, -100) is None
     selection.mux.set_topic_mark.side_effect = None
     await topic_selection.recover_topic_selections(mux=selection.mux)
-    assert not lifecycle_state.is_topic_detach_pending("@1")
+    assert not lifecycle_state.is_topic_detach_pending("@1", owner=None)
 
 
 async def test_auto_mode_detach_preserves_old_lifecycle(selection, monkeypatch):
@@ -204,7 +221,7 @@ async def test_settlement_save_failure_keeps_clear_retry_in_memory(
         await topic_selection.detach_topic_target(
             1, 42, "@1", chat_id=-100, router=selection.router, mux=selection.mux
         )
-    assert lifecycle_state.is_topic_detach_pending("@1")
+    assert lifecycle_state.is_topic_detach_pending("@1", owner=None)
     assert lifecycle_state.is_topic_detached("@1")
 
 
@@ -217,10 +234,10 @@ async def test_detach_persists_intent_before_waiting_for_inflight_mark(
     detach_persisted = asyncio.Event()
 
     def flush():
-        if lifecycle_state.is_topic_detach_pending("@1"):
+        if lifecycle_state.is_topic_detach_pending("@1", owner=None):
             detach_persisted.set()
 
-    async def native_mark(_window_id, desired):
+    async def native_mark(_window_id, desired, *, owner):
         if desired:
             mark_started.set()
             await finish_mark.wait()
@@ -243,13 +260,13 @@ async def test_detach_persists_intent_before_waiting_for_inflight_mark(
         async with asyncio.timeout(1):
             await detach_persisted.wait()
         assert selection.router.get_window_for_thread(1, 42, -100) is None
-        assert lifecycle_state.is_topic_detach_pending("@1")
+        assert lifecycle_state.is_topic_detach_pending("@1", owner=None)
     finally:
         finish_mark.set()
         results = await asyncio.gather(selected, detached, return_exceptions=True)
     assert results == [False, True]
     assert lifecycle_state.is_topic_detached("@1")
-    assert not lifecycle_state.is_topic_detach_pending("@1")
+    assert not lifecycle_state.is_topic_detach_pending("@1", owner=None)
 
 
 async def test_concurrent_explicit_binds_keep_mark_until_the_last_detach(selection):
@@ -268,7 +285,9 @@ async def test_concurrent_explicit_binds_keep_mark_until_the_last_detach(selecti
     await topic_selection.detach_topic_target(
         2, 43, "@1", chat_id=-200, router=selection.router, mux=selection.mux
     )
-    selection.mux.set_topic_mark.assert_awaited_once_with("@1", False)
+    selection.mux.set_topic_mark.assert_awaited_once_with(
+        "@1", False, owner="owner:" + "@1"
+    )
 
 
 async def test_failed_mark_on_recovers_after_restart_without_detaching_topics(
@@ -285,7 +304,212 @@ async def test_failed_mark_on_recovers_after_restart_without_detaching_topics(
     assert selection.router.get_window_for_thread(1, 42, -100) == "@1"
     assert lifecycle_state.get_pending_topic_mark("@1") is None
     assert not lifecycle_state.is_topic_detached("@1")
-    selection.mux.set_topic_mark.assert_awaited_with("@1", True)
+    selection.mux.set_topic_mark.assert_awaited_with("@1", True, owner="owner:" + "@1")
+
+
+async def test_owner_is_checkpointed_before_mark_ack_loss_and_rekey(selection):
+    async def mark(_wid, desired, *, owner):
+        assert owner == "owner:@1" and desired is True
+        assert selection.saved[-1][0]["@1"]["topic_mark_owner"] == owner
+        raise OSError("acknowledgement lost")
+
+    selection.mux.set_topic_mark.side_effect = mark
+    assert not await topic_selection.select_topic_target("@1", mux=selection.mux)
+    snapshot = selection.store.to_dict()
+    selection.store.from_dict(snapshot)
+    selection.mux.find_window_by_id.reset_mock()
+    selection.mux.find_window_by_id.return_value = None
+    selection.mux.set_topic_mark.side_effect = None
+    await topic_selection.recover_topic_selections(mux=selection.mux)
+    selection.mux.find_window_by_id.assert_not_awaited()
+    selection.mux.set_topic_mark.assert_awaited_with("@1", True, owner="owner:@1")
+    assert lifecycle_state.get_pending_topic_mark("@1") is None
+
+
+async def test_pending_clear_survives_rekey_and_bare_shell_restart(selection):
+    selection.router.bind_thread(1, 42, "@1", chat_id=-100)
+    selection.mux.set_topic_mark.return_value = False
+    assert not await topic_selection.detach_topic_target(
+        1, 42, "@1", chat_id=-100, router=selection.router, mux=selection.mux
+    )
+    snapshot = selection.store.to_dict()
+    selection.store.reset()
+    selection.store.from_dict(snapshot)
+    assert lifecycle_state.is_topic_detach_pending("new-conversation", owner="owner:@1")
+    assert not lifecycle_state.is_topic_detach_pending(
+        "independent", owner="owner:other"
+    )
+    selection.mux.find_window_by_id.reset_mock()
+    selection.mux.find_window_by_id.return_value = None
+    selection.mux.set_topic_mark.return_value = True
+    await topic_selection.recover_topic_selections(mux=selection.mux)
+    selection.mux.find_window_by_id.assert_not_awaited()
+    selection.mux.set_topic_mark.assert_awaited_with("@1", False, owner="owner:@1")
+    assert not lifecycle_state.is_topic_detach_pending(
+        "new-conversation", owner="owner:@1"
+    )
+    assert lifecycle_state.is_topic_detached("@1")
+
+
+async def test_unknown_owner_never_generates_a_candidate_or_mutates(selection):
+    selection.mux.find_window_by_id.return_value = SimpleNamespace(
+        window_id="@1", topic_markable=True, topic_mark_owner=None
+    )
+    assert not await topic_selection.select_topic_target("@1", mux=selection.mux)
+    assert lifecycle_state.get_pending_topic_mark("@1") is True
+    assert lifecycle_state.get_topic_mark_owner("@1") is None
+    selection.mux.set_topic_mark.assert_not_awaited()
+
+
+async def test_ownerless_historical_detach_stays_unfinished_without_guessing(selection):
+    selection.router.bind_thread(1, 42, "@1", chat_id=-100)
+    selection.mux.find_window_by_id.return_value = None
+    assert not await topic_selection.detach_topic_target(
+        1, 42, "@1", chat_id=-100, router=selection.router, mux=selection.mux
+    )
+    assert lifecycle_state.is_topic_detach_pending("@1", owner=None)
+    assert not lifecycle_state.is_topic_detach_pending("unrelated", owner="new-owner")
+    assert lifecycle_state.get_topic_mark_owner("@1") is None
+    selection.mux.set_topic_mark.assert_not_awaited()
+
+
+async def test_late_external_owner_is_read_while_binding_still_intact(selection):
+    async def current(wid):
+        assert selection.router.get_window_for_thread(1, 42, -100) == "@1"
+        return SimpleNamespace(
+            window_id=wid, topic_markable=True, topic_mark_owner="late-owner"
+        )
+
+    selection.router.bind_thread(1, 42, "@1", chat_id=-100)
+    selection.mux.find_window_by_id.side_effect = current
+    assert await topic_selection.detach_topic_target(
+        1, 42, "@1", chat_id=-100, router=selection.router, mux=selection.mux
+    )
+    selection.mux.set_topic_mark.assert_awaited_once_with(
+        "@1", False, owner="late-owner"
+    )
+    assert selection.saved[0][0]["@1"]["topic_mark_owner"] == "late-owner"
+
+
+async def test_pending_owner_blocks_another_routing_target_without_creating_state(
+    selection,
+):
+    lifecycle_state.set_topic_selection(
+        "@old", detached=True, pending=False, owner="owner:@1"
+    )
+    assert not await topic_selection.select_topic_target("@1", mux=selection.mux)
+    assert "@1" not in selection.store.window_states
+    selection.mux.set_topic_mark.assert_not_awaited()
+
+
+async def test_remaining_binding_of_same_owner_under_another_route_keeps_mark(
+    selection,
+):
+    selection.router.bind_thread(1, 42, "@1", chat_id=-100)
+    selection.router.bind_thread(2, 43, "@new", chat_id=-200)
+    assert lifecycle_state.record_topic_mark_owner("@new", "owner:@1")
+    assert await topic_selection.detach_topic_target(
+        1, 42, "@1", chat_id=-100, router=selection.router, mux=selection.mux
+    )
+    selection.mux.set_topic_mark.assert_not_awaited()
+    assert selection.router.get_window_for_thread(2, 43, -200) == "@new"
+
+
+async def test_clear_never_falls_back_to_recycled_window_id(selection):
+    lifecycle_state.set_topic_selection(
+        "@1", detached=True, pending=False, owner="old-owner"
+    )
+    selection.mux.find_window_by_id.return_value = SimpleNamespace(
+        window_id="@1", topic_markable=True, topic_mark_owner="replacement-owner"
+    )
+    await topic_selection.recover_topic_selections(mux=selection.mux)
+    selection.mux.find_window_by_id.assert_not_awaited()
+    selection.mux.set_topic_mark.assert_awaited_once_with(
+        "@1", False, owner="old-owner"
+    )
+
+
+async def test_cross_route_last_detach_cancels_older_owner_mark_on_retry(
+    selection, monkeypatch
+):
+    selection.router.bind_thread(1, 42, "@old", chat_id=-100)
+    lifecycle_state.record_topic_mark_owner("@old", "same-owner")
+    started = asyncio.Event()
+    release = asyncio.Event()
+    persisted = asyncio.Event()
+    from ccgram.session import session_manager
+
+    original_flush = session_manager.flush_state
+
+    def flush():
+        original_flush()
+        if lifecycle_state.is_topic_detach_pending("@old", owner="same-owner"):
+            persisted.set()
+
+    monkeypatch.setattr(session_manager, "flush_state", flush)
+    selection.mux.find_window_by_id.side_effect = lambda wid: SimpleNamespace(
+        window_id=wid, topic_markable=True, topic_mark_owner="same-owner"
+    )
+
+    async def native(_wid, desired, *, owner):
+        assert owner == "same-owner"
+        if desired:
+            started.set()
+            await release.wait()
+        return True
+
+    selection.mux.set_topic_mark.side_effect = native
+    marked = asyncio.create_task(
+        topic_selection.select_topic_target("@new", mux=selection.mux)
+    )
+    await started.wait()
+    detached = asyncio.create_task(
+        topic_selection.detach_topic_target(
+            1, 42, "@old", chat_id=-100, router=selection.router, mux=selection.mux
+        )
+    )
+    try:
+        async with asyncio.timeout(1):
+            await persisted.wait()
+    finally:
+        release.set()
+        results = await asyncio.gather(marked, detached)
+    assert results == [False, True]
+    assert lifecycle_state.get_pending_topic_mark("@new") is None
+    await topic_selection.recover_topic_selections(mux=selection.mux)
+    assert selection.mux.set_topic_mark.await_count == 2
+
+
+async def test_owner_mark_success_does_not_authorize_a_vanished_routing_target(
+    selection,
+):
+    selection.mux.find_window_by_id.side_effect = [
+        SimpleNamespace(
+            window_id="@1", topic_markable=True, topic_mark_owner="owner:@1"
+        ),
+        None,
+    ]
+    assert not await topic_selection.select_topic_target("@1", mux=selection.mux)
+    selection.mux.set_topic_mark.assert_awaited_once_with("@1", True, owner="owner:@1")
+
+
+@pytest.mark.parametrize("desired", [False, True])
+async def test_ownerless_retry_never_claims_fresh_owner_of_reused_slot(
+    selection, desired
+):
+    lifecycle_state.set_topic_selection(
+        "@1", detached=not desired, pending=desired, owner=None
+    )
+    selection.mux.find_window_by_id.return_value = SimpleNamespace(
+        window_id="@1",
+        topic_markable=True,
+        topic_mark_owner="replacement-owner",
+        topic_marked=True,
+    )
+    await topic_selection.recover_topic_selections(mux=selection.mux)
+    assert lifecycle_state.get_pending_topic_mark("@1") is desired
+    assert lifecycle_state.get_topic_mark_owner("@1") is None
+    selection.mux.set_topic_mark.assert_not_awaited()
 
 
 async def test_double_detach_does_not_queue_a_second_marker_write(selection):
@@ -298,4 +522,6 @@ async def test_double_detach_does_not_queue_a_second_marker_write(selection):
             for _ in range(2)
         )
     )
-    selection.mux.set_topic_mark.assert_awaited_once_with("@1", False)
+    selection.mux.set_topic_mark.assert_awaited_once_with(
+        "@1", False, owner="owner:" + "@1"
+    )

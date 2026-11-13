@@ -884,16 +884,38 @@ async def launch_window(  # noqa: C901, PLR0911, PLR0912, PLR0915
 
     try:
         selected = await select_topic_target(created_wid)
+        still_ready = provider_caps.chat_first_command_path or (
+            await agent_process_started(
+                created_wid,
+                adapter_for(context.bot_data),
+                expected_provider=provider_name,
+            )
+            is True
+        )
     except BaseException:
         _mark_provisioning_uncertain(claim_id)
         if claim_id is not None:
             topic_orchestration.clear_pending_creation(created_wid)
         raise
+    if not still_ready:
+        _mark_provisioning_uncertain(claim_id)
+        if claim_id is not None:
+            topic_orchestration.clear_pending_creation(created_wid)
+        message = "Session readiness changed during selection; kept it quarantined for recovery."
+        await safe_edit(query, f"⚠ {message}")
+        return WindowLaunchResult(success=False, error_message=message)
+    if lifecycle_state.is_topic_detach_pending(
+        created_wid, owner=lifecycle_state.get_topic_mark_owner(created_wid)
+    ) or lifecycle_state.is_topic_detached(created_wid):
+        selected = False
     if not selected:
         logger.warning("topic_selection_pending_on_create", window_id=created_wid)
         if (
             config.topic_discovery_mode == "marked"
-            or lifecycle_state.is_topic_detach_pending(created_wid)
+            or lifecycle_state.is_topic_detach_pending(
+                created_wid, owner=lifecycle_state.get_topic_mark_owner(created_wid)
+            )
+            or lifecycle_state.is_topic_detached(created_wid)
         ):
             _mark_provisioning_uncertain(claim_id)
             if claim_id is not None:

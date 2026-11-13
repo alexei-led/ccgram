@@ -1668,6 +1668,18 @@ class TestPruneStaleWindowStates:
         assert changed
         assert "@5" not in mgr.window_states
 
+    @pytest.mark.parametrize("desired", [False, True])
+    def test_keeps_pending_owner_operation_after_routing_target_disappears(
+        self, mgr: SessionManager, desired: bool
+    ) -> None:
+        mgr.window_states["@old"] = WindowState(
+            topic_mark_owner="native-owner",
+            topic_mark_pending=desired,
+            topic_detached=not desired,
+        )
+        assert not mgr.prune_stale_window_states(set())
+        assert mgr.window_states["@old"].topic_mark_pending is desired
+
     def test_keeps_bound_states(self, mgr: SessionManager) -> None:
         mgr.window_states["@1"] = WindowState(session_id="s1", cwd="/tmp")
         thread_router.bind_thread(100, 1, "@1")

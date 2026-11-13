@@ -331,7 +331,11 @@ async def _handle_bind(
         if not selected:
             if (
                 config.topic_discovery_mode == "marked"
-                or lifecycle_state.is_topic_detach_pending(selected_wid)
+                or lifecycle_state.is_topic_detach_pending(
+                    selected_wid,
+                    owner=lifecycle_state.get_topic_mark_owner(selected_wid),
+                )
+                or lifecycle_state.is_topic_detached(selected_wid)
             ):
                 await query.answer(
                     "Could not verify topic selection; please retry", show_alert=True

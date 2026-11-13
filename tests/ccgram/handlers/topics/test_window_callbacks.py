@@ -128,7 +128,10 @@ def _bind_env(window: MagicMock | None = None) -> Iterator[_BindMocks]:
             new=SimpleNamespace(
                 find_window_by_id=AsyncMock(
                     side_effect=lambda wid: SimpleNamespace(
-                        window_id=wid, topic_markable=True
+                        window_id=wid,
+                        topic_markable=True,
+                        topic_mark_owner="owner:" + wid,
+                        topic_marked=True,
                     )
                 ),
                 set_topic_mark=AsyncMock(return_value=True),
@@ -159,7 +162,12 @@ async def test_picker_native_selection_failure_gates_only_marked(mode, monkeypat
     )
     native = SimpleNamespace(
         find_window_by_id=AsyncMock(
-            return_value=SimpleNamespace(window_id="@5", topic_markable=True)
+            return_value=SimpleNamespace(
+                window_id="@5",
+                topic_markable=True,
+                topic_mark_owner="owner:" + "@5",
+                topic_marked=True,
+            )
         ),
         set_topic_mark=AsyncMock(return_value=False),
     )
@@ -170,7 +178,7 @@ async def test_picker_native_selection_failure_gates_only_marked(mode, monkeypat
         await handle_window_callback(query, 100, f"{CB_WIN_BIND}0", update, context)
 
     assert lifecycle_state.get_pending_topic_mark("@5") is True
-    native.set_topic_mark.assert_awaited_once_with("@5", True)
+    native.set_topic_mark.assert_awaited_once_with("@5", True, owner="owner:" + "@5")
     if mode == "marked":
         m.router.bind_thread.assert_not_called()
         assert context.user_data[UNBOUND_WINDOWS_KEY] == ["@5"]
@@ -185,14 +193,14 @@ async def test_auto_picker_cannot_bypass_unfinished_detach_clear(monkeypatch):
     from ccgram.window_state_ports import lifecycle_state
 
     monkeypatch.setattr(config, "topic_discovery_mode", "auto", raising=False)
-    lifecycle_state.set_topic_selection("@5", detached=True, pending=False)
+    lifecycle_state.set_topic_selection("@5", detached=True, pending=False, owner=None)
     query, update, context = _make_query_update_context(
         user_data={UNBOUND_WINDOWS_KEY: ["@5"], PENDING_THREAD_ID: 42}
     )
     with _bind_env(_unbound_window("selected")) as m:
         await handle_window_callback(query, 100, f"{CB_WIN_BIND}0", update, context)
     m.router.bind_thread.assert_not_called()
-    assert lifecycle_state.is_topic_detach_pending("@5")
+    assert lifecycle_state.is_topic_detach_pending("@5", owner=None)
 
 
 class TestBindWindowCallback:

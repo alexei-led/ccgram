@@ -751,6 +751,7 @@ class SessionManager:
                 and canonical_window_id(wid) not in bound_lookup
                 and canonical_window_id(wid) not in live_lookup
                 and not window_store.is_archived_legacy_herdr(wid)
+                and self.window_states[wid].topic_mark_pending is None
             )
         ]
         if not stale:
