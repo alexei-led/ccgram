@@ -38,6 +38,7 @@ class TestValueTypeDefaults:
         assert window.alias_window_ids == ()
         assert window.topic_marked is False
         assert window.topic_markable is True
+        assert window.topic_mark_owner is None
 
     def test_capture_result_is_untruncated_by_default(self) -> None:
         assert CaptureResult(text="hello").truncated is False

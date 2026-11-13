@@ -37,6 +37,8 @@ import os
 import re
 import shutil
 import subprocess
+import uuid
+from collections import Counter
 from collections.abc import (
     AsyncGenerator,
     Awaitable,
@@ -170,6 +172,74 @@ _STREAM_BACKOFF_MAX = 30.0
 # A live stream has no locator-change notification. Re-prime periodically so a
 # target that moved to another pane receives a fresh per-pane subscription.
 _STREAM_REPRIME_INTERVAL = 5.0
+
+_TOPIC_MARK_PREFIX = "[ccgram-topic-"
+_TOPIC_MARK_RE = re.compile(r"\[ccgram-topic-v1:([0-9a-f]{32})\]$")
+_TOPIC_OWNER_RE = re.compile(r"[0-9a-f]{32}")
+# Herdr's initial JSON request limit is tighter than our transport's frame cap.
+_TOPIC_MARK_REQUEST_BYTES = 1024 * 1024
+
+
+@dataclass(frozen=True)
+class _HerdrTopicMark:
+    terminal_id: str
+    pane_id: str
+    label: str | None
+    original_label: str | None
+    owner: str
+    marked: bool
+
+
+def _parse_topic_label(value: object) -> tuple[str | None, str | None]:
+    """Decode only our reserved native suffix, never titles or agent names."""
+    if value is None:
+        return None, None
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise HerdrMalformedRecordError("invalid native manual label")
+    try:
+        value.encode("utf-8")
+    except UnicodeError as exc:
+        raise HerdrMalformedRecordError("invalid native label Unicode") from exc
+    if _TOPIC_MARK_PREFIX not in value:
+        return value, None
+    match = _TOPIC_MARK_RE.search(value)
+    if match is None or value.count(_TOPIC_MARK_PREFIX) != 1:
+        raise HerdrMalformedRecordError("invalid reserved topic marker")
+    original = value[: match.start()]
+    if original:
+        if not original.endswith(" ") or original[:-1] != original[:-1].strip():
+            raise HerdrMalformedRecordError("non-reversible topic marker")
+        original = original[:-1]
+        if not original:
+            raise HerdrMalformedRecordError("non-reversible empty topic label")
+    return original or None, match[1]
+
+
+def _topic_label_args(pane_id: str, label: str | None) -> list[str] | None:
+    """Reject unsafe native requests before touching a user's manual label."""
+    request = {
+        "id": "0" * 32,
+        "method": "pane.rename",
+        "params": {"pane_id": pane_id, "label": label},
+    }
+    try:
+        size = (
+            len(
+                json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode(
+                    "utf-8"
+                )
+            )
+            + 1
+        )
+    except UnicodeError, ValueError:
+        return None
+    if size > _TOPIC_MARK_REQUEST_BYTES:
+        return None
+    if label is None:
+        return ["pane", "rename", pane_id, "--clear"]
+    # Standard CLI joins all label arguments then the server trims them. An
+    # extra empty argument keeps a literal '--clear' from becoming the control.
+    return ["pane", "rename", pane_id, label, *([""] if label == "--clear" else [])]
 
 
 def _workspace_cwd_from_panes(
@@ -742,7 +812,11 @@ class HerdrManager:
 
     @staticmethod
     def _live_ref(
-        record: HerdrLiveRecord, label: str, *, adoptable: bool = True
+        record: HerdrLiveRecord,
+        label: str,
+        *,
+        adoptable: bool = True,
+        mark: _HerdrTopicMark | None = None,
     ) -> WindowRef:
         """Project a live record without exposing reusable locator aliases.
 
@@ -757,6 +831,8 @@ class HerdrManager:
             window_name=label,
             cwd=record.cwd,
             pane_current_command=record.composite.agent,
+            topic_marked=mark.marked if mark is not None else None,
+            topic_mark_owner=mark.owner if mark is not None else None,
             topic_eligible=adoptable
             and record.composite.kind != _TERMINAL_FALLBACK_KIND
             and is_herdr_session_target(record.target_id)
@@ -813,6 +889,13 @@ class HerdrManager:
     ) -> list[WindowRef]:
         """Project one agent snapshot with best-effort live labels."""
         labels = await self._reconciliation_labels(records)
+        marks = await self._topic_mark_snapshot() if records else None
+        owner_counts = Counter(mark.owner for mark in marks or [])
+        marks_by_target = {
+            (mark.terminal_id, mark.pane_id): mark
+            for mark in marks or []
+            if owner_counts[mark.owner] == 1
+        }
         refs: list[WindowRef] = []
         for record in records:
             label = labels.get((record.workspace_id, record.tab_id))
@@ -831,6 +914,9 @@ class HerdrManager:
                                 provider=record.composite.agent,
                             ),
                             adoptable=False,
+                            mark=marks_by_target.get(
+                                (record.terminal_id, record.pane_id)
+                            ),
                         )
                     )
                 continue
@@ -852,9 +938,130 @@ class HerdrManager:
                         provider=record.composite.agent,
                     ),
                     adoptable=not internal,
+                    mark=marks_by_target.get((record.terminal_id, record.pane_id)),
                 )
             )
         return refs
+
+    async def _topic_mark_snapshot(self) -> list[_HerdrTopicMark] | None:
+        """All native owners, including shells; uncertainty never means absence."""
+        result = await self._call_json(["pane", "list"])
+        panes = result.get("panes") if result is not None else None
+        if not isinstance(panes, list) or not self._socket_path:
+            return None
+        marks: list[_HerdrTopicMark] = []
+        terminals: set[str] = set()
+        locators: set[str] = set()
+        for pane in panes:
+            if not isinstance(pane, Mapping):
+                return None
+            terminal_id = _session_field(pane.get("terminal_id"))
+            pane_id = _session_field(pane.get("pane_id"))
+            if (
+                not terminal_id
+                or not pane_id
+                or terminal_id in terminals
+                or pane_id in locators
+            ):
+                return None
+            try:
+                original, assigned_owner = _parse_topic_label(pane.get("label"))
+            except HerdrMalformedRecordError:
+                return None
+            witness = json.dumps(
+                [
+                    "ccgram-herdr-topic-v1",
+                    os.path.abspath(self._socket_path),
+                    terminal_id,
+                ],
+                separators=(",", ":"),
+            )
+            owner = assigned_owner or uuid.uuid5(uuid.NAMESPACE_URL, witness).hex
+            marks.append(
+                _HerdrTopicMark(
+                    terminal_id,
+                    pane_id,
+                    pane.get("label"),
+                    original,
+                    owner,
+                    assigned_owner is not None,
+                )
+            )
+            terminals.add(terminal_id)
+            locators.add(pane_id)
+        return marks
+
+    async def set_topic_mark(
+        self, window_id: str, marked: bool, *, owner: str | None = None
+    ) -> bool:
+        """Set native selection by exact owner, never retarget stale conversations."""
+        if not is_herdr_session_target(window_id) or (
+            owner is not None and _TOPIC_OWNER_RE.fullmatch(owner) is None
+        ):
+            return False
+        marks = await self._topic_mark_snapshot()
+        if marks is None:
+            return False
+        if owner is None:
+            try:
+                record = await self.guard_session_target(window_id)
+            except HerdrError:
+                return False
+            current = [
+                mark
+                for mark in marks
+                if (mark.terminal_id, mark.pane_id)
+                == (record.terminal_id, record.pane_id)
+            ]
+            if len(current) != 1:
+                return False
+            owner = current[0].owner
+        matches = [mark for mark in marks if mark.owner == owner]
+        if not matches:
+            # Restored labels exist before API requests run, including panes
+            # whose native agent resume is deferred. A complete absence is off.
+            return not marked
+        if len(matches) != 1:
+            return False
+        mark = matches[0]
+        if mark.marked == marked:
+            return True
+        return await self._rename_topic_label(mark, marked)
+
+    async def _rename_topic_label(self, mark: _HerdrTopicMark, marked: bool) -> bool:
+        label = mark.original_label
+        if marked:
+            suffix = f"[ccgram-topic-v1:{mark.owner}]"
+            label = f"{label} {suffix}" if label is not None else suffix
+        args = _topic_label_args(mark.pane_id, label)
+        if args is None:
+            return False
+        current = await self._pane_get(mark.pane_id)
+        if current is None or (
+            current.get("terminal_id"),
+            current.get("pane_id"),
+            current.get("label"),
+        ) != (mark.terminal_id, mark.pane_id, mark.label):
+            return False
+        if await self._call_json(args) is None:
+            return False
+        fresh = await self._topic_mark_snapshot()
+        if fresh is None:
+            return False
+        matches = [
+            candidate
+            for candidate in fresh
+            if candidate.terminal_id == mark.terminal_id
+        ]
+        if len(matches) != 1:
+            return False
+        actual = matches[0]
+        return (
+            actual.label == label
+            and actual.marked == marked
+            and (not marked or actual.owner == mark.owner)
+            and sum(candidate.owner == actual.owner for candidate in fresh) == 1
+        )
 
     async def list_windows(self) -> list[WindowRef]:
         """Return a best-effort UI listing, hiding ccgram's own internal panes.

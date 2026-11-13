@@ -389,6 +389,7 @@ async def test_find_window_requires_a_fresh_matching_session_target() -> None:
         ["agent", "list"],
         ["workspace", "list"],
         ["tab", "list"],
+        ["pane", "list"],
     ]
 
 
@@ -1016,6 +1017,7 @@ async def test_create_topic_target_uses_selected_workspace_and_returns_session_t
         ["agent", "list"],
         ["workspace", "list"],
         ["tab", "list"],
+        ["pane", "list"],
     ]
 
 
@@ -1299,6 +1301,7 @@ async def test_create_topic_target_without_selection_creates_workspace_at_cwd(
         ["agent", "list"],
         ["workspace", "list"],
         ["tab", "list"],
+        ["pane", "list"],
     ]
 
 
