@@ -174,6 +174,7 @@ class WindowState:
     topic_detached: bool = False
     # Desired native mark while its verified write remains unfinished.
     topic_mark_pending: bool | None = None
+    topic_mark_owner: str | None = None
 
     def to_dict(self) -> dict[str, Any]:  # noqa: C901, PLR0912
         d: dict[str, Any] = {
@@ -200,6 +201,8 @@ class WindowState:
             d["topic_detached"] = True
         if self.topic_mark_pending is not None:
             d["topic_mark_pending"] = self.topic_mark_pending
+        if self.topic_mark_owner:
+            d["topic_mark_owner"] = self.topic_mark_owner
         if self.panes:
             d["panes"] = {pid: p.to_dict() for pid, p in self.panes.items()}
         if self.pane_lifecycle_notify is not None:
@@ -253,6 +256,12 @@ class WindowState:
             topic_mark_pending=(
                 data["topic_mark_pending"]
                 if type(data.get("topic_mark_pending")) is bool
+                else None
+            ),
+            topic_mark_owner=(
+                data["topic_mark_owner"]
+                if isinstance(data.get("topic_mark_owner"), str)
+                and data["topic_mark_owner"]
                 else None
             ),
             panes=panes,
@@ -340,14 +349,33 @@ class WindowStateStore:
         self._schedule_save()
 
     def set_topic_selection(
-        self, window_id: str, *, detached: bool, pending: bool | None
+        self,
+        window_id: str,
+        *,
+        detached: bool,
+        pending: bool | None,
+        owner: str | None,
     ) -> None:
-        """Record lifecycle intent and unfinished native mark write together."""
+        """Record native ownership and unfinished lifecycle intent together."""
         state = self.get_window_state(window_id)
-        if state.topic_detached == detached and state.topic_mark_pending == pending:
+        if (
+            state.topic_detached == detached
+            and state.topic_mark_pending == pending
+            and state.topic_mark_owner == owner
+        ):
             return
         state.topic_detached = detached
         state.topic_mark_pending = pending
+        state.topic_mark_owner = owner
+        if pending is False and owner is not None:
+            for other in self.window_states.values():
+                if (
+                    other is not state
+                    and other.topic_mark_owner == owner
+                    and other.topic_mark_pending is True
+                ):
+                    other.topic_mark_pending = None
+                    other.topic_detached = True
         self._schedule_save()
 
     def set_worktree(self, window_id: str, worktree_path: str, branch: str) -> None:
@@ -735,6 +763,7 @@ class WindowStateStore:
                 and wid not in bound_window_ids
                 and wid not in live_window_ids
                 and not self.is_archived_legacy_herdr(wid)
+                and self.window_states[wid].topic_mark_pending is None
             )
         ]
         if not stale:

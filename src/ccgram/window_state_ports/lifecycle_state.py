@@ -59,10 +59,17 @@ def _selection_key(window_id: str) -> str:
     )
 
 
-def is_topic_detach_pending(window_id: str) -> bool:
-    """Whether the native mark clear from a deliberate detach needs retry."""
-    state = window_store.window_states.get(_selection_key(window_id))
-    return state is not None and state.topic_mark_pending is False
+def is_topic_detach_pending(window_id: str, *, owner: str | None) -> bool:
+    """Match unfinished clear by original routing key or exact native owner."""
+    wanted = canonical_window_id(window_id)
+    return any(
+        state.topic_mark_pending is False
+        and (
+            canonical_window_id(key) == wanted
+            or (owner is not None and state.topic_mark_owner == owner)
+        )
+        for key, state in window_store.window_states.items()
+    )
 
 
 def is_topic_detached(window_id: str) -> bool:
@@ -77,13 +84,46 @@ def get_pending_topic_mark(window_id: str) -> bool | None:
     return state.topic_mark_pending if state is not None else None
 
 
+def get_topic_mark_owner(window_id: str) -> str | None:
+    """Return captured native selection identity, never a routing alias."""
+    state = window_store.window_states.get(_selection_key(window_id))
+    return state.topic_mark_owner if state is not None else None
+
+
 def set_topic_selection(
-    window_id: str, *, detached: bool, pending: bool | None
+    window_id: str, *, detached: bool, pending: bool | None, owner: str | None
 ) -> None:
-    """Persist lifecycle intent through its state owner."""
+    """Persist native ownership and lifecycle intent through their state owner."""
     window_store.set_topic_selection(
-        _selection_key(window_id), detached=detached, pending=pending
+        _selection_key(window_id), detached=detached, pending=pending, owner=owner
     )
+
+
+def observe_topic_mark_owner(window_id: str, owner: str | None) -> bool:
+    """Refresh only an admitted, settled row from a confirmed native witness."""
+    state = window_store.window_states.get(_selection_key(window_id))
+    if state is None or not owner or state.topic_mark_pending is not None:
+        return False
+    set_topic_selection(
+        window_id, detached=state.topic_detached, pending=None, owner=owner
+    )
+    return True
+
+
+def record_topic_mark_owner(window_id: str, owner: str | None) -> bool:
+    """Capture actual admission ownership without marking a native terminal."""
+    if is_topic_detach_pending(window_id, owner=owner):
+        return False
+    state = window_store.window_states.get(_selection_key(window_id))
+    if state is not None and state.topic_mark_pending is not None:
+        return state.topic_mark_owner == owner
+    set_topic_selection(
+        window_id,
+        detached=False,
+        pending=None,
+        owner=owner if owner is not None else get_topic_mark_owner(window_id),
+    )
+    return True
 
 
 def pending_topic_selections() -> list[str]:
@@ -103,6 +143,9 @@ __all__ = [
     "is_topic_detach_pending",
     "is_topic_detached",
     "get_pending_topic_mark",
+    "get_topic_mark_owner",
+    "observe_topic_mark_owner",
+    "record_topic_mark_owner",
     "set_topic_selection",
     "pending_topic_selections",
 ]
