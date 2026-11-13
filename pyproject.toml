@@ -135,6 +135,7 @@ DEP003 = ["edge-tts"]
 
 [tool.pyright]
 pythonVersion = "3.14"
+extraPaths = ["tests/ccgram"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
