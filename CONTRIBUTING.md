@@ -21,6 +21,11 @@ Do not open an issue as a placeholder for a design you already decided on.
 3. Run the tests: `make test`
 4. Run the linters: `make lint`
 
+Native tmux tests use a private default socket namespace. Cleanup retains the
+creating server's endpoint and incarnation; a naked window ID is not ownership.
+Herdr cleanup closes guarded created sessions only. Fixtures that create a
+workspace or Git checkout must own its cleanup; global teardown never force-removes them.
+
 ## Submit a Pull Request
 
 1. Link the issue: write `Closes #<number>` in the PR description.
