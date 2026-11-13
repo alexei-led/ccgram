@@ -89,10 +89,6 @@ class _FakeWindow:
         self.window_id = window_id
         self.window_name = window_name
 
-    def cmd(self, *args):
-        assert args == ("show-options", "-w")
-        return SimpleNamespace(stdout=[], stderr=[], returncode=0)
-
     @property
     def active_pane(self):
         return None

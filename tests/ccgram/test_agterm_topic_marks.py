@@ -36,6 +36,18 @@ class FlagSocket:
             result = {
                 "tree": {"workspaces": [{"name": "code", "sessions": self.sessions}]}
             }
+        elif args[:2] == ["session", "text"]:
+            target = args[args.index("--target") + 1]
+            if not any(
+                session["id"].casefold() == target.casefold()
+                for session in self.sessions
+            ):
+                return (
+                    1,
+                    json.dumps({"ok": False, "error": f"no such session: {target}"}),
+                    "",
+                )
+            result = {"text": ""}
         elif args[:2] == ["session", "flag"]:
             self.writes.append(args)
             if self.failure == "write":
