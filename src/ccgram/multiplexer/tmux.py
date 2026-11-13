@@ -26,6 +26,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
+import stat
+from collections import Counter
+from uuid import NAMESPACE_URL, uuid5
 import structlog
 import subprocess
 from collections.abc import AsyncGenerator, Sequence
@@ -89,6 +93,10 @@ _TmuxError = (
 )
 
 _TOPIC_MARK_OPTION = "@ccgram_topic"
+_TOPIC_MARK_VERSION = "v1"
+_TOPIC_MARK_RE = re.compile(rf"{_TOPIC_MARK_VERSION}:([01]):([0-9a-f]{{32}})")
+_TOPIC_OWNER_RE = re.compile(r"tmux:[0-9a-f]{32}")
+_WINDOW_ID_RE = re.compile(r"@\d+")
 
 # Static capability declaration for the tmux backend (design Task 2).
 _TMUX_CAPABILITIES = MultiplexerCapabilities(
@@ -167,29 +175,83 @@ class TmuxManager:
         return session
 
     @staticmethod
-    def _topic_mark(window: libtmux.Window) -> bool | None:
-        """Read only window-local options, never global/session defaults.
+    def _socket_incarnation(server: libtmux.Server) -> str | None:
+        """Resolve the actual endpoint; neither @ID nor server PID is lineage."""
+        try:
+            result = server.cmd("display-message", "-p", "#{socket_path}")
+            if result.returncode != 0 or result.stderr or len(result.stdout) != 1:
+                return None
+            endpoint = Path(result.stdout[0]).resolve()
+            info = endpoint.stat()
+            if not stat.S_ISSOCK(info.st_mode):
+                return None
+            return f"{endpoint}:{info.st_dev}:{info.st_ino}:{info.st_ctime_ns}"
+        except (*_TmuxError, ValueError):
+            return None
 
-        Enumerate without -A: asking for a named option can resolve inherited
-        values. libtmux.show_options discards command failures, so inspect the
-        raw status to keep a vanished window from confirming a successful clear.
-        Options survive ccgram/process restarts, not tmux server destruction.
-        A restorer must reapply them only with verified same-window identity.
-        """
+    @staticmethod
+    def _read_topic_selection(
+        window: libtmux.Window, incarnation: str
+    ) -> tuple[bool | None, str | None]:
+        # No -A/-g or named lookup: those may expose inherited defaults.
         try:
             result = window.cmd("show-options", "-w")
             if result.returncode != 0 or result.stderr:
-                return None
+                return None, None
             for line in result.stdout:
                 key, _, value = line.partition(" ")
                 if key == _TOPIC_MARK_OPTION:
-                    return {"1": True, "0": False}.get(value.strip())
-            return False
+                    match = _TOPIC_MARK_RE.fullmatch(value.strip())
+                    return (
+                        (match[1] == "1", f"tmux:{match[2]}") if match else (None, None)
+                    )
+            witness = uuid5(
+                NAMESPACE_URL, f"ccgram:tmux:{incarnation}:{window.window_id}"
+            )
+            return False, f"tmux:{witness.hex}"
+        except _TmuxError:
+            return None, None
+
+    def _topic_inventory(
+        self,
+    ) -> tuple[str, dict[str, tuple[bool | None, str | None]]] | None:
+        """Complete native owner scan, including shells and out-of-scope windows."""
+        try:
+            incarnation = self._socket_incarnation(self.server)
+            if incarnation is None:
+                return None
+            result = self.server.cmd("list-windows", "-a", "-F", "#{window_id}")
+            if (
+                result.returncode != 0
+                or result.stderr
+                or any(
+                    not _WINDOW_ID_RE.fullmatch(window_id)
+                    for window_id in result.stdout
+                )
+            ):
+                return None
+            selections = {
+                window_id: self._read_topic_selection(
+                    libtmux.Window(server=self.server, window_id=window_id), incarnation
+                )
+                for window_id in dict.fromkeys(result.stdout)
+            }
+            if self._socket_incarnation(self.server) != incarnation:
+                return None
+            owners = Counter(owner for _, owner in selections.values() if owner)
+            return incarnation, {
+                wid: (None, None) if owner and owners[owner] > 1 else (marked, owner)
+                for wid, (marked, owner) in selections.items()
+            }
         except _TmuxError:
             return None
 
     @staticmethod
-    def _window_ref_for_reconciliation(window: libtmux.Window) -> TmuxWindow:
+    def _window_ref_for_reconciliation(
+        window: libtmux.Window,
+        *,
+        selection: tuple[bool | None, str | None] = (None, None),
+    ) -> TmuxWindow:
         """Build a window ref while treating pane metadata as optional.
 
         Every window in the session comes back, including the ones
@@ -233,7 +295,8 @@ class TmuxManager:
             pane_width=pw,
             pane_height=ph,
             topic_eligible=bool(adoptable),
-            topic_marked=TmuxManager._topic_mark(window),
+            topic_marked=selection[0],
+            topic_mark_owner=selection[1],
         )
 
     async def list_windows(self) -> list[TmuxWindow]:
@@ -246,6 +309,8 @@ class TmuxManager:
             if not session:
                 return windows
 
+            inventory = self._topic_inventory()
+            selections = inventory[1] if inventory is not None else {}
             for window in session.windows:
                 name = window.window_name or ""
                 window_id = window.window_id or ""
@@ -284,7 +349,8 @@ class TmuxManager:
                             pane_tty=pane_tty,
                             pane_width=pw,
                             pane_height=ph,
-                            topic_marked=self._topic_mark(window),
+                            topic_marked=selections.get(window_id, (None, None))[0],
+                            topic_mark_owner=selections.get(window_id, (None, None))[1],
                         )
                     )
                 except _TmuxError as e:
@@ -322,8 +388,13 @@ class TmuxManager:
                 session = self._fetch_session()
                 if session is None:
                     return []
+                inventory = self._topic_inventory()
+                selections = inventory[1] if inventory is not None else {}
                 windows = [
-                    self._window_ref_for_reconciliation(window)
+                    self._window_ref_for_reconciliation(
+                        window,
+                        selection=selections.get(window.window_id or "", (None, None)),
+                    )
                     for window in session.windows
                 ]
             except _TmuxError:
@@ -333,32 +404,65 @@ class TmuxManager:
 
         return await asyncio.to_thread(_sync_list_windows)
 
-    async def set_topic_mark(self, window_id: str, marked: bool) -> bool:
-        """Set a window-local native marker and verify the same target."""
+    async def set_topic_mark(
+        self, window_id: str, marked: bool, *, owner: str | None = None
+    ) -> bool:
+        """Update only a unique native owner, never fall back to a recycled ID."""
+        if not _WINDOW_ID_RE.fullmatch(window_id) or (
+            owner is not None and not _TOPIC_OWNER_RE.fullmatch(owner)
+        ):
+            return False
+        return await asyncio.to_thread(self._set_topic_mark, window_id, marked, owner)
 
-        def _sync_set() -> bool:
-            session = self.get_session()
-            if session is None:
+    def _set_topic_mark(self, window_id: str, marked: bool, owner: str | None) -> bool:
+        snapshot = self._topic_inventory()
+        if snapshot is None:
+            return False
+        incarnation, selections = snapshot
+        if any(actual_owner is None for _, actual_owner in selections.values()):
+            return False
+        expected = owner or selections.get(window_id, (None, None))[1]
+        if expected is None:
+            return False
+        matches = [wid for wid, (_, actual) in selections.items() if actual == expected]
+        if not matches:
+            return owner is not None and not marked
+        if len(matches) != 1:
+            return False
+        target = matches[0]
+        if selections[target][0] is marked:
+            return True
+        return self._write_topic_mark(target, marked, expected, incarnation)
+
+    def _write_topic_mark(
+        self, target: str, marked: bool, expected: str, incarnation: str
+    ) -> bool:
+        if self._socket_incarnation(self.server) != incarnation:
+            return False
+        try:
+            window = libtmux.Window(server=self.server, window_id=target)
+            token = (
+                f"{_TOPIC_MARK_VERSION}:{int(marked)}:{expected.removeprefix('tmux:')}"
+            )
+            result = window.cmd("set-option", "-w", _TOPIC_MARK_OPTION, token)
+            if result.returncode != 0 or result.stderr:
                 return False
-            try:
-                window = session.windows.get(window_id=window_id, default=None)
-                if window is None:
-                    return False
-                current = self._topic_mark(window)
-                if current is None:
-                    return False
-                if current is marked:
-                    return True
-                result = window.cmd(
-                    "set-option", "-w", _TOPIC_MARK_OPTION, "1" if marked else "0"
+            confirmed = self._topic_inventory()
+            return (
+                confirmed is not None
+                and confirmed[0] == incarnation
+                and all(
+                    actual_owner is not None
+                    for _, actual_owner in confirmed[1].values()
                 )
-                if result.returncode != 0 or result.stderr:
-                    return False
-                return self._topic_mark(window) is marked
-            except _TmuxError:
-                return False
-
-        return await asyncio.to_thread(_sync_set)
+                and sum(
+                    selection == (marked, expected)
+                    for selection in confirmed[1].values()
+                )
+                == 1
+            )
+        except _TmuxError:
+            return False
 
     async def find_window_by_name(self, window_name: str) -> TmuxWindow | None:
         """Find a window by its name.
