@@ -24,6 +24,27 @@ def mgr(monkeypatch) -> SessionManager:
     return SessionManager()
 
 
+def test_owner_journal_round_trips_in_same_state_file_without_overwriting_current_owner(
+    tmp_path, monkeypatch
+) -> None:
+    from ccgram.topic_mark_journal import read_topic_mark_operations
+
+    path = tmp_path / "state.json"
+    monkeypatch.setattr("ccgram.session.config.state_file", path)
+    manager = SessionManager()
+    window_store.set_topic_selection("@1", detached=False, owner="P")
+    old = window_store.queue_topic_mark("@1", "O", False)
+    current = window_store.queue_topic_mark("@1", "P", True)
+    manager.flush_state()
+    restored = SessionManager()
+    assert read_topic_mark_operations(path) == (old, current)
+    assert list(window_store.topic_mark_operations.values()) == [old, current]
+    assert restored.window_states["@1"].topic_mark_owner == "P"
+    assert not restored.window_states["@1"].topic_detached
+    window_store.reset()
+    thread_router.reset()
+
+
 class TestRoutingLoadRepair:
     def test_persists_normalized_routing_claims(self, monkeypatch) -> None:
         state = {
@@ -1674,11 +1695,11 @@ class TestPruneStaleWindowStates:
     ) -> None:
         mgr.window_states["@old"] = WindowState(
             topic_mark_owner="native-owner",
-            topic_mark_pending=desired,
             topic_detached=not desired,
         )
+        operation = window_store.queue_topic_mark("@old", "native-owner", desired)
         assert not mgr.prune_stale_window_states(set())
-        assert mgr.window_states["@old"].topic_mark_pending is desired
+        assert list(window_store.topic_mark_operations.values()) == [operation]
 
     def test_keeps_bound_states(self, mgr: SessionManager) -> None:
         mgr.window_states["@1"] = WindowState(session_id="s1", cwd="/tmp")
