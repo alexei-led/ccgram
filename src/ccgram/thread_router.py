@@ -442,10 +442,6 @@ class ThreadRouter:
                     and not isinstance(previous_target_id, str)
                 )
                 or (isinstance(previous_target_id, str) and not previous_target_id)
-                or (
-                    topic_mark_owner is not None
-                    and (not isinstance(topic_mark_owner, str) or not topic_mark_owner)
-                )
                 or not isinstance(kind, str)
                 or kind not in _TOPIC_PROVISIONING_KINDS
                 or not isinstance(uncertain, bool)
@@ -469,6 +465,11 @@ class ThreadRouter:
                 or retry_at_value < 0
             ):
                 continue
+            if topic_mark_owner is not None and (
+                not isinstance(topic_mark_owner, str) or not topic_mark_owner
+            ):
+                topic_mark_owner = None
+                uncertain = True
             loaded[claim_id] = TopicProvisioning(
                 claim_id=claim_id,
                 user_id=user_id,

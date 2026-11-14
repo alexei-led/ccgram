@@ -865,7 +865,7 @@ async def test_unknown_claim_cannot_capture_observed_owner_without_native_snapsh
     assert (
         selection.router.get_topic_provisioning(claim.claim_id).topic_mark_owner is None
     )
-    assert selection.snapshot()[0]["topic_mark_operations"][0]["owner"] is None
+    assert selection.snapshot()["topic_mark_operations"][0]["owner"] is None
     selection.mux.set_topic_mark.assert_not_awaited()
 
 
