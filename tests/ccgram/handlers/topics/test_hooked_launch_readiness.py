@@ -9,6 +9,9 @@ from ccgram.handlers.topics.window_launch_service import launch_window
 from ccgram.handlers.user_state import PENDING_THREAD_ID, PENDING_THREAD_TEXT
 
 from .test_window_launch_service import (
+    _isolated_window_state_owner as _isolated_window_state_owner,
+)
+from .test_window_launch_service import (
     _MODULE,
     _launch_env,
     _make_context,
@@ -30,7 +33,7 @@ async def test_hooked_launch_waits_for_matching_foreground_before_binding(tmp_pa
 
     async def resolve(window_id):
         assert window_id == "@5"
-        label, argv, provider = next(snapshots)
+        label, argv, provider = next(snapshots, ("ready", ("claude",), "claude"))
         order.append(label)
         return SimpleNamespace(
             foreground_argv=argv, provider=provider, available=True
@@ -57,7 +60,9 @@ async def test_hooked_launch_waits_for_matching_foreground_before_binding(tmp_pa
         )
 
     assert result.success
-    assert order == ["unknown", "shell", "other", "ready", "bind", "send"]
+    assert order[:3] == ["unknown", "shell", "other"]
+    assert set(order[3:-2]) == {"ready"}
+    assert order[-2:] == ["bind", "send"]
     forward.assert_awaited_once()
     assert PENDING_THREAD_TEXT not in user_data
 

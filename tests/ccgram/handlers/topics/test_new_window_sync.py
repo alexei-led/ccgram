@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from ccgram.handlers.topics.topic_orchestration import handle_new_window
+from ccgram.multiplexer.base import WindowRef
 from ccgram.session import SessionManager
 from ccgram.thread_router import thread_router
 from ccgram.session_monitor import NewWindowEvent, SessionMonitor
@@ -64,7 +65,13 @@ def _wire_orchestration(
         with (
             patch("ccgram.handlers.topics.topic_orchestration.session_manager", sm),
             patch("ccgram.handlers.topics.topic_orchestration.config") as mock_config,
+            patch("ccgram.handlers.topics.topic_orchestration.tmux_manager") as mux,
         ):
+            mux.find_window_by_id = AsyncMock(return_value=None)
+            mux.list_windows_for_reconciliation = AsyncMock(
+                return_value=[WindowRef(event.window_id, event.window_name, event.cwd)]
+            )
+            mock_config.topic_discovery_mode = "auto"
             mock_config.group_id = group_id
             mock_config.allowed_users = allowed_users
             await handle_new_window(event, bot)

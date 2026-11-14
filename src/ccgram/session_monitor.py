@@ -50,7 +50,7 @@ from .session_map import (
 from .window_state_ports import identity_state, lifecycle_state
 from .session_lifecycle import session_lifecycle
 from .multiplexer import multiplexer as tmux_manager
-from .multiplexer.base import canonical_window_id
+from .multiplexer.base import WindowRef, canonical_window_id
 from .multiplexer.reconciliation import list_windows_for_reconciliation
 from .multiplexer.window_liveness import note_live_windows
 from .multiplexer.topic_mapping import should_adopt_window
@@ -91,6 +91,18 @@ def _adoption_lookup(adoptable_window_ids: set[str]) -> set[str]:
     spelling, since the audit reports orphan ids straight out of it.
     """
     return {canonical_window_id(wid) for wid in adoptable_window_ids}
+
+
+def _observe_bound_topic_owners(
+    windows: list[WindowRef], bound_window_ids: set[str]
+) -> None:
+    """Refresh known bound ownership without tracking every discovered worker."""
+    bound = _adoption_lookup(bound_window_ids)
+    for window in windows:
+        if canonical_window_id(window.window_id) in bound:
+            lifecycle_state.observe_topic_mark_owner(
+                window.window_id, window.topic_mark_owner
+            )
 
 
 class SessionMonitor:
@@ -877,7 +889,7 @@ class SessionMonitor:
                 window,
                 mode=config.topic_discovery_mode,
                 detach_pending=lifecycle_state.is_topic_detach_pending(
-                    window.window_id
+                    window.window_id, owner=window.topic_mark_owner
                 ),
             ):
                 continue
@@ -1040,7 +1052,7 @@ class SessionMonitor:
                             w,
                             mode=config.topic_discovery_mode,
                             detach_pending=lifecycle_state.is_topic_detach_pending(
-                                w.window_id
+                                w.window_id, owner=w.topic_mark_owner
                             ),
                         )
                     }
@@ -1068,6 +1080,9 @@ class SessionMonitor:
                     from .thread_router import thread_router
 
                     _sm.reconcile_window_aliases(all_windows)
+                    _observe_bound_topic_owners(
+                        all_windows, thread_router.all_bound_window_ids()
+                    )
                     note_live_windows(all_windows, thread_router.all_bound_window_ids())
 
                 # Hook routing is exact-bound: consuming a canonical event

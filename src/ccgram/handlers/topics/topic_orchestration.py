@@ -31,9 +31,10 @@ from ...providers import (
 from ...session import session_manager
 from ...session_monitor import NewWindowEvent
 from ...telegram_client import TelegramClient
+from ...topic_selection import verify_topic_target
 from ...thread_router import TopicProvisioning, thread_router
 from ...multiplexer import multiplexer as tmux_manager
-from ...multiplexer.base import canonical_window_id
+from ...multiplexer.base import WindowRef, canonical_window_id
 from ...multiplexer.topic_mapping import should_adopt_window
 from ...window_state_ports import lifecycle_state
 
@@ -475,14 +476,30 @@ def _abort_topic_provisioning(claim_id: str) -> None:
             logger.exception("Could not persist topic provisioning abort %s", claim_id)
 
 
+def _admission_commit_is_current(window_id: str, owner: str | None) -> bool:
+    """Do not transfer a completed request onto another observed native owner."""
+    observed = lifecycle_state.get_topic_mark_owner(window_id)
+    if owner is not None and observed != owner:
+        return False
+    return not (
+        config.topic_discovery_mode == "marked"
+        and lifecycle_state.is_topic_detach_pending(
+            window_id, owner=owner if owner is not None else observed
+        )
+    )
+
+
 def _commit_topic_provisioning(
     claim_id: str,
     chat_id: int,
     window_id: str,
     topic_name: str,
     topic: object,
+    *,
+    defer_binding: bool = False,
+    expected_owner: str | None = None,
 ) -> bool:
-    """Attach the exact Telegram topic and atomically bind the target."""
+    """Attach the exact Telegram topic and atomically bind an admitted target."""
     thread_id = getattr(topic, "message_thread_id", None)
     if not isinstance(thread_id, int) or isinstance(thread_id, bool) or thread_id <= 0:
         _mark_topic_provisioning_uncertain(claim_id)
@@ -518,6 +535,11 @@ def _commit_topic_provisioning(
         )
         raise
 
+    if defer_binding or not _admission_commit_is_current(window_id, expected_owner):
+        _mark_topic_provisioning_uncertain(claim_id)
+        clear_pending_creation(window_id)
+        return False
+
     try:
         committed = thread_router.commit_topic_provisioning(
             claim_id,
@@ -533,6 +555,14 @@ def _commit_topic_provisioning(
         )
         return False
 
+    admission_complete = not committed or lifecycle_state.complete_topic_admission(
+        window_id, lifecycle_state.get_topic_mark_owner(window_id)
+    )
+    if not admission_complete:
+        logger.warning(
+            "Topic bound but native selection lifecycle is unfinished",
+            window_id=window_id,
+        )
     try:
         _flush_provisioning_state()
     except Exception:  # noqa: BLE001
@@ -564,7 +594,7 @@ def _commit_topic_provisioning(
         chat_id,
         window_id,
     )
-    return True
+    return admission_complete
 
 
 def _defer_retry_claim(claim_id: str, *, retry_at: float) -> None:
@@ -711,7 +741,7 @@ def _settle_topic_creation_task(
     topic_name: str,
     preserve_claim: bool = False,
 ) -> bool:
-    """Settle a completed shielded Telegram request, including callbacks."""
+    """Record late results for locked recovery, never bind in a done callback."""
     try:
         topic = task.result()
     except asyncio.CancelledError as exc:
@@ -739,6 +769,7 @@ def _settle_topic_creation_task(
             window_id,
             topic_name,
             topic,
+            defer_binding=True,
         )
     except Exception:  # noqa: BLE001
         logger.exception(
@@ -747,6 +778,33 @@ def _settle_topic_creation_task(
             chat_id,
         )
         return False
+
+
+async def _chat_supports_topics(
+    client: TelegramClient, chat_id: int, window_id: str
+) -> bool:
+    """Observe private-chat topic capability before taking a creation claim."""
+    if chat_id <= 0:
+        return True
+    try:
+        bot_user = await client.get_me()
+    except TelegramError:
+        logger.warning(
+            "Skipping private topic creation for window %s in chat %d: "
+            "could not observe bot topic capability",
+            window_id,
+            chat_id,
+        )
+        return False
+    if getattr(bot_user, "has_topics_enabled", None) is True:
+        return True
+    logger.info(
+        "Skipping private topic creation for window %s in chat %d: "
+        "bot topics are not enabled",
+        window_id,
+        chat_id,
+    )
+    return False
 
 
 async def create_topic_in_chat(  # noqa: C901
@@ -758,8 +816,9 @@ async def create_topic_in_chat(  # noqa: C901
     user_id: int | None = None,
     claim_id: str | None = None,
     propagate_retry_after: bool = False,
+    automatic: bool = False,
 ) -> bool:
-    """Create and bind one topic, returning whether it succeeded.
+    """Create and bind one topic under the caller's window creation lock.
 
     Recovery callers may propagate flood-control responses after the normal
     claim cleanup and chat backoff have been recorded.
@@ -767,27 +826,9 @@ async def create_topic_in_chat(  # noqa: C901
     existing_claim = _validated_retry_claim(claim_id, chat_id, window_id, user_id)
     if claim_id is not None and existing_claim is None:
         return False
-    if chat_id > 0:
-        try:
-            bot_user = await client.get_me()
-        except TelegramError:
-            _release_retry_claim(existing_claim)
-            logger.warning(
-                "Skipping private topic creation for window %s in chat %d: "
-                "could not observe bot topic capability",
-                window_id,
-                chat_id,
-            )
-            return False
-        if getattr(bot_user, "has_topics_enabled", None) is not True:
-            _release_retry_claim(existing_claim)
-            logger.info(
-                "Skipping private topic creation for window %s in chat %d: "
-                "bot topics are not enabled",
-                window_id,
-                chat_id,
-            )
-            return False
+    if not await _chat_supports_topics(client, chat_id, window_id):
+        _release_retry_claim(existing_claim)
+        return False
 
     owner_id = (
         existing_claim.user_id
@@ -826,6 +867,12 @@ async def create_topic_in_chat(  # noqa: C901
         )
         return False
 
+    admission = await _record_automatic_admission(window_id) if automatic else None
+    if automatic and admission is None:
+        _release_retry_claim(existing_claim)
+        return False
+
+    requested_owner = lifecycle_state.get_topic_mark_owner(window_id)
     register_pending_creation(window_id, now=now)
     provisioning_claim_id = existing_claim.claim_id if existing_claim else None
     if provisioning_claim_id is None:
@@ -885,13 +932,37 @@ async def create_topic_in_chat(  # noqa: C901
             raise
         return False
 
+    defer_binding = False
+    if admission is not None:
+        defer_binding = (
+            await _record_automatic_admission(
+                window_id,
+                expected_owner=admission.topic_mark_owner,
+                claim_id=provisioning_claim_id,
+            )
+            is None
+        )
+    elif requested_owner is not None:
+        defer_binding = not await _explicit_owner_is_current(window_id, requested_owner)
     return _commit_topic_provisioning(
         provisioning_claim_id,
         chat_id,
         window_id,
         topic_name,
         topic,
+        defer_binding=defer_binding,
+        expected_owner=requested_owner,
     )
+
+
+async def _explicit_owner_is_current(window_id: str, owner: str) -> bool:
+    """Recheck explicit ownership without applying discovery filters."""
+    if not _admission_commit_is_current(window_id, owner):
+        return False
+    window = await verify_topic_target(
+        window_id, owner=owner, require_marked=config.topic_discovery_mode == "marked"
+    )
+    return window is not None and window.topic_mark_owner == owner
 
 
 async def handle_new_window(
@@ -955,12 +1026,18 @@ async def _handle_new_window_locked(
                 event.window_id,
                 topic_name,
                 user_id=target_user_id,
+                automatic=target_user_id is None,
             )
         )
     return any(results)
 
 
 async def still_adoptable(window_id: str) -> bool:
+    """Confirm automatic admission without persisting or changing selection."""
+    return await _adoptable_window(window_id) is not None
+
+
+async def _adoptable_window(window_id: str) -> WindowRef | None:
     """Confirm, right now, that discovery may adopt this window.
 
     Read immediately before each automatic adoption, never once for a batch:
@@ -984,21 +1061,71 @@ async def still_adoptable(window_id: str) -> bool:
         logger.warning(
             "Skipping adoption: no confirmed window listing", window_id=window_id
         )
-        return False
-    if not any(
-        w.matches(window_id)
-        and should_adopt_window(
-            w,
-            mode=config.topic_discovery_mode,
-            detach_pending=lifecycle_state.is_topic_detach_pending(w.window_id),
-        )
-        for w in windows
-    ):
+        return None
+    window = next(
+        (
+            w
+            for w in windows
+            if w.matches(window_id)
+            and should_adopt_window(
+                w,
+                mode=config.topic_discovery_mode,
+                detach_pending=lifecycle_state.is_topic_detach_pending(
+                    w.window_id, owner=w.topic_mark_owner
+                ),
+            )
+        ),
+        None,
+    )
+    if window is None:
         logger.info(
             "Skipping adoption: window no longer adoptable", window_id=window_id
         )
+    return window
+
+
+def _owner_has_topic_provisioning(
+    owner: str | None, *, exclude_claim_id: str | None
+) -> bool:
+    """Keep one native owner quarantined when its conversation target changes."""
+    if owner is None:
         return False
-    return True
+    for claim in thread_router.iter_topic_provisionings():
+        if claim.claim_id == exclude_claim_id:
+            continue
+        for target in (claim.target_id, claim.previous_target_id):
+            if target and lifecycle_state.get_topic_mark_owner(target) == owner:
+                return True
+    return False
+
+
+async def _record_automatic_admission(
+    window_id: str,
+    *,
+    expected_owner: str | None = None,
+    claim_id: str | None = None,
+) -> WindowRef | None:
+    """Capture verified ownership before admitting a target, never mark it."""
+    window = await _adoptable_window(window_id)
+    if window is None:
+        return None
+    if _owner_has_topic_provisioning(
+        window.topic_mark_owner, exclude_claim_id=claim_id
+    ):
+        return None
+    if (
+        config.topic_discovery_mode == "marked"
+        and expected_owner is not None
+        and window.topic_mark_owner != expected_owner
+    ):
+        return None
+    recorded = lifecycle_state.record_topic_mark_owner(
+        window_id, window.topic_mark_owner
+    )
+    if not recorded and config.topic_discovery_mode == "marked":
+        return None
+    _flush_provisioning_state()
+    return window
 
 
 async def adopt_unbound_windows(client: TelegramClient) -> None:
@@ -1021,7 +1148,9 @@ async def adopt_unbound_windows(client: TelegramClient) -> None:
         if should_adopt_window(
             w,
             mode=config.topic_discovery_mode,
-            detach_pending=lifecycle_state.is_topic_detach_pending(w.window_id),
+            detach_pending=lifecycle_state.is_topic_detach_pending(
+                w.window_id, owner=w.topic_mark_owner
+            ),
         )
     }
     audit = session_manager.audit_state(live_ids, live_pairs, adoptable_ids)

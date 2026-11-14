@@ -42,10 +42,13 @@ def _mock_tmux():
     mock_window.pane_current_command = ""
     with patch("ccgram.handlers.topics.topic_orchestration.tmux_manager") as mock_tmux:
         mock_tmux.find_window_by_id = AsyncMock(return_value=mock_window)
-        # still_present reads this listing, and a confirmed empty one means
-        # "that window is gone" — the default the topic lifecycle tests below want. A
-        # test that needs the old window alive supplies it explicitly.
-        mock_tmux.list_windows_for_reconciliation = AsyncMock(return_value=[])
+        # New creation targets are live; old same-name targets remain absent.
+        mock_tmux.list_windows_for_reconciliation = AsyncMock(
+            return_value=[
+                WindowRef(wid, "project", "/p")
+                for wid in ("@10", "@5", "@3", "@new", "herdr-session-v1-new")
+            ]
+        )
         yield mock_tmux
 
 
@@ -202,6 +205,7 @@ class TestHandleNewWindow:
             mock_tr.has_window.return_value = True
             _configure_provisioning(mock_tr)
             mock_tr.iter_thread_bindings.return_value = iter([(200, 2, "@2")])
+            mock_config.topic_discovery_mode = "auto"
             mock_config.allowed_users = {100, 200}
             created = await handle_new_window(
                 event,
@@ -342,6 +346,7 @@ class TestHandleNewWindow:
             mock_tr.iter_thread_bindings.return_value = iter([])
             mock_tr.resolve_chat_id.return_value = 12345
             mock_config.group_id = -100500
+            mock_config.topic_discovery_mode = "auto"
             mock_config.allowed_users = {12345}
 
             await handle_new_window(event, bot)
@@ -364,8 +369,9 @@ class TestHandleNewWindow:
             patch(
                 "ccgram.handlers.topics.topic_orchestration.thread_router"
             ) as mock_tr,
-            patch("ccgram.handlers.topics.topic_orchestration.config"),
+            patch("ccgram.handlers.topics.topic_orchestration.config") as mock_config,
         ):
+            mock_config.topic_discovery_mode = "auto"
             bindings = [(100, 5, "@1")]
             mock_tr.has_window.return_value = False
             _configure_provisioning(mock_tr)
@@ -402,6 +408,7 @@ class TestHandleNewWindow:
             _configure_provisioning(mock_tr)
             mock_tr.iter_thread_bindings.return_value = iter([])
             mock_config.group_id = -100500
+            mock_config.topic_discovery_mode = "auto"
             mock_config.allowed_users = {12345}
 
             await handle_new_window(event, bot)
@@ -426,6 +433,7 @@ class TestHandleNewWindow:
             _configure_provisioning(mock_tr)
             mock_tr.iter_thread_bindings.return_value = iter([])
             mock_config.group_id = -100500
+            mock_config.topic_discovery_mode = "auto"
             mock_config.allowed_users = {12345}
 
             await handle_new_window(event, bot)
@@ -454,6 +462,7 @@ class TestHandleNewWindow:
             _configure_provisioning(mock_tr)
             mock_tr.iter_thread_bindings.side_effect = [iter([]) for _ in range(6)]
             mock_config.group_id = -100500
+            mock_config.topic_discovery_mode = "auto"
             mock_config.allowed_users = {12345}
 
             await handle_new_window(event, bot)
@@ -531,6 +540,7 @@ class TestHandleNewWindow:
             mock_tr.iter_thread_bindings.side_effect = [iter([]) for _ in range(6)]
             mock_tr.resolve_chat_id.return_value = 12345
             mock_config.group_id = -100500
+            mock_config.topic_discovery_mode = "auto"
             mock_config.allowed_users = {12345}
 
             await handle_new_window(event, bot)
@@ -560,6 +570,7 @@ class TestHandleNewWindow:
             mock_tr.iter_thread_bindings.return_value = iter([])
             mock_tr.group_chat_ids = {"100:5": -100200}
             mock_config.group_id = None
+            mock_config.topic_discovery_mode = "auto"
             mock_config.allowed_users = {12345}
 
             await handle_new_window(event, bot)
@@ -587,8 +598,10 @@ class TestHandleNewWindow:
             mock_tr.iter_thread_bindings.return_value = iter([(100, 120014, "@1")])
             mock_tr.resolve_chat_id.return_value = -100200
             mock_tmux.find_window_by_id = AsyncMock(return_value=None)
-            # Confirmed empty: the old window really is gone, not unreachable.
-            mock_tmux.list_windows_for_reconciliation = AsyncMock(return_value=[])
+            # Only the new target is live; the old same-name target is gone.
+            mock_tmux.list_windows_for_reconciliation = AsyncMock(
+                return_value=[WindowRef(event.window_id, event.window_name, event.cwd)]
+            )
 
             await handle_new_window(event, bot)
 
@@ -645,16 +658,21 @@ class TestHandleNewWindow:
             patch("ccgram.handlers.topics.topic_orchestration.config") as mock_config,
         ):
             mock_tmux.find_window_by_id = AsyncMock(return_value=None)
-            # Confirmed empty: the old window really is gone, not unreachable.
-            mock_tmux.list_windows_for_reconciliation = AsyncMock(return_value=[])
-            # Confirmed empty: the old window really is gone, not unreachable.
-            mock_tmux.list_windows_for_reconciliation = AsyncMock(return_value=[])
+            # Only the new target is live; the old same-name target is gone.
+            mock_tmux.list_windows_for_reconciliation = AsyncMock(
+                return_value=[WindowRef(event.window_id, event.window_name, event.cwd)]
+            )
+            # Only the new target is live; the old same-name target is gone.
+            mock_tmux.list_windows_for_reconciliation = AsyncMock(
+                return_value=[WindowRef(event.window_id, event.window_name, event.cwd)]
+            )
             mock_tr.has_window.return_value = False
             _configure_provisioning(mock_tr)
             mock_tr.iter_thread_bindings.return_value = iter([(100, 120014, "old")])
             mock_tr.resolve_chat_id.return_value = -100200
             mock_tr.get_display_name.return_value = "reflex-gh"
             mock_config.group_id = -100200
+            mock_config.topic_discovery_mode = "auto"
             mock_config.allowed_users = {100}
 
             assert await handle_new_window(event, bot)
@@ -694,10 +712,13 @@ class TestHandleNewWindow:
             mock_tr.get_display_name.return_value = "reflex-gh"
             mock_tr.resolve_chat_id.return_value = -100200
             mock_tmux.find_window_by_id = AsyncMock(return_value=None)
-            # Confirmed empty: the old window really is gone, not unreachable.
-            mock_tmux.list_windows_for_reconciliation = AsyncMock(return_value=[])
+            # Only the new target is live; the old same-name target is gone.
+            mock_tmux.list_windows_for_reconciliation = AsyncMock(
+                return_value=[WindowRef(event.window_id, event.window_name, event.cwd)]
+            )
             mock_tr.group_chat_ids = {"100:120014": -100200}
             mock_config.group_id = None
+            mock_config.topic_discovery_mode = "auto"
             mock_config.allowed_users = {100}
 
             await handle_new_window(event, bot)
@@ -735,6 +756,7 @@ class TestCreateForumTopicTransientRetry:
             _configure_provisioning(mock_tr)
             mock_tr.iter_thread_bindings.return_value = iter([])
             mock_config.group_id = -100500
+            mock_config.topic_discovery_mode = "auto"
             mock_config.allowed_users = {12345}
 
             await handle_new_window(event, bot)
@@ -761,6 +783,7 @@ class TestCreateForumTopicTransientRetry:
             _configure_provisioning(mock_tr)
             mock_tr.iter_thread_bindings.return_value = iter([])
             mock_config.group_id = -100500
+            mock_config.topic_discovery_mode = "auto"
             mock_config.allowed_users = {12345}
 
             await handle_new_window(event, bot)
@@ -962,7 +985,9 @@ class TestDurableTopicProvisioning:
             name="project",
         )
 
-    async def test_cancellation_binds_late_topic_response(self) -> None:
+    async def test_cancellation_retains_late_topic_response_for_locked_recovery(
+        self,
+    ) -> None:
         router = ThreadRouter(
             schedule_save=lambda: None,
             has_window_state=lambda _window_id: False,
@@ -1008,8 +1033,10 @@ class TestDurableTopicProvisioning:
             for _ in range(3):
                 await asyncio.sleep(0)
 
-            assert router.iter_topic_provisionings() == []
-            assert router.get_window_for_chat_thread(-100500, 501) == "@cancelled"
+            (claim,) = router.iter_topic_provisionings()
+            assert claim.thread_id == 501
+            assert claim.uncertain is True
+            assert router.get_window_for_chat_thread(-100500, 501) is None
 
     async def test_lost_response_stays_pending_after_marker_expiry(self) -> None:
         router = ThreadRouter(
@@ -1177,14 +1204,18 @@ class TestMarkedStartupAdoption:
 
         monkeypatch.setattr(config, "topic_discovery_mode", "marked")
         windows = [
-            WindowRef("marked", "one", "/p", topic_marked=True),
+            WindowRef(
+                "marked", "one", "/p", topic_marked=True, topic_mark_owner="owner"
+            ),
             WindowRef("unmarked", "two", "/p", topic_marked=False),
             WindowRef("unknown", "three", "/p", topic_marked=None),
-            WindowRef("pending", "four", "/p", topic_marked=True),
+            WindowRef(
+                "pending", "four", "/p", topic_marked=True, topic_mark_owner="owner"
+            ),
         ]
         monkeypatch.setattr(
             "ccgram.handlers.topics.topic_orchestration.lifecycle_state.is_topic_detach_pending",
-            lambda window_id: window_id == "pending",
+            lambda window_id, *, owner: window_id == "pending",
         )
         with (
             patch("ccgram.handlers.topics.topic_orchestration.tmux_manager") as mux,
@@ -1259,6 +1290,236 @@ class TestStillAdoptable:
         assert await self._verdict(None) is False
 
 
+class TestOwnedAutomaticAdmission:
+    @pytest.fixture
+    def runtime(self, monkeypatch, _mock_tmux):
+        from ccgram.config import config
+        from ccgram.window_state_store import (
+            WindowStateStore,
+            get_window_store,
+            install_window_store,
+        )
+
+        previous = get_window_store()
+        store = WindowStateStore(
+            schedule_save=lambda: None, on_hookless_provider_switch=lambda wid: None
+        )
+        install_window_store(store)
+        router = ThreadRouter(
+            schedule_save=lambda: None,
+            has_window_state=lambda wid: wid in store.window_states,
+        )
+        monkeypatch.setattr(
+            "ccgram.handlers.topics.topic_orchestration.thread_router", router
+        )
+        monkeypatch.setattr(
+            "ccgram.handlers.topics.topic_orchestration.session_manager", MagicMock()
+        )
+        monkeypatch.setattr(config, "topic_discovery_mode", "marked")
+        monkeypatch.setattr(config, "allowed_users", {100})
+        monkeypatch.setattr(config, "group_id", -100500)
+        _mock_tmux.list_windows_for_reconciliation.return_value = [
+            WindowRef(
+                "@10", "project", "/p", topic_marked=True, topic_mark_owner="owned"
+            )
+        ]
+        _mock_tmux.set_topic_mark = AsyncMock()
+        _mock_tmux.find_window_by_id = AsyncMock(
+            return_value=WindowRef(
+                "@10", "project", "/p", topic_marked=True, topic_mark_owner="owned"
+            )
+        )
+        monkeypatch.setattr("ccgram.multiplexer.multiplexer", _mock_tmux)
+        try:
+            yield router, store, _mock_tmux
+        finally:
+            install_window_store(previous)
+
+    async def test_automatic_bind_captures_owner_without_setting_mark(self, runtime):
+        router, store, mux = runtime
+        client = AsyncMock()
+        client.create_forum_topic.return_value = _make_topic(501)
+
+        assert await handle_new_window(_make_event(), client)
+
+        assert store.window_states["@10"].topic_mark_owner == "owned"
+        assert router.get_window_for_chat_thread(-100500, 501) == "@10"
+        mux.set_topic_mark.assert_not_awaited()
+
+    async def test_auto_mode_records_unmarked_owner_without_changing_selection(
+        self, runtime, monkeypatch
+    ):
+        from ccgram.config import config
+
+        router, store, mux = runtime
+        monkeypatch.setattr(config, "topic_discovery_mode", "auto")
+        mux.list_windows_for_reconciliation.return_value = [
+            WindowRef(
+                "@10", "project", "/p", topic_marked=False, topic_mark_owner="owned"
+            )
+        ]
+        client = AsyncMock()
+        client.create_forum_topic.return_value = _make_topic(501)
+
+        assert await handle_new_window(_make_event(), client)
+
+        assert store.window_states["@10"].topic_mark_owner == "owned"
+        assert router.get_window_for_chat_thread(-100500, 501) == "@10"
+        mux.set_topic_mark.assert_not_awaited()
+
+    async def test_detach_while_waiting_for_creation_lock_prevents_remote_create(
+        self, runtime
+    ):
+        from ccgram.handlers.topics.topic_orchestration import _window_topic_lock
+        from ccgram.window_state_ports import lifecycle_state
+
+        router, _, _ = runtime
+        client = AsyncMock()
+        async with _window_topic_lock("@10"):
+            task = asyncio.create_task(handle_new_window(_make_event(), client))
+            await asyncio.sleep(0)
+            lifecycle_state.set_topic_selection(
+                "@old", owner="owned", pending=False, detached=True
+            )
+
+        assert await task is False
+        client.create_forum_topic.assert_not_awaited()
+        assert router.iter_topic_provisionings() == []
+
+    @pytest.mark.parametrize("change", ["detach", "owner", "unmark"])
+    async def test_new_pending_or_changed_selection_cannot_commit_remote_response(
+        self, runtime, change
+    ):
+        from ccgram.window_state_ports import lifecycle_state
+
+        router, _, mux = runtime
+
+        async def create(**kwargs):
+            if change == "detach":
+                lifecycle_state.set_topic_selection(
+                    "@old", owner="owned", pending=False, detached=True
+                )
+            else:
+                mux.list_windows_for_reconciliation.return_value = [
+                    WindowRef(
+                        "@10",
+                        "project",
+                        "/p",
+                        topic_marked=change != "unmark",
+                        topic_mark_owner="different" if change == "owner" else "owned",
+                    )
+                ]
+            return _make_topic(501)
+
+        client = AsyncMock()
+        client.create_forum_topic.side_effect = create
+
+        assert await handle_new_window(_make_event(), client) is False
+
+        assert router.get_window_for_chat_thread(-100500, 501) is None
+        (claim,) = router.iter_topic_provisionings()
+        assert claim.thread_id == 501
+        assert claim.uncertain
+
+    async def test_late_automatic_response_is_retained_for_locked_recovery(
+        self, runtime
+    ):
+        router, _, _ = runtime
+        started, release, completed = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+        async def create(**kwargs):
+            started.set()
+            await release.wait()
+            completed.set()
+            return _make_topic(501)
+
+        client = AsyncMock()
+        client.create_forum_topic.side_effect = create
+        task = asyncio.create_task(handle_new_window(_make_event(), client))
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        release.set()
+        await completed.wait()
+        await asyncio.sleep(0)
+
+        assert router.get_window_for_chat_thread(-100500, 501) is None
+        (claim,) = router.iter_topic_provisionings()
+        assert claim.thread_id == 501
+        assert claim.uncertain
+
+    @pytest.mark.parametrize("late", [False, True])
+    @pytest.mark.parametrize(
+        ("change", "mode"),
+        [("observed", "marked"), ("native", "marked"), ("unknown", "auto")],
+    )
+    async def test_explicit_response_cannot_bind_reused_native_owner(
+        self, runtime, late, change, mode, monkeypatch
+    ):
+        from ccgram.config import config
+        from ccgram.window_state_ports import lifecycle_state
+
+        monkeypatch.setattr(config, "topic_discovery_mode", mode)
+        router, _, mux = runtime
+        lifecycle_state.record_topic_mark_owner("@10", "owned")
+        started, release, completed = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+        async def create(**kwargs):
+            started.set()
+            await release.wait()
+            if change == "observed":
+                lifecycle_state.observe_topic_mark_owner("@10", "replacement")
+            else:
+                mux.find_window_by_id.return_value = WindowRef(
+                    "@10",
+                    "project",
+                    "/p",
+                    topic_marked=True,
+                    topic_mark_owner="replacement" if change == "native" else None,
+                )
+            completed.set()
+            return _make_topic(501)
+
+        client = AsyncMock()
+        client.create_forum_topic.side_effect = create
+        task = asyncio.create_task(
+            handle_new_window(
+                _make_event(), client, target_user_id=100, target_chat_id=-100500
+            )
+        )
+        await started.wait()
+        if late:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        release.set()
+        await completed.wait()
+        if late:
+            await asyncio.sleep(0)
+        else:
+            assert await task is False
+
+        assert router.get_window_for_chat_thread(-100500, 501) is None
+        (claim,) = router.iter_topic_provisionings()
+        assert claim.thread_id == 501
+        assert claim.uncertain
+
+    async def test_owner_quarantine_survives_conversation_rekey(self, runtime):
+        from ccgram.window_state_store import WindowState
+
+        router, store, _ = runtime
+        store.window_states["@old"] = WindowState(topic_mark_owner="owned")
+        router.begin_topic_provisioning(
+            100, -100500, target_id="@old", kind="target_for_topic"
+        )
+        client = AsyncMock()
+
+        assert await handle_new_window(_make_event(), client) is False
+        client.create_forum_topic.assert_not_awaited()
+        assert "@10" not in store.window_states
+
+
 class TestMarkedPointOfUse:
     @pytest.mark.parametrize(
         ("marked", "pending", "expected"),
@@ -1278,11 +1539,19 @@ class TestMarkedPointOfUse:
         monkeypatch.setattr(config, "topic_discovery_mode", "marked")
         monkeypatch.setattr(
             "ccgram.handlers.topics.topic_orchestration.lifecycle_state.is_topic_detach_pending",
-            lambda window_id: pending,
+            lambda window_id, *, owner: pending,
         )
         with patch("ccgram.handlers.topics.topic_orchestration.tmux_manager") as mux:
             mux.list_windows_for_reconciliation = AsyncMock(
-                return_value=[WindowRef("@5", "proj", "/p", topic_marked=marked)]
+                return_value=[
+                    WindowRef(
+                        "@5",
+                        "proj",
+                        "/p",
+                        topic_marked=marked,
+                        topic_mark_owner="owner",
+                    )
+                ]
             )
             assert await still_adoptable("@5") is expected
 

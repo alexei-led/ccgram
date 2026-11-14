@@ -21,6 +21,7 @@ from ccgram.handlers.topics.directory_callbacks import (
 )
 from ccgram.handlers.topics.window_launch_service import _accept_yolo_confirmation
 from ccgram.handlers.user_state import PENDING_THREAD_ID, PENDING_THREAD_TEXT
+from ccgram.multiplexer.base import WindowRef
 from ccgram.window_query import resolve_window_alias
 
 
@@ -267,6 +268,25 @@ class TestHandleProviderSelect:
 
 
 class TestHandleModeSelect:
+    @pytest.fixture(autouse=True)
+    def _isolated_selection_state(self, monkeypatch):
+        from ccgram.window_state_store import (
+            WindowStateStore,
+            get_window_store,
+            install_window_store,
+        )
+
+        previous = get_window_store()
+        store = WindowStateStore(
+            schedule_save=lambda: None, on_hookless_provider_switch=lambda _wid: None
+        )
+        install_window_store(store)
+        monkeypatch.setattr("ccgram.topic_selection._flush", lambda: None)
+        try:
+            yield
+        finally:
+            install_window_store(previous)
+
     @patch(
         "ccgram.handlers.topics.window_launch_service.safe_edit", new_callable=AsyncMock
     )
@@ -284,7 +304,10 @@ class TestHandleModeSelect:
         mock_sm: MagicMock,
         mock_edit: AsyncMock,
         _session_adapter: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        monkeypatch.setattr("ccgram.multiplexer.multiplexer", mock_tmux)
+        mock_tmux.set_topic_mark = AsyncMock(return_value=True)
         mock_provider = MagicMock()
         mock_provider.capabilities.supports_hook = False
         mock_provider.capabilities.has_yolo_confirmation = False
@@ -298,7 +321,14 @@ class TestHandleModeSelect:
         )
         mock_tmux.stamp_pane_title = AsyncMock()
         mock_tmux.find_window_by_id = AsyncMock(
-            return_value=MagicMock(pane_current_command="codex")
+            return_value=WindowRef(
+                "@5",
+                "proj",
+                "/tmp/proj",
+                pane_current_command="codex",
+                topic_marked=True,
+                topic_mark_owner="test-owner",
+            )
         )
         mock_tmux.capabilities.native_worktrees = False
         mock_tmux.capabilities.native_agent_status = False
@@ -356,7 +386,10 @@ class TestHandleModeSelect:
         mock_edit: AsyncMock,
         mock_accept_yolo: AsyncMock,
         _session_adapter: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        monkeypatch.setattr("ccgram.multiplexer.multiplexer", mock_tmux)
+        mock_tmux.set_topic_mark = AsyncMock(return_value=True)
         mock_provider = MagicMock()
         mock_provider.capabilities.supports_hook = True
         mock_provider.capabilities.has_yolo_confirmation = True
@@ -370,7 +403,14 @@ class TestHandleModeSelect:
         )
         mock_tmux.stamp_pane_title = AsyncMock()
         mock_tmux.find_window_by_id = AsyncMock(
-            return_value=MagicMock(pane_current_command="codex")
+            return_value=WindowRef(
+                "@5",
+                "proj",
+                "/tmp/proj",
+                pane_current_command="codex",
+                topic_marked=True,
+                topic_mark_owner="test-owner",
+            )
         )
         mock_tmux.capabilities.native_worktrees = False
         mock_tmux.capabilities.native_agent_status = False
@@ -462,7 +502,10 @@ class TestHandleModeSelect:
         mock_send_to_window: AsyncMock,
         mock_edit: AsyncMock,
         _session_adapter: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        monkeypatch.setattr("ccgram.multiplexer.multiplexer", mock_tmux)
+        mock_tmux.set_topic_mark = AsyncMock(return_value=True)
         mock_provider = MagicMock()
         mock_provider.capabilities.supports_hook = False
         mock_provider.capabilities.chat_first_command_path = False
@@ -475,7 +518,14 @@ class TestHandleModeSelect:
         )
         mock_tmux.stamp_pane_title = AsyncMock()
         mock_tmux.find_window_by_id = AsyncMock(
-            return_value=MagicMock(pane_current_command="claude")
+            return_value=WindowRef(
+                "@5",
+                "proj",
+                "/tmp/proj",
+                pane_current_command="claude",
+                topic_marked=True,
+                topic_mark_owner="test-owner",
+            )
         )
         mock_tmux.capabilities.native_worktrees = False
         mock_tmux.capabilities.native_agent_status = False

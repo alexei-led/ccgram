@@ -3690,15 +3690,19 @@ class TestMarkedMonitorDiscovery:
         callback = AsyncMock()
         monitor.set_new_window_callback(callback)
         windows = [
-            WindowRef("marked", "one", "/p", topic_marked=True),
+            WindowRef(
+                "marked", "one", "/p", topic_marked=True, topic_mark_owner="owner"
+            ),
             WindowRef("unmarked", "two", "/p", topic_marked=False),
             WindowRef("unknown", "three", "/p", topic_marked=None),
-            WindowRef("pending", "four", "/p", topic_marked=True),
+            WindowRef(
+                "pending", "four", "/p", topic_marked=True, topic_mark_owner="owner"
+            ),
             WindowRef("split", "five", "/p", topic_marked=True, topic_markable=False),
         ]
         monkeypatch.setattr(
             "ccgram.session_monitor.lifecycle_state.is_topic_detach_pending",
-            lambda window_id: window_id == "pending",
+            lambda window_id, *, owner: window_id == "pending",
         )
 
         await monitor._emit_unbound_window_events(windows, set())
@@ -3714,10 +3718,14 @@ class TestMarkedMonitorDiscovery:
 
         monkeypatch.setattr(config, "topic_discovery_mode", "marked")
         windows = [
-            WindowRef("marked", "one", "/p", topic_marked=True),
+            WindowRef(
+                "marked", "one", "/p", topic_marked=True, topic_mark_owner="owner"
+            ),
             WindowRef("unmarked", "two", "/p", topic_marked=False),
             WindowRef("unknown", "three", "/p", topic_marked=None),
-            WindowRef("pending", "four", "/p", topic_marked=True),
+            WindowRef(
+                "pending", "four", "/p", topic_marked=True, topic_mark_owner="owner"
+            ),
         ]
         observed = {}
 
@@ -3735,7 +3743,7 @@ class TestMarkedMonitorDiscovery:
         )
         monkeypatch.setattr(
             "ccgram.session_monitor.lifecycle_state.is_topic_detach_pending",
-            lambda window_id: window_id == "pending",
+            lambda window_id, *, owner: window_id == "pending",
         )
         monkeypatch.setattr(
             "ccgram.session_monitor.read_session_map_raw", AsyncMock(return_value={})
@@ -3755,6 +3763,43 @@ class TestMarkedMonitorDiscovery:
 
         assert observed == {"delta": {"marked"}, "known": {"marked"}}
         prune.assert_called_once_with({"marked", "unmarked", "unknown", "pending"})
+
+
+def test_bound_owner_observation_does_not_track_unadmitted_workers():
+    from ccgram.session_monitor import _observe_bound_topic_owners
+    from ccgram.window_state_ports import lifecycle_state
+    from ccgram.window_state_store import (
+        WindowState,
+        WindowStateStore,
+        get_window_store,
+        install_window_store,
+    )
+
+    previous = get_window_store()
+    store = WindowStateStore(
+        schedule_save=lambda: None, on_hookless_provider_switch=lambda wid: None
+    )
+    install_window_store(store)
+    try:
+        store.window_states["BOUND"] = WindowState(topic_mark_owner="previous")
+        lifecycle_state.set_topic_selection(
+            "pending", owner="unfinished", pending=False, detached=True
+        )
+        _observe_bound_topic_owners(
+            [
+                WindowRef("bound", "one", "/p", topic_mark_owner="current"),
+                WindowRef("pending", "two", "/p", topic_mark_owner="different"),
+                WindowRef("unadmitted", "three", "/p", topic_mark_owner="new"),
+            ],
+            {"BOUND", "pending"},
+        )
+        assert store.window_states["BOUND"].topic_mark_owner == "current"
+        assert store.window_states["pending"].topic_mark_owner == "different"
+        assert lifecycle_state.is_topic_detach_pending("pending", owner="unfinished")
+        assert not lifecycle_state.is_topic_detach_pending("pending", owner="different")
+        assert "unadmitted" not in store.window_states
+    finally:
+        install_window_store(previous)
 
 
 class TestAdoptionIdentityFoldsCaseInTheMonitor:
