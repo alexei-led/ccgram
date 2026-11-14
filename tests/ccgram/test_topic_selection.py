@@ -823,6 +823,61 @@ async def test_current_target_requires_retention_of_a_captured_witness(
     selection.mux.set_topic_mark.assert_not_awaited()
 
 
+async def test_provisioning_selection_checkpoints_claim_owner_and_intent_before_write(
+    selection,
+):
+    claim = selection.router.begin_topic_provisioning(
+        1, -100, thread_id=42, target_id="@1", kind="target_for_topic"
+    )
+
+    async def native(_wid, _marked, *, owner):
+        captured = selection.router.get_topic_provisioning(claim.claim_id)
+        assert captured.topic_mark_owner == owner == "owner:@1"
+        assert (
+            selection.saved[-1][1]["topic_provisioning"][0]["topic_mark_owner"] == owner
+        )
+        assert selection.saved[-1][0]["topic_mark_operations"][0]["owner"] == owner
+        lifecycle_state.observe_topic_mark_owner("@1", "replacement-P")
+        return False
+
+    selection.mux.set_topic_mark.side_effect = native
+    assert not await topic_selection.select_topic_target(
+        "@1", mux=selection.mux, claim_id=claim.claim_id, router=selection.router
+    )
+    assert (
+        selection.router.get_topic_provisioning(claim.claim_id).topic_mark_owner
+        == "owner:@1"
+    )
+    assert lifecycle_state.get_topic_mark_owner("@1") == "replacement-P"
+
+
+@pytest.mark.parametrize("current_owner", [None, "replacement-P"])
+async def test_provisioning_selection_cannot_drop_or_replace_captured_owner(
+    selection, current_owner
+):
+    claim = selection.router.begin_topic_provisioning(
+        1,
+        -100,
+        thread_id=42,
+        target_id="@1",
+        kind="target_for_topic",
+        topic_mark_owner="original-O",
+    )
+    lifecycle_state.record_topic_mark_owner("@1", "replacement-P")
+    selection.mux.find_window_by_id.return_value = WindowRef(
+        "@1", "current", "/tmp", topic_mark_owner=current_owner
+    )
+    assert not await topic_selection.select_topic_target(
+        "@1", mux=selection.mux, claim_id=claim.claim_id, router=selection.router
+    )
+    assert (
+        selection.router.get_topic_provisioning(claim.claim_id).topic_mark_owner
+        == "original-O"
+    )
+    assert lifecycle_state.get_topic_mark_owner("@1") == "replacement-P"
+    selection.mux.set_topic_mark.assert_not_awaited()
+
+
 async def test_double_detach_does_not_queue_a_second_marker_write(selection):
     selection.router.bind_thread(1, 42, "@1", chat_id=-100)
     await asyncio.gather(
