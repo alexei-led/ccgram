@@ -42,12 +42,25 @@ async def test_owner_absence_clear_never_touches_a_replacement() -> None:
     assert socket.writes == []
 
 
-@pytest.mark.parametrize("bad_owner", [None, "tmux:abc", "agterm:invalid"])
-async def test_foreign_or_malformed_owner_does_not_mutate(
-    bad_owner: str | None,
-) -> None:
+@pytest.mark.parametrize("bad_owner", ["tmux:abc", "agterm:invalid"])
+async def test_foreign_or_malformed_owner_does_not_mutate(bad_owner: str) -> None:
     socket = FlagSocket()
-    assert not await manager(socket).set_topic_mark("@1", True, owner=bad_owner)
+    assert not await manager(socket).set_topic_mark(SESSION, True, owner=bad_owner)
+    assert socket.writes == []
+
+
+async def test_missing_owner_can_mark_a_valid_fresh_target() -> None:
+    socket = FlagSocket()
+    assert await manager(socket).set_topic_mark(SESSION, True, owner=None)
+    assert socket.sessions[0]["flagged"] is True
+    assert len(socket.writes) == 1
+
+
+async def test_invalid_target_never_mutates_a_valid_owner() -> None:
+    socket = FlagSocket()
+    assert not await manager(socket).set_topic_mark(
+        "@1", True, owner=f"agterm:{SESSION.lower()}"
+    )
     assert socket.writes == []
 
 
