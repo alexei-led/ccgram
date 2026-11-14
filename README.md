@@ -77,7 +77,7 @@ Telegram shares its native slash-command suggestions across topics. CCGram keeps
 
 ## Topic Discovery
 
-Automatic topic discovery remains the default. The approved opt-in marked-only mode controls new automatic Telegram topic admission, not existing bindings or terminal liveness. Backend support and restore verification are pending integration. See the [marked-discovery contract](docs/design/marked-topic-discovery.md) before relying on this mode.
+Automatic discovery remains the default. Set `CCGRAM_TOPIC_DISCOVERY=marked` to create automatic Telegram topics only for explicitly selected tmux windows, Herdr terminals, or agterm primary sessions. Use `ccgram topic status` to get exact target IDs, then `ccgram topic mark TARGET` or `ccgram topic unmark TARGET`. Unmarking keeps existing bound topics connected. See the [operator guide](docs/guides.md#marked-only-discovery) and [native storage and limits](docs/design/marked-topic-discovery.md).
 
 ## Provider Switching
 

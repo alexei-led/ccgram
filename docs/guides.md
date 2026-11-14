@@ -637,13 +637,36 @@ toolbar; pinned names survive window re-keying.
 
 `/bind` in an unbound topic lists windows that are running but not bound to
 any topic; one tap attaches the chosen one and renames the topic. Sessions
-started from the terminal still become topics automatically.
+started from the terminal become topics automatically in the default `auto` discovery mode.
 
 ## Creating Sessions from the Terminal
 
 Besides creating sessions through Telegram topics, you can create windows directly in your terminal multiplexer.
 
-The instructions below describe default automatic discovery. Opt-in marked-only discovery is specified in the [implementation contract](design/marked-topic-discovery.md), including selection, explicit binding, detach and backend restore requirements. Its all-backend support remains pending integration verification.
+The backend instructions below describe default automatic discovery. Use marked-only discovery to select which terminals receive automatic topics.
+
+### Marked-only discovery
+
+Set the discovery mode in the bot's `.env`, or start it with `ccgram run --topic-discovery marked`:
+
+```ini
+CCGRAM_TOPIC_DISCOVERY=marked
+```
+
+Use the same backend and CCGram state directory as the bot. Replace `TARGET` with an exact `id` from status, not a name, owner token, or active-terminal guess:
+
+```bash
+ccgram topic status
+ccgram topic mark TARGET
+ccgram topic status TARGET
+ccgram topic unmark TARGET
+```
+
+These commands do not require Telegram credentials. Status emits JSON with `backend`, `mode`, live `targets` (including native `marked`, `markable`, and diagnostic `owner`), and read-only `pending_operations`. Diagnostics go to stderr. The journal lists unfinished native writes, not a second selected-state preference. Opposite pending intent blocks a manual write until recovery; the CLI never rewrites or completes the bot's journal.
+
+Selection uses a window-local native option in tmux, a reversible owned manual-label suffix in standard Herdr, and the primary session flag in agterm. Agterm splits remain explicitly bindable without marking the primary. Ordinary Herdr names do not mark a terminal; copying a layout can copy explicit marker state, so fresh-worker templates must omit it. See [native storage and restoration limits](design/marked-topic-discovery.md#native-storage-and-restoration).
+
+Unmarking leaves bound topics connected. Marked-mode last-topic close or `/unbind` clears selection without killing the terminal, and deliberate detach is exempt from orphan TTL. If unmarking withdraws an unfinished explicit creation, CCGram retains its exact uncertain claim unbound and does not delete a possibly human-used topic. Reselect the native target to allow recovery. Existing bound topics are unaffected. See [recovery and lifecycle details](design/marked-topic-discovery.md#unfinished-or-ambiguous-detach).
 
 ### tmux (default)
 

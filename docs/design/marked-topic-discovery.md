@@ -1,6 +1,6 @@
-# Marked topic discovery: implementation contract
+# Marked topic discovery
 
-Status: approved design for [issue #400](https://github.com/alexei-led/ccgram/issues/400), not a release or backend-support claim. Owner-aware native storage and lifecycle behavior below require integrated implementation and verification on all three standard backends. Herdr requires no fork or upstream change. Tmux selection follows its native window lifetime, not a promised cold-restore path.
+CCGram supports opt-in marked-only Telegram topic discovery with tmux, standard Herdr, and agterm. Native selection is independent of agent conversations and routing identity. Herdr requires no fork or upstream change. Tmux selection follows its native window lifetime, not a promised cold-restore path. For setup, see the [operator guide](../guides.md#marked-only-discovery).
 
 ## Operator model
 
@@ -12,17 +12,19 @@ Status writes JSON to stdout and diagnostics to stderr. Its fields are `backend`
 
 A read-only journal guard refuses a manual native write that conflicts with unfinished opposite intent. Repeating the same desired value is nonconflicting. The CLI neither creates nor completes bot-owned retry operations and never rewrites the journal. An unreadable or malformed journal makes status and mutation fail closed. Native update failure is not reported as success.
 
-A mark selects a terminal/window, not an agent conversation. Replacing an agent or using `/clear` does not change that selection. Normal native creation or splitting starts unmarked. Explicitly copying native selection metadata is a separate operation with the Herdr limits below. Names, working directories and layout resemblance never prove terminal identity.
+A mark selects a terminal/window, not an agent conversation. Replacing an agent or using `/clear` does not change that selection. New native worker targets start unmarked. Explicitly copying native selection metadata is a separate operation with the Herdr limits below. Names, working directories and layout resemblance never prove terminal identity.
 
 The mode does not filter liveness, mobile listings, explicit binding, routing identity, or ongoing forwarding. Existing bound topics keep working after unmarking or changing modes. `/new` and picker binding attempt selection in both modes before binding. In `auto`, an unverified native write warns and persists a mark-on retry without changing historical binding success. In `marked`, it prevents binding and keeps creation quarantined until verification. Creation ownership and foreground readiness remain in force.
 
 In marked mode, intentional close or `/unbind` of the last binding clears that terminal's native mark, prevents automatic recreation, and leaves the terminal running. Other bindings and active creation claims protect the shared selection from clearing. Deliberate detach is exempt from orphan TTL without changing terminal origin. Abandoned failed creation retains its existing cleanup behavior.
 
+If a target is unmarked during unfinished explicit creation, admission is withdrawn. CCGram retains the exact uncertain creation claim unbound. It does not replay a stale mark-on or delete a possibly human-used topic. The operator can reselect the native target to permit final recovery. Already-bound topics remain connected.
+
 ### Unfinished or ambiguous detach
 
-A failed clear remains unfinished lifecycle work, not a permanent suppression preference. Persisted desired-false operations survive restart and block readmission of the exact same native owner, including after conversation re-keying. When both owners are known, exact owner matching takes precedence over routing IDs: an old owner's clear does not block an independent new owner reusing that ID. Route matching is a fallback only when ownership is unknown. Topic maintenance retries unfinished operations every 60 seconds. Independent owners remain independently admissible.
+A failed clear remains unfinished lifecycle work, not a permanent suppression preference. Persisted desired-false operations survive restart and block readmission of the exact same native owner, including after conversation re-keying. When both owners are known, exact owner matching takes precedence over routing IDs. An old owner's clear does not block an independent new owner reusing that ID. Route matching is a fallback only when ownership is unknown. Topic maintenance retries unfinished operations every 60 seconds. Independent owners remain independently admissible.
 
-If neither saved nor current verifiable ownership exists, CCGram must not guess which terminal to clear or report completed native detach. It keeps the unfinished operation and warns that ownership is unconfirmed. The operator must explicitly unmark the current target. A backend may settle an ownerless clear only if it safely proves no selected native owners remain. Merely losing the old routing target is not success.
+If neither saved nor current verifiable ownership exists, CCGram does not guess which terminal to clear or report completed native detach. It keeps the unfinished operation and warns that ownership is unconfirmed. Explicitly unmark the current target to withdraw selection there. This does not itself settle an ownerless journal entry: historical ambiguity can remain quarantined, and the CLI does not rewrite that evidence. Merely losing the old routing target is not success.
 
 ## Native storage and restoration
 
@@ -40,9 +42,9 @@ The native session `flagged` boolean selects the primary only. The native sessio
 
 Standard `pane.rename` and raw manual labels from `pane.get`/`pane.list` carry selection. Dynamic titles, terminal titles and agent names are not substitutes. The exact suffix is `[ccgram-topic-v1:<32 lowercase hex owner>]`. It follows the original manual label and one space, or stands alone when no original label exists. Ordinary labels do not select. Native snapshots preserve the explicitly written suffix with their saved terminal. This is stored state, not matching a display label heuristically. Unmarked ownership comes from the current native terminal and connection namespace. Once an assigned mark is persisted, its stored owner is authoritative across native restoration.
 
-Marking must reject non-reversible normalization, unsafe serialized requests, reserved/nested/malformed or colliding suffixes, and overlarge labels **before writing**. The complete serialized rename request, including its framing newline, must not exceed 1 MiB. It must never truncate or overwrite user data. Unmark removes only the managed suffix and restores the original label, including null when no original existed. A literal `--clear` label remains user data, not a clear command.
+Marking rejects non-reversible normalization, unsafe serialized requests, reserved/nested/malformed or colliding suffixes, and overlarge labels **before writing**. The complete serialized rename request, including its framing newline, must not exceed 1 MiB. It never truncates labels. Without concurrent manual-label edits, unmark removes only the managed suffix and restores the original label, including null when no original existed. A literal `--clear` label remains user data, not a clear command.
 
-Marker observations join authoritative `agent.list` records by current native terminal identity. A marker-query failure leaves liveness and auto eligibility intact. Routing still uses the guarded agent-session target, never the selection owner. Bare shells remain ineligible for automatic topics but must be discoverable by the backend when resolving an owned clear.
+Marker observations join authoritative `agent.list` records by current native terminal identity. A marker-query failure leaves liveness and auto eligibility intact. Routing still uses the guarded agent-session target, never the selection owner. Bare shells remain ineligible for automatic topics but remain in the native inventory used to resolve an owned clear.
 
 #### Explicit metadata-copy limit
 
@@ -52,15 +54,15 @@ A sole copied marker is indistinguishable from an imported selection and is trea
 
 ## Native verification and limits
 
-Isolated native tests against stock Herdr 0.9.5 verified exact Unicode/literal-`--clear` label restoration, conversation re-key and bare-shell clearing, fresh split unmarked state, duplicate-owner quarantine, and cold restore preserving the stored owner despite a changed runtime terminal ID. These tests used genuine native helpers with controlled standard hook reports. They did not launch an AI CLI or prove actual provider-session resumption.
+Isolated tests against stock Herdr 0.9.5 verified exact Unicode/literal-`--clear` label restoration, conversation re-key and bare-shell clearing, fresh unmarked splits, and duplicate-owner quarantine. Cold restoration preserved the stored owner despite a changed runtime terminal ID. These tests used genuine native helpers with controlled standard hook reports. They did not launch an AI CLI or prove actual provider-session resumption.
 
-Tmux test coverage includes native token retention, full-server loss, reused window IDs, restored full tokens, duplicate-owner quarantine, and acknowledgement-loss retries. The native cases passed again after the cleanup patch established an owned default namespace before imports and retained the creating socket/incarnation for teardown. This fresh evidence does not establish that earlier unguarded execution was fully isolated or had no effects. Historical default-server effects remain unknown. Agterm adapter tests and pinned upstream source establish the intended persisted primary flag and unmarked duplicates. A bounded live test verified flag on/off, a fresh adapter reading the same owner and selection, and restoration of the original flag. Its inventory was pinned to the owned test window. It does not verify application cold restore, conversation reset, or full multi-window inventory.
+Tmux test coverage includes native token retention, full-server loss, reused window IDs, restored full tokens, duplicate-owner quarantine, and acknowledgement-loss retries. All 16 native tmux cases passed in the current integration suite. That run established an owned default namespace before imports and retained the creating socket/incarnation for teardown. This fresh evidence does not establish that earlier unguarded execution was fully isolated or had no effects. Historical default-server effects remain unknown. Agterm adapter tests and pinned upstream source establish the intended persisted primary flag and unmarked duplicates. A bounded live test verified flag on/off, a fresh adapter reading the same owner and selection, and restoration of the original flag. Its inventory was pinned to the owned test window. It does not verify application cold restore, conversation reset, or full multi-window inventory.
 
-Native CLI read/check/write operations are not an atomic compare-and-set. Inventory, identity and readback checks detect observed changes, but an external replacement or metadata change between verification and dispatch can still affect a different resource before a postcheck reports uncertainty. No atomic-write or rollback guarantee is claimed. Final integration acceptance of this native limitation remains pending.
+Native CLI read/check/write operations are not an atomic compare-and-set. Inventory, identity and readback checks detect observed changes. An external replacement or metadata change between verification and dispatch can still affect a different resource before a postcheck reports uncertainty. No atomic-write or rollback guarantee is claimed.
 
 ## Backend and policy contract
 
-The existing `topic_eligible` remains separate from existence and visibility. Append neutral fields at the end of `WindowRef` for positional compatibility:
+The existing `topic_eligible` remains separate from existence and visibility. `WindowRef` exposes these fields at the end for positional compatibility:
 
 - `topic_marked: bool | None = False`: `None` is unconfirmed.
 - `topic_markable: bool = True`: false for agterm splits.
@@ -86,7 +88,7 @@ Fresh automatic admission checks run inside the actual creation-ownership lock a
 
 ## Acceptance matrix
 
-These are required checks, not claims that tests have passed.
+This matrix summarizes the behavior covered by the policy, lifecycle and native-storage checks. Native execution limits are listed above.
 
 | Scenario | Expected result |
 | --- | --- |
@@ -95,12 +97,13 @@ These are required checks, not claims that tests have passed.
 | Ineligible target or unavailable listing | Do not adopt ineligible targets. Unavailable listing never proves death. |
 | Unmark or switch mode with an existing binding | Keep binding, forwarding, liveness and mobile listing. |
 | Agent replacement or `/clear` | Keep native selection independent of conversation identity. |
-| Normal new terminal/split; reused tmux ID after server loss | Start unmarked. No name/cwd/layout recovery. |
+| Normal new target; reused tmux window ID after server loss | Start unmarked. No name/cwd/layout recovery. |
 | Native snapshot restore with full owned marker | Preserve selection only through verified native metadata, not transient tokens. |
 | Ordinary Herdr label / exact managed suffix | Ordinary label does not select. Only valid owned metadata can select. |
 | Herdr normalization, nested suffix, excessive size, literal `--clear` | Reject unsafe mutation without data loss. Preserve literal label data. |
 | Herdr copied layout, duplicate owner / sole copied marker | Quarantine duplicates. Sole copy is explicitly copied selection, not reset automatically. |
 | `/new` or `/bind`, native mark failure | Auto warns and retains binding with retry. Marked blocks binding until verification. |
+| Unmark during unfinished explicit creation | Retain exact uncertain claim unbound, without stale mark-on or topic deletion. Native reselection permits recovery. |
 | agterm explicit split binding | Bind split without flagging or auto-adopting primary. |
 | Last marked-mode detach / another binding remains | Clear only after last binding. Keep terminal alive and exempt intentional detach from TTL. |
 | Lost mark acknowledgement, conversation re-key or bare shell | Retry the exact saved owner, not the old conversation locator. |
