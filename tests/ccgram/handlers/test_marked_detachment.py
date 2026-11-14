@@ -32,7 +32,12 @@ def detached_env(monkeypatch):
     )
     native = SimpleNamespace(
         find_window_by_id=AsyncMock(
-            return_value=SimpleNamespace(window_id="@1", topic_markable=True)
+            return_value=SimpleNamespace(
+                window_id="@1",
+                topic_markable=True,
+                topic_mark_owner="owner:" + "@1",
+                topic_marked=True,
+            )
         ),
         set_topic_mark=AsyncMock(return_value=False),
     )
@@ -80,16 +85,18 @@ async def test_intentional_last_detach_keeps_terminal_and_retries_native_clear(
     await operation(env.update, env.context)
     assert env.router.get_window_for_thread(1, 42, -100) is None
     assert lifecycle_state.is_topic_detached("@1")
-    assert lifecycle_state.is_topic_detach_pending("@1")
+    assert lifecycle_state.is_topic_detach_pending("@1", owner=None)
     assert lifecycle_state.get_origin("@1") == "ccgram_created"
-    env.native.set_topic_mark.assert_awaited_once_with("@1", False)
+    env.native.set_topic_mark.assert_awaited_once_with(
+        "@1", False, owner="owner:" + "@1"
+    )
     assert env.clear.call_args.kwargs["window_dead"] is False
     if operation is cleanup.unbind_command:
         assert "pending" in env.reply.call_args.args[1]
     env.native.set_topic_mark.return_value = True
     await topic_selection.recover_topic_selections(mux=env.native)
     assert lifecycle_state.is_topic_detached("@1")
-    assert not lifecycle_state.is_topic_detach_pending("@1")
+    assert not lifecycle_state.is_topic_detach_pending("@1", owner=None)
 
 
 @pytest.mark.parametrize(
@@ -103,25 +110,26 @@ async def test_cleanup_cancellation_does_not_lose_detach_intent(
     with pytest.raises(asyncio.CancelledError):
         await operation(env.update, env.context)
     assert env.router.get_window_for_thread(1, 42, -100) is None
-    assert lifecycle_state.is_topic_detach_pending("@1")
+    assert lifecycle_state.is_topic_detach_pending("@1", owner=None)
 
 
 @pytest.mark.parametrize(
-    "mode,detached,expected_kill",
+    "mode,detached,native_marked,expected_kill",
     [
-        ("marked", True, False),
-        ("marked", False, True),
-        ("auto", True, True),
-        ("auto", False, True),
+        ("marked", True, False, False),
+        ("marked", True, True, False),
+        ("marked", False, True, True),
+        ("auto", True, True, True),
+        ("auto", False, False, True),
     ],
 )
 async def test_detached_ttl_exemption_is_marked_only_and_never_for_failed_creates(
-    detached_env, monkeypatch, mode, detached, expected_kill
+    detached_env, monkeypatch, mode, detached, native_marked, expected_kill
 ):
     env = detached_env
     env.router.unbind_thread(1, 42, -100)
     env.mode.topic_discovery_mode = mode
-    env.store.set_topic_selection("@1", detached=detached, pending=None)
+    env.store.set_topic_selection("@1", detached=detached, owner=None)
     terminal_poll_state.set_unbound_timer("@1", time.monotonic() - 100)
     monkeypatch.setattr(
         topic_lifecycle.window_query,
@@ -129,7 +137,7 @@ async def test_detached_ttl_exemption_is_marked_only_and_never_for_failed_create
         lambda _wid: SimpleNamespace(origin="ccgram_created"),
     )
     adapter = MagicMock(close=AsyncMock(return_value=(True, "closed")))
-    window = MagicMock(window_id="@1", topic_marked=False)
+    window = MagicMock(window_id="@1", topic_marked=native_marked)
     await topic_lifecycle.check_unbound_window_ttl([window], adapter=adapter)
     assert adapter.close.await_count == int(expected_kill)
     if not expected_kill:

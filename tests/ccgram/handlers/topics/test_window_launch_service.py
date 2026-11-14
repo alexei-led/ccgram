@@ -28,6 +28,26 @@ from ccgram.handlers.user_state import (
     PENDING_WORKTREE_REPO,
 )
 
+
+@pytest.fixture(autouse=True)
+def _isolated_window_state_owner():
+    from ccgram.window_state_store import (
+        WindowStateStore,
+        get_window_store,
+        install_window_store,
+    )
+
+    previous = get_window_store()
+    store = WindowStateStore(
+        schedule_save=lambda: None, on_hookless_provider_switch=lambda _wid: None
+    )
+    install_window_store(store)
+    try:
+        yield
+    finally:
+        install_window_store(previous)
+
+
 _MODULE = "ccgram.handlers.topics.window_launch_service."
 
 
@@ -340,7 +360,10 @@ def _launch_env(
             new=SimpleNamespace(
                 find_window_by_id=AsyncMock(
                     side_effect=lambda wid: SimpleNamespace(
-                        window_id=wid, topic_markable=True
+                        window_id=wid,
+                        topic_markable=True,
+                        topic_mark_owner="owner:" + wid,
+                        topic_marked=True,
                     )
                 ),
                 set_topic_mark=AsyncMock(return_value=True),
@@ -425,7 +448,12 @@ async def test_failed_native_selection_is_retryable_and_gates_only_marked(
     monkeypatch.setattr(config, "topic_discovery_mode", mode, raising=False)
     native = SimpleNamespace(
         find_window_by_id=AsyncMock(
-            return_value=SimpleNamespace(window_id="@5", topic_markable=True)
+            return_value=SimpleNamespace(
+                window_id="@5",
+                topic_markable=True,
+                topic_mark_owner="owner:" + "@5",
+                topic_marked=True,
+            )
         ),
         set_topic_mark=AsyncMock(return_value=False),
     )
@@ -434,7 +462,7 @@ async def test_failed_native_selection_is_retryable_and_gates_only_marked(
 
     assert result.success is (mode == "auto")
     assert lifecycle_state.get_pending_topic_mark("@5") is True
-    native.set_topic_mark.assert_awaited_once_with("@5", True)
+    native.set_topic_mark.assert_awaited_once_with("@5", True, owner="owner:" + "@5")
     m.adapter.close.assert_not_awaited()
     if mode == "marked":
         m.router.commit_topic_provisioning.assert_not_called()
@@ -450,7 +478,12 @@ async def test_cancellation_during_selection_preserves_provisioning(monkeypatch)
     monkeypatch.setattr(config, "topic_discovery_mode", "marked", raising=False)
     native = SimpleNamespace(
         find_window_by_id=AsyncMock(
-            return_value=SimpleNamespace(window_id="@5", topic_markable=True)
+            return_value=SimpleNamespace(
+                window_id="@5",
+                topic_markable=True,
+                topic_mark_owner="owner:" + "@5",
+                topic_marked=True,
+            )
         ),
         set_topic_mark=AsyncMock(side_effect=asyncio.CancelledError),
     )
@@ -473,14 +506,19 @@ async def test_native_selection_precedes_creation_commit(monkeypatch):
     monkeypatch.setattr(config, "topic_discovery_mode", "marked", raising=False)
     with _launch_env() as m:
 
-        async def mark(window_id, selected):
+        async def mark(window_id, selected, *, owner):
             assert window_id == "@5" and selected is True
             m.router.commit_topic_provisioning.assert_not_called()
             return True
 
         native = SimpleNamespace(
             find_window_by_id=AsyncMock(
-                return_value=SimpleNamespace(window_id="@5", topic_markable=True)
+                return_value=SimpleNamespace(
+                    window_id="@5",
+                    topic_markable=True,
+                    topic_mark_owner="owner:" + "@5",
+                    topic_marked=True,
+                )
             ),
             set_topic_mark=AsyncMock(side_effect=mark),
         )
@@ -490,6 +528,73 @@ async def test_native_selection_precedes_creation_commit(monkeypatch):
     assert result.success
     native.set_topic_mark.assert_awaited_once()
     m.router.commit_topic_provisioning.assert_called_once()
+
+
+async def test_agent_exit_during_native_mark_keeps_creation_quarantined(monkeypatch):
+    from ccgram.config import config
+
+    monkeypatch.setattr(config, "topic_discovery_mode", "auto")
+    with _launch_env() as m:
+
+        async def mark(_wid, _selected, *, owner):
+            m.adapter.resolve.return_value = (
+                SimpleNamespace(
+                    foreground_argv=("zsh",), provider="shell", available=True
+                ),
+                None,
+            )
+            return True
+
+        native = SimpleNamespace(
+            find_window_by_id=AsyncMock(
+                return_value=SimpleNamespace(
+                    window_id="@5",
+                    topic_markable=True,
+                    topic_marked=True,
+                    topic_mark_owner="owner:@5",
+                )
+            ),
+            set_topic_mark=AsyncMock(side_effect=mark),
+        )
+        with patch("ccgram.multiplexer.multiplexer", native):
+            result = await launch_window(_make_query(), _make_context(), _request())
+    assert not result.success
+    m.router.commit_topic_provisioning.assert_not_called()
+    m.router.mark_provisioning_uncertain.assert_called_once_with("claim-1")
+    m.adapter.close.assert_not_awaited()
+
+
+async def test_new_terminal_cannot_inherit_old_detached_ttl_at_reused_id(monkeypatch):
+    from ccgram.config import config
+    from ccgram.window_state_ports import lifecycle_state
+
+    monkeypatch.setattr(config, "topic_discovery_mode", "marked")
+    lifecycle_state.set_topic_selection(
+        "@5", detached=True, pending=False, owner="old-terminal"
+    )
+    native = SimpleNamespace(
+        find_window_by_id=AsyncMock(
+            return_value=SimpleNamespace(
+                window_id="@5",
+                topic_markable=True,
+                topic_marked=False,
+                topic_mark_owner="new-terminal",
+            )
+        ),
+        set_topic_mark=AsyncMock(return_value=False),
+    )
+    with _launch_env() as m, patch("ccgram.multiplexer.multiplexer", native):
+        result = await launch_window(_make_query(), _make_context(), _request())
+    assert not result.success
+    assert not lifecycle_state.is_topic_detached("@5")
+    assert lifecycle_state.get_topic_mark_owner("@5") == "new-terminal"
+    assert {
+        op.owner: op.desired for op in lifecycle_state.pending_topic_selections()
+    } == {
+        "old-terminal": False,
+        "new-terminal": True,
+    }
+    m.router.commit_topic_provisioning.assert_not_called()
 
 
 class TestLaunchWindowSuccess:
@@ -598,7 +703,7 @@ class TestLaunchWindowSuccess:
         exit and kill the window, so the bind must wait for the agent process.
         """
         order: list[str] = []
-        panes = iter(["zsh", "zsh", "agy"])
+        panes = iter(["zsh", "zsh", "agy", "agy"])
 
         async def resolve(_window_id: str) -> tuple[SimpleNamespace, None]:
             command = next(panes)
@@ -620,7 +725,7 @@ class TestLaunchWindowSuccess:
                 _request(provider_name="antigravity", cwd=str(tmp_path)),
             )
 
-        assert order == ["zsh", "zsh", "agy", "bind"]
+        assert order == ["zsh", "zsh", "agy", "agy", "bind"]
         assert mock_sleep.await_count == 2
 
     @patch(f"{_MODULE}asyncio.sleep", new_callable=AsyncMock)

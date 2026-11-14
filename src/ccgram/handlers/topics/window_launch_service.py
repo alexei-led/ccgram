@@ -21,7 +21,7 @@ from telegram import CallbackQuery, Message
 from telegram.error import TelegramError
 
 from ...config import config
-from ...topic_selection import select_topic_target
+from ...topic_selection import select_topic_target, verify_topic_target
 from ...providers import registry as provider_registry
 from ...session import session_manager
 from ...session_map import session_map_sync
@@ -727,6 +727,9 @@ async def launch_window(  # noqa: C901, PLR0911, PLR0912, PLR0915
         return WindowLaunchResult(success=False, error_message=message)
 
     user_preferences.update_user_mru(user_id, selected_path)
+    lifecycle_state.set_topic_selection(
+        created_wid, detached=False, pending=None, owner=None
+    )
     session_manager.set_window_origin(created_wid, CCGRAM_CREATED_WINDOW_ORIGIN)
     session_manager.set_window_cwd(created_wid, selected_path)
     session_manager.set_window_provider(created_wid, provider_name)
@@ -884,16 +887,42 @@ async def launch_window(  # noqa: C901, PLR0911, PLR0912, PLR0915
 
     try:
         selected = await select_topic_target(created_wid)
+        still_ready = provider_caps.chat_first_command_path or (
+            await agent_process_started(
+                created_wid,
+                adapter_for(context.bot_data),
+                expected_provider=provider_name,
+            )
+            is True
+        )
+        current = await verify_topic_target(
+            created_wid,
+            owner=lifecycle_state.get_topic_mark_owner(created_wid),
+            require_marked=config.topic_discovery_mode == "marked",
+        )
     except BaseException:
         _mark_provisioning_uncertain(claim_id)
         if claim_id is not None:
             topic_orchestration.clear_pending_creation(created_wid)
         raise
+    if not still_ready or current is None:
+        _mark_provisioning_uncertain(claim_id)
+        if claim_id is not None:
+            topic_orchestration.clear_pending_creation(created_wid)
+        message = "Session readiness changed during selection; kept it quarantined for recovery."
+        await safe_edit(query, f"⚠ {message}")
+        return WindowLaunchResult(success=False, error_message=message)
+    if lifecycle_state.is_topic_detach_pending(
+        created_wid, owner=lifecycle_state.get_topic_mark_owner(created_wid)
+    ):
+        selected = False
     if not selected:
         logger.warning("topic_selection_pending_on_create", window_id=created_wid)
         if (
             config.topic_discovery_mode == "marked"
-            or lifecycle_state.is_topic_detach_pending(created_wid)
+            or lifecycle_state.is_topic_detach_pending(
+                created_wid, owner=lifecycle_state.get_topic_mark_owner(created_wid)
+            )
         ):
             _mark_provisioning_uncertain(claim_id)
             if claim_id is not None:
@@ -902,12 +931,27 @@ async def launch_window(  # noqa: C901, PLR0911, PLR0912, PLR0915
             await safe_edit(query, f"⚠ {message}")
             return WindowLaunchResult(success=False, error_message=message)
 
+    captured = lifecycle_state.record_topic_mark_owner(
+        created_wid, current.topic_mark_owner
+    )
+    if not captured and config.topic_discovery_mode == "marked":
+        _mark_provisioning_uncertain(claim_id)
+        topic_orchestration.clear_pending_creation(created_wid)
+        return WindowLaunchResult(
+            success=False, error_message="Selection changed before binding"
+        )
+    session_manager.flush_state()
+    completed = True
     if claim_id is not None and pending_thread_id is not None:
         try:
             committed = thread_router.commit_topic_provisioning(
                 claim_id,
                 window_name=created_wname,
             )
+            if committed:
+                completed = lifecycle_state.complete_topic_admission(
+                    created_wid, current.topic_mark_owner
+                )
             session_manager.flush_state()
         except BaseException:  # noqa: BLE001
             _mark_provisioning_uncertain(claim_id)
@@ -929,7 +973,19 @@ async def launch_window(  # noqa: C901, PLR0911, PLR0912, PLR0915
             window_name=created_wname,
             chat_id=chat_id,
         )
+        completed = lifecycle_state.complete_topic_admission(
+            created_wid, current.topic_mark_owner
+        )
         session_manager.flush_state()
+
+    if not completed:
+        topic_orchestration.clear_pending_creation(created_wid)
+        logger.warning("topic_admission_lifecycle_unfinished", window_id=created_wid)
+        message = "Bound, but selection lifecycle completion remains unfinished."
+        await safe_edit(query, f"⚠ {message}")
+        return WindowLaunchResult(
+            success=False, window_id=created_wid, error_message=message
+        )
 
     # The provider-specific creation checks passed. Release the guard also for
     # the no-thread path, which has no topic bind to release it.

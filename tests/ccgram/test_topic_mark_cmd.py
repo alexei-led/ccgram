@@ -8,6 +8,11 @@ from click.testing import CliRunner
 from ccgram.cli import apply_args_to_env, cli
 
 
+@pytest.fixture(autouse=True)
+def _isolated_topic_state(tmp_path, monkeypatch):
+    monkeypatch.setenv("CCGRAM_DIR", str(tmp_path))
+
+
 @pytest.mark.parametrize("action", ["mark", "unmark", "status"])
 def test_topic_command_help_needs_no_bot_configuration(monkeypatch, action):
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
@@ -100,10 +105,17 @@ def marked_backend():
 
     def listing():
         return [
-            WindowRef("ABC-123", "manager", "/project", topic_marked=state["marked"])
+            WindowRef(
+                "ABC-123",
+                "manager",
+                "/project",
+                topic_marked=state["marked"],
+                topic_mark_owner="owner-A",
+            )
         ]
 
-    async def set_mark(window_id, marked):
+    async def set_mark(window_id, marked, *, owner):
+        assert owner == "owner-A"
         assert window_id == "ABC-123"
         state["marked"] = marked
         return True
@@ -130,7 +142,9 @@ async def test_marker_mutation_uses_verified_canonical_target(
 
     assert result == {"target": "ABC-123", "marked": expected}
     assert state["marked"] is expected
-    backend.set_topic_mark.assert_awaited_once_with("ABC-123", expected)
+    backend.set_topic_mark.assert_awaited_once_with(
+        "ABC-123", expected, owner="owner-A"
+    )
     backend.kill_window.assert_not_called()
     backend.send.assert_not_called()
 
@@ -182,9 +196,22 @@ async def test_status_preserves_unknown_and_explicit_only_native_states():
 
     assert result == {
         "targets": [
-            {"id": "primary", "name": "manager", "marked": None, "markable": True},
-            {"id": "split", "name": "worker", "marked": False, "markable": False},
-        ]
+            {
+                "id": "primary",
+                "name": "manager",
+                "marked": None,
+                "markable": True,
+                "owner": None,
+            },
+            {
+                "id": "split",
+                "name": "worker",
+                "marked": False,
+                "markable": False,
+                "owner": None,
+            },
+        ],
+        "pending_operations": [],
     }
     backend.set_topic_mark.assert_not_called()
 
@@ -252,3 +279,130 @@ def test_topic_status_keeps_native_diagnostics_off_json_stdout(tmp_path):
     payload = json.loads(result.stdout)
     assert payload["targets"][0]["marked"] is None
     assert "native_marker_read_unconfirmed" in result.stderr
+
+
+async def test_mutation_uses_captured_owner_without_target_relookup(marked_backend):
+    from ccgram.topic_mark_cmd import _topic_action
+
+    backend, state = marked_backend
+    backend.find_window_by_id.side_effect = AssertionError("recycled target lookup")
+
+    await _topic_action(backend, "mark", "ABC-123")
+
+    assert state["marked"] is True
+    backend.find_window_by_id.assert_not_awaited()
+    backend.set_topic_mark.assert_awaited_once_with("ABC-123", True, owner="owner-A")
+
+
+@pytest.mark.parametrize(
+    ("saved_route", "saved_owner", "desired", "blocked"),
+    [
+        ("ABC-123", "owner-A", False, True),
+        ("old-agent", "owner-A", False, True),
+        ("abc-123", None, False, True),
+        ("ABC-123", "different-owner", False, False),
+        ("ABC-123", "owner-a", False, False),
+        ("ABC-123", "owner-A", True, False),
+    ],
+)
+async def test_pending_journal_blocks_only_conflicting_owner_intent(
+    marked_backend, tmp_path, saved_route, saved_owner, desired, blocked
+):
+    import json
+
+    from ccgram.topic_mark_cmd import _topic_action
+
+    backend, _state = marked_backend
+    state_file = tmp_path / "state.json"
+    contents = json.dumps(
+        {
+            "other_state": {"preserve": True},
+            "topic_mark_operations": [
+                {
+                    "window_id": saved_route,
+                    "owner": saved_owner,
+                    "desired": desired,
+                }
+            ],
+        }
+    )
+    state_file.write_text(contents, encoding="utf-8")
+    before = state_file.stat().st_mtime_ns
+
+    if blocked:
+        with pytest.raises(RuntimeError, match="pending"):
+            await _topic_action(backend, "mark", "ABC-123")
+        backend.set_topic_mark.assert_not_awaited()
+    else:
+        await _topic_action(backend, "mark", "ABC-123")
+        backend.set_topic_mark.assert_awaited_once_with(
+            "ABC-123", True, owner="owner-A"
+        )
+
+    assert state_file.read_text(encoding="utf-8") == contents
+    assert state_file.stat().st_mtime_ns == before
+
+
+@pytest.mark.parametrize(
+    "contents", [b"{", b"[]", b"\xff", b'{"topic_mark_operations": null}']
+)
+async def test_unconfirmed_journal_refuses_native_mutation(
+    marked_backend, tmp_path, contents
+):
+    from ccgram.topic_mark_cmd import _topic_action
+
+    backend, _state = marked_backend
+    (tmp_path / "state.json").write_bytes(contents)
+
+    with pytest.raises(RuntimeError, match="journal.*unconfirmed"):
+        await _topic_action(backend, "mark", "ABC-123")
+
+    backend.set_topic_mark.assert_not_awaited()
+
+
+async def test_status_exposes_orphaned_journal_without_rewriting_state(
+    marked_backend, tmp_path
+):
+    import json
+
+    from ccgram.topic_mark_cmd import _topic_action
+
+    backend, _state = marked_backend
+    operation = {"window_id": "gone-agent", "owner": "old-owner", "desired": False}
+    (tmp_path / "state.json").write_text(
+        json.dumps({"topic_mark_operations": [operation]}), encoding="utf-8"
+    )
+
+    all_status = await _topic_action(backend, "status", None)
+    current_status = await _topic_action(backend, "status", "ABC-123")
+
+    assert all_status["pending_operations"] == [operation]
+    assert current_status["pending_operations"] == []
+    targets = all_status["targets"]
+    assert isinstance(targets, list)
+    assert targets[0]["owner"] == "owner-A"
+    backend.set_topic_mark.assert_not_awaited()
+
+
+async def test_unreadable_journal_refuses_native_mutation(
+    marked_backend, tmp_path, monkeypatch
+):
+    from pathlib import Path
+
+    from ccgram.topic_mark_cmd import _topic_action
+
+    backend, _state = marked_backend
+    state_file = tmp_path / "state.json"
+    original_read = Path.read_text
+
+    def read(path, *args, **kwargs):
+        if path == state_file:
+            raise PermissionError("state unavailable")
+        return original_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read)
+
+    with pytest.raises(RuntimeError, match="journal.*unconfirmed"):
+        await _topic_action(backend, "unmark", "ABC-123")
+
+    backend.set_topic_mark.assert_not_awaited()
