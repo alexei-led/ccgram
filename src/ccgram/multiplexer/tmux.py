@@ -412,7 +412,24 @@ class TmuxManager:
             owner is not None and not _TOPIC_OWNER_RE.fullmatch(owner)
         ):
             return False
-        return await asyncio.to_thread(self._set_topic_mark, window_id, marked, owner)
+        worker = asyncio.create_task(
+            asyncio.to_thread(self._set_topic_mark, window_id, marked, owner)
+        )
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            # The caller owns the selection lock until native writes stop, even
+            # through repeated cancellation. Worker failure must not mask it.
+            finished = asyncio.Event()
+            worker.add_done_callback(lambda _: finished.set())
+            while not worker.done():
+                try:
+                    await finished.wait()
+                except asyncio.CancelledError:
+                    continue
+            if not worker.cancelled():
+                worker.exception()
+            raise
 
     def _set_topic_mark(self, window_id: str, marked: bool, owner: str | None) -> bool:
         snapshot = self._topic_inventory()
