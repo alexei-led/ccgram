@@ -1505,6 +1505,75 @@ class TestOwnedAutomaticAdmission:
         assert claim.thread_id == 501
         assert claim.uncertain
 
+    @pytest.mark.parametrize(
+        "initial_owner,final_owner,admitted",
+        [
+            pytest.param("owned", None, False, id="known-owner-lost"),
+            pytest.param("owned", "replacement", False, id="known-owner-replaced"),
+            pytest.param("owned", "owned", True, id="stable-unmarked-owner"),
+            pytest.param(None, None, True, id="initially-ownerless"),
+            pytest.param(
+                None, "newly-confirmed", True, id="initially-unknown-confirmed"
+            ),
+        ],
+    )
+    async def test_auto_creation_preserves_captured_owner_after_telegram_await(
+        self, runtime, monkeypatch, initial_owner, final_owner, admitted
+    ):
+        from ccgram.config import config
+        from ccgram.handlers.topics import topic_orchestration
+        from ccgram.providers import _ensure_registered
+        from ccgram.window_state_ports import lifecycle_state
+
+        router, store, mux = runtime
+        lifecycle_state.record_topic_mark_owner("@10", initial_owner)
+        store.window_states["@10"].provider_name = "claude"
+        _ensure_registered()
+        monkeypatch.setattr(config, "topic_discovery_mode", "auto")
+        initial = WindowRef(
+            "@10", "project", "/p", topic_marked=False, topic_mark_owner=initial_owner
+        )
+        final = WindowRef(
+            "@10", "project", "/p", topic_marked=False, topic_mark_owner=final_owner
+        )
+        mux.list_windows_for_reconciliation.return_value = [initial]
+        mux.find_window_by_id.return_value = initial
+        client = AsyncMock()
+
+        async def create(**kwargs):
+            mux.list_windows_for_reconciliation.return_value = [final]
+            mux.find_window_by_id.return_value = final
+            return _make_topic(501)
+
+        client.create_forum_topic.side_effect = create
+
+        assert await handle_new_window(_make_event(), client) is admitted
+        mux.set_topic_mark.assert_not_awaited()
+        client.delete_forum_topic.assert_not_awaited()
+        if admitted:
+            assert router.get_window_for_chat_thread(-100500, 501) == "@10"
+            assert store.window_states["@10"].topic_mark_owner == final_owner
+            assert router.iter_topic_provisionings() == []
+            return
+
+        assert store.window_states["@10"].topic_mark_owner == initial_owner
+        assert router.get_window_for_chat_thread(-100500, 501) is None
+        (claim,) = router.iter_topic_provisionings()
+        assert claim.thread_id == 501 and claim.uncertain
+        assert not router.owns_topic_provisioning(claim.claim_id)
+        restored = ThreadRouter(
+            schedule_save=lambda: None, has_window_state=store.has_window
+        )
+        restored.from_dict(router.to_dict())
+        await self._recover_exact_topic(
+            restored,
+            client,
+            mux,
+            initial,
+            topic_orchestration.session_manager,
+            monkeypatch,
+        )
+
     @pytest.mark.parametrize("automatic", [False, True])
     @pytest.mark.parametrize("failure", ["cancel", "checkpoint"])
     async def test_post_creation_failure_preserves_exact_claim(

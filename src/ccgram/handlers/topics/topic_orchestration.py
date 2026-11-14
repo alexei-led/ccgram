@@ -1160,11 +1160,7 @@ async def _record_automatic_admission(
         window.topic_mark_owner, exclude_claim_id=claim_id
     ):
         return None
-    if (
-        config.topic_discovery_mode == "marked"
-        and expected_owner is not None
-        and window.topic_mark_owner != expected_owner
-    ):
+    if expected_owner is not None and window.topic_mark_owner != expected_owner:
         return None
     recorded = lifecycle_state.record_topic_mark_owner(
         window_id, window.topic_mark_owner
