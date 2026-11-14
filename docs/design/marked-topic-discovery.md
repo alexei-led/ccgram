@@ -18,6 +18,8 @@ The mode does not filter liveness, mobile listings, explicit binding, routing id
 
 In marked mode, intentional close or `/unbind` of the last binding clears that terminal's native mark, prevents automatic recreation, and leaves the terminal running. Other bindings and active creation claims protect the shared selection from clearing. Deliberate detach is exempt from orphan TTL without changing terminal origin. Abandoned failed creation retains its existing cleanup behavior.
 
+If a target is unmarked during unfinished explicit creation, admission is withdrawn. Keep the exact uncertain creation claim unbound: do not replay a stale mark-on or delete a possibly human-used topic. The operator can reselect the native target to permit final recovery. Already-bound topics remain connected.
+
 ### Unfinished or ambiguous detach
 
 A failed clear remains unfinished lifecycle work, not a permanent suppression preference. Persisted desired-false operations survive restart and block readmission of the exact same native owner, including after conversation re-keying. When both owners are known, exact owner matching takes precedence over routing IDs: an old owner's clear does not block an independent new owner reusing that ID. Route matching is a fallback only when ownership is unknown. Topic maintenance retries unfinished operations every 60 seconds. Independent owners remain independently admissible.
@@ -101,6 +103,7 @@ These are required checks, not claims that tests have passed.
 | Herdr normalization, nested suffix, excessive size, literal `--clear` | Reject unsafe mutation without data loss. Preserve literal label data. |
 | Herdr copied layout, duplicate owner / sole copied marker | Quarantine duplicates. Sole copy is explicitly copied selection, not reset automatically. |
 | `/new` or `/bind`, native mark failure | Auto warns and retains binding with retry. Marked blocks binding until verification. |
+| Unmark during unfinished explicit creation | Retain exact uncertain claim unbound, without stale mark-on or topic deletion. Native reselection permits recovery. |
 | agterm explicit split binding | Bind split without flagging or auto-adopting primary. |
 | Last marked-mode detach / another binding remains | Clear only after last binding. Keep terminal alive and exempt intentional detach from TTL. |
 | Lost mark acknowledgement, conversation re-key or bare shell | Retry the exact saved owner, not the old conversation locator. |
