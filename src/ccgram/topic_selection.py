@@ -216,11 +216,7 @@ async def verify_topic_target(
         window_id
     ):
         return None
-    if (
-        owner is not None
-        and window.topic_mark_owner is not None
-        and window.topic_mark_owner != owner
-    ):
+    if owner is not None and window.topic_mark_owner != owner:
         return None
     if (
         require_marked
@@ -311,7 +307,7 @@ async def detach_topic_target(
     window = await _read_window(window_id, mux)
     owner = (
         window.topic_mark_owner
-        if window is not None
+        if window is not None and window.topic_mark_owner is not None
         else lifecycle_state.get_topic_mark_owner(window_id)
     )
     if owner is not None:
