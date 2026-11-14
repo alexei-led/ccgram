@@ -34,6 +34,7 @@ def should_adopt_window(window: WindowRef, *, mode: str, detach_pending: bool) -
         window.topic_eligible
         and window.topic_markable
         and window.topic_marked is True
+        and bool(window.topic_mark_owner)
         and not detach_pending
     )
 

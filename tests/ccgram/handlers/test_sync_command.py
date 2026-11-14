@@ -1893,10 +1893,14 @@ class TestMarkedSyncDiscovery:
     @staticmethod
     def windows():
         return [
-            WindowRef("marked", "one", "/p", topic_marked=True),
+            WindowRef(
+                "marked", "one", "/p", topic_marked=True, topic_mark_owner="owner"
+            ),
             WindowRef("unmarked", "two", "/p", topic_marked=False),
             WindowRef("unknown", "three", "/p", topic_marked=None),
-            WindowRef("pending", "four", "/p", topic_marked=True),
+            WindowRef(
+                "pending", "four", "/p", topic_marked=True, topic_mark_owner="owner"
+            ),
         ]
 
     async def test_audit_and_fix_use_the_policy_without_narrowing_liveness(
@@ -1907,7 +1911,7 @@ class TestMarkedSyncDiscovery:
         mux.list_windows_for_reconciliation.return_value = self.windows()
         monkeypatch.setattr(
             "ccgram.handlers.sync_command.lifecycle_state.is_topic_detach_pending",
-            lambda window_id: window_id == "pending",
+            lambda window_id, *, owner: window_id == "pending",
         )
         await _run_audit()
         live, _, adoptable = sm.audit_state.call_args.args
@@ -1952,7 +1956,11 @@ class TestMarkedSyncDiscovery:
             session_id="s1", cwd="/p", window_name="project"
         )
         mux.list_windows_for_reconciliation.side_effect = [
-            [WindowRef("@1", "project", "/p", topic_marked=True)],
+            [
+                WindowRef(
+                    "@1", "project", "/p", topic_marked=True, topic_mark_owner="owner"
+                )
+            ],
             [WindowRef("@1", "project", "/p", topic_marked=False)],
             [WindowRef("@1", "project", "/p", topic_marked=False)],
         ]

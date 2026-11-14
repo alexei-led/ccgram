@@ -240,22 +240,24 @@ class TestTopicEligibleFlag:
 
 
 @pytest.mark.parametrize(
-    ("mode", "eligible", "marked", "markable", "pending", "expected"),
+    ("mode", "eligible", "marked", "markable", "owner", "pending", "expected"),
     [
-        ("auto", True, False, True, False, True),
-        ("auto", True, None, True, False, True),
-        ("auto", True, True, False, True, True),
-        ("auto", False, True, True, False, False),
-        ("marked", True, True, True, False, True),
-        ("marked", True, False, True, False, False),
-        ("marked", True, None, True, False, False),
-        ("marked", False, True, True, False, False),
-        ("marked", True, True, False, False, False),
-        ("marked", True, True, True, True, False),
+        ("auto", True, False, True, None, False, True),
+        ("auto", True, None, True, None, False, True),
+        ("auto", True, True, False, None, True, True),
+        ("auto", False, True, True, "owner", False, False),
+        ("marked", True, True, True, "owner", False, True),
+        ("marked", True, True, True, None, False, False),
+        ("marked", True, True, True, "", False, False),
+        ("marked", True, False, True, "owner", False, False),
+        ("marked", True, None, True, "owner", False, False),
+        ("marked", False, True, True, "owner", False, False),
+        ("marked", True, True, False, "owner", False, False),
+        ("marked", True, True, True, "owner", True, False),
     ],
 )
 def test_automatic_admission_policy(
-    mode, eligible, marked, markable, pending, expected
+    mode, eligible, marked, markable, owner, pending, expected
 ):
     window = WindowRef(
         "@1",
@@ -264,6 +266,7 @@ def test_automatic_admission_policy(
         topic_eligible=eligible,
         topic_marked=marked,
         topic_markable=markable,
+        topic_mark_owner=owner,
     )
     assert should_adopt_window(window, mode=mode, detach_pending=pending) is expected
 

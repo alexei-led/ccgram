@@ -110,7 +110,9 @@ async def _run_audit() -> AuditResult | None:
         if should_adopt_window(
             w,
             mode=config.topic_discovery_mode,
-            detach_pending=lifecycle_state.is_topic_detach_pending(w.window_id),
+            detach_pending=lifecycle_state.is_topic_detach_pending(
+                w.window_id, owner=w.topic_mark_owner
+            ),
         )
     }
     audit = session_manager.audit_state(live_ids, live_pairs, adoptable)
@@ -569,7 +571,9 @@ async def handle_sync_fix(
         if should_adopt_window(
             w,
             mode=config.topic_discovery_mode,
-            detach_pending=lifecycle_state.is_topic_detach_pending(w.window_id),
+            detach_pending=lifecycle_state.is_topic_detach_pending(
+                w.window_id, owner=w.topic_mark_owner
+            ),
         )
     }
 
