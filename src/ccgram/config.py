@@ -288,7 +288,8 @@ class Config:
         self.enabled_providers: tuple[str, ...] = _enabled_providers_env()
         self.startup_replay_max_bytes: int = _startup_replay_max_bytes()
 
-        # Discovery only: existing bindings and explicit selection are unaffected.
+        # Controls automatic admission and explicit-selection verification.
+        # Existing bindings remain connected.
         self.topic_discovery_mode: str = parse_topic_discovery_mode(
             os.getenv(TOPIC_DISCOVERY_ENV, DEFAULT_TOPIC_DISCOVERY_MODE)
         )

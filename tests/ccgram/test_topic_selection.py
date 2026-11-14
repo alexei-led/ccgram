@@ -867,6 +867,40 @@ async def test_current_target_requires_retention_of_a_captured_witness(
     selection.mux.set_topic_mark.assert_not_awaited()
 
 
+@pytest.mark.parametrize(
+    "current_owner,present,allowed",
+    [
+        ("original-O", True, True),
+        ("replacement-P", True, False),
+        ("original-o", True, False),
+        (None, True, False),
+        ("original-O", False, False),
+    ],
+)
+async def test_selection_pins_known_caller_owner_before_journal_or_native_write(
+    selection, current_owner, present, allowed
+):
+    lifecycle_state.record_topic_mark_owner("@1", "original-O")
+    selection.mux.find_window_by_id.return_value = (
+        WindowRef(
+            "@1", "current", "/p", topic_mark_owner=current_owner, topic_marked=True
+        )
+        if present
+        else None
+    )
+    assert (
+        await topic_selection.select_topic_target(
+            "@1", mux=selection.mux, expected_owner="original-O"
+        )
+        is allowed
+    )
+    assert selection.mux.set_topic_mark.await_count == int(allowed)
+    assert lifecycle_state.get_topic_mark_owner("@1") == "original-O"
+    assert not lifecycle_state.pending_topic_selections()
+    if not allowed:
+        assert not selection.saved
+
+
 async def test_provisioning_selection_checkpoints_claim_owner_and_intent_before_write(
     selection,
 ):
