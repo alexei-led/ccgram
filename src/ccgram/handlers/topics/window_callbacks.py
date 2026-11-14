@@ -18,7 +18,7 @@ from telegram import CallbackQuery, Chat, Update
 from telegram.error import TelegramError
 from ... import window_query
 from ...config import config
-from ...topic_selection import select_topic_target
+from ...topic_selection import select_topic_target, verify_topic_target
 from .topic_orchestration import pending_creation_transaction
 from ...telegram_client import PTBTelegramClient, TelegramClient
 from ...session import session_manager
@@ -282,6 +282,69 @@ async def _send_verified_shell_input(
             forget_telegram_injection(user_id, window_id, thread_id, injection, chat_id)
 
 
+async def _select_and_bind(
+    query: CallbackQuery,
+    user_id: int,
+    thread_id: int,
+    selected_wid: str,
+    display: str,
+    update: Update,
+) -> bool:
+    with pending_creation_transaction():
+        if thread_router.has_target_provisioning(selected_wid) is True:
+            await query.answer(
+                "Session is still being provisioned; please retry", show_alert=True
+            )
+            return False
+        selected = await select_topic_target(selected_wid)
+        if not selected:
+            if (
+                config.topic_discovery_mode == "marked"
+                or lifecycle_state.is_topic_detach_pending(
+                    selected_wid,
+                    owner=lifecycle_state.get_topic_mark_owner(selected_wid),
+                )
+            ):
+                await query.answer(
+                    "Could not verify topic selection; please retry", show_alert=True
+                )
+                return False
+            logger.warning("topic_selection_pending_on_bind", window_id=selected_wid)
+        current = await verify_topic_target(
+            selected_wid,
+            owner=lifecycle_state.get_topic_mark_owner(selected_wid),
+            require_marked=config.topic_discovery_mode == "marked",
+        )
+        if current is None or not lifecycle_state.record_topic_mark_owner(
+            selected_wid, current.topic_mark_owner
+        ):
+            await query.answer(
+                "Session changed; refresh the window picker", show_alert=True
+            )
+            return False
+        session_manager.flush_state()
+        thread_router.bind_thread(
+            user_id,
+            thread_id,
+            selected_wid,
+            window_name=display,
+            chat_id=(
+                update.callback_query.message.chat.id
+                if update.callback_query and update.callback_query.message
+                else None
+            ),
+        )
+        completed = lifecycle_state.complete_topic_admission(
+            selected_wid, current.topic_mark_owner
+        )
+        session_manager.flush_state()
+        if not completed:
+            logger.warning(
+                "topic_admission_lifecycle_unfinished", window_id=selected_wid
+            )
+    return True
+
+
 async def _handle_bind(
     query: CallbackQuery,
     user_id: int,
@@ -326,30 +389,11 @@ async def _handle_bind(
     # provider history first so that empty state is not mistaken for an exit.
     previous_provider = window_query.get_window_provider(selected_wid)
     initial_provider = get_initial_provider_name(selected_wid)
-    with pending_creation_transaction():
-        selected = await select_topic_target(selected_wid)
-        if not selected:
-            if (
-                config.topic_discovery_mode == "marked"
-                or lifecycle_state.is_topic_detach_pending(selected_wid)
-            ):
-                await query.answer(
-                    "Could not verify topic selection; please retry", show_alert=True
-                )
-                return
-            logger.warning("topic_selection_pending_on_bind", window_id=selected_wid)
-        clear_window_picker_state(context.user_data)
-        thread_router.bind_thread(
-            user_id,
-            thread_id,
-            selected_wid,
-            window_name=display,
-            chat_id=(
-                update.callback_query.message.chat.id
-                if update.callback_query and update.callback_query.message
-                else None
-            ),
-        )
+    if not await _select_and_bind(
+        query, user_id, thread_id, selected_wid, display, update
+    ):
+        return
+    clear_window_picker_state(context.user_data)
     _store_group_chat_id(user_id, thread_id, update, query)
     client: TelegramClient = PTBTelegramClient(context.bot)
     # Capture origin before detection updates the window's current provider.

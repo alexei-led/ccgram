@@ -193,7 +193,9 @@ async def _reply_unbound(
         await safe_reply(
             message,
             f"⚠ Unbound from window `{display}`; the session is still running. "
-            "Native selection clear is pending and will be retried.",
+            "Native selection clear is pending and will be retried. "
+            "If its owner is unconfirmed, explicitly unmark the CURRENT target; "
+            "ccgram cannot guess that terminal.",
         )
         return
     await safe_reply(

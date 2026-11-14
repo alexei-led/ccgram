@@ -29,6 +29,26 @@ from ccgram.session_protocol.service import LocalSessionService
 from ccgram.session_protocol.store import ProtocolStore
 from ccgram.session_protocol.telegram import TelegramSessionAdapter
 
+
+@pytest.fixture(autouse=True)
+def _isolated_window_state_owner():
+    from ccgram.window_state_store import (
+        WindowStateStore,
+        get_window_store,
+        install_window_store,
+    )
+
+    previous = get_window_store()
+    store = WindowStateStore(
+        schedule_save=lambda: None, on_hookless_provider_switch=lambda _wid: None
+    )
+    install_window_store(store)
+    try:
+        yield
+    finally:
+        install_window_store(previous)
+
+
 _MODULE = "ccgram.handlers.topics.window_callbacks."
 _FIND_WINDOW = "ccgram.multiplexer.tmux.tmux_manager.find_window_by_id"
 
@@ -60,6 +80,10 @@ def _make_query_update_context(
 def _unbound_window(name: str, pane_current_command: str | None = None) -> MagicMock:
     window = MagicMock()
     window.window_name = name
+    window.window_id = "@5"
+    window.topic_markable = True
+    window.topic_mark_owner = "owner:@5"
+    window.topic_marked = True
     if pane_current_command is not None:
         window.pane_current_command = pane_current_command
     return window
@@ -128,7 +152,10 @@ def _bind_env(window: MagicMock | None = None) -> Iterator[_BindMocks]:
             new=SimpleNamespace(
                 find_window_by_id=AsyncMock(
                     side_effect=lambda wid: SimpleNamespace(
-                        window_id=wid, topic_markable=True
+                        window_id=wid,
+                        topic_markable=True,
+                        topic_mark_owner="owner:" + wid,
+                        topic_marked=True,
                     )
                 ),
                 set_topic_mark=AsyncMock(return_value=True),
@@ -159,7 +186,12 @@ async def test_picker_native_selection_failure_gates_only_marked(mode, monkeypat
     )
     native = SimpleNamespace(
         find_window_by_id=AsyncMock(
-            return_value=SimpleNamespace(window_id="@5", topic_markable=True)
+            return_value=SimpleNamespace(
+                window_id="@5",
+                topic_markable=True,
+                topic_mark_owner="owner:" + "@5",
+                topic_marked=True,
+            )
         ),
         set_topic_mark=AsyncMock(return_value=False),
     )
@@ -170,7 +202,7 @@ async def test_picker_native_selection_failure_gates_only_marked(mode, monkeypat
         await handle_window_callback(query, 100, f"{CB_WIN_BIND}0", update, context)
 
     assert lifecycle_state.get_pending_topic_mark("@5") is True
-    native.set_topic_mark.assert_awaited_once_with("@5", True)
+    native.set_topic_mark.assert_awaited_once_with("@5", True, owner="owner:" + "@5")
     if mode == "marked":
         m.router.bind_thread.assert_not_called()
         assert context.user_data[UNBOUND_WINDOWS_KEY] == ["@5"]
@@ -183,16 +215,65 @@ async def test_picker_native_selection_failure_gates_only_marked(mode, monkeypat
 async def test_auto_picker_cannot_bypass_unfinished_detach_clear(monkeypatch):
     from ccgram.config import config
     from ccgram.window_state_ports import lifecycle_state
+    from ccgram.window_state_store import WindowStateStore
 
+    store = WindowStateStore(
+        schedule_save=lambda: None, on_hookless_provider_switch=lambda _wid: None
+    )
+    monkeypatch.setattr(lifecycle_state, "window_store", store)
     monkeypatch.setattr(config, "topic_discovery_mode", "auto", raising=False)
-    lifecycle_state.set_topic_selection("@5", detached=True, pending=False)
+    lifecycle_state.set_topic_selection("@5", detached=True, pending=False, owner=None)
     query, update, context = _make_query_update_context(
         user_data={UNBOUND_WINDOWS_KEY: ["@5"], PENDING_THREAD_ID: 42}
     )
     with _bind_env(_unbound_window("selected")) as m:
         await handle_window_callback(query, 100, f"{CB_WIN_BIND}0", update, context)
     m.router.bind_thread.assert_not_called()
-    assert lifecycle_state.is_topic_detach_pending("@5")
+    assert lifecycle_state.is_topic_detach_pending("@5", owner=None)
+
+
+async def test_auto_bind_never_uses_a_route_that_disappears_during_mark(monkeypatch):
+    from ccgram.config import config
+
+    monkeypatch.setattr(config, "topic_discovery_mode", "auto")
+    query, update, context = _make_query_update_context(
+        user_data={UNBOUND_WINDOWS_KEY: ["@5"], PENDING_THREAD_ID: 42}
+    )
+    native = SimpleNamespace(
+        find_window_by_id=AsyncMock(
+            side_effect=[
+                SimpleNamespace(
+                    window_id="@5", topic_markable=True, topic_mark_owner="owner:@5"
+                ),
+                None,
+            ]
+        ),
+        set_topic_mark=AsyncMock(return_value=False),
+    )
+    with (
+        _bind_env(_unbound_window("selected")) as m,
+        patch("ccgram.multiplexer.multiplexer", native),
+    ):
+        await handle_window_callback(query, 100, f"{CB_WIN_BIND}0", update, context)
+    m.router.bind_thread.assert_not_called()
+    assert "Session changed" in query.answer.call_args.args[0]
+
+
+async def test_existing_provisioning_claim_blocks_bind_before_owner_capture():
+    from ccgram.window_state_ports import lifecycle_state
+
+    lifecycle_state.set_topic_selection(
+        "@5", detached=False, pending=None, owner="original-owner"
+    )
+    query, update, context = _make_query_update_context(
+        user_data={UNBOUND_WINDOWS_KEY: ["@5"], PENDING_THREAD_ID: 42}
+    )
+    with _bind_env(_unbound_window("replacement")) as m:
+        m.router.has_target_provisioning.return_value = True
+        await handle_window_callback(query, 100, f"{CB_WIN_BIND}0", update, context)
+    assert lifecycle_state.get_topic_mark_owner("@5") == "original-owner"
+    assert not lifecycle_state.pending_topic_selections()
+    m.router.bind_thread.assert_not_called()
 
 
 class TestBindWindowCallback:
@@ -464,6 +545,7 @@ class TestBindProviderDetection:
         window = _unbound_window("former-agent", "node")
         mux = MagicMock()
         mux.find_window_by_id = AsyncMock(return_value=window)
+        mux.set_topic_mark = AsyncMock(return_value=True)
         mux.foreground = AsyncMock(
             side_effect=[
                 ForegroundInfo(
