@@ -1505,6 +1505,148 @@ class TestOwnedAutomaticAdmission:
         assert claim.thread_id == 501
         assert claim.uncertain
 
+    @pytest.mark.parametrize("automatic", [False, True])
+    @pytest.mark.parametrize("failure", ["cancel", "checkpoint"])
+    async def test_post_creation_failure_preserves_exact_claim(
+        self, runtime, tmp_path, monkeypatch, automatic, failure
+    ):
+        import json
+
+        from ccgram.handlers.topics import topic_orchestration
+        from ccgram.providers import _ensure_registered
+        from ccgram.window_state_ports import lifecycle_state
+
+        router, store, mux = runtime
+        lifecycle_state.record_topic_mark_owner("@10", "owned")
+        store.window_states["@10"].provider_name = "claude"
+        _ensure_registered()
+        created, recheck = asyncio.Event(), asyncio.Event()
+        blocked = asyncio.Event()
+        native = WindowRef(
+            "@10", "project", "/p", topic_marked=True, topic_mark_owner="owned"
+        )
+
+        async def observe(*args):
+            if created.is_set():
+                recheck.set()
+                if failure == "cancel":
+                    await blocked.wait()
+            return native
+
+        async def listing():
+            return [await observe()]
+
+        mux.find_window_by_id.side_effect = observe
+        mux.list_windows_for_reconciliation.side_effect = listing
+        checkpoint = tmp_path / "claims.json"
+        failed = False
+        checkpoint_router = router
+
+        def flush():
+            nonlocal failed
+            if (
+                failure == "checkpoint"
+                and created.is_set()
+                and (recheck.is_set() or not automatic)
+                and not failed
+            ):
+                failed = True
+                raise OSError("checkpoint full")
+            checkpoint.write_text(
+                json.dumps(checkpoint_router.to_dict()), encoding="utf-8"
+            )
+
+        monkeypatch.setattr(topic_orchestration.session_manager, "flush_state", flush)
+
+        async def create(**kwargs):
+            created.set()
+            return _make_topic(501)
+
+        client = AsyncMock()
+        client.create_forum_topic.side_effect = create
+        task = asyncio.create_task(
+            handle_new_window(
+                _make_event(),
+                client,
+                **(
+                    {}
+                    if automatic
+                    else {"target_user_id": 100, "target_chat_id": -100500}
+                ),
+            )
+        )
+        if failure == "cancel":
+            await recheck.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            with pytest.raises(OSError, match="checkpoint full"):
+                await task
+
+        restored = ThreadRouter(
+            schedule_save=lambda: None, has_window_state=lambda wid: False
+        )
+        restored.from_dict(json.loads(checkpoint.read_text(encoding="utf-8")))
+        (claim,) = restored.iter_topic_provisionings()
+        assert claim.thread_id == 501
+        assert claim.uncertain is True
+        assert not router.owns_topic_provisioning(claim.claim_id)
+        assert restored.get_window_for_chat_thread(-100500, 501) is None
+        assert router.get_window_for_chat_thread(-100500, 501) is None
+        client.delete_forum_topic.assert_not_awaited()
+        mux.kill_window.assert_not_called()
+        assert _window_topic_locks == {}
+
+        checkpoint_router = restored
+        await self._recover_exact_topic(
+            restored,
+            client,
+            mux,
+            native,
+            topic_orchestration.session_manager,
+            monkeypatch,
+        )
+
+    async def _recover_exact_topic(
+        self, restored, client, mux, native, session, monkeypatch
+    ):
+        from types import SimpleNamespace
+
+        from ccgram.handlers.topics import topic_provisioning_recovery
+
+        mux.find_window_by_id.side_effect = None
+        mux.find_window_by_id.return_value = native
+        mux.list_windows_for_reconciliation.side_effect = None
+        mux.list_windows_for_reconciliation.return_value = [native]
+        native_backend = SimpleNamespace(
+            capabilities=SimpleNamespace(name="tmux"),
+            list_windows_for_reconciliation=AsyncMock(return_value=[native]),
+        )
+        adapter = MagicMock()
+        adapter.resolve = AsyncMock(
+            return_value=(
+                SimpleNamespace(
+                    foreground_argv=("claude",), provider="claude", available=True
+                ),
+                None,
+            )
+        )
+        monkeypatch.setattr(topic_provisioning_recovery, "multiplexer", mux)
+        monkeypatch.setattr(
+            topic_provisioning_recovery,
+            "session_manager",
+            session,
+        )
+        outcomes = await topic_provisioning_recovery.recover_topic_provisioning(
+            client, router=restored, backend=native_backend, adapter=adapter
+        )
+        assert outcomes == {"bound": 1}
+        assert restored.get_window_for_chat_thread(-100500, 501) == "@10"
+        assert restored.iter_topic_provisionings() == []
+        client.create_forum_topic.assert_awaited_once()
+        client.delete_forum_topic.assert_not_awaited()
+
     async def test_owner_quarantine_survives_conversation_rekey(self, runtime):
         from ccgram.window_state_store import WindowState
 

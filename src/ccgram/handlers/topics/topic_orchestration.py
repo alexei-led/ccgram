@@ -489,17 +489,10 @@ def _admission_commit_is_current(window_id: str, owner: str | None) -> bool:
     )
 
 
-def _commit_topic_provisioning(
-    claim_id: str,
-    chat_id: int,
-    window_id: str,
-    topic_name: str,
-    topic: object,
-    *,
-    defer_binding: bool = False,
-    expected_owner: str | None = None,
-) -> bool:
-    """Attach the exact Telegram topic and atomically bind an admitted target."""
+def _checkpoint_created_topic(
+    claim_id: str, chat_id: int, window_id: str, topic: object
+) -> int | None:
+    """Retain Telegram's exact response before any further async boundary."""
     thread_id = getattr(topic, "message_thread_id", None)
     if not isinstance(thread_id, int) or isinstance(thread_id, bool) or thread_id <= 0:
         _mark_topic_provisioning_uncertain(claim_id)
@@ -509,7 +502,7 @@ def _commit_topic_provisioning(
             window_id,
             chat_id,
         )
-        return False
+        return None
 
     try:
         thread_router.attach_provisioning_topic(claim_id, thread_id)
@@ -521,11 +514,15 @@ def _commit_topic_provisioning(
             window_id,
             chat_id,
         )
-        return False
+        return None
+    except BaseException:
+        _mark_topic_provisioning_uncertain(claim_id)
+        clear_pending_creation(window_id)
+        raise
 
     try:
         _flush_provisioning_state()
-    except Exception:  # noqa: BLE001
+    except BaseException:
         _mark_topic_provisioning_uncertain(claim_id)
         clear_pending_creation(window_id)
         logger.exception(
@@ -534,7 +531,20 @@ def _commit_topic_provisioning(
             chat_id,
         )
         raise
+    return thread_id
 
+
+def _commit_topic_provisioning(
+    claim_id: str,
+    chat_id: int,
+    window_id: str,
+    topic_name: str,
+    thread_id: int,
+    *,
+    defer_binding: bool = False,
+    expected_owner: str | None = None,
+) -> bool:
+    """Bind an already-checkpointed topic after current ownership is verified."""
     if defer_binding or not _admission_commit_is_current(window_id, expected_owner):
         _mark_topic_provisioning_uncertain(claim_id)
         clear_pending_creation(window_id)
@@ -763,12 +773,15 @@ def _settle_topic_creation_task(
         )
         return False
     try:
+        thread_id = _checkpoint_created_topic(claim_id, chat_id, window_id, topic)
+        if thread_id is None:
+            return False
         return _commit_topic_provisioning(
             claim_id,
             chat_id,
             window_id,
             topic_name,
-            topic,
+            thread_id,
             defer_binding=True,
         )
     except Exception:  # noqa: BLE001
@@ -932,27 +945,61 @@ async def create_topic_in_chat(  # noqa: C901
             raise
         return False
 
-    defer_binding = False
-    if admission is not None:
-        defer_binding = (
-            await _record_automatic_admission(
-                window_id,
-                expected_owner=admission.topic_mark_owner,
-                claim_id=provisioning_claim_id,
-            )
-            is None
-        )
-    elif requested_owner is not None:
-        defer_binding = not await _explicit_owner_is_current(window_id, requested_owner)
-    return _commit_topic_provisioning(
+    thread_id = _checkpoint_created_topic(
+        provisioning_claim_id, chat_id, window_id, topic
+    )
+    return await _finish_topic_creation(
         provisioning_claim_id,
         chat_id,
         window_id,
         topic_name,
-        topic,
-        defer_binding=defer_binding,
+        thread_id,
+        admission=admission,
         expected_owner=requested_owner,
     )
+
+
+async def _finish_topic_creation(
+    claim_id: str,
+    chat_id: int,
+    window_id: str,
+    topic_name: str,
+    thread_id: int | None,
+    *,
+    admission: WindowRef | None,
+    expected_owner: str | None,
+) -> bool:
+    """Recheck admission only after the exact remote result is checkpointed."""
+    try:
+        if thread_id is None:
+            return False
+        defer_binding = False
+        if admission is not None:
+            defer_binding = (
+                await _record_automatic_admission(
+                    window_id,
+                    expected_owner=admission.topic_mark_owner,
+                    claim_id=claim_id,
+                )
+                is None
+            )
+        elif expected_owner is not None:
+            defer_binding = not await _explicit_owner_is_current(
+                window_id, expected_owner
+            )
+        return _commit_topic_provisioning(
+            claim_id,
+            chat_id,
+            window_id,
+            topic_name,
+            thread_id,
+            defer_binding=defer_binding,
+            expected_owner=expected_owner,
+        )
+    except BaseException:
+        _mark_topic_provisioning_uncertain(claim_id)
+        clear_pending_creation(window_id)
+        raise
 
 
 async def _explicit_owner_is_current(window_id: str, owner: str) -> bool:
