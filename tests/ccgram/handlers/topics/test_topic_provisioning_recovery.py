@@ -233,21 +233,26 @@ async def test_automatic_claim_recovery_requires_saved_native_owner_without_mark
     assert lifecycle_state.get_topic_mark_owner("@2") == "original-owner"
 
 
-async def test_auto_recovery_preserves_admission_during_owner_read_uncertainty(
+@pytest.mark.parametrize("kind", ["target_for_topic", "topic_for_target"])
+@pytest.mark.parametrize(
+    "saved_owner",
+    [None, "saved-owner"],
+    ids=["initially-unknown", "known-witness-lost"],
+)
+async def test_auto_recovery_waits_for_a_lost_known_owner_but_not_initial_unknown(
     monkeypatch,
+    kind,
+    saved_owner,
 ):
     from ccgram.config import config
     from ccgram.window_state_ports import lifecycle_state
 
     monkeypatch.setattr(config, "topic_discovery_mode", "auto")
     original = _router()
-    claim = original.begin_topic_provisioning(
-        1, -100, target_id="@2", kind="topic_for_target"
-    )
-    original.attach_provisioning_topic(claim.claim_id, 42)
+    original.begin_topic_provisioning(1, -100, target_id="@2", thread_id=42, kind=kind)
     router = _router()
     router.from_dict(original.to_dict())
-    lifecycle_state.record_topic_mark_owner("@2", "saved-owner")
+    lifecycle_state.record_topic_mark_owner("@2", saved_owner)
     native = SimpleNamespace(
         find_window_by_id=AsyncMock(
             return_value=SimpleNamespace(
@@ -268,11 +273,21 @@ async def test_auto_recovery_preserves_admission_during_owner_read_uncertainty(
             return_value=True,
         ),
     ):
+        claims_before = router.iter_topic_provisionings()
         assert await recover_topic_provisioning(
             AsyncMock(), router=router, adapter=_adapter()
-        ) == {"bound": 1}
+        ) == ({"bound": 1} if saved_owner is None else {"unresolved": 1})
+        if saved_owner is not None:
+            assert router.get_window_for_chat_thread(-100, 42) is None
+            assert router.iter_topic_provisionings() == claims_before
+            assert lifecycle_state.get_topic_mark_owner("@2") == saved_owner
+            native.find_window_by_id.return_value.topic_mark_owner = saved_owner
+            assert await recover_topic_provisioning(
+                AsyncMock(), router=router, adapter=_adapter()
+            ) == {"bound": 1}
+        assert router.get_window_for_chat_thread(-100, 42) == "@2"
     native.set_topic_mark.assert_not_awaited()
-    assert lifecycle_state.get_topic_mark_owner("@2") == "saved-owner"
+    assert lifecycle_state.get_topic_mark_owner("@2") == saved_owner
 
 
 async def test_detached_stale_creation_claim_never_remarks_terminal(monkeypatch):

@@ -276,6 +276,67 @@ async def test_existing_provisioning_claim_blocks_bind_before_owner_capture():
     m.router.bind_thread.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    "current_owner,binds",
+    [
+        pytest.param(None, False, id="captured-owner-lost"),
+        pytest.param("owner:@5", True, id="stable-owner-mark-write-failed"),
+    ],
+)
+async def test_auto_bind_rechecks_known_owner_with_real_router(
+    monkeypatch, current_owner, binds
+):
+    from ccgram.config import config
+    from ccgram.multiplexer.base import WindowRef
+    from ccgram.thread_router import ThreadRouter
+    from ccgram.window_state_store import get_window_store
+
+    monkeypatch.setattr(config, "topic_discovery_mode", "auto")
+    router = ThreadRouter(
+        schedule_save=lambda: None,
+        has_window_state=get_window_store().has_window,
+    )
+    query, update, context = _make_query_update_context(
+        user_data={UNBOUND_WINDOWS_KEY: ["@5"], PENDING_THREAD_ID: 42}
+    )
+    native = SimpleNamespace(
+        find_window_by_id=AsyncMock(
+            side_effect=[
+                WindowRef(
+                    "@5",
+                    "captured",
+                    "/tmp",
+                    pane_current_command="claude",
+                    topic_mark_owner="owner:@5",
+                    topic_marked=False,
+                ),
+                WindowRef(
+                    "@5",
+                    "current",
+                    "/tmp",
+                    pane_current_command="claude",
+                    topic_mark_owner=current_owner,
+                    topic_marked=False,
+                ),
+            ]
+        ),
+        set_topic_mark=AsyncMock(return_value=False),
+        foreground=AsyncMock(
+            return_value=ForegroundInfo(
+                pid=12345, pgid=12345, argv=["claude"], cwd="/tmp"
+            )
+        ),
+    )
+    with (
+        _bind_env(_unbound_window("selected", "claude")),
+        patch("ccgram.multiplexer.multiplexer", native),
+        patch(f"{_MODULE}thread_router", router),
+    ):
+        await handle_window_callback(query, 100, f"{CB_WIN_BIND}0", update, context)
+    assert router.get_window_for_thread(100, 42, -100999) == ("@5" if binds else None)
+    native.set_topic_mark.assert_awaited_once_with("@5", True, owner="owner:@5")
+
+
 class TestBindWindowCallback:
     async def test_bind_existing_window(self) -> None:
         query, update, context = _make_query_update_context(

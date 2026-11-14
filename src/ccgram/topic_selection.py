@@ -216,11 +216,7 @@ async def verify_topic_target(
         window_id
     ):
         return None
-    if (
-        owner is not None
-        and window.topic_mark_owner is not None
-        and window.topic_mark_owner != owner
-    ):
+    if owner is not None and window.topic_mark_owner != owner:
         return None
     if (
         require_marked
@@ -309,11 +305,9 @@ async def detach_topic_target(
         )
         return True
     window = await _read_window(window_id, mux)
-    owner = (
-        window.topic_mark_owner
-        if window is not None
-        else lifecycle_state.get_topic_mark_owner(window_id)
-    )
+    owner = lifecycle_state.get_topic_mark_owner(window_id)
+    if owner is None and window is not None:
+        owner = window.topic_mark_owner
     if owner is not None:
         lifecycle_state.observe_topic_mark_owner(window_id, owner)
     current = router.get_window_for_thread(user_id, thread_id, chat_id)

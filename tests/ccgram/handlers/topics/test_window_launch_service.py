@@ -597,6 +597,63 @@ async def test_new_terminal_cannot_inherit_old_detached_ttl_at_reused_id(monkeyp
     m.router.commit_topic_provisioning.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    "current_owner,commits",
+    [
+        pytest.param(None, False, id="captured-owner-lost"),
+        pytest.param("owner:@5", True, id="stable-owner-mark-write-failed"),
+    ],
+)
+async def test_auto_launch_rechecks_known_owner_before_real_claim_commit(
+    monkeypatch, current_owner, commits
+):
+    from ccgram.config import config
+    from ccgram.multiplexer.base import WindowRef
+    from ccgram.thread_router import ThreadRouter
+    from ccgram.window_state_store import get_window_store
+
+    monkeypatch.setattr(config, "topic_discovery_mode", "auto")
+    router = ThreadRouter(
+        schedule_save=lambda: None,
+        has_window_state=get_window_store().has_window,
+    )
+    native = SimpleNamespace(
+        find_window_by_id=AsyncMock(
+            side_effect=[
+                WindowRef(
+                    "@5",
+                    "captured",
+                    "/tmp",
+                    pane_current_command="claude",
+                    topic_mark_owner="owner:@5",
+                    topic_marked=False,
+                ),
+                WindowRef(
+                    "@5",
+                    "current",
+                    "/tmp",
+                    pane_current_command="claude",
+                    topic_mark_owner=current_owner,
+                    topic_marked=False,
+                ),
+            ]
+        ),
+        set_topic_mark=AsyncMock(return_value=False),
+    )
+    with (
+        _launch_env() as launch,
+        patch("ccgram.multiplexer.multiplexer", native),
+        patch(f"{_MODULE}thread_router", router),
+    ):
+        result = await launch_window(_make_query(), _make_context(), _request())
+    assert result.success is commits
+    assert router.get_window_for_thread(100, 42, -100999) == ("@5" if commits else None)
+    if not commits:
+        (claim,) = router.iter_topic_provisionings()
+        assert claim.uncertain
+    launch.adapter.close.assert_not_awaited()
+
+
 class TestLaunchWindowSuccess:
     async def test_creates_window_and_binds_thread(self, tmp_path) -> None:
         query = _make_query()

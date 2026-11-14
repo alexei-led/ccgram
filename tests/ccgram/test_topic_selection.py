@@ -391,6 +391,72 @@ async def test_unknown_owner_never_generates_a_candidate_or_mutates(selection):
     selection.mux.set_topic_mark.assert_not_awaited()
 
 
+@pytest.mark.parametrize(
+    "saved_owner,live_owner,expected_owner",
+    [
+        pytest.param("saved-O", None, "saved-O", id="unavailable-live-preserves-saved"),
+        pytest.param(None, None, None, id="neither-known-stays-quarantined"),
+        pytest.param(None, "live-P", "live-P", id="confirmed-live-is-captured"),
+        pytest.param("same-O", "same-O", "same-O", id="confirmed-witnesses-agree"),
+        pytest.param(
+            "saved-O", "live-P", "saved-O", id="replacement-never-substitutes-owner"
+        ),
+    ],
+)
+async def test_detach_retains_best_confirmed_owner_through_restart_and_retry(
+    selection, saved_owner, live_owner, expected_owner
+):
+    if saved_owner is not None:
+        lifecycle_state.record_topic_mark_owner("@1", saved_owner)
+    selection.router.bind_thread(1, 42, "@1", chat_id=-100)
+    selection.mux.find_window_by_id.return_value = WindowRef(
+        "@1",
+        "live",
+        "/tmp",
+        topic_mark_owner=live_owner,
+        topic_marked=True if live_owner is not None else None,
+    )
+    selection.mux.set_topic_mark.return_value = False
+
+    assert not await topic_selection.detach_topic_target(
+        1, 42, "@1", chat_id=-100, router=selection.router, mux=selection.mux
+    )
+    if expected_owner is None:
+        selection.mux.set_topic_mark.assert_not_awaited()
+    else:
+        selection.mux.set_topic_mark.assert_awaited_once_with(
+            "@1", False, owner=expected_owner
+        )
+    (operation,) = lifecycle_state.pending_topic_selections()
+    assert operation.owner == expected_owner
+    assert operation.desired is False
+    selection.restore(selection.snapshot())
+    assert lifecycle_state.pending_topic_selections() == [operation]
+
+    selection.mux.set_topic_mark.reset_mock()
+    selection.mux.find_window_by_id.reset_mock()
+    selection.mux.find_window_by_id.return_value = WindowRef(
+        "@1",
+        "recovered or replaced",
+        "/tmp",
+        topic_mark_owner="later-P",
+        topic_marked=True,
+    )
+    selection.mux.set_topic_mark.return_value = True
+    await topic_selection.recover_topic_selections(mux=selection.mux)
+
+    if expected_owner is None:
+        selection.mux.set_topic_mark.assert_not_awaited()
+        assert lifecycle_state.pending_topic_selections() == [operation]
+    else:
+        selection.mux.find_window_by_id.assert_not_awaited()
+        selection.mux.set_topic_mark.assert_awaited_once_with(
+            "@1", False, owner=expected_owner
+        )
+        assert not lifecycle_state.pending_topic_selections()
+    assert lifecycle_state.is_topic_detached("@1")
+
+
 async def test_ownerless_historical_detach_stays_unfinished_without_guessing(selection):
     selection.router.bind_thread(1, 42, "@1", chat_id=-100)
     selection.mux.find_window_by_id.return_value = None
@@ -723,6 +789,38 @@ async def test_owned_mark_on_retry_waits_for_conflicting_route_quarantine(select
     await topic_selection.recover_topic_selections(mux=selection.mux)
     selection.mux.set_topic_mark.assert_not_awaited()
     assert len(lifecycle_state.pending_topic_selections()) == 2
+
+
+@pytest.mark.parametrize(
+    "expected_owner,current_owner,marked,require_marked,allowed",
+    [
+        pytest.param("O", None, None, False, False, id="known-witness-lost-auto"),
+        pytest.param("O", "Q", False, False, False, id="known-witness-changed-auto"),
+        pytest.param("O", "O", False, False, True, id="stable-witness-unmarked-auto"),
+        pytest.param(None, None, None, False, True, id="initially-ownerless-auto"),
+        pytest.param(
+            None, "P", False, False, True, id="initially-ownerless-current-known"
+        ),
+        pytest.param("O", "O", False, True, False, id="marked-eligibility-independent"),
+        pytest.param("O", "O", True, True, True, id="stable-selected-marked"),
+    ],
+)
+async def test_current_target_requires_retention_of_a_captured_witness(
+    selection, expected_owner, current_owner, marked, require_marked, allowed
+):
+    snapshot = WindowRef(
+        "@1",
+        "same routing target",
+        "/tmp",
+        topic_mark_owner=current_owner,
+        topic_marked=marked,
+    )
+    selection.mux.find_window_by_id.return_value = snapshot
+    current = await topic_selection.verify_topic_target(
+        "@1", owner=expected_owner, require_marked=require_marked, mux=selection.mux
+    )
+    assert (current is snapshot) is allowed
+    selection.mux.set_topic_mark.assert_not_awaited()
 
 
 async def test_double_detach_does_not_queue_a_second_marker_write(selection):
