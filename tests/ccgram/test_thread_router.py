@@ -492,6 +492,27 @@ class TestProvisioningNativeWitness:
         assert claim.topic_mark_owner == "P"
         assert router.has_target_provisioning("old")
 
+    @pytest.mark.parametrize("owner", ["", 1, False, [], {}])
+    def test_malformed_owner_retains_exact_topic_and_target_as_uncertain(
+        self, router, owner
+    ):
+        claim = router.begin_topic_provisioning(
+            100,
+            -100,
+            thread_id=42,
+            target_id="@1",
+            kind="topic_for_target",
+            topic_mark_owner="original-O",
+        )
+        saved = router.to_dict()
+        saved["topic_provisioning"][0]["topic_mark_owner"] = owner
+        router.from_dict(saved)
+        loaded = router.get_topic_provisioning(claim.claim_id)
+        assert loaded is not None
+        assert loaded.target_id == "@1" and loaded.thread_id == 42
+        assert loaded.topic_mark_owner is None and loaded.uncertain
+        assert router.has_target_provisioning("@1")
+
 
 class TestTopicProvisioning:
     def test_begin_is_durable_and_owned(self, router: ThreadRouter) -> None:

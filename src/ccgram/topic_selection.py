@@ -250,6 +250,7 @@ async def select_topic_target(
             else lifecycle_state.get_topic_mark_owner(window_id)
         )
         if claim_id is not None:
+            owner = window.topic_mark_owner if window is not None else None
             # Lazy: only provisioning selection captures an immutable claim witness.
             from .thread_router import thread_router
 

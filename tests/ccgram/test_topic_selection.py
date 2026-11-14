@@ -851,6 +851,24 @@ async def test_provisioning_selection_checkpoints_claim_owner_and_intent_before_
     assert lifecycle_state.get_topic_mark_owner("@1") == "replacement-P"
 
 
+async def test_unknown_claim_cannot_capture_observed_owner_without_native_snapshot(
+    selection,
+):
+    claim = selection.router.begin_topic_provisioning(
+        1, -100, thread_id=42, target_id="@1", kind="target_for_topic"
+    )
+    lifecycle_state.record_topic_mark_owner("@1", "observed-P")
+    selection.mux.find_window_by_id.return_value = None
+    assert not await topic_selection.select_topic_target(
+        "@1", mux=selection.mux, claim_id=claim.claim_id, router=selection.router
+    )
+    assert (
+        selection.router.get_topic_provisioning(claim.claim_id).topic_mark_owner is None
+    )
+    assert selection.snapshot()["topic_mark_operations"][0]["owner"] is None
+    selection.mux.set_topic_mark.assert_not_awaited()
+
+
 @pytest.mark.parametrize("current_owner", [None, "replacement-P"])
 async def test_provisioning_selection_cannot_drop_or_replace_captured_owner(
     selection, current_owner
