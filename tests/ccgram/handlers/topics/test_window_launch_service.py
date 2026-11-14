@@ -49,6 +49,7 @@ def _isolated_window_state_owner():
 
 
 _MODULE = "ccgram.handlers.topics.window_launch_service."
+_CLAIM_ID = "00000000-0000-4000-8000-000000000001"
 
 
 # ── agent_process_started ────────────────────────────────────────────────────
@@ -353,6 +354,11 @@ def _launch_env(
     Defaults describe a guarded-target backend creating ``@5`` with no hook to
     wait for; each test overrides only the piece it is about.
     """
+    from ccgram.thread_router import ThreadRouter
+
+    claims = ThreadRouter(
+        schedule_save=lambda: None, has_window_state=lambda wid: False
+    )
     with (
         patch(f"{_MODULE}tmux_manager") as mux,
         patch(
@@ -371,7 +377,8 @@ def _launch_env(
         ),
         patch("ccgram.session.session_manager"),
         patch(f"{_MODULE}session_manager") as session,
-        patch(f"{_MODULE}thread_router") as router,
+        patch(f"{_MODULE}thread_router", wraps=claims) as router,
+        patch("ccgram.thread_router.uuid.uuid4", return_value=_CLAIM_ID),
         patch(f"{_MODULE}topic_orchestration") as orchestration,
         patch(f"{_MODULE}user_preferences") as preferences,
         patch(f"{_MODULE}session_map_sync") as session_map,
@@ -402,9 +409,6 @@ def _launch_env(
         mux.capabilities.native_topic_targets = True
         router.get_window_for_thread.return_value = None
         router.resolve_chat_id.return_value = -100999
-        router.begin_topic_provisioning.return_value = SimpleNamespace(
-            claim_id="claim-1"
-        )
         router.commit_topic_provisioning.return_value = True
         session_map.wait_for_session_map_entry = AsyncMock(return_value=True)
         registry.get.return_value.capabilities = MagicMock(
@@ -438,6 +442,196 @@ def _request(**overrides) -> WindowLaunchRequest:
     return WindowLaunchRequest(**fields)
 
 
+@pytest.fixture
+def persisted_launch_state(tmp_path, monkeypatch):
+    from ccgram.config import config
+    from ccgram.session import SessionManager
+    from ccgram.session_map import get_session_map_sync, install_session_map_sync
+    from ccgram.thread_router import get_thread_router, install_thread_router
+    from ccgram.user_preferences import get_user_preferences, install_user_preferences
+    from ccgram.window_state_store import get_window_store, install_window_store
+
+    owners = (
+        (get_window_store, install_window_store),
+        (get_thread_router, install_thread_router),
+        (get_user_preferences, install_user_preferences),
+        (get_session_map_sync, install_session_map_sync),
+    )
+    previous = [(install, get()) for get, install in owners]
+    monkeypatch.setattr(config, "state_file", tmp_path / "state.json")
+    monkeypatch.setattr(config, "topic_discovery_mode", "marked")
+    manager = SessionManager()
+    try:
+        yield manager
+    finally:
+        manager.flush_state()
+        for install, instance in previous:
+            install(instance)
+
+
+@pytest.mark.parametrize("replaced", [False, True])
+@pytest.mark.parametrize("supports_hook", [False, True])
+async def test_slow_launch_recovers_only_original_selection(
+    persisted_launch_state, monkeypatch, replaced, supports_hook
+):
+    import json
+
+    from ccgram.config import config
+    from ccgram.handlers.topics import topic_orchestration, topic_provisioning_recovery
+    from ccgram.multiplexer.base import WindowRef
+    from ccgram.providers import _ensure_registered
+    from ccgram.session import SessionManager
+    from ccgram.thread_router import ThreadRouter, get_thread_router
+    from ccgram.topic_mark_journal import read_topic_mark_operations
+
+    _ensure_registered()
+    manager = persisted_launch_state
+    current_owner, selected = "original", False
+
+    async def find(window_id):
+        return WindowRef(
+            window_id,
+            "slow",
+            "/tmp/proj",
+            topic_mark_owner=current_owner,
+            topic_marked=selected,
+        )
+
+    async def mark(window_id, marked, *, owner: str | None = None):
+        nonlocal selected
+        if owner != current_owner:
+            return False
+        saved = json.loads(config.state_file.read_text(encoding="utf-8"))
+        saved_router = ThreadRouter(
+            schedule_save=lambda: None, has_window_state=lambda wid: False
+        )
+        saved_router.from_dict(saved)
+        (claim,) = saved_router.iter_topic_provisionings()
+        assert claim.topic_mark_owner == owner
+        assert any(
+            operation.owner == owner and operation.desired
+            for operation in read_topic_mark_operations(config.state_file)
+        )
+        assert saved["window_states"][window_id]["provider_name"] == "claude"
+        assert saved["window_states"][window_id]["origin"] == "ccgram_created"
+        selected = marked
+        return True
+
+    async def listing():
+        return [await find("@5")]
+
+    with (
+        _launch_env(supports_hook=supports_hook) as env,
+        patch("ccgram.multiplexer.multiplexer", env.mux),
+        patch("ccgram.session.session_manager", manager),
+        patch(f"{_MODULE}session_manager", manager),
+        patch(f"{_MODULE}thread_router", get_thread_router()),
+        patch(f"{_MODULE}topic_orchestration", topic_orchestration),
+        patch(f"{_MODULE}asyncio.sleep", new_callable=AsyncMock),
+    ):
+        env.mux.capabilities.name = "tmux"
+        env.mux.find_window_by_id = AsyncMock(side_effect=find)
+        env.mux.set_topic_mark = AsyncMock(side_effect=mark)
+        env.mux.list_windows_for_reconciliation = AsyncMock(side_effect=listing)
+        env.adapter.resolve.return_value = (
+            SimpleNamespace(foreground_argv=("zsh",), provider="shell", available=True),
+            None,
+        )
+        context = _make_context({PENDING_THREAD_ID: 42, PENDING_THREAD_TEXT: "first"})
+        result = await launch_window(
+            _make_query(), context, _request(pending_text="first")
+        )
+        assert not result.success and "still starting" in result.error_message
+        env.adapter.create.assert_awaited_once()
+        env.adapter.close.assert_not_awaited()
+        assert get_thread_router().get_window_for_chat_thread(-100999, 42) is None
+        (claim,) = get_thread_router().iter_topic_provisionings()
+        assert claim.topic_mark_owner == "original"
+        manager.flush_state()
+
+        restored = SessionManager()
+        env.adapter.resolve.return_value = (
+            SimpleNamespace(
+                foreground_argv=("claude",), provider="claude", available=True
+            ),
+            None,
+        )
+        if replaced:
+            current_owner, selected = "replacement", False
+        client = AsyncMock()
+        with (
+            patch("ccgram.session.session_manager", restored),
+            patch(
+                "ccgram.handlers.topics.topic_provisioning_recovery.session_manager",
+                restored,
+            ),
+            patch(
+                "ccgram.handlers.topics.topic_provisioning_recovery.multiplexer",
+                env.mux,
+            ),
+        ):
+            outcomes = await topic_provisioning_recovery.recover_topic_provisioning(
+                client, router=get_thread_router(), backend=env.mux, adapter=env.adapter
+            )
+        assert outcomes == ({"unresolved": 1} if replaced else {"bound": 1})
+        assert get_thread_router().get_window_for_chat_thread(-100999, 42) == (
+            None if replaced else "@5"
+        )
+        client.create_forum_topic.assert_not_awaited()
+        client.delete_forum_topic.assert_not_awaited()
+        assert all(
+            call.kwargs["owner"] == "original"
+            for call in env.mux.set_topic_mark.await_args_list
+        )
+
+
+async def test_auto_launch_preserves_unknown_original_owner_behavior(
+    persisted_launch_state, monkeypatch
+):
+    from ccgram.config import config
+    from ccgram.handlers.topics import topic_orchestration
+    from ccgram.multiplexer.base import WindowRef
+    from ccgram.thread_router import get_thread_router
+
+    manager = persisted_launch_state
+    monkeypatch.setattr(config, "topic_discovery_mode", "auto")
+    native = SimpleNamespace(
+        find_window_by_id=AsyncMock(
+            side_effect=[
+                WindowRef(
+                    "@5",
+                    "unknown",
+                    "/tmp/proj",
+                    topic_mark_owner=None,
+                    topic_marked=None,
+                ),
+                WindowRef(
+                    "@5",
+                    "replacement",
+                    "/tmp/proj",
+                    topic_mark_owner="replacement",
+                    topic_marked=True,
+                ),
+            ]
+        ),
+        set_topic_mark=AsyncMock(return_value=True),
+    )
+    with (
+        _launch_env(),
+        patch("ccgram.multiplexer.multiplexer", native),
+        patch("ccgram.session.session_manager", manager),
+        patch(f"{_MODULE}session_manager", manager),
+        patch(f"{_MODULE}thread_router", get_thread_router()),
+        patch(f"{_MODULE}topic_orchestration", topic_orchestration),
+    ):
+        result = await launch_window(_make_query(), _make_context(), _request())
+
+    assert result.success
+    assert get_thread_router().get_window_for_chat_thread(-100999, 42) == "@5"
+    assert get_thread_router().iter_topic_provisionings() == []
+    native.set_topic_mark.assert_not_awaited()
+
+
 @pytest.mark.parametrize("mode", ["auto", "marked"])
 async def test_failed_native_selection_is_retryable_and_gates_only_marked(
     mode, monkeypatch
@@ -466,7 +660,7 @@ async def test_failed_native_selection_is_retryable_and_gates_only_marked(
     m.adapter.close.assert_not_awaited()
     if mode == "marked":
         m.router.commit_topic_provisioning.assert_not_called()
-        m.router.mark_provisioning_uncertain.assert_called_once_with("claim-1")
+        m.router.mark_provisioning_uncertain.assert_called_once_with(_CLAIM_ID)
     else:
         m.router.commit_topic_provisioning.assert_called_once()
 
@@ -495,7 +689,7 @@ async def test_cancellation_during_selection_preserves_provisioning(monkeypatch)
         await launch_window(_make_query(), _make_context(), _request())
 
     assert lifecycle_state.get_pending_topic_mark("@5") is True
-    m.router.mark_provisioning_uncertain.assert_called_once_with("claim-1")
+    m.router.mark_provisioning_uncertain.assert_called_once_with(_CLAIM_ID)
     m.router.commit_topic_provisioning.assert_not_called()
     m.adapter.close.assert_not_awaited()
 
@@ -534,7 +728,10 @@ async def test_agent_exit_during_native_mark_keeps_creation_quarantined(monkeypa
     from ccgram.config import config
 
     monkeypatch.setattr(config, "topic_discovery_mode", "auto")
-    with _launch_env() as m:
+    with (
+        _launch_env() as m,
+        patch(f"{_MODULE}asyncio.sleep", new_callable=AsyncMock),
+    ):
 
         async def mark(_wid, _selected, *, owner):
             m.adapter.resolve.return_value = (
@@ -560,7 +757,7 @@ async def test_agent_exit_during_native_mark_keeps_creation_quarantined(monkeypa
             result = await launch_window(_make_query(), _make_context(), _request())
     assert not result.success
     m.router.commit_topic_provisioning.assert_not_called()
-    m.router.mark_provisioning_uncertain.assert_called_once_with("claim-1")
+    m.router.mark_provisioning_uncertain.assert_called_once_with(_CLAIM_ID)
     m.adapter.close.assert_not_awaited()
 
 
@@ -669,9 +866,9 @@ class TestLaunchWindowSuccess:
         m.router.begin_topic_provisioning.assert_called_once_with(
             100, -100999, thread_id=42, kind="target_for_topic"
         )
-        m.router.attach_provisioning_target.assert_called_once_with("claim-1", "@5")
+        m.router.attach_provisioning_target.assert_called_once_with(_CLAIM_ID, "@5")
         m.router.commit_topic_provisioning.assert_called_once_with(
-            "claim-1", window_name="my-win"
+            _CLAIM_ID, window_name="my-win"
         )
         m.orchestration.pending_creation_transaction.assert_called_once_with()
         m.orchestration.register_pending_creation.assert_called_once_with("@5")
@@ -868,7 +1065,7 @@ class TestLaunchWindowFailure:
                 )
 
         m.router.abort_topic_provisioning.assert_not_called()
-        m.router.mark_provisioning_uncertain.assert_called_once_with("claim-1")
+        m.router.mark_provisioning_uncertain.assert_called_once_with(_CLAIM_ID)
 
     async def test_initial_checkpoint_failure_does_not_start_backend(
         self, tmp_path
@@ -884,7 +1081,7 @@ class TestLaunchWindowFailure:
 
         m.adapter.create.assert_not_awaited()
         m.router.abort_topic_provisioning.assert_called_once_with(
-            "claim-1", target_confirmed_absent=True
+            _CLAIM_ID, target_confirmed_absent=True
         )
 
     async def test_attach_checkpoint_failure_keeps_completed_target_quarantined(
@@ -909,7 +1106,7 @@ class TestLaunchWindowFailure:
 
         m.adapter.close.assert_not_awaited()
         m.router.abort_topic_provisioning.assert_not_called()
-        m.router.mark_provisioning_uncertain.assert_called_once_with("claim-1")
+        m.router.mark_provisioning_uncertain.assert_called_once_with(_CLAIM_ID)
 
     async def test_cancellation_settles_completed_creation_and_cleans_target(
         self, tmp_path
@@ -939,7 +1136,7 @@ class TestLaunchWindowFailure:
 
         m.adapter.close.assert_awaited_once_with("@5")
         m.router.abort_topic_provisioning.assert_called_once_with(
-            "claim-1", target_confirmed_absent=True
+            _CLAIM_ID, target_confirmed_absent=True
         )
 
     async def test_post_create_stamp_error_closes_target_before_reraising(
@@ -957,7 +1154,7 @@ class TestLaunchWindowFailure:
         m.adapter.close.assert_awaited_once_with("@5")
         m.orchestration.clear_pending_creation.assert_called_once_with("@5")
         m.router.abort_topic_provisioning.assert_called_once_with(
-            "claim-1", target_confirmed_absent=True
+            _CLAIM_ID, target_confirmed_absent=True
         )
 
     async def test_session_map_timeout_closes_target_before_unbinding_late_hook(
@@ -996,7 +1193,7 @@ class TestLaunchWindowFailure:
         assert result.success is False
         m.adapter.close.assert_not_awaited()
         m.router.abort_topic_provisioning.assert_called_once_with(
-            "claim-1", target_confirmed_absent=True
+            _CLAIM_ID, target_confirmed_absent=True
         )
         assert cleanup_order == ["clear-pending"]
         assert "❌" in m.edit.call_args.args[1]
@@ -1025,7 +1222,7 @@ class TestLaunchWindowFailure:
         assert not result.success and "still starting" in (result.error_message or "")
         m.adapter.close.assert_not_awaited()
         m.router.abort_topic_provisioning.assert_not_called()
-        m.router.mark_provisioning_uncertain.assert_called_once_with("claim-1")
+        m.router.mark_provisioning_uncertain.assert_called_once_with(_CLAIM_ID)
         m.orchestration.clear_pending_creation.assert_called_once_with("@5")
         assert user_data[PENDING_THREAD_ID] == 42
         assert user_data[PENDING_THREAD_TEXT] == "hi"
@@ -1049,7 +1246,7 @@ class TestLaunchWindowFailure:
 
         assert not result.success
         m.adapter.close.assert_not_awaited()
-        m.router.mark_provisioning_uncertain.assert_called_once_with("claim-1")
+        m.router.mark_provisioning_uncertain.assert_called_once_with(_CLAIM_ID)
 
     async def test_pending_text_send_failure_reports_back_to_the_topic(
         self, tmp_path
