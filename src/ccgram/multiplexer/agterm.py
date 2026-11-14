@@ -721,9 +721,7 @@ class AgtermManager:
         window = matches[0]
         if window.topic_marked is marked:
             return True
-        if not await self._call_ok(
-            ["session", "flag", "on" if marked else "off", "--target", window.window_id]
-        ):
+        if not await self._set_topic_flag(window.window_id, marked):
             return False
         confirmed = await self.list_windows_for_reconciliation()
         return (
@@ -738,6 +736,28 @@ class AgtermManager:
             )
             == 1
         )
+
+    async def _set_topic_flag(self, window_id: str, marked: bool) -> bool:
+        worker = asyncio.create_task(
+            self._call_ok(
+                ["session", "flag", "on" if marked else "off", "--target", window_id]
+            )
+        )
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            # A cancelled subprocess wait cannot release native marker ownership
+            # while agtermctl can still write. Preserve the original cancellation.
+            finished = asyncio.Event()
+            worker.add_done_callback(lambda _: finished.set())
+            while not worker.done():
+                try:
+                    await finished.wait()
+                except asyncio.CancelledError:
+                    continue
+            if not worker.cancelled():
+                worker.exception()
+            raise
 
     async def list_workspaces(self) -> list[WorkspaceRef]:
         """List agterm workspaces; the id is an opaque token for ``create_window``."""
