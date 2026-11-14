@@ -21,6 +21,18 @@ from ccgram.multiplexer.herdr_commands import command_request
             ("workspace.close", {"workspace_id": "w2"}),
         ),
         (
+            ("pane", "rename", "w2:p1", "User label 中"),
+            ("pane.rename", {"pane_id": "w2:p1", "label": "User label 中"}),
+        ),
+        (
+            ("pane", "rename", "w2:p1", "--clear"),
+            ("pane.rename", {"pane_id": "w2:p1", "label": None}),
+        ),
+        (
+            ("pane", "rename", "w2:p1", "--clear", ""),
+            ("pane.rename", {"pane_id": "w2:p1", "label": "--clear "}),
+        ),
+        (
             ("tab", "rename", "w2:t1", "Renamed"),
             ("tab.rename", {"tab_id": "w2:t1", "label": "Renamed"}),
         ),
@@ -224,6 +236,9 @@ def test_command_request_maps_manager_command(args, expected) -> None:
         ("status", "--json", "extra"),
         ("unknown", "list"),
         ("pane", "unknown"),
+        ("pane", "rename"),
+        ("pane", "rename", "w2:p1"),
+        ("pane", "rename", "--bad-pane", "label"),
         ("pane", "get"),
         ("pane", "get", "--help"),
         ("pane", "get", "p1", "--unknown"),

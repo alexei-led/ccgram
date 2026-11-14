@@ -195,6 +195,15 @@ def _target_command(argv: tuple[str, ...]) -> _Request:
     return method, {parameter: _require_identifier(argv[2], parameter)}
 
 
+def _pane_rename(argv: tuple[str, ...]) -> _Request:
+    if len(argv) < _FOUR_PARTS:
+        raise ValueError("Malformed pane rename command")
+    return "pane.rename", {
+        "pane_id": _require_identifier(argv[2], "pane_id"),
+        "label": None if argv[3:] == ("--clear",) else " ".join(argv[3:]),
+    }
+
+
 def _tab_rename(argv: tuple[str, ...]) -> _Request:
     if len(argv) != _FOUR_PARTS:
         raise ValueError("Malformed tab rename command")
@@ -246,6 +255,7 @@ _COMMAND_HANDLERS: Mapping[tuple[str, str], _Handler] = {
     **dict.fromkeys(_LIST_METHODS, _list_command),
     **dict.fromkeys(_TARGET_METHODS, _target_command),
     ("tab", "rename"): _tab_rename,
+    ("pane", "rename"): _pane_rename,
     ("pane", "layout"): _pane_layout_or_process_info,
     ("pane", "process-info"): _pane_layout_or_process_info,
     ("pane", "send-text"): _pane_send_text,
