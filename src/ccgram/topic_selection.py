@@ -228,7 +228,11 @@ async def verify_topic_target(
 
 
 async def select_topic_target(
-    window_id: str, *, mux: Multiplexer | None = None
+    window_id: str,
+    *,
+    mux: Multiplexer | None = None,
+    claim_id: str | None = None,
+    router: ThreadRouter | None = None,
 ) -> bool:
     """Checkpoint an observed owner and immutable mark-on intent before writing."""
     # Lazy: only bot selection uses the wired backend.
@@ -245,6 +249,25 @@ async def select_topic_target(
             if window is not None
             else lifecycle_state.get_topic_mark_owner(window_id)
         )
+        if claim_id is not None:
+            # Lazy: only provisioning selection captures an immutable claim witness.
+            from .thread_router import thread_router
+
+            claim_router = thread_router if router is None else router
+            claim = claim_router.get_topic_provisioning(claim_id)
+            if (
+                claim is None
+                or claim.target_id is None
+                or canonical_window_id(claim.target_id)
+                != canonical_window_id(window_id)
+            ):
+                return False
+            if claim.topic_mark_owner is not None and (
+                window is None or owner != claim.topic_mark_owner
+            ):
+                return False
+            claim_router.capture_provisioning_owner(claim_id, owner)
+            _flush()
         if lifecycle_state.is_topic_detach_pending(window_id, owner=owner):
             return False
         if window is not None and not window.topic_markable:
