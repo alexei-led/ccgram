@@ -267,6 +267,24 @@ class TestHandleProviderSelect:
         assert "expired" in mock_edit.call_args[0][1].lower()
 
 
+def _claim_router_spy() -> MagicMock:
+    from ccgram.thread_router import ThreadRouter
+    from ccgram.window_state_store import get_window_store
+
+    router = ThreadRouter(
+        schedule_save=lambda: None, has_window_state=get_window_store().has_window
+    )
+    spy = MagicMock(wraps=router)
+
+    def begin(*args, **kwargs):
+        claim = router.begin_topic_provisioning(*args, **kwargs)
+        spy.begin_topic_provisioning.return_value = claim
+        return claim
+
+    spy.begin_topic_provisioning.side_effect = begin
+    return spy
+
+
 class TestHandleModeSelect:
     @pytest.fixture(autouse=True)
     def _isolated_selection_state(self, monkeypatch):
@@ -294,7 +312,10 @@ class TestHandleModeSelect:
     @patch("ccgram.handlers.topics.window_launch_service.tmux_manager")
     @patch("ccgram.handlers.topics.window_launch_service.provider_registry")
     @patch("ccgram.handlers.topics.provider_mode_callbacks.provider_registry")
-    @patch("ccgram.handlers.topics.window_launch_service.thread_router")
+    @patch(
+        "ccgram.handlers.topics.window_launch_service.thread_router",
+        new_callable=_claim_router_spy,
+    )
     async def test_creates_window_with_yolo_mode(
         self,
         mock_tr: MagicMock,
@@ -374,7 +395,10 @@ class TestHandleModeSelect:
     @patch("ccgram.handlers.topics.window_launch_service.tmux_manager")
     @patch("ccgram.handlers.topics.window_launch_service.provider_registry")
     @patch("ccgram.handlers.topics.provider_mode_callbacks.provider_registry")
-    @patch("ccgram.handlers.topics.window_launch_service.thread_router")
+    @patch(
+        "ccgram.handlers.topics.window_launch_service.thread_router",
+        new_callable=_claim_router_spy,
+    )
     async def test_claude_yolo_accepts_bypass_prompt(
         self,
         mock_tr: MagicMock,
@@ -491,7 +515,10 @@ class TestHandleModeSelect:
     @patch("ccgram.handlers.topics.window_launch_service.tmux_manager")
     @patch("ccgram.handlers.topics.window_launch_service.provider_registry")
     @patch("ccgram.handlers.topics.provider_mode_callbacks.provider_registry")
-    @patch("ccgram.handlers.topics.window_launch_service.thread_router")
+    @patch(
+        "ccgram.handlers.topics.window_launch_service.thread_router",
+        new_callable=_claim_router_spy,
+    )
     async def test_forwards_pending_text(
         self,
         mock_tr: MagicMock,

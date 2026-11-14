@@ -752,6 +752,21 @@ async def launch_window(  # noqa: C901, PLR0911, PLR0912, PLR0915
         pending_thread_id,
     )
     try:
+        selected = await select_topic_target(
+            created_wid, claim_id=claim_id, router=thread_router
+        )
+        if claim_id is not None:
+            claim = thread_router.get_topic_provisioning(claim_id)
+            captured_owner = claim.topic_mark_owner if claim is not None else None
+        else:
+            captured_owner = lifecycle_state.get_topic_mark_owner(created_wid)
+    except BaseException:
+        _mark_provisioning_uncertain(claim_id)
+        if claim_id is not None:
+            topic_orchestration.clear_pending_creation(created_wid)
+        raise
+
+    try:
         await tmux_manager.stamp_pane_title(created_wid, provider_name)
     except BaseException as exc:  # noqa: BLE001
         created_wid = _follow_supersession(created_wid, claim_id=claim_id)
@@ -886,7 +901,6 @@ async def launch_window(  # noqa: C901, PLR0911, PLR0912, PLR0915
         return WindowLaunchResult(success=False, error_message=message)
 
     try:
-        selected = await select_topic_target(created_wid)
         still_ready = provider_caps.chat_first_command_path or (
             await agent_process_started(
                 created_wid,
@@ -897,7 +911,7 @@ async def launch_window(  # noqa: C901, PLR0911, PLR0912, PLR0915
         )
         current = await verify_topic_target(
             created_wid,
-            owner=lifecycle_state.get_topic_mark_owner(created_wid),
+            owner=captured_owner,
             require_marked=config.topic_discovery_mode == "marked",
         )
     except BaseException:
@@ -905,23 +919,25 @@ async def launch_window(  # noqa: C901, PLR0911, PLR0912, PLR0915
         if claim_id is not None:
             topic_orchestration.clear_pending_creation(created_wid)
         raise
-    if not still_ready or current is None:
+    if (
+        not still_ready
+        or current is None
+        or (captured_owner is not None and current.topic_mark_owner != captured_owner)
+    ):
         _mark_provisioning_uncertain(claim_id)
         if claim_id is not None:
             topic_orchestration.clear_pending_creation(created_wid)
         message = "Session readiness changed during selection; kept it quarantined for recovery."
         await safe_edit(query, f"⚠ {message}")
         return WindowLaunchResult(success=False, error_message=message)
-    if lifecycle_state.is_topic_detach_pending(
-        created_wid, owner=lifecycle_state.get_topic_mark_owner(created_wid)
-    ):
+    if lifecycle_state.is_topic_detach_pending(created_wid, owner=captured_owner):
         selected = False
     if not selected:
         logger.warning("topic_selection_pending_on_create", window_id=created_wid)
         if (
             config.topic_discovery_mode == "marked"
             or lifecycle_state.is_topic_detach_pending(
-                created_wid, owner=lifecycle_state.get_topic_mark_owner(created_wid)
+                created_wid, owner=captured_owner
             )
         ):
             _mark_provisioning_uncertain(claim_id)

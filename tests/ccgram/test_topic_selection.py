@@ -627,15 +627,54 @@ async def test_selection_preparation_preserves_detached_ttl_until_actual_binding
 
 async def test_same_owner_provisioning_claim_is_a_remaining_consumer(selection):
     selection.router.bind_thread(1, 42, "@1", chat_id=-100)
-    lifecycle_state.record_topic_mark_owner("@new", "owner:@1")
+    lifecycle_state.record_topic_mark_owner("@new", "replacement-P")
     selection.router.begin_topic_provisioning(
-        2, -200, thread_id=43, target_id="@new", kind="target_for_topic"
+        2,
+        -200,
+        thread_id=43,
+        target_id="@new",
+        kind="target_for_topic",
+        topic_mark_owner="owner:@1",
     )
     assert await topic_selection.detach_topic_target(
         1, 42, "@1", chat_id=-100, router=selection.router, mux=selection.mux
     )
     selection.mux.set_topic_mark.assert_not_awaited()
     assert lifecycle_state.is_topic_detached("@1")
+
+
+@pytest.mark.parametrize(
+    "cleared_owner,write_expected", [("original-O", False), ("replacement-P", True)]
+)
+async def test_claim_consumers_use_captured_owner_not_mutable_bound_row(
+    selection, cleared_owner, write_expected
+):
+    claim = selection.router.begin_topic_provisioning(
+        1,
+        -100,
+        thread_id=42,
+        target_id="@1",
+        kind="target_for_topic",
+        topic_mark_owner="original-O",
+    )
+    lifecycle_state.record_topic_mark_owner("@1", "original-O")
+    lifecycle_state.observe_topic_mark_owner("@1", "replacement-P")
+    selection.router.from_dict(selection.router.to_dict())
+    selection.restore(selection.snapshot())
+    operation = lifecycle_state.queue_topic_mark("@1", cleared_owner, False)
+    await topic_selection.recover_topic_selections(
+        mux=selection.mux, operation=operation
+    )
+    assert selection.mux.set_topic_mark.await_count == int(write_expected)
+    if write_expected:
+        selection.mux.set_topic_mark.assert_awaited_once_with(
+            "@1", False, owner=cleared_owner
+        )
+    assert lifecycle_state.get_topic_mark_owner("@1") == "replacement-P"
+    assert (
+        selection.router.get_topic_provisioning(claim.claim_id).topic_mark_owner
+        == "original-O"
+    )
 
 
 async def test_old_owner_clear_completion_never_changes_reused_route_state(selection):
@@ -728,7 +767,12 @@ async def test_clear_rechecks_consumers_after_waiting_for_owner_lock(
             selection.router.bind_thread(2, 43, "@consumer", chat_id=-200)
         else:
             selection.router.begin_topic_provisioning(
-                2, -200, thread_id=43, target_id="@consumer", kind="target_for_topic"
+                2,
+                -200,
+                thread_id=43,
+                target_id="@consumer",
+                kind="target_for_topic",
+                topic_mark_owner="shared",
             )
     finally:
         release.set()

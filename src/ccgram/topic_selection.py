@@ -111,14 +111,9 @@ def _has_remaining_binding(
 def _has_remaining_claim(
     router: ThreadRouter, window_id: str, owner: str | None
 ) -> bool:
-    # Lazy: creation claims retain ownership in the existing bot state.
-    from .window_state_ports import lifecycle_state
-
     return any(
         target is not None
-        and _same_selection_resource(
-            window_id, owner, target, lifecycle_state.get_topic_mark_owner(target)
-        )
+        and _same_selection_resource(window_id, owner, target, claim.topic_mark_owner)
         for claim in router.iter_topic_provisionings()
         for target in (claim.target_id, claim.previous_target_id)
     )

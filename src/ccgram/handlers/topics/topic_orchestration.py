@@ -381,7 +381,11 @@ def _claim_id(claim: object) -> str | None:
 
 
 def _begin_topic_provisioning(
-    owner_id: int, chat_id: int, window_id: str
+    owner_id: int,
+    chat_id: int,
+    window_id: str,
+    *,
+    topic_mark_owner: str | None = None,
 ) -> str | None:
     """Claim a target before asking Telegram to create its topic."""
     try:
@@ -390,6 +394,7 @@ def _begin_topic_provisioning(
             chat_id,
             target_id=window_id,
             kind="topic_for_target",
+            topic_mark_owner=topic_mark_owner,
         )
     except (TypeError, ValueError) as exc:
         logger.info(
@@ -432,6 +437,25 @@ def _begin_topic_provisioning(
         clear_pending_creation(window_id)
         raise
     return claim_id
+
+
+async def _begin_admitted_topic_provisioning(
+    owner_id: int, chat_id: int, window_id: str, admission: WindowRef | None
+) -> str | None:
+    """Checkpoint the original native snapshot, not a mutable cached witness."""
+    if admission is None:
+        saved_owner = lifecycle_state.get_topic_mark_owner(window_id)
+        admission = await verify_topic_target(
+            window_id, owner=saved_owner, require_marked=False, mux=tmux_manager
+        )
+        if admission is None and saved_owner is not None:
+            return None
+    owner = admission.topic_mark_owner if admission is not None else None
+    if admission is not None:
+        lifecycle_state.record_topic_mark_owner(window_id, owner)
+    return _begin_topic_provisioning(
+        owner_id, chat_id, window_id, topic_mark_owner=owner
+    )
 
 
 def _mark_topic_provisioning_uncertain(
@@ -566,7 +590,7 @@ def _commit_topic_provisioning(
         return False
 
     admission_complete = not committed or lifecycle_state.complete_topic_admission(
-        window_id, lifecycle_state.get_topic_mark_owner(window_id)
+        window_id, expected_owner
     )
     if not admission_complete:
         logger.warning(
@@ -880,18 +904,25 @@ async def create_topic_in_chat(  # noqa: C901
         )
         return False
 
-    admission = await _record_automatic_admission(window_id) if automatic else None
+    admission = (
+        await _record_automatic_admission(
+            window_id,
+            expected_owner=existing_claim.topic_mark_owner if existing_claim else None,
+            claim_id=existing_claim.claim_id if existing_claim else None,
+        )
+        if automatic
+        else None
+    )
     if automatic and admission is None:
         _release_retry_claim(existing_claim)
         return False
 
-    requested_owner = lifecycle_state.get_topic_mark_owner(window_id)
     register_pending_creation(window_id, now=now)
     provisioning_claim_id = existing_claim.claim_id if existing_claim else None
     if provisioning_claim_id is None:
         try:
-            provisioning_claim_id = _begin_topic_provisioning(
-                owner_id, chat_id, window_id
+            provisioning_claim_id = await _begin_admitted_topic_provisioning(
+                owner_id, chat_id, window_id, admission
             )
         except Exception:  # noqa: BLE001
             clear_pending_creation(window_id)
@@ -899,6 +930,8 @@ async def create_topic_in_chat(  # noqa: C901
         if provisioning_claim_id is None:
             clear_pending_creation(window_id)
             return False
+    captured_claim = thread_router.get_topic_provisioning(provisioning_claim_id)
+    requested_owner = captured_claim.topic_mark_owner if captured_claim else None
     preserve_claim = existing_claim is not None
 
     creation_task: asyncio.Task[object] = asyncio.create_task(
@@ -983,7 +1016,7 @@ async def _finish_topic_creation(
                 )
                 is None
             )
-        elif expected_owner is not None:
+        elif expected_owner is not None or config.topic_discovery_mode == "marked":
             defer_binding = not await _explicit_owner_is_current(
                 window_id, expected_owner
             )
@@ -1002,14 +1035,25 @@ async def _finish_topic_creation(
         raise
 
 
-async def _explicit_owner_is_current(window_id: str, owner: str) -> bool:
+async def _explicit_owner_is_current(window_id: str, owner: str | None) -> bool:
     """Recheck explicit ownership without applying discovery filters."""
     if not _admission_commit_is_current(window_id, owner):
         return False
     window = await verify_topic_target(
-        window_id, owner=owner, require_marked=config.topic_discovery_mode == "marked"
+        window_id,
+        owner=owner,
+        require_marked=config.topic_discovery_mode == "marked",
+        mux=tmux_manager,
     )
-    return window is not None and window.topic_mark_owner == owner
+    return (
+        window is not None
+        and window.topic_mark_owner == owner
+        and not (
+            config.topic_discovery_mode == "marked"
+            and owner is None
+            and window.topic_markable
+        )
+    )
 
 
 async def handle_new_window(
@@ -1140,9 +1184,8 @@ def _owner_has_topic_provisioning(
     for claim in thread_router.iter_topic_provisionings():
         if claim.claim_id == exclude_claim_id:
             continue
-        for target in (claim.target_id, claim.previous_target_id):
-            if target and lifecycle_state.get_topic_mark_owner(target) == owner:
-                return True
+        if claim.topic_mark_owner == owner:
+            return True
     return False
 
 
@@ -1162,6 +1205,13 @@ async def _record_automatic_admission(
         return None
     if expected_owner is not None and window.topic_mark_owner != expected_owner:
         return None
+    if claim_id is not None:
+        claim = thread_router.get_topic_provisioning(claim_id)
+        if claim is None or (
+            claim.topic_mark_owner is not None
+            and window.topic_mark_owner != claim.topic_mark_owner
+        ):
+            return None
     recorded = lifecycle_state.record_topic_mark_owner(
         window_id, window.topic_mark_owner
     )

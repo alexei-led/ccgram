@@ -7,6 +7,7 @@ from telegram.error import BadRequest, RetryAfter
 from ccgram.handlers.topics.topic_provisioning_recovery import (
     recover_topic_provisioning,
 )
+from ccgram.multiplexer.base import WindowRef
 from ccgram.providers import _ensure_registered
 from ccgram.telegram_rate_limiter import NO_RETRY_RATE_LIMIT_ARGS
 from ccgram.thread_router import ThreadRouter
@@ -59,6 +60,7 @@ def _restored_claim(*, target_id="@2", thread_id=42, previous_target_id=None):
         target_id=target_id,
         previous_target_id=previous_target_id,
         kind="topic_for_target" if thread_id is None else "target_for_topic",
+        topic_mark_owner="owner:" + target_id if target_id else None,
     )
     restored = _router()
     restored.from_dict(original.to_dict())
@@ -78,6 +80,7 @@ def _isolate_persistence():
                     side_effect=lambda wid: SimpleNamespace(
                         window_id=wid,
                         topic_markable=True,
+                        topic_eligible=True,
                         topic_mark_owner="owner:" + wid,
                         topic_marked=True,
                     )
@@ -86,6 +89,7 @@ def _isolate_persistence():
             ),
         ) as native,
         patch("ccgram.handlers.topics.topic_provisioning_recovery.multiplexer", native),
+        patch("ccgram.handlers.topics.topic_orchestration.tmux_manager", native),
         patch("ccgram.handlers.topics.topic_deletion.session_manager"),
         patch(
             "ccgram.handlers.topics.topic_provisioning_recovery.window_query.get_window_provider",
@@ -101,6 +105,123 @@ def _isolate_persistence():
         ),
     ):
         yield
+
+
+@pytest.mark.parametrize("mode", ["auto", "marked"])
+@pytest.mark.parametrize("kind", ["topic_for_target", "target_for_topic"])
+async def test_reloaded_second_chat_claim_keeps_original_owner_after_bound_chat_observes_replacement(
+    monkeypatch, mode, kind
+):
+    from ccgram.config import config
+    from ccgram.window_state_ports import lifecycle_state
+
+    monkeypatch.setattr(config, "topic_discovery_mode", mode)
+    original = _router()
+    original.bind_thread(1, 11, "@2", chat_id=-101)
+    claim = original.begin_topic_provisioning(
+        1,
+        -100,
+        thread_id=42,
+        target_id="@2",
+        kind=kind,
+        topic_mark_owner="original-O",
+    )
+    lifecycle_state.record_topic_mark_owner("@2", "original-O")
+    lifecycle_state.observe_topic_mark_owner("@2", "replacement-P")
+    restored = _router()
+    restored.from_dict(original.to_dict())
+    native = SimpleNamespace(
+        find_window_by_id=AsyncMock(
+            return_value=WindowRef(
+                "@2",
+                "replacement",
+                "/p",
+                topic_marked=True,
+                topic_mark_owner="replacement-P",
+            )
+        ),
+        set_topic_mark=AsyncMock(return_value=True),
+    )
+    client = AsyncMock()
+    with (
+        patch("ccgram.handlers.topics.topic_provisioning_recovery.multiplexer", native),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.window_presence",
+            AsyncMock(return_value=True),
+        ),
+    ):
+        assert await recover_topic_provisioning(
+            client, router=restored, adapter=_adapter()
+        ) == {"unresolved": 1}
+    assert restored.get_window_for_chat_thread(-101, 11) == "@2"
+    assert restored.get_window_for_chat_thread(-100, 42) is None
+    retained = restored.get_topic_provisioning(claim.claim_id)
+    assert retained is not None and retained.topic_mark_owner == "original-O"
+    assert lifecycle_state.get_topic_mark_owner("@2") == "replacement-P"
+    native.set_topic_mark.assert_not_awaited()
+    client.delete_forum_topic.assert_not_awaited()
+
+
+@pytest.mark.parametrize("mode", ["auto", "marked"])
+@pytest.mark.parametrize("kind", ["topic_for_target", "target_for_topic"])
+@pytest.mark.parametrize("topic_present", [True, False])
+async def test_recovery_rechecks_automatic_eligibility_without_filtering_explicit_creation(
+    monkeypatch, mode, kind, topic_present
+):
+    from ccgram.config import config
+    from ccgram.window_state_ports import lifecycle_state
+
+    monkeypatch.setattr(config, "topic_discovery_mode", mode)
+    original = _router()
+    claim = original.begin_topic_provisioning(
+        1,
+        -100,
+        thread_id=42,
+        target_id="@2",
+        kind=kind,
+        topic_mark_owner="original-O",
+    )
+    restored = _router()
+    restored.from_dict(original.to_dict())
+    lifecycle_state.record_topic_mark_owner("@2", "original-O")
+    native = SimpleNamespace(
+        find_window_by_id=AsyncMock(
+            return_value=WindowRef(
+                "@2",
+                "excluded",
+                "/p",
+                topic_eligible=False,
+                topic_marked=True,
+                topic_mark_owner="original-O",
+            )
+        ),
+        set_topic_mark=AsyncMock(return_value=True),
+    )
+    with (
+        patch("ccgram.handlers.topics.topic_provisioning_recovery.multiplexer", native),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.window_presence",
+            AsyncMock(return_value=True),
+        ),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.probe_topic_exists",
+            AsyncMock(return_value=topic_present),
+        ),
+        patch(
+            "ccgram.handlers.topics.topic_provisioning_recovery.create_topic_in_chat",
+            AsyncMock(return_value=True),
+        ) as creator,
+    ):
+        result = await recover_topic_provisioning(
+            AsyncMock(), router=restored, adapter=_adapter()
+        )
+    if kind == "topic_for_target":
+        assert result == {"unresolved": 1}
+        assert restored.iter_topic_provisionings() == [claim]
+        creator.assert_not_awaited()
+    else:
+        assert result == ({"bound": 1} if topic_present else {"recreated": 1})
+    native.set_topic_mark.assert_not_awaited()
 
 
 @pytest.mark.parametrize("presence", [True, False, None])
@@ -152,6 +273,7 @@ async def test_marked_explicit_creation_recovers_only_after_verified_selection(
             return_value=SimpleNamespace(
                 window_id="@2",
                 topic_markable=True,
+                topic_eligible=True,
                 topic_mark_owner="owner:" + "@2",
                 topic_marked=True,
             )
@@ -200,7 +322,11 @@ async def test_automatic_claim_recovery_requires_saved_native_owner_without_mark
     monkeypatch.setattr(config, "topic_discovery_mode", "marked")
     original = _router()
     claim = original.begin_topic_provisioning(
-        1, -100, target_id="@2", kind="topic_for_target"
+        1,
+        -100,
+        target_id="@2",
+        kind="topic_for_target",
+        topic_mark_owner="original-owner",
     )
     original.attach_provisioning_topic(claim.claim_id, 42)
     router = _router()
@@ -211,6 +337,7 @@ async def test_automatic_claim_recovery_requires_saved_native_owner_without_mark
             return_value=SimpleNamespace(
                 window_id="@2",
                 topic_markable=True,
+                topic_eligible=True,
                 topic_mark_owner=owner,
                 topic_marked=marked,
             )
@@ -249,7 +376,9 @@ async def test_auto_recovery_waits_for_a_lost_known_owner_but_not_initial_unknow
 
     monkeypatch.setattr(config, "topic_discovery_mode", "auto")
     original = _router()
-    original.begin_topic_provisioning(1, -100, target_id="@2", thread_id=42, kind=kind)
+    original.begin_topic_provisioning(
+        1, -100, target_id="@2", thread_id=42, kind=kind, topic_mark_owner=saved_owner
+    )
     router = _router()
     router.from_dict(original.to_dict())
     lifecycle_state.record_topic_mark_owner("@2", saved_owner)
@@ -258,6 +387,7 @@ async def test_auto_recovery_waits_for_a_lost_known_owner_but_not_initial_unknow
             return_value=SimpleNamespace(
                 window_id="@2",
                 topic_markable=True,
+                topic_eligible=True,
                 topic_mark_owner=None,
                 topic_marked=None,
             )
@@ -304,6 +434,7 @@ async def test_detached_stale_creation_claim_never_remarks_terminal(monkeypatch)
             return_value=SimpleNamespace(
                 window_id="@2",
                 topic_markable=True,
+                topic_eligible=True,
                 topic_mark_owner="owner:@2",
                 topic_marked=False,
             )
@@ -418,6 +549,7 @@ async def test_deleted_topic_is_unbound_and_recreated_for_live_target():
         user_id,
         propagate_retry_after,
         claim_id,
+        automatic,
     ):
         router.attach_provisioning_topic(claim_id, 77)
         return router.commit_topic_provisioning(claim_id, window_name=topic_name)
@@ -454,6 +586,7 @@ async def test_deleted_topic_is_unbound_and_recreated_for_live_target():
         user_id=1,
         propagate_retry_after=True,
         claim_id=claim.claim_id,
+        automatic=False,
     )
 
 
@@ -471,6 +604,7 @@ async def test_deleted_topic_recreation_uses_cached_window_name():
         user_id,
         propagate_retry_after,
         claim_id,
+        automatic,
     ):
         return True
 
@@ -502,6 +636,7 @@ async def test_deleted_topic_recreation_uses_cached_window_name():
         user_id=1,
         propagate_retry_after=True,
         claim_id=claim.claim_id,
+        automatic=False,
     )
 
 
@@ -969,6 +1104,7 @@ async def test_recreation_flush_failure_releases_ownership_for_later_retry():
         user_id,
         propagate_retry_after,
         claim_id,
+        automatic,
     ):
         router.attach_provisioning_topic(claim_id, 77)
         return router.commit_topic_provisioning(claim_id)
@@ -1180,6 +1316,7 @@ async def test_deleted_topic_waits_for_ready_agent_before_recreation(
         user_id,
         propagate_retry_after,
         claim_id,
+        automatic,
     ):
         router.attach_provisioning_topic(claim_id, 77)
         return router.commit_topic_provisioning(claim_id, window_name=topic_name)
