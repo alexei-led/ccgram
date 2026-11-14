@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.23.0] - 2026-11-14
+
+### Marked-only topic discovery
+
+- Opt in with `CCGRAM_TOPIC_DISCOVERY=marked` or `ccgram run --topic-discovery marked`. Automatic discovery remains the default on agterm, Herdr, and tmux.
+- Select a terminal with `ccgram topic mark TARGET`; inspect exact target IDs, native owners, and unfinished operations with `ccgram topic status`. These commands do not need Telegram credentials. `unmark TARGET` stops future automatic admission without interrupting existing topics.
+- Keep selection with the native terminal, not its agent conversation: agterm uses the primary session flag, tmux a window-local option, and standard Herdr a reversible persisted manual-label suffix. No Herdr fork or restoration plugin is required.
+- Attempt native selection for Telegram-created and explicitly bound targets. In marked mode, admission waits for confirmation. Unfinished effects are journaled atomically in the existing state file and retried against the captured native owner, not a reused routing ID.
+- Detaching the last topic in marked mode clears selection but leaves the terminal running, protected from orphan expiry until successful re-admission.
+
+### Native boundaries
+
+Agterm split agents remain explicitly bindable without selecting the primary. Tmux selection lasts for the native window's lifetime; external restorers must preserve its complete metadata. Herdr layout copies include selection; duplicate owners are quarantined, but a sole copy cannot be distinguished from an intentional import. Avoid concurrent manual-label edits while marking: standard Herdr has no atomic label compare-and-set. See the [discovery guide](docs/design/marked-topic-discovery.md).
+
+### Contributor safety
+
+Scope native-test cleanup to the creating socket/session. Never close a default-server window by a private-server ID or infer ownership of a workspace or Git checkout ([#402](https://github.com/alexei-led/ccgram/pull/402)).
+
+### Upgrade
+
+Upgrade and restart ccgram. No migration is required; existing topic bindings remain active. To opt in, set `CCGRAM_TOPIC_DISCOVERY=marked`, mark the desired terminals using IDs from `ccgram topic status`, and restart the bot.
+
+[Full Changelog](https://github.com/alexei-led/ccgram/compare/v4.22.0...v4.23.0)
+
 ## [4.22.0] - 2026-11-09
 
 ### Performance — cost follows new output, not transcript size
