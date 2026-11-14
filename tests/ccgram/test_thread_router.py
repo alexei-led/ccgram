@@ -420,6 +420,79 @@ class TestTopicDeletionClaims:
         assert router.begin_topic_deletion(topic) is True
 
 
+class TestProvisioningNativeWitness:
+    def test_captured_owner_survives_reload_independently_of_current_window(
+        self, router
+    ):
+        claim = router.begin_topic_provisioning(
+            100,
+            -100,
+            target_id="@1",
+            kind="topic_for_target",
+            topic_mark_owner="captured-O",
+        )
+        saved = router.to_dict()
+        restored = ThreadRouter(
+            schedule_save=lambda: None, has_window_state=lambda _wid: False
+        )
+        restored.from_dict(saved)
+        loaded = restored.get_topic_provisioning(claim.claim_id)
+        assert loaded is not None
+        assert loaded.topic_mark_owner == "captured-O"
+
+    def test_known_capture_is_sticky_and_mismatch_is_atomic(self, router):
+        initial = router.begin_topic_provisioning(
+            100, -100, target_id="@1", kind="topic_for_target"
+        )
+        captured = router.capture_provisioning_owner(initial.claim_id, "Opaque-O")
+        assert captured.topic_mark_owner == "Opaque-O"
+        assert router.capture_provisioning_owner(initial.claim_id, None) == captured
+        assert (
+            router.capture_provisioning_owner(initial.claim_id, "Opaque-O") == captured
+        )
+        with pytest.raises(ValueError, match="owner changed"):
+            router.capture_provisioning_owner(initial.claim_id, "opaque-o")
+        assert router.get_topic_provisioning(initial.claim_id) == captured
+
+    def test_legacy_missing_owner_is_unknown(self, router):
+        claim = router.begin_topic_provisioning(
+            100, -100, target_id="@1", kind="topic_for_target"
+        )
+        saved = router.to_dict()
+        saved["topic_provisioning"][0].pop("topic_mark_owner")
+        router.from_dict(saved)
+        loaded = router.get_topic_provisioning(claim.claim_id)
+        assert loaded is not None and loaded.topic_mark_owner is None
+
+    def test_target_supersession_preserves_witness_and_previous_reservation(
+        self, router
+    ):
+        claim = router.begin_topic_provisioning(
+            100,
+            -100,
+            target_id="provisional",
+            kind="target_for_topic",
+            topic_mark_owner="O",
+        )
+        updated = router.attach_provisioning_target(claim.claim_id, "durable")
+        assert updated.topic_mark_owner == "O"
+        assert updated.previous_target_id == "provisional"
+        assert router.has_target_provisioning("provisional")
+        assert router.has_target_provisioning("durable")
+
+    def test_new_resource_replacement_has_its_own_witness(self, router):
+        claim = router.begin_topic_provisioning(
+            100,
+            -100,
+            target_id="new",
+            previous_target_id="old",
+            kind="replacement",
+            topic_mark_owner="P",
+        )
+        assert claim.topic_mark_owner == "P"
+        assert router.has_target_provisioning("old")
+
+
 class TestTopicProvisioning:
     def test_begin_is_durable_and_owned(self, router: ThreadRouter) -> None:
         claim = router.begin_topic_provisioning(
@@ -446,6 +519,7 @@ class TestTopicProvisioning:
                 "created_at": claim.created_at,
                 "retry_thread_id": None,
                 "retry_at": 0.0,
+                "topic_mark_owner": None,
             }
         ]
 
