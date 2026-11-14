@@ -55,6 +55,10 @@ _STALE_TRANSCRIPT_MAX_AGE_SECS = 120.0
 # How many recent session files to inspect when searching for a cwd match.
 _DISCOVERY_SCAN_LIMIT = 20
 
+#: Providers that share pi's transcript format and follow-up input contract.
+#: Kept here so session_protocol modules import one authority, not copies.
+PI_LIKE_PROVIDERS: frozenset[str] = frozenset({"pi", "omo"})
+
 
 def encode_cwd_dirname(cwd: str) -> str:
     """Encode a working directory into pi's session subdirectory name.
@@ -72,7 +76,12 @@ def encode_cwd_dirname(cwd: str) -> str:
 
 def _candidate_transcripts(cwd: str) -> list[tuple[float, Path]]:
     """Return ``(mtime, path)`` tuples for this cwd's sessions, newest first."""
-    session_dir = _pi_sessions_dir() / encode_cwd_dirname(cwd)
+    return _scan_sessions(_pi_sessions_dir(), cwd)
+
+
+def _scan_sessions(sessions_dir: Path, cwd: str) -> list[tuple[float, Path]]:
+    """List the JSONL transcripts for ``cwd`` under ``sessions_dir``, newest first."""
+    session_dir = sessions_dir / encode_cwd_dirname(cwd)
     if not session_dir.is_dir():
         return []
     results: list[tuple[float, Path]] = []
@@ -90,8 +99,27 @@ def _candidate_transcripts(cwd: str) -> list[tuple[float, Path]]:
     return results
 
 
+def provider_sessions_dir(
+    env_names: tuple[str, ...], default_parts: tuple[str, ...]
+) -> Path:
+    """Resolve ``<agent dir>/sessions`` for forks that do not use pi's env name."""
+    for name in env_names:
+        configured = os.environ.get(name)
+        if configured and configured.strip():
+            return Path(configured.strip()).expanduser() / "sessions"
+    return Path.home().joinpath(*default_parts) / "sessions"
+
+
 class PiProvider(JsonlProvider):
     """AgentProvider implementation for the pi coding agent CLI."""
+
+    def _sessions_dir(self) -> Path:
+        """Pi's session directory; module-level seam kept for tests and forks."""
+        return _pi_sessions_dir()
+
+    def _candidate_transcripts(self, cwd: str) -> list[tuple[float, Path]]:
+        """Return ``(mtime, path)`` tuples for this cwd's sessions, newest first."""
+        return _scan_sessions(self._sessions_dir(), cwd)
 
     _CAPS = ProviderCapabilities(
         name="pi",
@@ -169,7 +197,7 @@ class PiProvider(JsonlProvider):
         except OSError:
             return None
 
-        for mtime, path in _candidate_transcripts(cwd)[:_DISCOVERY_SCAN_LIMIT]:
+        for mtime, path in self._candidate_transcripts(cwd)[:_DISCOVERY_SCAN_LIMIT]:
             if age_limit > 0 and now - mtime > age_limit:
                 break
             header = read_session_header(str(path))

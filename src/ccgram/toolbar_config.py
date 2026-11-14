@@ -228,6 +228,15 @@ DEFAULT_LAYOUTS: dict[str, ToolbarLayout] = {
             ("last", "getfile", "close"),
         ),
     ),
+    "omo": ToolbarLayout(
+        style="emoji_text",
+        buttons=(
+            ("screen", "ctrlc", "live"),
+            ("esc", "tab", "model"),
+            ("up", "enter", "down"),
+            ("last", "getfile", "close"),
+        ),
+    ),
     "pi": ToolbarLayout(
         style="emoji_text",
         buttons=(
