@@ -48,6 +48,7 @@ from ..user_state import PENDING_THREAD_ID, PENDING_THREAD_TEXT
 
 if TYPE_CHECKING:
     from telegram.ext import ContextTypes
+    from ...multiplexer.base import WindowRef
 
 logger = structlog.get_logger()
 
@@ -287,22 +288,32 @@ async def _select_and_bind(
     user_id: int,
     thread_id: int,
     selected_wid: str,
-    display: str,
+    window: WindowRef,
     update: Update,
 ) -> bool:
+    owner = window.topic_mark_owner
     with pending_creation_transaction():
         if thread_router.has_target_provisioning(selected_wid) is True:
             await query.answer(
                 "Session is still being provisioned; please retry", show_alert=True
             )
             return False
-        selected = await select_topic_target(selected_wid)
+        if (
+            config.topic_discovery_mode == "marked"
+            and window.topic_markable
+            and owner is None
+        ):
+            await query.answer(
+                "Could not verify topic selection; please retry", show_alert=True
+            )
+            return False
+        selected = await select_topic_target(selected_wid, expected_owner=owner)
         if not selected:
             if (
                 config.topic_discovery_mode == "marked"
                 or lifecycle_state.is_topic_detach_pending(
                     selected_wid,
-                    owner=lifecycle_state.get_topic_mark_owner(selected_wid),
+                    owner=owner,
                 )
             ):
                 await query.answer(
@@ -312,7 +323,7 @@ async def _select_and_bind(
             logger.warning("topic_selection_pending_on_bind", window_id=selected_wid)
         current = await verify_topic_target(
             selected_wid,
-            owner=lifecycle_state.get_topic_mark_owner(selected_wid),
+            owner=owner,
             require_marked=config.topic_discovery_mode == "marked",
         )
         if current is None or not lifecycle_state.record_topic_mark_owner(
@@ -327,7 +338,7 @@ async def _select_and_bind(
             user_id,
             thread_id,
             selected_wid,
-            window_name=display,
+            window_name=window.window_name,
             chat_id=(
                 update.callback_query.message.chat.id
                 if update.callback_query and update.callback_query.message
@@ -389,9 +400,7 @@ async def _handle_bind(
     # provider history first so that empty state is not mistaken for an exit.
     previous_provider = window_query.get_window_provider(selected_wid)
     initial_provider = get_initial_provider_name(selected_wid)
-    if not await _select_and_bind(
-        query, user_id, thread_id, selected_wid, display, update
-    ):
+    if not await _select_and_bind(query, user_id, thread_id, selected_wid, w, update):
         return
     clear_window_picker_state(context.user_data)
     _store_group_chat_id(user_id, thread_id, update, query)

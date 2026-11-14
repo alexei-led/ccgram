@@ -228,8 +228,9 @@ async def select_topic_target(
     mux: Multiplexer | None = None,
     claim_id: str | None = None,
     router: ThreadRouter | None = None,
+    expected_owner: str | None = None,
 ) -> bool:
-    """Checkpoint an observed owner and immutable mark-on intent before writing."""
+    """Checkpoint native intent without replacing a known caller or claim witness."""
     # Lazy: only bot selection uses the wired backend.
     from .multiplexer import multiplexer
 
@@ -239,6 +240,10 @@ async def select_topic_target(
     mux = multiplexer if mux is None else mux
     async with _selection_lock(window_id):
         window = await _read_window(window_id, mux)
+        if expected_owner is not None and (
+            window is None or window.topic_mark_owner != expected_owner
+        ):
+            return False
         owner = (
             window.topic_mark_owner
             if window is not None

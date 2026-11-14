@@ -17,7 +17,7 @@ from ccgram.handlers.callback_data import CB_WIN_BIND, CB_WIN_CANCEL, CB_WIN_NEW
 from ccgram.handlers.topics.directory_browser import UNBOUND_WINDOWS_KEY
 from ccgram.handlers.topics.new_command import new_command
 from ccgram.handlers.user_state import PENDING_THREAD_ID, PENDING_THREAD_TEXT
-from ccgram.multiplexer.base import ForegroundInfo
+from ccgram.multiplexer.base import ForegroundInfo, WindowRef
 from ccgram.handlers.topics.window_callbacks import (
     _forward_pending_text,
     _send_verified_shell_input,
@@ -173,6 +173,126 @@ def _bind_env(window: MagicMock | None = None) -> Iterator[_BindMocks]:
         yield _BindMocks(
             session=session, router=router, find_window=find_window, edit=edit
         )
+
+
+@pytest.mark.parametrize("mode", ["auto", "marked"])
+@pytest.mark.parametrize("phase", ["before-selection", "during-failed-mark"])
+@pytest.mark.parametrize(
+    "initial_owner,markable,current_owner",
+    [
+        ("original-O", True, "original-O"),
+        ("original-O", True, "replacement-P"),
+        ("original-O", True, None),
+        (None, True, None),
+        (None, True, "replacement-P"),
+        (None, False, None),
+    ],
+)
+async def test_picker_keeps_original_native_owner_across_selection_awaits(
+    monkeypatch, mode, phase, initial_owner, markable, current_owner
+):
+    from ccgram.config import config
+    from ccgram.thread_router import ThreadRouter
+    from ccgram.window_state_ports import lifecycle_state
+    from ccgram.window_state_store import get_window_store
+
+    monkeypatch.setattr(config, "topic_discovery_mode", mode)
+    store = get_window_store()
+    router = ThreadRouter(schedule_save=lambda: None, has_window_state=store.has_window)
+    router.bind_thread(200, 77, "@5", chat_id=-100888)
+    lifecycle_state.record_topic_mark_owner("@5", initial_owner)
+    initial = WindowRef(
+        "@5",
+        "selected",
+        "/p",
+        pane_current_command="claude",
+        topic_marked=True,
+        topic_mark_owner=initial_owner,
+        topic_markable=markable,
+    )
+    replacement = replace(initial, topic_mark_owner=current_owner)
+    calls = 0
+    current = initial
+
+    async def find_window(_wid):
+        nonlocal calls, current
+        calls += 1
+        if calls > 1 and phase == "before-selection":
+            current = replacement
+            lifecycle_state.observe_topic_mark_owner("@5", current_owner)
+        return current
+
+    async def native_mark(_wid, _desired, *, owner):
+        nonlocal current
+        if phase == "during-failed-mark":
+            assert owner == initial_owner
+            current = replacement
+            lifecycle_state.observe_topic_mark_owner("@5", current_owner)
+            return False
+        return True
+
+    native = SimpleNamespace(
+        find_window_by_id=AsyncMock(side_effect=find_window),
+        set_topic_mark=AsyncMock(side_effect=native_mark),
+    )
+    manager = SimpleNamespace(
+        flush_state=lambda: None, set_window_provider=lambda *_args: None
+    )
+    query, update, context = _make_query_update_context(
+        user_data={
+            UNBOUND_WINDOWS_KEY: ["@5"],
+            PENDING_THREAD_ID: 42,
+            PENDING_THREAD_TEXT: "keep this off replacement terminals",
+        }
+    )
+    with (
+        patch(f"{_MODULE}thread_router", router),
+        patch(f"{_MODULE}session_manager", manager),
+        patch("ccgram.session.session_manager", manager),
+        patch(f"{_MODULE}tmux_manager", native),
+        patch("ccgram.multiplexer.multiplexer", native),
+        patch(
+            "ccgram.providers.detect_provider_from_pane",
+            AsyncMock(return_value="claude"),
+        ),
+        patch(f"{_MODULE}adapter_for", return_value=MagicMock()),
+        patch(f"{_MODULE}safe_edit", AsyncMock()),
+        patch(
+            f"{_MODULE}send_telegram_to_window", AsyncMock(return_value=(True, ""))
+        ) as sender,
+    ):
+        await handle_window_callback(query, 100, f"{CB_WIN_BIND}0", update, context)
+
+    if initial_owner is None:
+        bound = not markable or mode == "auto"
+    else:
+        bound = current_owner == initial_owner and (
+            phase == "before-selection" or mode == "auto"
+        )
+    assert router.get_window_for_chat_thread(-100999, 42) == ("@5" if bound else None)
+    assert router.get_window_for_chat_thread(-100888, 77) == "@5"
+    assert sender.await_count == int(bound)
+    if not bound:
+        assert (
+            context.user_data[PENDING_THREAD_TEXT]
+            == "keep this off replacement terminals"
+        )
+    if (
+        initial_owner is not None
+        and phase == "before-selection"
+        and current_owner != initial_owner
+    ):
+        native.set_topic_mark.assert_not_awaited()
+        assert not lifecycle_state.pending_topic_selections()
+    if initial_owner is not None and phase == "during-failed-mark":
+        assert [op.owner for op in lifecycle_state.pending_topic_selections()] == [
+            "original-O"
+        ]
+        native.set_topic_mark.assert_awaited_once_with("@5", True, owner="original-O")
+
+    if not markable or (initial_owner is None and mode == "marked"):
+        native.set_topic_mark.assert_not_awaited()
+        assert not lifecycle_state.pending_topic_selections()
 
 
 @pytest.mark.parametrize("mode", ["auto", "marked"])
