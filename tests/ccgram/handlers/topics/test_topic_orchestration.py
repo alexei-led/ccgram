@@ -75,6 +75,8 @@ def _make_topic(thread_id: int = 999) -> MagicMock:
 def _configure_provisioning(mock_router: MagicMock) -> None:
     claim = MagicMock()
     claim.claim_id = "claim-1"
+    claim.topic_mark_owner = None
+    mock_router.get_topic_provisioning.return_value = claim
     mock_router.begin_topic_provisioning.return_value = claim
     mock_router.commit_topic_provisioning.return_value = True
 
@@ -1335,6 +1337,57 @@ class TestOwnedAutomaticAdmission:
         finally:
             install_window_store(previous)
 
+    async def test_automatic_claim_owner_is_durable_before_telegram_can_change_bound_observation(
+        self, runtime, tmp_path, monkeypatch
+    ):
+        import json
+        from ccgram.handlers.topics import topic_orchestration as mod
+        from ccgram.window_state_ports import lifecycle_state
+
+        router, store, mux = runtime
+        router.bind_thread(100, 77, "@10", chat_id=-100501)
+        checkpoint = tmp_path / "state.json"
+        monkeypatch.setattr(
+            mod.session_manager,
+            "flush_state",
+            lambda: checkpoint.write_text(
+                json.dumps({"router": router.to_dict(), "store": store.to_dict()})
+            ),
+        )
+
+        async def create(**_kwargs):
+            saved = json.loads(checkpoint.read_text())
+            assert (
+                saved["router"]["topic_provisioning"][0]["topic_mark_owner"] == "owned"
+            )
+            lifecycle_state.observe_topic_mark_owner("@10", "replacement")
+            mux.list_windows_for_reconciliation.return_value = [
+                WindowRef(
+                    "@10",
+                    "replacement",
+                    "/p",
+                    topic_marked=True,
+                    topic_mark_owner="replacement",
+                )
+            ]
+            return _make_topic(501)
+
+        client = AsyncMock()
+        client.create_forum_topic.side_effect = create
+        assert not await create_topic_in_chat(
+            client, -100500, "@10", "project", user_id=100, automatic=True
+        )
+        restored = ThreadRouter(
+            schedule_save=lambda: None, has_window_state=lambda _wid: False
+        )
+        restored.from_dict(json.loads(checkpoint.read_text())["router"])
+        (claim,) = restored.iter_topic_provisionings()
+        assert claim.topic_mark_owner == "owned" and claim.thread_id == 501
+        assert restored.get_window_for_chat_thread(-100500, 501) is None
+        assert restored.get_window_for_chat_thread(-100501, 77) == "@10"
+        assert store.window_states["@10"].topic_mark_owner == "replacement"
+        mux.set_topic_mark.assert_not_awaited()
+
     async def test_automatic_bind_captures_owner_without_setting_mark(self, runtime):
         router, store, mux = runtime
         client = AsyncMock()
@@ -1720,9 +1773,13 @@ class TestOwnedAutomaticAdmission:
         from ccgram.window_state_store import WindowState
 
         router, store, _ = runtime
-        store.window_states["@old"] = WindowState(topic_mark_owner="owned")
+        store.window_states["@old"] = WindowState(topic_mark_owner="replacement-P")
         router.begin_topic_provisioning(
-            100, -100500, target_id="@old", kind="target_for_topic"
+            100,
+            -100500,
+            target_id="@old",
+            kind="target_for_topic",
+            topic_mark_owner="owned",
         )
         client = AsyncMock()
 

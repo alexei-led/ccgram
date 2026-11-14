@@ -14,7 +14,8 @@ from ...config import config
 from ...topic_selection import recover_topic_selections, verify_topic_target
 from ...window_state_ports import lifecycle_state
 from ...multiplexer import multiplexer
-from ...multiplexer.base import canonical_window_id
+from ...multiplexer.base import WindowRef, canonical_window_id
+from ...multiplexer.topic_mapping import should_adopt_window
 from ...multiplexer.reconciliation import window_presence
 from ...session_protocol.telegram import TelegramSessionAdapter
 from ...providers import registry as provider_registry
@@ -293,11 +294,23 @@ async def _create_prepared_replacement(
             user_id=prepared.user_id,
             propagate_retry_after=True,
             claim_id=prepared.claim_id,
+            automatic=prepared.kind == "topic_for_target",
         )
     except RetryAfter:
         return "rate_limited"
     session_manager.flush_state()
     return _recreation_outcome(router, prepared, created=created)
+
+
+def _recovered_window_admissible(claim: TopicProvisioning, window: WindowRef) -> bool:
+    """Only automatic claims inherit the backend's current adoption verdict."""
+    return claim.kind != "topic_for_target" or should_adopt_window(
+        window,
+        mode=config.topic_discovery_mode,
+        detach_pending=lifecycle_state.is_topic_detach_pending(
+            window.window_id, owner=window.topic_mark_owner
+        ),
+    )
 
 
 async def _select_recovered_target(
@@ -307,11 +320,11 @@ async def _select_recovered_target(
     assert claim.target_id is not None
     if not await _claim_agent_is_ready(claim, adapter):
         return False
-    saved_owner = lifecycle_state.get_topic_mark_owner(claim.target_id)
+    saved_owner = claim.topic_mark_owner
     window = await verify_topic_target(
         claim.target_id, owner=saved_owner, require_marked=False, mux=multiplexer
     )
-    if window is None:
+    if window is None or not _recovered_window_admissible(claim, window):
         return False
     owner = window.topic_mark_owner or saved_owner
     marked_mode = config.topic_discovery_mode == "marked"
@@ -338,9 +351,7 @@ async def _select_recovered_target(
     current = await verify_topic_target(
         claim.target_id, owner=saved_owner, require_marked=marked_mode, mux=multiplexer
     )
-    if current is None or (
-        marked_mode and claim.kind != "target_for_topic" and not current.topic_markable
-    ):
+    if current is None or not _recovered_window_admissible(claim, current):
         return False
     if require_selection and lifecycle_state.is_topic_detach_pending(
         claim.target_id, owner=current.topic_mark_owner
@@ -372,7 +383,7 @@ async def _commit_present_topic(
             return "unresolved"
         committed = router.commit_topic_provisioning(claim.claim_id)
         completed = not committed or lifecycle_state.complete_topic_admission(
-            claim.target_id, lifecycle_state.get_topic_mark_owner(claim.target_id)
+            claim.target_id, claim.topic_mark_owner
         )
         session_manager.flush_state()
         if not completed:
