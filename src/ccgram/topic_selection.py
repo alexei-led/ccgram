@@ -3,20 +3,55 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
+import threading
 from typing import TYPE_CHECKING
 from weakref import WeakValueDictionary
 
 import structlog
 
 from .multiplexer.base import canonical_window_id
-from .topic_mark_journal import TopicMarkOperation
+from .topic_mark_journal import (
+    TopicMarkOperation,
+    has_topic_mark_conflict,
+    operation_matches,
+)
+from .topic_mark_types import TopicMarkWriteWitness
 
 if TYPE_CHECKING:
     from .multiplexer.base import Multiplexer, WindowRef
     from .thread_router import ThreadRouter
+    from .window_state_store import WindowStateStore
 
 logger = structlog.get_logger()
 _selection_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+_ENDPOINT_SCOPE_LENGTH = 64
+
+
+def is_topic_mark_endpoint_scope(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == _ENDPOINT_SCOPE_LENGTH
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+async def read_topic_mark_endpoint_scope(backend: Multiplexer) -> str:
+    scope = await backend.topic_mark_endpoint_scope()
+    if not isinstance(scope, str) or not is_topic_mark_endpoint_scope(scope):
+        raise RuntimeError("Native marker endpoint is unconfirmed")
+    return scope
+
+
+async def require_topic_mark_endpoint_scope(
+    backend: Multiplexer, expected: str
+) -> None:
+    if not is_topic_mark_endpoint_scope(expected) or (
+        await read_topic_mark_endpoint_scope(backend) != expected
+    ):
+        raise RuntimeError(
+            "Native marker endpoint changed or does not match this command"
+        )
 
 
 def _selection_lock(window_id: str, *, owner: str | None = None) -> asyncio.Lock:
@@ -42,18 +77,260 @@ async def _read_window(window_id: str, mux: Multiplexer) -> WindowRef | None:
         return None
 
 
-async def set_topic_selection(
-    window: WindowRef, marked: bool, *, backend: Multiplexer
+def _finish_attempt(
+    store: WindowStateStore,
+    flush: Callable[[], None],
+    operation: TopicMarkOperation,
+    dispatch_id: str,
+) -> TopicMarkOperation:
+    current = store.topic_mark_operations.get(operation.key)
+    finished = store.finish_topic_mark_attempt(
+        operation.window_id, owner=operation.owner, dispatch_id=dispatch_id
+    )
+    if finished is None or current is None:
+        raise ValueError("Stale native marker completion")
+    try:
+        flush()
+    except BaseException:
+        store.restore_topic_mark(current)
+        raise
+    return finished
+
+
+class _TopicMarkGuard:
+    def __init__(
+        self,
+        operation: TopicMarkOperation,
+        store: WindowStateStore,
+        flush: Callable[[], None],
+        backend_name: str,
+        before_arm: Callable[[], None] | None = None,
+        *,
+        endpoint_scope: str | None = None,
+        terminal_receipt: Callable[[str], None] | None = None,
+    ) -> None:
+        self.operation = operation
+        self.store = store
+        self.flush = flush
+        self.backend_name = backend_name
+        self.before_arm = before_arm
+        self.endpoint_scope = endpoint_scope
+        self.terminal_receipt = terminal_receipt
+        self.finished: TopicMarkOperation | None = None
+        self._thread = threading.get_ident()
+        self._loop = asyncio.get_running_loop()
+        self._dispatch_id: str | None = None
+
+    def _check_context(self) -> None:
+        if (
+            threading.get_ident() != self._thread
+            or asyncio.get_running_loop() is not self._loop
+        ):
+            raise RuntimeError("Marker journal callback is outside its state owner")
+
+    def arm(self, witness: TopicMarkWriteWitness) -> None:
+        self._check_context()
+        if (
+            self._dispatch_id is not None
+            or witness.backend != self.backend_name
+            or self.operation.owner is None
+        ):
+            raise ValueError("Duplicate or foreign native marker attempt")
+        if (
+            self.endpoint_scope is not None
+            and witness.endpoint_scope != self.endpoint_scope
+        ):
+            raise RuntimeError("Native marker endpoint changed before dispatch")
+        if has_topic_mark_conflict(
+            self.store.topic_mark_operations.values(),
+            self.operation.window_id,
+            self.operation.owner,
+            self.operation.desired,
+        ):
+            raise RuntimeError("Pending native marker work changed before dispatch")
+        if self.before_arm is not None:
+            self.before_arm()
+        self.store.begin_topic_mark_attempt(self.operation, witness)
+        self._dispatch_id = witness.dispatch_id
+        self.flush()
+
+    def terminal(self, dispatch_id: str) -> None:
+        self._check_context()
+        if self._dispatch_id != dispatch_id:
+            raise ValueError("Stale native marker completion")
+        if self.terminal_receipt is not None:
+            self.terminal_receipt(dispatch_id)
+        else:
+            self.finished = _finish_attempt(
+                self.store, self.flush, self.operation, dispatch_id
+            )
+
+
+def _settle_stored(
+    operation: TopicMarkOperation, store: WindowStateStore, flush: Callable[[], None]
 ) -> bool:
-    """Use the CLI's captured native witness without re-resolving its route."""
+    if not store.settle_topic_mark(operation):
+        return False
+    try:
+        flush()
+    except BaseException:
+        store.restore_topic_mark(operation)
+        raise
+    return True
+
+
+async def _write_topic_mark(
+    operation: TopicMarkOperation,
+    backend: Multiplexer,
+    store: WindowStateStore,
+    flush: Callable[[], None],
+    before_arm: Callable[[], None] | None = None,
+) -> bool:
+    flush()
+    guard = _TopicMarkGuard(
+        operation, store, flush, backend.capabilities.name, before_arm
+    )
+    verified = await backend.set_topic_mark(
+        operation.window_id,
+        operation.desired,
+        owner=operation.owner,
+        write_guard=guard,
+    )
+    current = store.topic_mark_operations.get(operation.key)
+    return (
+        verified is True
+        and current is not None
+        and current.desired == operation.desired
+        and current.attempt is None
+        and _settle_stored(current, store, flush)
+    )
+
+
+def _manual_topic_operation(
+    window: WindowRef, marked: bool, store: WindowStateStore
+) -> tuple[TopicMarkOperation, TopicMarkOperation | None]:
+    if has_topic_mark_conflict(
+        store.topic_mark_operations.values(),
+        window.window_id,
+        window.topic_mark_owner,
+        marked,
+    ):
+        raise RuntimeError("Pending native marker work owns this target")
+    candidate = TopicMarkOperation(window.window_id, window.topic_mark_owner, marked)
+    prior = store.topic_mark_operations.get(candidate.key)
+    return (candidate if prior is None else prior), prior
+
+
+async def set_topic_selection_locked(
+    window: WindowRef,
+    marked: bool,
+    *,
+    backend: Multiplexer,
+    store: WindowStateStore,
+    flush: Callable[[], None],
+    endpoint_scope: str,
+) -> bool:
+    """Bind manual authority to its actual origin, never daemon configuration."""
     if not window.topic_markable or not window.topic_mark_owner:
         return False
-    return (
-        await backend.set_topic_mark(
-            window.window_id, marked, owner=window.topic_mark_owner
-        )
-        is True
+    await require_topic_mark_endpoint_scope(backend, endpoint_scope)
+    operation, prior = _manual_topic_operation(window, marked, store)
+
+    def before_arm() -> None:
+        if store.topic_mark_operations.get(operation.key) is not prior:
+            raise RuntimeError("Native marker intent changed before dispatch")
+        if prior is None:
+            store.queue_topic_mark(window.window_id, window.topic_mark_owner, marked)
+
+    receipt: str | None = None
+
+    def terminal_receipt(dispatch_id: str) -> None:
+        nonlocal receipt
+        if receipt is not None:
+            raise ValueError("Duplicate native marker completion")
+        receipt = dispatch_id
+
+    guard = _TopicMarkGuard(
+        operation,
+        store,
+        flush,
+        backend.capabilities.name,
+        before_arm,
+        endpoint_scope=endpoint_scope,
+        terminal_receipt=terminal_receipt,
     )
+    verified = await backend.set_topic_mark(
+        operation.window_id, marked, owner=operation.owner, write_guard=guard
+    )
+    # Keep the durable fence until origin is confirmed; failed cleanup cannot
+    # leave a new, unfenced request runnable against a replacement endpoint.
+    await require_topic_mark_endpoint_scope(backend, endpoint_scope)
+    if receipt is not None:
+        guard.finished = _finish_attempt(store, flush, operation, receipt)
+    if verified is not True or has_topic_mark_conflict(
+        store.topic_mark_operations.values(),
+        window.window_id,
+        window.topic_mark_owner,
+        marked,
+    ):
+        return False
+    current = store.topic_mark_operations.get(operation.key)
+    if current is prior or current is guard.finished:
+        return current is None or _settle_stored(current, store, flush)
+    return True
+
+
+async def _recover_topic_mark_attempt(
+    operation: TopicMarkOperation,
+    backend: Multiplexer,
+    store: WindowStateStore,
+    flush: Callable[[], None],
+) -> TopicMarkOperation | None:
+    attempt = operation.attempt
+    current = store.topic_mark_operations.get(operation.key)
+    if (
+        operation.owner is None
+        or attempt is None
+        or current is None
+        or current.attempt != attempt
+    ):
+        return None
+    try:
+        retired = await backend.recover_topic_mark_write(attempt.witness)
+    except Exception:
+        logger.warning("topic_mark_retirement_unconfirmed", exc_info=True)
+        return None
+    if retired is not True:
+        return None
+    return _finish_attempt(store, flush, operation, attempt.witness.dispatch_id)
+
+
+async def set_topic_selection(
+    window: WindowRef,
+    marked: bool,
+    *,
+    backend: Multiplexer,
+    store: WindowStateStore,
+    flush: Callable[[], None],
+    endpoint_scope: str,
+) -> bool:
+    if not window.topic_markable or not window.topic_mark_owner:
+        return False
+    async with _selection_lock(window.window_id, owner=window.topic_mark_owner):
+        await require_topic_mark_endpoint_scope(backend, endpoint_scope)
+        for pending in tuple(store.topic_mark_operations.values()):
+            if pending.attempt is not None and operation_matches(
+                pending, window.window_id, window.topic_mark_owner
+            ):
+                await _recover_topic_mark_attempt(pending, backend, store, flush)
+        return await set_topic_selection_locked(
+            window,
+            marked,
+            backend=backend,
+            store=store,
+            flush=flush,
+            endpoint_scope=endpoint_scope,
+        )
 
 
 def _flush() -> None:
@@ -73,17 +350,10 @@ def _queue(window_id: str, owner: str | None, desired: bool) -> TopicMarkOperati
 
 
 def _settle(operation: TopicMarkOperation) -> bool:
-    # Lazy: the CLI reads immutable DTOs without initializing bot state.
-    from .window_state_ports import lifecycle_state
+    # Lazy: only bot lifecycle operations use the installed state store.
+    from .window_state_store import get_window_store
 
-    if not lifecycle_state.settle_topic_mark(operation):
-        return False
-    try:
-        _flush()
-    except BaseException:
-        lifecycle_state.restore_topic_mark(operation)
-        raise
-    return True
+    return _settle_stored(operation, get_window_store(), _flush)
 
 
 def _same_selection_resource(
@@ -152,46 +422,53 @@ async def _finish_topic_selection(
         )
         return False
     async with _selection_lock(operation.window_id, owner=operation.owner):
-        if not lifecycle_state.topic_mark_operation_is_current(operation) or (
-            operation.desired
-            and lifecycle_state.is_topic_detach_pending(
-                operation.window_id, owner=operation.owner
-            )
-        ):
-            return False
-        # Lazy: only clear completion checks binding and provisioning consumers.
-        from .thread_router import thread_router
+        return await _finish_topic_selection_locked(operation, mux, router=router)
 
-        consumer_router = thread_router if router is None else router
+
+async def _finish_topic_selection_locked(
+    operation: TopicMarkOperation,
+    mux: Multiplexer,
+    *,
+    router: ThreadRouter | None,
+) -> bool:
+    # Lazy: only the bot retry path accesses installed lifecycle/routing state.
+    from .window_state_ports import lifecycle_state
+    from .window_state_store import get_window_store
+    from .thread_router import thread_router
+
+    store = get_window_store()
+    if not lifecycle_state.topic_mark_operation_is_current(operation):
+        return False
+    if operation.attempt is not None:
+        recovered = await _recover_topic_mark_attempt(operation, mux, store, _flush)
+        if recovered is None:
+            return False
+        operation = recovered
+    if operation.desired and lifecycle_state.is_topic_detach_pending(
+        operation.window_id, owner=operation.owner
+    ):
+        return False
+    consumer_router = thread_router if router is None else router
+    if not operation.desired and _has_remaining_consumers(consumer_router, operation):
+        return _settle(operation)
+
+    def before_arm() -> None:
         if not operation.desired and _has_remaining_consumers(
             consumer_router, operation
         ):
-            return _settle(operation)
-        # A failed preparation checkpoint can leave a record only in memory.
-        # Every retry must durably retain its exact intent before native I/O.
-        _flush()
-        try:
-            verified = await mux.set_topic_mark(
-                operation.window_id, operation.desired, owner=operation.owner
-            )
-        except Exception:
-            logger.warning(
-                "topic_selection_retry_pending",
-                window_id=operation.window_id,
-                owner=operation.owner,
-                marked=operation.desired,
-                exc_info=True,
-            )
-            return False
-        if verified is not True:
-            logger.warning(
-                "native_topic_mark_unverified",
-                window_id=operation.window_id,
-                owner=operation.owner,
-                marked=operation.desired,
-            )
-            return False
-        return _settle(operation)
+            raise ValueError("A binding or creation now protects this marker")
+
+    try:
+        return await _write_topic_mark(operation, mux, store, _flush, before_arm)
+    except Exception:
+        logger.warning(
+            "topic_selection_retry_pending",
+            window_id=operation.window_id,
+            owner=operation.owner,
+            marked=operation.desired,
+            exc_info=True,
+        )
+        return False
 
 
 async def verify_topic_target(
@@ -269,7 +546,9 @@ async def select_topic_target(
                 return False
             claim_router.capture_provisioning_owner(claim_id, owner)
             _flush()
-        if lifecycle_state.is_topic_detach_pending(window_id, owner=owner):
+        if lifecycle_state.is_topic_detach_pending(
+            window_id, owner=owner
+        ) or lifecycle_state.is_topic_mark_quarantined(window_id, owner=owner):
             return False
         if window is not None and not window.topic_markable:
             lifecycle_state.record_topic_mark_owner(window_id, None)
@@ -286,8 +565,10 @@ async def select_topic_target(
         current = await verify_topic_target(
             window_id, owner=owner, require_marked=True, mux=mux
         )
-        return current is not None and not lifecycle_state.is_topic_detach_pending(
-            window_id, owner=owner
+        return (
+            current is not None
+            and not lifecycle_state.is_topic_detach_pending(window_id, owner=owner)
+            and not lifecycle_state.is_topic_mark_quarantined(window_id, owner=owner)
         )
 
 

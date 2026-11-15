@@ -63,11 +63,13 @@ class StatePersistence:
             self._do_save(strict=strict)
 
     def load(self) -> dict[str, Any]:
-        """Read JSON file and return raw dict. Returns empty dict if missing/invalid."""
-        if not self._path.exists():
-            return {}
+        """Only a genuinely missing file means there is no durable work."""
         try:
-            return json.loads(self._path.read_text())
-        except (json.JSONDecodeError, ValueError, OSError) as e:
-            logger.warning("Failed to load state: %s", e)
+            state = json.loads(self._path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
             return {}
+        if not isinstance(state, dict):
+            raise ValueError(
+                "State must be an object; refusing to discard durable work"
+            )
+        return state

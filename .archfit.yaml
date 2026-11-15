@@ -196,6 +196,8 @@ modules:
       - ccgram.monitor_events
       - ccgram.monitor_state
       - ccgram.event_stream_monitor # supervises multiplexer.watch_events → agent_status_cache / death
+      - ccgram.topic_selection
+      - ccgram.state_writer_lock
     layer: core
     owner: alexei-led
     subdomain: core
@@ -207,6 +209,7 @@ modules:
       - ccgram.window_resolver
       - ccgram.window_state_store
       - ccgram.window_view
+      - ccgram.topic_mark_journal
     layer: core
     owner: alexei-led
     subdomain: core
@@ -236,6 +239,7 @@ modules:
       - ccgram.utils
       - ccgram.expandable_quote
       - ccgram.tool_format
+      - ccgram.topic_discovery
     layer: core
     owner: alexei-led
     subdomain: generic # stable shared infra (config fan-in ~72)
@@ -304,12 +308,14 @@ modules:
       - ccgram.multiplexer.reconciliation # confirmed/unknown cross-backend presence contract
       - ccgram.multiplexer.window_liveness # neutral liveness state for queued delivery
       - ccgram.herdr_targets # persisted target-namespace contract shared with session state
+      - ccgram.topic_mark_types
     public:
       - ccgram.multiplexer
       - ccgram.multiplexer.base
       - ccgram.multiplexer.reconciliation
       - ccgram.multiplexer.window_liveness
       - ccgram.herdr_targets
+      - ccgram.topic_mark_types
     layer: core
     owner: alexei-led
     subdomain: generic
@@ -333,6 +339,8 @@ modules:
       - ccgram.multiplexer.herdr_commands # manager CLI to Herdr JSON-RPC translation
       - ccgram.multiplexer.herdr_socket # bounded Herdr socket transport
       - ccgram.multiplexer.registry
+      - ccgram.multiplexer.native_process
+      - ccgram.multiplexer.topic_mark_transport
     layer: adapter
     owner: alexei-led
     subdomain: generic
@@ -382,6 +390,8 @@ modules:
       - ccgram.doctor_cmd
       - ccgram.status_cmd
       - ccgram.hook
+      - ccgram.topic_mark_cmd
+      - ccgram.topic_mark_ipc
     layer: adapter
     owner: alexei-led
     subdomain: generic # composition root / wiring
