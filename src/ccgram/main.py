@@ -233,6 +233,9 @@ def _ensure_tmux_session(auto_detected: bool) -> None:
     # Lazy: main runs `ccgram` startup; defer imports until the run subcommand executes
     from .multiplexer.tmux import tmux_manager
 
+    tmux_manager.session_name = config.tmux_session_name
+    tmux_manager.main_window_name = config.tmux_main_window_name
+    tmux_manager.own_window_id = config.own_window_id
     logger = structlog.get_logger()
 
     # In auto-detect mode, the session must already exist.

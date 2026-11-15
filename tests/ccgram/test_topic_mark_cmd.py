@@ -456,3 +456,76 @@ async def test_live_writer_without_rpc_never_falls_back_to_native_mutation(
     backend.kill_window.assert_not_called()
     assert state["marked"] is False
     assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("action", ["status", "mark", "unmark"])
+def test_tmux_topic_console_needs_no_bot_credentials(tmp_path, action):
+    import json
+    from pathlib import Path
+    import subprocess
+    import sys
+
+    home = tmp_path / "home"
+    config_dir = home / ".ccgram"
+    tmux_dir = tmp_path / "tmux"
+    binary_dir = tmp_path / "bin"
+    for directory in (config_dir, tmux_dir, binary_dir):
+        directory.mkdir(parents=True, mode=0o700)
+    command_log = tmp_path / "tmux-commands.jsonl"
+    native = binary_dir / "tmux"
+    native.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "args = sys.argv[1:]\n"
+        "with Path(os.environ['TMUX_COMMAND_LOG']).open('a') as stream:\n"
+        "    stream.write(json.dumps(args) + '\\n')\n"
+        "if '-V' in args:\n"
+        "    print('tmux 3.8')\n"
+        "elif 'list-sessions' not in args:\n"
+        "    sys.exit(1)\n"
+    )
+    native.chmod(0o700)
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("CCGRAM_", "AGTERM_", "HERDR_"))
+        and key not in {"TELEGRAM_BOT_TOKEN", "ALLOWED_USERS", "TMUX", "TMUX_PANE"}
+    }
+    env.update(
+        HOME=str(home),
+        CCGRAM_DIR=str(config_dir),
+        CCGRAM_MULTIPLEXER="tmux",
+        TMUX_TMPDIR=str(tmux_dir),
+        TMUX_COMMAND_LOG=str(command_log),
+        PATH=str(binary_dir) + os.pathsep + env["PATH"],
+        PYTHONPATH=str(Path(__file__).resolve().parents[2] / "src"),
+    )
+    console = Path(sys.executable).with_name("ccgram")
+    command = [str(console), "topic", action]
+    if action != "status":
+        command.append("@1")
+
+    result = subprocess.run(
+        command,
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert "TELEGRAM_BOT_TOKEN" not in result.stderr
+    assert "ALLOWED_USERS" not in result.stderr
+    commands = [json.loads(line) for line in command_log.read_text().splitlines()]
+    if action == "status":
+        assert result.returncode == 0, result.stderr
+        payload = json.loads(result.stdout)
+        assert payload["backend"] == "tmux"
+        assert payload["targets"] == []
+        assert any("list-sessions" in args for args in commands)
+    else:
+        assert result.returncode == 1
+        assert "endpoint" in result.stderr.lower()
+        assert "unconfirmed" in result.stderr.lower()
+        assert any("display-message" in args for args in commands)
