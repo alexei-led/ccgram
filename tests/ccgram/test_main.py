@@ -8,21 +8,45 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from ccgram import main
 from ccgram.main import run_bot
+from ccgram.state_writer_lock import StateWriterLease
 
 
-def test_run_bot_exits_nonzero_after_sustained_polling_conflict() -> None:
+@pytest.fixture(autouse=True)
+def _isolate_state_writer_lease(monkeypatch):
+    monkeypatch.setattr(main, "_state_writer_lease", None)
+    yield
+    lease = main._state_writer_lease
+    if lease is not None:
+        lease.close()
+
+
+def test_run_bot_exits_nonzero_after_sustained_polling_conflict(tmp_path) -> None:
     config = MagicMock(
         allowed_users=set(),
         claude_projects_path="/tmp/claude",
         multiplexer_name="herdr",
+        state_file=tmp_path / "state.json",
     )
     application = MagicMock()
+    application.bot_data = {}
+
+    def create_application():
+        lease = main._state_writer_lease
+        assert lease is not None and lease.held
+        assert lease.state_path == (tmp_path / "state.json").resolve()
+        contender = StateWriterLease(tmp_path / "state.json")
+        try:
+            assert not contender.try_acquire()
+        finally:
+            contender.close()
+        return application
 
     with (
         patch.dict(os.environ, {"TMUX_SESSION_NAME": "test"}),
         patch("ccgram.main.setup_logging"),
-        patch("ccgram.bot.create_bot", return_value=application),
+        patch("ccgram.bot.create_bot", side_effect=create_application),
         patch("ccgram.config.config", config),
         patch("ccgram.bot.polling_conflict_requires_restart", return_value=True),
         patch("ccgram.main._install_signal_handlers"),
@@ -34,11 +58,12 @@ def test_run_bot_exits_nonzero_after_sustained_polling_conflict() -> None:
     application.run_polling.assert_called_once()
 
 
-def test_run_bot_execs_again_after_restart_callback() -> None:
+def test_run_bot_execs_again_after_restart_callback(tmp_path) -> None:
     config = MagicMock(
         allowed_users=set(),
         claude_projects_path="/tmp/claude",
         multiplexer_name="herdr",
+        state_file=tmp_path / "state.json",
     )
     application = MagicMock()
     application.bot_data = {}
@@ -63,7 +88,7 @@ def test_run_bot_execs_again_after_restart_callback() -> None:
     reraise_signal.assert_not_called()
 
 
-def test_run_bot_shutdown_reason_reads_signal_at_notification_time() -> None:
+def test_run_bot_shutdown_reason_reads_signal_at_notification_time(tmp_path) -> None:
     from ccgram import main
     from ccgram.bot import GET_SHUTDOWN_REASON_KEY
 
@@ -71,6 +96,7 @@ def test_run_bot_shutdown_reason_reads_signal_at_notification_time() -> None:
         allowed_users=set(),
         claude_projects_path="/tmp/claude",
         multiplexer_name="herdr",
+        state_file=tmp_path / "state.json",
     )
     application = MagicMock()
     application.bot_data = {}
