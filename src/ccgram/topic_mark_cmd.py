@@ -16,11 +16,12 @@ from .topic_discovery import (
     parse_topic_discovery_mode,
 )
 from .topic_mark_journal import (
-    has_topic_mark_conflict,
+    TOPIC_MARK_OPERATIONS_KEY,
     operation_matches,
     read_topic_mark_operations,
 )
-from .utils import ccgram_dir, load_ccgram_env
+from .utils import atomic_write_json, ccgram_dir, load_ccgram_env
+from .state_writer_lock import StateWriterLease
 
 
 def _select_targets(windows: list[WindowRef], target: str | None) -> list[WindowRef]:
@@ -36,10 +37,31 @@ def _select_targets(windows: list[WindowRef], target: str | None) -> list[Window
     return matches
 
 
+async def _capture_topic_inventory(
+    backend: Multiplexer,
+) -> tuple[list[WindowRef] | None, str]:
+    # Lazy: read-only status need not resolve mutation provenance.
+    from .topic_selection import (
+        read_topic_mark_endpoint_scope,
+        require_topic_mark_endpoint_scope,
+    )
+
+    scope = await read_topic_mark_endpoint_scope(backend)
+    windows = await backend.list_windows_for_reconciliation()
+    await require_topic_mark_endpoint_scope(backend, scope)
+    return windows, scope
+
+
 async def _topic_action(
     backend: Multiplexer, action: str, target: str | None
 ) -> dict[str, object]:
-    windows = await backend.list_windows_for_reconciliation()
+    if action == "status":
+        windows = await backend.list_windows_for_reconciliation()
+        endpoint_scope = None
+    else:
+        if action not in {"mark", "unmark"} or target is None:
+            raise ValueError("Mark and unmark require one explicit target.")
+        windows, endpoint_scope = await _capture_topic_inventory(backend)
     if windows is None:
         raise RuntimeError("Backend listing is unconfirmed; no selection was changed.")
     selected = _select_targets(windows, target)
@@ -70,26 +92,77 @@ async def _topic_action(
                 )
             ],
         }
-    if action not in {"mark", "unmark"} or target is None:
-        raise ValueError("Mark and unmark require one explicit target.")
+    if endpoint_scope is None:
+        raise RuntimeError("Native marker endpoint is unconfirmed")
     window = selected[0]
     if not window.topic_markable:
         raise ValueError(
             "This target cannot be natively marked; use an explicit Telegram bind."
         )
 
-    # Lazy: read-only status and CLI help must not load lifecycle dependencies.
+    if not window.topic_mark_owner:
+        raise RuntimeError("Native selection ownership is unconfirmed")
+    marked = action == "mark"
+    path = ccgram_dir() / "state.json"
+    lease = StateWriterLease(path)
+    if not lease.try_acquire():
+        # Lazy: status never creates a socket, lease or marker operation.
+        from .topic_mark_ipc import request_topic_mark
+
+        return await request_topic_mark(
+            path,
+            backend.capabilities.name,
+            window,
+            marked,
+            endpoint_scope=endpoint_scope,
+        )
+    try:
+        return await _offline_topic_mark(
+            lease, backend, window, marked, endpoint_scope=endpoint_scope
+        )
+    finally:
+        lease.close()
+
+
+async def _offline_topic_mark(
+    lease: StateWriterLease,
+    backend: Multiplexer,
+    window: WindowRef,
+    marked: bool,
+    *,
+    endpoint_scope: str,
+) -> dict[str, object]:
+    # Lazy: offline marker writes reuse the codec/store, never SessionManager.
+    from .window_state_store import WindowStateStore
     from .topic_selection import set_topic_selection
 
-    marked = action == "mark"
-    if has_topic_mark_conflict(
-        operations, window.window_id, window.topic_mark_owner, marked
+    if not lease.held:
+        raise RuntimeError("Offline marker mutation needs the state writer lease")
+    try:
+        state = json.loads(lease.state_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        state = {}
+    if not isinstance(state, dict):
+        raise ValueError("State must be an object")
+    store = WindowStateStore(
+        schedule_save=lambda: None, on_hookless_provider_switch=lambda _window_id: None
+    )
+    store.load_topic_mark_journal(state)
+
+    def flush() -> None:
+        snapshot = dict(state)
+        snapshot.pop(TOPIC_MARK_OPERATIONS_KEY, None)
+        snapshot.update(store.topic_mark_journal_to_dict())
+        atomic_write_json(lease.state_path, snapshot)
+
+    if not await set_topic_selection(
+        window,
+        marked,
+        backend=backend,
+        store=store,
+        flush=flush,
+        endpoint_scope=endpoint_scope,
     ):
-        raise RuntimeError(
-            "A conflicting pending marker operation owns this target; "
-            "retry after recovery. No selection was changed."
-        )
-    if not await set_topic_selection(window, marked, backend=backend):
         raise RuntimeError(
             "Marker update could not be confirmed. Inspect ccgram topic status."
         )
