@@ -177,7 +177,11 @@ _STREAM_BACKOFF_MAX = 30.0
 _STREAM_REPRIME_INTERVAL = 5.0
 
 _TOPIC_MARK_PREFIX = "[ccgram-topic-"
-_TOPIC_MARK_RE = re.compile(r"\[ccgram-topic-v1:([0-9a-f]{32})\]$")
+_TOPIC_MARK_OFF = "off"
+_TOPIC_MARK_RE = re.compile(
+    rf"\[ccgram-topic-v1:(?:(?P<state>{_TOPIC_MARK_OFF}):)?"
+    r"(?P<owner>[0-9a-f]{32})\]$"
+)
 _TOPIC_OWNER_RE = re.compile(r"[0-9a-f]{32}")
 # Herdr's initial JSON request limit is tighter than our transport's frame cap.
 _TOPIC_MARK_REQUEST_BYTES = 1024 * 1024
@@ -193,18 +197,18 @@ class _HerdrTopicMark:
     marked: bool
 
 
-def _parse_topic_label(value: object) -> tuple[str | None, str | None]:
+def _parse_topic_label(value: object) -> tuple[str | None, str | None, bool]:
     """Decode only our reserved native suffix, never titles or agent names."""
-    if value is None:
-        return None, None
-    if not isinstance(value, str) or not value or value != value.strip():
+    if value is None or value == "":
+        return None, None, False
+    if not isinstance(value, str) or value != value.strip():
         raise HerdrMalformedRecordError("invalid native manual label")
     try:
         value.encode("utf-8")
     except UnicodeError as exc:
         raise HerdrMalformedRecordError("invalid native label Unicode") from exc
     if _TOPIC_MARK_PREFIX not in value:
-        return value, None
+        return value, None, False
     match = _TOPIC_MARK_RE.search(value)
     if match is None or value.count(_TOPIC_MARK_PREFIX) != 1:
         raise HerdrMalformedRecordError("invalid reserved topic marker")
@@ -215,7 +219,7 @@ def _parse_topic_label(value: object) -> tuple[str | None, str | None]:
         original = original[:-1]
         if not original:
             raise HerdrMalformedRecordError("non-reversible empty topic label")
-    return original or None, match[1]
+    return original or None, match["owner"], match["state"] is None
 
 
 def _topic_label_args(pane_id: str, label: str | None) -> list[str] | None:
@@ -968,7 +972,7 @@ class HerdrManager:
             ):
                 return None
             try:
-                original, assigned_owner = _parse_topic_label(pane.get("label"))
+                original, assigned_owner, marked = _parse_topic_label(pane.get("label"))
             except HerdrMalformedRecordError:
                 return None
             witness = json.dumps(
@@ -987,7 +991,7 @@ class HerdrManager:
                     pane.get("label"),
                     original,
                     owner,
-                    assigned_owner is not None,
+                    marked,
                 )
             )
             terminals.add(terminal_id)
@@ -1041,10 +1045,9 @@ class HerdrManager:
     async def _rename_topic_label(
         self, mark: _HerdrTopicMark, marked: bool, write_guard: TopicMarkWriteGuard
     ) -> bool:
-        label = mark.original_label
-        if marked:
-            suffix = f"[ccgram-topic-v1:{mark.owner}]"
-            label = f"{label} {suffix}" if label is not None else suffix
+        state = "" if marked else f"{_TOPIC_MARK_OFF}:"
+        suffix = f"[ccgram-topic-v1:{state}{mark.owner}]"
+        label = f"{mark.original_label} {suffix}" if mark.original_label else suffix
         args = _topic_label_args(mark.pane_id, label)
         if args is None:
             return False
@@ -1104,7 +1107,7 @@ class HerdrManager:
         return (
             actual.label == label
             and actual.marked == marked
-            and (not marked or actual.owner == mark.owner)
+            and actual.owner == mark.owner
             and sum(candidate.owner == actual.owner for candidate in fresh) == 1
         )
 

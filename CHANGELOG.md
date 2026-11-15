@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Opt in with `CCGRAM_TOPIC_DISCOVERY=marked` or `ccgram run --topic-discovery marked`. Automatic discovery remains the default on agterm, Herdr, and tmux.
 - Select a terminal with `ccgram topic mark TARGET`; inspect exact target IDs, native owners, and unfinished operations with `ccgram topic status`. These commands do not need Telegram credentials. In marked mode, `unmark TARGET` stops future automatic admission without interrupting existing topics.
-- Keep selection with the native terminal, not its agent conversation: agterm uses the primary session flag, tmux a window-local option, and standard Herdr a reversible persisted manual-label suffix. No Herdr fork or restoration plugin is required.
+- Keep selection with the native terminal, not its agent conversation: agterm uses the primary session flag, tmux a window-local option, and standard Herdr a persisted ON/OFF owner suffix. Herdr retains the visible owner suffix when unselected. No Herdr fork or restoration plugin is required.
 - Journal native selection for Telegram-created, explicitly bound and CLI-selected targets. Credential-free CLI mutation requires the matching state, backend and actual native endpoint, through the live daemon or an exclusive offline state lease. No unjournaled direct-write fallback.
 - Arm native writes durably before dispatch. An ambiguous attempt blocks new admission, retries and settlement for its resource in both modes, without interrupting existing topic delivery or liveness. Maintenance requires verified native completion or exact native-process retirement before fresh owner/intent checks.
 - Detaching the last topic in marked mode clears selection but leaves the terminal running, protected from orphan expiry until successful re-admission.
@@ -28,7 +28,7 @@ Scope native-test cleanup to the creating socket/session. Never close a default-
 
 ### Upgrade
 
-Stop older ccgram writers and CLI invocations before upgrading. Existing bindings remain active after restart. Ordinary v4.22 state without the marker journal is valid. Unpublished three-field development journals fail closed: preserve them rather than deleting evidence.
+Stop older ccgram writers and CLI invocations before upgrading. Existing bindings remain active after restart. Ordinary v4.22 state without the marker journal is valid. Unpublished three- or four-field development journals fail closed: preserve them rather than deleting evidence.
 
 To opt in, set `CCGRAM_TOPIC_DISCOVERY=marked` and select exact IDs from status. Follow the [quarantine procedure](https://github.com/alexei-led/ccgram/blob/v4.23.0/docs/guides.md#native-write-quarantine-and-recovery) for ambiguous writes. CCGram never kills or restarts native servers. **Operator retirement of a tmux server can end terminals and agents and lose unsaved work.** A timer, snapshot or ccgram restart cannot clear dispatch uncertainty.
 

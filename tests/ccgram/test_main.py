@@ -153,3 +153,34 @@ class TestSignalDiagnostics:
         for call in loop.add_signal_handler.call_args_list:
             assert call.args[1] is _on_signal
             assert call.args[2] == call.args[0]
+
+
+@pytest.mark.parametrize("auto_detected", [False, True])
+def test_ensure_tmux_session_applies_settings_before_native_lookup(
+    monkeypatch, auto_detected
+):
+    from types import SimpleNamespace
+
+    from ccgram.config import config
+    from ccgram.multiplexer import tmux
+
+    backend = tmux.TmuxManager(session_name="before")
+    server = MagicMock()
+    session = SimpleNamespace(session_name="configured")
+    observed = []
+    server.sessions.get.side_effect = lambda **_kwargs: (
+        observed.append(
+            (backend.session_name, backend.main_window_name, backend.own_window_id)
+        )
+        or session
+    )
+    backend._server = server
+    monkeypatch.setattr(tmux, "tmux_manager", backend)
+    monkeypatch.setattr(config, "tmux_session_name", "configured")
+    monkeypatch.setattr(config, "tmux_main_window_name", "landing")
+    monkeypatch.setattr(config, "own_window_id", "@9")
+
+    main._ensure_tmux_session(auto_detected)
+
+    assert observed == [("configured", "landing", "@9")]
+    server.sessions.get.assert_called_once_with(session_name="configured", default=None)

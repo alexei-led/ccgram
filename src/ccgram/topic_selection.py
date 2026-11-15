@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from dataclasses import replace
 import threading
 from typing import TYPE_CHECKING
 from weakref import WeakValueDictionary
@@ -218,7 +219,7 @@ def _manual_topic_operation(
         raise RuntimeError("Pending native marker work owns this target")
     candidate = TopicMarkOperation(window.window_id, window.topic_mark_owner, marked)
     prior = store.topic_mark_operations.get(candidate.key)
-    return (candidate if prior is None else prior), prior
+    return (candidate if prior is None else replace(prior, detach_clear=False)), prior
 
 
 async def set_topic_selection_locked(
@@ -239,8 +240,7 @@ async def set_topic_selection_locked(
     def before_arm() -> None:
         if store.topic_mark_operations.get(operation.key) is not prior:
             raise RuntimeError("Native marker intent changed before dispatch")
-        if prior is None:
-            store.queue_topic_mark(window.window_id, window.topic_mark_owner, marked)
+        store.queue_topic_mark(window.window_id, window.topic_mark_owner, marked)
 
     receipt: str | None = None
 
@@ -276,7 +276,10 @@ async def set_topic_selection_locked(
         return False
     current = store.topic_mark_operations.get(operation.key)
     if current is prior or current is guard.finished:
-        return current is None or _settle_stored(current, store, flush)
+        if current is None:
+            return True
+        current = store.queue_topic_mark(current.window_id, current.owner, marked)
+        return _settle_stored(current, store, flush)
     return True
 
 
@@ -340,11 +343,15 @@ def _flush() -> None:
     session_manager.flush_state()
 
 
-def _queue(window_id: str, owner: str | None, desired: bool) -> TopicMarkOperation:
+def _queue(
+    window_id: str, owner: str | None, desired: bool, *, detach_clear: bool = False
+) -> TopicMarkOperation:
     # Lazy: unfinished bot effects are independent of the native CLI.
     from .window_state_ports import lifecycle_state
 
-    operation = lifecycle_state.queue_topic_mark(window_id, owner, desired)
+    operation = lifecycle_state.queue_topic_mark(
+        window_id, owner, desired, detach_clear=detach_clear
+    )
     _flush()
     return operation
 
@@ -453,11 +460,11 @@ async def _finish_topic_selection_locked(
     ):
         return False
     consumer_router = thread_router if router is None else router
-    if not operation.desired and _has_remaining_consumers(consumer_router, operation):
+    if operation.detach_clear and _has_remaining_consumers(consumer_router, operation):
         return _settle(operation)
 
     def before_arm() -> None:
-        if not operation.desired and _has_remaining_consumers(
+        if operation.detach_clear and _has_remaining_consumers(
             consumer_router, operation
         ):
             raise ValueError("A binding or creation now protects this marker")
@@ -636,7 +643,7 @@ async def detach_topic_target(
     if split or claimed:
         _flush()
         return True
-    operation = _queue(window_id, owner, False)
+    operation = _queue(window_id, owner, False, detach_clear=True)
     return await _finish_topic_selection(operation, mux, router=router)
 
 

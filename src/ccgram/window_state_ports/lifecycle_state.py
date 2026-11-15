@@ -97,9 +97,15 @@ def get_pending_topic_mark(window_id: str, *, owner: str | None = None) -> bool 
 
 
 def queue_topic_mark(
-    window_id: str, owner: str | None, desired: bool
+    window_id: str,
+    owner: str | None,
+    desired: bool,
+    *,
+    detach_clear: bool = False,
 ) -> TopicMarkOperation:
-    return window_store.queue_topic_mark(window_id, owner, desired)
+    return window_store.queue_topic_mark(
+        window_id, owner, desired, detach_clear=detach_clear
+    )
 
 
 def topic_mark_operation_is_current(operation: TopicMarkOperation) -> bool:

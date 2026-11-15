@@ -40,7 +40,7 @@ import libtmux
 from libtmux.exc import LibTmuxException
 from libtmux.neo import fetch_objs
 
-from ..config import config
+from ..utils import tmux_session_name
 from ..topic_mark_types import TopicMarkWriteGuard, TopicMarkWriteWitness
 from . import native_process, topic_mark_transport
 from .base import (
@@ -100,6 +100,7 @@ _TOPIC_MARK_VERSION = "v1"
 _TOPIC_MARK_RE = re.compile(rf"{_TOPIC_MARK_VERSION}:([01]):([0-9a-f]{{32}})")
 _TOPIC_OWNER_RE = re.compile(r"tmux:[0-9a-f]{32}")
 _WINDOW_ID_RE = re.compile(r"@\d+")
+_MAIN_WINDOW_NAME = "__main__"
 
 # Static capability declaration for the tmux backend (design Task 2).
 _TMUX_CAPABILITIES = MultiplexerCapabilities(
@@ -135,9 +136,11 @@ class TmuxManager:
         """Initialize tmux manager.
 
         Args:
-            session_name: Name of the tmux session to use (default from config)
+            session_name: Session name, defaulting to TMUX_SESSION_NAME or ccgram.
         """
-        self.session_name = session_name or config.tmux_session_name
+        self.session_name = session_name or tmux_session_name()
+        self.main_window_name = _MAIN_WINDOW_NAME
+        self.own_window_id: str | None = None
         self._server: libtmux.Server | None = None
 
     @property
@@ -174,7 +177,7 @@ class TmuxManager:
         )
         # Rename the default window to the main window name
         if session.windows:
-            session.windows[0].rename_window(config.tmux_main_window_name)
+            session.windows[0].rename_window(self.main_window_name)
         return session
 
     @staticmethod
@@ -264,6 +267,8 @@ class TmuxManager:
         window: libtmux.Window,
         *,
         selection: tuple[bool | None, str | None] = (None, None),
+        main_window_name: str = _MAIN_WINDOW_NAME,
+        own_window_id: str | None = None,
     ) -> TmuxWindow:
         """Build a window ref while treating pane metadata as optional.
 
@@ -278,8 +283,8 @@ class TmuxManager:
         name = window.window_name or ""
         window_id = window.window_id or ""
         adoptable = not (
-            name == config.tmux_main_window_name
-            or (config.own_window_id and window_id == config.own_window_id)
+            name == main_window_name
+            or (own_window_id and window_id == own_window_id)
             or name.startswith("_")
         )
 
@@ -328,10 +333,10 @@ class TmuxManager:
                 name = window.window_name or ""
                 window_id = window.window_id or ""
                 # Skip the main window (placeholder window)
-                if name == config.tmux_main_window_name:
+                if name == self.main_window_name:
                     continue
                 # Skip our own window (auto-detect mode)
-                if config.own_window_id and window_id == config.own_window_id:
+                if self.own_window_id and window_id == self.own_window_id:
                     continue
                 # Skip hidden windows (name starts with underscore)
                 if name.startswith("_"):
@@ -407,6 +412,8 @@ class TmuxManager:
                     self._window_ref_for_reconciliation(
                         window,
                         selection=selections.get(window.window_id or "", (None, None)),
+                        main_window_name=self.main_window_name,
+                        own_window_id=self.own_window_id,
                     )
                     for window in session.windows
                 ]

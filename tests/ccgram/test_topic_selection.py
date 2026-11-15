@@ -168,6 +168,9 @@ async def test_last_binding_detach_persists_before_native_clear(selection):
         assert owner == "owner:@1"
         assert selection.router.get_window_for_thread(1, 42, -100) is None
         assert selection.saved[-1][0]["topic_mark_operations"][0]["desired"] is False
+        assert (
+            selection.saved[-1][0]["topic_mark_operations"][0]["detach_clear"] is True
+        )
         assert selection.saved[-1][0]["window_states"]["@1"]["topic_detached"] is True
         return True
 
@@ -704,7 +707,9 @@ async def test_claim_consumers_use_captured_owner_not_mutable_bound_row(
     lifecycle_state.observe_topic_mark_owner("@1", "replacement-P")
     selection.router.from_dict(selection.router.to_dict())
     selection.restore(selection.snapshot())
-    operation = lifecycle_state.queue_topic_mark("@1", cleared_owner, False)
+    operation = lifecycle_state.queue_topic_mark(
+        "@1", cleared_owner, False, detach_clear=True
+    )
     await topic_selection.recover_topic_selections(
         mux=selection.mux, operation=operation
     )
