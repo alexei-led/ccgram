@@ -7,7 +7,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
 
 import pytest
 from telegram import Bot, CallbackQuery, Update
@@ -150,6 +150,7 @@ def _bind_env(window: MagicMock | None = None) -> Iterator[_BindMocks]:
         patch(
             "ccgram.multiplexer.multiplexer",
             new=SimpleNamespace(
+                capabilities=SimpleNamespace(name="tmux"),
                 find_window_by_id=AsyncMock(
                     side_effect=lambda wid: SimpleNamespace(
                         window_id=wid,
@@ -222,7 +223,7 @@ async def test_picker_keeps_original_native_owner_across_selection_awaits(
             lifecycle_state.observe_topic_mark_owner("@5", current_owner)
         return current
 
-    async def native_mark(_wid, _desired, *, owner):
+    async def native_mark(_wid, _desired, *, owner, write_guard=None):
         nonlocal current
         if phase == "during-failed-mark":
             assert owner == initial_owner
@@ -232,6 +233,7 @@ async def test_picker_keeps_original_native_owner_across_selection_awaits(
         return True
 
     native = SimpleNamespace(
+        capabilities=SimpleNamespace(name="tmux"),
         find_window_by_id=AsyncMock(side_effect=find_window),
         set_topic_mark=AsyncMock(side_effect=native_mark),
     )
@@ -288,7 +290,9 @@ async def test_picker_keeps_original_native_owner_across_selection_awaits(
         assert [op.owner for op in lifecycle_state.pending_topic_selections()] == [
             "original-O"
         ]
-        native.set_topic_mark.assert_awaited_once_with("@5", True, owner="original-O")
+        native.set_topic_mark.assert_awaited_once_with(
+            "@5", True, owner="original-O", write_guard=ANY
+        )
 
     if not markable or (initial_owner is None and mode == "marked"):
         native.set_topic_mark.assert_not_awaited()
@@ -305,6 +309,7 @@ async def test_picker_native_selection_failure_gates_only_marked(mode, monkeypat
         user_data={UNBOUND_WINDOWS_KEY: ["@5"], PENDING_THREAD_ID: 42}
     )
     native = SimpleNamespace(
+        capabilities=SimpleNamespace(name="tmux"),
         find_window_by_id=AsyncMock(
             return_value=SimpleNamespace(
                 window_id="@5",
@@ -322,7 +327,9 @@ async def test_picker_native_selection_failure_gates_only_marked(mode, monkeypat
         await handle_window_callback(query, 100, f"{CB_WIN_BIND}0", update, context)
 
     assert lifecycle_state.get_pending_topic_mark("@5") is True
-    native.set_topic_mark.assert_awaited_once_with("@5", True, owner="owner:" + "@5")
+    native.set_topic_mark.assert_awaited_once_with(
+        "@5", True, owner="owner:" + "@5", write_guard=ANY
+    )
     if mode == "marked":
         m.router.bind_thread.assert_not_called()
         assert context.user_data[UNBOUND_WINDOWS_KEY] == ["@5"]
@@ -360,6 +367,7 @@ async def test_auto_bind_never_uses_a_route_that_disappears_during_mark(monkeypa
         user_data={UNBOUND_WINDOWS_KEY: ["@5"], PENDING_THREAD_ID: 42}
     )
     native = SimpleNamespace(
+        capabilities=SimpleNamespace(name="tmux"),
         find_window_by_id=AsyncMock(
             side_effect=[
                 SimpleNamespace(
@@ -420,6 +428,7 @@ async def test_auto_bind_rechecks_known_owner_with_real_router(
         user_data={UNBOUND_WINDOWS_KEY: ["@5"], PENDING_THREAD_ID: 42}
     )
     native = SimpleNamespace(
+        capabilities=SimpleNamespace(name="tmux"),
         find_window_by_id=AsyncMock(
             side_effect=[
                 WindowRef(
@@ -454,7 +463,9 @@ async def test_auto_bind_rechecks_known_owner_with_real_router(
     ):
         await handle_window_callback(query, 100, f"{CB_WIN_BIND}0", update, context)
     assert router.get_window_for_thread(100, 42, -100999) == ("@5" if binds else None)
-    native.set_topic_mark.assert_awaited_once_with("@5", True, owner="owner:@5")
+    native.set_topic_mark.assert_awaited_once_with(
+        "@5", True, owner="owner:@5", write_guard=ANY
+    )
 
 
 class TestBindWindowCallback:

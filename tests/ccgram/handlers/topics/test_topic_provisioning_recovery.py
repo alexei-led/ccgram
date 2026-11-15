@@ -76,6 +76,7 @@ def _isolate_persistence():
         patch(
             "ccgram.multiplexer.multiplexer",
             new=SimpleNamespace(
+                capabilities=SimpleNamespace(name="tmux"),
                 find_window_by_id=AsyncMock(
                     side_effect=lambda wid: SimpleNamespace(
                         window_id=wid,
@@ -131,6 +132,7 @@ async def test_reloaded_second_chat_claim_keeps_original_owner_after_bound_chat_
     restored = _router()
     restored.from_dict(original.to_dict())
     native = SimpleNamespace(
+        capabilities=SimpleNamespace(name="tmux"),
         find_window_by_id=AsyncMock(
             return_value=WindowRef(
                 "@2",
@@ -185,6 +187,7 @@ async def test_recovery_rechecks_automatic_eligibility_without_filtering_explici
     restored.from_dict(original.to_dict())
     lifecycle_state.record_topic_mark_owner("@2", "original-O")
     native = SimpleNamespace(
+        capabilities=SimpleNamespace(name="tmux"),
         find_window_by_id=AsyncMock(
             return_value=WindowRef(
                 "@2",
@@ -269,6 +272,7 @@ async def test_marked_explicit_creation_recovers_only_after_verified_selection(
     )
     client = AsyncMock()
     native = SimpleNamespace(
+        capabilities=SimpleNamespace(name="tmux"),
         find_window_by_id=AsyncMock(
             return_value=SimpleNamespace(
                 window_id="@2",
@@ -333,6 +337,7 @@ async def test_automatic_claim_recovery_requires_saved_native_owner_without_mark
     router.from_dict(original.to_dict())
     lifecycle_state.record_topic_mark_owner("@2", "original-owner")
     native = SimpleNamespace(
+        capabilities=SimpleNamespace(name="tmux"),
         find_window_by_id=AsyncMock(
             return_value=SimpleNamespace(
                 window_id="@2",
@@ -383,6 +388,7 @@ async def test_auto_recovery_waits_for_a_lost_known_owner_but_not_initial_unknow
     router.from_dict(original.to_dict())
     lifecycle_state.record_topic_mark_owner("@2", saved_owner)
     native = SimpleNamespace(
+        capabilities=SimpleNamespace(name="tmux"),
         find_window_by_id=AsyncMock(
             return_value=SimpleNamespace(
                 window_id="@2",
@@ -430,6 +436,7 @@ async def test_detached_stale_creation_claim_never_remarks_terminal(monkeypatch)
         "@2", detached=True, pending=None, owner="owner:@2"
     )
     native = SimpleNamespace(
+        capabilities=SimpleNamespace(name="tmux"),
         find_window_by_id=AsyncMock(
             return_value=SimpleNamespace(
                 window_id="@2",
