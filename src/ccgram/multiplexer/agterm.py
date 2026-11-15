@@ -53,6 +53,8 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 import structlog
 
 from ..utils import log_throttled
+from ..topic_mark_types import TopicMarkWriteGuard, TopicMarkWriteWitness
+from . import topic_mark_transport
 from .agterm_panes import pane_sessions, split_session_id
 from .base import (
     AgentStatus,
@@ -273,6 +275,7 @@ class AgtermManager:
         # emit macOS MallocStackLogging noise.
         self._binary = shutil.which(binary) or binary
         self._run: AgtermRunner = runner or self._subprocess_run
+        self._marker_runner = runner
         # The session the bot itself runs in, so listings can skip it the way
         # the tmux backend skips ``config.own_window_id``. Empty when ccgram
         # runs outside agterm, in which case nothing is excluded on this count.
@@ -687,7 +690,12 @@ class AgtermManager:
         return self._topic_windows(tree)
 
     async def set_topic_mark(
-        self, window_id: str, marked: bool, *, owner: str | None = None
+        self,
+        window_id: str,
+        marked: bool,
+        *,
+        owner: str | None = None,
+        write_guard: TopicMarkWriteGuard | None = None,
     ) -> bool:
         """Change only the expected primary UUID, never a stale routing target."""
         try:
@@ -721,7 +729,9 @@ class AgtermManager:
         window = matches[0]
         if window.topic_marked is marked:
             return True
-        if not await self._set_topic_flag(window.window_id, marked):
+        if write_guard is None or not await self._set_topic_flag(
+            window.window_id, marked, write_guard
+        ):
             return False
         confirmed = await self.list_windows_for_reconciliation()
         return (
@@ -737,27 +747,67 @@ class AgtermManager:
             == 1
         )
 
-    async def _set_topic_flag(self, window_id: str, marked: bool) -> bool:
-        worker = asyncio.create_task(
-            self._call_ok(
-                ["session", "flag", "on" if marked else "off", "--target", window_id]
+    async def _set_topic_flag(
+        self, window_id: str, marked: bool, write_guard: TopicMarkWriteGuard
+    ) -> bool:
+        state_dir = os.environ.get("AGTERM_STATE_DIR")
+        endpoint = self._socket_path or str(
+            (
+                Path(state_dir)
+                if state_dir
+                else Path.home() / "Library/Application Support/agterm"
             )
+            / "agterm.sock"
         )
-        try:
-            return await asyncio.shield(worker)
-        except asyncio.CancelledError:
-            # A cancelled subprocess wait cannot release native marker ownership
-            # while agtermctl can still write. Preserve the original cancellation.
-            finished = asyncio.Event()
-            worker.add_done_callback(lambda _: finished.set())
-            while not worker.done():
-                try:
-                    await finished.wait()
-                except asyncio.CancelledError:
-                    continue
-            if not worker.cancelled():
-                worker.exception()
-            raise
+        witness = topic_mark_transport.prepare_cli_write(
+            backend="agterm", binary=self._binary, socket_path=endpoint
+        )
+        if witness is None or witness.pin_path is None:
+            return False
+
+        def success(result: tuple[int, str, str]) -> bool:
+            if result[0] != 0:
+                return False
+            try:
+                payload = json.loads(result[1])
+            except ValueError:
+                return False
+            native = payload.get("result") if isinstance(payload, dict) else None
+            return (
+                isinstance(payload, dict)
+                and payload.get("ok") is True
+                and isinstance(native, dict)
+                and str(native.get("id", "")).casefold() == window_id.casefold()
+            )
+
+        async def injected_runner(
+            _binary: str, args: list[str]
+        ) -> tuple[int, str, str]:
+            return await self._run(args, None)
+
+        result = await topic_mark_transport.guarded_cli_write(
+            witness,
+            write_guard,
+            self._binary,
+            [
+                "session",
+                "flag",
+                "on" if marked else "off",
+                "--target",
+                window_id,
+                "--json",
+                "--socket",
+                witness.pin_path,
+            ],
+            success=success,
+            runner=injected_runner if self._marker_runner is not None else None,
+        )
+        return result is not None
+
+    async def recover_topic_mark_write(
+        self, witness: TopicMarkWriteWitness
+    ) -> bool | None:
+        return topic_mark_transport.recover_write(witness, backend="agterm")
 
     async def list_workspaces(self) -> list[WorkspaceRef]:
         """List agterm workspaces; the id is an opaque token for ``create_window``."""

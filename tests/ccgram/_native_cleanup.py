@@ -39,13 +39,36 @@ def tmux_window_cleanup(server: Any, window_id: str) -> Callable[[], None] | Non
     except OSError, ValueError, AttributeError, TypeError:
         return None
 
+    # This function runs only after root conftest established its private
+    # namespace. Pin link/unlink changes ctime without replacing the executor.
+    from ccgram.multiplexer import native_process
+
+    binary = shutil.which("tmux")
+    process = (
+        native_process.inspect_native_process(
+            str(endpoint), backend="tmux", binary=binary
+        )
+        if binary is not None
+        else None
+    )
+
     def close() -> None:
-        if _socket_identity(endpoint) == identity:
-            subprocess.run(
-                ["tmux", "-S", str(endpoint), "kill-window", "-t", window_id],
-                capture_output=True,
-                timeout=5,
+        current = _socket_identity(endpoint)
+        if current is None or current[:2] != identity[:2]:
+            return
+        if process is not None and binary is not None:
+            actual = native_process.inspect_native_process(
+                str(endpoint), backend="tmux", binary=binary
             )
+            if actual != process:
+                return
+        elif current != identity:
+            return
+        subprocess.run(
+            ["tmux", "-S", str(endpoint), "kill-window", "-t", window_id],
+            capture_output=True,
+            timeout=5,
+        )
 
     return close
 
