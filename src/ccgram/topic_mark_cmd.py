@@ -134,6 +134,8 @@ async def _offline_topic_mark(
 ) -> dict[str, object]:
     # Lazy: offline marker writes reuse the codec/store, never SessionManager.
     from .window_state_store import WindowStateStore
+
+    # Lazy: acquire the offline writer lease before loading mutation orchestration.
     from .topic_selection import set_topic_selection
 
     if not lease.held:

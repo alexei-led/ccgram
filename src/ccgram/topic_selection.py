@@ -433,7 +433,11 @@ async def _finish_topic_selection_locked(
 ) -> bool:
     # Lazy: only the bot retry path accesses installed lifecycle/routing state.
     from .window_state_ports import lifecycle_state
+
+    # Lazy: keep installed state initialization behind the daemon retry path.
     from .window_state_store import get_window_store
+
+    # Lazy: initialize the routing singleton only after acquiring writer authority.
     from .thread_router import thread_router
 
     store = get_window_store()

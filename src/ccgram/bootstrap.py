@@ -438,7 +438,11 @@ async def bootstrap_application(application: Application) -> None:
 
     # Lazy: private marker IPC is independent of mobile API credentials.
     from .topic_mark_ipc import start_topic_mark_server
+
+    # Lazy: keep writer authority setup on the daemon-only startup path.
     from .state_writer_lock import STATE_WRITER_LEASE_KEY, StateWriterLease
+
+    # Lazy: installed state must follow daemon lifecycle initialization.
     from .window_state_store import get_window_store
 
     lease = application.bot_data.get(STATE_WRITER_LEASE_KEY)

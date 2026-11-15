@@ -7,10 +7,11 @@ import contextlib
 from collections.abc import Iterator
 from dataclasses import dataclass
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
+from _topic_mark_helpers import make_witness
 from ccgram.handlers.topics.window_launch_service import (
     WindowLaunchRequest,
     _create_topic_window,
@@ -364,6 +365,7 @@ def _launch_env(
         patch(
             "ccgram.multiplexer.multiplexer",
             new=SimpleNamespace(
+                capabilities=SimpleNamespace(name="tmux"),
                 find_window_by_id=AsyncMock(
                     side_effect=lambda wid: SimpleNamespace(
                         window_id=wid,
@@ -404,6 +406,7 @@ def _launch_env(
         )
         adapter_for.return_value = adapter
         mux.stamp_pane_title = AsyncMock()
+        mux.capabilities.name = "tmux"
         mux.capabilities.native_worktrees = False
         mux.capabilities.native_agent_status = True
         mux.capabilities.native_topic_targets = True
@@ -496,7 +499,7 @@ async def test_slow_launch_recovers_only_original_selection(
             topic_marked=selected,
         )
 
-    async def mark(window_id, marked, *, owner: str | None = None):
+    async def mark(window_id, marked, *, owner: str | None = None, write_guard=None):
         nonlocal selected
         if owner != current_owner:
             return False
@@ -513,7 +516,11 @@ async def test_slow_launch_recovers_only_original_selection(
         )
         assert saved["window_states"][window_id]["provider_name"] == "claude"
         assert saved["window_states"][window_id]["origin"] == "ccgram_created"
+        assert write_guard is not None
+        witness = make_witness()
+        write_guard.arm(witness)
         selected = marked
+        write_guard.terminal(witness.dispatch_id)
         return True
 
     async def listing():
@@ -597,6 +604,7 @@ async def test_auto_launch_preserves_unknown_original_owner_behavior(
     manager = persisted_launch_state
     monkeypatch.setattr(config, "topic_discovery_mode", "auto")
     native = SimpleNamespace(
+        capabilities=SimpleNamespace(name="tmux"),
         find_window_by_id=AsyncMock(
             side_effect=[
                 WindowRef(
@@ -642,6 +650,7 @@ async def test_failed_native_selection_is_retryable_and_gates_only_marked(
 
     monkeypatch.setattr(config, "topic_discovery_mode", mode, raising=False)
     native = SimpleNamespace(
+        capabilities=SimpleNamespace(name="tmux"),
         find_window_by_id=AsyncMock(
             return_value=SimpleNamespace(
                 window_id="@5",
@@ -657,7 +666,9 @@ async def test_failed_native_selection_is_retryable_and_gates_only_marked(
 
     assert result.success is (mode == "auto")
     assert lifecycle_state.get_pending_topic_mark("@5") is True
-    native.set_topic_mark.assert_awaited_once_with("@5", True, owner="owner:" + "@5")
+    native.set_topic_mark.assert_awaited_once_with(
+        "@5", True, owner="owner:" + "@5", write_guard=ANY
+    )
     m.adapter.close.assert_not_awaited()
     if mode == "marked":
         m.router.commit_topic_provisioning.assert_not_called()
@@ -672,6 +683,7 @@ async def test_cancellation_during_selection_preserves_provisioning(monkeypatch)
 
     monkeypatch.setattr(config, "topic_discovery_mode", "marked", raising=False)
     native = SimpleNamespace(
+        capabilities=SimpleNamespace(name="tmux"),
         find_window_by_id=AsyncMock(
             return_value=SimpleNamespace(
                 window_id="@5",
@@ -701,12 +713,17 @@ async def test_native_selection_precedes_creation_commit(monkeypatch):
     monkeypatch.setattr(config, "topic_discovery_mode", "marked", raising=False)
     with _launch_env() as m:
 
-        async def mark(window_id, selected, *, owner):
+        async def mark(window_id, selected, *, owner, write_guard=None):
             assert window_id == "@5" and selected is True
             m.router.commit_topic_provisioning.assert_not_called()
+            assert write_guard is not None
+            witness = make_witness()
+            write_guard.arm(witness)
+            write_guard.terminal(witness.dispatch_id)
             return True
 
         native = SimpleNamespace(
+            capabilities=SimpleNamespace(name="tmux"),
             find_window_by_id=AsyncMock(
                 return_value=SimpleNamespace(
                     window_id="@5",
@@ -734,16 +751,21 @@ async def test_agent_exit_during_native_mark_keeps_creation_quarantined(monkeypa
         patch(f"{_MODULE}asyncio.sleep", new_callable=AsyncMock),
     ):
 
-        async def mark(_wid, _selected, *, owner):
+        async def mark(_wid, _selected, *, owner, write_guard=None):
+            assert write_guard is not None
+            witness = make_witness()
+            write_guard.arm(witness)
             m.adapter.resolve.return_value = (
                 SimpleNamespace(
                     foreground_argv=("zsh",), provider="shell", available=True
                 ),
                 None,
             )
+            write_guard.terminal(witness.dispatch_id)
             return True
 
         native = SimpleNamespace(
+            capabilities=SimpleNamespace(name="tmux"),
             find_window_by_id=AsyncMock(
                 return_value=SimpleNamespace(
                     window_id="@5",
@@ -771,6 +793,7 @@ async def test_new_terminal_cannot_inherit_old_detached_ttl_at_reused_id(monkeyp
         "@5", detached=True, pending=False, owner="old-terminal"
     )
     native = SimpleNamespace(
+        capabilities=SimpleNamespace(name="tmux"),
         find_window_by_id=AsyncMock(
             return_value=SimpleNamespace(
                 window_id="@5",
@@ -816,6 +839,7 @@ async def test_auto_launch_rechecks_known_owner_before_real_claim_commit(
         has_window_state=get_window_store().has_window,
     )
     native = SimpleNamespace(
+        capabilities=SimpleNamespace(name="tmux"),
         find_window_by_id=AsyncMock(
             side_effect=[
                 WindowRef(

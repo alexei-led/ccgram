@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 
@@ -13,15 +13,21 @@ from ccgram.handlers.polling.polling_state import terminal_poll_state
 from ccgram.handlers.topics import topic_lifecycle
 from ccgram.thread_router import ThreadRouter
 from ccgram.window_state_ports import legacy_state, lifecycle_state
-from ccgram.window_state_store import WindowStateStore
+from ccgram.window_state_store import (
+    WindowStateStore,
+    get_window_store,
+    install_window_store,
+)
 
 
 @pytest.fixture
 def detached_env(monkeypatch):
+    previous = get_window_store()
     store = WindowStateStore(
         schedule_save=lambda: None,
         on_hookless_provider_switch=lambda _wid: None,
     )
+    install_window_store(store)
     store.set_window_origin("@1", "ccgram_created")
     router = ThreadRouter(schedule_save=lambda: None, has_window_state=store.has_window)
     router.bind_thread(1, 42, "@1", chat_id=-100)
@@ -31,6 +37,7 @@ def detached_env(monkeypatch):
         unbound_window_ttl_minutes=1,
     )
     native = SimpleNamespace(
+        capabilities=SimpleNamespace(name="tmux"),
         find_window_by_id=AsyncMock(
             return_value=SimpleNamespace(
                 window_id="@1",
@@ -73,6 +80,7 @@ def detached_env(monkeypatch):
         reply=reply,
     )
     terminal_poll_state.clear_state("@1")
+    install_window_store(previous)
 
 
 @pytest.mark.parametrize(
@@ -88,7 +96,7 @@ async def test_intentional_last_detach_keeps_terminal_and_retries_native_clear(
     assert lifecycle_state.is_topic_detach_pending("@1", owner=None)
     assert lifecycle_state.get_origin("@1") == "ccgram_created"
     env.native.set_topic_mark.assert_awaited_once_with(
-        "@1", False, owner="owner:" + "@1"
+        "@1", False, owner="owner:" + "@1", write_guard=ANY
     )
     assert env.clear.call_args.kwargs["window_dead"] is False
     if operation is cleanup.unbind_command:
