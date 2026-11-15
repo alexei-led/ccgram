@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import asdict, dataclass, fields
 from pathlib import PurePosixPath
 from typing import Protocol, Self
@@ -62,6 +64,25 @@ class TopicMarkWriteWitness:
                 or str(path) != self.pin_path
             ):
                 raise ValueError("Marker write pin must be an absolute canonical path")
+
+    @property
+    def endpoint_scope(self) -> str:
+        values = [
+            "ccgram-native-endpoint-v1",
+            self.backend,
+            self.host_id,
+            self.boot_id,
+            self.namespace_id,
+            self.native_pid,
+            self.native_start,
+            self.code_id,
+            self.socket_dev,
+            self.socket_ino,
+        ]
+        encoded = json.dumps(values, ensure_ascii=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+        return hashlib.sha256(encoded).hexdigest()
 
     def to_dict(self) -> dict[str, str | int | None]:
         return asdict(self)

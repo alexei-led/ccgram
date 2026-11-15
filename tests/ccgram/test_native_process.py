@@ -230,3 +230,112 @@ def test_malformed_current_boot_cannot_fabricate_retirement(monkeypatch, mac_sco
 
     assert native.process_retired(witness()) is None
     probe.assert_not_called()
+
+
+@pytest.fixture
+def scope_endpoints(monkeypatch):
+    with TemporaryDirectory(prefix="ccg-scope-", dir="/tmp") as directory:
+        root = Path(directory).resolve()
+        identity = native.NativeProcessIdentity(
+            HOST, BOOT, "darwin-local", 123, START, CODE
+        )
+        monkeypatch.setattr(
+            native, "capture_native_process", lambda *_a, **_k: identity
+        )
+        endpoints = [root / "a", root / "b"]
+        listeners = []
+        try:
+            for path in endpoints:
+                listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                listener.bind(str(path))
+                listener.listen(16)
+                listeners.append(listener)
+            yield endpoints, identity
+        finally:
+            for listener in listeners:
+                listener.close()
+
+
+def test_scope_distinguishes_endpoints_with_same_executor(scope_endpoints):
+    (a, b), _identity = scope_endpoints
+    first = native.inspect_endpoint_scope(str(a), backend="tmux", binary="/forbidden")
+    second = native.inspect_endpoint_scope(str(b), backend="tmux", binary="/forbidden")
+
+    assert first is not None and second is not None and first != second
+
+
+def test_scope_alias_and_mutable_metadata_do_not_change_identity(scope_endpoints):
+    (a, _b), _identity = scope_endpoints
+    original = native.inspect_endpoint_scope(
+        str(a), backend="tmux", binary="/forbidden"
+    )
+    alias = a.parent / "alias"
+    os.link(a, alias)
+    os.utime(a, None)
+
+    assert original is not None
+    assert (
+        native.inspect_endpoint_scope(str(alias), backend="tmux", binary="/forbidden")
+        == original
+    )
+    assert (
+        native.inspect_endpoint_scope(str(a), backend="tmux", binary="/forbidden")
+        == original
+    )
+
+
+def test_readonly_scope_equals_dispatch_descriptor_without_creating_files(
+    scope_endpoints,
+):
+    (a, _b), identity = scope_endpoints
+    before = a.lstat()
+    entries = set(a.parent.iterdir())
+
+    actual = native.inspect_endpoint_scope(str(a), backend="tmux", binary="/forbidden")
+
+    after = a.lstat()
+    assert set(a.parent.iterdir()) == entries
+    assert (before.st_nlink, before.st_ctime_ns) == (after.st_nlink, after.st_ctime_ns)
+    witness = identity.witness(
+        "tmux", after, dispatch_id="a" * 32, pin_path="/tmp/ignored-pin"
+    )
+    assert actual == witness.endpoint_scope
+
+
+def test_scope_unknown_peer_or_missing_endpoint_is_not_global(
+    scope_endpoints, monkeypatch
+):
+    (a, _b), _identity = scope_endpoints
+    monkeypatch.setattr(native, "capture_native_process", lambda *_a, **_k: None)
+
+    assert (
+        native.inspect_endpoint_scope(str(a), backend="tmux", binary="/forbidden")
+        is None
+    )
+    assert (
+        native.inspect_endpoint_scope(
+            str(a.parent / "missing"), backend="tmux", binary="/forbidden"
+        )
+        is None
+    )
+
+
+def test_scope_rejects_endpoint_replacement_during_capture(
+    scope_endpoints, monkeypatch
+):
+    (a, _b), identity = scope_endpoints
+    replacement = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+
+    def changed(*_a, **_k):
+        a.unlink()
+        replacement.bind(str(a))
+        return identity
+
+    monkeypatch.setattr(native, "inspect_native_process", changed)
+    try:
+        assert (
+            native.inspect_endpoint_scope(str(a), backend="tmux", binary="/forbidden")
+            is None
+        )
+    finally:
+        replacement.close()

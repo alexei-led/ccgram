@@ -54,7 +54,7 @@ import structlog
 
 from ..herdr_targets import HERDR_SESSION_TARGET_PREFIX, is_herdr_session_target
 from ..topic_mark_types import TopicMarkWriteGuard, TopicMarkWriteWitness
-from . import topic_mark_transport
+from . import native_process, topic_mark_transport
 from .base import (
     AgentStatus,
     CaptureResult,
@@ -1106,6 +1106,15 @@ class HerdrManager:
             and actual.marked == marked
             and (not marked or actual.owner == mark.owner)
             and sum(candidate.owner == actual.owner for candidate in fresh) == 1
+        )
+
+    async def topic_mark_endpoint_scope(self) -> str | None:
+        try:
+            path = await self._resolve_socket_path()
+        except HerdrError:
+            return None
+        return native_process.inspect_endpoint_scope(
+            path, backend="herdr", binary=self._binary
         )
 
     async def recover_topic_mark_write(

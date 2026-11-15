@@ -182,3 +182,51 @@ assert not any(name == "ccgram" or name.startswith("ccgram.") for name in sys.mo
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_endpoint_scope_matches_frozen_canonical_vector():
+    witness = TopicMarkWriteWitness.from_dict(witness_row())
+
+    assert (
+        witness.endpoint_scope
+        == "e73dd6fe70baeb552c0b479bf25b3946569b7e146559a50f13fe9b69bd33c700"
+    )
+    assert replace(witness, host_id="host-λ").endpoint_scope == (
+        "ac72c9a6f79579db16ffc1f26fc4b414b028e1efdc0928d154849d6e55fd0bfc"
+    )
+    assert len(witness.to_dict()) == 11
+    assert "endpoint_scope" not in witness.to_dict()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("backend", "herdr"),
+        ("host_id", "host-2"),
+        ("boot_id", "boot-2"),
+        ("namespace_id", "namespace-2"),
+        ("native_pid", 124),
+        ("native_start", "darwin:101:200"),
+        ("code_id", "cdhash:other"),
+        ("socket_dev", 1),
+        ("socket_ino", 457),
+    ],
+)
+def test_endpoint_scope_changes_for_each_native_identity_field(field, value):
+    witness = TopicMarkWriteWitness.from_dict(witness_row())
+
+    assert replace(witness, **{field: value}).endpoint_scope != witness.endpoint_scope
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("dispatch_id", "another-dispatch"),
+        ("pin_path", None),
+        ("pin_path", "/private/tmp/other-pin"),
+    ],
+)
+def test_endpoint_scope_excludes_per_attempt_capability(field, value):
+    witness = TopicMarkWriteWitness.from_dict(witness_row())
+
+    assert replace(witness, **{field: value}).endpoint_scope == witness.endpoint_scope

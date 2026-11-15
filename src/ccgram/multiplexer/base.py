@@ -387,6 +387,13 @@ class Multiplexer(Protocol):
         """
         ...
 
+    async def topic_mark_endpoint_scope(self) -> str | None:
+        """Identify the actual native endpoint, not an owner or configured name.
+
+        Unknown never means a global/default scope. This getter is read-only.
+        """
+        ...
+
     async def recover_topic_mark_write(
         self, witness: TopicMarkWriteWitness
     ) -> bool | None:
