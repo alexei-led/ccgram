@@ -1,476 +1,931 @@
-# archfit architecture-drift config for ccgram.
-#
-# Module ownership and supported public surfaces follow source contracts.
-# Volatility describes expected domain change; history only corroborates it.
-# Under scorer v7 a resolved module boundary has module-boundary distance;
-# owner/deploy metadata do not lower severity. Missing deploy declarations do
-# not establish separate services, and the distributed-monolith label is a
-# structural heuristic rather than an observed runtime topology.
-# - `owner: alexei-led` remains declared on every module for hygiene (single
-#   owner; silences omit-owner warnings) — NOT to influence coupling.
-# - Subdomain/volatility are architect-inferred labels. Current map in docs and
-#   config is aligned to the code/tests: core=session/window-state, the shared
-#   session protocol, delivery and multiplexer contracts, and handler
-#   orchestration; supporting=provider/multiplexer adapters, transcript, Mini
-#   App/mobile API, Telegram adapters, and Git-worktree helpers; generic=config,
-#   utils, provider detection, and concrete backends.
-#   Review labels against domain and implementation changes, not warning counts.
-# - The pytest audits are the enforced drift gate. `archfit` is the whole-graph
-#   mirror and advisory gate: keep `no-import-cycles` as warn because the repo
-#   intentionally uses lazy imports that runtime tests accept.
-# - The config below is intended for full scans and delta scans. Keep it aligned
-#   with the current package map before running `archfit analyze` or
-#   `archfit analyze --base <ref>`.
-#
-# Solo-developer / distance note (Balanced Coupling):
-#   Distance is socio-technical — different-TEAM ownership RAISES it. A single
-#   owner adds ZERO ownership distance, so here distance reduces to code
-#   structure + runtime. Declaring yourself as owner is correct and honest, but
-#   it cannot lower coupling: the only levers are reduce strength (add a
-#   contract), reduce structural distance (co-locate), or accept low volatility.
-#   Because you personally absorb every cascade, honest `volatility` is the right
-#   primary signal — it tells you which couplings will actually bite.
-version: 2
-languages:
-  python:
-    package: ccgram
-  go:
-    enabled: false
-  typescript:
-    enabled: false
-# Minimum severity for BC coupling advisories: low|medium|high|critical
-coupling:
-  min_severity: medium
-  # Inferred-volatility cascade (Balanced Coupling, book Ch9; archfit >=0.8). A
-  # stable module that is functional/intrusive-coupled to a `core` module inherits
-  # high volatility — it gets dragged into change whenever the core does. This is
-  # exactly ccgram's shape: modules wired to the live-session core (session_state,
-  # handlers, window_state) co-evolve with it. Enabling this surfaces that inherited
-  # volatility instead of under-rating quiet modules wired to a churning core.
-  volatility_cascade: true
-# Skip non-Python assets from extraction (incl. the jscpd clone scan). Without
-# this, font-license text + miniapp JS dominate clone findings as false cohesion
-# risk. .gitnexus/.codegraph index dirs are auto-ignored by archfit.
-exclude:
-  - '**/fonts/**'
-  - '**/miniapp/static/**'
-  - '**/pkg/mod/**' # stray Go module cache at repo root (untracked cruft; safe to `rm -rf pkg/`)
-analyzers:
-  scip:
-    enabled: true
-  syntax:
-    enabled: true
-  clones:
-    enabled: true # jscpd — powers duplication signal (kept honest by exclusions)
-ai:
-  provider: anthropic
-  model: claude-opus-4-8
+# The Archfit policy, converted by archfit init from the Archfit 3 files.
+# Review the modules, rules and exceptions, then commit it.
+version: 3
+owners:
+  - alexei-led
+gate: advisory
 layers:
   - core
   - adapter
 modules:
-  # --- Adapter: subpackages ---
-  handlers:
-    paths:
-      - ccgram.handlers
-      - ccgram.handlers.*
-    # One supported entrypoint for neutral death facts, not all polling internals.
-    public:
-      - ccgram.handlers.polling.window_death
-    layer: adapter
-    owner: alexei-led
-    subdomain: core # the orchestration that makes ccgram ccgram
-    volatility: high
-  providers:
-    paths:
-      - ccgram.providers
-      - ccgram.providers.*
-    layer: adapter
-    owner: alexei-led
-    subdomain: supporting # adapters to external agent CLIs
-    volatility: medium
-  # --- Core: subpackages ---
-  hooks:
-    paths:
-      - ccgram.hooks
-      - ccgram.hooks.*
-    layer: core
-    owner: alexei-led
-    subdomain: supporting
-    volatility: low
-  llm:
-    paths:
-      - ccgram.llm
-      - ccgram.llm.*
-    layer: core
-    owner: alexei-led
-    subdomain: generic # LLM client plumbing
-    volatility: low
-  miniapp:
-    paths:
-      - ccgram.miniapp
-      - ccgram.miniapp.*
-    layer: core
-    owner: alexei-led
-    subdomain: supporting
-    volatility: medium
-  tts:
-    paths:
-      - ccgram.tts
-      - ccgram.tts.*
-    layer: core
-    owner: alexei-led
-    subdomain: generic
-    volatility: low
-  whisper:
-    paths:
-      - ccgram.whisper
-      - ccgram.whisper.*
-    layer: core
-    owner: alexei-led
-    subdomain: generic
-    volatility: low
-  window_state_ports:
-    paths:
-      - ccgram.window_state_ports
-      - ccgram.window_state_ports.*
-    layer: core
-    owner: alexei-led
-    subdomain: core
-    volatility: medium
-  # --- Core: live-session read contract ---
-  # Mirrors window_state_ports for the volatile session-state cluster.
-  # Handlers read frozen LiveSessionSnapshot projections via free functions;
-  # direct imports of claude_task_state / get_claude_task_snapshot / idle_tracker
-  # from handlers are banned. Write authority stays in session_lifecycle.
-  # Fitness gate: tests/ccgram/test_session_state_ports_audit.py.
-  session_state_ports:
-    paths:
-      - ccgram.session_state_ports
-      - ccgram.session_state_ports.*
-    layer: core
-    owner: alexei-led
-    subdomain: core
-    volatility: medium
-  # --- Core: transcript-delivery acknowledgement and checkpoint contract ---
-  # A narrow shared contract for transcript producers, queue settlement, and
-  # session-monitor persistence; it owns no Telegram, handler, or monitor code.
-  # Medium volatility is a design hypothesis: delivery/replay semantics are
-  # central and expected to evolve, not a historical churn measurement.
-  delivery_contract:
-    paths:
-      - ccgram.delivery_contract
-    public:
-      - ccgram.delivery_contract
-    layer: core
-    owner: alexei-led
-    subdomain: core
-    volatility: medium
-  # --- Core: shared session protocol and live-session service ---
-  # The source package also contains telegram.py; that concrete in-process
-  # adapter gets a narrower adapter owner below rather than inheriting this core.
-  session_protocol:
-    paths:
-      - ccgram.session_protocol
-      - ccgram.session_protocol.*
-    layer: core
-    owner: alexei-led
-    subdomain: core
-    volatility: high # design hypothesis: session behavior evolves; protocol/v1 preserves wire compatibility
-  # --- Core: session and lifecycle management (the live-session core) ---
-  # Session identity, lifecycle, and monitoring state. Handlers read live state
-  # through session_state_ports; bootstrap supplies presentation callbacks to
-  # neutral monitors rather than letting monitors import handlers.
-  session_state:
-    paths:
-      - ccgram.session
-      - ccgram.session_map
-      - ccgram.session_lifecycle
-      - ccgram.session_resolver
-      - ccgram.session_query
-      - ccgram.session_monitor
-      - ccgram.topic_state_registry
-      - ccgram.claude_task_state
-      - ccgram.idle_tracker
-      - ccgram.state_persistence
-      - ccgram.monitor_events
-      - ccgram.monitor_state
-      - ccgram.event_stream_monitor # supervises multiplexer.watch_events → agent_status_cache / death
-    layer: core
-    owner: alexei-led
-    subdomain: core
-    volatility: high
-  # --- Core: window state and queries ---
-  window_state:
-    paths:
-      - ccgram.window_query
-      - ccgram.window_resolver
-      - ccgram.window_state_store
-      - ccgram.window_view
-    layer: core
-    owner: alexei-led
-    subdomain: core
-    volatility: medium
-  # --- Core: transcript reading and terminal parsing ---
-  transcript:
-    paths:
-      - ccgram.transcript_parser
-      - ccgram.transcript_reader
-      - ccgram.event_reader
-      - ccgram.terminal_parser
-      - ccgram.screen_buffer
-      - ccgram.last_unit
-    layer: core
-    owner: alexei-led
-    subdomain: supporting # follows external transcript formats
-    volatility: medium
-  # --- Core: config, shared utilities, and domain formatting ---
-  domain_config:
-    paths:
-      - ccgram
-      - ccgram._version
-      - ccgram.config
-      - ccgram.user_preferences
-      - ccgram.toolbar_config
-      - ccgram.command_catalog
-      - ccgram.utils
-      - ccgram.expandable_quote
-      - ccgram.tool_format
-    layer: core
-    owner: alexei-led
-    subdomain: generic # stable shared infra (config fan-in ~72)
-    volatility: low
-  # --- Adapter: Telegram protocol and bot ---
-  telegram_adapter:
-    paths:
-      - ccgram.telegram_client
-      - ccgram.telegram_draft
-      - ccgram.telegram_request
-      - ccgram.telegram_sender
-      - ccgram.telegram_rate_limiter
-      - ccgram.bot
-      - ccgram.cc_commands
-      - ccgram.entity_formatting
-    layer: adapter
-    owner: alexei-led
-    subdomain: supporting
-    volatility: medium
-  # --- Adapter: in-process Telegram facade over the shared session protocol ---
-  # Explicit __all__ plus existing handler callers identify its public surface.
-  # Supporting/medium is a design hypothesis: the Telegram translation follows
-  # UI workflow changes while the shared service contract stays transport-neutral.
-  session_protocol_telegram:
-    paths:
-      - ccgram.session_protocol.telegram
-    public:
-      - ccgram.session_protocol.telegram
-    layer: adapter
-    owner: alexei-led
-    subdomain: supporting
-    volatility: medium
-  # --- Adapter: authenticated ccgram/1 HTTP and WebSocket transport ---
-  # The wire contract lives in protocol/v1; no in-tree caller uses the package
-  # re-exports, so do not label them as a public Python import boundary.
-  # Supporting/medium is a design hypothesis for a separate client transport
-  # whose security and wire evolution do not redefine the session core.
   api:
     paths:
-      - ccgram.api
-      - ccgram.api.*
-    layer: adapter
-    owner: alexei-led
-    subdomain: supporting
+      - src/ccgram/api/__init__.py
+      - src/ccgram/api/**
     volatility: medium
-  # --- Core: multiplexer contract (pure Protocol + value types) ---
-  # The backend-neutral seam callers depend on. Generic subdomain; functional
-  # volatility low, implementation volatility medium (one backend became two;
-  # herdr is young). Public paths name exact module-level contracts supported
-  # by source documentation and cross-component callers; backend-specific
-  # implementations remain private.
-  # Persisted Herdr target validation belongs here as a shared identity
-  # contract, not in adapter implementation code. `base` importing no backend
-  # is the F3 core-purity audit (test_import_no_cycles); the proxy's wiring
-  # import of `registry` is the seam's sanctioned job (F1 exempts
-  # `multiplexer/**`).
-  multiplexer:
-    paths:
-      - ccgram.multiplexer # proxy facade (neutral)
-      - ccgram.multiplexer.base # Protocol + capabilities + value types
-      - ccgram.multiplexer.vim_state
-      - ccgram.multiplexer.window_ops
-      - ccgram.multiplexer.self_identify
-      - ccgram.multiplexer.agent_status_cache # backend-neutral push-status cache (mirrors vim_state)
-      - ccgram.multiplexer.topic_mapping # backend-neutral window→topic projection helper
-      - ccgram.multiplexer.reconciliation # confirmed/unknown cross-backend presence contract
-      - ccgram.multiplexer.window_liveness # neutral liveness state for queued delivery
-      - ccgram.herdr_targets # persisted target-namespace contract shared with session state
-    public:
-      - ccgram.multiplexer
-      - ccgram.multiplexer.base
-      - ccgram.multiplexer.reconciliation
-      - ccgram.multiplexer.window_liveness
-      - ccgram.herdr_targets
-    layer: core
-    owner: alexei-led
-    subdomain: generic
-    volatility: low # functional; implementation medium (two backends)
-  # --- Adapter: concrete multiplexer backends and private support ---
-  # Herdr socket/JSON and tmux/libtmux details stay here. Feature code uses the
-  # neutral proxy/base; the detached hook's direct imports of agterm_panes and
-  # herdr_socket are narrow standalone-hook support. The F1 pytest audit
-  # prohibits direct concrete-backend imports from non-exempt code, and the
-  # forbidden-dependency rules below mirror selected high-risk edges. These
-  # backends also own foreground/tty internals: tmux alone reads `pane_tty` +
-  # `ps -t`, exposed solely through `Multiplexer.foreground()` (see the
-  # `test_no_tty_outside_backend.py` audit).
-  multiplexer_backends:
-    paths:
-      - ccgram.multiplexer.tmux
-      - ccgram.multiplexer.herdr
-      - ccgram.multiplexer.herdr_events # herdr-only unix-socket event-stream reader
-      - ccgram.multiplexer.agterm
-      - ccgram.multiplexer.agterm_panes # private agterm split-pane projections
-      - ccgram.multiplexer.herdr_commands # manager CLI to Herdr JSON-RPC translation
-      - ccgram.multiplexer.herdr_socket # bounded Herdr socket transport
-      - ccgram.multiplexer.registry
-    layer: adapter
-    owner: alexei-led
-    subdomain: generic
-    volatility: medium # implementation: herdr protocol / id scheme may change
-  # --- Adapter: provider-detection classifier (foreground -> provider name) ---
-  # The backend-neutral half of foreground detection. `process_detection` only
-  # classifies a neutral `ForegroundInfo.argv` it receives from
-  # `Multiplexer.foreground()` — no tty, no `ps`. The sanctioned consumer is the
-  # providers facade (`detect_provider_from_pane`); handlers must route through
-  # that facade, not import the classifier internals (no-tty drift gate below).
-  provider_detection:
-    paths:
-      - ccgram.providers.process_detection
-    layer: adapter
-    owner: alexei-led
-    subdomain: generic
-    volatility: low
-  # --- Adapter: terminal infrastructure ---
-  terminal_adapter:
-    paths:
-      - ccgram.thread_router
-      - ccgram.screenshot
-    layer: adapter
-    owner: alexei-led
     subdomain: supporting
-    volatility: low
-  # --- Adapter: host Git worktree provisioning ---
-  # Shared API used by the session creation backend and Telegram's directory
-  # flow; the module documents its narrow helper surface and both callers import
-  # it directly. Supporting/medium is a design hypothesis for host-Git plumbing
-  # that can evolve with worktree creation behavior, not a churn measurement.
-  worktrees:
-    paths:
-      - ccgram.worktrees
-    public:
-      - ccgram.worktrees
     layer: adapter
-    owner: alexei-led
-    subdomain: supporting
-    volatility: medium
-  # --- Adapter: application entry points and CLI ---
+    depends_on:
+      - domain_config
+      - session_protocol
   app_bootstrap:
     paths:
-      - ccgram.main
-      - ccgram.cli
-      - ccgram.bootstrap
-      - ccgram.doctor_cmd
-      - ccgram.status_cmd
-      - ccgram.hook
-    layer: adapter
-    owner: alexei-led
-    subdomain: generic # composition root / wiring
+      - src/ccgram/main.py
+      - src/ccgram/cli.py
+      - src/ccgram/bootstrap.py
+      - src/ccgram/doctor_cmd.py
+      - src/ccgram/status_cmd.py
+      - src/ccgram/hook.py
     volatility: low
+    subdomain: generic
+    layer: adapter
+    depends_on:
+      - api
+      - domain_config
+      - handlers
+      - hooks
+      - miniapp
+      - multiplexer
+      - multiplexer_backends
+      - providers
+      - session_protocol
+      - session_protocol_telegram
+      - session_state
+      - telegram_adapter
+      - terminal_adapter
+      - transcript
+      - window_state
+  delivery_contract:
+    paths:
+      - src/ccgram/delivery_contract.py
+    public:
+      - src/ccgram/delivery_contract.py
+    volatility: medium
+    subdomain: core
+    layer: core
+  domain_config:
+    paths:
+      - src/ccgram/__init__.py
+      - src/ccgram/config.py
+      - src/ccgram/user_preferences.py
+      - src/ccgram/toolbar_config.py
+      - src/ccgram/command_catalog.py
+      - src/ccgram/utils.py
+      - src/ccgram/expandable_quote.py
+      - src/ccgram/tool_format.py
+    volatility: low
+    subdomain: generic
+    layer: core
+    depends_on:
+      - handlers
+      - multiplexer
+      - multiplexer_backends
+      - providers
+      - session_protocol
+  handlers:
+    paths:
+      - src/ccgram/handlers/__init__.py
+      - src/ccgram/handlers/**
+    public:
+      - src/ccgram/handlers/polling/window_death.py
+    volatility: high
+    subdomain: core
+    layer: adapter
+    depends_on:
+      - delivery_contract
+      - domain_config
+      - llm
+      - miniapp
+      - multiplexer
+      - providers
+      - session_protocol
+      - session_protocol_telegram
+      - session_state
+      - session_state_ports
+      - telegram_adapter
+      - terminal_adapter
+      - transcript
+      - tts
+      - whisper
+      - window_state
+      - window_state_ports
+      - worktrees
+  hooks:
+    paths:
+      - src/ccgram/hooks/__init__.py
+      - src/ccgram/hooks/**
+    volatility: low
+    subdomain: supporting
+    layer: core
+    depends_on:
+      - providers
+  llm:
+    paths:
+      - src/ccgram/llm/__init__.py
+      - src/ccgram/llm/**
+    volatility: low
+    subdomain: generic
+    layer: core
+    depends_on:
+      - domain_config
+      - session_protocol
+  miniapp:
+    paths:
+      - src/ccgram/miniapp/__init__.py
+      - src/ccgram/miniapp/**
+    volatility: medium
+    subdomain: supporting
+    layer: core
+    depends_on:
+      - domain_config
+      - multiplexer
+      - session_state
+      - window_state_ports
+  multiplexer:
+    paths:
+      - src/ccgram/multiplexer/__init__.py
+      - src/ccgram/multiplexer/base.py
+      - src/ccgram/multiplexer/vim_state.py
+      - src/ccgram/multiplexer/self_identify.py
+      - src/ccgram/multiplexer/agent_status_cache.py
+      - src/ccgram/multiplexer/topic_mapping.py
+      - src/ccgram/multiplexer/reconciliation.py
+      - src/ccgram/multiplexer/window_liveness.py
+      - src/ccgram/herdr_targets.py
+    public:
+      - src/ccgram/multiplexer/__init__.py
+      - src/ccgram/multiplexer/base.py
+      - src/ccgram/multiplexer/reconciliation.py
+      - src/ccgram/multiplexer/window_liveness.py
+      - src/ccgram/herdr_targets.py
+    volatility: low
+    subdomain: generic
+    layer: core
+    depends_on:
+      - multiplexer_backends
+      - session_state
+      - window_state
+  multiplexer_backends:
+    paths:
+      - src/ccgram/multiplexer/tmux.py
+      - src/ccgram/multiplexer/herdr.py
+      - src/ccgram/multiplexer/herdr_events.py
+      - src/ccgram/multiplexer/agterm.py
+      - src/ccgram/multiplexer/agterm_panes.py
+      - src/ccgram/multiplexer/herdr_commands.py
+      - src/ccgram/multiplexer/herdr_socket.py
+      - src/ccgram/multiplexer/registry.py
+    volatility: medium
+    subdomain: generic
+    layer: adapter
+    depends_on:
+      - domain_config
+      - multiplexer
+      - provider_detection
+      - providers
+  provider_detection:
+    paths:
+      - src/ccgram/providers/process_detection.py
+    volatility: low
+    subdomain: generic
+    layer: adapter
+    depends_on:
+      - providers
+      - session_state
+  providers:
+    paths:
+      - src/ccgram/providers/__init__.py
+      - src/ccgram/providers/**
+    volatility: medium
+    subdomain: supporting
+    layer: adapter
+    depends_on:
+      - domain_config
+      - multiplexer
+      - provider_detection
+      - session_protocol
+      - session_state
+      - telegram_adapter
+      - transcript
+  session_protocol:
+    paths:
+      - src/ccgram/session_protocol/__init__.py
+      - src/ccgram/session_protocol/**
+    volatility: high
+    subdomain: core
+    layer: core
+    depends_on:
+      - domain_config
+      - multiplexer
+      - provider_detection
+      - providers
+      - transcript
+      - window_state_ports
+      - worktrees
+  session_protocol_telegram:
+    paths:
+      - src/ccgram/session_protocol/telegram.py
+    public:
+      - src/ccgram/session_protocol/telegram.py
+    volatility: medium
+    subdomain: supporting
+    layer: adapter
+    depends_on:
+      - session_protocol
+  session_state:
+    paths:
+      - src/ccgram/session.py
+      - src/ccgram/session_map.py
+      - src/ccgram/session_lifecycle.py
+      - src/ccgram/session_resolver.py
+      - src/ccgram/session_query.py
+      - src/ccgram/session_monitor.py
+      - src/ccgram/topic_state_registry.py
+      - src/ccgram/claude_task_state.py
+      - src/ccgram/idle_tracker.py
+      - src/ccgram/state_persistence.py
+      - src/ccgram/monitor_events.py
+      - src/ccgram/monitor_state.py
+      - src/ccgram/event_stream_monitor.py
+    volatility: high
+    subdomain: core
+    layer: core
+    depends_on:
+      - delivery_contract
+      - domain_config
+      - hooks
+      - multiplexer
+      - providers
+      - session_protocol
+      - terminal_adapter
+      - transcript
+      - window_state
+      - window_state_ports
+  session_state_ports:
+    paths:
+      - src/ccgram/session_state_ports/__init__.py
+      - src/ccgram/session_state_ports/**
+    volatility: medium
+    subdomain: core
+    layer: core
+    depends_on:
+      - session_state
+  telegram_adapter:
+    paths:
+      - src/ccgram/telegram_client.py
+      - src/ccgram/telegram_draft.py
+      - src/ccgram/telegram_request.py
+      - src/ccgram/telegram_sender.py
+      - src/ccgram/telegram_rate_limiter.py
+      - src/ccgram/bot.py
+      - src/ccgram/cc_commands.py
+      - src/ccgram/entity_formatting.py
+    volatility: medium
+    subdomain: supporting
+    layer: adapter
+    depends_on:
+      - app_bootstrap
+      - domain_config
+      - handlers
+      - providers
+      - session_state
+      - terminal_adapter
+  terminal_adapter:
+    paths:
+      - src/ccgram/thread_router.py
+      - src/ccgram/screenshot.py
+    volatility: low
+    subdomain: supporting
+    layer: adapter
+    depends_on:
+      - multiplexer
+  transcript:
+    paths:
+      - src/ccgram/transcript_reader.py
+      - src/ccgram/event_reader.py
+      - src/ccgram/terminal_parser.py
+      - src/ccgram/screen_buffer.py
+      - src/ccgram/last_unit.py
+    volatility: medium
+    subdomain: supporting
+    layer: core
+    depends_on:
+      - domain_config
+      - hooks
+      - multiplexer
+      - providers
+      - session_protocol
+      - session_state
+      - window_state_ports
+  tts:
+    paths:
+      - src/ccgram/tts/__init__.py
+      - src/ccgram/tts/**
+    volatility: low
+    subdomain: generic
+    layer: core
+    depends_on:
+      - domain_config
+      - telegram_adapter
+  whisper:
+    paths:
+      - src/ccgram/whisper/__init__.py
+      - src/ccgram/whisper/**
+    volatility: low
+    subdomain: generic
+    layer: core
+    depends_on:
+      - domain_config
+  window_state:
+    paths:
+      - src/ccgram/window_query.py
+      - src/ccgram/window_resolver.py
+      - src/ccgram/window_state_store.py
+      - src/ccgram/window_view.py
+    volatility: medium
+    subdomain: core
+    layer: core
+    depends_on:
+      - multiplexer
+      - window_state_ports
+  window_state_ports:
+    paths:
+      - src/ccgram/window_state_ports/__init__.py
+      - src/ccgram/window_state_ports/**
+    volatility: medium
+    subdomain: core
+    layer: core
+    depends_on:
+      - domain_config
+      - multiplexer
+      - window_state
+  worktrees:
+    paths:
+      - src/ccgram/worktrees.py
+    public:
+      - src/ccgram/worktrees.py
+    volatility: medium
+    subdomain: supporting
+    layer: adapter
 rules:
-  # IMPORTANT — forbidden_dependency `from`/`to` are PATH GLOBS (e.g.
-  # `ccgram.handlers**`), NOT module-group names. Using a module name (`handlers`)
-  # silently matches nothing and the rule never fires.
-  # The pytest test_multiplexer_boundary audit stays the COMPREHENSIVE in-process
-  # gate (all callers, both import forms, allow-list); these glob rules mirror the
-  # highest-risk source->backend edges as a fast archfit drift signal.
-  #
-  # Multiplexer seam: no caller may import a concrete backend (tmux/herdr/registry);
-  # callers go through the neutral `ccgram.multiplexer` proxy / `.base` contract.
   - id: no-handlers-to-tmux
-    type: forbidden_dependency
-    from: ccgram.handlers**
-    to: ccgram.multiplexer.tmux
-    gate: fail
-    rationale: "A handler that imports a concrete multiplexer backend ties message handling to that one backend; callers go through the neutral ccgram.multiplexer proxy, so a backend can change without touching them."
+    note: No dependency from src/ccgram/handlers**/__init__.py to src/ccgram/multiplexer/tmux.py.
+    why: A handler that imports a concrete multiplexer backend ties message handling to that one backend; callers go through the neutral ccgram.multiplexer proxy, so a backend can change without touching them.
   - id: no-handlers-to-herdr
-    type: forbidden_dependency
-    from: ccgram.handlers**
-    to: ccgram.multiplexer.herdr
-    gate: fail
-    rationale: "A handler that imports a concrete multiplexer backend ties message handling to that one backend; callers go through the neutral ccgram.multiplexer proxy, so a backend can change without touching them."
+    note: No dependency from src/ccgram/handlers**/__init__.py to src/ccgram/multiplexer/herdr.py.
+    why: A handler that imports a concrete multiplexer backend ties message handling to that one backend; callers go through the neutral ccgram.multiplexer proxy, so a backend can change without touching them.
   - id: no-handlers-to-mux-registry
-    type: forbidden_dependency
-    from: ccgram.handlers**
-    to: ccgram.multiplexer.registry
-    gate: fail
-    rationale: "A handler that imports a concrete multiplexer backend ties message handling to that one backend; callers go through the neutral ccgram.multiplexer proxy, so a backend can change without touching them."
+    note: No dependency from src/ccgram/handlers**/__init__.py to src/ccgram/multiplexer/registry.py.
+    why: A handler that imports a concrete multiplexer backend ties message handling to that one backend; callers go through the neutral ccgram.multiplexer proxy, so a backend can change without touching them.
   - id: no-providers-to-tmux
-    type: forbidden_dependency
-    from: ccgram.providers**
-    to: ccgram.multiplexer.tmux
-    gate: fail
-    rationale: "A provider that imports a concrete multiplexer backend ties provider logic to that one backend; callers go through the neutral ccgram.multiplexer proxy, so a backend can change without touching them."
+    note: No dependency from src/ccgram/providers**/__init__.py to src/ccgram/multiplexer/tmux.py.
+    why: A provider that imports a concrete multiplexer backend ties provider logic to that one backend; callers go through the neutral ccgram.multiplexer proxy, so a backend can change without touching them.
   - id: no-providers-to-herdr
-    type: forbidden_dependency
-    from: ccgram.providers**
-    to: ccgram.multiplexer.herdr
-    gate: fail
-    rationale: "A provider that imports a concrete multiplexer backend ties provider logic to that one backend; callers go through the neutral ccgram.multiplexer proxy, so a backend can change without touching them."
-  # No-tty drift gate: handlers learn the foreground process through the
-  # `detect_provider_from_pane` facade, never by importing the classifier
-  # directly. Mirrors the pytest test_no_tty_outside_backend audit.
+    note: No dependency from src/ccgram/providers**/__init__.py to src/ccgram/multiplexer/herdr.py.
+    why: A provider that imports a concrete multiplexer backend ties provider logic to that one backend; callers go through the neutral ccgram.multiplexer proxy, so a backend can change without touching them.
   - id: no-handlers-to-provider-detection
-    type: forbidden_dependency
-    from: ccgram.handlers**
-    to: ccgram.providers.process_detection
-    gate: fail
-    rationale: "A handler that imports the process classifier reads terminal state itself; handlers learn the foreground process through the detect_provider_from_pane facade."
-  # Neutral push observation must not own Telegram transport or recipient routing.
-  # The runtime import audit also covers nested/lazy imports and external types.
+    note: No dependency from src/ccgram/handlers**/__init__.py to src/ccgram/providers/process_detection.py.
+    why: A handler that imports the process classifier reads terminal state itself; handlers learn the foreground process through the detect_provider_from_pane facade.
   - id: no-event-stream-to-handlers
-    type: forbidden_dependency
-    from: ccgram.event_stream_monitor
-    to: ccgram.handlers**
-    gate: fail
-    rationale: "Push observation that owns message handling stops being neutral: it can no longer be reused or tested without the bot."
+    note: No dependency from src/ccgram/event_stream_monitor.py to src/ccgram/handlers**/__init__.py.
+    why: "Push observation that owns message handling stops being neutral: it can no longer be reused or tested without the bot."
   - id: no-event-stream-to-telegram
-    type: forbidden_dependency
-    from: ccgram.event_stream_monitor
-    to: ccgram.telegram**
-    gate: fail
-    rationale: "Push observation that owns Telegram transport stops being neutral: it can no longer be reused or tested without the bot."
+    note: No dependency from src/ccgram/event_stream_monitor.py to src/ccgram/telegram**.py.
+    why: "Push observation that owns Telegram transport stops being neutral: it can no longer be reused or tested without the bot."
   - id: no-event-stream-to-routing
-    type: forbidden_dependency
-    from: ccgram.event_stream_monitor
-    to: ccgram.thread_router
-    gate: fail
-    rationale: "Push observation that owns recipient routing stops being neutral: it can no longer be reused or tested without the bot."
-  # Composition uses the supported adapter entrypoint, not private policy helpers.
+    note: No dependency from src/ccgram/event_stream_monitor.py to src/ccgram/thread_router.py.
+    why: "Push observation that owns recipient routing stops being neutral: it can no longer be reused or tested without the bot."
   - id: no-bootstrap-to-polling-implementation
-    type: forbidden_dependency
-    from: ccgram.bootstrap
-    to: ccgram.handlers.polling.window_tick**
-    gate: fail
-    rationale: "Composition that reaches into private polling helpers breaks when they change; it uses the supported adapter entrypoint."
-  # The runner supplies live lifecycle facts; the bot must not import CLI state.
+    note: No dependency from src/ccgram/bootstrap.py to src/ccgram/handlers/polling/window_tick**/__init__.py.
+    why: Composition that reaches into private polling helpers breaks when they change; it uses the supported adapter entrypoint.
   - id: no-bot-to-main
-    type: forbidden_dependency
-    from: ccgram.bot
-    to: ccgram.main
-    gate: fail
-    rationale: "The bot importing CLI state inverts the dependency: the runner supplies live lifecycle facts to the bot, not the other way round."
-  # Advisory (see header): archfit counts lazy/in-function imports as cycle
-  # edges; the runtime gate is the clean-interpreter test_import_no_cycles.
-  - id: no-import-cycles
-    type: cycle
-    gate: warn
+    note: No dependency from src/ccgram/bot.py to src/ccgram/main.py.
+    why: "The bot importing CLI state inverts the dependency: the runner supplies live lifecycle facts to the bot, not the other way round."
+exceptions:
+  - rule: coupling
+    from: app_bootstrap
+    to: handlers
+    why: The error existed when archfit init wrote this policy.
+  - rule: coupling
+    from: domain_config
+    to: handlers
+    why: The error existed when archfit init wrote this policy.
+  - rule: coupling
+    from: handlers
+    to: multiplexer
+    why: The error existed when archfit init wrote this policy.
+  - rule: coupling
+    from: multiplexer_backends
+    to: multiplexer
+    why: The error existed when archfit init wrote this policy.
+  - rule: coupling
+    from: session_protocol
+    to: multiplexer
+    why: The error existed when archfit init wrote this policy.
+  - rule: coupling
+    from: session_state
+    to: multiplexer
+    why: The error existed when archfit init wrote this policy.
+  - rule: coupling
+    from: telegram_adapter
+    to: handlers
+    why: The error existed when archfit init wrote this policy.
+  - rule: duplication
+    from: app_bootstrap
+    to: session_state
+    why: The error existed when archfit init wrote this policy.
+  - rule: duplication
+    from: handlers
+    to: llm
+    why: The error existed when archfit init wrote this policy.
+  - rule: duplication
+    from: handlers
+    to: providers
+    why: The error existed when archfit init wrote this policy.
+  - rule: duplication
+    from: handlers
+    to: session_protocol
+    why: The error existed when archfit init wrote this policy.
+  - rule: duplication
+    from: handlers
+    to: session_state
+    why: The error existed when archfit init wrote this policy.
+  - rule: duplication
+    from: handlers
+    to: telegram_adapter
+    why: The error existed when archfit init wrote this policy.
+  - rule: duplication
+    from: handlers
+    to: worktrees
+    why: The error existed when archfit init wrote this policy.
+  - rule: duplication
+    from: llm
+    to: whisper
+    why: The error existed when archfit init wrote this policy.
+  - rule: duplication
+    from: session_protocol
+    to: session_protocol_telegram
+    why: The error existed when archfit init wrote this policy.
+  - rule: duplication
+    from: session_state
+    to: window_state
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: api
+    to: domain_config
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: api
+    to: session_protocol
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: app_bootstrap
+    to: api
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: app_bootstrap
+    to: domain_config
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: app_bootstrap
+    to: handlers
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: app_bootstrap
+    to: hooks
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: app_bootstrap
+    to: miniapp
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: app_bootstrap
+    to: multiplexer
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: app_bootstrap
+    to: multiplexer_backends
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: app_bootstrap
+    to: providers
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: app_bootstrap
+    to: session_protocol
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: app_bootstrap
+    to: session_protocol_telegram
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: app_bootstrap
+    to: session_state
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: app_bootstrap
+    to: telegram_adapter
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: app_bootstrap
+    to: terminal_adapter
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: app_bootstrap
+    to: transcript
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: app_bootstrap
+    to: window_state
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: domain_config
+    to: handlers
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: domain_config
+    to: multiplexer
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: domain_config
+    to: multiplexer_backends
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: domain_config
+    to: providers
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: domain_config
+    to: session_protocol
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: handlers
+    to: domain_config
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: handlers
+    to: llm
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: handlers
+    to: miniapp
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: handlers
+    to: multiplexer
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: handlers
+    to: providers
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: handlers
+    to: session_protocol
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: handlers
+    to: session_protocol_telegram
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: handlers
+    to: session_state
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: handlers
+    to: session_state_ports
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: handlers
+    to: telegram_adapter
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: handlers
+    to: terminal_adapter
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: handlers
+    to: transcript
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: handlers
+    to: tts
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: handlers
+    to: whisper
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: handlers
+    to: window_state
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: handlers
+    to: window_state_ports
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: hooks
+    to: providers
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: llm
+    to: domain_config
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: llm
+    to: session_protocol
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: miniapp
+    to: domain_config
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: miniapp
+    to: multiplexer
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: miniapp
+    to: session_state
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: miniapp
+    to: window_state_ports
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: multiplexer
+    to: multiplexer_backends
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: multiplexer
+    to: session_state
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: multiplexer
+    to: window_state
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: multiplexer_backends
+    to: domain_config
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: multiplexer_backends
+    to: multiplexer
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: multiplexer_backends
+    to: provider_detection
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: multiplexer_backends
+    to: providers
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: provider_detection
+    to: providers
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: provider_detection
+    to: session_state
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: providers
+    to: domain_config
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: providers
+    to: multiplexer
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: providers
+    to: provider_detection
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: providers
+    to: session_protocol
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: providers
+    to: session_state
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: providers
+    to: telegram_adapter
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: providers
+    to: transcript
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: session_protocol
+    to: domain_config
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: session_protocol
+    to: multiplexer
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: session_protocol
+    to: provider_detection
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: session_protocol
+    to: providers
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: session_protocol
+    to: transcript
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: session_protocol
+    to: window_state_ports
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: session_protocol_telegram
+    to: session_protocol
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: session_state
+    to: domain_config
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: session_state
+    to: hooks
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: session_state
+    to: multiplexer
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: session_state
+    to: providers
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: session_state
+    to: session_protocol
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: session_state
+    to: terminal_adapter
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: session_state
+    to: transcript
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: session_state
+    to: window_state
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: session_state
+    to: window_state_ports
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: session_state_ports
+    to: session_state
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: telegram_adapter
+    to: app_bootstrap
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: telegram_adapter
+    to: domain_config
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: telegram_adapter
+    to: handlers
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: telegram_adapter
+    to: providers
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: telegram_adapter
+    to: session_state
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: telegram_adapter
+    to: terminal_adapter
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: terminal_adapter
+    to: multiplexer
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: transcript
+    to: domain_config
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: transcript
+    to: hooks
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: transcript
+    to: multiplexer
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: transcript
+    to: providers
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: transcript
+    to: session_protocol
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: transcript
+    to: session_state
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: transcript
+    to: window_state_ports
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: tts
+    to: domain_config
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: tts
+    to: telegram_adapter
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: whisper
+    to: domain_config
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: window_state
+    to: multiplexer
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: window_state
+    to: window_state_ports
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: window_state_ports
+    to: domain_config
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: window_state_ports
+    to: multiplexer
+    why: The error existed when archfit init wrote this policy.
+  - rule: cycle
+    from: window_state_ports
+    to: window_state
+    why: The error existed when archfit init wrote this policy.
+  - rule: layers
+    from: domain_config
+    to: handlers
+    why: The error existed when archfit init wrote this policy.
+  - rule: layers
+    from: domain_config
+    to: multiplexer_backends
+    why: The error existed when archfit init wrote this policy.
+  - rule: layers
+    from: domain_config
+    to: providers
+    why: The error existed when archfit init wrote this policy.
+  - rule: layers
+    from: hooks
+    to: providers
+    why: The error existed when archfit init wrote this policy.
+  - rule: layers
+    from: multiplexer
+    to: multiplexer_backends
+    why: The error existed when archfit init wrote this policy.
+  - rule: layers
+    from: session_protocol
+    to: provider_detection
+    why: The error existed when archfit init wrote this policy.
+  - rule: layers
+    from: session_protocol
+    to: providers
+    why: The error existed when archfit init wrote this policy.
+  - rule: layers
+    from: session_protocol
+    to: worktrees
+    why: The error existed when archfit init wrote this policy.
+  - rule: layers
+    from: session_state
+    to: providers
+    why: The error existed when archfit init wrote this policy.
+  - rule: layers
+    from: session_state
+    to: terminal_adapter
+    why: The error existed when archfit init wrote this policy.
+  - rule: layers
+    from: transcript
+    to: providers
+    why: The error existed when archfit init wrote this policy.
+  - rule: layers
+    from: tts
+    to: telegram_adapter
+    why: The error existed when archfit init wrote this policy.
+  - rule: unowned
+    from: src/ccgram/agent_startup.py
+    why: The error existed when archfit init wrote this policy.
+tests:
+  - "**/test_*.py"
+  - "**/conftest.py"
+  - "**/tests/**"
+exclude:
+  - "**/fonts/**"
+  - "**/miniapp/static/**"
+  - "**/pkg/mod/**"
+languages:
+  go:
+    enabled: false
+  typescript:
+    enabled: false
+  python:
+    package: ccgram
+analyzers:
+  syntax:
+    enabled: true

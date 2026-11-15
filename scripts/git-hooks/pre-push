@@ -5,11 +5,10 @@
 # config, so doc/test-only pushes stay instant:
 #   1. make arch-guard  — fast (~3s), comprehensive, reliable pytest boundary
 #                         audits (the authoritative drift gate).
-#   2. make arch-check  — archfit whole-graph gate (~45s): forbidden-dep + cycle
-#                         + coupling. Adds the cross-module view on top of (1).
+#   2. make arch-check  — Archfit 4 whole-graph drift check (exit 0/1/2),
+#                         adding the cross-module view on top of (1).
 #
 # Installed via: git config --local core.hooksPath scripts/git-hooks
-# To skip ad hoc:  git push --no-verify   (or comment out the arch-check line).
 set -euo pipefail
 
 z40=0000000000000000000000000000000000000000

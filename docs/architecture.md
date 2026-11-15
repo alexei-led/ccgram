@@ -345,3 +345,22 @@ flowchart TB
 | Lazy-import contract                              | In-function `Import`/`ImportFrom` must carry `# Lazy: <reason>` (or live inside `if TYPE_CHECKING:` / `_reset_*_for_testing`). `scripts/lint_lazy_imports.py` runs in `make lint`; cycle regressions caught by `tests/integration/test_import_no_cycles.py`                                                                                                                                                                                           |
 
 <!-- markdownlint-enable MD060 -->
+
+## Archfit policy
+
+The schema 3 policy in `.archfit.yaml` groups the code into 24 modules across
+the `core` and `adapter` layers. It declares module paths, public surfaces,
+allowed dependencies, and volatility. The built-in rules enforce graph
+dependencies, coupling, cycles, layer direction, and ownership of new production
+code. Eleven converted custom rules remain notes
+until an owner confirms their proposed alternatives; they document the multiplexer
+backend seam, provider detection, neutral event-stream ownership, bootstrap's
+supported handler entrypoint, and bot/runner direction. See `.archfit.yaml` for
+the exact module and dependency declarations.
+
+Use Archfit 4 commands: `archfit check` checks whole-graph drift,
+`archfit rules [path-or-rule]` shows applicable policy, and
+`archfit can <file> <target>` checks a proposed dependency. `archfit report`
+produces a report; Archfit 4 has no scorecard or LLM-summary command. The
+GitHub Action reports changes to the Archfit App, which decides the gate.
+The Python boundary audit tests remain repository-owned fitness checks.
