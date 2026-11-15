@@ -28,6 +28,7 @@ import asyncio
 import contextlib
 import re
 import stat
+import shutil
 from collections import Counter
 from uuid import NAMESPACE_URL, uuid5
 import structlog
@@ -40,6 +41,8 @@ from libtmux.exc import LibTmuxException
 from libtmux.neo import fetch_objs
 
 from ..config import config
+from ..topic_mark_types import TopicMarkWriteGuard, TopicMarkWriteWitness
+from . import native_process, topic_mark_transport
 from .base import (
     AgentStatus,
     CaptureResult,
@@ -185,7 +188,13 @@ class TmuxManager:
             info = endpoint.stat()
             if not stat.S_ISSOCK(info.st_mode):
                 return None
-            return f"{endpoint}:{info.st_dev}:{info.st_ino}:{info.st_ctime_ns}"
+            binary = shutil.which(server.tmux_bin or "tmux")
+            if binary is None:
+                return None
+            identity = native_process.inspect_native_process(
+                str(endpoint), backend="tmux", binary=binary
+            )
+            return identity.scope if identity is not None else None
         except (*_TmuxError, ValueError):
             return None
 
@@ -198,19 +207,23 @@ class TmuxManager:
             result = window.cmd("show-options", "-w")
             if result.returncode != 0 or result.stderr:
                 return None, None
-            for line in result.stdout:
-                key, _, value = line.partition(" ")
-                if key == _TOPIC_MARK_OPTION:
-                    match = _TOPIC_MARK_RE.fullmatch(value.strip())
-                    return (
-                        (match[1] == "1", f"tmux:{match[2]}") if match else (None, None)
-                    )
-            witness = uuid5(
-                NAMESPACE_URL, f"ccgram:tmux:{incarnation}:{window.window_id}"
+            return TmuxManager._selection_from_options(
+                result.stdout, window.window_id or "", incarnation
             )
-            return False, f"tmux:{witness.hex}"
         except _TmuxError:
             return None, None
+
+    @staticmethod
+    def _selection_from_options(
+        lines: list[str], window_id: str, incarnation: str
+    ) -> tuple[bool | None, str | None]:
+        for line in lines:
+            key, _, value = line.partition(" ")
+            if key == _TOPIC_MARK_OPTION:
+                match = _TOPIC_MARK_RE.fullmatch(value.strip())
+                return (match[1] == "1", f"tmux:{match[2]}") if match else (None, None)
+        witness = uuid5(NAMESPACE_URL, f"ccgram:tmux:{incarnation}:{window_id}")
+        return False, f"tmux:{witness.hex}"
 
     def _topic_inventory(
         self,
@@ -405,34 +418,19 @@ class TmuxManager:
         return await asyncio.to_thread(_sync_list_windows)
 
     async def set_topic_mark(
-        self, window_id: str, marked: bool, *, owner: str | None = None
+        self,
+        window_id: str,
+        marked: bool,
+        *,
+        owner: str | None = None,
+        write_guard: TopicMarkWriteGuard | None = None,
     ) -> bool:
-        """Update only a unique native owner, never fall back to a recycled ID."""
+        """Update only a unique owner through a pinned, bounded native client."""
         if not _WINDOW_ID_RE.fullmatch(window_id) or (
             owner is not None and not _TOPIC_OWNER_RE.fullmatch(owner)
         ):
             return False
-        worker = asyncio.create_task(
-            asyncio.to_thread(self._set_topic_mark, window_id, marked, owner)
-        )
-        try:
-            return await asyncio.shield(worker)
-        except asyncio.CancelledError:
-            # The caller owns the selection lock until native writes stop, even
-            # through repeated cancellation. Worker failure must not mask it.
-            finished = asyncio.Event()
-            worker.add_done_callback(lambda _: finished.set())
-            while not worker.done():
-                try:
-                    await finished.wait()
-                except asyncio.CancelledError:
-                    continue
-            if not worker.cancelled():
-                worker.exception()
-            raise
-
-    def _set_topic_mark(self, window_id: str, marked: bool, owner: str | None) -> bool:
-        snapshot = self._topic_inventory()
+        snapshot = await self._marker_inventory()
         if snapshot is None:
             return False
         incarnation, selections = snapshot
@@ -449,37 +447,161 @@ class TmuxManager:
         target = matches[0]
         if selections[target][0] is marked:
             return True
-        return self._write_topic_mark(target, marked, expected, incarnation)
+        return write_guard is not None and await self._write_topic_mark(
+            target, marked, expected, incarnation, write_guard
+        )
 
-    def _write_topic_mark(
-        self, target: str, marked: bool, expected: str, incarnation: str
-    ) -> bool:
-        if self._socket_incarnation(self.server) != incarnation:
-            return False
+    async def _marker_socket_path(self) -> tuple[str, str] | None:
+        binary = shutil.which(self.server.tmux_bin or "tmux")
+        if binary is None:
+            return None
+        args = ["-N"]
+        if self.server.socket_path:
+            args += ["-S", self.server.socket_path]
+        elif self.server.socket_name:
+            args += ["-L", self.server.socket_name]
+        result = await topic_mark_transport.run_marker_cli(
+            binary, [*args, "display-message", "-p", "#{socket_path}"]
+        )
+        if result is None or result[0] or result[2].strip():
+            return None
+        paths = result[1].splitlines()
+        return (binary, paths[0]) if len(paths) == 1 and paths[0] else None
+
+    async def _inventory_on_pin(
+        self, binary: str, witness: TopicMarkWriteWitness
+    ) -> tuple[str, dict[str, tuple[bool | None, str | None]]] | None:
+        if witness.pin_path is None:
+            return None
+        args = ["-N", "-S", witness.pin_path]
+        pid = await topic_mark_transport.run_marker_cli(
+            binary, [*args, "display-message", "-p", "#{pid}"]
+        )
+        if (
+            pid is None
+            or pid[0]
+            or pid[2].strip()
+            or pid[1].strip() != str(witness.native_pid)
+        ):
+            return None
+        result = await topic_mark_transport.run_marker_cli(
+            binary, [*args, "list-windows", "-a", "-F", "#{window_id}"]
+        )
+        if result is None or result[0] or result[2].strip():
+            return None
+        windows = result[1].splitlines()
+        if any(not _WINDOW_ID_RE.fullmatch(window) for window in windows):
+            return None
+        scope = topic_mark_transport.process_scope(witness)
+        selections: dict[str, tuple[bool | None, str | None]] = {}
+        for window in dict.fromkeys(windows):
+            options = await topic_mark_transport.run_marker_cli(
+                binary, [*args, "show-options", "-w", "-t", window]
+            )
+            if options is None or options[0] or options[2].strip():
+                return None
+            selections[window] = self._selection_from_options(
+                options[1].splitlines(), window, scope
+            )
+        owners = Counter(owner for _, owner in selections.values() if owner)
+        return scope, {
+            window: (None, None) if owner and owners[owner] > 1 else (marked, owner)
+            for window, (marked, owner) in selections.items()
+        }
+
+    async def _marker_inventory(
+        self,
+    ) -> tuple[str, dict[str, tuple[bool | None, str | None]]] | None:
+        endpoint = await self._marker_socket_path()
+        if endpoint is None:
+            return None
+        binary, path = endpoint
+        witness = topic_mark_transport.prepare_cli_write(
+            backend="tmux", binary=binary, socket_path=path
+        )
+        if witness is None:
+            return None
         try:
-            window = libtmux.Window(server=self.server, window_id=target)
-            token = (
-                f"{_TOPIC_MARK_VERSION}:{int(marked)}:{expected.removeprefix('tmux:')}"
-            )
-            result = window.cmd("set-option", "-w", _TOPIC_MARK_OPTION, token)
-            if result.returncode != 0 or result.stderr:
-                return False
-            confirmed = self._topic_inventory()
-            return (
-                confirmed is not None
-                and confirmed[0] == incarnation
-                and all(
-                    actual_owner is not None
-                    for _, actual_owner in confirmed[1].values()
-                )
-                and sum(
-                    selection == (marked, expected)
-                    for selection in confirmed[1].values()
-                )
-                == 1
-            )
-        except _TmuxError:
+            snapshot = await self._inventory_on_pin(binary, witness)
+        finally:
+            cleaned = topic_mark_transport.cleanup_pin(witness)
+        return snapshot if cleaned else None
+
+    async def _write_topic_mark(
+        self,
+        target: str,
+        marked: bool,
+        expected: str,
+        incarnation: str,
+        write_guard: TopicMarkWriteGuard,
+    ) -> bool:
+        endpoint = await self._marker_socket_path()
+        if endpoint is None:
             return False
+        binary, path = endpoint
+        witness = topic_mark_transport.prepare_cli_write(
+            backend="tmux", binary=binary, socket_path=path
+        )
+        if witness is None or witness.pin_path is None:
+            return False
+        if topic_mark_transport.process_scope(witness) != incarnation:
+            topic_mark_transport.cleanup_pin(witness)
+            return False
+        token = f"{_TOPIC_MARK_VERSION}:{int(marked)}:{expected.removeprefix('tmux:')}"
+        completion = f"ccgram-mark:{witness.dispatch_id}:{witness.native_pid}"
+        result = await topic_mark_transport.guarded_cli_write(
+            witness,
+            write_guard,
+            binary,
+            [
+                "-N",
+                "-S",
+                witness.pin_path,
+                "set-option",
+                "-w",
+                "-t",
+                target,
+                _TOPIC_MARK_OPTION,
+                token,
+                ";",
+                "display-message",
+                "-p",
+                f"ccgram-mark:{witness.dispatch_id}:#{{pid}}",
+            ],
+            success=lambda result: (
+                result[0] == 0
+                and not result[2].strip()
+                and result[1].strip() == completion
+            ),
+        )
+        if result is None:
+            return False
+        confirmed = await self._marker_inventory()
+        return (
+            confirmed is not None
+            and confirmed[0] == incarnation
+            and all(
+                actual_owner is not None for _, actual_owner in confirmed[1].values()
+            )
+            and sum(
+                selection == (marked, expected) for selection in confirmed[1].values()
+            )
+            == 1
+        )
+
+    async def topic_mark_endpoint_scope(self) -> str | None:
+        endpoint = await self._marker_socket_path()
+        if endpoint is None:
+            return None
+        binary, path = endpoint
+        return native_process.inspect_endpoint_scope(
+            path, backend="tmux", binary=binary
+        )
+
+    async def recover_topic_mark_write(
+        self, witness: TopicMarkWriteWitness
+    ) -> bool | None:
+        return topic_mark_transport.recover_write(witness, backend="tmux")
 
     async def find_window_by_name(self, window_name: str) -> TmuxWindow | None:
         """Find a window by its name.

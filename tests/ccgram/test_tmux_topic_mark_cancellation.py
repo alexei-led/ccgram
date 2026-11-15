@@ -1,171 +1,192 @@
-"""A cancelled native marker operation must finish before its owner unlocks."""
+"""Native tmux completion requires a per-dispatch same-queue acknowledgement."""
 
 import asyncio
 from pathlib import Path
-import stat
-import threading
+import socket
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from typing import cast
 
 import libtmux
 import pytest
 
+from ccgram.multiplexer import native_process as native_process
+from ccgram.multiplexer import tmux as tmux_module
+from ccgram.multiplexer import topic_mark_transport as transport
 from ccgram.multiplexer.tmux import TmuxManager
-from ccgram.topic_selection import _selection_lock
+from _topic_mark_helpers import RecordingTopicMarkGuard
 
 
 class NativeMarker:
-    def __init__(self, endpoint: Path, outcome: str) -> None:
+    def __init__(self, endpoint: Path, outcome: str):
         self.endpoint = endpoint
         self.outcome = outcome
         self.token: str | None = None
-        self.entered = threading.Event()
-        self.release = threading.Event()
-        self.finished = threading.Event()
-        self.worker_thread: int | None = None
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        self.finished = asyncio.Event()
+        self.remote: asyncio.Task | None = None
+        self.writes = 0
 
-    def cmd(self, command, *args, target=None):
-        result = SimpleNamespace(returncode=0, stderr=[], stdout=[])
-        if command == "display-message":
-            result.stdout = [str(self.endpoint)]
-        elif command == "list-windows":
-            result.stdout = ["@1"]
-        elif command == "show-options":
-            result.stdout = [f"@ccgram_topic {self.token}"] if self.token else []
-        elif command == "set-option":
-            token = args[-1]
-            if token.startswith("v1:1:"):
-                self.worker_thread = threading.get_ident()
-                self.entered.set()
-                try:
-                    if not self.release.wait(5):
-                        raise TimeoutError("test did not release native mark-on")
-                    if self.outcome == "api-error":
-                        return SimpleNamespace(
-                            returncode=1, stderr=["refused"], stdout=[]
-                        )
-                    if self.outcome == "os-error":
-                        raise OSError("native connection failed")
-                    if self.outcome == "worker-error":
-                        raise RuntimeError("native worker failed")
-                    self.token = token
-                finally:
-                    self.finished.set()
-            else:
+    async def run(self, _binary: str, args: list[str]):
+        assert args[0] == "-N"
+        if "display-message" in args and "set-option" not in args:
+            value = str(self.endpoint) if args[-1] == "#{socket_path}" else "123"
+            return 0, value + "\n", ""
+        if "list-windows" in args:
+            return 0, "@1\n", ""
+        if "show-options" in args:
+            return 0, f"@ccgram_topic {self.token}\n" if self.token else "", ""
+        assert "set-option" in args and args[args.index("-S") + 1] != str(self.endpoint)
+        token = args[args.index("@ccgram_topic") + 1]
+        completion = args[-1].replace("#{pid}", "123")
+        self.writes += 1
+
+        async def remote():
+            self.entered.set()
+            await self.release.wait()
+            try:
+                if self.outcome == "worker-error":
+                    raise RuntimeError("native worker failed")
+                if self.outcome in {"api-error", "os-error"}:
+                    return 1, "", self.outcome
                 self.token = token
-        else:
-            raise AssertionError(command)
-        return result
+                if self.outcome == "uncorrelated-success":
+                    return 0, "", ""
+                if self.outcome == "wrong-pid":
+                    return 0, completion.removesuffix(":123") + ":124\n", ""
+                return 0, completion + "\n", ""
+            finally:
+                self.finished.set()
+
+        self.remote = asyncio.create_task(remote())
+        return await asyncio.shield(self.remote)
 
 
 @pytest.fixture
-def native_marker(tmp_path, monkeypatch):
-    endpoint = (tmp_path / "dummy-native.sock").resolve()
-    real_stat = Path.stat
-
-    def socket_stat(path, *args, **kwargs):
-        if path == endpoint:
-            return SimpleNamespace(
-                st_mode=stat.S_IFSOCK, st_dev=1, st_ino=2, st_ctime_ns=3
+async def native_marker(monkeypatch):
+    with TemporaryDirectory(prefix="ccg-tmark-", dir="/tmp") as directory:
+        endpoint = Path(directory) / "rpc"
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+            listener.bind(str(endpoint))
+            listener.listen(32)
+            identity = native_process.NativeProcessIdentity(
+                "11111111-1111-4111-8111-111111111111",
+                "22222222-2222-4222-8222-222222222222",
+                "darwin-local",
+                123,
+                "darwin:100:200",
+                "darwin:tmux:3.8:cdhash:" + "a" * 40,
             )
-        return real_stat(path, *args, **kwargs)
+            monkeypatch.setattr(native_process.sys, "platform", "darwin")
+            monkeypatch.setattr(
+                native_process, "capture_native_process", lambda *_a, **_k: identity
+            )
+            monkeypatch.setattr(transport.tempfile, "gettempdir", lambda: directory)
+            monkeypatch.setattr(
+                tmux_module.shutil, "which", lambda _: "/forbidden-tmux"
+            )
 
-    monkeypatch.setattr(Path, "stat", socket_stat)
+            async def build(outcome, marked=True):
+                native = NativeMarker(endpoint, outcome)
+                monkeypatch.setattr(transport, "run_marker_cli", native.run)
+                mux = TmuxManager("owned-test")
+                mux._server = cast(
+                    libtmux.Server,
+                    SimpleNamespace(
+                        tmux_bin="/forbidden-tmux",
+                        socket_path=str(endpoint),
+                        socket_name=None,
+                    ),
+                )
+                snapshot = await mux._marker_inventory()
+                assert snapshot is not None
+                owner = snapshot[1]["@1"][1]
+                assert owner is not None
+                native.token = f"v1:{int(not marked)}:{owner.removeprefix('tmux:')}"
+                return mux, native, owner
 
-    def build(outcome):
-        native = NativeMarker(endpoint, outcome)
-        mux = TmuxManager("test-cancellation")
-        mux._server = cast(libtmux.Server, native)
-        snapshot = mux._topic_inventory()
-        assert snapshot is not None
-        owner = snapshot[1]["@1"][1]
-        assert owner is not None
-        return mux, native, owner
-
-    return build
+            yield build
 
 
-async def checkpoint() -> None:
-    future = asyncio.get_running_loop().create_future()
-    asyncio.get_running_loop().call_soon(future.set_result, None)
-    await future
-
-
+@pytest.mark.parametrize("marked", [True, False])
 @pytest.mark.parametrize("cancellations", [1, 3])
-@pytest.mark.parametrize(
-    "outcome", ["success", "api-error", "os-error", "worker-error"]
-)
-async def test_cancelled_mark_finishes_before_waiting_owner_clear(
-    native_marker, cancellations, outcome
-) -> None:
-    mux, native, owner = native_marker(outcome)
-    lock = _selection_lock("@1", owner=owner)
-    waiting = asyncio.Event()
-    settled_off = asyncio.Event()
-    clear_overtook_on = False
-
-    async def mark_on():
-        async with lock:
-            return await mux.set_topic_mark("@1", True, owner=owner)
-
-    async def detach():
-        nonlocal clear_overtook_on
-        waiting.set()
-        async with lock:
-            clear_overtook_on = not native.finished.is_set()
-            verified = await mux.set_topic_mark("@1", False, owner=owner)
-            if verified:
-                settled_off.set()
-            return verified
-
-    on = asyncio.create_task(mark_on())
-    off = None
+async def test_cancelled_mark_keeps_fence_while_native_job_can_still_apply(
+    native_marker, marked, cancellations
+):
+    mux, native, owner = await native_marker("success", marked)
+    write_guard = RecordingTopicMarkGuard()
+    task = asyncio.create_task(
+        mux.set_topic_mark("@1", marked, owner=owner, write_guard=write_guard)
+    )
     try:
-        assert await asyncio.to_thread(native.entered.wait, 3)
-        assert native.worker_thread != threading.get_ident()
-        on.cancel("original cancellation")
-        off = asyncio.create_task(detach())
-        await waiting.wait()
-        await checkpoint()
+        await native.entered.wait()
+        assert len(write_guard.armed) == 1
+        task.cancel("original cancellation")
+        await asyncio.sleep(0)
         for _ in range(cancellations - 1):
-            on.cancel("repeated cancellation")
-            await checkpoint()
-        cancelled_before_quiescent = on.done()
-        if cancelled_before_quiescent:
-            async with asyncio.timeout(3):
-                await settled_off.wait()
-        off_settled_before_quiescent = settled_off.is_set()
+            task.cancel("repeated cancellation")
+            await asyncio.sleep(0)
+        async with asyncio.timeout(1):
+            with pytest.raises(asyncio.CancelledError, match="original cancellation"):
+                await task
+        assert not native.finished.is_set()
+        assert write_guard.terminal_ids == []
         native.release.set()
-        with pytest.raises(asyncio.CancelledError, match="original cancellation"):
-            await on
-        assert await off
-        assert await asyncio.to_thread(native.finished.wait, 3)
-        assert not cancelled_before_quiescent
-        assert not off_settled_before_quiescent
-        assert not clear_overtook_on
-        assert settled_off.is_set()
-        assert native.token is None or native.token.startswith("v1:0:")
+        await native.finished.wait()
+        assert native.token.startswith(f"v1:{int(marked)}:")
+        assert write_guard.terminal_ids == []
     finally:
         native.release.set()
         await asyncio.gather(
-            *(task for task in (on, off) if task is not None), return_exceptions=True
+            *(item for item in (task, native.remote) if item is not None),
+            return_exceptions=True,
         )
-        assert await asyncio.to_thread(native.finished.wait, 3)
 
 
 @pytest.mark.parametrize(
-    "outcome", ["success", "api-error", "os-error", "worker-error"]
+    "outcome",
+    [
+        "success",
+        "api-error",
+        "os-error",
+        "worker-error",
+        "uncorrelated-success",
+        "wrong-pid",
+    ],
 )
-async def test_uncancelled_native_marker_preserves_result_or_error(
+async def test_tmux_terminal_callback_requires_correlated_same_queue_result(
     native_marker, outcome
-) -> None:
-    mux, native, owner = native_marker(outcome)
+):
+    mux, native, owner = await native_marker(outcome)
+    write_guard = RecordingTopicMarkGuard()
     native.release.set()
     if outcome == "worker-error":
         with pytest.raises(RuntimeError, match="native worker failed"):
-            await mux.set_topic_mark("@1", True, owner=owner)
+            await mux.set_topic_mark("@1", True, owner=owner, write_guard=write_guard)
     else:
-        assert await mux.set_topic_mark("@1", True, owner=owner) is (
-            outcome == "success"
-        )
-    assert native.finished.is_set()
+        assert await mux.set_topic_mark(
+            "@1", True, owner=owner, write_guard=write_guard
+        ) is (outcome == "success")
+    assert native.writes == 1
+    assert len(write_guard.armed) == 1
+    expected = [write_guard.armed[0].dispatch_id] if outcome == "success" else []
+    assert write_guard.terminal_ids == expected
+
+
+async def test_tmux_actual_mutation_without_guard_is_refused(native_marker):
+    mux, native, owner = await native_marker("success")
+
+    assert not await mux.set_topic_mark("@1", True, owner=owner)
+    assert native.writes == 0
+
+
+async def test_tmux_endpoint_scope_matches_actual_pinned_guard_witness(native_marker):
+    mux, native, owner = await native_marker("success")
+    scope = await mux.topic_mark_endpoint_scope()
+    native.release.set()
+    write_guard = RecordingTopicMarkGuard()
+
+    assert scope is not None and native.writes == 0
+    assert await mux.set_topic_mark("@1", True, owner=owner, write_guard=write_guard)
+    assert write_guard.armed[0].endpoint_scope == scope

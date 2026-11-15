@@ -16,8 +16,8 @@ from ccgram.multiplexer.herdr import (
     HerdrSessionComposite,
     herdr_session_target_id,
 )
-from ccgram.multiplexer.herdr_socket import request
-from ccgram.topic_selection import _selection_lock
+from _topic_mark_helpers import RecordingTopicMarkGuard
+from test_herdr_topic_marks import native_factory as native_factory
 
 _TARGET = herdr_session_target_id(
     HerdrSessionComposite("herdr:pi", "pi", "id", "cancel-session")
@@ -114,7 +114,7 @@ class DelayedHerdrSocket:
 
 @pytest.fixture
 async def native_marker(
-    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch, native_factory
 ):
     outcome = request.param
     native = DelayedHerdrSocket(outcome)
@@ -158,64 +158,33 @@ async def native_marker(
     indirect=True,
 )
 @pytest.mark.parametrize("cancellations", [1, 3])
-async def test_herdr_cancelled_marker_rpc_quiesces_before_opposing_clear(
+async def test_cancelled_herdr_write_returns_with_durable_ambiguity(
     native_marker, cancellations: int
-) -> None:
-    manager, native, owner, socket_path = native_marker
-    lock = _selection_lock(_TARGET, owner=owner)
-    waiting = asyncio.Event()
-    settled_off = asyncio.Event()
-    clear_overtook_on = False
-
-    async def mark_on():
-        async with lock:
-            return await manager.set_topic_mark(_TARGET, True, owner=owner)
-
-    async def detach():
-        nonlocal clear_overtook_on
-        waiting.set()
-        async with lock:
-            clear_overtook_on = not native.quiescent.is_set()
-            result = await manager.set_topic_mark(_TARGET, False, owner=owner)
-            if result:
-                settled_off.set()
-            return result
-
-    on = asyncio.create_task(mark_on())
-    off = None
+):
+    manager, native, owner, _socket_path = native_marker
+    write_guard = RecordingTopicMarkGuard()
+    task = asyncio.create_task(
+        manager.set_topic_mark(_TARGET, True, owner=owner, write_guard=write_guard)
+    )
     try:
-        async with asyncio.timeout(3):
-            await native.received.wait()
-        on.cancel("original cancellation")
-        off = asyncio.create_task(detach())
-        await waiting.wait()
-        # A real independent RPC roundtrip advances transport cancellation,
-        # without assuming an App enqueue order across socket connections.
-        await request(socket_path, "ping", {})
+        await native.received.wait()
+        assert len(write_guard.armed) == 1
+        task.cancel("original cancellation")
+        await asyncio.sleep(0)
         for _ in range(cancellations - 1):
-            on.cancel("repeated cancellation")
-            await request(socket_path, "ping", {})
-        ended_early = on.done()
-        if ended_early:
-            async with asyncio.timeout(3):
-                await settled_off.wait()
-        settled_early = settled_off.is_set()
+            task.cancel("repeated cancellation")
+            await asyncio.sleep(0)
+        async with asyncio.timeout(1):
+            with pytest.raises(asyncio.CancelledError, match="original cancellation"):
+                await task
+        assert not native.quiescent.is_set()
+        assert write_guard.terminal_ids == []
         native.release.set()
-        with pytest.raises(asyncio.CancelledError, match="original cancellation"):
-            await on
-        assert await off
-        async with asyncio.timeout(3):
-            await native.quiescent.wait()
-        assert not ended_early
-        assert not settled_early
-        assert not clear_overtook_on
-        assert native.label == native.original
-        assert settled_off.is_set()
+        await native.quiescent.wait()
+        assert write_guard.terminal_ids == []
     finally:
         native.release.set()
-        await asyncio.gather(
-            *(task for task in (on, off) if task is not None), return_exceptions=True
-        )
+        await asyncio.gather(task, return_exceptions=True)
 
 
 @pytest.mark.parametrize(
@@ -223,18 +192,45 @@ async def test_herdr_cancelled_marker_rpc_quiesces_before_opposing_clear(
     ["success", "remote-error", "disconnect", "worker-error"],
     indirect=True,
 )
-async def test_herdr_uncancelled_marker_rpc_preserves_failure_or_verification(
+async def test_uncancelled_herdr_notifies_only_valid_correlated_completion(
     native_marker,
-) -> None:
-    manager, native, owner, _ = native_marker
+):
+    manager, native, owner, _socket_path = native_marker
+    write_guard = RecordingTopicMarkGuard()
     native.release.set()
     if native.outcome == "worker-error":
         with pytest.raises(RuntimeError, match="unexpected RPC worker failure"):
-            await manager.set_topic_mark(_TARGET, True, owner=owner)
+            await manager.set_topic_mark(
+                _TARGET, True, owner=owner, write_guard=write_guard
+            )
     else:
-        result = await manager.set_topic_mark(_TARGET, True, owner=owner)
-        assert result is (native.outcome == "success")
-    assert native.quiescent.is_set()
-    if native.outcome == "disconnect":
-        assert native.label != native.original
-        assert await manager.set_topic_mark(_TARGET, True, owner=owner)
+        assert await manager.set_topic_mark(
+            _TARGET, True, owner=owner, write_guard=write_guard
+        ) is (native.outcome == "success")
+    assert len(write_guard.armed) == 1
+    expected = [write_guard.armed[0].dispatch_id] if native.outcome == "success" else []
+    assert write_guard.terminal_ids == expected
+
+
+@pytest.mark.parametrize("native_marker", ["success"], indirect=True)
+async def test_failed_herdr_arm_sends_no_request_frame(native_marker):
+    manager, native, owner, _socket_path = native_marker
+
+    class FailedCheckpoint(RecordingTopicMarkGuard):
+        def arm(self, witness):
+            raise OSError("checkpoint failed")
+
+    assert not await manager.set_topic_mark(
+        _TARGET, True, owner=owner, write_guard=FailedCheckpoint()
+    )
+    assert not native.received.is_set()
+    assert native.label == native.original
+
+
+@pytest.mark.parametrize("native_marker", ["success"], indirect=True)
+async def test_herdr_actual_write_requires_state_owner_guard(native_marker):
+    manager, native, owner, _socket_path = native_marker
+
+    assert not await manager.set_topic_mark(_TARGET, True, owner=owner)
+    assert not native.received.is_set()
+    assert native.label == native.original
