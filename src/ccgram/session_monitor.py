@@ -891,6 +891,9 @@ class SessionMonitor:
                 detach_pending=lifecycle_state.is_topic_detach_pending(
                     window.window_id, owner=window.topic_mark_owner
                 ),
+                quarantined=lifecycle_state.is_topic_mark_quarantined(
+                    window.window_id, owner=window.topic_mark_owner
+                ),
             ):
                 continue
             event = NewWindowEvent(
@@ -1052,6 +1055,9 @@ class SessionMonitor:
                             w,
                             mode=config.topic_discovery_mode,
                             detach_pending=lifecycle_state.is_topic_detach_pending(
+                                w.window_id, owner=w.topic_mark_owner
+                            ),
+                            quarantined=lifecycle_state.is_topic_mark_quarantined(
                                 w.window_id, owner=w.topic_mark_owner
                             ),
                         )

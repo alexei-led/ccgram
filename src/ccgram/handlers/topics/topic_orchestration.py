@@ -451,6 +451,8 @@ async def _begin_admitted_topic_provisioning(
         if admission is None and saved_owner is not None:
             return None
     owner = admission.topic_mark_owner if admission is not None else None
+    if lifecycle_state.is_topic_mark_quarantined(window_id, owner=owner):
+        return None
     if admission is not None:
         lifecycle_state.record_topic_mark_owner(window_id, owner)
     return _begin_topic_provisioning(
@@ -504,6 +506,8 @@ def _admission_commit_is_current(window_id: str, owner: str | None) -> bool:
     """Do not transfer a completed request onto another observed native owner."""
     observed = lifecycle_state.get_topic_mark_owner(window_id)
     if owner is not None and observed != owner:
+        return False
+    if lifecycle_state.is_topic_mark_quarantined(window_id, owner=owner):
         return False
     return not (
         config.topic_discovery_mode == "marked"
@@ -861,9 +865,9 @@ async def create_topic_in_chat(  # noqa: C901
     claim cleanup and chat backoff have been recorded.
     """
     existing_claim = _validated_retry_claim(claim_id, chat_id, window_id, user_id)
-    if claim_id is not None and existing_claim is None:
-        return False
-    if not await _chat_supports_topics(client, chat_id, window_id):
+    if (
+        claim_id is not None and existing_claim is None
+    ) or not await _chat_supports_topics(client, chat_id, window_id):
         _release_retry_claim(existing_claim)
         return False
 
@@ -933,6 +937,12 @@ async def create_topic_in_chat(  # noqa: C901
     captured_claim = thread_router.get_topic_provisioning(provisioning_claim_id)
     requested_owner = captured_claim.topic_mark_owner if captured_claim else None
     preserve_claim = existing_claim is not None
+    if lifecycle_state.is_topic_mark_quarantined(window_id, owner=requested_owner):
+        _mark_topic_provisioning_uncertain(
+            provisioning_claim_id, keep_owner=preserve_claim
+        )
+        clear_pending_creation(window_id)
+        return False
 
     creation_task: asyncio.Task[object] = asyncio.create_task(
         _create_forum_topic_with_retry(client, chat_id, topic_name)
@@ -1164,6 +1174,9 @@ async def _adoptable_window(window_id: str) -> WindowRef | None:
                 detach_pending=lifecycle_state.is_topic_detach_pending(
                     w.window_id, owner=w.topic_mark_owner
                 ),
+                quarantined=lifecycle_state.is_topic_mark_quarantined(
+                    w.window_id, owner=w.topic_mark_owner
+                ),
             )
         ),
         None,
@@ -1242,6 +1255,9 @@ async def adopt_unbound_windows(client: TelegramClient) -> None:
             w,
             mode=config.topic_discovery_mode,
             detach_pending=lifecycle_state.is_topic_detach_pending(
+                w.window_id, owner=w.topic_mark_owner
+            ),
+            quarantined=lifecycle_state.is_topic_mark_quarantined(
                 w.window_id, owner=w.topic_mark_owner
             ),
         )

@@ -261,6 +261,11 @@ async def _prepare_selected_recreation(
         return None, "unresolved"
     if not _claim_is_current(router, claim):
         return None, "changed"
+    assert claim.target_id is not None
+    if lifecycle_state.is_topic_mark_quarantined(
+        claim.target_id, owner=claim.topic_mark_owner
+    ):
+        return None, "unresolved"
     return _prepare_recreation(router, claim), "changed"
 
 
@@ -303,13 +308,20 @@ async def _create_prepared_replacement(
 
 
 def _recovered_window_admissible(claim: TopicProvisioning, window: WindowRef) -> bool:
-    """Only automatic claims inherit the backend's current adoption verdict."""
-    return claim.kind != "topic_for_target" or should_adopt_window(
-        window,
-        mode=config.topic_discovery_mode,
-        detach_pending=lifecycle_state.is_topic_detach_pending(
-            window.window_id, owner=window.topic_mark_owner
-        ),
+    """Quarantine blocks all claims; only automatic claims inherit discovery."""
+    quarantined = lifecycle_state.is_topic_mark_quarantined(
+        window.window_id, owner=window.topic_mark_owner
+    )
+    return not quarantined and (
+        claim.kind != "topic_for_target"
+        or should_adopt_window(
+            window,
+            mode=config.topic_discovery_mode,
+            detach_pending=lifecycle_state.is_topic_detach_pending(
+                window.window_id, owner=window.topic_mark_owner
+            ),
+            quarantined=quarantined,
+        )
     )
 
 
@@ -379,7 +391,11 @@ async def _commit_present_topic(
             return "unresolved"
         if not _claim_is_current(router, claim):
             return "changed"
-        if _target_bound_in_chat(router, claim):
+        if _target_bound_in_chat(
+            router, claim
+        ) or lifecycle_state.is_topic_mark_quarantined(
+            claim.target_id, owner=claim.topic_mark_owner
+        ):
             return "unresolved"
         committed = router.commit_topic_provisioning(claim.claim_id)
         completed = not committed or lifecycle_state.complete_topic_admission(

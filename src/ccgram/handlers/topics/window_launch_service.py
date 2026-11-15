@@ -766,6 +766,15 @@ async def launch_window(  # noqa: C901, PLR0911, PLR0912, PLR0915
             topic_orchestration.clear_pending_creation(created_wid)
         raise
 
+    if lifecycle_state.is_topic_mark_quarantined(created_wid, owner=captured_owner):
+        _mark_provisioning_uncertain(claim_id)
+        topic_orchestration.clear_pending_creation(created_wid)
+        message = (
+            "Native selection is unfinished; kept the session quarantined for recovery."
+        )
+        await safe_edit(query, f"⚠ {message}")
+        return WindowLaunchResult(success=False, error_message=message)
+
     try:
         await tmux_manager.stamp_pane_title(created_wid, provider_name)
     except BaseException as exc:  # noqa: BLE001
@@ -923,6 +932,9 @@ async def launch_window(  # noqa: C901, PLR0911, PLR0912, PLR0915
         not still_ready
         or current is None
         or (captured_owner is not None and current.topic_mark_owner != captured_owner)
+        or lifecycle_state.is_topic_mark_quarantined(
+            created_wid, owner=current.topic_mark_owner
+        )
     ):
         _mark_provisioning_uncertain(claim_id)
         if claim_id is not None:
