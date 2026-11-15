@@ -21,16 +21,19 @@ from __future__ import annotations
 
 import structlog
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal, Self, cast
 
 from .herdr_targets import is_herdr_session_target
 from .topic_mark_journal import (
     TOPIC_MARK_OPERATIONS_KEY,
+    TopicMarkAttempt,
     TopicMarkOperation,
     operation_matches,
     parse_topic_mark_operations,
 )
+
+from .topic_mark_types import TopicMarkWriteWitness
 
 logger = structlog.get_logger()
 
@@ -363,24 +366,59 @@ class WindowStateStore:
     ) -> TopicMarkOperation:
         operation = TopicMarkOperation(window_id, owner, desired)
         current = self.topic_mark_operations.get(operation.key)
-        if current is not None and current.desired == desired:
-            return current
+        if current is not None:
+            if current.desired == desired:
+                return current
+            operation = replace(current, desired=desired)
         self.topic_mark_operations[operation.key] = operation
         self._schedule_save()
         return operation
 
     def settle_topic_mark(self, operation: TopicMarkOperation) -> bool:
         current = self.topic_mark_operations.get(operation.key)
-        if current is None or current.desired != operation.desired:
+        if current != operation or operation.attempt is not None:
             return False
         del self.topic_mark_operations[operation.key]
         self._schedule_save()
         return True
 
     def restore_topic_mark(self, operation: TopicMarkOperation) -> None:
-        if operation.key not in self.topic_mark_operations:
+        current = self.topic_mark_operations.get(operation.key)
+        if current is None:
             self.topic_mark_operations[operation.key] = operation
             self._schedule_save()
+        elif operation.attempt is not None and current.attempt is None:
+            self.topic_mark_operations[operation.key] = replace(
+                current, attempt=operation.attempt
+            )
+            self._schedule_save()
+
+    def begin_topic_mark_attempt(
+        self, operation: TopicMarkOperation, witness: TopicMarkWriteWitness
+    ) -> TopicMarkOperation:
+        current = self.topic_mark_operations.get(operation.key)
+        if current is None or current != operation or current.attempt is not None:
+            raise ValueError("Marker intent changed or an attempt remains armed")
+        armed = replace(current, attempt=TopicMarkAttempt(current.desired, witness))
+        self.topic_mark_operations[operation.key] = armed
+        self._schedule_save()
+        return armed
+
+    def finish_topic_mark_attempt(
+        self, window_id: str, *, owner: str | None, dispatch_id: str
+    ) -> TopicMarkOperation | None:
+        key = TopicMarkOperation(window_id, owner, False).key
+        current = self.topic_mark_operations.get(key)
+        if (
+            current is None
+            or current.attempt is None
+            or current.attempt.witness.dispatch_id != dispatch_id
+        ):
+            return None
+        finished = replace(current, attempt=None)
+        self.topic_mark_operations[key] = finished
+        self._schedule_save()
+        return finished
 
     def topic_mark_journal_to_dict(self) -> dict[str, Any]:
         if not self.topic_mark_operations:

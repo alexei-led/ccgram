@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from ..multiplexer.base import canonical_window_id
 from ..topic_mark_journal import TopicMarkOperation, operation_matches
+from ..topic_mark_types import TopicMarkWriteWitness
 from ..window_state_store import DEFAULT_WINDOW_ORIGIN, WINDOW_ORIGINS, window_store
 
 
@@ -53,6 +54,27 @@ def is_topic_detach_pending(window_id: str, *, owner: str | None) -> bool:
     )
 
 
+def is_topic_mark_quarantined(window_id: str, *, owner: str | None) -> bool:
+    return any(
+        operation.attempt is not None and operation_matches(operation, window_id, owner)
+        for operation in window_store.topic_mark_operations.values()
+    )
+
+
+def begin_topic_mark_attempt(
+    operation: TopicMarkOperation, witness: TopicMarkWriteWitness
+) -> TopicMarkOperation:
+    return window_store.begin_topic_mark_attempt(operation, witness)
+
+
+def finish_topic_mark_attempt(
+    window_id: str, *, owner: str | None, dispatch_id: str
+) -> TopicMarkOperation | None:
+    return window_store.finish_topic_mark_attempt(
+        window_id, owner=owner, dispatch_id=dispatch_id
+    )
+
+
 def is_topic_detached(window_id: str) -> bool:
     state = window_store.window_states.get(_selection_key(window_id))
     return state is not None and state.topic_detached
@@ -82,7 +104,7 @@ def queue_topic_mark(
 
 def topic_mark_operation_is_current(operation: TopicMarkOperation) -> bool:
     current = window_store.topic_mark_operations.get(operation.key)
-    return current is not None and current.desired == operation.desired
+    return current == operation
 
 
 def settle_topic_mark(operation: TopicMarkOperation) -> bool:
@@ -123,7 +145,9 @@ def observe_topic_mark_owner(window_id: str, owner: str | None) -> bool:
 
 
 def record_topic_mark_owner(window_id: str, owner: str | None) -> bool:
-    if is_topic_detach_pending(window_id, owner=owner):
+    if is_topic_detach_pending(window_id, owner=owner) or is_topic_mark_quarantined(
+        window_id, owner=owner
+    ):
         return False
     state = window_store.window_states.get(_selection_key(window_id))
     window_store.set_topic_selection(
@@ -136,13 +160,17 @@ def record_topic_mark_owner(window_id: str, owner: str | None) -> bool:
 
 def complete_topic_admission(window_id: str, owner: str | None) -> bool:
     """Clear lifetime protection only after an actual synchronous bind."""
+    if is_topic_mark_quarantined(window_id, owner=owner):
+        return False
     state = window_store.window_states.get(_selection_key(window_id))
     if state is None:
         return owner is None
     if owner is not None and state.topic_mark_owner != owner:
         return False
     effective_owner = owner if owner is not None else state.topic_mark_owner
-    if is_topic_detach_pending(window_id, owner=effective_owner):
+    if is_topic_detach_pending(
+        window_id, owner=effective_owner
+    ) or is_topic_mark_quarantined(window_id, owner=effective_owner):
         return False
     for key, candidate in list(window_store.window_states.items()):
         related = (
@@ -181,6 +209,9 @@ __all__ = [
     "get_origin",
     "set_window_origin",
     "is_topic_detach_pending",
+    "is_topic_mark_quarantined",
+    "begin_topic_mark_attempt",
+    "finish_topic_mark_attempt",
     "is_topic_detached",
     "get_pending_topic_mark",
     "get_topic_mark_owner",
