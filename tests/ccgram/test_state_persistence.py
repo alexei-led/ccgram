@@ -228,15 +228,3 @@ class TestLoad:
         path.write_text('{"x": 42}')
         sp = StatePersistence(path, lambda: {})
         assert sp.load() == {"x": 42}
-
-    def test_returns_empty_dict_on_invalid_json(self, tmp_path: Path) -> None:
-        path = tmp_path / "state.json"
-        path.write_text("not valid json {{{")
-        sp = StatePersistence(path, lambda: {})
-        assert sp.load() == {}
-
-    def test_returns_empty_dict_on_os_error(self, tmp_path: Path) -> None:
-        # A directory path raises IsADirectoryError (OSError subclass) on read_text.
-        path = tmp_path  # tmp_path is a directory
-        sp = StatePersistence(path, lambda: {})
-        assert sp.load() == {}

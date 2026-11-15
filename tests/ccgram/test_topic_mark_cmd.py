@@ -1,11 +1,16 @@
 """Operator commands for explicit Telegram-topic selection."""
 
 import os
+from types import SimpleNamespace
+from unittest.mock import ANY
 
 import pytest
 from click.testing import CliRunner
 
+from _topic_mark_helpers import make_witness
+
 from ccgram.cli import apply_args_to_env, cli
+from ccgram.state_writer_lock import StateWriterLease
 
 
 @pytest.fixture(autouse=True)
@@ -88,6 +93,7 @@ async def test_unconfirmed_backend_listing_cannot_change_selection():
     from ccgram.topic_mark_cmd import _topic_action
 
     backend = AsyncMock(spec=Multiplexer)
+    backend.topic_mark_endpoint_scope.return_value = make_witness().endpoint_scope
     backend.list_windows_for_reconciliation.return_value = None
 
     with pytest.raises(RuntimeError, match="unconfirmed"):
@@ -102,6 +108,10 @@ def marked_backend():
 
     state = {"marked": False}
     backend = AsyncMock(spec=Multiplexer)
+    backend.capabilities = SimpleNamespace(name="tmux")
+    backend.topic_mark_endpoint_scope = AsyncMock(
+        return_value=make_witness().endpoint_scope
+    )
 
     def listing():
         return [
@@ -114,10 +124,13 @@ def marked_backend():
             )
         ]
 
-    async def set_mark(window_id, marked, *, owner):
+    async def set_mark(window_id, marked, *, owner, write_guard):
         assert owner == "owner-A"
         assert window_id == "ABC-123"
+        witness = make_witness()
+        write_guard.arm(witness)
         state["marked"] = marked
+        write_guard.terminal(witness.dispatch_id)
         return True
 
     backend.list_windows_for_reconciliation.side_effect = listing
@@ -143,7 +156,7 @@ async def test_marker_mutation_uses_verified_canonical_target(
     assert result == {"target": "ABC-123", "marked": expected}
     assert state["marked"] is expected
     backend.set_topic_mark.assert_awaited_once_with(
-        "ABC-123", expected, owner="owner-A"
+        "ABC-123", expected, owner="owner-A", write_guard=ANY
     )
     backend.kill_window.assert_not_called()
     backend.send.assert_not_called()
@@ -169,6 +182,7 @@ async def test_unmarkable_split_cannot_change_its_primary_marker():
     from ccgram.topic_mark_cmd import _topic_action
 
     backend = AsyncMock(spec=Multiplexer)
+    backend.topic_mark_endpoint_scope.return_value = make_witness().endpoint_scope
     backend.list_windows_for_reconciliation.return_value = [
         WindowRef("split-target", "split", "/project", topic_markable=False)
     ]
@@ -291,7 +305,9 @@ async def test_mutation_uses_captured_owner_without_target_relookup(marked_backe
 
     assert state["marked"] is True
     backend.find_window_by_id.assert_not_awaited()
-    backend.set_topic_mark.assert_awaited_once_with("ABC-123", True, owner="owner-A")
+    backend.set_topic_mark.assert_awaited_once_with(
+        "ABC-123", True, owner="owner-A", write_guard=ANY
+    )
 
 
 @pytest.mark.parametrize(
@@ -322,6 +338,7 @@ async def test_pending_journal_blocks_only_conflicting_owner_intent(
                     "window_id": saved_route,
                     "owner": saved_owner,
                     "desired": desired,
+                    "attempt": None,
                 }
             ],
         }
@@ -330,17 +347,27 @@ async def test_pending_journal_blocks_only_conflicting_owner_intent(
     before = state_file.stat().st_mtime_ns
 
     if blocked:
-        with pytest.raises(RuntimeError, match="pending"):
+        with pytest.raises(RuntimeError, match="(?i)pending"):
             await _topic_action(backend, "mark", "ABC-123")
         backend.set_topic_mark.assert_not_awaited()
     else:
         await _topic_action(backend, "mark", "ABC-123")
         backend.set_topic_mark.assert_awaited_once_with(
-            "ABC-123", True, owner="owner-A"
+            "ABC-123", True, owner="owner-A", write_guard=ANY
         )
 
-    assert state_file.read_text(encoding="utf-8") == contents
-    assert state_file.stat().st_mtime_ns == before
+    if blocked:
+        assert state_file.read_text(encoding="utf-8") == contents
+        assert state_file.stat().st_mtime_ns == before
+    else:
+        saved = json.loads(state_file.read_text(encoding="utf-8"))
+        assert saved["other_state"] == {"preserve": True}
+        expected_pending = (
+            []
+            if saved_owner == "owner-A" and desired is True
+            else json.loads(contents)["topic_mark_operations"]
+        )
+        assert saved.get("topic_mark_operations", []) == expected_pending
 
 
 @pytest.mark.parametrize(
@@ -368,7 +395,12 @@ async def test_status_exposes_orphaned_journal_without_rewriting_state(
     from ccgram.topic_mark_cmd import _topic_action
 
     backend, _state = marked_backend
-    operation = {"window_id": "gone-agent", "owner": "old-owner", "desired": False}
+    operation = {
+        "window_id": "gone-agent",
+        "owner": "old-owner",
+        "desired": False,
+        "attempt": None,
+    }
     (tmp_path / "state.json").write_text(
         json.dumps({"topic_mark_operations": [operation]}), encoding="utf-8"
     )
@@ -406,3 +438,21 @@ async def test_unreadable_journal_refuses_native_mutation(
         await _topic_action(backend, "unmark", "ABC-123")
 
     backend.set_topic_mark.assert_not_awaited()
+
+
+async def test_live_writer_without_rpc_never_falls_back_to_native_mutation(
+    marked_backend, tmp_path
+):
+    from ccgram.topic_mark_cmd import _topic_action
+
+    backend, state = marked_backend
+    path = tmp_path / "state.json"
+    original = b'{"unrelated":{"keep":true}}\n'
+    path.write_bytes(original)
+    with StateWriterLease(path), pytest.raises((RuntimeError, OSError)):
+        await _topic_action(backend, "mark", "ABC-123")
+
+    backend.set_topic_mark.assert_not_awaited()
+    backend.kill_window.assert_not_called()
+    assert state["marked"] is False
+    assert path.read_bytes() == original

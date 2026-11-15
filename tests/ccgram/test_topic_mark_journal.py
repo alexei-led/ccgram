@@ -43,11 +43,19 @@ def test_journal_round_trip_preserves_opaque_owners_and_route_collision():
         {},
         [None],
         [{}],
-        [{"window_id": "@1", "owner": "owner", "desired": 1}],
-        [{"window_id": "", "owner": "owner", "desired": False}],
-        [{"window_id": "@1", "owner": "", "desired": False}],
-        [{"window_id": "@1", "owner": 1, "desired": False}],
-        [{"window_id": "@1", "owner": "owner", "desired": False, "selected": True}],
+        [{"window_id": "@1", "owner": "owner", "desired": 1, "attempt": None}],
+        [{"window_id": "", "owner": "owner", "desired": False, "attempt": None}],
+        [{"window_id": "@1", "owner": "", "desired": False, "attempt": None}],
+        [{"window_id": "@1", "owner": 1, "desired": False, "attempt": None}],
+        [
+            {
+                "window_id": "@1",
+                "owner": "owner",
+                "desired": False,
+                "attempt": None,
+                "selected": True,
+            }
+        ],
     ],
 )
 def test_malformed_intent_is_not_silently_discarded(rows):
@@ -107,7 +115,7 @@ def test_reader_does_not_mutate_user_state(tmp_path):
         {
             "window_states": {"@1": {"window_name": "user label"}},
             TOPIC_MARK_OPERATIONS_KEY: [
-                {"window_id": "@1", "owner": "owner", "desired": False}
+                {"window_id": "@1", "owner": "owner", "desired": False, "attempt": None}
             ],
         }
     )
@@ -124,3 +132,42 @@ def test_reader_fails_closed_on_corrupt_state(tmp_path):
     path.write_text("not json", encoding="utf-8")
     with pytest.raises(ValueError):
         read_topic_mark_operations(path)
+
+
+@pytest.mark.parametrize("owner", [None, "opaque-owner"])
+def test_prepared_operation_explicitly_serializes_no_native_attempt(owner):
+    operation = TopicMarkOperation("@1", owner, True)
+
+    assert operation.to_dict() == {
+        "window_id": "@1",
+        "owner": owner,
+        "desired": True,
+        "attempt": None,
+    }
+
+
+@pytest.mark.parametrize("owner", [None, "opaque-owner"])
+def test_prepared_four_field_journal_round_trip(owner):
+    row = {"window_id": "@1", "owner": owner, "desired": False, "attempt": None}
+
+    (operation,) = parse_topic_mark_operations({TOPIC_MARK_OPERATIONS_KEY: [row]})
+
+    assert operation.to_dict() == row
+
+
+def test_unpublished_legacy_journal_fails_closed_without_rewriting(tmp_path):
+    path = tmp_path / "state.json"
+    original = json.dumps(
+        {
+            "unrelated": {"keep": True},
+            TOPIC_MARK_OPERATIONS_KEY: [
+                {"window_id": "@1", "owner": "opaque-owner", "desired": True}
+            ],
+        }
+    )
+    path.write_text(original, encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        read_topic_mark_operations(path)
+
+    assert path.read_text(encoding="utf-8") == original

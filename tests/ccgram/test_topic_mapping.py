@@ -256,8 +256,9 @@ class TestTopicEligibleFlag:
         ("marked", True, True, True, "owner", True, False),
     ],
 )
+@pytest.mark.parametrize("quarantined", [False, True])
 def test_automatic_admission_policy(
-    mode, eligible, marked, markable, owner, pending, expected
+    mode, eligible, marked, markable, owner, pending, expected, quarantined
 ):
     window = WindowRef(
         "@1",
@@ -268,10 +269,14 @@ def test_automatic_admission_policy(
         topic_markable=markable,
         topic_mark_owner=owner,
     )
-    assert should_adopt_window(window, mode=mode, detach_pending=pending) is expected
+    assert should_adopt_window(
+        window, mode=mode, detach_pending=pending, quarantined=quarantined
+    ) is (expected and not quarantined)
 
 
 @pytest.mark.parametrize("mode", ["", "all", "mark", " "])
 def test_admission_rejects_unvalidated_mode(mode):
     with pytest.raises(ValueError, match="CCGRAM_TOPIC_DISCOVERY"):
-        should_adopt_window(_win("@1"), mode=mode, detach_pending=False)
+        should_adopt_window(
+            _win("@1"), mode=mode, detach_pending=False, quarantined=False
+        )
