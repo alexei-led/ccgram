@@ -32,6 +32,8 @@ CONTRACT_METHODS = (
     # bring the bot down at startup and on every monitor cycle.
     "list_windows_for_reconciliation",
     "set_topic_mark",
+    "recover_topic_mark_write",
+    "topic_mark_endpoint_scope",
     "capture_scrollback",
     "pane_dims",
     "send",

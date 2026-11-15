@@ -21,13 +21,17 @@ from ..topic_discovery import parse_topic_discovery_mode
 from .base import MultiplexerCapabilities, WindowRef
 
 
-def should_adopt_window(window: WindowRef, *, mode: str, detach_pending: bool) -> bool:
-    """Automatic admission only; never filter liveness or explicit binding.
+def should_adopt_window(
+    window: WindowRef, *, mode: str, detach_pending: bool, quarantined: bool
+) -> bool:
+    """Automatic admission only; never filter liveness or existing bindings.
 
-    A pending native mark clear is an unfinished detach, not another selection
-    preference. Unknown marker state cannot authorize marked-mode admission.
+    An unfinished native write blocks admission even in auto mode. A pending
+    clear remains a marked-mode detach, not another selection preference.
     """
     mode = parse_topic_discovery_mode(mode)
+    if quarantined:
+        return False
     if mode == "auto":
         return window.topic_eligible
     return (

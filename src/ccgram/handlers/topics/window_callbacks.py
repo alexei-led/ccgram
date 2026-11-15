@@ -298,7 +298,7 @@ async def _select_and_bind(
                 "Session is still being provisioned; please retry", show_alert=True
             )
             return False
-        if (
+        if lifecycle_state.is_topic_mark_quarantined(selected_wid, owner=owner) or (
             config.topic_discovery_mode == "marked"
             and window.topic_markable
             and owner is None
@@ -311,6 +311,7 @@ async def _select_and_bind(
         if not selected:
             if (
                 config.topic_discovery_mode == "marked"
+                or lifecycle_state.is_topic_mark_quarantined(selected_wid, owner=owner)
                 or lifecycle_state.is_topic_detach_pending(
                     selected_wid,
                     owner=owner,
@@ -326,8 +327,14 @@ async def _select_and_bind(
             owner=owner,
             require_marked=config.topic_discovery_mode == "marked",
         )
-        if current is None or not lifecycle_state.record_topic_mark_owner(
-            selected_wid, current.topic_mark_owner
+        if (
+            current is None
+            or lifecycle_state.is_topic_mark_quarantined(
+                selected_wid, owner=current.topic_mark_owner
+            )
+            or not lifecycle_state.record_topic_mark_owner(
+                selected_wid, current.topic_mark_owner
+            )
         ):
             await query.answer(
                 "Session changed; refresh the window picker", show_alert=True

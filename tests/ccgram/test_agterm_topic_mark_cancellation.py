@@ -1,108 +1,46 @@
-"""The production agterm runner cannot leave a flag process past cancellation."""
+"""Cancellation preserves durable ownership instead of waiting on a remote flag."""
 
 import asyncio
-import json
-import subprocess
-import threading
 
 import pytest
 
 from ccgram.multiplexer.agterm import AgtermManager
-from ccgram.topic_selection import _selection_lock
+from test_agterm_topic_marks import SESSION, FlagSocket
+from _topic_mark_helpers import RecordingTopicMarkGuard
+from test_agterm_topic_marks import _native_marker_endpoint as _native_marker_endpoint
 
-SESSION = "6FE911B4-B39A-47AB-970C-8AC13B14CB88"
-WINDOW = "AC1E8A7F-4DD4-49FA-8DFE-E03A8519A6E8"
 OWNER = f"agterm:{SESSION.lower()}"
 
 
-class NativeFlagProcess:
-    def __init__(self, original: bool, outcome: str) -> None:
-        self.flagged = original
+class DelayedFlag(FlagSocket):
+    def __init__(self, original: bool, outcome: str):
+        super().__init__()
+        self.sessions[0]["flagged"] = original
         self.outcome = outcome
-        self.entered = threading.Event()
-        self.release = threading.Event()
-        self.finished = threading.Event()
-        self.first_write = True
-        self.worker_thread: int | None = None
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        self.finished = asyncio.Event()
+        self.remote: asyncio.Task | None = None
 
-    def __call__(self, args, **kwargs):
-        assert args[0] == "/owned-test/agtermctl"
-        assert args[-3:] == ["--json", "--socket", "/owned-test/agterm.sock"]
-        command = list(args[1:-3])
-        result = {}
-        if command == ["window", "list"]:
-            result = {"windows": [{"id": WINDOW, "open": True}]}
-        elif command == ["tree", "--window", WINDOW]:
-            result = {
-                "tree": {
-                    "workspaces": [
-                        {
-                            "name": "test",
-                            "sessions": [
-                                {
-                                    "id": SESSION,
-                                    "name": "_owned-test",
-                                    "cwd": "/test",
-                                    "flagged": self.flagged,
-                                    "foreground": ["pi"],
-                                }
-                            ],
-                        }
-                    ],
-                }
-            }
-        elif command in (
-            ["session", "flag", "on", "--target", SESSION],
-            ["session", "flag", "off", "--target", SESSION],
-        ):
-            desired = command[2] == "on"
-            if self.first_write:
-                self.first_write = False
-                self.worker_thread = threading.get_ident()
-                self.entered.set()
-                try:
-                    if not self.release.wait(5):
-                        raise TimeoutError("test did not release native flag process")
-                    if self.outcome == "api-error":
-                        return subprocess.CompletedProcess(args, 1, "", "refused")
-                    if self.outcome == "os-error":
-                        raise OSError("native process could not start")
-                    if self.outcome == "timeout":
-                        raise subprocess.TimeoutExpired(args, kwargs["timeout"])
-                    if self.outcome == "worker-error":
-                        raise RuntimeError("native process worker failed")
-                    self.flagged = desired
-                finally:
-                    self.finished.set()
-            else:
-                self.flagged = desired
-        else:
-            raise AssertionError(command)
-        return subprocess.CompletedProcess(
-            args, 0, json.dumps({"ok": True, "result": result}), ""
-        )
+    async def __call__(self, args, stdin=None):
+        if list(args)[:2] != ["session", "flag"]:
+            return await super().__call__(args, stdin)
+        apply = super().__call__
 
+        async def remote():
+            self.entered.set()
+            await self.release.wait()
+            try:
+                if self.outcome == "worker-error":
+                    raise RuntimeError("native worker failed")
+                if self.outcome != "success":
+                    return 1, "", self.outcome
+                return await apply(args, stdin)
+            finally:
+                self.finished.set()
 
-@pytest.fixture
-def native_flag(monkeypatch):
-    def build(original, outcome):
-        native = NativeFlagProcess(original, outcome)
-        monkeypatch.setattr(subprocess, "run", native)
-        mux = AgtermManager(
-            socket_path="/owned-test/agterm.sock",
-            binary="/owned-test/agtermctl",
-            own_session_id="",
-            workspaces=None,
-        )
-        return mux, native
-
-    return build
-
-
-async def checkpoint() -> None:
-    future = asyncio.get_running_loop().create_future()
-    asyncio.get_running_loop().call_soon(future.set_result, None)
-    await future
+        self.remote = asyncio.create_task(remote())
+        return await asyncio.shield(self.remote)
 
 
 @pytest.mark.parametrize("marked", [True, False])
@@ -110,81 +48,58 @@ async def checkpoint() -> None:
 @pytest.mark.parametrize(
     "outcome", ["success", "api-error", "os-error", "timeout", "worker-error"]
 )
-async def test_cancelled_flag_process_quiesces_before_opposing_owner_mutation(
-    native_flag, marked, cancellations, outcome
-) -> None:
-    mux, native = native_flag(not marked, outcome)
-    captured = await mux.find_window_by_id(SESSION)
-    assert captured is not None and captured.topic_mark_owner == OWNER
-    lock = _selection_lock(SESSION, owner=captured.topic_mark_owner)
-    waiting = asyncio.Event()
-    settled = asyncio.Event()
-    opposing_overtook = False
-
-    async def first_mutation():
-        async with lock:
-            return await mux.set_topic_mark(SESSION, marked, owner=OWNER)
-
-    async def opposing_mutation():
-        nonlocal opposing_overtook
-        waiting.set()
-        async with lock:
-            opposing_overtook = not native.finished.is_set()
-            verified = await mux.set_topic_mark(SESSION, not marked, owner=OWNER)
-            if verified:
-                settled.set()
-            return verified
-
-    first = asyncio.create_task(first_mutation())
-    second = None
+async def test_cancelled_flag_retains_ambiguity_without_waiting_for_app(
+    marked, cancellations, outcome
+):
+    native = DelayedFlag(not marked, outcome)
+    mux = AgtermManager(runner=native, own_session_id="", workspaces=None)
+    write_guard = RecordingTopicMarkGuard()
+    task = asyncio.create_task(
+        mux.set_topic_mark(SESSION, marked, owner=OWNER, write_guard=write_guard)
+    )
     try:
-        assert await asyncio.to_thread(native.entered.wait, 3)
-        assert native.worker_thread != threading.get_ident()
-        first.cancel("original cancellation")
-        second = asyncio.create_task(opposing_mutation())
-        await waiting.wait()
-        await checkpoint()
+        await native.entered.wait()
+        assert len(write_guard.armed) == 1
+        task.cancel("original cancellation")
+        await asyncio.sleep(0)
         for _ in range(cancellations - 1):
-            first.cancel("repeated cancellation")
-            await checkpoint()
-        cancelled_before_quiescent = first.done()
-        if cancelled_before_quiescent:
-            async with asyncio.timeout(3):
-                await settled.wait()
-        settled_before_quiescent = settled.is_set()
+            task.cancel("repeated cancellation")
+            await asyncio.sleep(0)
+        async with asyncio.timeout(1):
+            with pytest.raises(asyncio.CancelledError, match="original cancellation"):
+                await task
+        assert not native.finished.is_set()
+        assert write_guard.terminal_ids == []
         native.release.set()
-        with pytest.raises(asyncio.CancelledError, match="original cancellation"):
-            await first
-        assert await second
-        assert await asyncio.to_thread(native.finished.wait, 3)
-        assert native.flagged is not marked
-        assert not cancelled_before_quiescent
-        assert not settled_before_quiescent
-        assert not opposing_overtook
-        assert settled.is_set()
+        await native.finished.wait()
+        assert write_guard.terminal_ids == []
     finally:
         native.release.set()
         await asyncio.gather(
-            *(task for task in (first, second) if task is not None),
+            *(item for item in (task, native.remote) if item is not None),
             return_exceptions=True,
         )
-        assert await asyncio.to_thread(native.finished.wait, 3)
 
 
 @pytest.mark.parametrize("marked", [True, False])
 @pytest.mark.parametrize(
     "outcome", ["success", "api-error", "os-error", "timeout", "worker-error"]
 )
-async def test_uncancelled_flag_process_keeps_result_and_error_semantics(
-    native_flag, marked, outcome
-) -> None:
-    mux, native = native_flag(not marked, outcome)
+async def test_flag_terminal_callback_requires_valid_native_completion(marked, outcome):
+    native = DelayedFlag(not marked, outcome)
+    mux = AgtermManager(runner=native, own_session_id="", workspaces=None)
+    write_guard = RecordingTopicMarkGuard()
     native.release.set()
     if outcome == "worker-error":
-        with pytest.raises(RuntimeError, match="native process worker failed"):
-            await mux.set_topic_mark(SESSION, marked, owner=OWNER)
+        with pytest.raises(RuntimeError, match="native worker failed"):
+            await mux.set_topic_mark(
+                SESSION, marked, owner=OWNER, write_guard=write_guard
+            )
     else:
-        assert await mux.set_topic_mark(SESSION, marked, owner=OWNER) is (
-            outcome == "success"
-        )
+        assert await mux.set_topic_mark(
+            SESSION, marked, owner=OWNER, write_guard=write_guard
+        ) is (outcome == "success")
     assert native.finished.is_set()
+    assert len(write_guard.armed) == 1
+    expected = [write_guard.armed[0].dispatch_id] if outcome == "success" else []
+    assert write_guard.terminal_ids == expected

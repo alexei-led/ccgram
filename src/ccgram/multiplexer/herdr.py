@@ -33,6 +33,7 @@ import asyncio
 import contextlib
 import hashlib
 import json
+import socket
 import os
 import re
 import shutil
@@ -52,6 +53,8 @@ from pathlib import Path
 import structlog
 
 from ..herdr_targets import HERDR_SESSION_TARGET_PREFIX, is_herdr_session_target
+from ..topic_mark_types import TopicMarkWriteGuard, TopicMarkWriteWitness
+from . import native_process, topic_mark_transport
 from .base import (
     AgentStatus,
     CaptureResult,
@@ -992,7 +995,12 @@ class HerdrManager:
         return marks
 
     async def set_topic_mark(
-        self, window_id: str, marked: bool, *, owner: str | None = None
+        self,
+        window_id: str,
+        marked: bool,
+        *,
+        owner: str | None = None,
+        write_guard: TopicMarkWriteGuard | None = None,
     ) -> bool:
         """Set native selection by exact owner, never retarget stale conversations."""
         if not is_herdr_session_target(window_id) or (
@@ -1026,9 +1034,13 @@ class HerdrManager:
         mark = matches[0]
         if mark.marked == marked:
             return True
-        return await self._rename_topic_label(mark, marked)
+        return write_guard is not None and await self._rename_topic_label(
+            mark, marked, write_guard
+        )
 
-    async def _rename_topic_label(self, mark: _HerdrTopicMark, marked: bool) -> bool:
+    async def _rename_topic_label(
+        self, mark: _HerdrTopicMark, marked: bool, write_guard: TopicMarkWriteGuard
+    ) -> bool:
         label = mark.original_label
         if marked:
             suffix = f"[ccgram-topic-v1:{mark.owner}]"
@@ -1043,24 +1055,41 @@ class HerdrManager:
             current.get("label"),
         ) != (mark.terminal_id, mark.pane_id, mark.label):
             return False
-        rename = asyncio.create_task(self._call_json(args))
+        witness: TopicMarkWriteWitness | None = None
         try:
-            result = await asyncio.shield(rename)
-        except asyncio.CancelledError:
-            # Client closure cannot cancel a remote rename. Keep the owner's
-            # lock through the RPC; transport failure is still unconfirmed.
-            finished = asyncio.Event()
-            rename.add_done_callback(lambda _: finished.set())
-            while not rename.done():
-                try:
-                    await finished.wait()
-                except asyncio.CancelledError:
-                    continue
-            with contextlib.suppress(asyncio.CancelledError):
-                rename.exception()
-            raise
-        if result is None:
+            path = await self._resolve_socket_path()
+            method, params = command_request(args)
+
+            def before_send(connection: socket.socket) -> None:
+                nonlocal witness
+                witness = topic_mark_transport.witness_for_connection(
+                    connection, backend="herdr", binary=self._binary, socket_path=path
+                )
+                if witness is None:
+                    raise HerdrSocketError("Native Herdr executor is unproved")
+                write_guard.arm(witness)
+
+            payload = await socket_request(
+                path,
+                method,
+                params,
+                timeout=_CALL_TIMEOUT_SECONDS,
+                before_send=before_send,
+            )
+        except HerdrSocketError, HerdrError, ValueError:
             return False
+        result = payload.get("result")
+        # Stock PaneInfo omits an absent optional label when a clear succeeds.
+        pane = result.get("pane") if isinstance(result, dict) else None
+        if (
+            witness is None
+            or not isinstance(pane, dict)
+            or (pane.get("terminal_id"), pane.get("pane_id"), pane.get("label"))
+            != (mark.terminal_id, mark.pane_id, label)
+            or not topic_mark_transport.cleanup_pin(witness)
+        ):
+            return False
+        write_guard.terminal(witness.dispatch_id)
         fresh = await self._topic_mark_snapshot()
         if fresh is None:
             return False
@@ -1078,6 +1107,20 @@ class HerdrManager:
             and (not marked or actual.owner == mark.owner)
             and sum(candidate.owner == actual.owner for candidate in fresh) == 1
         )
+
+    async def topic_mark_endpoint_scope(self) -> str | None:
+        try:
+            path = await self._resolve_socket_path()
+        except HerdrError:
+            return None
+        return native_process.inspect_endpoint_scope(
+            path, backend="herdr", binary=self._binary
+        )
+
+    async def recover_topic_mark_write(
+        self, witness: TopicMarkWriteWitness
+    ) -> bool | None:
+        return topic_mark_transport.recover_write(witness, backend="herdr")
 
     async def list_windows(self) -> list[WindowRef]:
         """Return a best-effort UI listing, hiding ccgram's own internal panes.

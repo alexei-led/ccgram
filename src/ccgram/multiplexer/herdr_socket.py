@@ -8,7 +8,7 @@ import json
 import socket
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 __all__ = ["MAX_FRAME_BYTES", "HerdrSocketError", "request"]
 
@@ -78,11 +78,12 @@ async def request(
     params: Mapping[str, object],
     *,
     timeout: float = 8.0,
+    before_send: Callable[[socket.socket], None] | None = None,
 ) -> dict:
     """Send one Herdr request and return its correlated response envelope."""
     request_id = uuid.uuid4().hex
     request_line = _encode_request(request_id, method, params)
-    response_line = await _exchange(socket_path, request_line, timeout)
+    response_line = await _exchange(socket_path, request_line, timeout, before_send)
     return _parse_response(response_line, request_id)
 
 
@@ -106,7 +107,12 @@ def _encode_request(
     return request_line
 
 
-async def _exchange(socket_path: str, request_line: bytes, timeout: float) -> bytes:
+async def _exchange(
+    socket_path: str,
+    request_line: bytes,
+    timeout: float,
+    before_send: Callable[[socket.socket], None] | None = None,
+) -> bytes:
     writer: asyncio.StreamWriter | None = None
     try:
         async with asyncio.timeout(timeout):
@@ -114,6 +120,8 @@ async def _exchange(socket_path: str, request_line: bytes, timeout: float) -> by
                 socket_path,
                 limit=MAX_FRAME_BYTES,
             )
+            if before_send is not None:
+                before_send(writer.get_extra_info("socket"))
             writer.write(request_line)
             await writer.drain()
             try:
@@ -122,6 +130,11 @@ async def _exchange(socket_path: str, request_line: bytes, timeout: float) -> by
                 raise HerdrSocketError(
                     "herdr socket response exceeded the maximum frame size"
                 ) from exc
+    except asyncio.CancelledError:
+        if writer is not None:
+            _abort_writer(writer)
+            writer = None
+        raise
     except HerdrSocketError:
         raise
     except TimeoutError as exc:
