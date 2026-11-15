@@ -39,6 +39,7 @@ class TopicMarkOperation:
     owner: str | None
     desired: bool
     attempt: TopicMarkAttempt | None = None
+    detach_clear: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.window_id, str) or not self.window_id:
@@ -49,6 +50,10 @@ class TopicMarkOperation:
             raise ValueError("Marker operation owner must be nonempty or null")
         if not isinstance(self.desired, bool):
             raise ValueError("Marker operation desired value must be boolean")
+        if not isinstance(self.detach_clear, bool) or (
+            self.desired and self.detach_clear
+        ):
+            raise ValueError("Only a clear may carry boolean detach protection")
         if self.attempt is not None and not isinstance(self.attempt, TopicMarkAttempt):
             raise ValueError("Malformed marker attempt")
 
@@ -66,6 +71,7 @@ class TopicMarkOperation:
             "owner": self.owner,
             "desired": self.desired,
             "attempt": self.attempt.to_dict() if self.attempt is not None else None,
+            "detach_clear": self.detach_clear,
         }
 
 
@@ -92,6 +98,7 @@ def parse_topic_mark_operations(
             "owner",
             "desired",
             "attempt",
+            "detach_clear",
         }:
             raise ValueError("Malformed or incompatible marker operation record")
         attempt = (
@@ -100,7 +107,11 @@ def parse_topic_mark_operations(
             else TopicMarkAttempt.from_dict(row["attempt"])
         )
         operation = TopicMarkOperation(
-            row["window_id"], row["owner"], row["desired"], attempt
+            row["window_id"],
+            row["owner"],
+            row["desired"],
+            attempt,
+            detach_clear=row["detach_clear"],
         )
         if operation.key in operations:
             raise ValueError("Duplicate marker operation owner or quarantined route")

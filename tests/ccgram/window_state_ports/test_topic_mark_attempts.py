@@ -138,3 +138,38 @@ def test_ownerless_armed_evidence_blocks_admission_without_a_window_state(store)
 
     assert lifecycle_state.pending_topic_selections() == [armed]
     assert not store.window_states
+
+
+def test_manual_clear_dominates_same_desired_detach_and_keeps_armed_receipt(store):
+    protected = lifecycle_state.queue_topic_mark(
+        "@1", "owner", False, detach_clear=True
+    )
+    armed = lifecycle_state.begin_topic_mark_attempt(protected, _witness("A"))
+    manual = lifecycle_state.queue_topic_mark("@rekey", "owner", False)
+    assert manual.detach_clear is False
+    assert manual.attempt == armed.attempt and manual.window_id == "@1"
+    assert (
+        lifecycle_state.queue_topic_mark("@1", "owner", False, detach_clear=True)
+        == manual
+    )
+    saved = store.topic_mark_journal_to_dict()
+    store.reset()
+    store.load_topic_mark_journal(saved)
+    finished = lifecycle_state.finish_topic_mark_attempt(
+        "@1", owner="owner", dispatch_id="A"
+    )
+    assert finished is not None and not finished.detach_clear
+    lifecycle_state.restore_topic_mark(armed)
+    (restored,) = lifecycle_state.pending_topic_selections()
+    assert not restored.detach_clear and restored.attempt == armed.attempt
+
+
+def test_purpose_change_invalidates_prechecked_detach_before_arm(store):
+    protected = lifecycle_state.queue_topic_mark(
+        "@1", "owner", False, detach_clear=True
+    )
+    manual = lifecycle_state.queue_topic_mark("@1", "owner", False)
+    with pytest.raises(ValueError):
+        lifecycle_state.begin_topic_mark_attempt(protected, _witness("A"))
+    assert lifecycle_state.pending_topic_selections() == [manual]
+    assert not lifecycle_state.is_topic_mark_quarantined("@1", owner="owner")

@@ -362,14 +362,27 @@ class WindowStateStore:
         self._schedule_save()
 
     def queue_topic_mark(
-        self, window_id: str, owner: str | None, desired: bool
+        self,
+        window_id: str,
+        owner: str | None,
+        desired: bool,
+        *,
+        detach_clear: bool = False,
     ) -> TopicMarkOperation:
-        operation = TopicMarkOperation(window_id, owner, desired)
+        operation = TopicMarkOperation(
+            window_id, owner, desired, detach_clear=detach_clear
+        )
         current = self.topic_mark_operations.get(operation.key)
         if current is not None:
-            if current.desired == desired:
+            # An explicit unmark cannot become cancelable on a later detach.
+            protected = (
+                current.detach_clear and detach_clear
+                if current.desired == desired
+                else detach_clear
+            )
+            operation = replace(current, desired=desired, detach_clear=protected)
+            if operation == current:
                 return current
-            operation = replace(current, desired=desired)
         self.topic_mark_operations[operation.key] = operation
         self._schedule_save()
         return operation

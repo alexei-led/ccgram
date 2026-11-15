@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
@@ -24,12 +24,14 @@ from ccgram.handlers.user_state import PENDING_THREAD_ID
 from ccgram.multiplexer.base import Multiplexer, WindowRef
 from ccgram.providers import _ensure_registered
 from ccgram.session import SessionManager
+from ccgram.state_writer_lock import StateWriterLease
 from ccgram.session_map import get_session_map_sync, install_session_map_sync
 from ccgram.session_monitor import SessionMonitor
 from ccgram.thread_router import get_thread_router, install_thread_router
 from ccgram.topic_mark_journal import read_topic_mark_operations
 from ccgram.user_preferences import get_user_preferences, install_user_preferences
 from ccgram.window_state_store import get_window_store, install_window_store
+from ccgram.window_state_ports import lifecycle_state
 
 
 @dataclass
@@ -340,3 +342,89 @@ async def test_launch_rechecks_quarantine_after_awaited_native_title_write(
     adapter.close.assert_not_awaited()
     (armed,) = read_topic_mark_operations(config.state_file)
     assert armed.attempt is not None and armed.attempt.witness.dispatch_id == "A"
+
+
+@pytest.mark.parametrize("consumer", ["binding", "claim"])
+async def test_manual_unmark_survives_maintenance_with_existing_consumer(
+    state, consumer
+):
+    router, store = get_thread_router(), get_window_store()
+    lifecycle_state.record_topic_mark_owner("@1", "owner")
+    if consumer == "binding":
+        router.bind_thread(100, 42, "@1", chat_id=-100500)
+    else:
+        lifecycle_state.record_topic_detached("@1", "owner")
+        router.begin_topic_provisioning(
+            100,
+            -100500,
+            thread_id=42,
+            target_id="@1",
+            kind="target_for_topic",
+            topic_mark_owner="owner",
+        )
+    state.manager.flush_state()
+    selected = {"marked": True, "retired": False}
+    writes = []
+
+    def witness(dispatch_id):
+        value = make_witness(dispatch_id)
+        return (
+            replace(
+                value, native_pid=124, native_start="darwin:101:200", socket_ino=457
+            )
+            if selected["retired"]
+            else value
+        )
+
+    async def write(_target, marked, *, owner, write_guard):
+        assert owner == "owner"
+        dispatch_id = "A" if not writes else "B"
+        write_guard.arm(witness(dispatch_id))
+        writes.append(marked)
+        if dispatch_id == "A":
+            raise OSError("ambiguous native OFF before replacement")
+        (checkpoint,) = read_topic_mark_operations(config.state_file)
+        assert checkpoint.attempt is not None
+        assert checkpoint.attempt.witness.dispatch_id == "B"
+        assert checkpoint.detach_clear is False
+        selected["marked"] = marked
+        write_guard.terminal(dispatch_id)
+        return True
+
+    async def retired(saved):
+        assert saved.dispatch_id == "A"
+        selected["retired"] = True
+        return True
+
+    backend = SimpleNamespace(
+        capabilities=SimpleNamespace(name="tmux"),
+        topic_mark_endpoint_scope=AsyncMock(
+            side_effect=lambda: witness("scope").endpoint_scope
+        ),
+        set_topic_mark=AsyncMock(side_effect=write),
+        recover_topic_mark_write=AsyncMock(side_effect=retired),
+    )
+    with StateWriterLease(config.state_file):
+        with pytest.raises(OSError, match="ambiguous"):
+            await topic_selection.set_topic_selection(
+                _window(),
+                False,
+                backend=cast(Multiplexer, backend),
+                store=store,
+                flush=state.manager.flush_state,
+                endpoint_scope=await backend.topic_mark_endpoint_scope(),
+            )
+        (armed,) = read_topic_mark_operations(config.state_file)
+        assert armed.attempt is not None
+        await topic_selection.recover_topic_selections(mux=cast(Multiplexer, backend))
+
+    assert selected["marked"] is False
+    assert writes == [False, False]
+    assert read_topic_mark_operations(config.state_file) == ()
+    assert armed.detach_clear is False
+    if consumer == "binding":
+        assert router.get_window_for_chat_thread(-100500, 42) == "@1"
+    else:
+        (claim,) = router.iter_topic_provisionings()
+        assert claim.target_id == "@1" and claim.topic_mark_owner == "owner"
+        assert lifecycle_state.is_topic_detached("@1")

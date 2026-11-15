@@ -339,6 +339,7 @@ async def test_pending_journal_blocks_only_conflicting_owner_intent(
                     "owner": saved_owner,
                     "desired": desired,
                     "attempt": None,
+                    "detach_clear": False,
                 }
             ],
         }
@@ -400,6 +401,7 @@ async def test_status_exposes_orphaned_journal_without_rewriting_state(
         "owner": "old-owner",
         "desired": False,
         "attempt": None,
+        "detach_clear": False,
     }
     (tmp_path / "state.json").write_text(
         json.dumps({"topic_mark_operations": [operation]}), encoding="utf-8"

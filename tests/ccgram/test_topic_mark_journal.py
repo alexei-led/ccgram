@@ -20,7 +20,7 @@ def test_optional_journal_has_no_migration_or_selected_state():
 
 def test_journal_round_trip_preserves_opaque_owners_and_route_collision():
     operations = (
-        TopicMarkOperation("@1", "owner-O", False),
+        TopicMarkOperation("@1", "owner-O", False, detach_clear=True),
         TopicMarkOperation("@1", "owner-P", True),
         TopicMarkOperation("@1", None, False),
     )
@@ -43,16 +43,49 @@ def test_journal_round_trip_preserves_opaque_owners_and_route_collision():
         {},
         [None],
         [{}],
-        [{"window_id": "@1", "owner": "owner", "desired": 1, "attempt": None}],
-        [{"window_id": "", "owner": "owner", "desired": False, "attempt": None}],
-        [{"window_id": "@1", "owner": "", "desired": False, "attempt": None}],
-        [{"window_id": "@1", "owner": 1, "desired": False, "attempt": None}],
+        [
+            {
+                "window_id": "@1",
+                "owner": "owner",
+                "desired": 1,
+                "attempt": None,
+                "detach_clear": False,
+            }
+        ],
+        [
+            {
+                "window_id": "",
+                "owner": "owner",
+                "desired": False,
+                "attempt": None,
+                "detach_clear": False,
+            }
+        ],
+        [
+            {
+                "window_id": "@1",
+                "owner": "",
+                "desired": False,
+                "attempt": None,
+                "detach_clear": False,
+            }
+        ],
+        [
+            {
+                "window_id": "@1",
+                "owner": 1,
+                "desired": False,
+                "attempt": None,
+                "detach_clear": False,
+            }
+        ],
         [
             {
                 "window_id": "@1",
                 "owner": "owner",
                 "desired": False,
                 "attempt": None,
+                "detach_clear": False,
                 "selected": True,
             }
         ],
@@ -115,7 +148,13 @@ def test_reader_does_not_mutate_user_state(tmp_path):
         {
             "window_states": {"@1": {"window_name": "user label"}},
             TOPIC_MARK_OPERATIONS_KEY: [
-                {"window_id": "@1", "owner": "owner", "desired": False, "attempt": None}
+                {
+                    "window_id": "@1",
+                    "owner": "owner",
+                    "desired": False,
+                    "attempt": None,
+                    "detach_clear": False,
+                }
             ],
         }
     )
@@ -143,12 +182,19 @@ def test_prepared_operation_explicitly_serializes_no_native_attempt(owner):
         "owner": owner,
         "desired": True,
         "attempt": None,
+        "detach_clear": False,
     }
 
 
 @pytest.mark.parametrize("owner", [None, "opaque-owner"])
 def test_prepared_four_field_journal_round_trip(owner):
-    row = {"window_id": "@1", "owner": owner, "desired": False, "attempt": None}
+    row = {
+        "window_id": "@1",
+        "owner": owner,
+        "desired": False,
+        "attempt": None,
+        "detach_clear": False,
+    }
 
     (operation,) = parse_topic_mark_operations({TOPIC_MARK_OPERATIONS_KEY: [row]})
 
@@ -170,4 +216,34 @@ def test_unpublished_legacy_journal_fails_closed_without_rewriting(tmp_path):
     with pytest.raises(ValueError):
         read_topic_mark_operations(path)
 
+    assert path.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.parametrize(
+    "desired,detach_clear", [(True, True), (False, 1), (False, None), (False, "false")]
+)
+def test_detach_clear_requires_a_boolean_clear_intent(desired, detach_clear):
+    row = {
+        "window_id": "@1",
+        "owner": "owner",
+        "desired": desired,
+        "attempt": None,
+        "detach_clear": detach_clear,
+    }
+    with pytest.raises(ValueError):
+        parse_topic_mark_operations({TOPIC_MARK_OPERATIONS_KEY: [row]})
+
+
+def test_unpublished_four_key_journal_fails_closed_without_rewriting(tmp_path):
+    path = tmp_path / "state.json"
+    original = json.dumps(
+        {
+            TOPIC_MARK_OPERATIONS_KEY: [
+                {"window_id": "@1", "owner": "owner", "desired": False, "attempt": None}
+            ]
+        }
+    )
+    path.write_text(original, encoding="utf-8")
+    with pytest.raises(ValueError):
+        read_topic_mark_operations(path)
     assert path.read_text(encoding="utf-8") == original
