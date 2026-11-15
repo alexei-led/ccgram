@@ -315,3 +315,74 @@ def test_root_conftest_isolates_namespace_before_first_application_import(tmp_pa
     assert Path(proof["namespace"]).name.startswith("ccg-pytest-")
     assert not Path(proof["namespace"]).exists()
     assert sentinel.read_text(encoding="utf-8") == "synthetic foreign data"
+
+
+def test_cleanup_accepts_owned_pin_metadata_only_with_same_native_process(
+    native_socket, monkeypatch
+):
+    from _native_cleanup import tmux_window_cleanup
+    from ccgram.multiplexer import native_process
+
+    process = native_process.NativeProcessIdentity(
+        "host", "boot", "namespace", 123, "birth", "code"
+    )
+    monkeypatch.setattr(
+        native_process, "inspect_native_process", lambda *_a, **_k: process
+    )
+    monkeypatch.setattr("shutil.which", lambda _: "/owned-tmux")
+    server = SimpleNamespace(
+        cmd=lambda *_a: SimpleNamespace(
+            returncode=0, stderr=[], stdout=[str(native_socket)]
+        )
+    )
+    close = tmux_window_cleanup(server, "@1")
+    assert close is not None
+    pin = native_socket.parent / "own-pin"
+    os.link(native_socket, pin)
+    run = Mock(return_value=SimpleNamespace(returncode=0))
+    monkeypatch.setattr("subprocess.run", run)
+
+    close()
+
+    assert run.call_args.args[0] == [
+        "tmux",
+        "-S",
+        str(native_socket.resolve()),
+        "kill-window",
+        "-t",
+        "@1",
+    ]
+    assert native_socket.exists()
+
+
+def test_cleanup_refuses_replaced_native_process_even_with_unchanged_socket(
+    native_socket, monkeypatch
+):
+    from _native_cleanup import tmux_window_cleanup
+    from ccgram.multiplexer import native_process
+
+    process = native_process.NativeProcessIdentity(
+        "host", "boot", "namespace", 123, "birth", "code"
+    )
+    current = process
+    monkeypatch.setattr(
+        native_process, "inspect_native_process", lambda *_a, **_k: current
+    )
+    monkeypatch.setattr("shutil.which", lambda _: "/owned-tmux")
+    server = SimpleNamespace(
+        cmd=lambda *_a: SimpleNamespace(
+            returncode=0, stderr=[], stdout=[str(native_socket)]
+        )
+    )
+    close = tmux_window_cleanup(server, "@1")
+    assert close is not None
+    current = native_process.NativeProcessIdentity(
+        "host", "boot", "namespace", 124, "new-birth", "code"
+    )
+    run = Mock()
+    monkeypatch.setattr("subprocess.run", run)
+
+    close()
+
+    run.assert_not_called()
+    assert native_socket.exists()

@@ -16,6 +16,8 @@ from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
+from ..topic_mark_types import TopicMarkWriteGuard, TopicMarkWriteWitness
+
 
 # ── Value types ────────────────────────────────────────────────────────
 
@@ -366,7 +368,12 @@ class Multiplexer(Protocol):
         ...
 
     async def set_topic_mark(
-        self, window_id: str, marked: bool, *, owner: str | None = None
+        self,
+        window_id: str,
+        marked: bool,
+        *,
+        owner: str | None = None,
+        write_guard: TopicMarkWriteGuard | None = None,
     ) -> bool:
         """Set selection with verified readback, scoped to the expected owner.
 
@@ -374,7 +381,19 @@ class Multiplexer(Protocol):
         its routing ID changed. A complete validated absence can confirm clear,
         never mark-on. No stale-ID fallback. Without owner, resolve the fresh
         target first. Unknown, duplicate or malformed ownership returns False.
-        Never infer ownership from a name, cwd or layout.
+        Never infer ownership from a name, cwd or layout. Actual writes require
+        the state owner's durable write_guard; a native no-op does not settle
+        an existing journal attempt.
+        """
+        ...
+
+    async def recover_topic_mark_write(
+        self, witness: TopicMarkWriteWitness
+    ) -> bool | None:
+        """True after executor retirement and exact owned-pin cleanup.
+
+        False means the same executor is alive; None means proof is unavailable.
+        Recovery never kills or restarts native processes.
         """
         ...
 
