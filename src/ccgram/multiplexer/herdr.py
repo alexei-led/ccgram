@@ -1043,7 +1043,23 @@ class HerdrManager:
             current.get("label"),
         ) != (mark.terminal_id, mark.pane_id, mark.label):
             return False
-        if await self._call_json(args) is None:
+        rename = asyncio.create_task(self._call_json(args))
+        try:
+            result = await asyncio.shield(rename)
+        except asyncio.CancelledError:
+            # Client closure cannot cancel a remote rename. Keep the owner's
+            # lock through the RPC; transport failure is still unconfirmed.
+            finished = asyncio.Event()
+            rename.add_done_callback(lambda _: finished.set())
+            while not rename.done():
+                try:
+                    await finished.wait()
+                except asyncio.CancelledError:
+                    continue
+            with contextlib.suppress(asyncio.CancelledError):
+                rename.exception()
+            raise
+        if result is None:
             return False
         fresh = await self._topic_mark_snapshot()
         if fresh is None:
