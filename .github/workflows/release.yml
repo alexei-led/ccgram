@@ -3,38 +3,51 @@ on:
   push:
     tags:
       - v*
+permissions:
+  contents: read
 jobs:
   publish:
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
+      contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@v7
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           python-version: "3.14"
+          enable-cache: false
+      - name: Validate reviewed release notes
+        run: uv run --no-project --python 3.14 python scripts/extract_release_notes.py "$GITHUB_REF_NAME" > /dev/null
       - run: uv build
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
   update-homebrew:
     needs: publish
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           python-version: "3.14"
+          enable-cache: false
       - name: Extract version
         id: version
         run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
       - name: Generate formula
-        run: uv run scripts/generate_homebrew_formula.py "${{ steps.version.outputs.VERSION }}" > ccgram.rb
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.VERSION }}
+        run: uv run scripts/generate_homebrew_formula.py "$RELEASE_VERSION" > ccgram.rb
       - name: Push to homebrew-tap
         env:
           GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          RELEASE_VERSION: ${{ steps.version.outputs.VERSION }}
         run: |
           git clone "https://x-access-token:${GITHUB_TOKEN}@github.com/alexei-led/homebrew-tap.git" tap
           cp ccgram.rb tap/Formula/ccgram.rb
@@ -42,7 +55,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add Formula/ccgram.rb
-          git commit -m "ccgram ${{ steps.version.outputs.VERSION }}"
+          git commit -m "ccgram $RELEASE_VERSION"
           git push
   github-release:
     needs:
@@ -52,18 +65,19 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
-      - name: Generate release notes
-        id: cliff
-        uses: orhun/git-cliff-action@v4
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
-          config: cliff.toml
-          args: --latest --strip header
+          python-version: "3.14"
+          enable-cache: false
+      - name: Extract reviewed release notes
+        run: uv run --no-project --python 3.14 python scripts/extract_release_notes.py "$GITHUB_REF_NAME" > release-notes.md
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
-          body: ${{ steps.cliff.outputs.content }}
+          body_path: release-notes.md
