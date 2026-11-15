@@ -993,3 +993,93 @@ async def test_verified_shell_input_rejects_binding_change_after_verification(
     assert message == "Session binding changed"
     backend.send_text.assert_not_awaited()
     store.close()
+
+
+@pytest.mark.parametrize("mark_succeeds", [True, False, None])
+async def test_picker_retains_owner_first_confirmed_during_selection(
+    mark_succeeds, monkeypatch, tmp_path
+):
+    from _topic_mark_helpers import make_witness
+    from ccgram.config import config
+    from ccgram.handlers.topics import window_callbacks as module
+    from ccgram.session import SessionManager
+    from ccgram.thread_router import get_thread_router
+    from ccgram.window_state_ports import lifecycle_state
+
+    monkeypatch.setattr(config, "state_file", tmp_path / "state.json")
+    monkeypatch.setattr(config, "topic_discovery_mode", "auto")
+    manager = SessionManager()
+    router = get_thread_router()
+    router.bind_thread(200, 77, "@keep", chat_id=-100888)
+    owners = iter(
+        [None, None, None]
+        if mark_succeeds is None
+        else [None, "original-O", "original-O", "replacement-P"]
+        if mark_succeeds
+        else [None, "original-O", "replacement-P"]
+    )
+
+    async def find_window(target):
+        assert target == "@5"
+        owner = next(owners)
+        return WindowRef(
+            "@5",
+            "selected",
+            "/tmp/proj",
+            pane_current_command="claude",
+            topic_marked=owner is not None,
+            topic_mark_owner=owner,
+        )
+
+    async def mark(target, desired, *, owner, write_guard):
+        assert (target, desired, owner) == ("@5", True, "original-O")
+        if not mark_succeeds:
+            return False
+        witness = make_witness()
+        write_guard.arm(witness)
+        write_guard.terminal(witness.dispatch_id)
+        return True
+
+    native = SimpleNamespace(
+        capabilities=SimpleNamespace(name="tmux"),
+        find_window_by_id=AsyncMock(side_effect=find_window),
+        set_topic_mark=AsyncMock(side_effect=mark),
+    )
+    query, update, context = _make_query_update_context(
+        user_data={
+            UNBOUND_WINDOWS_KEY: ["@5"],
+            PENDING_THREAD_ID: 42,
+            PENDING_THREAD_TEXT: "must not reach replacement terminal",
+        }
+    )
+    sender = AsyncMock(return_value=(True, ""))
+    with (
+        patch.object(module, "thread_router", router),
+        patch.object(module, "session_manager", manager),
+        patch("ccgram.session.session_manager", manager),
+        patch.object(module, "tmux_manager", native),
+        patch("ccgram.multiplexer.multiplexer", native),
+        patch(
+            "ccgram.providers.detect_provider_from_pane",
+            AsyncMock(return_value="claude"),
+        ),
+        patch.object(module, "adapter_for", return_value=MagicMock()),
+        patch.object(module, "safe_edit", AsyncMock()),
+        patch.object(module, "send_telegram_to_window", sender),
+    ):
+        await handle_window_callback(query, 100, f"{CB_WIN_BIND}0", update, context)
+
+    assert router.get_window_for_chat_thread(-100888, 77) == "@keep"
+    if mark_succeeds is None:
+        assert router.get_window_for_chat_thread(-100999, 42) == "@5"
+        sender.assert_awaited_once()
+        assert PENDING_THREAD_TEXT not in context.user_data
+    else:
+        assert router.get_window_for_chat_thread(-100999, 42) is None
+        sender.assert_not_awaited()
+        assert PENDING_THREAD_TEXT in context.user_data
+        assert lifecycle_state.get_topic_mark_owner("@5") == "original-O"
+        if not mark_succeeds:
+            assert [op.owner for op in lifecycle_state.pending_topic_selections()] == [
+                "original-O"
+            ]

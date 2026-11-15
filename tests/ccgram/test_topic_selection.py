@@ -133,7 +133,7 @@ async def test_explicit_selection_preserves_unfinished_mark_on_failure(
     selection, result
 ):
     selection.mux.set_topic_mark.return_value = result
-    assert not await topic_selection.select_topic_target("@1", mux=selection.mux)
+    assert not (await topic_selection.select_topic_target("@1", mux=selection.mux))[0]
     assert lifecycle_state.get_pending_topic_mark("@1") is True
     assert not lifecycle_state.is_topic_detached("@1")
     assert selection.saved[0][0]["topic_mark_operations"][0]["desired"] is True
@@ -146,7 +146,9 @@ async def test_explicit_selection_and_detach_of_split_never_mutate_primary(selec
         topic_mark_owner=None,
         topic_marked=True,
     )
-    assert await topic_selection.select_topic_target("primary:split", mux=selection.mux)
+    assert (
+        await topic_selection.select_topic_target("primary:split", mux=selection.mux)
+    )[0]
     selection.router.bind_thread(1, 42, "primary:split", chat_id=-100)
     assert await topic_selection.detach_topic_target(
         1, 42, "primary:split", chat_id=-100, router=selection.router, mux=selection.mux
@@ -202,12 +204,12 @@ async def test_clear_failure_survives_restart_then_retries_and_allows_reselectio
     selection.store.reset()
     selection.restore(snapshot)
     assert lifecycle_state.is_topic_detach_pending("@1", owner=None)
-    assert not await topic_selection.select_topic_target("@1", mux=selection.mux)
+    assert not (await topic_selection.select_topic_target("@1", mux=selection.mux))[0]
     selection.mux.set_topic_mark.return_value = True
     await topic_selection.recover_topic_selections(mux=selection.mux)
     assert not lifecycle_state.is_topic_detach_pending("@1", owner=None)
     assert lifecycle_state.is_topic_detached("@1")
-    assert await topic_selection.select_topic_target("@1", mux=selection.mux)
+    assert (await topic_selection.select_topic_target("@1", mux=selection.mux))[0]
     assert lifecycle_state.is_topic_detached("@1")
     selection.router.bind_thread(1, 42, "@1", chat_id=-100)
     assert lifecycle_state.complete_topic_admission("@1", "owner:@1")
@@ -317,14 +319,14 @@ async def test_detach_persists_intent_before_waiting_for_inflight_mark(
     finally:
         finish_mark.set()
         results = await asyncio.gather(selected, detached, return_exceptions=True)
-    assert results == [False, True]
+    assert results == [(False, "owner:@1"), True]
     assert lifecycle_state.is_topic_detached("@1")
     assert not lifecycle_state.is_topic_detach_pending("@1", owner=None)
 
 
 async def test_concurrent_explicit_binds_keep_mark_until_the_last_detach(selection):
     async def bind(user_id, thread_id, chat_id):
-        assert await topic_selection.select_topic_target("@1", mux=selection.mux)
+        assert (await topic_selection.select_topic_target("@1", mux=selection.mux))[0]
         selection.router.bind_thread(user_id, thread_id, "@1", chat_id=chat_id)
 
     await asyncio.gather(bind(1, 42, -100), bind(2, 43, -200))
@@ -348,7 +350,7 @@ async def test_failed_mark_on_recovers_after_restart_without_detaching_topics(
 ):
     selection.router.bind_thread(1, 42, "@1", chat_id=-100)
     selection.mux.set_topic_mark.return_value = False
-    assert not await topic_selection.select_topic_target("@1", mux=selection.mux)
+    assert not (await topic_selection.select_topic_target("@1", mux=selection.mux))[0]
     snapshot = selection.snapshot()
     selection.store.reset()
     selection.restore(snapshot)
@@ -373,7 +375,7 @@ async def test_owner_is_checkpointed_before_mark_ack_loss_and_rekey(selection):
         raise OSError("acknowledgement lost")
 
     selection.mux.set_topic_mark.side_effect = mark
-    assert not await topic_selection.select_topic_target("@1", mux=selection.mux)
+    assert not (await topic_selection.select_topic_target("@1", mux=selection.mux))[0]
     snapshot = selection.snapshot()
     selection.restore(snapshot)
     selection.mux.find_window_by_id.reset_mock()
@@ -425,7 +427,7 @@ async def test_unknown_owner_never_generates_a_candidate_or_mutates(selection):
     selection.mux.find_window_by_id.return_value = SimpleNamespace(
         window_id="@1", topic_markable=True, topic_mark_owner=None
     )
-    assert not await topic_selection.select_topic_target("@1", mux=selection.mux)
+    assert not (await topic_selection.select_topic_target("@1", mux=selection.mux))[0]
     assert lifecycle_state.get_pending_topic_mark("@1") is True
     assert lifecycle_state.get_topic_mark_owner("@1") is None
     selection.mux.set_topic_mark.assert_not_awaited()
@@ -535,7 +537,7 @@ async def test_pending_owner_blocks_another_routing_target_without_creating_stat
     lifecycle_state.set_topic_selection(
         "@old", detached=True, pending=False, owner="owner:@1"
     )
-    assert not await topic_selection.select_topic_target("@1", mux=selection.mux)
+    assert not (await topic_selection.select_topic_target("@1", mux=selection.mux))[0]
     assert "@1" not in selection.store.window_states
     selection.mux.set_topic_mark.assert_not_awaited()
 
@@ -612,7 +614,7 @@ async def test_cross_route_last_detach_cancels_older_owner_mark_on_retry(
     finally:
         release.set()
         results = await asyncio.gather(marked, detached)
-    assert results == [False, True]
+    assert results == [(False, "same-owner"), True]
     assert lifecycle_state.get_pending_topic_mark("@new") is None
     await topic_selection.recover_topic_selections(mux=selection.mux)
     assert selection.mux.set_topic_mark.await_count == 2
@@ -627,7 +629,7 @@ async def test_owner_mark_success_does_not_authorize_a_vanished_routing_target(
         ),
         None,
     ]
-    assert not await topic_selection.select_topic_target("@1", mux=selection.mux)
+    assert not (await topic_selection.select_topic_target("@1", mux=selection.mux))[0]
     selection.mux.set_topic_mark.assert_awaited_once_with(
         "@1", True, owner="owner:@1", write_guard=ANY
     )
@@ -660,10 +662,9 @@ async def test_selection_preparation_preserves_detached_ttl_until_actual_binding
         "@1", detached=True, pending=None, owner="owner:@1"
     )
     selection.mux.set_topic_mark.return_value = native_result
-    assert (
-        await topic_selection.select_topic_target("@1", mux=selection.mux)
-        is native_result
-    )
+    assert (await topic_selection.select_topic_target("@1", mux=selection.mux))[
+        0
+    ] is native_result
     assert lifecycle_state.is_topic_detached("@1")
 
 
@@ -819,7 +820,7 @@ async def test_clear_rechecks_consumers_after_waiting_for_owner_lock(
     finally:
         release.set()
         results = await asyncio.gather(marked, detached)
-    assert results == [False, True]
+    assert results == [(False, "shared"), True]
     assert selection.mux.set_topic_mark.await_count == 1
     assert not lifecycle_state.is_topic_detach_pending("@old", owner="shared")
     assert lifecycle_state.is_topic_detached("@old")
@@ -836,7 +837,7 @@ async def test_marker_owner_is_never_used_as_a_routing_alias(selection):
             topic_mark_owner="O",
         ),
     ]
-    assert not await topic_selection.select_topic_target("@1", mux=selection.mux)
+    assert not (await topic_selection.select_topic_target("@1", mux=selection.mux))[0]
     selection.mux.set_topic_mark.assert_awaited_once_with(
         "@1", True, owner="O", write_guard=ANY
     )
@@ -935,8 +936,7 @@ async def test_selection_pins_known_caller_owner_before_journal_or_native_write(
         await topic_selection.select_topic_target(
             "@1", mux=selection.mux, expected_owner="original-O"
         )
-        is allowed
-    )
+    )[0] is allowed
     assert selection.mux.set_topic_mark.await_count == int(allowed)
     assert lifecycle_state.get_topic_mark_owner("@1") == "original-O"
     assert not lifecycle_state.pending_topic_selections()
@@ -962,9 +962,11 @@ async def test_provisioning_selection_checkpoints_claim_owner_and_intent_before_
         return False
 
     selection.mux.set_topic_mark.side_effect = native
-    assert not await topic_selection.select_topic_target(
-        "@1", mux=selection.mux, claim_id=claim.claim_id, router=selection.router
-    )
+    assert not (
+        await topic_selection.select_topic_target(
+            "@1", mux=selection.mux, claim_id=claim.claim_id, router=selection.router
+        )
+    )[0]
     assert (
         selection.router.get_topic_provisioning(claim.claim_id).topic_mark_owner
         == "owner:@1"
@@ -980,9 +982,11 @@ async def test_unknown_claim_cannot_capture_observed_owner_without_native_snapsh
     )
     lifecycle_state.record_topic_mark_owner("@1", "observed-P")
     selection.mux.find_window_by_id.return_value = None
-    assert not await topic_selection.select_topic_target(
-        "@1", mux=selection.mux, claim_id=claim.claim_id, router=selection.router
-    )
+    assert not (
+        await topic_selection.select_topic_target(
+            "@1", mux=selection.mux, claim_id=claim.claim_id, router=selection.router
+        )
+    )[0]
     assert (
         selection.router.get_topic_provisioning(claim.claim_id).topic_mark_owner is None
     )
@@ -1006,9 +1010,11 @@ async def test_provisioning_selection_cannot_drop_or_replace_captured_owner(
     selection.mux.find_window_by_id.return_value = WindowRef(
         "@1", "current", "/tmp", topic_mark_owner=current_owner
     )
-    assert not await topic_selection.select_topic_target(
-        "@1", mux=selection.mux, claim_id=claim.claim_id, router=selection.router
-    )
+    assert not (
+        await topic_selection.select_topic_target(
+            "@1", mux=selection.mux, claim_id=claim.claim_id, router=selection.router
+        )
+    )[0]
     assert (
         selection.router.get_topic_provisioning(claim.claim_id).topic_mark_owner
         == "original-O"

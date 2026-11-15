@@ -510,8 +510,8 @@ async def select_topic_target(
     claim_id: str | None = None,
     router: ThreadRouter | None = None,
     expected_owner: str | None = None,
-) -> bool:
-    """Checkpoint native intent without replacing a known caller or claim witness."""
+) -> tuple[bool, str | None]:
+    """Return selection readiness and its first immutable owner, even on failure."""
     # Lazy: only bot selection uses the wired backend.
     from .multiplexer import multiplexer
 
@@ -524,7 +524,7 @@ async def select_topic_target(
         if expected_owner is not None and (
             window is None or window.topic_mark_owner != expected_owner
         ):
-            return False
+            return False, expected_owner
         owner = (
             window.topic_mark_owner
             if window is not None
@@ -543,36 +543,37 @@ async def select_topic_target(
                 or canonical_window_id(claim.target_id)
                 != canonical_window_id(window_id)
             ):
-                return False
+                return False, owner
             if claim.topic_mark_owner is not None and (
                 window is None or owner != claim.topic_mark_owner
             ):
-                return False
+                return False, claim.topic_mark_owner
             claim_router.capture_provisioning_owner(claim_id, owner)
             _flush()
         if lifecycle_state.is_topic_detach_pending(
             window_id, owner=owner
         ) or lifecycle_state.is_topic_mark_quarantined(window_id, owner=owner):
-            return False
+            return False, owner
         if window is not None and not window.topic_markable:
             lifecycle_state.record_topic_mark_owner(window_id, None)
             _flush()
-            return True
+            return True, owner
         if owner is not None:
             lifecycle_state.record_topic_mark_owner(window_id, owner)
         operation = _queue(window_id, owner, True)
         if window is None or owner is None:
             logger.warning("topic_selection_owner_unconfirmed", window_id=window_id)
-            return False
+            return False, owner
         if not await _finish_topic_selection(operation, mux):
-            return False
+            return False, owner
         current = await verify_topic_target(
             window_id, owner=owner, require_marked=True, mux=mux
         )
         return (
             current is not None
             and not lifecycle_state.is_topic_detach_pending(window_id, owner=owner)
-            and not lifecycle_state.is_topic_mark_quarantined(window_id, owner=owner)
+            and not lifecycle_state.is_topic_mark_quarantined(window_id, owner=owner),
+            owner,
         )
 
 

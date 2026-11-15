@@ -307,7 +307,7 @@ async def _select_and_bind(
                 "Could not verify topic selection; please retry", show_alert=True
             )
             return False
-        selected = await select_topic_target(selected_wid, expected_owner=owner)
+        selected, owner = await select_topic_target(selected_wid, expected_owner=owner)
         if not selected:
             if (
                 config.topic_discovery_mode == "marked"

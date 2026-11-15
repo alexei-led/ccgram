@@ -752,14 +752,14 @@ async def launch_window(  # noqa: C901, PLR0911, PLR0912, PLR0915
         pending_thread_id,
     )
     try:
-        selected = await select_topic_target(
+        selected, selection_owner = await select_topic_target(
             created_wid, claim_id=claim_id, router=thread_router
         )
         if claim_id is not None:
             claim = thread_router.get_topic_provisioning(claim_id)
             captured_owner = claim.topic_mark_owner if claim is not None else None
         else:
-            captured_owner = lifecycle_state.get_topic_mark_owner(created_wid)
+            captured_owner = selection_owner
     except BaseException:
         _mark_provisioning_uncertain(claim_id)
         if claim_id is not None:
