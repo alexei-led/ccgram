@@ -41,18 +41,8 @@ def witness_for_connection(
         info = Path(socket_path).lstat()
         if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():
             return None
-        witness = TopicMarkWriteWitness(
-            dispatch_id=dispatch_id or uuid4().hex,
-            backend=backend,
-            host_id=identity.host_id,
-            boot_id=identity.boot_id,
-            namespace_id=identity.namespace_id,
-            native_pid=identity.pid,
-            native_start=identity.start,
-            code_id=identity.code_id,
-            socket_dev=info.st_dev,
-            socket_ino=info.st_ino,
-            pin_path=pin_path,
+        witness = identity.witness(
+            backend, info, dispatch_id=dispatch_id or uuid4().hex, pin_path=pin_path
         )
         return witness if native_process.valid_saved_witness(witness) else None
     except OSError, ValueError:

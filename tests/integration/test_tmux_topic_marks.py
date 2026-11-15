@@ -516,3 +516,24 @@ async def test_ambiguous_pin_recovers_only_after_original_executor_exits(
     assert await mgr.recover_topic_mark_write(witness) is True
     assert not pin.parent.exists()
     assert replacement in session.server.sessions
+
+
+async def test_native_endpoint_scope_alias_matches_dispatch_witness(isolated_tmux):
+    mgr, session = isolated_tmux
+    window = session.new_window(window_name="project")
+    assert window.window_id is not None
+    scope = await mgr.topic_mark_endpoint_scope()
+    assert scope is not None
+    path = Path(session.server.socket_path)
+    alias = path.parent / "alias"
+    os.link(path, alias)
+    try:
+        aliased = TmuxManager(session_name="marks")
+        aliased._server = libtmux.Server(socket_path=str(alias))
+        assert await aliased.topic_mark_endpoint_scope() == scope
+        write_guard = RecordingTopicMarkGuard()
+        assert await mgr.set_topic_mark(window.window_id, True, write_guard=write_guard)
+        assert write_guard.armed[0].endpoint_scope == scope
+        assert await mgr.topic_mark_endpoint_scope() == scope
+    finally:
+        alias.unlink(missing_ok=True)

@@ -13,11 +13,12 @@ import plistlib
 import re
 import socket
 import struct
+import stat
 import subprocess
 import sys
 from dataclasses import dataclass
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from ..topic_mark_types import TopicMarkWriteWitness
 
@@ -49,6 +50,28 @@ class NativeProcessIdentity:
         return hashlib.sha256(
             json.dumps(raw, separators=(",", ":")).encode()
         ).hexdigest()
+
+    def witness(
+        self,
+        backend: str,
+        info: os.stat_result,
+        *,
+        dispatch_id: str,
+        pin_path: str | None,
+    ) -> TopicMarkWriteWitness:
+        return TopicMarkWriteWitness(
+            dispatch_id=dispatch_id,
+            backend=backend,
+            host_id=self.host_id,
+            boot_id=self.boot_id,
+            namespace_id=self.namespace_id,
+            native_pid=self.pid,
+            native_start=self.start,
+            code_id=self.code_id,
+            socket_dev=info.st_dev,
+            socket_ino=info.st_ino,
+            pin_path=pin_path,
+        )
 
 
 class _BSDInfo(ctypes.Structure):
@@ -467,6 +490,32 @@ def inspect_native_process(
             connection.connect(socket_path)
             return capture_native_process(connection, backend=backend, binary=binary)
     except OSError:
+        return None
+
+
+def inspect_endpoint_scope(
+    socket_path: str, *, backend: str, binary: str
+) -> str | None:
+    """Read a trusted actual endpoint; a scope-only descriptor never authorizes I/O."""
+    try:
+        endpoint = Path(socket_path).resolve(strict=True)
+        before = endpoint.lstat()
+        if not stat.S_ISSOCK(before.st_mode) or before.st_uid != os.getuid():
+            return None
+        identity = inspect_native_process(str(endpoint), backend=backend, binary=binary)
+        after = endpoint.lstat()
+        if (
+            identity is None
+            or not stat.S_ISSOCK(after.st_mode)
+            or after.st_uid != os.getuid()
+            or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+        ):
+            return None
+        # Dispatch/pin fields are excluded from the shared pure fingerprint.
+        return identity.witness(
+            backend, after, dispatch_id=uuid4().hex, pin_path=None
+        ).endpoint_scope
+    except OSError, ValueError, RuntimeError:
         return None
 
 

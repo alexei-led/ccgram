@@ -179,3 +179,14 @@ async def test_tmux_actual_mutation_without_guard_is_refused(native_marker):
 
     assert not await mux.set_topic_mark("@1", True, owner=owner)
     assert native.writes == 0
+
+
+async def test_tmux_endpoint_scope_matches_actual_pinned_guard_witness(native_marker):
+    mux, native, owner = await native_marker("success")
+    scope = await mux.topic_mark_endpoint_scope()
+    native.release.set()
+    write_guard = RecordingTopicMarkGuard()
+
+    assert scope is not None and native.writes == 0
+    assert await mux.set_topic_mark("@1", True, owner=owner, write_guard=write_guard)
+    assert write_guard.armed[0].endpoint_scope == scope

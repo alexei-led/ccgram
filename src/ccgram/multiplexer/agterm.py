@@ -54,7 +54,7 @@ import structlog
 
 from ..utils import log_throttled
 from ..topic_mark_types import TopicMarkWriteGuard, TopicMarkWriteWitness
-from . import topic_mark_transport
+from . import native_process, topic_mark_transport
 from .agterm_panes import pane_sessions, split_session_id
 from .base import (
     AgentStatus,
@@ -750,15 +750,7 @@ class AgtermManager:
     async def _set_topic_flag(
         self, window_id: str, marked: bool, write_guard: TopicMarkWriteGuard
     ) -> bool:
-        state_dir = os.environ.get("AGTERM_STATE_DIR")
-        endpoint = self._socket_path or str(
-            (
-                Path(state_dir)
-                if state_dir
-                else Path.home() / "Library/Application Support/agterm"
-            )
-            / "agterm.sock"
-        )
+        endpoint = self._topic_socket_path()
         witness = topic_mark_transport.prepare_cli_write(
             backend="agterm", binary=self._binary, socket_path=endpoint
         )
@@ -803,6 +795,22 @@ class AgtermManager:
             runner=injected_runner if self._marker_runner is not None else None,
         )
         return result is not None
+
+    def _topic_socket_path(self) -> str:
+        if self._socket_path:
+            return self._socket_path
+        state_dir = os.environ.get("AGTERM_STATE_DIR")
+        base = (
+            Path(state_dir)
+            if state_dir is not None
+            else Path.home() / "Library/Application Support/agterm"
+        )
+        return str(base / "agterm.sock")
+
+    async def topic_mark_endpoint_scope(self) -> str | None:
+        return native_process.inspect_endpoint_scope(
+            self._topic_socket_path(), backend="agterm", binary=self._binary
+        )
 
     async def recover_topic_mark_write(
         self, witness: TopicMarkWriteWitness

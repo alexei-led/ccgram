@@ -589,6 +589,15 @@ class TmuxManager:
             == 1
         )
 
+    async def topic_mark_endpoint_scope(self) -> str | None:
+        endpoint = await self._marker_socket_path()
+        if endpoint is None:
+            return None
+        binary, path = endpoint
+        return native_process.inspect_endpoint_scope(
+            path, backend="tmux", binary=binary
+        )
+
     async def recover_topic_mark_write(
         self, witness: TopicMarkWriteWitness
     ) -> bool | None:

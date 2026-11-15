@@ -418,3 +418,13 @@ async def test_herdr_topic_mark_rejects_foreign_backend_targets_and_stale_witnes
         _target(), False, owner=owner, write_guard=RecordingTopicMarkGuard()
     )
     assert native.writes == []
+
+
+async def test_herdr_endpoint_scope_matches_actual_guard_witness(native_factory):
+    native = await native_factory()
+    scope = await native.manager.topic_mark_endpoint_scope()
+    write_guard = RecordingTopicMarkGuard()
+
+    assert scope is not None and native.writes == []
+    assert await native.manager.set_topic_mark(_target(), True, write_guard=write_guard)
+    assert write_guard.armed[0].endpoint_scope == scope

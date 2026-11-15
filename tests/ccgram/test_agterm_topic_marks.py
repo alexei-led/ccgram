@@ -217,3 +217,32 @@ async def test_actual_flag_write_without_state_guard_is_refused():
 
     assert not await mux.set_topic_mark(SESSION, True)
     assert native.writes == []
+
+
+async def test_agterm_endpoint_scope_matches_actual_guard_witness():
+    socket = FlagSocket()
+    mux = manager(socket)
+    scope = await mux.topic_mark_endpoint_scope()
+    write_guard = RecordingTopicMarkGuard()
+
+    assert scope is not None and socket.writes == []
+    assert await mux.set_topic_mark(SESSION, True, write_guard=write_guard)
+    assert write_guard.armed[0].endpoint_scope == scope
+
+
+async def test_agterm_empty_state_dir_uses_published_relative_socket(monkeypatch):
+    from ccgram.multiplexer import native_process
+
+    monkeypatch.delenv("AGTERM_SOCKET")
+    monkeypatch.setenv("AGTERM_STATE_DIR", "")
+    captured = []
+
+    def observe(path, **_kwargs):
+        captured.append(path)
+        return None
+
+    monkeypatch.setattr(native_process, "inspect_endpoint_scope", observe)
+    mux = AgtermManager(runner=FlagSocket(), own_session_id="")
+
+    assert await mux.topic_mark_endpoint_scope() is None
+    assert captured == ["agterm.sock"]
