@@ -101,6 +101,7 @@ _TOPIC_MARK_RE = re.compile(rf"{_TOPIC_MARK_VERSION}:([01]):([0-9a-f]{{32}})")
 _TOPIC_OWNER_RE = re.compile(r"tmux:[0-9a-f]{32}")
 _WINDOW_ID_RE = re.compile(r"@\d+")
 _MAIN_WINDOW_NAME = "__main__"
+_TOPIC_INVENTORY_BATCH_SIZE = 64
 
 # Static capability declaration for the tmux backend (design Task 2).
 _TMUX_CAPABILITIES = MultiplexerCapabilities(
@@ -202,21 +203,6 @@ class TmuxManager:
             return None
 
     @staticmethod
-    def _read_topic_selection(
-        window: libtmux.Window, incarnation: str
-    ) -> tuple[bool | None, str | None]:
-        # No -A/-g or named lookup: those may expose inherited defaults.
-        try:
-            result = window.cmd("show-options", "-w")
-            if result.returncode != 0 or result.stderr:
-                return None, None
-            return TmuxManager._selection_from_options(
-                result.stdout, window.window_id or "", incarnation
-            )
-        except _TmuxError:
-            return None, None
-
-    @staticmethod
     def _selection_from_options(
         lines: list[str], window_id: str, incarnation: str
     ) -> tuple[bool | None, str | None]:
@@ -228,10 +214,69 @@ class TmuxManager:
         witness = uuid5(NAMESPACE_URL, f"ccgram:tmux:{incarnation}:{window_id}")
         return False, f"tmux:{witness.hex}"
 
+    def _read_topic_selections(
+        self, window_ids: list[str], incarnation: str
+    ) -> dict[str, tuple[bool | None, str | None]] | None:
+        selections: dict[str, tuple[bool | None, str | None]] = {}
+        for offset in range(0, len(window_ids), _TOPIC_INVENTORY_BATCH_SIZE):
+            targets = window_ids[offset : offset + _TOPIC_INVENTORY_BATCH_SIZE]
+            commands: list[str] = []
+            for window_id in targets:
+                if commands:
+                    commands.append(";")
+                commands.extend(
+                    [
+                        "display-message",
+                        "-p",
+                        "-t",
+                        window_id,
+                        TMUX_WINDOW_ID_FORMAT,
+                        ";",
+                        "show-options",
+                        "-w",
+                        "-t",
+                        window_id,
+                    ]
+                )
+            result = self.server.cmd(commands[0], *commands[1:])
+            if result.returncode != 0 or result.stderr:
+                return None
+            parsed = self._selections_from_frames(result.stdout, targets, incarnation)
+            if parsed is None:
+                return None
+            selections.update(parsed)
+        return selections
+
+    @staticmethod
+    def _selections_from_frames(
+        lines: list[str], targets: list[str], incarnation: str
+    ) -> dict[str, tuple[bool | None, str | None]] | None:
+        selections: dict[str, tuple[bool | None, str | None]] = {}
+        current: str | None = None
+        options: list[str] = []
+        for line in lines:
+            if _WINDOW_ID_RE.fullmatch(line):
+                if current is not None:
+                    selections[current] = TmuxManager._selection_from_options(
+                        options, current, incarnation
+                    )
+                if line not in targets or line in selections:
+                    return None
+                current, options = line, []
+            elif current is None:
+                return None
+            else:
+                options.append(line)
+        if current is not None:
+            selections[current] = TmuxManager._selection_from_options(
+                options, current, incarnation
+            )
+        return selections if set(selections) == set(targets) else None
+
     def _topic_inventory(
         self,
     ) -> tuple[str, dict[str, tuple[bool | None, str | None]]] | None:
-        """Complete native owner scan, including shells and out-of-scope windows."""
+        """Fresh global owner scan; duplicate owners in other sessions still matter."""
         try:
             incarnation = self._socket_incarnation(self.server)
             if incarnation is None:
@@ -240,19 +285,16 @@ class TmuxManager:
             if (
                 result.returncode != 0
                 or result.stderr
-                or any(
-                    not _WINDOW_ID_RE.fullmatch(window_id)
-                    for window_id in result.stdout
-                )
+                or any(not _WINDOW_ID_RE.fullmatch(wid) for wid in result.stdout)
             ):
                 return None
-            selections = {
-                window_id: self._read_topic_selection(
-                    libtmux.Window(server=self.server, window_id=window_id), incarnation
-                )
-                for window_id in dict.fromkeys(result.stdout)
-            }
-            if self._socket_incarnation(self.server) != incarnation:
+            selections = self._read_topic_selections(
+                list(dict.fromkeys(result.stdout)), incarnation
+            )
+            if (
+                selections is None
+                or self._socket_incarnation(self.server) != incarnation
+            ):
                 return None
             owners = Counter(owner for _, owner in selections.values() if owner)
             return incarnation, {

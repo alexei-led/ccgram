@@ -325,7 +325,9 @@ async def test_marker_read_failure_retains_liveness_and_never_settles_clear(
     native = session.server.cmd
 
     def fail(command, *args, **kwargs):
-        if command == failed_command and (command != "list-windows" or "-a" in args):
+        if failed_command in (command, *args) and (
+            failed_command != "list-windows" or "-a" in args
+        ):
             return SimpleNamespace(returncode=1, stderr=["unavailable"], stdout=[])
         return native(command, *args, **kwargs)
 
