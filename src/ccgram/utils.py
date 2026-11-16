@@ -92,6 +92,7 @@ def log_throttle_sweep(
 
 
 CCGRAM_DIR_ENV = "CCGRAM_DIR"
+TMUX_WINDOW_ID_FORMAT = "#{window_id}"
 
 # Maximum number of JSONL lines to scan when extracting session metadata.
 _SCAN_LINES = 20

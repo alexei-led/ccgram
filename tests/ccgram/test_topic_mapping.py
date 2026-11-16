@@ -15,12 +15,12 @@ from pathlib import Path
 import pytest
 
 from ccgram.config import config
+from ccgram.topic_discovery import should_adopt_window
 
 from ccgram.multiplexer.base import MultiplexerCapabilities, WindowRef
 from ccgram.multiplexer.topic_mapping import (
     format_agent_topic_prefix,
     is_agent_topic_window,
-    should_adopt_window,
 )
 from ccgram.session import SessionManager
 from ccgram.session_resolver import session_resolver

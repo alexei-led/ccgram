@@ -15,7 +15,7 @@ from ...topic_selection import recover_topic_selections, verify_topic_target
 from ...window_state_ports import lifecycle_state
 from ...multiplexer import multiplexer
 from ...multiplexer.base import WindowRef, canonical_window_id
-from ...multiplexer.topic_mapping import should_adopt_window
+from ...topic_discovery import should_adopt_window
 from ...multiplexer.reconciliation import window_presence
 from ...session_protocol.telegram import TelegramSessionAdapter
 from ...providers import registry as provider_registry

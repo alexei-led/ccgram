@@ -40,7 +40,7 @@ import libtmux
 from libtmux.exc import LibTmuxException
 from libtmux.neo import fetch_objs
 
-from ..utils import tmux_session_name
+from ..utils import TMUX_WINDOW_ID_FORMAT, tmux_session_name
 from ..topic_mark_types import TopicMarkWriteGuard, TopicMarkWriteWitness
 from . import native_process, topic_mark_transport
 from .base import (
@@ -236,7 +236,7 @@ class TmuxManager:
             incarnation = self._socket_incarnation(self.server)
             if incarnation is None:
                 return None
-            result = self.server.cmd("list-windows", "-a", "-F", "#{window_id}")
+            result = self.server.cmd("list-windows", "-a", "-F", TMUX_WINDOW_ID_FORMAT)
             if (
                 result.returncode != 0
                 or result.stderr
@@ -492,7 +492,7 @@ class TmuxManager:
         ):
             return None
         result = await topic_mark_transport.run_marker_cli(
-            binary, [*args, "list-windows", "-a", "-F", "#{window_id}"]
+            binary, [*args, "list-windows", "-a", "-F", TMUX_WINDOW_ID_FORMAT]
         )
         if result is None or result[0] or result[2].strip():
             return None

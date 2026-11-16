@@ -19,6 +19,7 @@ from .topic_mark_journal import (
     TOPIC_MARK_OPERATIONS_KEY,
     operation_matches,
     read_topic_mark_operations,
+    read_topic_mark_state,
 )
 from .utils import atomic_write_json, ccgram_dir, load_ccgram_env
 from .state_writer_lock import StateWriterLease
@@ -140,12 +141,7 @@ async def _offline_topic_mark(
 
     if not lease.held:
         raise RuntimeError("Offline marker mutation needs the state writer lease")
-    try:
-        state = json.loads(lease.state_path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        state = {}
-    if not isinstance(state, dict):
-        raise ValueError("State must be an object")
+    state = read_topic_mark_state(lease.state_path)
     store = WindowStateStore(
         schedule_save=lambda: None, on_hookless_provider_switch=lambda _window_id: None
     )

@@ -124,15 +124,20 @@ def parse_topic_mark_operations(
     return tuple(operations.values())
 
 
-def read_topic_mark_operations(path: str | Path) -> tuple[TopicMarkOperation, ...]:
-    """Read state.json without bot initialization, native mutation, or writes."""
+def read_topic_mark_state(path: str | Path) -> dict[str, object]:
+    """Read raw marker state without bot initialization, mutation, or writes."""
     try:
         state = json.loads(Path(path).read_text(encoding="utf-8"))
     except FileNotFoundError:
-        return ()
+        return {}
     if not isinstance(state, dict):
         raise ValueError("State must be an object")
-    return parse_topic_mark_operations(state)
+    return state
+
+
+def read_topic_mark_operations(path: str | Path) -> tuple[TopicMarkOperation, ...]:
+    """Read state.json without bot initialization, native mutation, or writes."""
+    return parse_topic_mark_operations(read_topic_mark_state(path))
 
 
 def has_topic_mark_conflict(

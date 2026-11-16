@@ -35,7 +35,7 @@ from ...topic_selection import verify_topic_target
 from ...thread_router import TopicProvisioning, thread_router
 from ...multiplexer import multiplexer as tmux_manager
 from ...multiplexer.base import WindowRef, canonical_window_id
-from ...multiplexer.topic_mapping import should_adopt_window
+from ...topic_discovery import should_adopt_window
 from ...window_state_ports import lifecycle_state
 
 logger = structlog.get_logger()

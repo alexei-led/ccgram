@@ -37,7 +37,7 @@ from ..telegram_client import PTBTelegramClient, TelegramClient
 from ..thread_router import thread_router
 from ..multiplexer import multiplexer as tmux_manager
 from ..multiplexer.reconciliation import list_windows_for_reconciliation
-from ..multiplexer.topic_mapping import should_adopt_window
+from ..topic_discovery import should_adopt_window
 from ..window_state_ports import lifecycle_state
 from ..user_preferences import user_preferences
 from .callback_data import CB_SYNC_DISMISS, CB_SYNC_FIX

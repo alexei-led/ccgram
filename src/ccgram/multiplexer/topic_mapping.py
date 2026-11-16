@@ -17,30 +17,7 @@ because it is pure logic over the neutral value types.
 
 from __future__ import annotations
 
-from ..topic_discovery import parse_topic_discovery_mode
 from .base import MultiplexerCapabilities, WindowRef
-
-
-def should_adopt_window(
-    window: WindowRef, *, mode: str, detach_pending: bool, quarantined: bool
-) -> bool:
-    """Automatic admission only; never filter liveness or existing bindings.
-
-    An unfinished native write blocks admission even in auto mode. A pending
-    clear remains a marked-mode detach, not another selection preference.
-    """
-    mode = parse_topic_discovery_mode(mode)
-    if quarantined:
-        return False
-    if mode == "auto":
-        return window.topic_eligible
-    return (
-        window.topic_eligible
-        and window.topic_markable
-        and window.topic_marked is True
-        and bool(window.topic_mark_owner)
-        and not detach_pending
-    )
 
 
 # Separates workspace, tab, and optional pane parts in a Herdr topic title.

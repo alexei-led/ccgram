@@ -96,7 +96,7 @@ Herdr mutation stays on its proven connected transport. Mutating agtermctl/tmux 
 
 With no armed attempt, complete validated owner absence can prove the old selection off. Duplicate owners, malformed owned markers, incomplete inventory or read errors cannot. Resolution includes bare shells but never falls back to a stale locator, another backend, a display name or a guessed current terminal. An unavailable listing is not an empty listing and never proves closure.
 
-`topic_discovery.py` owns the stdlib-only mode constants and validator. Configuration exposes `config.topic_discovery_mode`. `should_adopt_window(window, *, mode: str, detach_pending: bool, quarantined: bool) -> bool` requires all three keywords. Every automatic site supplies current detach and quarantine state with an explicit observed owner. `is_topic_mark_quarantined(window_id, *, owner)` blocks new admission in both modes. Ordinary detach-pending state retains its marked-mode meaning. The existing `is_agent_topic_window` keeps its baseline eligibility semantics.
+`topic_discovery.py` owns mode validation and automatic admission policy; its runtime imports are stdlib-only. Configuration exposes `config.topic_discovery_mode`. `should_adopt_window(window, *, mode: str, detach_pending: bool, quarantined: bool) -> bool` requires all three keywords. Every automatic site supplies current detach and quarantine state with an explicit observed owner. `is_topic_mark_quarantined(window_id, *, owner)` blocks new admission in both modes. Ordinary detach-pending state retains its marked-mode meaning. The existing `is_agent_topic_window` keeps its baseline eligibility semantics.
 
 ## Lifecycle ownership
 

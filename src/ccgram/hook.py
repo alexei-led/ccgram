@@ -1004,12 +1004,15 @@ def _session_map_session_for(window_id: str, pane_session: str) -> str:
     Falls back to the pane's own session whenever the window is not linked into
     ccgram's session, which is the single-session case and today's behaviour.
     """
+    # Lazy: hook-side tmux queries must stay independent of bot configuration.
+    from .utils import TMUX_WINDOW_ID_FORMAT
+
     target = _ccgram_tmux_session_name()
     if not target or target == pane_session:
         return pane_session
     try:
         result = subprocess.run(
-            ["tmux", "list-windows", "-t", target, "-F", "#{window_id}"],
+            ["tmux", "list-windows", "-t", target, "-F", TMUX_WINDOW_ID_FORMAT],
             capture_output=True,
             text=True,
             timeout=5,

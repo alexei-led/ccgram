@@ -53,7 +53,7 @@ from .multiplexer import multiplexer as tmux_manager
 from .multiplexer.base import WindowRef, canonical_window_id
 from .multiplexer.reconciliation import list_windows_for_reconciliation
 from .multiplexer.window_liveness import note_live_windows
-from .multiplexer.topic_mapping import should_adopt_window
+from .topic_discovery import should_adopt_window
 from .monitor_events import NewMessage, NewWindowEvent, SessionInfo
 from .transcript_reader import TranscriptReader, render_transcript_batch
 from .session_protocol.events import EventHub
