@@ -26,6 +26,8 @@ modules:
       - src/ccgram/doctor_cmd.py
       - src/ccgram/status_cmd.py
       - src/ccgram/hook.py
+      - src/ccgram/topic_mark_cmd.py
+      - src/ccgram/topic_mark_ipc.py
     volatility: low
     subdomain: generic
     layer: adapter
@@ -63,6 +65,7 @@ modules:
       - src/ccgram/utils.py
       - src/ccgram/expandable_quote.py
       - src/ccgram/tool_format.py
+      - src/ccgram/topic_discovery.py
     volatility: low
     subdomain: generic
     layer: core
@@ -142,12 +145,14 @@ modules:
       - src/ccgram/multiplexer/reconciliation.py
       - src/ccgram/multiplexer/window_liveness.py
       - src/ccgram/herdr_targets.py
+      - src/ccgram/topic_mark_types.py
     public:
       - src/ccgram/multiplexer/__init__.py
       - src/ccgram/multiplexer/base.py
       - src/ccgram/multiplexer/reconciliation.py
       - src/ccgram/multiplexer/window_liveness.py
       - src/ccgram/herdr_targets.py
+      - src/ccgram/topic_mark_types.py
     volatility: low
     subdomain: generic
     layer: core
@@ -165,6 +170,8 @@ modules:
       - src/ccgram/multiplexer/herdr_commands.py
       - src/ccgram/multiplexer/herdr_socket.py
       - src/ccgram/multiplexer/registry.py
+      - src/ccgram/multiplexer/native_process.py
+      - src/ccgram/multiplexer/topic_mark_transport.py
     volatility: medium
     subdomain: generic
     layer: adapter
@@ -237,6 +244,8 @@ modules:
       - src/ccgram/monitor_events.py
       - src/ccgram/monitor_state.py
       - src/ccgram/event_stream_monitor.py
+      - src/ccgram/topic_selection.py
+      - src/ccgram/state_writer_lock.py
     volatility: high
     subdomain: core
     layer: core
@@ -332,6 +341,7 @@ modules:
       - src/ccgram/window_resolver.py
       - src/ccgram/window_state_store.py
       - src/ccgram/window_view.py
+      - src/ccgram/topic_mark_journal.py
     volatility: medium
     subdomain: core
     layer: core
